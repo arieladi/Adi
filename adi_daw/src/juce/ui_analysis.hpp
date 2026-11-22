@@ -3,10 +3,13 @@
 #include "adi/ui/shared_analysis.hpp"
 #include "adi/ui/analysis_palettes.hpp"
 #include "adi/ui/spectrum_slope.hpp"
+#include "adi/ui/theme.hpp"
+#include "ui_scope_classic.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <memory>
 #include <limits>
 #include <optional>
+#include <span>
 #include <vector>
 
 namespace adi::engine { class MainLoudness; }
@@ -44,7 +47,7 @@ class SharedSpectrumView final : public juce::Component,
     SharedSpectrumView();
     ~SharedSpectrumView() override;
     void present(std::shared_ptr<SharedAnalysis>, std::int64_t track);
-    enum class Mode { Spectrum, Scope, Meters, Phase, Spectrogram };
+    enum class Mode { Spectrum, Scope, Meters, Phase, Spectrogram, ChannelReadout, SpectrumAverage, ClassicScope };
     void setMode(Mode);
     Mode mode() const noexcept { return mode_; }
     void setSource(engine::ScopePoint, std::int64_t device = 0);
@@ -56,11 +59,20 @@ class SharedSpectrumView final : public juce::Component,
     bool paletteReversed() const noexcept { return paletteReversed_; }
     void setSpectrumSlope(SpectrumSlope);
     SpectrumSlope spectrumSlope() const noexcept { return spectrumSlope_; }
+    enum class SpectrumScale { Wide, Detail, Extended, Device };
+    void setSpectrumScale(SpectrumScale);
+    SpectrumScale spectrumScale() const noexcept { return spectrumScale_; }
+    enum class HistoryMotion { Scroll, Sweep };
+    void setHistoryMotion(HistoryMotion);
+    HistoryMotion historyMotion() const noexcept { return historyMotion_; }
     // Weak owner token: closing/replacing the document revokes future reads.
     // Main-only eligibility is checked before invoking the callback.
     void setMainMeterSource(const std::shared_ptr<const MainMeterSource> &);
     std::optional<MainMeterSnapshot> mainMeterSnapshot() const noexcept { return mainMeter_; }
     juce::String mainMeterText() const;
+    void setClassicControls(const ClassicScopeControls &);
+    const ClassicScopeControls &classicControls() const noexcept { return classicControls_; }
+    std::function<void(bool)> onClassicFreeze;
     void freeze(bool);
     void clear();
     bool frozen() const noexcept { return frozen_; }
@@ -75,8 +87,9 @@ class SharedSpectrumView final : public juce::Component,
     void moved() override;
     enum class Status { Detached, Unavailable, Waiting, Ready };
     Status status() const noexcept { return status_; }
-    bool subscribed() const noexcept { return static_cast<bool>(lease_); }
+    bool subscribed() const noexcept { return static_cast<bool>(lease_) || static_cast<bool>(captureLease_); }
     std::shared_ptr<const SharedAnalysis::Result> snapshot() const noexcept { return shown_; }
+    std::span<const float> spectrumBins() const noexcept;
     std::int64_t track() const noexcept { return track_; }
   private:
     friend struct SharedSpectrumViewTestAccess;
@@ -84,6 +97,10 @@ class SharedSpectrumView final : public juce::Component,
     void updateDemand() noexcept;
     void armFreshBoundary() noexcept;
     void updateMainMeter() noexcept;
+    void updateClassicDemand() noexcept;
+    void classicFrame() noexcept;
+    void resetClassic(bool fresh) noexcept;
+    void presentClassic() noexcept;
     void watchAncestors();
     void unwatchAncestors() noexcept;
     void componentVisibilityChanged(juce::Component &) override;
@@ -93,10 +110,23 @@ class SharedSpectrumView final : public juce::Component,
     struct Raster;
     void updateRaster();
     void updateSpectrumProjection();
+    void updateScaledSpectrum() noexcept;
+    bool spectrumMode() const noexcept { return mode_ == Mode::Spectrum || mode_ == Mode::SpectrumAverage; }
+    Status pictureStatus() const noexcept;
+    void resetPicture() noexcept;
+    void paintChannelReadout(juce::Graphics &) const;
     std::shared_ptr<SharedAnalysis> broker_;
     std::int64_t track_ = 0;
     SharedAnalysis::Lease lease_;
+    SharedAnalysis::CaptureLease captureLease_;
+    std::shared_ptr<const SharedAnalysis::CaptureResult> captureShown_;
+    std::unique_ptr<ClassicScopePanel> classicPanel_;
+    ClassicScopeControls classicControls_;
+    SharedAnalysis::Lease::SourcePosition capturePosition_;
+    bool captureFresh_ = false;
     std::shared_ptr<const SharedAnalysis::Result> shown_;
+    std::shared_ptr<const std::vector<float>> averageBins_;
+    SharedAnalysis::AverageStatus averageStatus_ = SharedAnalysis::AverageStatus::Waiting;
     std::weak_ptr<const MainMeterSource> mainMeterSource_;
     std::optional<MainMeterSnapshot> mainMeter_;
     std::vector<juce::Component::SafePointer<juce::Component>> ancestors_;
@@ -110,6 +140,7 @@ class SharedSpectrumView final : public juce::Component,
     std::unique_ptr<Raster> raster_;
     std::size_t paletteIndex_ = palettes::defaultIndex;
     bool paletteReversed_ = false;
+    HistoryMotion historyMotion_ = HistoryMotion::Scroll;
     std::uint64_t clearedRevision_ = 0, clearedEpoch_ = 0, clearedColumn_ = 0;
     // Owner-only source position, independent of parked stamps and worker backlog.
     // Initial compatible pictures may be reused; explicit fresh actions fence them.
@@ -117,7 +148,25 @@ class SharedSpectrumView final : public juce::Component,
     bool freshRequired_ = false;
     SpectrumSlope spectrumSlope_ = SpectrumSlope::Flat;
     SpectrumSlopeCache spectrumProjection_;
+    struct ScaledSpectrum;
+    std::unique_ptr<ScaledSpectrum> scaledSpectrum_;
+    SpectrumScale spectrumScale_ = SpectrumScale::Wide;
 };
+
+// Fixed display coordinates used by the spectrum and the A/B overlay. The
+// caller still caps visible bins at the measured Nyquist.
+struct SpectrumAxis {
+    double lowHz, highHz, logWidth;
+    int topDb, bottomDb, divisionDb;
+    const char *lowLabel, *highLabel;
+
+    float x(double hz) const noexcept;
+    float y(float db) const noexcept;
+};
+const SpectrumAxis &spectrumAxis(SharedSpectrumView::SpectrumScale);
+juce::Rectangle<float> paintSpectrumGrid(juce::Graphics &, juce::Rectangle<float>, SharedSpectrumView::SpectrumScale);
+void populateSpectrumScaleMenu(juce::ComboBox &);
+SharedSpectrumView::SpectrumScale selectedSpectrumScale(const juce::ComboBox &) noexcept;
 
 // A full analyzer and the compact Info renderer use SharedSpectrumView above. Controls are
 // view state, never audio parameters. Main is explicit default; Selected follows channel
@@ -131,6 +180,7 @@ class AnalysisPane final : public juce::Component {
     static bool anyControlsFocused() noexcept;
     void frame(std::shared_ptr<SharedAnalysis>, std::int64_t main, std::int64_t selected);
     void resized() override;
+    void usePageControls();
     void setMode(SharedSpectrumView::Mode);
     SharedSpectrumView::Mode mode() const noexcept { return view.mode(); }
     void setSource(Source);
@@ -143,16 +193,19 @@ class AnalysisPane final : public juce::Component {
     std::string_view requestedPalette() const noexcept;
     std::function<void()> onPaletteChange;
     void setSpectrumSlope(SpectrumSlope);
+    void setSpectrumScale(SharedSpectrumView::SpectrumScale);
+    void setHistoryMotion(SharedSpectrumView::HistoryMotion);
     void restoreSlopeControls(SpectrumSlope);
     SpectrumSlope requestedSpectrumSlope() const noexcept;
     std::function<void()> onSpectrumSlopeChange;
     std::function<void(std::int64_t)> onExpand;
     SharedSpectrumView view;
-    juce::ComboBox modeBox, sourceBox, pointBox, channelBox, paletteBox, slopeBox;
+    juce::ComboBox modeBox, sourceBox, pointBox, channelBox, paletteBox, slopeBox, scaleBox, historyBox;
     juce::ToggleButton reverseButton{"Reverse"};
     juce::TextButton freezeButton{"Freeze"}, resetButton{"Reset"}, expandButton{"Window"};
   private:
     Source source_ = Source::Main;
+    ThemeId palettePreviewTheme_ = ThemeId::Dark;
 };
 
 // Optional compact projection of the same broker: identical source/configuration

@@ -128,6 +128,8 @@ Constants Constants::scaled(double k) const {
         px(w);
     for (auto &w : s.w100Dormant)
         px(w);
+    px(s.chainEndSpace);
+    px(s.pluginChipWidth);
     px(s.chainItemMin);
     px(s.pill);
     px(s.itemGap);
@@ -150,6 +152,26 @@ Constants Constants::scaled(double k) const {
     px(s.dragThreshold);
     px(s.subscribeMarginPx);
     return s;
+}
+
+Constants mixChannelGeometry(DensityId id) noexcept {
+    const auto& density = densityFor(id);
+    const auto compactRow = densityFor(DensityId::Compact).mixStackRow;
+    auto c = Constants{}.scaled(static_cast<double>(density.mixStackRow) / compactRow);
+    c.continuousLens = true;
+    c.anchor = Anchor::PointerRowFraction;
+    c.chainEndSpace = density.fieldHeight + 2 * density.gap;
+    c.pluginChipWidth = density.mixPluginChipWidth;
+    c.baseDefault = density.mixStackRow;
+    c.detents = {c.baseMin, c.baseDefault * 4 / 5, c.baseDefault,
+                 density.mixStackOuterRow, density.mixStackNearRow, c.baseMax};
+    const auto ratio = [&](int height) { return (100 * height + c.baseDefault / 2) / c.baseDefault; };
+    c.enlargedPct = ratio(density.mixStackFocusedRow);
+    c.near1Pct = ratio(density.mixStackNearRow);
+    c.near2Pct = ratio(density.mixStackOuterRow);
+    c.gapPct = 6;
+    c.dwellMs = 0;
+    return c;
 }
 
 int fisheyeHeight(int base, std::size_t distance, double listHeight, const Constants &c) noexcept {
@@ -253,7 +275,8 @@ ProcessorPlan planProcessor(double listWidth, int base, std::span<const KindScop
     const double navFull = view.navigator ? (view.navigatorCollapsed ? c.navigatorCollapsed : c.navigatorWidth) : 0;
     const auto fixedFor = [&](double procW, double navW) {
         const std::size_t parts = 1 + (view.showChain ? 1u : 0u) + (procW > 0 ? 1u : 0u);
-        return static_cast<double>(c.chipColumn) + static_cast<double>(parts - 1) * gap + procW + navW;
+        const double trailing = view.showChain ? c.chainEndSpace : 0;
+        return static_cast<double>(c.chipColumn) + static_cast<double>(parts - 1) * gap + procW + navW + trailing;
     };
     const auto fits = [&](double fixed) {
         const double lane = listWidth - fixed;
@@ -298,7 +321,7 @@ ProcessorPlan planProcessor(double listWidth, int base, std::span<const KindScop
     if (view.layout == RowLayout::ChainFirst) {
         if (view.showChain) {
             p.laneX = x;
-            x += p.laneW + gap;
+            x += p.laneW + c.chainEndSpace + gap;
         }
         p.processorX = x;
     } else {
@@ -452,100 +475,52 @@ ViewState ViewState::normalised(const Constants &c) const {
     return v;
 }
 
-std::span<const ModuleKindInput> defaultModuleKinds() noexcept {
-    static constexpr std::array<ModuleKindInput, 3> kinds{{
-        {1, "ADI-Q", "adi-q eq", ItemClass::AdiQ, true, true},
-        {2, "Ducking", "ducking sidechain sc", ItemClass::Ducking, false, false},
-        {4, "ADI-L", "adi-l limiter", ItemClass::AdiL, false, false},
-    }};
-    return kinds;
-}
-
 RowsInput SnapshotRows::input(std::uint64_t generation, std::uint64_t providerRevision) const noexcept {
     RowsInput in;
-    in.kinds = kinds;
     in.tracks = tracks;
     in.items = items;
-    in.modules = modules;
     in.generation = generation;
     in.providerRevision = providerRevision;
     return in;
 }
 
 void tracksFromSnapshot(const SnapshotReader &reader, const ArrangementGeometry &geometry,
-                        const MixViewProvider &provider, SnapshotRows &out) {
-    out.kinds = defaultModuleKinds();
-    const auto rows = geometry.rows(reader);
-    const std::size_t n = rows.size(), nk = out.kinds.size();
-    out.tracks.resize(n);
-    out.modules.resize(n * nk);
-    out.items.clear();
-    const TrackId referenceTrack = provider.reference(reader.tracks());
-    for (std::size_t i = 0; i < n; ++i) {
-        const auto row = rows[i];
-        const engine::TrackNode &node = *row.track;
-        TrackInput &t = out.tracks[i];
-        t = TrackInput{};
-        t.id = node.id;
-        t.parent = row.place.parent;
-        t.depth = row.place.depth;
-        t.group = row.place.group;
-        t.main = row.place.main;
-        t.ret = row.place.ret;
-        std::uint64_t identity = hashBytes(hashBytes(kFnvBasis, "track:"), node.kind);
-        t.identity = identity == 0 ? 1 : identity;
-        t.inView = geometry.inView(node.id);
-        const std::string_view roleName = node.role ? std::string_view(*node.role) : std::string_view();
-        t.reference = node.id == referenceTrack || roleName == "reference";
-        t.colour = node.color && *node.color >= 0 && *node.color < kPaletteColours
-                       ? static_cast<std::int32_t>(*node.color)
-                       : -1;
-        t.roles = roleName == "kick"    ? role::Kick
-                  : roleName == "bass"  ? role::Bass
-                  : roleName == "vocal" ? role::Vocal
-                                        : std::uint8_t{0};
-        t.name = node.name;
-        // MixViewProvider v1 reports three engaged flags per channel; the rest is ADI's rules:
-        // no ducking on Main (nothing above it to key from), nothing on the Reference.
-        const auto state = provider.slots(node);
-        for (std::size_t k = 0; k < nk; ++k) {
-            ModuleInput &m = out.modules[i * nk + k];
-            m = ModuleInput{};
-            const std::uint32_t key = out.kinds[k].key;
-            bool engaged = false, absent = t.reference;
-            if (key == 1)
-                engaged = state.eq;
-            else if (key == 2) {
-                engaged = state.sidechain != SidechainMode::Off;
-                absent = absent || t.main;
-            } else if (key == 4)
-                engaged = state.limiter;
-            m.state = absent ? ModuleState::Absent : engaged ? ModuleState::Engaged : ModuleState::Dormant;
-            if (m.state != ModuleState::Absent) {
-                const std::uint64_t instance =
-                    hashWord(hashWord(hashWord(kFnvBasis, static_cast<std::uint64_t>(node.id)), t.identity), key);
-                m.instance = instance == 0 ? 1 : instance;
-            }
-        }
-    }
-}
-
-void tracksFromSnapshot(const SnapshotReader &reader, const ArrangementGeometry &geometry,
                         const MixViewProvider &provider, std::span<const ChainDeviceInput> devices,
                         SnapshotRows &out) {
-    tracksFromSnapshot(reader, geometry, provider, out);
-    // The compatibility adapter's columns are not real devices. Actual-chain rows have only
-    // their user-added devices; this overload never switches on or reserves a built-in module.
-    out.kinds = {};
-    out.modules.clear();
+    const auto rows = geometry.rows(reader);
+    out.tracks.resize(rows.size());
+    out.items.clear();
+    const TrackId referenceTrack = provider.reference(reader.tracks());
     out.chainOrder.resize(devices.size());
     for (std::size_t i = 0; i < devices.size(); ++i)
         out.chainOrder[i] = {devices[i].track, i};
     std::sort(out.chainOrder.begin(), out.chainOrder.end());
     out.items.reserve(devices.size());
-    for (auto &track : out.tracks) {
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+        const auto row = rows[i];
+        const engine::TrackNode &node = *row.track;
+        TrackInput &track = out.tracks[i];
+        track = TrackInput{};
+        track.id = node.id;
+        track.parent = row.place.parent;
+        track.depth = row.place.depth;
+        track.group = row.place.group;
+        track.main = row.place.main;
+        track.ret = row.place.ret;
+        std::uint64_t identity = hashBytes(hashBytes(kFnvBasis, "track:"), node.kind);
+        track.identity = identity == 0 ? 1 : identity;
+        track.inView = geometry.inView(node.id);
+        const std::string_view roleName = node.role ? std::string_view(*node.role) : std::string_view();
+        track.reference = node.id == referenceTrack || roleName == "reference";
+        track.colour = node.color && *node.color >= 0 && *node.color < kPaletteColours
+                           ? static_cast<std::int32_t>(*node.color)
+                           : -1;
+        track.roles = roleName == "kick"    ? role::Kick
+                    : roleName == "bass"  ? role::Bass
+                    : roleName == "vocal" ? role::Vocal
+                                          : std::uint8_t{0};
+        track.name = node.name;
         track.itemBegin = static_cast<std::uint32_t>(out.items.size());
-        track.itemCount = 0;
         auto at = std::lower_bound(out.chainOrder.begin(), out.chainOrder.end(),
                                    std::pair<TrackId, std::size_t>{track.id, 0});
         for (; at != out.chainOrder.end() && at->first == track.id; ++at) {
@@ -585,6 +560,7 @@ constexpr std::size_t kMaxTouched = 8;
 
 StackModel::StackModel(Constants constants) : c_(constants) {
     view_.baseHeight = c_.baseDefault;
+    if (c_.continuousLens) view_.channelScope = ChannelScope::AllChannels;
     shared_.pins.reserve(boundOf(c_.maxPins));
     view_.folded.reserve(boundOf(c_.maxFolded));
     view_.search.reserve(boundOf(c_.searchMaxBytes) + 8);
@@ -990,10 +966,15 @@ void StackModel::recountScope() {
         scopeAdd(r, +1);
 }
 
+bool StackModel::inChannelSubset(TrackId id) const noexcept {
+    return !channelSubset_ || std::binary_search(channelSubset_->begin(), channelSubset_->end(), id);
+}
+
 bool StackModel::memberPlain(std::uint32_t rec) const noexcept {
     const Rec &r = rows_[rec];
-    if (!inScope(r))
+    if (!inScope(r) || !inChannelSubset(r.id))
         return false;
+    if (focusGroup_) return true;
     if (view_.channelScope == ChannelScope::WithTools && !r.hasMixFunction)
         return false;
     const bool searching = view_.searchMode == SearchMode::Filter && !queryFold_.empty();
@@ -1037,7 +1018,7 @@ bool StackModel::computeUnderFold(std::uint32_t rec, ChannelScope scope) const n
     for (std::size_t steps = 0; up != kNoRec && steps <= rows_.size(); ++steps) {
         // A group omitted by With tools has no fold affordance in this list.
         // Keep its saved fold for All channels without hiding eligible children.
-        if ((scope == ChannelScope::AllChannels || rows_[up].hasMixFunction) &&
+        if (inChannelSubset(rows_[up].id) && (scope == ChannelScope::AllChannels || rows_[up].hasMixFunction) &&
             std::binary_search(view_.folded.begin(), view_.folded.end(), rows_[up].id))
             return true;
         up = rows_[up].parentRec;
@@ -1592,10 +1573,18 @@ std::size_t StackModel::buildTargets(std::array<Entry, kMaxEntries> &out) const 
     if (!at)
         return 0;
     const std::size_t e = *at;
-    const std::size_t lo = e >= 2 ? e - 2 : 0, hi = std::min(count - 1, e + 2);
-    std::array<int, 5> h{};
-    for (std::size_t i = lo; i <= hi; ++i)
-        h[i - lo] = fisheyeHeight(b, i > e ? i - e : e - i, listH_, c_);
+    const std::size_t radius = c_.continuousLens ? 3 : 2;
+    const auto lo = e >= radius ? e - radius : 0, hi = std::min(count - 1, e + radius);
+    std::array<int, 7> h{};
+    for (std::size_t i = lo; i <= hi; ++i) {
+        const double distance = std::abs(static_cast<double>(i) - static_cast<double>(e) - lensOffset_);
+        const auto band = static_cast<std::size_t>(distance);
+        const double t = distance - static_cast<double>(band);
+        const double weight = t * t * (3 - 2 * t);
+        const int center = fisheyeHeight(b, band, listH_, c_);
+        h[i - lo] = center + static_cast<int>(std::round(
+            (fisheyeHeight(b, band + 1, listH_, c_) - center) * weight));
+    }
     std::size_t n = 0;
     for (std::size_t i = lo; i <= hi; ++i) {
         Entry t;
@@ -2090,7 +2079,7 @@ void StackModel::onLeave(TimeMs d) {
         anchorFirstVisible(); // settles any slack the pointer left
     }
     if (view_.autoZoom && maximised_ == 0) {
-        const TrackId target = keyboardFocus_ && focusRow_ != 0 && shownIndex(focusRow_) ? focusRow_ : 0;
+        const TrackId target = keyboardFocus_ && !c_.continuousLens && focusRow_ != 0 && shownIndex(focusRow_) ? focusRow_ : 0;
         setEnlarged(target, d);
         retarget(d);
     }
@@ -2117,6 +2106,7 @@ void StackModel::setEnlarged(TrackId id, TimeMs now) {
     if (id == enlarged_)
         return;
     enlarged_ = id;
+    lensOffset_ = 0;
     enlargedSince_ = now;
     bump();
 }
@@ -2163,6 +2153,7 @@ double StackModel::itemHeight(const Rec &r, std::size_t index, double h, bool ta
 
 double StackModel::itemWidth(const Rec &r, std::size_t index, double h, bool target) const noexcept {
     const auto &item = r.items[index];
+    if (item.cls == ItemClass::Plugin && item.folded && c_.pluginChipWidth > 0) return c_.pluginChipWidth;
     const double height = itemHeight(r, index, h, target);
     if (item.folded || plan().laneMode == LaneMode::Pills || tierFor(height, false, c_) < c_.foldBelow[classAt(item.cls)])
         return c_.pill;
@@ -2606,6 +2597,28 @@ Effects StackModel::mergeFlags(Effects into, const Effects &from) noexcept {
     return into;
 }
 
+void StackModel::updatePointerLens(TimeMs now) {
+    if (!c_.continuousLens || !view_.autoZoom || cap_.active || buttonDown_ || focusOwns_ ||
+        maximised_ != 0 || jump_.active || landed_ != 0 || !pointerOverRows() ||
+        now < lastScrollAt_ + c_.scrollHoldOffMs)
+        return;
+    const auto hit = locate(py_ + scroll_);
+    if (hit.locus != Locus::Gap && hit.locus != Locus::Row) return;
+    const auto index = hit.index;
+    const auto id = rows_[shown_[index]].id;
+    const double fraction = hit.locus == Locus::Gap ? 1.0 :
+        std::clamp((py_ + scroll_ - hit.top) / hit.height, 0.0, 1.0);
+    double offset = fraction - .5;
+    if ((index == 0 && offset < 0) || (index + 1 == shown_.size() && offset > 0)) offset = 0;
+    if (enlarged_ == id && std::abs(lensOffset_ - offset) < .002) return;
+    setEnlarged(id, now);
+    lensOffset_ = offset;
+    anchorPointer();
+    retarget(now);
+    solveScroll();
+    updateNavScroll();
+}
+
 Effects StackModel::pointerMove(double x, double y, bool buttonDown, TimeMs now) {
     Effects fx;
     const auto before = beginEvent();
@@ -2655,6 +2668,7 @@ Effects StackModel::pointerMove(double x, double y, bool buttonDown, TimeMs now)
     if (moved) {
         rehit(now);
         rehitItem(now);
+        updatePointerLens(now);
     }
     endEvent(fx, before);
     return fx;
@@ -3175,6 +3189,29 @@ void StackModel::membershipChanged(TimeMs now, bool toTop) {
     rehit(now);
     updateNavScroll();
     bump();
+}
+
+Effects StackModel::setChannelSubset(std::optional<std::vector<TrackId>> ids, TimeMs now, bool focusGroup) {
+    Effects fx;
+    const auto before = beginEvent();
+    now = advanceTo(now);
+    if (ids) {
+        std::sort(ids->begin(), ids->end());
+        ids->erase(std::unique(ids->begin(), ids->end()), ids->end());
+    }
+    if (ids != channelSubset_ || focusGroup_ != focusGroup) {
+        focusGroup_ = focusGroup;
+        const auto cursor = jumpTarget().track;
+        channelSubset_ = std::move(ids);
+        ++stats_.fullPasses;
+        for (std::uint32_t i = 0; i < rows_.size(); ++i)
+            rows_[i].underFold = computeUnderFold(i);
+        membershipChanged(now, false);
+        if (view_.searchMode == SearchMode::Jump && !queryFold_.empty())
+            rebuildMatches(cursor);
+    }
+    endEvent(fx, before);
+    return fx;
 }
 
 Effects StackModel::setFilterPinned(bool on, TimeMs now) {
@@ -4243,7 +4280,7 @@ bool StackModel::hiddenOnlyByToolScope(TrackId id) const noexcept {
     if (view_.channelScope != ChannelScope::WithTools || shownIndex(id))
         return false;
     const auto rec = recOf(id);
-    if (rec == kNoRec || !inScope(rows_[rec]) || rows_[rec].hasMixFunction)
+    if (rec == kNoRec || !inScope(rows_[rec]) || !inChannelSubset(id) || rows_[rec].hasMixFunction)
         return false;
     const Rec &r = rows_[rec];
     const bool searching = view_.searchMode == SearchMode::Filter && !queryFold_.empty();

@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
+#include "adi/engine/param_ops.hpp"
+#include "adi/mix/limiter/ReductionMailbox.h"
 #include "adi/ui/mix_view_provider.hpp"
 #include "adi/ui/parameter_feed.hpp"
 #include "adi/ui/stack_model.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -43,7 +46,10 @@ class StackTab final : public juce::Component {
   public:
     explicit StackTab(AdiRootComponent &);
     ~StackTab() override;
+    void adoptViewState();
     void suspendParameters(bool);
+    using LimiterObserver = std::function<mix::limiter::ReductionMailbox::Lease(const DevicePanelData &)>;
+    void setLimiterObserver(LimiterObserver);
     void frame(const SnapshotReader &);
     // Deterministic component-test entry; normal frames use the window's monotonic clock.
     void frameAt(const SnapshotReader &, stack::TimeMs);
@@ -63,6 +69,7 @@ class StackTab final : public juce::Component {
     void focusLost(FocusChangeType) override;
     void focusOfChildComponentChanged(FocusChangeType) override;
     void focus(std::int64_t track);
+    void filterChannels(std::optional<std::vector<std::int64_t>> ids, bool focusGroup = false);
     std::int64_t focused() const noexcept;
     void hover(std::int64_t track);
     std::int64_t hovered() const noexcept;
@@ -76,6 +83,7 @@ class StackTab final : public juce::Component {
     bool hasDeviceContext() const;
     bool hasToolbarFocus() const;
     bool deviceCommand(int command);
+    juce::PopupMenu rowAddMenu(stack::RowRef);
     // Ends a held edit exactly once before hiding/rebinding/removing its component.
     void cancelInteractions();
     AdiRootComponent &root;
@@ -89,22 +97,32 @@ class StackTab final : public juce::Component {
     static constexpr int kDisplayHeight = 56, kHeaderHeight = 30;
 
   private:
+    friend class AdiRootComponent;
     friend class StackRow;
     struct State;
     std::unique_ptr<State> state_;
+    bool editingPage() const;
     std::vector<std::unique_ptr<StackRow>> rows_;
     void effects(const stack::Effects &, bool takeFocus = true);
+    void syncWindowControls();
+    void syncStoredPins(stack::TimeMs time);
+    void persistWindowControls();
     void layoutRows();
+    void releaseCardObservations();
     void updateParameterDemand(std::vector<std::int64_t>);
     void refreshRows(const SnapshotReader &, stack::TimeMs);
     void syncScroll();
     int toolbarHeight() const noexcept;
     void focusTile(const stack::ItemRef &);
+    void showRowAddMenu(stack::RowRef, juce::Component& anchor);
+    bool unfoldDevice(const stack::ItemRef &);
+    void showFoldedDeviceMenu(const stack::ItemRef &, juce::Point<int> screenPoint);
     stack::Hit presentedHit(double x, double y) const;
     void beginRename(stack::RowRef);
     void endRename(bool commit);
     bool beginInteraction(const stack::ItemRef &, stack::CaptureKind);
-    void endInteraction();
+    bool endInteraction(engine::ParameterPairEvent = engine::ParameterPairEvent::Cancel);
+    bool editParameterPair(const stack::ItemRef &, const engine::ParameterPair &, engine::ParameterPairEvent);
     bool editParameter(const stack::ItemRef &, const std::string &, engine::ParamEventKind, double);
     bool validTarget(const stack::ItemRef &) const;
     const DevicePanelData *device(std::int64_t) const noexcept;

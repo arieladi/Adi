@@ -414,6 +414,137 @@ void precisionAndStaticLaws() {
     check(ok && std::abs(dc[1].back() - expected) < 2e-6 && std::abs(dc[0].back() - expected * .1) < 2e-7,
           "linked steady DC follows analytic threshold ratio law");
 }
+void makeupAutomation() {
+    struct Timing { double rate; int downward, midpoint, reversal; };
+    constexpr Timing timings[]{
+        {44100, 6600, 3072, 6608}, {48000, 7184, 3584, 7192}, {96000, 14369, 7168, 14384},
+    };
+    constexpr float level = .01f;
+    const double base = std::pow(10.0, 13.5 / std::exp(1.0) / 20.0);
+    const double target = std::pow(10.0, 18.0 / std::exp(1.0) / 20.0);
+    const auto near = [](double actual, double expected) { return std::abs(actual - expected) < 3e-6; };
+
+    for (const auto &timing : timings) {
+        c::Core core;
+        c::Settings settings;
+        settings.thresholdDb = -18;
+        settings.ratio = 4;
+        settings.attack = 0;
+        settings.autoGain = true;
+        const auto read = [&](int frames) {
+            std::array<float, 127> audio{};
+            while (frames > 0) {
+                const int n = std::min(frames, static_cast<int>(audio.size()));
+                std::fill_n(audio.begin(), n, level);
+                float *main[]{audio.data()};
+                {
+                    AudioCall guard;
+                    const auto block = core.beginBlock(n);
+                    if (core.process(block, 0, n, main, nullptr, 0, settings) != c::Status::Ok)
+                        return std::numeric_limits<double>::quiet_NaN();
+                }
+                if (n == frames) return static_cast<double>(audio[static_cast<std::size_t>(n - 1)]) / level;
+                frames -= n;
+            }
+            return std::numeric_limits<double>::quiet_NaN();
+        };
+        check(core.prepare({timing.rate, 256, 1}, settings) == c::Status::Ok && near(read(1), base),
+              "Clean starts directly at its prepared make-up");
+        settings.thresholdDb = -24;
+        const double first = read(1);
+        const double last = read(timing.downward - 1);
+        check(near(first, base) && near(last, target - (target - base) / timing.downward) && near(read(1), target),
+              "a lowering Threshold ramps its linear make-up across split callbacks");
+
+        settings.thresholdDb = -18;
+        const double reverse = read(1);
+        const double reverseLast = read(timing.downward - 1);
+        check(near(reverse, target) && near(reverseLast, base + (target - base) / timing.downward) && near(read(1), base),
+              "a raising Threshold ramps in the other direction with the same duration");
+
+        settings.thresholdDb = -24;
+        read(timing.midpoint);
+        const double mid = base + (target - base) * timing.midpoint / timing.downward;
+        settings.thresholdDb = -18;
+        const double held = read(1);
+        const double heldLast = read(timing.reversal - 1);
+        check(near(held, mid) && near(heldLast, base + (mid - base) / timing.reversal) && near(read(1), base),
+              "a mid-ramp reversal starts at the interpolated gain and gets its own duration");
+
+        settings.thresholdDb = -24;
+        read(100);
+        core.reset();
+        check(near(read(1), target), "reset finishes the ramp at its authored destination");
+        settings.autoGain = false;
+        check(read(1) == 1.0, "explicit Auto Gain Off switches immediately");
+        settings.autoGain = true;
+        check(near(read(1), target), "explicit Auto Gain On switches immediately");
+        settings.thresholdDb = -18;
+        read(100);
+        check(core.prepare({timing.rate, 256, 1}, settings) == c::Status::Ok && near(read(1), base),
+              "explicit preparation starts fresh at the destination");
+    }
+}
+
+void measuredGainEnvelope() {
+    constexpr double rate = 48000;
+    constexpr double attackSeconds = .25;
+    constexpr double releaseSeconds = .0025;
+    constexpr double targetDb = 15;
+    constexpr float quiet = .001f;
+    c::Settings settings;
+    settings.thresholdDb = -20;
+    settings.ratio = 4;
+    settings.attack = 1;
+    settings.release = 0;
+
+    c::Core core;
+    const auto readGainDb = [&](float level, int frames) {
+        std::array<float, 256> samples{};
+        while (frames > 0) {
+            const int n = std::min(frames, static_cast<int>(samples.size()));
+            std::fill_n(samples.begin(), n, level);
+            float *main[]{samples.data()};
+            {
+                AudioCall guard;
+                const auto context = core.beginBlock(n);
+                if (core.process(context, 0, n, main, nullptr, 0, settings) != c::Status::Ok)
+                    return std::numeric_limits<double>::quiet_NaN();
+            }
+            if (frames == n)
+                return 20 * std::log10(static_cast<double>(samples[static_cast<std::size_t>(n - 1)]) / level);
+            frames -= n;
+        }
+        return std::numeric_limits<double>::quiet_NaN();
+    };
+
+    check(core.prepare({rate, 256, 1}, settings) == c::Status::Ok, "analytic envelope fixture prepares");
+    const double halfway = targetDb * (1 - std::sqrt(.1));
+    check(std::abs(readGainDb(1, 6000) + halfway) < .002 &&
+              std::abs(readGainDb(1, 6000) + 13.5) < .002,
+          "hard knee Clean attack reaches half-time and 90 percent at 250 ms");
+
+    // The slower detector has been driven for exactly one attack period. Its
+    // remaining exponential is a geometric sum during the fast release.
+    const double slowAtRelease = targetDb * (1 - std::pow(.1, attackSeconds / (100 * attackSeconds + 2)));
+    const double fast = std::pow(.1, 1 / (rate * releaseSeconds));
+    const double slow = std::pow(.1, 1 / (rate * (releaseSeconds + .2)));
+    const double slowAfter120 = std::pow(slow, 120);
+    const double remaining = 1.35 + (1 - fast) * slowAtRelease * slow * (.1 - slowAfter120) / (fast - slow);
+    check(std::abs(readGainDb(quiet, 120) + remaining) < .002,
+          "Clean release reaches its analytic reduction after 2.5 ms");
+
+    check(std::abs(readGainDb(quiet, 96000)) < .0001 &&
+              std::abs(readGainDb(1, 6000) + halfway) < .002,
+          "the core settles to unity on quiet input and attacks again on a new signal");
+
+    settings.attack = 0;
+    settings.autoGain = true;
+    check(core.prepare({rate, 256, 1}, settings) == c::Status::Ok, "static make-up fixture prepares");
+    check(std::abs(readGainDb(quiet, 256) - targetDb / std::exp(1.0)) < .002,
+          "Clean Auto Gain applies the independently calculated make-up below threshold");
+}
+
 template <class Sample>
 void nonFiniteInput() {
     for (const bool external : {false, true}) {
@@ -461,6 +592,8 @@ int main() {
     splitsAndControls<double>();
     keyAndLink();
     precisionAndStaticLaws();
+    makeupAutomation();
+    measuredGainEnvelope();
     nonFiniteInput<float>();
     nonFiniteInput<double>();
     check(allocations == 0 && deallocations == 0, "audio callbacks allocate and deallocate nothing");

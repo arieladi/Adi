@@ -9,6 +9,7 @@
 #include "adi/engine/session.hpp"
 #include "adi/history.hpp"
 #include "adi/mix_functions.hpp"
+#include "adi/mix/limiter/ReductionMailbox.h"
 #include "adi/media/media_ops.hpp"
 #include "adi/store.hpp"
 #include "adi/material_commands.hpp"
@@ -100,6 +101,10 @@ class ProjectDocument final : public engine::BlockProcessor {
     ParameterFeed &parameterFeed() noexcept { return feed_; }
     void setParameterDemand(const void *consumer, const std::vector<std::int64_t> &devices);
     const std::shared_ptr<SharedAnalysis> &analysis() const noexcept { return analysis_; }
+    // Visible surfaces hold one owner-thread lease per presented runtime.
+    // Reads are nonconsuming and expose the same current frame to every reader.
+    [[nodiscard]] mix::limiter::ReductionMailbox::Lease observeLimiterReduction(
+        std::int64_t id, const engine::DeviceRuntimeToken& expected);
     // A control in the device strip: Begin, Values and End on one parameter, in the plug-in's
     // normalised unit (N7; ADR-0124 d4, ADR-0181 d5; MR 9.1). Every value reaches the plug-in at
     // once; End commits the gesture as ONE undo step, its first-touch opener in front, through
@@ -117,6 +122,9 @@ class ProjectDocument final : public engine::BlockProcessor {
     // must never redirect a gesture to a replacement instance.
     bool parameterGestureExpected(std::int64_t id, const std::string &param, engine::ParamEventKind,
                                   double normalized, const engine::DeviceRuntimeToken &, std::uint64_t instance);
+    bool parameterPairGestureExpected(std::int64_t id, const engine::ParameterPair &,
+                                      engine::ParameterPairEvent, const engine::DeviceRuntimeToken &,
+                                      std::uint64_t instance, std::shared_ptr<const gesture::OwnerToken> &owner);
     bool deviceTargetCurrent(std::int64_t id, const engine::DeviceRuntimeToken &, std::uint64_t instance);
     // Live's Re-Enable Automation (manual 25.4; MR 6.1; N26): every lane a manual change overrode
     // this run follows its envelope again, from the playhead at once, and the snapshot's
@@ -242,6 +250,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     WaveformCache &waveforms() noexcept { return waveforms_; }
 
   private:
+    std::int64_t retainedDeviceId() const noexcept;
     bool finishInsert(PreparedBuiltinInsert);
     ProjectDocument(std::unique_ptr<Store>, std::string name);
     // The clock the capture's timers run on: steady milliseconds, the same for the timer's drain
@@ -260,6 +269,9 @@ class ProjectDocument final : public engine::BlockProcessor {
     // so a frame that changes nothing builds nothing; the rows did not move, so the session has
     // nothing to re-read after it.
     void followOverrides();
+    [[nodiscard]] device::DeviceInstance* limiterReductionTarget(
+        std::int64_t id, const engine::DeviceRuntimeToken& expected);
+    void refreshLimiterReductionSources();
     void persistReportedLatencies();
     void refreshReportedLatenciesForSave();
     std::unique_ptr<Store> store_;
@@ -303,5 +315,11 @@ class ProjectDocument final : public engine::BlockProcessor {
     // Where the document's file is now, for the waveform worker: Save As moves it.
     std::shared_ptr<WaveformSource> waveformSource_;
     WaveformCache waveforms_;
+    struct ReductionSource {
+        engine::DeviceRuntimeToken expected;
+        std::weak_ptr<mix::limiter::ReductionMailbox> mailbox;
+    };
+    std::map<std::int64_t, ReductionSource> limiterReductionSources_;
+    std::int64_t limiterReductionPublication_ = 0;
 };
 } // namespace adi::ui

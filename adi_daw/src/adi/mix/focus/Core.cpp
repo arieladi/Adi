@@ -172,6 +172,9 @@ struct Core::Impl {
     enum class FirStage { Idle, ForwardStart, Forward, Node, CurrentProduct, PreviousProduct, Sum,
                           InverseStart, Inverse, Overlap, Finish };
     FirStage firStage=FirStage::Idle;
+    static constexpr std::uint64_t firEdgeWork = 16;
+    std::uint64_t firBaseWork = 0, firNodeWork = 0;
+    std::uint64_t jobWorkPerSample = 0, jobRemainder = 0, jobRemainderCarry = 0;
     std::size_t captureBank=0,jobTimeBank=0,previousSpectrumBank=0,jobSpectrumBank=1;
     std::size_t jobStream=0,jobNode=0,jobIndex=0;
     std::uint64_t jobOutput=0;
@@ -252,7 +255,18 @@ struct Core::Impl {
         captureTag={};jobTag={};previousTag={};firStage=FirStage::Idle;
         captureBank=jobTimeBank=previousSpectrumBank=0;jobSpectrumBank=1;
         epoch=nextPreparationEpoch.fetch_add(1,std::memory_order_relaxed);stats={};phaseBlend={1.,1.};
-        stats.firWorkQuota=static_cast<std::uint64_t>(373+22*(std::bit_width(p)-1));
+        const auto stages = static_cast<std::uint64_t>(std::bit_width(p) - 1);
+        // Transform counts one scan per element in each pack/permute/post stage
+        // (inverse has four scans), p/2 butterflies per stage, and every transition.
+        const auto fftCursorWork = stages * (p / 2) + stages + 5;
+        const auto forwardWork = 3 * p + fftCursorWork;
+        const auto inverseWork = 4 * p + fftCursorWork;
+        // Always visit four streams and every node. Each live node adds three
+        // bin operations, an inverse and its two outer transitions, and h
+        // overlap charges including the cursor transition.
+        firBaseWork = 4 * (forwardWork + 2 + kNodes + 1) + 1 + 2 * firEdgeWork;
+        firNodeWork = 4 * (inverseWork + 3 * (p + 1) + 2 + h);
+        stats.firWorkQuota = (firBaseWork + kNodes * firNodeWork + p - 1) / p;
         phaseBlendStep=1./std::max(1.,spec.sampleRate*.01);prepared=true;
     }
     // Owner-only, while the relevant bank/stage is dormant. Re-entering after
@@ -497,7 +511,7 @@ struct Core::Impl {
     std::uint64_t advanceFir(const Settings &s) noexcept {
         // First/last-sample metadata is reserved from this sample's quota,
         // not credited by configured capacity or earlier idle callbacks.
-        const std::uint64_t metadata=(firFill==0?16U:0U)+(firFill+1==p?16U:0U);
+        const std::uint64_t metadata = firFill == 0 || firFill + 1 == p ? firEdgeWork : 0;
         if(firFill==0) {
             captureTag.slot=activeSlot;captureTag.version=slots[static_cast<std::size_t>(activeSlot)].coefficients.version;
             captureTag.mask=0;
@@ -505,13 +519,18 @@ struct Core::Impl {
             slots[static_cast<std::size_t>(activeSlot)].readers.fetch_add(1,std::memory_order_relaxed);
         }
         std::uint64_t used=metadata;
-        while(firStage!=FirStage::Idle&&used<stats.firWorkQuota) {
-            const auto transformBefore=firTransform.workUnits();const auto chunk=firStep(stats.firWorkQuota-used);
-            const auto primitives=firTransform.workUnits()-transformBefore;
-            // A synchronous transform mutation is still charged in full and
-            // therefore fails the sample-work/deadline regression.
-            const auto charge=std::max(chunk,primitives);
-            used+=charge;
+        if (firStage != FirStage::Idle) {
+            // Masks cannot change within a job. This remainder follows the
+            // remaining per-hop work without a divide on the sample path.
+            jobRemainderCarry += jobRemainder;
+            const auto budget = jobWorkPerSample + static_cast<std::uint64_t>(jobRemainderCarry >= p);
+            jobRemainderCarry &= p - 1;
+            while (firStage != FirStage::Idle && used < budget) {
+                const auto transformBefore = firTransform.workUnits();
+                const auto chunk = firStep(budget - used);
+                // An unexpected synchronous transform must still be charged in full.
+                used += std::max(chunk, firTransform.workUnits() - transformBefore);
+            }
         }
         stats.firWorkUnits+=used;stats.firMaxSampleWork=std::max(stats.firMaxSampleWork,used);
         return used;
@@ -527,6 +546,11 @@ struct Core::Impl {
             releaseFirTag(previousTag);
         }
         jobTag=captureTag;captureTag={};jobTimeBank=captureBank;captureBank=1-captureBank;
+        const auto activeNodes = std::popcount(static_cast<unsigned>(jobTag.mask | previousTag.mask));
+        const auto work = firBaseWork + static_cast<std::uint64_t>(activeNodes) * firNodeWork;
+        jobWorkPerSample = work / p;
+        jobRemainder = work % p;
+        jobRemainderCarry = 0;
         jobSpectrumBank=1-previousSpectrumBank;jobOutput=firCursor+1+p;
         jobStream=jobNode=jobIndex=0;firStage=FirStage::ForwardStart;firFill=0;
         ++stats.firJobsStarted;

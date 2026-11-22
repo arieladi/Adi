@@ -3,6 +3,8 @@
 #include "ui_shell.hpp"
 #include "ui_browser.hpp"
 #include "adi/ui/automation_override.hpp"
+#include "mix_eq_host.hpp"
+#include "adi/mix/eq/Preview.hpp"
 #include <algorithm>
 #include <cmath>
 #include <iterator>
@@ -139,6 +141,21 @@ void ParameterControl::showMenu() {
         m.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(this));
 }
 void ParameterControl::resized() {
+    if (getHeight() < 48) {
+        const int half = getHeight() / 2;
+        const int side = std::min(24, getHeight());
+        if (slider.isVisible()) {
+            slider.setBounds(0, (getHeight() - side) / 2, side, side);
+            name.setBounds(side, 0, getWidth() - side, half);
+            value.setBounds(side, half, getWidth() - side, getHeight() - half);
+        } else {
+            name.setBounds(0, 0, getWidth(), half);
+            value.setBounds({});
+            toggle.setBounds(getWidth() / 2 - 12, half, 24, getHeight() - half);
+            menu.setBounds(2, half, getWidth() - 4, getHeight() - half);
+        }
+        return;
+    }
     // Live's knob column: the name, the knob, the value under it.
     name.setBounds(0, 0, getWidth(), 14);
     slider.setBounds(getWidth() / 2 - 14, 13, 28, 28);
@@ -253,8 +270,555 @@ void SampleTile::itemDropped(const SourceDetails &details) {
     if (const auto files = BrowserPanel::droppedFiles(details.description); !files.isEmpty())
         drop(files[0]);
 }
-DevicePanelView::DevicePanelView(DeviceChainStrip &s, const DevicePanelData &d)
-    : id(d.id), strip(s) {
+namespace {
+using NodeAxis = device::EqNodeAxis;
+bool nodeHasGain(mix::eq::Shape shape) {
+    using S = mix::eq::Shape;
+    return shape == S::Bell || shape == S::LowShelf || shape == S::HighShelf ||
+           shape == S::TiltShelf || shape == S::FlatTilt || shape == S::FlatGain;
+}
+constexpr float eqDbSpan = 36.f;
+float eqFrequencyPosition(float hz) {
+    return std::clamp(std::log(hz / 10.f) / std::log(3000.f), 0.f, 1.f);
+}
+void drawEqGrid(juce::Graphics &g, juce::Rectangle<float> graph) {
+    struct Tick { float fraction; bool decade; };
+    static const auto ticks = [] {
+        std::array<Tick, 29> values{};
+        auto out = values.begin();
+        for (float decade : {10.f, 100.f, 1000.f}) {
+            for (int tick = 1; tick <= 9; ++tick)
+                *out++ = {eqFrequencyPosition(decade * static_cast<float>(tick)), tick == 1};
+        }
+        *out++ = {eqFrequencyPosition(10000.f), true};
+        *out = {eqFrequencyPosition(20000.f), false};
+        return values;
+    }();
+    g.setColour(look::display);
+    g.fillRect(graph);
+    for (const auto &tick : ticks) {
+        g.setColour(look::gridLine.withMultipliedAlpha(tick.decade ? 1.f : .46f));
+        const float x = graph.getX() + tick.fraction * graph.getWidth();
+        g.drawVerticalLine(juce::roundToInt(x), graph.getY(), graph.getBottom());
+    }
+    g.setColour(look::outline);
+    g.drawHorizontalLine(juce::roundToInt(graph.getCentreY()), graph.getX(), graph.getRight());
+    if (graph.getHeight() >= 2 * look::fieldHeight) {
+        g.setColour(look::gridLine);
+        for (float offset : {-1.f / 3.f, 1.f / 3.f}) {
+            const auto y = graph.getCentreY() + offset * graph.getHeight();
+            g.drawHorizontalLine(juce::roundToInt(y), graph.getX(), graph.getRight());
+        }
+    }
+}
+juce::Point<float> nodePosition(const mix::eq::BandSettings &band, juce::Rectangle<float> graph) {
+    const auto fraction = eqFrequencyPosition(band.frequencyHz);
+    const auto gain = nodeHasGain(band.shape) ? band.gainDb : 0.f;
+    return {graph.getX() + fraction * graph.getWidth(),
+            std::clamp(graph.getCentreY() - gain * graph.getHeight() / eqDbSpan, graph.getY(), graph.getBottom())};
+}
+juce::Rectangle<float> nodeHandle(juce::Point<float> node, juce::Rectangle<float> graph, NodeAxis axis) {
+    constexpr float w = 23.f, h = 13.f;
+    const float x = node.x + ((node.x + w + 8.f <= graph.getRight()) ? 7.f : -w - 7.f);
+    const float y = std::clamp(node.y - h, graph.getY(), graph.getBottom() - 2.f * h);
+    return {x, y + (axis == NodeAxis::Gain ? h : 0.f), w, h};
+}
+}
+
+struct DevicePanelView::EqPreview {
+    std::shared_ptr<const std::vector<panel::Record>> records;
+    std::optional<mix::eq::Settings> settings;
+    double sampleRate = 0;
+    std::array<juce::Path, 5> paths;
+    std::weak_ptr<SharedAnalysis> spectrumBroker;
+    SharedAnalysis::Lease spectrumLease;
+    SharedAnalysis::Lease::SourcePosition freshSpectrum;
+    std::shared_ptr<const SharedAnalysis::Result> spectrumResult;
+    std::vector<float> spectrumPositions;
+    double spectrumRate = 0;
+    int spectrumFftSize = 0;
+    int spectrumWidth = 0;
+    juce::Path spectrumPath;
+    int hovered = -1;
+    struct Edit {
+        std::size_t band;
+        std::uint64_t instance;
+        NodeAxis axis;
+        juce::Point<float> start;
+        juce::Rectangle<float> graph;
+        juce::Point<float> origin, current; // Hz and dB, respectively
+        std::optional<engine::ParameterPair> pair;
+    };
+    std::optional<Edit> edit;
+    mix::eq::BandSettings displayedBand(std::size_t i) const {
+        auto band = settings->bands[i];
+        if (edit && edit->band == i) {
+            if (edit->pair || edit->axis == NodeAxis::Frequency) band.frequencyHz = edit->current.x;
+            if (edit->pair || edit->axis == NodeAxis::Gain) band.gainDb = edit->current.y;
+        }
+        return band;
+    }
+};
+void DevicePanelView::updateEqPreview(const DevicePanelData &d) {
+    if (!mixCard_ || !eqPresentation(d)) return;
+    if (!eqPreview_) eqPreview_ = std::make_unique<EqPreview>();
+    auto &preview = *eqPreview_;
+    const auto rate = strip.root.editRate();
+    if (d.cachedRecords && preview.records == d.cachedRecords && preview.sampleRate == rate) return;
+    preview.records = d.cachedRecords;
+    const auto settings = device::publishedMixEqSettings(d.parameters());
+    if (settings == preview.settings && preview.sampleRate == rate) return;
+    preview.sampleRate = rate;
+    preview.settings = settings;
+    for (auto &path : preview.paths) path.clear();
+    if (settings) {
+        const auto graph = mix::eq::designPreview(*settings, rate);
+        for (std::size_t route = 0; route < graph.visible.size(); ++route) {
+            if (!graph.visible[route]) continue;
+            auto &path = preview.paths[route];
+            const auto &db = graph.decibels[route];
+            path.preallocateSpace(static_cast<int>(db.size() * 3));
+            path.startNewSubPath(0.f, db.front());
+            for (std::size_t i = 1; i < db.size(); ++i)
+                path.lineTo(static_cast<float>(i) / static_cast<float>(db.size() - 1), db[i]);
+        }
+    }
+    repaint();
+}
+
+void DevicePanelView::releaseEqSpectrum() {
+    if (!eqPreview_) return;
+    auto &preview = *eqPreview_;
+    // The broker's release hook can change the owning document. Leave the
+    // picture and lease state clear before calling it.
+    auto lease = std::move(preview.spectrumLease);
+    preview.freshSpectrum = {};
+    preview.spectrumResult.reset();
+    if (preview.spectrumPath.isEmpty()) return;
+    preview.spectrumPath.clear();
+    repaint(eqPreviewBounds().toNearestInt());
+}
+
+bool DevicePanelView::previewVisible(juce::Rectangle<int> visible) const {
+    if (!isShowing()) return false;
+    for (auto *p = getParentComponent(); p != nullptr && !visible.isEmpty(); p = p->getParentComponent())
+        visible = visible.getIntersection(getLocalArea(p, p->getLocalBounds()));
+    return !visible.isEmpty();
+}
+
+bool DevicePanelView::frameEqSpectrum(const std::shared_ptr<SharedAnalysis> &broker) {
+    if (!eqPreview_) return false;
+    if (!broker || !isShowing() || !data || !data->available || strip.folded(id)) {
+        releaseEqSpectrum();
+        return false;
+    }
+    const auto graph = eqPreviewBounds().toNearestInt();
+    if (!previewVisible(graph)) {
+        releaseEqSpectrum();
+        return false;
+    }
+    const auto safe = SafePointer<DevicePanelView>(this);
+    auto &preview = *eqPreview_;
+    if (preview.spectrumBroker.lock() != broker) {
+        releaseEqSpectrum();
+        if (!safe) return false;
+        preview.spectrumBroker = broker;
+    }
+    if (!preview.spectrumLease) {
+        const auto track = data->track;
+        const auto instance = presentedInstance();
+        SharedAnalysis::Request request{track, engine::ScopePoint::DeviceOutput};
+        request.device = id;
+        request.channel = SharedAnalysis::Channel::StereoPower;
+        SharedAnalysis::Lease acquired;
+        try { acquired = broker->acquire(request); }
+        catch (...) { return false; }
+        if (!safe || !data || !data->available || data->track != track || presentedInstance() != instance ||
+            preview.spectrumBroker.lock() != broker || !isShowing() || strip.folded(id) || eqPreviewBounds().isEmpty()) return false;
+        if (!preview.spectrumLease) {
+            preview.freshSpectrum = acquired.sourcePosition();
+            preview.spectrumLease = std::move(acquired);
+        }
+    }
+    auto next = preview.spectrumLease.read();
+    // The broker fences an adopted tap before it publishes its first window.
+    if (next && next->generation != preview.freshSpectrum.generation)
+        preview.freshSpectrum = {next->generation, 0};
+    if (next && next->firstSequence + next->request.fftSize <= preview.freshSpectrum.written)
+        next.reset();
+    // The graph stamps the output at the time it is heard. A result built
+    // before a driver callback finishes waits for its last audible sample.
+    if (next && next->advancing && next->firstStamp + next->request.fftSize > strip.root.renderedSamplePosition()) {
+        next = preview.spectrumResult && preview.spectrumResult->sourceEpoch == next->sourceEpoch
+            ? preview.spectrumResult : nullptr;
+    }
+    if (next == preview.spectrumResult && graph.getWidth() == preview.spectrumWidth)
+        return static_cast<bool>(preview.spectrumLease);
+    preview.spectrumPath.clear();
+    if (next && std::max(next->peak[0], next->peak[1]) > 0.f) {
+        if (preview.spectrumPositions.empty() || preview.spectrumRate != next->sampleRate ||
+            preview.spectrumFftSize != next->request.fftSize) {
+            preview.spectrumPositions.clear();
+            preview.spectrumRate = next->sampleRate;
+            preview.spectrumFftSize = next->request.fftSize;
+            const auto step = static_cast<float>(next->sampleRate / next->request.fftSize);
+            for (std::size_t bin = 1; bin < next->binsDbfs.size(); ++bin) {
+                const auto hz = static_cast<float>(bin) * step;
+                if (hz > 30000.f) break;
+                preview.spectrumPositions.push_back(eqFrequencyPosition(hz));
+            }
+        }
+        // Retain the loudest bin in each on-screen column. Use its actual Hz
+        // to align it to the nodes, and stop at Nyquist rather than extending it.
+        constexpr float floorDb = -96.f;
+        const auto width = graph.getWidth();
+        int column = -1;
+        float x = 0.f, peak = floorDb;
+        bool firstPoint = true;
+        const auto append = [&] {
+            const auto y = std::clamp(peak / floorDb, 0.f, 1.f);
+            if (firstPoint) preview.spectrumPath.startNewSubPath(x, y);
+            else preview.spectrumPath.lineTo(x, y);
+            firstPoint = false;
+        };
+        preview.spectrumPath.preallocateSpace(3 * std::min(width, static_cast<int>(preview.spectrumPositions.size())));
+        for (std::size_t i = 0; i < preview.spectrumPositions.size(); ++i) {
+            const auto position = preview.spectrumPositions[i];
+            const int pixel = static_cast<int>(position * static_cast<float>(width));
+            const auto value = next->binsDbfs[i + 1];
+            if (pixel != column) {
+                if (column >= 0) append();
+                column = pixel; x = position; peak = value;
+            } else if (value > peak) {
+                x = position; peak = value;
+            }
+        }
+        if (column >= 0) append();
+    }
+    preview.spectrumWidth = graph.getWidth();
+    preview.spectrumResult = std::move(next);
+    repaint(graph);
+    return static_cast<bool>(preview.spectrumLease);
+}
+
+struct DevicePanelView::LimiterPreview {
+    static constexpr float gap = -1.f;
+    static constexpr float displayRangeDb = 24.f;
+    std::array<float, 64> peaks;
+    mix::limiter::ReductionMailbox::Lease lease;
+    std::optional<mix::limiter::ReductionFrame> previous;
+    std::uint64_t instance = 0;
+    juce::String readout{"-- dB"};
+
+    LimiterPreview() { peaks.fill(gap); }
+
+    bool present(const mix::limiter::ReductionFrame &next) {
+        const auto oldPeak = peaks.back();
+        const bool samePeak = previous && next.reduction.available == previous->reduction.available &&
+            next.reduction.peakLoss == previous->reduction.peakLoss;
+        const auto peak = samePeak ? oldPeak : next.reduction.available
+            ? -20.f * std::log10(std::max(1.e-8f, 1.f - next.reduction.peakLoss)) : gap;
+        const bool discontinuity = previous &&
+            (next.transportRevision != previous->transportRevision || next.advancing != previous->advancing ||
+             next.renderBlock < previous->renderBlock);
+        if (discontinuity) peaks.fill(gap);
+        const bool continuation = previous && !discontinuity;
+        const bool sameBlock = continuation && previous->renderBlock == next.renderBlock && next.renderBlock != 0;
+        const auto blockGap = continuation && next.advancing && previous->renderBlock != 0 &&
+            next.renderBlock > previous->renderBlock ? next.renderBlock - previous->renderBlock : 1;
+        previous = next;
+        // Parked callbacks with steady reduction leave the same view. A split
+        // callback overwrites its own column as more segments become audible.
+        if ((sameBlock || (!next.advancing && !discontinuity)) && peaks.back() == peak) return false;
+        if (!sameBlock) {
+            const auto shift = static_cast<std::ptrdiff_t>(std::min<std::uint64_t>(blockGap, peaks.size()));
+            std::move(peaks.begin() + shift, peaks.end(), peaks.begin());
+            std::fill(peaks.end() - shift, peaks.end(), gap);
+        }
+        peaks.back() = peak;
+        if (peak != oldPeak)
+            readout = peak == gap ? juce::String("-- dB") : juce::String(peak == 0 ? 0.f : -peak, 1) + " dB";
+        return true;
+    }
+};
+
+juce::Rectangle<int> DevicePanelView::limiterPreviewBounds() const {
+    if (!mixCard_ || getHeight() < (look::mixStackNearRow + look::fieldHeight) || selectedPage_ != "limiter" ||
+        configuring || strip.folded(id)) return {};
+    const auto *function = nativeFunction();
+    if (!function || function->kind != mix::Function::Limiter) return {};
+    const int inset = look::gap;
+    const int top = kTitleHeight + kPageHeight + 2 * inset;
+    const int free = getHeight() - top - ParameterControl::kHeight - 2 * inset;
+    const int reading = look::fieldHeight;
+    if (free < 2 * reading || getWidth() < 2 * ParameterControl::kWidth) return {};
+    const int height = std::min(free, juce::roundToInt(static_cast<float>(getHeight()) * .36f));
+    const int left = inset + look::fieldHeight;
+    return {left, top, std::max(0, getWidth() - left - inset), height};
+}
+
+void DevicePanelView::releaseLimiterReduction() {
+    if (!limiterPreview_) return;
+    limiterPreview_.reset();
+    repaint(limiterPreviewBounds());
+}
+
+void DevicePanelView::frameLimiterReduction(
+    const std::function<mix::limiter::ReductionMailbox::Lease(const DevicePanelData &)>* observer) {
+    const auto area = limiterPreviewBounds();
+    if (!observer || !*observer || !data || !data->available || !data->enabled ||
+        !previewVisible(area)) {
+        releaseLimiterReduction();
+        return;
+    }
+    if (limiterPreview_ && limiterPreview_->instance != data->instance) releaseLimiterReduction();
+    if (!limiterPreview_ || !limiterPreview_->lease) {
+        const auto expected = data->runtime;
+        const auto stamp = data->instance;
+        const auto safe = SafePointer<DevicePanelView>(this);
+        const auto acquire = *observer;
+        auto acquired = acquire(*data);
+        if (!safe || !data || !data->available || !data->enabled || data->instance != stamp ||
+            !expected.sameInstance(data->runtime) || !previewVisible(limiterPreviewBounds())) return;
+        if (!acquired) {
+            releaseLimiterReduction();
+            return;
+        }
+        if (!limiterPreview_ || !limiterPreview_->lease) {
+            limiterPreview_ = std::make_unique<LimiterPreview>();
+            limiterPreview_->instance = stamp;
+            limiterPreview_->lease = std::move(acquired);
+            repaint(area);
+        }
+    }
+    const auto snapshot = limiterPreview_->lease.read();
+    if (snapshot && limiterPreview_->present(*snapshot)) repaint(area);
+}
+
+void DevicePanelView::paintLimiterReduction(juce::Graphics &g, juce::Rectangle<int> area) const {
+    using Preview = LimiterPreview;
+    juce::Graphics::ScopedSaveState save(g);
+    g.reduceClipRegion(area);
+    g.setColour(look::display);
+    g.fillRoundedRectangle(area.toFloat(), look::radiusBox);
+    auto inner = area.reduced(look::gap);
+    const auto captions = inner.removeFromTop(look::fieldHeight);
+    g.setFont(look::font(look::fontTiny));
+    g.setColour(look::textDim);
+    g.drawText("Reduction", captions, juce::Justification::centredLeft);
+    const auto* preview = limiterPreview_ && data && data->available && data->enabled &&
+        limiterPreview_->instance == data->instance && limiterPreview_->lease ? limiterPreview_.get() : nullptr;
+    const auto latest = preview ? preview->peaks.back() : Preview::gap;
+    g.setColour(latest == Preview::gap ? look::textDim : look::text);
+    g.drawText(preview ? preview->readout : juce::String("-- dB"),
+        captions, juce::Justification::centredRight);
+    if (inner.isEmpty()) return;
+
+    const auto plot = inner.toFloat();
+    g.setColour(look::gridLine);
+    g.drawHorizontalLine(inner.getY(), plot.getX(), plot.getRight());
+    g.drawHorizontalLine(inner.getCentreY(), plot.getX(), plot.getRight());
+    if (!preview) return;
+    const auto &peaks = preview->peaks;
+    const auto width = plot.getWidth() / static_cast<float>(peaks.size());
+    g.setColour(look::meterPeak);
+    for (std::size_t i = 0; i < peaks.size(); ++i) {
+        if (peaks[i] <= 0) continue;
+        const auto depth = std::min(peaks[i] / Preview::displayRangeDb, 1.f) * plot.getHeight();
+        g.fillRect(plot.getX() + static_cast<float>(i) * width, plot.getY(), width, depth);
+    }
+}
+
+juce::Rectangle<float> DevicePanelView::eqPreviewBounds() const {
+    if (!eqPreview_ || !eqPreview_->settings || (!selectedPage_.empty() && selectedPage_ != "eq")) return {};
+    auto area = getLocalBounds().reduced(look::border);
+    area.removeFromLeft(look::fieldHeight);
+    if (getHeight() >= look::mixStackNearRow + look::fieldHeight)
+        area.setHeight(std::min(look::mixStackOuterRow, area.getHeight() / 2));
+    return area.toFloat();
+}
+
+int DevicePanelView::eqBandAt(juce::Point<float> p) const {
+    const auto graph = eqPreviewBounds();
+    if (getHeight() < look::mixStackNearRow + look::fieldHeight || graph.isEmpty() || !graph.expanded(4.f).contains(p) || strip.folded(id)) return -1;
+    int hit = -1;
+    float distance = 7.f;
+    const auto &bands = eqPreview_->settings->bands;
+    for (std::size_t i = 0; i < bands.size(); ++i) {
+        if (bands[i].status == mix::eq::Status::Off) continue;
+        const auto d = nodePosition(bands[i], graph).getDistanceFrom(p);
+        if (d < distance || (d == distance && static_cast<int>(i) == selectedBand_)) {
+            distance = d;
+            hit = static_cast<int>(i);
+        }
+    }
+    if (hit < 0 && selectedBand_ >= 0 && static_cast<std::size_t>(selectedBand_) < bands.size()) {
+        const auto &b = bands[static_cast<std::size_t>(selectedBand_)];
+        const auto point = nodePosition(b, graph);
+        if (b.status != mix::eq::Status::Off &&
+            ((b.shape != mix::eq::Shape::FlatGain && nodeHandle(point, graph, NodeAxis::Frequency).contains(p)) ||
+             (nodeHasGain(b.shape) && nodeHandle(point, graph, NodeAxis::Gain).contains(p)))) return selectedBand_;
+    }
+    return hit;
+}
+void DevicePanelView::drawEqNodes(juce::Graphics &g, juce::Rectangle<float> graph) const {
+    if (getHeight() < look::mixStackNearRow + look::fieldHeight || strip.folded(id)) return;
+    const auto &preview = *eqPreview_;
+    const auto &bands = preview.settings->bands;
+    for (std::size_t i = 0; i < bands.size(); ++i) {
+        const auto band = preview.displayedBand(i);
+        if (band.status == mix::eq::Status::Off) continue;
+        const auto p = nodePosition(band, graph);
+        const auto route = static_cast<std::size_t>(band.route);
+        const auto colour = route == 0 ? look::accent : look::trackColour(route);
+        auto dot = juce::Rectangle<float>{8.f, 8.f}.withCentre(p);
+        g.setColour(band.status == mix::eq::Status::Bypass ? look::panel : colour);
+        g.fillEllipse(dot);
+        g.setColour(static_cast<int>(i) == selectedBand_ ? look::text : colour);
+        g.drawEllipse(dot, 1.f);
+    }
+    if (selectedBand_ >= 0 && static_cast<std::size_t>(selectedBand_) < bands.size()) {
+        const auto &selected = bands[static_cast<std::size_t>(selectedBand_)];
+        if (selected.status != mix::eq::Status::Off) {
+            const auto node = nodePosition(preview.displayedBand(static_cast<std::size_t>(selectedBand_)), graph);
+            for (const auto axis : {NodeAxis::Frequency, NodeAxis::Gain}) {
+                if ((axis == NodeAxis::Gain && !nodeHasGain(selected.shape)) ||
+                    (axis == NodeAxis::Frequency && selected.shape == mix::eq::Shape::FlatGain)) continue;
+                const auto box = nodeHandle(node, graph, axis);
+                g.setColour(look::button); g.fillRoundedRectangle(box.reduced(.4f), 2.f);
+                g.setColour(look::text); g.setFont(look::font(10.f));
+                g.drawText(axis == NodeAxis::Frequency ? "Hz" : "dB", box, juce::Justification::centred);
+            }
+        }
+    }
+    const int read = preview.edit ? static_cast<int>(preview.edit->band) : preview.hovered;
+    if (read < 0 || static_cast<std::size_t>(read) >= bands.size() || bands[static_cast<std::size_t>(read)].status == mix::eq::Status::Off) return;
+    const auto band = preview.displayedBand(static_cast<std::size_t>(read));
+    const auto p = nodePosition(band, graph);
+    juce::String label = juce::String(band.frequencyHz, band.frequencyHz < 100.f ? 2 : 1) + " Hz";
+    if (nodeHasGain(band.shape)) label += "   " + juce::String(band.gainDb, 2) + " dB";
+    label += "   Q " + juce::String(band.q, 2);
+    const auto font = look::font(look::fontSmall);
+    const auto gap = static_cast<float>(look::gap);
+    const auto height = static_cast<float>(look::fieldHeight);
+    const auto width = std::min(juce::GlyphArrangement::getStringWidth(font, label) + 2.f * gap,
+                                graph.getWidth());
+    const float left = std::clamp(p.x - width * .5f, graph.getX(), graph.getRight() - width);
+    const float above = p.y - gap - height, below = p.y + gap;
+    const float preferred = band.gainDb >= 0.f || !nodeHasGain(band.shape) ? above : below;
+    const float alternative = preferred == above ? below : above;
+    const float last = graph.getBottom() - height;
+    const auto fits = [&](float y) { return y >= graph.getY() && y <= last; };
+    const float top = fits(preferred) ? preferred :
+                      fits(alternative) ? alternative : std::clamp(preferred, graph.getY(), last);
+    const juce::Rectangle<float> rect{left, top, width, height};
+    g.setColour(look::tooltip);
+    g.fillRoundedRectangle(rect, look::radiusBox);
+    g.setColour(look::text);
+    g.setFont(font);
+    g.drawText(label, rect, juce::Justification::centred);
+}
+
+bool DevicePanelView::pressEqGraph(juce::Point<float> point) {
+    const auto graph = eqPreviewBounds();
+    if (getHeight() < look::mixStackNearRow + look::fieldHeight || graph.isEmpty() || !graph.expanded(4.f).contains(point) ||
+        strip.folded(id) || !validTarget()) return false;
+    const auto safe = SafePointer<DevicePanelView>(this);
+    const auto beginSingle = [&](std::size_t band, NodeAxis axis, juce::Point<float> origin) {
+        const auto mapped = device::mixEqNodeValue(band, axis, axis == NodeAxis::Frequency ? origin.x : origin.y);
+        if (!mapped || !editFunctionParameter(mapped->id, engine::ParamEventKind::Begin, mapped->value.normalized) ||
+            !safe || !editingBegan_) return false;
+        eqPreview_->edit.emplace(EqPreview::Edit{band, presentedInstance(), axis, point, graph, origin, origin, {}});
+        repaint(graph.toNearestInt());
+        return true;
+    };
+    if (selectedBand_ >= 0 && static_cast<std::size_t>(selectedBand_) < mix::eq::bandCount) {
+        const auto bandIndex = static_cast<std::size_t>(selectedBand_);
+        const auto band = eqPreview_->settings->bands[bandIndex];
+        const auto node = nodePosition(band, graph);
+        if (band.status != mix::eq::Status::Off) {
+            if (band.shape != mix::eq::Shape::FlatGain && nodeHandle(node, graph, NodeAxis::Frequency).contains(point))
+                return beginSingle(bandIndex, NodeAxis::Frequency, {band.frequencyHz, band.gainDb});
+            if (nodeHasGain(band.shape) && nodeHandle(node, graph, NodeAxis::Gain).contains(point))
+                return beginSingle(bandIndex, NodeAxis::Gain, {band.frequencyHz, band.gainDb});
+        }
+    }
+
+    const auto hit = eqBandAt(point);
+    if (hit < 0 || !chooseFunctionBand(hit) || !safe) return false;
+    eqPreview_->hovered = hit;
+    repaint(graph.toNearestInt());
+    if (!parameterPairGesture) return true;
+
+    const auto bandIndex = static_cast<std::size_t>(hit);
+    const auto band = eqPreview_->settings->bands[bandIndex];
+    const juce::Point<float> origin{band.frequencyHz, band.gainDb};
+    if (band.shape == mix::eq::Shape::FlatGain) return beginSingle(bandIndex, NodeAxis::Gain, origin);
+    if (!nodeHasGain(band.shape)) return beginSingle(bandIndex, NodeAxis::Frequency, origin);
+    const auto frequency = device::mixEqNodeValue(bandIndex, NodeAxis::Frequency, origin.x);
+    const auto gain = device::mixEqNodeValue(bandIndex, NodeAxis::Gain, origin.y);
+    if (!frequency || !gain) return false;
+    engine::ParameterPair pair{{{frequency->id, frequency->value.normalized}, {gain->id, gain->value.normalized}}};
+    const auto instance = presentedInstance();
+    if (!parameterPairGesture(pair, engine::ParameterPairEvent::Begin) || !safe) return false;
+    eqPreview_->edit.emplace(EqPreview::Edit{bandIndex, instance, NodeAxis::Frequency, point, graph, origin, origin, std::move(pair)});
+    return true;
+}
+bool DevicePanelView::dragEqHandle(juce::Point<float> point) {
+    if (!eqPreview_ || !eqPreview_->edit) return false;
+    const auto e = *eqPreview_->edit;
+    if (presentedInstance() != e.instance || !validTarget() || getHeight() < look::mixStackNearRow + look::fieldHeight || eqPreviewBounds().isEmpty() ||
+        strip.folded(id) || eqPreview_->settings->bands[e.band].status == mix::eq::Status::Off) {
+        finishEqEdit(true);
+        return false;
+    }
+    const float dx = (point.x - e.start.x) / e.graph.getWidth();
+    const float dy = (point.y - e.start.y) / e.graph.getHeight();
+    const auto frequency = std::clamp(e.origin.x * std::pow(3000.f, dx), 10.f, std::max(30000.f, e.origin.x));
+    const auto gain = std::clamp(e.origin.y - dy * eqDbSpan, -30.f, 30.f);
+    const auto safe = SafePointer<DevicePanelView>(this);
+    bool accepted = false;
+    auto pair = e.pair;
+    if (pair) {
+        const auto horizontal = device::mixEqNodeValue(e.band, NodeAxis::Frequency, frequency);
+        const auto vertical = device::mixEqNodeValue(e.band, NodeAxis::Gain, gain);
+        if (horizontal && vertical && parameterPairGesture) {
+            (*pair)[0].second = horizontal->value.normalized;
+            (*pair)[1].second = vertical->value.normalized;
+            accepted = parameterPairGesture(*pair, engine::ParameterPairEvent::Value);
+        }
+    } else {
+        const auto mapped = device::mixEqNodeValue(e.band, e.axis, e.axis == NodeAxis::Frequency ? frequency : gain);
+        accepted = mapped && editFunctionParameter(mapped->id, engine::ParamEventKind::Value, mapped->value.normalized);
+    }
+    if (!safe || !eqPreview_->edit) return false;
+    if (!accepted) {
+        finishEqEdit(true);
+        return false;
+    }
+    eqPreview_->edit->current = {frequency, gain};
+    eqPreview_->edit->pair = std::move(pair);
+    repaint(e.graph.toNearestInt());
+    return true;
+}
+void DevicePanelView::releaseEqHandle() {
+    finishEqEdit(false);
+}
+void DevicePanelView::finishEqEdit(bool cancel) {
+    if (!eqPreview_ || !eqPreview_->edit) return;
+    auto pair = std::move(eqPreview_->edit->pair);
+    eqPreview_->edit.reset();
+    repaint(eqPreviewBounds().toNearestInt());
+    if (pair) {
+        if (parameterPairGesture)
+            parameterPairGesture(*pair, cancel ? engine::ParameterPairEvent::Cancel : engine::ParameterPairEvent::End);
+    } else {
+        endFunctionParameter();
+    }
+}
+
+DevicePanelView::DevicePanelView(DeviceChainStrip &s, const DevicePanelData &d, bool mixCard)
+    : id(d.id), mixCard_(mixCard), strip(s) {
     // The title is the bar's text, not a box (Live's device title).
     title.setColour(juce::TextButton::buttonColourId, juce::Colours::transparentBlack);
     title.getProperties().set("live.left", true);
@@ -316,6 +880,7 @@ DevicePanelView::DevicePanelView(DeviceChainStrip &s, const DevicePanelData &d)
     present(d);
 }
 DevicePanelView::~DevicePanelView() {
+    finishEqEdit(true);
     endFunctionParameter();
     endInteraction(Interaction::Text);
     endInteraction(Interaction::Menu);
@@ -345,7 +910,10 @@ void DevicePanelView::cancelInteractions() {
     // and completion must neither mutate this target nor end a newly acquired capture.
     ++menuEpoch_;
     dragTarget_.reset();
+    if (eqPreview_) eqPreview_->hovered = -1;
     const auto safe = SafePointer<DevicePanelView>(this);
+    finishEqEdit(true);
+    if (!safe) return;
     endFunctionParameter();
     if (!safe) return;
     endRename(false);
@@ -365,6 +933,7 @@ bool DevicePanelView::beginFunctionDrag() {
     endFunctionParameter();
     if (!safe || !safe->validTarget()) return false;
     dragTarget_ = std::move(expected);
+    ++dragEpoch_;
     return true;
 }
 const DevicePanelData *DevicePanelView::functionDragTarget() const noexcept {
@@ -571,6 +1140,9 @@ bool DevicePanelView::chooseParameterPage(const std::string &page) {
     if (!safe || !safe->validTarget()) return false;
     if (std::none_of(parameterPages.begin(), parameterPages.end(), [&](const auto &p) { return p.id == requested; })) return false;
     selectedPage_ = requested;
+    if (selectedPage_ != "eq") releaseEqSpectrum();
+    if (!safe) return false;
+    if (selectedPage_ != "limiter") releaseLimiterReduction();
     for (auto &p : parameterPages) p.selector->setToggleState(p.id == selectedPage_, juce::dontSendNotification);
     if (eqPresentation()) present(*data);
     if (!safe) return false;
@@ -667,22 +1239,36 @@ bool DevicePanelView::presentParameterPages(const DevicePanelData &next) {
     return true;
 }
 void DevicePanelView::visibilityChanged() {
-    if (!parameterPages.empty() && !isShowing()) cancelInteractions();
+    if (isShowing()) return;
+    const auto safe = SafePointer<DevicePanelView>(this);
+    releaseEqSpectrum();
+    if (!safe) return;
+    releaseLimiterReduction();
+    if (!parameterPages.empty()) cancelInteractions();
 }
 void DevicePanelView::present(const DevicePanelData &d) {
     if (!presentParameterPages(d)) return;
     presentFunctionSelection(d);
+    updateEqPreview(d);
     data = &d;
     auto hint = juce::String("Double-click to fold; right-click for device commands.\n") +
                       (d.available ? "Latency: " + juce::String(d.latency) + " samples."
                                    : juce::String("This device is unavailable."));
-    if (nativeFunction()) hint += "\nNative Mix View function; drag the header to move it within this channel.";
+    if (nativeFunction()) hint += "\nNative Mix View function; drag the name to move it within this channel.";
+    if (mixCard_ && eqPresentation(d))
+        hint += "\nSelect a band, then drag its frequency or gain handle.";
+    if (!d.processingIssue.empty()) {
+        hint += "\nConfiguration failed: " + juce::String(d.processingIssue);
+        hint += "\nTo retry, reopen this project using File > Open Project.";
+    }
     if (title.getTooltip() != hint) title.setTooltip(hint);
     const auto activatorHint = juce::String(nativeFunction() ? "Remove this Mix View function. Undo restores its settings."
                                                           : "Switches the device on or off.");
     if (enabled.getTooltip() != activatorHint) enabled.setTooltip(activatorHint);
-    if (title.getButtonText() != juce::String(d.name)) {
-        title.setButtonText(d.name);
+    const auto caption = d.processingIssue.empty() ? juce::String(d.name)
+                                                  : "Configuration failed: " + juce::String(d.name);
+    if (title.getButtonText() != caption) {
+        title.setButtonText(caption);
     }
     enabled.setToggleState(d.enabled, juce::dontSendNotification);
     // Color Cab's Impulse slot, its one declared sample slot (ENGINE-SAMPLE-SLOTS.md).
@@ -766,7 +1352,7 @@ void DevicePanelView::present(const DevicePanelData &d) {
         page.enabled->setEnabled(record && validTarget());
         page.enabled->setToggleState(record && record->playing >= .5, juce::dontSendNotification);
     }
-    if (!parameterPages.empty()) resized();
+    if (!parameterPages.empty() || mixCard_) resized();
 }
 int DevicePanelView::widthFor(int height) const noexcept {
     if (strip.folded(id))
@@ -784,17 +1370,50 @@ int DevicePanelView::widthFor(int height) const noexcept {
     return std::max({eqPresentation() ? 270 : 150, pageWidth,
                      columns * ParameterControl::kWidth + 12 + (sample ? kTileWidth : 0)});
 }
+void DevicePanelView::layoutCompactControls(int top) {
+    const int h = std::min(ParameterControl::kHeight, getHeight() - top - 2);
+    const auto left = look::fieldHeight + look::border;
+    const auto width = std::max(0, getWidth() - left - look::border);
+    const auto columns = h >= look::fieldHeight ? std::clamp(width / (4 * look::fieldHeight), 1, 4) : 0;
+    const int w = width / std::max(1, columns);
+    std::array<ParameterControl *, 4> selected{};
+    int placed = 0;
+    const auto take = [&](ParameterControl &control) {
+        if (placed >= columns || std::find(selected.begin(), selected.end(), &control) != selected.end()
+            || !parameterShown(control.parameter)) return;
+        selected[static_cast<std::size_t>(placed++)] = &control;
+    };
+    for (const char *key : {"Threshold", "Ratio", "Input Gain", "Output Level", "Amount", "Attack", "Release"}) {
+        if (placed == columns) break;
+        for (auto &control : controls)
+            if (control->getTitle().endsWithIgnoreCase(key)) take(*control);
+    }
+    for (auto &control : controls) take(*control);
+    for (auto &control : controls) {
+        const auto at = std::find(selected.begin(), selected.end(), control.get());
+        control->setVisible(at != selected.end());
+        if (at != selected.end()) control->setBounds(left + static_cast<int>(at - selected.begin()) * w, top,
+                                                     std::max(0, w - look::border), h);
+    }
+}
 void DevicePanelView::resized() {
     const bool isFolded = strip.folded(id);
     enabled.setBounds(2, 1, 16, 15);
     title.setVisible(!isFolded);
-    configureButton.setVisible(!isFolded && !eqPresentation());
+    configureButton.setVisible(!mixCard_ && !isFolded && !eqPresentation());
     wrench.setVisible(!isFolded && data != nullptr && data->plugin);
     // Live's order (manual 23.3's figure): the activator, the fold switch, the wrench, the name.
     const int nameLeft = wrench.isVisible() ? 50 : 32;
     wrench.setBounds(32, 1, 16, 15);
-    title.setBounds(nameLeft, 1, std::max(0, getWidth() - nameLeft - (eqPresentation() ? 4 : 58)), 15);
+    title.setBounds(nameLeft, 1, std::max(0, getWidth() - nameLeft - (eqPresentation() || mixCard_ ? 4 : 58)), 15);
     configureButton.setBounds(getWidth() - 56, 2, 52, 13);
+    if (mixCard_ && !isFolded) {
+        const auto rail = look::fieldHeight;
+        enabled.setBounds(0, 0, rail, rail);
+        title.setBounds(0, 0, std::max(0, getHeight() - rail), rail);
+        title.setTransform(juce::AffineTransform::rotation(-juce::MathConstants<float>::halfPi)
+                               .translated(0.f, static_cast<float>(getHeight())));
+    }
     if (sample) {
         sample->setVisible(!isFolded);
         const int tileTop = kTitleHeight + (configuring ? 26 : 4) + (parameterPages.empty() ? 0 : kPageHeight);
@@ -802,8 +1421,24 @@ void DevicePanelView::resized() {
     }
     search.setVisible(!isFolded && configuring);
     search.setBounds(4, kTitleHeight + 2, std::max(0, getWidth() - 8), 22);
-    int top = kTitleHeight + (configuring ? 26 : 2);
-    int pageX = 6;
+    const int rail = mixCard_ ? look::fieldHeight : 0;
+    int top = mixCard_ ? look::border : kTitleHeight + (configuring ? 26 : 2);
+    if (mixCard_ && !isFolded) {
+        const auto graph = eqPreviewBounds();
+        if (!graph.isEmpty()) top = static_cast<int>(graph.getBottom()) + 2;
+        if (getHeight() < look::mixStackNearRow + look::fieldHeight) {
+            releaseLimiterReduction();
+            for (auto &page : parameterPages) {
+                page.selector->setVisible(false);
+                page.enabled->setVisible(false);
+            }
+            functionBand.setVisible(false);
+            functionSection.setVisible(false);
+            layoutCompactControls(top);
+            return;
+        }
+    }
+    int pageX = 6 + rail;
     for (auto &page : parameterPages) {
         page.selector->setVisible(!isFolded);
         page.enabled->setVisible(!isFolded && !page.enableParameter.empty());
@@ -812,6 +1447,9 @@ void DevicePanelView::resized() {
         page.selector->setBounds(pageX, top + 1, width, kPageHeight - 3); pageX += width + 3;
     }
     if (!parameterPages.empty()) top += kPageHeight;
+    const auto reduction = limiterPreviewBounds();
+    if (reduction.isEmpty()) releaseLimiterReduction();
+    else top = std::max(top, reduction.getBottom() + static_cast<int>(look::gap));
     const bool functionControls = !isFolded && eqPresentation() && parameterPageUnavailableReason().empty() &&
                                   (!functionBands_.empty() || !functionSections_.empty());
     functionBand.setVisible(functionControls && !functionBands_.empty());
@@ -820,8 +1458,8 @@ void DevicePanelView::resized() {
                             std::find(functionBandSections_.begin(), functionBandSections_.end(), selectedSection_) != functionBandSections_.end();
     functionBand.setEnabled(bandApplies && validTarget());
     functionSection.setEnabled(validTarget());
-    functionBand.setBounds(6, top + 1, 98, kPageHeight - 3);
-    functionSection.setBounds(108, top + 1, std::max(0, std::min(150, getWidth() - 114)), kPageHeight - 3);
+    functionBand.setBounds(6 + rail, top + 1, 98, kPageHeight - 3);
+    functionSection.setBounds(108 + rail, top + 1, std::max(0, std::min(150, getWidth() - 114 - rail)), kPageHeight - 3);
     if (functionControls) top += kPageHeight;
     const int rows = std::max(1, (getHeight() - top - 2) / ParameterControl::kHeight);
     int visible = 0;
@@ -830,7 +1468,7 @@ void DevicePanelView::resized() {
         control->setVisible(shown);
         if (!shown) continue;
         const int column = visible / rows, row = visible++ % rows;
-        control->setBounds(6 + column * ParameterControl::kWidth,
+        control->setBounds(6 + rail + column * ParameterControl::kWidth,
                                top + row * ParameterControl::kHeight, ParameterControl::kWidth - 4,
                                ParameterControl::kHeight);
     }
@@ -838,19 +1476,50 @@ void DevicePanelView::resized() {
 void DevicePanelView::paint(juce::Graphics &g) {
     // Live's device: grey, its title bar and a 2 pt edge lighter; blue-grey when the
     // device has the focus, as Live marks the selected device.
-    const auto edge = nativeFunction() ? look::accent : hasKeyboardFocus(true) ? juce::Colour(0xffa9b8c5) : look::field;
+    const auto edge = nativeFunction() ? look::accent : hasKeyboardFocus(true) ? look::focus : look::field;
     g.fillAll(look::panel);
     g.setColour(edge);
-    g.fillRect(0, 0, getWidth(), kTitleHeight);
-    g.drawRect(getLocalBounds(), 2);
+    if (!mixCard_) g.fillRect(0, 0, getWidth(), kTitleHeight);
+    g.drawRect(getLocalBounds().toFloat(), mixCard_ ? look::hairline : look::heavyLine);
+    if (mixCard_ && eqPreview_) {
+        const auto graph = eqPreviewBounds();
+        if (!graph.isEmpty()) {
+            juce::Graphics::ScopedSaveState saved(g);
+            g.reduceClipRegion(graph.toNearestInt());
+            drawEqGrid(g, graph);
+            if (!eqPreview_->spectrumPath.isEmpty()) {
+                g.setColour(look::textDim);
+                g.strokePath(eqPreview_->spectrumPath, juce::PathStrokeType(look::hairline),
+                    juce::AffineTransform{graph.getWidth(), 0.f, graph.getX(), 0.f, graph.getHeight(), graph.getY()});
+            }
+            const juce::AffineTransform transform{graph.getWidth(), 0.f, graph.getX(), 0.f,
+                                                  -graph.getHeight() / eqDbSpan, graph.getCentreY()};
+            for (std::size_t r = 0; r < eqPreview_->paths.size(); ++r) {
+                const auto &path = eqPreview_->paths[r];
+                if (path.isEmpty()) continue;
+                const auto colour = r == 0 ? static_cast<juce::Colour>(look::accent) : look::trackColour(r);
+                if (r == 0 && eqPreview_->hovered >= 0) {
+                    g.setColour(colour.withMultipliedAlpha(.18f));
+                    g.strokePath(path, juce::PathStrokeType(look::line + look::heavyLine), transform);
+                }
+                g.setColour(colour);
+                g.strokePath(path, juce::PathStrokeType(look::line), transform);
+            }
+            drawEqNodes(g, graph);
+        }
+    }
+    const auto reduction = limiterPreviewBounds();
+    if (!reduction.isEmpty()) paintLimiterReduction(g, reduction);
     // Live's fold switch beside the activator.
     const auto fold = foldSwitch().toFloat();
-    g.setColour(look::button);
-    g.fillEllipse(fold);
-    g.setColour(look::text);
-    g.drawEllipse(fold.reduced(0.5f), 1.f);
-    look::triangle(g, fold.reduced(3.f).translated(0.5f, 0),
-                   strip.folded(id) ? 0.f : juce::MathConstants<float>::halfPi, look::text);
+    if (!fold.isEmpty()) {
+        g.setColour(look::button);
+        g.fillEllipse(fold);
+        g.setColour(look::text);
+        g.drawEllipse(fold.reduced(0.5f), 1.f);
+        look::triangle(g, fold.reduced(3.f).translated(0.5f, 0),
+                       strip.folded(id) ? 0.f : juce::MathConstants<float>::halfPi, look::text);
+    }
     if (strip.folded(id) && data) {
         // A folded device is a narrow bar with its name running up it, as Live's.
         g.setColour(look::text);
@@ -858,7 +1527,7 @@ void DevicePanelView::paint(juce::Graphics &g) {
         juce::Graphics::ScopedSaveState saved(g);
         g.addTransform(juce::AffineTransform::rotation(-juce::MathConstants<float>::halfPi, 0,
                                                        static_cast<float>(getHeight())));
-        g.drawText(juce::String(data->name), kTitleHeight + 2, getHeight() + 4,
+        g.drawText(title.getButtonText(), kTitleHeight + 2, getHeight() + 4,
                    std::max(0, getHeight() - kTitleHeight - 4), kFoldedWidth - 8,
                    juce::Justification::centredLeft);
     } else if (data && !parameterPageUnavailableReason().empty()) {
@@ -903,9 +1572,29 @@ void DevicePanelView::mouseDown(const juce::MouseEvent &e) {
         contextMenu(e.getScreenPosition());
     else if (e.eventComponent == this && foldSwitch().contains(e.getPosition()))
         strip.fold(id);
+    else if (e.eventComponent == this && e.mods.isLeftButtonDown())
+        pressEqGraph(e.position);
 }
-juce::Rectangle<int> DevicePanelView::foldSwitch() const noexcept { return {19, 3, 11, 11}; }
+juce::Rectangle<int> DevicePanelView::foldSwitch() const noexcept {
+    return mixCard_ ? juce::Rectangle<int>{} : juce::Rectangle<int>{19, 3, 11, 11};
+}
+void DevicePanelView::mouseMove(const juce::MouseEvent &e) {
+    if (!eqPreview_ || eqPreview_->edit) return;
+    const auto hovered = eqBandAt(e.position);
+    if (eqPreview_->hovered != hovered) {
+        eqPreview_->hovered = hovered;
+        repaint(eqPreviewBounds().toNearestInt());
+    }
+}
+void DevicePanelView::mouseExit(const juce::MouseEvent &) {
+    if (eqPreview_ && eqPreview_->hovered >= 0) {
+        eqPreview_->hovered = -1;
+        repaint(eqPreviewBounds().toNearestInt());
+    }
+}
+void DevicePanelView::mouseUp(const juce::MouseEvent &) { releaseEqHandle(); }
 void DevicePanelView::mouseDrag(const juce::MouseEvent &e) {
+    if (eqPreview_ && eqPreview_->edit) { dragEqHandle(e.position); return; }
     if (!nativeFunction() || dragTarget_ || e.getDistanceFromDragStart() < 4 || !e.mods.isLeftButtonDown() ||
         !(e.eventComponent == &title || (e.eventComponent == this && e.y < kTitleHeight))) return;
     auto *container = juce::DragAndDropContainer::findParentDragContainerFor(this);
@@ -1190,29 +1879,42 @@ juce::PopupMenu DeviceChainStrip::functionMenuFor(std::int64_t track,
         juce::PopupMenu::Item item(label);
         item.isTicked = exists;
         item.isEnabled = !exists && availability.ready && addFunction && ownerCurrent && track > 0;
-        item.action = [safe, track, ownerCurrent, present, kind = info.kind] {
-            if (!safe || !ownerCurrent || !ownerCurrent() || !safe || !safe->addFunction ||
-                !safe->functionAvailability)
-                return;
-            const auto latest = safe->publication ? safe->publication() : safe->presented;
-            if (!safe || present(latest) || !ownerCurrent() || !safe)
-                return;
-            const auto availability = safe->functionAvailability(kind);
-            if (!safe || !availability.ready || !ownerCurrent() || !safe)
-                return;
-            safe->addFunction(kind, track);
-        };
+        if (item.isEnabled) {
+            item.action = [safe, track, ownerCurrent, present, kind = info.kind] {
+                const auto current = [&] {
+                    return safe && ownerCurrent() && safe && safe->addFunction && safe->functionAvailability;
+                };
+                const auto refuse = [&] { if (safe) safe->root.sayStaleAddMenu(); };
+                if (!current()) { refuse(); return; }
+                const auto latest = safe->publication ? safe->publication() : safe->presented;
+                if (!safe || present(latest) || !current()) { refuse(); return; }
+                const auto availability = safe->functionAvailability(kind);
+                if (!safe || !availability.ready || !current()) { refuse(); return; }
+                safe->addFunction(kind, track);
+            };
+        }
         menu.addItem(std::move(item));
     }
     return menu;
 }
 bool DeviceChainStrip::dropFunction(DevicePanelView &source, std::optional<std::int64_t> before) {
     const auto *expected = source.functionDragTarget();
-    if (!expected || &source.strip.root != &root || expected->track != selectedTrack || !source.validTarget() ||
-        !validExpected(*expected) || !moveFunction) return false;
+    const auto track = selectedTrack;
+    if (!expected || &source.strip.root != &root || expected->track != track)
+        return false;
     const auto captured = *expected;
-    source.dragTarget_.reset();
-    return moveFunction(captured, selectedTrack, before);
+    const auto epoch = source.dragEpoch_;
+    const auto origin = SafePointer<DevicePanelView>(&source);
+    const auto destination = SafePointer<DeviceChainStrip>(this);
+    const auto current = [&] {
+        return destination && origin && destination->selectedTrack == track &&
+               origin->dragEpoch_ == epoch && origin->functionDragTarget();
+    };
+    if (!source.validTarget() || !current() || !destination->validExpected(captured) || !current() ||
+        !destination->moveFunction)
+        return false;
+    origin->dragTarget_.reset();
+    return destination->moveFunction(captured, track, before);
 }
 void DeviceChainStrip::cancelFunctionInteractions() {
     ++addMenuEpoch_;
@@ -1275,12 +1977,15 @@ bool DeviceChainStrip::clipboard(Clip c, std::optional<std::int64_t> device) {
     case Clip::Cut:
     case Clip::Copy:
         return data != nullptr && copy && copy(*device, c == Clip::Cut);
-    case Clip::Paste:
+    case Clip::Paste: {
         if (!paste || !holdsCopy || !holdsCopy())
             return false;
-        if (data != nullptr)
-            return paste(data->track, *device);
-        return endChosen() && selectedTrack >= 0 && paste(selectedTrack, std::nullopt);
+        const SafePointer<DeviceChainStrip> alive(this);
+        const bool pasted = data ? paste(data->track, *device)
+                                 : endChosen() && selectedTrack >= 0 && paste(selectedTrack, std::nullopt);
+        if (pasted && alive) root.say({});
+        return pasted;
+    }
     case Clip::Duplicate: {
         if (data == nullptr || !duplicate || (!data->plugin && mix::functionForUid(data->uid)))
             return false;
@@ -1461,6 +2166,12 @@ bool DeviceChainStrip::edit(std::int64_t id, const std::string &p, engine::Param
                             double v) {
     return gesture && gesture(id, p, k, v);
 }
+bool DeviceChainStrip::editPairExpected(const DevicePanelData &expected, const engine::ParameterPair &pair,
+                                        engine::ParameterPairEvent event, std::shared_ptr<const gesture::OwnerToken> &owner) {
+    using Event = engine::ParameterPairEvent;
+    if ((event == Event::Begin || event == Event::Value) && !validExpected(expected)) return false;
+    return guardedPairGesture && guardedPairGesture(expected.id, pair, event, expected.runtime, expected.instance, owner);
+}
 bool DeviceChainStrip::editExpected(const DevicePanelData &expected, const std::string &parameter,
                                    engine::ParamEventKind kind, double value) {
     // End must reach the document even after this publication has been superseded. It owns
@@ -1492,9 +2203,9 @@ bool DeviceChainStrip::action(const std::string &op, Payload p) {
 bool DeviceChainStrip::setEnabledExpected(const DevicePanelData &expected, bool enabled) {
     const auto safe = SafePointer<DeviceChainStrip>(this);
     const auto id = expected.id;
-    const bool native = !expected.plugin && mix::functionForUid(expected.uid);
-    // Retain only identity across a callback that can replace the publication
-    // or destroy its panel. Do not copy a large parameter table for this action.
+    const bool removeNative = expected.enabled && !expected.plugin && mix::functionForUid(expected.uid);
+    // Retain the click's operation and identity before revalidation can
+    // replace the publication or destroy its panel.
     DevicePanelData identity;
     identity.id = id;
     identity.runtime = expected.runtime;
@@ -1504,7 +2215,7 @@ bool DeviceChainStrip::setEnabledExpected(const DevicePanelData &expected, bool 
     // Compatibility: older projects, control clients and Bounce can leave a
     // native function bypassed. Its first activation recovers it; deactivating
     // an active native function still means remove plus Undo.
-    if (native && expected.enabled)
+    if (removeNative)
         return safe->action("device.remove", {{"id", id}});
     return safe->action("device.setEnabled", {{"id", id}, {"enabled", enabled}});
 }

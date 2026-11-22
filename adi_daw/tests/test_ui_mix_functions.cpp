@@ -2,24 +2,118 @@
 // Retained function controls and prepared drag targets, with a software peer only.
 // No native host, OS window, desktop input, capture or audio device is involved.
 #include "../src/juce/ui_shell.hpp"
+#include "../src/juce/ui_look.hpp"
+#include "../src/juce/ui_stack_picker.hpp"
 #include "adi/ui/project_document.hpp"
 #include "temp_directory.hpp"
 #include "juce/builtin_host.hpp"
 #include "juce/mix_function_host.hpp"
 #include "juce/device_bridge.hpp"
 #include "adi/gesture_presentation.hpp"
-#include <array>
 #include <SQLiteCpp/SQLiteCpp.h>
 #include "ui_fake_peer.hpp"
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstdio>
 #include <functional>
+#include <iostream>
 #include <memory>
+#include <numbers>
+#include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 using namespace adi;
 using namespace adi::ui;
+namespace adi::ui {
+struct MixFocusTestAccess {
+    static bool aligned(const MixFocus &focus) { return focus.scopeRange_ && focus.sum_; }
+    static bool waitingForAlignment(const MixFocus &focus) { return focus.alignment_ != MixFocus::Alignment::Ready; }
+    static bool independent(const MixFocus &focus) {
+        return !focus.scopeRange_ && !focus.sum_ && focus.scopeHasTrace_ &&
+               std::all_of(focus.scopeSumPaths_.begin(), focus.scopeSumPaths_.end(),
+                           [](const auto &path) { return path.isEmpty(); }) &&
+               std::all_of(focus.members_.begin(), focus.members_.end(),
+                           [](const auto &member) { return !member.scopePaths[0].isEmpty(); });
+    }
+    static bool spectraWithoutMask(const MixFocus &focus) {
+        return focus.masked_.empty() && !focus.sum_ &&
+               std::all_of(focus.members_.begin(), focus.members_.end(),
+                           [](const auto &member) { return !member.path.isEmpty(); });
+    }
+    static bool scopeInterval(const MixFocus &focus, std::int64_t first, std::size_t frames, double rate) {
+        return focus.scopeRange_ && focus.scopeRange_->first == first && focus.scopeRange_->frames == frames &&
+               focus.scopeRange_->sampleRate == rate && focus.sum_;
+    }
+    static bool sumPulseAt(const MixFocus &focus, float position, float value) {
+        const auto plot = focus.plot_;
+        if (plot.isEmpty()) return false;
+        juce::Path::Iterator vertices(focus.scopeSumPaths_[0]);
+        while (vertices.next()) {
+            if (vertices.elementType != juce::Path::Iterator::lineTo) continue;
+            const auto relative = (vertices.x1 - plot.getX()) / plot.getWidth();
+            const auto amplitude = 2.f * (plot.getCentreY() - vertices.y1) / plot.getHeight();
+            if (std::abs(relative - position) <= .013f && std::abs(amplitude - value) <= .015f) return true;
+        }
+        return false;
+    }
+    static bool flatScopePaths(const MixFocus &focus) {
+        const auto oneSegment = [](const juce::Path &path) {
+            juce::Path::Iterator vertices(path);
+            return vertices.next() && vertices.elementType == juce::Path::Iterator::startNewSubPath &&
+                   vertices.next() && vertices.elementType == juce::Path::Iterator::lineTo && !vertices.next();
+        };
+        return std::ranges::all_of(focus.scopeSumPaths_, oneSegment) &&
+               std::ranges::all_of(focus.members_, [&](const auto &member) {
+                   return std::ranges::all_of(member.scopePaths, oneSegment);
+               });
+    }
+    static bool sumStrokeAt(MixFocus &focus, float value) {
+        const auto plot = focus.plot_;
+        if (plot.isEmpty()) return false;
+        juce::Image image(juce::Image::RGB, focus.getWidth(), focus.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(image);
+            focus.paint(g);
+        }
+        const auto y = juce::roundToInt(plot.getCentreY() - value * plot.getHeight() * .5f);
+        const juce::Colour stroke = look::text;
+        const auto matches = [stroke](juce::Colour pixel) {
+            return std::abs(pixel.getRed() - stroke.getRed()) <= 12 &&
+                   std::abs(pixel.getGreen() - stroke.getGreen()) <= 12 &&
+                   std::abs(pixel.getBlue() - stroke.getBlue()) <= 12;
+        };
+        for (const float position : {.2f, .4f, .6f, .8f}) {
+            const auto x = juce::roundToInt(plot.getX() + plot.getWidth() * position);
+            if (!matches(image.getPixelAt(x, y - 1)) && !matches(image.getPixelAt(x, y)) &&
+                !matches(image.getPixelAt(x, y + 1))) return false;
+        }
+        return true;
+    }
+    static bool compactScope(const MixFocus &focus) { return focus.sumLabel_.isEmpty(); }
+    static bool sumOverRangeInk(MixFocus &focus) {
+        const auto plot = focus.plot_.toNearestInt();
+        const auto left = plot.getX(), top = focus.scroll_.getBottom();
+        const auto right = focus.sumLabel_.isEmpty() ? plot.getRight() : focus.sumLabel_.getX();
+        juce::Image image(juce::Image::RGB, focus.getWidth(), focus.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(image);
+            focus.paint(g);
+        }
+        const juce::Colour indicator = look::record;
+        for (auto y = top; y < plot.getY(); ++y)
+            for (auto x = left; x < right; ++x) {
+                const auto pixel = image.getPixelAt(x, y);
+                if (std::abs(pixel.getRed() - indicator.getRed()) <= 16 &&
+                    std::abs(pixel.getGreen() - indicator.getGreen()) <= 16 &&
+                    std::abs(pixel.getBlue() - indicator.getBlue()) <= 16) return true;
+            }
+        return false;
+    }
+};
+} // namespace adi::ui
 namespace {
 int checks = 0, failures = 0;
 void check(bool value, const char *what) {
@@ -63,10 +157,12 @@ struct Event {
 // Exercises the actual GUI callback/coordinator seam without opening hardware.
 struct SimulatedDevice final : juce::AudioIODevice {
     SimulatedDevice() : AudioIODevice("Owned callback fixture", "test") {}
+    double rate = 48000.;
+    int frames = 256;
     juce::StringArray getOutputChannelNames() override { return {"L", "R"}; }
     juce::StringArray getInputChannelNames() override { return {}; }
-    juce::Array<double> getAvailableSampleRates() override { return {48000.}; }
-    juce::Array<int> getAvailableBufferSizes() override { return {256}; }
+    juce::Array<double> getAvailableSampleRates() override { return {44100., 48000.}; }
+    juce::Array<int> getAvailableBufferSizes() override { return {256, 512}; }
     int getDefaultBufferSize() override { return 256; }
     juce::String open(const juce::BigInteger &, const juce::BigInteger &, double, int) override { return {}; }
     void close() override {}
@@ -75,8 +171,8 @@ struct SimulatedDevice final : juce::AudioIODevice {
     void stop() override {}
     bool isPlaying() override { return true; }
     juce::String getLastError() override { return {}; }
-    int getCurrentBufferSizeSamples() override { return 256; }
-    double getCurrentSampleRate() override { return 48000.; }
+    int getCurrentBufferSizeSamples() override { return frames; }
+    double getCurrentSampleRate() override { return rate; }
     int getCurrentBitDepth() override { return 32; }
     juce::BigInteger getActiveOutputChannels() const override { return juce::BigInteger(3); }
     juce::BigInteger getActiveInputChannels() const override { return {}; }
@@ -121,11 +217,13 @@ struct KeyProbe final : device::DeviceInstance {
             }
     }
 };
-struct KeyTone final : engine::Node {
+struct CallbackTone final : engine::Node {
+    std::array<float, 2> channels{.25f, .25f};
     void process(const engine::NodeIo &io) noexcept override {
-        for (int c = 0; c < io.channels; ++c)
-            if (io.out && io.out[c])
-                std::fill_n(io.out[c] + io.blockOffset, io.frames, .25f);
+        if (!io.out) return;
+        for (int c = 0; c < std::min(io.channels, 2); ++c)
+            if (io.out[c])
+                std::fill_n(io.out[c] + io.blockOffset, io.frames, channels[static_cast<std::size_t>(c)]);
     }
 };
 void callbackKeys(AppCommands &commands, const std::filesystem::path &directory) {
@@ -147,7 +245,7 @@ void callbackKeys(AppCommands &commands, const std::filesystem::path &directory)
     check(bool(doc), "callback key document opens");
     if (!doc)
         return;
-    KeyTone tone;
+    CallbackTone tone;
     doc->session().setSourcesFor([&](std::int64_t track) {
         return track == 2 ? std::vector<engine::Node *>{&tone} : std::vector<engine::Node *>{};
     });
@@ -238,6 +336,137 @@ void callbackKeys(AppCommands &commands, const std::filesystem::path &directory)
     }
     bridge.audioDeviceStopped();
 }
+void callbackAnalyzerRateChange(const std::filesystem::path &directory) {
+    constexpr std::int64_t mainTrack = 1;
+    constexpr std::int64_t programmeTrack = 2;
+    constexpr int fftSize = 1024;
+    StoreError status{};
+    const auto path = directory / "analyzer-rate.adi";
+    auto store = Store::create(path, status);
+    check(bool(store), "sample rate fixture creates a project");
+    if (!store) return;
+    store->db().exec("INSERT INTO tracks(id,kind,name) VALUES(1,'master','Main'),(2,'audio','Programme');"
+                     "INSERT INTO mixer_strip(track_id,volume_db) VALUES(1,0),(2,0);");
+    store.reset();
+
+    CallbackTone tone;
+    tone.channels = {.375f, .125f};
+    std::string error;
+    auto doc = ProjectDocument::open(path, false, {}, error);
+    check(bool(doc), "sample rate fixture opens through ProjectDocument");
+    if (!doc) return;
+    doc->session().setSourcesFor([&](std::int64_t track) {
+        return track == programmeTrack ? std::vector<engine::Node *>{&tone} : std::vector<engine::Node *>{};
+    });
+    SimulatedDevice hardware;
+    device::DeviceBridge bridge(*doc);
+    doc->session().graph().setFadeFrames(0);
+    bridge.setRequestedBlockSize(hardware.frames);
+    bridge.audioDeviceAboutToStart(&hardware);
+    doc->session().transport().play();
+
+    const auto broker = doc->analysis();
+    SharedAnalysis::Request request{mainTrack, engine::ScopePoint::PostFader, fftSize};
+    request.outputs = SharedAnalysis::Scope;
+    auto scope = broker->acquire(request);
+    request.outputs = SharedAnalysis::Spectrogram;
+    auto spectrogram = broker->acquire(request);
+    auto meter = broker->acquireStereoMeter(mainTrack, {});
+    const auto leasesSurvive = [&] {
+        const auto stats = broker->stats();
+        return doc->analysis() == broker && scope.available() && spectrogram.available() && meter.available() &&
+               stats.consumers == 3 && stats.domains == 2 && stats.taps == 1;
+    };
+    check(bridge.lastOpen().opened && leasesSurvive(), "one project Main tap feeds both windows and the stereo meter");
+
+    std::array<std::array<float, 256>, 2> pcm{};
+    std::array<float *, 2> out{pcm[0].data(), pcm[1].data()};
+    const auto render = [&](int callbacks) {
+        for (int i = 0; i < callbacks; ++i)
+            bridge.audioDeviceIOCallbackWithContext(nullptr, 0, out.data(), 2, hardware.frames, {});
+        broker->pump(); // Direct bounded pass; no requestFrame or view refresh rebinds the tap.
+    };
+    const auto freshAnalysis = [&] {
+        const auto frame = scope.read();
+        const auto reading = meter.readStereoMeter();
+        if (!frame || frame != spectrogram.read() || !reading ||
+            frame->scopeLeft.size() != fftSize || frame->scopeRight.size() != fftSize ||
+            frame->columns.empty() || !frame->columns.back().binsDbfs) return false;
+        const auto allValue = [](const auto &samples, float value) {
+            return std::all_of(samples.begin(), samples.end(), [value](float sample) { return sample == value; });
+        };
+        return bridge.core().oversizeRefusals() == 0 &&
+               frame->request.track == mainTrack && frame->advancing &&
+               frame->sampleRate == hardware.rate && reading->sampleRate == hardware.rate &&
+               frame->generation == reading->generation &&
+               allValue(frame->scopeLeft, tone.channels[0]) && allValue(frame->scopeRight, tone.channels[1]) &&
+               allValue(std::span(pcm[0]).first(static_cast<std::size_t>(hardware.frames)), tone.channels[0]) &&
+               allValue(std::span(pcm[1]).first(static_cast<std::size_t>(hardware.frames)), tone.channels[1]) &&
+               reading->reading.maximumPeak == std::array<double, 2>{std::abs(tone.channels[0]), std::abs(tone.channels[1])};
+    };
+    render(4);
+    check(freshAnalysis(), "48 kHz/256 device audio drives Main scope, history and peak publication");
+    // Retain the snapshots a frozen reader would own throughout both changes.
+    const auto frozen = scope.read();
+    const auto frozenMeter = meter.readStereoMeter();
+    if (!frozen || !frozenMeter || frozen->columns.empty() || !frozen->columns.front().binsDbfs) {
+        bridge.audioDeviceStopped();
+        return;
+    }
+    const auto frozenLeft = frozen->scopeLeft;
+    const auto frozenRight = frozen->scopeRight;
+    const auto frozenColumnCount = frozen->columns.size();
+    const auto frozenBins = frozen->columns.front().binsDbfs;
+    const auto frozenBinsData = *frozenBins;
+    const auto frozenPeaks = frozenMeter->reading.maximumPeak;
+
+    const auto verifyReplacement = [&](const auto &previous, const auto &previousMeter) {
+        const auto position = scope.sourcePosition();
+        check(bridge.lastOpen().opened && leasesSurvive() && previous &&
+                  position.generation > previous->generation && position.written == 0 &&
+                  spectrogram.sourcePosition().generation == position.generation &&
+                  meter.sourcePosition().generation == position.generation &&
+                  !scope.read() && !spectrogram.read() && !meter.readStereoMeter(),
+              "device prepare invalidates old results and preserves the same three leases before any analyser frame");
+        render(1);
+        check(!scope.read() && !spectrogram.read(),
+              "a partial new window cannot resurrect samples or history from the former tap");
+        render(3);
+        check(freshAnalysis(), "current-rate PCM and metering reach the retained Main leases without reopening the project");
+        const auto next = scope.read();
+        const auto nextMeter = meter.readStereoMeter();
+        check(previous && previousMeter && next && nextMeter && next->generation > previous->generation &&
+                  next->sourceEpoch > previous->sourceEpoch && nextMeter->epoch > previousMeter->epoch &&
+                  next->generation == position.generation && !next->columns.empty() &&
+                  std::all_of(next->columns.begin(), next->columns.end(), [&](const auto &column) {
+                      return column.binsDbfs && std::none_of(previous->columns.begin(), previous->columns.end(),
+                          [&](const auto &old) { return old.binsDbfs == column.binsDbfs; });
+                  }),
+              "new source epochs publish only spectrogram columns acquired from the replacement tap");
+    };
+    const auto streamTime = bridge.core().streamTime();
+    hardware.rate = 44100.;
+    tone.channels = {-.25f, .0625f};
+    bridge.audioDeviceAboutToStart(&hardware);
+    check(bridge.core().reconfigurations() == 1 && bridge.core().streamTime() == streamTime,
+          "the open device changes only its sample rate, preserving block size and stream clock");
+    verifyReplacement(frozen, frozenMeter);
+
+    const auto beforeStop = scope.read();
+    const auto meterBeforeStop = meter.readStereoMeter();
+    bridge.audioDeviceStopped();
+    tone.channels = {.03125f, -.125f};
+    bridge.audioDeviceAboutToStart(&hardware);
+    check(bridge.core().reconfigurations() == 0 && bridge.core().streamTime() == 0,
+          "stopping and reopening at the same format exercises the DeviceBridge open path");
+    verifyReplacement(beforeStop, meterBeforeStop);
+    check(frozen->sampleRate == 48000. && frozen->scopeLeft == frozenLeft && frozen->scopeRight == frozenRight &&
+              frozen->columns.size() == frozenColumnCount && frozen->columns.front().binsDbfs == frozenBins &&
+              *frozenBins == frozenBinsData &&
+              frozenMeter->sampleRate == 48000. && frozenMeter->reading.maximumPeak == frozenPeaks,
+          "a retained frozen scope, spectrogram and meter snapshot stays immutable across both replacements");
+    bridge.audioDeviceStopped();
+}
 void functions(AppCommands &commands, const std::filesystem::path &directory) {
     std::string error;
     auto document = ProjectDocument::open(directory / "function-tabs.adi", true, {}, error);
@@ -295,7 +524,46 @@ void functions(AppCommands &commands, const std::filesystem::path &directory) {
               native->nativeFunction()->kind == mix::Function::Limiter,
           "external UID coincidence remains an ordinary plug-in; native identity is explicit");
     check(native->parameterPages.empty(), "a plain Limiter without group descriptors invents no Clip page");
+    {
+        DevicePanelView card(strip, publication->back(), true);
+        card.setSize((look::workspaceSegmentWidth * 3), look::mixStackRow);
+        card.present(publication->back());
+        const auto *gain = card.controls.empty() ? nullptr : card.controls.front().get();
+        check(gain && gain->isVisible() && gain->getBottom() <= card.getHeight() &&
+                  !card.configureButton.isVisible(), "the compact Limiter retains its actual Gain control");
+        card.setSize((look::workspaceSegmentWidth * 3) * 2, look::mixStackFocusedRow);
+        check(gain && card.controls.front().get() == gain && gain->isVisible(),
+              "the expanded card uses the same owned control as the compact card");
+    }
     check(!ordinary->beginFunctionDrag(), "ordinary plug-ins cannot enter the native function drag path");
+    {
+        constexpr auto oldRefusal = "Earlier device action was refused.";
+        constexpr auto newRefusal = "Fixture device cannot be loaded.";
+        constexpr auto uid = "fixture.builtin";
+        bool allow = false;
+        root.loadBuiltin = [&](const std::string &device, std::int64_t track, std::optional<std::int64_t> before) {
+            if (device != uid || track != 2 || before != ordinary->id) return false;
+            if (!allow) root.say(newRefusal);
+            return allow;
+        };
+        root.say(oldRefusal);
+        check(!root.insertDevice(uid, 2, ordinary->id) && root.error() == newRefusal,
+              "a refused built-in insertion retains its own status");
+        allow = true;
+        check(root.insertDevice(uid, 2, ordinary->id) && root.error().empty(),
+              "a successful built-in insertion clears the earlier device status");
+        root.loadBuiltin = {};
+
+        strip.holdsCopy = [] { return true; };
+        strip.paste = [&](std::int64_t track, std::optional<std::int64_t> before) {
+            return track == 2 && before == ordinary->id;
+        };
+        root.say(oldRefusal);
+        check(strip.clipboard(DeviceChainStrip::Clip::Paste, ordinary->id) && root.error().empty(),
+              "a successful device paste clears the earlier status on the real chain-strip path");
+        strip.holdsCopy = {};
+        strip.paste = {};
+    }
     int duplicates = 0;
     strip.duplicate = [&](std::int64_t, std::int64_t, std::optional<std::int64_t>) { ++duplicates; return true; };
     const auto commandItems = menuItems(native->commands());
@@ -311,16 +579,99 @@ void functions(AppCommands &commands, const std::filesystem::path &directory) {
     check(!items[0].enabled && items[0].name.contains("Core pending") && items[1].enabled && !items[1].ticked &&
               items[4].ticked && !items[4].enabled,
           "menu distinguishes absent unavailable cores, addable core and already-present native function");
+    constexpr auto existingNotice = "Previous status";
+    constexpr auto staleNotice = "This Add menu is out of date. Reopen it and try again.";
     auto staleAction = items[1].action;
+    root.say(existingNotice);
     strip.cancelFunctionInteractions();
+    check(root.error() == existingNotice, "cancelling the Device View add menu alone leaves the Status Bar alone");
+    const auto cancelHead = History(document->store()).head();
     staleAction();
-    check(additions == 0, "cancelled add-menu action cannot insert a function later");
+    check(additions == 0 && root.error() == staleNotice && History(document->store()).head() == cancelHead,
+          "attempting the cancelled Device View choice explains the refusal with no insertion or undo step");
     items = menuItems(strip.functionMenu()); items[1].action();
     check(additions == 1 && added == mix::Function::Compressor, "current enabled menu action calls shared insertion once");
     staleAction = menuItems(strip.functionMenu())[1].action;
     strip.frame(3); strip.frame(2);
+    root.say(existingNotice);
     staleAction();
-    check(additions == 1, "leaving and returning to the channel cannot revive its prior add menu");
+    check(additions == 1 && root.error() == staleNotice && History(document->store()).head() == cancelHead,
+          "changing channels refuses the old Device View choice and says to reopen the menu");
+    {
+        root.chooseMixViewTab(static_cast<int>(MixViewPanel::Tab::Stack));
+        root.setMixView(true, false);
+        root.frame();
+        auto &stack = root.mixViewPanel.stack;
+        root.arrangement.geometry.selection.track = 2;
+        root.publishSelection();
+        stack.frame(root.reader());
+        const auto toolbar = menuItems(stack.functionMenu());
+        check(toolbar.size() > 1 && toolbar[1].enabled && toolbar[1].action,
+              "the toolbar Add menu offers its current channel's Compressor");
+        const auto beforeCommit = root.current();
+        check(document->deviceAction("track.rename", {{"id", 2}, {"name", "Renamed while Add was open"}}) &&
+                  root.current() != beforeCommit,
+              "a real authored track commit invalidates the open toolbar menu");
+        const auto toolbarHead = History(document->store()).head();
+        root.say(existingNotice);
+        if (toolbar.size() > 1 && toolbar[1].action) toolbar[1].action();
+        check(additions == 1 && root.error() == staleNotice && History(document->store()).head() == toolbarHead,
+              "a stale toolbar choice only reports the refusal and leaves the latest commit and Undo intact");
+        stack.frame(root.reader());
+        PluginEntry reference;
+        reference.format = "vst3";
+        reference.uid = "fixture.vendor.unique";
+        reference.name = "Fixture VST";
+        reference.kind = PluginEntry::Kind::MidiEffect;
+        PluginScan scan;
+        scan.phase = PluginScan::Phase::Done;
+        scan.listed = 1;
+        scan.listing.plugins = {reference, reference};
+        root.browser.setPluginScan(scan);
+        int plugIns = 0;
+        root.loadPlugin = [&](const auto& picked, std::int64_t track, std::optional<std::int64_t> before, bool guessed) {
+            if (picked.uid == reference.uid && picked.subtype == "midi_effect" &&
+                track == 2 && !before && !guessed)
+                ++plugIns;
+            return true;
+        };
+        auto menu = stack.rowAddMenu(stack.model().rowRef(2));
+        const auto result = menuItems(menu);
+        const auto named = [&](const auto& label) {
+            return std::find_if(result.begin(), result.end(), [&](const auto &item) { return item.name == label; });
+        };
+        const auto plugin = named("Fixture VST (VST3)");
+        const auto limiter = named("Limiter");
+        check(!result.empty() && result.front().name == "Mix View tools" && named("Devices") < named("Plug-ins") &&
+              named("Plug-ins") < plugin && plugin != result.end() &&
+              limiter != result.end() && limiter->ticked && !limiter->enabled &&
+              std::count_if(result.begin(), result.end(), [&](const auto& item) { return item.name == plugin->name; }) == 1,
+              "the picker orders devices after tools, deduplicates plug-ins and ticks the existing function");
+        StackAddPicker picker(menu);
+        auto* search = dynamic_cast<juce::TextEditor*>(picker.getChildComponent(0));
+        auto* list = dynamic_cast<juce::ListBox*>(picker.getChildComponent(1));
+        check(search && list, "the picker exposes a search field and a named menu");
+        if (search && list) {
+            search->setText("fixture vst", false);
+            search->onTextChange();
+            check(list->getListBoxModel()->getNumRows() == 2 && list->getSelectedRow() == 1 &&
+                      list->getListBoxModel()->getNameForRow(1) == "Fixture VST (VST3)",
+                  "case-insensitive search focuses the matching device and exposes its accessible name");
+            search->onReturnKey();
+        }
+        check(plugIns == 1, "Enter loads the matching plug-in with its catalogue kind on the captured row");
+        root.say(existingNotice);
+        if (search) search->onEscapeKey();
+        stack.cancelInteractions();
+        check(root.error() == existingNotice, "dismissing the row picker alone does not report a refusal");
+        if (search) search->onReturnKey();
+        check(plugIns == 1 && root.error() == staleNotice && History(document->store()).head() == toolbarHead,
+              "attempting a stale filtered row choice says to reopen and creates no edit or Undo step");
+        root.browser.setPluginScan({});
+        root.loadPlugin = {};
+        root.setMixView(false, false);
+        strip.frame(2);
+    }
     ordinary = strip.panels[0].get(); native = strip.panels[1].get();
     native->enabled.onClick();
     check(op == "device.remove" && payload.at("id").get<std::int64_t>() == 20,
@@ -346,12 +697,74 @@ void functions(AppCommands &commands, const std::filesystem::path &directory) {
     ordinary->enabled.onClick();
     check(op == "device.setEnabled" && payload.at("id").get<std::int64_t>() == 21,
           "ordinary plug-in activator keeps ordinary bypass semantics");
+    {
+        const auto targetCurrent = strip.targetCurrent;
+        const auto reenter = [&](DevicePanelData expected, bool validate, const char *command, const char *label) {
+            const bool authored = expected.enabled;
+            const bool requested = !authored;
+            Payload arguments{{"id", expected.id}};
+            if (std::string_view(command) == "device.setEnabled") arguments["enabled"] = requested;
+            int validations = 0, submissions = 0;
+            bool sameTarget = false, sameEdit = false;
+            strip.targetCurrent = [&](std::int64_t id, const engine::DeviceRuntimeToken &, std::uint64_t stamp) {
+                ++validations;
+                sameTarget = id == expected.id && stamp == expected.instance;
+                // Model a reentrant refresh while the borrowed record stays alive.
+                expected.enabled = requested;
+                return validate && sameTarget;
+            };
+            strip.submit = [&](const std::string &name, Payload p) {
+                ++submissions;
+                sameEdit = name == command && p == arguments;
+                return true;
+            };
+            const bool result = strip.setEnabledExpected(expected, requested);
+            strip.targetCurrent = targetCurrent;
+            strip.submit = submit;
+            check(validations == 1 && sameTarget && result == validate &&
+                      (validate ? submissions == 1 && sameEdit : submissions == 0),
+                  label);
+        };
+        reenter(publication->back(), true, "device.remove", "active native click retains removal through revalidation");
+        auto bypassed = publication->back();
+        bypassed.enabled = false;
+        reenter(bypassed, true, "device.setEnabled", "bypassed native click retains recovery through revalidation");
+        reenter(publication->front(), true, "device.setEnabled", "ordinary revalidated click keeps bypass semantics");
+        reenter(publication->back(), false, "device.remove", "refused revalidation submits no activation edit");
+    }
     check(native->beginFunctionDrag() && native->functionDragTarget() &&
               native->functionDragTarget()->id == 20 && native->functionDragTarget()->instance == 71,
           "a function drag retains its authored identity and current instance");
     check(strip.dropFunction(*native, 21) && moves == 1 && moved.id == 20 && moved.instance == 71 && movedBefore == 21 &&
               !native->functionDragTarget(),
           "drop forwards one captured move and clears its drag owner before the callback");
+    {
+        const auto currentTarget = strip.targetCurrent;
+        const auto submitMove = strip.moveFunction;
+        // The destination can replace its panels during validation. Keep the drag source alive independently.
+        DevicePanelView dragSource(strip, publication->back(), true);
+        check(dragSource.beginFunctionDrag(), "independent source starts a native drag on the displayed track");
+        bool changedDestination = false;
+        std::optional<std::int64_t> submittedTrack;
+        strip.targetCurrent = [&](std::int64_t id, const engine::DeviceRuntimeToken &runtime, std::uint64_t stamp) {
+            const bool valid = currentTarget(id, runtime, stamp);
+            strip.frame(3);
+            changedDestination = strip.panels.empty();
+            return valid;
+        };
+        strip.moveFunction = [&](const DevicePanelData &, std::int64_t track, std::optional<std::int64_t>) {
+            submittedTrack = track;
+            return true;
+        };
+        const bool accepted = strip.dropFunction(dragSource, 21);
+        strip.targetCurrent = currentTarget;
+        strip.moveFunction = submitMove;
+        check(changedDestination, "validating the drop updates the destination to another track");
+        check(!accepted && !submittedTrack, "destination track change refuses the drop without submitting a move");
+        strip.frame(2);
+        if (strip.panels.size() != 2) { check(false, "original track restores its device panels"); return; }
+        native = strip.panels[1].get();
+    }
     check(native->beginFunctionDrag(), "a second drag captures the displayed instance");
     publication = std::make_shared<ParameterPublication>(*publication);
     publication->back().instance = 72;
@@ -398,6 +811,75 @@ void functions(AppCommands &commands, const std::filesystem::path &directory) {
           "explicit-target add menu works for another visible owner without retargeting the hidden strip");
     foreignLive = false; foreign[1].action();
     check(additions == beforeForeign + 1, "expired foreign add-menu owner cannot add later");
+    peer.removeChildComponent(&root); peer.removeFromDesktop();
+}
+void processingIssuePresentation(AppCommands &commands, const std::filesystem::path &directory) {
+    std::string error;
+    auto document = ProjectDocument::open(directory / "processing-issue.adi", true, {}, error);
+    check(document != nullptr, "processing issue component project opens without a native host");
+    if (!document) return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands,
+                          document->views(), document->sessionState(), "processing-issue");
+    root.setSize(1200, 800);
+    UiPeerRoot peer;
+    peer.setSize(1200, 800); peer.setVisible(true); peer.addToDesktop(0);
+    peer.addAndMakeVisible(root);
+    auto publication = std::make_shared<ParameterPublication>();
+    publication->push_back(makePanel(20, false, "A long authored device name retained through configuration failure"));
+    auto &strip = root.devices;
+    strip.setVisible(true);
+    strip.publication = [&] { return publication; };
+    strip.targetCurrent = [&](std::int64_t id, const engine::DeviceRuntimeToken &, std::uint64_t stamp) {
+        return publication->front().id == id && publication->front().instance == stamp &&
+               publication->front().available;
+    };
+    std::vector<engine::ParamEventKind> events;
+    strip.guardedGesture = [&](std::int64_t, const std::string &, engine::ParamEventKind kind,
+                                double, const engine::DeviceRuntimeToken &, std::uint64_t) {
+        events.push_back(kind);
+        return true;
+    };
+    strip.frame(2);
+    check(strip.panels.size() == 1 && strip.panels.front()->controls.size() == 1,
+          "processing issue fixture has one real editable control");
+    if (strip.panels.size() != 1 || strip.panels.front()->controls.size() != 1) return;
+    auto *panel = strip.panels.front().get();
+    auto *control = panel->controls.front().get();
+    const auto titleBounds = panel->title.getBounds();
+    const auto panelWidth = panel->widthFor(160);
+    const auto ordinaryTooltip = panel->title.getTooltip();
+    check(panel->title.getButtonText() == juce::String(publication->front().name) &&
+              !ordinaryTooltip.contains("Configuration failed"),
+          "ordinary processing has no failure warning");
+    control->slider.onDragStart();
+    publication = std::make_shared<ParameterPublication>(*publication);
+    publication->front().processingIssue = "The configuration worker could not start.";
+    strip.frame(2);
+    check(strip.panels.front().get() == panel && panel->controls.front().get() == control &&
+              panel->presentedInstance() == 71 && control->isEnabled() && panel->enabled.isEnabled(),
+          "nonfatal processing issue retains the exact panel, runtime, control and activator");
+    check(panel->title.getButtonText().startsWith("Configuration failed") &&
+              panel->title.getButtonText().contains(juce::String(publication->front().name)) &&
+              panel->title.getTooltip().contains("The configuration worker could not start.") &&
+              panel->title.getTooltip().contains("To retry, reopen this project using File > Open Project.") &&
+              panel->title.getTooltip().contains("476 samples"),
+          "header puts configuration failure first and retains the device name and detailed latency tooltip");
+    check(panel->title.getBounds() == titleBounds && panel->widthFor(160) == panelWidth &&
+              events == std::vector<engine::ParamEventKind>{engine::ParamEventKind::Begin},
+          "status publication neither expands layout nor ends an active gesture");
+    strip.frame(2);
+    control->slider.setValue(.4, juce::sendNotificationSync); control->slider.onDragEnd();
+    check(events == std::vector<engine::ParamEventKind>{engine::ParamEventKind::Begin,
+                  engine::ParamEventKind::Value, engine::ParamEventKind::End},
+          "repeated failed-status presentation still permits the ordinary exact-owner edit");
+    publication = std::make_shared<ParameterPublication>(*publication);
+    publication->front().processingIssue.clear();
+    strip.frame(2);
+    check(strip.panels.front().get() == panel && panel->controls.front().get() == control &&
+              panel->title.getButtonText() == juce::String(publication->front().name) &&
+              panel->title.getTooltip() == ordinaryTooltip && panel->widthFor(160) == panelWidth &&
+              control->isEnabled() && events.size() == 3,
+          "recovery removes status text without rebuilding controls or emitting another edit");
     peer.removeChildComponent(&root); peer.removeFromDesktop();
 }
 DevicePanelData makePagedPanel() {
@@ -533,6 +1015,614 @@ void parameterPages(AppCommands &commands, const std::filesystem::path &director
     check(events.empty(), "page enable rejects a replaced runtime before mutation");
     peer.removeChildComponent(&root); peer.removeFromDesktop();
 }
+void stackEqSpectrum(AppCommands &commands, const std::filesystem::path &directory) {
+    std::string error;
+    auto document = ProjectDocument::open(directory / "stack-eq-spectrum.adi", true, device::withBuiltinDevices(), error);
+    check(document && document->addMixFunction(mix::Function::Eq, 2), "Stack spectrum opens a native EQ fixture");
+    if (!document) return;
+    document->tick(0);
+    const auto publication = document->parameterFeed().current();
+    const auto eq = std::ranges::find(*publication, "org.adidaw.mix.eq", &DevicePanelData::uid);
+    if (eq == publication->end()) return;
+    const auto device = eq->id;
+    const engine::ScopeSource expected{2, engine::ScopePoint::DeviceOutput, device};
+    auto tap = std::make_shared<engine::ScopeTap>(48000, 1.);
+    std::vector<engine::ScopeSource> opened, closed;
+    auto broker = std::make_shared<SharedAnalysis>(
+        [&](engine::ScopeSource source, double) -> std::shared_ptr<const engine::ScopeTap> {
+            opened.push_back(source);
+            return source == expected ? tap : nullptr;
+        }, [&](engine::ScopeSource source) { closed.push_back(source); }, SharedAnalysis::Mode::Manual);
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands,
+                          document->views(), document->sessionState(), "stack-eq-spectrum");
+    root.devices.publication = [&] { return document->parameterFeed().current(); };
+    root.devices.parameterDemand = [&](const void *owner, const auto &ids) { document->setParameterDemand(owner, ids); };
+    root.sharedAnalysis = broker;
+    root.state().mixView = true;
+    root.state().mixViewTab = static_cast<int>(MixViewPanel::Tab::Stack);
+    root.arrangement.geometry.selection.track = 2;
+    UiPeerRoot peer;
+    peer.setBounds(0, 0, 1200, 720);
+    peer.setVisible(true); peer.addToDesktop(0);
+    StackTab surface(root);
+    surface.setBounds(peer.getLocalBounds()); peer.addAndMakeVisible(surface);
+    surface.filterChannels(std::vector<std::int64_t>{2});
+    surface.model().setAutoZoom(false, 0);
+    surface.frameAt(root.reader(), 500);
+    check(opened == std::vector{expected} && broker->stats().consumers == 1,
+          "visible EQ graph demands exactly its stable device output");
+
+    const auto findPanel = [&](const auto &walk, juce::Component &parent) -> DevicePanelView * {
+        if (auto *item = dynamic_cast<DevicePanelView *>(&parent); item && item->id == device) return item;
+        for (auto *child : parent.getChildren())
+            if (auto *found = walk(walk, *child)) return found;
+        return nullptr;
+    };
+    const auto paintPanel = [](DevicePanelView &panel) {
+        juce::Image image(juce::Image::RGB, panel.getWidth(), panel.getHeight(), true, juce::SoftwareImageType());
+        juce::Graphics g(image);
+        panel.paint(g);
+        return image;
+    };
+    auto *panel = findPanel(findPanel, surface);
+    check(panel != nullptr, "the spectrum uses the existing EQ card");
+    if (!panel) return;
+    juce::Component::SafePointer<DevicePanelView> card(panel);
+    SharedAnalysis::Request request{expected.track, expected.point};
+    request.device = expected.device;
+    request.channel = SharedAnalysis::Channel::StereoPower;
+    auto sibling = broker->acquire(request);
+    check(sibling.available() && broker->stats().consumers == 2 && broker->stats().domains == 1 &&
+              broker->stats().spectralPlans == 1 && opened.size() == 1,
+          "a compatible sibling shares the same tap, FFT plan and worker domain");
+
+    tap->write(static_cast<const float *>(nullptr), nullptr, 1024, 0, false);
+    broker->pump(); surface.frameAt(root.reader(), 520);
+    const auto silent = paintPanel(*card);
+    std::array<float, 1024> left{}, right{};
+    for (std::size_t i = 0; i < left.size(); ++i) {
+        left[i] = .5f * static_cast<float>(std::sin(2. * std::numbers::pi * 16. * static_cast<double>(i) / static_cast<double>(left.size())));
+        right[i] = -left[i];
+    }
+    tap->write(left.data(), right.data(), static_cast<std::int32_t>(left.size()), 0, false);
+    broker->pump(); surface.frameAt(root.reader(), 540);
+    const auto audible = paintPanel(*card);
+    const auto result = sibling.read();
+    int changedPixels = 0;
+    bool withinGraph = true;
+    const auto graph = card->eqPreviewBounds().toNearestInt();
+    for (int y = 0; y < silent.getHeight(); ++y)
+        for (int x = 0; x < silent.getWidth(); ++x)
+            if (silent.getPixelAt(x, y) != audible.getPixelAt(x, y)) {
+                ++changedPixels;
+                withinGraph = withinGraph && graph.contains(x, y);
+            }
+    if (!result || std::abs(result->binsDbfs[16] + 6.0206f) >= .002f || changedPixels == 0 || !withinGraph)
+        std::cout << "Stack spectrum fixture: bin16=" << (result ? result->binsDbfs[16] : -999.f)
+                  << ", peak=" << (result ? result->peak[0] : -1.f)
+                  << ", changed=" << changedPixels << ", withinGraph=" << withinGraph << '\n';
+    check(result && std::abs(result->binsDbfs[16] + 6.0206f) < .002f && changedPixels > 0 && withinGraph,
+          "valid antiphase sound after silence changes only pixels clipped to the graph");
+    const auto shown = broker->stats();
+    const auto width = card->getWidth();
+    surface.model().setBaseHeight(122, 550);
+    surface.frameAt(root.reader(), 800);
+    broker->pump();
+    check(card && card->getWidth() != width && broker->stats().transforms == shown.transforms &&
+              broker->stats().publications == shown.publications && broker->stats().consumers == shown.consumers,
+          "resizing changes graph geometry without requesting a new transform or lease");
+
+    surface.setVisible(false);
+    check(broker->stats().consumers == 1 && closed.empty(),
+          "hiding the Stack immediately releases its reader while the sibling remains live");
+    sibling.reset();
+    check(broker->stats().consumers == 0 && closed == std::vector{expected},
+          "last hide unbinds the physical EQ tap exactly once");
+    surface.setVisible(true);
+    surface.frameAt(root.reader(), 850);
+    check(broker->stats().consumers == 1, "showing the EQ attaches one new reader");
+    surface.filterChannels(std::nullopt);
+    surface.setSize(1200, 165);
+    surface.frameAt(root.reader(), 900);
+    surface.model().scrollTo(surface.model().maxScroll(), 905);
+    surface.frameAt(root.reader(), 1200);
+    check(broker->stats().consumers == 0 && closed.size() == opened.size(),
+          "scrolling all EQ graph pixels outside the viewport unbinds its device tap");
+    surface.filterChannels(std::vector<std::int64_t>{2});
+    surface.setBounds(peer.getLocalBounds()); surface.frameAt(root.reader(), 1300);
+    const auto live = broker->stats();
+    surface.suspendParameters(true);
+    broker->pump();
+    check(live.consumers == 1 && broker->stats().consumers == 0 && broker->stats().workerPasses == live.workerPasses,
+          "suspending the window removes its last EQ reader and schedules no idle work");
+    peer.removeChildComponent(&surface); peer.removeFromDesktop();
+}
+
+void stackLimiterReduction(AppCommands &commands, const std::filesystem::path &directory) {
+    namespace l = mix::limiter;
+    std::string error;
+    auto document = ProjectDocument::open(directory / "stack-limiter-reduction.adi", true,
+        device::withBuiltinDevices(), error);
+    check(document && document->addMixFunction(mix::Function::Limiter, 2),
+          "Stack reduction opens a native limiter fixture");
+    if (!document) return;
+    document->tick(0);
+    const auto publication = document->parameterFeed().current();
+    const auto row = std::ranges::find(*publication, "org.adidaw.mix.limiter", &DevicePanelData::uid);
+    check(row != publication->end(), "fixture exposes the same exact native runtime to the Stack");
+    if (row == publication->end()) return;
+    const auto runtime = row->runtime;
+    const auto device = row->id;
+    auto mailbox = std::make_shared<l::ReductionMailbox>();
+    mailbox->setPrepared(true);
+    int acquisitions = 0;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands,
+                          document->views(), document->sessionState(), "stack-limiter-reduction");
+    root.devices.publication = [&] { return document->parameterFeed().current(); };
+    root.devices.parameterDemand = [&](const void *owner, const auto &ids) { document->setParameterDemand(owner, ids); };
+    root.state().mixView = true;
+    root.state().mixViewTab = static_cast<int>(MixViewPanel::Tab::Stack);
+    root.arrangement.geometry.selection.track = 2;
+    UiPeerRoot peer;
+    peer.setBounds(0, 0, 1200, 720);
+    peer.setVisible(true); peer.addToDesktop(0);
+    StackTab surface(root);
+    surface.setBounds(peer.getLocalBounds()); peer.addAndMakeVisible(surface);
+    surface.filterChannels(std::vector<std::int64_t>{2});
+    surface.model().setAutoZoom(false, 0);
+    surface.model().setBaseHeight(184, 0);
+    surface.setLimiterObserver([&](const DevicePanelData &target) {
+        if (target.id != device || !target.runtime.sameInstance(runtime)) return l::ReductionMailbox::Lease{};
+        ++acquisitions;
+        return l::ReductionMailbox::observe(mailbox);
+    });
+    surface.frameAt(root.reader(), 500);
+    check(mailbox->observed() && acquisitions == 1, "expanded visible Limiter card acquires one reading lease");
+    const auto locate = [&](const auto &walk, juce::Component &parent) -> DevicePanelView * {
+        if (auto *card = dynamic_cast<DevicePanelView *>(&parent); card && card->id == device) return card;
+        for (auto *child : parent.getChildren())
+            if (auto *found = walk(walk, *child)) return found;
+        return nullptr;
+    };
+    auto *found = locate(locate, surface);
+    check(found != nullptr, "the reduction plot lives in the existing Stack device card");
+    if (!found) return;
+    juce::Component::SafePointer<DevicePanelView> card(found);
+    const auto paint = [](DevicePanelView &panel) {
+        juce::Image image(juce::Image::RGB, panel.getWidth(), panel.getHeight(), true, juce::SoftwareImageType());
+        juce::Graphics g(image);
+        panel.paint(g);
+        return image;
+    };
+    const auto rightPeakPixels = [](const juce::Image &image) {
+        const auto colour = static_cast<juce::Colour>(look::meterPeak);
+        const int x = image.getWidth() - 2 * static_cast<int>(look::gap) - 2;
+        int pixels = 0;
+        for (int y = DevicePanelView::kTitleHeight; y < image.getHeight(); ++y)
+            if (image.getPixelAt(x, y) == colour) ++pixels;
+        return pixels;
+    };
+    const auto empty = paint(*card);
+    l::ReductionFrame summary;
+    summary.renderBlock = 1;
+    summary.observedFrames = 128;
+    summary.reduction = {.75f, true};
+    mailbox->publishSegment(mailbox->observationEpoch(), summary);
+    surface.frameAt(root.reader(), 520);
+    const auto peak = paint(*card);
+    check(rightPeakPixels(peak) > rightPeakPixels(empty) && acquisitions == 1,
+          "the latest measured peak paints a right-hand column without reacquiring the source");
+    summary.renderBlock = 2;
+    summary.reduction = {};
+    mailbox->publishSegment(mailbox->observationEpoch(), summary);
+    surface.frameAt(root.reader(), 540);
+    const auto missing = paint(*card);
+    check(rightPeakPixels(missing) == rightPeakPixels(empty) && mailbox->observed(),
+          "an unavailable block paints a genuine gap in place of the latest peak");
+
+    surface.model().setBaseHeight(112, 600);
+    surface.frameAt(root.reader(), 950);
+    check(!mailbox->observed(), "a compact card releases its reduction lease");
+    surface.model().setBaseHeight(184, 980);
+    surface.frameAt(root.reader(), 1330);
+    check(mailbox->observed() && acquisitions == 2, "re-expansion reacquires an empty observation");
+    root.devices.fold(device);
+    surface.frameAt(root.reader(), 1360);
+    check(!mailbox->observed(), "folded Limiter has no reduction subscription");
+    root.devices.fold(device);
+    surface.frameAt(root.reader(), 1600);
+    check(mailbox->observed() && acquisitions == 3, "unfolding reopens one subscription");
+    surface.filterChannels(std::nullopt);
+    surface.setSize(1200, 165);
+    surface.frameAt(root.reader(), 1640);
+    surface.model().scrollTo(surface.model().maxScroll(), 1660);
+    surface.frameAt(root.reader(), 2090);
+    check(!mailbox->observed(), "a retained Limiter card with its plot fully offscreen releases demand");
+
+    surface.filterChannels(std::vector<std::int64_t>{2});
+    surface.setBounds(peer.getLocalBounds());
+    surface.frameAt(root.reader(), 2410);
+    const auto shown = mailbox->observed();
+    auto sibling = l::ReductionMailbox::observe(mailbox);
+    surface.setVisible(false);
+    check(shown && mailbox->observed(), "hiding a Stack reader preserves a compatible sibling");
+    sibling.reset();
+    check(!mailbox->observed(), "the last hidden view leaves no producer demand");
+    peer.removeChildComponent(&surface); peer.removeFromDesktop();
+}
+
+void focusWorkspace(AppCommands &commands, const std::filesystem::path &directory) {
+    std::string error;
+    auto doc = ProjectDocument::open(directory / "focus-workspace.adi", true, device::withBuiltinDevices(), error);
+    check(doc != nullptr, "Focus opens a project fixture");
+    if (!doc) return;
+
+    constexpr std::int64_t first = 71, second = 72, added = 73;
+    auto rootOwner = std::make_unique<AdiRootComponent>(doc->view(), doc->ops(), doc->mailbox(), commands,
+                                                        doc->views(), doc->sessionState(), "focus-workspace");
+    auto &root = *rootOwner;
+    root.afterEdit = [&] { doc->synchronise(); };
+    bool created = true;
+    for (auto id : {first, second, added})
+        created = root.submitEdit("track.create", {{"id", id}, {"kind", "audio"}, {"name", "Focus track"}},
+                                  "Create Focus track") && created;
+    check(created, "Focus fixture creates three authored channels");
+    if (!created) return;
+    root.arrangement.geometry.selection.track = 2;
+    root.publishSelection();
+
+    const auto ownSource = [](engine::ScopeSource source) {
+        return source.point == engine::ScopePoint::PostFader &&
+               (source.track == first || source.track == second || source.track == added);
+    };
+    std::vector<std::int64_t> opened, closed;
+    auto tap = std::make_shared<engine::ScopeTap>(48000, 1.);
+    auto secondTap = std::make_shared<engine::ScopeTap>(48000, 1.);
+    auto broker = std::make_shared<SharedAnalysis>(
+        [&](engine::ScopeSource source, double) -> std::shared_ptr<const engine::ScopeTap> {
+            if (ownSource(source)) opened.push_back(source.track);
+            return source.track == second ? secondTap : tap;
+        },
+        [&](engine::ScopeSource source) { if (ownSource(source)) closed.push_back(source.track); },
+        SharedAnalysis::Mode::Manual);
+    root.sharedAnalysis = broker;
+
+    UiPeerRoot peer;
+    juce::Component docked;
+    peer.setSize(1440, 800);
+    peer.setVisible(true);
+    peer.addToDesktop(0);
+    peer.addAndMakeVisible(docked);
+    docked.setBounds(peer.getLocalBounds());
+    docked.addAndMakeVisible(root);
+    root.setBounds(docked.getLocalBounds());
+    const auto solo = [&](std::int64_t id) {
+        const auto current = root.current();
+        const auto *track = current ? current->findTrack(id) : nullptr;
+        return track && track->soloed;
+    };
+    const auto toggleMix = [&] {
+        const auto ok = root.command(AppCommands::ToggleMixView);
+        root.frame();
+        return ok;
+    };
+    auto &mix = root.mixViewPanel;
+    auto &focus = mix.focusPage;
+    check(root.submitEdit("track.setSolo", {{"id", first}, {"soloed", true}}, "Solo first") && solo(first) &&
+              toggleMix() && mix.tab() == MixViewPanel::Tab::Stack && opened.empty(),
+          "one solo opens Stack and attaches no Focus comparison source");
+    mix.stack.model().setChannelScope(stack::ChannelScope::WithTools, 0);
+    check(toggleMix() && !root.state().mixView, "return to Arrangement before changing the solo group");
+    check(root.submitEdit("track.setSolo", {{"id", second}, {"soloed", true}}, "Solo second") && solo(second) &&
+              toggleMix() && mix.tab() == MixViewPanel::Tab::Focus && focus.isShowing(),
+          "two authored solos open the Focus workspace");
+
+    const auto initial = std::vector{first, second};
+    check(focus.channelIds() == initial && focus.mainTrack() == first && opened == initial && closed.empty(),
+          "the initial ordered solo membership attaches both post-fader sources once");
+    check(mix.channels.focusMemberLabel(first) == "A" && mix.channels.focusMemberLabel(second) == "B" &&
+              mix.channels.focusMemberLabel(added).isEmpty(),
+          "the browser labels the Focus membership without labelling other channels");
+    check(mix.stack.model().shownIndex(first) && mix.stack.model().shownIndex(second) &&
+              !mix.stack.model().shownIndex(added),
+          "member chains bypass Stack tool scope without adding an unrelated row");
+
+    SharedAnalysis::Request same;
+    same.track = first;
+    same.channel = SharedAnalysis::Channel::StereoPower;
+    auto sibling = broker->acquire(same);
+    check(sibling.available() && opened == initial,
+          "a compatible comparison consumer shares the existing source");
+    check(root.chooseMixViewTab(static_cast<int>(MixViewPanel::Tab::Stack)), "Stack can be chosen explicitly");
+    root.frame();
+    check(!focus.isShowing() && closed == std::vector{second} && solo(first) && solo(second),
+          "leaving Focus releases its comparison leases and keeps all authored solos");
+    check(mix.channels.focusMemberLabel(first).isEmpty(), "Stack clears Focus-only badges");
+    sibling.reset();
+    check(closed == std::vector{second, first},
+          "the last compatible reader releases the remaining source");
+
+    check(root.chooseMixViewTab(static_cast<int>(MixViewPanel::Tab::Focus)), "return to the retained Focus group");
+    root.frame();
+    const auto sourceCloses = closed.size();
+    focus.scope.setToggleState(true, juce::dontSendNotification);
+    root.frame();
+    check(!root.playing() && closed.size() == sourceCloses + 2,
+          "stopped Focus Scope releases both member taps while waiting for alignable audio");
+    focus.scope.setToggleState(false, juce::dontSendNotification);
+    root.frame();
+
+    auto detail = broker->acquire(same);
+    auto rawRequest = same;
+    rawRequest.outputs = SharedAnalysis::Scope;
+    auto waveform = broker->acquire(rawRequest);
+    const auto beforeAncestorHide = closed.size();
+    docked.setVisible(false);
+    check(focus.isVisible() && !focus.isShowing() && closed.size() == beforeAncestorHide + 1 &&
+              closed.back() == second && detail.available() && waveform.available(),
+          "ancestor hide drops Focus spectrum demand immediately and preserves both sibling readers");
+    const auto opensBeforeRestore = opened.size();
+    docked.setVisible(true);
+    root.frame();
+    check(focus.isShowing() && opened.size() == opensBeforeRestore + 1 && opened.back() == second,
+          "restoring the parent reattaches only the previously released source");
+
+    engine::Transport driver;
+    driver.play(true);
+    driver.locate(4096);
+    doc->mailbox().publish(driver);
+    focus.scope.setToggleState(true, juce::dontSendNotification);
+    root.frame();
+    std::array<float, 1024> pcm{};
+    pcm.fill(.25f);
+    tap->write(pcm.data(), pcm.data(), static_cast<std::int32_t>(pcm.size()), 0, true, 1);
+    secondTap->write(pcm.data(), pcm.data(), static_cast<std::int32_t>(pcm.size()), 0, true, 1);
+    broker->pump();
+    root.frame();
+    const auto retained = waveform.read();
+    check(root.playing() && retained && detail.read() == retained && !retained->scopeLeft.empty() &&
+              MixFocusTestAccess::aligned(focus),
+          "the detailed analyzer and waveform share a publication and Focus aligns the two live sources");
+    check(MixFocusTestAccess::sumStrokeAt(focus, .5f),
+          "the Focus Scope visibly overlays the signed sum of two in-phase 0.25 member traces");
+    check(MixFocusTestAccess::flatScopePaths(focus),
+          "flat Focus member and sum traces contribute just one stroke segment per lane");
+    auto floating = std::make_unique<juce::Component>();
+    peer.addChildComponent(floating.get());
+    floating->setBounds(peer.getLocalBounds());
+    const auto beforeReparent = closed.size();
+    floating->addChildComponent(&root);
+    check(!focus.isShowing() && closed.size() == beforeReparent + 1 && closed.back() == second &&
+              waveform.read() == retained && detail.read() == retained,
+          "reparenting Focus Scope into a hidden owner drops only its own demand immediately");
+
+    floating->setVisible(true);
+    root.frame();
+    const auto beforeOwnerClose = closed.size();
+    docked.setVisible(false);
+    check(focus.isShowing() && closed.size() == beforeOwnerClose,
+          "hiding the former docked parent has no effect after reparenting");
+    docked.setVisible(true);
+    floating.reset();
+    check(root.getParentComponent() == nullptr && closed.size() == beforeOwnerClose + 1 &&
+              closed.back() == second && waveform.read() == retained && detail.read() == retained,
+          "closing a visible hosting component detaches Focus Scope without another frame");
+
+    docked.addAndMakeVisible(root);
+    root.frame();
+    check(root.submitEdit("transport.setLoop", {{"on", true}, {"start", 0}, {"end", 3840}}, "Loop"),
+          "Focus fixture enables the authored Arrangement Loop");
+    // Only the second channel observes a repeated heard interval before this frame.
+    // The loop does not advance the audio engine's transport control revision.
+    pcm.fill(.125f);
+    secondTap->write(pcm.data(), pcm.data(), static_cast<std::int32_t>(pcm.size()), 0, true, 1);
+    broker->pump();
+    root.frame();
+    check(MixFocusTestAccess::independent(focus), "loop passes with repeated stamps retain individual traces without a combined sum");
+    focus.scope.setToggleState(false, juce::dontSendNotification);
+    root.frame();
+    broker->pump();
+    root.frame();
+    check(MixFocusTestAccess::spectraWithoutMask(focus), "Together retains member spectra while withholding a cross-loop mask");
+    check(root.submitEdit("transport.setLoop", {{"on", false}, {"start", 0}, {"end", 3840}}, "Loop Off"),
+          "Focus fixture disables the authored Arrangement Loop");
+    focus.scope.setToggleState(true, juce::dontSendNotification);
+    root.frame();
+    check(MixFocusTestAccess::waitingForAlignment(focus) && !MixFocusTestAccess::aligned(focus),
+          "turning the loop off while playing cannot combine retained loop windows");
+    driver.play(false);
+    doc->mailbox().publish(driver);
+    root.frame();
+    driver.play(true);
+    doc->mailbox().publish(driver);
+    root.frame();
+    check(MixFocusTestAccess::waitingForAlignment(focus) && !MixFocusTestAccess::aligned(focus),
+          "restarting playback still waits for complete windows beyond the new tap boundaries");
+    const auto revision = driver.revision();
+    tap->write(pcm.data(), pcm.data(), static_cast<std::int32_t>(pcm.size()), 2048, true, revision);
+    secondTap->write(pcm.data(), pcm.data(), static_cast<std::int32_t>(pcm.size()), 2048, true, revision);
+    broker->pump();
+    root.frame();
+    check(MixFocusTestAccess::aligned(focus) && !MixFocusTestAccess::waitingForAlignment(focus),
+          "fresh aligned member data restores combined Focus after a stop and start");
+    const auto beforeSum = broker->stats();
+    tap->write(pcm.data(), pcm.data(), static_cast<std::int32_t>(pcm.size()), 3072, true, revision);
+    pcm.fill(-.125f);
+    secondTap->write(pcm.data(), pcm.data(), static_cast<std::int32_t>(pcm.size()), 3072, true, revision);
+    broker->pump();
+    root.frame();
+    const auto afterSum = broker->stats();
+    check(MixFocusTestAccess::sumStrokeAt(focus, 0.f) && afterSum.taps == beforeSum.taps &&
+              afterSum.consumers == beforeSum.consumers,
+          "an opposed pair collapses the visible sum to zero immediately without acquiring another analysis reader");
+    check(MixFocusTestAccess::flatScopePaths(focus),
+          "exact cancellation keeps one centerline segment and does not expand the member paths");
+    const auto writeSum = [&](float leftA, float rightA, float leftB, float rightB) {
+        std::array<float, 1024> left{}, right{};
+        const auto stamp = driver.position();
+        const auto frames = static_cast<std::int32_t>(left.size());
+        driver.advance(frames);
+        doc->mailbox().publish(driver);
+        left.fill(leftA); right.fill(rightA);
+        tap->write(left.data(), right.data(), frames, stamp, true, driver.revision());
+        left.fill(leftB); right.fill(rightB);
+        secondTap->write(left.data(), right.data(), frames, stamp, true, driver.revision());
+        broker->pump();
+        root.frame();
+    };
+    writeSum(.5f, -.5f, .5f, -.5f);
+    check(MixFocusTestAccess::aligned(focus) && !MixFocusTestAccess::sumOverRangeInk(focus),
+          "an exact +1 left and -1 right sum leaves the Scope title normal");
+    writeSum(.8f, 0.f, .8f, 0.f);
+    check(MixFocusTestAccess::aligned(focus) && MixFocusTestAccess::sumOverRangeInk(focus),
+          "the Scope title visibly marks an above-unity positive sum on the left channel alone");
+    writeSum(0.f, -.8f, 0.f, -.8f);
+    check(MixFocusTestAccess::aligned(focus) && MixFocusTestAccess::sumOverRangeInk(focus),
+          "the Scope title visibly marks an above-unity negative sum on the right channel alone");
+    const auto wideFocus = focus.getBounds();
+    focus.setBounds(wideFocus.withWidth(3 * look::mixFocusSourceWidth));
+    focus.frame(SnapshotReader(root.current()));
+    check(MixFocusTestAccess::compactScope(focus) && MixFocusTestAccess::sumOverRangeInk(focus),
+          "the over-range title remains visible at a width without a separate numeric sum readout");
+    focus.setBounds(wideFocus);
+    writeSum(.8f, -.8f, -.8f, .8f);
+    check(MixFocusTestAccess::aligned(focus) && !MixFocusTestAccess::sumOverRangeInk(focus) &&
+              broker->stats().consumers == afterSum.consumers && broker->stats().taps == afterSum.taps,
+          "the over-range title clears on cancellation without another analysis consumer or tap");
+    driver.play(false);
+    doc->mailbox().publish(driver);
+    focus.scope.setToggleState(false, juce::dontSendNotification);
+    root.frame();
+    waveform.reset();
+    detail.reset();
+    focus.setMembers({first, added, second});
+    root.frame();
+    check(focus.channelIds() == std::vector{first, added, second} && mix.stack.model().shownIndex(added),
+          "manual membership is retained without writing a solo");
+    focus.toggleMemberSolo(first);
+    root.frame();
+    check(!solo(first) && solo(second) && !solo(added) &&
+              focus.channelIds() == std::vector{added, second} && focus.mainTrack() == second &&
+              !mix.stack.model().shownIndex(first),
+          "explicit unsolo removes its row and promotes the first remaining solo over a manual member");
+    check(mix.channels.focusMemberLabel(first).isEmpty() && mix.channels.focusMemberLabel(second) == "B" &&
+              mix.channels.focusMemberLabel(added) == "A",
+          "the browser updates labels to the remaining membership order");
+    check(doc->ops().undo().ok && doc->synchronise() && solo(first) && solo(second),
+          "Focus unsolo is one ordinary authored undo step");
+
+    check(toggleMix() && !root.state().mixView && solo(first) && solo(second),
+          "closing Focus returns to Arrangement without modifying solos");
+    check(root.command(AppCommands::ShowChannelEq) && mix.tab() == MixViewPanel::Tab::Stack,
+          "the explicit Channel EQ command still opens Stack with two solos");
+    docked.removeChildComponent(&root);
+    peer.removeFromDesktop();
+    rootOwner.reset();
+}
+
+void focusOneBarScope(AppCommands &commands, const std::filesystem::path &directory) {
+    constexpr int rate = 48000, chunk = 1024;
+    constexpr std::int64_t bar = 96000, early = 12000, late = 84000, pulseLength = 600;
+    constexpr std::int64_t first = 181, second = 182;
+    std::string error;
+    auto doc = ProjectDocument::open(directory / "focus-one-bar.adi", true, device::withBuiltinDevices(), error);
+    check(doc != nullptr, "one-bar Focus opens its own project fixture");
+    if (!doc) return;
+    doc->prepare(rate, chunk);
+    auto root = std::make_unique<AdiRootComponent>(doc->view(), doc->ops(), doc->mailbox(), commands,
+                                                   doc->views(), doc->sessionState(), "focus-one-bar");
+    root->afterEdit = [&] { doc->synchronise(); };
+    const auto addTrack = [&](std::int64_t id) {
+        return root->submitEdit("track.create", {{"id", id}, {"kind", "audio"}, {"name", "One-bar pulse"}},
+                                "Create Scope channel");
+    };
+    const bool created = addTrack(first) && addTrack(second);
+    check(created, "one-bar Scope selects two authored audio tracks");
+    if (!created) return;
+
+    std::array<int, 2> opens{};
+    auto a = std::make_shared<engine::ScopeTap>(rate, .25);
+    auto b = std::make_shared<engine::ScopeTap>(rate, .25);
+    auto broker = std::make_shared<SharedAnalysis>(
+        [&](engine::ScopeSource source, double) -> std::shared_ptr<const engine::ScopeTap> {
+            if (source.point != engine::ScopePoint::PostFader || source.device != 0) return {};
+            if (source.track == first) { ++opens[0]; return a; }
+            if (source.track == second) { ++opens[1]; return b; }
+            return {};
+        }, [](engine::ScopeSource) {}, SharedAnalysis::Mode::Manual);
+    root->sharedAnalysis = broker;
+
+    // Only the actual Focus component is shown. The root supplies the project
+    // and transport without creating Info, Together or dock demand.
+    UiPeerRoot peer;
+    MixFocus focus(*root);
+    peer.setSize(940, 460); peer.setVisible(true); peer.addToDesktop(0);
+    peer.addAndMakeVisible(focus); focus.setBounds(peer.getLocalBounds());
+    focus.setMembers({first, second});
+    focus.scope.setToggleState(true, juce::dontSendNotification);
+    engine::Transport driver;
+    driver.play(true);
+    const auto frame = [&] {
+        doc->mailbox().publish(driver);
+        root->frame();
+        focus.frame(SnapshotReader(root->current()));
+    };
+    frame();
+    const SnapshotReader initial(root->current());
+    const auto &meters = initial.meters();
+    check(root->playing() && root->bpm() == 120. && doc->mailbox().sampleRate() == rate &&
+              (meters.empty() || (meters[0].numerator == 4 && meters[0].denominator == 4)) &&
+              a->capacity() == 12000 && b->capacity() == 12000 && broker->stats().taps == 2,
+          "one-bar Scope runs at 48 kHz, 120 BPM and 4/4 on two quarter-second rings");
+
+    const auto writeUntil = [&](std::int64_t target) {
+        std::array<float, chunk> pcmA{}, pcmB{};
+        while (driver.position() < target) {
+            const auto from = driver.position();
+            const auto count = static_cast<std::int32_t>(std::min<std::int64_t>(chunk, target - from));
+            for (std::int32_t i = 0; i < count; ++i) {
+                const auto sample = from + i;
+                pcmA[static_cast<std::size_t>(i)] = sample >= early && sample < early + pulseLength ? .75f : 0.f;
+                pcmB[static_cast<std::size_t>(i)] = sample >= late && sample < late + pulseLength ? -.625f : 0.f;
+            }
+            a->write(pcmA.data(), pcmA.data(), count, from, true, driver.revision());
+            b->write(pcmB.data(), pcmB.data(), count, from, true, driver.revision());
+            driver.advance(count);
+            broker->pump(); frame();
+        }
+    };
+    writeUntil(late);
+    check(!MixFocusTestAccess::sumPulseAt(focus, .875f, -.625f),
+          "no late pulse is drawn before that audio arrives");
+    writeUntil(bar - 1);
+    check(!MixFocusTestAccess::scopeInterval(focus, 0, static_cast<std::size_t>(bar), rate),
+          "Scope has no complete bar before its final heard sample");
+    writeUntil(bar);
+    check(a->oldest() > early + pulseLength && b->oldest() > early + pulseLength,
+          "the early pulse has already fallen out of both physical rings");
+    check(MixFocusTestAccess::scopeInterval(focus, 0, static_cast<std::size_t>(bar), rate),
+          "Focus presents the complete two-second musical bar from its original heard position");
+    check(MixFocusTestAccess::sumPulseAt(focus, .125f, .75f) &&
+              MixFocusTestAccess::sumPulseAt(focus, .875f, -.625f),
+          "the visible summed path keeps its early and late pulses at their positions in the same bar");
+    const auto active = broker->stats();
+    check(opens == std::array{1, 1} && active.taps == 2 && active.transforms == 0 && active.spectralPlans == 0,
+          "one-bar Scope keeps the same two physical taps without a spectrum transform or plan");
+    check(active.consumers == 1,
+          "a complete bar replaces the two short previews with one grouped reader");
+    const auto visibleBounds = focus.getBounds();
+    focus.setTopLeftPosition(peer.getWidth(), 0);
+    check(broker->stats().taps == 0 && broker->stats().consumers == 0,
+          "moving the plot fully out of view releases Focus demand before its next frame");
+    focus.setBounds(visibleBounds);
+    focus.frame(initial);
+    check(broker->stats().taps == 2 && !MixFocusTestAccess::aligned(focus),
+          "a restored plot waits for new source data instead of reusing the old bar");
+    peer.setVisible(false);
+    check(broker->stats().taps == 0 && broker->stats().consumers == 0,
+          "hiding the one-bar Scope releases its sources immediately");
+    peer.removeChildComponent(&focus); peer.removeFromDesktop();
+}
 void cleanCompressor(AppCommands &commands, const std::filesystem::path &directory) {
     std::string error;
     auto doc =
@@ -615,9 +1705,9 @@ void cleanCompressor(AppCommands &commands, const std::filesystem::path &directo
           root.mixViewPanel.isVisible(), stack.isVisible(), stack.rows().size(),
           static_cast<int>(stack.model().windowView().channelScope), item.row.valid(),static_cast<int>(item.place),
           stack.getWidth(),stack.getHeight(),root.error().c_str());
-    check(stack.model().windowView().channelScope == stack::ChannelScope::WithTools &&
+    check(stack.model().windowView().channelScope == stack::ChannelScope::AllChannels &&
               item.row.valid() && item.place == stack::ItemPlace::Chain && !stack.rows().empty(),
-          "actual Clean device appears in the default With Tools STACK row");
+          "actual Clean device appears in the default All channels Stack row");
     const auto bounds = stack.getBounds();
     bool fits = true;
     for (int width : {320, 480, 816, 1200}) {
@@ -663,11 +1753,15 @@ void cleanCompressor(AppCommands &commands, const std::filesystem::path &directo
     // Drive the actual folded-dot handler using generated component events,
     // not desktop input. Its coordinates come from the presented model geometry.
     strip.submit = [&](const std::string &op, Payload p) { return doc->deviceAction(op, std::move(p)); };
-    stack.setSize(320, 650);
+    if (!strip.folded(found->id)) strip.fold(found->id);
     stack.model().setAutoZoom(false, 10);
     const auto refresh = [&] {
         doc->tick(10); root.mark(DirtySet::All); root.frame();
-        stack.setSize(320, 650); stack.frameAt(root.reader(), 10000);
+        const auto at = static_cast<stack::TimeMs>(juce::Time::getMillisecondCounterHiRes());
+        // A lens transition may leave the row intersecting the viewport with its top clipped.
+        // Scroll back before synthesising a click at the visible activator position.
+        stack.model().scrollTo(0, at);
+        stack.frameAt(root.reader(), at);
     };
     const auto clickDot = [&](std::int64_t id) {
         std::optional<stack::ItemGeo> target;
@@ -679,7 +1773,9 @@ void cleanCompressor(AppCommands &commands, const std::filesystem::path &directo
         if (!target) return false;
         const auto at = stack.listArea().getPosition().toFloat() +
             juce::Point<float>{static_cast<float>(target->x + target->width / 2),
-                               static_cast<float>(target->top + 8)};
+                               static_cast<float>(target->top + look::border) +
+                                   look::radiusSmall + static_cast<float>(look::gap) * .5f};
+        if (!stack.listArea().contains(at.roundToInt())) return false;
         const auto now = juce::Time::getCurrentTime();
         const juce::MouseEvent event{juce::Desktop::getInstance().getMainMouseSource(), at,
             juce::ModifierKeys::leftButtonModifier, 1.f, 0.f, 0.f, 0.f, 0.f,
@@ -772,8 +1868,14 @@ int main() {
     settings::AppSettings settings(appdata::App::Daw, temporary.path() / "settings.json");
     AppCommands commands(settings);
     callbackKeys(commands, temporary.path());
+    callbackAnalyzerRateChange(temporary.path());
     functions(commands, temporary.path());
+    processingIssuePresentation(commands, temporary.path());
     parameterPages(commands, temporary.path());
+    stackEqSpectrum(commands, temporary.path());
+    stackLimiterReduction(commands, temporary.path());
+    focusWorkspace(commands, temporary.path());
+    focusOneBarScope(commands, temporary.path());
     cleanCompressor(commands, temporary.path());
     keyMenus(commands, temporary.path());
     std::printf("%d checks, %d failures (software-peer components)\n", checks, failures);

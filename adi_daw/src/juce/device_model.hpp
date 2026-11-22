@@ -34,7 +34,9 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace adi::gesture::detail { class ProducerFence; class StateProducerFence; }
@@ -210,6 +212,13 @@ public:
     /// audio through and holds its bytes.
     [[nodiscard]] virtual bool loaded() const noexcept = 0;
 
+    /// A nonfatal processing/configuration issue for presentation on Main only.
+    /// Empty during ordinary pending work. Read already-published status without
+    /// SDK calls or side effects; the view stays valid until the next Main-side
+    /// mutation or destruction. Consumers copy it into their publication. This
+    /// does not change loaded(), parameter availability or audio behavior.
+    [[nodiscard]] virtual std::string_view processingIssue() const noexcept { return {}; }
+
     // Names commented out, matching `engine::Node::prepare`: MSVC /W4 raises
     // C4100 on an unreferenced parameter in a defaulted body, and the
     // -Werror build turns that into a hard failure that the default local
@@ -230,6 +239,10 @@ public:
     /// Audio thread. Same contract as `engine::Node::process`.
     virtual void process(const engine::NodeIo& io) noexcept = 0;
     [[nodiscard]] virtual bool wantsDeviceTransport() const noexcept { return false; }
+    [[nodiscard]] virtual bool needsBypassTransition(std::int32_t /*configuredLatency*/) noexcept { return false; }
+    virtual void processBypassTransition(const engine::NodeIo&) noexcept {}
+    /// Actual graph suspension transition, on the same serialized audio owner.
+    virtual void didSuspend() noexcept {}
 
     /// `engine::Node::processesDouble`, for a device (ADR-0207 d2). False by
     /// default: the device is handed float in every graph, converted either
@@ -413,6 +426,13 @@ public:
     /// Message thread. The op log is the source of truth (ADR-0038); this
     /// pushes a value the log has already recorded into the live plugin.
     virtual bool setParam(const std::string& paramId, const ParamValue& v);
+
+    using ParameterPair = std::array<std::pair<std::string, double>, 2>;
+    /// Owner thread, normalized values. A supported pair is accepted together
+    /// or refused with neither value changed. Single-parameter devices keep
+    /// their existing editing path.
+    [[nodiscard]] virtual bool supportsParameterPair(const ParameterPair&) const noexcept { return false; }
+    virtual bool setParameterPair(const ParameterPair&) { return false; }
     /// Message thread: an accepted control is still waiting for processing.
     /// State recall must supersede it even if the serialized chunk is equal.
     [[nodiscard]] virtual bool hasPendingParamChanges() const noexcept { return false; }
@@ -588,6 +608,9 @@ public:
 
     [[nodiscard]] bool hasBypass() const noexcept override { return true; }
     void processActive(const engine::NodeIo& io) noexcept override;
+    [[nodiscard]] bool needsBypassTransition(std::int32_t configuredLatency) noexcept override;
+    void processBypassTransition(const engine::NodeIo& io) noexcept override;
+    void didSuspend() noexcept override;
 
     [[nodiscard]] std::int64_t tailSamples() const noexcept override;
     [[nodiscard]] std::int32_t latencySamples() const noexcept override;

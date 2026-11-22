@@ -20,7 +20,7 @@ class AnalysisComparison final {
     };
     struct Metadata {
         Endpoint endpoint;
-        std::uint64_t revision = 0, sourceEpoch = 0, generation = 0, windowSerial = 0;
+        std::uint64_t revision = 0, sourceEpoch = 0, generation = 0, windowSerial = 0, transportRevision = 0;
         std::int64_t firstStamp = 0, firstSequence = 0;
         double sampleRate = 0, coherentGain = 0;
         std::int32_t hopSize = 0;

@@ -5,13 +5,16 @@
 #include "adi/mix/eq/Backend.hpp"
 #include "adi/mix/limiter/DspEngine.h"
 #include "adi/mix/limiter/ControlMapping.h"
+#include "adi/mix/limiter/ReductionMailbox.h"
 #include "adi/ops.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
+#include <vector>
 
 namespace adi::device {
 namespace {
@@ -159,14 +162,24 @@ public:
         return prepared_&&(stagePending_.load(std::memory_order_acquire)||
             (enabled_.load(std::memory_order_acquire)&&transition_.load(std::memory_order_acquire)!=0));
     }
+    bool needsBypassTransition(std::int32_t configuredTotal) const noexcept override {
+        if (!prepared_ || configuredTotal != advertisedLatency()) return false;
+        if (stagePending_.load(std::memory_order_acquire)) return true;
+        const auto token = transition_.load(std::memory_order_acquire);
+        return enabled_.load(std::memory_order_acquire) && token != 0 &&
+            engine_.latencySamples() != static_cast<std::int32_t>(token & 0xffffffffU);
+    }
     void process(float* const* main,const float* const* key,std::int32_t frames,const Settings& s,
-                 std::uint64_t serial,std::int32_t configured) noexcept override {
+                 std::uint64_t serial,std::int32_t configured,l::BlockReduction* reduction) noexcept override {
         auto enabled=enabled_.load(std::memory_order_acquire);
         if(enabled!=s.limiterEnabled&&configured==(s.limiterEnabled?engine_.latencySamples():0)) {
             enabled=s.limiterEnabled;enabled_.store(enabled,std::memory_order_release);
             stagePending_.store(false,std::memory_order_release);lastBlock_=0;
         }
-        if(!enabled) {engine_.requestConfiguration(s.limiter);return;}
+        if(!enabled) {
+            if(reduction)*reduction={0.f,frames>0};
+            engine_.requestConfiguration(s.limiter);return;
+        }
         observeTransition();
         if(serial==0||serial!=lastBlock_) {
             const auto pending=engine_.pendingLatencyChange();
@@ -175,7 +188,7 @@ public:
             const auto token=transition_.load(std::memory_order_acquire);
             if(token&&static_cast<std::int32_t>(token&0xffffffffU)!=configured)block_.latencyAcknowledged=0;
         }
-        engine_.process(main,key,frames,s.limiter,block_);
+        engine_.process(main,key,frames,s.limiter,block_,reduction);
     }
 private:
     void observeTransition() noexcept {
@@ -224,17 +237,26 @@ public:
                 d.choiceLabels.push_back(paramText(d.id,static_cast<double>(step)/(d.stepCount-1)));
         }
     }
+    ~LimiterDevice() override { reduction_->setPrepared(false); }
     const DeviceIdentity& identity() const noexcept override {return identity_;}
     bool loaded() const noexcept override {return !unavailable_.load(std::memory_order_acquire);}
+    [[nodiscard]] const std::shared_ptr<l::ReductionMailbox>& reductionSource() const noexcept { return reduction_; }
     void prepare(double rate,std::int32_t maximum) override {
         const ReactivationGate::Hold hold(gate_);
+        reduction_->setPrepared(false);
         refreshValues();
-        if(!loaded()){prepared_=false;publishLatency(0);return;}
+        prepared_ = false;
+        if (!loaded()) { publishLatency(0); return; }
+        if (maximum <= 0) throw std::invalid_argument("Invalid Limiter block capacity");
+        for (int channel = 0; channel < channels_; ++channel)
+            bypassScratch_[static_cast<std::size_t>(channel)].resize(static_cast<std::size_t>(maximum));
         backend_->prepare(rate,maximum,channels_,settings(cached_,offline_));
+        reduction_->setPrepared(!offline_);
         prepared_=everPrepared_=true;publishLatency(backend_->advertisedLatency());
     }
     void release() override {
         const ReactivationGate::Hold hold(gate_);
+        reduction_->setPrepared(false);
         prepared_=false;backend_->release();
     }
     std::int32_t latencySamples() const noexcept override {return latency_.load(std::memory_order_acquire);}
@@ -246,9 +268,21 @@ public:
         backend_->pumpMainThread(settings(readValues(),offline_));publishLatency(backend_->advertisedLatency());
     }
     std::int32_t sidechainInputChannels() const noexcept override {return channels_;}
-    void process(const engine::NodeIo& io) noexcept override {
+    void process(const engine::NodeIo& io) noexcept override { processAudio(io, false); }
+    bool needsBypassTransition(std::int32_t configuredLatency) noexcept override {
         const ReactivationGate::Pass pass(gate_);
-        if(!pass||!prepared_||!loaded()||!io.out||io.channels!=channels_||io.frames<=0) {passThrough(io);return;}
+        return pass && prepared_ && loaded() && backend_->needsBypassTransition(configuredLatency);
+    }
+    void processBypassTransition(const engine::NodeIo& io) noexcept override { processAudio(io, true); }
+
+private:
+    void processAudio(const engine::NodeIo& io, bool bypassTransition) noexcept {
+        const ReactivationGate::Pass pass(gate_);
+        if (!pass || !prepared_ || !loaded() || io.channels != channels_ || io.frames <= 0 ||
+            (bypassTransition ? static_cast<std::size_t>(io.frames) > bypassScratch_[0].size() : !io.out)) {
+            if (!bypassTransition) passThrough(io);
+            return;
+        }
         refreshValues();
         // The graph splits at parameter boundaries. Its numeric ids are this
         // adapter's stable decimal ids; never forward them to another device.
@@ -264,17 +298,41 @@ public:
         std::array<float*,2> audio{};
         std::array<const float*,2> key{};
         for(int c=0;c<channels_;++c) {
-            audio[static_cast<std::size_t>(c)]=io.out[c]+io.blockOffset;
-            const auto* source=io.in&&io.in[c]?io.in[c]+io.blockOffset:nullptr;
-            if(source!=audio[static_cast<std::size_t>(c)]) {
-                if(source)std::copy_n(source,io.frames,audio[static_cast<std::size_t>(c)]);
-                else std::fill_n(audio[static_cast<std::size_t>(c)],io.frames,0.0f);
+            const auto index = static_cast<std::size_t>(c);
+            audio[index] = bypassTransition ? bypassScratch_[index].data() : io.out[c] + io.blockOffset;
+            const auto* source = io.in && io.in[c] ? io.in[c] + io.blockOffset : nullptr;
+            if (source != audio[index]) {
+                if (source) std::copy_n(source, io.frames, audio[index]);
+                else std::fill_n(audio[index], io.frames, 0.0f);
             }
-            key[static_cast<std::size_t>(c)]=io.sidechain&&io.sidechain[c]?io.sidechain[c]+io.blockOffset:nullptr;
+            key[index] = io.sidechain && io.sidechain[c] ? io.sidechain[c] + io.blockOffset : nullptr;
         }
-        backend_->process(audio.data(),io.sidechain?key.data():nullptr,io.frames,settings(cached_,io.exporting),
-                          io.renderBlock,io.configuredLatency);
+        const auto render = [&](l::BlockReduction* measured) {
+            backend_->process(audio.data(), io.sidechain ? key.data() : nullptr, io.frames,
+                              settings(cached_, io.exporting), io.renderBlock, io.configuredLatency, measured);
+        };
+        const auto observation = bypassTransition ? std::uint64_t{} : reduction_->observationEpoch();
+        if (observation == 0 || io.exporting) {
+            render(nullptr);
+            return;
+        }
+        l::ReductionFrame frame;
+        frame.renderBlock = io.renderBlock;
+        frame.observedFrames = static_cast<std::uint32_t>(io.frames);
+        if (io.transport) {
+            frame.transportRevision = io.transport->transportRevision;
+            frame.advancing = io.transport->playing;
+            frame.firstTimelineSample = io.transport->timelineSample;
+            if (frame.advancing) {
+                const auto offset = std::max(0, io.blockOffset);
+                frame.firstTimelineSample =
+                    std::min(frame.firstTimelineSample, std::numeric_limits<std::int64_t>::max() - offset) + offset;
+            }
+        }
+        render(&frame.reduction);
+        reduction_->publishSegment(observation, frame);
     }
+public:
     std::int32_t paramCount() const noexcept override {return full_?67:21;}
     const ParamDescriptor* paramAt(std::int32_t i) const noexcept override {
         if(i<0||i>=paramCount())return nullptr;
@@ -356,6 +414,7 @@ public:
                 if(continuation.size()!=2||continuation[0]!=1||!c::validContinuationWord(continuation[1]))return false;
                 const ReactivationGate::Hold hold(gate_);
                 unavailableState_=bytes;identity_.name=baseName_+" (Clip processing unavailable)";
+                reduction_->setPrepared(false);
                 prepared_=false;
                 if(!unavailable_.exchange(true,std::memory_order_acq_rel))
                     restartEpoch_.fetch_add(1,std::memory_order_release);
@@ -412,9 +471,15 @@ private:
     std::atomic<std::uint64_t> stateVersion_{0},latencyEpoch_{0},restartEpoch_{0};
     std::atomic<std::int32_t> latency_{0}; bool prepared_=false,everPrepared_=false;
     std::atomic<bool> unavailable_{false};std::vector<std::uint8_t> unavailableState_;
+    std::array<std::vector<float>, 2> bypassScratch_;
     Payload extra_=Payload::object();
+    const std::shared_ptr<l::ReductionMailbox> reduction_ = std::make_shared<l::ReductionMailbox>();
 };
 } // namespace
+std::shared_ptr<mix::limiter::ReductionMailbox> limiterReductionSource(DeviceInstance& instance) noexcept {
+    if (const auto* limiter = dynamic_cast<const LimiterDevice*>(&instance)) return limiter->reductionSource();
+    return {};
+}
 mix::Availability mixFunctionAvailability(mix::Function kind) {
     if(kind==mix::Function::Limiter || kind==mix::Function::Eq || kind==mix::Function::Compressor)return {true,{}};
     return {false,"This processing core is not integrated in this build yet"};
@@ -427,7 +492,7 @@ std::unique_ptr<DeviceInstance> makeMixFunction(const engine::DeviceRequest& req
     try {
         const auto* info=request.ref?mix::functionForReference(request.ref->format,request.ref->uid):nullptr;
         if(!info){error="Unknown native mix function";return {};}
-        if(info->kind==mix::Function::Eq)return makeMixEqFunction(request,error,mix::eq::makeBackend());
+        if(info->kind==mix::Function::Eq)return makeMixEqFunction(request,error,mix::eq::makeBackend(request.exporting));
         if(info->kind==mix::Function::Compressor)return makeMixCompressorFunction(request,error);
         const auto available=mixFunctionAvailability(info->kind);
         if(!available.ready){error=available.reason;return {};}

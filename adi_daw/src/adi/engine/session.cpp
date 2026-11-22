@@ -2438,6 +2438,7 @@ void Session::release() {
     // rather than finding ADR-0090 d5's guard satisfied on a released
     // instance. `live_` false is what defeats the no-op path above.
     live_ = false;
+    cueMonitor_.release();
     mainLoudness_.requestReset();
     playbackRunning_.store(false, std::memory_order_release);
     if (Graph* g = graph_.currentGraph()) g->release();

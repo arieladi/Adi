@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/engine/cue_monitor.hpp"
+#include "adi/dsp/stereo_envelope_meter.hpp"
 #include "adi/engine/publisher.hpp"
+#include "adi/mix/filters/FlushDenormals.hpp"
 #include <algorithm>
 #include <cmath>
 #include <map>
@@ -75,10 +77,23 @@ struct Feed {
 bool audioTrack(const rows::Track& t) {
     return t.kind=="audio" || t.kind=="midi" || t.kind=="instrument" || t.kind=="group" || t.kind=="return";
 }
+using ListenFilter = dsp::StereoMeterWeighting;
+using ListenHistory = std::array<ListenFilter::History, 2>;
 struct Buffers {
     int frames,channels;
     std::vector<double> cue,reference,scratch;
-    Buffers(int n,int ch):frames(n),channels(ch),cue(static_cast<std::size_t>(2)*static_cast<std::size_t>(n)),reference(cue.size()),scratch(cue.size()){}
+    double sampleRate;
+    std::array<ListenFilter, 4> weighting;
+    ListenHistory narrowHistory{}, wideHistory{}; // audio only
+    MainAudition activeFilter = MainAudition::Stereo;
+    Buffers(int n,int ch,double rate)
+        :frames(n),channels(ch),cue(static_cast<std::size_t>(2)*static_cast<std::size_t>(n)),
+         reference(cue.size()),scratch(cue.size()),sampleRate(rate) {
+        using Weight = ListenFilter::Weighting;
+        weighting[1].prepare(rate, Weight::A);
+        weighting[2].prepare(rate, Weight::C);
+        weighting[3].prepare(rate, Weight::K);
+    }
 };
 struct Scene final:Sequenced {
     CueSettings settings;
@@ -94,6 +109,7 @@ struct Scene final:Sequenced {
 
 }
 struct CueMonitor::Impl {
+    std::atomic<MainAudition> audition{MainAudition::Stereo};
     std::map<std::int64_t,std::unique_ptr<Feed>> feeds;
     std::set<std::int64_t> present,selected;
     std::shared_ptr<Buffers> buffers;
@@ -147,8 +163,9 @@ bool CueMonitor::publish(const CueSettings& settings,double rate,int maxFrames,i
     try {
     auto scene=std::make_unique<Scene>();scene->settings=settings;scene->enabled=enabled;
     scene->ramp=std::max(1,static_cast<int>(std::lround(rate*0.005)));scene->gain=faderGain(settings.volumeDb);
-    if(!impl_->buffers || impl_->buffers->frames!=maxFrames || impl_->buffers->channels!=channels)
-        impl_->buffers=std::make_shared<Buffers>(maxFrames,channels);
+    if(!impl_->buffers || impl_->buffers->frames!=maxFrames || impl_->buffers->channels!=channels ||
+       impl_->buffers->sampleRate!=rate)
+        impl_->buffers=std::make_shared<Buffers>(maxFrames,channels,rate);
     scene->buffers=impl_->buffers;
     if(enabled) {
         for(auto id:impl_->present){auto& feed=*impl_->feeds.at(id);scene->voices.push_back({&feed.aligned,&feed.cueMix,impl_->selected.contains(id)});}
@@ -192,15 +209,97 @@ std::shared_ptr<const CueControlBatch> CueMonitor::prepareControls(const rows::M
     return result;
 }
 void CueMonitor::collect(){impl_->scenes.collect();for(auto& [id,feed]:impl_->feeds){(void)id;feed->gain.collect();}}
+void CueMonitor::release() noexcept {
+    // A same-format restart gets fresh monitor history. Published scenes keep
+    // their own buffers alive through retirement.
+    impl_->buffers.reset();
+}
+void CueMonitor::setMainAudition(MainAudition mode) noexcept {
+    impl_->audition.store(mode, std::memory_order_relaxed);
+}
+namespace {
+template<class T> void auditionStereo(T* const* output, int frames, MainAudition mode) noexcept {
+    if (!output || !output[0] || !output[1] || output[0] == output[1]) return;
+    auto* left = output[0];
+    auto* right = output[1];
+    switch (mode) {
+    case MainAudition::Left:
+        std::copy_n(left, frames, right);
+        break;
+    case MainAudition::Right:
+        std::copy_n(right, frames, left);
+        break;
+    case MainAudition::Mid:
+    case MainAudition::Side: {
+        const T sign = mode == MainAudition::Mid ? T(0.5) : T(-0.5);
+        for (int i = 0; i < frames; ++i) {
+            const auto sample = left[i] * T(0.5) + right[i] * sign;
+            left[i] = right[i] = sample;
+        }
+        break;
+    }
+    default:
+        break;
+    }
+}
+template<class T>
+void filterStereo(T* const* output, int frames, const ListenFilter& filter, ListenHistory& history) noexcept {
+    if (!output || !output[0] || !output[1] || output[0] == output[1]) return;
+    constexpr double listenGain = 0.45;
+    for (std::size_t lane = 0; lane < history.size(); ++lane) {
+        auto* samples = output[lane];
+        if (filter.flat()) {
+            for (int i = 0; i < frames; ++i)
+                samples[i] = static_cast<T>(samples[i] * listenGain);
+        } else {
+            auto& state = history[lane];
+            for (int i = 0; i < frames; ++i) {
+                const double sample = samples[i];
+                const auto filtered = filter.process(sample, state);
+                if (std::isfinite(filtered)) {
+                    samples[i] = static_cast<T>(filtered * listenGain);
+                } else {
+                    samples[i] = T{};
+                    state = {};
+                }
+            }
+        }
+    }
+}
+}
 void CueMonitor::process(const GraphHost& graph,const AudioIo& io,Click click) noexcept {
     SnapshotPublisher<Scene>::AudioRead scene(impl_->scenes);
     if(!scene.valid() || !scene->enabled || io.frames<=0)return;
+    // Graph outputs and Main measurements have already been copied. Only the
+    // physical monitor pair changes here, before adding cue/reference/click.
+    const auto audition = impl_->audition.load(std::memory_order_relaxed);
+    auto& buffers=*scene->buffers;
+    if (audition != MainAudition::Stereo && !io.exporting && io.numOut >= 2 && buffers.channels >= 2) {
+        if (isFilterListen(audition)) {
+            if (buffers.activeFilter != audition) {
+                buffers.narrowHistory = {};
+                buffers.wideHistory = {};
+                buffers.activeFilter = audition;
+            }
+            const auto index = static_cast<std::size_t>(static_cast<int>(audition) - static_cast<int>(MainAudition::FilterFlat));
+            const auto& filter = buffers.weighting[index];
+            [[maybe_unused]] mix::filters::FlushDenormals flush;
+            filterStereo(io.out, io.frames, filter, buffers.narrowHistory);
+            filterStereo(io.out64, io.frames, filter, buffers.wideHistory);
+        } else {
+            buffers.activeFilter = MainAudition::Stereo;
+            auditionStereo(io.out, io.frames, audition);
+            auditionStereo(io.out64, io.frames, audition);
+        }
+    } else if (!io.exporting && buffers.activeFilter != MainAudition::Stereo) {
+        buffers.activeFilter = MainAudition::Stereo;
+    }
     const bool cueActive=std::any_of(scene->voices.begin(),scene->voices.end(),[](const Scene::Voice& voice){return voice.selected || voice.gate->current!=0;});
     if(!cueActive && !scene->settings.referenceOn && impl_->referenceMix.current==0 && !click.render) {
         impl_->volume={scene->gain,scene->gain,0,0};
         return;
     }
-    auto& buffers=*scene->buffers;if(io.frames>buffers.frames)return;
+    if(io.frames>buffers.frames)return;
     const auto frames=static_cast<std::size_t>(io.frames),stride=static_cast<std::size_t>(buffers.frames);
     double* cue[]{buffers.cue.data(),buffers.cue.data()+stride};
     double* reference[]{buffers.reference.data(),buffers.reference.data()+stride};

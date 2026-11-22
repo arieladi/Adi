@@ -6,8 +6,11 @@
 #include <atomic>
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <set>
+#include <span>
 #include <string>
+#include <vector>
 namespace adi {
 class Store;
 }
@@ -67,6 +70,9 @@ struct WindowState {
     // Where it opens: docked in the centre, or in a window of its own onto any display (ADR-0209
     // d11, ADR-0180 d3); the window's place is kept as every floating window's.
     bool mixViewDetached = false;
+    // STACK search and resting row size belong to this window. Pins belong to the project.
+    std::string mixStackSearch;
+    std::optional<int> mixStackBaseHeight;
     // Optional right-side shared analyzer presentation; never audio parameters.
     bool mixAnalyzerDock = false;
     int mixAnalyzerWidth = 300, mixAnalyzerSource = 0, mixAnalyzerPoint = 0, mixAnalyzerChannel = 0;
@@ -119,9 +125,16 @@ class ViewStateStore {
     bool saveFloating(const std::string& key,const FloatingState&,std::string& error);
     WindowState load(const std::string &window, DesktopDefaults defaults = {}) const;
     bool save(const std::string &window, const WindowState &, std::string &error);
+    struct StackPins {
+        std::uint64_t revision = 1;
+        std::vector<std::int64_t> ids;
+    };
+    const StackPins &stackPins() const;
+    bool saveStackPins(std::span<const std::int64_t> before, std::span<const std::int64_t> after, std::string &error);
 
   private:
     Store &store_;
+    mutable std::optional<StackPins> stackPins_;
 };
 class DirtySet {
   public:

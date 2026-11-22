@@ -723,6 +723,46 @@ void causalFirGenerations() {
     check(core.pendingLatencyChange().token==offer.token,"five-slot pressure cannot overwrite the retained offer");
     check(consume(p-1)&&core.statistics().firDeadlineMisses==0,"retained source generations drain without missing a deadline");
 }
+void firCallbackWorkDistribution() {
+    constexpr std::size_t block = 512;
+    for (const auto nodes : {std::size_t{1}, f::kNodes}) {
+        auto settings = firSettings(1.3);
+        for (std::size_t i = 0; i < settings.nodes.size(); ++i)
+            settings.nodes[i].enabled = i < nodes;
+        f::Core core;
+        core.prepare({192000., static_cast<std::int32_t>(block), 2}, settings);
+        const auto partition = static_cast<std::size_t>(core.latencySamples() / 3);
+        std::array<double, block> left{}, right{}, keyLeft{}, keyRight{};
+        std::array<double *, 2> main{left.data(), right.data()};
+        std::array<const double *, 2> key{keyLeft.data(), keyRight.data()};
+        keyLeft.fill(.2);
+        keyRight.fill(-.15);
+        bool accepted = true;
+        std::uint64_t least = std::numeric_limits<std::uint64_t>::max(), most = 0;
+        for (std::size_t first = 0; first < 3 * partition; first += block) {
+            left.fill(.07);
+            right.fill(-.11);
+            const auto before = core.statistics();
+            {
+                AudioScope scope;
+                accepted = core.process(main.data(), key.data(), 2, static_cast<std::int32_t>(block), settings,
+                    core.beginBlock(0, core.latencySamples(), settings)) && accepted;
+            }
+            const auto after = core.statistics();
+            if (first >= partition) {
+                const auto work = after.firWorkUnits - before.firWorkUnits;
+                least = std::min(least, work);
+                most = std::max(most, work);
+            }
+        }
+        const auto final = core.statistics();
+        check(accepted && final.firJobsCompleted == 2 && final.firJobsStarted == 3 && final.firDeadlineMisses == 0,
+              "192 kHz stereo main and key meet both partition deadlines at 512 frames");
+        check(least > 0 && most - least <= 1,
+              nodes == 1 ? "one enabled node spreads counted FIR work through the entire callback interval" :
+                           "ten enabled nodes bound every callback to the same counted FIR work");
+    }
+}
 void firCallbackPartitions() {
     for(const double rate:{44100.,96000.,192000.}) {
         auto settings=firSettings(1.3);settings.nodes[1]=settings.nodes[0];settings.nodes[1].enabled=true;
@@ -1060,6 +1100,7 @@ int main(){
         firSampleBudget();
         causalFirGenerations();
         firCallbackPartitions();
+        firCallbackWorkDistribution();
         fftChecks();
         mailboxConcurrency();
         defaultsAndReadiness();

@@ -3,6 +3,8 @@
 // No native window, desktop input, audio device or reference plug-in is used.
 #include "../src/juce/ui_shell.hpp"
 #include "adi/ui/project_document.hpp"
+#include "juce/builtin_host.hpp"
+#include <cmath>
 #include "temp_directory.hpp"
 #include "ui_fake_peer.hpp"
 #include <algorithm>
@@ -77,6 +79,101 @@ DevicePanelData combinedData(std::int64_t id) {
     return data;
 }
 struct Event { std::int64_t device; std::string parameter; engine::ParamEventKind kind; double value; std::uint64_t instance; };
+void plottedGestures(AppCommands &commands, const std::filesystem::path &directory) {
+    std::string error;
+    auto doc = ProjectDocument::open(directory / "curve-handles.adi", true, device::withBuiltinDevices(), error);
+    check(doc && doc->addMixFunction(mix::Function::Eq, 2), "graph fixture inserts real native EQ");
+    if (!doc) return;
+    doc->tick(0);
+    const auto initial = doc->parameterFeed().current();
+    const auto found = std::find_if(initial->begin(), initial->end(), [](const auto &p) { return p.uid == "org.adidaw.mix.eq"; });
+    if (found == initial->end()) { check(false, "graph fixture publishes real device"); return; }
+    const auto id = found->id;
+    doc->setParameterDemand(doc.get(), {id});
+    using K = engine::ParamEventKind;
+    const auto apply = [&](const std::string &parameter, K kind, double v) {
+        return doc->parameterGestureExpected(id, parameter, kind, v, found->runtime, found->instance);
+    };
+    check(apply("34", K::Begin, 0) && apply("34", K::Value, 1) && apply("34", K::End, 1), "Band 2 enabled");
+    doc->tick(1);
+    const auto live = doc->parameterFeed().current();
+    const auto shown = std::find_if(live->begin(), live->end(), [id](const auto &p) { return p.id == id; });
+    if (shown == live->end()) { check(false, "enabled band published"); return; }
+    AdiRootComponent root(doc->view(), doc->ops(), doc->mailbox(), commands, doc->views(), doc->sessionState(), "nodes");
+    DevicePanelView card(root.devices, *shown, true);
+    bool valid = true;
+    card.targetValid = [&] { return valid; };
+    card.parameterGesture = apply;
+    card.setSize(480, 246);
+    const auto graph = card.eqPreviewBounds();
+    const float x = graph.getX() + graph.getWidth() * std::log(100.f) / std::log(3000.f);
+    const juce::Point<float> point{x, graph.getCentreY()};
+    check(card.title.isTransformed() && graph.getX() > static_cast<float>(card.enabled.getRight()),
+          "the turned title and activator share a rail beside the EQ graph");
+    juce::Image grid(juce::Image::RGB, card.getWidth(), card.getHeight(), true,
+                     juce::SoftwareImageType{});
+    juce::Graphics graphics(grid);
+    card.paint(graphics);
+    const int decadeX = juce::roundToInt(x);
+    check(grid.getPixelAt(decadeX, 30) != grid.getPixelAt(decadeX + 3, 30),
+          "the Stack EQ paints frequency decades at the same log positions as its nodes");
+    check(card.pressEqGraph(point) && card.selectedFunctionBand() == 1, "plotted handle selects its actual band");
+    const auto gain = point.translated(15.f, 6.f), frequency = point.translated(15.f, -6.f);
+    check(card.pressEqGraph(gain) && card.dragEqHandle(gain.translated(20.f, -4.f)) &&
+          card.dragEqHandle(gain.translated(30.f, -12.f)), "dB handle accepts a continuous drag");
+    card.releaseEqHandle();
+    auto real = [&](const std::string &p) { return doc->session().instanceFor(id)->getParam(p).real; };
+    check(std::abs(real("39") - 12.f * 36.f / graph.getHeight()) < .001 && std::abs(real("38") - 1000.) < .001 &&
+          std::abs(real("14")) < .001, "gain handle edits only its band and axis");
+    const auto undoGain = doc->ops().undo();
+    const bool gainSynced = doc->synchronise();
+    doc->tick(2);
+    check(undoGain.ok && gainSynced && std::abs(real("39")) < .001 && real("34") == 2,
+          "one undo restores the whole dB drag and keeps band enabled");
+    check(card.pressEqGraph(frequency) && card.dragEqHandle(frequency.translated(10.f, 10.f)) &&
+          card.dragEqHandle(frequency.translated(25.f, 20.f)), "Hz handle accepts a continuous drag");
+    card.releaseEqHandle();
+    check(std::abs(real("38") - 1000. * std::pow(3000., 25. / graph.getWidth())) < .01 && std::abs(real("39")) < .001,
+          "frequency drag follows the display log scale and authored parameter mapping");
+    const auto undoFrequency = doc->ops().undo();
+    const bool frequencySynced = doc->synchronise();
+    doc->tick(3);
+    check(undoFrequency.ok && frequencySynced && std::abs(real("38") - 1000.) < .01,
+          "one undo restores the frequency drag");
+    check(card.pressEqGraph(gain), "a new gesture acquires the original target");
+    valid = false;
+    check(!card.dragEqHandle(gain.translated(0.f,-10.f)) && std::abs(real("39")) < .001,
+          "invalidation rejects further movement");
+    card.releaseEqHandle(); valid = true;
+    card.setSize(480, 52);
+    check(!card.pressEqGraph({x, 30.f}), "summary thumbnail never acquires a node gesture");
+
+    card.setSize(480, 246);
+    std::shared_ptr<const gesture::OwnerToken> pairOwner;
+    card.parameterPairGesture = [&](const engine::ParameterPair &values, engine::ParameterPairEvent event) {
+        return doc->parameterPairGestureExpected(id, values, event, found->runtime, found->instance, pairOwner);
+    };
+    check(card.pressEqGraph(point) && pairOwner &&
+              card.dragEqHandle(point.translated(20.f, -12.f)),
+          "dragging the band itself previews Frequency and Gain under one owner");
+    check(std::abs(real("38") - 1000. * std::pow(3000., 20. / graph.getWidth())) < .01 &&
+              std::abs(real("39") - 12.f * 36.f / graph.getHeight()) < .001 && std::abs(real("14")) < .001,
+          "a diagonal drag edits both coordinates of the selected band only");
+    card.releaseEqHandle();
+    const bool committed = !pairOwner && doc->synchronise();
+    const auto undo = doc->ops().undo();
+    doc->tick(1);
+    check(committed && undo.ok && std::abs(real("38") - 1000.) < .01 && std::abs(real("39")) < .001,
+          "one Undo restores both coordinates of the diagonal gesture");
+
+    check(card.pressEqGraph(point) && card.dragEqHandle(point.translated(6.f, 6.f)),
+          "the next direct drag acquires a fresh paired owner");
+    valid = false;
+    check(!card.dragEqHandle(point.translated(10.f, 9.f)) && !pairOwner &&
+              doc->synchronise() && std::abs(real("38") - 1000.) < .01 && std::abs(real("39")) < .001,
+          "invalidating a held card cancels the paired preview and restores both values");
+    valid = true;
+}
 void exercise(AppCommands &commands, const std::filesystem::path &directory) {
     std::string error;
     auto document = ProjectDocument::open(directory / "eq-pages.adi", true, {}, error);
@@ -394,6 +491,7 @@ int main() {
     settings::AppSettings settings(appdata::App::Daw, temporary.path() / "settings.json");
     AppCommands commands(settings);
     exercise(commands, temporary.path());
+    plottedGestures(commands, temporary.path());
     groupSelections(commands, temporary.path());
     for (int action = 0; action < 3; ++action) destructionDuringSelection(commands, temporary.path(), action);
     destructionDuringFrame(commands, temporary.path(), true);

@@ -305,6 +305,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     void mark(unsigned bits) noexcept { dirty_.mark(bits); }
     const SnapshotReader &reader() const noexcept { return *reader_; }
     bool playing() const noexcept { return playing_; }
+    std::int64_t renderedSamplePosition() const noexcept { return mailbox_.position(); }
     // The Control Bar's MIDI Indicators (Live 12 manual 2.x, the Control Bar's right end): lit while MIDI
     // has come in from an open port within the last moment (SRF-05). The application sets it.
     void setMidiIn(bool on) noexcept {
@@ -316,12 +317,15 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     bool midiIn() const noexcept { return midiIn_; }
     double bpm() const noexcept;
     std::uint64_t generation() const noexcept { return generation_; }
+    std::uint64_t projectViewGeneration() const noexcept { return view_.generation(); }
     unsigned lastDrain() const noexcept { return lastDrain_; }
     const std::string &error() const noexcept { return error_; }
     WindowState &state() noexcept { return state_; }
     bool persist();
+    ViewStateStore &viewStateStore() noexcept { return persistence_; }
     // A message for the Status Bar from outside the root (the application's commands).
     void say(std::string message);
+    void sayStaleAddMenu();
     // What the Status Bar says when there is no message: Live's line for the insert
     // marker or the time selection.
     juce::String selectionText() const;
@@ -466,6 +470,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     };
     std::function<PluginEditorView(std::int64_t device, std::string &error)> pluginEditor;
     FloatingHost *pluginHost = nullptr;
+    bool openPluginWindow(std::int64_t device);
     bool togglePluginWindow(std::int64_t device, bool several);
     bool pluginWindowOpen(std::int64_t device) const;
     static std::string pluginWindowKey(std::int64_t device);
@@ -792,8 +797,8 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
                    bool separate);
     void importNext();
     void finishImport(const std::string &why);
-    StubMixViewProvider mixStub_;
-    const MixViewProvider *mixProvider_ = &mixStub_;
+    MixViewProvider defaultMixProvider_;
+    const MixViewProvider *mixProvider_ = &defaultMixProvider_;
     ReferenceAudition reference_;
     MomentaryLatch latch_;
     TapTempo tap_;

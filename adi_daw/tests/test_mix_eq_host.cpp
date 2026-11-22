@@ -2,15 +2,19 @@
 #include "juce/mix_eq_host.hpp"
 #include "adi/mix/eq/Backend.hpp"
 #include "adi/mix/eq/Core.hpp"
+#include "adi/mix/eq/Preview.hpp"
 #include "adi/ops.hpp"
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <functional>
 #include <limits>
 #include <new>
+#include <thread>
 #include <type_traits>
 
 namespace {
@@ -52,7 +56,11 @@ struct Observe final:mix::EqProcessingBackend {
     void process(double* const* a,const double* const* k,int kc,int n,const q::Settings& s,
                  std::uint64_t b,int p) noexcept override {run(a,k,kc,n,s,b,p);}
     void pumpMainThread(const q::Settings& s) override {seen=s;}
-    int advertisedLatency() const noexcept override {return latency;}
+    std::function<void()> onLatencyRead;
+    int advertisedLatency() const noexcept override {
+        if (onLatencyRead) onLatencyRead();
+        return latency;
+    }
 };
 std::unique_ptr<device::DeviceInstance> make(std::unique_ptr<mix::EqProcessingBackend> backend,int channels=2,
                                             const char* format="internal",const char* uid="org.adidaw.mix.eq") {
@@ -60,8 +68,88 @@ std::unique_ptr<device::DeviceInstance> make(std::unique_ptr<mix::EqProcessingBa
     engine::DeviceRequest rq;rq.ref=&ref;rq.channels=channels;std::string error;
     return device::makeMixEqFunction(rq,error,std::move(backend));
 }
+void pairPublication() {
+    auto probe = std::make_unique<Observe>();
+    auto* observed = probe.get();
+    auto device = make(std::move(probe));
+    if (!device) { check(false, "paired publication fixture loads EQ"); return; }
+    using Pair = device::DeviceInstance::ParameterPair;
+    const Pair low{{{"13", .24}, {"14", .28}}};
+    const Pair high{{{"13", .76}, {"14", .72}}};
+    check(device->supportsParameterPair(low) && device->setParameterPair(low),
+          "native EQ accepts one frequency and gain in the same band");
+    const auto lowFrequency = static_cast<float>(device->getParam("13").real);
+    const auto lowGain = static_cast<float>(device->getParam("14").real);
+    auto invalid = high;
+    invalid[1].second = std::numeric_limits<double>::quiet_NaN();
+    const Pair differentBands{{{"13", .76}, {"39", .72}}};
+    check(!device->setParameterPair(invalid) && !device->supportsParameterPair(differentBands) &&
+          !device->setParameterPair(differentBands) && device->getParam("13").real == lowFrequency &&
+          device->getParam("14").real == lowGain,
+          "rejected pair writes neither coordinate");
+    if (!device->setParameterPair(high)) { check(false, "second native pair accepted"); return; }
+    const auto highFrequency = static_cast<float>(device->getParam("13").real);
+    const auto highGain = static_cast<float>(device->getParam("14").real);
+    device->prepare(48000, 64);
+    std::array<float, 64> left{}, right{};
+    std::array<float*, 2> output{left.data(), right.data()};
+    engine::NodeIo io;
+    io.channels = 2;
+    io.frames = 64;
+    io.out = output.data();
+    std::atomic<bool> refused{false};
+    std::jthread writer([&](std::stop_token stop) {
+        while (!stop.stop_requested()) {
+            if (!device->setParameterPair(low) || !device->setParameterPair(high))
+                refused.store(true, std::memory_order_relaxed);
+        }
+    });
+    bool completePairs = true;
+    for (std::uint64_t block = 1; block <= 4000; ++block) {
+        io.renderBlock = block;
+        inAudio = true;
+        device->process(io);
+        inAudio = false;
+        const auto& band = observed->seen.bands[0];
+        completePairs = completePairs && ((band.frequencyHz == lowFrequency && band.gainDb == lowGain) ||
+                                         (band.frequencyHz == highFrequency && band.gainDb == highGain));
+    }
+    writer.request_stop();
+    writer.join();
+    check(completePairs && !refused.load(std::memory_order_relaxed),
+          "callback refresh sees complete native EQ coordinate pairs during publication");
+}
 bool set(device::DeviceInstance& d,std::size_t id,double value) {
     return d.setParam(std::to_string(id),device::ParamValue::fromNormalized(value));
+}
+void publishedDesignPreview() {
+    auto device = make(std::make_unique<Observe>());
+    if (!device) { check(false, "preview fixture loads EQ"); return; }
+    set(*device, 9, 1);    // band 1 On
+    set(*device, 12, .25); // Left
+    set(*device, 14, .6);  // +6 dB
+    std::vector<panel::Record> records;
+    for (int i = 0; i < device->paramCount(); ++i) {
+        panel::Record r;
+        r.id = device->paramAt(i)->id;
+        r.playing = device->getParam(r.id).normalized;
+        records.push_back(r);
+    }
+    const auto settings = adi::device::publishedMixEqSettings(records);
+    check(settings && settings->bands[0].status == q::Status::On &&
+          settings->bands[0].route == q::Route::Left &&
+          std::abs(settings->bands[0].gainDb - 6.f) < .001f, "panel playing values become the same authored EQ settings");
+    if (settings) {
+        const auto graph = q::designPreview(*settings, 44100);
+        const auto peak = std::max_element(graph.decibels[1].begin(), graph.decibels[1].end());
+        const auto hz = 10.0 * std::pow(3000.0, static_cast<double>(peak - graph.decibels[1].begin()) / (graph.points - 1));
+        check(graph.visible[1] && graph.visible[2] && !graph.visible[0] && std::abs(*peak - 6.f) < .08f &&
+              hz > 970 && hz < 1030, "static preview draws the 1 kHz boost on its selected route");
+        check(std::all_of(graph.decibels[2].begin(), graph.decibels[2].end(), [](float db) { return db == 0; }),
+              "other route's designed response remains flat");
+    }
+    records.pop_back();
+    check(!adi::device::publishedMixEqSettings(records), "a withheld EQ publication never manufactures a curve");
 }
 void metadataAndMapping() {
     auto probe=std::make_unique<Observe>();auto* seen=probe.get();auto d=make(std::move(probe));
@@ -223,6 +311,35 @@ void prepareLifecycle() {
     d->prepare(44100,128);check(seen->prepares==4,"maximum-frame change really reprepares provider");
     d->prepare(44100,128);check(seen->prepares==4,"new-format redundant prepare is idempotent too");
 }
+void duplicatePrepareKeepsProcessing() {
+    auto probe = std::make_unique<Observe>();
+    auto *seen = probe.get();
+    auto eq = make(std::move(probe), 1);
+    check(eq != nullptr, "native EQ no-op prepare fixture loads");
+    if (!eq) return;
+    eq->prepare(48000, 64);
+
+    const float input[]{.25f, .5f};
+    const float key[]{.125f, .25f};
+    float output[2]{};
+    const float *in[]{input}, *side[]{key};
+    float *out[]{output};
+    engine::NodeIo io;
+    io.channels = 1;
+    io.frames = 2;
+    io.in = in;
+    io.out = out;
+    io.sidechain = side;
+    // The backend's latency query occurs inside the redundant prepare. A
+    // process call here deterministically detects whether that scope gates it.
+    seen->onLatencyRead = [&] { eq->process(io); };
+    seen->latency = 17;
+    eq->prepare(48000, 64);
+    check(seen->prepares == 1 && seen->calls == 1 && output[0] == .375f &&
+              output[1] == .75f && eq->latencySamples() == 17,
+          "same-format EQ prepare leaves processing admitted and updates the read-only latency");
+}
+
 template<class Sample>void continuousPrepare() {
     auto uninterrupted=make(q::makeBackend()),duplicate=make(q::makeBackend());
     for(auto* d:{uninterrupted.get(),duplicate.get()}) {
@@ -264,8 +381,8 @@ int main() {
     check(!make(std::make_unique<Observe>(),2,"vst3"),"ordinary plugin never relabelled native EQ");
     auto narrow=std::make_unique<Observe>();narrow->doubles=false;auto d=make(std::move(narrow));
     check(d&&!d->processesDouble(),"narrow-only provider does not claim native double");
-    metadataAndMapping();strictState();offsetsAndEvents<float>();offsetsAndEvents<double>();
-    prepareLifecycle();continuousPrepare<float>();continuousPrepare<double>();
+    publishedDesignPreview();metadataAndMapping();strictState();pairPublication();offsetsAndEvents<float>();offsetsAndEvents<double>();
+    prepareLifecycle();duplicatePrepareKeepsProcessing();continuousPrepare<float>();continuousPrepare<double>();
     for(const auto rate:{44100.,48000.,96000.})for(const int channels:{1,2}){exactCore<float>(channels,rate);exactCore<double>(channels,rate);}
     check(allocations==0&&deallocations==0,"native controller and direct core allocate/free nothing during callbacks");
     std::printf("Mix EQ host: %d checks, %d failures\n",checks,failures);return failures?1:0;

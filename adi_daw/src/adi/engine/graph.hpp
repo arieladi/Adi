@@ -245,11 +245,20 @@ public:
     /// Called only after the graph sampled bypass for this block. Do not
     /// re-read the switch: a concurrent toggle must not select undelayed dry.
     virtual void processActive(const NodeIo& io) noexcept { process(io); }
+    /// Audio thread, sampled once per bypassed physical block from its pinned PDC plan.
+    /// Only native devices with an outstanding transition should opt in.
+    [[nodiscard]] virtual bool needsBypassTransition(std::int32_t /*configuredLatency*/) noexcept { return false; }
+    /// When requested, service each real segment with no graph output buffers.
+    /// Bypass still owns the audible compensated dry signal and all graph taps.
+    virtual void processBypassTransition(const NodeIo&) noexcept {}
 
     /// Notification when scheduling skips a silent node. No DSP work; a strip
     /// uses it to keep watched rings current through silence, and to land a
     /// gain moved while it sleeps, so it wakes at that gain.
     virtual void silenceTaps(const NodeIo&) noexcept {}
+    /// Audio owner, once on entry to suspension, after the tail has drained.
+    /// Keep this as cheap as silenceTaps. Stateful effects can arm a wake reset.
+    virtual void didSuspend() noexcept {}
 
     /// Capture ports have a lifetime independent of the node. A retired graph can release
     /// its node before a later callback detaches its old scope publication safely.
@@ -1228,6 +1237,8 @@ private:
         bool explicitEventSource = false;
         std::uint64_t preparationRevision = 0;
         bool hasBypass = false;
+        std::uint64_t bypassTransitionBlock = 0;
+        bool serviceBypassTransition = false;
         DelayLine dryDelay;
         std::vector<NodeId> inputs;
         std::vector<NodeId> sidechains;

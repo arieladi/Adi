@@ -2,6 +2,7 @@
 #pragma once
 #include "adi/mix/eq/Settings.hpp"
 #include <cstdint>
+#include <string_view>
 
 namespace adi::mix {
 // The native device owns authored parameters, state and host edit authority.
@@ -23,8 +24,12 @@ public:
     virtual void process(double* const* main, const double* const* key, std::int32_t keyChannels,
                          std::int32_t frames, const eq::Settings&, std::uint64_t physicalBlock,
                          std::int32_t configuredLatency) noexcept = 0;
-    // Read/publish pending latency only; never reconfigure live processing here.
+    // Relay pending latency and optionally schedule owner configuration work.
+    // Never prepare/reconfigure processing synchronously on this Main callback.
     virtual void pumpMainThread(const eq::Settings&) = 0;
     [[nodiscard]] virtual std::int32_t advertisedLatency() const noexcept = 0;
+    // Nonfatal owner failure only. Pending/warming configurations are normal
+    // operation; the last admitted plan remains active on a reported failure.
+    [[nodiscard]] virtual std::string_view processingIssue() const noexcept { return {}; }
 };
 } // namespace adi::mix

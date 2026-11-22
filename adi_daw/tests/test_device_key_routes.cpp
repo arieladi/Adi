@@ -7,6 +7,8 @@
 #include "adi/ui/project_document.hpp"
 #include "adi/row_capture.hpp"
 #include "adi/store.hpp"
+#include "juce/builtin_host.hpp"
+#include "juce/device_core.hpp"
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <array>
@@ -14,6 +16,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <new>
+#include <numbers>
 #include <stdexcept>
 namespace {
 thread_local bool realtime = false;
@@ -240,6 +243,103 @@ void persistence() {
     check(f.store && rows::readModel(*f.store).routing.front().keyTap == "post_mixer",
           "key default survives file reopen");
 }
+// The source is audible on Main. Common-mode key audio cancels when reading
+// only the programme's opposite-polarity stereo lane.
+struct RoutingTone final : Node {
+    RoutingTone(double peak, bool opposite) : amplitude(peak), antiphase(opposite) {}
+    double amplitude;
+    bool antiphase;
+    double rate = 48000.;
+    std::int64_t position = 0;
+    void prepare(double sampleRate, std::int32_t) override { rate = sampleRate; position = 0; }
+    void process(const NodeIo &io) noexcept override {
+        for (std::int32_t sample = 0; sample < io.frames; ++sample) {
+            const auto phase = 2. * std::numbers::pi * 1000. * static_cast<double>(position++) / rate;
+            const auto value = static_cast<float>(amplitude * std::sin(phase));
+            for (std::int32_t channel = 0; channel < io.channels; ++channel)
+                io.out[channel][io.blockOffset + sample] = channel == 1 && antiphase ? -value : value;
+        }
+    }
+};
+void nativeSerialEqThroughDeviceCallback() {
+    Fixture fixture;
+    fixture.store->db().exec("INSERT INTO plugin_refs(id,format,uid,name) "
+                             "VALUES(77,'internal','org.adidaw.mix.eq','EQ')");
+    fixture.store->db().exec("UPDATE devices SET plugin_ref_id=77 WHERE id=30");
+    const auto file = fixture.store->path();
+    fixture.store.reset();
+    std::string error;
+    RoutingTone key(.5, false), programme(std::pow(10., -.9), true);
+    auto document = ui::ProjectDocument::open(file, false, device::withBuiltinDevices(), error);
+    check(document != nullptr, "device callback fixture opens native EQ");
+    if (!document) return;
+    auto &session = document->session();
+    document->tick(0);
+    auto *eq = session.instanceFor(30);
+    const auto set = [&](const char *id, double value) {
+        return eq && eq->setParam(id, device::ParamValue::fromNormalized(value));
+    };
+    const bool ready = set("9", 1.) && set("17", 1.) && set("15", .3) && set("1", 1.);
+    check(ready, "native EQ callback fixture selects external dynamic reduction");
+    if (!ready) return;
+    session.setSourcesFor([&](std::int64_t track) {
+        if (track == 2) return std::vector<Node *>{&key};
+        if (track == 3) return std::vector<Node *>{&programme};
+        return std::vector<Node *>{};
+    });
+    constexpr int frames = 256;
+    device::DeviceCore stream;
+    const auto opened = stream.open(*document, 48000., frames, frames);
+    check(opened.opened, "device callback fixture prepares the project");
+    if (!opened.opened) return;
+    session.graph().setFadeFrames(0);
+    session.transport().play();
+    gesture::EnginePresentation presentation(document->view(), session);
+    const auto source = appliedSource(document->store());
+    const auto installed = presentation.adoptCommitted(
+        document->store(), {source, History(document->store()).head(), source.sequence()}, nullptr);
+    document->tick(1);
+    const auto publication = document->parameterFeed().current();
+    if (installed.state == gesture::PresentationState::Refused || !publication || publication->empty()) {
+        check(false, "device callback fixture publishes the real prepared programme");
+        stream.close();
+        return;
+    }
+    const auto target = publication->front();
+    std::array<float, frames> left{}, right{};
+    const std::array<float *, 2> output{left.data(), right.data()};
+    const auto energy = [&] {
+        double sum = 0.;
+        for (int block = 0; block < 650; ++block) {
+            stream.process(output.data(), 2, nullptr, 0, frames);
+            if (block < 550) continue;
+            for (std::size_t sample = 0; sample < left.size(); ++sample) {
+                const double programmeOnly = static_cast<double>(left[sample]) - right[sample];
+                sum += programmeOnly * programmeOnly;
+            }
+        }
+        return sum;
+    };
+    const double absent = energy();
+    check(absent > 0. && target.sidechainChannels == 2, "absent external key leaves the real programme audible");
+    if (absent > 0.) {
+        const auto beforeRoute = OpJournal(document->store()).headSeq();
+        const bool routed = document->setDeviceKey(target, 2, "post_fx");
+        check(routed && energy() / absent < .1, "real device key reaches the serial EQ and reduces programme by over 10 dB");
+        const auto afterRoute = OpJournal(document->store()).headSeq();
+        const bool undone = routed && document->ops().undo().ok && document->synchronise();
+        check(undone && OpJournal(document->store()).headSeq() == beforeRoute &&
+                  document->session().instanceFor(30) == eq && std::abs(energy() / absent - 1.) < .003,
+              "one key-route Undo restores the missing-key signal through the same EQ");
+        const bool redone = undone && document->ops().redo().ok && document->synchronise();
+        check(redone && OpJournal(document->store()).headSeq() == afterRoute && energy() / absent < .1,
+              "one key-route Redo restores serial EQ reduction");
+        key.amplitude = 0.;
+        check(redone && std::abs(energy() / absent - 1.) < .003,
+              "routed silence and an absent route settle to the same programme");
+    }
+    stream.close();
+}
 struct Pulse final : Node {
     explicit Pulse(double v) : value(v) {}
     double value;
@@ -393,6 +493,7 @@ int main() {
     try {
         persistence();
         preparedAndDocument();
+        nativeSerialEqThroughDeviceCallback();
         for (const auto p : {Precision::Float32, Precision::Float64})
             for (int c : {1, 2})
                 for (const auto *tap : {"pre_fx", "post_fx", "post_mixer"})
