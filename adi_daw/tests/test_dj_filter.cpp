@@ -217,7 +217,29 @@ void noClick() {
     }
 }
 
+/// Prepared at a dark setting, the first samples do not ring (the second
+/// review: the low pass was seeded with the input even at a 20 Hz cutoff,
+/// and a 1 kHz cosine of 0.5 rang at 20 Hz with a peak of 0.5).
+void preparedDark() {
+    for (double f : {-100.0, -80.0}) {
+        D dj;
+        dj.set(D::Filter, f);
+        dj.prepare(kRate);
+        std::vector<float> x(9600), l(9600), r(9600);
+        for (std::size_t i = 0; i < x.size(); ++i) {
+            x[i] = static_cast<float>(0.5 * std::cos(2 * std::numbers::pi * 1000 * static_cast<double>(i) / kRate));
+        }
+        dj.process(x.data(), x.data(), l.data(), r.data(), x.size());
+        double peak = 0;
+        for (float v : l) {
+            peak = std::max(peak, static_cast<double>(std::abs(v)));
+        }
+        check(peak < 0.06, "prepared at Filter " + std::to_string(f) + ", a 1 kHz cosine does not ring (peak " + std::to_string(peak) + ")");
+    }
+}
+
 int main() {
+    preparedDark();
     noClick();
     againstAutoFilter();
     knob();

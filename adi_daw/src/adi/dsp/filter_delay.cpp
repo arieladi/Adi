@@ -44,11 +44,25 @@ FilterDelay::FilterDelay() {
     prepare(48000);
 }
 
-void FilterDelay::prepare(double sampleRate) {
+void FilterDelay::prepare(double sampleRate) noexcept {
     rate_ = std::isfinite(sampleRate) && sampleRate > 0 ? sampleRate : 48000;
-    size_ = static_cast<std::size_t>(std::ceil(kMaxSeconds * rate_)) + 4;
+    // The lines are sized before size_ says so, and memory that cannot be had
+    // leaves the device inert (the dry signal only): never a throw out of a
+    // host's DSP callback, which is where a Pd external prepares, and never a
+    // size_ larger than a line.
+    const auto size = static_cast<std::size_t>(std::ceil(kMaxSeconds * rate_)) + 4;
+    size_ = 0;
+    try {
+        for (auto& line : lines_) {
+            line.ring.assign(size, 0.f);
+        }
+        size_ = size;
+    } catch (...) {
+        for (auto& line : lines_) {
+            line.ring.clear();
+        }
+    }
     for (auto& line : lines_) {
-        line.ring.assign(size_, 0.f);
         line.s1 = line.s2 = line.last = 0;
     }
     write_ = 0;
@@ -107,6 +121,16 @@ void FilterDelay::update(std::size_t l) noexcept {
 
 void FilterDelay::process(const float* inL, const float* inR, float* outL, float* outR, std::size_t frames) noexcept {
     if (size_ == 0) {
+        // Inert (prepare could not allocate): the dry signal alone.
+        for (std::size_t i = 0; i < frames; ++i) {
+            const double l = inL && std::isfinite(inL[i]) ? inL[i] : 0.0, r = inR && std::isfinite(inR[i]) ? inR[i] : 0.0;
+            if (outL) {
+                outL[i] = static_cast<float>(dry_ * l);
+            }
+            if (outR) {
+                outR[i] = static_cast<float>(dry_ * r);
+            }
+        }
         return;
     }
     for (std::size_t i = 0; i < frames; ++i) {
