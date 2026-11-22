@@ -4,6 +4,10 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-22 — EX-12 After Export import
+
+- EX-12 After Export to a track — PR requested, `engine-win/after-export-import` at `86b3c519` on `87ea349c`. Opt-in worker digest captured before publication. Owner-thread import verifies the delivery and the journalled source digest using the existing material command, then commits one undo step. Undo kept the published file and removed the new clip. Cancel and a same-length replacement were refused. MSVC: render queue 440, material 29, history 148, all green. The existing symlink case was skipped for Windows privilege. Window owns completion dispatch and destination selection. Gapless and converter delivery need the joined publication path before offering After Export there.
+
 ## 2026-11-22, EX-12 sparse render matrix
 
 **PR requested** — `engine-win/export-render-matrix` `59a97c2b`, stacked on the direct-stem batch `e44cc77e`, after 3 December. Gives the window a literal list of source/tap and cycle-marker cells, predicts resolved names and bounds under one read revision, and enqueues them atomically as ordinary jobs. Existing single-region stem batching uses the same path. Actual cells resolve project state at their own job start. Strict MSVC passed 476 render and 85 NI Stems checks (native AAC unavailable). Three sparse cells verified exact audible ranges and job-start naming. Duplicate cells and point markers refuse the batch. The Window's matrix grid and automatic source selection are separate.
