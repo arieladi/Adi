@@ -217,7 +217,9 @@ method); Live's files and renders stay in the director's research.
     smooth attribute (on by default): how it smooths, over how long, and whether coefficients given as
     arguments are smoothed in at load. `[slide~]` with a signal in its slide inlets: read per sample?
     A slide below 1, 0 or negative: clamped to 1? `[%]`: is a float input truncated or rounded? The sign
-    of `-7 % 3`, and what `% 0` gives.
+    of `-7 % 3`, and what `% 0` gives. A float `[/]` by 0: −2^31, as the reference seems to say?
+    `[selector~]` told a negative choice: silence? A `$1` message box fed a message with a selector
+    (not a list): is `$1` the selector or its first argument?
 
 (The Shifter question is answered — Live's way, ADR-0247 d9 — and struck.)
 
@@ -230,6 +232,50 @@ method); Live's files and renders stay in the director's research.
   - keep the Annex's reading, which matches the meter, and rely on the −1 dBTP ceiling's margin;
   - or have the export's brickwall read finer than the meter, at some CPU cost.
 - Nothing changes until you say.
+
+## 2026-11-22 — DEV-16, steps 9 and 10: the translation table audited against Max's reference pages (P2)
+
+**PR requested:** head `devices/amxd-audit` (6049ee08), base `main`, after
+`devices/amxd-modulo-biquad`. Two commits; the bodies are the commit messages.
+- **The audit.** Four finders read the translation table against docs.cycling74.com, by object group:
+  signal objects, arithmetic, flow and messages, and the live.* controls. Three skeptics checked each
+  finding, and 28 differences were confirmed: things a translated patch would hear or show differently
+  from Max. Two findings were refuted.
+- **Step 9 (f2264fe8): defaults, ranges and inlets.**
+  - A bare `[/~]` divides by 1, and a bare `[t]` has two int outlets.
+  - `[gate]` and `[selector~]` clamp a choice past their count. A bang into `[gate]` reports the open
+    outlet.
+  - `[loadbang]` and live.thisdevice take a bang in their inlet.
+  - plugin~ and plugout~ channel arguments do not route in Max, so only "1 2" or none translate.
+  - A message box's `---` names reach `[r ---name]`. Pd 0.56 does not expand `$0` in a `;` receiver,
+    so each part becomes its own message into `[s $0-name]`. The box's right inlet sets its contents.
+  - Number boxes keep their minimum and maximum, and their Decimal Floating-Point format.
+  - The fan-out order follows the destination inlet's x. One outlet into both inlets of `[*]` gives
+    9, not 0.
+  - Refused, named: quoted messages; a `---` name inside a message; hard sync into `[phasor~]`;
+    unstable biquad~ arguments; live.* Steps, and outlets past the first.
+- **Step 10 (6049ee08): the messages.**
+  - Lists and `set` into an int operator's left inlet.
+  - Int division by 0 divides by 1.
+  - `set` into `[i]`, `[f]` and number boxes.
+  - `set` into `[prepend]` and `[append]`, and a bang there becomes the word "bang".
+  - `reset` into `[cycle~]` and `[phasor~]`, and `clear` into biquad~.
+  - A list and a bang into `[pack]`, with its int slots truncated on the way out.
+  - An `[f]` in front of `[!- n.]`, so a list cannot change its multiplier.
+  - A message box keeps its `$` arguments for a later bang.
+  - Refused: slide~'s `reset`.
+- **Not made explicit, and said so in the header:**
+  - A number into Pd's `[t s]` gives "float" (Max gives "").
+  - A selector message into `[t i]` or `[t f]` gives 0 in Max and an error in Pd.
+  - A float division by 0 gives 0 in Pd (Max gives −2^31, by its reference; added to reading 14).
+- **Still open from the audit:**
+  - `set` into `[pack]`, and into a float-form operator (`[+ 1.]`);
+  - a coefficient list that turns biquad~ unstable at run time. Pd silences it; Max runs away.
+  - live.thisdevice also bangs when a preset is loaded or the device saved. ADI has no such event for
+    a device.
+- **Tests:** `adi_pd_amxd_tests` 124 (37 new), each played in libpd where it can be.
+  - 13 plants each fail: 6 for step 9 and 7 for step 10.
+  - Every plant build deletes the old binary first, so a build that fails cannot pass as a result.
 
 ## 2026-11-22 — the sixth review: the overlap-add Auto Shift was wrong; rebuilt as a spliced delay line. The detector's stall fixed
 
