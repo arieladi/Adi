@@ -17,6 +17,16 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Recallable stereo-shared clock jitter in Crush
+
+`clones/shaper-crush-jitter` at `0b6ca57e` — Model per-band Crush clock jitter and stereo latch timing. **Lands after 3 December.** IDs 871–873 recall each band's amount, defaulting to zero in older projects. Two equal-seeded triangular streams advance independently for dither and timing. In the reference their draws correlated at 0.999999897 while their positions agreed. Pausing dither for 1,024 frames and resuming gave 0.000000715 RMS against the paused sequence. A full-height flat hold also paused its timing sequence while dither continued. The model uses ADI's deterministic generator. Smoothing when automating the amount remains open.
+
+The original core failed the new timing-distribution test. Signed stereo latch tests at four rates, cap and reset cases, and registered native and edited-Pd replays passed. The rack, Crush and registered suites all passed under MSVC /W4 /WX at both Pd precisions. At 75% jitter on kick and bass, registered median/p99 was 27.3/42.4 µs at 256 and 214.6/4,904.6 µs at 2,048, against 61.7/101.2 and 362.2/11,872.6 µs. ADI missed 11 and 32 deadlines per 10,240 callbacks respectively, against 9 and 13 in the reference. Each implementation independently gave identical recordings at both block sizes. Between the two generators the signed stereo RMS difference was 0.03870/0.03756. At zero, ADI and reference each reproduced its earlier recording exactly. All four comparisons reported zero latency.
+
+Across the 39 affected seven-stage programs, twelve RMS errors fell, eight rose, and nineteen were within 0.000001. Separate verification of the prior treble control found all 854 neutral fixed-order programs identical over 327,936,000 stereo frames. A decimal transcription in the earlier moving-resolution CPU entry is corrected to the original gate reading of 0.00000166 RMS.
+
+PR requested
+
 ## 22 November 2026 — For Devices, the two Time locate tests and their prerequisites
 
 The core API and its regression are on `clones/shaper-linear-reconcile` at `e8ff2ead`. In `test_adi_shaper.cpp` the buffered stereo marker survives a contiguous call with the existing revision. A revision change at the predicted sample clears it. The registered native factory case still needs the Devices-owned wrapper to forward quarter notes, exact samples and transport revision to `syncAtSample`. At the 128-frame boundary, keep the timeline at its predicted frame, change revision from 1 to 2 and require the delayed marker to disappear. Keep the edited-Pd case on its explicit 192,000-frame jump. The registered test failed before forwarding and passed after forwarding in private. Its test hunk belongs to clones and is parked for the Time stack and owner hook. The shared two-head reader is separately available for Devices review on `clones/two-head-reader` at `9b7cd7ca`.
@@ -35,7 +45,7 @@ PR requested
 
 `clones/shaper-crush-resolution` at `2afb86d5` — Reuse the preceding quantizer code for moving Crush curves. This updates the current-stage repair at `77f4ec0a`. It keeps the previous integer code per ear and takes a shorter path for normalized controls. It also preserves the original rules for infinities, NaNs, finite out-of-range controls, full resolution and resets.
 
-Compared on the same registered thread, processing cycles fell by 13.60% at 256 frames and 15.60% at 2,048 for a continuously moving bit curve. Steady controls fell by 18.89% and 21.58%, and the eight-step curve by 14.43% and 16.28%. A separate six-order comparison of registered processes measured moving-curve medians of 26.9 to 17.8 µs and 213.55 to 141.10 µs. The respective p99s fell from 41.35 to 30.50 µs and from 471.05 to 287.10 µs. Deadline misses rose from 9 to 11 and 7 to 10 per 61,440 callbacks. The original 0.00166 worst transition RMS and the saved-program counts from `77f4ec0a` apply to the same rendered signal.
+Compared on the same registered thread, processing cycles fell by 13.60% at 256 frames and 15.60% at 2,048 for a continuously moving bit curve. Steady controls fell by 18.89% and 21.58%, and the eight-step curve by 14.43% and 16.28%. A separate six-order comparison of registered processes measured moving-curve medians of 26.9 to 17.8 µs and 213.55 to 141.10 µs. The respective p99s fell from 41.35 to 30.50 µs and from 471.05 to 287.10 µs. Deadline misses rose from 9 to 11 and 7 to 10 per 61,440 callbacks. The original 0.00000166 worst transition RMS and the saved-program counts from `77f4ec0a` apply to the same rendered signal.
 
 The two versions produced identical stereo outputs on all six registered musical fixtures, 18 cross-rate traces, 589,824 fixed-control frames and invalid-control recovery cases. The rack, Crush and registered native/edited-Pd suites passed under MSVC /W4 /WX at both precisions. Reported latency remains zero.
 
