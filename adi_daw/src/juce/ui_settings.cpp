@@ -639,8 +639,31 @@ SettingsWindow::SettingsWindow(settings::AppSettings &store,
     setContentOwned(panel.release(), false);
     setResizable(true, false);
     setResizeLimits(500, 560, 2000, 1600);
-    // Live 11's Preferences open 500 by 607; ADI's has more pages and its Find box.
-    centreWithSize(560, 680);
+    // Live 11's Preferences open 500 by 607; ADI's has more pages and its Find box. Then where it was
+    // left, as the main window (window.places, WIN-02).
+    restorePlace(*this, store, "settings", 560, 680);
+    place.save = [this, &store] {
+        std::string why;
+        if (!keepPlace(*this, store, "settings", why))
+            panel_->setHelp("The window's place was not kept: " + juce::String::fromUTF8(why.c_str()));
+    };
 }
-void SettingsWindow::closeButtonPressed() { setVisible(false); }
+SettingsWindow::~SettingsWindow() { place.flush(); }
+void SettingsWindow::closeButtonPressed() {
+    place.flush();
+    setVisible(false);
+}
+void SettingsWindow::moved() {
+    DocumentWindow::moved();
+    place.moved();
+}
+void SettingsWindow::resized() {
+    DocumentWindow::resized();
+    place.moved();
+}
+void SettingsWindow::parentSizeChanged() {
+    DocumentWindow::parentSizeChanged();
+    if (keepReachable(*this))
+        place.moved();
+}
 } // namespace adi::ui

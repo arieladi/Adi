@@ -21,6 +21,7 @@
 #include "ui_browser.hpp"
 #include "ui_controlbar.hpp"
 #include "ui_look.hpp"
+#include "ui_place.hpp"
 #include "adi/clip_commands.hpp"
 #include "ui_devices.hpp"
 #include "ui_clipview.hpp"
@@ -855,7 +856,12 @@ class AdiWindow final : public juce::DocumentWindow, private juce::KeyListener {
     juce::MenuBarModel *menu() noexcept;
     // Placed, or moved onto another display: the root takes the zoom kept for it there (N4).
     void moved() override;
+    void resized() override;
+    // The displays changed (a monitor gone, another resolution or scale): the title bar kept on one.
+    void parentSizeChanged() override;
     void minimisationStateChanged(bool) override;
+    // Where the window stands, saved after each move or size once it stands still (WIN-02).
+    PlaceWatch place;
     // What the window keeps of the App settings, brought up to date: each frame does it.
     void followSettings();
     AdiRootComponent &root() noexcept { return *root_; }

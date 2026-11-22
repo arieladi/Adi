@@ -4034,6 +4034,16 @@ AdiWindow::AdiWindow(std::unique_ptr<AdiRootComponent> root, AppCommands &comman
 void AdiWindow::moved() {
     DocumentWindow::moved();
     root_->followDisplay();
+    place.moved();
+}
+void AdiWindow::resized() {
+    DocumentWindow::resized();
+    place.moved();
+}
+void AdiWindow::parentSizeChanged() {
+    DocumentWindow::parentSizeChanged();
+    if (!isFullScreen() && keepReachable(*this))
+        place.moved();
 }
 void AdiWindow::minimisationStateChanged(bool minimised) {
     root_->infoSpectrum.suspend(minimised);

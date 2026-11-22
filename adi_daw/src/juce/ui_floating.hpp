@@ -10,6 +10,9 @@ namespace adi::ui {
 struct MonitorArea {
     std::string id;
     juce::Rectangle<int> usable;
+    juce::Rectangle<int> area{}; // the whole display; the usable part when left empty
+    int dpi = 96;
+    bool main = false;
 };
 juce::Rectangle<int> restoreFloating(const FloatingState &, const std::vector<MonitorArea> &);
 std::vector<MonitorArea> currentMonitors();
@@ -74,6 +77,8 @@ class FloatingHost {
     void collect();                     // message-thread lifecycle, not a renderer clock
     void close(const std::string &key);
     void closeAll(bool remember);
+    // Saves now the place of every window still settling after a move (WIN-02; at quit, and for tests).
+    void flushPlaces();
     std::size_t count() const noexcept { return entries_.size(); }
     bool hasTooltips(const std::string &key) const;
     juce::Component *content(const std::string &) const;

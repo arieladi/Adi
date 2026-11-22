@@ -117,6 +117,9 @@ struct FloatingState {
     std::string monitor;
     int x=100,y=100,width=800,height=420;
     bool open=false;
+    // WIN-02: the monitor's area and DPI when it was saved (0 for a record from before them), so the
+    // rule can find the monitor again and restore in proportion.
+    int areaX=0,areaY=0,areaWidth=0,areaHeight=0,dpi=0;
 };
 class ViewStateStore {
   public:

@@ -556,6 +556,8 @@ class AdiApplication final : public juce::JUCEApplication,
         mainMeterSource_.reset();
         floating_.reset();
         historyWindow_.reset();
+        if (window_)
+            window_->place.flush(); // a move still settling is kept (WIN-02)
         window_.reset();
         document_.reset();
         commands_.reset();
@@ -628,6 +630,13 @@ class AdiApplication final : public juce::JUCEApplication,
         mainMeterSource_.reset();
         floating_.reset();
         historyWindow_.reset();
+        // A project opened keeps the main window where it stands, full screen or not (WIN-02).
+        std::optional<place::Rect> standingAt;
+        bool fullScreen = false;
+        if (window_) {
+            window_->place.flush();
+            standingAt = standing(*window_, fullScreen);
+        }
         window_.reset();
         document_ = std::move(next);
         auto root = std::make_unique<AdiRootComponent>(document_->view(), document_->ops(),
@@ -932,7 +941,18 @@ class AdiApplication final : public juce::JUCEApplication,
         window_ = std::make_unique<AdiWindow>(std::move(root), *commands_);
         window_->onClose = [this] { systemRequestedQuit(); };
         window_->setName("ADI - " + file.getFileNameWithoutExtension());
-        window_->centreWithSize(1200, 720);
+        // Where it was when the application last stood (window.places, WIN-02), at first run centred.
+        if (standingAt) {
+            window_->setBounds(fromPlace(*standingAt));
+            if (fullScreen)
+                window_->setFullScreen(true);
+        } else
+            restorePlace(*window_, *settings_, "main", 1200, 720);
+        window_->place.save = [this] {
+            std::string why;
+            if (window_ && !keepPlace(*window_, *settings_, "main", why))
+                report("The window's place was not kept: " + why);
+        };
         // The floating-window host, built before anything needs two windows (STEP-7-PLAN
         // 7.5). Its users arrive with the hosts' plug-in editors (collab/window.md, N8)
         // and the analyser device's big view (ADR-0183 d4).

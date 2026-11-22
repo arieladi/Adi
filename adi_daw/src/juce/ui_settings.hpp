@@ -3,6 +3,7 @@
 #include "adi/settings/registry.hpp"
 #include "adi/settings/store.hpp"
 #include "adi/ui/settings_tabs.hpp"
+#include "ui_place.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
 #include <memory>
@@ -150,8 +151,14 @@ class SettingsPanel final : public juce::Component {
 class SettingsWindow final : public juce::DocumentWindow {
   public:
     SettingsWindow(settings::AppSettings &, std::function<std::unique_ptr<juce::Component>()> audioDevices);
+    ~SettingsWindow() override;
     void closeButtonPressed() override;
+    void moved() override;
+    void resized() override;
+    void parentSizeChanged() override;
     SettingsPanel &panel() noexcept { return *panel_; }
+    // Where it stands, kept in window.places after each move (WIN-02).
+    PlaceWatch place;
 
   private:
     SettingsPanel *panel_ = nullptr;

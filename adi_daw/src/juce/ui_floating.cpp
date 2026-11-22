@@ -2,26 +2,30 @@
 #include "ui_floating.hpp"
 #include <chrono>
 namespace adi::ui {
-juce::Rectangle<int> restoreFloating(const FloatingState &s,
-                                     const std::vector<MonitorArea> &screens) {
+namespace {
+std::vector<place::Monitor> asPlaces(const std::vector<MonitorArea> &screens) {
+    std::vector<place::Monitor> out;
+    for (const auto &s : screens)
+        out.push_back({s.id, toPlace(s.area.isEmpty() ? s.usable : s.area), toPlace(s.usable), s.dpi, s.main});
+    return out;
+}
+} // namespace
+// WIN-02: the one placement rule (adi/ui/window_place.hpp). A record from before the monitor's area was
+// kept reads as on its monitor unchanged, or, with that monitor gone, at its own coordinates.
+juce::Rectangle<int> restoreFloating(const FloatingState &s, const std::vector<MonitorArea> &screens) {
     if (screens.empty())
         return {0, 0, 800, 420};
-    auto chosen = screens.begin();
-    for (auto it = screens.begin(); it != screens.end(); ++it)
-        if (it->id == s.monitor) {
-            chosen = it;
-            break;
-        }
-    const auto area = chosen->usable;
-    const int w = std::clamp(s.width, 1, area.getWidth()),
-              h = std::clamp(s.height, 1, area.getHeight());
-    return {std::clamp(s.x, area.getX(), area.getRight() - w),
-            std::clamp(s.y, area.getY(), area.getBottom() - h), w, h};
+    place::Place p;
+    p.display = s.monitor;
+    p.area = {s.areaX, s.areaY, s.areaWidth, s.areaHeight};
+    p.dpi = s.dpi;
+    p.rect = {s.x, s.y, s.width, s.height};
+    return fromPlace(place::restore(p, asPlaces(screens), 100, 100));
 }
 std::vector<MonitorArea> currentMonitors() {
     std::vector<MonitorArea> result;
     for (const auto &d : juce::Desktop::getInstance().getDisplays().displays)
-        result.push_back({displayId(d), d.userBounds.toNearestInt()});
+        result.push_back({displayId(d), d.userArea, d.totalArea, static_cast<int>(d.dpi), d.isMain});
     return result;
 }
 AnalyserModel::AnalyserModel(std::shared_ptr<const engine::ScopeTap> tap) : tap_(std::move(tap)) {
@@ -122,6 +126,21 @@ struct FloatingHost::Entry {
                 h.root_.mixViewPanel.stack.suspendParameters(true);
             setVisible(false);
         }
+        // WIN-02: saved once it stands still after a move, so it keeps its place after a kill; kept on a
+        // screen when the displays change.
+        void moved() override {
+            DocumentWindow::moved();
+            place.moved();
+        }
+        void resized() override {
+            DocumentWindow::resized();
+            place.moved();
+        }
+        void parentSizeChanged() override {
+            DocumentWindow::parentSizeChanged();
+            if (keepReachable(*this))
+                place.moved();
+        }
         void minimisationStateChanged(bool minimised) override {
             if (e.component.getComponent() == &h.root_.mixViewPanel) {
                 h.root_.mixViewPanel.suspendAnalysis(minimised);
@@ -134,6 +153,7 @@ struct FloatingHost::Entry {
         Entry &e;
         std::unique_ptr<juce::TooltipWindow> tips;
         int tipDelayMs = 0;
+        PlaceWatch place;
         juce::VBlankAttachment clock;
     };
     std::unique_ptr<Window> window;
@@ -162,6 +182,7 @@ bool FloatingHost::install(std::unique_ptr<Entry> e) {
         if (native_)
             raw->window->setVisible(true);
         save(*raw, true);
+        raw->window->place.save = [this, raw] { save(*raw, true); };
         return true;
     }
     raw->window->setContentNonOwned(raw->zoomed ? static_cast<juce::Component *>(raw->zoomed.get())
@@ -170,6 +191,16 @@ bool FloatingHost::install(std::unique_ptr<Entry> e) {
     if (const auto kept = states_.loadFloating(key); kept.monitor.empty() && !raw->first.isEmpty()) {
         // Never placed: the content where `first` says, the title bar above it.
         raw->window->setBounds(raw->window->getContentComponentBorder().addedTo(raw->first));
+    } else if (kept.monitor.empty()) {
+        // Never placed and nowhere asked: cascaded off the windows already open (WIN-02).
+        const auto screens = currentMonitors();
+        const auto start = restoreFloating(kept, screens);
+        std::vector<place::Rect> others;
+        for (const auto &[k, other] : entries_)
+            if (other.get() != raw && other->window)
+                others.push_back(toPlace(other->window->getBounds()));
+        const auto usable = screens.empty() ? start : screens.front().usable;
+        raw->window->setBounds(fromPlace(place::cascade(toPlace(start), others, toPlace(usable))));
     } else
         raw->window->setBounds(restoreFloating(kept, currentMonitors()));
     // An ADI view's window opens at the zoom kept for it on its display (N4).
@@ -181,6 +212,7 @@ bool FloatingHost::install(std::unique_ptr<Entry> e) {
     if (native_)
         raw->window->setVisible(true);
     save(*raw, true);
+    raw->window->place.save = [this, raw] { save(*raw, true); };
     return true;
 }
 bool FloatingHost::detach(const std::string &key, std::int64_t id, juce::Component &component,
@@ -290,20 +322,30 @@ void FloatingHost::save(Entry &e, bool open) {
     state.width = b.getWidth();
     state.height = b.getHeight();
     state.open = open;
-    const auto screens = currentMonitors();
-    for (const auto &screen : screens)
-        if (screen.usable.contains(b.getCentre())) {
-            state.monitor = screen.id;
-            break;
-        }
+    // The monitor showing most of it, with its area and DPI then (WIN-02).
+    const auto at = place::placeOf(toPlace(b), false, asPlaces(currentMonitors()));
+    if (!at.display.empty()) {
+        state.monitor = at.display;
+        state.areaX = at.area.x;
+        state.areaY = at.area.y;
+        state.areaWidth = at.area.w;
+        state.areaHeight = at.area.h;
+        state.dpi = at.dpi;
+    }
     std::string ignored;
     states_.saveFloating(e.key, state, ignored);
+}
+void FloatingHost::flushPlaces() {
+    for (auto &[key, e] : entries_)
+        if (e->window)
+            e->window->place.flush();
 }
 void FloatingHost::close(const std::string &key) {
     auto it = entries_.find(key);
     if (it == entries_.end())
         return;
     auto &e = *it->second;
+    e.window->place.save = nullptr; // closed: its last place is the one saved now
     save(e, false);
     if (e.component.getComponent() == &root_.mixViewPanel)
         root_.mixViewPanel.stack.suspendParameters(true);
