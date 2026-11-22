@@ -23,5 +23,9 @@ OpRequest transposeRequest(std::int64_t clip, std::span<const std::uint64_t> ids
 [[nodiscard]] PreparedDiff prepareClipFitToScale(Store &, std::int64_t clip,
                                                   std::span<const std::uint64_t> ids,
                                                   std::optional<double> tonicCents = std::nullopt);
+/// Reflect selected absolute pitches about the supplied chromatic axis in
+/// cents. Preserve note IDs, positions, durations and expression.
+[[nodiscard]] PreparedDiff prepareInvertPitches(const Snapshot &, std::span<const std::uint64_t> ids,
+                                                 double axisCents);
 std::span<const OpDescriptor> transformOps();
 } // namespace adi::notes
