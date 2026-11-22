@@ -146,6 +146,7 @@ bool valid(const Settings &s) noexcept {
 struct Core::Impl {
     PrepareSpec spec;
     bool prepared=false;
+    bool firStorageReady=false, phaseStorageReady=false;
     Settings lastRequested;
     detail::ConfigurationMailbox mailbox;
     // Capture, executing input, preceding spectrum, admitted plan and offer
@@ -214,10 +215,40 @@ struct Core::Impl {
                 destination.first[b]=previous->first[b];destination.second[b]=previous->second[b];
                 continue;
             }
+            destination.first[b].resize(p+1); destination.second[b].resize(p+1);
             kernel(builderSmall,builderLarge,buildTime,buildSpectrum,buildWindow,
                 s.nodes[b].frequencyHz,s.nodes[b].q,spec.sampleRate,destination.first[b],destination.second[b]);
         }
         destination.kernelsValid=true;
+    }
+    // Owner only. Each processing path allocates its working storage before
+    // publishing the first configuration that can touch it on audio.
+    void prepareFirStorage() {
+        builderSmall.prepare(h); builderLarge.prepare(h); firTransform.prepare(h);
+        buildTime.assign(h,0.); buildSpectrum.resize(p+1); buildWindow.clear();
+        transformTime.assign(h,0.); transformSpectrum.resize(p+1);
+        for(auto &bank:firInput) for(auto &stream:bank) stream.assign(p,0.);
+        for(auto &bank:firSpectrum) for(auto &stream:bank) stream.assign(p+1,Complex{});
+        for(std::size_t c=0;c<2;++c) for(std::size_t b=0;b<kNodes;++b) {
+            bandMain[c][b].assign(4*h,0.); bandKey[c][b].assign(4*h,0.);
+            firEnvelope[c][b]={};
+        }
+        firDry.prepare(h*3/2);
+        firStorageReady=true;
+    }
+    void preparePhaseStorage() {
+        phaseTransform.prepare(phaseN);
+        phaseTime.assign(phaseN,0.); phaseSpectrum.resize(phaseN/2+1); phaseKeySpectrum.resize(phaseN/2+1);
+        phaseWindow.resize(phaseN);
+        for(std::size_t i=0;i<phaseN;++i) {
+            const float angle=(static_cast<float>(i)*static_cast<float>(2.*std::numbers::pi))/static_cast<float>(phaseN-1);
+            phaseWindow[i]=static_cast<double>(1.f-std::cos(angle))*.5;
+        }
+        for(std::size_t c=0;c<2;++c) {
+            phaseInput[c].assign(phaseN,0.); phaseKey[c].assign(phaseN,0.); phaseOutput[c].assign(4*phaseN,0.);
+        }
+        phaseDry.prepare(phaseN); phaseKeyDelay.prepare(phaseN); phaseValidityDelay.prepare(phaseN,1.);
+        phaseStorageReady=true;
     }
     void prepare(PrepareSpec next,const Settings &s) {
         if(!valid(s)||!std::isfinite(next.sampleRate)||next.sampleRate<44100.||next.sampleRate>192000.||
@@ -225,30 +256,12 @@ struct Core::Impl {
             throw std::invalid_argument("Focus prepare requires stereo main, 44.1-192 kHz and a positive block capacity");
         prepared=false;spec=next;h=hopFor(spec.sampleRate);p=h/2;
         phaseN=phaseSizeFor(spec.sampleRate);phaseH=phaseN/4;
-        builderSmall.prepare(h);builderLarge.prepare(h);firTransform.prepare(h);phaseTransform.prepare(phaseN);
-        buildTime.assign(h,0.);buildSpectrum.resize(p+1);buildWindow.clear();
-        transformTime.assign(h,0.);transformSpectrum.resize(p+1);
-        for(auto &bank:firInput)for(auto &stream:bank)stream.assign(p,0.);
-        for(auto &bank:firSpectrum)for(auto &stream:bank)stream.assign(p+1,Complex{});
-        phaseTime.assign(phaseN,0.);phaseSpectrum.resize(phaseN/2+1);phaseKeySpectrum.resize(phaseN/2+1);
-        phaseWindow.resize(phaseN);
-        for(std::size_t i=0;i<phaseN;++i) {
-            const float angle=(static_cast<float>(i)*static_cast<float>(2.*std::numbers::pi))/static_cast<float>(phaseN-1);
-            phaseWindow[i]=static_cast<double>(1.f-std::cos(angle))*.5;
-        }
-        for(std::size_t c=0;c<2;++c) {
-            phaseInput[c].assign(phaseN,0.);phaseKey[c].assign(phaseN,0.);phaseOutput[c].assign(4*phaseN,0.);
-            for(std::size_t b=0;b<kNodes;++b) {
-                bandMain[c][b].assign(4*h,0.);bandKey[c][b].assign(4*h,0.);
-                iir[c][b]=Node{};firEnvelope[c][b]=detail::Envelope{};
-            }
-            keyGuard[c]={0,std::max(1,static_cast<int>(spec.sampleRate*.01))};
-        }
-        for(auto &slot:slots) {
-            slot.readers.store(0,std::memory_order_relaxed);
-            for(auto &v:slot.coefficients.first)v.resize(p+1);
-            for(auto &v:slot.coefficients.second)v.resize(p+1);
-        }
+        firStorageReady=false;phaseStorageReady=false;
+        if(s.engine==Engine::Fir) prepareFirStorage();
+        if(phaseActive(s)) preparePhaseStorage();
+        clearIirSignal();
+        for(auto &guard:keyGuard)guard={0,std::max(1,static_cast<int>(spec.sampleRate*.01))};
+        for(auto &slot:slots)slot.readers.store(0,std::memory_order_relaxed);
         lastRequested=s;mailbox.reset();
         const auto version=mailbox.publish(s);
         build(slots[0].coefficients,s,version,nullptr);
@@ -256,7 +269,6 @@ struct Core::Impl {
         ready.store(version,std::memory_order_release);applied.store(version,std::memory_order_release);
         pendingToken.store(0,std::memory_order_release);pendingSamples.store(latencyFor(s,spec.sampleRate),std::memory_order_release);
         activeLatency.store(latencyFor(s,spec.sampleRate),std::memory_order_release);
-        firDry.prepare(h*3/2);phaseDry.prepare(phaseN);phaseKeyDelay.prepare(phaseN);phaseValidityDelay.prepare(phaseN,1.);
         firFill=0;firCursor=phaseCursor=0;physical=serial=0;++generation;
         captureTag={};jobTag={};previousTag={};firStage=FirStage::Idle;
         captureBank=jobTimeBank=previousSpectrumBank=0;jobSpectrumBank=1;
@@ -330,11 +342,18 @@ struct Core::Impl {
             if(!slots[static_cast<std::size_t>(index)].readers.compare_exchange_strong(zero,-1,std::memory_order_acq_rel)) continue;
             auto &slot=slots[static_cast<std::size_t>(index)];
             const auto &previous=slots[static_cast<std::size_t>(current)].coefficients;
-            if(previous.settings.engine!=s.engine) {
-                if(s.engine==Engine::Fir)clearFirSignal();else clearIirSignal();
+            try {
+                if(previous.settings.engine!=s.engine) {
+                    if(s.engine!=Engine::Fir) clearIirSignal();
+                    else if(firStorageReady) clearFirSignal();
+                    else prepareFirStorage();
+                }
+                if(!phaseActive(previous.settings)&&phaseActive(s)) {
+                    if(phaseStorageReady) clearPhaseSignal();
+                    else preparePhaseStorage();
+                }
+                build(slot.coefficients,s,version,&previous);
             }
-            if(!phaseActive(previous.settings)&&phaseActive(s))clearPhaseSignal();
-            try { build(slot.coefficients,s,version,&previous); }
             catch(...) { slot.readers.store(0,std::memory_order_release);throw; }
             slot.readers.store(0,std::memory_order_release);
             published.store(index,std::memory_order_release);ready.store(version,std::memory_order_release);
