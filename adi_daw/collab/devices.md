@@ -172,6 +172,16 @@ method); Live's files and renders stay in the director's research.
   - or have the export's brickwall read finer than the meter, at some CPU cost.
 - Nothing changes until you say.
 
+## 2026-11-22 — the Shifter takes a non-finite input as silence (found building Auto Shift)
+
+**PR requested:** head `devices/shifter-nan` (90cb51cb), base `main`. A fix to a built device, not
+new work, so it is not held for 3 December.
+- **What it fixes.** A NaN or infinite input sample stayed in the Shifter's pitch, delay and dry lines,
+  so everything after it came out NaN, in every mode. Each input sample is now made finite first.
+- **Tests:** `adi_shifter_tests` 53. A NaN block with an inf in it, then a tone, in all three modes
+  with and without the delay: the tone comes out finite. The old core fails every case, and every
+  earlier measurement is unchanged.
+
 ## 2026-11-22 — PLAN DEV-22: Auto Shift on the Tuner's detector and the Shifter — lands after 3 December
 
 **PR requested:** head `devices/auto-shift` (9149da91), base `main`, after `devices/dj-filter`.
@@ -232,8 +242,8 @@ their order. The heads below replace those logged for items 19, 20 and 22.
   on `devices/auto-shift`.
 
 **Found in passing, not this branch's to change:** `dsp::Shifter` passes a NaN input into its delay
-line, where it stays (Auto Shift, next, sanitises its own input). The fix belongs on its own branch
-with a test; it is queued as this lane's next small item.
+line, where it stays (Auto Shift, next, sanitises its own input). Fixed on `devices/shifter-nan`
+(entry above).
 
 ## 2026-11-22 — standing queue item 22: the DJ Filter on Auto Filter's cores — lands after 3 December
 
