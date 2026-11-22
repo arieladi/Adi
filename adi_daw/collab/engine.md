@@ -32,6 +32,12 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — #677 follow-ups prepared against the published base
+
+Local `engine/df-e23-followups-local` at `167d863e6af3008d477b45803f90e478c6e251f4` contains DF-E30(a–c) and the mixed-switch rule. Ungroup judges sends against the final parent tree, disconnects capture routing-dependent automation and MIDI mappings, and Pre FX resets the send's strip controls. The mixer switch moves a mixed return to Post and the next click to Pre in separate Undo steps.
+
+The native GCC warnings-as-errors gate against `4f58f30d` passed Return Send Tap 113, UI Seams 533 and Track Delete 38. The old DF-E30 units failed 12 planted checks. The old mixed toggle failed both direction assertions. The changed mixer caller compiled under GCC 14 and Clang 19. The exact combined schema and per-bus host still need the published reconciliation before adding this commit to #677 and marking it ready.
+
 ## 2026-11-22 — Same-transaction MIDI note capture for engine-win
 
 **PR requested** · `engine/midi-notes-new-clip` · `254d7d1ce918958315c360bc93d5401fb26c3331`
