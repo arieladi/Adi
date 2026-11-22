@@ -93,6 +93,69 @@ method); Live's files and renders stay in the director's research.
   - or have the export's brickwall read finer than the meter, at some CPU cost.
 - Nothing changes until you say.
 
+## 2026-11-22 — the 3 December performance pass: every built-in's callback at 64 and 128 frames; Hybrid Reverb no longer spikes
+
+**PR requested:** head `devices/perf-pass` (920fac00, two commits on 0ea10b8e), base `main`. It adds
+a new suite, `adi_builtin_realtime_tests`, which builds with `-DADI_ACCEPTANCE=ON` and runs under
+`ctest -L acceptance` or `-L performance`. It also changes one built-in, Hybrid Reverb.
+
+- **What the suite measures, at 64 and 128 frames.**
+  - **Each built-in alone, all 20.** Noise goes in, the first parameter moves every block, and an
+    instrument gets a note every 100 ms. Every declared sample slot is filled (Hybrid Reverb gets a
+    5 s impulse). ADI-Shaper runs working: every stage on, three bands, moving curves. At its
+    defaults it would only copy its input.
+  - **WTS-01's project.** It is built through the app's own document calls: OneShot with a sample on
+    an armed MIDI track, then Saturator, EQ Eight, Reverb, Delay and ADI-Shaper, worked through the
+    device strip's gestures. It plays from the start, with live notes and the app's timer.
+  - **A breakdown,** from an empty New project up the chain, one device at a time.
+  - **A contended pass.** The callback runs on its own thread, paced like a device, while the timer
+    and a control's gestures run on another, as in the app.
+- **What it checks.**
+  - **Allocation.** No allocation in any callback, from the first one: every `operator new` form,
+    plus the CRT hook (`malloc` too) in an MSVC debug build.
+  - **Stalls.** No callback over half the deadline that recurs block for block over two runs of
+    the same input. That is a device's own stall (a first touch, a page, a lock), not the
+    machine's preemption.
+  - **Cost.** The p99 of a built-in alone under 15 % of the deadline (Hybrid Reverb 25 %, stated
+    below), and the whole project's under 50 %.
+  - **Contention.** Under contention, every raw callback inside the deadline.
+  - Timings are judged in an optimised build only; Debug checks allocations.
+- **Measured** (RelWithDebInfo on this machine).
+  - **No built-in allocates, locks or stalls.** The built-ins' audio paths were also audited for
+    locks; the only mutex is pd_builtins' registration table.
+  - **Alone:**
+    - the heaviest by p99 are Saturator (7–10 %), Vocoder (7–9 %), Reverb (6–8 %), Multiband
+      Dynamics (5–6 %) and ADI-Shaper working (4 %);
+    - everything else is under 4 %.
+  - **The project:**
+    - p99 is 31–36 % of the deadline at both sizes, recurring worst 456–880 µs;
+    - an empty New project already takes 90–150 µs per 64-frame callback, 11–14 % of the deadline.
+      That is the engine's own share.
+  - **Contended:** the worst callback near a gesture's commit is no worse than one apart from it.
+    All four variants are alike, so no lock shows.
+- **Fixed: Hybrid Reverb spiked one callback in four.**
+  - **The cause.** Its uniformly partitioned convolution did the whole multiply-accumulate over
+    every partition at the 256-sample boundary. With a 5 s impulse (937 partitions), p99 was 634 µs
+    at 64 frames (48 % of the deadline), with a recurring worst of 838 µs.
+  - **The fix.** The next block's older partitions are now summed a share at a time over the 256
+    samples before it, on a schedule set by the sample position alone. The boundary keeps the
+    newest partition and the FFTs.
+  - **Now:** recurring worst 231 µs.
+  - Its tests are unchanged and pass: exact against direct convolution, bit-identical across block
+    sizes, Pd parity.
+- **Left, for win to place:**
+  - **Hybrid Reverb's steady cost.** With a 5 s impulse, p99 is still 17–20 % of the deadline at an
+    even load. Non-uniform partitioning would cut it; that is a convolution redesign, after
+    3 December.
+  - **For the engine seat:** an empty New project's 90–150 µs per 64-frame callback is the largest
+    share of the project's cost. It is worth profiling before 3 December if the session runs at
+    64 frames.
+- **Reviewed:** three dimensions with three skeptics per finding. Five confirmed gaps in the first
+  version of the suite are fixed in the second commit: ADI-Shaper timed as a copy, missing samples,
+  warm-up allocations uncounted, a project that never played, and contention untested.
+- CTest 267/267 (MSVC Debug, /W4 /WX); the suite passes in Debug (70 checks) and RelWithDebInfo
+  (156).
+
 ## 2026-11-20, late — for win: the twelve requested branches together on main, and where the queue stands
 
 **Together.** On 9b35613a (after #697 and #699), all 12 open requests merge cleanly onto main and
