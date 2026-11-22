@@ -36,6 +36,20 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — DEV-13 / DF-E40(a) node segment quantum, lands after 3 December
+
+Branch `engine/dev13-node-segment-quantum` at `59453a164662768232a8815d2c459f62ce84f174`, from main `87ea349c`. Suggested PR title **Keep node segments on the declared processing quantum**. [Compare](https://github.com/arieladi/Adi/compare/main...engine/dev13-node-segment-quantum)
+
+The graph caches the prepared device quantum. Events mark the start of their containing tick, and the device receives the original callback-relative frames in each segment. Clock cuts round up to the next legal boundary. The ordinary one-sample mode keeps the existing scheduler and floor. A partial final segment preserves the physical host callback length.
+
+GCC 14 and Clang 19 passed six suites with warnings as errors. Graph 261, Graph Workers 92, Pd Engine 701, CLAP 585, Delay Compensation 117 and MIDI Clock Continuity 121. The graph fixture covers 64, 128, 256 and 511 frames with event offsets 1, 63, 64, 65 and 127. With a simultaneous ordinary 1+255 split, the quantum device receives one 256-frame segment and nulls at its zero declared delay. Its clock update waits for the next legal tick. Reviewed the five Win portability patterns.
+
+| Seat | Needs |
+|---|---|
+| win and devices | Join Devices' Automatic adapter at `b8ff1a6e` with main's tick-carried transport state and existing position virtual. Mark PdDevice::segmentQuantum as an override of the new engine DeviceInstance virtual. The engine branch's six suites are green. A separate reconciled native graph/patch test is running. |
+
+PR requested
+
 ## 2026-11-22 — DEV-18 event transform phase, lands after DEV-17 and 3 December
 
 Branch `engine/dev18-event-transforms` at `4e7495537cc04b8816e2c52eb624fe5456281d6e`, stacked on `4af8d018`. Suggested PR title **Transform gathered MIDI events before graph segmentation**. [Compare](https://github.com/arieladi/Adi/compare/engine/dev17-note-identity...engine/dev18-event-transforms)
