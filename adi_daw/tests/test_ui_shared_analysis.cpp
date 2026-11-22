@@ -774,6 +774,15 @@ bool samePixels(const juce::Image &a, const juce::Image &b) {
         if (a.getPixelAt(x, y) != b.getPixelAt(x, y)) return false;
     return true;
 }
+void cumulativeAverageTitlePaint() {
+    SharedSpectrumView view;
+    view.setBounds(0, 0, 300, 180);
+    const auto realtime = softwarePicture(view);
+    view.setMode(SharedSpectrumView::Mode::SpectrumCumulativeAverage);
+    const auto average = softwarePicture(view);
+    check(view.getTitle() == "Cumulative Average" && !samePixels(realtime, average),
+          "Cumulative Average paints its own title while the source is still waiting");
+}
 void paletteMenuTheme() {
     using namespace adi::ui;
     Root root;
@@ -2759,7 +2768,7 @@ int main() {
     juce::ScopedJuceInitialiser_GUI initialiser;
     try { sharingAndVisibility(); sourceAndOwnerLifetime(); parentDestruction(); modesSourcesAndFreeze(); pendingSourceLease(); cappedFrozenHistoryAndIdleReset();
           mainReadoutFormatProjection(); mainMetersSharedPresentation(); permanentMainMeter(); linkedMainMeter(); parkedMainLoudnessProjection();
-          compactAnalyzerDock(); paletteMenuTheme(); palettesAndFrozenRaster(); restartedRasterDomain();
+          compactAnalyzerDock(); cumulativeAverageTitlePaint(); paletteMenuTheme(); palettesAndFrozenRaster(); restartedRasterDomain();
           clearSpectrogramWhileWorkerAhead(); freshActionsWithSharedConsumer(); backlogAndLifecycleFreshness(); spectrumSlopeProjection(); spectrumWideCachedGeometry(); spectrumDetailScale(); spectrumExtendedGridGeometry(); spectrumExtendedScale();
           pinnedSpectrumWaitsForHeardPrimary();
           spectrumDeviceScale(); spectrogramHistoryMotion(); classicScopeSurface();

@@ -416,6 +416,7 @@ MixAnalysers::MixAnalysers() {
     spectrumTraceBox.addItem("Realtime", static_cast<int>(Mode::Spectrum) + 1);
     spectrumTraceBox.addItem("Realtime Average", static_cast<int>(Mode::SpectrumAverage) + 1);
     spectrumTraceBox.addItem("Cumulative Average", static_cast<int>(Mode::SpectrumCumulativeAverage) + 1);
+    spectrumTraceBox.addItem("Realtime Sigma", static_cast<int>(Mode::SpectrumRealtimeSigma) + 1);
     spectrumTraceBox.addItem("Realtime Maximum", static_cast<int>(Mode::SpectrumMaximum) + 1);
     spectrumTraceBox.addItem("Cumulative Maximum", static_cast<int>(Mode::SpectrumCumulativeMaximum) + 1);
     spectrumTraceBox.setTitle("Spectrum trace");
@@ -430,7 +431,7 @@ MixAnalysers::MixAnalysers() {
         pinnedTracks_.setEnabled(canPin);
     };
     pinnedTracks_.setTitle("Pinned tracks");
-    pinnedTracks_.setTooltip("Overlay your Stack pins in Realtime, Realtime Average or Cumulative Average.");
+    pinnedTracks_.setTooltip("Overlay your Stack pins in Realtime, either average, or Realtime Sigma.");
     pinnedTracks_.onClick = [this] {
         if (!pinnedTracks_.getToggleState()) clearPinnedSpectrum();
     };

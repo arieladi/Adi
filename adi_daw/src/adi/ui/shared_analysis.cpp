@@ -104,7 +104,7 @@ constexpr std::uint32_t allOutputs = SharedAnalysis::Spectrum | SharedAnalysis::
                                      SharedAnalysis::Phase | SharedAnalysis::Spectrogram | SharedAnalysis::Average1s |
                                      SharedAnalysis::RealtimeMaximum | SharedAnalysis::CumulativeMaximum |
                                      SharedAnalysis::Strip | SharedAnalysis::DeviceBlockAverage | SharedAnalysis::PhaseBands |
-                                     SharedAnalysis::CumulativeAverage;
+                                     SharedAnalysis::CumulativeAverage | SharedAnalysis::RealtimeSigma;
 constexpr int stripFftSize = 1024;
 constexpr double stripRefreshSeconds = .05, stripSmoothingSeconds = .3;
 constexpr std::size_t maxHistoryColumns = 128;
@@ -241,7 +241,8 @@ bool usable(const std::shared_ptr<const engine::ScopeTap> &tap, std::int32_t n) 
 bool spectralOutput(std::uint32_t outputs) noexcept {
     return (outputs & (SharedAnalysis::Spectrum | SharedAnalysis::Spectrogram |
                        SharedAnalysis::Average1s | SharedAnalysis::RealtimeMaximum |
-                       SharedAnalysis::CumulativeMaximum | SharedAnalysis::Strip | SharedAnalysis::CumulativeAverage)) != 0;
+                       SharedAnalysis::CumulativeMaximum | SharedAnalysis::Strip | SharedAnalysis::CumulativeAverage |
+                       SharedAnalysis::RealtimeSigma)) != 0;
 }
 bool rawSpectralOutput(std::uint32_t outputs) noexcept {
     return (outputs & (SharedAnalysis::Spectrum | SharedAnalysis::Spectrogram)) != 0;
@@ -549,6 +550,15 @@ struct SharedAnalysis::Domain {
     };
     std::unique_ptr<MaximumHistory> maximum;
     std::atomic<bool> neutralMaximum{true};
+    struct SigmaHistory {
+        struct Moments { double mean = 0., variance = 0.; };
+        std::vector<Moments> bins;
+        double step = 0.;
+        std::int64_t afterSequence = 0;
+        std::uint64_t lastWindow = 0;
+    };
+    std::unique_ptr<SigmaHistory> sigma;
+    std::atomic<bool> neutralSigma{true};
     std::vector<std::shared_ptr<CumulativeHistory>> cumulativeHistories;
     std::atomic<bool> cumulativeReady{true};
     std::vector<std::shared_ptr<CumulativeAverageHistory>> cumulativeAverages;
@@ -589,6 +599,7 @@ struct SharedAnalysis::Domain {
     std::shared_ptr<const Result> result;
     std::shared_ptr<const AverageResult> averageResult;
     std::shared_ptr<const MaximumResult> maximumResult;
+    std::shared_ptr<const RealtimeSigmaResult> sigmaResult;
     std::shared_ptr<const StereoMeterResult> meterResult;
     std::shared_ptr<const StripResult> stripResult;
     struct StripHistory {
@@ -601,6 +612,7 @@ struct SharedAnalysis::Domain {
     std::shared_ptr<const Result> readResult() const { std::lock_guard lock(resultMutex); return result; }
     std::shared_ptr<const AverageResult> readAverageResult() const { std::lock_guard lock(resultMutex); return averageResult; }
     std::shared_ptr<const MaximumResult> readMaximumResult() const { std::lock_guard lock(resultMutex); return maximumResult; }
+    std::shared_ptr<const RealtimeSigmaResult> readSigmaResult() const { std::lock_guard lock(resultMutex); return sigmaResult; }
     std::shared_ptr<const StereoMeterResult> readMeterResult() const { std::lock_guard lock(resultMutex); return meterResult; }
     std::shared_ptr<const StripResult> readStripResult() const { std::lock_guard lock(resultMutex); return stripResult; }
     void publishStrip(std::shared_ptr<const StripResult> next) {
@@ -674,16 +686,19 @@ struct SharedAnalysis::Domain {
         meterResult.swap(next);
     }
     void publishResult(std::shared_ptr<const Result> next, std::shared_ptr<const AverageResult> nextAverage = {},
-                       std::shared_ptr<const MaximumResult> nextMaximum = {}) {
+                       std::shared_ptr<const MaximumResult> nextMaximum = {},
+                       std::shared_ptr<const RealtimeSigmaResult> nextSigma = {}) {
         {
             std::lock_guard lock(resultMutex);
             result.swap(next); averageResult.swap(nextAverage); maximumResult.swap(nextMaximum);
+            sigmaResult.swap(nextSigma);
         }
     }
     void updateAvailability() noexcept {
         const auto bits = outputs.load(std::memory_order_acquire);
         const auto unavailable = (averageConfigured ? 0u : std::uint32_t{Average1s}) |
-                                 (maximum ? 0u : std::uint32_t{RealtimeMaximum});
+                                 (maximum ? 0u : std::uint32_t{RealtimeMaximum}) |
+                                 (sigma ? 0u : std::uint32_t{RealtimeSigma});
         const bool onlyUnavailable = bits != 0 && (bits & ~unavailable) == 0;
         available.store(usable(tap, request.fftSize) && !onlyUnavailable && (!meter || meterPrepared),
                         std::memory_order_release);
@@ -744,6 +759,49 @@ struct SharedAnalysis::Domain {
         } catch (...) { maximum.reset(); }
         resetMaximum();
         updateAvailability();
+    }
+    void resetSigma() noexcept {
+        if (sigma) {
+            std::fill(sigma->bins.begin(), sigma->bins.end(), SigmaHistory::Moments{});
+            sigma->lastWindow = 0;
+        }
+        neutralSigma.store(!sigma, std::memory_order_release);
+    }
+    void activateSigma(std::int64_t sequence) noexcept {
+        if (!(outputs.load(std::memory_order_acquire) & RealtimeSigma)) return;
+        try {
+            if (!usable(tap, request.fftSize)) sigma.reset();
+            else {
+                if (!sigma) {
+                    auto next = std::make_unique<SigmaHistory>();
+                    next->bins.resize(linear.size());
+                    sigma = std::move(next);
+                }
+                // Both moments use the half-second coefficient for the one-second Sigma trace.
+                sigma->step = -std::expm1(std::log(.1) * (request.hopSize / (.5 * tap->sampleRate())));
+                sigma->afterSequence = sequence;
+            }
+        } catch (...) { sigma.reset(); }
+        resetSigma();
+        updateAvailability();
+    }
+    void advanceSigma(bool nonzero) noexcept {
+        bool quiet = !nonzero;
+        if (nonzero || !neutralSigma.load(std::memory_order_relaxed)) {
+            constexpr double nearZero = 1.e-15;
+            for (std::size_t i = 0; i < sigma->bins.size(); ++i) {
+                auto &bin = sigma->bins[i];
+                const double magnitude = linear[i];
+                bin.mean += sigma->step * (magnitude - bin.mean);
+                const auto residual = magnitude - bin.mean;
+                bin.variance += sigma->step * (residual * residual - bin.variance);
+                quiet = quiet && bin.mean < nearZero && bin.variance < nearZero * nearZero;
+            }
+            // Effects this far below the display floor cannot affect a reading.
+            if (quiet) std::fill(sigma->bins.begin(), sigma->bins.end(), SigmaHistory::Moments{});
+            neutralSigma.store(quiet, std::memory_order_release);
+        }
+        sigma->lastWindow = windowSerial;
     }
     void addCumulative(const std::shared_ptr<CumulativeHistory> &history, std::int64_t sequence) {
         if (!history) return;
@@ -817,6 +875,7 @@ struct SharedAnalysis::Domain {
             // A discontinuity clears the history but cannot admit older
             // samples from the same tap. A replacement tap uses startAt().
             resetMaximum();
+            resetSigma();
             for (const auto &history : cumulativeHistories) history->clear();
             for (const auto &history : cumulativeAverages) history->clear();
             for (const auto &entry : blockAverages) entry->reset(resultMutex);
@@ -854,6 +913,7 @@ struct SharedAnalysis::Domain {
         if (balanceHistory) balanceHistory->startAt(cursor.next);
         activateAverage(sequence);
         activateMaximum(sequence);
+        activateSigma(sequence);
         if (outputs.load(std::memory_order_acquire) & Strip) startStripAt(sequence);
         for (const auto &blockAverage : blockAverages) {
             blockAverage->afterSequence = sequence;
@@ -914,6 +974,12 @@ struct SharedAnalysis::Domain {
             std::shared_ptr<const MaximumResult> retired;
             { std::lock_guard lock(resultMutex); maximumResult.swap(retired); }
         }
+        if (!(bits & RealtimeSigma) && sigma) {
+            sigma.reset();
+            neutralSigma.store(true, std::memory_order_release);
+            std::shared_ptr<const RealtimeSigmaResult> retired;
+            { std::lock_guard lock(resultMutex); sigmaResult.swap(retired); }
+        }
         if (!(bits & Output::Spectrogram)) {
             columns.clear(); pendingHistory.clear(); retiredForPending = 0;
             historyWindow = 0; historyBlocked.store(false, std::memory_order_release);
@@ -942,7 +1008,8 @@ struct SharedAnalysis::Domain {
                (!(bits & DeviceBlockAverage) || blockAveragesQuiet.load(std::memory_order_acquire)) &&
                // Cumulative averaging counts silent hops even when its bins already sit at the floor.
                !(bits & (Average1s | CumulativeAverage)) &&
-               (!(bits & RealtimeMaximum) || neutralMaximum.load(std::memory_order_acquire));
+               (!(bits & RealtimeMaximum) || neutralMaximum.load(std::memory_order_acquire)) &&
+               (!(bits & RealtimeSigma) || neutralSigma.load(std::memory_order_acquire));
     }
     bool settledParkedSilence(engine::ScopeTap::ParkedSilence quiet) const noexcept {
         const auto bits = outputs.load(std::memory_order_acquire);
@@ -1068,6 +1135,7 @@ struct SharedAnalysis::Domain {
         const bool averageHopEligible = (bits & Average1s) && averageConfigured && newWindow && averageWindow != windowSerial &&
             firstSequence > averageAfterSequence - static_cast<std::int64_t>(n);
         const bool maximumHopEligible = maximum && newWindow && firstSequence >= maximum->afterSequence;
+        const bool sigmaHopEligible = sigma && (bits & RealtimeSigma) && newWindow && firstSequence >= sigma->afterSequence;
         const bool cumulativeHop = (bits & CumulativeMaximum) && newWindow &&
             std::ranges::any_of(cumulativeHistories, [this](const auto &history) {
                 return firstSequence >= history->afterSequence;
@@ -1079,7 +1147,7 @@ struct SharedAnalysis::Domain {
         const auto windowEnd = firstSequence + static_cast<std::int64_t>(n);
         const bool stripHop = (bits & Strip) && newWindow && strip->period &&
                               windowEnd >= stripNextEnd.load(std::memory_order_relaxed);
-        const bool needsSpectrum = rawSpectralOutput(bits) || averageHopEligible || maximumHopEligible ||
+        const bool needsSpectrum = rawSpectralOutput(bits) || averageHopEligible || maximumHopEligible || sigmaHopEligible ||
                                    cumulativeHop || cumulativeAverageHop || stripHop;
         if (needsSpectrum && !spectrum) return {};
         auto latest = std::make_shared<Result>();
@@ -1172,6 +1240,7 @@ struct SharedAnalysis::Domain {
                 maximum->lastWindow = windowSerial;
                 neutralMaximum.store(quiet, std::memory_order_release);
             }
+            if (sigmaHopEligible) advanceSigma(nonzero);
             if (cumulativeHop) {
                 bool ready = true;
                 for (const auto &history : cumulativeHistories) {
@@ -1244,6 +1313,26 @@ struct SharedAnalysis::Domain {
             publication->binsDbfs.resize(maximum->bins.size());
             std::transform(maximum->bins.begin(), maximum->bins.end(), publication->binsDbfs.begin(), dsp::toDbfs);
             return publication;
+        } catch (...) { return {}; }
+    }
+    std::shared_ptr<const RealtimeSigmaResult> makeSigmaResult(const std::shared_ptr<const Result> &window) noexcept {
+        if (!sigma || !sigma->lastWindow || !(window->outputs & RealtimeSigma)) return {};
+        const auto previous = readSigmaResult();
+        const bool unchanged = previous && previous->window->windowSerial == sigma->lastWindow;
+        if (unchanged && previous->window->outputs == window->outputs) return previous;
+        try {
+            auto next = std::make_shared<RealtimeSigmaResult>();
+            next->window = window;
+            if (unchanged) next->binsDbfs = previous->binsDbfs;
+            else {
+                next->binsDbfs.resize(sigma->bins.size(), dsp::kDbFloor);
+                if (!neutralSigma.load(std::memory_order_relaxed)) {
+                    std::ranges::transform(sigma->bins, next->binsDbfs.begin(), [](const auto &bin) {
+                        return dsp::toDbfs(static_cast<float>(std::sqrt(std::max(0., bin.variance))));
+                    });
+                }
+            }
+            return next;
         } catch (...) { return {}; }
     }
     void publishCumulative(const std::shared_ptr<const Result> &window) noexcept {
@@ -2171,7 +2260,9 @@ struct SharedAnalysis::State {
                     if (latest->outputs & CumulativeAverage)
                         for (const auto &history : d.cumulativeAverages) history->publish(latest);
                     for (const auto &blockAverage : d.blockAverages) blockAverage->publish(d.resultMutex);
-                    d.publishResult(std::move(latest), std::move(averagePublication), std::move(maximumPublication));
+                    auto sigmaPublication = d.makeSigmaResult(latest);
+                    d.publishResult(std::move(latest), std::move(averagePublication), std::move(maximumPublication),
+                                    std::move(sigmaPublication));
                     publications.fetch_add(1, std::memory_order_relaxed);
                 }
             }
@@ -2317,6 +2408,10 @@ bool SharedAnalysis::Lease::restartCumulativeAverage() noexcept {
     cumulativeAverage_->afterSequence = domain_->tap->written();
     cumulativeAverage_->clear();
     return true;
+}
+std::shared_ptr<const SharedAnalysis::RealtimeSigmaResult> SharedAnalysis::Lease::readRealtimeSigma() const noexcept {
+    const auto publication = (outputs_ & RealtimeSigma) && available() ? domain_->readSigmaResult() : nullptr;
+    return publication && (publication->window->outputs & outputs_) == outputs_ ? publication : nullptr;
 }
 void SharedAnalysis::Lease::setStereoBalanceEnabled(bool enabled) noexcept {
     if (enabled == balanceEnabled_ || !domain_ || !spectralOutput(outputs_)) return;
@@ -2579,6 +2674,7 @@ SharedAnalysis::Lease SharedAnalysis::acquire(const Request &request, std::uint3
         found->second->changeOutputs(request.outputs, true);
         if (newlyRequested & Average1s) found->second->activateAverage(sequence);
         if (newlyRequested & RealtimeMaximum) found->second->activateMaximum(sequence);
+        if (newlyRequested & RealtimeSigma) found->second->activateSigma(sequence);
         if (newlyRequested & Strip) found->second->startStripAt(sequence);
         found->second->updateAvailability();
         ++found->second->consumers; ++state_->consumers;
@@ -2607,6 +2703,7 @@ SharedAnalysis::Lease SharedAnalysis::acquire(const Request &request, std::uint3
     const auto admission = inserted || t.value != previousTap ? t.freshSequence : (t.value ? t.value->written() : 0);
     if (request.outputs & Average1s) domain->activateAverage(admission);
     if (request.outputs & RealtimeMaximum) domain->activateMaximum(admission);
+    if (request.outputs & RealtimeSigma) domain->activateSigma(admission);
     if (request.outputs & Strip) domain->startStripAt(admission);
     if (cumulative) cumulative->afterSequence = admission;
     if (blockAverage) blockAverage->afterSequence = admission;

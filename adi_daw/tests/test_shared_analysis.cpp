@@ -547,6 +547,126 @@ void realtimeMaximumDecayAndAdmission() {
               "settled parked maximum skips later certified quiet samples");
     }
 }
+void realtimeSigmaSpectrum() {
+    constexpr int window = 480;
+    constexpr std::uint64_t revision = 51;
+    Fixture f;
+    SharedAnalysis::Request request{1, ScopePoint::PostFader, window};
+    request.window = adi::dsp::Window::Rectangular;
+    request.hopSize = window;
+    auto raw = f.broker.acquire(request);
+    request.outputs = SharedAnalysis::RealtimeSigma;
+    auto sigma = f.broker.acquire(request);
+    const auto plan = f.broker.stats();
+    check(raw.available() && sigma.available() && !sigma.readRealtimeSigma() && !raw.readRealtimeSigma() &&
+              plan.taps == 1 && plan.domains == 1 && plan.spectralPlans == 1 && f.acquireCalls == 1,
+          "realtime sigma is demand-gated and shares the Raw FFT plan and physical tap");
+
+    const auto write = [&](float value, std::int64_t stamp, std::uint64_t epoch) {
+        std::array<float, window> samples;
+        samples.fill(value);
+        const auto *source = value == 0.f ? nullptr : samples.data();
+        f.tap->write(source, source, window, stamp, true, epoch);
+        return f.broker.pump();
+    };
+    const auto floorWork = write(0.f, 0, revision);
+    const auto initial = sigma.readRealtimeSigma();
+    check(initial && initial->window == raw.read() && !initial->binsDbfs.empty() &&
+              initial->binsDbfs.front() == adi::dsp::kDbFloor && floorWork == 0,
+          "the first silent null-input window publishes sigma floor without running the FFT");
+
+    // Independent values for a2 = 1 - .1^(480/(48000 * .5)).
+    // Update the mean with a2, then use the new mean and the same a2
+    // for the central second moment. Report only its square root in dB.
+    constexpr std::array<float, 4> steps{.5f, .125f, 0.f, .5f};
+    constexpr std::array<double, 4> expectedDb{-19.887759312, -19.900744366, -20.087349149, -17.308109395};
+    bool exactSteps = true;
+    bool sharedWindows = true;
+    for (std::size_t i = 0; i < steps.size(); ++i) {
+        const auto transforms = write(steps[i], static_cast<std::int64_t>(i + 1) * window, revision);
+        const auto picture = sigma.readRealtimeSigma();
+        exactSteps = exactSteps && picture && !picture->binsDbfs.empty() &&
+                     near(picture->binsDbfs.front(), expectedDb[i], .001) &&
+                     transforms == (steps[i] == 0.f ? 0u : 1u);
+        sharedWindows = sharedWindows && picture && picture->window == raw.read();
+    }
+    const auto last = sigma.readRealtimeSigma();
+    check(exactSteps && sharedWindows && f.broker.stats().transforms == 3,
+          "both sigma moments advance per physical hop with the same faster coefficient and newly updated mean");
+    check(initial && !initial->binsDbfs.empty() && initial->binsDbfs.front() == adi::dsp::kDbFloor,
+          "subsequent sigma windows cannot mutate a previously held publication");
+
+    request.outputs = SharedAnalysis::Scope;
+    auto scope = f.broker.acquire(request);
+    const auto beforeRepublish = f.broker.stats();
+    f.broker.pump();
+    const auto metadata = sigma.readRealtimeSigma();
+    const auto republished = f.broker.stats();
+    check(metadata && last && metadata->window && last->window &&
+              metadata->window == raw.read() && metadata->window == scope.read() &&
+              metadata->window->windowSerial == last->window->windowSerial &&
+              exactBins(metadata->binsDbfs, last->binsDbfs) &&
+              republished.transforms == beforeRepublish.transforms &&
+              republished.analysisWindows == beforeRepublish.analysisWindows,
+          "metadata-only scope publication changes no sigma history or transform");
+    f.broker.pump();
+    const auto idle = f.broker.stats();
+    check(sigma.readRealtimeSigma() == metadata && idle.transforms == republished.transforms &&
+              idle.publications == republished.publications && idle.workerPasses == republished.workerPasses,
+          "unchanged workers keep the same immutable sigma publication without extra passes");
+    scope.reset();
+
+    const auto seekWork = write(0.f, 30000, revision + 1);
+    const auto afterSeek = sigma.readRealtimeSigma();
+    check(seekWork == 0 && metadata && afterSeek && afterSeek->window == raw.read() &&
+              afterSeek->window->transportRevision == revision + 1 &&
+              afterSeek->window->sourceEpoch > metadata->window->sourceEpoch &&
+              !afterSeek->binsDbfs.empty() && afterSeek->binsDbfs.front() == adi::dsp::kDbFloor,
+          "a silent seek clears both sigma moments before publishing the new epoch");
+    write(.5f, 30000 + window, revision + 1);
+    const auto restarted = sigma.readRealtimeSigma();
+    check(restarted && !restarted->binsDbfs.empty() &&
+              near(restarted->binsDbfs.front(), expectedDb.front(), .001),
+          "the first nonzero post-seek hop repeats sigma startup numerically");
+
+    sigma.reset();
+    write(.25f, 30000 + 2 * window, revision + 1);
+    check(raw.read() && !(raw.read()->outputs & SharedAnalysis::RealtimeSigma) &&
+              f.broker.stats().spectralPlans == 1 && f.releaseCalls == 0,
+          "closing the sigma lease leaves the independent Raw plan without sigma output");
+    raw.reset();
+    const auto hidden = f.broker.stats();
+    write(.25f, 30000 + 3 * window, revision + 1);
+    const auto still = f.broker.stats();
+    check(hidden.taps == 0 && hidden.spectralPlans == 0 && f.releaseCalls == 1 &&
+              still.transforms == hidden.transforms && still.cursorReads == hidden.cursorReads &&
+              still.workerPasses == hidden.workerPasses && still.publications == hidden.publications,
+          "closing the final lease leaves no work for subsequent input");
+
+    Fixture parked;
+    request.outputs = SharedAnalysis::RealtimeSigma;
+    auto quietSigma = parked.broker.acquire(request);
+    const float *silence = nullptr;
+    parked.tap->write(silence, silence, window, 0, false, revision);
+    parked.broker.pump();
+    const auto settled = parked.broker.stats();
+    const auto heldFloor = quietSigma.readRealtimeSigma();
+    parked.tap->write(silence, silence, 5 * window, 0, false, revision);
+    parked.broker.pump();
+    const auto quiet = parked.broker.stats();
+    check(heldFloor && quietSigma.readRealtimeSigma() == heldFloor && settled.transforms == 0 &&
+              quiet.cursorReads == settled.cursorReads && quiet.workerPasses == settled.workerPasses,
+          "a settled parked Sigma trace does not read or transform further certified silence");
+    std::array<float, window> resumedInput;
+    resumedInput.fill(.5f);
+    parked.tap->write(resumedInput.data(), resumedInput.data(), window, 0, false, revision);
+    parked.broker.pump();
+    const auto resumedSigma = quietSigma.readRealtimeSigma();
+    check(resumedSigma && !resumedSigma->binsDbfs.empty() &&
+              near(resumedSigma->binsDbfs.front(), expectedDb.front(), .001) && parked.broker.stats().transforms == 1,
+          "an audible input wakes parked Sigma with its correct first-hop value");
+}
+
 void focusScopeMidBeforeBinning() {
     using adi::ui::FocusScopeBarBlock;
     using adi::ui::FocusScopeChannels;
@@ -4173,7 +4293,7 @@ void operator delete[](void *p,std::size_t) noexcept {::operator delete(p);}
 int main() {
     try { stripCadenceAndEpochs(); stripReusesRawSpectrum(); stripWorkerBudget(); stripLeaseInSession();
           continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeMidDemand(); focusScopeDifference(); focusScopeSideDemand(); focusBarScopeBrokerBoundaries(); focusScopeSumProjection(); focusScopeLayerPreview(); focusBarLayerPreview(); focusBarResidualSpectrum(); focusScopePhaseOperands(); focusScopeFlatPath(); focusLagPreviewRequests(); focusLagPreviewCases(); focusLagTapReads(); focusLagHighRateTaps(); focusMatchWindows(); parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
-          sharedModesAndCursors(); phaseBandCorrelation(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); cumulativeMaximumSpectrum(); cumulativeAverageSpectrum(); cumulativeMaximumParkedRollover(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); deviceSpectrumLease(); parkedDeviceSpectrum(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
+          sharedModesAndCursors(); phaseBandCorrelation(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); realtimeSigmaSpectrum(); cumulativeMaximumSpectrum(); cumulativeAverageSpectrum(); cumulativeMaximumParkedRollover(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); deviceSpectrumLease(); parkedDeviceSpectrum(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

@@ -57,7 +57,7 @@ class SharedAnalysis final {
     enum Output : std::uint32_t {
         Spectrum = 1, Scope = 2, Meters = 4, Phase = 8, Spectrogram = 16, Average1s = 32,
         RealtimeMaximum = 64, CumulativeMaximum = 128, Strip = 256, DeviceBlockAverage = 512, PhaseBands = 1024,
-        CumulativeAverage = 2048
+        CumulativeAverage = 2048, RealtimeSigma = 4096
     };
     struct DeviceSpectrumRequest {
         enum class Channel : std::uint8_t { Left, Right, Stereo };
@@ -140,6 +140,10 @@ class SharedAnalysis final {
         std::vector<float> binsDbfs;
         std::uint64_t processedWindows = 0;
     };
+    struct RealtimeSigmaResult {
+        std::shared_ptr<const Result> window;
+        std::vector<float> binsDbfs;
+    };
     struct BlockAverageResult {
         std::shared_ptr<const Result> window;
         std::vector<float> binsDbfs;
@@ -198,6 +202,7 @@ class SharedAnalysis final {
         // Arithmetic mean of calibrated linear bin magnitudes over this lease's interval.
         std::shared_ptr<const CumulativeAverageResult> readCumulativeAverage() const noexcept;
         bool restartCumulativeAverage() noexcept;
+        std::shared_ptr<const RealtimeSigmaResult> readRealtimeSigma() const noexcept;
         void setStereoBalanceEnabled(bool) noexcept;
         std::shared_ptr<const StereoMeterResult> readStereoMeter() const noexcept;
         std::shared_ptr<const StripResult> readStrip() const noexcept;

@@ -1751,6 +1751,76 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
                           now.spectralPlans == beforeAverage.spectralPlans && now.taps == beforeAverage.taps,
                       "returning to Realtime restores raw primary and pin traces on the same plans");
             }
+
+            const bool offeredSigma = select(pages.spectrumTraceBox, "Realtime Sigma");
+            root.frame();
+            check(offeredSigma && pages.page() == Page::Spectrum && control->isEnabled() &&
+                      control->getToggleState() && tapFor(main) == primaryTap && tapFor(first) == firstTap,
+                  "Realtime Sigma is a Spectrum trace that keeps its existing pinned sources");
+            if (offeredSigma) {
+                constexpr std::int64_t sigmaStamp = 300000;
+                constexpr std::size_t mainBin = 8, pinBin = 4;
+                broker->pump();
+                const auto beforeSigma = broker->stats();
+                sendTone(*primaryTap, overviewFft, static_cast<int>(mainBin), sigmaStamp);
+                sendTone(*firstTap, overviewFft, static_cast<int>(pinBin), sigmaStamp);
+                for (int pass = 0; pass < 12; ++pass) broker->pump();
+                root.frame();
+                const auto rawMain = primary.read(), rawPin = low.read();
+                const auto produced = broker->stats();
+                check(rawMain && rawPin && rawMain->firstStamp == sigmaStamp && rawPin->firstStamp == sigmaStamp &&
+                          rawMain->request.fftSize == overviewFft && rawPin->request.fftSize == overviewFft &&
+                          rawMain->hopSize == 1024 && rawPin->hopSize == 1024 &&
+                          (rawMain->outputs & SharedAnalysis::RealtimeSigma) &&
+                          (rawPin->outputs & SharedAnalysis::RealtimeSigma),
+                      "the visible primary and fresh pin already request sigma on their 4096/1024 plans");
+
+                auto sigmaRequest = request;
+                sigmaRequest.outputs = SharedAnalysis::RealtimeSigma;
+                sigmaRequest.track = main;
+                auto sigmaMainLease = broker->acquire(sigmaRequest);
+                sigmaRequest.track = first;
+                auto sigmaPinLease = broker->acquire(sigmaRequest);
+                const auto mainSigma = sigmaMainLease.readRealtimeSigma(), pinSigma = sigmaPinLease.readRealtimeSigma();
+                const auto step = 1. - std::pow(.1, 1024. / (48000. * .5));
+                const auto firstHopDb = 20. * std::log10((1. - step) * std::sqrt(step));
+                const auto matches = [&](const auto &sigma, const auto &raw, std::size_t bin) {
+                    return sigma && raw && sigma->window == raw &&
+                        bin < sigma->binsDbfs.size() && bin < raw->binsDbfs.size() &&
+                        std::abs(sigma->binsDbfs[bin] - raw->binsDbfs[bin] - firstHopDb) < .01;
+                };
+                auto &view = pages.detail.view;
+                check(matches(mainSigma, rawMain, mainBin) && matches(pinSigma, rawPin, pinBin) &&
+                          view.snapshot() == rawMain && view.spectrumBins().data() == mainSigma->binsDbfs.data(),
+                      "Sigma projects the first-hop standard deviation from the actual shared immutable windows");
+
+                if (pinSigma && pinBin < pinSigma->binsDbfs.size()) {
+                    juce::Image image(juce::Image::RGB, view.getWidth(), view.getHeight(), true, juce::SoftwareImageType{});
+                    juce::Graphics g(image);
+                    view.paint(g);
+                    const auto hz = static_cast<double>(pinBin) * 48000. / 4096.;
+                    const auto x = juce::roundToInt(5. + (image.getWidth() - 28.) * std::log(hz / 20.) / std::log(1000.));
+                    const auto y = juce::roundToInt(21. - (image.getHeight() - 55.) * pinSigma->binsDbfs[pinBin] / 96.);
+                    bool visiblePinPeak = false;
+                    for (int dy = -2; dy <= 2; ++dy)
+                        for (int dx = -2; dx <= 2; ++dx)
+                            visiblePinPeak = visiblePinPeak || (image.getBounds().contains(x + dx, y + dy) &&
+                                image.getPixelAt(x + dx, y + dy) != look::display);
+                    check(view.spectrumScale() == SharedSpectrumView::SpectrumScale::Wide && visiblePinPeak,
+                          "the pinned trace is painted at the sigma level rather than its raw peak");
+                }
+                const auto observed = broker->stats();
+                check(produced.taps == beforeSigma.taps && produced.domains == beforeSigma.domains &&
+                          produced.spectralPlans == beforeSigma.spectralPlans &&
+                          observed.spectralPlans == produced.spectralPlans &&
+                          produced.transforms > beforeSigma.transforms &&
+                          produced.transforms - beforeSigma.transforms ==
+                              produced.analysisWindows - beforeSigma.analysisWindows,
+                      "Sigma adds no plan and each real window has just its existing analyser transform");
+                sigmaMainLease.reset(); sigmaPinLease.reset();
+                select(pages.spectrumTraceBox, "Realtime");
+                root.frame();
+            }
         }
     }
     const bool renamed = doc->deviceAction("track.rename", {{"id", wide}, {"name", "Renamed wide ID"}});
@@ -1837,6 +1907,12 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
             root.frame();
             check(pages.comparisonView().referenceHeld && attached(wide),
                   "Realtime Average may open a pinned live tap without replacing Compare's held reference");
+            select(pages.spectrumTraceBox, "Realtime");
+        }
+        if (rate == 48000 && select(pages.spectrumTraceBox, "Realtime Sigma")) {
+            root.frame();
+            check(pages.comparisonView().referenceHeld && attached(wide),
+                  "Realtime Sigma keeps Compare's separate held reference while its own pin is live");
             select(pages.spectrumTraceBox, "Realtime");
         }
         pages.setPage(Page::Compare);
