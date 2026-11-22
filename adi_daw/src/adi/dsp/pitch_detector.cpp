@@ -170,6 +170,12 @@ bool PitchDetector::analyse(const float* window, double& hz, double& clarity) no
     // period. A pitch moving inside the window (vibrato, a glide) may put the
     // fine dip a few samples from the coarse one; that reading stands.
     const std::size_t length = size_ - half - 2;
+    // A window whose halves differ in energy by more than half again holds a
+    // note starting or stopping: there the fine difference slopes with the
+    // energy and pulls the walk, so its period must stay within 1.5 samples
+    // of the coarse dip. A steady level (a vibrato, a glide) keeps the walk.
+    const double first = energy_[half], second = energy_[size_] - energy_[half];
+    const bool onset = std::max(first, second) > 1.5 * std::min(first, second);
     const auto diff = [&](std::size_t lag) {
         ++work_;
         return difference(window, lag, length);
@@ -204,6 +210,9 @@ bool PitchDetector::analyse(const float* window, double& hz, double& clarity) no
         period = (static_cast<double>(at) + offset) / static_cast<double>(multiple);
         if (!(period >= static_cast<double>(lowest) - 1 && period <= static_cast<double>(highest) + 1)) {
             return false;   // walked out of the range read
+        }
+        if (onset && !(std::abs(period - static_cast<double>(tau)) < 1.5)) {
+            return false;   // a note starting (or stopping) inside the window pulled the walk off the coarse dip
         }
     }
     hz = rate_ / period;
