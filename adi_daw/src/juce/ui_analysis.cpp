@@ -62,6 +62,11 @@ float heightFor(float value, juce::Rectangle<float> area) {
 juce::String meterNumber(float value) {
     return std::isfinite(value) ? juce::String(value, 1) : juce::String("--");
 }
+bool spectrumFitsPrimary(const SharedAnalysis::Result *primary, const SharedAnalysis::Result &pin) noexcept {
+    return primary && pin.sampleRate == primary->sampleRate && pin.request.fftSize == primary->request.fftSize &&
+           pin.transportRevision == primary->transportRevision && pin.advancing == primary->advancing &&
+           (!pin.advancing || pin.firstStamp <= primary->firstStamp);
+}
 std::size_t currentThemeIndex() noexcept {
     const auto theme = std::ranges::find(kThemes, look::themeId());
     return theme == kThemes.end() ? 0 : static_cast<std::size_t>(theme - kThemes.begin());
@@ -413,10 +418,7 @@ void SharedSpectrumView::releaseSpectrumOverlays(bool keepPictures) noexcept {
     }
 }
 bool SharedSpectrumView::spectrumOverlayMatchesPrimary(const SpectrumOverlay &overlay) const noexcept {
-    return overlay.picture && shown_ && overlay.picture->sampleRate == shown_->sampleRate &&
-           overlay.picture->request.fftSize == shown_->request.fftSize &&
-           overlay.picture->transportRevision == shown_->transportRevision &&
-           overlay.picture->advancing == shown_->advancing;
+    return overlay.picture && spectrumFitsPrimary(shown_.get(), *overlay.picture);
 }
 void SharedSpectrumView::updateSpectrumOverlayPlot(SpectrumOverlay &overlay) noexcept {
     if (!spectrumOverlayMatchesPrimary(overlay)) {
@@ -455,10 +457,12 @@ void SharedSpectrumView::updateSpectrumOverlays(bool primaryChanged) noexcept {
         if (size <= 0 || next->firstSequence < 0 ||
             next->firstSequence > std::numeric_limits<std::int64_t>::max() - size ||
             next->firstSequence + size <= overlay.admission.written) continue;
+        // Leave a lead in the broker until the primary reaches it. The old
+        // trace can stay visible in the meantime if it still fits the primary.
         // The primary and first seven additional curves follow the normal clock.
         // Extra paths adopt new data at 15 Hz while the worker retains its hop rate.
         const auto &prior = overlay.picture;
-        bool due = next != prior;
+        bool due = next != prior && spectrumFitsPrimary(shown_.get(), *next);
         if (due && i >= 7 && prior && prior->generation == next->generation &&
             prior->sourceEpoch == next->sourceEpoch && prior->transportRevision == next->transportRevision &&
             prior->advancing == next->advancing && prior->sampleRate == next->sampleRate) {

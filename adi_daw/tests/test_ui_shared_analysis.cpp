@@ -1422,6 +1422,61 @@ void spectrumExtendedScale() {
           "hidden Extended keeps only its view-local preference");
 }
 
+void pinnedSpectrumWaitsForHeardPrimary() {
+    using Source = SharedSpectrumView::SpectrumOverlayTrack;
+    constexpr std::int32_t frames = 1024;
+    constexpr std::uint64_t transport = 37;
+    auto primary = std::make_shared<ScopeTap>(48000., SharedAnalysis::kTapSeconds);
+    auto pin = std::make_shared<ScopeTap>(48000., SharedAnalysis::kTapSeconds);
+    auto broker = std::make_shared<SharedAnalysis>(
+        [&](std::int64_t track, ScopePoint) { return track == 1 ? primary : pin; },
+        [](std::int64_t, ScopePoint) {}, SharedAnalysis::Mode::Manual);
+    Root root;
+    root.setBounds(0, 0, 680, 380);
+    root.setVisible(true);
+    root.addToDesktop(0);
+    SharedSpectrumView view;
+    view.setBounds(0, 0, 640, 360);
+    root.addAndMakeVisible(view);
+    const std::array<Source, 1> pins{{{2, "Pinned", adi::ui::look::accent}}};
+    view.setSpectrumOverlayTracks(pins);
+    view.present(broker, 1);
+    view.frame();
+    const auto write = [&](ScopeTap &tap, std::int64_t stamp, int bin, float gain) {
+        std::array<float, frames> samples{};
+        for (std::size_t i = 0; i < samples.size(); ++i)
+            samples[i] = gain * static_cast<float>(std::sin(
+                2. * std::numbers::pi * static_cast<double>(bin) * static_cast<double>(i) / frames));
+        tap.write(samples.data(), samples.data(), frames, stamp, true, transport);
+        broker->pump();
+        view.frame();
+    };
+    const auto heard = [&](std::int64_t stamp) {
+        const auto result = view.snapshot();
+        return result && result->advancing && result->transportRevision == transport && result->firstStamp == stamp;
+    };
+
+    write(*primary, 0, 16, .125f);
+    check(heard(0) && broker->stats().taps == 2 && broker->stats().spectralPlans == 2,
+          "pinned Spectrum starts with a current primary and both expected source plans");
+    const auto primaryOnly = softwarePicture(view);
+    write(*pin, frames, 32, .75f);
+    check(heard(0) && samePixels(primaryOnly, softwarePicture(view)),
+          "a future pin in the same transport epoch does not lead the current primary");
+
+    write(*primary, frames, 16, .125f);
+    const auto paired = softwarePicture(view);
+    check(heard(frames) && !samePixels(primaryOnly, paired),
+          "the retained pin picture becomes visible when the primary reaches its heard sample");
+    write(*pin, 2 * frames, 64, .5f);
+    check(heard(frames) && samePixels(paired, softwarePicture(view)),
+          "a later pin frame preserves the previous visible pin while it waits");
+    write(*primary, 2 * frames, 16, .125f);
+    check(heard(2 * frames) && !samePixels(paired, softwarePicture(view)),
+          "the later pin frame is admitted on the next matching primary interval");
+    root.removeFromDesktop();
+}
+
 void spectrumDeviceScale() {
     using namespace adi::ui;
     using Scale = SharedSpectrumView::SpectrumScale;
@@ -2549,6 +2604,7 @@ int main() {
           mainReadoutFormatProjection(); mainMetersSharedPresentation(); permanentMainMeter(); linkedMainMeter(); parkedMainLoudnessProjection();
           compactAnalyzerDock(); paletteMenuTheme(); palettesAndFrozenRaster(); restartedRasterDomain();
           clearSpectrogramWhileWorkerAhead(); freshActionsWithSharedConsumer(); backlogAndLifecycleFreshness(); spectrumSlopeProjection(); spectrumDetailScale(); spectrumExtendedScale();
+          pinnedSpectrumWaitsForHeardPrimary();
           spectrumDeviceScale(); spectrogramHistoryMotion(); classicScopeSurface();
           classicScopeUnchangedTrace(); detailedPhasePreservesHighFrequencyTrace(); mixAnalyserPages();
           compareAndAveragePages(); compareHoldSurvivesInvalidA(); }
