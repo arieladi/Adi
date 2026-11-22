@@ -17,6 +17,14 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — What the Width follower holds when its input falls
+
+Independent signed stereo steps show that positive Hold stores the recent input maximum ahead of the attack/release detector. After a one-frame 0.75 transient at 48 kHz and Hold 0.035, the measured envelope rose from 0.74029 through 0.74985 to 0.749998 and 0.75 after the input had fallen. Freezing the current envelope value misses the attack. A descending ramp at 44.1 kHz matched the sliding input maximum to 0.00000006. The strict input/envelope comparison and per-sample rounding also account for the sustained plateau ripple documented in the Hold follower fixtures.
+
+When the Hold setting changes between positive values, the new window takes effect immediately. Lengthening it may recover a peak that was outside the smaller window. At zero, the detector takes the current input and pauses its hold-history cursor. Restoring a positive value can recover pre-zero input. Samples received while Hold was zero do not enter this history. Eighteen changes in an 8,072-frame run matched at 0.0000000143 RMS with blocks of one and sixteen. The 256-frame external host delivered the change on its callback, giving 0.0000000198 RMS against the same law. Clearing the history on entering zero gave 0.0543 RMS.
+
+The clones seat takes the owned Width follower core and its tests on the existing `clones/shaper-width-follower` review branch. **Lands after 3 December.** Keep neutral and switched-off audio unchanged, prepare storage away from audio processing, verify the previous Width acceptance cases and measure the revised active detector at both block sizes. The same detector response is required by the future Crush Hold control.
+
 ## 22 November 2026 — Faster moving hold contour with the exact calibrated output
 
 `clones/shaper-crush-clock-precision` at `51901a1a` — Reduce the cost of moving Crush hold rates. Three small factor tables replace the exponential polynomial, and a new period is computed at its first capture. The tables add 4,736 shared bytes and no per-instance memory. Each supported rate still uses its original division. The 8,160,049 possible logarithmic inputs retained their rounded exponential. Across seventeen rates the steps and stereo samples matched in 835,584 comparisons, including the extreme rates. All 96 registered comparison captures were byte-identical to the calibrated device. The rack, Crush and registered native/edited-Pd suites passed at both Pd precisions under MSVC /W4 /WX.
