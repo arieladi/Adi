@@ -33,7 +33,7 @@ void AutoShift::prepare(double sampleRate) noexcept {
     if (rate_ > kHighestRate) {   // past any host's: inert, its input out
         return;
     }
-    decimation_ = std::max<std::size_t>(1, static_cast<std::size_t>(std::floor(rate_ / 48000)));
+    decimation_ = std::max<std::size_t>(1, static_cast<std::size_t>(std::ceil(rate_ / 48000 - 1e-9)));
     detector_.prepare(rate_ / static_cast<double>(decimation_));
     if (detector_.window() == 0) {
         return;
@@ -47,7 +47,9 @@ void AutoShift::prepare(double sampleRate) noexcept {
     try {
         for (std::size_t c = 0; c < 2; ++c) {
             in_[c].assign(size, 0.f);
-            low_[c].assign(size, 0.f);
+            for (auto& copy : low_) {
+                copy[c].assign(size, 0.f);
+            }
         }
         size_ = size;
         ready_ = true;
@@ -62,11 +64,12 @@ void AutoShift::prepare(double sampleRate) noexcept {
     tap_ = old_ = -static_cast<double>(latency_);
     shortest_ = farthest_ = static_cast<double>(latency_);
     filter_ = {};
-    cutoffRatio_ = 0;
+    design();
+    switches_ = 0;
     retune();
     speed_ = ratio_;
-    lowTap_ = lowOld_ = ratio_ > 1;
-    lowpass();
+    band_ = oldBand_ = -1;
+    band_ = oldBand_ = band();
 }
 
 void AutoShift::set(Param p, double v) noexcept {
@@ -106,27 +109,46 @@ double AutoShift::nearest(double note, int root, int scale) noexcept {
 
 double AutoShift::shift() const noexcept { return p_[Shift] + (p_[Detune] + current_) / 100; }
 
-void AutoShift::retune() noexcept { ratio_ = std::clamp(std::exp2(shift() / 12), 1 / kHighestRatio, kHighestRatio); }
+void AutoShift::retune() noexcept {
+    const double semitones = shift();
+    ratio_ = std::abs(semitones) < 0.002 ? 1.0 : std::clamp(std::exp2(semitones / 12), 1 / kHighestRatio, kHighestRatio);
+}
 
-void AutoShift::lowpass() noexcept {
-    // An eighth-order Butterworth (four sections) at 0.45 of the rate over
-    // the ratio: what a tap reading `ratio` samples a sample can hold.
-    if (ratio_ == cutoffRatio_) {
-        return;
-    }
-    cutoffRatio_ = ratio_;
-    const double w = 2 * std::numbers::pi * 0.45 / std::max(1.0, ratio_), cs = std::cos(w), sn = std::sin(w);
+void AutoShift::design() noexcept {
+    // Each band's eighth-order Butterworth (four sections) at 0.45 of the
+    // rate over the band's top ratio: what a tap reading that fast can hold.
+    // Fixed: designed once here, never retuned while it runs.
     constexpr std::array<double, 4> kQ = {0.50979557910415918, 0.60134488693504529, 0.89997622313641570, 2.5629154477415055};
-    for (std::size_t s = 0; s < kQ.size(); ++s) {
-        const double alpha = sn / (2 * kQ[s]), a0 = 1 + alpha;
-        for (std::size_t c = 0; c < 2; ++c) {
-            Biquad& f = filter_[c][s];
-            f.b0 = f.b2 = (1 - cs) / 2 / a0;
-            f.b1 = (1 - cs) / a0;
-            f.a1 = -2 * cs / a0;
-            f.a2 = (1 - alpha) / a0;
+    for (std::size_t k = 0; k < kBands; ++k) {
+        const double w = 2 * std::numbers::pi * 0.45 / kTops[k], cs = std::cos(w), sn = std::sin(w);
+        for (std::size_t s = 0; s < kQ.size(); ++s) {
+            const double alpha = sn / (2 * kQ[s]), a0 = 1 + alpha;
+            for (std::size_t c = 0; c < 2; ++c) {
+                Biquad& f = filter_[k][c][s];
+                f.b0 = f.b2 = (1 - cs) / 2 / a0;
+                f.b1 = (1 - cs) / a0;
+                f.a1 = -2 * cs / a0;
+                f.a2 = (1 - alpha) / a0;
+            }
         }
     }
+}
+
+int AutoShift::band() const noexcept {
+    int want = -1;
+    if (ratio_ > 1.05) {
+        want = 0;
+        while (want < static_cast<int>(kBands) - 1 && kTops[static_cast<std::size_t>(want)] < ratio_) {
+            ++want;
+        }
+    }
+    if (want < band_) {   // down only once 2 % under the current band's floor
+        const double floor = band_ == 0 ? 1.05 : kTops[static_cast<std::size_t>(band_ - 1)];
+        if (ratio_ > 0.98 * floor) {
+            return band_;
+        }
+    }
+    return want;
 }
 
 double AutoShift::read(const std::vector<float>& ring, double at) const noexcept {
@@ -180,16 +202,17 @@ void AutoShift::process(const float* inL, const float* inR, float* outL, float* 
                 current_ = target_;
             }
             retune();
-            lowpass();
         }
         const std::size_t slot = clock_ & (size_ - 1);
         for (std::size_t c = 0; c < 2; ++c) {
             in_[c][slot] = x[c];
-            double v = x[c];
-            for (auto& section : filter_[c]) {
-                v = section.run(v);
+            for (std::size_t k = 0; k < kBands; ++k) {
+                double v = x[c];
+                for (auto& section : filter_[k][c]) {
+                    v = section.run(v);
+                }
+                low_[k][c][slot] = static_cast<float>(v);
             }
-            low_[c][slot] = static_cast<float>(v);
         }
         // The detector, at the rate over the decimation, a chunk at a time;
         // each new reading is queued with the middle of its window.
@@ -234,7 +257,8 @@ void AutoShift::process(const float* inL, const float* inR, float* outL, float* 
             speed_ = ratio_;
             const double p = period_, delay = static_cast<double>(clock_) - tap_;
             const double length = std::clamp(std::round(p / 4), 16.0, std::ceil(longest_ / 4));
-            const bool low = ratio_ > 1, switching = low != lowTap_;
+            const int want = band();
+            const bool switching = want != band_;
             const double ahead = switching ? std::abs(speed_ - 1) * length : 0.0;
             double by = 0;
             if (speed_ > 1 && delay - ahead < centre - p / 2) {
@@ -253,8 +277,9 @@ void AutoShift::process(const float* inL, const float* inR, float* outL, float* 
             }
             if (by != 0 || switching) {
                 old_ = tap_;
-                lowOld_ = lowTap_;
-                lowTap_ = low;
+                oldBand_ = band_;
+                band_ = want;
+                switches_ += switching ? 1 : 0;
                 tap_ += by;
                 fadeLength_ = fade_ = static_cast<std::size_t>(length);
             }
@@ -271,9 +296,9 @@ void AutoShift::process(const float* inL, const float* inR, float* outL, float* 
                                          : 0.5 - 0.5 * std::cos(std::numbers::pi * static_cast<double>(fadeLength_ - fade_ + 1) /
                                                                  static_cast<double>(fadeLength_ + 1));
         for (std::size_t c = 0; c < 2; ++c) {
-            double wet = read(lowTap_ ? low_[c] : in_[c], tap_);
+            double wet = read(band_ < 0 ? in_[c] : low_[static_cast<std::size_t>(band_)][c], tap_);
             if (fade_ > 0) {
-                wet = fadeIn * wet + (1 - fadeIn) * read(lowOld_ ? low_[c] : in_[c], old_);
+                wet = fadeIn * wet + (1 - fadeIn) * read(oldBand_ < 0 ? in_[c] : low_[static_cast<std::size_t>(oldBand_)][c], old_);
             }
             const double dry = in_[c][(clock_ + size_ - latency_) & (size_ - 1)];
             float* out = c == 0 ? outL : outR;
