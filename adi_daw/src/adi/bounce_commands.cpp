@@ -4,6 +4,7 @@
 #include "adi/store.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <cmath>
+#include <iterator>
 #include <limits>
 #include <stdexcept>
 namespace adi::clip_edit {
@@ -44,8 +45,13 @@ TrackBounce prepareBounceToNewTrack(Store &store, const TrackBounceOptions &opti
             options.job.beginSample < 0 || options.job.endSample <= options.job.beginSample ||
             options.job.endSample > (std::int64_t{1} << 50))
             throw std::invalid_argument("invalid Bounce to New Track render range/rate");
+        const auto placement = edit::nanosFromSeconds(static_cast<double>(options.job.beginSample) / rate);
+        const auto end = edit::nanosFromSeconds(static_cast<double>(options.job.endSample) / rate);
+        if (std::llround(static_cast<double>(placement) * rate / 1e9) != options.job.beginSample ||
+            std::llround(static_cast<double>(end) * rate / 1e9) != options.job.endSample)
+            throw std::runtime_error("bounce placement cannot preserve its source samples");
         std::optional<std::int64_t> head;
-        std::vector<OpRequest> prefix;
+        std::vector<OpRequest> prefix, sourceEdits;
         std::string name;
         {
             SQLite::Transaction capture(store.db(), SQLite::TransactionBehavior::DEFERRED);
@@ -113,6 +119,16 @@ TrackBounce prepareBounceToNewTrack(Store &store, const TrackBounceOptions &opti
                 if (route.executeStep())
                     throw std::runtime_error("bounce source has multiple explicit Main destinations");
             }
+            if (options.muteOriginal) {
+                if (source.getColumn(0).getString() == "group") {
+                    add(sourceEdits, "track.setMute", {{"id", options.sourceTrack}, {"muted", true}});
+                } else {
+                    auto muted = prepareMuteRange(store, {{options.sourceTrack}, {1, placement}, {1, end}},
+                                                  rate, options.clipId);
+                    if (!muted.ok) throw std::runtime_error(muted.error);
+                    sourceEdits = std::move(muted.requests);
+                }
+            }
             capture.commit();
         }
         BounceOptions bounce;
@@ -122,9 +138,6 @@ TrackBounce prepareBounceToNewTrack(Store &store, const TrackBounceOptions &opti
         bounce.destination.track = options.newTrack;
         bounce.destination.clipId = options.clipId;
         bounce.destination.mediaId = options.mediaId;
-        const auto placement = edit::nanosFromSeconds(static_cast<double>(options.job.beginSample) / rate);
-        if (std::llround(static_cast<double>(placement) * rate / 1e9) != options.job.beginSample)
-            throw std::runtime_error("bounce placement cannot preserve its source sample");
         bounce.destination.at = {1, placement};
         auto data = std::make_shared<TrackBounce::Data>();
         data->generation = options.documentGeneration;
@@ -136,8 +149,8 @@ TrackBounce prepareBounceToNewTrack(Store &store, const TrackBounceOptions &opti
         auto &requests = data->material.edit.requests;
         requests.insert(requests.begin(), prefix.begin(), prefix.end());
         add(requests, "clip.setName", {{"id", options.clipId}, {"name", name}});
-        if (options.muteOriginal)
-            add(requests, "track.setMute", {{"id", options.sourceTrack}, {"muted", true}});
+        requests.insert(requests.end(), std::make_move_iterator(sourceEdits.begin()),
+                        std::make_move_iterator(sourceEdits.end()));
         for (auto &op : requests)
             op.label = "Bounce to New Track";
         result.data_ = std::move(data);

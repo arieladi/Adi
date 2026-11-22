@@ -84,6 +84,9 @@ struct RangeCut {RangeCopy copy;PreparedEdit edit;};
 [[nodiscard]] RangeCut prepareCutRange(Store&,const RangeSelection&,double referenceRate);
 [[nodiscard]] RangeCut prepareCutRange(Store&,const RangeSelection&,const edit_plan::Options&);
 [[nodiscard]] RangeCopy copyRange(Store&,const RangeSelection&,double referenceRate);
+/// Split covered main-lane material at both range edges and mute the interior.
+[[nodiscard]] PreparedEdit prepareMuteRange(Store&,const RangeSelection&,
+                                            double referenceRate,std::int64_t reserveClipId=0);
 [[nodiscard]] PreparedEdit prepareDeleteRange(Store&,const RangeSelection&,double referenceRate,std::int64_t reserveClipId=0);
 [[nodiscard]] PreparedEdit preparePasteRange(Store&,const RangeCopy&,const std::vector<std::int64_t>& tracks,
                                             TimePoint at,double referenceRate,bool insertTime=false);

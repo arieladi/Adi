@@ -8,6 +8,8 @@ struct TrackBounceOptions {
     // Needed only to retain a user-selected explicit Main destination.
     std::int64_t routingId = 0;
     std::string name; // empty: source name + " (Bounce)"
+    // Mute the rendered material on regular tracks. Group bounce keeps its
+    // group-output mute until its isolated mix contract is available.
     bool muteOriginal = true;
     std::uint64_t documentGeneration = 0;
 };
@@ -36,7 +38,7 @@ class TrackBounce {
 };
 // Direct post-fader wet render, placed Warp off on a plain audio sibling.
 // The source's parent, color and explicit Main destination are captured; the
-// source may be muted in the same undo step. Returns, sends and sidechain
+// source material may be muted in the same undo step. Returns, sends and sidechain
 // connections are not copied: this command places the selected direct output.
 [[nodiscard]] TrackBounce prepareBounceToNewTrack(Store &, const TrackBounceOptions &,
                                                   engine::DeviceLoader = {}, render::Control = {});

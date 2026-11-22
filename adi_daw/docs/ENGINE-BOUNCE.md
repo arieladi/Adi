@@ -15,8 +15,9 @@ media and, when the source has a user Main route, new routing identities.
 The new sibling follows the source; later siblings shift together in the same
 undo step. It inherits the parent and palette color and retains the source's
 explicit Main destination. Name defaults to the source plus ` (Bounce)` and
-also names the new clip. `muteOriginal` defaults true and mutes the ENTIRE
-original track; callers wanting it to remain live must set false. This is a
+also names the new clip. `muteOriginal` defaults true and splits the main-lane
+material at the captured range's edges. It mutes the covered pieces and leaves
+the remaining material live. A group source still mutes its group output. This is a
 direct output render, not an isolated mix through Main. Sends, return effects
 and sidechain connections are not cloned. It does not promise to replace every
 parallel route of a source. The output clip starts at the job's begin sample,

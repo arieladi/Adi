@@ -749,6 +749,63 @@ RangeCopy copyRangeImpl(Store& store,const RangeSelection& selection,double refe
 RangeCopy copyRange(Store& store,const RangeSelection& selection,double referenceRate) {
     return copyRangeImpl(store,selection,referenceRate,ClipLaneScope::MainLane);
 }
+PreparedEdit prepareMuteRange(Store& store,const RangeSelection& selection,double referenceRate,
+                              std::int64_t reserveClipId) {
+    PreparedEdit result;
+    try {
+        validRange(selection);
+        validRate(referenceRate);
+        Read read(store.db());
+        expectedHead(store,result);
+        result.sourceFile = filename(store);
+        const edit::TimeMap time(store.db());
+        CopyIds ids(store.db());
+        ids.reserve("clips",reserveClipId);
+        for (const auto track : selection.tracks) {
+            SQLite::Statement clips(store.db(),
+                "SELECT id,time_base,pos_ticks,length_ticks,pos_ns,length_ns FROM clips "
+                "WHERE track_id=? AND lane_id IS NULL AND muted=0 ORDER BY id");
+            clips.bind(1,track);
+            while (clips.executeStep()) {
+                const auto id = clips.getColumn(0).getInt64();
+                const int base = clips.getColumn(1).getInt();
+                if (base != 0 && base != 1) throw std::runtime_error("range mute needs a known clip clock");
+                const auto begin = coordinate(selection.begin,base,time);
+                const auto end = coordinate(selection.end,base,time);
+                const auto position = clips.getColumn(base == 0 ? 2 : 4);
+                const auto length = clips.getColumn(base == 0 ? 3 : 5);
+                if (position.isNull() || length.isNull()) throw std::runtime_error("range mute needs finite clip extents");
+                const auto first = position.getInt64();
+                const auto last = edit::addTime(first,length.getInt64());
+                if (last <= first || end <= begin || last <= begin || first >= end) continue;
+
+                auto inside = id;
+                if (first < begin) {
+                    inside = ids.next("clips");
+                    const bool splitEnd = last > end;
+                    const ClipSplit cuts{id,{base,begin},splitEnd ? std::optional{TimePoint{base,end}} : std::nullopt};
+                    const auto right = splitEnd ? std::optional{ids.next("clips")} : std::nullopt;
+                    result.requests.push_back(captureSplit(store,cuts,inside,right,time,referenceRate,ids));
+                } else if (last > end) {
+                    const ClipSplit cut{id,{base,end},{}};
+                    result.requests.push_back(captureSplit(store,cut,ids.next("clips"),{},time,referenceRate,ids));
+                }
+                OpRequest mute;
+                mute.opType = "clip.setMute";
+                mute.payload = {{"id",inside},{"muted",true}};
+                mute.targetKind = "clip";
+                mute.targetId = inside;
+                result.requests.push_back(std::move(mute));
+            }
+        }
+        for (auto& request : result.requests) request.label = "Mute Material Range";
+        result.ok = true;
+    } catch (const std::exception& error) {
+        result.requests.clear();
+        result.error = error.what();
+    }
+    return result;
+}
 RangeCut prepareCutRange(Store& store,const RangeSelection& selection,double referenceRate) {
     return prepareCutRange(store,selection,edit_plan::Options{referenceRate,{}});
 }

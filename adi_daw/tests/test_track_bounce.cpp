@@ -115,21 +115,25 @@ struct Project {
         return result;
     }
 };
-std::vector<float> hear(Project &p, const std::string &name, engine::Precision precision) {
+std::vector<float> hear(Project &p, const std::string &name, engine::Precision precision,
+                        std::int64_t begin=137,std::int64_t end=777) {
     auto job = p.options().job;
     job.project = p.store->path();
     job.directory = p.directory.path();
     job.nameTemplate = name;
     job.source = {};
     job.session.precision = precision;
+    job.beginSample = begin;
+    job.endSample = end;
     const auto result = render::renderWav(job, loader());
     check(result.state == render::JobState::Completed,
           result.error.empty() ? "native master render completes" : result.error.c_str());
     if (result.state != render::JobState::Completed)
         return {};
     audio::WavReader reader(result.output);
-    std::vector<float> data(1280);
-    check(reader.frames() == 640 && reader.read(data.data(), 640) == 640,
+    const auto count = static_cast<std::uint32_t>(end - begin);
+    std::vector<float> data(static_cast<std::size_t>(count) * 2);
+    check(reader.frames() == count && reader.read(data.data(), count) == count,
           "audition reads exact bounced range");
     return data;
 }
@@ -139,7 +143,7 @@ void command() {
         Project p;
         auto options = p.options();
         options.job.session.precision = precision;
-        const auto before = hear(p, "before", precision);
+        const auto before = hear(p, "before", precision, 0, 1024);
         const auto digest = digestProject(*p.store).text;
         auto prepared = clip_edit::prepareBounceToNewTrack(*p.store, options, loader());
         check(prepared.ready(),
@@ -163,22 +167,26 @@ void command() {
                   db.execAndGet("SELECT index_in_parent FROM tracks WHERE id=22").getInt() == 2,
               "new sibling is inserted immediately after the source");
         check(db.execAndGet("SELECT dst_id FROM routing WHERE id=81").getInt() == 41 &&
-                  db.execAndGet("SELECT muted FROM tracks WHERE id=21").getInt() == 1,
-              "explicit output destination is retained and original is muted");
+                  db.execAndGet("SELECT muted FROM tracks WHERE id=21").getInt() == 0 &&
+                  db.execAndGet("SELECT count(*) FROM clips WHERE track_id=21 AND muted<>0").getInt() == 1 &&
+                  db.execAndGet("SELECT count(*) FROM clips WHERE track_id=21 AND muted=0").getInt() == 2 &&
+                  db.execAndGet("SELECT pos_ns FROM clips WHERE track_id=21 AND muted<>0").getInt64() == 2854167 &&
+                  db.execAndGet("SELECT length_ns FROM clips WHERE track_id=21 AND muted<>0").getInt64() == 13333333,
+              "the explicit output remains and only the middle source piece is muted on the sample clock");
         check(db.execAndGet("SELECT warp_enabled FROM audio_clips WHERE clip_id=31").getInt() == 0 &&
                   db.execAndGet("SELECT src_len_frames FROM audio_clips WHERE clip_id=31").getInt() == 640 &&
                   db.execAndGet("SELECT name FROM clips WHERE id=31").getString() == "Source (Bounce)",
               "new clip is named, sample-exact and Warp off");
-        const auto after = hear(p, "after", precision);
+        const auto after = hear(p, "after", precision, 0, 1024);
         bool matches = before.size() == after.size() && !before.empty();
         for (std::size_t i = 0; i < after.size() && matches; ++i)
             matches = std::abs(before[i] - after[i]) < 1e-7f;
-        check(matches, "actual heard wet output matches through the captured parent/routing in both widths");
+        check(matches, "both rendered overlap and unselected source tails null through the explicit route");
         check(!clip_edit::commitTrackBounce(*p.store, prepared, 7).ok,
               "completed track bounce cannot be committed twice");
         check(History(*p.store).undo().ok && digestProject(*p.store).text == digest,
               "one undo restores all original tracks, order, source state and media rows");
-        check(History(*p.store).redo().ok && db.execAndGet("SELECT count(*) FROM clips").getInt() == 2,
+        check(History(*p.store).redo().ok && db.execAndGet("SELECT count(*) FROM clips").getInt() == 4,
               "one redo restores track and immutable render without running the effect again");
         const auto path = p.store->path();
         p.store.reset();
