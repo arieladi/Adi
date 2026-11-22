@@ -36,6 +36,14 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — PLAN AU-03, bounded write-pass thinning
+
+**PR requested** after the 3 December gate for `engine/au03-bounded-write-thinning` at `2782fb8a9383155bf706080db61356085687bfdb`. It joins guarded Insert Shape `8e44fe52` and write-pass boundaries `c85c9f34` at `e1619db6`. The native owner can pass a value tolerance and the session's sample rate when preparing a completed Arrangement pass. Linear replacement is checked on the projected playback clock with floating-point allowance. Endpoints, Hold transitions and coincident steps retain their original anchors. The journal records the number removed and the tolerance if any points were removed. With no tolerance, the original capture is retained.
+
+Strict GCC 14 and Clang 19 each passed four suites and 391 checks. For both nanosecond and musical lanes, including changing tempo, a 401-point pass retained fewer than a quarter of its points. Every playback sample stayed within 0.00025 of the exact capture. Tests also cover a transient spike, a hard Hold, coincident timestamps, exact Undo/Redo bytes and an invalid policy. Clip-local passes retain all points until their playback-clock mapping is integrated.
+
+The application setting and initial tolerance belong with the Window binding and the Live spacing reading. Taking the shared Arrangement write-pass exterior guards next.
+
 ## 2026-11-22 — PLAN AU-03, automation write-pass boundaries
 
 **PR requested** after the 3 December gate for `engine/au03-write-pass-boundaries` at `c85c9f3463592df295d44d5c39f714c3d3cdc735`, based on `87ea349c`. The recorder has explicit Touch and Latch modes. Latch keeps the released value at its recorded time, holds it until a new touch, and carries it across loop or locate boundaries. The transport producer supplies both native boundary positions. Stop closes the last open pass. A re-touch stays in that pass. A gap after release stores a Hold knot, so the next touch does not create an unplayed ramp. Existing Touch callers keep their release behavior.
