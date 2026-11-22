@@ -233,6 +233,47 @@ method); Live's files and renders stay in the director's research.
   - or have the export's brickwall read finer than the meter, at some CPU cost.
 - Nothing changes until you say.
 
+## 2026-11-22 — the tenth review: 3 findings, all fixed
+
+This round reviewed only the last round's changes. Three findings were confirmed and one refuted: that
+high notes' clear onset readings were up to 114 cents off.
+- **The detector (`devices/tuner`, 36212226).**
+  - The fault: the onset rule measured its quarters after the window's mean was removed. A low note
+    starting in the window leaves a large mean, which fills the silent quarter. So bass onsets (E1 at
+    40 cents off) and fast plucked decays escaped the rule.
+  - Each quarter is now its own variance: its energy about its own mean. A window with a quarter under
+    5 % of its loudest counts as a note starting, stopping or dying fast.
+  - `adi_tuner_tests` 71 (12 new):
+    - E1 and B1 after silence, the onset anywhere in the window, at 44.1, 48 and 96 kHz: worst 26.5
+      and 12.0 cents. That is the floor for 3.5 periods of E1 in a 44.1 kHz window; the halves rule
+      read 21 to 22.
+    - 41.2 Hz plucks: worst 22.2 cents.
+    - The previous detector reads E1 40.3 cents off.
+- **Auto Shift (`devices/auto-shift`, 738a1a59).**
+  - The fault: the 0.1 % glide back to the centre takes seconds on a low note (6 s at 82 Hz). Dry/Wet
+    combed until it ended: E2 was 7 dB down at first.
+  - While the tap glides, the dry signal now reads the tap as well, crossfaded over 20 ms, so Dry/Wet
+    cannot comb. The header now says how long the glide takes, and that both signals are off the
+    reported latency until it ends.
+  - `adi_auto_shift_tests` 127. E2 and E1 at Dry/Wet 50 % stay within 0.5 dB in every half second.
+    The plant fails at 6.6 dB.
+  - Merged up the stack to `devices/spectral-resonator` (220043f8).
+- **The translator (`devices/amxd-audit`, 745b7c15).**
+  - The fault: a `set` into a `$` message box whose `;` parts send to `---` names reached every part.
+  - Such a set is now refused, as is a `[prepend set]` feeding that box. A set made at run time is
+    dropped.
+  - `adi_pd_amxd_tests` 138. The plant fails.
+
+**Rounds so far:** 17, 8, 5, then 3 findings. Each fix has a plant that fails without it.
+
+**New heads:**
+- tuner 36212226, erosion fc8aa714, vinyl-distortion 8747f19d, filter-delay ccb36d5d, dj-filter
+  a27d28ca, auto-shift 738a1a59;
+- spectrum-device 6b0ecf19, live-amp 746623a0, live-cabinet e66c4647, corpus 1ac5587e, drum-buss
+  697886df, dynamic-tube 8dd55896, grain-delay a8d7affd, live-pedal f951f52c, roar aac01e9a,
+  spectral-time 55a0ec33, spectral-resonator 220043f8;
+- amxd-audit 745b7c15.
+
 ## 2026-11-22 — the ninth review: 5 findings, all fixed
 
 This round covered only the last round's changes. Five findings were confirmed and one refuted: that
