@@ -101,6 +101,7 @@ float AdiShaperFilter::tick(float input, Channel& state) const noexcept {
     }
     if (mode_ == Mode::HighPass12) return static_cast<float>(0.5 * highSum);
     if (mode_ == Mode::BandPass12) return static_cast<float>(band);
+    if (mode_ == Mode::Peak12) return input + static_cast<float>(band);
     return static_cast<float>(low);
 }
 

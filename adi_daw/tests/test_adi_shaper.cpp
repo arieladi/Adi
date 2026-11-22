@@ -18,9 +18,10 @@ using Stage = Shaper::Stage;
 static_assert(Shaper::bandParam(Stage::Pan, Band::High, Shaper::Point8) + 1 == Shaper::VolumeLowSlope);
 static_assert(Shaper::VolumeLowSlope == 127 && Shaper::VolumeHighSlope == 130 && Shaper::FilterOn == 133);
 static_assert(Shaper::SweepOn == 208 && Shaper::SweepLowPolarity == 283 && Shaper::DriveOn == 286);
-static_assert(Shaper::CrushOn == 340 && Shaper::Count == 415);
+static_assert(Shaper::CrushOn == 340 && Shaper::BaseCount == 415);
+static_assert(Shaper::FilterLowPeak == 912 && Shaper::FilterHighPeak == 914 && Shaper::Count == 915);
 static_assert(Shaper::driveParam(Band::High, Shaper::OutputTrim) + 1 == Shaper::CrushOn);
-static_assert(Shaper::modParam(Stage::Crush, Band::High, Shaper::Secondary8) + 1 == Shaper::Count);
+static_assert(Shaper::modParam(Stage::Crush, Band::High, Shaper::Secondary8) + 1 == Shaper::BaseCount);
 int failures = 0;
 
 void check(bool condition, const char* description) {
@@ -310,6 +311,8 @@ void bypassAndInvalid() {
           && sample[1] == 0.3f, "neutral rack preserves input bits");
     shaper.set(Shaper::bandParam(Stage::Width, Band::Mid, Shaper::Point3),
                std::numeric_limits<float>::quiet_NaN());
+    shaper.set(Shaper::BaseCount, 1);
+    shaper.set(static_cast<Shaper::Param>(Shaper::FilterLowPeak - 1), 1);
     shaper.set(Shaper::Count, 20);
     shaper.sync(std::numeric_limits<double>::infinity());
     shaper.tempo(0);

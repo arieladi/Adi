@@ -8,7 +8,7 @@ namespace adi::dsp {
 // One stereo band. Cutoff and resonance accept normalized contour heights.
 class AdiShaperFilter {
   public:
-    enum class Mode { LowPass6, LowPass12, HighPass6, HighPass12, BandPass12 };
+    enum class Mode { LowPass6, LowPass12, HighPass6, HighPass12, BandPass12, Peak12 };
 
     AdiShaperFilter() noexcept;
     void prepare(double sampleRate) noexcept;

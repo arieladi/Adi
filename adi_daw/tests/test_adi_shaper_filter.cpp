@@ -75,6 +75,57 @@ void heldOutResonantImpulses() {
     check(worst < 5e-5, "five small-signal filter responses agree within 0.005% of a unit impulse");
 }
 
+void peakImpulseResponse() {
+    struct Reading {
+        double rate;
+        float cutoff, resonance;
+        std::array<double, 6> taps;
+    };
+    constexpr std::array frames{0, 1, 3, 11, 63, 127};
+    constexpr std::array readings{
+        Reading{44100., .5f, 0.f, {1.06520438, .07391887, .04823056, -.00182336, -.00121960, -.00000661}},
+        Reading{48000., .845f, .91f, {1.61642444, .30349815, -.80005819, -.22326441, -.12978590, .01543924}},
+        Reading{96000., 1.f, 1.f, {1.80734241, -.18637720, -.26273555, -1.13907290, .79100227, .77836698}}
+    };
+    constexpr float impulse = 1.f / 256.f;
+    double worst = 0.;
+    for (const auto& reading : readings) {
+        Filter filter;
+        filter.prepare(reading.rate);
+        filter.setMode(Mode::Peak12);
+        std::size_t tap = 0;
+        for (int i = 0; i <= frames.back(); ++i) {
+            float left = i == 0 ? impulse : 0.f;
+            float right = -left;
+            filter.process(left, right, reading.cutoff, reading.resonance);
+            if (i != frames[tap]) continue;
+            worst = std::max({worst, std::abs(left / impulse - reading.taps[tap]),
+                              std::abs(right / impulse + reading.taps[tap])});
+            ++tap;
+        }
+    }
+    std::printf("Signed peak impulse maximum error %.9g\n", worst);
+    check(worst < 5e-5, "peak impulses match the measured response at three sample rates");
+}
+
+void movingPeakResponse() {
+    Filter peak, pass;
+    peak.setMode(Mode::Peak12);
+    pass.setMode(Mode::BandPass12);
+    bool exact = true;
+    for (int frame = 0; frame < 24000; ++frame) {
+        const float cutoff = static_cast<float>(std::abs(frame % 4096 - 2048)) / 2048.f;
+        const float resonance = static_cast<float>(frame % 1021) / 1020.f;
+        const float dryL = static_cast<float>(frame % 173 - 86) / 128.f;
+        const float dryR = static_cast<float>(61 - frame % 127) / 97.f;
+        float left = dryL, right = dryR, bandL = dryL, bandR = dryR;
+        peak.process(left, right, cutoff, resonance);
+        pass.process(bandL, bandR, cutoff, resonance);
+        exact = exact && left == dryL + bandL && right == dryR + bandR;
+    }
+    check(exact, "moving peak adds each input sample to its own band-pass output");
+}
+
 void sampleRatesAndReset() {
     constexpr std::array rates{32000.,44100.,96000.};
     constexpr std::array first{1.43091667,1.30600560,.47358054};
@@ -158,6 +209,8 @@ void movingContours() {
 int main() {
     bandwidth();
     heldOutResonantImpulses();
+    peakImpulseResponse();
+    movingPeakResponse();
     sampleRatesAndReset();
     resonantLevel();
     movingContours();

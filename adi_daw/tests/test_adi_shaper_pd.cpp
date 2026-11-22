@@ -37,6 +37,54 @@ void set(DeviceInstance& device, int id, double value) {
     check(device.setParam(std::to_string(id), ParamValue::fromNormalized(value)), "parameter write");
 }
 
+void filterPeakRecall() {
+    auto source = open();
+    set(*source, 134, 1);
+    set(*source, 140, .25);
+    set(*source, 163, .75);
+    set(*source, 186, 1);
+    set(*source, 913, 1);
+    set(*source, 914, 1);
+    const auto saved = source->saveState("state");
+    auto device = open();
+    check(device->loadState("state", saved), "recall independent peak switches");
+    check(device->getParam("913").real == 1 && device->getParam("914").real == 1
+          && device->getParam("915").real == 0, "the three saved peak switches are independent");
+    check(device->getParam("140").real == 1 && device->getParam("163").real == 3
+          && device->getParam("186").real == 4, "legacy normalized Filter selections retain their meaning");
+
+    const auto impulse = [](DeviceInstance& effect) {
+        effect.prepare(48000, 64);
+        std::array<std::array<float, 64>, 2> input{}, output{};
+        input[0][0] = -.25f;
+        input[1][11] = .375f;
+        const float* in[]{input[0].data(), input[1].data()};
+        float* out[]{output[0].data(), output[1].data()};
+        adi::engine::NodeIo io;
+        io.channels = 2;
+        io.frames = 64;
+        io.in = in;
+        io.out = out;
+        effect.process(io);
+        return output;
+    };
+    const auto peak = impulse(*device);
+    check(peak == impulse(*source), "peak state reproduces stereo audio after reopening");
+    auto legacy = adi::Payload::from_cbor(saved);
+    for (int id = 913; id <= 915; ++id) {
+        legacy.at("params").erase(std::to_string(id));
+        legacy.at("real").erase(std::to_string(id));
+    }
+    set(*device, 915, 1);
+    check(device->loadState("state", adi::Payload::to_cbor(legacy)), "recall an older state on the running Filter");
+    check(device->getParam("913").real == 0 && device->getParam("914").real == 0
+          && device->getParam("915").real == 0, "absent peak switches restore their defaults");
+    set(*source, 913, 0);
+    set(*source, 914, 0);
+    const auto restored = impulse(*device);
+    check(restored != peak && restored == impulse(*source), "sparse recall restores the selected high-pass response");
+}
+
 void writeCrossedCanvas(const std::filesystem::path& file) {
     std::string canvas(adi::builtinCanvas(uid));
     const std::string left = "#X connect 1 0 2 0;", right = "#X connect 1 1 2 1;";
@@ -48,6 +96,73 @@ void writeCrossedCanvas(const std::filesystem::path& file) {
     output << canvas;
     output.close();
     check(output.good(), "write edited project canvas");
+}
+
+void filterPeakPd(const std::string& directory, bool crossed) {
+    using Engine = adi::device::LibPdEngine;
+    using Shaper = adi::dsp::AdiShaper;
+    Engine path(directory, "ADI-Shaper.pd", 2, 2, Engine::Execution::Automatic, Engine::BlockMode::WholeBlocks);
+    adi::device::PdLatencyReceiver latency;
+    std::string error;
+    path.addSearchPath(ADI_PD_PATCH_DIR);
+    check(path.open(latency, error) && path.isNative() == !crossed, "open the requested peak processing path");
+    path.prepare(48000, 64);
+    path.bindParameters(adi::device::parsePdDeclarations(adi::builtinCanvas(uid)));
+    Shaper expected, plain;
+    const auto send = [&](Shaper::Param id, float value) {
+        check(path.sendParameter(static_cast<int>(id) + 1, value), "send a Filter control");
+        expected.set(id, value);
+        if (id < Shaper::BaseCount) plain.set(id, value);
+    };
+    send(Shaper::FilterOn, 1);
+    send(static_cast<Shaper::Param>(Shaper::FilterOn + 1), 3);
+    for (int b = 0; b < 3; ++b) {
+        const auto band = static_cast<Shaper::Band>(b);
+        for (int i = 0; i < 8; ++i) {
+            send(Shaper::modParam(Shaper::Stage::Filter, band, static_cast<Shaper::ModControl>(Shaper::Primary1 + i)), 55);
+            send(Shaper::modParam(Shaper::Stage::Filter, band, static_cast<Shaper::ModControl>(Shaper::Secondary1 + i)), 40);
+        }
+    }
+    using Block = std::array<std::array<float, 64>, 2>;
+    Block input{}, actual{}, wanted{}, unboosted{};
+    const float* in[]{input[0].data(), input[1].data()};
+    float* out[]{actual[0].data(), actual[1].data()};
+    adi::engine::NodeIo io;
+    io.channels = 2;
+    io.frames = 64;
+    io.in = in;
+    io.out = out;
+    for (int block = 0; block < 10; ++block) {
+        if (block > 0) {
+            const int band = (block - 1) / 3;
+            const auto peak = static_cast<Shaper::Param>(Shaper::FilterLowPeak + band);
+            const auto type = Shaper::modParam(Shaper::Stage::Filter, static_cast<Shaper::Band>(band), Shaper::Type);
+            const auto nextType = static_cast<float>(band + 1);
+            if (block % 3 == 1) {
+                send(peak, 1);
+            } else if (block % 3 == 2) {
+                // Delay this write in the oracle by one block. Editing the underlying
+                // choice while Peak is active must preserve its running filter history.
+                check(path.sendParameter(static_cast<int>(type) + 1, nextType), "edit the underlying Filter selection");
+                plain.set(type, nextType);
+            } else {
+                expected.set(type, nextType);
+                send(peak, 0);
+            }
+        }
+        for (int i = 0; i < io.frames; ++i) {
+            const auto n = block * io.frames + i;
+            input[0][static_cast<std::size_t>(i)] = static_cast<float>(.3 * std::sin(.071 * n)) + (n % 11 == 1 ? .4f : 0.f);
+            input[1][static_cast<std::size_t>(i)] = static_cast<float>(.2 * std::cos(.163 * n)) - (n % 17 == 3 ? .3f : 0.f);
+        }
+        expected.process(in[0], in[1], wanted[0].data(), wanted[1].data(), 64);
+        plain.process(in[0], in[1], unboosted[0].data(), unboosted[1].data(), 64);
+        path.process(io);
+        for (std::size_t ch = 0; ch < 2; ++ch)
+            check(actual[crossed ? 1 - ch : ch] == wanted[ch], "each band receives its peak switch on the live stereo canvas");
+        if (block % 3 == 1) check(wanted != unboosted, "the selected peak band changes the stereo waveform");
+    }
+    check(latency.latencySamples() == 0, "peak processing adds zero latency");
 }
 
 void cachedPdTransport(const std::string& directory, bool native) {
@@ -266,9 +381,13 @@ void automationKeepsTheClock() {
 int main() try {
     auto device = open();
     const auto* info = adi::findBuiltin(uid);
-    check(info && info->name == "ADI-Shaper" && device->paramCount() == 415, "device registration");
+    check(info && info->name == "ADI-Shaper" && device->paramCount() == 418, "device registration");
     for (int id = 1; id <= 415; ++id)
         check(device->paramAt(id - 1) && device->paramAt(id - 1)->id == std::to_string(id), "contiguous stable parameter IDs");
+    for (int i = 0; i < 3; ++i)
+        check(device->paramAt(415 + i) && device->paramAt(415 + i)->id == std::to_string(913 + i),
+              "append the peak switches after the legacy parameters");
+    filterPeakRecall();
     check(device->wantsDeviceTransport() && device->latencySamples() == 0, "position and latency");
     for (int id = 23; id <= 26; ++id) set(*device, id, 0);  // half-bar gate
     for (int id = 65; id <= 72; ++id) set(*device, id, 0);  // mono
@@ -379,6 +498,8 @@ int main() try {
     adi::test::TempDirectory edited{"shaper_pd", "crossed_outputs"};
     writeCrossedCanvas(edited.path() / "ADI-Shaper.pd");
     const auto editedDir = edited.path().string();
+    filterPeakPd(ADI_SHAPER_PATCH_DIR, false);
+    filterPeakPd(editedDir, true);
     cachedPdTransport(ADI_SHAPER_PATCH_DIR, true);
     cachedPdTransport(editedDir, false);
     modulationPd(editedDir, false, false);
