@@ -13,6 +13,30 @@
 #include <stdexcept>
 #include <utility>
 namespace adi {
+namespace detail {
+std::int64_t deviceChainOwner(const SQLite::Database& db, std::int64_t chain) {
+    std::set<std::int64_t> seen;
+    for (;;) {
+        if (!seen.insert(chain).second) throw std::runtime_error("destination rack contains a cycle");
+        SQLite::Statement row(db, "SELECT track_id,parent_device_id FROM device_chains WHERE id=?");
+        row.bind(1, chain);
+        if (!row.executeStep()) throw std::runtime_error("destination chain is missing");
+        if (!row.getColumn(0).isNull()) return row.getColumn(0).getInt64();
+        if (row.getColumn(1).isNull()) throw std::runtime_error("destination chain has no owner");
+        SQLite::Statement parent(db, "SELECT chain_id FROM devices WHERE id=?");
+        parent.bind(1, row.getColumn(1).getInt64());
+        if (!parent.executeStep()) throw std::runtime_error("destination rack owner is missing");
+        chain = parent.getColumn(0).getInt64();
+    }
+}
+void requireDeviceInsertTrack(const SQLite::Database& db, std::int64_t track) {
+    SQLite::Statement target(db, "SELECT kind FROM tracks WHERE id=?");
+    target.bind(1, track);
+    if (!target.executeStep()) throw std::runtime_error("destination track is missing");
+    if (target.getColumn(0).getString() == "vca")
+        throw std::runtime_error("devices cannot be inserted on a VCA track");
+}
+}
 namespace {
 std::int64_t integer(const Payload& value){return detail::signedInteger(value);}
 enum class Role { MidiEffect, Instrument, AudioEffect };
@@ -46,19 +70,6 @@ std::string identity(SQLite::Database& db) {
     SQLite::Statement query(db,"PRAGMA database_list");
     while(query.executeStep())if(query.getColumn(1).getString()=="main")return query.getColumn(2).getString();
     throw std::runtime_error("built-in insertion needs a project");
-}
-std::int64_t owner(SQLite::Database& db,std::int64_t chain) {
-    std::set<std::int64_t> seen;
-    for(;;) {
-        if(!seen.insert(chain).second)throw std::runtime_error("destination rack contains a cycle");
-        SQLite::Statement row(db,"SELECT track_id,parent_device_id FROM device_chains WHERE id=?");row.bind(1,chain);
-        if(!row.executeStep())throw std::runtime_error("destination chain is missing");
-        if(!row.getColumn(0).isNull())return row.getColumn(0).getInt64();
-        if(row.getColumn(1).isNull())throw std::runtime_error("destination chain has no owner");
-        SQLite::Statement parent(db,"SELECT chain_id FROM devices WHERE id=?");parent.bind(1,row.getColumn(1).getInt64());
-        if(!parent.executeStep())throw std::runtime_error("destination rack owner is missing");
-        chain=parent.getColumn(0).getInt64();
-    }
 }
 Payload referenceRow(SQLite::Database& db,const Payload& values) {
     SQLite::Statement ddl(db,"SELECT sql FROM sqlite_master WHERE type='table' AND name='plugin_refs'");
@@ -106,8 +117,7 @@ static PreparedBuiltinInsert prepareInsert(Store& store,const rows::PluginRef& r
         auto& db=store.db();RowIds ids(db);std::optional<SQLite::Transaction> read;
         if(sqlite3_get_autocommit(db.getHandle())!=0)read.emplace(db,SQLite::TransactionBehavior::DEFERRED);
         result.sourceFile=identity(db);result.options.expectHead.emplace(OpJournal(store).headSeq());
-        SQLite::Statement target(db,"SELECT 1 FROM tracks WHERE id=?");target.bind(1,track);
-        if(!target.executeStep())throw std::runtime_error("destination track is missing");
+        detail::requireDeviceInsertTrack(db, track);
         const std::string label="Insert "+ref.name;
         auto append=[&](const char* type,Payload payload,const char* kind,std::int64_t id) {
             OpRequest request;request.opType=type;request.payload=std::move(payload);request.label=label;
@@ -128,7 +138,8 @@ static PreparedBuiltinInsert prepareInsert(Store& store,const rows::PluginRef& r
             SQLite::Statement selected(db,"SELECT chain_id FROM devices WHERE id=?");selected.bind(1,*before);
             if(!selected.executeStep())throw std::runtime_error("selected device is missing");
             result.chainId=selected.getColumn(0).getInt64();
-            if(owner(db,result.chainId)!=track)throw std::runtime_error("selected device belongs to another track");
+            if (detail::deviceChainOwner(db, result.chainId) != track)
+                throw std::runtime_error("selected device belongs to another track");
         } else {
             SQLite::Statement chain(db,"SELECT id FROM device_chains WHERE track_id=? ORDER BY ord,id LIMIT 1");chain.bind(1,track);
             if(chain.executeStep())result.chainId=chain.getColumn(0).getInt64();
