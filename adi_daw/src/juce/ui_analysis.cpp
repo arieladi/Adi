@@ -173,19 +173,21 @@ struct SharedSpectrumView::ScaledSpectrum {
         }
     }
 
-    void paint(juce::Graphics &g, juce::Rectangle<float> plot, juce::Colour colour = look::value) const {
+    void paint(juce::Graphics &g, juce::Rectangle<float> plot, juce::Colour colour = look::value,
+               bool primary = false) const {
         if (line.isEmpty() || plot.getWidth() <= 1.f || plot.getHeight() <= 1.f) return;
         const float inset = scale == SpectrumScale::Wide ? 0.f : 1.f;
         const auto transform = juce::AffineTransform::scale(plot.getWidth() - inset, plot.getHeight() - inset)
             .translated(plot.getX(), plot.getY());
         juce::Graphics::ScopedSaveState state(g);
-        g.reduceClipRegion(plot.toNearestInt());
+        const bool widePrimary = primary && scale == SpectrumScale::Wide;
+        if (!widePrimary) g.reduceClipRegion(plot.toNearestInt());
         if (!fill.isEmpty()) {
             g.setColour(colour.withAlpha(spectrumFillOpacity));
             g.fillPath(fill, transform);
         }
         g.setColour(colour);
-        g.strokePath(line, juce::PathStrokeType(look::line), transform);
+        g.strokePath(line, juce::PathStrokeType(widePrimary ? 1.4f : look::line), transform);
     }
 };
 
@@ -574,7 +576,7 @@ void SharedSpectrumView::setSpectrumSlope(SpectrumSlope slope) {
     if (spectrumSlope_ == slope) return;
     spectrumSlope_ = slope;
     try { updateSpectrumProjection(); } catch (...) { spectrumProjection_.reset(); }
-    if (spectrumScale_ != SpectrumScale::Wide) updateScaledSpectrum();
+    updateScaledSpectrum();
     for (auto &overlay : spectrumOverlays_) updateSpectrumOverlayPlot(overlay);
     repaint();
 }
@@ -588,7 +590,7 @@ void SharedSpectrumView::setSpectrumScale(SpectrumScale scale) {
     repaint();
 }
 void SharedSpectrumView::updateScaledSpectrum() noexcept {
-    if (spectrumScale_ == SpectrumScale::Wide || !shown_) {
+    if (!spectrumMode() || !shown_) {
         scaledSpectrum_.reset();
         return;
     }
@@ -992,7 +994,7 @@ void SharedSpectrumView::frame() noexcept {
     updateMainMeter();
     try { updateRaster(); } catch (...) { raster_.reset(); }
     try { updateSpectrumProjection(); } catch (...) { spectrumProjection_.reset(); }
-    if (spectrumScale_ != SpectrumScale::Wide && pictureChanged) updateScaledSpectrum();
+    if (pictureChanged && spectrumMode()) updateScaledSpectrum();
     updateSpectrumOverlays(pictureChanged);
 }
 void SharedSpectrumView::updateRaster() {
@@ -1399,27 +1401,11 @@ void SharedSpectrumView::paint(juce::Graphics &g) {
         g.setColour(look::outline);
         g.drawVerticalLine(juce::roundToInt(x), plot.getY(), plot.getBottom());
     }
-    juce::Path curve;
-    bool started = false;
     const auto offsets = spectrumProjection_.offsets();
     const bool tilted = spectrumSlope_ == SpectrumSlope::Tilt45;
     const auto bins = spectrumBins();
     const bool projectionReady = !tilted || offsets.size() == bins.size();
-    if (spectrumMode() && !scaled && projectionReady) for (std::size_t i = 1; i < bins.size(); ++i) {
-        const double hz = static_cast<double>(i) * shown_->sampleRate / shown_->request.fftSize;
-        if (hz < 20 || hz > topHz) continue;
-        auto value = std::isfinite(bins[i]) ? bins[i] : floorDb;
-        if (tilted) value += offsets[i];
-        const auto x = xFor(hz), y = heightFor(value, plot);
-        if (!started) { curve.startNewSubPath(x, y); started = true; }
-        else curve.lineTo(x, y);
-    }
-    if (scaled) {
-        if (scaledSpectrum_) scaledSpectrum_->paint(g, scaledPlot);
-    } else {
-        g.setColour(look::value);
-        g.strokePath(curve, juce::PathStrokeType(1.4f));
-    }
+    if (scaledSpectrum_) scaledSpectrum_->paint(g, scaled ? scaledPlot : plot, look::value, true);
     if (mode_ == Mode::Spectrum) paintSpectrumOverlays(g, scaled ? scaledPlot : plot);
     if (spectrumCursorPosition_) {
         const auto pointer = *spectrumCursorPosition_;

@@ -1232,6 +1232,91 @@ void spectrumSlopeProjection() {
     }
 }
 
+void spectrumWideCachedGeometry() {
+    using namespace adi::ui;
+    Fixture f;
+    f.tap = std::make_shared<ScopeTap>(32000., SharedAnalysis::kTapSeconds);
+    Root root;
+    root.setBounds(0, 0, 680, 390);
+    root.setVisible(true);
+    root.addToDesktop(0);
+    SharedSpectrumView view;
+    view.setBounds(0, 0, 640, 360);
+    root.addAndMakeVisible(view);
+    view.present(f.broker, 1);
+    check(!SharedSpectrumViewTestAccess::hasScaledPlot(view),
+          "Wide does not prepare a plot while waiting for the first spectrum");
+
+    // Keep both frequency projections clear of the 10 kHz grid line.
+    constexpr int frames = 1024, lowBin = 8, highBin = 420;
+    constexpr auto sampleRate = 32000.;
+    const auto gain = std::pow(10., -36. / 20.);
+    std::array<float, frames> signal;
+    for (std::size_t i = 0; i < signal.size(); ++i) {
+        const auto phase = 2. * std::numbers::pi * static_cast<double>(i) / frames;
+        signal[i] = static_cast<float>(gain * (std::sin(lowBin * phase) + std::sin(highBin * phase)));
+    }
+    f.tap->write(signal.data(), signal.data(), frames, 0, true);
+    f.broker->pump();
+    view.frame();
+    const auto result = view.snapshot();
+    check(result && result->sampleRate == sampleRate && result->request.fftSize == frames &&
+              SharedSpectrumViewTestAccess::hasScaledPlot(view),
+          "a visible Wide publication prepares its retained graph before paint");
+
+    const auto traceAt = [](const juce::Image &image, int bin, double db, double ceiling) {
+        const auto width = static_cast<double>(image.getWidth()) - 28.;
+        const auto height = static_cast<double>(image.getHeight()) - 55.;
+        const auto hz = static_cast<double>(bin) * sampleRate / frames;
+        const auto x = juce::roundToInt(5. + width * std::log(hz / 20.) / std::log(ceiling / 20.));
+        const auto y = juce::roundToInt(21. - height * db / 96.);
+        for (int dy = -2; dy <= 2; ++dy)
+            for (int dx = -2; dx <= 2; ++dx)
+                if (image.getPixelAt(x + dx, y + dy) != look::display) return true;
+        return false;
+    };
+    constexpr auto nyquist = sampleRate * .5;
+    const auto flat = softwarePicture(view);
+    check(traceAt(flat, lowBin, -36., nyquist) &&
+              traceAt(flat, lowBin - 1, -42., nyquist) && traceAt(flat, lowBin + 1, -42., nyquist) &&
+              traceAt(flat, highBin, -36., nyquist) && !traceAt(flat, highBin, -36., 20000.),
+          "Wide keeps both shoulders and calibrates the high tone against the lower Nyquist edge");
+
+    const auto sameWork = [](const SharedAnalysis::Stats &a, const SharedAnalysis::Stats &b) {
+        return a.transforms == b.transforms && a.analysisWindows == b.analysisWindows &&
+            a.publications == b.publications && a.cursorReads == b.cursorReads &&
+            a.workerPasses == b.workerPasses && a.consumers == b.consumers &&
+            a.taps == b.taps && a.domains == b.domains && a.frameRequests == b.frameRequests &&
+            a.spectralPlans == b.spectralPlans;
+    };
+    view.freeze(true);
+    const auto flatFrozen = softwarePicture(view);
+    const auto frozen = f.broker->stats();
+    view.setSpectrumSlope(SpectrumSlope::Tilt45);
+    const auto tilted = softwarePicture(view);
+    check(traceAt(tilted, lowBin, -45., nyquist) && !traceAt(tilted, lowBin, -36., nyquist) &&
+              view.snapshot() == result && SharedSpectrumViewTestAccess::hasScaledPlot(view),
+          "a frozen Wide graph updates its cached tilt while retaining the raw publication");
+    view.setSize(420, 360);
+    const auto resized = softwarePicture(view);
+    view.frame();
+    check(traceAt(resized, lowBin, -45., nyquist) && samePixels(resized, softwarePicture(view)) &&
+              view.snapshot() == result && sameWork(frozen, f.broker->stats()),
+          "resize and repeated frozen Wide paint reuse the same publication without broker work");
+    view.setSize(640, 360);
+    view.setSpectrumSlope(SpectrumSlope::Flat);
+    check(samePixels(flatFrozen, softwarePicture(view)) && f.acquired == 1 && sameWork(frozen, f.broker->stats()),
+          "restoring Wide size and slope restores the same graph without renewed demand");
+
+    root.setVisible(false);
+    const auto hidden = f.broker->stats();
+    view.frame();
+    f.broker->pump();
+    check(!view.snapshot() && !view.subscribed() && !SharedSpectrumViewTestAccess::hasScaledPlot(view) &&
+              hidden.consumers == 0 && f.released == 1 && sameWork(hidden, f.broker->stats()),
+          "hiding a frozen Wide view discards its retained plot and stays idle");
+}
+
 void spectrumDetailScale() {
     using namespace adi::ui;
     using Mode = SharedSpectrumView::Mode;
@@ -2611,7 +2696,7 @@ int main() {
     try { sharingAndVisibility(); sourceAndOwnerLifetime(); parentDestruction(); modesSourcesAndFreeze(); pendingSourceLease(); cappedFrozenHistoryAndIdleReset();
           mainReadoutFormatProjection(); mainMetersSharedPresentation(); permanentMainMeter(); linkedMainMeter(); parkedMainLoudnessProjection();
           compactAnalyzerDock(); paletteMenuTheme(); palettesAndFrozenRaster(); restartedRasterDomain();
-          clearSpectrogramWhileWorkerAhead(); freshActionsWithSharedConsumer(); backlogAndLifecycleFreshness(); spectrumSlopeProjection(); spectrumDetailScale(); spectrumExtendedScale();
+          clearSpectrogramWhileWorkerAhead(); freshActionsWithSharedConsumer(); backlogAndLifecycleFreshness(); spectrumSlopeProjection(); spectrumWideCachedGeometry(); spectrumDetailScale(); spectrumExtendedScale();
           pinnedSpectrumWaitsForHeardPrimary();
           spectrumDeviceScale(); spectrogramHistoryMotion(); classicScopeSurface();
           classicScopeUnchangedTrace(); detailedPhasePreservesHighFrequencyTrace(); mixAnalyserPages();
