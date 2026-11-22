@@ -773,12 +773,16 @@ void Vst3Device::process(const engine::NodeIo& io) noexcept {
         // counted rather than silently refused. A channel message the plugin
         // mapped to a parameter rides IParameterChanges in this same call
         // (ADR-0073); everything else is an event.
+        // ADR-0097: a synth with a hidden controller can still take MPE over
+        // the legacy wire. Unmapped ordinary Controller events keep their
+        // unsupported diagnostic on every route.
+        const bool legacyMpe = router_.current() == engine::ExpressionRoute::MpeMidi;
         for (const engine::MpeOut& o : routed_) {
             if (o.kind == engine::MpeOut::Kind::Control && o.paramId != engine::kNoParam) {
                 const std::int32_t t = o.frame - off;
                 if (t < 0 || t >= n) { ++routedOutOfRange_; continue; }
                 paramChanges_.set(o.paramId, o.value, t);
-            } else if (o.kind == engine::MpeOut::Kind::Control) {
+            } else if (o.kind == engine::MpeOut::Kind::Control && (!legacyMpe || o.fromControllerEvent)) {
                 unsupportedControllers_.fetch_add(1, std::memory_order_relaxed);
             } else {
                 events_.addOut(o, off, n);

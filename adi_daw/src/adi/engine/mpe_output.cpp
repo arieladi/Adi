@@ -271,13 +271,14 @@ int MpeRouter::allocate() noexcept {
 }
 
 void MpeRouter::control(std::uint8_t chan, std::uint16_t ctrl, double v, std::int32_t frame,
-                        std::uint64_t noteId, MpeOutList& out) noexcept {
+                        std::uint64_t noteId, MpeOutList& out, bool fromControllerEvent) noexcept {
     MpeOut o;
     o.kind = MpeOut::Kind::Control;
     o.channel = chan;
     o.ctrl = ctrl;
     o.frame = frame;
     o.noteId = noteId;
+    o.fromControllerEvent = fromControllerEvent;
     const auto c = static_cast<std::size_t>(chan & 0x0F);
 
     if (ctrl == kCtrlPitchBend) {
@@ -331,7 +332,7 @@ void MpeRouter::route(const Event* events, std::int32_t n, std::int32_t segmentS
                 if (events[i].channel < 16 && events[i].paramId < 128 && std::isfinite(events[i].value) &&
                     events[i].value >= 0 && events[i].value <= 1)
                     control(events[i].channel, static_cast<std::uint16_t>(events[i].paramId), events[i].value,
-                            events[i].frame, events[i].noteId, out);
+                            events[i].frame, events[i].noteId, out, true);
                 break;
             case EventType::ParamValue:
             case EventType::ParamMod:       break;   // addressed, not a note stream (ADR-0091)

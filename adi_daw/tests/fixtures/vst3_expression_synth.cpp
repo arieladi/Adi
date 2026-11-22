@@ -79,6 +79,7 @@
 #include <pluginterfaces/vst/ivstunits.h>
 #include <pluginterfaces/vst/vsttypes.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -133,6 +134,12 @@ std::atomic<int> g_keyChannels{0},g_mainInPlace{0};
 std::atomic<std::uint64_t> g_completedProcessCalls{0};
 static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
 std::array<std::atomic<double>, 12> g_transport{};
+// Raw input observations only. The synth's sound continues to ignore legacy MIDI.
+std::array<std::array<std::atomic<int>, 6>, 8> g_legacyMidi{};
+std::atomic<int> g_legacyMidiCount{0};
+std::array<std::array<std::atomic<int>, 3>, 128> g_noteWire{};
+std::atomic<int> g_noteWireCount{0};
+std::atomic<double> g_mappedMemberBend{-1.0};
 constexpr double kPresetDrive7 = 0.45, kPresetDrive3 = 0.6;
 constexpr int32 kStateBytes = 16;   // 'ADS1', the patch, Drive
 constexpr char kStateMagic[4] = {'A', 'D', 'S', '1'};
@@ -324,6 +331,7 @@ public:
         } else {
             g_transport.front().store(-1.0, std::memory_order_relaxed);
         }
+        g_mappedMemberBend.store(-1.0, std::memory_order_relaxed);
         applyParameters(data.inputParameterChanges);
         if (refuse_) { refuse_ = false; return kResultFalse; }
         if (slow_) {
@@ -546,6 +554,8 @@ private:
                 int32 offset = 0;
                 ParamValue v = 0.0;
                 if (q->getPoint(p, offset, v) != kResultOk) continue;
+                if (id == kBend + 1)
+                    g_mappedMemberBend.store(v, std::memory_order_relaxed);
                 setParameter(id, v);
             }
         }
@@ -570,13 +580,28 @@ private:
     }
 
     void applyEvents(IEventList* events) {
+        g_legacyMidiCount.store(0, std::memory_order_relaxed);
+        g_noteWireCount.store(0, std::memory_order_relaxed);
         if (events == nullptr) return;
+        int legacyCount = 0;
+        int noteCount = 0;
+        // Observe the wire before the synth's smaller audible voice pool.
+        const auto captureNote = [&](int32 id, int16 channel, bool on) {
+            if (noteCount < static_cast<int>(g_noteWire.size())) {
+                auto& row = g_noteWire[static_cast<std::size_t>(noteCount)];
+                row[0].store(id, std::memory_order_relaxed);
+                row[1].store(channel, std::memory_order_relaxed);
+                row[2].store(on ? 1 : 0, std::memory_order_relaxed);
+            }
+            ++noteCount;
+        };
         const int32 n = events->getEventCount();
         for (int32 i = 0; i < n; ++i) {
             Event e{};
             if (events->getEvent(i, e) != kResultOk) continue;
             switch (e.type) {
                 case Event::kNoteOnEvent: {
+                    captureNote(e.noteOn.noteId, e.noteOn.channel, true);
                     Voice* v = nullptr;
                     for (auto& c : voices_) if (!c.on) { v = &c; break; }
                     if (v == nullptr) break;
@@ -588,6 +613,7 @@ private:
                     break;
                 }
                 case Event::kNoteOffEvent:
+                    captureNote(e.noteOff.noteId, e.noteOff.channel, false);
                     if (Voice* v = voiceFor(e.noteOff.noteId, e.noteOff.pitch, e.noteOff.channel)) v->on = false;
                     break;
                 case Event::kPolyPressureEvent:
@@ -605,10 +631,23 @@ private:
                             else if (e.noteExpressionValue.typeId == kPressureType) v.pressure = x;
                         }
                     break;
+                case Event::kLegacyMIDICCOutEvent:
+                    if (legacyCount < static_cast<int>(g_legacyMidi.size())) {
+                        const auto& cc = e.midiCCOut;
+                        const std::array<int, 6> fields{e.busIndex, e.sampleOffset, cc.channel,
+                                                        cc.controlNumber, cc.value, cc.value2};
+                        auto& dest = g_legacyMidi[static_cast<std::size_t>(legacyCount)];
+                        for (std::size_t j = 0; j < fields.size(); ++j)
+                            dest[j].store(fields[j], std::memory_order_relaxed);
+                    }
+                    ++legacyCount;
+                    break;
                 default:
-                    break;      // kLegacyMIDICCOutEvent included: this plugin reads MIDI only as parameters
+                    break;
             }
         }
+        g_legacyMidiCount.store(legacyCount, std::memory_order_relaxed);
+        g_noteWireCount.store(noteCount, std::memory_order_relaxed);
     }
 
     void render(ProcessData& data) {
@@ -813,6 +852,29 @@ extern "C" SMTG_EXPORT_SYMBOL bool ModuleEntry(void*) { return true; }
 extern "C" SMTG_EXPORT_SYMBOL bool ModuleExit() { return true; }
 #endif
 
+// Each row contains bus, sample offset, channel, controller, LSB, and MSB.
+extern "C" SMTG_EXPORT_SYMBOL int adiFixtureReadLegacyMidi(int* output, int rows) {
+    const int count = g_legacyMidiCount.load(std::memory_order_relaxed);
+    const int available = std::min({rows, count, static_cast<int>(g_legacyMidi.size())});
+    for (int i = 0; i < available; ++i) {
+        for (const auto& field : g_legacyMidi[static_cast<std::size_t>(i)])
+            *output++ = field.load(std::memory_order_relaxed);
+    }
+    return count;
+}
+// Each row is a note ID, its MIDI channel, and 1 for on or 0 for off.
+extern "C" SMTG_EXPORT_SYMBOL int adiFixtureReadNoteWire(int* output, int rows) {
+    const int count = g_noteWireCount.load(std::memory_order_relaxed);
+    const int available = std::min({rows, count, static_cast<int>(g_noteWire.size())});
+    for (int i = 0; i < available; ++i) {
+        for (const auto& field : g_noteWire[static_cast<std::size_t>(i)])
+            *output++ = field.load(std::memory_order_relaxed);
+    }
+    return count;
+}
+extern "C" SMTG_EXPORT_SYMBOL double adiFixtureMappedMemberBend() {
+    return g_mappedMemberBend.load(std::memory_order_relaxed);
+}
 extern "C" SMTG_EXPORT_SYMBOL double adiFixtureKeyFirst() { return g_keyFirst.load(); }
 extern "C" SMTG_EXPORT_SYMBOL double adiFixtureKeyLast() { return g_keyLast.load(); }
 extern "C" SMTG_EXPORT_SYMBOL int adiFixtureKeyChannels() { return g_keyChannels.load(); }

@@ -1640,6 +1640,166 @@ void testDialectsThroughTheDevice() {
     }
 }
 
+struct DialectNote {
+    ClapDialect wire;
+    bool on;
+    int key, channel, id;
+    std::uint32_t frame;
+};
+
+std::vector<DialectNote> dialectNotes(const Fake& f) {
+    std::vector<DialectNote> notes;
+    std::size_t midi = 0, native = 0;
+    // The fake keeps each wire payload separately. Walk the common header
+    // sequence so a release sent after an attack at the same frame still fails.
+    for (const auto& event : f.seenEvents) {
+        if (event.type == CLAP_EVENT_MIDI) {
+            const auto& message = f.seenMidi[midi++];
+            const int status = message.data[0] & 0xf0;
+            if (status == 0x80 || status == 0x90)
+                notes.push_back({ClapDialect::MidiMpe, status == 0x90, message.data[1],
+                                 message.data[0] & 0x0f, -1, event.time});
+        } else if (event.type == CLAP_EVENT_NOTE_ON || event.type == CLAP_EVENT_NOTE_OFF) {
+            const auto& note = f.seenNotes[native++];
+            notes.push_back({ClapDialect::Clap, event.type == CLAP_EVENT_NOTE_ON, note.key,
+                             note.channel, note.note_id, event.time});
+        }
+    }
+    return notes;
+}
+
+bool releasesOnOriginalWire(const DialectNote& attack, const DialectNote& release) {
+    return !release.on && release.wire == attack.wire && release.channel == attack.channel &&
+           release.key == attack.key && release.id == attack.id && release.frame == 0;
+}
+
+void testFullClapDialectSwitch() {
+    section("DF-E56 -- a full router switches CLAP and MPE MIDI in both directions");
+    constexpr std::int32_t frames = 16;
+    constexpr int voices = engine::MpeRouter::kMaxNotes;
+    constexpr int newVoices = 16;
+    for (const bool nativeFirst : {false, true}) {
+        Fake f;
+        f.declareNotePorts = true;
+        f.noteSupported = CLAP_NOTE_DIALECT_CLAP | CLAP_NOTE_DIALECT_MIDI_MPE;
+        DeviceIdentity id;
+        id.format = "clap";
+        ClapDevice d(&f.plugin, id);
+        d.setNoteDialect(nativeFirst ? ClapDialectChoice::Clap : ClapDialectChoice::MidiMpe);
+        d.prepare(48000.0, frames);
+        const auto oldWire = nativeFirst ? ClapDialect::Clap : ClapDialect::MidiMpe;
+        const auto newWire = nativeFirst ? ClapDialect::MidiMpe : ClapDialect::Clap;
+
+        std::array<float, frames> left{}, right{};
+        float* out[]{left.data(), right.data()};
+        engine::NodeIo io;
+        io.out = out;
+        io.channels = 2;
+        io.frames = frames;
+        std::vector<DialectNote> held;
+        bool accepted = true;
+        for (int key = 0; key < voices; ++key) {
+            accepted = d.pushEvent(noteOn(static_cast<std::uint64_t>(key + 1), key, .75)) && accepted;
+            if ((key + 1) % 4 == 0) {
+                d.process(io);
+                const auto batch = dialectNotes(f);
+                held.insert(held.end(), batch.begin(), batch.end());
+            }
+        }
+        check(accepted && held.size() == voices && d.noteRouter().liveNotes() == voices &&
+                  d.noteDialect() == oldWire && std::all_of(held.begin(), held.end(),
+                      [oldWire](const auto& note) { return note.on && note.wire == oldWire; }),
+              "all 128 voices are sounding on the original wire");
+
+        d.setNoteDialect(nativeFirst ? ClapDialectChoice::MidiMpe : ClapDialectChoice::Clap);
+        for (int key = 0; key < newVoices; ++key)
+            accepted = d.pushEvent(noteOn(static_cast<std::uint64_t>(1001 + key), key, .75)) && accepted;
+        d.process(io);
+        const auto switched = dialectNotes(f);
+        bool ordered = held.size() == voices && switched.size() == voices + newVoices;
+        if (ordered) {
+            for (std::size_t i = 0; i < held.size(); ++i)
+                ordered = releasesOnOriginalWire(held[i], switched[i]) && ordered;
+            for (int key = 0; key < newVoices; ++key) {
+                const auto& attack = switched[static_cast<std::size_t>(voices + key)];
+                ordered = attack.on && attack.wire == newWire && attack.key == key && attack.frame == 0 &&
+                          (newWire != ClapDialect::Clap || attack.id == 1001 + key) && ordered;
+            }
+        }
+        check(accepted && ordered, "the switch sends all 128 original releases before all 16 new-wire attacks");
+        check(d.noteRouter().pendingNoteOffs() == 0 && d.eventsDropped() == 0 &&
+                  d.eventsOutOfRange() == 0 && d.noteDialect() == newWire,
+              "a full switch finishes without pending releases or host drops");
+        d.process(io);
+        check(dialectNotes(f).empty(), "the next callback does not duplicate any note");
+    }
+}
+
+void testPendingClapDialectRelease() {
+    section("DF-E56 -- switching drains an already pending release on its original wire");
+    constexpr std::int32_t frames = 16;
+    for (const bool nativeFirst : {false, true}) {
+        Fake f;
+        f.declareNotePorts = true;
+        f.noteSupported = CLAP_NOTE_DIALECT_CLAP | CLAP_NOTE_DIALECT_MIDI_MPE;
+        DeviceIdentity id;
+        id.format = "clap";
+        ClapDevice d(&f.plugin, id);
+        d.setNoteDialect(nativeFirst ? ClapDialectChoice::Clap : ClapDialectChoice::MidiMpe);
+        d.prepare(48000.0, frames);
+        const auto oldWire = nativeFirst ? ClapDialect::Clap : ClapDialect::MidiMpe;
+        const auto newWire = nativeFirst ? ClapDialect::MidiMpe : ClapDialect::Clap;
+
+        std::array<float, frames> left{}, right{};
+        float* out[]{left.data(), right.data()};
+        engine::NodeIo io;
+        io.out = out;
+        io.channels = 2;
+        io.frames = frames;
+        const bool accepted = d.pushEvent(noteOn(77, 60, .75));
+        d.process(io);
+        const auto held = dialectNotes(f);
+        check(accepted && held.size() == 1 && held.front().on && held.front().wire == oldWire,
+              "one note starts before the deliberately oversized segment");
+
+        // At 16 frames the graph budget is 256 and the router has 72 more
+        // slots. Use the graph-facing span to deliberately fill all 328,
+        // beyond pushEvent's input budget, then ask it to release the note.
+        engine::Event controller;
+        controller.type = engine::EventType::Controller;
+        controller.paramId = 1;
+        controller.value = .5;
+        std::array<engine::Event, 329> oversized{};
+        oversized.fill(controller);
+        oversized.back() = noteOn(77, 60, .5, frames - 1);
+        oversized.back().type = engine::EventType::NoteOff;
+        io.events = {oversized.data(), static_cast<std::int32_t>(oversized.size())};
+        d.process(io);
+        const auto earlierDrops = d.eventsDropped();
+        check(d.noteRouter().pendingNoteOffs() == 1 && dialectNotes(f).empty(),
+              "the oversized segment leaves just the release pending");
+
+        d.setNoteDialect(nativeFirst ? ClapDialectChoice::MidiMpe : ClapDialectChoice::Clap);
+        io.blockOffset = 7;
+        io.frames = frames - io.blockOffset;
+        const auto fresh = noteOn(99, 64, .75, io.blockOffset);
+        io.events = {&fresh, 1};
+        d.process(io);
+        const auto switched = dialectNotes(f);
+        check(held.size() == 1 && switched.size() == 2 &&
+                  releasesOnOriginalWire(held.front(), switched[0]) &&
+                  switched[1].on && switched[1].wire == newWire && switched[1].key == 64 &&
+                  switched[1].frame == 0 && (newWire != ClapDialect::Clap || switched[1].id == 99),
+              "the next segment first sends the pending release on its original wire, then the new attack");
+        check(d.noteRouter().pendingNoteOffs() == 0 && d.eventsDropped() == earlierDrops &&
+                  d.eventsOutOfRange() == 0 && d.noteDialect() == newWire,
+              "the next segment clears the pending release with no added drops or range errors");
+        io.events = {};
+        d.process(io);
+        check(dialectNotes(f).empty(), "a retried release is not duplicated");
+    }
+}
+
 void testOrdinaryControllerPorts() {
     section("ordinary CC lanes use MIDI on a capable port, alongside native CLAP notes");
     for (int mode = 0; mode < 3; ++mode) {
@@ -3711,6 +3871,8 @@ int main() {
     testDialectEncodings();
     testTheListIsSortedByTime();
     testDialectsThroughTheDevice();
+    testFullClapDialectSwitch();
+    testPendingClapDialectRelease();
     testOrdinaryControllerPorts();
     testTheHostSaysWhichDialectsItSpeaks();
     testBundleSearchIsRecursive();

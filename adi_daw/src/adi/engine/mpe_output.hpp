@@ -214,6 +214,8 @@ struct MpeOut {
     std::int32_t frame = 0;
     std::uint32_t exprType = 0;
     std::uint32_t paramId = kNoParam;
+    // An ordinary Controller event, separate from controls generated for MPE.
+    bool fromControllerEvent = false;
     std::uint64_t noteId = 0;
     /// Velocity 0..1, an expression's normalised value, poly pressure, or a
     /// Control's parameter value. A double: the route decides what is
@@ -344,7 +346,7 @@ private:
     void expression(const Event& e, MpeOutList& out) noexcept;
     void sendMcm(std::int32_t frame, MpeOutList& out) noexcept;
     void control(std::uint8_t chan, std::uint16_t ctrl, double unit, std::int32_t frame,
-                 std::uint64_t noteId, MpeOutList& out) noexcept;
+                 std::uint64_t noteId, MpeOutList& out, bool fromControllerEvent = false) noexcept;
     int allocate() noexcept;
     Note* find(std::uint64_t id) noexcept;
     [[nodiscard]] const Note* find(std::uint64_t id) const noexcept;

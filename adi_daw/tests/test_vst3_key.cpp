@@ -5,6 +5,7 @@
 #include "temp_directory.hpp"
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <stdexcept>
@@ -78,6 +79,166 @@ void expressionBlock(device::Vst3Host& host, const juce::PluginDescription& desc
     check(dropped == 0, "the host keeps the full five-dimension expression block");
     check(outOfRange == 0, "the host keeps every event inside the full block");
 }
+using ReadLegacyMidi = int (*)(int*, int);
+void mpeWire(device::Vst3Host& host, const juce::PluginDescription& unmapped,
+             const juce::PluginDescription& mapped, ReadLegacyMidi readLegacyMidi,
+             double (*mappedMemberBend)()) {
+    constexpr double rate = 48000.0;
+    constexpr int frames = 32;
+    constexpr int segmentStart = 7;
+    const std::array phrase{
+        engine::Event{segmentStart, engine::EventType::NoteOn, 0, 60, 1, 0, 0.8},
+        engine::Event{segmentStart + 5, engine::EventType::NoteExpression, 0,
+                      static_cast<std::uint16_t>(ExpressionDim::Pitch), 1, 0, 6.5},
+    };
+    const engine::Event cc{segmentStart, engine::EventType::Controller, 4, 0, 0, 11, 0.8};
+    constexpr int wireRows = 7;
+    struct Observation {
+        std::array<int, wireRows * 6> wire{};
+        int legacyCount = 0;
+        std::uint32_t unsupported = 0;
+        double mappedBend = 0.0;
+    };
+
+    const auto run = [&](const juce::PluginDescription& desc, engine::RouteChoice choice,
+                         engine::ExpressionRoute route, engine::EventSpan events) {
+        std::string error;
+        auto instance = host.instantiate(desc, rate, frames, error);
+        if (!instance)
+            throw std::runtime_error(error);
+        device::Vst3Device vst(std::move(instance), device::identityOf(desc));
+        vst.prepare(rate, frames);
+        check(vst.usingRawProcessor() && vst.setExpressionRoute(choice), "wire test uses the raw VST3 host");
+        std::array<float, frames> left{}, right{};
+        float* output[]{left.data(), right.data()};
+        engine::NodeIo io;
+        io.out = output;
+        io.channels = 2;
+        io.frames = 11;
+        io.blockOffset = segmentStart;
+        io.sampleRate = rate;
+        io.events = events;
+        vst.process(io);
+        check(vst.expressionRoute() == route, "host keeps the requested expression route");
+        Observation result;
+        result.legacyCount = readLegacyMidi(result.wire.data(), wireRows);
+        result.unsupported = vst.unsupportedControllers();
+        result.mappedBend = mappedMemberBend();
+        return result;
+    };
+    const engine::EventSpan notes{phrase.data(), static_cast<std::int32_t>(phrase.size())};
+    const auto legacy = run(unmapped, engine::RouteChoice::MpeMidi,
+                            engine::ExpressionRoute::MpeMidi, notes);
+    // Bus, segment offset, MIDI channel, controller, LSB, MSB.
+    constexpr std::array expected{
+        0, 0, 0, 101, 0, 0,
+        0, 0, 0, 100, 6, 0,
+        0, 0, 0, 6, 15, 0,
+        0, 0, 1, static_cast<int>(engine::kCtrlPitchBend), 0, 64,
+        0, 0, 1, 74, 64, 0,
+        0, 0, 1, static_cast<int>(engine::kCtrlAfterTouch), 0, 0,
+        0, 5, 1, static_cast<int>(engine::kCtrlPitchBend), 85, 72,
+    };
+    check(legacy.legacyCount == wireRows && legacy.wire == expected,
+          "unmapped MpeMidi reaches the plug-in with exact MCM and member bend bytes and offsets");
+    check(legacy.unsupported == 0, "delivered MpeMidi controls are not counted as unsupported");
+
+    const auto parameters = run(mapped, engine::RouteChoice::MpeMidi,
+                                engine::ExpressionRoute::MpeMidi, notes);
+    constexpr double unroundedBend = (8192.0 + (6.5 / 48.0) * 8191.0) / 16383.0;
+    check(parameters.legacyCount == 0 && parameters.unsupported == 0 &&
+              std::abs(parameters.mappedBend - unroundedBend) < 1e-14,
+          "mapped MpeMidi keeps the unrounded bend parameter and sends no legacy duplicates");
+
+    const auto plain = run(unmapped, engine::RouteChoice::Plain,
+                           engine::ExpressionRoute::Plain, {&cc, 1});
+    check(plain.unsupported == 1 && plain.legacyCount == 0,
+          "Plain still counts an unmapped ordinary CC without delivering it");
+    const auto expression = run(unmapped, engine::RouteChoice::NoteExpression,
+                                engine::ExpressionRoute::NoteExpression, {&cc, 1});
+    check(expression.unsupported == 1 && expression.legacyCount == 0,
+          "NoteExpression still counts an unmapped ordinary CC without delivering it");
+    const auto ordinaryMpe = run(unmapped, engine::RouteChoice::MpeMidi,
+                                 engine::ExpressionRoute::MpeMidi, {&cc, 1});
+    check(ordinaryMpe.unsupported == 1 && ordinaryMpe.legacyCount == 3,
+          "MpeMidi sends its configuration and counts the unmapped ordinary CC without delivering it");
+}
+using ReadNoteWire = int (*)(int*, int);
+void mpeSwitchReleases(device::Vst3Host& host, const juce::PluginDescription& desc,
+                       ReadNoteWire readNoteWire) {
+    constexpr double rate = 48000.0;
+    constexpr int frames = 16;
+    constexpr int heldNotes = 128;
+    constexpr int fields = 3;
+    std::string error;
+    auto instance = host.instantiate(desc, rate, frames, error);
+    if (!instance)
+        throw std::runtime_error(error);
+    device::Vst3Device vst(std::move(instance), device::identityOf(desc));
+    vst.prepare(rate, frames);
+    check(vst.usingRawProcessor() && vst.setExpressionRoute(engine::RouteChoice::MpeMidi),
+          "release test selects MpeMidi on the raw VST3 adapter");
+
+    std::array<float, frames> left{}, right{};
+    float* output[]{left.data(), right.data()};
+    engine::NodeIo io;
+    io.out = output;
+    io.channels = 2;
+    io.frames = frames;
+    io.sampleRate = rate;
+    std::array<engine::Event, frames> ons{};
+    std::array<int, heldNotes> channels{};
+    std::array<int, heldNotes * fields> wire{};
+    bool started = true;
+    for (int first = 0; first < heldNotes; first += frames) {
+        for (int frame = 0; frame < frames; ++frame) {
+            ons[static_cast<std::size_t>(frame)] = {frame, engine::EventType::NoteOn, 0, 60,
+                static_cast<std::uint64_t>(first + frame + 1), 0, 0.8};
+        }
+        io.events = {ons.data(), frames};
+        vst.process(io);
+        const int count = readNoteWire(wire.data(), heldNotes);
+        started = started && count == frames;
+        for (int i = 0; i < frames && i < count; ++i) {
+            const auto row = static_cast<std::size_t>(i * fields);
+            const int id = wire[row];
+            const int channel = wire[row + 1];
+            started = started && id == first + i + 1 && channel >= 1 && channel <= 15 && wire[row + 2] == 1;
+            channels[static_cast<std::size_t>(first + i)] = channel;
+        }
+    }
+    check(started && vst.expressionRoute() == engine::ExpressionRoute::MpeMidi,
+          "all 128 NoteOns reach the plug-in on MPE member channels across 16-frame blocks");
+
+    check(vst.setExpressionRoute(engine::RouteChoice::Plain), "request the explicit switch from MpeMidi to Plain");
+    io.events = {};
+    vst.process(io);
+    const int count = readNoteWire(wire.data(), heldNotes);
+    bool exact = count == heldNotes;
+    std::array<bool, heldNotes> released{};
+    for (int i = 0; i < heldNotes && i < count; ++i) {
+        const auto row = static_cast<std::size_t>(i * fields);
+        const int id = wire[row];
+        if (id < 1 || id > heldNotes) {
+            exact = false;
+            continue;
+        }
+        const auto note = static_cast<std::size_t>(id - 1);
+        exact = exact && !released[note] && wire[row + 1] == channels[note] && wire[row + 2] == 0;
+        released[note] = true;
+    }
+    check(exact && vst.expressionRoute() == engine::ExpressionRoute::Plain,
+          "the first Plain block delivers exactly 128 distinct NoteOffs on their original MPE channels");
+
+    bool drained = true;
+    for (int block = 0; block < 3; ++block) {
+        vst.process(io);
+        drained = readNoteWire(nullptr, 0) == 0 && drained;
+    }
+    check(drained, "later Plain blocks carry no deferred or duplicate NoteOffs");
+    check(vst.eventsDropped() == 0 && vst.eventsOutOfRange() == 0 && vst.paramsDropped() == 0,
+          "the adapter drops no events or mapped parameters during the route switch");
+}
 void contract() {
     test::TempDirectory temp("vst3_key", "owned");
     scan::Config config;
@@ -103,13 +264,21 @@ void contract() {
     auto inPlace=reinterpret_cast<int(*)()>(module.getFunction("adiFixtureMainInPlace"));
     const auto completedProcessCalls = reinterpret_cast<std::uint64_t (*)()>(
         module.getFunction("adiFixtureCompletedProcessCalls"));
-    if (!first || !last || !channels || !inPlace || !completedProcessCalls)
+    const auto readLegacyMidi = reinterpret_cast<ReadLegacyMidi>(module.getFunction("adiFixtureReadLegacyMidi"));
+    const auto mappedMemberBend = reinterpret_cast<double (*)()>(module.getFunction("adiFixtureMappedMemberBend"));
+    const auto readNoteWire = reinterpret_cast<ReadNoteWire>(module.getFunction("adiFixtureReadNoteWire"));
+    if (!first || !last || !channels || !inPlace || !completedProcessCalls ||
+        !readLegacyMidi || !mappedMemberBend || !readNoteWire)
         throw std::runtime_error("owned fixture observations unavailable");
     const auto types = list.getTypes();
     const auto expression = std::find_if(types.begin(), types.end(),
         [](const auto& desc) { return desc.name == "ADI Test NoteExpr"; });
-    if (expression == types.end())
+    const auto mapped = std::find_if(types.begin(), types.end(),
+        [](const auto& desc) { return desc.name == "ADI Test MPE"; });
+    if (expression == types.end() || mapped == types.end())
         throw std::runtime_error("owned VST3 expression fixture not discovered");
+    mpeWire(host, *expression, *mapped, readLegacyMidi, mappedMemberBend);
+    mpeSwitchReleases(host, *mapped, readNoteWire);
     expressionBlock(host, *expression, completedProcessCalls);
     for (const auto &desc : types)
         for (bool wide : {false, true}) {
