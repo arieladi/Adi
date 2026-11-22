@@ -51,6 +51,9 @@ void DrumBuss::prepare(double sampleRate) noexcept {
     crunchPole_ = std::exp(-2 * std::numbers::pi * 20 / rate_);
     crunchDcIn_ = crunchDcOut_ = {};
     shape_ = {1, 1};
+    for (auto* g : {&trim_, &drive_, &match_, &crunch_, &transients_, &boomGain_, &output_, &wet_}) {
+        g->prepare(rate_);
+    }
     update();
 }
 
@@ -73,14 +76,15 @@ void DrumBuss::update() noexcept {
     const double q = 2 + 28 * p_[BoomDecay] / 100, w = 2 * std::numbers::pi * p_[BoomFreq] / rate_;
     const double alpha = std::sin(w) / (2 * q), a0 = 1 + alpha;
     boom_ = {alpha / a0, 0, -alpha / a0, -2 * std::cos(w) / a0, (1 - alpha) / a0};
-    trim_ = level(p_[Trim]);
-    drive_ = level(24 * p_[Drive] / 100);
-    match_ = curve(static_cast<int>(p_[Type]), 0.5) / curve(static_cast<int>(p_[Type]), 0.5 * drive_);
-    crunch_ = p_[Crunch] / 100;
-    transients_ = p_[Transients] / 100;
-    boomGain_ = 4 * p_[Boom] / 100;
-    output_ = level(p_[Output]);
-    wet_ = p_[DryWet] / 100;
+    trim_.set(level(p_[Trim]));
+    const double drive = level(24 * p_[Drive] / 100);
+    drive_.set(drive);
+    match_.set(curve(static_cast<int>(p_[Type]), 0.5) / curve(static_cast<int>(p_[Type]), 0.5 * drive));
+    crunch_.set(p_[Crunch] / 100);
+    transients_.set(p_[Transients] / 100);
+    boomGain_.set(4 * p_[Boom] / 100);
+    output_.set(level(p_[Output]));
+    wet_.set(p_[DryWet] / 100);
 }
 
 double DrumBuss::run(const Biquad& b, State& s, double x) noexcept {
@@ -100,7 +104,9 @@ void DrumBuss::process(const float* inL, const float* inR, float* outL, float* o
         // Both inputs are read before either output is written (a host may
         // hand an output plane that is an input plane).
         const double dry[2] = {inL && std::isfinite(inL[i]) ? inL[i] : 0.0, inR && std::isfinite(inR[i]) ? inR[i] : 0.0};
-        double x[2] = {trim_ * dry[0], trim_ * dry[1]};
+        const double trim = trim_.next(), drive = drive_.next(), match = match_.next(), crunch = crunch_.next();
+        const double transients = transients_.next(), boom = boomGain_.next(), gainOut = output_.next(), mix = wet_.next();
+        double x[2] = {trim * dry[0], trim * dry[1]};
         double gain = 1;
         if (comp) {
             const double peak = std::max(std::abs(x[0]), std::abs(x[1]));
@@ -111,7 +117,7 @@ void DrumBuss::process(const float* inL, const float* inR, float* outL, float* o
             const double in = gain * x[c];
             // Drive, matched at -6 dBFS: a peak of 0.5 keeps its level, a
             // quieter signal gains (the curve compresses), a louder one is held.
-            double y = curve(type, drive_ * in) * match_;
+            double y = curve(type, drive * in) * match;
             // Crunch: the high band's square, its DC removed, an octave up.
             // A sine's square holds no fundamental, so Crunch brightens
             // without lifting the band, and being of the second order it
@@ -120,7 +126,7 @@ void DrumBuss::process(const float* inL, const float* inR, float* outL, float* o
             const double even = sq - crunchDcIn_[c] + crunchPole_ * crunchDcOut_[c];
             crunchDcIn_[c] = sq;
             crunchDcOut_[c] = settle(even);
-            y += 2 * crunch_ * even;
+            y += 2 * crunch * even;
             y = run(damp_, dampState_[c], y);
             // Transients: a peak envelope (0.5 ms attack, 300 ms release)
             // against itself lagged by a 10 ms one-pole. A held tone keeps
@@ -129,15 +135,15 @@ void DrumBuss::process(const float* inL, const float* inR, float* outL, float* o
             const double a = std::abs(in);
             fast_[c] = settle(a + (a > fast_[c] ? fastA_ : releaseA_) * (fast_[c] - a));
             slow_[c] = settle(fast_[c] + slowA_ * (slow_[c] - fast_[c]));
-            const double target = slow_[c] > 1e-9 ? std::clamp(1 + transients_ * (fast_[c] - slow_[c]) / slow_[c], 0.25, 4.0) : 1.0;
+            const double target = slow_[c] > 1e-9 ? std::clamp(1 + transients * (fast_[c] - slow_[c]) / slow_[c], 0.25, 4.0) : 1.0;
             shape_[c] = target + smoothA_ * (shape_[c] - target);
-            if (transients_ != 0) {
+            if (transients != 0) {
                 y *= shape_[c];
             }
-            y += boomGain_ * run(boom_, boomState_[c], in);
-            const double wet = output_ * y;
+            y += boom * run(boom_, boomState_[c], in);
+            const double wet = gainOut * y;
             if (out[c]) {
-                out[c][i] = static_cast<float>(dry[c] + (wet - dry[c]) * wet_);
+                out[c][i] = static_cast<float>(dry[c] + (wet - dry[c]) * mix);
             }
         }
     }

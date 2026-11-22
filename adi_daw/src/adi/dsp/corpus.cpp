@@ -65,6 +65,9 @@ void Corpus::prepare(double sampleRate) noexcept {
     for (auto& m : mode_) {
         m.y1 = m.y2 = 0;
     }
+    for (auto* g : {&gain_, &bleed_, &wet_}) {
+        g->prepare(rate_);
+    }
     update();
 }
 
@@ -103,9 +106,9 @@ void Corpus::update() noexcept {
         mode.left = std::sin(std::numbers::pi * n * posL);
         mode.right = std::sin(std::numbers::pi * n * posR);
     }
-    gain_ = 0.25 * std::pow(10.0, p_[Gain] / 20);
-    bleed_ = p_[Bleed] / 100;
-    wet_ = p_[DryWet] / 100;
+    gain_.set(0.25 * std::pow(10.0, p_[Gain] / 20));
+    bleed_.set(p_[Bleed] / 100);
+    wet_.set(p_[DryWet] / 100);
 }
 
 void Corpus::process(const float* inL, const float* inR, float* outL, float* outR, std::size_t frames) noexcept {
@@ -127,12 +130,13 @@ void Corpus::process(const float* inL, const float* inR, float* outL, float* out
         }
         // The resonance passes a tanh: a tone held at a mode builds up by the
         // mode's Q (thousands at a long Decay), and is held under full scale.
-        const double wetL = std::tanh(gain_ * yl) + bleed_ * x, wetR = std::tanh(gain_ * yr) + bleed_ * x;
+        const double g = gain_.next(), b = bleed_.next(), mix = wet_.next();
+        const double wetL = std::tanh(g * yl) + b * x, wetR = std::tanh(g * yr) + b * x;
         if (outL) {
-            outL[i] = static_cast<float>(l + (wetL - l) * wet_);
+            outL[i] = static_cast<float>(l + (wetL - l) * mix);
         }
         if (outR) {
-            outR[i] = static_cast<float>(r + (wetR - r) * wet_);
+            outR[i] = static_cast<float>(r + (wetR - r) * mix);
         }
     }
 }

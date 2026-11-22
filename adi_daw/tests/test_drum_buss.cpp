@@ -317,7 +317,43 @@ void reviewed() {
     }
 }
 
+/// Trim, Drive, Boom, Output and Dry/Wet moved at a tone's peak glide: the
+/// largest step while they move stays within the signal's own, before or
+/// after.
+void glides() {
+    struct Move {
+        B::Param param;
+        double from, to;
+        const char* what;
+    };
+    for (const Move m : {Move{B::Trim, -24, 12, "Trim"}, Move{B::Drive, 0, 100, "Drive"}, Move{B::Boom, 0, 100, "Boom"},
+                         Move{B::Output, -36, 12, "Output"}, Move{B::DryWet, 0, 100, "Dry/Wet"}}) {
+        B b = plain();
+        b.set(m.param, m.from);
+        b.prepare(kRate);
+        const auto x = sine(110, 96000, 0.2);
+        std::vector<float> l(x.size()), r(x.size());
+        constexpr std::size_t at = 48109;   // the tone's peak
+        b.process(x.data(), x.data(), l.data(), r.data(), at);
+        b.set(m.param, m.to);
+        b.process(x.data() + at, x.data() + at, l.data() + at, r.data() + at, x.size() - at);
+        double moving = 0, settled = 0;
+        for (std::size_t i = at; i < at + 4800; ++i) {
+            moving = std::max(moving, static_cast<double>(std::abs(l[i] - l[i - 1])));
+        }
+        for (std::size_t i = 24000; i < 48000; ++i) {
+            settled = std::max(settled, static_cast<double>(std::abs(l[i] - l[i - 1])));
+        }
+        for (std::size_t i = 72000; i < 96000; ++i) {
+            settled = std::max(settled, static_cast<double>(std::abs(l[i] - l[i - 1])));
+        }
+        check(moving <= 1.5 * std::max(settled, 1e-9), std::string(m.what) + " glides: no step past the signal's own (" + std::to_string(moving) +
+                                                           " against " + std::to_string(settled) + ")");
+    }
+}
+
 int main() {
+    glides();
     reviewed();
     quiet();
     compressor();
