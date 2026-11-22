@@ -2,7 +2,7 @@
 #include "adi/dsp/adi_shaper.hpp"
 #include <algorithm>
 #include <cmath>
-#include <limits>
+#include <new>
 #include <numbers>
 
 namespace adi::dsp {
@@ -63,10 +63,7 @@ void AdiShaper::prepare(double sampleRate) noexcept {
     quarterNotes_ = 0.0;
     playing_ = true;
     for (auto& filter : filters_) filter.prepare(sampleRate);
-    for (auto& follower : widthFollowers_) {
-        follower.updateTimes(sampleRate);
-        follower.reset();
-    }
+    for (auto& follower : widthFollowers_) follower.prepare(sampleRate);
     for (auto& sweep : sweeps_) (void)sweep.prepare(sampleRate);
     for (auto& drive : drives_) drive.prepare(sampleRate);
     for (auto& crusher : crush_) (void)crusher.prepare(sampleRate);
@@ -235,9 +232,25 @@ void AdiShaper::updateBand(Stage kind, CurveBand& band) const noexcept {
                   (band.blend != 0.0f && (!band.primary.constant || band.primary.points[0] != neutral));
 }
 
+void AdiShaper::WidthFollower::prepare(double rate) noexcept {
+    // Keep the complete half-second window through 768 kHz. At higher
+    // rates limit memory to the same number of past stereo peaks.
+    constexpr double maximumPastFrames = 384000;
+    const auto capacity = static_cast<std::size_t>(std::min(.5 * rate, maximumPastFrames)) + 1;
+    try {
+        history.resize(capacity);
+    } catch (const std::bad_alloc&) {
+        // A failed growth leaves the existing window available.
+    }
+    updateTimes(rate);
+    reset();
+}
+
 void AdiShaper::WidthFollower::reset() noexcept {
     envelope = 0;
-    remaining = 0;
+    front = count = selected = 0;
+    frame = 0;
+    windowChanged = false;
 }
 
 void AdiShaper::WidthFollower::updateTimes(double rate) noexcept {
@@ -245,23 +258,21 @@ void AdiShaper::WidthFollower::updateTimes(double rate) noexcept {
     // Fitted to the first step sample at 48 and 96 kHz.
     constexpr double minimumAttackSeconds = 5.0018e-6;
     const double attackSeconds = minimumAttackSeconds + (.1 - minimumAttackSeconds) * a * a * a;
-    rise = -std::expm1(-1.0 / (rate * attackSeconds));
-    const double frames = std::round(rate * .5 * hold * hold);
-    holdFrames = static_cast<std::uint32_t>(std::min(frames, static_cast<double>(std::numeric_limits<std::uint32_t>::max())));
-    remaining = std::min(remaining, holdFrames);
+    rise = static_cast<float>(-std::expm1(-1.0 / (rate * attackSeconds)));
+    const double limit = history.empty() ? 0.0 : static_cast<double>(history.size() - 1);
+    const float frames = static_cast<float>(std::min(.5 * rate * (hold * hold), limit));
+    const auto nextWindow = static_cast<std::uint32_t>(frames);
+    if (holdFrames != nextWindow) {
+        holdFrames = nextWindow;
+        windowChanged = true;
+    }
 
-    // ADI interpolates log duration between the measured 48 kHz decay constants.
-    struct Anchor { double control, ms; };
-    constexpr std::array<Anchor, 12> anchors{{
-        {0, 5}, {.05, 18.923}, {.1, 36.418}, {.15, 58.360}, {.2, 85.82}, {.25, 120.3},
-        {.375, 249.635}, {.5, 477.44}, {.625, 875.978}, {.75, 1588.7}, {.875, 2818.788}, {1, 5065.3}
-    }};
-    const auto next = std::lower_bound(anchors.begin() + 1, anchors.end(), release,
-        [](const Anchor& anchor, float control) { return anchor.control < control; });
-    const auto& previous = *(next - 1);
-    const double t = (release - previous.control) / (next->control - previous.control);
-    const double ms = previous.ms * std::pow(next->ms / previous.ms, t);
-    fall = std::exp(-1000.0 / (rate * ms));
+    // Continuous duration fitted to signed falling steps across the control.
+    const double ms = 5.00160 + 55.0211 * std::expm1(4.51953 * release);
+    // Round both terms of the decay pole. At long release, a one-ULP
+    // coefficient difference persists for several seconds.
+    const float halfStep = static_cast<float>(std::tanh(500.0 / rate / ms));
+    fall = (1.f - halfStep) / (1.f + halfStep);
 }
 
 void AdiShaper::WidthFollower::set(FollowerControl control, float value, double rate) noexcept {
@@ -274,8 +285,9 @@ void AdiShaper::WidthFollower::set(FollowerControl control, float value, double 
     case FollowerThreshold: threshold = unit; return;
     case FollowerAttack: case FollowerHold: case FollowerRelease: {
         auto& setting = control == FollowerAttack ? attack : control == FollowerHold ? hold : release;
-        if (setting != unit) {
-            setting = unit;
+        const float time = std::clamp(value, 0.f, 100.f) / 100.f;
+        if (setting != time) {
+            setting = time;
             updateTimes(rate);
         }
         return;
@@ -285,19 +297,50 @@ void AdiShaper::WidthFollower::set(FollowerControl control, float value, double 
     scale = static_cast<float>(2 << depth) * (multiply ? amount : 2.f * amount - 1.f);
 }
 
+float AdiShaper::WidthFollower::heldPeak(float input) noexcept {
+    // From oldest to newest, levels strictly decrease. Keep the entire
+    // supported window when the live hold shrinks.
+    const auto capacity = history.size();
+    const auto at = [&](std::size_t offset) -> Peak& {
+        const auto position = front + offset;
+        return history[position < capacity ? position : position - capacity];
+    };
+    const auto now = frame++;
+    if (count && now - at(0).frame >= capacity) {
+        if (++front == capacity) front = 0;
+        --count;
+        if (selected) --selected;
+    }
+    while (count && at(count - 1).level <= input) --count;
+    at(count) = {input, now};
+    ++count;
+
+    if (windowChanged) {
+        std::size_t first = 0, last = count - 1;
+        while (first < last) {
+            const auto mid = first + (last - first) / 2;
+            if (now - at(mid).frame > holdFrames) first = mid + 1;
+            else last = mid;
+        }
+        selected = first;
+        windowChanged = false;
+    } else {
+        selected = std::min(selected, count - 1);
+        while (now - at(selected).frame > holdFrames) ++selected;
+    }
+    return at(selected).level;
+}
+
 float AdiShaper::WidthFollower::width(float left, float right, float baseWidth) noexcept {
     const float peak = std::max(std::abs(left), std::abs(right));
-    const double input = std::isfinite(peak) && peak >= threshold ? peak : 0.0;
-    if (input >= envelope) {
-        envelope += rise * (input - envelope);
-        remaining = holdFrames;
-    } else if (remaining) {
-        --remaining;
-    } else {
-        envelope = std::max(input, envelope * fall);
-        if (envelope < 1.e-30) envelope = 0;
-    }
-    const auto modulation = static_cast<float>(envelope) * scale;
+    const float input = std::isfinite(peak) && peak >= threshold ? peak : 0.f;
+    // A zero-frame hold pauses history. At equality the detector releases
+    // for a frame before its attack moves back toward a sustained peak.
+    const float target = holdFrames ? heldPeak(input) : input;
+    if (target > envelope) envelope += rise * (target - envelope);
+    else envelope *= fall;
+    if (envelope < 1.e-30f) envelope = 0;
+    const auto modulation = envelope * scale;
     const float combined = multiply ? baseWidth * modulation : baseWidth + 2.f * modulation;
     return std::clamp(combined + offset, 0.f, 2.f);
 }

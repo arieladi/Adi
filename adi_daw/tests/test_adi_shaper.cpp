@@ -771,6 +771,99 @@ void setFollower(Shaper& rack, Band band, Shaper::FollowerControl control, float
     rack.set(Shaper::followerParam(band, control), value);
 }
 
+void followerSignedPeaks() {
+    Shaper rack;
+    flat(rack, Stage::Width, Band::Mid, 0);
+    auto set = [&](Shaper::FollowerControl id, float v) { setFollower(rack, Band::Mid, id, v); };
+    set(Shaper::FollowerOn, 1);
+    set(Shaper::FollowerAmount, 75);
+    set(Shaper::FollowerAttack, 0);
+    set(Shaper::FollowerRelease, 0);
+    set(Shaper::FollowerHold, 3.5f);
+    auto read = [&](int frame, float level) {
+        const float left = frame % 3 == 0 ? -level : level;
+        return one(rack, left, -left)[0] / (2.f * left);
+    };
+    // A signed plateau followed by a one-sample peak. At 96 kHz the
+    // 3.5-percent hold spans 58 previous frames, before the envelope falls.
+    struct Capture { double rate; std::array<float, 6> envelope; };
+    constexpr std::array<int, 6> frames{385, 387, 610, 611, 640, 669};
+    constexpr Capture reads[]{
+        {44100, {.24998784f, .25f, .61946333f, .62494051f, .61655682f, .54059649f}},
+        {48000, {.24896085f, .24999976f, .61712301f, .62487769f, .62236190f, .55154723f}},
+        {96000, {.25f, .24947989f, .56986404f, .61813009f, .62483800f, .62353802f}}
+    };
+    for (const auto& row : reads) {
+        rack.prepare(row.rate);
+        std::size_t mark = 0;
+        for (int i = 0; i <= frames.back(); ++i) {
+            const float level = i <= 400 ? .25f : i == 610 ? .625f : .0625f;
+            const auto actual = read(i, level);
+            if (i == frames[mark])
+                check(near(actual, row.envelope[mark++], 5e-6), "signed plateau and single-frame peak hold");
+        }
+    }
+
+    // Lengthening the window can recover an older peak. Frames delivered
+    // during zero hold drive the envelope without advancing this history.
+    rack.prepare(48000);
+    constexpr std::array<int, 10> at{167, 168, 169, 639, 640, 642, 767, 768, 1168, 1169};
+    constexpr std::array<double, 10> captured{.32955289, .37429443, .37498903, .38544315, .38384101,
+                                               .38065666, .37497580, .37341717, .49755105, .49996197};
+    std::size_t mark = 0;
+    for (int i = 0; i <= at.back(); ++i) {
+        if (i == 168) set(Shaper::FollowerHold, 10);
+        if (i == 310) set(Shaper::FollowerHold, 0);
+        if (i == 640) set(Shaper::FollowerHold, 16);
+        if (i == 768) set(Shaper::FollowerHold, 2.5f);
+        if (i == 1168) set(Shaper::FollowerHold, 17);
+        float level = .03125f;
+        if (i >= 102 && i < 108) level = .375f;
+        if (i == 522 || i == 523) level = .625f;
+        if (i == 1060 || i == 1061) level = .5f;
+        const auto actual = read(i, level);
+        if (i == at[mark])
+            check(near(actual, captured[mark++], 5e-6), "changing hold recalls only positive-window input");
+    }
+
+    // The oldest input still belongs to the half-second window at the
+    // highest supported sample rate, including after the circular queue wraps.
+    rack.prepare(768000);
+    set(Shaper::FollowerHold, 100);
+    std::array<float, 2048> l{}, r{}, outL{}, outR{};
+    l.fill(.03125f);
+    r.fill(-.03125f);
+    auto feedLow = [&](int n) {
+        while (n > 0) {
+            const auto framesThisTime = std::min(n, static_cast<int>(l.size()));
+            rack.process(l.data(), r.data(), outL.data(), outR.data(), static_cast<std::size_t>(framesThisTime));
+            n -= framesThisTime;
+        }
+    };
+    feedLow(384019);
+    (void)read(0, .625f);
+    feedLow(383999);
+    check(near(read(0, .03125f), .625, 2e-6), "768 kHz retains the oldest peak at the 500 ms limit");
+    check(near(read(0, .03125f), .6248373, 2e-6), "the oldest peak expires on the next frame");
+
+    struct Release { double rate; float percent, sample800, sample1200; };
+    constexpr Release releases[]{
+        {48000, 2, .33241251f, .14692384f}, {48000, 7.25f, .42682707f, .31103966f},
+        {96000, 2, .40769157f, .27105471f}, {96000, 11, .47488791f, .42838410f}
+    };
+    set(Shaper::FollowerHold, 0);
+    for (const auto& release : releases) {
+        rack.prepare(release.rate);
+        set(Shaper::FollowerRelease, release.percent);
+        for (int i = 0; i <= 1200; ++i) {
+            const auto actual = read(i, i <= 600 ? .5f : .0625f);
+            if (i == 800) check(near(actual, release.sample800, 3e-5), "early measured decay between release anchors");
+            // After 600 decay steps a two-ULP pole error can reach 0.000036.
+            if (i == 1200) check(near(actual, release.sample1200, 4e-5), "later measured decay between release anchors");
+        }
+    }
+}
+
 void followerLevels() {
     Shaper rack;
     flat(rack, Stage::Width, Band::Mid, 50);
@@ -779,12 +872,18 @@ void followerLevels() {
     set(Shaper::FollowerAmount, 75);
     set(Shaper::FollowerAttack, 0);
     set(Shaper::FollowerRelease, 0);
-    auto measure = [&](float left, float right) {
+    auto measure = [&](float left, float right, bool narrows = false) {
         std::array<float, 4096> l, r;
         l.fill(left);
         r.fill(right);
         rack.process(l.data(), r.data(), l.data(), r.data(), l.size());
-        return (l.back() - r.back()) / (left - right);
+        // Compare the maximum modulation over a complete plateau ripple.
+        float extreme = (l.back() - r.back()) / (left - right);
+        for (std::size_t i = l.size() - 16; i < l.size(); ++i) {
+            const float gain = (l[i] - r[i]) / (left - right);
+            extreme = narrows ? std::min(extreme, gain) : std::max(extreme, gain);
+        }
+        return extreme;
     };
     for (const auto& pair : {std::array{-.2f,.02f}, std::array{.02f,-.2f}, std::array{.15f,-.15f},
                              std::array{-.03f,-.09f}, std::array{.01f,.35f}}) {
@@ -801,7 +900,7 @@ void followerLevels() {
     set(Shaper::FollowerThreshold, 0);
     set(Shaper::FollowerDepth, 0);
     set(Shaper::FollowerAmount, 25);
-    check(near(measure(.21f,.19f), .08, 1e-5), "negative Add amount narrows the stereo signal");
+    check(near(measure(.21f,.19f,true), .08, 1e-5), "negative Add amount narrows the stereo signal");
     set(Shaper::FollowerMode, 1);
     set(Shaper::FollowerAmount, 75);
     set(Shaper::FollowerOffset, 75);
@@ -928,6 +1027,7 @@ int main() {
     modulationBands();
     driveDryAndLatency();
     driveAndCrush();
+    followerSignedPeaks();
     followerLevels();
     followerTimeConstants();
     followerSplitInputs();
