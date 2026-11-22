@@ -2,6 +2,7 @@
 #include "adi/engine/scale_timeline.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/store.hpp"
+#include "adi/store_rows.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <sqlite3.h>
 #include <algorithm>
@@ -66,6 +67,74 @@ std::optional<std::int64_t> ScaleTimeline::nextChangeAfterTicks(std::int64_t tic
     return found==changes.end()?std::nullopt:std::optional<std::int64_t>(found->posTicks);
 }
 std::span<const ScaleTimelineEvent> ScaleTimeline::events() const noexcept{return data_?std::span<const ScaleTimelineEvent>(data_->changes):std::span<const ScaleTimelineEvent>{};}
+ScaleTimelineRead compileScaleTimeline(const rows::Model &model) {
+    ScaleTimelineRead result;
+    if (audio::onAudioThread) {
+        result.error = "callback";
+        return result;
+    }
+    try {
+        require(model.keyEvents.size() <= eventLimit && model.keyDegrees.size() <= degreeLimit,
+                "scale timeline event or membership budget exceeded");
+        std::vector<ScaleKeyChange> changes;
+        changes.reserve(model.keyEvents.size());
+        std::map<std::int64_t, std::size_t> index;
+        std::size_t text = 0;
+        for (const auto &row : model.keyEvents) {
+            require(index.emplace(row.id, changes.size()).second, "duplicate key identity");
+            budget(text, row.scaleId.size(), textLimit, "scale timeline text budget exceeded");
+            ClipScale scale;
+            scale.root = row.root;
+            scale.id = row.scaleId;
+            scale.mask = row.mask;
+            changes.push_back({row.id, row.posTicks, std::move(scale)});
+        }
+        std::set<std::int64_t> referencedTunings;
+        for (const auto &row : model.keyTunings) {
+            const auto found = index.find(row.keyId);
+            require(found != index.end(), "orphan key tuning reference");
+            auto &scale = changes[found->second].scale;
+            require(!scale.tuningId, "duplicate key tuning reference");
+            scale.tuningId = row.tuningId;
+            referencedTunings.insert(row.tuningId);
+            require(referencedTunings.size() <= tuningLimit, "scale timeline tuning budget exceeded");
+        }
+        for (const auto &row : model.keyDegrees) {
+            const auto found = index.find(row.keyId);
+            require(found != index.end(), "orphan key membership");
+            auto &scale = changes[found->second].scale;
+            require(scale.tuningId.has_value(), "membership without a tuning");
+            scale.degrees.push_back(row.degree);
+        }
+        std::vector<TuningDefinition> tunings;
+        tunings.reserve(referencedTunings.size());
+        index.clear();
+        for (const auto &row : model.tunings) {
+            if (!referencedTunings.contains(row.id))
+                continue;
+            require(index.emplace(row.id, tunings.size()).second, "duplicate tuning identity");
+            budget(text, row.name.size(), textLimit, "scale timeline text budget exceeded");
+            budget(text, row.source.size(), textLimit, "scale timeline text budget exceeded");
+            budget(text, row.description.size(), textLimit, "scale timeline text budget exceeded");
+            tunings.push_back({row.id, row.name, row.source, row.description, row.periodCents, {}});
+        }
+        std::size_t totalDegrees = 0;
+        for (const auto &row : model.tuningDegrees) {
+            const auto found = index.find(row.tuningId);
+            if (found == index.end())
+                continue;
+            auto &degrees = tunings[found->second].degrees;
+            require(degrees.size() < eventLimit, "tuning degree budget exceeded");
+            budget(totalDegrees, 1, degreeLimit, "scale timeline degree budget exceeded");
+            budget(text, row.name.size(), textLimit, "scale timeline text budget exceeded");
+            degrees.push_back({row.degree, row.cents, row.name});
+        }
+        result.timeline = compileScaleTimeline(changes, tunings, result.error);
+    } catch (const std::exception &exception) {
+        result.error = exception.what();
+    }
+    return result;
+}
 ScaleTimelineRead readScaleTimeline(const Store& store) {
     ScaleTimelineRead result;if(audio::onAudioThread){result.error="callback";return result;}
     try {

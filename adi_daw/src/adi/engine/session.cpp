@@ -1014,6 +1014,9 @@ bool Session::rebuild() {
     // Snapshot has tempo but no meter data. rows::readModel reads this vector
     // from time_signature_map, sorted by position and id.
     timing->signatures = model_.signatures;
+    auto scale = compileScaleTimeline(model_);
+    timing->scaleTimeline = std::move(scale.timeline);
+    deviceScaleProblem_ = std::move(scale.error);
     timing->prepareDeviceClockChanges();
     std::unique_ptr<ClipPlayback> nextClips;
     std::unique_ptr<MidiClips> nextMidi;
@@ -1138,6 +1141,8 @@ bool Session::rebuild() {
 
 void Session::refreshProblems() {
     problems_ = model_.problems;
+    if (!deviceScaleProblem_.empty())
+        problems_.push_back("Device scale unavailable: " + deviceScaleProblem_);
     if (midi_) problems_.insert(problems_.end(), midi_->problems().begin(), midi_->problems().end());
     if (auto* c = clips()) problems_.insert(problems_.end(), c->problems().begin(), c->problems().end());
     problems_.insert(problems_.end(), sessionProblems_.begin(), sessionProblems_.end());
@@ -2136,6 +2141,17 @@ void Session::TimingView::prepareDeviceClockChanges() {
     for (const auto& event : tempo.events) add(event.posTicks);
     for (const auto& meter : signatures) add(meter.posTicks);
     std::sort(deviceClockChanges.begin(), deviceClockChanges.end());
+    deviceScaleChanges.clear();
+    if (scaleTimeline) {
+        deviceScaleChanges.reserve(scaleTimeline->events().size());
+        for (const auto &event : scaleTimeline->events()) {
+            const auto sample = sampleForTick(event.posTicks);
+            if (!deviceScaleChanges.empty() && deviceScaleChanges.back().first == sample)
+                deviceScaleChanges.back().second = &event.context;
+            else
+                deviceScaleChanges.emplace_back(sample, &event.context);
+        }
+    }
 }
 
 double Session::TimingView::quartersAt(std::int64_t sample) const noexcept {
@@ -2156,6 +2172,16 @@ DeviceTransport Session::TimingView::deviceAt(std::int64_t sample) const noexcep
     DeviceTransport result;
     result.sample = sample;
     result.quarterNotes = quartersAt(sample);
+    if (scaleTimeline) {
+        const auto scale = std::upper_bound(deviceScaleChanges.begin(), deviceScaleChanges.end(),
+                                            sample, [](auto at, const auto &row) {
+                                                return at < row.first;
+                                            });
+        result.scale = scale == deviceScaleChanges.begin() ? scaleTimeline->atTicks(-1)
+                                                          : std::prev(scale)->second;
+        if (scale != deviceScaleChanges.end())
+            result.nextScaleChange = scale->first;
+    }
     const auto next = std::upper_bound(deviceClockChanges.begin(), deviceClockChanges.end(), sample,
         [](std::int64_t value, const auto& change) { return value < change.first; });
     if (next != deviceClockChanges.end()) result.nextChange = next->first;

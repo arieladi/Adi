@@ -1863,8 +1863,10 @@ void Graph::runNode(RenderState& r, Slot& s, std::int32_t frames, std::int32_t n
         if (s.tailRemaining < 0) s.tailRemaining = 0;
     }
 
+    const bool scaleTiming = s.node->wantsDeviceScale();
     const bool deviceTiming = !bypass && transport && transport->deviceClock &&
-                              transport->devicePosition && s.node->wantsDeviceTransport();
+                              transport->devicePosition &&
+                              (s.node->wantsDeviceTransport() || scaleTiming);
     for (std::int32_t seg = 0, nextBegin = 0; seg < nsplit;) {
         const std::int32_t begin = nextBegin;
         const std::int32_t boundary = splits_[static_cast<std::size_t>(seg + 1)];
@@ -1874,9 +1876,12 @@ void Graph::runNode(RenderState& r, Slot& s, std::int32_t frames, std::int32_t n
             const auto sample = transport->deviceClock->inputSample(begin, arrival);
             end = begin + transport->deviceClock->inputContiguousFrames(sample, boundary - begin);
             devicePosition = transport->devicePosition(transport->deviceClockContext, sample);
-            if (devicePosition.playing && devicePosition.nextChange > sample &&
-                sample > devicePosition.nextChange - (end - begin)) {
-                end = begin + static_cast<std::int32_t>(devicePosition.nextChange - sample);
+            const auto nextChange = scaleTiming
+                ? std::min(devicePosition.nextChange, devicePosition.nextScaleChange)
+                : devicePosition.nextChange;
+            if (devicePosition.playing && nextChange > sample &&
+                sample > nextChange - (end - begin)) {
+                end = begin + static_cast<std::int32_t>(nextChange - sample);
             }
         }
         nextBegin = end;
@@ -2165,7 +2170,8 @@ void Graph::process(const AudioIo& io) noexcept {
         // ADR-0165: automation addressed to this node, beside what it sources.
         if (EventSource* source = s.eventSource.source) {
             const auto index = static_cast<std::size_t>(&s - slots_.data());
-            const auto arrival = delayCompensation_ && s.node->wantsDeviceTransport()
+            const auto arrival = delayCompensation_ &&
+                    (s.node->wantsDeviceTransport() || s.node->wantsDeviceScale())
                 ? pdcActiveArrival_[index] : 0;
             source->emitAtInput(s.events, frames, arrival);
         }
