@@ -36,6 +36,10 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — TM-TT-01 and TM-SV-01 together
+
+Local integration `fb043d678e9970a67eb48a65842803c60dcadd48` kept both MIDI test selectors and added the rolling locate fixture under a 90–210 BPM Bézier ramp. Strict GCC passed all three joined suites and the focused 38-check ramp-locate run, including both precisions, MIDI release and chase, loop wrap, a callback-edge grid line and Stop cancellation. The production branch heads are unchanged.
+
 ## 2026-11-22 — M3 media order
 
 - TM-LS-01's remaining window and workstation gates wait on Window and Win. The engine Link consumer was exercised in the tempo-ramp and quantized-locate work.
