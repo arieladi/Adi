@@ -11,6 +11,17 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+### 22 November — MX-21 pinned Spectrum FFT profile
+
+Pinned Realtime Spectrum sizes its shared Hann window from the prepared main tap. It requests the nearest admitted FFT to the 85.3 ms base and uses a quarter-window hop. That is 4,096/1,024 at 48 kHz and 8,192/2,048 at 96 kHz. The ordinary 1,024-point reader and the pinned Overview can share the source tap while keeping their own plans. Toggling off takes the primary back to the ordinary plan. The dated scheduled branch includes main’s #714 documentation correction.
+
+Six profile and rate-rebind assertions failed first. All 401 Mix Functions checks now pass, including the same-panel 96→48 kHz rebind with the project stored at 44.1 kHz, two pin tone peaks, plan identity, the ordinary reader, domain release, no unchanged-frame transformation or publication, and stable Compare Hold B. All 24 CTests and 906 / 329 / 7 shell checks passed. MSVC /W4 /WX passed four units and Clang passed three implementation units.
+
+Review ZIP SHA-256 `d32bbc47bb8fe73b88e6a736265bde16a3fd137bf84ca7d0584228f8ac0ecb58`; EXE SHA-256 `128a78cc64948de719f9f3a9bcf49e3691d68798cfba89eeaab5d6aad5aee230`. The brief includes six 48/96 kHz WAVs. The 1,024-cell display grid, power average, statistical ballistics and timed X19 remain open.
+
+PR requested — `mixview/mx21-overview-spectrum-profile-lands-after-2026-12-03` at `a6ef94c95eeae4d2c89fea383d6d6bd7df6f322a`, also on the joined scheduled preview. Lands after 3 December.
+
+
 ### 22 November — DF-M3 native High Shelf sound comparison
 
 Four previously model-only 48 kHz/256 stereo cases now ran through the registered native EQ at `88bab8b9` with exact physical readback and zero delay on both sides. All are 12 dB/oct static shelves with Dynamics and Spectral off. None passes whole-render or settled 2–3 s strict gates. Settled RMS is 0.001508 at 2.2 kHz / Q 2.5 / −8 dB; 0.003188 at 14 kHz / Q 4 / −6 dB; 0.001021 at 20 kHz / Q .25 / +6 dB; and 0.002976 at 20 kHz / Q 4 / +6 dB. Largest peaks occur in the first 480 samples. The settled failure at 2.2 kHz rules out the graph edge and startup as the sole causes.
