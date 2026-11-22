@@ -17,6 +17,10 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — For Devices, the two Time locate tests and their prerequisites
+
+The core API and its regression are on `clones/shaper-linear-reconcile` at `e8ff2ead`. In `test_adi_shaper.cpp` the buffered stereo marker survives a contiguous call with the existing revision. A revision change at the predicted sample clears it. The registered native factory case still needs the Devices-owned wrapper to forward quarter notes, exact samples and transport revision to `syncAtSample`. At the 128-frame boundary, keep the timeline at its predicted frame, change revision from 1 to 2 and require the delayed marker to disappear. Keep the edited-Pd case on its explicit 192,000-frame jump. The registered test failed before forwarding and passed after forwarding in private. Its test hunk belongs to clones and is parked for the Time stack and owner hook. The shared two-head reader is separately available for Devices review on `clones/two-head-reader` at `9b7cd7ca`.
+
 ## 22 November 2026 — Per-band Crush treble follows both curves
 
 `clones/shaper-crush-treble` at `edc8ee1f` — Calibrate Crush treble against bit and hold contours. **Lands after 3 December.** IDs 868–870 store each band's treble independently. Old states reopen at 100%. The 350 Hz filter keeps its history at full treble so the next edit can use the preceding audio. The knob, native and edited-Pd paths all passed under MSVC /W4 /WX at both precisions. Applying the shelf after the DC filter failed the moving marker by 0.00314. Discarding its history at full treble failed a later automation marker by over 0.55. Across three rates, 196,608 neutral stereo frames matched the previous binary and 1,769,472 whole, split and irregular stereo comparisons matched exactly.
