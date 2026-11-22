@@ -17,6 +17,18 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — A stereo transfer law and selectable delay range for Pan
+
+The most frequent missing Pan law occurs in 127 of 873 programs and ten of the earlier 81 regressions. With delay blend at zero, a +50% excursion sends half the right input to the left output while retaining half on the right. The left input stays at unity. Negative excursion exchanges the channels. At either endpoint the two inputs sum into the near speaker.
+
+For excursion magnitude a and normalized delay blend h, let t = a × (1−max(0,2h−1)). The near output is its input plus t times the far input. The far output receives (1−t) times its input. Both complete mixed outputs enter the delay history. Only the current far speaker blends direct and delayed audio. Writing the pre-crossfeed speaker into its history gave 0.00650 RMS on a hard switch. Band and master wet controls scale the difference from dry by their product in this isolated stage.
+
+Across 666 stationary cases at 44.1, 48 and 96 kHz, independent stereo input reconstructed the output within 0.000000163 peak. On 51 moving cases the maximum stereo RMS was 0.0000122 and peak error was 0.000185. During an overshoot the matrix uses the clamped position, while the delay uses the full signed excursion.
+
+For a stationary contour, normalized range s and excursion a, let v = sa. The far-side delay in milliseconds follows 40v³ + max(0,2v−4v²), spanning 0–40 ms. The integer tap is the floor of the resulting sample count. All 36 grid cases and 24 independent off-grid cases matched the observed frame exactly. The selectable range and stereo transfer need the Pan delay writer from the existing repair to reach main. The active review branch covers the standard Pan law and its measured 2 ms range.
+
+PR requested
+
 ## 22 November 2026 — Saved Sweep offsets on the historical bank
 
 For all 116 affected programs, we loaded, saved and reopened the three offsets through a private 1,496-control registered device with weighted curves, Time and Trim. All 464 state restores and readback checks passed. On the original stage order, with Reverb held fixed where available, 85 stereo RMS errors fell, 26 rose and five stayed within 0.000001. Two programs finished below 0.001, up from one. All 33 overlapping centered Reverb paths reproduced their earlier samples exactly. Of the twelve programs with every stage represented, nine improved and three worsened.
