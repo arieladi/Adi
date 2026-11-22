@@ -236,6 +236,13 @@ public:
         : data_(storage), capacity_(capacity) {}
 
     [[nodiscard]] std::int32_t size() const noexcept { return size_; }
+    [[nodiscard]] std::int32_t capacity() const noexcept {
+        return data_ == nullptr || capacity_ < 0 ? 0 : capacity_;
+    }
+    [[nodiscard]] std::int32_t remaining() const noexcept {
+        const std::int32_t cap = capacity();
+        return size_ < cap ? cap - size_ : 0;
+    }
     [[nodiscard]] std::int64_t dropped() const noexcept { return dropped_; }
     [[nodiscard]] const MpeOut* begin() const noexcept { return data_; }
     [[nodiscard]] const MpeOut* end() const noexcept { return data_ + size_; }
@@ -248,6 +255,9 @@ public:
         if (data_ == nullptr || size_ >= capacity_) { ++dropped_; return false; }
         data_[size_++] = o;
         return true;
+    }
+    void drop(std::int32_t count) noexcept {
+        if (count > 0) dropped_ += count;
     }
     void clear() noexcept { size_ = 0; }
 
