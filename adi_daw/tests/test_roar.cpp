@@ -290,7 +290,46 @@ void routing() {
 
 }  // namespace
 
+/// Input, a stage's Amount and Level, Output and Dry/Wet moved at a tone's
+/// peak glide: the largest step while they move stays within the signal's
+/// own, before or after.
+void glides() {
+    struct Move {
+        R::Param param;
+        double from, to;
+        const char* what;
+    };
+    for (const Move m : {Move{R::Input, -24, 24, "Input"}, Move{R::stage(0, R::StageAmount), 0, 100, "Amount"},
+                         Move{R::stage(0, R::StageLevel), -36, 12, "Level"}, Move{R::Output, -36, 12, "Output"}, Move{R::DryWet, 0, 100, "Dry/Wet"}}) {
+        R r;
+        r.set(R::stage(0, R::StageShape), R::Tube);
+        r.set(R::stage(0, R::StageFilter), R::LowPass);
+        r.set(R::stage(0, R::StageFreq), 3000);
+        r.set(m.param, m.from);
+        r.prepare(kRate);
+        const auto x = sine(110, 96000, 0.2);
+        std::vector<float> l(x.size()), rr(x.size());
+        constexpr std::size_t at = 48109;   // the tone's peak
+        r.process(x.data(), x.data(), l.data(), rr.data(), at);
+        r.set(m.param, m.to);
+        r.process(x.data() + at, x.data() + at, l.data() + at, rr.data() + at, x.size() - at);
+        double moving = 0, settled = 0;
+        for (std::size_t i = at; i < at + 4800; ++i) {
+            moving = std::max(moving, static_cast<double>(std::abs(l[i] - l[i - 1])));
+        }
+        for (std::size_t i = 24000; i < 48000; ++i) {
+            settled = std::max(settled, static_cast<double>(std::abs(l[i] - l[i - 1])));
+        }
+        for (std::size_t i = 72000; i < 96000; ++i) {
+            settled = std::max(settled, static_cast<double>(std::abs(l[i] - l[i - 1])));
+        }
+        check(moving <= 1.5 * std::max(settled, 1e-9), std::string(m.what) + " glides: no step past the signal's own (" + std::to_string(moving) +
+                                                           " against " + std::to_string(settled) + ")");
+    }
+}
+
 int main() {
+    glides();
     routings();
     feedback();
     shapes();

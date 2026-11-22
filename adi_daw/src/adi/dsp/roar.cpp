@@ -126,11 +126,23 @@ void Roar::prepare(double sampleRate) noexcept {
     for (auto& s : stages_) {
         s.state = {};
         s.dcIn = s.dcOut = {};
+        s.biasGlide.prepare(rate_);
+        s.levelGlide.prepare(rate_);
+        s.driveGlide.prepare(rate_, 0.050);   // up to 36 dB: over 50 ms
     }
     for (auto* chain : {&lowLp_, &lowHp_, &highLp_, &highHp_, &allLp_, &allHp_}) {
         chain->state = {};
     }
+    for (auto* g : {&input_, &output_, &wet_, &feedback_}) {
+        g->prepare(rate_);
+    }
     update();
+    for (auto& s : stages_) {
+        s.drive = s.driveGlide.value;
+        s.bias = s.biasGlide.value;
+        s.level = s.levelGlide.value;
+        s.offset = shape(s.shape, s.bias, s.amount);
+    }
 }
 
 void Roar::set(Param p, double v) noexcept {
@@ -164,10 +176,9 @@ void Roar::update() noexcept {
         const auto at = [&](StageField f) { return p_[static_cast<std::size_t>(stage(s, f))]; };
         st.shape = static_cast<int>(at(StageShape));
         st.amount = at(StageAmount) / 100;
-        st.drive = level(36 * st.amount);
-        st.bias = 0.5 * at(StageBias) / 100;
-        st.offset = shape(st.shape, st.bias, st.amount);
-        st.level = level(at(StageLevel));
+        st.driveGlide.set(level(36 * st.amount));
+        st.biasGlide.set(0.5 * at(StageBias) / 100);
+        st.levelGlide.set(level(at(StageLevel)));
         const double f = std::min(at(StageFreq), top), sq = at(StageQ);
         switch (static_cast<int>(at(StageFilter))) {
         case LowPass:
@@ -193,10 +204,10 @@ void Roar::update() noexcept {
     allHp_.sections = highHp_.sections;
     feedbackFilter_ = lowPass(rate_, std::min(p_[FeedbackFreq], top), q);
     feedbackDelay_ = std::max<std::size_t>(1, static_cast<std::size_t>(std::lround(p_[FeedbackTime] / 1000 * rate_)));
-    feedback_ = size_ > 0 ? p_[Feedback] / 100 : 0.0;
-    input_ = level(p_[Input]);
-    output_ = level(p_[Output]);
-    wet_ = p_[DryWet] / 100;
+    feedback_.set(size_ > 0 ? p_[Feedback] / 100 : 0.0);
+    input_.set(level(p_[Input]));
+    output_.set(level(p_[Output]));
+    wet_.set(p_[DryWet] / 100);
 }
 
 double Roar::runStage(std::size_t s, std::size_t c, double x) noexcept {
@@ -215,12 +226,22 @@ void Roar::process(const float* inL, const float* inR, float* outL, float* outR,
         // Both inputs are read before either output is written (a host may
         // hand an output plane that is an input plane).
         const double dry[2] = {inL && std::isfinite(inL[i]) ? inL[i] : 0.0, inR && std::isfinite(inR[i]) ? inR[i] : 0.0};
-        double x[2] = {input_ * dry[0], input_ * dry[1]};
-        if (feedback_ > 0) {
+        for (auto& st : stages_) {
+            st.drive = st.driveGlide.next();
+            const double bias = st.biasGlide.next();
+            if (bias != st.bias) {
+                st.bias = bias;
+                st.offset = shape(st.shape, bias, st.amount);
+            }
+            st.level = st.levelGlide.next();
+        }
+        const double input = input_.next(), feedback = feedback_.next(), gainOut = output_.next(), mix = wet_.next();
+        double x[2] = {input * dry[0], input * dry[1]};
+        if (feedback > 0) {
             for (std::size_t c = 0; c < 2; ++c) {
                 const double delayed = line_[c][(write_ + size_ - feedbackDelay_) % size_];
                 auto& f = feedbackState_[c];
-                x[c] += feedback_ * runBiquad(feedbackFilter_, f.x1, f.x2, f.y1, f.y2, delayed);
+                x[c] += feedback * runBiquad(feedbackFilter_, f.x1, f.x2, f.y1, f.y2, delayed);
             }
         }
         double y[2] = {0, 0};
@@ -261,10 +282,10 @@ void Roar::process(const float* inL, const float* inR, float* outL, float* outR,
             write_ = (write_ + 1) % size_;
         }
         if (outL) {
-            outL[i] = static_cast<float>(dry[0] + (output_ * y[0] - dry[0]) * wet_);
+            outL[i] = static_cast<float>(dry[0] + (gainOut * y[0] - dry[0]) * mix);
         }
         if (outR) {
-            outR[i] = static_cast<float>(dry[1] + (output_ * y[1] - dry[1]) * wet_);
+            outR[i] = static_cast<float>(dry[1] + (gainOut * y[1] - dry[1]) * mix);
         }
     }
 }

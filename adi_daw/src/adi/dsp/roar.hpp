@@ -33,7 +33,9 @@
 // linear: its response is the routing of the stages' filters, levels and DC
 // blockers, which the test checks per routing, and with feedback the loop's
 // own response. A change of Routing restarts every stage from silence, so a
-// stage that sat idle does not replay its old state.
+// stage that sat idle does not replay its old state. Input, each stage's
+// Bias and Level, Feedback, Output and Dry/Wet glide over about 10 ms once
+// audio runs, each Amount (up to 36 dB of drive) over 50 ms (dsp/glide.hpp).
 //
 // WHAT IS NOT LIVE'S YET, and says so: Roar's shape list, its compressor,
 // its modulation matrix (LFOs, envelopes, noise), the feedback's modes and
@@ -45,6 +47,7 @@
 #pragma once
 
 #include "adi/dsp/biquad.hpp"
+#include "adi/dsp/glide.hpp"
 
 #include <array>
 #include <cstddef>
@@ -97,7 +100,8 @@ private:
     };
     struct Stage {
         Biquad filter{1, 0, 0, 0, 0};
-        double drive = 1, bias = 0, offset = 0, level = 1, amount = 0;
+        double drive = 1, bias = 0, offset = 0, level = 1, amount = 0;   ///< this sample's values
+        Glide driveGlide, biasGlide, levelGlide;
         int shape = 0;
         std::array<State, 2> state{};
         std::array<double, 2> dcIn{}, dcOut{};
@@ -116,7 +120,8 @@ private:
     std::array<State, 2> feedbackState_{};
     Biquad feedbackFilter_{};
     std::size_t size_ = 0, write_ = 0, feedbackDelay_ = 1;
-    double rate_ = 48000, input_ = 1, output_ = 1, wet_ = 1, feedback_ = 0, dcPole_ = 0;
+    double rate_ = 48000, dcPole_ = 0;
+    Glide input_, output_, wet_, feedback_;
 };
 
 }  // namespace adi::dsp
