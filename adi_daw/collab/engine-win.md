@@ -4,6 +4,19 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-22, VST3 export and the Browser's scan cache
+
+- **PR requested** — N62, `engine-win/export-host-owner` at `6b78d94c`. The render session creates, prepares, restores, services and destroys plug-ins on the host owner. The worker renders blocks and writes the file. Quit and Cancel can service pending owner calls through teardown. WTS-01 7d in the JUCE acceptance build rendered 192,000 frames including the saved note from a real VST3 fixture, and 7e passed. The render queue passed 437 checks, including state, thread affinity and cancellation.
+- **PR requested** — DF-E62 (a) and (d), `engine-win/scanner-cache-ownership` at `c6bdb514`. A successful fresh probe without a reliable stamp retires the old cached packet in the ticket transaction. The prune reader waits through a short competing registry write. This is the Browser prerequisite.
+- **PR requested** — DF-E62 (b), (c) and (e), `engine-win/scanner-cache-paths` at `1d6dd030`, stacked on `c6bdb514`. Retire the spelling of a case-renamed module only when its canonical replacement was seen. Strip trailing root and dangling-target separators. Include extensionless executables in a mixed-case macOS bundle layout. The pinned Windows scanner cache and prune suites passed 141 and 29 checks, respectively. The scanner protocol and catalogue suites passed on the (a)/(d) candidate.
+- **PR requested** — N66, `engine-win/recording-failed-prefix` at `0747821d`. A discontinuity, overflow or other input interruption can attach the prefix only after all sinks finish and the normal project-media checks verify their WAV dimensions. The window reports the cause and places the kept prefix in one undo step. The recording, recording commands and document suites all passed. An I/O failure without a verified finalized prefix is still refused. This candidate is independent on current main. The older DF-E44 and PD-06/PD-05 branches overlap recorder completion and need reconciliation if taken in the same window.
+- The previously withdrawn DF-E51, DF-E45 and DF-E54 candidates need no follow-up PR. The current engine fixes passed the carried zone-change and FIFO checks, 44.1 kHz Beat 2 and bar boundaries plus the stored-nanosecond round trips, and Collect and Export after Cut or Undo.
+
+## 2026-11-22 — DF-E64 Play starts with the recorded take
+
+- PR requested `engine-win/play-first-block` (`c7f3d9cc`). Engine review (loan). Read ahead at the stopped or located playhead, and keep Play pending until the graph running the first block admits its source pages. Stop cancels pending Play, a later Locate retargets it, and failed media stays silent without holding unrelated clips. Offline admission remains strict.
+- Windows MSVC Debug, `ADI_ACCEPTANCE=ON`, pinned SQLiteCpp, warnings as errors: WTS-01 2b before the fix lost 256 frames of the 384,000-frame take. The fixed run waited one 256-frame callback after a cold Locate/Play, then matched every take sample with zero underruns. The acceptance driver checks that the held callback stays silent at the locate position and measures from actual transport start. Full headless WTS-01 and the clip playback, render slices and window state tests passed (4/4).
+
 ## 2026-11-20, release a failed recorder before cancellation (DF-E44)
 
 **PR requested** — `engine-win/recorder-failure-recovery` at `0ed2c355e2c71087ccd896c65e5c30fa40e5a6fa`, on main `917b22c0`. Every created sink gets a close attempt. The worker releases all sinks before reporting completion, even if one close throws. The owner clears the pending job before discarding. A removal refusal is reported, with the directory retained for retry. Engine seat review requested before the Window Record entry point.
@@ -55,11 +68,6 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 ## 2026-11-20, integration check for the three loans and startup discovery
 
 **MEASURED.** The exact requested tips `fc2d0a7b`, `f26730fb`, `55f20c8c` and `879a5d15` merge cleanly on `b56b1348`. Their combined tree passed 593 checks in five strict MSVC x64 `/W4 /WX` suites with the SQLiteCpp 3.4.0 pin. The gate exercised live MIDI parsing, Capture MIDI, actual archive publication, audio recording and process-exit recording discovery. The review and landing requests stay on the four original branch tips.
-
-## 2026-11-22 — DF-E64 Play starts with the recorded take
-
-- PR requested `engine-win/play-first-block` (`c7f3d9cc`). Engine review (loan). Read ahead at the stopped or located playhead, and keep Play pending until the graph running the first block admits its source pages. Stop cancels pending Play, a later Locate retargets it, and failed media stays silent without holding unrelated clips. Offline admission remains strict.
-- Windows MSVC Debug, `ADI_ACCEPTANCE=ON`, pinned SQLiteCpp, warnings as errors: WTS-01 2b before the fix lost 256 frames of the 384,000-frame take. The fixed run waited one 256-frame callback after a cold Locate/Play, then matched every take sample with zero underruns. The acceptance driver checks that the held callback stays silent at the locate position and measures from actual transport start. Full headless WTS-01 and the clip playback, render slices and window state tests passed (4/4).
 
 ## 2026-11-19, order the MIDI settings before the graph-worker preference
 
