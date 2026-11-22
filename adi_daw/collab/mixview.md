@@ -11,6 +11,12 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+## 2026-11-22 — MX-13, real Device Output stamps through the analyser broker
+- Extended the native limiter document fixture with Scope requests for Device Input and Device Output and a Device Spectrum lease. With both native providers and real graph compensation, the output picture shares the Spectrum result, retains the physical tap's waveform and stamp, and matches non-silent compensated input at the same heard sample. Releasing the analyser demand leaves the independent direct observers attached.
+- The targeted suite passes 99 checks, the exact test unit passes MSVC /W4 /WX, and all 24 named CTests and the 906/329/7 components pass. This adds a headless test to the existing product behavior. The scheduled app release remains `6c13c217`.
+- #558's failed ARM64 dependency-fetch job alone was requeued. Attempt two is running on the same `3c767304a9` head.
+- PR requested — `mixview/mx13-device-tap-stamps-lands-after-2026-12-03` at `e0f7030c`, after the scheduled preview and DEV-22 lease. Lands after 3 December.
+
 ## 2026-11-22 — Focus Align preview under equal signal and noise power
 - The existing integer-lag preview keeps the .70 floor for short or ordinary cases. The narrow extension to .68 requires at least 2,048 common samples and a .15 lead over every other local peak. The chosen lag, signed correlation, transport fences and one-off worker scheduling stay in the existing preview.
 - The red 0 dB SNR fixture refused a distinct correct +137-sample peak. The exact Release passes it, the also-passing noise seed, the −20 to +10 dB gain sweep, and the short-window and dual-echo refusals. The broker suite passes 717 checks and the exact app passes all 24 selected CTests and the 906/329/7 component checks. Three MSVC /W4 /WX units and both Clang production units pass.
