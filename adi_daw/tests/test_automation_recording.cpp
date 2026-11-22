@@ -124,5 +124,98 @@ void run() {
     check(producerOk && ordered && transferred.size()==1000 && concurrent.stats().dropped==0,"SPSC preserves every timestamped gesture across actual threads");
     check(allocations==0,"all guarded producer operations remain allocation-free");
 }
+void passBoundaries() {
+    const AutomationTarget target{3, 2, std::nullopt};
+    AutomationRecorder latch(target, 16, 64, AutomationCaptureMode::Latch);
+    std::vector<RecordedAutomation> passes;
+    watch = true;
+    const bool released = latch.setRecording(true, 50) &&
+                          latch.push(AutomationGesture::Begin, 100, 0.25) &&
+                          latch.push(AutomationGesture::Value, 125, 0.5) &&
+                          latch.push(AutomationGesture::End, 130, 0.5);
+    watch = false;
+    check(released && latch.drain(passes) == 0,
+          "latch keeps the released value open for the rest of the pass");
+    watch = true;
+    const bool wrapped = latch.splitAtTransportBoundary(200, 50);
+    watch = false;
+    check(wrapped && latch.drain(passes) == 1, "loop wrap yields exactly one completed pass");
+    if (passes.size() != 1)
+        return;
+    const auto &first = passes[0].points;
+    check(first.size() == 4 && first.front().time == 100 && first[2].time == 130 &&
+              first[2].curve == static_cast<std::uint8_t>(Curve::Hold) &&
+              first.back().time == 200 && first.back().value == 0.5,
+          "the old pass records the held value up to the old loop end");
+    watch = true;
+    const bool wrappedAgain = latch.splitAtTransportBoundary(200, 50);
+    watch = false;
+    check(wrappedAgain && latch.drain(passes) == 1 && passes.size() == 2,
+          "an untouched later cycle still records its held value");
+    if (passes.size() != 2)
+        return;
+    const auto &next = passes[1].points;
+    check(next.size() == 2 && next.front().time == 50 && next.back().time == 200 &&
+              next.front().value == 0.5 && next.back().value == 0.5 &&
+              next.front().curve == static_cast<std::uint8_t>(Curve::Hold),
+          "the next loop begins on its literal native clock with a held knot");
+    watch = true;
+    const bool retouched = latch.push(AutomationGesture::Begin, 75, 0.75) &&
+                           latch.push(AutomationGesture::End, 80, 0.75) &&
+                           latch.splitAtTransportBoundary(110, 300) &&
+                           latch.setRecording(false, 350);
+    watch = false;
+    check(retouched && latch.drain(passes) == 2 && passes.size() == 4,
+          "retouch stays in its pass while locate and Stop close separate passes");
+    if (passes.size() != 4)
+        return;
+    const auto &beforeLocate = passes[2].points;
+    const auto &afterLocate = passes[3].points;
+    check(beforeLocate.size() == 4 && beforeLocate.front().time == 50 &&
+              beforeLocate[1].time == 75 && beforeLocate[1].value == 0.75 &&
+              beforeLocate.back().time == 110 && afterLocate.front().time == 300 &&
+              afterLocate.back().time == 350 && afterLocate.front().value == 0.75,
+          "separate exact locate clocks preserve new touch and continued value");
+
+    AutomationRecorder touch(target, 8);
+    std::vector<RecordedAutomation> touched;
+    check(touch.setRecording(true, 0) && touch.push(AutomationGesture::Begin, 10, 0.125) &&
+              touch.splitAtTransportBoundary(30, 100) &&
+              touch.push(AutomationGesture::End, 110, 0.25) && touch.drain(touched) == 2 &&
+              touched[0].points.back().time == 30 && touched[1].points.front().time == 100 &&
+              touched[1].points.back().time == 110 && touch.splitAtTransportBoundary(120, 200) &&
+              touch.drain(touched) == 0,
+          "touch splits while held, closes on release and stays closed at a later boundary");
+
+    AutomationRecorder small(target, 2, 64, AutomationCaptureMode::Latch);
+    std::vector<RecordedAutomation> bounded;
+    check(small.setRecording(true, 0) && small.push(AutomationGesture::Begin, 10, 0.5) &&
+              !small.splitAtTransportBoundary(20, 0) && small.drain(bounded) == 1 &&
+              small.setRecording(false, 1) && small.drain(bounded) == 0 &&
+              bounded.front().points.back().time == 20,
+          "overflow at the split keeps the completed pass and discards the missing start");
+    check(small.setRecording(true, 10) && small.push(AutomationGesture::Begin, 11, 0.25) &&
+              !small.splitAtTransportBoundary(9, 0) && small.setRecording(false, 15) &&
+              small.drain(bounded) == 0,
+          "a contradictory clock boundary discards the open pass without partial history");
+    check(allocations == 0, "latch, retouch and transport splitting allocate nothing on the producer");
+
+    const test::TempDirectory temp("automation", "write-pass");
+    auto store = project(temp.path() / "pass.adi");
+    std::string error;
+    const auto prepared = prepareRecordedAutomation(*store, passes[2], error);
+    check(prepared && automation::commitShapeInsertion(*store, *prepared).ok,
+          "a closed pass commits through the existing owner-side writer");
+    const auto persisted = bytes(*store);
+    const StreamReader<AutomationPoint> replay(persisted, FourCC::Automation);
+    check(replay.ok() && replay.count() == 4 && replay.at(0)->time == 50 &&
+              replay.at(0)->curve == static_cast<std::uint8_t>(Curve::Hold) &&
+              replay.at(1)->time == 75 && replay.at(1)->value == 0.75,
+          "the native stream stores the held interval and the exact retouch");
+    History history(*store);
+    check(history.undo().ok && bytes(*store).empty() &&
+              history.redo().ok && bytes(*store) == persisted,
+          "the completed pass has one exact undo and redo");
+}
 } // namespace
-int main(){try{run();}catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{run();passBoundaries();}catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
