@@ -15,6 +15,18 @@
 namespace adi::engine {
 namespace fs=std::filesystem;
 struct AudioRecordingResult::Files {fs::path directory;};
+bool AudioRecordingResult::hasAttachableAudio()const noexcept {
+    if(frames==0)return false;
+    switch(failure) {
+    case RecordingFailure::None:return true;
+    case RecordingFailure::Overflow:
+    case RecordingFailure::MissingInput:
+    case RecordingFailure::BlockSize:
+    case RecordingFailure::Discontinuity:
+    case RecordingFailure::PassLimit:return finalizedPrefix_;
+    default:return false;
+    }
+}
 const fs::path& AudioRecordingResult::directory()const noexcept {static const fs::path empty;return files_?files_->directory:empty;}
 std::error_code AudioRecordingResult::discard() {
     if(audio::onAudioThread)return std::make_error_code(std::errc::operation_not_permitted);
@@ -58,6 +70,7 @@ struct Job {
     std::atomic<bool> stopWriter{false},done{false},transportEnded{false};
     std::thread worker;
     std::exception_ptr writerError;
+    bool finalized=false; // written before publishing done
     bool discardRequested=false; // owner only; cancellation also discards failed takes
     // Callback-owned continuity state; observed only after its quiescence.
     bool begun=false;
@@ -87,6 +100,7 @@ struct Job {
         writers.clear();
     }
     void run()noexcept {
+        bool drained=false;
         try {
             while(true) {
                 auto head=written.load(std::memory_order_acquire);
@@ -112,10 +126,13 @@ struct Job {
                     writers[target]->write(std::span<const float>(values.data(),static_cast<std::size_t>(frames)*mapping.size()),frames);
                 }
             }
+            drained=true;
         } catch(...) {
             noteWriterError();
         }
         closeWriters();
+        // A kept prefix needs the whole write loop and every close to succeed.
+        finalized=drained && !writerError;
         done.store(true,std::memory_order_release);
     }
     void capture(const AudioIo& io,const Transport& transport)noexcept {
@@ -251,6 +268,7 @@ std::optional<AudioRecordingResult> AudioInputRecorder::poll(bool deviceStopped)
     if(job->worker.joinable())job->worker.join();
     AudioRecordingResult result;result.failure=job->failure.load(std::memory_order_acquire);result.sampleRate=job->spec.sampleRate;
     result.frames=job->written.load(std::memory_order_acquire);result.startSample=job->firstSample.load(std::memory_order_acquire);result.tracks=job->tracks;
+    result.finalizedPrefix_=job->finalized;
     result.sourceProject_=job->spec.sourceProject;
     result.loop_=job->spec.loop;
     result.passes_.assign(job->passes.begin(),job->passes.begin()+static_cast<std::ptrdiff_t>(job->passCount));

@@ -154,13 +154,13 @@ void discontinuityAndWriterFailures() {
     test::TempDirectory directory{"audio_recording","discontinuity"};AudioInputRecorder recorder;auto request=spec(directory.path());request.targets={{21,{0}}};request.maxFrames=8;std::string error;
     std::array<float,8> values{};const float* channels[]={values.data()};AudioIo io;io.in=channels;io.numIn=1;io.frames=8;
     Transport transport;transport.play();check(recorder.start(request,error),"start recording before a transport seek");input(recorder,transport,io);transport.locate(100);io.streamTimeSamples=8;input(recorder,transport,io);recorder.stop();input(recorder,transport,io);
-    auto seek=finish(recorder);check(seek.failure==RecordingFailure::Discontinuity && seek.frames==8,"seek fails the linear take without attaching audio to a false timeline");seek.discard();
+    auto seek=finish(recorder);check(seek.failure==RecordingFailure::Discontinuity && seek.frames==8 && seek.hasAttachableAudio(),"seek reports a discontinuity and keeps the finalized prefix");seek.discard();
     transport.locate(0);transport.loop(0,4);io.streamTimeSamples=0;check(recorder.start(request,error),"start recording with an interior loop boundary");input(recorder,transport,io);recorder.stop();input(recorder,transport,io);
-    auto loop=finish(recorder);check(loop.failure==RecordingFailure::Discontinuity && loop.frames==0,"a loop wrap within the callback is rejected before mixed-position samples enter a take");loop.discard();
+    auto loop=finish(recorder);check(loop.failure==RecordingFailure::Discontinuity && loop.frames==0 && !loop.hasAttachableAudio(),"a loop wrap within the callback is rejected before mixed-position samples enter a take");loop.discard();
     transport.loop(0,4,false);transport.locate(0);check(recorder.start(request,error,[](const auto&,auto,auto,auto){return std::make_unique<FailingSink>();}),"start a writer that will report an I/O failure");input(recorder,transport,io);
     AudioIo idle;const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);std::optional<AudioRecordingResult> failed;
     while(std::chrono::steady_clock::now()<deadline && !failed){failed=recorder.poll();input(recorder,transport,idle);std::this_thread::sleep_for(std::chrono::milliseconds(1));}
-    check(failed && failed->failure==RecordingFailure::Io && failed->error=="injected disk write failure","worker I/O failures reach the owner with their reason after callback quiescence");if(failed)failed->discard();
+    check(failed && failed->failure==RecordingFailure::Io && failed->error=="injected disk write failure" && !failed->hasAttachableAudio(),"worker I/O failures reach the owner with their reason after callback quiescence");if(failed)failed->discard();
 }
 struct DiskFailure {
     std::atomic<unsigned> firstWrites{0};
@@ -335,7 +335,8 @@ void boundedOverflow() {
     io.streamTimeSamples=8;input(recorder,transport,io);io.streamTimeSamples=16;input(recorder,transport,io);
     recorder.stop();io.streamTimeSamples=24;input(recorder,transport,io);
     {std::lock_guard lock(blocked->mutex);blocked->release=true;}blocked->condition.notify_all();
-    auto result=finish(recorder);check(result.failure==RecordingFailure::Overflow && result.frames==16,"full bounded queue reports overflow and retains only accepted frames");
+    auto result=finish(recorder);check(result.failure==RecordingFailure::Overflow && result.frames==16 && result.hasAttachableAudio(),
+        "overflow reports the failure and offers only the finalized prefix for attachment");
     if(looping)check(result.passes().size()==4 && result.passes().back().sourceStartFrame==15 && result.passes().back().frames==1 && result.passes().back().timelineEndSample==1,"ring overflow does not append or extend pass metadata for rejected input");
     result.discard();
     }
