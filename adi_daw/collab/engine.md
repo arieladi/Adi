@@ -32,6 +32,16 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — the standing queue's E23-FU branch
+
+**PR requested** for `engine/df-e23-followups` at `25e3dfe9f2c46773c6af6f9931df92410c066347`, base Win's `76c8aaa1`. Title **Preserve grouped sends, one-click Post and main-route ownership**. This is the exact tree and three commits gated below for DF-E30, DF-E55(b) and DF-E24(b,c), including the 512-frame MIDI clock fixture. The prior direct instruction placed these three commits on #677 before the standing queue reached this checkout. #677 already contains the identical head, so Win can take its existing review or use this companion branch. `engine/df-e23-followups-staged` is superseded. GitHub's gate for the published #677 head is run `45010141132`.
+
+| Seat | Review needed |
+|---|---|
+| Window | `src/juce/ui_mixer.cpp` submits `return.setSendTap` with `click: true` for the physical switch. Review the caller. The existing UI Seams suite passed with the three commits. |
+| window-fn | Group Tracks still refuses a selected return. The engine route, sound and Undo already pass the Step 5b engine probe. |
+| Win | WTS-01 Step 5b acceptance follows the Window grouping rule. |
+
 ## 2026-11-22 — #677 reconciled, follow-ups pushed and ready for review
 
 **PR requested on existing #677** (`engine/df-e23-plugin-workers`) at `25e3dfe9f2c46773c6af6f9931df92410c066347`. Title **Plug-in host inputs, group returns and send taps, hosted plug-ins on graph workers**. GitHub shows that exact PR head Open after Win's ready-for-review event. Win's reconciliation `056ac81b`, send-tap preview fix `79c424de` and EQ Eight FMA merge `76c8aaa1` are all ancestors. The schema remains 1.23 with both device key taps and individual send taps. The frozen 1.22 DDL matches main's 1.22 and the reconciled host retains per-bus `inputBuses_`.
