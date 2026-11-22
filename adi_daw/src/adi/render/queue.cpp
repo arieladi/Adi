@@ -735,6 +735,15 @@ std::string serializeRunManifest(const RunReport& run) {
                     {"target_lufs", job.normalization.targetLufs},
                     {"true_peak_ceiling_db", job.normalization.truePeakCeilingDb},
                     {"channel_weights", job.normalization.channelWeights}}}};
+            if (job.normalization.mode == NormalizeMode::Loudness) {
+                const auto* metric = normalizationTargetName(job.normalization.target);
+                auto& normalization = profile["normalization"];
+                normalization["target_metric"] = metric ? Json(metric) : Json(nullptr);
+                if (job.normalization.target == NormalizationTarget::Rms) {
+                    normalization.erase("target_lufs");
+                    normalization["target_rms_dbfs"] = job.normalization.targetRmsDbfs;
+                }
+            }
             if (job.niStems) {
                 profile["ni_stems"] = {{"bit_rate_per_stream", job.niStems->bitRate}, {"stems", Json::array()}};
                 for (const auto& stem : job.niStems->stems)

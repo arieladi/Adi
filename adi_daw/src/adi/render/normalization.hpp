@@ -9,10 +9,15 @@
 #include <vector>
 namespace adi::render {
 enum class NormalizeMode {Off,Peak,Loudness};
+enum class NormalizationTarget { Integrated, Rms, MaximumMomentary, MaximumShortTerm };
+
+[[nodiscard]] const char* normalizationTargetName(NormalizationTarget) noexcept;
 struct Normalization {
     NormalizeMode mode=NormalizeMode::Off;
     double targetLufs=-14,truePeakCeilingDb=-1;
     std::vector<double> channelWeights{};
+    NormalizationTarget target = NormalizationTarget::Integrated;
+    double targetRmsDbfs = -14.0;
 };
 // Values describe the named stage. Silence and an unfitted loudness
 // window have no numeric value. RMS gives each scalar sample equal weight.

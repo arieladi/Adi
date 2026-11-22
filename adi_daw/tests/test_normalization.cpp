@@ -118,6 +118,64 @@ void exportStatistics() {
           "captured PCM and decoded normalized delivery are distinguished");
 }
 
+void moreTargets() {
+    test::TempDirectory directory{"normalization", "targets"};
+    const auto appendTone = [](NormalizationCapture& capture, std::uint32_t totalFrames) {
+        constexpr std::uint32_t blockSize = 1200;
+        std::vector<double> block(blockSize);
+        for (std::uint32_t start = 0; start < totalFrames; start += blockSize) {
+            const double gain = start < 120000 ? 0.05 : 0.2;
+            for (std::uint32_t i = 0; i < blockSize; ++i) {
+                block[i] = gain * std::sin(2.0 * std::numbers::pi * i / 48.0);
+            }
+            capture.append(block, blockSize);
+        }
+    };
+    Normalization options;
+    options.mode = NormalizeMode::Loudness;
+    options.targetLufs = -18.0;
+    options.targetRmsDbfs = -21.0;
+    for (const auto target : {NormalizationTarget::Rms, NormalizationTarget::MaximumMomentary,
+                              NormalizationTarget::MaximumShortTerm}) {
+        options.target = target;
+        const auto name = std::string(normalizationTargetName(target));
+        NormalizationCapture capture(directory.path() / (name + ".f64"), 48000, 1, options);
+        appendTone(capture, 192000);
+        const auto out = directory.path() / (name + ".wav");
+        const auto report = capture.finish(out, audio::WavFormat::Pcm24, audio::WavDither::Triangular, 321);
+        check(report.decoded.truePeakDbtp && *report.decoded.truePeakDbtp <= options.truePeakCeilingDb,
+              "each extra target verifies the decoded true-peak ceiling");
+        if (target == NormalizationTarget::Rms) {
+            double squares = 0.0;
+            const auto samples = read(out);
+            for (const double value : samples) squares += value * value;
+            const auto rmsDbfs = 10.0 * std::log10(squares / static_cast<double>(samples.size()));
+            check(std::abs(rmsDbfs - options.targetRmsDbfs) <= 0.1 && report.captured.rmsDbfs &&
+                  std::abs(*report.captured.rmsDbfs - 10.0 * std::log10(
+                      (0.05 * 0.05 * 2.5 + 0.2 * 0.2 * 1.5) / 8.0)) < 1e-6,
+                  "RMS meets the requested level on the decoded samples");
+        } else {
+            const auto loudness = target == NormalizationTarget::MaximumMomentary ?
+                report.decoded.maximumMomentaryLufs : report.decoded.maximumShortTermLufs;
+            check(loudness && std::abs(*loudness - options.targetLufs) <= 0.1 &&
+                  report.decoded.integratedLufs && std::abs(*report.decoded.integratedLufs - options.targetLufs) > 0.15,
+                  "window maximum targets its own statistic instead of integrated LUFS");
+        }
+    }
+    options.target = NormalizationTarget::MaximumShortTerm;
+    NormalizationCapture shortCapture(directory.path() / "short_term.f64", 48000, 1, options);
+    appendTone(shortCapture, 48000);
+    bool rejected = false;
+    try {
+        shortCapture.finish(directory.path() / "too_short.wav",
+                            audio::WavFormat::Pcm24, audio::WavDither::None, 0);
+    } catch (const std::runtime_error&) {
+        rejected = true;
+    }
+    check(rejected && !std::filesystem::exists(directory.path() / "too_short.wav"),
+          "short-term target refuses an underfilled analysis window before encoding");
+}
+
 void refusalsAndCancellation() {
     test::TempDirectory directory{"normalization","refusals"};Normalization options;options.mode=NormalizeMode::Loudness;
     bool refused=false;try{NormalizationCapture capture(directory.path()/"short.f64",48000,1,options);const std::array<double,2> samples={0.1,-0.1};capture.append(samples,2);capture.finish(directory.path()/"short.wav",audio::WavFormat::Float32,audio::WavDither::None,0);}catch(const std::exception&){refused=true;}
@@ -134,4 +192,4 @@ void refusalsAndCancellation() {
     check(refused && !std::filesystem::exists(directory.path()/"cancel.wav"),"owner cancellation interrupts normalization before its output is encoded");
 }
 }
-int main(){try{peakAndWidePrecision();loudnessCeilingAndGates();exportStatistics();refusalsAndCancellation();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{peakAndWidePrecision();loudnessCeilingAndGates();exportStatistics();moreTargets();refusalsAndCancellation();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

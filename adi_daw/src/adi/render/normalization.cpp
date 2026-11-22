@@ -36,6 +36,20 @@ std::vector<double> measurementWeights(std::uint32_t rate, int channels,
     return {weights.begin(), weights.end()};
 }
 
+std::optional<double> targetReading(const ExportStatistics& stats, NormalizationTarget target) {
+    switch (target) {
+    case NormalizationTarget::Integrated: return stats.integratedLufs;
+    case NormalizationTarget::Rms: return stats.rmsDbfs;
+    case NormalizationTarget::MaximumMomentary: return stats.maximumMomentaryLufs;
+    case NormalizationTarget::MaximumShortTerm: return stats.maximumShortTermLufs;
+    }
+    return std::nullopt;
+}
+
+double targetLevel(const Normalization& options) {
+    return options.target == NormalizationTarget::Rms ? options.targetRmsDbfs : options.targetLufs;
+}
+
 void service(const std::function<void()>& callback) { if (callback) callback(); }
 } // namespace
 
@@ -113,12 +127,33 @@ ExportStatistics ExportAnalysis::finish() {
     return result;
 }
 
+const char* normalizationTargetName(NormalizationTarget target) noexcept {
+    switch (target) {
+    case NormalizationTarget::Integrated: return "integrated_lufs";
+    case NormalizationTarget::Rms: return "rms_dbfs";
+    case NormalizationTarget::MaximumMomentary: return "maximum_momentary_lufs";
+    case NormalizationTarget::MaximumShortTerm: return "maximum_short_term_lufs";
+    }
+    return nullptr;
+}
+
 void validateNormalization(const Normalization& options,std::uint32_t rate,int channels) {
     if(options.mode!=NormalizeMode::Off && options.mode!=NormalizeMode::Peak && options.mode!=NormalizeMode::Loudness)throw std::invalid_argument("Unknown export normalization mode");
     if(options.mode==NormalizeMode::Off)return;
-    if(options.mode==NormalizeMode::Loudness && (!std::isfinite(options.targetLufs) || options.targetLufs<-36 || options.targetLufs>0 ||
-       !std::isfinite(options.truePeakCeilingDb) || options.truePeakCeilingDb<-12 || options.truePeakCeilingDb>0))
-        throw std::invalid_argument("Loudness target must be -36..0 LUFS and ceiling -12..0 dBTP");
+    if (options.mode == NormalizeMode::Loudness) {
+        if (!normalizationTargetName(options.target)) {
+            throw std::invalid_argument("Unknown export normalization target statistic");
+        }
+        const auto target = targetLevel(options);
+        if (!std::isfinite(target) || target < -36 || target > 0) {
+            throw std::invalid_argument(options.target == NormalizationTarget::Rms ?
+                "RMS target must be -36..0 dBFS" : "Loudness target must be -36..0 LUFS");
+        }
+        if (!std::isfinite(options.truePeakCeilingDb) || options.truePeakCeilingDb < -12 ||
+            options.truePeakCeilingDb > 0) {
+            throw std::invalid_argument("True-peak ceiling must be -12..0 dBTP");
+        }
+    }
     (void)measurementWeights(rate, channels, options.channelWeights);
 }
 struct NormalizationCapture::Impl {
@@ -172,9 +207,12 @@ NormalizationReport NormalizationCapture::finish(const std::filesystem::path& ou
     double gainDb=0;
     if(state.options.mode==NormalizeMode::Peak)gainDb=report.sourceSamplePeakDb?-*report.sourceSamplePeakDb:0;
     else {
-        if(state.frames<static_cast<std::uint64_t>(std::llround(state.rate*0.4)) || !report.sourceLufs || !report.sourceTruePeakDb)
-            throw std::runtime_error("LUFS target requires at least 400 ms of measurable gated audio; choose Peak or Off");
-        gainDb=state.options.targetLufs-*report.sourceLufs;
+        const auto sourceTarget = targetReading(report.captured, state.options.target);
+        if (!sourceTarget || !report.sourceTruePeakDb) {
+            throw std::runtime_error(std::string("No measurable ") +
+                normalizationTargetName(state.options.target) + " in this range; choose Peak or Off");
+        }
+        gainDb = targetLevel(state.options) - *sourceTarget;
         const auto ceilingGain=state.options.truePeakCeilingDb-*report.sourceTruePeakDb;
         if(gainDb>ceilingGain){gainDb=ceilingGain;report.ceilingLimited=true;}
     }
@@ -220,8 +258,9 @@ NormalizationReport NormalizationCapture::finish(const std::filesystem::path& ou
         if(*report.outputTruePeakDb<=state.options.truePeakCeilingDb) {
             // Absolute gating can admit windows after a large boost. Correct
             // against the encoded result, retaining the same captured audio.
-            if(report.outputLufs) {
-                const auto correction=state.options.targetLufs-*report.outputLufs;
+            const auto outputTarget = targetReading(report.decoded, state.options.target);
+            if (outputTarget) {
+                const auto correction = targetLevel(state.options) - *outputTarget;
                 if(std::abs(correction)>0.1 && (correction<0 || !report.ceilingLimited)) {
                     const auto available=state.options.truePeakCeilingDb-*report.outputTruePeakDb;
                     const auto delta=std::min(correction,available);
