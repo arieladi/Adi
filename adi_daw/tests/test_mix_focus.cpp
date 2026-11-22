@@ -25,6 +25,8 @@
 namespace f=adi::mix::focus;
 namespace {
 thread_local bool inAudio=false;
+thread_local bool countOwnerAllocations=false;
+thread_local std::size_t ownerAllocationBytes=0;
 std::uint64_t allocations=0,deallocations=0;
 int checks=0,failures=0;
 std::uint64_t comparedSamples=0;
@@ -210,6 +212,69 @@ bool stage(f::Core &core,const f::Settings &settings,std::uint64_t physical,std:
 f::Settings firSettings(double q=3.) {
     f::Settings s;s.engine=f::Engine::Fir;s.nodes[0].enabled=true;
     s.nodes[0].q=q;s.nodes[0].frequencyHz=1000.;s.nodes[0].thresholdDb=-60.;return s;
+}
+void lazyOwnerStorage() {
+    struct CountOwnerStorage {
+        CountOwnerStorage() { ownerAllocationBytes=0;countOwnerAllocations=true; }
+        ~CountOwnerStorage() { countOwnerAllocations=false; }
+    };
+    const f::PrepareSpec spec{48000,256,2};
+    const GeneratedAudio signal(32768);
+    auto iir=firSettings();
+    iir.engine=f::Engine::Iir;
+    f::Core core,reference;
+    {
+        CountOwnerStorage count;
+        core.prepare(spec,iir);
+    }
+    check(ownerAllocationBytes==0,"fresh native IIR prepares without allocating phase or FIR storage");
+    iir.nodes[0].q=2.;
+    check(core.requestConfiguration(iir),"coefficient-only IIR request is accepted");
+    bool built=false;
+    {
+        CountOwnerStorage count;
+        built=core.serviceConfiguration();
+    }
+    check(built && ownerAllocationBytes==0,"ordinary IIR coefficient updates allocate no transform storage");
+    { AudioScope scope;static_cast<void>(core.beginBlock(101,0,iir)); }
+
+    auto phase=iir;
+    phase.phaseMode=f::PhaseMode::Match;
+    phase.matchAmount=1.;
+    phase.externalKey=true;
+    // Isolate the dormant phase buffers from the IIR filter history, which
+    // correctly stays active across a phase-only configuration change.
+    phase.nodes[0].enabled=false;
+    auto fir=iir;
+    fir.engine=f::Engine::Fir;
+    std::uint64_t block=102;
+    const auto exercise=[&](const f::Settings &configured,std::int32_t latency) {
+        check(core.requestConfiguration(configured),"first transform configuration is requested");
+        bool ready=false;
+        {
+            CountOwnerStorage count;
+            ready=core.serviceConfiguration();
+        }
+        const auto offer=core.pendingLatencyChange();
+        check(ready && offer.token!=0 && offer.samples==latency && core.latencySamples()==0 &&
+                  ownerAllocationBytes>0,
+              "first transform storage is prepared by the owner before latency admission");
+        { AudioScope scope;static_cast<void>(core.beginBlock(block++,latency,configured)); }
+        reference.prepare(spec,configured);
+        auto actual=signal,expected=signal;
+        check(actual.run(core,configured) && expected.run(reference,configured) && compare(actual,expected)==0.,
+              "first live transform render is sample-identical to fresh preparation");
+        check(stage(core,iir,block++,0),"the live transform path retires before re-entry");
+        auto gap=signal;
+        check(gap.run(core,iir) && stage(core,configured,block++,latency),
+              "IIR advances source time before re-entering the transform path");
+        actual=signal;
+        check(actual.run(core,configured) && compare(actual,expected)==0.,
+              "re-entry resets dormant signal history and matches the same fresh render exactly");
+        check(stage(core,iir,block++,0),"the completed transform path returns to IIR");
+    };
+    exercise(phase,1024);
+    exercise(fir,12288);
 }
 void coherentFirPolicy() {
     constexpr std::size_t hop=8192,count=65536;constexpr std::int32_t latency=12288;
@@ -1168,7 +1233,7 @@ void latencyAndSafety() {
     check(error<1.e-12,"missing Difference key cannot demand unlimited cut");
 }
 }
-void* operator new(std::size_t n){if(inAudio)++allocations;if(void*p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
+void* operator new(std::size_t n){if(countOwnerAllocations)ownerAllocationBytes+=n;if(inAudio)++allocations;if(void*p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
 void operator delete(void*p)noexcept{if(inAudio&&p)++deallocations;std::free(p);}
 void operator delete(void*p,std::size_t)noexcept{::operator delete(p);}
 void* operator new[](std::size_t n){return ::operator new(n);}
@@ -1182,6 +1247,7 @@ int main(){
     _set_abort_behavior(0,_WRITE_ABORT_MSG|_CALL_REPORTFAULT);
 #endif
     try {
+        lazyOwnerStorage();
         nonfiniteInputs<float>();
         nonfiniteInputs<double>();
         sourceTaggedFirOracle();
