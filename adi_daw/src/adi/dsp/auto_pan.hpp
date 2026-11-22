@@ -29,6 +29,7 @@
 
 #pragma once
 
+#include "adi/dsp/glide.hpp"
 #include "adi/dsp/modulator_clock.hpp"
 
 #include <array>
@@ -64,6 +65,7 @@ private:
     [[nodiscard]] double wave(double cycles) const noexcept;
     std::array<double, Count> p_{};
     std::array<double, 2> gain_{1, 1};
+    Glide amount_;   ///< Amount glides over about 10 ms once audio runs (dsp/glide.hpp)
     ModulatorClock clock_;
     double bpm_ = 120;
 };

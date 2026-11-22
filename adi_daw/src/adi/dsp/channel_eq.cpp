@@ -19,6 +19,7 @@ ChannelEq::ChannelEq() noexcept {
 void ChannelEq::prepare(double sampleRate) noexcept {
     rate_ = std::isfinite(sampleRate) && sampleRate > 0 ? sampleRate : 48000;
     state_ = {};
+    output_.prepare(rate_);
     update();
 }
 
@@ -39,7 +40,7 @@ void ChannelEq::update() noexcept {
     band_[LowShelf] = lowShelf(rate_, kLowHz, p_[Low]);
     band_[Bell] = peaking(rate_, std::min(p_[MidFreq], top), kMidQ, p_[Mid]);
     band_[HighShelf] = highShelf(rate_, std::min(kHighHz, top), p_[High]);
-    output_ = std::pow(10.0, p_[Output] / 20);
+    output_.set(std::pow(10.0, p_[Output] / 20));
 }
 
 double ChannelEq::responseDb(double hz) const noexcept {
@@ -54,6 +55,7 @@ void ChannelEq::process(const float* inL, const float* inR, float* outL, float* 
     const float* in[2] = {inL, inR};
     float* out[2] = {outL, outR};
     for (std::size_t i = 0; i < frames; ++i) {
+        const double gain = output_.next();
         // Both inputs are read before either output is written (a host may
         // hand an output plane that is an input plane).
         double x[2];
@@ -73,7 +75,7 @@ void ChannelEq::process(const float* inL, const float* inR, float* outL, float* 
                 v = y;
             }
             if (out[c]) {
-                out[c][i] = static_cast<float>(v * output_);
+                out[c][i] = static_cast<float>(v * gain);
             }
         }
     }
