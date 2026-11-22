@@ -676,7 +676,7 @@ void firSampleBudget() {
         auto settings=firSettings(1.3);for(auto &node:settings.nodes)node.enabled=true;
         f::Core core;core.prepare({rate,1<<20,2},settings);
         const auto initial=core.statistics();const auto p=static_cast<std::size_t>(core.latencySamples()/3);
-        const auto expectedQuota=std::uint64_t{373}+22*static_cast<std::uint64_t>(std::bit_width(p)-1);
+        const auto expectedQuota=std::uint64_t{289}+22*static_cast<std::uint64_t>(std::bit_width(p)-1);
         check(initial.firWorkQuota==expectedQuota,"prepared quota follows actual transform size");
         bool bounded=true,okay=true;std::array<double,2> main{},key{.1,-.13};
         std::array<double*,2>m{&main[0],&main[1]};std::array<const double*,2>k{&key[0],&key[1]};

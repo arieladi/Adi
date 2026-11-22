@@ -262,11 +262,11 @@ struct Core::Impl {
         captureBank=jobTimeBank=previousSpectrumBank=0;jobSpectrumBank=1;
         epoch=nextPreparationEpoch.fetch_add(1,std::memory_order_relaxed);stats={};phaseBlend={1.,1.};
         const auto stages = static_cast<std::uint64_t>(std::bit_width(p) - 1);
-        // Transform counts one scan per element in each pack/permute/post stage
-        // (inverse has four scans), p/2 butterflies per stage, and every transition.
-        const auto fftCursorWork = stages * (p / 2) + stages + 5;
-        const auto forwardWork = 3 * p + fftCursorWork;
-        const auto inverseWork = 4 * p + fftCursorWork;
+        // Each transform packs in bit-reversed order, applies p/2 butterflies
+        // per stage, then scans once for the output. Charge every transition.
+        const auto fftCursorWork = stages * (p / 2) + stages + 3;
+        const auto inverseWork = 2 * p + fftCursorWork;
+        const auto forwardWork = inverseWork + 1; // The spectrum includes Nyquist.
         // Each job pays per forwarding stream and per rendered stream.
         // A rendered band adds the products, inverse and h overlap charges.
         firForwardStreamWork = forwardWork + 2;
