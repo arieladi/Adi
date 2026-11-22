@@ -22,7 +22,10 @@ std::int64_t integerOr(const nlohmann::json &j, std::int64_t fallback) {
 
 const ViewStateStore::StackPins &ViewStateStore::stackPins() const {
     if (stackPins_) return *stackPins_;
-    auto &pins = stackPins_.emplace();
+    // Not emplace(): clang (libstdc++ and libc++) settles optional<StackPins>'s
+    // default-constructibility inside ViewStateStore's definition, where a
+    // nested struct with member initializers does not count as one yet.
+    auto &pins = stackPins_.emplace(StackPins{});
     try {
         SQLite::Statement q(store_.db(), "SELECT value FROM ui_view WHERE scope_kind='project' AND scope_id IS NULL AND key='mixview.stack.pins'");
         if (!q.executeStep()) return pins;

@@ -105,11 +105,38 @@ std::shared_ptr<const std::vector<float>> historyBuffer(const std::shared_ptr<Hi
     auto storage = std::make_shared<HistoryStorage>(std::move(charge), std::forward<Bins>(values));
     return {storage, &storage->bins};
 }
+// One immutable result handed from the analysis worker (or the owner, when it
+// clears a binding) to owner-thread readers. std::atomic<std::shared_ptr> is
+// C++20 but libc++ does not provide it, and the atomic_load/atomic_store free
+// functions are deprecated in C++20, so a short lock guards the pointer copy
+// instead: the same pattern as Domain::resultMutex. Neither side is the audio
+// thread (see the header: no audio processor or callback lock is involved).
+// A reader gets a complete result or none; the replaced result is released
+// after the lock is dropped, so a large picture never frees under it.
+template <typename T>
+class PublicationSlot {
+public:
+    [[nodiscard]] std::shared_ptr<const T> load() const noexcept {
+        const std::lock_guard lock(mutex_);
+        return value_;
+    }
+    void store(std::shared_ptr<const T> next) noexcept {
+        {
+            const std::lock_guard lock(mutex_);
+            value_.swap(next);
+        }
+        // `next` now holds the previous result and drops here, unlocked.
+    }
+
+private:
+    mutable std::mutex mutex_;
+    std::shared_ptr<const T> value_;
+};
 } // namespace
 struct SharedAnalysis::CumulativeHistory {
     // Control and worker writes hold the domain lock. Readers own only immutable results.
     std::vector<float> bins;
-    std::atomic<std::shared_ptr<const MaximumResult>> publication;
+    PublicationSlot<MaximumResult> publication;
     std::int64_t afterSequence = 0;
     std::uint64_t lastWindow = 0;
     bool binsChanged = false;
@@ -739,7 +766,7 @@ struct SharedAnalysis::CaptureDomain {
     engine::ScopeTap::Cursor cursor;
     std::atomic<std::int64_t> consumed{0};
     std::atomic<bool> active{true}, available{false};
-    std::atomic<std::shared_ptr<const CaptureResult>> result;
+    PublicationSlot<CaptureResult> result;
     std::mutex mutex;
     std::size_t consumers = 0;
     std::uint64_t epoch = 0, revision = 0, gaps = 0, overruns = 0;
@@ -995,7 +1022,7 @@ struct SharedAnalysis::BarScopeDomain {
     std::atomic<bool> active{true};
     std::atomic<double> rate{0.};
     std::atomic<BarScopeStatus> status{BarScopeStatus::Idle};
-    std::atomic<std::shared_ptr<const BarScopeResult>> result;
+    PublicationSlot<BarScopeResult> result;
     std::atomic<std::size_t> waiting{0};
     std::atomic<std::int64_t> waitThrough{0};
     FocusScopeRange range;
