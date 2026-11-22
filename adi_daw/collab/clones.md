@@ -17,6 +17,16 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Preserve the fractional Crush latch through a full-rate plateau
+
+`clones/shaper-crush-endpoint` at `761744fb` — Retain the Crush latch phase through a full-rate plateau. This repairs the existing stage on main. In the cold and 8,192-frame silent-preroll test, the original retained 0.071371 of a cycle when it left the full-rate segment. On the first post-plateau stereo marker the old core gave −0.250000 on the left against the measured +0.110614. A moving contour at full rate emits current audio and retains the interpolated capture. A flat full-rate contour freezes the phase and keeps the latest direct sample. A capped, sub-full rate keeps the interpolation. The new source markers distinguish all three cases. The earlier hold-grid entry described the phase reset in the old ADI implementation. These readings correct the reference behavior and preserve the separate callback-grid fix.
+
+Rack, Crush and registered native/edited-Pd passed under MSVC /W4 /WX at both precisions. All 873 seven-stage kick-and-bass programs were re-rendered. Thirty-six changed, seven errors fell by over 0.000001 RMS, three rose and 863 were within tolerance. All 710 without active Crush were identical. The count below 0.001 remained 17 in both runs. This is the direct seven-stage comparison.
+
+At 256/2,048 frames the corrected registered device measured 16.3/126.0 µs median on the stepped contour and 24.8/192.9 µs on the linear contour. The corresponding reference medians were 74.5/453.1 µs and 79.4/469.7 µs. The corrected runs missed 0/0 and 2/0 deadlines respectively per 10,240 callbacks. On the musical stepped fixture, the larger channel RMS fell from 0.005892 to 0.005596 at 256 and from 0.005980 to 0.005519 at 2,048. On the linear fixture it rose from 0.004242 to 0.004482. Direct phase markers pass on both ears. The stationary fixture retained its exact previous waveform. All paths report zero latency.
+
+PR requested
+
 ## 22 November 2026 — Jitter attribution over identical scoring windows
 
 The weighted 1,505-control replay of `clones/shaper-crush-jitter` at `0b6ca57e` and the source agree on which programs respond. Across 39 pairs the same six are exactly unchanged on the scored bar and 33 change. Their source changes span 0.00000317–0.009969 RMS. ADI's authored sequence spans 0.00000202–0.021274 RMS. Eight source comparisons used the full chain and 31 used the saved Crush stage. Fresh reloads of the same source state were repeatable. Five responsive startups had settled before the scored bar.
