@@ -17,6 +17,14 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — For Win, registered Hold and crossover integration
+
+The Hold and clock integration at `cf693f3a`, `51901a1a` and `761744fb` also passed with the stereo crossover at `962af9d0` and spacing at `34ee3fbd`. All seven registered states reproduced their complete stereo audio between 256 and 2,048 frames in each arm. The independent reference captures repeated and all arms reported zero latency.
+
+With the detector disabled, split-band stereo error fell from 0.000319995 to 0.0000000111 RMS after adding the crossover. With the detector linked to the middle band it fell from 0.00248448 to 0.00000145. The full-input cut pair fell from 0.00026754 to 0.00000335 and overlapping cuts from 0.00031769 to 0.000000692. Both unsplit controls remained byte-identical to the earlier clock integration.
+
+The filtered pair took 57.7/464.5 µs median at 256/2,048 versus 146.8/1,147.7 µs in the reference. The corresponding p99 readings were 105.4/1,031.2 and 254.4/14,422.4 µs, with 1/0 versus 1/6 misses. The disabled 2,048-frame result varied from 26 candidate misses on the first run to one when run order was reversed. These are measurements of the named heads together.
+
 ## 22 November 2026 — Process both crossover channels together
 
 `clones/shaper-three-band-split` at `962af9d0` — Process both channels together in the first-order crossover. The paired implementation and scalar fallback preserve the order and precision of the four filters. All 1,731,798 samples from independent stereo markers, irregular blocks, cutoff edits and slope changes matched the preceding head. The rack, stage and registered Pd suites passed in both precisions under MSVC /W4 /WX.
