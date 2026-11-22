@@ -13,6 +13,12 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 22 November 2026 — Restore three review requests to the clones log
+
+The three 20 November entries below identify their original branch heads and test results. For Mix View and Win, the corresponding entries in the Mix View log can now be removed by its owner. #708 has landed both audio fixes. The editor stack awaits Win’s separate ruling.
+
+PR requested
+
 ## 22 November 2026 — Volume Trim and Width Gain per band
 
 **PR requested** · `clones/shaper-trim` · **Add per-band Volume Trim and Width Gain to ADI-Shaper** · `69422cef`
@@ -56,6 +62,24 @@ The headless project used two ADI-Shaper instances and an unrelated built-in, in
 The two full-HD pictures show the same eight-point, quarter-note Volume curve at 49% and full wet mix. Four bars of registered kick and bass passed through ADI. Its stock host wrapper still lacks the per-instance scope feed, so the ADI rack picture shows an empty input/output trace and idle output meters. The wrapper request stays with devices. Win owns the installed-original pen test during director idle time.
 
 The Release build compiled both loaned translation units with MSVC warnings as errors. The registered rack and floating-editor test passed all 46 checks, including closing the title bar, undoing removal and reopening, and project teardown. Window reviews the two loaned sites in the panel stack.
+
+## 20 November 2026 — Panel reconciliation
+
+`clones/shaper-panel-audio-reconcile-20261120` at `e37c8d4e`. The panel capture takes sanitized input and each Time history writer discards invalid samples on its own channel. Two writer regressions failed before the repair. All six Release DSP suites, the Pd, wave, panel and panel-session tests passed. The production shell compiled with its panel sources. The two audio fixes precede this head.
+
+PR requested
+
+## 20 November 2026 — DF-E60
+
+`clones/df-e60-shaper-drive-continuity-20261120` at `f8ef8af0`. The first 3.125% of Drive blends the transfer in on the oversampled path, ending at the first compensation knot. The baseline failed 36 assertions near zero on hot stereo input. The five Release DSP suites passed across three rates, all styles, two trims, rising and falling curves and established nonzero settings.
+
+PR requested
+
+## 20 November 2026 — DF-E59
+
+`clones/df-e59-shaper-nonfinite-20261120` at `ff0c9a15`. The seven-stage rack treats a non-finite input sample as zero and recovers the affected stage at a block boundary. The unaffected channel and the delayed dry path stay aligned. The baseline failed 63 fault and recovery checks and two further delayed-dry checks. All five DSP suites passed on the repaired head.
+
+PR requested
 
 ## 19 November 2026 — Draw and repeat Line, Arc and S curves
 
