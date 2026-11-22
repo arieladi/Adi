@@ -297,6 +297,9 @@ public:
 
     [[nodiscard]] ExpressionRoute current() const noexcept { return route_; }
     [[nodiscard]] int liveNotes() const noexcept;
+    /// Note-offs that could not fit in the output list and will be sent first
+    /// on the next `route()` or `switchTo()`.
+    [[nodiscard]] int pendingNoteOffs() const noexcept { return pendingCount_; }
     /// The member channel a sounding note was given, or -1.
     [[nodiscard]] int channelOf(std::uint64_t noteId) const noexcept;
 
@@ -326,6 +329,16 @@ private:
         std::uint8_t channel = 0;
     };
 
+    struct PendingNoteOff {
+        std::uint8_t channel = 0;
+        std::int16_t key = 0;
+        std::uint64_t id = 0;
+        double velocity = 0.0;
+    };
+
+    void resetLiveState() noexcept;
+    void enqueuePendingOff(const Note& nt, double velocity) noexcept;
+    void drainPendingOffs(std::int32_t frame, MpeOutList& out) noexcept;
     void noteOn(const Event* events, std::int32_t n, std::int32_t i, MpeOutList& out) noexcept;
     void noteOff(const Event& e, MpeOutList& out) noexcept;
     void expression(const Event& e, MpeOutList& out) noexcept;
@@ -342,6 +355,8 @@ private:
     bool mcmPending_ = false;
 
     std::array<Note, kMaxNotes> notes_{};
+    std::array<PendingNoteOff, kMaxNotes> pendingOffs_{};
+    int pendingCount_ = 0;
     std::array<int, 16> active_{};             ///< notes sounding per channel
     std::array<std::uint64_t, 16> lastOn_{};   ///< clock of the last note-on
     std::array<std::uint64_t, 16> lastOff_{};  ///< clock of the last release
