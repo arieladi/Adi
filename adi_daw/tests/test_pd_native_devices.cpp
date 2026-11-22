@@ -64,7 +64,7 @@ constexpr std::array<Fixture, 22> fixtures{{
     {"Chorus-Ensemble.pd", 2, {{{3, 160}, {10, 2.3f}, {11, 70}, {16, 75}}}},
     {"Color Cab.pd", 2, {{{2, 0.7f}, {0, 0}, {0, 0}, {0, 0}}}},
     {"Compressor.pd", 2, {{{1, -32}, {2, 8}, {6, 1}, {11, 70}}}},
-    {"Delay.pd", 2, {{{3, 1}, {5, 1}, {10, 55}, {25, 80}}}},
+    {"Delay.pd", 2, {{{3, 0}, {5, 1}, {10, 55}, {25, 80}}}},
     {"EQEight.pd", 2, {{{3, 1100}, {4, 6}, {83, 0}, {87, 1}}}},
     {"Hybrid Reverb.pd", 2, {{{1, 2}, {8, 2.5f}, {13, 120}, {14, 70}}}},
     {"Echo.pd", 2, {{{4, 1}, {6, 0.0625f}, {15, 48}, {0, 0}}}},
@@ -73,11 +73,11 @@ constexpr std::array<Fixture, 22> fixtures{{
     {"Phaser-Flanger.pd", 2, {{{7, 1}, {9, 0.25f}, {19, 74}, {20, 35}}}},
     {"Redux.pd", 2, {{{1, 7800}, {2, 33}, {3, 7}, {9, 70}}}},
     {"Resonators.pd", 2, {{{5, 0.4f}, {8, 43}, {13, 5}, {30, 70}}}},
-    {"Reverb.pd", 2, {{{5, 1}, {20, 4}, {23, 0.3f}, {31, 72}}}},
-    {"Saturator.pd", 2, {{{2, 9}, {8, 1300}, {11, 70}, {18, 1}}}},
+    {"Reverb.pd", 2, {{{5, 0}, {20, 4}, {23, 0.3f}, {31, 72}}}},
+    {"Saturator.pd", 2, {{{2, 9}, {8, 1300}, {11, 70}, {18, 0}}}},
     {"Shifter.pd", 2, {{{1, 2}, {2, 7}, {31, 1}, {33, 12}}}},
     {"Utility.pd", 2, {{{4, 140}, {11, 6}, {12, -20}, {14, 1}}}},
-    {"Glue Compressor.pd", 2, {{{1, -30}, {2, 2}, {4, 6}, {7, 60}}}},
+    {"Glue Compressor.pd", 2, {{{1, -30}, {2, 2}, {4, 2}, {7, 60}}}},
     {"Gate.pd", 2, {{{1, -30}, {6, -20}, {7, 1}, {8, 1}}}},
     {"Vocoder.pd", 4, {{{1, 1}, {12, 2}, {20, 2}, {24, 70}}}}
 }};
@@ -134,6 +134,11 @@ void parity(const Fixture& fixture) {
         if (block == 32) {
             for (const auto& change : fixture.changes) {
                 if (change.id == 0) continue;
+                // A change that sets a control to its declared default moves
+                // nothing: the fixture would not exercise it (a found gap).
+                const auto* declared = declarations.param(change.id);
+                check(declared != nullptr && static_cast<double>(change.value) != declared->def, fixture.file,
+                      "each fixture change moves a declared control off its default");
                 countAllocations = true;
                 const bool nativeSent = native.sendParameter(change.id, change.value);
                 countAllocations = false;
