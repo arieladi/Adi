@@ -155,8 +155,12 @@ class ProjectDocument final : public engine::BlockProcessor {
     // Stops the recorder (the transport is the caller's); the takes land on a later `tick()`.
     void stopRecording();
     // Lands a running or stopping take now, with the driver detached (a project replaced, Quit): call it
-    // after the audio callback is gone and before the document goes.
-    void settleRecording();
+    // after the audio callback is gone and before the document goes. False: the take was still being
+    // written after ten seconds and goes with the document.
+    bool settleRecording();
+    // A take recording or landing lands in this file now, Record stopped first: what Save As does before
+    // the file switches. False when the recorder's worker did not finish in ten seconds.
+    bool landTakeHere();
     bool recording() const noexcept { return recording_; }
     bool landingTake() const noexcept { return landing_; }
     // What the last take did, once: the clips it added (one undo step for all of them), or nothing and

@@ -552,7 +552,7 @@ class AdiApplication final : public juce::JUCEApplication,
         detachAudio();
         // A take still recording or landing goes into its project before the project closes (MX-09).
         if (document_)
-            document_->settleRecording();
+            (void)document_->settleRecording(); // Quit: nothing is left to tell
         mainMeterSource_.reset();
         floating_.reset();
         historyWindow_.reset();
@@ -621,8 +621,9 @@ class AdiApplication final : public juce::JUCEApplication,
         // A take still recording or landing goes into the project it was recorded in (MX-09); a take that
         // could not be kept says so before that project goes.
         if (document_) {
-            document_->settleRecording();
-            if (auto landed = document_->takeLanded(); landed && !landed->ok)
+            if (!document_->settleRecording())
+                report("The last take was still being saved and could not be kept; the new project opened.");
+            else if (auto landed = document_->takeLanded(); landed && !landed->ok)
                 report(landed->message);
         }
         mainMeterSource_.reset();
