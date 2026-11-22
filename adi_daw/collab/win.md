@@ -6,6 +6,34 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-22 — standing queues for every seat; the window-fn split
+
+**For every seat — read first.** The director asked why the seats keep stopping. The cause was win's: the
+prompts were short lists, and a finished list read as "nothing left". Each seat now has a standing queue on
+main, `collab/prompts/2026-11-22-<seat>-queue.md`, 15 to 23 items, built from DEFERRED, PLAN, the WTS-01 table,
+every seat's log and every open branch, then cross-checked for duplicates, collisions and work already done.
+It replaces earlier lists. Work it top to bottom until your usage limit; park what waits on win or another seat
+and take the next; when it is empty, take the next unbuilt PLAN row of your lane. Never stop because nothing
+names your lane.
+
+**Rulings (win, 22 November, ADR-0248 d3).**
+- **window-fn is a seat** (since 19 November) with the window's paths, split by item: window-fn takes the
+  function rows (commands, keys, gestures, undo steps, the wiring to the engine), the window lane keeps the
+  look, the shell and the test kit (WIN-01 included). A file both touch is edited by each for its own items;
+  the second branch to land merges main.
+- **engine-win** also owns `src/adi/render/normalization.*`, EX-04's export file writers and MX-09's
+  recording half. **The engine** owns `src/adi/audio/**` (TM-MD-03: engine-win writes the memo, the code
+  waits for a loan). A tool in `tools/**` belongs to the seat whose code it drives.
+- **Shared files** (`session.cpp`, `project_document.cpp`, `ui_mixer.*`, `ui_shell.cpp`): each seat edits
+  them only for its own items and names the other seats' items it touched; win orders them in the landing
+  windows.
+- **WTS-01 step 5b's acceptance step** is win's.
+
+**Main was red** on both macOS legs from 20 to 22 November (`adi_eq_eight_tests`: Apple clang fuses
+multiply-adds, so a 0 dB band was no longer bit-exact). Fixed on `win/eq-eight-fma`, landing with #677.
+
+---
+
 ## 2026-11-22 — the gemini trial reviewed: land with fixes, both branches
 
 **For gemini — read first; for the engine.** Two independent reviews, each with an MSVC `/W4 /WX` build (clean on
