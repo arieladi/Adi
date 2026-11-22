@@ -58,6 +58,129 @@ struct Fixture {
         [this](std::int64_t, ScopePoint) { ++acquireCalls; return tap; },
         [this](std::int64_t, ScopePoint) { ++releaseCalls; }, SharedAnalysis::Mode::Manual};
 };
+void stripCadenceAndEpochs() {
+    constexpr int period = 2400, window = 1024;
+    Fixture f;
+    auto strip = f.broker.acquireStrip(1), sibling = f.broker.acquireStrip(1);
+    check(strip.available() && sibling.available() && !strip.readStrip() && f.acquireCalls == 1 &&
+              f.broker.stats().taps == 1 && f.broker.stats().domains == 1 && f.broker.stats().spectralPlans == 1,
+          "two visible strip readers share one post-fader tap and spectral domain");
+
+    std::array<float, period> left{}, right{};
+    left.fill(.5f); right.fill(.25f);
+    left[period - window] = -.75f; left[period - window + 1] = .8f;
+    right[period - window] = -.5f; right[period - window + 1] = .6f;
+    f.tap->write(left.data(), right.data(), period - 1, 0, true, 1);
+    check(f.broker.pump() == 0 && f.broker.stats().workerPasses == 0 && !strip.readStrip(),
+          "a strip-only lease stays idle until its first 50 milliseconds of audio");
+    f.tap->write(left.data() + period - 1, right.data() + period - 1, 1, period - 1, true, 1);
+    check(f.broker.pump() == 1, "the first due strip frame uses one transform for both readers");
+    const auto first = strip.readStrip();
+    check(first && first == sibling.readStrip() && first->spectrumDbfs.size() == 96 && first->scope.size() == 64 &&
+              first->firstStamp == period - window && first->endSequence == period && first->transportRevision == 1 &&
+              first->scope.front().minimum == std::array{-.75f, -.5f} &&
+              first->scope.front().maximum == std::array{.8f, .6f},
+          "the strip publishes shared stamped spectrum points and signed per-channel scope extrema");
+
+    const float *silence = nullptr;
+    f.tap->write(silence, silence, period, period, true, 1);
+    check(f.broker.pump() == 0, "playing silence needs no strip FFT");
+    const auto smooth = strip.readStrip();
+    check(first && smooth && smooth->endSequence == 2 * period &&
+              near(static_cast<double>(first->spectrumDbfs[0]) - smooth->spectrumDbfs[0],
+                   20. * std::log10(std::exp(.05 / .3))),
+          "the captured spectrum smooths linear magnitude with a 300-millisecond time constant");
+
+    f.tap->write(silence, silence, period, 5, true, 2);
+    f.broker.pump();
+    const auto sought = strip.readStrip();
+    check(first && sought && sought->sourceEpoch > first->sourceEpoch && sought->transportRevision == 2 &&
+              sought->firstStamp == 5 + period - window && sought->spectrumDbfs[0] == adi::dsp::toDbfs(0.f),
+          "a seek clears the prior smoothing and never publishes samples across the transport epoch");
+
+    f.tap = std::make_shared<ScopeTap>(44100, SharedAnalysis::kTapSeconds);
+    f.broker.refreshSources();
+    check(!strip.readStrip(), "a new tap binding clears the old strip picture before new audio");
+    constexpr int newPeriod = 2205;
+    f.tap->write(left.data(), right.data(), newPeriod - 1, 5, true, 2);
+    check(f.broker.pump() == 0 && !strip.readStrip(), "the strip waits for 2205 samples at 44.1 kHz");
+    f.tap->write(left.data() + newPeriod - 1, right.data() + newPeriod - 1, 1, 5 + newPeriod - 1, true, 2);
+    check(f.broker.pump() == 1, "the new rate publishes one transform at its exact sample boundary");
+    const auto replaced = strip.readStrip();
+    check(sought && replaced && replaced->generation == f.tap->generation() && replaced->sampleRate == 44100. &&
+              replaced->sourceEpoch > sought->sourceEpoch && replaced->endSequence == newPeriod,
+          "the refreshed strip publishes the current generation and sample-rate cadence");
+
+    f.tap->write(silence, silence, newPeriod, 0, false, 3);
+    f.broker.pump();
+    const auto parked = strip.readStrip();
+    const auto settled = f.broker.stats();
+    f.tap->write(silence, silence, newPeriod, 0, false, 3);
+    f.broker.pump();
+    check(parked && parked->spectrumDbfs[0] == adi::dsp::toDbfs(0.f) && strip.readStrip() == parked &&
+              f.broker.stats().workerPasses == settled.workerPasses,
+          "certified stopped silence clears once and then performs no continuous analysis");
+
+    strip.reset(); sibling.reset();
+    const auto hidden = f.broker.stats();
+    f.tap->write(left.data(), right.data(), newPeriod, 0, true, 4);
+    f.broker.pump();
+    check(hidden.taps == 0 && hidden.domains == 0 && f.releaseCalls == 1 &&
+              hidden.transforms == f.broker.stats().transforms && hidden.workerPasses == f.broker.stats().workerPasses,
+          "releasing the last visible strip detaches the tap and leaves no work for hidden audio");
+}
+
+void stripReusesRawSpectrum() {
+    Fixture f;
+    auto raw = f.broker.acquire({1});
+    auto strip = f.broker.acquireStrip(1);
+    std::array<float, 2560> audio;
+    audio.fill(.25f);
+    f.tap->write(audio.data(), audio.data(), static_cast<int>(audio.size()), 0, true, 1);
+    check(f.broker.pump() == 7 && f.broker.stats().transforms == 7 && f.broker.stats().spectralPlans == 1 &&
+              f.broker.stats().domains == 1 && f.acquireCalls == 1,
+          "a compatible raw analyzer plus strip uses only the raw domain's seven transforms");
+    const auto window = raw.read();
+    const auto summary = strip.readStrip();
+    check(window && summary && summary->endSequence == 2560 && summary->firstStamp == window->firstStamp &&
+              summary->spectrumDbfs[0] == *std::max_element(window->binsDbfs.begin(), window->binsDbfs.begin() + 5),
+          "the strip projects the first shared completed raw FFT at or after its 50-millisecond boundary");
+    strip.reset();
+    f.tap->write(audio.data(), audio.data(), 256, 2560, true, 1);
+    check(f.broker.pump() == 1 && f.broker.stats().transforms == 8 && f.broker.stats().taps == 1,
+          "hiding the strip leaves the compatible raw analyzer running");
+}
+
+void stripWorkerBudget() {
+    constexpr int rate = 768000, period = rate / 20, elapsed = 3 * period;
+    constexpr auto count = SharedAnalysis::kMaxWindowsPerFrame + 1;
+    std::array<std::shared_ptr<ScopeTap>, count> taps;
+    std::size_t acquired = 0, released = 0;
+    SharedAnalysis broker(
+        [&](adi::engine::ScopeSource source, double seconds) -> std::shared_ptr<const ScopeTap> {
+            ++acquired;
+            auto &tap = taps.at(static_cast<std::size_t>(source.track - 1));
+            if (!tap && source.point == ScopePoint::PostFader) tap = std::make_shared<ScopeTap>(rate, seconds);
+            return tap;
+        }, [&](adi::engine::ScopeSource) { ++released; }, SharedAnalysis::Mode::Manual);
+    std::array<SharedAnalysis::Lease, count> strips;
+    std::vector<float> audio(static_cast<std::size_t>(elapsed), .25f);
+    for (std::size_t i = 0; i < count; ++i) {
+        strips[i] = broker.acquireStrip(static_cast<std::int64_t>(i + 1));
+        taps[i]->write(audio.data(), audio.data(), elapsed, 0, true, 1);
+    }
+    check(acquired == count && broker.stats().taps == count && broker.stats().spectralPlans == count &&
+              broker.pump() == SharedAnalysis::kMaxWindowsPerFrame && broker.pump() == 1 && broker.pump() == 0 &&
+              broker.stats().transforms == count && broker.stats().cursorReads == count,
+          "high-rate late frames get one latest FFT and bounded cursor read per strip across fair worker passes");
+    check(std::ranges::all_of(strips, [&](const auto &strip) {
+              const auto frame = strip.readStrip(); return frame && frame->endSequence == elapsed;
+          }), "a late owner frame skips obsolete 50-millisecond pictures instead of building a backlog");
+    for (auto &strip : strips) strip.reset();
+    check(released == count && broker.stats().taps == 0 && broker.stats().spectralPlans == 0,
+          "closing all visible strips releases every physical tap and plan");
+}
+
 void realtimeMaximumSpectrum() {
     constexpr int window = 480;
     constexpr int rate = 48000;
@@ -3318,7 +3441,8 @@ void operator delete[](void *p) noexcept {::operator delete(p);}
 void operator delete(void *p,std::size_t) noexcept {::operator delete(p);}
 void operator delete[](void *p,std::size_t) noexcept {::operator delete(p);}
 int main() {
-    try { continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeMidDemand(); focusScopeDifference(); focusScopeSideDemand(); focusBarScopeBrokerBoundaries(); focusScopeSumProjection(); focusScopeLayerPreview(); focusBarLayerPreview(); focusBarResidualSpectrum(); focusScopePhaseOperands(); focusScopeFlatPath(); focusLagPreviewRequests(); focusLagPreviewCases(); focusLagTapReads(); focusMatchWindows(); parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
+    try { stripCadenceAndEpochs(); stripReusesRawSpectrum(); stripWorkerBudget();
+          continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeMidDemand(); focusScopeDifference(); focusScopeSideDemand(); focusBarScopeBrokerBoundaries(); focusScopeSumProjection(); focusScopeLayerPreview(); focusBarLayerPreview(); focusBarResidualSpectrum(); focusScopePhaseOperands(); focusScopeFlatPath(); focusLagPreviewRequests(); focusLagPreviewCases(); focusLagTapReads(); focusMatchWindows(); parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
           sharedModesAndCursors(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); cumulativeMaximumSpectrum(); cumulativeMaximumParkedRollover(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
