@@ -2,6 +2,7 @@
 #include "adi/audio/wav_file.hpp"
 #include "adi/measure/loopback.hpp"
 #include "adi/measure/residual.hpp"
+#include "adi/measure/sync_spike.hpp"
 #include "adi/material_commands.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/media/publish_file.hpp"
@@ -29,8 +30,10 @@ namespace fs = std::filesystem;
 using adi::audio::WavReader;
 using adi::measure::LoopbackProbe;
 using adi::measure::LoopbackStatus;
+using adi::measure::SyncSpikeStatus;
 using nlohmann::json;
 constexpr std::uint32_t blockFrames = 4096;
+constexpr std::uint64_t maximumSyncFrames = 1'048'576;
 
 template<class Number> Number number(std::string_view text, std::string_view name) {
     Number value{};
@@ -67,22 +70,20 @@ void reserve(Stage& stage, const fs::path& target, const char* basename) {
     fs::permissions(stage.directory, fs::perms::owner_all, fs::perm_options::replace);
 }
 
-int generate(const fs::path& selectedPath, std::uint32_t sampleRate, unsigned periods) {
-    if (sampleRate == 0 || sampleRate > 768000 || periods == 0 || periods > 64) {
-        throw std::invalid_argument("expected 1–64 periods and a sample rate through 768000 Hz");
-    }
+template<class Signal> int writeProbe(const fs::path& selectedPath, std::uint32_t sampleRate,
+                                      std::uint64_t frames, const Signal& signal) {
+    if (sampleRate == 0 || sampleRate > 768000) throw std::invalid_argument("invalid probe sample rate");
     const auto target = fs::absolute(selectedPath).lexically_normal();
     Stage stage;
     reserve(stage, target, "probe.wav");
 
-    const std::uint64_t frames = periods * LoopbackProbe::period;
-    const LoopbackProbe probe;
     std::array<float, blockFrames> block{};
     {
         adi::audio::WavWriter wav(stage.file, sampleRate, 1, adi::audio::WavFormat::Float32);
         for (std::uint64_t frame = 0; frame < frames; frame += blockFrames) {
-            probe.render(frame, block);
-            wav.write(block.data(), blockFrames);
+            const auto count = static_cast<std::uint32_t>(std::min<std::uint64_t>(blockFrames, frames - frame));
+            signal(frame, std::span(block).first(count));
+            wav.write(block.data(), count);
         }
         wav.close();
     }
@@ -92,6 +93,23 @@ int generate(const fs::path& selectedPath, std::uint32_t sampleRate, unsigned pe
     }
     std::cout << json{{"sampleRate", sampleRate}, {"frames", frames}, {"warning", result.warning}}.dump() << '\n';
     return 0;
+}
+
+int generate(const fs::path& path, std::uint32_t sampleRate, unsigned periods) {
+    if (periods == 0 || periods > 64) throw std::invalid_argument("expected 1–64 loopback periods");
+    const LoopbackProbe probe;
+    return writeProbe(path, sampleRate, periods * LoopbackProbe::period,
+                      [&](std::uint64_t frame, std::span<float> output) { probe.render(frame, output); });
+}
+
+int generateSync(const fs::path& path, std::uint32_t sampleRate, std::uint64_t frames,
+                 std::uint64_t spike, std::uint64_t seed) {
+    if (frames == 0 || frames > maximumSyncFrames || spike >= frames) {
+        throw std::invalid_argument("sync probe needs 1–1048576 frames and a marker inside the probe");
+    }
+    return writeProbe(path, sampleRate, frames, [&](std::uint64_t frame, std::span<float> output) {
+        adi::measure::renderSyncSpike(frame, output, spike, seed);
+    });
 }
 
 std::string_view statusName(LoopbackStatus status) {
@@ -105,27 +123,56 @@ std::string_view statusName(LoopbackStatus status) {
     return "unknown";
 }
 
-int latency(const fs::path& capture, std::uint64_t firstFrame, double maximum, unsigned channel) {
-    WavReader wav(capture);
+std::vector<float> readChannel(WavReader& wav, std::uint64_t firstFrame, std::size_t frames, unsigned channel) {
     if (channel == 0 || channel > wav.channels()) throw std::invalid_argument("capture channel is out of range");
-    if (firstFrame > wav.frames() || wav.frames() - firstFrame < LoopbackProbe::period) {
-        throw std::invalid_argument("capture has no complete probe period at the selected frame");
-    }
     std::vector<float> block(static_cast<std::size_t>(blockFrames) * wav.channels());
-    std::vector<float> mono(LoopbackProbe::period);
+    std::vector<float> mono(frames);
     wav.seek(firstFrame);
     for (std::size_t begin = 0; begin < mono.size(); begin += blockFrames) {
-        if (wav.read(block.data(), blockFrames) != blockFrames) throw std::runtime_error("short probe input");
-        for (std::size_t i = 0; i < blockFrames; ++i) {
+        const auto count = static_cast<std::uint32_t>(std::min<std::size_t>(blockFrames, mono.size() - begin));
+        if (wav.read(block.data(), count) != count) throw std::runtime_error("short probe input");
+        for (std::size_t i = 0; i < count; ++i) {
             mono[begin + i] = block[i * wav.channels() + channel - 1];
         }
     }
+    return mono;
+}
+
+int latency(const fs::path& capture, std::uint64_t firstFrame, double maximum, unsigned channel) {
+    WavReader wav(capture);
+    if (firstFrame > wav.frames() || wav.frames() - firstFrame < LoopbackProbe::period) {
+        throw std::invalid_argument("capture has no complete probe period at the selected frame");
+    }
+    const auto mono = readChannel(wav, firstFrame, LoopbackProbe::period, channel);
     const auto result = LoopbackProbe{}.resolve(mono, firstFrame, maximum);
     std::cout << json{{"status", statusName(result.status)}, {"sampleRate", wav.sampleRate()},
                       {"windowStart", firstFrame}, {"channel", channel},
                       {"samples", result ? json(result.samples) : json(nullptr)},
                       {"inverted", result.inverted}, {"pilotGain", result.pilotGain},
                       {"coherence", result.coherence}}.dump() << '\n';
+    return result ? 0 : 1;
+}
+
+std::string_view statusName(SyncSpikeStatus status) {
+    switch (status) {
+        case SyncSpikeStatus::Measured: return "measured";
+        case SyncSpikeStatus::SignalTooLow: return "signal_too_low";
+        case SyncSpikeStatus::Ambiguous: return "ambiguous";
+        case SyncSpikeStatus::InvalidInput: return "invalid_input";
+    }
+    return "unknown";
+}
+
+int sync(const fs::path& capture, std::uint64_t firstFrame, std::uint64_t frames, unsigned channel) {
+    WavReader wav(capture);
+    if (frames == 0 || frames > maximumSyncFrames || firstFrame > wav.frames() || frames > wav.frames() - firstFrame) {
+        throw std::invalid_argument("capture has no complete sync window at the selected frames");
+    }
+    const auto mono = readChannel(wav, firstFrame, static_cast<std::size_t>(frames), channel);
+    const auto result = adi::measure::findSyncSpike(mono);
+    std::cout << json{{"status", statusName(result.status)}, {"sampleRate", wav.sampleRate()},
+                      {"channel", channel}, {"frame", result ? json(firstFrame + result.frame) : json(nullptr)},
+                      {"value", result ? json(result.value) : json(nullptr)}}.dump() << '\n';
     return result ? 0 : 1;
 }
 
@@ -246,10 +293,19 @@ int main(int argc, char** argv) {
                 return generate(argv[3], number<std::uint32_t>(argv[4], "sample rate"),
                                 argc == 6 ? number<unsigned>(argv[5], "period count") : 2U);
             }
+            if (command == "gen" && argc == 8 && std::string_view(argv[2]) == "sync") {
+                return generateSync(argv[3], number<std::uint32_t>(argv[4], "sample rate"),
+                    number<std::uint64_t>(argv[5], "frames"), number<std::uint64_t>(argv[6], "spike frame"),
+                    number<std::uint64_t>(argv[7], "noise seed"));
+            }
             if (command == "latency" && (argc == 5 || argc == 6)) {
                 return latency(argv[2], number<std::uint64_t>(argv[3], "starting frame"),
                                number<double>(argv[4], "maximum delay in samples"),
                                argc == 6 ? number<unsigned>(argv[5], "channel") : 1U);
+            }
+            if (command == "sync" && (argc == 5 || argc == 6)) {
+                return sync(argv[2], number<std::uint64_t>(argv[3], "starting frame"),
+                    number<std::uint64_t>(argv[4], "frames"), argc == 6 ? number<unsigned>(argv[5], "channel") : 1U);
             }
             if (command == "compare" && argc == 4) return compare(argv[2], argv[3]);
             if (command == "build" && argc == 4) return build(argv[2], argv[3]);
@@ -265,7 +321,9 @@ int main(int argc, char** argv) {
         return 1;
     }
     std::cerr << "adi_measure gen loopback <output.wav> <sample-rate> [periods]\n"
+                 "adi_measure gen sync <output.wav> <sample-rate> <frames> <spike-frame> <seed>\n"
                  "adi_measure latency <capture.wav> <starting-frame> <maximum-samples> [one-based-channel]\n"
+                 "adi_measure sync <capture.wav> <starting-frame> <frames> [one-based-channel]\n"
                  "adi_measure compare <expected.wav> <actual.wav>\n"
                  "adi_measure build <fixture.adi> <source.wav>\n"
                  "adi_measure render <fixture.adi> <track-or-0-for-Main> <start> <exclusive-end> <output.wav> "
