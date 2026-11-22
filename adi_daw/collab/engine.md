@@ -32,6 +32,11 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-22 — DEV-07 and DEV-32 parked
+
+- DEV-07 waits for Devices' LFO and Shaper kernels and Win's route-table schema reservation.
+- DEV-32 waits for the Devices ONE list's minimal stock-only Live 12.4 rack evidence and Win's verified legacy type/version mapping. A synthetic raw-Deflate/CRC gate passed six cases with the existing miniz; the ADG grammar and one-Undo import gate await those inputs.
+
 ## 2026-11-22 — DEV-06 rack macro playback, lands after DEV-03 and 3 December
 
 Branch `engine/dev06-rack-macros` at `0a2e3eb94b9826248ac4962fc996310f9a2b97b5`, stacked on DEV-03 `757d934a`. Suggested PR title **Play rack macros through mapped device parameters**. [Compare](https://github.com/arieladi/Adi/compare/engine/dev03-rack-structure...engine/dev06-rack-macros)
