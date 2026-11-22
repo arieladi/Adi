@@ -155,6 +155,40 @@ void trimAtWarpMarker() {
               "Warp trim undo restores exact original rows and optional-domain absence");
     }
 }
+void editedInteriorMarkerPlayback() {
+    for (const auto width : {Precision::Float32, Precision::Float64}) {
+        Fixture f;
+        auto &db = f.store->db();
+        db.exec("UPDATE audio_clips SET warp_mode='re-pitch'");
+        const auto base = audio::writeWarpMap(std::vector<WarpMarker>{{0, 0}, {12000, q}}, 12000);
+        const auto moved = audio::editWarpMarker(base.bytes, 12000, {}, WarpMarker{6000, 3 * q / 4});
+        if (!moved)
+            throw std::runtime_error("prepare fixture interior Warp marker");
+        SQLite::Statement row(db, "UPDATE audio_clips SET warp_markers=? WHERE clip_id=7");
+        row.bind(1, moved.bytes.data(), static_cast<int>(moved.bytes.size()));
+        row.exec();
+        f.load(width);
+        const auto output = f.render(26000, width);
+        const auto measure = [&](std::size_t begin, std::size_t end) {
+            std::size_t first = 0, last = 0, count = 0;
+            for (auto i = begin + 1; i < end; ++i) {
+                if (output[(i - 1) * 2] <= 0 && output[i * 2] > 0) {
+                    if (count == 0)
+                        first = i;
+                    last = i;
+                    ++count;
+                }
+            }
+            return count > 1 ? 48000.0 * static_cast<double>(count - 1) /
+                                   static_cast<double>(last - first) : 0.0;
+        };
+        check(f.session.problems().empty() && std::abs(measure(2500, 15000) - 440.0 / 3) < 3 &&
+                  std::abs(measure(19500, 22700) - 440.0) < 5,
+              "stored edited interior marker changes the two heard Re-Pitch ratios");
+        check(std::all_of(output.begin() + 48000, output.end(), [](double v) { return v == 0; }),
+              "edited interior marker preserves the exact source end at both native widths");
+    }
+}
 void extendWarpWithStalePhysicalPin() {
     for(const auto width:{Precision::Float32,Precision::Float64}) {
         Fixture f;f.load(width);const auto original=f.render(26000,width);
@@ -246,4 +280,4 @@ void warpFadesAcrossTempoAndLinearSplit() {
     }
 }
 }
-int main(){try{modesAndLoops();sourceRatesAndTempoBoundary();modelAndRefusals();trimmedMusicalOffset();trimAtWarpMarker();extendWarpWithStalePhysicalPin();warpedEditsKeepHeardFades();warpFadeProjectionAndSharing();warpFadesAcrossTempoAndLinearSplit();}catch(const std::exception& error){check(false,error.what());}check(callbackAllocations.load()==0 && audio::callbackFileIo.load()==0,"actual warped audio callback allocates nothing and performs no file I/O");std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{modesAndLoops();sourceRatesAndTempoBoundary();modelAndRefusals();trimmedMusicalOffset();trimAtWarpMarker();editedInteriorMarkerPlayback();extendWarpWithStalePhysicalPin();warpedEditsKeepHeardFades();warpFadeProjectionAndSharing();warpFadesAcrossTempoAndLinearSplit();}catch(const std::exception& error){check(false,error.what());}check(callbackAllocations.load()==0 && audio::callbackFileIo.load()==0,"actual warped audio callback allocates nothing and performs no file I/O");std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
