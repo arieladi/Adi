@@ -7,6 +7,14 @@
 
 namespace adi::dsp {
 
+namespace {
+
+/// The longest period the detector can read: its lowest pitch less the 5 %
+/// it accepts below it.
+double longestAt(double rate) noexcept { return std::ceil(rate / (0.95 * PitchDetector::kLowestHz)); }
+
+}  // namespace
+
 AutoShift::AutoShift() {
     for (std::size_t i = 0; i < Count; ++i) {
         p_[i] = ranges[i].initial;
@@ -15,29 +23,31 @@ AutoShift::AutoShift() {
 }
 
 std::size_t AutoShift::latencyFor(double sampleRate, std::size_t window) noexcept {
-    const double longest = std::ceil(sampleRate / kLowestShiftedHz);
-    return window / 2 + window / 8 + kChunk + static_cast<std::size_t>(std::ceil(kHighestRatio * longest / 2)) + 8;
+    return window / 2 + window / 8 + kChunk + static_cast<std::size_t>(std::ceil(1.625 * longestAt(sampleRate))) + 8;
 }
 
 void AutoShift::prepare(double sampleRate) noexcept {
     rate_ = std::isfinite(sampleRate) && sampleRate > 0 ? sampleRate : 48000;
     ready_ = false;
     size_ = 0;
-    detector_.prepare(rate_);
-    // A rate past any host's (the detector inert, or past 10 MHz) leaves the
-    // device inert: its input, no latency.
-    if (detector_.window() == 0 || rate_ > 1e7) {
+    if (rate_ > kHighestRate) {   // past any host's: inert, its input out
         return;
     }
-    longest_ = std::ceil(rate_ / kLowestShiftedHz);
-    latency_ = latencyFor(rate_, detector_.window());
+    decimation_ = std::max<std::size_t>(1, static_cast<std::size_t>(std::floor(rate_ / 48000)));
+    detector_.prepare(rate_ / static_cast<double>(decimation_));
+    if (detector_.window() == 0) {
+        return;
+    }
+    longest_ = longestAt(rate_);
+    latency_ = latencyFor(rate_, window());
     std::size_t size = 1;
     while (size < 2 * latency_ + 16) {
         size *= 2;
     }
     try {
-        for (auto& ring : in_) {
-            ring.assign(size, 0.f);
+        for (std::size_t c = 0; c < 2; ++c) {
+            in_[c].assign(size, 0.f);
+            low_[c].assign(size, 0.f);
         }
         size_ = size;
         ready_ = true;
@@ -46,11 +56,17 @@ void AutoShift::prepare(double sampleRate) noexcept {
     }
     mix_.prepare(rate_);
     mix_.set(p_[DryWet] / 100);
-    target_ = current_ = 0;
+    target_ = current_ = sum_ = 0;
     period_ = rate_ / 200;
-    clock_ = pushed_ = head_ = count_ = fade_ = fadeLength_ = 0;
+    clock_ = pushed_ = head_ = count_ = fade_ = fadeLength_ = gathered_ = filled_ = 0;
     tap_ = old_ = -static_cast<double>(latency_);
+    shortest_ = farthest_ = static_cast<double>(latency_);
+    filter_ = {};
+    cutoffRatio_ = 0;
     retune();
+    speed_ = ratio_;
+    lowTap_ = lowOld_ = ratio_ > 1;
+    lowpass();
 }
 
 void AutoShift::set(Param p, double v) noexcept {
@@ -92,6 +108,27 @@ double AutoShift::shift() const noexcept { return p_[Shift] + (p_[Detune] + curr
 
 void AutoShift::retune() noexcept { ratio_ = std::clamp(std::exp2(shift() / 12), 1 / kHighestRatio, kHighestRatio); }
 
+void AutoShift::lowpass() noexcept {
+    // An eighth-order Butterworth (four sections) at 0.45 of the rate over
+    // the ratio: what a tap reading `ratio` samples a sample can hold.
+    if (ratio_ == cutoffRatio_) {
+        return;
+    }
+    cutoffRatio_ = ratio_;
+    const double w = 2 * std::numbers::pi * 0.45 / std::max(1.0, ratio_), cs = std::cos(w), sn = std::sin(w);
+    constexpr std::array<double, 4> kQ = {0.50979557910415918, 0.60134488693504529, 0.89997622313641570, 2.5629154477415055};
+    for (std::size_t s = 0; s < kQ.size(); ++s) {
+        const double alpha = sn / (2 * kQ[s]), a0 = 1 + alpha;
+        for (std::size_t c = 0; c < 2; ++c) {
+            Biquad& f = filter_[c][s];
+            f.b0 = f.b2 = (1 - cs) / 2 / a0;
+            f.b1 = (1 - cs) / a0;
+            f.a1 = -2 * cs / a0;
+            f.a2 = (1 - alpha) / a0;
+        }
+    }
+}
+
 double AutoShift::read(const std::vector<float>& ring, double at) const noexcept {
     // Four-point Hermite, at an absolute (fractional) sample position; a
     // negative one wraps on the power-of-two ring.
@@ -116,7 +153,8 @@ void AutoShift::adopt(const Reading& r) noexcept {
 }
 
 void AutoShift::process(const float* inL, const float* inR, float* outL, float* outR, std::size_t frames) noexcept {
-    const std::size_t window = detector_.window(), hop = detector_.hop();
+    const std::size_t window = detector_.window(), hop = detector_.hop(), wide = window * decimation_;
+    const double reach = static_cast<double>(hop * decimation_) / 2, centre = static_cast<double>(latency_);
     for (std::size_t i = 0; i < frames; ++i) {
         // Both inputs are read, and made finite and bounded, before anything
         // is written (a host may hand an output plane that is an input plane).
@@ -142,63 +180,100 @@ void AutoShift::process(const float* inL, const float* inR, float* outL, float* 
                 current_ = target_;
             }
             retune();
+            lowpass();
         }
         const std::size_t slot = clock_ & (size_ - 1);
-        in_[0][slot] = x[0];
-        in_[1][slot] = x[1];
-        // The detector, a chunk at a time; each new reading is queued with
-        // the middle of the window it was read from.
-        mono_[clock_ % kChunk] = 0.5f * (x[0] + x[1]);
-        if (clock_ % kChunk == kChunk - 1) {
-            detector_.push(mono_.data(), kChunk);
-            pushed_ += kChunk;
-            if (pushed_ >= window && pushed_ % hop == 0) {
-                Reading r;
-                r.centre = static_cast<double>(clock_) - static_cast<double>(window - 1) / 2;
-                double clarity = 0;
-                r.clear = detector_.estimate(r.hz, clarity) && clarity >= kClarity;
-                if (count_ == kQueue) {   // never at this latency; bounded all the same
-                    adopt(queue_[head_]);
-                    head_ = (head_ + 1) % kQueue;
-                    --count_;
+        for (std::size_t c = 0; c < 2; ++c) {
+            in_[c][slot] = x[c];
+            double v = x[c];
+            for (auto& section : filter_[c]) {
+                v = section.run(v);
+            }
+            low_[c][slot] = static_cast<float>(v);
+        }
+        // The detector, at the rate over the decimation, a chunk at a time;
+        // each new reading is queued with the middle of its window.
+        sum_ += 0.5 * (static_cast<double>(x[0]) + x[1]);
+        if (++gathered_ == decimation_) {
+            mono_[filled_] = static_cast<float>(sum_ / static_cast<double>(decimation_));
+            sum_ = 0;
+            gathered_ = 0;
+            if (++filled_ == kChunk) {
+                filled_ = 0;
+                detector_.push(mono_.data(), kChunk);
+                pushed_ += kChunk;
+                if (pushed_ >= window && pushed_ % hop == 0) {
+                    Reading r;
+                    r.centre = static_cast<double>(clock_) - static_cast<double>(wide - 1) / 2;
+                    double clarity = 0;
+                    r.clear = detector_.estimate(r.hz, clarity) && clarity >= kClarity;
+                    if (count_ == kQueue) {   // never at this latency; bounded all the same
+                        adopt(queue_[head_]);
+                        head_ = (head_ + 1) % kQueue;
+                        --count_;
+                    }
+                    queue_[(head_ + count_) % kQueue] = r;
+                    ++count_;
                 }
-                queue_[(head_ + count_) % kQueue] = r;
-                ++count_;
             }
         }
         // The readings the tap has reached.
-        while (count_ > 0 && queue_[head_].centre <= tap_ + static_cast<double>(hop) / 2) {
+        while (count_ > 0 && queue_[head_].centre <= tap_ + reach) {
             adopt(queue_[head_]);
             head_ = (head_ + 1) % kQueue;
             --count_;
         }
-        // A splice, once the tap has drifted half a period from the centre
-        // (and none is under way): a whole number of periods back toward it,
-        // far enough that the next is not due before this one's crossfade
-        // ends.
+        // Between crossfades: the ratio is taken up; the tap splices a whole
+        // number of periods back toward the centre once it has drifted half
+        // a period, far enough that the next is not due before this one's
+        // fade ends, and moves to the low-passed copy (or off it) when the
+        // ratio crosses 1, in the same fade (a splice due before such a fade
+        // ends is made with it). At a ratio of exactly 1, what is left of a
+        // period is glided away at 0.5 % speed.
         if (fade_ == 0) {
-            const double p = period_, centre = static_cast<double>(latency_), delay = static_cast<double>(clock_) - tap_;
-            const double length = std::clamp(std::round(p / 2), 16.0, std::ceil(longest_ / 2));
+            speed_ = ratio_;
+            const double p = period_, delay = static_cast<double>(clock_) - tap_;
+            const double length = std::clamp(std::round(p / 4), 16.0, std::ceil(longest_ / 4));
+            const bool low = ratio_ > 1, switching = low != lowTap_;
+            const double ahead = switching ? std::abs(speed_ - 1) * length : 0.0;
             double by = 0;
-            if (ratio_ > 1 && delay < centre - p / 2) {
-                by = -std::ceil((centre - p / 2 + (ratio_ - 1) * length - delay) / p) * p;
-            } else if (ratio_ < 1 && delay > centre + p / 2) {
-                by = std::ceil((delay - (centre + p / 2 - (1 - ratio_) * length)) / p) * p;
+            if (speed_ > 1 && delay - ahead < centre - p / 2) {
+                by = -std::ceil((centre - p / 2 + (speed_ - 1) * length - delay) / p) * p;
+            } else if (speed_ < 1 && delay + ahead > centre + p / 2) {
+                by = std::ceil((delay - (centre + p / 2 - (1 - speed_) * length)) / p) * p;
+            } else if (speed_ == 1 && std::abs(delay - centre) > p / 2) {
+                by = std::round((delay - centre) / p) * p;
+            } else if (speed_ == 1 && delay != centre && !switching) {
+                const double off = delay - centre;
+                if (std::abs(off) < 1e-6) {
+                    tap_ = static_cast<double>(clock_) - centre;
+                } else {
+                    speed_ = 1 + std::clamp(off, -0.005, 0.005);
+                }
             }
-            if (by != 0) {
+            if (by != 0 || switching) {
                 old_ = tap_;
+                lowOld_ = lowTap_;
+                lowTap_ = low;
                 tap_ += by;
                 fadeLength_ = fade_ = static_cast<std::size_t>(length);
             }
+        }
+        const double now = static_cast<double>(clock_);
+        shortest_ = std::min(shortest_, now - tap_);
+        farthest_ = std::max(farthest_, now - tap_);
+        if (fade_ > 0) {
+            shortest_ = std::min(shortest_, now - old_);
+            farthest_ = std::max(farthest_, now - old_);
         }
         const double mix = mix_.next();
         const double fadeIn = fade_ == 0 ? 1.0
                                          : 0.5 - 0.5 * std::cos(std::numbers::pi * static_cast<double>(fadeLength_ - fade_ + 1) /
                                                                  static_cast<double>(fadeLength_ + 1));
         for (std::size_t c = 0; c < 2; ++c) {
-            double wet = read(in_[c], tap_);
+            double wet = read(lowTap_ ? low_[c] : in_[c], tap_);
             if (fade_ > 0) {
-                wet = fadeIn * wet + (1 - fadeIn) * read(in_[c], old_);
+                wet = fadeIn * wet + (1 - fadeIn) * read(lowOld_ ? low_[c] : in_[c], old_);
             }
             const double dry = in_[c][(clock_ + size_ - latency_) & (size_ - 1)];
             float* out = c == 0 ? outL : outR;
@@ -206,9 +281,9 @@ void AutoShift::process(const float* inL, const float* inR, float* outL, float* 
                 out[i] = static_cast<float>(dry + (wet - dry) * mix);
             }
         }
-        tap_ += ratio_;
+        tap_ += speed_;
         if (fade_ > 0) {
-            old_ += ratio_;
+            old_ += speed_;
             --fade_;
         }
         ++clock_;
