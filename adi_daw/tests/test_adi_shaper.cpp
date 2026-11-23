@@ -182,12 +182,14 @@ void heldPanEdges() {
         std::vector<float> l(count, .25f), r(count, -.125f);
         for (int i = 0; i < count; i += block) {
             shaper.sync(static_cast<double>(i) / 24000.);
-            shaper.process(l.data()+i, r.data()+i, l.data()+i, r.data()+i, std::min(block, count-i));
+            shaper.process(l.data()+i, r.data()+i, l.data()+i, r.data()+i,
+                           static_cast<std::size_t>(std::min(block, count-i)));
         }
         double squares = 0., peak = 0.;
         for (int i = 256; i < count; ++i) {
-            const double dl = l[i] - .25 * expected(i, 0);
-            const double dr = r[i] + .125 * expected(i, 1);
+            const auto at = static_cast<std::size_t>(i);
+            const double dl = l[at] - .25 * expected(i, 0);
+            const double dr = r[at] + .125 * expected(i, 1);
             squares += dl*dl + dr*dr;
             peak = std::max({peak, std::abs(dl), std::abs(dr)});
         }
