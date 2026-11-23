@@ -41,7 +41,7 @@ class CommandPalette final : public juce::Component, private juce::TextEditor::L
     void paint(juce::Graphics &) override;
     void resized() override;
     void mouseUp(const juce::MouseEvent &) override;
-    // Called once it has gone (the root releases it).
+    // Called once it has gone (the root keeps it, hidden, for the next Ctrl/Cmd+P).
     std::function<void()> onDismiss;
     // The field hands Up, Down, Enter and Esc to the palette before it would use them itself.
     struct Field final : juce::TextEditor {

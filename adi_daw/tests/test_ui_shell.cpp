@@ -13527,6 +13527,8 @@ int main(int argc, char **argv) {
             commands.getCommandInfo(C::Copy, copyInfo);
             commands.getCommandInfo(C::Paste, paste);
             commands.getCommandInfo(C::Duplicate, duplicate);
+            juce::ApplicationCommandInfo paletteInfo(C::CommandPalette);
+            commands.getCommandInfo(C::CommandPalette, paletteInfo);
             const auto keyed = [](const juce::ApplicationCommandInfo &info, char key) {
                 return info.defaultKeypresses.contains(juce::KeyPress(key, juce::ModifierKeys::commandModifier, 0));
             };
@@ -13542,11 +13544,13 @@ int main(int argc, char **argv) {
                       C::InvertSelection == C::DeleteFades + 1 && C::ArrangePanelsAutomatically == C::DrawMode + 1 &&
                       C::FocusClipView == C::ArrangePanelsVertically + 1 && C::FitToTimeRange == C::FocusClipView + 1 &&
                       C::ArrangementRecord == C::FitToTimeRange + 1 && C::ExportAudio == C::ArrangementRecord + 1 &&
-                      C::LastId == C::ExportAudio,
+                      C::CommandPalette == C::ExportAudio + 1 && C::LastId == C::CommandPalette &&
+                      paletteInfo.shortName == "Command Palette..." && keyed(paletteInfo, 'p'),
                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
                   "Select Loop, Save a Copy, Collect All and Save, Collect and Export, Cut, Copy, Paste, Duplicate, "
                   "Show/Hide Plug-In Windows, Split, Clip View, Insert Empty MIDI Clip(s), the …Time commands and "
-                  "Insert Silence, then Create Fade In/Out and Delete Fades/Crossfades, then the Note Editor's nine, each named");
+                  "Insert Silence, then Create Fade In/Out and Delete Fades/Crossfades, then the Note Editor's nine, each named, "
+                  "then the Command Palette on Ctrl/Cmd+P, the last id (WIN-06)");
             // The Note Editor's commands, the last ids: named in the table's order, each on the editor's key.
             {
                 const auto named = [&](int id) {
