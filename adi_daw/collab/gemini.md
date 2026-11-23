@@ -4,6 +4,30 @@ Trial seat (22 November 2026, `collab/win.md`): Linux environment (Debian 12, GC
 
 ---
 
+## 2026-11-23 — PLAN row 3 (PD-15): cross-project track paste, the engine half
+
+Branch: `gemini/pd15-project-paste` at `ba43cddc` (from `origin/main` `7aa3ab58`, lent paths only per ADR-0252 and `collab/RESERVATIONS.md`; zero edits to `row_ids.*`, `device_copy.*`, or `publish_file.*`).
+
+### What changed
+
+- `adi_daw/src/adi/project_paste.hpp`, `adi_daw/src/adi/project_paste.cpp`: `pasteTrackFromProject(source, sourceTrackId, dest, actor, actorDetail)` copies one track (mixer strip, top-level device chains and devices, audio and MIDI clips, track/device/clip automation lanes and data, curve segment ranges, and referenced media/state blobs) from a second `Store` (opened read-only) into the active writable `Store` as one undoable `OpJournal` transaction (`expectHead` guarded, one `txn_id`).
+  - Allocates every destination row id through `RowIds` (`row_ids.hpp`).
+  - Reads devices through public `readDeviceCopy()` (`device_copy.hpp`), deduplicates `plugin_refs` by `(format, uid, shell_id)` using `pluginRef.register` only when absent, and transports missing `state_blobs` by BLAKE3 hash via `OpTransactionInputs` + `OpJournal::commitCaptured()`.
+  - Copies media by BLAKE3 hash through public `media::resolveMedia()` and `media::publishFile()` (`VerifiedCopyFallback`), reusing any hash already in `dest.media_files` without copying again, and rolling back published files if the transaction fails.
+  - Refuses read-only destinations, Master tracks, missing source tracks, nested rack chains, and audio-thread calls without modifying `source` or publishing files.
+- `adi_daw/tests/test_project_paste.cpp`, `adi_daw/CMakeLists.txt`: `adi_project_paste_tests` covering colliding-id full remapping, single-step undo returning the exact `digestProject` start digest and redo, byte-for-byte source `.adi` and audio file immutability, media hash deduplication (pre-existing hash not copied again; two clips sharing one WAV copied once), read-only destination refusal, `state_blobs` hash copy/dedup, and concurrent open `Store`s.
+
+### Verification
+
+- **GCC 12.2 (`-DADI_WERROR=ON`, CMake + ctest, transient local DF-M62 patch reverted):** `adi_project_paste_tests` PASS (`81/81` checks); 0 warnings.
+- **Clang 14.0.6 (`-Wall -Wextra -Wpedantic -Wcast-align -Wconversion -Wsign-conversion -Wshadow -Wswitch-enum -Werror`):** `src/adi/project_paste.cpp` and `tests/test_project_paste.cpp` compile with 0 warnings.
+- **GCC 12.2 ASan + LSan + UBSan (`-O1 -g1 -fsanitize=address,undefined`):** `adi_project_paste_tests` PASS (`81/81` checks, 1.65 s), 0 leaks, 0 UB.
+- **GCC 12.2 TSan (`-O1 -g1 -fsanitize=thread`, `setarch x86_64 -R`):** `adi_project_paste_tests` PASS (`81/81` checks, 5.86 s), 0 data races, 0 deadlocks. (MSVC `/W4 /WX` and macOS legs remain for win.)
+
+Review requested (engine): `gemini/pd15-project-paste` at `ba43cddc` (lands after 3 December; PR requested only after engine review in `collab/engine.md` passes this head).
+
+---
+
 ## 2026-11-23 — PLAN row 2 (SRF-10): OSCQuery v1 tree, ?HOST_INFO, and GET-only HTTP core
 
 Branch: `gemini/srf10-oscquery-core` at `195892d7` (stacked on `gemini/srf09-osc-core` `5e42fa61`, lent paths only per ADR-0252 and `collab/RESERVATIONS.md`).
