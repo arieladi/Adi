@@ -6,6 +6,45 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-23, night — win covers the engine lane until its limit resets; main green
+
+**The director's order:** win takes the engine lane until the engine seat's next limit reset. Win does not write
+`collab/engine.md`; this entry is the record, and the engine seat reads it first when it returns.
+
+**Main is green** at dbf98b0cd (#734). The landing merge c0a8f9bb4 (#733) failed once on macOS in
+`adi_mix_focus_tests` and passed on the rerun of that leg: DF-M66, a flaky check, the Mix View seat's.
+
+**Engine rows already done on main**, found by a triage of every open engine row against the code (moved to
+Done on this PR): DF-E19, E45, E51, E52, E54, and DF-E29 (a) to (d). DF-E29 (e) and DF-E6 (b) are the
+director's questions (the engine log's FOR THE DIRECTOR). DF-E17's overlap needs a window change in the same
+stack (`ui_shell.cpp`'s raw move fallback) and waits for the window lane.
+
+**Built, reviewed and requested** (#735, one landing branch `land/engine-cover-1123` over five branches cut from
+main; each built and tested under MSVC `/W4 /WX`, then read by two independent reviewers, every real finding fixed):
+- `engine/df-e70-resize-fades`: DF-E70. `clip.resize` clamps both fades; Undo restores the authored ones; old
+  journal entries replay as recorded; a whole-clip fade-out renders over the exact span either way.
+- `engine/df-e65-vorbis-table`: DF-E65. One lock around the stb_vorbis calls that reach its CRC table. The
+  ThreadSanitizer proof is the gemini seat's.
+- `engine/df-e66-test-new-forms`: DF-E66. One header replaces every `operator new` form for the seven suites, and a
+  new CI job runs them under ASan after a canary proves the old harness is still caught.
+- `engine/df-e69-clang14`: DF-E69. `timelineClips` without `std::views::filter`; init-captures at every engine
+  site. The window's one site is DF-W40. The Clang 14 proof is the gemini seat's.
+- `engine/df-e6-countin-latency`: DF-E6 (a). Count-in clicks on the compensated clock up to one beat of latency;
+  above one beat unchanged, for the director.
+
+**Repaired, held for after 3 December:** `engine/tm-tt01-tempo-ramps-current` (7c37df259): the engine's TM-TT-01 on
+current main, its two implicit conversions explicit, and the two suites it changes on purpose
+(`adi_transport_info_tests`, `adi_scale_context_tests`) updated to the ramp, each change following the branch's own
+log entry; 44 suites pass; a second reader approved it with three test-comment notes. The engine seat owns it:
+review it, then mark it "lands after 3 December".
+
+**The engine's review of DF-M36** (owed since #579): bf221a35 is correct in all three hosts. It found a worse case
+outside them, the Limiter, which re-prepares on every rebuild while playing: DF-M67, the Mix View seat's, now.
+
+**Next free:** DF-E73, DF-W41, DF-M68, ADR-0253.
+
+---
+
 ## 2026-11-23, evening — the landing window of 23 November is on main (#733); nine rows closed
 
 **Landed** as one stack through its top, #733 (c0a8f9bb4): #722 engine-win, #729 engine, #730 window, #731 Mix
@@ -53,7 +92,7 @@ reader; nothing run here beyond the landing's own CI).
   engine's review left).
 - **New:** DF-E71 (engine-win: GCC 13 rejects a range loop in `tests/scanner_session_reopen.hpp`, from the window
   log), DF-E72 (engine-win: a held Play has no time limit).
-- **Next free:** DF-E73, DF-W40, DF-M66, ADR-0253.
+- **Next free:** DF-E73, DF-W40, DF-M67, ADR-0253 (DF-M66 added after this entry: a flaky Focus mailbox check on main).
 
 ---
 
