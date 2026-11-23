@@ -2043,6 +2043,12 @@ target_sources(adi_core PRIVATE src/adi/engine/curves.cpp)
 add_executable(adi_transport_tests tests/test_transport.cpp)
 target_link_libraries(adi_transport_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_transport_tests COMMAND adi_transport_tests)
+
+add_executable(adi_launch_gesture_tests tests/test_launch_gestures.cpp)
+target_include_directories(adi_launch_gesture_tests PRIVATE src)
+target_link_libraries(adi_launch_gesture_tests PRIVATE adi_warnings Threads::Threads)
+add_test(NAME adi_launch_gesture_tests COMMAND adi_launch_gesture_tests)
+
 add_executable(adi_link_session_tests tests/test_link_session.cpp)
 target_link_libraries(adi_link_session_tests PRIVATE adi_core adi_warnings)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
