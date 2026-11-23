@@ -75,10 +75,6 @@ inline double envelopeValueAt(const engine::AutomationPointNode &a, const engine
         slice = {a.curveSlice->begin, a.curveSlice->end, a.curveSlice->sourceFirst, a.curveSlice->sourceLast};
     return engine::curveSliceValue(a.value, b.value, x, a.curve, a.tension, a.curveSlice ? &slice : nullptr);
 }
-// Whether a segment from `a` is drawn as a straight join: a linear one the source has not trimmed.
-inline bool straightSegment(const engine::AutomationPointNode &a) noexcept {
-    return a.curve == static_cast<std::uint8_t>(engine::CurveShape::Linear) && !a.curveSlice;
-}
 // Whether the window edits this envelope: a lane in ticks and real units (one in nanoseconds or another
 // domain is shown as it is and left alone).
 inline bool editableEnvelope(const TrackEnvelope &env) {

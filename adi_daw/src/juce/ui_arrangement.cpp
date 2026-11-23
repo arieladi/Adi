@@ -2432,6 +2432,21 @@ void ArrangementCanvas::paintAutomation(juce::Graphics &g) const {
                 nodes.push_back(p);
             }
         std::stable_sort(nodes.begin(), nodes.end(), [](const auto &a, const auto &b) { return a.time < b.time; });
+        // While a point is dragged, a segment keeps the curve of its trimmed source only where the move will keep it
+        // (`automation.movePoints`): its point's value and its next point unchanged. Else it is drawn as it will play.
+        if (pointDrag_ && pointDrag_->track == body.track->id && env.data != nullptr) {
+            const auto &stored = env.data->points;
+            for (std::size_t i = 0; i < nodes.size(); ++i) {
+                if (!nodes[i].curveSlice)
+                    continue;
+                const auto at = std::find_if(stored.begin(), stored.end(), [&](const auto &q) { return q.id == nodes[i].id; });
+                const bool next = i + 1 < nodes.size(), hadNext = at != stored.end() && at + 1 != stored.end();
+                const bool keep = at != stored.end() && at->value == nodes[i].value && next == hadNext &&
+                                  (!next || (nodes[i + 1].id == (at + 1)->id && nodes[i + 1].value == (at + 1)->value));
+                if (!keep)
+                    nodes[i].curveSlice.reset();
+            }
+        }
         std::vector<juce::Point<float>> points;
         for (const auto &p : nodes)
             points.push_back({static_cast<float>(geo.x(p.time)), automationY(p.value, range, body.top, body.scaleBottom)});
@@ -2442,18 +2457,17 @@ void ArrangementCanvas::paintAutomation(juce::Graphics &g) const {
             g.drawLine(0, y, right, y, 1.f);
             continue;
         }
-        // Each segment as the engine plays it (AU-01; SPEC 6.3.2): a straight join where it is linear, else the
-        // curve traced every two pixels.
+        // Each segment as the engine plays it (AU-01; SPEC 6.3.2), traced every two pixels in seconds: a linear one
+        // too, which bends where the tempo changes inside it.
         juce::Path line;
         line.startNewSubPath(0, points.front().y);
         line.lineTo(points.front());
         const auto *tempo = current->tempo ? &*current->tempo : nullptr;
         for (std::size_t i = 1; i < points.size(); ++i) {
             const auto &a = nodes[i - 1];
-            if (!straightSegment(a))
-                for (float px = std::max(0.f, points[i - 1].x + 2.f); px < std::min(right, points[i].x); px += 2.f)
-                    line.lineTo(px, automationY(envelopeValueAt(a, nodes[i], geo.tick(px), tempo), range, body.top,
-                                                body.scaleBottom));
+            for (float px = std::max(0.f, points[i - 1].x + 2.f); px < std::min(right, points[i].x); px += 2.f)
+                line.lineTo(px, automationY(envelopeValueAt(a, nodes[i], geo.tick(px), tempo), range, body.top,
+                                            body.scaleBottom));
             line.lineTo(points[i]);
         }
         line.lineTo(right, points.back().y);

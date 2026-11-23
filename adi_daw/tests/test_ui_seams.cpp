@@ -2394,9 +2394,6 @@ void automationCurvesDrawn() {
             check(worst < 2e-3, "curve " + std::to_string(curve) + " tension " + std::to_string(tension) +
                                     ": drawn as played within 0.002 dB (worst " + std::to_string(worst) + ")");
         }
-    engine::AutomationPointNode linear, held;
-    held.curve = 0;
-    check(ui::straightSegment(linear) && !ui::straightSegment(held), "a linear segment is a straight join; a held one is not");
 }
 int main() {
     automationCurvesDrawn();
