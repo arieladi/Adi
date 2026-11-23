@@ -22,6 +22,7 @@
 #include "adi/history.hpp"
 #include "adi/ops.hpp"
 #include "adi/store.hpp"
+#include "adi/ui/fade_edits.hpp"
 #include "adi/ui/op_submitter.hpp"
 #include "adi/ui/arrangement_geometry.hpp"
 #include "adi/ui/audio_drop.hpp"
@@ -1970,6 +1971,47 @@ void meterGrid() {
           "a change part-way through bar 2 ends it there, and 3/4's bars run on from it");
     check(geo.barHolding(5 * q).index == 1 && geo.barHolding(5 * q).end == 6 * q && geo.barHolding(7 * q).index == 2,
           "bar 2 is cut short; the next is bar 3");
+    // DF-W30 (a): a long bar and a wide grid. In 23/4 on the 8 Bars grid a tick is less than 1e-9 of a
+    // cell; the lines are still every eight bars, and the arrows still step by them.
+    const std::vector<textproj::Meter> long23{{0, 23, 4}};
+    geo.meters = &long23;
+    geo.grid.fixedQuarters = 32; // 8 Bars
+    const auto eight = 8 * 23 * q;
+    lines.clear();
+    geo.forEachGridLine(0, 3 * eight, [&](std::int64_t t) { lines.push_back(t); });
+    check(lines == std::vector<std::int64_t>{0, eight, 2 * eight, 3 * eight} && geo.snap(1, true) == eight &&
+              geo.snap(eight - 1, false) == 0 && geo.snap(eight + 1, false) == eight,
+          "in 23/4 on 8 Bars a line is every eight bars, a tick past one snaps back to it");
+    check(geo.nextGridLine(eight, true) == 2 * eight && geo.nextGridLine(eight, false) == 0,
+          "and the arrows step from one to the next");
+    geo.grid.fixedQuarters = 4;
+    const std::vector<textproj::Meter> long180{{0, 180, 4}};
+    geo.meters = &long180;
+    check(geo.nextGridLine(0, true) == 180 * q && geo.nextGridLine(180 * q, true) == 360 * q,
+          "a bar of 180 quarters on 1 Bar steps a whole bar");
+    // DF-W30 (c): a fade already that long is no op, unless an edit pinned its clock, so it plays at
+    // another length (its handles say so): then Create Fade puts it back on its ticks.
+    {
+        auto clip = std::make_shared<engine::ClipNode>();
+        clip->id = 9;
+        clip->posTicks = 0;
+        clip->lengthTicks = 1000;
+        clip->audio.emplace();
+        clip->fadeInTicks = 200;
+        clip->fadeInHandles = {0, 200};
+        auto track = std::make_shared<engine::TrackNode>();
+        track->id = 1;
+        track->kind = "audio";
+        track->clips = {clip};
+        const ui::SnapshotTracks fadeTracks{track};
+        const auto plainFade = ui::createFades(fadeTracks, {1}, -10, 200);
+        check(plainFade.ops.empty() && plainFade.refusal == "The fades are already that long.",
+              "a plain fade already that long: no op, and says so");
+        clip->fadeInHandles = {0, 300}; // the clock a split pinned, at a new tempo
+        const auto pinnedFade = ui::createFades(fadeTracks, {1}, -10, 200);
+        check(pinnedFade.ops.size() == 1 && pinnedFade.refusal.empty(),
+              "a fade of that length playing at another (its clock pinned) still takes the op");
+    }
 }
 
 void positionsTyped() {

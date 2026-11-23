@@ -9620,6 +9620,32 @@ void clipFades(AppCommands &commands, const std::filesystem::path &dir) {
     check(!root.selectionCrossfades() && root.command(AppCommands::CreateFade), "Create Fade In over the first half bar");
     root.frame();
     check(clips()[0]->fadeInTicks == bar / 2 && clips()[0]->fadeOutTicks == 0, "a half-bar fade in");
+    // DF-W30 (c): the same again changes nothing, and makes no undo step.
+    {
+        const auto stepBefore = document->ops().nextUndo() ? document->ops().nextUndo()->txnId : 0;
+        check(!root.command(AppCommands::CreateFade) && root.error() == "The fades are already that long." &&
+                  document->ops().nextUndo() && document->ops().nextUndo()->txnId == stepBefore,
+              "a fade already that long is no change: refused, and no empty undo step");
+    }
+    // A crossfade whose left side is already that long is still a crossfade, so named.
+    {
+        const auto keep = sel;
+        sel = {};
+        sel.track = 4;
+        sel.start = bar - bar / 4;
+        sel.end = bar + bar / 4;
+        check(root.command(AppCommands::CreateFade), "a crossfade over the boundary");
+        root.frame();
+        sel.end = bar + bar / 2;
+        check(root.selectionCrossfades() && root.command(AppCommands::CreateFade), "Create Crossfade again, longer");
+        root.frame();
+        check(document->ops().nextUndo() && document->ops().nextUndo()->label == "Create Crossfade" &&
+                  clips()[0]->fadeOutTicks == bar / 4 && clips()[1]->fadeInTicks == bar / 2,
+              "the left side already that long, the right one longer: still Create Crossfade");
+        check(root.command(AppCommands::Undo) && root.command(AppCommands::Undo), "two undos");
+        root.frame();
+        sel = keep;
+    }
     // Delete Fades/Crossfades on the time selection's clips.
     sel.end = 2 * bar;
     check(root.keyPressed(juce::KeyPress(juce::KeyPress::backspaceKey, juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier, 0)),

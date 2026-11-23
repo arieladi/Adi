@@ -182,7 +182,8 @@ bool ProjectDocument::saveAs(const std::filesystem::path &path) {
     // through synchronise(), and every window follows at its next frame. The store has switched
     // by now, so false would lie ("nothing moved"): a session that fails to re-read is a warning
     // on a save that stands, and the next synchronise() tries again.
-    view_.refresh(*store_);
+    // With the session's overridden lanes, so the marks stand and one refresh does (DF-W30 b).
+    view_.refresh(*store_, session_.overriddenLanes());
     if (!synchronise()) {
         if (!warning_.empty())
             warning_ += ' ';
@@ -229,7 +230,8 @@ bool ProjectDocument::collectAllAndSave() {
         return false;
     }
     // The media rows point at the copies now: the view and the session read them again.
-    view_.refresh(*store_);
+    // With the session's overridden lanes, so the marks stand and one refresh does (DF-W30 b).
+    view_.refresh(*store_, session_.overriddenLanes());
     if (!synchronise()) {
         if (!warning_.empty())
             warning_ += ' ';
@@ -500,7 +502,8 @@ bool ProjectDocument::autoGainStage(bool lufs) {
     error_ = result.commit.error;
     if (!result.commit.ok)
         return false;
-    view_.refresh(*store_);
+    // With the session's overridden lanes, so the marks stand and one refresh does (DF-W30 b).
+    view_.refresh(*store_, session_.overriddenLanes());
     return synchronise();
 }
 bool ProjectDocument::deviceAction(const std::string &op, Payload payload) {
@@ -1153,7 +1156,7 @@ bool ProjectDocument::endMixerDrag() {
         return false;
     }
     // The committed rows reach the view and the session as any commit does.
-    view_.refresh(*store_);
+    view_.refresh(*store_, session_.overriddenLanes());
     synchronise();
     error_.clear();
     return true;
