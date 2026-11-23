@@ -4,6 +4,29 @@ Trial seat (22 November 2026, `collab/win.md`): Linux environment (Debian 12, GC
 
 ---
 
+## 2026-11-23 — PLAN row 2 (SRF-10): OSCQuery v1 tree, ?HOST_INFO, and GET-only HTTP core
+
+Branch: `gemini/srf10-oscquery-core` at `195892d7` (stacked on `gemini/srf09-osc-core` `5e42fa61`, lent paths only per ADR-0252 and `collab/RESERVATIONS.md`).
+
+### What changed
+
+- `adi_daw/src/adi/oscquery.hpp`, `adi_daw/src/adi/oscquery.cpp`: OSCQuery v1 core built on pinned header-only `nlohmann/json` (ADR-0188 d7) with zero dependency on `osc_codec`, `adi_core`, SQLite, or JUCE so `adi_fuzz_oscquery` compiles `tests/fuzz_oscquery.cpp` + `src/adi/oscquery.cpp` alone.
+  - `OscQueryTree::build(NamespaceDescription)` constructs a deterministic JSON tree keyed by stable positive ids (`/adi/track/{stableId}/...`, `/adi/master/...`, sends, devices, params) with `FULL_PATH`, float `TYPE` (`"f"`), clamped finite `VALUE`, `RANGE` (`[{"MIN": 0.0, "MAX": 1.0}]`), `ACCESS: 3` (read+write together, ADR-0188 d7), and `DESCRIPTION` combining name and `Record.text`. Zero `LISTEN` keys anywhere.
+  - `renderHostInfoJson(HostInfo)` emits `NAME`, `OSC_PORT`, `OSC_TRANSPORT` (`"UDP"`), optional `OSC_IP`, and v1-only `EXTENSIONS` (`ACCESS`, `DESCRIPTION`, `RANGE`, `VALUE` — no `LISTEN`).
+  - `parseHttpRequest` and `handleHttpRequest` implement a pure `GET`-only HTTP/1.x responder serving `/`, any tree path, and `/?HOST_INFO` without CORS `*` or file endpoints, refusing non-GET methods (`405` + `Allow: GET`), unknown paths (`404`), malformed/traversal/v2 `?LISTEN` requests (`400`), unsupported HTTP versions (`505`), oversized requests (`413`), oversized targets (`414`), and excessive headers (`431`).
+- `adi_daw/tests/test_oscquery.cpp`, `adi_daw/tests/fuzz_oscquery.cpp`, `adi_daw/CMakeLists.txt`: golden JSON test for two tracks + Main, stable-id preservation test when a track is inserted before existing tracks, `?HOST_INFO` and HTTP error-status tests, no-`LISTEN` / no-CORS assertions, and standalone libFuzzer harness (`adi_fuzz_oscquery`, linked only against header-only `nlohmann_json::nlohmann_json` and `adi_warnings`).
+
+### Verification
+
+- **GCC 12.2 (`-DADI_WERROR=ON`, CMake + ctest, transient local DF-M62 patch reverted):** `adi_oscquery_tests` PASS (`70/70` checks) alongside `adi_osc_codec_tests` (`208/208`) and `adi_osc_namespace_tests` (`217/217`); 0 warnings.
+- **Clang 14.0.6 (`-Wall -Wextra -Wpedantic -Wcast-align -Wconversion -Wsign-conversion -Wshadow -Wswitch-enum -Werror`):** all 3 new TUs (`oscquery.cpp`, `test_oscquery.cpp`, `fuzz_oscquery.cpp`) compile with 0 warnings without `osc_codec`; `adi_oscquery_tests` PASS (`70/70`).
+- **GCC 12.2 ASan + LSan + UBSan & `_GLIBCXX_DEBUG`:** `adi_oscquery_tests` PASS (`70/70`) under both; 0 leaks, 0 UB.
+- **Standalone `fuzz_oscquery` (`tests/fuzz_oscquery.cpp` + `src/adi/oscquery.cpp`, ASan + LSan + UBSan, no `osc_codec`):** replayed 12 HTTP seeds + 239,628 mutated executions in 5.00 s (47,917 exec/s) with 0 crashes, 0 UB, 0 leaks, 0 `LISTEN` or CORS leaks. (MSVC `/W4 /WX` and macOS legs remain for win.)
+
+Review requested (engine): `gemini/srf10-oscquery-core` at `195892d7` (stacked on `gemini/srf09-osc-core` `5e42fa61`; lands after 3 December; PR requested only after engine review in `collab/engine.md` passes this head).
+
+---
+
 ## 2026-11-23 — PLAN row 1 (SRF-09): OSC 1.0 decoder, fixed namespace, and no-echo feedback core
 
 Branch: `gemini/srf09-osc-core` at `5e42fa61` (from `origin/main` `7aa3ab58`, lent paths only per ADR-0252 and `collab/RESERVATIONS.md`).
