@@ -24,6 +24,7 @@ constexpr auto expressionDimensions = kStandardExpressionDimensionCount;
 struct ExpressionSample {std::int64_t time;double value;};
 struct ExpressionRange {std::size_t first=0,last=0;};
 using ExpressionCurves = std::array<const NoteExpressionCurve*,expressionDimensions>;
+constexpr auto tickLimit = std::int64_t{1} << 50;
 struct ClipClock {
     std::int64_t id=0,timeBase=0,offset=0,loopStart=0;
     std::optional<std::int64_t> posTicks,posNs,lengthTicks,lengthNs,loopLength,endMarker,alias;
@@ -575,7 +576,6 @@ template <typename SecondsAt>
 void prepareExpression(Occurrence& note,const ExpressionCurves& curves,std::vector<ExpressionSample>& samples,
                        const TempoMap& tempo,double rate,double originSeconds,const SecondsAt& secondsAt,
                        std::int64_t sourceStart,std::int64_t visibleStart) {
-    constexpr auto tickLimit=std::int64_t{1}<<50;
     constexpr double ppq=5765760.0;
     const auto step=static_cast<std::int64_t>(std::floor(rate/500.0));
     const auto sampleAt=[&](std::int64_t tick) {
@@ -640,6 +640,46 @@ void prepareExpression(Occurrence& note,const ExpressionCurves& curves,std::vect
         note.expressionTiming=timing;
     }
 }
+}
+MidiClipPlacement projectMidiClipPlacement(const rows::Clip &clip, const TempoMap &tempo,
+                                           double rate) {
+    if (clip.timeBase != 0 && clip.timeBase != 1)
+        throw std::runtime_error("invalid MIDI clip time base; silent");
+    MidiClipPlacement result;
+    double endSeconds = 0;
+    if (clip.timeBase == 0) {
+        result.originTick = clip.posTicks.value_or(0);
+        result.lengthTicks = clip.lengthTicks.value_or(0);
+    } else {
+        const auto begin = clip.posNs.value_or(-1), extent = clip.lengthNs.value_or(0);
+        if (begin < 0 || extent <= 0 || begin > INT64_MAX - extent)
+            throw std::runtime_error("invalid linear MIDI clip time; silent");
+        result.startSeconds = static_cast<double>(begin) * 1e-9;
+        endSeconds = static_cast<double>(begin + extent) * 1e-9;
+        result.originTick = tempo.storedNanosecondsToTicks(begin);
+        result.lengthTicks = tempo.storedNanosecondsToTicks(begin + extent) - result.originTick;
+    }
+    if (result.originTick < 0 || result.originTick > tickLimit ||
+        result.lengthTicks <= 0 || result.lengthTicks > tickLimit ||
+        clip.contentOffsetTicks < -tickLimit || clip.contentOffsetTicks > tickLimit)
+        throw std::runtime_error("invalid MIDI clip time; silent");
+    const auto loop = clip.loopLenTicks.value_or(0);
+    if (clip.loopEnabled &&
+        (loop <= 0 || loop > tickLimit || clip.loopStartTicks < 0 || clip.loopStartTicks > tickLimit))
+        throw std::runtime_error("invalid MIDI clip loop; silent");
+    if (!clip.loopEnabled && clip.endMarkerTicks &&
+        (*clip.endMarkerTicks <= clip.contentOffsetTicks || *clip.endMarkerTicks > tickLimit))
+        throw std::runtime_error("invalid MIDI clip End marker; silent");
+    result.originSeconds = tempo.ticksToSeconds(result.originTick);
+    if (clip.timeBase == 0) {
+        result.startSeconds = result.originSeconds;
+        endSeconds = result.startSeconds + tempo.ticksToSeconds(result.originTick + result.lengthTicks) -
+                     result.originSeconds;
+    }
+    result.beginSample = checkedSample(result.startSeconds + result.originSeconds -
+                                       result.originSeconds, rate);
+    result.endSample = checkedSample(endSeconds, rate);
+    return result;
 }
 struct MidiClipState {
     struct OwnedTrack {
@@ -739,35 +779,19 @@ MidiClips::MidiClips(const rows::Model& model,Transport& transport,double rate,s
         const auto expressionBefore=source.expressionSamples.size();
         try {
             if(clip.aliasOf)throw std::runtime_error("MIDI alias unsupported; silent");
-            auto origin = clip.posTicks.value_or(0);
-            auto length = clip.lengthTicks.value_or(0);
-            double startSeconds = tempo.ticksToSeconds(origin), endSeconds = startSeconds;
-            if (clip.timeBase == 1) {
-                const auto begin = clip.posNs.value_or(-1);
-                const auto extent = clip.lengthNs.value_or(0);
-                if (begin < 0 || extent <= 0 || begin > INT64_MAX - extent)
-                    throw std::runtime_error("invalid linear MIDI clip time; silent");
-                const auto end = begin + extent;
-                startSeconds = static_cast<double>(begin) * 1e-9;
-                endSeconds = static_cast<double>(end) * 1e-9;
-                origin = tempo.storedNanosecondsToTicks(begin);
-                length = tempo.storedNanosecondsToTicks(end) - origin;
-            }
-            constexpr auto tickLimit=std::int64_t{1}<<50;
-            if(origin<0||origin>tickLimit||length<=0||length>tickLimit||clip.contentOffsetTicks < -tickLimit||clip.contentOffsetTicks>tickLimit)throw std::runtime_error("invalid MIDI clip time; silent");
+            const auto placement = projectMidiClipPlacement(clip, tempo, rate);
+            const auto origin = placement.originTick, length = placement.lengthTicks;
+            const double startSeconds = placement.startSeconds;
             const auto loop=clip.loopLenTicks.value_or(0);
-            if(clip.loopEnabled && (loop<=0||loop>tickLimit||clip.loopStartTicks<0||clip.loopStartTicks>tickLimit))throw std::runtime_error("invalid MIDI clip loop; silent");
-            if (!clip.loopEnabled && clip.endMarkerTicks &&
-                (*clip.endMarkerTicks <= clip.contentOffsetTicks || *clip.endMarkerTicks > tickLimit))
-                throw std::runtime_error("invalid MIDI clip End marker; silent");
-            const auto tempoAtOrigin = tempo.ticksToSeconds(origin);
+            // Loop and End marker are validated by projectMidiClipPlacement.
+            const auto tempoAtOrigin = placement.originSeconds;
             // One conversion keeps note edges and curve knots on the same
             // side of the sample rounding boundary.
             const auto secondsAt = [&](std::int64_t tick) {
                 return startSeconds + tempo.ticksToSeconds(tick) - tempoAtOrigin;
             };
             const auto at = [&](std::int64_t local) { return checkedSample(secondsAt(origin + local),rate); };
-            const auto clipEnd=clip.timeBase==0?at(length):checkedSample(endSeconds,rate);
+            const auto clipEnd = placement.endSample;
             bool unsupported=false;
             std::string expressionProblem;
             const double tempoOrigin=startSeconds-tempoAtOrigin;

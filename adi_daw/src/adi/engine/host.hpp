@@ -209,6 +209,12 @@ public:
         delayCompensation_=on;
     }
     [[nodiscard]] bool delayCompensation() const noexcept { return delayCompensation_; }
+    /// Owner can enable profiling while the track indicators are needed.
+    /// A physical callback keeps the setting it observed at acquisition.
+    void setTrackTimingEnabled(bool enabled) noexcept {
+        trackTimingEnabled_.store(enabled, std::memory_order_release);
+    }
+    [[nodiscard]] std::optional<TrackProcessingBlock> trackProcessingTime() const;
     /// What a graph built at `sampleRate` gets (ADR-0157 d3).
     [[nodiscard]] std::int32_t latencyHeadroomAt(double sampleRate) const noexcept;
 
@@ -271,6 +277,7 @@ public:
         GraphHost& host_;
         const PublishedGraph* snapshot_ = nullptr;
         std::uint64_t serial_ = 0;
+        bool trackTiming_ = false;
     };
     [[nodiscard]] RenderBlock beginRender() noexcept { return RenderBlock(*this); }
 
@@ -283,6 +290,7 @@ public:
     void process(const AudioIo& io) noexcept;
 
 private:
+    std::atomic<bool> trackTimingEnabled_{false};
     using Pub = SnapshotPublisher<PublishedGraph>;
 
     const PublishedGraph* acquireRender() noexcept;

@@ -11,9 +11,9 @@ namespace adi::ui {
 // Arm switch, and its monitoring switch In, Auto and Off. Each change is one batch of ops on the
 // tracks the click acts on, built from the state the click lands on, never from a guess.
 //
-// The snapshot does not carry a track's arm or its monitoring yet (window-fn log: the engine's
-// snapshot fields), so the window reads them from the session's rows, `RecordStates` below, and the
-// app fills it once per frame. `tracks.monitor_mode` stores 0 Off, 1 In, 2 Auto.
+// The snapshot carries each track's arm and monitoring (N64: `TrackNode::recordArmed`, `monitorMode`), read
+// as every other control reads the frame's snapshot (ADR-0201). `tracks.monitor_mode` stores 0 Off, 1 In,
+// 2 Auto.
 enum class Monitor : std::int64_t { Off = 0, In = 1, Auto = 2 };
 // A track the window has no rows for (outside the application) shows Live's default, Auto. A track's
 // own rows are always read as they stand: New's tracks and the window's new tracks are written Auto
@@ -24,6 +24,17 @@ struct TrackRecordState {
     friend bool operator==(const TrackRecordState &, const TrackRecordState &) = default;
 };
 using RecordStates = std::map<std::int64_t, TrackRecordState>;
+// A track's arm and monitoring as its snapshot node holds them.
+inline TrackRecordState recordStateOf(const engine::TrackNode &t) noexcept {
+    return {t.recordArmed, t.monitorMode == 1 ? Monitor::In : t.monitorMode == 2 ? Monitor::Auto : Monitor::Off};
+}
+template <class Tracks> RecordStates recordStatesOf(const Tracks &tracks) {
+    RecordStates out;
+    for (const auto &t : tracks)
+        if (t)
+            out[t->id] = recordStateOf(*t);
+    return out;
+}
 inline TrackRecordState recordState(const RecordStates &states, std::int64_t track) {
     const auto it = states.find(track);
     return it == states.end() ? TrackRecordState{} : it->second;

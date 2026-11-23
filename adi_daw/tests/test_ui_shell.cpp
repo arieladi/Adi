@@ -887,7 +887,7 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
               "Body comes back, by name, holding what it held");
         lanes.selection.track = 1;
         check(!enabled(AppCommands::GroupTracks) && !root.command(AppCommands::GroupTracks) &&
-                  root.error() == "Main and return tracks can't be grouped." && order() == tree,
+                  root.error() == "Main can't be grouped." && order() == tree,
               "Main can't be grouped, and the Status Bar says so");
         lanes.selection.track = 0;
         check(!root.command(AppCommands::UngroupTracks) && root.error() == "Select a group track to ungroup.",
@@ -2391,9 +2391,10 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
     check(muted() == std::vector<std::int64_t>{1, 2} && submitter.nextUndo()->label == "Deactivate Track" &&
               submitter.nextUndo()->opCount == 2,
           "1 MIDI's activator, with 1 and 2 MIDI selected, deactivates both, one step");
-    check(root.keyPressed(juce::KeyPress(juce::KeyPress::F3Key, 0, 0)), "F3");
+    // Activate/Deactivate Track 3 (§42.19; no default key since WIN-01: F3 is held free).
+    check(root.command(AppCommands::ActivateTrack1 + 2), "Activate/Deactivate Track 3");
     root.frame();
-    check(muted() == std::vector<std::int64_t>{1, 2, 3}, "F3 deactivates the third track, alone");
+    check(muted() == std::vector<std::int64_t>{1, 2, 3}, "Activate/Deactivate Track 3 deactivates the third track, alone");
     render("adi-activators.png");
     root.arrangement.geometry.selection.toTrack = 0;
     check(root.keyPressed(juce::KeyPress('0', 0, 0)), "0");
@@ -3011,7 +3012,8 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
         service.poll();
         check(opened == 1 && !jobBesideOpen && listedAtOpen > listedBefore && !service.running() &&
                   service.state().listing.plugins.size() == 2,
-              "it opens once the job is adopted, with no job beside it, the plug-in the job found listed");
+              "it opens once the job is adopted, with no job beside it (when the loader probes a saved path, N68), "
+              "the plug-in the job found listed");
         service.settleThen([&] { ++opened; });
         check(opened == 2, "with no job running, an open runs at once");
         // The open runs between jobs: after the running job's adoption, before the job queued behind it.
@@ -3112,6 +3114,9 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
         return document->store().db().execAndGet("SELECT count(*) FROM device_chains WHERE track_id = " +
                                                  std::to_string(track)).getInt();
     };
+    // The plug-in loads above ended with no track selected: 3 Audio, track 4, again.
+    root.arrangement.geometry.selection.track = 4;
+    refresh();
 #if ADI_WITH_PD
     root.say("Earlier device insertion was refused.");
     check(browser.load(find("Auto Filter")) && root.error().empty(),
@@ -4751,6 +4756,28 @@ void clipView(AppCommands &commands, const std::filesystem::path &dir, bool writ
 // on an empty MIDI lane, Insert Empty MIDI Clip(s) on a time selection), and its notes are added,
 // moved, resized, given velocities and deleted with the mouse and the keys, each gesture one undo
 // step, a drag previewed while it is held, and a refused op leaving the notes as they were.
+// An undo step's label and its op count. A note edit of any size is one note.applyDiff (MI-01): `ops` counts
+// the legacy note ops the edit is made of, and such a step holds the one op that applies them in turn.
+template <class Submitter> bool undoStepIs(Submitter &submitter, const char *label, int ops) {
+    const auto step = submitter.nextUndo();
+    if (!step || step->label != label)
+        return false;
+    SQLite::Statement last(submitter.store().db(), "SELECT op_type, payload FROM ops WHERE seq = ?");
+    last.bind(1, step->lastSeq);
+    if (!last.executeStep() || last.getColumn(0).getString() != "note.applyDiff" || ops <= 0)
+        return step->opCount == ops;
+    // The diff applies the edit's legacy note ops in turn: as many steps as the edit has ops.
+    const auto *bytes = static_cast<const std::uint8_t *>(last.getColumn(1).getBlob());
+    const auto payload = Payload::from_cbor(std::vector<std::uint8_t>(bytes, bytes + last.getColumn(1).getBytes()));
+    const auto sequence = payload.find("_sequence");
+    return step->opCount == 1 && sequence != payload.end() && sequence->contains("steps") &&
+           (*sequence)["steps"].size() == static_cast<std::size_t>(ops);
+}
+// An undo step's op count, read as `undoStepIs` reads it: a note.applyDiff step is one op for the edit (MI-01).
+template <class Submitter> bool undoOpsAre(Submitter &submitter, int ops) {
+    const auto step = submitter.nextUndo();
+    return step && undoStepIs(submitter, step->label.c_str(), ops);
+}
 void clipViewNotes(AppCommands &commands, const std::filesystem::path &dir) {
     StoreError err{};
     auto store = Store::createEmpty(dir / "clip-view-notes.adi", err);
@@ -4795,7 +4822,7 @@ void clipViewNotes(AppCommands &commands, const std::filesystem::path &dir) {
     const auto *made1 = panel.details();
     check(root.state().clipView && made1 != nullptr && panel.midi() && made1->posTicks == 2 * bar &&
               made1->lengthTicks == bar && made1->notes.empty() && geo.selection.clip == made1->id &&
-              submitter.nextUndo()->label == "Insert MIDI Clip" && submitter.nextUndo()->opCount == 1,
+              submitter.nextUndo()->label == "Insert MIDI Clip" && undoOpsAre(submitter, 1),
           "a double-click on an empty MIDI lane makes a one-bar clip there, selects and opens it, one undo step");
     if (made1 == nullptr)
         return;
@@ -4839,9 +4866,7 @@ void clipViewNotes(AppCommands &commands, const std::filesystem::path &dir) {
         return juce::Point<float>(static_cast<float>(static_cast<int>(box.x + box.width / 2)),
                                   static_cast<float>(box.y + box.height / 2));
     };
-    const auto undoIs = [&](const char *label, int ops) {
-        return submitter.nextUndo()->label == label && submitter.nextUndo()->opCount == ops;
-    };
+    const auto undoIs = [&](const char *label, int ops) { return undoStepIs(submitter, label, ops); };
 
     // A double-click on empty space adds a note a grid step long, snapped to the grid, selected.
     ed.mouseDoubleClick(pressAt(ed, {xAt(2 * bar + beat) + 10.f, yOf(64)}));
@@ -4850,6 +4875,13 @@ void clipViewNotes(AppCommands &commands, const std::filesystem::path &dir) {
               note(0).key == 64 && note(0).velocity == 100 && ed.selected() == std::vector<std::uint64_t>{note(0).id} &&
               undoIs("Add Note", 1),
           "a double-click adds E3 on the second beat, a beat long, velocity 100, selected, one undo step");
+    {
+        // MI-01: the note went in as one note.applyDiff, the clip's notes stream made with it.
+        SQLite::Statement last(submitter.store().db(), "SELECT op_type FROM ops WHERE seq = ?");
+        last.bind(1, submitter.nextUndo()->lastSeq);
+        check(last.executeStep() && last.getColumn(0).getString() == "note.applyDiff" && submitter.nextUndo()->opCount == 1,
+              "the note edit is one note.applyDiff, its stream made with it");
+    }
 
     // Dragged by its body: a grid step later and two keys up, previewed while held, one step on release.
     auto from = centre(0);
@@ -5029,7 +5061,7 @@ void clipViewFields(AppCommands &commands, const std::filesystem::path &dir) {
               panel.readings().position == "1. 1. 1" && panel.readings().length == "2. 0. 0" && !panel.readings().loop,
           "the clip as made: Start 1.1.1, End 3.1.1, the loop off over its two bars");
     const auto undoIs = [&](const char *label) {
-        return submitter.nextUndo()->label == label && submitter.nextUndo()->opCount == 1;
+        return submitter.nextUndo()->label == label && undoOpsAre(submitter, 1);
     };
     const auto details = [&]() -> const engine::ClipDetails & { return *panel.details(); };
     const auto centreOf = [](juce::Rectangle<int> r) { return r.getCentre().toFloat(); };
@@ -5212,7 +5244,7 @@ void clipViewTools(AppCommands &commands, const std::filesystem::path &dir) {
         return engine::ClipNote{};
     };
     const auto undoIs = [&](const char *label, int ops) {
-        return submitter.nextUndo()->label == label && submitter.nextUndo()->opCount == ops;
+        return undoStepIs(submitter, label, ops);
     };
 
     // An audio clip has the Main panel only; a MIDI clip has the Pitch and Time panel beside it.
@@ -5494,7 +5526,7 @@ void clipViewMore(AppCommands &commands, const std::filesystem::path &dir) {
         return engine::ClipNote{};
     };
     const auto undoIs = [&](const char *label, int ops) {
-        return submitter.nextUndo()->label == label && submitter.nextUndo()->opCount == ops;
+        return undoStepIs(submitter, label, ops);
     };
     const int kh = ed.keys.keyHeight;
 
@@ -5605,8 +5637,7 @@ void clipViewMore(AppCommands &commands, const std::filesystem::path &dir) {
     ed.select({41});
     for (int i = 0; i < 3; ++i)
         check(ed.keyPressed(juce::KeyPress(juce::KeyPress::leftKey)), "Left");
-    check(note(41).startTicks == 2 * beat && note(40).durationTicks == 2 * beat && submitter.nextUndo()->opCount == 2 &&
-              submitter.nextUndo()->label == "Move Note",
+    check(note(41).startTicks == 2 * beat && note(40).durationTicks == 2 * beat && undoStepIs(submitter, "Move Note", 2),
           "moved into the long note, the short one survives whole and the long one now ends where it begins: one undo step");
     check(root.command(AppCommands::Undo), "undo");
     root.frame();
@@ -5919,7 +5950,7 @@ void clipViewTime(AppCommands &commands, const std::filesystem::path &dir) {
     ed.selectTime(4 * beat + beat / 2, 7 * beat);
     check(ed.keyPressed(key('e', command)) && panel.details()->notes.size() == 6 && note(1).durationTicks == beat / 2 &&
               note(3).durationTicks == beat && note(4).durationTicks == beat && note(2).durationTicks == beat &&
-              submitter.nextUndo()->label == "Split Notes" && submitter.nextUndo()->opCount == 4,
+              undoStepIs(submitter, "Split Notes", 4),
           "Ctrl+E with time selected and no note cuts the notes crossing its two edges: one undo step");
     check(root.command(AppCommands::Undo), "undo");
     root.frame();
@@ -6013,7 +6044,7 @@ void clipViewTime(AppCommands &commands, const std::filesystem::path &dir) {
                 ed.mouseUp(dragAt(ed, a, b));
         };
         const auto undoIs = [&](const char *label, int ops) {
-            return submitter.nextUndo()->label == label && submitter.nextUndo()->opCount == ops;
+            return undoStepIs(submitter, label, ops);
         };
         // The clip never looped: its loop is its whole length, from beat 4 to beat 12 of the song.
         check(!details().loopEnabled && loopLengthOf(details()) == 8 * beat && details().startMarkerTicks == 0 && endMarkerOf(details()) == 8 * beat,
@@ -6094,7 +6125,7 @@ void clipViewTime(AppCommands &commands, const std::filesystem::path &dir) {
             return juce::Point<float>(static_cast<float>(lane.getX() + static_cast<int>(ed.time.x(tick))), yOf(velocity));
         };
         const auto undoIs = [&](const char *label, int ops) {
-            return submitter.nextUndo()->label == label && submitter.nextUndo()->opCount == ops;
+            return undoStepIs(submitter, label, ops);
         };
 #if JUCE_MAC
         const juce::ModifierKeys bypass(command);
@@ -6195,7 +6226,7 @@ void clipViewTime(AppCommands &commands, const std::filesystem::path &dir) {
     {
         using Field = ClipViewPanel::Field;
         const auto undoIs = [&](const char *label, int ops) {
-            return submitter.nextUndo()->label == label && submitter.nextUndo()->opCount == ops;
+            return undoStepIs(submitter, label, ops);
         };
         const auto click = [&](juce::Rectangle<int> box) {
             panel.mouseDown(pressAt(panel, box.getCentre().toFloat()));
@@ -6262,7 +6293,7 @@ void clipViewTime(AppCommands &commands, const std::filesystem::path &dir) {
     {
         const auto details = [&]() -> const engine::ClipDetails & { return *panel.details(); };
         const auto undoIs = [&](const char *label, int ops) {
-            return submitter.nextUndo()->label == label && submitter.nextUndo()->opCount == ops;
+            return undoStepIs(submitter, label, ops);
         };
         const auto click = [&](juce::Rectangle<int> box) {
             panel.mouseDown(pressAt(panel, box.getCentre().toFloat()));
@@ -6439,7 +6470,7 @@ void clipViewTime(AppCommands &commands, const std::filesystem::path &dir) {
             panel.mouseUp(pressAt(panel, box.getCentre().toFloat()));
         };
         const auto undoIs = [&](const char *label, int ops) {
-            return submitter.nextUndo()->label == label && submitter.nextUndo()->opCount == ops;
+            return undoStepIs(submitter, label, ops);
         };
         panel.setToolsTab(0);
         check(ed.keyPressed(key('u', command | shift)) && panel.toolsTab() == 1, "Ctrl+Shift+U shows the Quantize settings: the Functions tab");
@@ -6772,7 +6803,7 @@ void clipViewClipTime(AppCommands &commands, const std::filesystem::path &dir) {
     }
     check(ed.keyPressed(key('d', command)) && details().loopLengthTicks == 5 * beat && details().loopStartTicks == 3 * beat && details().loopEnabled &&
               details().notes.size() == 6 && note(5).startTicks == 9 * beat + beat / 2 && note(4).startTicks == 5 * beat && undoIs("Duplicate Loop") &&
-              submitter.nextUndo()->opCount == 3,
+              undoOpsAre(submitter, 3),
           "Ctrl+D doubles the loop, copies the note that begins in it and moves the later note on by the loop's length: one undo step");
     bool copied = false;
     for (const auto &n : details().notes)
@@ -6865,7 +6896,7 @@ void clipViewClipTime(AppCommands &commands, const std::filesystem::path &dir) {
               "the Duration chooser: the editing grid's step first, then fixed lengths; 1/4 chosen");
         ed.select({3});
         click(panel.toolBox(Tool::FixedLength));
-        check(note(3).durationTicks == beat && note(4).durationTicks == beat && undoIs("Set Length") && submitter.nextUndo()->opCount == 1,
+        check(note(3).durationTicks == beat && note(4).durationTicks == beat && undoIs("Set Length") && undoOpsAre(submitter, 1),
               "Set Length gives the selected note the chosen length");
         check(panel.chooseDuration(5), "1/8");
         ed.select({});
@@ -6873,7 +6904,7 @@ void clipViewClipTime(AppCommands &commands, const std::filesystem::path &dir) {
         bool allEighths = true;
         for (const auto &n : details().notes)
             allEighths = allEighths && n.durationTicks == beat / 2;
-        check(allEighths && submitter.nextUndo()->opCount == 5 && undo() && undo() && note(3).durationTicks == 2 * beat && panel.chooseDuration(2),
+        check(allEighths && undoOpsAre(submitter, 5) && undo() && undo() && note(3).durationTicks == 2 * beat && panel.chooseDuration(2),
               "with no note selected, every note; undone, and the Duration back on Grid");
     }
 
@@ -7581,7 +7612,7 @@ void clipViewMulti(AppCommands &commands, const std::filesystem::path &dir) {
     const auto mineStart = mine().startTicks, theirStart = theirs().startTicks;
     const int mineKey = mine().key, theirKey = theirs().key;
     check(ed.keyPressed(juce::KeyPress(juce::KeyPress::rightKey)) && mine().startTicks == mineStart + beat &&
-              theirs().startTicks == theirStart + beat && submitter.nextUndo()->opCount == 2,
+              theirs().startTicks == theirStart + beat && undoOpsAre(submitter, 2),
           "Right moves both clips' notes a grid step later, as one undo step of two ops");
     check(ed.keyPressed(juce::KeyPress(juce::KeyPress::upKey, juce::ModifierKeys::shiftModifier, 0)) && mine().key == mineKey + 12 &&
               theirs().key == theirKey + 12 && ed.selectedIn(12).size() == 1,
@@ -7601,13 +7632,13 @@ void clipViewMulti(AppCommands &commands, const std::filesystem::path &dir) {
               theirs().startTicks == theirStart,
           "while the drag is held both clips' notes are drawn a step later, nothing written");
     ed.mouseUp(pressAt(ed, {grab.x + stepPx, grab.y}));
-    check(mine().startTicks == mineStart + beat && theirs().startTicks == theirStart + beat && submitter.nextUndo()->opCount == 2,
+    check(mine().startTicks == mineStart + beat && theirs().startTicks == theirStart + beat && undoOpsAre(submitter, 2),
           "let go, both have moved: one undo step");
     check(root.command(AppCommands::Undo), "undo");
     root.frame();
     // Delete takes the selected notes of both clips; one Undo brings both back.
     check(ed.keyPressed(all) && ed.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)) && panel.details()->notes.empty() &&
-              panel.others()[0].details.notes.empty() && submitter.nextUndo()->opCount == 2 && !ed.anySelected(),
+              panel.others()[0].details.notes.empty() && undoOpsAre(submitter, 2) && !ed.anySelected(),
           "Delete removes the selected notes of both clips, one undo step");
     check(root.command(AppCommands::Undo), "undo");
     root.frame();
@@ -7628,7 +7659,7 @@ void clipViewMulti(AppCommands &commands, const std::filesystem::path &dir) {
     panel.setFocus(true);
     check(ed.keyPressed(all) && ed.selected().size() == 1 && ed.selectedIn(12).empty(), "with Focus on, Ctrl/Cmd+A selects the edited clip's notes only");
     check(ed.keyPressed(juce::KeyPress(juce::KeyPress::rightKey)) && mine().startTicks == mineStart + beat && theirs().startTicks == theirStart &&
-              submitter.nextUndo()->opCount == 1,
+              undoOpsAre(submitter, 1),
           "and Right moves them only");
     check(root.command(AppCommands::Undo), "undo");
     root.frame();
@@ -7656,17 +7687,17 @@ void clipViewMulti(AppCommands &commands, const std::filesystem::path &dir) {
         check(panel.others().size() == 1 && panel.readings().title == "2 MIDI Clips" && !panel.readings().loopMixed && panel.readings().scale != "*",
               "with two clips shown the title reads their number; they agree on looping and on the scale");
         const bool looped = edited().loopEnabled;
-        check(panel.toggleLoop() && edited().loopEnabled == !looped && another().loopEnabled == !looped && submitter.nextUndo()->opCount == 2,
+        check(panel.toggleLoop() && edited().loopEnabled == !looped && another().loopEnabled == !looped && undoOpsAre(submitter, 2),
               "the Loop switch switches both clips: one undo step");
         check(submitter.submit(op("clip.setLoop", {{"id", another().id}, {"on", false}}, "Deactivate Loop")).ok, "the other clip's loop switched off alone");
         root.frame();
         if (edited().loopEnabled) {
             check(panel.readings().loopMixed, "one looped and one not: the Loop button is half lit");
-            check(panel.toggleLoop() && !edited().loopEnabled && !another().loopEnabled && !panel.readings().loopMixed && submitter.nextUndo()->opCount == 1,
+            check(panel.toggleLoop() && !edited().loopEnabled && !another().loopEnabled && !panel.readings().loopMixed && undoOpsAre(submitter, 1),
                   "switched off, only the clip that still looped is written");
         }
         check(panel.typeField(Field::Signature, "3/4") && edited().signature.numerator == 3 && another().signature.numerator == 3 &&
-                  another().signature.local && submitter.nextUndo()->opCount == 2,
+                  another().signature.local && undoOpsAre(submitter, 2),
               "a time signature typed is both clips'");
         check(panel.chooseScale(true, 3) && edited().scale.root == 2 && another().scale.root == 2 && another().scale.local && edited().scale.local,
               "a root chosen is both clips'");
@@ -7679,7 +7710,7 @@ void clipViewMulti(AppCommands &commands, const std::filesystem::path &dir) {
               "a scale chosen brings them together again");
         panel.mouseDown(pressAt(panel, panel.scaleModeBox().getCentre().toFloat()));
         panel.mouseUp(pressAt(panel, panel.scaleModeBox().getCentre().toFloat()));
-        check(!edited().scale.local && !another().scale.local && submitter.nextUndo()->label == "Deactivate Scale" && submitter.nextUndo()->opCount == 2,
+        check(!edited().scale.local && !another().scale.local && submitter.nextUndo()->label == "Deactivate Scale" && undoOpsAre(submitter, 2),
               "Scale Mode switched off is switched off in both");
 
         // Copy from both clips; paste goes back into both.
@@ -7714,12 +7745,12 @@ void clipViewMulti(AppCommands &commands, const std::filesystem::path &dir) {
         check(panel.titleMenu().getNumItems() == 4 && panel.chooseTitleItem(1),
               "the title's menu: Rename, Color, Arrange Clip View Panels Automatically and Fold; Rename opens the name for typing");
         check(panel.typeField(ClipViewPanel::Field::Name, "  Verse A ") && edited().name == "Verse A" && another().name == "Verse A" &&
-                  submitter.nextUndo()->label == "Rename Clip" && submitter.nextUndo()->opCount == 2 && panel.readings().title == "2 MIDI Clips",
+                  submitter.nextUndo()->label == "Rename Clip" && undoOpsAre(submitter, 2) && panel.readings().title == "2 MIDI Clips",
               "a name typed names both shown clips, without the spaces at its ends: one undo step");
         const auto renamed = submitter.nextUndo()->txnId;
         check(panel.rename("Verse A") && submitter.nextUndo()->txnId == renamed, "the same name again writes nothing");
         check(panel.chooseTitleItem(105) && edited().color == 5 && another().color == 5 && submitter.nextUndo()->label == "Change Clip Color" &&
-                  submitter.nextUndo()->opCount == 2 && !panel.chooseTitleItem(100 + ClipViewPanel::kTitleColours) && !panel.chooseTitleItem(4),
+                  undoOpsAre(submitter, 2) && !panel.chooseTitleItem(100 + ClipViewPanel::kTitleColours) && !panel.chooseTitleItem(4),
               "a colour chosen colours both: one undo step");
         root.frame();
         check(panel.colour() == look::paletteColour(5) && panel.others()[0].colour == look::paletteColour(5), "and the editor draws both clips in it");
@@ -8471,6 +8502,12 @@ void newProject(AppCommands &commands, const std::filesystem::path &dir) {
           "New shows Live's default Set: 1 MIDI, 2 MIDI, 3 Audio, 4 Audio, A Reverb, B Delay, then Main (N41)");
     check(!root.canUndo(false) && root.undoTitle(false) == "Nothing to Undo" && root.undoTitle(true) == "Nothing to Redo",
           "and has nothing to undo: the Edit menu's items read Nothing to Undo and Nothing to Redo, as Live 12's (LK-02)");
+    // DF-W29: a knob edit still held makes Undo act, a project's first edit included; Redo waits.
+    root.editsHeld = [] { return true; };
+    check(root.canUndo(false) && !root.canUndo(true) && root.undoTitle(false) == "Undo" &&
+              root.undoTitle(true) == "Nothing to Redo",
+          "a knob edit held: Undo acts (it commits the edit, then takes it back), Redo waits");
+    root.editsHeld = nullptr;
     if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
         juce::Image picture(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
         {
@@ -9135,7 +9172,297 @@ void showcase(AppCommands &commands, const std::filesystem::path &dir) {
         }
         save(plugIns, "adi-plugins.png");
     }
+    // DF-W33 (ADR-0247 d2): a return inside Drums, "Drum Room", made by Insert Return Track in Group;
+    // Loops and Drum Loop send to it, Drum Loop's send after its effects (Post FX), so the return's
+    // Pre/Post switch is mixed. (Kit holds no instrument, so it has no sends.)
+    const bool roomMade = root.insertReturnTrack(30);
+    check(roomMade, "the showcase's return in Drums");
+    if (roomMade) {
+        document->synchronise();
+        root.frame();
+        std::int64_t room = 0;
+        for (const auto &t : root.reader().tracks())
+            if (t->kind == "return" && t->parent == 30)
+                room = t->id;
+        std::vector<OpRequest> rename;
+        OpRequest r;
+        r.opType = "track.rename";
+        r.payload = {{"id", room}, {"name", "Drum Room"}};
+        r.label = "Rename";
+        rename.push_back(std::move(r));
+        root.submitEdits(std::move(rename));
+        document->synchronise();
+        root.submitEdits(adi::ui::setSend(*root.current(), 31, room, -18).ops);
+        document->synchronise();
+        root.submitEdits(adi::ui::setSend(*root.current(), 4, room, -12).ops);
+        document->synchronise();
+        root.submitEdits(adi::ui::setSendTap(*root.current(), 4, room, IndividualSendTap::PostFx).ops);
+        document->synchronise();
+        root.frame();
+        root.command(AppCommands::OptimizeHeight);
+        sel.track = 4;
+        root.frame();
+        root.frame();
+        juce::Image inGroup(juce::Image::ARGB, 1920, 1080, true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(inGroup);
+            root.paintEntireComponent(g, true);
+        }
+        check(room != 0 && adi::ui::returnTapMixed(*root.current(), room), "the showcase's Drum Room, its switch mixed");
+        save(inGroup, "adi-return-in-group.png");
+    }
     commands.detach(root);
+    document->release();
+}
+// DF-W33 (ADR-0247 d2; ADR-0245 d9): a return inside a group. Insert Return Track in Group puts it in
+// the group, after what the group holds, lettered with the group's initial ("DA"); its send knob is
+// on the group's tracks only; A and B keep their letters; Group Tracks takes a return; one Undo each.
+void returnInGroup(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "return-in-group.adi", true, {}, error);
+    check(document != nullptr, "a new project for a return inside a group");
+    if (!document)
+        return;
+    std::vector<OpRequest> grouping;
+    const auto op = [&grouping](const char *type, Payload payload) {
+        OpRequest r;
+        r.opType = type;
+        r.payload = std::move(payload);
+        r.label = "Group Tracks";
+        grouping.push_back(std::move(r));
+    };
+    // The default set's second MIDI track and first audio track into a group named Drums; the
+    // second audio track stays outside, to compare its knobs.
+    op("track.create", {{"id", 40}, {"kind", "group"}, {"name", "Drums"}, {"index", 0}});
+    op("track.setParent", {{"id", 3}, {"parent", 40}});
+    op("track.setParent", {{"id", 4}, {"parent", 40}});
+    check(document->ops().submit(std::move(grouping)).ok && document->synchronise(), "Drums holds two tracks");
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "return-in-group");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.setSize(1440, 1600); // every row in sight, so every strip is realised
+    root.frame();
+    root.frame();
+    const auto returns = [&root](std::int64_t parent) {
+        std::vector<std::int64_t> out;
+        for (const auto &t : root.reader().tracks())
+            if (t->kind == "return" && t->parent == parent)
+                out.push_back(t->id);
+        return out;
+    };
+    const auto topBefore = returns(0);
+    check(topBefore.size() == 2 && returns(40).empty(), "the default set's two returns, A and B, at the top");
+    check(root.insertReturnTrack(40), "Insert Return Track in Group on Drums");
+    document->synchronise();
+    root.frame();
+    root.frame();
+    const auto grouped = returns(40);
+    // A copy of the return's node: the reader's snapshot is replaced at a later refresh, and a pointer
+    // into it would dangle for the checks below (main's frame-snapshot handoff frees it sooner).
+    const auto *found = grouped.size() == 1 ? root.reader().findTrack(grouped.front()) : nullptr;
+    const std::optional<engine::TrackNode> madeCopy =
+        found != nullptr ? std::optional<engine::TrackNode>(*found) : std::nullopt;
+    const engine::TrackNode *made = madeCopy ? &*madeCopy : nullptr;
+    check(made != nullptr && made->name == "DA Return" && returns(0) == topBefore &&
+              document->ops().nextUndo() && document->ops().nextUndo()->label == "Insert Return Track in Group",
+          "a return inside Drums, named DA, the top-level returns untouched, one undo step");
+    // Its place: in Drums, after the group's tracks, not at the foot.
+    const auto rows = root.arrangement.geometry.rows(root.reader());
+    const auto at = made != nullptr ? rows.find(made->id) : rows.size();
+    const auto foot = root.arrangement.geometry.footStart(rows);
+    check(at < rows.size() && at < foot && rows[at].place.parent == 40 && at == rows.find(4) + 1 &&
+              rows.size() - foot == 3,
+          "drawn in its group after what it holds; the foot keeps A, B and Main");
+    // The knobs: A, B and DA on Drums' tracks; A and B on a track outside it.
+    const auto knobsOf = [&root](std::int64_t track) {
+        std::vector<std::pair<std::int64_t, juce::String>> out;
+        for (const auto &strip : root.mixer.strips())
+            if (strip->track() == track)
+                for (std::size_t i = 0; i < strip->sendKnobs().size(); ++i)
+                    out.emplace_back(strip->sendsTo(i), strip->sendKnobs()[i]->getTitle());
+        return out;
+    };
+    const auto inside = knobsOf(4), outside = knobsOf(5);
+    check(made != nullptr && inside.size() == 3 && inside[2].first == made->id && inside[2].second == "Send DA" &&
+              inside[0].second == "Send A" && inside[1].second == "Send B",
+          "a track in Drums has a knob for A, B and DA, each lettered as its return");
+    check(outside.size() == 2 && outside[0].second == "Send A" && outside[1].second == "Send B",
+          "a track outside Drums has no knob for DA; A and B keep their letters");
+    // DA's own strip: knobs for A and B, none for itself (the agreed sheet).
+    const auto own = made != nullptr ? knobsOf(made->id) : decltype(knobsOf(0)){};
+    check(own.size() == 2 && own[0].second == "Send A" && own[1].second == "Send B",
+          "DA's own strip has knobs for A and B, none for itself");
+    // The return's own activator says DA.
+    bool lettered = false;
+    for (const auto &strip : root.mixer.strips())
+        if (made != nullptr && strip->track() == made->id)
+            lettered = strip->active.getButtonText() == "DA";
+    check(lettered, "the return's activator shows DA");
+    // Numbers skip the returns, the grouped one too: 1 MIDI is 1, Drums 2, its tracks 3 and 4, then
+    // 2 Audio is 5, as F5 counts it, not 6.
+    const auto activatorOf = [&root](std::int64_t track) {
+        for (const auto &strip : root.mixer.strips())
+            if (strip->track() == track)
+                return strip->active.getButtonText();
+        return juce::String();
+    };
+    check(activatorOf(2) == "1" && activatorOf(40) == "2" && activatorOf(4) == "4" && activatorOf(5) == "5",
+          "the tracks after Drums keep their numbers: the return in it takes none");
+    // The Mixer View: every strip keeps a row per return, so the faders line up (DF-W33).
+    check(root.command(AppCommands::ToggleMixerView), "the Mixer View opens");
+    root.resizeMixerView(420);
+    root.mark(DirtySet::All);
+    root.frame();
+    {
+        const MixerStrip *in = nullptr, *out = nullptr;
+        for (const auto &strip : root.mixerView.strips()) {
+            if (strip->track() == 4)
+                in = strip.get();
+            if (strip->track() == 5)
+                out = strip.get();
+        }
+        check(in != nullptr && out != nullptr && in->sendKnobs().size() == 3 && out->sendKnobs().size() == 2 &&
+                  in->sendsShown() == out->sendsShown() && in->volume.getY() == out->volume.getY(),
+              "in the Mixer View a Drums track (A, B, DA) and one outside (A, B) keep their faders level");
+    }
+    check(root.command(AppCommands::ToggleMixerView), "and closes");
+    root.frame();
+    // A rename of the group re-letters its return everywhere: the knobs, the activator, Main's switch.
+    {
+        std::vector<OpRequest> rename;
+        OpRequest r;
+        r.opType = "track.rename";
+        r.payload = {{"id", 40}, {"name", "Kicks"}};
+        r.label = "Rename";
+        rename.push_back(std::move(r));
+        check(root.submitEdits(std::move(rename)), "Drums renamed Kicks");
+        document->synchronise();
+        root.frame();
+        const auto renamed = knobsOf(4);
+        bool reLettered = false;
+        for (const auto &strip : root.mixer.strips())
+            if (made != nullptr && strip->track() == made->id)
+                reLettered = strip->active.getButtonText() == "KA";
+        check(renamed.size() == 3 && renamed[2].second == "Send KA" && reLettered,
+              "its return is KA now, on its knobs and its activator");
+        check(root.command(AppCommands::Undo), "undo the rename");
+        document->synchronise();
+        root.frame();
+        check(knobsOf(4).size() == 3 && knobsOf(4)[2].second == "Send DA", "and DA again");
+    }
+    // A send's own tap (ADR-0245 d10): DA turned up on a Drums track, then Pre FX from its menu.
+    if (made != nullptr) {
+        check(root.submitEdits(adi::ui::setSend(*root.current(), 4, made->id, -12).ops), "DA turned up on a Drums track");
+        document->synchronise();
+        check(!root.submitEdits(adi::ui::setSend(*root.current(), 5, made->id, -12).ops) &&
+                  adi::ui::sendTap(*root.current(), 5, made->id) == std::nullopt,
+              "a track outside Drums can't send to DA: the engine refuses it");
+        document->synchronise();
+        check(adi::ui::sendTap(*root.current(), 4, made->id) == IndividualSendTap::PostMixer,
+              "a new send taps where its return's switch says: Post Mixer");
+        check(adi::ui::setSendTap(*root.current(), 4, made->id, IndividualSendTap::PostMixer).ops.empty(),
+              "choosing the tap it already takes from the switch makes no step and pins nothing");
+        check(root.submitEdits(adi::ui::setSendTap(*root.current(), 4, made->id, IndividualSendTap::PreFx).ops) &&
+                  document->ops().nextUndo() && document->ops().nextUndo()->label == "Change Send Tap",
+              "Pre FX chosen: one undo step");
+        document->synchronise();
+        check(adi::ui::sendTap(*root.current(), 4, made->id) == IndividualSendTap::PreFx, "and the send taps before the effects");
+        {
+            const auto back = adi::ui::setSendTap(*root.current(), 4, made->id, IndividualSendTap::PostMixer);
+            check(back.ops.size() == 1 && back.ops[0].payload.find("tap") == back.ops[0].payload.end(),
+                  "choosing the switch's own tap again clears the send's own, so it follows the switch");
+        }
+        check(!adi::ui::setSendTap(*root.current(), 3, made->id, IndividualSendTap::PreFx).refusal.empty(),
+              "a send still fully down has no tap to choose, and says so");
+        root.frame();
+        juce::TextButton *returnSwitch = nullptr;
+        for (const auto &strip : root.mixer.strips())
+            if (strip->track() == made->id)
+                returnSwitch = &strip->prePost;
+        // One send with a tap of its own is no mixed switch: the sends don't differ (ADR-0247 d2); its
+        // knob carries no mark, its menu says it.
+        check(returnSwitch != nullptr && !adi::ui::returnTapMixed(*root.current(), made->id) &&
+                  returnSwitch->getButtonText() == "Post" && !static_cast<bool>(returnSwitch->getProperties()["live.mixed"]),
+              "one send tapping on its own leaves DA's switch at Post, unmixed");
+        // A second send, following the switch (Post Mixer): now DA's sends differ.
+        check(root.submitEdits(adi::ui::setSend(*root.current(), 3, made->id, -6).ops), "DA turned up on the other Drums track");
+        document->synchronise();
+        root.frame();
+        check(adi::ui::returnTapMixed(*root.current(), made->id) && returnSwitch != nullptr &&
+                  static_cast<bool>(returnSwitch->getProperties()["live.mixed"]) && !returnSwitch->getToggleState() &&
+                  returnSwitch->getButtonText() == juce::String(juce::CharPointer_UTF8("\xe2\x80\x93")),
+              "DA's sends differ, Pre FX and Post Mixer: its Pre/Post is mixed, a dash in an accent edge");
+        if (returnSwitch != nullptr && returnSwitch->onClick)
+            returnSwitch->onClick();
+        document->synchronise();
+        root.frame();
+        check(!adi::ui::returnTapMixed(*root.current(), made->id) &&
+                  adi::ui::sendTap(*root.current(), 4, made->id) == IndividualSendTap::PostMixer &&
+                  adi::ui::sendTap(*root.current(), 3, made->id) == IndividualSendTap::PostMixer &&
+                  document->ops().nextUndo() && document->ops().nextUndo()->label == "Change Pre/Post" &&
+                  returnSwitch != nullptr && returnSwitch->getButtonText() == "Post" &&
+                  !static_cast<bool>(returnSwitch->getProperties()["live.mixed"]),
+              "a click on the mixed switch sets every send to Post, one undo step");
+        if (returnSwitch != nullptr && returnSwitch->onClick)
+            returnSwitch->onClick();
+        document->synchronise();
+        root.frame();
+        check(!adi::ui::returnTapMixed(*root.current(), made->id) && adi::ui::returnPre(root.reader().tracks(), made->id) &&
+                  adi::ui::sendTap(*root.current(), 4, made->id) == IndividualSendTap::PostFx &&
+                  adi::ui::sendTap(*root.current(), 3, made->id) == IndividualSendTap::PostFx &&
+                  returnSwitch != nullptr && returnSwitch->getButtonText() == "Pre",
+              "and the next click throws the switch to Pre");
+        check(root.command(AppCommands::Undo), "undo the second click");
+        document->synchronise();
+        check(root.command(AppCommands::Undo), "undo the click");
+        document->synchronise();
+        check(adi::ui::sendTap(*root.current(), 4, made->id) == IndividualSendTap::PreFx &&
+                  adi::ui::returnTapMixed(*root.current(), made->id),
+              "the send's own tap is back, and the switch mixed");
+        check(root.command(AppCommands::Undo), "undo the second send");
+        document->synchronise();
+        check(root.command(AppCommands::Undo) && root.command(AppCommands::Undo), "two undos: the tap, the send");
+        document->synchronise();
+    }
+    check(root.command(AppCommands::Undo), "one undo");
+    document->synchronise();
+    root.frame();
+    check(returns(40).empty() && returns(0) == topBefore, "takes the grouped return back");
+    // The other way in (ADR-0247 d2): return A dragged by its title onto Drums' row goes into Drums.
+    {
+        auto &headers = root.arrangement.headers;
+        const auto rowAt = [&root](std::int64_t id, int down) {
+            return juce::Point<float>(60.f, static_cast<float>(root.arrangement.geometry.rowTop(root.reader(), id) + down));
+        };
+        const auto from = rowAt(topBefore.front(), 16), to = rowAt(40, 44);
+        headers.mouseDown(pressAt(headers, from));
+        headers.mouseDrag(dragAt(headers, from, to));
+        const auto shown = headers.drop();
+        check(shown && shown->into == 40 && shown->to.parent == 40, "over Drums' row, the drop outlines Drums");
+        headers.mouseUp(dragAt(headers, from, to));
+        document->synchronise();
+        root.frame();
+        const auto *dragged = root.reader().findTrack(topBefore.front());
+        check(dragged != nullptr && dragged->parent == 40 && returns(0).size() == 1 && document->ops().nextUndo() &&
+                  document->ops().nextUndo()->label == "Move Track",
+              "and on release, A is in Drums, one undo step; B stays at the foot");
+        check(root.command(AppCommands::Undo), "undo");
+        document->synchronise();
+        root.frame();
+        check(returns(40).empty() && returns(0) == topBefore, "A back at the foot");
+    }
+    // Group Tracks takes a return now; Main still can't be grouped.
+    root.arrangement.geometry.selection.track = topBefore.front();
+    root.arrangement.geometry.selection.picked.clear();
+    root.publishSelection();
+    check(root.command(AppCommands::GroupTracks), "Group Tracks on return A");
+    document->synchronise();
+    root.frame();
+    const auto *a = root.reader().findTrack(topBefore.front());
+    check(a != nullptr && a->parent != 0, "return A is inside a new group");
+    check(root.command(AppCommands::Undo), "and one undo puts it back");
+    document->synchronise();
+    root.frame();
     document->release();
 }
 void clipFades(AppCommands &commands, const std::filesystem::path &dir) {
@@ -9326,6 +9653,32 @@ void clipFades(AppCommands &commands, const std::filesystem::path &dir) {
     check(!root.selectionCrossfades() && root.command(AppCommands::CreateFade), "Create Fade In over the first half bar");
     root.frame();
     check(clips()[0]->fadeInTicks == bar / 2 && clips()[0]->fadeOutTicks == 0, "a half-bar fade in");
+    // DF-W30 (c): the same again changes nothing, and makes no undo step.
+    {
+        const auto stepBefore = document->ops().nextUndo() ? document->ops().nextUndo()->txnId : 0;
+        check(!root.command(AppCommands::CreateFade) && root.error() == "The fades are already that long." &&
+                  document->ops().nextUndo() && document->ops().nextUndo()->txnId == stepBefore,
+              "a fade already that long is no change: refused, and no empty undo step");
+    }
+    // A crossfade whose left side is already that long is still a crossfade, so named.
+    {
+        const auto keep = sel;
+        sel = {};
+        sel.track = 4;
+        sel.start = bar - bar / 4;
+        sel.end = bar + bar / 4;
+        check(root.command(AppCommands::CreateFade), "a crossfade over the boundary");
+        root.frame();
+        sel.end = bar + bar / 2;
+        check(root.selectionCrossfades() && root.command(AppCommands::CreateFade), "Create Crossfade again, longer");
+        root.frame();
+        check(document->ops().nextUndo() && document->ops().nextUndo()->label == "Create Crossfade" &&
+                  clips()[0]->fadeOutTicks == bar / 4 && clips()[1]->fadeInTicks == bar / 2,
+              "the left side already that long, the right one longer: still Create Crossfade");
+        check(root.command(AppCommands::Undo) && root.command(AppCommands::Undo), "two undos");
+        root.frame();
+        sel = keep;
+    }
     // Delete Fades/Crossfades on the time selection's clips.
     sel.end = 2 * bar;
     check(root.keyPressed(juce::KeyPress(juce::KeyPress::backspaceKey, juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier, 0)),
@@ -10523,7 +10876,6 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     surfacePeer.setVisible(true);
     surfacePeer.addToDesktop(0);
     root.afterEdit = [&] { document->synchronise(); };
-    root.readRecordStates = [&] { return document->recordStates(); };
     root.startRecording = [&](std::int64_t insertTick, bool playing) {
         const bool ok = document->startRecording(insertTick, 2, playing);
         if (!ok)
@@ -10533,11 +10885,11 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     root.stopRecording = [&] { document->stopRecording(); };
     root.recording = [&] { return document->recording(); };
     root.setSize(1440, 900);
-    // The application's frame: the timer's tick, the rows handed over, the window's frame.
+    // The application's frame: the timer's tick, then the window's frame (arm and monitoring are the
+    // snapshot's, N64).
     std::int64_t now = 0;
     const auto frame = [&] {
         document->tick(++now);
-        root.setRecordStates(document->recordStates());
         root.frame();
     };
     frame();
@@ -10694,16 +11046,19 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
         }
         (void)document->takeLanded();
     }
-    // With the loop on, Record says it waits for take lanes.
+    // With the loop on, Record records each pass as a take (CT-02; the passes are the document suite's).
     {
         OpRequest loop;
         loop.opType = "transport.setLoop";
         loop.payload = {{"on", true}, {"start", 0}, {"end", 3840}};
         check(document->ops().submit(loop).ok && document->synchronise(), "the loop on");
         frame();
-        check(!root.command(AppCommands::ArrangementRecord) && !document->recording() &&
-                  root.error().find("loop") != std::string::npos,
-              "Record with the loop on is refused, saying why");
+        check(root.command(AppCommands::ArrangementRecord) && document->recording(),
+              "Record with the loop on records");
+        document->stopRecording();
+        document->settleRecording();
+        (void)document->takeLanded();
+        check(!document->recording() && !document->landingTake(), "and stops");
     }
     // Without the application's hooks Record says where it runs.
     root.startRecording = nullptr;
@@ -12077,9 +12432,14 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
               "Play Reference on Shift+R; Ctrl/Cmd+R stays Live's Rename (d9)");
         check(root.referenceTrack() == 0 && panel.referenceText() == "None yet",
               "the stub names no Reference track until the format carries a track's role (N38)");
+        // The window's clock is the test's (ADR-0231 d2; DF-W18): no key is held, and every reading is
+        // 300 ms after the last, slower than any machine; the menu's Play Reference is still a tap.
+        auto clockMs = std::make_shared<std::int64_t>(0);
+        root.input.keyDown = [](int) { return false; };
+        root.input.now = [clockMs] { return *clockMs += 300; };
         check(root.keyPressed(juce::KeyPress('r', juce::ModifierKeys::shiftModifier, 0)) &&
-                  root.error().find("No track is the Reference") != std::string::npos,
-              "Shift+R with none says so");
+                  root.error().find("No track is the Reference") != std::string::npos && !root.reference().held(),
+              "Shift+R with none says so, and lets go at once: a tap, however slow the machine");
         root.referenceKey(true, 0);
         root.referenceKey(false, 50);
         // A provider that names Lead, as the snapshot's will once tracks carry their role.
@@ -12111,12 +12471,39 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
         check(root.command(AppCommands::ToggleReferenceTrack) && !root.arrangement.geometry.inView(12),
               "and hides it again");
         // [REF] and Shift+R: a tap latches, a second tap lets go, a hold auditions.
+        check(root.command(AppCommands::PlayReference) && root.reference().latched() && !root.reference().held(),
+              "Play Reference from the menu latches it, with the clock 300 ms on at each reading");
+        check(root.command(AppCommands::PlayReference) && !root.reference().on(), "and a second lets it go");
         check(root.referenceKey(true, 1000) && root.reference().on() && root.reference().held(), "down: it plays");
         check(!root.referenceKey(false, 1100) && root.reference().latched() &&
                   root.error().find("cue path") != std::string::npos,
               "a tap under 200 ms latches it; the Status Bar says it waits for the cue path (N23)");
         root.frame();
         check(panel.ref.getToggleState(), "[REF] lit while it is on");
+        // [REF] clicked times its press through the seam too (DF-W18): with the test's clock 600 ms
+        // between press and release it is a hold, which plays only while held, however fast the
+        // machine delivers the click.
+        {
+            const bool wasOn = root.reference().on();
+            if (wasOn) {
+                root.referenceKey(true, 2000);
+                root.referenceKey(false, 2050); // a second tap lets it go
+            }
+            const auto kept = root.input.now;
+            std::int64_t reading = 3000;
+            root.input.now = [&reading] { const auto t = reading; reading += 600; return t; };
+            const auto at = panel.ref.getLocalBounds().getCentre().toFloat();
+            panel.ref.mouseDown(pressAt(panel.ref, at));
+            const bool playing = root.reference().on();
+            panel.ref.mouseUp(dragAt(panel.ref, at, at));
+            check(!root.reference().latched() && playing && !root.reference().on(),
+                  "[REF] held 600 ms by the test's clock plays while held and stops on release: a hold, not a tap");
+            root.input.now = kept;
+            if (wasOn) { // latched again, as the checks after this one expect
+                root.referenceKey(true, 2500);
+                root.referenceKey(false, 2550);
+            }
+        }
         if (const auto out = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); !headlessOnly && out.isNotEmpty()) {
             // Lead with two clips, the Reference latched, for the picture; undone after.
             int made = 0;
@@ -13325,6 +13712,52 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
             check(panelBegins == 1 && panelEnds == 1,
                   "panel End still reaches its original owner after target validation turns stale");
         }
+        // A parameter shown as a menu (DF-W19): every item picked, by the mouse's way and the keyboard's,
+        // reaches the plug-in as one gesture, though a frame shows the panel again before JUCE sends the
+        // pick, as the window's frames do.
+        DevicePanelData menuDevice = expected;
+        adi::panel::Record mode;
+        mode.id = "cutoff";
+        mode.name = "Mode";
+        mode.shape = adi::panel::Shape::Menu;
+        mode.stepCount = 5;
+        mode.choiceLabels = {"Clean", "Warm", "Tape", "Tube", "Fuzz"};
+        // From the last item, so every pick of the walk differs from the value playing: a pick of the
+        // value already playing is no gesture (main's guard).
+        mode.playing = mode.stored = 1.0;
+        menuDevice.records = {mode};
+        DevicePanelView menuPanel(gateway, menuDevice);
+        std::vector<std::pair<engine::ParamEventKind, double>> sent;
+        menuPanel.parameterGesture = [&sent](const std::string &, engine::ParamEventKind kind, double v) {
+            sent.emplace_back(kind, v);
+            return true;
+        };
+        bool everyPick = menuPanel.controls.size() == 1;
+        for (int item = 1; everyPick && item <= 5; ++item) {
+            auto &box = menuPanel.controls.front()->menu;
+            sent.clear();
+            if (item % 2 == 0)
+                box.setSelectedId(item, juce::dontSendNotification); // the mouse: a pick from the list
+            else
+                box.setSelectedItemIndex(item - 1, juce::dontSendNotification); // the keyboard's step
+            menuPanel.present(menuDevice); // a frame before the pick is sent: the value playing is the old one
+            box.onChange(); // JUCE's delivery of the pick, after the frame
+            const double v = (item - 1) / 4.0;
+            everyPick = sent.size() == 3 && sent[0].first == engine::ParamEventKind::Begin &&
+                        sent[2].first == engine::ParamEventKind::End && std::abs(sent[2].second - v) < 1e-9;
+            // The plug-in takes it; the next frame shows it.
+            menuDevice.records.front().playing = v;
+            menuPanel.present(menuDevice);
+            everyPick = everyPick && box.getSelectedId() == item;
+        }
+        check(everyPick, "every item of a menu parameter, picked by mouse or keyboard, is sent as one gesture");
+        // A pick the plug-in refuses goes back to what plays.
+        menuPanel.parameterGesture = [](const std::string &, engine::ParamEventKind, double) { return false; };
+        menuPanel.controls.front()->menu.setSelectedId(2, juce::dontSendNotification);
+        menuPanel.present(menuDevice);
+        menuPanel.controls.front()->menu.onChange();
+        menuPanel.present(menuDevice);
+        check(menuPanel.controls.front()->menu.getSelectedId() == 5, "a refused pick shows the value playing again");
     }
     std::fputs("[shell] mix fixture seek checks start\n", stderr);
     adi::uitest::mixSeekChecks(commands, dir, check);
@@ -13503,6 +13936,136 @@ void midiInputFeedCases() {
           "the quiet port's note gets through in the same block as 900 messages from a busy port");
 }
 } // namespace
+// WIN-01: the default key map of every shortcut preset, as text the same on every platform family,
+// against its golden (ADI_UI_REFERENCES/keymap-<preset>-<family>.txt; --write-references writes it,
+// and each run leaves keymap-<preset>-<family>-actual.txt in the working directory),
+// with no key bound to two commands. Then F4, headless: the Mix View opens once and no track's
+// activator changes (MX-14), as F4 was also Activate Track 4 before.
+namespace keymap_golden {
+std::string keyText(const juce::KeyPress &k) {
+    std::string out;
+    const auto mods = k.getModifiers();
+    if (mods.isCommandDown())
+        out += "Cmd+";
+#if JUCE_MAC
+    if ((mods.getRawFlags() & juce::ModifierKeys::ctrlModifier) != 0)
+        out += "Ctrl+";
+#endif
+    if (mods.isAltDown())
+        out += "Alt+";
+    if (mods.isShiftDown())
+        out += "Shift+";
+    const int code = k.getKeyCode();
+    struct Named {
+        int code;
+        const char *name;
+    };
+    static const Named named[] = {
+        {juce::KeyPress::spaceKey, "Space"},       {juce::KeyPress::escapeKey, "Esc"},
+        {juce::KeyPress::returnKey, "Return"},     {juce::KeyPress::tabKey, "Tab"},
+        {juce::KeyPress::deleteKey, "Delete"},     {juce::KeyPress::backspaceKey, "Backspace"},
+        {juce::KeyPress::insertKey, "Insert"},     {juce::KeyPress::upKey, "Up"},
+        {juce::KeyPress::downKey, "Down"},         {juce::KeyPress::leftKey, "Left"},
+        {juce::KeyPress::rightKey, "Right"},       {juce::KeyPress::pageUpKey, "PageUp"},
+        {juce::KeyPress::pageDownKey, "PageDown"}, {juce::KeyPress::homeKey, "Home"},
+        {juce::KeyPress::endKey, "End"},           {juce::KeyPress::F1Key, "F1"},
+        {juce::KeyPress::F2Key, "F2"},             {juce::KeyPress::F3Key, "F3"},
+        {juce::KeyPress::F4Key, "F4"},             {juce::KeyPress::F5Key, "F5"},
+        {juce::KeyPress::F6Key, "F6"},             {juce::KeyPress::F7Key, "F7"},
+        {juce::KeyPress::F8Key, "F8"},             {juce::KeyPress::F9Key, "F9"},
+        {juce::KeyPress::F10Key, "F10"},           {juce::KeyPress::F11Key, "F11"},
+        {juce::KeyPress::F12Key, "F12"},           {juce::KeyPress::numberPadAdd, "Num+"},
+        {juce::KeyPress::numberPadSubtract, "Num-"}};
+    for (const auto &n : named)
+        if (n.code == code)
+            return out + n.name;
+    if (code > 32 && code < 127)
+        return out + static_cast<char>(code >= 'a' && code <= 'z' ? code - 'a' + 'A' : code);
+    return out + "#" + std::to_string(code);
+}
+} // namespace keymap_golden
+void keymapGolden(AppCommands &commands, settings::AppSettings &settings, const std::filesystem::path &dir, bool write) {
+#if JUCE_MAC
+    const char *family = "mac";
+#else
+    const char *family = "pc";
+#endif
+    for (const char *preset : {"live", "cubase", "bitwig"}) {
+        std::string why;
+        check(settings.set("shortcuts.preset", std::string(preset), {}, why), "the preset set");
+        commands.reload();
+        juce::Array<juce::CommandID> ids;
+        commands.getAllCommands(ids);
+        std::map<std::string, std::vector<std::string>> byKey;
+        std::string text;
+        for (const auto id : ids) {
+            juce::ApplicationCommandInfo info(id);
+            commands.getCommandInfo(id, info);
+            std::string keys;
+            for (const auto &k : info.defaultKeypresses) {
+                const auto t = keymap_golden::keyText(k);
+                keys += (keys.empty() ? "" : ", ") + t;
+                byKey[t].push_back(info.shortName.toStdString());
+            }
+            text += std::to_string(id) + " " + info.shortName.toStdString() + ": " + keys + "\n";
+        }
+        std::string clashes;
+        for (const auto &[key, names] : byKey)
+            if (names.size() > 1) {
+                clashes += key + " (";
+                for (std::size_t i = 0; i < names.size(); ++i)
+                    clashes += (i ? ", " : "") + names[i];
+                clashes += ") ";
+            }
+        check(clashes.empty(), ("no key is the default of two commands, preset " + std::string(preset) + ": " + clashes).c_str());
+        const auto stem = juce::String("keymap-") + preset + "-" + family;
+        juce::File::getCurrentWorkingDirectory().getChildFile(stem + "-actual.txt").replaceWithText(juce::String::fromUTF8(text.c_str()), false, false, "\n");
+        const auto golden = juce::File(ADI_UI_REFERENCES).getChildFile(stem + ".txt");
+        if (write) {
+            golden.getParentDirectory().createDirectory();
+            check(golden.replaceWithText(juce::String::fromUTF8(text.c_str()), false, false, "\n"), "write the key map golden");
+        } else if (golden.existsAsFile()) {
+            check(golden.loadFileAsString().toStdString() == text,
+                  ("the default key map of preset " + std::string(preset) + " matches its golden").c_str());
+        } else {
+            std::fprintf(stderr, "[shell] no key map golden for this platform family (%s): write it with --write-references\n", family);
+        }
+    }
+    std::string why;
+    settings.set("shortcuts.preset", std::string("live"), {}, why);
+    commands.reload();
+    // F4, headless: the Mix View once, no activator.
+    std::string error;
+    auto document = ProjectDocument::open(dir / "f4.adi", true, {}, error);
+    check(document != nullptr, "a new project for F4");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "f4");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.setSize(1440, 900);
+    commands.activate(root);
+    root.frame();
+    const auto muted = [&root] {
+        std::vector<std::int64_t> out;
+        for (const auto &t : root.reader().tracks())
+            if (t->muted)
+                out.push_back(t->id);
+        return out;
+    };
+    const auto before = muted();
+    const auto stepBefore = document->ops().nextUndo() ? document->ops().nextUndo()->txnId : 0;
+    const bool wasOpen = root.state().mixView;
+    check(root.keyPressed(juce::KeyPress(juce::KeyPress::F4Key)), "F4");
+    document->synchronise();
+    root.frame();
+    check(root.state().mixView != wasOpen && muted() == before &&
+              (document->ops().nextUndo() ? document->ops().nextUndo()->txnId : 0) == stepBefore,
+          "F4 toggles the Mix View once and throws no activator: no undo step");
+    commands.detach(root);
+    document->release();
+}
+
 int main(int argc, char **argv) {
 #if defined(_MSC_VER) && defined(_DEBUG)
     _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
@@ -16769,8 +17332,10 @@ int main(int argc, char **argv) {
     trace("clipWaveforms", [&] { clipWaveforms(commands, temp.path()); });
     trace("clipFades", [&] { clipFades(commands, temp.path()); });
     trace("showcase", [&] { showcase(commands, temp.path()); });
+    trace("returnInGroup", [&] { returnInGroup(commands, temp.path()); });
     trace("loopMetronome", [&] { loopMetronome(commands, settings, temp.path()); });
     trace("locators", [&] { locators(commands, temp.path()); });
+    trace("keymapGolden", [&] { keymapGolden(commands, settings, temp.path(), write); });
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

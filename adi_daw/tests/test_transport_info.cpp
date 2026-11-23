@@ -56,6 +56,11 @@ bool parsePosition(const std::string& position, long long& bar, long long& beat)
     return static_cast<bool>(input >> bar >> a >> beat >> b >> remainder) && a == '|' && b == '|';
 }
 struct Capture final : Node {
+    struct ScaleSample {
+        std::int64_t sample = 0, root = -1, tuning = 0;
+        std::int32_t frames = 0;
+        bool hasQuarterTone = false;
+    };
     TransportInfo last{};
     const TransportInfo* expected = nullptr;
     int calls = 0, nulls = 0;
@@ -64,6 +69,13 @@ struct Capture final : Node {
     bool concurrent = false;
     std::atomic<int> observedBpm{0};
     std::atomic<unsigned> badViews{0};
+    bool scaleTiming = false, transportTiming = false;
+    std::int32_t latency = 0;
+    std::array<ScaleSample, 12> scaleSamples{};
+    std::size_t scaleCount = 0;
+    [[nodiscard]] bool wantsDeviceScale() const noexcept override { return scaleTiming; }
+    [[nodiscard]] bool wantsDeviceTransport() const noexcept override { return transportTiming; }
+    [[nodiscard]] std::int32_t latencySamples() const noexcept override { return latency; }
     void process(const NodeIo& io) noexcept override {
         ++calls;
         if (expected) pointerMatches = pointerMatches && io.transport == expected;
@@ -78,6 +90,18 @@ struct Capture final : Node {
                     ((last.bpm == 120 && last.beat == 2) || (last.bpm == 240 && last.beat == 3));
                 if (!valid) ++badViews;
                 observedBpm.store(static_cast<int>(last.bpm), std::memory_order_release);
+            }
+        }
+        if (io.deviceTransport && scaleCount < scaleSamples.size()) {
+            const auto &timing = *io.deviceTransport;
+            auto &sample = scaleSamples[scaleCount++];
+            sample = {};
+            sample.sample = timing.sample;
+            sample.frames = io.frames;
+            if (timing.scale) {
+                sample.root = timing.scale->scale()->root;
+                sample.tuning = timing.scale->scale()->tuningId.value_or(0);
+                sample.hasQuarterTone = timing.scale->contains(6050.0, 6000.0);
             }
         }
         for (int c = 0; c < io.channels; ++c)
@@ -273,11 +297,150 @@ void concurrentEdits() {
     check(sawEveryEdit, "render thread observes every published tempo edit");
     check(f.capture.badViews.load() == 0 && f.capture.calls > 0, "concurrent refresh never exposes a torn tempo/meter view");
 }
+void deviceScaleClock() {
+    Fixture f;
+    auto &db = f.store->db();
+    db.exec("INSERT INTO key_map(id,pos_ticks,root,scale_id,scale_mask) VALUES(10,0,2,'major',2741),"
+            "(11,2882880,7,'major',2741),(12,2882881,9,'custom',0),(13,2883120,5,'major',2741);"
+            "INSERT INTO tuning_systems(id,name,source,period_cents) VALUES(21,'Quarter','edo',1200);"
+            "INSERT INTO tuning_degrees(tuning_id,degree,cents,name) VALUES(21,0,0,'root'),(21,1,50,'quarter');"
+            "INSERT INTO key_map_tunings VALUES(12,21);"
+            "INSERT INTO key_map_degrees VALUES(12,0),(12,1);");
+    f.capture.scaleTiming = true;
+    f.load();
+    f.session.transport().locate(11998);
+    f.session.transport().play();
+    f.render(4);
+    const auto &seen = f.capture.scaleSamples;
+    check(f.capture.scaleCount == 3 &&
+              seen[0].sample == 11998 && seen[0].frames == 2 && seen[0].root == 2 &&
+              seen[1].sample == 12000 && seen[1].frames == 1 && seen[1].root == 9 &&
+              seen[1].tuning == 21 && seen[1].hasQuarterTone &&
+              seen[2].sample == 12001 && seen[2].frames == 1 && seen[2].root == 5,
+          "scale-aware device segments split on projected key samples and choose the latest coincident key");
+
+    f.capture.scaleCount = 0;
+    f.capture.scaleTiming = false;
+    f.capture.transportTiming = true;
+    f.session.transport().locate(11998);
+    f.render(4);
+    check(f.capture.scaleCount == 1 && seen[0].frames == 4 && seen[0].root == 2,
+          "transport-only devices keep their previous segmentation through key changes");
+
+    f.capture.scaleCount = 0;
+    f.capture.scaleTiming = true;
+    db.exec("UPDATE key_map SET root=11 WHERE id=12");
+    f.refresh();
+    f.session.transport().locate(12000);
+    f.render(1);
+    check(f.capture.scaleCount == 1 && seen[0].root == 11 && seen[0].tuning == 21,
+          "refreshed graph retains a new immutable scale generation through a seek");
+
+    db.exec("UPDATE tuning_degrees SET cents=0 WHERE tuning_id=21 AND degree=1");
+    f.refresh();
+    f.capture.scaleCount = 0;
+    f.render(1);
+    check(f.capture.scaleCount == 1 && seen[0].root == -1 &&
+              std::any_of(f.session.problems().begin(), f.session.problems().end(),
+                          [](const auto &s) { return s.starts_with("Device scale unavailable"); }),
+          "a malformed scale is diagnosed without stopping playback or publishing a partial map");
+}
+void compensatedScaleClock() {
+    Capture latent, target;
+    latent.latency = 7;
+    target.scaleTiming = true;
+    Graph graph;
+    const auto source = graph.addNode(latent);
+    const auto consumer = graph.addNode(target);
+    if (!graph.connect(source, consumer))
+        throw std::runtime_error("connect compensated scale fixture");
+    graph.setOutput(consumer);
+    graph.prepare(48000, 32);
+
+    Transport clock;
+    clock.locate(12005);
+    clock.play();
+    TransportInfo info;
+    info.playing = true;
+    info.timelineSample = clock.position();
+    info.deviceClock = &clock;
+    info.devicePosition = [](const void *, std::int64_t sample) noexcept {
+        DeviceTransport position;
+        position.playing = true;
+        position.sample = sample;
+        if (sample < 12000)
+            position.nextScaleChange = 12000;
+        return position;
+    };
+    std::array<float, 4> left{}, right{};
+    float *outputs[] = {left.data(), right.data()};
+    AudioIo io{outputs, nullptr, 2, 0, 4, 0};
+    io.transport = &info;
+    graph.process(io);
+    check(target.scaleCount == 2 && target.scaleSamples[0].sample == 11998 &&
+              target.scaleSamples[0].frames == 2 && target.scaleSamples[1].sample == 12000 &&
+              target.scaleSamples[1].frames == 2,
+          "scale boundaries follow the compensated input sample behind a latent source");
+}
+void trackScaleClocks() {
+    Capture second;
+    Fixture f;
+    auto &db = f.store->db();
+    db.exec("UPDATE tracks SET kind='midi' WHERE id=1;"
+            "INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(2,'midi','Second',2);"
+            "INSERT INTO key_map(id,pos_ticks,root,scale_id,scale_mask) VALUES"
+            "(10,0,2,'major',2741),(11,360360,4,'major',2741);"
+            "INSERT INTO lanes(id,track_id,kind) VALUES(21,1,'take');"
+            "INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks,lane_id,muted) VALUES"
+            "(31,1,'midi',240240,480480,NULL,0),(32,1,'midi',480480,120120,NULL,0),"
+            "(33,1,'midi',240240,480480,21,0),(34,1,'midi',240240,480480,NULL,1);"
+            "INSERT INTO clips(id,track_id,kind,time_base,pos_ns,length_ns) "
+            "VALUES(35,2,'midi',1,25000000,20833333);"
+            "INSERT INTO clip_properties(clip_id,scale_root,scale_id,scale_mask) VALUES"
+            "(31,5,'major',2741),(33,8,'major',2741),(34,7,'major',2741),(35,9,'major',2741);");
+    f.capture.scaleTiming = true;
+    second.scaleTiming = true;
+    f.session.setSourcesFor([&](std::int64_t track) {
+        if (track == 1)
+            return std::vector<Node *>{&f.capture};
+        if (track == 2)
+            return std::vector<Node *>{&second};
+        return std::vector<Node *>{};
+    });
+    f.load();
+    f.session.transport().locate(900);
+    f.session.transport().play();
+    f.render(2300);
+    const auto &a = f.capture.scaleSamples;
+    check(f.capture.scaleCount == 5 && a[0].sample == 900 && a[0].root == 2 &&
+              a[1].sample == 1000 && a[1].frames == 1000 && a[1].root == 5 &&
+              a[2].sample == 2000 && a[2].frames == 500 && a[2].root == 4 &&
+              a[3].sample == 2500 && a[3].root == 5 &&
+              a[4].sample == 3000 && a[4].root == 4,
+          "a sole arrangement clip supplies its own scale and competing clips use the project scale");
+    const auto &b = second.scaleSamples;
+    check(second.scaleCount == 3 && b[0].sample == 900 && b[0].root == 2 &&
+              b[1].sample == 1200 && b[1].frames == 1000 && b[1].root == 9 &&
+              b[2].sample == 2200 && b[2].root == 4,
+          "a nanosecond clip on another track sets only that track's half-open scale span");
+
+    f.capture.scaleCount = 0;
+    second.scaleCount = 0;
+    db.exec("UPDATE clip_properties SET scale_root=11 WHERE clip_id=31");
+    f.refresh();
+    f.session.transport().locate(1250);
+    f.render(1);
+    check(f.capture.scaleCount == 1 && a[0].root == 11 &&
+              second.scaleCount == 1 && b[0].root == 9,
+          "a refreshed clip scale stays local to its track through a seek");
+}
 } // namespace
 
 int main() {
     try {
-        boundaries(); defaultsAndBlocks(); nullableAndSegments(); concurrentEdits();
+        boundaries(); defaultsAndBlocks(); nullableAndSegments(); concurrentEdits(); deviceScaleClock();
+        compensatedScaleClock();
+        trackScaleClocks();
         check(allocations.load() == 0, "zero allocations in Session::process including live edits");
         check(audio::callbackFileIo.load() == 0, "zero file I/O in Session::process");
     } catch (const std::exception& e) {

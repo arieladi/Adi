@@ -3,6 +3,7 @@
 #include "adi/mix/clip/Values.hpp"
 #include "adi/store_rows.hpp"
 #include "juce/builtin_host.hpp"
+#include "juce/device_host.hpp"
 #include "juce/mix_function_host.hpp"
 #include "juce/mix_pipeline_host.hpp"
 #include "temp_directory.hpp"
@@ -280,6 +281,67 @@ void bypassedPinnedClaim(bool full) {
     graph.release();
 }
 
+void offlineInitialLatency(bool full) {
+    rows::PluginRef reference;
+    reference.format = "internal";
+    reference.uid = "org.adidaw.mix.limiter";
+    reference.name = "Limiter";
+    engine::DeviceRequest request;
+    request.ref = &reference;
+    request.exporting = true;
+    std::string error;
+    auto instance = full ? device::makeFullMixFunction(request, error) : device::makeMixFunction(request, error);
+    check(instance != nullptr, "offline latency fixture creates the registered device");
+    if (!instance)
+        return;
+    if (full)
+        check(instance->setParam("19", device::ParamValue::fromNormalized(0)) &&
+              instance->setParam("20", device::ParamValue::fromNormalized(1)),
+              "offline full provider starts with only the Clip stage at 8x");
+    auto* native = instance.get();
+    const auto initialEpoch = native->latencyEpoch();
+    device::DeviceHost host;
+    auto& node = host.add(std::move(instance), reference.name);
+    Tone tone;
+    engine::Graph graph;
+    const auto output = graph.addNode(node);
+    check(graph.connect(graph.addNode(tone), output), "offline tone drives the native device node");
+    graph.setOutput(output);
+    constexpr int frames = 256;
+    graph.prepare(48000, frames);
+    const auto initialDelay = native->latencySamples();
+    check(graph.ok() && initialDelay > 0 && graph.latencySamples() == initialDelay &&
+              (!full || initialDelay == 65),
+          "first export graph includes the prepared delay before its first callback");
+    host.attachGraph(graph);
+    auto& coalescer = host.coalescer();
+    coalescer.setQuietPeriodMs(0);
+    host.tick(0);
+    check(coalescer.stats().reports == 0 && native->latencyEpoch() == initialEpoch,
+          "cold offline prepare does not report a change to the already prepared graph");
+    const auto startedReports = coalescer.stats().reports;
+    const auto preparedEpoch = native->latencyEpoch();
+
+    std::array<float, frames> left{}, right{};
+    std::array<float*, 2> planes{left.data(), right.data()};
+    engine::AudioIo io;
+    io.out = planes.data();
+    io.numOut = 2;
+    io.frames = frames;
+    io.exporting = true;
+    io.renderBlock = 1;
+    graph.process(io);
+    check(native->setParam(full ? "20" : "19", device::ParamValue::fromNormalized(0)),
+          "owner can request a real change to the prepared delay");
+    ++io.renderBlock;
+    graph.process(io);
+    host.tick(1);
+    check(native->latencySamples() == 0 && native->latencyEpoch() == preparedEpoch + 1 &&
+              coalescer.stats().reports == startedReports + 1,
+          "a post-prepare delay change still notifies the graph and export guard once");
+    graph.release();
+}
+
 }
 int main(){
     test::TempDirectory temp("mix_pipeline_document","serial-pages");std::string error;
@@ -345,5 +407,7 @@ int main(){
     bypassedClaim(false);
     bypassedPinnedClaim(true);
     bypassedPinnedClaim(false);
+    offlineInitialLatency(true);
+    offlineInitialLatency(false);
     std::printf("pipeline document: %d checks, %d failures\n",checks,failures);return failures?1:0;
 }

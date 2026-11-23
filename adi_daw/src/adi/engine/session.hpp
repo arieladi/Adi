@@ -58,6 +58,7 @@
 #include "adi/engine/summing.hpp"
 #include "adi/engine/param_automation.hpp"
 #include "adi/engine/process.hpp"
+#include "adi/engine/scale_timeline.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/engine/realize.hpp"
 #include "adi/store_rows.hpp"
@@ -303,8 +304,10 @@ public:
         [[nodiscard]] double bpmAtTick(std::int64_t) const noexcept;
         /// Driver only, immediately before rendering this target. Posts bounded
         /// read-ahead and checks mandatory pages without waiting or doing I/O.
-        [[nodiscard]] bool sourcesReadyAt(std::int64_t sample, std::int32_t frames) const noexcept;
-        [[nodiscard]] bool sourcesReady(const Transport& requested, std::int32_t frames) const noexcept;
+        [[nodiscard]] bool sourcesReadyAt(std::int64_t sample, std::int32_t frames,
+                                          bool allowFailedSources = false) const noexcept;
+        [[nodiscard]] bool sourcesReady(const Transport& requested, std::int32_t frames,
+                                        bool allowFailedSources = false) const noexcept;
         /// Driver command between slices. Saved song start overrides the
         /// insert marker; only a record start uses the saved count-in. Prepare
         /// the recorder on its owner first. Explicit locate/play bypasses this
@@ -539,6 +542,9 @@ private:
         TempoMap tempo;
         std::vector<rows::TimeSignature> signatures;
         std::vector<std::pair<std::int64_t, std::int64_t>> deviceClockChanges; ///< sample, tick
+        std::optional<ScaleTimeline> scaleTimeline;
+        std::vector<std::pair<std::int64_t, const ScaleContext*>> deviceScaleChanges;
+        TrackScaleTimeline trackScaleTimeline;
         std::vector<LiveMidiInput::Route> midiInputRoutes;
         std::shared_ptr<const StripLaneBindings> stripLanes;
         ClipPlayback::Readiness sourceReadiness;
@@ -588,9 +594,9 @@ private:
     void renderMetronome(const TimingView&,const AudioIo&) noexcept;
     std::shared_ptr<const ClipProject> clipProject_;
     // Published graphs retain their own old source generations until reclamation.
-    std::unique_ptr<ClipPlayback> clips_;
+    std::shared_ptr<ClipPlayback> clips_;
     std::shared_ptr<MidiClipState> midiState_ = makeMidiClipState();
-    std::unique_ptr<MidiClips> midi_;
+    std::shared_ptr<MidiClips> midi_;
     // ADR-0163: one strip per track, for the whole session. Declared before
     // the graphs so it outlives every graph that names one of its strips.
     MixerStrips strips_;
@@ -616,6 +622,8 @@ private:
     device::DeviceHost devices_;
     GraphHost graph_;
     rows::Model model_;
+    std::string deviceScaleProblem_;
+    std::string trackScaleProblem_;
     AppliedSource appliedSource_;
     void observeKeyRoutes();
     void refreshProblems();

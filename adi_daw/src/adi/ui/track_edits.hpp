@@ -78,8 +78,10 @@ inline void renumber(std::vector<OpRequest> &ops, const std::vector<const engine
 }
 } // namespace track_edits_detail
 // Live groups audio and MIDI tracks and groups; Main and the returns stay where they are.
+// What Group Tracks takes: every track but Main. A return may go into a group (ADR-0245 d9, ADR-0247
+// d2): it then takes sends only from inside it, and plays into it (#677, DF-E22).
 inline bool groupable(const engine::TrackNode &t) noexcept {
-    return t.kind == "audio" || t.kind == "midi" || t.kind == "instrument" || t.kind == "group";
+    return t.kind == "audio" || t.kind == "midi" || t.kind == "instrument" || t.kind == "group" || t.kind == "return";
 }
 inline bool canGroup(const SnapshotTracks &tracks, std::int64_t id) noexcept {
     const auto *t = track_edits_detail::find(tracks, id);
@@ -221,7 +223,7 @@ inline TrackEdit groupTracks(const SnapshotTracks &tracks, const std::vector<std
     const auto parent = chosen.front()->parent;
     for (const auto *t : chosen) {
         if (!groupable(*t)) {
-            edit.refusal = "Main and return tracks can't be grouped.";
+            edit.refusal = "Main can't be grouped.";
             return edit;
         }
         if (t->parent != parent) {
@@ -349,8 +351,8 @@ struct TrackDrop {
 // Live's track drag (Live 12 manual, Arrangement View: "Tracks can be reordered by selecting and
 // dragging them above or below other tracks"; 18.3: "tracks can be dragged into or out of the
 // group"): the selected tracks, in the arrangement's order, to `to`, side by side. A track whose
-// group is selected as well goes with its group. The returns move among themselves, at the foot
-// (`to.before` a return, or 0 for after the last); Main stays last; a group never goes inside
+// group is selected as well goes with its group. The returns move among themselves, at the foot or
+// in a group (`to.before` a return, or 0 for after the last); Main stays last; a group never goes inside
 // itself. Tracks moved into or out of a group are routed as Group Tracks routes
 // them (`track.setParent`). One batch, so one undo step; no ops when nothing would move.
 inline TrackEdit moveTracks(const SnapshotTracks &tracks, const std::vector<std::int64_t> &ids, TrackDrop to) {
@@ -395,7 +397,8 @@ inline TrackEdit moveTracks(const SnapshotTracks &tracks, const std::vector<std:
             edit.refusal = "Main stays last.";
             return edit;
         }
-    if (returns != 0 && (returns != chosen.size() || to.parent != 0)) {
+    // A return goes into a group too, among its returns (ADR-0247 d2), and out again to the foot.
+    if (returns != 0 && returns != chosen.size()) {
         edit.refusal = "Return tracks move among the returns only.";
         return edit;
     }

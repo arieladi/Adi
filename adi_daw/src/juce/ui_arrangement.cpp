@@ -671,7 +671,7 @@ juce::String ArrangementCanvas::describe(std::int64_t trackId, std::int64_t clip
             const auto beats = static_cast<double>(c->lengthTicks) / textproj::kPPQ;
             // The clip's name when it has one: "2 Audio, Verse, at bar 9 beat 1, 16.00 beats".
             const auto clip = c->name.empty() ? juce::String("clip") : juce::String::fromUTF8(c->name.c_str()) + ",";
-            return juce::String::fromUTF8(displayName(t->name, i + 1).c_str()) + ", " + clip +
+            return juce::String::fromUTF8(displayName(t->name, rows[i].number()).c_str()) + ", " + clip +
                    " at bar " + juce::String(at.bar) + " beat " + juce::String(at.beat) + ", " +
                    juce::String(beats, 2) + " beats" +
                    (c->muted ? ", muted" : "");
@@ -1081,7 +1081,7 @@ void ArrangementView::leaveOut() {
         // manual 18.2).
         for (const auto row : geometry.rows(reader()))
             if (row.track->id == group) {
-                const auto shown = juce::String::fromUTF8(displayName(chosen->name, row.position + 1).c_str());
+                const auto shown = juce::String::fromUTF8(displayName(chosen->name, row.number()).c_str());
                 if (show.getButtonText() != shown)
                     show.setButtonText(shown);
             }
@@ -1169,7 +1169,7 @@ juce::PopupMenu ArrangementView::projectViewMenu() {
             const auto *stored = tree_.find(row.track->id);
             const auto &name = stored != nullptr ? stored->name : row.track->name;
             add(row.track->id, static_cast<int>(row.place.depth) + 1,
-                juce::String::fromUTF8(displayName(name, row.position + 1).c_str()), colourFor(row.position));
+                juce::String::fromUTF8(displayName(name, row.number()).c_str()), colourFor(row.position));
         }
     // The ★ Reference track's toggle (ADR-0209 §4, d11), hidden by default.
     menu.addSeparator();
@@ -1585,8 +1585,12 @@ juce::PopupMenu ArrangementView::headerMenu() {
     // Live's colour chooser at the menu's foot (Live 12 manual 2.3.2); on a group, the command that
     // gives what it holds its colour (manual 18.3).
     menu.addSeparator();
-    if (const auto *t = reader().findTrack(geometry.selection.track); t != nullptr && t->kind == "group")
+    if (const auto *t = reader().findTrack(geometry.selection.track); t != nullptr && t->kind == "group") {
         menu.addItem("Assign Track Color to Grouped Tracks and Clips", [this] { assignGroupColour(); });
+        // The way into a group for a return (ADR-0247 d2): a new return inside it, after what it
+        // holds, lettered with the group's initial ("DA"). The Create menu's keeps Live's foot.
+        menu.addItem("Insert Return Track in Group", [this, group = t->id] { root.insertReturnTrack(group); });
+    }
     menu.addCustomItem(1, std::make_unique<ColourChooser>(*this, colourIndex(geometry.selection.track)), nullptr,
                        "Colour");
     return menu;
@@ -1885,7 +1889,7 @@ void TrackHeaderList::paint(juce::Graphics &g) {
         if (t->id != renaming_) {
             g.setColour(look::ink);
             g.setFont(look::font(look::fontBody, true));
-            g.drawText(juce::String::fromUTF8(displayName(t->name, row.position + 1).c_str()), x + 23, y + 2,
+            g.drawText(juce::String::fromUTF8(displayName(t->name, row.number()).c_str()), x + 23, y + 2,
                        getWidth() - x - 25, 15, juce::Justification::centredLeft);
         }
         // ADI's Rec-Q and Play-Q (MR V.2 §9) on a MIDI track's header: what new recordings are
@@ -2095,6 +2099,36 @@ TrackHeaderList::Drop TrackHeaderList::returnDropAt(int y) const {
     const auto rows = view.geometry.rows(reader);
     const auto foot = view.geometry.footStart(rows);
     Drop drop;
+    // Over the tracks, into a group (ADR-0247 d2): a group's row or a row it holds takes the return
+    // to the end of that group's returns; a return in a group, before it in its upper half, after it
+    // in its lower, among that group's returns.
+    int rowTop = 0;
+    if (const auto at = view.geometry.rowAt(reader, y, &rowTop); at < foot) {
+        const auto row = rows[at];
+        if (row.place.ret && row.place.parent != 0) {
+            const int h = view.geometry.heightFor(row.track->id);
+            const bool upper = (y - rowTop) * 2 < h;
+            drop.to = {row.place.parent, row.track->id};
+            if (!upper) {
+                drop.to.before = 0;
+                for (auto j = at + 1; j < foot && drop.to.before == 0; ++j)
+                    if (rows[j].place.ret && rows[j].place.parent == row.place.parent)
+                        drop.to.before = rows[j].track->id;
+            }
+            drop.y = upper ? rowTop : rowTop + h;
+            drop.depth = row.place.depth;
+            return drop;
+        }
+        const auto group = row.place.group ? row.track->id : row.place.parent;
+        if (group != 0) {
+            const auto g = rows.find(group);
+            drop.to = {group, 0};
+            drop.y = view.geometry.rowTop(reader, group);
+            drop.depth = g < rows.size() ? rows[g].place.depth : 0;
+            drop.into = group;
+            return drop;
+        }
+    }
     // The returns' rows, top to bottom, where the foot draws them.
     int top = view.geometry.footTop(reader);
     drop.y = top;
@@ -2461,14 +2495,35 @@ void ArrangementCanvas::paintAutomation(juce::Graphics &g) const {
         // Drawn inside the lane's visible strip only: a lane under the foot is not drawn over it.
         juce::Graphics::ScopedSaveState keep(g);
         g.reduceClipRegion(0, static_cast<int>(body.top) - 4, getWidth(), static_cast<int>(body.bottom - body.top) + 8);
-        std::vector<juce::Point<float>> points;
+        // The breakpoints as they play, the dragged one where the mouse has it, in time order.
+        std::vector<engine::AutomationPointNode> nodes;
         if (env.data != nullptr)
-            for (const auto &p : env.data->points) {
-                const bool dragged = pointDrag_ && pointDrag_->track == body.track->id && pointDrag_->point == p.id;
-                points.push_back({static_cast<float>(geo.x(dragged ? pointTick_ : p.time)),
-                                  automationY(dragged ? pointValue_ : p.value, range, body.top, body.scaleBottom)});
+            for (auto p : env.data->points) {
+                if (pointDrag_ && pointDrag_->track == body.track->id && pointDrag_->point == p.id) {
+                    p.time = pointTick_;
+                    p.value = pointValue_;
+                }
+                nodes.push_back(p);
             }
-        std::sort(points.begin(), points.end(), [](auto a, auto b) { return a.x < b.x; });
+        std::stable_sort(nodes.begin(), nodes.end(), [](const auto &a, const auto &b) { return a.time < b.time; });
+        // While a point is dragged, a segment keeps the curve of its trimmed source only where the move will keep it
+        // (`automation.movePoints`): its point's value and its next point unchanged. Else it is drawn as it will play.
+        if (pointDrag_ && pointDrag_->track == body.track->id && env.data != nullptr) {
+            const auto &stored = env.data->points;
+            for (std::size_t i = 0; i < nodes.size(); ++i) {
+                if (!nodes[i].curveSlice)
+                    continue;
+                const auto at = std::find_if(stored.begin(), stored.end(), [&](const auto &q) { return q.id == nodes[i].id; });
+                const bool next = i + 1 < nodes.size(), hadNext = at != stored.end() && at + 1 != stored.end();
+                const bool keepsSlice = at != stored.end() && at->value == nodes[i].value && next == hadNext &&
+                                        (!next || (nodes[i + 1].id == (at + 1)->id && nodes[i + 1].value == (at + 1)->value));
+                if (!keepsSlice)
+                    nodes[i].curveSlice.reset();
+            }
+        }
+        std::vector<juce::Point<float>> points;
+        for (const auto &p : nodes)
+            points.push_back({static_cast<float>(geo.x(p.time)), automationY(p.value, range, body.top, body.scaleBottom)});
         g.setColour(look::record.withAlpha(.9f));
         const float right = static_cast<float>(getWidth());
         if (points.empty()) {
@@ -2476,10 +2531,19 @@ void ArrangementCanvas::paintAutomation(juce::Graphics &g) const {
             g.drawLine(0, y, right, y, 1.f);
             continue;
         }
+        // Each segment as the engine plays it (AU-01; SPEC 6.3.2), traced every two pixels in seconds: a linear one
+        // too, which bends where the tempo changes inside it.
         juce::Path line;
         line.startNewSubPath(0, points.front().y);
-        for (const auto &p : points)
-            line.lineTo(p);
+        line.lineTo(points.front());
+        const auto *tempo = current->tempo ? &*current->tempo : nullptr;
+        for (std::size_t i = 1; i < points.size(); ++i) {
+            const auto &a = nodes[i - 1];
+            for (float px = std::max(0.f, points[i - 1].x + 2.f); px < std::min(right, points[i].x); px += 2.f)
+                line.lineTo(px, automationY(envelopeValueAt(a, nodes[i], geo.tick(px), tempo), range, body.top,
+                                            body.scaleBottom));
+            line.lineTo(points[i]);
+        }
         line.lineTo(right, points.back().y);
         g.strokePath(line, juce::PathStrokeType(1.f));
         for (std::size_t i = 0; i < points.size(); ++i) {
@@ -2705,14 +2769,14 @@ void ArrangementCanvas::mouseExit(const juce::MouseEvent &) {
 }
 void ArrangementCanvas::focusLost(FocusChangeType) {
     // F released where the canvas cannot hear it: the handles go back.
-    if (showFades && !juce::KeyPress::isKeyCurrentlyDown('f') && !juce::KeyPress::isKeyCurrentlyDown('F')) {
+    if (showFades && !view.root.input.down('f')) {
         showFades = false;
         repaint();
     }
 }
 bool ArrangementCanvas::keyStateChanged(bool) {
     // F up: the handles go back to the clip under the mouse and the selected ones.
-    if (showFades && !juce::KeyPress::isKeyCurrentlyDown('f') && !juce::KeyPress::isKeyCurrentlyDown('F')) {
+    if (showFades && !view.root.input.down('f')) {
         showFades = false;
         repaint();
     }
