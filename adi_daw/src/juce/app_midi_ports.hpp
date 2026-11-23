@@ -62,8 +62,10 @@ class MidiPortHost final : private juce::ump::EndpointsListener {
     std::size_t drain(const std::function<void(const MidiPortEvent &)> &take);
     // A count that moves each time an open input delivers a message (the MIDI Indicators).
     std::uint64_t activity() const noexcept { return activity_.load(std::memory_order_relaxed); }
-    // Events lost because a ring was full (the consumer fell behind).
-    std::uint64_t dropped() const noexcept;
+    // Events lost because a ring was full (the consumer fell behind), since the host began: the input
+    // callbacks count them in one atomic, so any thread may read it (DF-W36), and an input closed by
+    // `refresh` keeps its count.
+    std::uint64_t dropped() const noexcept { return dropped_.load(std::memory_order_relaxed); }
 
   private:
     struct Input;
@@ -76,6 +78,7 @@ class MidiPortHost final : private juce::ump::EndpointsListener {
     // Open inputs by slot; a slot's index is its events' `port`. A closed one stays null, so indexes hold.
     std::vector<std::unique_ptr<Input>> inputs_;
     std::atomic<std::uint64_t> activity_{0};
+    std::atomic<std::uint64_t> dropped_{0};
 };
 // Live's MIDI Ports table on the Tempo & MIDI Settings page (Live 12 manual 41.6): one row per port and
 // direction, its Track, Sync, Remote and MPE switches. A switch is written to the `midi.ports` record at

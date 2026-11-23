@@ -40,6 +40,9 @@ class NativePdDevice {
 
 // Compiled-in canvas bytes (only CRLF/LF may differ), not a filename or an
 // external's name. Any other edit or unsupported I/O stays on the Pd path.
+/// DEV-21: the Sampler hosted as a built-in instrument, from its declaration
+/// text (adi/sampler_declarations.hpp); null when the text does not parse.
+[[nodiscard]] std::unique_ptr<NativePdDevice> makeSamplerNative(std::string_view declarations);
 [[nodiscard]] std::unique_ptr<NativePdDevice> makeNativePdDevice(
     std::string_view patchText, int inChannels, int outChannels);
 

@@ -208,6 +208,7 @@ struct ImageCut {
     std::int64_t first=0,last=0,cut=0,beforeTicks=0,afterTicks=0;
     std::int64_t fadeIn=0,fadeOut=0,rightOffsetTicks=0;
     std::optional<std::int64_t> rightOffsetNs;
+    bool rightBeforeEnd = true;
 };
 ImageCut calculateImageCut(Payload& image,TimePoint point,
                          const edit::TimeMap& time,double referenceRate) {
@@ -231,13 +232,30 @@ ImageCut calculateImageCut(Payload& image,TimePoint point,
     result.fadeOut=detail::signedInteger(old.at("fade_out_ticks"));
     if(result.fadeIn<0 || result.fadeOut<0)throw std::runtime_error("split needs valid existing fades");
     result.rightOffsetTicks=edit::addTime(detail::signedInteger(old.at("content_offset_ticks")),result.beforeTicks);
+    const auto& children = image.at("children");
+    std::optional<bool> beforePhysicalEnd;
     if(kind=="audio") {
         const auto* clock=playback(image);
         if(clock && !clock->at("content_offset_ns").is_null()) {
             const auto offset=sample(static_cast<double>(detail::signedInteger(clock->at("content_offset_ns")))*1e-9,referenceRate);
             const double cutSeconds=base==0?time.seconds(result.cut):static_cast<double>(result.cut)*1e-9;
             const auto passed=sample(cutSeconds,referenceRate)-sample(startSeconds(old,time),referenceRate);
-            result.rightOffsetNs=sampleNanos(edit::addTime(offset,passed),referenceRate);
+            const auto rightSample=edit::addTime(offset,passed);
+            result.rightOffsetNs=sampleNanos(rightSample,referenceRate);
+            const auto& sources=children.at("audio_clips");
+            if (old.at("loop_enabled")==0 && !sources.empty() && sources.front().at("warp_enabled")==0 &&
+                !clock->at("source_end_ns").is_null())
+                beforePhysicalEnd=rightSample < sample(
+                    static_cast<double>(detail::signedInteger(clock->at("source_end_ns")))*1e-9,
+                    referenceRate);
+        }
+    }
+    if (old.at("loop_enabled")==0) {
+        if (beforePhysicalEnd) {
+            result.rightBeforeEnd=*beforePhysicalEnd;
+        } else if (children.contains("clip_properties") && !children.at("clip_properties").empty()) {
+            const auto& marker=children.at("clip_properties").front().at("end_marker_ticks");
+            if (!marker.is_null()) result.rightBeforeEnd=result.rightOffsetTicks < detail::signedInteger(marker);
         }
     }
     return result;
@@ -253,6 +271,7 @@ void keepLeft(Payload& image,const ImageCut& cut) {
     row["fade_in_ticks"]=std::min(cut.fadeIn,cut.beforeTicks);
 }
 void keepRight(Payload& image,const ImageCut& cut) {
+    if (!cut.rightBeforeEnd) throw std::runtime_error("right clip must start before its source End");
     auto& row=image["row"];
     row[cut.position]=cut.cut;row[cut.length]=cut.last-cut.cut;row["fade_in_ticks"]=0;
     row["fade_out_ticks"]=std::min(cut.fadeOut,cut.afterTicks);
@@ -379,39 +398,98 @@ PreparedEdit prepareDuplicate(Store& store,std::int64_t sourceId,std::int64_t ne
         return result;
     } catch(const std::exception& exception){PreparedEdit result;result.error=exception.what();return result;}
 }
-PreparedEdit prepareSplit(Store& store,std::int64_t sourceId,std::int64_t rightId,TimePoint point,double referenceRate) {
+namespace {
+OpRequest captureSplit(Store& store,const ClipSplit& split,std::int64_t firstId,
+                       std::optional<std::int64_t> secondId,const edit::TimeMap& time,
+                       double rate,CopyIds& ids) {
+    auto first=split.first;
+    auto second=split.second;
+    if(second) {
+        if(split.clipId==firstId || split.clipId==*secondId || firstId==*secondId)
+            throw std::runtime_error("split needs three distinct clip identities");
+        if(first.base!=second->base || (first.base!=0 && first.base!=1) || first.value<0 || second->value<=first.value)
+            throw std::runtime_error("split needs ordered endpoints in one clock");
+    }
+    OpContext context{store,store.db()};
+    auto image=captureDeleted(context,split.clipId);
+    if(second) {
+        const int base=static_cast<int>(detail::signedInteger(image.at("row").at("time_base")));
+        first={base,coordinate(first,base,time)};
+        second=TimePoint{base,coordinate(*second,base,time)};
+        if(second->value<=first.value)throw std::runtime_error("split endpoints coincide in the clip's clock");
+    }
+    auto next=splitImage(store,image,firstId,first,time,rate,ids);
+    std::optional<Payload> tail;
+    if(second)tail=splitImage(store,next,*secondId,*second,time,rate,ids);
+    edit::RowEdits plan(store.db());
+    plan.set("clips",split.clipId,image.at("row"));
+    retainDetails(plan,image);
+    createImage(plan,next);
+    if(tail)createImage(plan,*tail);
+    OpRequest request;
+    request.opType="clip.split";
+    request.payload={{"id",split.clipId},{"changes",plan.changes()}};
+    request.label="Split Clip";
+    request.targetKind="clip";request.targetId=split.clipId;
+    return request;
+}
+
+PreparedEdit prepareOneSplit(Store& store,const ClipSplit& split,std::int64_t firstId,
+                             std::optional<std::int64_t> secondId,double referenceRate) {
     PreparedEdit result;
     try {
-        validRate(referenceRate);Read read(store.db());expectedHead(store,result);OpContext context{store,store.db()};
-        auto image=captureDeleted(context,sourceId);edit::TimeMap time(store.db());
-        CopyIds ids(store.db());auto right=splitImage(store,image,rightId,point,time,referenceRate,ids);
-        edit::RowEdits plan(store.db());plan.set("clips",sourceId,image.at("row"));
-        retainDetails(plan,image);
-        createImage(plan,right);packet(store,result,"clip.split","Split Clip",sourceId,plan);
-    } catch(const std::exception& exception){result.ok=false;result.error=exception.what();}
+        validRate(referenceRate);Read read(store.db());expectedHead(store,result);
+        result.sourceFile=filename(store);
+        const edit::TimeMap time(store.db());
+        CopyIds ids(store.db());
+        result.requests.push_back(captureSplit(store,split,firstId,secondId,time,referenceRate,ids));
+        result.ok=true;
+    } catch(const std::exception& exception){result.error=exception.what();}
     return result;
+}
+}
+PreparedEdit prepareSplit(Store& store,std::int64_t sourceId,std::int64_t rightId,TimePoint point,double referenceRate) {
+    return prepareOneSplit(store,{sourceId,point,{}},rightId,{},referenceRate);
 }
 PreparedEdit prepareSplit(Store& store,std::int64_t sourceId,std::int64_t middleId,std::int64_t rightId,
                           TimePoint begin,TimePoint end,double referenceRate) {
-    PreparedEdit result;
+    return prepareOneSplit(store,{sourceId,begin,end},middleId,rightId,referenceRate);
+}
+PreparedSplits prepareSplits(Store& store,std::span<const ClipSplit> splits,double referenceRate) {
+    PreparedSplits result;
     try {
-        validRate(referenceRate);
-        if(sourceId==middleId || sourceId==rightId || middleId==rightId)
-            throw std::runtime_error("split needs three distinct clip identities");
-        if(begin.base!=end.base || (begin.base!=0 && begin.base!=1) || begin.value<0 || end.value<=begin.value)
-            throw std::runtime_error("split needs ordered endpoints in one clock");
-        Read read(store.db());expectedHead(store,result);OpContext context{store,store.db()};
-        auto image=captureDeleted(context,sourceId);edit::TimeMap time(store.db());
-        const int base=static_cast<int>(detail::signedInteger(image.at("row").at("time_base")));
-        const auto first=coordinate(begin,base,time),last=coordinate(end,base,time);
-        if(last<=first)throw std::runtime_error("split endpoints coincide in the clip's clock");
-        CopyIds ids(store.db());
-        auto middle=splitImage(store,image,middleId,{base,first},time,referenceRate,ids);
-        auto right=splitImage(store,middle,rightId,{base,last},time,referenceRate,ids);
-        edit::RowEdits plan(store.db());plan.set("clips",sourceId,image.at("row"));
-        retainDetails(plan,image);createImage(plan,middle);createImage(plan,right);
-        packet(store,result,"clip.split","Split Clip",sourceId,plan);
-    } catch(const std::exception& exception){result.ok=false;result.error=exception.what();}
+        validRate(referenceRate);Read read(store.db());expectedHead(store,result.edit);
+        result.edit.sourceFile=filename(store);
+        const edit::TimeMap time(store.db());
+        std::optional<CopyIds> ids(std::in_place,store.db());
+        std::set<std::int64_t> seen;
+        for(const auto& split:splits) {
+            try {
+                if(!seen.insert(split.clipId).second)throw std::runtime_error("clip appears twice in the split selection");
+                const auto firstId=ids->next("clips");
+                const auto secondId=split.second?std::optional{ids->next("clips")}:std::nullopt;
+                auto request=captureSplit(store,split,firstId,secondId,time,referenceRate,*ids);
+                result.edit.requests.push_back(std::move(request));
+            } catch(const std::exception& exception){
+                result.refused.push_back({split.clipId,exception.what()});
+                // A refused split may have reserved the last available ID.
+                // Carry only the actual insertions from accepted requests.
+                ids.emplace(store.db());
+                for(const auto& accepted:result.edit.requests)for(const auto& change:accepted.payload.at("changes")) {
+                    const auto& table=change.at("table").get_ref<const std::string&>();
+                    if(change.at("before").is_null() && !change.at("after").is_null() &&
+                       std::string_view(edit::rowSpec(table).key)=="id")
+                        ids->reserve(table,detail::signedInteger(change.at("id")));
+                }
+            }
+        }
+        if(result.edit.requests.empty()) {
+            result.edit.error=result.refused.empty()?"split selection is empty":result.refused.front().error;
+            return result;
+        }
+        if(result.edit.requests.size()>1)for(auto& request:result.edit.requests)request.label="Split Clips";
+        result.edit.ok=true;
+    } catch(const std::exception& exception){result.edit.error=exception.what();}
     return result;
 }
 namespace {
@@ -1046,7 +1124,7 @@ void resizeFrozenEnd(Payload& image,std::int64_t end,const edit::TimeMap& time,d
     const char* position=base==0?"pos_ticks":"pos_ns";
     const char* length=base==0?"length_ticks":"length_ns";
     const auto first=adi::detail::signedInteger(row.at(position));
-    if(end<first)throw std::runtime_error("end resize must not precede the anchored start");
+    if(end<=first)throw std::runtime_error("end resize must follow the anchored start");
     const auto origin=clip_edit::originTicks(row,time),lastTick=base==0?end:time.ticks(end);
     if(lastTick<origin)throw std::runtime_error("end resize has an invalid musical span");
     const auto ticks=lastTick-origin;
@@ -1094,6 +1172,107 @@ void resizeFrozenEnd(Payload& image,std::int64_t end,const edit::TimeMap& time,d
             if(count==0){domain[pair.first]=nullptr;domain[pair.second]=nullptr;continue;}
             domain[pair.first]=finish-count;domain[pair.second]=finish;
         }
+    }
+}
+void trimFrozenStart(Payload& image,std::int64_t begin,const edit::TimeMap& time,double rate) {
+    auto& row=image["row"];
+    if(!row.at("alias_of").is_null())throw std::runtime_error("left trim needs alias resolution");
+    const bool audio=row.at("kind")=="audio";
+    if(!audio && row.at("kind")!="midi")throw std::runtime_error("this clip kind has no left-trim playback");
+    const auto base=static_cast<int>(adi::detail::signedInteger(row.at("time_base")));
+    const char* position=base==0?"pos_ticks":"pos_ns";
+    const char* length=base==0?"length_ticks":"length_ns";
+    const auto first=adi::detail::signedInteger(row.at(position));
+    const auto end=edit::addTime(first,adi::detail::signedInteger(row.at(length)));
+    if(begin<0 || begin>=end)throw std::runtime_error("left trim must not pass the anchored end");
+    const auto oldOrigin=clip_edit::originTicks(row,time);
+    const auto oldOffset=adi::detail::signedInteger(row.at("content_offset_ticks"));
+    constexpr std::int64_t limit=std::int64_t{1}<<50;
+    if(oldOffset < -limit || oldOffset > limit)throw std::runtime_error("left trim source offset outside supported range");
+    auto tickAt=[&](std::int64_t value){return base==0?value:time.ticks(value);};
+    auto sampleAt=[&](std::int64_t value){return clip_edit::sample(base==0?time.seconds(value):static_cast<double>(value)*1e-9,rate);};
+    auto* clock=clip_edit::playback(image);
+    const auto& sources=image.at("children").at("audio_clips");
+    const bool warpSource=audio && !sources.empty() && sources.front().at("warp_enabled")!=0;
+    const bool physical=audio && !warpSource && clock && !clock->at("content_offset_ns").is_null();
+    std::int64_t oldSample=0,sourceSample=0;
+    if(physical) {
+        oldSample=sampleAt(first);
+        sourceSample=clip_edit::sample(static_cast<double>(adi::detail::signedInteger(clock->at("content_offset_ns")))*1e-9,rate);
+    } else if(audio && oldOffset<0)throw std::runtime_error("audio left trim needs a nonnegative source clock");
+    // A clip already at source zero has no earlier material: keep its begin,
+    // so prepareTrim restores the original image as a true no-op.
+    if(physical && sourceSample==0 && begin<first)begin=first;
+    if(audio && begin<first) {
+        // Find the first representable native position at or after source zero.
+        // Binary search keeps directed conversion independent of tempo and of
+        // tick/ns rounding at a sample boundary. The old begin is admissible.
+        auto sourceAt=[&](std::int64_t value){return physical?(base==0?time.nanos(value):value):tickAt(value);};
+        const auto lower=physical?std::min(sourceAt(first),clip_edit::sampleNanos(std::max<std::int64_t>(0,oldSample-sourceSample),rate)):oldOrigin-oldOffset;
+        if(sourceAt(begin)<lower) {
+            auto high=first;
+            while(begin<high) {
+                const auto middle=begin+(high-begin)/2;
+                if(sourceAt(middle)<lower)begin=middle+1;else high=middle;
+            }
+        }
+    }
+    const auto origin=tickAt(begin),last=tickAt(end);
+    if(last<origin)throw std::runtime_error("left trim has an invalid musical span");
+    const auto offset=edit::addTime(oldOffset,origin-oldOrigin);
+    if(offset < -limit || offset > limit || (audio && !physical && offset<0))
+        throw std::runtime_error("left trim source offset outside supported range");
+    // An unlooped MIDI or warped clip must keep Start before its End marker.
+    // Unwarped audio plays from its physical pins instead.
+    const auto& children=image.at("children");
+    if((!audio || warpSource) && row.at("loop_enabled")==0 && children.contains("clip_properties") &&
+       !children.at("clip_properties").empty() && !children.at("clip_properties")[0].at("end_marker_ticks").is_null() &&
+       offset>=adi::detail::signedInteger(children.at("clip_properties")[0].at("end_marker_ticks")))
+        throw std::runtime_error("left trim must not pass the clip End marker");
+    const auto ticks=last-origin;
+    const bool activeIn=adi::detail::signedInteger(row.at("fade_in_ticks"))>0;
+    const bool activeOut=adi::detail::signedInteger(row.at("fade_out_ticks"))>0;
+    for(const char* fade:{"fade_in_ticks","fade_out_ticks"}) {
+        const auto value=adi::detail::signedInteger(row.at(fade));
+        if(value<0)throw std::runtime_error("left trim needs valid fades");
+        row[fade]=std::min(value,ticks);
+    }
+    row[position]=begin;row[length]=end-begin;row["content_offset_ticks"]=offset;
+    auto retarget=[&](Payload& domain,const char* firstKey,const char* lastKey,
+                      std::int64_t sourceBegin,std::int64_t sourceEnd,bool incoming) {
+        if(incoming?!activeIn:!activeOut)return;
+        if(domain.at(firstKey).is_null() || domain.at(lastKey).is_null())return;
+        const auto a=adi::detail::signedInteger(domain.at(firstKey));
+        const auto b=adi::detail::signedInteger(domain.at(lastKey));
+        if(a<0 || b<a)throw std::runtime_error("left trim needs ordered fade domains");
+        const auto start=incoming?sourceBegin:std::max(a,sourceBegin);
+        const auto finish=incoming?edit::addTime(start,std::min(b-a,sourceEnd-sourceBegin)):std::min(b,sourceEnd);
+        if(finish<=start){domain[firstKey]=nullptr;domain[lastKey]=nullptr;return;}
+        domain[firstKey]=start;domain[lastKey]=finish;
+    };
+    if(physical) {
+        const auto next=edit::addTime(sourceSample,sampleAt(begin)-oldSample);
+        const auto finish=edit::addTime(next,sampleAt(end)-sampleAt(begin));
+        if(next<0 || finish<next)throw std::runtime_error("audio left trim precedes source zero");
+        // Operate in samples, then pin representable ns once per boundary.
+        Payload domains=Payload::object();
+        for(const char* key:{"in_begin_ns","in_end_ns","out_begin_ns","out_end_ns"}) {
+            if(std::string_view(key).starts_with("in_")?!activeIn:!activeOut)continue;
+            domains[key]=clock->at(key).is_null()?Payload(nullptr):Payload(clip_edit::sample(static_cast<double>(adi::detail::signedInteger(clock->at(key)))*1e-9,rate));
+        }
+        retarget(domains,"in_begin_ns","in_end_ns",next,finish,true);
+        retarget(domains,"out_begin_ns","out_end_ns",next,finish,false);
+        for(const char* key:{"in_begin_ns","in_end_ns","out_begin_ns","out_end_ns"}) {
+            if(!domains.contains(key))continue;
+            (*clock)[key]=domains.at(key).is_null()?Payload(nullptr):Payload(clip_edit::sampleNanos(adi::detail::signedInteger(domains.at(key)),rate));
+        }
+        (*clock)["content_offset_ns"]=clip_edit::sampleNanos(next,rate);
+    }
+    auto& warped=image["children"]["clip_warp_fade_domains"];
+    if(warpSource && !warped.empty()) {
+        const auto finish=edit::addTime(offset,ticks);
+        retarget(warped[0],"in_begin_ticks","in_end_ticks",offset,finish,true);
+        retarget(warped[0],"out_begin_ticks","out_end_ticks",offset,finish,false);
     }
 }
 } // namespace adi::edit_plan::detail

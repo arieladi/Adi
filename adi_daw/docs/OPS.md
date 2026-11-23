@@ -566,9 +566,12 @@ updating in place without cascading children; clearing retains extensions.
 links. Legacy captured create payloads remain readable. No unknown child-table
 capture is claimed.
 
-The clip.setFades payload is {id,in?:{ticks?,curve?,tension?},out?:{...}}.
+The clip.setFades payload is {id,in?:{ticks?,startTicks?,curve?,tension?},out?:{...}}.
 It is audio-only; ticks are nonnegative and no longer than the clip's musical
 span, curve is 0..5, tension is finite [-1,1] or null for legacy arithmetic.
+The two distances are inward from each side's clip edge. `ticks` locates the
+peak, and `startTicks` locates the zero-gain handle. A positive `startTicks`
+must precede its peak, and a zero or omitted value puts it at the clip edge.
 Each selected side must set at least one known field. Both sides are one edit;
 its inverse captures native fields and the full typed details row or absence.
 
@@ -582,6 +585,10 @@ is not rewritten. clip.join restores the captured source and removes all new
 pieces, without allocating IDs or recapturing their source clocks. A prepared
 two-cut split and an appended clip.setMute for its middle piece can be committed
 as one expected-head transaction and one undo step (ADR-0153; N17).
+`prepareSplits` prepares one or two cuts per selected clip using one project
+snapshot and shared clip and child identity allocation (N55). It reports
+per-clip refusals and returns the accepted captures for one expected-head
+commit and one Undo.
 The clip.duplicate op creates only one captured clip and its children; its inverse
 is clip.delete.
 Delete captures full native rows, opaque children and external alias links.
@@ -632,8 +639,10 @@ supported commands and explicit refusals.
 accept attached Warp audio. They preserve AWRP/source windows and capture
 source musical fade domains in clip_warp_fade_domains (schema 1.13), so Split
 retains the original curve on both pieces with no new internal edge fade.
-clip.setFades clears the selected side's retained domain and captures its
-complete typed row in the inverse, alongside the existing nanosecond shape.
+clip.setFades uses that domain for an authored Warp handle pair and the existing
+nanosecond domain for an unwarped source. A selected side at the clip edge
+returns to its legacy edge-based envelope. The inverse captures both complete
+typed domain rows or their absence.
 
 **Captured Warp import (N17).** `clip_edit::prepareImportAudio` with
 `ImportOptions::warp` analyzes the source off the callback, then captures
@@ -1727,6 +1736,7 @@ rate conversion, missing-file snapshot and immutable-content publication limit.
 | `routing.setGain` | e | S | sym, coalescable | P0 |
 | `routing.setPan` | e | S | sym, coalescable | P1 |
 | `routing.setPreFader` | e | G | sym | P0 |
+| `routing.setSendTap` | e | G | cap, sym | P1 |
 | `routing.setEnabled` | e | S | sym | P0 |
 | `routing.reorder` | e | S | sym | P1 |
 | `mixer.setVolume` | e | S | sym, coalescable | P0 |
@@ -1757,13 +1767,30 @@ lanes `panLeft` and `panRight` use real -1..+1 units and the existing override /
 Re-Enable Automation path. The window does not implement the panning matrix.
 
 `return.setSendTap {id, pre}` is one return-owned Pre/Post choice (ADR-0203 d3).
-It persists with zero sends and changes every incoming send as one undo step.
+`return.setSendTap {id, click: true}` is the physical switch. A mixed return
+chooses Post first. A uniform return toggles its setting. The click clears
+individual tap overrides on every incoming send, including disabled sends,
+and captures their complete rows in the same Undo step.
+It persists with zero sends and changes the inherited tap in one undo step.
 Ordinary new routing.connect sends inherit an explicit choice on their return.
 A conflicting new per-edge routing.setPreFader edit refuses; the same value is
 allowed. Historical scalar payloads retain their old apply semantics. Absent
 preferences preserve legacy row taps and expose uniform or mixed state; no
 migration rewrites existing audio. A producer for a new send captures the
 uniform legacy choice as literal ops before creating it.
+
+`routing.setSendTap {id, tap}` chooses `pre_fx`, `post_fx`, or `post_mixer`
+for one send (ADR-0245 d10). Omit `tap` to inherit the return's setting again.
+The inverse restores the prior tap or inheritance. An explicit change to the
+return default with `pre` preserves individual choices. The snapshot marks unequal
+effective taps as mixed.
+
+A return inside a group accepts sends from descendants of that group. Its
+output joins those descendants before the group's devices. Moving a track or
+subgroup out removes any sends it loses access to, with the rows and their
+taps captured in the same undo step. Group-copy producers append
+`copyGroupSendRequests` after the cloned track ops in one transaction so
+internal sends target the copied returns.
 
 Its captured inverse uses internal optional restore {current, target}, each with
 nullable choice and ordered incoming {id, pre} values. It checks current flags,

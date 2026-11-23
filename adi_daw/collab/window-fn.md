@@ -40,8 +40,145 @@ until then a need is named by its item.
 | Reserve: one N row. The input-monitor node of MX-09: a live input per monitored track, from its input (channels 1/2 until `input_ref` has its grammar, MX-25), heard per `monitor_mode` (In always; Auto while armed and no clip plays; Off never) | engine (ADR-0248 d6, item 4) | MX-09: the director hears what he records | Arm and the switch store their choice; nothing is heard of the input; Record records |
 | Reserve: one N row. A failed capture's audio kept up to the failure (a locate or an overflow after minutes of good audio is lost whole today: `recording::prepareCommit` takes only a clean result) | engine (`src/adi/recording_commands.*`) | MX-09: a take is not lost to one click on the timeline | the take is dropped and the Status Bar says why, at once |
 | Reserve: one N row. Live's monitoring default for a new track: Auto, where New and `track.create` store 0 (Off) | win (AWAITING 20) and the engine | MX-09: a new audio track should monitor as Live's does once the input-monitor node exists | the switch shows Off on New's tracks, as stored |
+| Reserve: one N row. After a discovery job, an ordinary project open should still probe a plug-in's saved path when the catalogue lacks it, as it does before any job. Today `managedDiscovery_` is set by the first `startDiscovery` and never cleared, so `makeVst3` and `makeClap` answer "needs discovery" for every miss for the rest of the run (and `hydrateCatalogue` returns at once). A proposal: suppress the hint only while a job is in flight (`discoveryJob_`) | engine-win (`src/juce/juce_device_loader.cpp`, N58) | DF-W34: a project that names a plug-in installed since the last scan loads it on open, as before the window started discovery at launch | an open while a job runs waits for its adoption (engine-win's handoff); an open with no job running loads catalogue hits only |
 
 ---
+
+## 2026-11-20, window-fn — DF-W36: `MidiPortHost::dropped()` safe from any thread (PR requested)
+
+Win's evening entry gave DF-W36 to this seat. The header said `activity` and `dropped` may be read from
+any thread, but `dropped()` walked `inputs_`, which `refresh()` rebuilds on the message thread. The input
+callbacks now count an event lost to a full ring in one host-level atomic, beside `activity_`, so the
+promise holds. The count runs from the host's start, and an input closed by `refresh()` keeps its share.
+
+**Run.** The window's 27 suites (100%). A fixed-port test host opens no inputs, so the shell's check stays
+at "nothing played, nothing dropped". No review workflow ran for a seven-line change.
+
+**PR requested** — `window-fn/midi-dropped` at `9bcd9e72`, on main `7510acd2`: "adi_daw: DF-W36:
+MidiPortHost::dropped() is one atomic, safe from any thread". It depends on nothing.
+
+## 2026-11-20, window-fn — AU-04: Re-Enable Automation in a control's context menu (PR requested)
+
+M1's AU-04, its open half. The Control Bar's switch (#472) re-enables every lane at once. Live's
+parameter menu re-enables one (manual 25.4), and `Session::reenableAutomation(laneId)` was on main with
+no caller.
+
+- A device knob's right-click (on the knob or its labels), and the mixer's pan and send menus, offer
+  **Re-Enable Automation** while the control has a lane. It is available while that lane is overridden.
+  Choosing it makes that one lane follow its envelope again; the others stay overridden. It is session
+  state and no undo step, as the switch is (ADR-0162). `ProjectDocument::reenableAutomation(laneId)`
+  refreshes the snapshot and the feed as the global one does, and refuses a lane that is not overridden,
+  with the reason.
+- The lane behind a control (`adi/ui/automation_override.hpp`) is the one the engine plays. As its
+  binders do, the lookup skips a disabled lane or one in another value domain, and the first of two
+  plays. A device's lane is named as the engine names it (`engine::automationParamRef`, a CLAP id in
+  decimal), so `DevicePanelData` now carries its plug-in format.
+- **Not here.** The vertical volume fader: a JUCE linear slider moves on a right-click before a menu can
+  open, so its item waits for a fader that ignores the right button (the look's or a follow-up). The
+  AU-01 lanes' own item comes once `window-fn/automation-lanes` lands. Split pans' items come with MX-02.
+
+**Run.** The window's 27 suites (100%). `adi_ui_shell_tests` (2798 checks): Cutoff overridden, its
+menu's item available; chosen, it follows its lane, the switch is unlit, and no undo step is added; a lane
+not overridden is refused; a control with no lane gets no item. `adi_ui_seams_tests` (537 checks): the
+played lane among disabled, wrong-domain and second lanes, and a CLAP id. Review: three dimensions with a
+skeptic on each finding. One was confirmed (the lookup took the first lane, not the played one) and fixed;
+three were refuted.
+
+**PR requested** — `window-fn/reenable-param` at `f2988fab`, on main `909ba114`: "adi_daw: AU-04: Live's
+per-parameter Re-Enable Automation in a control's context menu". It depends on nothing.
+
+## 2026-11-20, window-fn — DF-W9's load half brought onto N58 (PR requested)
+
+`window-fn/plugin-load` was built on the first scan branch's gate. It now merges
+`window-fn/plugin-scan-n58`, with no conflict. The insert goes straight to the loader: the Browser lists
+the catalogue, and the loader serves a catalogue hit while a discovery runs. Every listed plug-in carries
+its kind, so the guessed-kind path is only a fallback, and its Status Bar line no longer cites N58.
+
+**Run.** The window's 27 suites (100%); `adi_ui_shell_tests` 2841 checks, 0 failures.
+
+**PR requested** — `window-fn/plugin-load` at `ee8bd592`: "adi_daw: DF-W9 load on N58: the Browser inserts
+from the loader's catalogue". It depends on `window-fn/plugin-scan-n58` (land that first; this branch
+contains it) and on N57, which is on main.
+
+## 2026-11-20, window-fn — DF-W34 on N58: the Browser's plug-ins through the loader's discovery jobs (PR requested)
+
+N58 (engine-win's catalogue API) and the Settings' separate VST3 and CLAP search roots are on main, so
+the scan moves onto them, as engine-win's log asked. This branch replaces `window-fn/plugin-scan`: it is
+that branch merged with main and reworked. The window's own worker, its gate in front of the loader
+(`Hold`) and its folder plumbing are gone.
+
+- **The service.** `PluginCatalogueService` (`adi/ui/plugin_scan.hpp`, no JUCE) runs on the message
+  thread, over a `DiscoveryPort` that `ui_main.cpp` adapts to `startDiscovery`, `discoveryProgress`,
+  `adoptDiscovery`, `cancelDiscovery` and `catalogue()`. The app's 20 ms timer polls it. It never scans
+  and never waits.
+- **The jobs.** At launch the first project's open reads the stored catalogue (the loader's read-only
+  hydration, already on main), and the Browser lists it at once. Then an Incremental finds what was
+  installed or removed since. Engine-win suggested CacheOnly first; a separate CacheOnly job would only
+  make the first open wait. Rescan runs a Refresh, and stops a running Incremental first, since the
+  Refresh covers it. A change to the Settings' plug-in folders runs an Incremental; a running job left
+  stale runs again.
+- **What is shown.** The Browser's list comes from `catalogue()`. Each VST3 has its kind from the
+  catalogue's instrument flag (N58), named as `device::identityOf` names it. The status line ("Scanning
+  plug-ins: 12 of 150 files…") heads the list for the whole job. A count changes only that line, so the
+  selection and scroll stay. A failed or user-cancelled job keeps the list and names why it stopped; a job
+  the loader would not start is named too, on the Settings page as well.
+- **Opens.** Once a job has run, the loader resolves plug-ins from the catalogue alone (see the needs
+  table). So a project opened while a job runs waits for that job's adoption, then finds what it found.
+  The Status Bar says "Opening X once the plug-in scan has finished…". A stale job's opens wait for its
+  rerun; those of a job a Rescan stopped wait for the Refresh. Opens run between jobs, before the next job
+  starts. A refused open clears its line.
+
+**Run.** The window's 27 suites (100%). `adi_ui_shell_tests` 2836 checks, 0 failures: the service over a
+stand-in port (startup listing, progress, adoption, Rescan stopping an Incremental, a stop refused by a
+finished job, Stale, opens waiting and running between jobs, a failed job, a refused start, Quit), and the
+Browser's status line keeping the selection. The new Rescan test fails on the previous rule. The app ran
+headless under a virtual display, with a CLAP fixture folder set in the Settings: the Incremental started,
+was adopted Published, and the catalogue held the fixture's two plug-ins. There were two review rounds,
+each finding verified by a skeptic. The first confirmed 13 findings (one root cause: stopping a job for an
+open gained nothing; plus the Browser's selection, the progress line, Rescan's refusal and the waiting
+line), all fixed. The second confirmed one (the Rescan case above, reported twice) and a test gap, both
+fixed.
+
+**For engine-win, through win.** The needs-table row above: the loader's saved-path probe stays off for
+the whole run after the first discovery job.
+
+**For win.** `adi_play_render_tests` does not build on GCC 13 with warnings as errors:
+`tests/scanner_session_reopen.hpp:208`, "loop variable '<structured bindings>' creates a copy"
+(`-Werror=range-loop-construct`; `const auto& [position,count]` is the fix). It came from main (`3bfd0d5c`),
+and it is not this seat's file.
+
+**PR requested** — `window-fn/plugin-scan-n58` at `423f1027`, on main `909ba114` (merged): "adi_daw:
+DF-W34 on N58: the Browser's plug-ins through the loader's discovery jobs". It replaces
+`window-fn/plugin-scan` and depends on #676 (`window/plugins-browser`), which it contains. The DF-W9 load
+branch (`window-fn/plugin-load`) was built on `window-fn/plugin-scan`'s gate; it is brought onto this
+branch next.
+
+## 2026-11-20, window-fn — DF-W35: a send's Enable Send tick and action under one rule (PR requested)
+
+Win's entry of 19 November gave DF-W35 (a) to this seat; (b) and (c) are small and were taken with it.
+
+- **(a)** `enableSend` now reads a send as `sendOn` does: with no row, a track's send is on and a return's
+  is off. Unticking Enable Send on a new track's send writes the row fully down, as the knob shows it, and
+  switched off: one step, "Disable Send". It is no longer refused as "off already". Ticking it again
+  switches the same row on, and undo removes the row, so the send reads on again. Enable All Sends makes
+  no row for a send that already reads on.
+- **(b)** Enable All Sends counts no id past its last new row, which may be INT64_MAX itself. The review
+  found that the first test of this passed on the old code too, because the overflow is undefined and
+  invisible on a plain build. So `adi_ui_seams_tests` now builds with signed-overflow trapping (GCC and
+  Clang, trap mode, no runtime), and putting the old increment back makes the suite trap. There are cases
+  for one row and for two rows ending at INT64_MAX, and for three that do not fit.
+- **(c)** `heldBy` and `holdsSoloed` share one walk (`track_edits_detail::insideGroup`). It stops after as
+  many steps as there are tracks, as `TrackTree::within` does, so a parent loop cannot hang the mixer. A
+  copied snapshot with two tracks made each other's parent checks it.
+
+**Run.** The window's 27 suites (100%); `adi_ui_shell_tests` (2747 checks, 0 failures) with a mixer case:
+Disable Send on 3 Audio's send with no row, the tick gone, one step, undo; `adi_ui_seams_tests` (549
+checks). The review ran in three dimensions with a skeptic on each finding: one confirmed (the test above,
+fixed), two refuted.
+
+**PR requested** — `window-fn/send-enable` at `bb8d28f1`, on main `909ba114`: "adi_daw: one rule for a
+send's Enable Send tick and action; bounded group walks (DF-W35)". It depends on nothing. It touches
+`CMakeLists.txt` in one place, the seams target's compile options.
 
 ## 2026-11-19, window-fn — AU-01: Automation Mode in the Arrangement (PR requested)
 

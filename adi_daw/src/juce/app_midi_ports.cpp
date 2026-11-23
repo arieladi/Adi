@@ -25,7 +25,8 @@ struct MidiPortHost::Input final : ump::Consumer {
                 continue;
             event.timeMs = time * 1000.0; // JUCE's UMP backends pass seconds
             event.port = slot;
-            ring.push(event);
+            if (!ring.push(event))
+                host.dropped_.fetch_add(1, std::memory_order_relaxed);
             host.activity_.fetch_add(1, std::memory_order_relaxed);
         }
     }
@@ -66,13 +67,6 @@ std::string MidiPortHost::backend() const {
     case ump::Backend::wms: return "Windows MIDI Services";
     }
     return {};
-}
-std::uint64_t MidiPortHost::dropped() const noexcept {
-    std::uint64_t n = 0;
-    for (const auto &input : inputs_)
-        if (input)
-            n += input->ring.dropped();
-    return n;
 }
 std::size_t MidiPortHost::drain(const std::function<void(const MidiPortEvent &)> &take) {
     std::size_t n = 0;

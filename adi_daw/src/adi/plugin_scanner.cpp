@@ -25,6 +25,7 @@
 namespace adi::scan {
 namespace {
 using Json = nlohmann::json;
+constexpr auto helperCouldNotStart = "scanner helper could not start";
 void require(bool value, const char* message) { if (!value) throw std::runtime_error(message); }
 bool text(std::string_view value, std::size_t maximum = 65536) {
     if (value.size()>maximum || value.find('\0')!=value.npos) return false;
@@ -224,9 +225,14 @@ Scanner::Scanner(Config config,std::unique_ptr<PluginRegistry> registry,std::str
     std::uintmax_t helperSize,std::filesystem::file_time_type helperTime)
     :config_(std::move(config)),registry_(std::move(registry)),helperBuildHash_(std::move(buildHash)),
      helperSize_(helperSize),helperTime_(helperTime){}
-std::unique_ptr<Scanner> Scanner::open(const Config& config,std::string& error) {
-    if(audio::onAudioThread)return nullptr;
+std::unique_ptr<Scanner> Scanner::open(const Config& config,std::string& error,State* reason) {
+    if(reason)*reason=State::Unavailable;
+    if(audio::onAudioThread) {
+        if(reason)*reason=State::CallbackRefused;
+        return nullptr;
+    }
     error.clear();
+    auto failureState=State::Unavailable;
     try {
         Config resolved=config;
         require(resolved.cacheMode==ScanCacheMode::Reuse || resolved.cacheMode==ScanCacheMode::Refresh,
@@ -238,15 +244,21 @@ std::unique_ptr<Scanner> Scanner::open(const Config& config,std::string& error) 
         const auto& process=resolved.process;
         require(process.timeout.count()>0 && process.timeout.count()<=300000 && process.maximumOutput>0 &&
             process.maximumOutput<=kMaximumPacket,"invalid scanner process bounds");
+        failureState=State::HelperCouldNotStart;
         const auto helperSize=std::filesystem::file_size(resolved.executable);
         const auto helperTime=std::filesystem::last_write_time(resolved.executable);
         const auto build=media::blake3File(resolved.executable);
         require(static_cast<bool>(build),"scanner helper build identity unavailable");
         require(helperSize==std::filesystem::file_size(resolved.executable) &&
                 helperTime==std::filesystem::last_write_time(resolved.executable),"scanner helper changed during identification");
+        failureState=State::Unavailable;
         auto registry=PluginRegistry::open(resolved.registry,error);if(!registry)return nullptr;
         return std::unique_ptr<Scanner>(new Scanner(std::move(resolved),std::move(registry),build.hex,helperSize,helperTime));
-    } catch(const std::exception&) {error="scanner configuration unavailable";return nullptr;}
+    } catch(const std::exception&) {
+        if(reason)*reason=failureState;
+        error=failureState==State::HelperCouldNotStart?helperCouldNotStart:"scanner configuration unavailable";
+        return nullptr;
+    }
 }
 std::unique_ptr<Scanner> Scanner::openPeer(std::string& error) const {
     if (audio::onAudioThread) return nullptr;
@@ -274,13 +286,21 @@ Result Scanner::probe(const std::string& format,const std::filesystem::path& pat
         if(format!="clap" && (format!="vst3" || validate==nullptr)) {
             result.error="unsupported scanner format/validator";return result;
         }
-        const auto helperSize=std::filesystem::file_size(config_.executable);
-        const auto helperTime=std::filesystem::last_write_time(config_.executable);
-        if(helperSize!=helperSize_ || helperTime!=helperTime_) {
-            const auto build=media::blake3File(config_.executable);
-            require(static_cast<bool>(build) && helperSize==std::filesystem::file_size(config_.executable) &&
-                    helperTime==std::filesystem::last_write_time(config_.executable),"scanner helper changed during identification");
-            helperBuildHash_=build.hex;helperSize_=helperSize;helperTime_=helperTime;
+        std::uintmax_t helperSize=0;
+        std::filesystem::file_time_type helperTime;
+        try {
+            helperSize=std::filesystem::file_size(config_.executable);
+            helperTime=std::filesystem::last_write_time(config_.executable);
+            if(helperSize!=helperSize_ || helperTime!=helperTime_) {
+                const auto build=media::blake3File(config_.executable);
+                require(static_cast<bool>(build) && helperSize==std::filesystem::file_size(config_.executable) &&
+                        helperTime==std::filesystem::last_write_time(config_.executable),"scanner helper changed during identification");
+                helperBuildHash_=build.hex;helperSize_=helperSize;helperTime_=helperTime;
+            }
+        } catch(const std::exception&) {
+            result.state=State::HelperCouldNotStart;
+            result.error=helperCouldNotStart;
+            return result;
         }
         std::error_code ec;const auto canonical=std::filesystem::canonical(path,ec);
         if(ec){result.state=State::Unavailable;result.error="scan candidate path unavailable";return result;}
@@ -396,12 +416,16 @@ Result Scanner::probe(const std::string& format,const std::filesystem::path& pat
             process.status==ProcessStatus::Invalid || process.status==ProcessStatus::CallbackRefused ||
             process.status==ProcessStatus::IoFailed || helperFailure;
         if(abandoned) {
-            const auto state=cancel || process.status==ProcessStatus::Cancelled?State::Cancelled:State::Unavailable;
+            auto state=State::Unavailable;
+            if(cancel || process.status==ProcessStatus::Cancelled)state=State::Cancelled;
+            else if(process.status==ProcessStatus::LaunchFailed)state=State::HelperCouldNotStart;
             std::string error;
             if(!registry_->finishScan(*ticket,ScanDisposition::Abandoned,"",config_.clock(),error)) {
                 result.state=State::Quarantined;result.error=error;return result;
             }
-            result.state=state;result.error="scanner helper unavailable or scan cancelled";return result;
+            result.state=state;
+            result.error=state==State::HelperCouldNotStart?helperCouldNotStart:"scanner helper unavailable or scan cancelled";
+            return result;
         }
         std::optional<std::vector<Plugin>> plugins;
         if(process.succeeded())plugins=decodeMetadata(process.output,format,result.path,result.error);

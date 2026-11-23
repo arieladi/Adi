@@ -46,7 +46,11 @@ struct Config {
     BatchProgress* progress = nullptr; // borrowed by one ordered batch through return
 };
 inline constexpr unsigned kMaximumProbeWorkers = 4;
-enum class State { Ready, Quarantined, Unavailable, Cancelled, Failed, Invalid, CallbackRefused };
+enum class State { Ready, Quarantined, Unavailable, Cancelled, Failed, Invalid, CallbackRefused, HelperCouldNotStart };
+[[nodiscard]] constexpr bool stopsDiscovery(State state) noexcept {
+    return state==State::Cancelled || state==State::Unavailable || state==State::Invalid ||
+           state==State::HelperCouldNotStart;
+}
 struct Result {
     State state = State::Invalid;
     bool cacheHit = false; // validated success packet; does not mean instantiated
@@ -69,7 +73,8 @@ using Validator = bool(*)(const std::vector<Plugin>&, const std::string&,
                           void*, std::string&);
 class Scanner {
 public:
-    static std::unique_ptr<Scanner> open(const Config&, std::string& error);
+    // The optional reason describes an open failure before any candidate is probed.
+    static std::unique_ptr<Scanner> open(const Config&, std::string& error, State* reason = nullptr);
     /// Same helper identity and configuration, with an independent registry connection.
     [[nodiscard]] std::unique_ptr<Scanner> openPeer(std::string& error) const;
     /// Canonicalize/stamp an existing file/bundle, commit pending, validate a

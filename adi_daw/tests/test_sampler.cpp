@@ -2,10 +2,14 @@
 #include "adi/audio/wav_file.hpp"
 #include "adi/blob.hpp"
 #include "adi/dsp/sampler.hpp"
+#include "adi/sampler_declarations.hpp"
+#include "juce/pd_declarations.hpp"
+#include <functional>
 #include "adi/engine/session.hpp"
 #include "adi/store.hpp"
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <algorithm>
 #include <cmath>
 #include <complex>
 #include <cstdio>
@@ -93,6 +97,147 @@ double bin(const std::vector<float> &a, int k) {
                                   static_cast<double>(n));
     return 2 * std::abs(sum) / static_cast<double>(n);
 }
+// DEV-21: slot mode, the Sampler as a built-in instrument. 32 layers, layer i
+// playing slot i+1's prepared sample, borrowed per call.
+using SlotArray = std::array<device::Sampler::SlotSample, device::Sampler::kSlots>;
+std::vector<float> renderSlots(device::Sampler &d, int count, std::span<const engine::Event> input,
+                               const std::function<void(int, SlotArray &)> &slotsAt) {
+    d.release();
+    d.prepare(48000, 64);
+    std::vector<float> output(static_cast<std::size_t>(count));
+    std::array<float, 64> l{}, r{};
+    float *ch[]{l.data(), r.data()};
+    SlotArray slots{};
+    for (int at = 0; at < count; at += 64) {
+        slotsAt(at, slots);
+        std::array<engine::Event, 32> events{};
+        int n = 0;
+        for (auto e : input) {
+            if (e.frame >= at && e.frame < at + 64) {
+                e.frame -= at;
+                events[static_cast<std::size_t>(n++)] = e;
+            }
+        }
+        engine::NodeIo io{};
+        io.out = ch;
+        io.channels = 2;
+        io.frames = std::min(64, count - at);
+        io.events = {events.data(), n};
+        allocations = 0;
+        audit = true;
+        d.processSlots(io, slots);
+        audit = false;
+        check(allocations == 0, "slot mode processing allocates nothing");
+        std::copy_n(l.begin(), io.frames, output.begin() + at);
+    }
+    return output;
+}
+void slotMode() {
+    using S = device::Sampler;
+    const std::vector<float> dc(65536, .5f);
+    const auto sample = device::OneShot::prepareSample(dc, 1, 48000);
+    const auto *prepared = sample.get();
+    const auto note = std::array{on(0, 60)};
+    {
+        S d(S::slotBacked);
+        const auto silent = renderSlots(d, 512, note, [](int, SlotArray &) {});
+        check(std::all_of(silent.begin(), silent.end(), [](float v) { return v == 0; }),
+              "with every slot empty the Sampler is silent");
+    }
+    double single = 0;
+    for (const int key : {0, 60, 127}) {
+        S d(S::slotBacked);
+        const auto keyed = std::array{on(0, key)};
+        const auto out = renderSlots(d, 512, keyed, [&](int, SlotArray &slots) { slots[2] = {prepared, 1}; });
+        if (key == 60) {
+            single = out[400];
+        }
+        check(out[100] > .1f, "a filled slot plays every key at once (keys 0, 60, 127)");
+    }
+    {
+        S d(S::slotBacked);
+        const auto out = renderSlots(d, 512, note, [&](int, SlotArray &slots) {
+            slots[2] = {prepared, 1};
+            slots[6] = {prepared, 2};
+        });
+        check(std::abs(out[400] - 2 * single) < 1e-5, "two filled slots layer: the output doubles");
+    }
+    {
+        // Slot 7 is filled while slot 3 holds a note: slot 3 plays on, untouched.
+        S d(S::slotBacked);
+        const auto out = renderSlots(d, 512, note, [&](int at, SlotArray &slots) {
+            slots[2] = {prepared, 1};
+            if (at >= 256) {
+                slots[6] = {prepared, 9};
+            }
+        });
+        check(std::abs(out[400] - single) < 1e-6, "filling another slot does not cut a sounding one");
+    }
+    {
+        // Slot 3 is emptied while both sound: only slot 7 remains.
+        S d(S::slotBacked);
+        const auto out = renderSlots(d, 512, note, [&](int at, SlotArray &slots) {
+            slots[6] = {prepared, 2};
+            slots[2] = at < 256 ? S::SlotSample{prepared, 1} : S::SlotSample{};
+        });
+        check(std::abs(out[200] - 2 * single) < 1e-5 && std::abs(out[400] - single) < 1e-6,
+              "emptying a slot silences that slot only");
+    }
+    {
+        // A zone table reshapes the slots: slot 3 keeps keys 0..59, so key 60
+        // plays slot 7 alone. A zone holding samples is refused, table kept.
+        S d(S::slotBacked);
+        std::array<S::Zone, S::kSlots> zones{};
+        zones[2].key = {0, 59, 0, 0};
+        check(d.publishSlotZones(zones), "a zone table without samples publishes");
+        // Each refused table would also open slot 3 to every key: were it
+        // published anyway, key 60 would play both slots below.
+        auto refused = zones;
+        refused[2].key = {0, 127, 0, 0};
+        refused[4].samples = {1.f};
+        check(!d.publishSlotZones(refused), "a zone holding samples is refused");
+        refused[4].samples.clear();
+        refused[4].key = {80, 20, 0, 0};
+        check(!d.publishSlotZones(refused), "an invalid zone is refused");
+        const auto out = renderSlots(d, 512, note, [&](int, SlotArray &slots) {
+            slots[2] = {prepared, 1};
+            slots[6] = {prepared, 2};
+        });
+        check(std::abs(out[400] - single) < 1e-6,
+              "a zone's key range decides which slots a note plays, and a refused table changed nothing");
+    }
+    {
+        S bank;
+        check(!bank.publishSlotZones(std::array<S::Zone, S::kSlots>{}), "a bank-mode Sampler has no slot table");
+        S slots(S::slotBacked);
+        check(!slots.publishZones(std::array<S::Zone, 1>{}), "a slot-mode Sampler takes no bank");
+    }
+}
+// The declaration text the host reads agrees with the core it hosts.
+void declarations() {
+    const auto parsed = device::parsePdDeclarations(device::samplerDeclarations);
+    device::Sampler d(device::Sampler::slotBacked);
+    check(parsed.problems.empty() && parsed.arrays.empty() && parsed.params.size() == 24 &&
+              static_cast<int>(parsed.params.size()) == d.paramCount(),
+          "the Sampler's declarations parse: 24 parameters");
+    bool same = true;
+    for (std::size_t i = 0; i < parsed.params.size(); ++i) {
+        const auto &decl = parsed.params[i];
+        const auto *p = d.paramAt(static_cast<std::int32_t>(i));
+        if (decl.id != static_cast<std::int32_t>(i + 1) || p == nullptr ||
+            std::abs(decl.min - p->minReal) > 1e-9 || std::abs(decl.max - p->maxReal) > 1e-9 ||
+            std::abs(decl.def - p->defaultValue.real) > 1e-9) {
+            std::printf("  declaration %zu (%s) differs from the core\n", i + 1, decl.name.c_str());
+            same = false;
+        }
+    }
+    check(same, "each declaration's id, range and default is the core's");
+    bool slots = parsed.samples.size() == 32;
+    for (std::size_t i = 0; slots && i < parsed.samples.size(); ++i) {
+        slots = parsed.samples[i].id == static_cast<std::int32_t>(i + 1);
+    }
+    check(slots, "32 sample slots, ids 1 to 32");
+}
 } // namespace
 int main(int argc, char **argv) {
     if (argc == 2 && std::string(argv[1]) == "--parameters") {
@@ -106,6 +251,8 @@ int main(int argc, char **argv) {
         }
         return 0;
     }
+    slotMode();
+    declarations();
 
     device::Sampler d;
     set(d, "volume", 0);

@@ -444,8 +444,12 @@ inline void asynchronousDiscovery() {
     require(failed.status==DiscoveryStart::Started,"start owner job with unavailable helper");
     const auto refused=finish(failed.job);
     require(refused && refused->outcome==DiscoveryOutcome::Failed && !refused->report.complete &&
-        !refused->error.empty() && loader.catalogue()==fresh->catalogue,
-        "helper deployment failure reports the cause and preserves adopted metadata");
+        refused->error=="scanner helper could not start" && refused->report.failures.size()==1 &&
+        refused->report.failures.front().state==scan::State::HelperCouldNotStart &&
+        refused->report.failures.front().path.empty() && loader.catalogue()==fresh->catalogue &&
+        loader.lastScanReport().failures.size()==1 &&
+        loader.lastScanReport().failures.front().state==scan::State::HelperCouldNotStart,
+        "missing deployment arrives as a typed owner report and preserves adopted metadata");
     std::printf("DISCOVERY_ASYNC startup, reuse, refresh, cancellation, stale adoption and deployment refusal passed\n");
 }
 struct ScopedHome {

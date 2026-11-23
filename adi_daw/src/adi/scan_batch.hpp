@@ -15,7 +15,8 @@ namespace adi::scan::detail {
 // run on that worker, while the owner visits completed results in input order.
 // At most one validated result per worker waits for the owner.
 template<class Probe, class Visit>
-bool visitProbes(std::size_t count, const Config& config, Probe probe, Visit visit, std::string& error) {
+bool visitProbes(std::size_t count, const Config& config, Probe probe, Visit visit, std::string& error,
+                 State* openFailure = nullptr) {
     if (audio::onAudioThread) return false;
     error.clear();
     if (config.workers == 0 || config.workers > kMaximumProbeWorkers) {
@@ -36,7 +37,7 @@ bool visitProbes(std::size_t count, const Config& config, Probe probe, Visit vis
     };
     try {
         const auto active = std::min(count, static_cast<std::size_t>(config.workers));
-        auto first = Scanner::open(config, error);
+        auto first = Scanner::open(config, error, openFailure);
         if (!first) return false;
         if (active == 1) {
             for (std::size_t i = 0; i < count; ++i)

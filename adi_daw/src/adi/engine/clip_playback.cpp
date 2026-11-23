@@ -8,6 +8,7 @@
 #include "adi/audio/progressive_decode.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/audio/wav_file.hpp"
+#include "adi/edit_time.hpp"
 #include "adi/store.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <samplerate.h>
@@ -52,6 +53,15 @@ std::int64_t samples(double seconds, double rate) {
     const double n = seconds * rate;
     if (!std::isfinite(n) || n < 0 || n > static_cast<double>(limit)) throw std::runtime_error("time outside supported sample range");
     return static_cast<std::int64_t>(std::llround(n));
+}
+std::int64_t samplesAtNs(std::int64_t ns, std::int64_t rate) {
+    if (ns < 0) throw std::runtime_error("negative nanosecond clock");
+    // ClipPlayback admits only bounded integer sample rates. Separate whole
+    // seconds from the fraction so the products fit and half-sample ties are exact.
+    constexpr std::int64_t second = 1000000000;
+    const auto value = (ns / second) * rate + ((ns % second) * rate + second / 2) / second;
+    if (value > limit) throw std::runtime_error("time outside supported sample range");
+    return value;
 }
 struct Page {
     // 0 empty, 1 worker-owned, 2 ready, 3 reader-owned. Both sides must
@@ -113,9 +123,13 @@ struct Clip {
     }
     template<typename V> V shaped(std::int64_t time,V gainValue)const noexcept {
         const auto local=time-start+offset;
-        if(fadeClock[0])gainValue*=clipFadeShape(static_cast<V>(local-*fadeClock[0])/static_cast<V>(*fadeClock[1]-*fadeClock[0]),inCurve,inTension);
+        const auto shape=[](std::int64_t progressed,std::int64_t width,std::int64_t curve,std::optional<double> tension) {
+            if(width==0)return progressed>=0?V{1}:V{0};
+            return clipFadeShape(static_cast<V>(progressed)/static_cast<V>(width),curve,tension);
+        };
+        if(fadeClock[0])gainValue*=shape(local-*fadeClock[0],*fadeClock[1]-*fadeClock[0],inCurve,inTension);
         else if(fadeIn>0)gainValue*=clipFadeShape(static_cast<V>(time-start)/static_cast<V>(fadeIn),inCurve,inTension);
-        if(fadeClock[2])gainValue*=clipFadeShape(static_cast<V>(*fadeClock[3]-1-local)/static_cast<V>(*fadeClock[3]-*fadeClock[2]),outCurve,outTension);
+        if(fadeClock[2])gainValue*=shape(*fadeClock[3]-1-local,*fadeClock[3]-*fadeClock[2],outCurve,outTension);
         else if(fadeOut>0)gainValue*=clipFadeShape(static_cast<V>(end-1-time)/static_cast<V>(fadeOut),outCurve,outTension);
         return gainValue;
     }
@@ -475,7 +489,8 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
     if(!project->rows.audioClips.empty() && std::any_of(tempo.events.begin(),tempo.events.end(),[](const auto& e){return e.curve!=0;}))
         impl_->problems.push_back("tempo_map: TempoMap does not implement ramps; clip timing uses step tempos");
     for(const auto& row:timelineClips(project->rows)) {
-        if(row.kind!="audio") continue;
+        // Muted clips do not need a reader or a playable media source.
+        if(row.kind!="audio" || row.muted) continue;
         const auto label="clips#"+std::to_string(row.id)+": ";
         try {
             const auto a=std::find_if(project->rows.audioClips.begin(),project->rows.audioClips.end(),[&](const auto& x){return x.clipId==row.id;});
@@ -492,10 +507,6 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             if(media->relPath) clip->path=project->folder/utf8Path(*media->relPath);
             else if(auto h=project->hints.find(media->id);h!=project->hints.end()) clip->path=h->second;
             else throw std::runtime_error("no media path; silent");
-            // A muted clip opens no media. Its decode job would be cancelled
-            // when it is dropped here, yet stay queued against the decoder's
-            // job and space budgets ahead of the clips that do play.
-            if(row.muted) continue;
             // Direct WAV remains unchanged. Plain compressed clips consume a
             // shared worker's flushed prefixes; Warp still needs its complete
             // offline render and unknown-length sources retain the full path.
@@ -526,15 +537,19 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             clip->pageFrames=static_cast<std::int64_t>(std::ceil(8192.0*rate/48000.0));
             clip->sourceStart=static_cast<std::uint64_t>(a->srcStartFrames); clip->sourceLength=static_cast<std::uint64_t>(a->srcLenFrames);
             clip->length=samples(static_cast<double>(clip->sourceLength)/clip->sourceRate,rate);
-            const auto origin=row.timeBase==0?row.posTicks.value_or(0):tempo.secondsToTicks(static_cast<double>(row.posNs.value_or(0))*1e-9);
+            const auto beginNs = row.posNs.value_or(0);
+            // Project stored nanoseconds as the edit clock and Snapshot do: an
+            // integer nanosecond rounded below its originating tick maps back to it.
+            const auto origin=row.timeBase==0?row.posTicks.value_or(0):tempo.storedNanosecondsToTicks(beginNs);
             if(origin<0) throw std::runtime_error("negative musical time unsupported by TempoMap");
-            const double startSeconds=row.timeBase==0?tempo.ticksToSeconds(origin):static_cast<double>(row.posNs.value_or(0))*1e-9;
-            auto duration=[&](std::int64_t ticks){
+            auto tickSpanSeconds=[&](std::int64_t ticks){
                 if(ticks<0 || origin>std::numeric_limits<std::int64_t>::max()-ticks) throw std::runtime_error("invalid tick duration");
-                return samples(tempo.ticksToSeconds(origin+ticks)-tempo.ticksToSeconds(origin),rate);
+                return tempo.ticksToSeconds(origin+ticks)-tempo.ticksToSeconds(origin);
             };
-            if(row.contentOffsetTicks<0)throw std::runtime_error("negative clip content offset");
-            const auto sourceOrigin=origin-row.contentOffsetTicks;
+            auto duration=[&](std::int64_t ticks){return samples(tickSpanSeconds(ticks),rate);};
+            if(row.contentOffsetTicks<0 && (a->warpEnabled || !row.contentOffsetNs))
+                throw std::runtime_error("negative clip content offset needs an unwarped source clock");
+            const auto sourceOrigin=a->warpEnabled?origin-row.contentOffsetTicks:origin;
             auto sourceDuration=[&](std::int64_t ticks){return a->warpEnabled?warpSourceSamples(tempo,sourceOrigin,ticks,rate):duration(ticks);};
             if(a->warpEnabled) {
                 if(row.contentOffsetTicks<0 || !a->warpMarkers)throw std::runtime_error("warp needs valid source offsets and a stored marker map");
@@ -555,31 +570,23 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                 clip->sourceStart=0;clip->sourceLength=clip->warped->frames;clip->sourceRate=clip->rate;
                 clip->length=static_cast<std::int64_t>(clip->warped->frames);
             }
-            clip->start=samples(startSeconds,rate);
             std::int64_t endTicks=origin;
-            double endSeconds=startSeconds;
             if(row.timeBase==0) {
                 const auto ticks=row.lengthTicks.value_or(0);
                 if(ticks<0 || origin>std::numeric_limits<std::int64_t>::max()-ticks) throw std::runtime_error("invalid clip duration");
                 endTicks+=ticks;
-                endSeconds=tempo.ticksToSeconds(endTicks);
+                clip->start=samples(tempo.ticksToSeconds(origin),rate);
+                clip->end=samples(tempo.ticksToSeconds(endTicks),rate);
             } else {
                 const auto nanos=row.lengthNs.value_or(0);
-                const auto begin=row.posNs.value_or(0);
-                if(begin<0 || nanos<0 || begin>std::numeric_limits<std::int64_t>::max()-nanos)
+                if(beginNs<0 || nanos<0 || beginNs>std::numeric_limits<std::int64_t>::max()-nanos)
                     throw std::runtime_error("invalid clip duration");
-                // Preserve the stored absolute endpoint before conversion: a
-                // separately converted begin + duration can miss a sample tie.
-                endSeconds=static_cast<double>(begin+nanos)*1e-9;
-                endTicks=tempo.secondsToTicks(endSeconds);
+                const auto endNs = beginNs + nanos;
+                endTicks=tempo.storedNanosecondsToTicks(endNs);
+                clip->start=samplesAtNs(beginNs,clip->rate);
+                clip->end=samplesAtNs(endNs,clip->rate);
             }
-            // Quantise both absolute endpoints once. Rounding a duration and
-            // adding it to a rounded start can lose or add a sample.
-            clip->end=samples(endSeconds,rate);
-            auto fixedTime=[&](std::int64_t nanos) {
-                if(nanos<0)throw std::runtime_error("negative source clock");
-                return samples(static_cast<double>(nanos)*1e-9,rate);
-            };
+            auto fixedTime=[&](std::int64_t nanos) {return samplesAtNs(nanos,clip->rate);};
             clip->offset=!a->warpEnabled && row.contentOffsetNs?fixedTime(*row.contentOffsetNs):sourceDuration(row.contentOffsetTicks);
             if(!row.loopEnabled) {
                 // A physical pin survives placement and tempo edits. Warp and
@@ -587,9 +594,23 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                 if (!a->warpEnabled && row.sourceEndNs) {
                     clip->length = std::min(clip->length, fixedTime(*row.sourceEndNs));
                 } else if (row.endMarkerTicks) {
-                    if (*row.endMarkerTicks <= row.contentOffsetTicks)
+                    const auto marker = *row.endMarkerTicks;
+                    if ((a->warpEnabled || !row.contentOffsetNs) && marker <= row.contentOffsetTicks)
                         throw std::runtime_error("invalid audio clip End marker");
-                    clip->length = std::min(clip->length, sourceDuration(*row.endMarkerTicks));
+                    std::int64_t end;
+                    if (a->warpEnabled || row.timeBase == 0) {
+                        end = sourceDuration(marker);
+                    } else if (!row.contentOffsetNs && marker - row.contentOffsetTicks == endTicks - origin) {
+                        // A legacy marker mirroring the visible End retains
+                        // the stored absolute endpoint, including sub-tick time.
+                        end = clip->offset + (clip->end - clip->start);
+                    } else {
+                        const auto absolute = edit::addTime(beginNs, edit::nanosFromSeconds(tickSpanSeconds(marker)));
+                        end = samplesAtNs(absolute, clip->rate) - clip->start;
+                    }
+                    if (!a->warpEnabled && row.contentOffsetNs && end <= clip->offset)
+                        throw std::runtime_error("invalid audio clip End marker");
+                    clip->length = std::min(clip->length, end);
                 }
             }
             const auto& fadeClock=a->warpEnabled?row.fadeClockTicks:row.fadeClockNs;
@@ -598,7 +619,9 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                 if(fadeClock[i]) {
                     const auto first=a->warpEnabled?sourceDuration(*fadeClock[i]):fixedTime(*fadeClock[i]);
                     const auto last=a->warpEnabled?sourceDuration(*fadeClock[i+1]):fixedTime(*fadeClock[i+1]);
-                    if(last<=first)throw std::runtime_error("fade clock has no sample extent");
+                    // A valid stored span can quantize to a single boundary
+                    // at this device rate. Render it as a step at that sample.
+                    if(last<first)throw std::runtime_error("fade clock is reversed");
                     clip->fadeClock[i]=first;clip->fadeClock[i+1]=last;
                 }
             }

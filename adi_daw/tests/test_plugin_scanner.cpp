@@ -212,6 +212,50 @@ void reservedCandidateExits() {
     check(fs::exists(native(utf8(healthy)+".pids")) && f.registry->scanBlocks(f.error)->empty(),
         "healthy sibling ran and candidate exits made no pending or manual block");
 }
+void helperStartFailures() {
+    Fixture f;
+    device::ClapHost host;
+    const auto healthy=f.bundle("working");
+    const std::vector<std::string> roots{utf8(f.temp.path())};
+    check(host.scan(roots,f.config).complete && host.plugins().size()==2,"fixture adopts working metadata");
+    const auto marker=native(utf8(healthy)+".pids");
+    const auto initBytes=fs::file_size(marker);
+
+    auto unavailable=f.config;
+    unavailable.executable=f.temp.path()/"missing-helper";
+    State reason{};
+    check(!Scanner::open(unavailable,f.error,&reason) && reason==State::HelperCouldNotStart,
+        "the scanner identifies a missing helper before candidate admission");
+    auto wrongRegistry=f.config;
+    wrongRegistry.registry="relative-registry.sqlite";
+    check(!Scanner::open(wrongRegistry,f.error,&reason) && reason==State::Unavailable,
+        "a different configuration failure retains its own category");
+
+    unavailable.executable=f.candidate("invalid-helper.exe");
+#if !defined(_WIN32)
+    fs::permissions(unavailable.executable,fs::perms::owner_exec,fs::perm_options::add);
+#endif
+    auto scanner=Scanner::open(unavailable,f.error);
+    if(!scanner)throw std::runtime_error(f.error);
+    for(int attempt=0;attempt<2;++attempt) {
+        const auto result=scanner->probe("clap",healthy);
+        check(result.state==State::HelperCouldNotStart && !result.failureCacheHit &&
+            result.failureStrikes==0 && result.plugins.empty(),"an OS launch refusal is never a candidate failure");
+    }
+    const auto report=host.scan(roots,unavailable);
+    check(!report.complete && !report.cancelled && report.failures.size()==1 &&
+        report.failures.front().state==State::HelperCouldNotStart &&
+        !report.failures.front().path.empty() && report.failures.front().error=="scanner helper could not start",
+        "the CLAP batch preserves the typed launch refusal and its explanation");
+    auto blocks=f.registry->scanBlocks(f.error);
+    check(blocks && blocks->empty() && host.plugins().size()==2 && host.libraryCount()==0 &&
+        fs::file_size(marker)==initBytes,"helper launch refusal leaves no pending ticket or parent module load");
+    fs::remove(unavailable.executable);
+    check(scanner->probe("clap",healthy).state==State::HelperCouldNotStart,
+        "a helper removed after Scanner::open has the same typed deployment state");
+    check(host.scan(roots,f.config).complete && host.plugins().size()==2 &&
+        fs::file_size(marker)==initBytes,"the working helper can use the prior accepted catalogue");
+}
 void hostAndFailurePolicy() {
     Fixture f;device::ClapHost host;
     const auto healthy=f.bundle("healthy");(void)healthy;
@@ -251,7 +295,7 @@ void hostAndFailurePolicy() {
 int entry(const std::vector<std::string>& arguments) {
     if(arguments.size()==4 && arguments[1]=="--scan")return fakeHelper(arguments);
     if(arguments.size()!=1)return 64;
-    try {protocol();protocolProcess(fs::absolute(native(arguments[0])));realLibraries();reservedCandidateExits();hostAndFailurePolicy();}
+    try {protocol();protocolProcess(fs::absolute(native(arguments[0])));realLibraries();reservedCandidateExits();helperStartFailures();hostAndFailurePolicy();}
     catch(const std::exception& error){++failures;std::printf("EXCEPTION: %s\n",error.what());}
     std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;
 }

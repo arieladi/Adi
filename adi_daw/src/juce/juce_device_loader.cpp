@@ -305,13 +305,14 @@ std::shared_ptr<const DiscoveryResult> JuceDeviceLoader::discoverOwned(Discovery
                 // not stop the batch. Name its fatal cause in the headline.
                 const auto fatal=std::find_if(result->report.failures.begin(),result->report.failures.end(),[&](const auto& failure) {
                     return result->report.cancelled?failure.state==scan::State::Cancelled:
-                        failure.state==scan::State::Unavailable || failure.state==scan::State::Invalid;
+                        scan::stopsDiscovery(failure.state);
                 });
                 const auto diagnostic=fatal==result->report.failures.end() || fatal->error.empty()
                     ?(result->report.cancelled?std::string{"discovery cancelled"}:std::string{"discovery did not complete"})
                     :fatal->error;
-                failed(diagnostic,
-                    result->report.cancelled?scan::State::Cancelled:scan::State::Unavailable);
+                const auto state=result->report.cancelled?scan::State::Cancelled:
+                    (fatal==result->report.failures.end()?scan::State::Unavailable:fatal->state);
+                failed(diagnostic,state);
                 return result;
             }
         } else {

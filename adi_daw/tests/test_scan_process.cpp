@@ -131,6 +131,21 @@ void contract(const fs::path& self) {
     check(crashed.status==ProcessStatus::Crashed && !crashed.succeeded(),"actual crashing child is contained and classified");
     check(runProcess(self,{"--fixture","stderr"}).output=="ok","large stderr cannot fill a pipe or contaminate stdout");
     check(runProcess(self.parent_path()/"missing scanner executable",{}).status==ProcessStatus::LaunchFailed,"missing absolute executable reports launch failure");
+#if defined(_WIN32)
+    {
+        // Text and a bare MZ stub both take CreateProcessW's 16-bit path, whose modal
+        // dialog never returns unattended (PR #694). The launcher refuses them first.
+        adi::test::TempDirectory images("scanner","images");
+        const auto text=images.path()/"text-helper.exe",stub=images.path()/"stub-helper.exe";
+        std::ofstream(text)<<"candidate";
+        {std::ofstream out(stub,std::ios::binary);const std::array<char,64> header{'M','Z'};out.write(header.data(),header.size());}
+        const auto start=std::chrono::steady_clock::now();
+        const auto fromText=runProcess(text,{"--scan"}),fromStub=runProcess(stub,{"--scan"});
+        check(fromText.status==ProcessStatus::LaunchFailed && fromText.osError==static_cast<std::uint32_t>(ERROR_BAD_EXE_FORMAT) &&
+              fromStub.status==ProcessStatus::LaunchFailed && fromStub.osError==static_cast<std::uint32_t>(ERROR_BAD_EXE_FORMAT) &&
+              std::chrono::steady_clock::now()-start<10s,"a file that is not a PE image is refused before CreateProcessW");
+    }
+#endif
     check(runProcess("relative-program",{}).status==ProcessStatus::Invalid,"relative executable never searches PATH");
     check(runProcess(self,{std::string("bad\0argument",12)}).status==ProcessStatus::Invalid,"embedded argument NUL refuses before launch");
     check(runProcess(self,std::vector<std::string>(257,"x")).status==ProcessStatus::Invalid,"argument count is bounded");
