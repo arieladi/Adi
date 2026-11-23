@@ -75,7 +75,8 @@ def read_sheet(path, errors):
 
 def tags(root):
     found = []
-    for path in sorted((root / "tests").glob("*.cpp")) + sorted((root / "tests").glob("*.hpp")):
+    # Every test file, in tests/ and its folders (acceptance scripts, Pd suites, fixtures' code).
+    for path in sorted(p for p in (root / "tests").rglob("*") if p.suffix in (".cpp", ".hpp", ".jsonl", ".py") and p.is_file()):
         for number, line in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
             for m in TAG.finditer(line):
                 found.append((f"{path.name}:{number}", m.group(1), m.group(2)))
