@@ -542,6 +542,7 @@ private:
         std::vector<std::pair<std::int64_t, std::int64_t>> deviceClockChanges; ///< sample, tick
         std::optional<ScaleTimeline> scaleTimeline;
         std::vector<std::pair<std::int64_t, const ScaleContext*>> deviceScaleChanges;
+        TrackScaleTimeline trackScaleTimeline;
         std::vector<LiveMidiInput::Route> midiInputRoutes;
         std::shared_ptr<const StripLaneBindings> stripLanes;
         ClipPlayback::Readiness sourceReadiness;
@@ -620,6 +621,7 @@ private:
     GraphHost graph_;
     rows::Model model_;
     std::string deviceScaleProblem_;
+    std::string trackScaleProblem_;
     AppliedSource appliedSource_;
     void observeKeyRoutes();
     void refreshProblems();

@@ -382,12 +382,65 @@ void compensatedScaleClock() {
               target.scaleSamples[1].frames == 2,
           "scale boundaries follow the compensated input sample behind a latent source");
 }
+void trackScaleClocks() {
+    Capture second;
+    Fixture f;
+    auto &db = f.store->db();
+    db.exec("UPDATE tracks SET kind='midi' WHERE id=1;"
+            "INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(2,'midi','Second',2);"
+            "INSERT INTO key_map(id,pos_ticks,root,scale_id,scale_mask) VALUES"
+            "(10,0,2,'major',2741),(11,360360,4,'major',2741);"
+            "INSERT INTO lanes(id,track_id,kind) VALUES(21,1,'take');"
+            "INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks,lane_id,muted) VALUES"
+            "(31,1,'midi',240240,480480,NULL,0),(32,1,'midi',480480,120120,NULL,0),"
+            "(33,1,'midi',240240,480480,21,0),(34,1,'midi',240240,480480,NULL,1);"
+            "INSERT INTO clips(id,track_id,kind,time_base,pos_ns,length_ns) "
+            "VALUES(35,2,'midi',1,25000000,20833333);"
+            "INSERT INTO clip_properties(clip_id,scale_root,scale_id,scale_mask) VALUES"
+            "(31,5,'major',2741),(33,8,'major',2741),(34,7,'major',2741),(35,9,'major',2741);");
+    f.capture.scaleTiming = true;
+    second.scaleTiming = true;
+    f.session.setSourcesFor([&](std::int64_t track) {
+        if (track == 1)
+            return std::vector<Node *>{&f.capture};
+        if (track == 2)
+            return std::vector<Node *>{&second};
+        return std::vector<Node *>{};
+    });
+    f.load();
+    f.session.transport().locate(900);
+    f.session.transport().play();
+    f.render(2300);
+    const auto &a = f.capture.scaleSamples;
+    check(f.capture.scaleCount == 5 && a[0].sample == 900 && a[0].root == 2 &&
+              a[1].sample == 1000 && a[1].frames == 1000 && a[1].root == 5 &&
+              a[2].sample == 2000 && a[2].frames == 500 && a[2].root == 4 &&
+              a[3].sample == 2500 && a[3].root == 5 &&
+              a[4].sample == 3000 && a[4].root == 4,
+          "a sole arrangement clip supplies its own scale and competing clips use the project scale");
+    const auto &b = second.scaleSamples;
+    check(second.scaleCount == 3 && b[0].sample == 900 && b[0].root == 2 &&
+              b[1].sample == 1200 && b[1].frames == 1000 && b[1].root == 9 &&
+              b[2].sample == 2200 && b[2].root == 4,
+          "a nanosecond clip on another track sets only that track's half-open scale span");
+
+    f.capture.scaleCount = 0;
+    second.scaleCount = 0;
+    db.exec("UPDATE clip_properties SET scale_root=11 WHERE clip_id=31");
+    f.refresh();
+    f.session.transport().locate(1250);
+    f.render(1);
+    check(f.capture.scaleCount == 1 && a[0].root == 11 &&
+              second.scaleCount == 1 && b[0].root == 9,
+          "a refreshed clip scale stays local to its track through a seek");
+}
 } // namespace
 
 int main() {
     try {
         boundaries(); defaultsAndBlocks(); nullableAndSegments(); concurrentEdits(); deviceScaleClock();
         compensatedScaleClock();
+        trackScaleClocks();
         check(allocations.load() == 0, "zero allocations in Session::process including live edits");
         check(audio::callbackFileIo.load() == 0, "zero file I/O in Session::process");
     } catch (const std::exception& e) {

@@ -78,6 +78,10 @@ inline constexpr std::int64_t kInfiniteTail = INT64_MAX;
 enum class Bus : std::uint8_t { Main = 0, Sidechain = 1 };
 
 class ScaleContext;
+struct DeviceScalePosition {
+    const ScaleContext* scale = nullptr;
+    std::int64_t nextChange = std::numeric_limits<std::int64_t>::max();
+};
 /// Transport at the first sample of a hosted device's current segment.
 struct DeviceTransport {
     std::int64_t sample = 0;
@@ -118,6 +122,8 @@ struct TransportInfo {
     const Transport* deviceClock = nullptr;
     const void* deviceClockContext = nullptr;
     DeviceTransport (*devicePosition)(const void*, std::int64_t) noexcept = nullptr;
+    DeviceScalePosition (*trackScalePosition)(const void*, std::int64_t track,
+                                               std::int64_t sample) noexcept = nullptr;
 };
 
 /// What a node is handed for one SEGMENT of one block.
@@ -921,7 +927,8 @@ public:
     /// Adds a node and returns its id. The graph does not own it; nodes outlive
     /// the graph, because ADR-0042's decision 5 says a device change must not
     /// disturb the project and the project is where nodes come from.
-    NodeId addNode(Node& node, std::optional<std::int32_t> fixedLatency = std::nullopt);
+    NodeId addNode(Node& node, std::int64_t track = 0,
+                   std::optional<std::int32_t> fixedLatency = std::nullopt);
     // Owner preflight on a newly constructed graph. No node prepare, SDK calls,
     // buffers or publication; reuse the same topology authority as prepare.
     [[nodiscard]] bool validateTopology() { error_.clear(); return topoSort(); }
@@ -1245,6 +1252,7 @@ private:
             if (fixedLatency) return *fixedLatency;
             return node ? node->latencySamples() : 0;
         }
+        std::int64_t track = 0;
         EventSourceBinding eventSource;
         bool explicitEventSource = false;
         std::uint64_t preparationRevision = 0;
