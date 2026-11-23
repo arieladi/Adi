@@ -25,6 +25,7 @@
 // into node indices. They stop here.
 
 #pragma once
+#include "adi/rack_zones.hpp"
 #include <array>
 
 #include "adi/track_recording.hpp"
@@ -294,6 +295,7 @@ struct DeviceChain {
     std::string name;
     bool muted = false;
     bool soloed = false;
+    rack::Zones zones{};
 };
 
 /// `devices`: one row per device in a chain, in `ord` order. Read in
