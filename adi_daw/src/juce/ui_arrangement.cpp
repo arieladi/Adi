@@ -2461,14 +2461,35 @@ void ArrangementCanvas::paintAutomation(juce::Graphics &g) const {
         // Drawn inside the lane's visible strip only: a lane under the foot is not drawn over it.
         juce::Graphics::ScopedSaveState keep(g);
         g.reduceClipRegion(0, static_cast<int>(body.top) - 4, getWidth(), static_cast<int>(body.bottom - body.top) + 8);
-        std::vector<juce::Point<float>> points;
+        // The breakpoints as they play, the dragged one where the mouse has it, in time order.
+        std::vector<engine::AutomationPointNode> nodes;
         if (env.data != nullptr)
-            for (const auto &p : env.data->points) {
-                const bool dragged = pointDrag_ && pointDrag_->track == body.track->id && pointDrag_->point == p.id;
-                points.push_back({static_cast<float>(geo.x(dragged ? pointTick_ : p.time)),
-                                  automationY(dragged ? pointValue_ : p.value, range, body.top, body.scaleBottom)});
+            for (auto p : env.data->points) {
+                if (pointDrag_ && pointDrag_->track == body.track->id && pointDrag_->point == p.id) {
+                    p.time = pointTick_;
+                    p.value = pointValue_;
+                }
+                nodes.push_back(p);
             }
-        std::sort(points.begin(), points.end(), [](auto a, auto b) { return a.x < b.x; });
+        std::stable_sort(nodes.begin(), nodes.end(), [](const auto &a, const auto &b) { return a.time < b.time; });
+        // While a point is dragged, a segment keeps the curve of its trimmed source only where the move will keep it
+        // (`automation.movePoints`): its point's value and its next point unchanged. Else it is drawn as it will play.
+        if (pointDrag_ && pointDrag_->track == body.track->id && env.data != nullptr) {
+            const auto &stored = env.data->points;
+            for (std::size_t i = 0; i < nodes.size(); ++i) {
+                if (!nodes[i].curveSlice)
+                    continue;
+                const auto at = std::find_if(stored.begin(), stored.end(), [&](const auto &q) { return q.id == nodes[i].id; });
+                const bool next = i + 1 < nodes.size(), hadNext = at != stored.end() && at + 1 != stored.end();
+                const bool keep = at != stored.end() && at->value == nodes[i].value && next == hadNext &&
+                                  (!next || (nodes[i + 1].id == (at + 1)->id && nodes[i + 1].value == (at + 1)->value));
+                if (!keep)
+                    nodes[i].curveSlice.reset();
+            }
+        }
+        std::vector<juce::Point<float>> points;
+        for (const auto &p : nodes)
+            points.push_back({static_cast<float>(geo.x(p.time)), automationY(p.value, range, body.top, body.scaleBottom)});
         g.setColour(look::record.withAlpha(.9f));
         const float right = static_cast<float>(getWidth());
         if (points.empty()) {
@@ -2476,10 +2497,19 @@ void ArrangementCanvas::paintAutomation(juce::Graphics &g) const {
             g.drawLine(0, y, right, y, 1.f);
             continue;
         }
+        // Each segment as the engine plays it (AU-01; SPEC 6.3.2), traced every two pixels in seconds: a linear one
+        // too, which bends where the tempo changes inside it.
         juce::Path line;
         line.startNewSubPath(0, points.front().y);
-        for (const auto &p : points)
-            line.lineTo(p);
+        line.lineTo(points.front());
+        const auto *tempo = current->tempo ? &*current->tempo : nullptr;
+        for (std::size_t i = 1; i < points.size(); ++i) {
+            const auto &a = nodes[i - 1];
+            for (float px = std::max(0.f, points[i - 1].x + 2.f); px < std::min(right, points[i].x); px += 2.f)
+                line.lineTo(px, automationY(envelopeValueAt(a, nodes[i], geo.tick(px), tempo), range, body.top,
+                                            body.scaleBottom));
+            line.lineTo(points[i]);
+        }
         line.lineTo(right, points.back().y);
         g.strokePath(line, juce::PathStrokeType(1.f));
         for (std::size_t i = 0; i < points.size(); ++i) {
