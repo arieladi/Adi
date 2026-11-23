@@ -41,6 +41,7 @@ float clockExponential(float logFrequency) noexcept {
 }
 
 float sanitized(float height) noexcept {
+    if (height >= 0.f && height <= 1.f) return height;
     return std::isfinite(height) ? std::clamp(height, 0.f, 1.f) : 1.f;
 }
 } // namespace
@@ -59,7 +60,7 @@ void AdiShaperCrush::reset() noexcept {
     bits_ = clock_ = -1;
     phase_ = 0;
     seed_ = 0x297a04b3u;
-    previousQuantInput_ = previousHoldInput_ = held_ = low_ = {};
+    previousQuantInput_ = previousCode_ = previousHoldInput_ = held_ = low_ = {};
 }
 
 void AdiShaperCrush::updateResolution(float height) noexcept {
@@ -99,7 +100,7 @@ double AdiShaperCrush::noise() noexcept {
     return .5 * (first - uniform());
 }
 
-void AdiShaperCrush::quantize(Stereo& sample) noexcept {
+void AdiShaperCrush::quantize(Stereo& sample, double previousLevels, double codeScale) noexcept {
     if (bits_ == 1.f) {
         previousQuantInput_ = sample;
         return;
@@ -107,20 +108,22 @@ void AdiShaperCrush::quantize(Stereo& sample) noexcept {
     const double perturbation = dither_ ? noise() / levels_ : 0.0;
     for (unsigned ch = 0; ch < 2; ++ch) {
         const double value = sample[ch] + perturbation;
-        const double before = previousQuantInput_[ch] * levels_;
+        const double before = previousQuantInput_[ch] * previousLevels;
         const double now = value * levels_;
-        const double priorCode = std::floor(before + .5);
+        const double priorCode = previousCode_[ch];
         const double code = std::floor(now + .5);
         if (code == priorCode) {
             sample[ch] = quantizedGain_ * code;
         } else {
-            // Integrated staircase over the linear transition from before to
-            // now. This centered form avoids subtracting two large primitives.
+            // Find the crossing in code space. The previous output step keeps
+            // its original amplitude when expressed in units of the new step.
+            const double priorOutput = priorCode * codeScale;
             const double residuals = (now - code) + (before - priorCode);
-            const double mean = .5 * ((code + priorCode) + (code - priorCode) * residuals / (now - before));
+            const double mean = .5 * ((code + priorOutput) + (code - priorOutput) * residuals / (now - before));
             sample[ch] = quantizedGain_ * mean;
         }
         previousQuantInput_[ch] = value;
+        previousCode_[ch] = code;
     }
 }
 
@@ -163,10 +166,21 @@ void AdiShaperCrush::processStereo(float& left, float& right, float bitsHeight,
                                    float resampleHeight, bool flatHold) noexcept {
     if (rate_ == 0) return;
     const auto u = sanitized(bitsHeight), r = sanitized(resampleHeight);
-    if (u != bits_) updateResolution(u);
+    const double previousLevels = levels_;
+    double codeScale = 1.0;
+    if (u != bits_) {
+        // Bypass records its input without quantizing. Recover that final
+        // sample's code only when leaving bypass.
+        if (bits_ == 1.f) {
+            for (unsigned ch = 0; ch < 2; ++ch)
+                previousCode_[ch] = std::floor(previousQuantInput_[ch] * previousLevels + .5);
+        }
+        updateResolution(u);
+        codeScale = levels_ / previousLevels;
+    }
     if (r != clock_) updateClock(r);
     Stereo sample{left, right};
-    quantize(sample);
+    quantize(sample, previousLevels, codeScale);
     hold(sample, flatHold);
     for (unsigned ch = 0; ch < 2; ++ch) {
         const double difference = sample[ch] - low_[ch];
@@ -183,7 +197,7 @@ bool AdiShaperCrush::finishBlock() noexcept {
     for (std::size_t ch = 0; ch < low_.size(); ++ch) {
         if (!std::isfinite(low_[ch]) || !std::isfinite(held_[ch]) ||
             !std::isfinite(previousHoldInput_[ch]) || !std::isfinite(previousQuantInput_[ch])) {
-            low_[ch] = held_[ch] = previousHoldInput_[ch] = previousQuantInput_[ch] = 0.0;
+            low_[ch] = held_[ch] = previousHoldInput_[ch] = previousQuantInput_[ch] = previousCode_[ch] = 0.0;
             repaired = true;
         }
     }
