@@ -106,7 +106,7 @@ Questions only the director can answer. Each says what the window lane recommend
 **WTS-03, first half. PR requested.** Branch `window/text-goldens`, on main, head `2b9f5c2b`. Title: **adi_daw: window: goldens that check text by its place: recorder, masked compare (WTS-03, first half)**. Body: [`collab/window/pr-bodies/window-text-goldens.md`](window/pr-bodies/window-text-goldens.md).
 - **Tests:** shell 2974, seams 553, document 317, window_state 129, 0 failures; the `ui.yml` six green; the sweeps clean on its lines. `textGoldens` holds AT-2.
 - **Parked, the second half:** the font experiment (one pinned Latin and Hebrew face, each scene recorded per OS) needs CI's three legs; the shell's hand-placed masks and the eight goldens move onto the recorder after it.
-- **Left as found (minor):** a run clipped by its component still counts its whole box, and the ink row under a glyph's bounds is not masked; neither changes AT-2.
+- **Left as found (minor, the review's):** a run partly outside the clip records its whole box, not the painted part; and at 11.5 pt the ink can fall one row below the recorded box (JUCE rounds the baseline, the recorder does not). The default pad of 1 covers both, so AT-2 holds; boxes used as a mask with no pad would not. Both are for the second half.
 - **For win (asked before):** where AT-1 and AT-24 are defined.
 
 ---
