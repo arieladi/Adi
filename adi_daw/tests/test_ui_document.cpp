@@ -805,9 +805,12 @@ void loopRecord(const std::filesystem::path &dir) {
     const auto onMain = count("SELECT count(*) FROM clips WHERE track_id = 4 AND lane_id IS NULL");
     std::printf("loop record: %s; take lanes +%d, takes %d, main-lane clips %d\n",
                 landed ? landed->message.c_str() : "(none)", takeLanes, onLanes, onMain);
-    check(landed && landed->ok && takeLanes >= 2 && onLanes >= 2 && onMain >= 1 &&
-              count("SELECT count(*) FROM clips WHERE track_id = 4") > clipsBefore,
-          "each pass a take on a take lane of 3 Audio, the last pass's audio on the main lane");
+    // 760 blocks of 64 from 0 over a 24000-frame loop: two whole passes and 640 frames of a third.
+    check(landed && landed->ok && takeLanes == 3 && onLanes == 3 && onMain >= 1 &&
+              landed->message.find("3 passes") != std::string::npos && landed->clips.size() == 1 &&
+              count(("SELECT count(*) FROM clips WHERE lane_id IS NULL AND id = " + std::to_string(landed->clips.front())).c_str()) == 1,
+          "each of the three passes a take on its own take lane of 3 Audio, the last pass's audio on the main lane, "
+          "the main-lane clip chosen");
     int undone = 0;
     while (doc->ops().canUndo() && doc->ops().nextUndo() && doc->ops().nextUndo()->label != "Arm Recording" &&
            count("SELECT count(*) FROM clips WHERE track_id = 4") > clipsBefore && undone < 8) {
@@ -818,6 +821,7 @@ void loopRecord(const std::filesystem::path &dir) {
     check(count("SELECT count(*) FROM clips WHERE track_id = 4") == clipsBefore &&
               count("SELECT count(*) FROM lanes WHERE track_id = 4 AND kind = 'take'") == lanesBefore && undone >= 1,
           "Undo takes the loop's takes back (the engine makes a step per pass)");
+    check(undone == 3, "three passes, three undo steps");
     std::printf("loop record: %d undo steps\n", undone);
 }
 // MX-23 and SRF-02: a fader dragged is heard while it moves, writes nothing until the mouse lets go, then

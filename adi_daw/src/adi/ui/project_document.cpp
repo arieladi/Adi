@@ -1129,8 +1129,15 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
             error_ = "Recording with the loop on needs a loop: set the loop brace first.";
             return false;
         }
+        // The engine's own tempo map for the loop (`Session`'s TimingView): the stored events as they are, 120 BPM
+        // only for a project with none. The snapshot's map adds a 120 at the start that the engine does not.
+        engine::TempoMap tempo;
+        for (const auto &e : session_.model().tempo)
+            tempo.events.push_back({e.posTicks, e.bpm, static_cast<int>(e.curve)});
+        if (tempo.events.empty())
+            tempo.events.push_back({0, 120.0, 0});
         const auto sampleAt = [&](std::int64_t tick) {
-            const long double sample = static_cast<long double>(current->tempo->ticksToSeconds(tick)) * engineRate_;
+            const long double sample = static_cast<long double>(tempo.ticksToSeconds(tick)) * engineRate_;
             constexpr auto limit = std::numeric_limits<std::int64_t>::max();
             if (!std::isfinite(sample) || sample >= static_cast<long double>(limit))
                 return limit;
@@ -1220,16 +1227,15 @@ void ProjectDocument::landTake(engine::AudioRecordingResult &result) {
     if (result.loopSpec()) {
         // A loop recording (CT-02): each pass a take on a take lane of its track, the last pass's audio copied to
         // the main lane, one media per track; the engine's commit makes an undo step per pass.
-        auto lane = db.execAndGet("SELECT COALESCE(MAX(id), 0) + 1 FROM lanes").getInt64();
-        auto clip = db.execAndGet("SELECT COALESCE(MAX(id), 0) + 1 FROM clips").getInt64();
-        auto media = db.execAndGet("SELECT COALESCE(MAX(id), 0) + 1 FROM media_files").getInt64();
+        // Ids past every live row and every id a remark holds (DF-E16's rule).
+        RowIds rowIds(db);
         std::vector<recording::LoopTrackIds> loopIds;
         for (const auto &track : result.tracks) {
-            recording::LoopTrackIds ids{media++, {}};
-            for (std::size_t pass = 0; pass < result.passes().size(); ++pass)
-                ids.passes.push_back({lane++, clip++, takeName(track.trackId)});
-            if (!ids.passes.empty())
-                outcome.clips.push_back(ids.passes.back().clip);
+            recording::LoopTrackIds ids{rowIds.next("media_files"), {}};
+            for (std::size_t pass = 0; pass < result.passes().size(); ++pass) {
+                const auto lane = rowIds.next("lanes");
+                ids.passes.push_back({lane, rowIds.next("clips"), takeName(track.trackId)});
+            }
             loopIds.push_back(std::move(ids));
         }
         auto edit = recording::prepareLoopCommit(*store_, result, loopIds);
@@ -1249,6 +1255,13 @@ void ProjectDocument::landTake(engine::AudioRecordingResult &result) {
             return;
         }
         synchronise();
+        // The clip chosen is the one that plays: each track's main-lane copy of its last pass.
+        for (const auto &track : result.tracks) {
+            SQLite::Statement main(db, "SELECT id FROM clips WHERE track_id = ? AND lane_id IS NULL ORDER BY id DESC LIMIT 1");
+            main.bind(1, track.trackId);
+            if (main.executeStep())
+                outcome.clips.push_back(main.getColumn(0).getInt64());
+        }
         outcome.ok = true;
         const auto passes = result.passes().size();
         outcome.message = passes == 1 ? "Recorded one pass of the loop." : "Recorded " + std::to_string(passes) +
