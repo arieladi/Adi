@@ -642,5 +642,9 @@ SettingsWindow::SettingsWindow(settings::AppSettings &store,
     // Live 11's Preferences open 500 by 607; ADI's has more pages and its Find box.
     centreWithSize(560, 680);
 }
+void SettingsWindow::visibilityChanged() {
+    if (!quiet)
+        DocumentWindow::visibilityChanged();
+}
 void SettingsWindow::closeButtonPressed() { setVisible(false); }
 } // namespace adi::ui

@@ -596,7 +596,7 @@ class AdiApplication final : public juce::JUCEApplication,
     }
     void report(const std::string &text) {
         // A test launch reports to stderr, never in a window (WTS-01).
-        if (smokeOutput_ != juce::File{} || controlTest_) {
+        if (testLaunch()) {
             std::fprintf(stderr, "ADI: %s\n", text.c_str());
             return;
         }
@@ -997,7 +997,7 @@ class AdiApplication final : public juce::JUCEApplication,
             return out;
         };
         // A test launch never takes the foreground from the person at the desk (WTS-01).
-        window_->quiet = smokeOutput_ != juce::File{} || controlTest_;
+        window_->quiet = testLaunch();
         window_->setVisible(true);
         // A Mix View kept open in its own window opens there again.
         syncMixView(*floating_, *root_, true);
@@ -1268,8 +1268,11 @@ class AdiApplication final : public juce::JUCEApplication,
                     });
                 };
             }
+            // A test launch's Settings window (--smoke-settings) shows without the foreground too (WTS-01).
+            settingsWindow_->quiet = testLaunch();
             settingsWindow_->setVisible(true);
-            settingsWindow_->toFront(true);
+            if (!settingsWindow_->quiet)
+                settingsWindow_->toFront(true);
             return true;
         }
         if (id != AppCommands::NewProject && id != AppCommands::OpenProject)
@@ -1379,6 +1382,7 @@ class AdiApplication final : public juce::JUCEApplication,
     bool noAudio_ = false, smokeSettings_ = false;
     juce::File smokeOutput_;
     bool controlTest_ = false;
+    bool testLaunch() const { return smokeOutput_ != juce::File{} || controlTest_; }
     std::unique_ptr<settings::AppSettings> settings_;
     std::unique_ptr<AppCommands> commands_;
     device::JuceDeviceLoader loader_;

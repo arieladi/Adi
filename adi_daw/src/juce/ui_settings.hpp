@@ -151,6 +151,9 @@ class SettingsWindow final : public juce::DocumentWindow {
   public:
     SettingsWindow(settings::AppSettings &, std::function<std::unique_ptr<juce::Component>()> audioDevices);
     void closeButtonPressed() override;
+    // WTS-01: a test launch's Settings window shows without taking the foreground; set before it shows.
+    bool quiet = false;
+    void visibilityChanged() override;
     SettingsPanel &panel() noexcept { return *panel_; }
 
   private:
