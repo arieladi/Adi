@@ -76,7 +76,10 @@ struct ArrangementGeometry {
     struct Row {
         const engine::TrackNode *track; // never null
         TrackPlace place;
-        std::size_t position; // down the rows, from 0: Live's track number less one
+        std::size_t position; // down the rows, from 0
+        // The number a # in its name and its activator show: Live's track number, which skips the
+        // returns (one may stand in a group, DF-W33); a return or Main keeps its place's.
+        std::size_t number() const noexcept { return place.number != 0 ? place.number : position + 1; }
     };
     // The tracks in the arrangement's order: `order` when it was built for this snapshot, else
     // the snapshot's own, every track at the top (a geometry used without its view).

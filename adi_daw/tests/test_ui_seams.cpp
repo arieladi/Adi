@@ -907,7 +907,7 @@ void groupAndUngroupAsBatches() {
     check(sub.submit(std::move(inner.ops)).ok && order() == Order{{2, 0}, {6, 0}, {3, 1}, {4, 0}, {1, 0}},
           "the inner group ungrouped: Snare in the outer one");
 
-    check(ui::groupTrack(view.current()->tracks, 1).refusal == "Main and return tracks can't be grouped." &&
+    check(ui::groupTrack(view.current()->tracks, 1).refusal == "Main can't be grouped." &&
               ui::groupTrack(view.current()->tracks, 99).refusal == "Select a track to group." &&
               ui::ungroupTrack(view.current()->tracks, 2).refusal == "Select a group track to ungroup.",
           "Main, a missing track and a track that is not a group are refused, with the reason");
@@ -1006,9 +1006,18 @@ void groupAndUngroupAsBatches() {
           "A dragged below the last return: after B, before Main");
     check(sub.undo().ok && ui::moveTracks(view.current()->tracks, {21}, {0, 0}).ops.empty(),
           "B dropped where it stands: no step");
-    check(ui::moveTracks(view.current()->tracks, {20, 2}, {0, 0}).refusal == "Return tracks move among the returns only." &&
-              ui::moveTracks(view.current()->tracks, {20}, {6, 0}).refusal == "Return tracks move among the returns only.",
-          "a return with a track, or into a group, is refused, with the reason");
+    check(ui::moveTracks(view.current()->tracks, {20, 2}, {0, 0}).refusal == "Return tracks move among the returns only.",
+          "a return with a track is refused, with the reason");
+    // A return dragged into a group (ADR-0247 d2): after what the group holds, one step; and out again.
+    auto intoGroup = ui::moveTracks(view.current()->tracks, {20}, {6, 0});
+    check(intoGroup.refusal.empty() && sub.submit(std::move(intoGroup.ops)).ok &&
+              order() == Order{{2, 0}, {6, 0}, {3, 1}, {20, 1}, {4, 0}, {21, 0}, {1, 0}} && sub.nextUndo()->label == "Move Track",
+          "A dragged into the group: after the group's track, the foot keeps B and Main; one step");
+    auto outOfGroup = ui::moveTracks(view.current()->tracks, {20}, {0, 21});
+    check(outOfGroup.refusal.empty() && sub.submit(std::move(outOfGroup.ops)).ok &&
+              order() == Order{{2, 0}, {6, 0}, {3, 1}, {4, 0}, {20, 0}, {21, 0}, {1, 0}},
+          "and dragged out before B: back at the foot");
+    check(sub.undo().ok && sub.undo().ok && order() == withReturns, "both undone");
     check(sub.undo().ok && sub.undo().ok && order() == before, "the returns undone");
 
     // A group holding a soloed track (manual 18.3: its Solo shows half coloured).
@@ -1196,6 +1205,22 @@ void sendsAsBatches() {
               !ui::returnPre(view.current()->tracks, 11) && !ui::returnPre(view.current()->tracks, 2) &&
               !ui::returnPre(view.current()->tracks, 12),
           "a return with no choice yet reads Post from its sends; a track, or no track, reads Post");
+    // An older file whose sends into A disagree, one Pre and one Post, no choice on the return: the
+    // engine reads it mixed, and so does the switch (ADR-0247 d2); its first click sets every send to
+    // Post. Undone.
+    {
+        OpRequest r;
+        r.opType = "routing.setPreFader";
+        r.payload = {{"id", first}, {"pre", true}};
+        r.label = "Older file";
+        check(sub.submit(std::move(r)).ok, "one send into A written Pre, the other left Post");
+        check(ui::returnTapMixed(*view.current(), 10), "A's switch reads mixed");
+        check(sub.submit(adi::clickReturnSendTap(10)).ok && !ui::returnTapMixed(*view.current(), 10) &&
+                  !ui::returnPre(view.current()->tracks, 10) && !ui::findSend(view.current()->sends, 2, 10)->preFader,
+              "its first click (the engine's) sets every send to Post");
+        check(sub.undo().ok && ui::returnTapMixed(*view.current(), 10) && sub.undo().ok &&
+                  !ui::returnTapMixed(*view.current(), 10), "undone: mixed, then not");
+    }
     // An older file: every send into A written Pre by the per-send op with no choice on the return
     // (what `allowSendEdgeTapEdit` allows while none is held). The return reads Pre without holding
     // it, and a new send into it still carries `routing.setPreFader`, as the engine's own
@@ -1855,8 +1880,15 @@ void returnsStandBeforeMain() {
     check(geometry.footTop(reader) == 1000 - 2 * geometry.height &&
               geometry.rowTop(reader, 1) == 1000 - geometry.height && geometry.rowTop(reader, 3) == 0,
           "with its view, it stands at the bottom of the lanes");
-    check(ui::groupTrack(view.current()->tracks, 2).refusal == "Main and return tracks can't be grouped.",
-          "a return can't be grouped");
+    {
+        // A return may go into a group now (DF-W33; ADR-0247 d2): Group Tracks makes the group and
+        // moves the return into it. Not submitted: the checks after this one read the foot as it is.
+        const auto grouped = ui::groupTrack(view.current()->tracks, 2);
+        check(grouped.refusal.empty() && !grouped.ops.empty() && grouped.ops.front().opType == "track.create" &&
+                  std::any_of(grouped.ops.begin(), grouped.ops.end(),
+                              [](const OpRequest &o) { return o.opType == "track.setParent" && o.payload.at("id") == 2; }),
+              "a return can be grouped: a new group, and the return moved into it");
+    }
 
     // A track's own colour (ADR-0211): an index into Live's palette, or none.
     auto colour = [&sub](std::int64_t id, std::int64_t value) {
