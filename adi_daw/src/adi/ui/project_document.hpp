@@ -6,6 +6,7 @@
 #include "adi/engine/audio_recording.hpp"
 #include "adi/engine/param_ops.hpp"
 #include "adi/gesture_producers.hpp"
+#include "adi/quiet_gesture.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/history.hpp"
 #include "adi/mix_functions.hpp"
@@ -82,6 +83,10 @@ class ProjectDocument final : public engine::BlockProcessor {
     static StoreFileResult runCollectAndExport(const ExportJob &);
     bool synchronise();
     void tick(std::int64_t milliseconds);
+    // Commits every parameter edit still held in the capture, each as the undo step it was going to
+    // be, without waiting for its quiet interval: what Undo, Redo and the Undo History do first, so the
+    // step they undo is the one the user sees last (DF-W29). A held drag (Begin with no End) stays.
+    bool settleParameters();
     // Installed by the audio device owner before attaching its callback. Evaluated on the
     // message thread when the driver supplies the granted size to prepare.
     void configureGraphWorkers(std::function<std::uint32_t(std::int32_t)> count,
@@ -197,6 +202,16 @@ class ProjectDocument final : public engine::BlockProcessor {
     bool endMixerDrag();
     void cancelMixerDrag();
     bool mixerDragging() const noexcept { return mixerDrag_ != nullptr; }
+    // Live's Tap Tempo (HI-01): a run of taps is one quiet gesture on the tempo event in force at the playhead,
+    // heard at each tap and one undo step "Tap Tempo" once the taps stop: no undo and recommit, so no forked
+    // history. `eventTick` is that event's position: its row's bpm changes, or, where no row holds it (the
+    // start's 120 can be the snapshot's own), the run inserts one there. `nowMs` and `pollTapTempo`'s clock are
+    // one monotonic clock; the run ends `TapTempo::kPauseMs` after its last tap, or at `endTapTempo`.
+    bool tapTempo(double bpm, std::int64_t eventTick, std::uint64_t nowMs);
+    // False when the run ended and its step was refused; `error()` says why, and the tempo goes back.
+    bool pollTapTempo(std::uint64_t nowMs);
+    bool endTapTempo();
+    bool tapping() const noexcept { return tap_ != nullptr; }
     // Auto Gain Stage (ADR-0195 d4): one offline command, one undo step.
     bool autoGainStage(bool lufs);
     // A device edit from the strip (enable, remove, panel), as one op.
@@ -320,6 +335,9 @@ class ProjectDocument final : public engine::BlockProcessor {
     // The mixer drag's gesture (MX-23): the coordinator of this store's gestures, and the open session.
     std::shared_ptr<gesture::Coordinator> coordinator_;
     std::unique_ptr<gesture::Session> mixerDrag_;
+    std::shared_ptr<gesture::Coordinator> tapCoordinator_;
+    std::unique_ptr<gesture::QuietSession> tap_;
+    bool tapInserts_ = false;
     ParameterFeed feed_;
     // Owner-only. Refresh the pointer even when latency fields still match so
     // an old load of controls is never held after its display changes.

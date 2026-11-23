@@ -35,6 +35,8 @@
 
 #include "temp_directory.hpp"
 #include "acceptance/wts01_harness.hpp"
+#include "adi/audio/floating_point_control.hpp"
+#include "adi/audio/io_audit.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/builtin_catalog.hpp"
 #include "adi/ui/arm_edits.hpp"
@@ -47,12 +49,14 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
+#include <memory>
 #include <new>
 #include <optional>
 #include <stdexcept>
@@ -268,10 +272,10 @@ std::filesystem::path writeSample(const std::filesystem::path& dir, const std::s
 
 // --- Part 1: each built-in alone ---------------------------------------------
 
-/// One run of `info` alone. False when it does not load or set up.
-bool runAlone(const BuiltinInfo& info, std::int32_t frames, int blocks, const std::filesystem::path& samples,
-              std::vector<double>& times, long& allocated, double& loudest, double& changed) {
-    noiseState = 20261122u;
+/// `info` loaded and prepared as each part runs it: a sample in every slot it
+/// declares, its working state. Null (and a failed check) when it does not.
+std::unique_ptr<device::DeviceInstance> workingDevice(const BuiltinInfo& info, std::int32_t frames,
+                                                      const std::filesystem::path& samples) {
     const auto ref = referenceFor(info.uid);
     engine::DeviceRequest request;
     request.ref = &ref;
@@ -280,7 +284,7 @@ bool runAlone(const BuiltinInfo& info, std::int32_t frames, int blocks, const st
     auto device = device::makeBuiltinDevice(request, error);
     if (!device) {
         check(false, std::string(info.name) + " loads: " + error);
-        return false;
+        return nullptr;
     }
     device->prepare(kRate, frames);
     // A sample in every slot it declares: a 5 s impulse for Hybrid Reverb (its
@@ -296,7 +300,7 @@ bool runAlone(const BuiltinInfo& info, std::int32_t frames, int blocks, const st
         const auto state = device::captureBuiltinSample(info.uid, slot, file, file, kRate);
         if (!device->loadState(role, Payload::to_cbor(state))) {
             check(false, std::string(info.name) + " takes a sample in " + role);
-            return false;
+            return nullptr;
         }
     }
     int taken = 0, asked = 0;
@@ -307,6 +311,17 @@ bool runAlone(const BuiltinInfo& info, std::int32_t frames, int blocks, const st
     if (asked > 0) {
         std::printf("    [setup] %s: %d of %d working controls taken; first parameter %s\n", std::string(info.name).c_str(),
                     taken, asked, device->paramCount() > 0 ? device->paramAt(0)->name.c_str() : "-");
+    }
+    return device;
+}
+
+/// One run of `info` alone. False when it does not load or set up.
+bool runAlone(const BuiltinInfo& info, std::int32_t frames, int blocks, const std::filesystem::path& samples,
+              std::vector<double>& times, long& allocated, double& loudest, double& changed) {
+    noiseState = 20261122u;
+    auto device = workingDevice(info, frames, samples);
+    if (!device) {
+        return false;
     }
     std::vector<std::vector<float>> in(2, std::vector<float>(static_cast<std::size_t>(frames)));
     std::vector<std::vector<float>> out(2, std::vector<float>(static_cast<std::size_t>(frames)));
@@ -370,8 +385,15 @@ void eachBuiltinAlone(std::int32_t frames, double seconds) {
     const double deadlineUs = static_cast<double>(frames) * 1e6 / kRate;
     const auto blocks = static_cast<int>(seconds * kRate / frames);
     adi::test::TempDirectory samples("builtin_realtime", "samples");
+    // Every available entry, with a canvas or native only (the Sampler has no
+    // canvas: a found gap, it was skipped). The count expected is the
+    // catalogue's, taken apart from the loop, so a skip anywhere in it shows.
+    const auto expected = static_cast<std::size_t>(std::count_if(
+        builtinCatalog().begin(), builtinCatalog().end(), [](const BuiltinInfo& info) { return info.available; }));
+    std::size_t measured = 0;
+    bool sampler = false;
     for (const auto& info : builtinCatalog()) {
-        if (!info.available || builtinCanvas(info.uid).empty()) {
+        if (!info.available) {
             continue;
         }
         // Twice, each time a fresh device on the same input, so a stall that
@@ -402,7 +424,30 @@ void eachBuiltinAlone(std::int32_t frames, double seconds) {
         // deadline. Its bound says so; non-uniform partitioning would cut it.
         const double share = info.uid == "org.adidaw.builtin.hybrid-reverb" ? 0.25 : 0.15;
         judge(name, frames, statsOf(runs[0], runs[1], deadlineUs), allocated, deadlineUs, share);
+        ++measured;
+        sampler = sampler || info.uid == "org.adidaw.builtin.sampler";
     }
+    check(measured == expected && expected > 0, "at " + std::to_string(frames) + " frames every available built-in is "
+                                                "measured (" + std::to_string(measured) + " of " +
+                                                    std::to_string(expected) + ")");
+    // Its 32 slots: runAlone loads every sample role the device declares or
+    // fails, so the Sampler measured had 32 samples in it.
+    std::size_t slots = 0;
+    {
+        const auto ref = referenceFor("org.adidaw.builtin.sampler");
+        engine::DeviceRequest request;
+        request.ref = &ref;
+        request.maxFrames = frames;
+        std::string error;
+        if (auto device = device::makeBuiltinDevice(request, error)) {
+            for (const auto& role : device->stateRoles()) {
+                slots += role.rfind("sample:", 0) == 0 ? 1u : 0u;
+            }
+        }
+    }
+    check(sampler && slots == 32, "at " + std::to_string(frames) +
+                                      " frames the Sampler, native only, with its 32 slots, is measured (" +
+                                      std::to_string(slots) + " slots)");
 }
 
 // --- Part 2: WTS-01's project ---------------------------------------------------
@@ -527,6 +572,81 @@ void callbacks(ui::ProjectDocument& doc, std::int32_t frames, int blocks, std::i
             nextTimer = stream + 1024;
         }
     }
+}
+
+// Measure actual factory New separately from the live-MIDI chain fixture.
+void factoryNewCost(std::int32_t frames, bool playing) {
+    const std::string label = playing ? "factory New playing" : "factory New stopped";
+    auto project = buildProject(frames, false, {});
+    if (!project->built) {
+        check(false, label + ": " + project->chain);
+        return;
+    }
+    auto& doc = *project->doc;
+    auto& session = doc.session();
+    const auto& model = session.model();
+    const bool factory = model.tracks.size() == 7 && model.clips.empty() &&
+        model.devices.size() == 2 && session.stats().loaded == 2;
+    const auto* graph = session.graph().currentGraph();
+    if (!factory || !graph) {
+        check(false, label + " needs a prepared New project and both factory return effects");
+        return;
+    }
+    if (playing) {
+        session.transport().play();
+    }
+
+    std::array<float, 128> inputLeft{}, inputRight{}, left{}, right{};
+    const float* input[]{inputLeft.data(), inputRight.data()};
+    float* output[]{left.data(), right.data()};
+    engine::AudioIo io;
+    io.in = input;
+    io.numIn = 2;
+    io.out = output;
+    io.numOut = 2;
+    io.frames = frames;
+    const auto process = [&] {
+        const audio::CallbackScope callback;
+        const auto us = timed([&] { doc.process(io); });
+        io.streamTimeSamples += frames;
+        return us;
+    };
+    std::vector<double> times(static_cast<std::size_t>(5.0 * kRate / frames));
+    const auto allocationsBefore = allocations.load(std::memory_order_relaxed);
+    while (io.streamTimeSamples < static_cast<std::int64_t>(5.0 * kRate)) {
+        (void)process();
+    }
+    if (session.graph().currentGraph() != graph) {
+        check(false, label + " changed its prepared graph during warmup");
+        return;
+    }
+    const auto before = graph->stats();
+    const auto zero = [](float value) { return std::bit_cast<std::uint32_t>(value) == 0; };
+    bool silent = true;
+    for (auto& us : times) {
+        std::fill_n(left.data(), frames, .25f);
+        std::fill_n(right.data(), frames, -.25f);
+        us = process();
+        silent = std::all_of(left.data(), left.data() + frames, zero) &&
+                 std::all_of(right.data(), right.data() + frames, zero) && silent;
+    }
+    const auto allocated = allocations.load(std::memory_order_relaxed) - allocationsBefore;
+    if (session.graph().currentGraph() != graph) {
+        check(false, label + " changed its prepared graph during measurement");
+        return;
+    }
+    const auto after = graph->stats();
+    const auto measured = static_cast<double>(times.size());
+    const auto deadline = static_cast<double>(frames) * 1e6 / kRate;
+    const auto s = statsOf(times, {}, deadline);
+    std::printf("    [breakdown] %4d frames, %-20s p50 %7.2f us, p99 %7.2f us (%.2f %%), max %7.2f us; "
+                "Graph: %zu nodes, %.2f processed and %.2f suspended per callback; %ld allocations\n",
+                frames, label.c_str(), s.p50, s.p99, 100.0 * s.p99 / deadline, s.max, graph->nodeCount(),
+                static_cast<double>(after.nodeCalls - before.nodeCalls) / measured,
+                static_cast<double>(after.nodesSuspended - before.nodesSuspended) / measured, allocated);
+    check(silent && session.transport().playing() == playing && after.blocks > before.blocks,
+          label + " renders exact silence with the requested transport");
+    check(allocated == 0, label + " allocates nothing from its first callback");
 }
 
 /// WTS-01's project, played from the start, twice (see Stats::stall): checked
@@ -657,6 +777,175 @@ void contended(std::int32_t frames, double seconds, const std::vector<const char
 
 }  // namespace
 
+// --- Part 3: the tail after silence (item 3, denormal-tail) -----------------
+
+#if (defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)) && !defined(_M_ARM64EC)
+/// The SSE status word's denormal-operand flag (DE, bit 1): set by any
+/// operation that READ a subnormal. Flush-to-zero and denormals-are-zero are
+/// cleared for the check, so a core's own state is seen as it decays.
+class DenormalWatch {
+public:
+    DenormalWatch() noexcept { _mm_setcsr(saved_ & ~0x8040u); }
+    ~DenormalWatch() { _mm_setcsr(saved_); }
+    DenormalWatch(const DenormalWatch&) = delete;
+    DenormalWatch& operator=(const DenormalWatch&) = delete;
+    static void clear() noexcept { _mm_setcsr(_mm_getcsr() & ~0x3Fu); }
+    [[nodiscard]] static bool seen() noexcept { return (_mm_getcsr() & 0x2u) != 0; }
+
+private:
+    const unsigned saved_ = _mm_getcsr();
+};
+#endif
+
+/// `info` given `signalSeconds` of noise (and notes, for an instrument), then
+/// `silenceSeconds` of digital silence with no events. Over the last second of
+/// silence no operation may read a subnormal (x86's denormal-operand flag,
+/// with flush-to-zero off: the core as run outside the callback's scope, in
+/// Pd or offline). Then, under the callback's own flush scope, the silence
+/// costs no more than the signal did.
+///
+/// What the flag can see in 60 s: every float-held state (a float delay line
+/// turns subnormal some 760 dB down), and every double state whose time
+/// constant is under about 85 ms (a double turns subnormal only at 2.2e-308,
+/// 708 time constants down). A slower double state's floor (Echo's envelope,
+/// Resonators' combs at a 2 s decay, a low-cut biquad) is held by the audit
+/// and its floor in the code, not by this check.
+void tailAfterSilence(const BuiltinInfo& info, std::int32_t frames, double signalSeconds,
+                      [[maybe_unused]] double silenceSeconds, const std::filesystem::path& samples) {
+    const std::string name(info.name);
+    std::vector<std::vector<float>> in(2, std::vector<float>(static_cast<std::size_t>(frames)));
+    std::vector<std::vector<float>> out(2, std::vector<float>(static_cast<std::size_t>(frames)));
+    const float* inPointers[2] = {in[0].data(), in[1].data()};
+    float* outPointers[2] = {out[0].data(), out[1].data()};
+    const int signalBlocks = static_cast<int>(signalSeconds * kRate / frames);
+    // One block: noise or silence in; while the signal plays, a note every
+    // 100 ms held 50 ms for an instrument (its notes all end before the silence).
+    std::array<engine::Event, 2> events{};
+    const auto block = [&](device::DeviceInstance& d, int b, bool signal) {
+        int n = 0;
+        for (std::size_t c = 0; c < 2; ++c) {
+            for (auto& v : in[c]) {
+                v = signal ? noise() : 0.f;
+            }
+        }
+        const auto at = static_cast<std::int64_t>(b) * frames;
+        const auto key = static_cast<std::uint16_t>(48 + (at / 4800) % 24);
+        const auto id = static_cast<std::uint64_t>(at / 4800 + 1);
+        if (info.midi && signal && at % 4800 < frames) {
+            events[static_cast<std::size_t>(n++)] = engine::Event{0, engine::EventType::NoteOn, 0, key, id, 0, 0.8};
+        }
+        if (info.midi && at % 4800 >= 2400 && at % 4800 < 2400 + frames) {
+            events[static_cast<std::size_t>(n++)] = engine::Event{0, engine::EventType::NoteOff, 0, key, id, 0, 0.0};
+        }
+        engine::NodeIo io;
+        io.in = inPointers;
+        io.out = outPointers;
+        io.channels = 2;
+        io.frames = frames;
+        io.events = engine::EventSpan{events.data(), n};
+        return timed([&] { d.process(io); });
+    };
+#if (defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)) && !defined(_M_ARM64EC)
+    {
+        noiseState = 20261122u;
+        auto device = workingDevice(info, frames, samples);
+        if (!device) {
+            return;
+        }
+        const DenormalWatch watch;
+        const int silenceBlocks = static_cast<int>(silenceSeconds * kRate / frames);
+        const int lastSecond = static_cast<int>(kRate / frames);
+        int touched = 0;
+        for (int b = 0; b < signalBlocks + silenceBlocks; ++b) {
+            const bool counted = b >= signalBlocks + silenceBlocks - lastSecond;
+            if (counted) {
+                DenormalWatch::clear();
+            }
+            (void)block(*device, b, b < signalBlocks);
+            if (counted && DenormalWatch::seen()) {
+                ++touched;
+            }
+        }
+        std::printf("    [tail] %-22s %4d frames: %d of the last %d silent blocks read a subnormal\n", name.c_str(),
+                    frames, touched, lastSecond);
+        check(touched == 0, name + " at " + std::to_string(frames) + " frames: after " +
+                                std::to_string(static_cast<int>(silenceSeconds)) +
+                                " s of silence its states have settled (no subnormal read in the last second)");
+    }
+#else
+    std::printf("    [tail] %-22s %4d frames: the settling check reads x86's denormal-operand flag; not here%c",
+                name.c_str(), frames, 10);
+#endif
+    {
+        // The callback's own scope (DF-E11): in the steady state, the silence
+        // costs no more than the signal. The last 2 s of each are compared: the
+        // signal long enough to be steady (Hybrid Reverb's history fills its
+        // 5 s impulse), the silence 30 s so the tails have settled (while a
+        // tail decays through the floors, branches that were predictable stop
+        // being so: Chord Comb's mean rises 5 % for some 10 s, then falls below
+        // the signal's). Each block's lesser time over two runs (as Stats'
+        // stall), so the machine's own preemption is not read as the core's.
+        const int window = static_cast<int>(2.0 * kRate / frames);
+        const int quietBlocks = static_cast<int>(30.0 * kRate / frames);
+        std::array<std::vector<double>, 2> loud, quiet;
+        for (std::size_t run = 0; run < 2; ++run) {
+            noiseState = 20261122u;
+            auto device = workingDevice(info, frames, samples);
+            if (!device) {
+                return;
+            }
+            const audio::ScopedFlushDenormals flush;
+            for (int b = 0; b < signalBlocks + quietBlocks; ++b) {
+                const double us = block(*device, b, b < signalBlocks);
+                if (b < signalBlocks && b >= signalBlocks - window) {
+                    loud[run].push_back(us);
+                } else if (b >= signalBlocks + quietBlocks - window) {
+                    quiet[run].push_back(us);
+                }
+            }
+        }
+        const auto steady = [](const std::array<std::vector<double>, 2>& runs) {
+            std::vector<double> least(runs[0].size());
+            for (std::size_t i = 0; i < least.size(); ++i) {
+                least[i] = std::min(runs[0][i], runs[1][i]);
+            }
+            std::sort(least.begin(), least.end());
+            return least[static_cast<std::size_t>(0.99 * static_cast<double>(least.size() - 1))];
+        };
+        const double a = steady(loud), q = steady(quiet);
+        std::printf("    [tail] %-22s %4d frames: p99 %7.2f us with signal, %7.2f us in the silence after it\n",
+                    name.c_str(), frames, a, q);
+        // No worse, within the machine's own jitter: 25 % and 5 us. Under the
+        // flush scope a subnormal costs nothing, so this catches a silence
+        // that costs more for another reason (a doubling of any real cost);
+        // the subnormals themselves are the check above's.
+        check(q <= 1.25 * a + 5.0, name + " at " + std::to_string(frames) +
+                                       " frames: its silence costs no more than its signal (p99, steady state)");
+    }
+}
+
+void eachTailAfterSilence(std::int32_t frames) {
+    adi::test::TempDirectory samples("builtin_realtime", "tail");
+    for (const auto& info : builtinCatalog()) {
+        if (info.available) {
+            tailAfterSilence(info, frames, 8.0, 60.0, samples.path());
+        }
+    }
+}
+
+// A debug build counts allocations only (its times are not the product's),
+// and runs a tenth as long so it fits its CTest timeout: every callback is
+// still counted from the first, the warm-up second included. The parts that
+// only time (three of the four contention variants, the breakdown) are an
+// optimised build's alone.
+#if defined(NDEBUG)
+constexpr double kLength = 1.0;
+constexpr bool kTimed = true;
+#else
+constexpr double kLength = 0.1;
+constexpr bool kTimed = false;
+#endif
+
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
 #if defined(_MSC_VER) && defined(_DEBUG)
@@ -670,25 +959,37 @@ int main() {
     try {
         for (std::int32_t frames : {64, 128}) {
             std::printf("\n[each built-in alone, %d frames]\n", frames);
-            eachBuiltinAlone(frames, 10.0);
+            eachBuiltinAlone(frames, 10.0 * kLength);
         }
         const std::vector<const char*> chain{"org.adidaw.builtin.saturator", "org.adidaw.builtin.eq-eight",
                                              "org.adidaw.builtin.reverb", "org.adidaw.builtin.delay",
                                              "org.adidaw.builtin.adi-shaper"};
         for (std::int32_t frames : {64, 128}) {
             std::printf("\n[WTS-01's project, %d frames]\n", frames);
-            theSessionsProject(frames, 20.0, true, chain, true);
-            contended(frames, 10.0, chain, true, true, true);
-            contended(frames, 10.0, chain, true, false, false);
-            contended(frames, 10.0, chain, false, true, false);
-            contended(frames, 10.0, chain, false, false, false);
-            // Where the time goes: an empty project (the engine's own share),
-            // then the chain grown one device at a time.
-            theSessionsProject(frames, 5.0, false, {}, false);
-            for (std::size_t n = 0; n <= chain.size(); ++n) {
-                theSessionsProject(frames, 5.0, true,
-                                   std::vector<const char*>(chain.begin(), chain.begin() + static_cast<std::ptrdiff_t>(n)),
-                                   false);
+            theSessionsProject(frames, 20.0 * kLength, true, chain, true);
+            contended(frames, 10.0 * kLength, chain, true, true, true);
+            if constexpr (kTimed) {
+                contended(frames, 10.0, chain, true, false, false);
+                contended(frames, 10.0, chain, false, true, false);
+                contended(frames, 10.0, chain, false, false, false);
+            }
+            // Where the time goes: an empty project (the engine's own share), then the chain
+            // grown one device at a time. Factory New checks exact silence and no allocation in
+            // every build; the chain's growth is an optimised build's alone.
+            factoryNewCost(frames, false);
+            factoryNewCost(frames, true);
+            if constexpr (kTimed) {
+                for (std::size_t n = 0; n <= chain.size(); ++n) {
+                    theSessionsProject(
+                        frames, 5.0, true,
+                        std::vector<const char*>(chain.begin(), chain.begin() + static_cast<std::ptrdiff_t>(n)), false);
+                }
+            }
+        }
+        if constexpr (kTimed) {
+            for (std::int32_t frames : {64, 128}) {
+                std::printf("\n[the tail after 60 s of silence, %d frames]\n", frames);
+                eachTailAfterSilence(frames);
             }
         }
     } catch (const std::exception& e) {

@@ -11,7 +11,7 @@
 #include <set>
 #include <stdexcept>
 namespace adi::engine {
-namespace {constexpr long double periodLimit=static_cast<long double>(std::int64_t{1}<<50);}
+namespace {constexpr std::int64_t periodLimit = std::int64_t{1} << 50;}
 struct ScaleData {
     ClipScale scale;double period=1200;std::string name,source="implicit",description;
     std::vector<ScaleDegree> degrees;
@@ -91,6 +91,39 @@ std::optional<ScalePitch> ScaleContext::nearest(double pitch,double tonic,bool s
     if(!std::isfinite(low.cents))return std::isfinite(high.cents)?std::optional<ScalePitch>(high):std::nullopt;
     if(!std::isfinite(high.cents))return low;
     return lowDistance<=highDistance?low:high; // ties choose lower pitch
+}
+std::optional<ScalePitch> ScaleContext::stepDegree(std::int64_t degree, std::int64_t period,
+                                                   std::int64_t steps, double tonic) const noexcept {
+    if (!data_ || !std::isfinite(tonic) || std::abs(tonic) > 1e9 ||
+        period < -periodLimit || period > periodLimit)
+        return {};
+    const auto &members = data_->members;
+    const auto &degrees = data_->degrees;
+    const auto found = std::lower_bound(members.begin(), members.end(), degree,
+                                        [&](auto index, auto id) { return degrees[index].id < id; });
+    if (found == members.end() || degrees[*found].id != degree)
+        return {};
+    const auto count = static_cast<std::int64_t>(members.size());
+    auto rank = static_cast<std::int64_t>(found - members.begin()) + steps % count;
+    auto turns = steps / count;
+    if (rank < 0) {
+        rank += count;
+        --turns;
+    } else if (rank >= count) {
+        rank -= count;
+        ++turns;
+    }
+    if (turns < -periodLimit - period || turns > periodLimit - period)
+        return {};
+    const auto repeat = period + turns;
+    const auto index = members[static_cast<std::size_t>(rank)];
+    const auto &destination = degrees[index];
+    const auto cents = static_cast<double>(static_cast<long double>(tonic) +
+                                           static_cast<long double>(repeat) * data_->period +
+                                           destination.cents);
+    if (!std::isfinite(cents) || std::abs(cents) > 1e9)
+        return {};
+    return ScalePitch{destination.id, repeat, index, cents, true};
 }
 std::optional<ScalePitch> ScaleContext::match(double pitch,double tonic,double tolerance)const noexcept {
     if(!std::isfinite(tolerance) || tolerance<0)return {};

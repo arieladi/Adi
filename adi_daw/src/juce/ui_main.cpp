@@ -510,7 +510,9 @@ class AdiApplication final : public juce::JUCEApplication,
         return key;
     }
     // A project opened while a discovery runs waits for its adoption, so the plug-ins it finds load
-    // (`PluginCatalogueService::settleThen`); the Status Bar says why the open waits.
+    // (`PluginCatalogueService::settleThen`); the Status Bar says why the open waits. The open then runs with no
+    // job beside it, which is when the loader probes a plug-in the catalogue lacks at the path the project saved
+    // (N68): a plug-in installed since the last scan still loads on open.
     void openSettled(const juce::File &file, bool create) {
         if (!catalogue_ || !catalogue_->running()) {
             install(file, create);
@@ -563,8 +565,10 @@ class AdiApplication final : public juce::JUCEApplication,
         manager_.removeChangeListener(this);
         detachAudio();
         // A take still recording or landing goes into its project before the project closes (MX-09).
-        if (document_)
+        if (document_) {
+            (void)document_->endTapTempo(); // Quit: the run is a step of the file
             (void)document_->settleRecording(); // Quit: nothing is left to tell
+        }
         mainMeterSource_.reset();
         floating_.reset();
         historyWindow_.reset();
@@ -634,6 +638,9 @@ class AdiApplication final : public juce::JUCEApplication,
         // A take still recording or landing goes into the project it was recorded in (MX-09); a take that
         // could not be kept says so before that project goes.
         if (document_) {
+            // A Tap Tempo run is a step of the project it was tapped in (HI-01).
+            if (!document_->endTapTempo())
+                report(document_->error());
             if (!document_->settleRecording())
                 report("The last take was still being saved and could not be kept; the new project opened.");
             else if (auto landed = document_->takeLanded(); landed && !landed->ok)
@@ -858,8 +865,6 @@ class AdiApplication final : public juce::JUCEApplication,
         root->automationArmed = [this] { return document_->automationArmed(); };
         root->armAutomation = [this](bool armed) { document_->setAutomationArmed(armed); };
         // Arm, monitoring and Arrangement Record (MX-09): the session's rows, and the recorder.
-        root->readRecordStates = [this] { return document_->recordStates(); };
-        root->setRecordStates(document_->recordStates());
         root->startRecording = [this](std::int64_t insertTick, bool playing) {
             const auto *device = manager_.getCurrentAudioDevice();
             const int inputs = device != nullptr ? device->getActiveInputChannels().countNumberOfSetBits() : 0;
@@ -894,6 +899,18 @@ class AdiApplication final : public juce::JUCEApplication,
             return ok;
         };
         root->cancelMixerDrag = [this] { document_->cancelMixerDrag(); };
+        root->endTapTempoGesture = [this] {
+            const bool ok = document_->endTapTempo();
+            if (!ok)
+                root_->say(document_->error());
+            return ok;
+        };
+        root->tapTempoGesture = [this](double bpm, std::int64_t eventTick, std::int64_t nowMs) {
+            const bool ok = document_->tapTempo(bpm, eventTick, static_cast<std::uint64_t>(nowMs));
+            if (!ok)
+                root_->say(document_->error());
+            return ok;
+        };
         for (auto *panel : {&root->mixer, &root->mixerView}) {
             // The strips' meters: the engine's scalar per strip (UI-ARCHITECTURE §9; N9, #381),
             // through the session; null until the session has a strip for the track. The strips
@@ -951,6 +968,14 @@ class AdiApplication final : public juce::JUCEApplication,
                 return true;
             why = document_->error();
             return false;
+        };
+        // Undo and Redo commit the knob edits still held first (DF-W29).
+        root->editsHeld = [this] { return !document_->pendingParameterGestures().empty(); };
+        root->settleEdits = [this] {
+            const bool ok = document_->settleParameters();
+            if (!ok && root_)
+                root_->say(document_->error());
+            return ok;
         };
         root->afterEdit = [this] {
             if (!document_->synchronise())
@@ -1133,6 +1158,7 @@ class AdiApplication final : public juce::JUCEApplication,
     void saveCopy(const juce::File &file) {
         if (!document_ || !root_)
             return;
+        (void)document_->endTapTempo(); // the copy holds the tempo heard
         if (!document_->saveCopy(pathFromUtf8(file.getFullPathName().toStdString()))) {
             root_->say(document_->error());
             return;
@@ -1365,7 +1391,9 @@ class AdiApplication final : public juce::JUCEApplication,
             return;
         document_->tick(static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
         if (root_) {
-            root_->setRecordStates(document_->recordStates());
+            // A Tap Tempo run ends once the taps stop (HI-01), on the taps' clock; a refused end says why.
+            if (!document_->pollTapTempo(juce::Time::getMillisecondCounter()))
+                root_->say(document_->error());
             // A take landed (MX-09): its outcome in the Status Bar, its clips selected.
             if (auto landed = document_->takeLanded()) {
                 root_->say(landed->message);

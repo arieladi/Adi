@@ -29,6 +29,7 @@ namespace adi::dsp {
 namespace {
 constexpr double pi = std::numbers::pi;
 double db(double x) noexcept { return std::pow(10., x / 20.); }
+double clean(double x) noexcept { return std::abs(x) < 1e-30 ? 0 : x; }
 } // namespace
 void VocoderBand::coefficients(double hz, double quality, double sampleRate) noexcept {
     quality = std::max(.707, quality);
@@ -47,6 +48,10 @@ double VocoderBand::step(double input) noexcept {
         const double h2 = b1 * q - l2 - q * b2;
         b2 += f2 * h2;
     }
+    l1 = clean(l1);
+    b1 = clean(b1);
+    l2 = clean(l2);
+    b2 = clean(b2);
     return b2;
 }
 Vocoder::Vocoder() noexcept
@@ -124,6 +129,7 @@ double Vocoder::random() noexcept {
 void Vocoder::track(double input) noexcept {
     pitchLP_ += (1 - std::exp(-2 * pi * std::min(p_[PitchHigh] * 1.5, sr_ * .2) / sr_)) *
                 (input - pitchLP_);
+    pitchLP_ = clean(pitchLP_);
     if (++decimationPhase_ < decimation_)
         return;
     decimationPhase_ = 0;
@@ -193,10 +199,12 @@ void Vocoder::process(const float *left, const float *right, float *outLeft, flo
                          : mode == 1 ? (carrierRight ? carrierRight[n] : 0)
                          : mode == 2 ? dry[1]
                                      : osc};
-        detectorLP_ += (1 - std::exp(-2 * pi * 2000 / sr_)) * (mid - detectorLP_);
+        detectorLP_ =
+            clean(detectorLP_ + (1 - std::exp(-2 * pi * 2000 / sr_)) * (mid - detectorLP_));
         const double hp = mid - detectorLP_;
-        detectorPower_ = detectorRate_ * detectorPower_ + (1 - detectorRate_) * mid * mid;
-        detectorHigh_ = detectorRate_ * detectorHigh_ + (1 - detectorRate_) * hp * hp;
+        detectorPower_ =
+            clean(detectorRate_ * detectorPower_ + (1 - detectorRate_) * mid * mid);
+        detectorHigh_ = clean(detectorRate_ * detectorHigh_ + (1 - detectorRate_) * hp * hp);
         const double sens = p_[Sensitivity] * .01;
         const double uv =
             sens >= 1 ? 1
@@ -204,6 +212,9 @@ void Vocoder::process(const float *left, const float *right, float *outLeft, flo
                 ? 0
                 : (detectorHigh_ > (1 - sens) * detectorPower_ && detectorPower_ > 1e-10 ? 1. : 0.);
         unvoiced_ = detectorRate_ * unvoiced_ + (1 - detectorRate_) * uv;
+        if (std::abs(unvoiced_ - uv) < 1e-12) {
+            unvoiced_ = uv;
+        }
         const double breath = random() * p_[Unvoiced] * .01 * unvoiced_;
         car[0] += breath;
         car[1] += breath;
@@ -220,11 +231,16 @@ void Vocoder::process(const float *left, const float *right, float *outLeft, flo
                 auto &env = envelopes_[c][b];
                 const double rate = power > env ? attack_ : release_;
                 env = rate * env + (1 - rate) * power;
+                // Floor just above DBL_MIN: a 1e-30 floor would be audible through
+                // pow(sqrt(env), Depth) at small Depth.
+                if (env < 1e-300) {
+                    env = 0;
+                }
                 const double amp = p_[Depth] == 0 ? 1 : std::pow(std::sqrt(env), p_[Depth] * .01);
                 // Surge applies each envelope before its corresponding carrier filter.
                 double v = carrier_[c][b].step(car[c] * amp);
                 auto &cp = carrierPower_[c][b];
-                cp = .999 * cp + .001 * v * v;
+                cp = clean(.999 * cp + .001 * v * v);
                 if (p_[Enhance] >= .5)
                     v *= std::min(8., 1 / std::sqrt(cp + 1e-6));
                 wet[c] += gains_[b] * v;

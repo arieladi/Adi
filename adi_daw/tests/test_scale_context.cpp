@@ -56,6 +56,17 @@ void basic() {
     check(transposed.contains(6400,6200) && !transposed.contains(6500,6200) && transposed.contains(6600,6200) && transposed.degrees()[0].name=="D","clip root metadata transposes relative membership and fallback names");
     ClipScale empty;empty.mask=0;const auto none=compile(empty);
     check(none.grid(6000,7200,6000,true).rows.empty() && !none.nearest(6000,6000,true) && !none.contains(6000,6000) && none.degrees().size()==12,"an explicitly empty scale stays empty without inventing a fallback membership");
+    const auto up = major.stepDegree(11, -1, 1, 6000);
+    const auto down = major.stepDegree(0, 0, -1, 6000);
+    const auto many = major.stepDegree(9, 0, 16, 6000);
+    check(up && up->degree == 0 && up->period == 0 && up->cents == 6000 &&
+              down && down->degree == 11 && down->period == -1 && down->cents == 5900 &&
+              many && many->degree == 0 && many->period == 3 && many->cents == 9600,
+          "degree stepping wraps forward and backward over selected membership");
+    check(!major.stepDegree(1, 0, 1, 6000) && !none.stepDegree(0, 0, 1, 6000) &&
+              !major.stepDegree(0, 0, std::numeric_limits<std::int64_t>::min(), 6000) &&
+              !major.stepDegree(0, 0, std::numeric_limits<std::int64_t>::max(), 6000),
+          "degree stepping refuses off-scale source IDs, empty scales and overflow");
 }
 void microtonal() {
     ClipScale scale;scale.tuningId=4;scale.mask=0;scale.id="rast";scale.degrees={0,4,7,10,14,18,21};auto definition=edo(4,24);const auto rast=compile(scale,definition);
@@ -73,6 +84,10 @@ void microtonal() {
     ClipScale odd;odd.tuningId=8;odd.degrees={0,3};const auto nonOctave=compile(odd,tritave);const auto rows=nonOctave.grid(6000,7901.96,6000,true);
     check(nonOctave.contains(6000+1901.955,6000) && !nonOctave.contains(7200,6000) && rows.rows.size()==3 && rows.rows[1].pitch.degree==3 && rows.rows[2].pitch.period==1,"non-octave periods and sparse authored degree IDs are preserved rather than coerced to octaves");
     check(nonOctave.contains(6100,6100) && !nonOctave.contains(6100,6000),"consumer supplies the absolute tonic anchor explicitly");
+    const auto tritaveStep = nonOctave.stepDegree(3, -1, 4, 6000);
+    check(tritaveStep && tritaveStep->degree == 3 && tritaveStep->period == 1 &&
+              std::abs(tritaveStep->cents - 8603.91) < 0.00001,
+          "degree stepping follows sparse identities and native non-octave periods");
 }
 void boundsAndRealtime() {
     const auto context=compile();check(!context.grid(0,12700,0,false,127).error.empty() && context.grid(0,12700,0,false,127).rows.empty(),"ruler budget failure returns no partial grid");
@@ -83,6 +98,10 @@ void boundsAndRealtime() {
     {audio::CallbackScope callback;for(int pass=0;pass<1000;++pass)for(int key=0;key<128;++key) {
         const auto pitch=static_cast<double>(key)*100;const auto found=context.match(pitch,6000);good=good && found.has_value();
         const auto nearest=context.nearest(pitch+30,6000,true);good=good && nearest && nearest->inScale;
+        if (nearest) {
+            const auto stepped = context.stepDegree(nearest->degree, nearest->period, -8, 6000);
+            good = good && stepped && stepped->inScale && stepped->cents < nearest->cents;
+        }
     }}
     check(good,"realtime membership/matching/nearest queries allocate and mutate nothing");
     std::string error;ClipScale source;const std::optional<TuningDefinition> none;

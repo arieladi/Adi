@@ -22,6 +22,7 @@
 #include "adi/history.hpp"
 #include "adi/ops.hpp"
 #include "adi/store.hpp"
+#include "adi/ui/fade_edits.hpp"
 #include "adi/ui/op_submitter.hpp"
 #include "adi/ui/arrangement_geometry.hpp"
 #include "adi/ui/audio_drop.hpp"
@@ -41,6 +42,8 @@
 #include "adi/row_ids.hpp"
 #include "adi/ui/audio_drop.hpp"
 #include "adi/ui/automation_override.hpp"
+#include "adi/ui/automation_mode.hpp"
+#include "adi/engine/automation.hpp"
 #include "adi/ui/snapshot_reader.hpp"
 #include "adi/ui/track_edits.hpp"
 #include "adi/ui/track_order.hpp"
@@ -907,7 +910,7 @@ void groupAndUngroupAsBatches() {
     check(sub.submit(std::move(inner.ops)).ok && order() == Order{{2, 0}, {6, 0}, {3, 1}, {4, 0}, {1, 0}},
           "the inner group ungrouped: Snare in the outer one");
 
-    check(ui::groupTrack(view.current()->tracks, 1).refusal == "Main and return tracks can't be grouped." &&
+    check(ui::groupTrack(view.current()->tracks, 1).refusal == "Main can't be grouped." &&
               ui::groupTrack(view.current()->tracks, 99).refusal == "Select a track to group." &&
               ui::ungroupTrack(view.current()->tracks, 2).refusal == "Select a group track to ungroup.",
           "Main, a missing track and a track that is not a group are refused, with the reason");
@@ -1006,9 +1009,18 @@ void groupAndUngroupAsBatches() {
           "A dragged below the last return: after B, before Main");
     check(sub.undo().ok && ui::moveTracks(view.current()->tracks, {21}, {0, 0}).ops.empty(),
           "B dropped where it stands: no step");
-    check(ui::moveTracks(view.current()->tracks, {20, 2}, {0, 0}).refusal == "Return tracks move among the returns only." &&
-              ui::moveTracks(view.current()->tracks, {20}, {6, 0}).refusal == "Return tracks move among the returns only.",
-          "a return with a track, or into a group, is refused, with the reason");
+    check(ui::moveTracks(view.current()->tracks, {20, 2}, {0, 0}).refusal == "Return tracks move among the returns only.",
+          "a return with a track is refused, with the reason");
+    // A return dragged into a group (ADR-0247 d2): after what the group holds, one step; and out again.
+    auto intoGroup = ui::moveTracks(view.current()->tracks, {20}, {6, 0});
+    check(intoGroup.refusal.empty() && sub.submit(std::move(intoGroup.ops)).ok &&
+              order() == Order{{2, 0}, {6, 0}, {3, 1}, {20, 1}, {4, 0}, {21, 0}, {1, 0}} && sub.nextUndo()->label == "Move Track",
+          "A dragged into the group: after the group's track, the foot keeps B and Main; one step");
+    auto outOfGroup = ui::moveTracks(view.current()->tracks, {20}, {0, 21});
+    check(outOfGroup.refusal.empty() && sub.submit(std::move(outOfGroup.ops)).ok &&
+              order() == Order{{2, 0}, {6, 0}, {3, 1}, {4, 0}, {20, 0}, {21, 0}, {1, 0}},
+          "and dragged out before B: back at the foot");
+    check(sub.undo().ok && sub.undo().ok && order() == withReturns, "both undone");
     check(sub.undo().ok && sub.undo().ok && order() == before, "the returns undone");
 
     // A group holding a soloed track (manual 18.3: its Solo shows half coloured).
@@ -1131,6 +1143,35 @@ void sendsAsBatches() {
     check(sub.undo().ok && ui::findSend(view.current()->sends, 2, 10) == nullptr, "and then removes the row");
     check(sub.redo().ok && ui::findSend(view.current()->sends, 2, 10) != nullptr, "redo");
 
+    // MX-06: a pan on a send, one undo step. On a row, its pan; with no row, the row first, fully down, so the pan
+    // alone makes nothing heard; a pan that would not change writes nothing.
+    {
+        auto panned = ui::setSendPan(*view.current(), 2, 10, -.5);
+        check(panned.refusal.empty() && panned.ops.size() == 1 && panned.ops[0].opType == "routing.setPan" &&
+                  panned.ops[0].payload["id"] == first && panned.ops[0].payload["pan"] == -.5 &&
+                  sub.submit(std::move(panned.ops)).ok && ui::findSend(view.current()->sends, 2, 10)->pan == -.5 &&
+                  sub.nextUndo()->label == "Change Send Panning",
+              "Kick's send A panned 50L: one op on its row, one undo step");
+        check(ui::setSendPan(*view.current(), 2, 10, -.5).ops.empty(), "the same pan again writes nothing");
+        check(ui::setSendPan(*view.current(), 2, 10, -7).ops.size() == 1 &&
+                  ui::setSendPan(*view.current(), 2, 10, -7).ops[0].payload["pan"] == -1.0,
+              "past the left stops at Left");
+        check(ui::setSendPan(*view.current(), 3, 10, 0).ops.empty(), "a send with no row is centred already");
+        auto fresh = ui::setSendPan(*view.current(), 3, 10, 1);
+        const bool silent = std::any_of(fresh.ops.begin(), fresh.ops.end(), [](const OpRequest &o) {
+            return o.opType == "routing.setGain" && o.payload["db"] == ui::kSendSilenceDb;
+        });
+        check(fresh.ops.size() >= 3 && fresh.ops.front().opType == "routing.connect" && silent &&
+                  fresh.ops.back().opType == "routing.setPan" && fresh.ops.back().payload["pan"] == 1.0 &&
+                  sub.submit(std::move(fresh.ops)).ok && ui::findSend(view.current()->sends, 3, 10) != nullptr &&
+                  ui::findSend(view.current()->sends, 3, 10)->gainDb == ui::kSendSilenceDb &&
+                  ui::findSend(view.current()->sends, 3, 10)->pan == 1.0,
+              "a send with no row panned Right: the row made fully down, then panned, as one step");
+        check(sub.undo().ok && ui::findSend(view.current()->sends, 3, 10) == nullptr && sub.undo().ok &&
+                  ui::findSend(view.current()->sends, 2, 10)->pan == 0.0,
+              "undo takes both back");
+    }
+
     // A second send gets the next id.
     auto second = ui::setSend(*view.current(), 3, 11, -6);
     check(second.ops.size() == 2 && second.ops[0].payload["id"] == first + 1 && sub.submit(std::move(second.ops)).ok &&
@@ -1196,6 +1237,22 @@ void sendsAsBatches() {
               !ui::returnPre(view.current()->tracks, 11) && !ui::returnPre(view.current()->tracks, 2) &&
               !ui::returnPre(view.current()->tracks, 12),
           "a return with no choice yet reads Post from its sends; a track, or no track, reads Post");
+    // An older file whose sends into A disagree, one Pre and one Post, no choice on the return: the
+    // engine reads it mixed, and so does the switch (ADR-0247 d2); its first click sets every send to
+    // Post. Undone.
+    {
+        OpRequest r;
+        r.opType = "routing.setPreFader";
+        r.payload = {{"id", first}, {"pre", true}};
+        r.label = "Older file";
+        check(sub.submit(std::move(r)).ok, "one send into A written Pre, the other left Post");
+        check(ui::returnTapMixed(*view.current(), 10), "A's switch reads mixed");
+        check(sub.submit(adi::clickReturnSendTap(10)).ok && !ui::returnTapMixed(*view.current(), 10) &&
+                  !ui::returnPre(view.current()->tracks, 10) && !ui::findSend(view.current()->sends, 2, 10)->preFader,
+              "its first click (the engine's) sets every send to Post");
+        check(sub.undo().ok && ui::returnTapMixed(*view.current(), 10) && sub.undo().ok &&
+                  !ui::returnTapMixed(*view.current(), 10), "undone: mixed, then not");
+    }
     // An older file: every send into A written Pre by the per-send op with no choice on the return
     // (what `allowSendEdgeTapEdit` allows while none is held). The return reads Pre without holding
     // it, and a new send into it still carries `routing.setPreFader`, as the engine's own
@@ -1855,8 +1912,15 @@ void returnsStandBeforeMain() {
     check(geometry.footTop(reader) == 1000 - 2 * geometry.height &&
               geometry.rowTop(reader, 1) == 1000 - geometry.height && geometry.rowTop(reader, 3) == 0,
           "with its view, it stands at the bottom of the lanes");
-    check(ui::groupTrack(view.current()->tracks, 2).refusal == "Main and return tracks can't be grouped.",
-          "a return can't be grouped");
+    {
+        // A return may go into a group now (DF-W33; ADR-0247 d2): Group Tracks makes the group and
+        // moves the return into it. Not submitted: the checks after this one read the foot as it is.
+        const auto grouped = ui::groupTrack(view.current()->tracks, 2);
+        check(grouped.refusal.empty() && !grouped.ops.empty() && grouped.ops.front().opType == "track.create" &&
+                  std::any_of(grouped.ops.begin(), grouped.ops.end(),
+                              [](const OpRequest &o) { return o.opType == "track.setParent" && o.payload.at("id") == 2; }),
+              "a return can be grouped: a new group, and the return moved into it");
+    }
 
     // A track's own colour (ADR-0211): an index into Live's palette, or none.
     auto colour = [&sub](std::int64_t id, std::int64_t value) {
@@ -1938,6 +2002,47 @@ void meterGrid() {
           "a change part-way through bar 2 ends it there, and 3/4's bars run on from it");
     check(geo.barHolding(5 * q).index == 1 && geo.barHolding(5 * q).end == 6 * q && geo.barHolding(7 * q).index == 2,
           "bar 2 is cut short; the next is bar 3");
+    // DF-W30 (a): a long bar and a wide grid. In 23/4 on the 8 Bars grid a tick is less than 1e-9 of a
+    // cell; the lines are still every eight bars, and the arrows still step by them.
+    const std::vector<textproj::Meter> long23{{0, 23, 4}};
+    geo.meters = &long23;
+    geo.grid.fixedQuarters = 32; // 8 Bars
+    const auto eight = 8 * 23 * q;
+    lines.clear();
+    geo.forEachGridLine(0, 3 * eight, [&](std::int64_t t) { lines.push_back(t); });
+    check(lines == std::vector<std::int64_t>{0, eight, 2 * eight, 3 * eight} && geo.snap(1, true) == eight &&
+              geo.snap(eight - 1, false) == 0 && geo.snap(eight + 1, false) == eight,
+          "in 23/4 on 8 Bars a line is every eight bars, a tick past one snaps back to it");
+    check(geo.nextGridLine(eight, true) == 2 * eight && geo.nextGridLine(eight, false) == 0,
+          "and the arrows step from one to the next");
+    geo.grid.fixedQuarters = 4;
+    const std::vector<textproj::Meter> long180{{0, 180, 4}};
+    geo.meters = &long180;
+    check(geo.nextGridLine(0, true) == 180 * q && geo.nextGridLine(180 * q, true) == 360 * q,
+          "a bar of 180 quarters on 1 Bar steps a whole bar");
+    // DF-W30 (c): a fade already that long is no op, unless an edit pinned its clock, so it plays at
+    // another length (its handles say so): then Create Fade puts it back on its ticks.
+    {
+        auto clip = std::make_shared<engine::ClipNode>();
+        clip->id = 9;
+        clip->posTicks = 0;
+        clip->lengthTicks = 1000;
+        clip->audio.emplace();
+        clip->fadeInTicks = 200;
+        clip->fadeInHandles = {0, 200};
+        auto track = std::make_shared<engine::TrackNode>();
+        track->id = 1;
+        track->kind = "audio";
+        track->clips = {clip};
+        const ui::SnapshotTracks fadeTracks{track};
+        const auto plainFade = ui::createFades(fadeTracks, {1}, -10, 200);
+        check(plainFade.ops.empty() && plainFade.refusal == "The fades are already that long.",
+              "a plain fade already that long: no op, and says so");
+        clip->fadeInHandles = {0, 300}; // the clock a split pinned, at a new tempo
+        const auto pinnedFade = ui::createFades(fadeTracks, {1}, -10, 200);
+        check(pinnedFade.ops.size() == 1 && pinnedFade.refusal.empty(),
+              "a fade of that length playing at another (its clock pinned) still takes the op");
+    }
 }
 
 void positionsTyped() {
@@ -2424,7 +2529,42 @@ void heldIdsAreSkipped() {
           "Redo deletes it again and puts the new track back as 5");
 }
 
+// AU-01: a curved automation segment is drawn where the engine plays it: the window's value at a tick equals the
+// engine's valueAt at that tick's sample, for each curve, across a tempo change.
+void automationCurvesDrawn() {
+    engine::TempoMap steady;
+    steady.events = {{0, 120.0, 0}};
+    const auto quarter = steady.secondsToTicks(.5);
+    engine::TempoMap tempo;
+    tempo.events = {{0, 120.0, 0}, {4 * quarter, 90.0, 0}}; // a tempo change inside the segment
+    const double rate = 48000;
+    for (std::uint8_t curve = 0; curve <= engine::kMaxCurve; ++curve)
+        for (const float tension : {-.6f, 0.f, .45f}) {
+            engine::AutomationPointNode a, b;
+            a.time = quarter;
+            a.value = -24;
+            a.curve = curve;
+            a.tension = tension;
+            b.time = 8 * quarter;
+            b.value = 3;
+            engine::AutomationLaneProgram lane;
+            const auto sample = [&](std::int64_t tick) {
+                return static_cast<std::int64_t>(std::llround(tempo.ticksToSeconds(tick) * rate));
+            };
+            lane.points = {{sample(a.time), a.value, a.tension, a.curve, nullptr},
+                           {sample(b.time), b.value, b.tension, b.curve, nullptr}};
+            double worst = 0;
+            for (std::int64_t tick = a.time; tick <= b.time; tick += quarter / 50 + 1) {
+                const double drawn = ui::envelopeValueAt(a, b, tick, &tempo);
+                const double played = engine::valueAt(lane, sample(tick));
+                worst = std::max(worst, std::abs(drawn - played));
+            }
+            check(worst < 2e-3, "curve " + std::to_string(curve) + " tension " + std::to_string(tension) +
+                                    ": drawn as played within 0.002 dB (worst " + std::to_string(worst) + ")");
+        }
+}
 int main() {
+    automationCurvesDrawn();
     theWrongThingDoesNotCompile();
     heldIdsAreSkipped();
     reenableFindsThePlayedLane();
