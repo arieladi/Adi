@@ -3,6 +3,9 @@
 #include <algorithm>
 #include <cmath>
 #include <numbers>
+#if defined(_M_X64) || defined(__SSE2__)
+#include <emmintrin.h>
+#endif
 
 namespace adi::dsp {
 namespace {
@@ -37,6 +40,13 @@ void sanitizeStereo(const float* inL, const float* inR, float* outL, float* outR
         std::transform(inL, inL + frames, outL, finiteOrZero);
         std::transform(inR, inR + frames, outR, finiteOrZero);
     }
+}
+void applyWidth(float width, float& left, float& right) noexcept {
+    if (width == 1.0f) return;
+    const float mid = 0.5f * left + 0.5f * right;
+    const float side = (0.5f * left - 0.5f * right) * width;
+    left = mid + side;
+    right = mid - side;
 }
 } // namespace
 
@@ -87,7 +97,8 @@ void AdiShaper::Split::prepare(double hz, double sampleRate) noexcept {
 }
 
 void AdiShaper::Split::reset() noexcept {
-    channels = {};
+    poles = {};
+    pairs = {};
     compensation = {};
 }
 
@@ -96,6 +107,46 @@ double AdiShaper::Split::pole(double input, double& state) const noexcept {
     const double low = state + increment;
     state = low + increment;
     return low;
+}
+
+AdiShaper::StageData::Bands AdiShaper::StageData::firstOrderBands(float left, float right) noexcept {
+    // Each outer band crosses its own edge first. Swapping the two filters
+    // changes the response while either cutoff moves.
+#if defined(_M_X64) || defined(__SSE2__)
+    const auto input = _mm_set_pd(right, left);
+    const auto subtract = [](__m128d a, __m128d b) { return _mm_sub_pd(a, b); };
+    const auto pole = [](__m128d signal, Split& split, std::size_t index) {
+        auto& history = split.poles[index];
+        const auto state = _mm_loadu_pd(history.data());
+        const auto delta = _mm_sub_pd(signal, state);
+        const auto increment = _mm_mul_pd(delta, _mm_set1_pd(split.coefficient));
+        const auto output = _mm_add_pd(state, increment);
+        _mm_storeu_pd(history.data(), _mm_add_pd(output, increment));
+        return output;
+    };
+    const auto asFloats = [](__m128d pair) -> std::array<float, 2> {
+        std::array<float, 4> values;
+        _mm_storeu_ps(values.data(), _mm_cvtpd_ps(pair));
+        return {values[0], values[1]};
+    };
+#else
+    using Pair = Split::StereoPole;
+    const Pair input{left, right};
+    const auto subtract = [](const Pair& a, const Pair& b) -> Pair {
+        return {a[0] - b[0], a[1] - b[1]};
+    };
+    const auto pole = [](const Pair& signal, Split& split, std::size_t index) -> Pair {
+        auto& history = split.poles[index];
+        return {split.pole(signal[0], history[0]), split.pole(signal[1], history[1])};
+    };
+    const auto asFloats = [](const Pair& pair) -> std::array<float, 2> {
+        return {static_cast<float>(pair[0]), static_cast<float>(pair[1])};
+    };
+#endif
+    const auto bass = pole(pole(input, low, 0), high, 1);
+    const auto upperHigh = subtract(input, pole(input, high, 0));
+    const auto treble = subtract(upperHigh, pole(upperHigh, low, 1));
+    return {asFloats(bass), asFloats(subtract(subtract(input, bass), treble)), asFloats(treble)};
 }
 
 void AdiShaper::Split::butterworth(double x, Integrator& state, double& low,
@@ -110,25 +161,25 @@ void AdiShaper::Split::butterworth(double x, Integrator& state, double& low,
 }
 
 AdiShaper::Split::Bands AdiShaper::Split::split(float input, std::size_t channel) noexcept {
-    auto& state = channels[channel];
+    auto& channelPairs = pairs[channel];
     if (slope == 0) {
-        const auto low = static_cast<float>(pole(input, state.poles[0]));
+        const auto low = static_cast<float>(pole(input, poles[0][channel]));
         return {low, input - low};
     }
     if (slope == 1) {
         // Both LR2 branches pass through one additional first-order allpass.
         // The aligned high branch has inverted polarity, so the sum is AP^2.
-        const double phase = 2.0 * pole(input, state.poles[0]) - input;
-        const double low1 = pole(phase, state.poles[1]);
+        const double phase = 2.0 * pole(input, poles[0][channel]) - input;
+        const double low1 = pole(phase, poles[1][channel]);
         const double high1 = phase - low1;
-        const double low = pole(low1, state.poles[2]);
-        const double high = pole(high1, state.poles[3]) - high1;
+        const double low = pole(low1, poles[2][channel]);
+        const double high = pole(high1, poles[3][channel]) - high1;
         return {static_cast<float>(low), static_cast<float>(high)};
     }
     double low1, high1, low, high, unused1, unused2;
-    butterworth(input, state.pairs[0], low1, high1, unused1);
-    butterworth(low1, state.pairs[1], low, unused1, unused2);
-    butterworth(high1, state.pairs[2], unused1, high, unused2);
+    butterworth(input, channelPairs[0], low1, high1, unused1);
+    butterworth(low1, channelPairs[1], low, unused1, unused2);
+    butterworth(high1, channelPairs[2], unused1, high, unused2);
     return {static_cast<float>(low), static_cast<float>(high)};
 }
 
@@ -146,15 +197,14 @@ float AdiShaper::Split::align(float input, std::size_t channel) noexcept {
 
 bool AdiShaper::Split::finishBlock() noexcept {
     bool repaired = false;
-    for (std::size_t ch = 0; ch < channels.size(); ++ch) {
+    for (std::size_t ch = 0; ch < pairs.size(); ++ch) {
         bool bad = false;
         const auto flush = [&bad](double& x) {
             bad |= !std::isfinite(x);
             if (std::abs(x) < 1.0e-280) x = 0;
         };
-        auto& state = channels[ch];
-        for (auto& poleState : state.poles) flush(poleState);
-        for (auto& pair : state.pairs) {
+        for (auto& history : poles) flush(history[ch]);
+        for (auto& pair : pairs[ch]) {
             flush(pair.band);
             flush(pair.low);
         }
@@ -162,7 +212,8 @@ bool AdiShaper::Split::finishBlock() noexcept {
         flush(pair.band);
         flush(pair.low);
         if (bad) {
-            state = {};
+            for (auto& history : poles) history[ch] = 0.0;
+            pairs[ch] = {};
             pair = {};
             repaired = true;
         }
@@ -443,11 +494,7 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
                        float* outL, float* outR, std::size_t frames) noexcept {
     auto applyGain = [](Gain g, float& l, float& r) {
         if constexpr (kind == Stage::Width) {
-            if (g.left == 1.0f) return;
-            const float mid = 0.5f * l + 0.5f * r;
-            const float side = (0.5f * l - 0.5f * r) * g.left;
-            l = mid + side;
-            r = mid - side;
+            applyWidth(g.left, l, r);
         } else {
             l *= g.left;
             r *= g.right;
@@ -523,30 +570,64 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
                 sumR += wetR;
             }
         };
-        if (hasLow) {
-            auto l = stage.low.split(midL, 0);
-            auto r = stage.low.split(midR, 1);
-            midL = l.high;
-            midR = r.high;
-            // The low band bypasses the upper split and needs its summed
-            // allpass phase for coherent three-way reconstruction.
-            if (hasHigh) {
-                l.low = stage.high.align(l.low, 0);
-                r.low = stage.high.align(r.low, 1);
+        if (flatPhase && hasLow && hasHigh) {
+            const auto split = stage.firstOrderBands(midL, midR);
+            accumulate(0, split.low[0], split.low[1]);
+            accumulate(2, split.high[0], split.high[1]);
+            midL = split.mid[0];
+            midR = split.mid[1];
+        } else {
+            if (hasLow) {
+                auto l = stage.low.split(midL, 0);
+                auto r = stage.low.split(midR, 1);
+                midL = l.high;
+                midR = r.high;
+                // Steeper three-way splits align the low band to the upper allpass.
+                if (hasHigh) {
+                    l.low = stage.high.align(l.low, 0);
+                    r.low = stage.high.align(r.low, 1);
+                }
+                accumulate(0, l.low, r.low);
             }
-            accumulate(0, l.low, r.low);
-        }
-        if (hasHigh) {
-            const auto l = stage.high.split(midL, 0);
-            const auto r = stage.high.split(midR, 1);
-            accumulate(2, l.high, r.high);
-            midL = l.low;
-            midR = r.low;
+            if (hasHigh) {
+                const auto l = stage.high.split(midL, 0);
+                const auto r = stage.high.split(midR, 1);
+                accumulate(2, l.high, r.high);
+                midL = l.low;
+                midR = r.low;
+            }
         }
         accumulate(1, midL, midR);
         outL[i] = !flatPhase ? sumL : (sumL == 0.0f ? dryL : dryL + sumL);
         outR[i] = !flatPhase ? sumR : (sumR == 0.0f ? dryR : dryR + sumR);
     }
+}
+
+bool AdiShaper::renderFixedWidth(StageData& stage, float* left, float* right, std::size_t frames) noexcept {
+    if (stage.layout != 3 || stage.low.slope != 0 || stage.high.slope != 0) return false;
+    std::array<float, 3> widths;
+    for (std::size_t i = 0; i < widths.size(); ++i) {
+        const auto& band = stage.bands[i];
+        if (!band.primary.constant) return false;
+        widths[i] = band.active ? band.heldGains[0].left : 1.0f;
+    }
+    for (std::size_t i = 0; i < frames; ++i) {
+        const float dryL = left[i], dryR = right[i];
+        const auto bands = stage.firstOrderBands(dryL, dryR);
+        float sumL = 0.0f, sumR = 0.0f;
+        const auto addBand = [&](const std::array<float, 2>& dry, float width) {
+            float l = dry[0], r = dry[1];
+            applyWidth(width, l, r);
+            sumL += l - dry[0];
+            sumR += r - dry[1];
+        };
+        addBand(bands.low, widths[0]);
+        addBand(bands.high, widths[2]);
+        addBand(bands.mid, widths[1]);
+        left[i] = sumL == 0.0f ? dryL : dryL + sumL;
+        right[i] = sumR == 0.0f ? dryR : dryR + sumR;
+    }
+    return true;
 }
 
 void AdiShaper::process(const float* inL, const float* inR, float* outL, float* outR,
@@ -561,7 +642,9 @@ void AdiShaper::process(const float* inL, const float* inR, float* outL, float* 
             if (!stage.enabled) return;
         }
         if (!stage.active && stage.layout == 0) return;
-        render<kind>(stage, outL, outR, outL, outR, frames);
+        bool rendered = false;
+        if constexpr (kind == Stage::Width) rendered = renderFixedWidth(stage, outL, outR, frames);
+        if (!rendered) render<kind>(stage, outL, outR, outL, outR, frames);
         bool repaired = false;
         if (stage.layout != 0) {
             repaired |= stage.low.finishBlock();

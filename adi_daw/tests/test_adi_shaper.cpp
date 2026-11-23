@@ -272,8 +272,10 @@ void steepCrossovers() {
                 shaper.process(impulse.data(), impulse.data(), l.data(), r.data(), l.size());
                 for (const double f : {160.0, 658.0, 1200.0, 3729.0, 5000.0}) {
                     const auto a = crossover(lower, lowerHz, f), b = crossover(upper, upperHz, f);
-                    const std::array expected{a.low * (b.low + b.high), a.high * b.low,
-                                              a.high * b.high, (a.low + a.high) * (b.low + b.high)};
+                    const auto total = (a.low + a.high) * (b.low + b.high);
+                    const auto high = a.high * b.high;
+                    const auto low = lower == 0 && upper == 0 ? a.low * b.low : a.low * (b.low + b.high);
+                    const std::array expected{low, total - low - high, high, total};
                     const auto rotation = std::polar(1.0, -2.0 * std::numbers::pi * f / 48000.0);
                     Complex phase{1, 0}, actual{};
                     for (const auto x : l) {
@@ -300,6 +302,90 @@ void steepCrossovers() {
         check(near(one(shaper, 0.5f, 0.5f)[0], firstTaps[static_cast<std::size_t>(slope)], 2.0e-8),
               "isolated low branch starts at the measured impulse coefficient");
     }
+}
+
+void firstOrderBandImpulses() {
+    // Measured unit-impulse taps with the two split controls at 20% and 58%.
+    // Each row isolates low, middle or high with the other gain curves at zero.
+    constexpr std::array<std::size_t, 4> taps{0, 1, 17, 63};
+    constexpr double response[2][3][4]{
+        {{.00044206684, .00169613920, .00957904682, .00603571869},
+         {.08069658279, .14822648764, .00056757480, -.00646242127},
+         {.91886138916, -.14992262125, -.01014662162, .00042670271}},
+        {{.00037551573, .00144546293, .00877333507, .00588846505},
+         {.07461194992, .13797796965, .00309078321, -.00629830435},
+         {.92501249313, -.13942342997, -.01186411828, .00040983907}}
+    };
+    constexpr std::array rates{44100.0, 48000.0};
+    for (std::size_t rate = 0; rate < rates.size(); ++rate) {
+        for (std::size_t band = 0; band < 3; ++band) {
+            Shaper shaper;
+            shaper.prepare(rates[rate]);
+            shaper.set(Shaper::VolumeBands, 3);
+            shaper.set(static_cast<Shaper::Param>(Shaper::VolumeBands + 1), 82.40689f);
+            shaper.set(static_cast<Shaper::Param>(Shaper::VolumeBands + 2), 1147.8298f);
+            for (std::size_t i = 0; i < 3; ++i)
+                flat(shaper, Stage::Volume, static_cast<Band>(i), i == band ? 100.0f : 0.0f);
+            std::array<float, 160> left{}, right{}, outL{}, outR{};
+            left[3] = .625f;
+            right[56] = -.375f;
+            shaper.process(left.data(), right.data(), outL.data(), outR.data(), 64);
+            shaper.process(left.data() + 64, right.data() + 64, outL.data() + 64, outR.data() + 64, 96);
+            for (std::size_t i = 0; i < taps.size(); ++i) {
+                const double tap = response[rate][band][i];
+                check(near(outL[3 + taps[i]], .625 * tap, 1.0e-7)
+                          && near(outR[56 + taps[i]], -.375 * tap, 1.0e-7),
+                      "isolated first-order band has the measured stereo impulse response across a block boundary");
+            }
+        }
+    }
+}
+
+void movingFirstOrderSplits() {
+    // A pair of independent two-way devices gives the correct response while
+    // each edge is moving, including the device's own cutoff timing.
+    const auto isolate = [](const std::vector<float>& input, int layout, Band selected) {
+        Shaper shaper;
+        shaper.prepare(48000);
+        shaper.set(Shaper::VolumeBands, static_cast<float>(layout));
+        const auto lower = static_cast<Shaper::Param>(Shaper::VolumeBands + 1);
+        const auto upper = static_cast<Shaper::Param>(Shaper::VolumeBands + 2);
+        shaper.set(lower, 160);
+        shaper.set(upper, 8000);
+        for (const auto b : {Band::Low, Band::Mid, Band::High})
+            flat(shaper, Stage::Volume, b, b == selected ? 100.f : 0.f);
+        std::vector<float> left(input.size()), right(input.size());
+        const auto render = [&](std::size_t first, std::size_t end) {
+            shaper.process(input.data() + first, input.data() + first, left.data() + first,
+                           right.data() + first, end - first);
+        };
+        render(0, 733);
+        shaper.set(lower, 3200);
+        render(733, 2783);
+        shaper.set(upper, 5200);
+        render(2783, input.size());
+        return left;
+    };
+    std::vector<float> input(8192);
+    for (std::size_t i = 0; i < input.size(); ++i) {
+        const double t = static_cast<double>(i);
+        input[i] = static_cast<float>(.38 * std::sin(.033 * t) + .19 * std::cos(.23 * t));
+    }
+    const auto bass = isolate(isolate(input, 1, Band::Low), 2, Band::Mid);
+    const auto treble = isolate(isolate(input, 2, Band::High), 1, Band::Mid);
+    const auto reversedBass = isolate(isolate(input, 2, Band::Mid), 1, Band::Low);
+    const auto low = isolate(input, 3, Band::Low);
+    const auto mid = isolate(input, 3, Band::Mid);
+    const auto high = isolate(input, 3, Band::High);
+    bool discriminates = false;
+    float peak = 0;
+    for (std::size_t i = 0; i < input.size(); ++i) {
+        const float middle = input[i] - bass[i] - treble[i];
+        peak = std::max({peak, std::abs(low[i] - bass[i]), std::abs(mid[i] - middle), std::abs(high[i] - treble[i])});
+        discriminates |= std::abs(bass[i] - reversedBass[i]) > .0001f;
+    }
+    check(peak < 4e-7f, "each moving outer band crosses its own edge first and the middle is complementary");
+    check(discriminates, "the moving input distinguishes reversed crossover order");
 }
 
 void bypassAndInvalid() {
@@ -776,6 +862,8 @@ int main() {
     splitBands();
     independentBandClocks();
     steepCrossovers();
+    firstOrderBandImpulses();
+    movingFirstOrderSplits();
     bypassAndInvalid();
     nonfiniteAudio();
     finiteDriveOverflow();
