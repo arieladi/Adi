@@ -4,6 +4,27 @@ Trial seat (22 November 2026, `collab/win.md`): Linux environment (Debian 12, GC
 
 ---
 
+## 2026-11-23 — Queue item 2 (PR-BUILDS, Round 4): combined 7-stack `land/*-1123` train (`de85bc60`) and newly requested window/window-fn heads
+
+**For win (follow-up to Round 3).** Win chained the six updated `land/*-1123` stacks together onto `land/engine-win-1123` (`46eaba97`) -> `land/engine-1123` (`d5163723`, adding DF-E17 `4eda2b5b` and `c5407f3d` for `test_ui_document`) -> `land/window-1123` (`3413cb86`) -> `land/window-fn-1123` (`854e0ba5`) -> `land/mixview-1123` (`f5c59c0c`, DF-M62 `d22b81c1`) -> `land/devices-1123` (`94a2c796`) -> `land/clones-1123` (`de85bc60`), and `window` / `window-fn` requested two new branches. Verified on Linux GCC 12.2.0 `-DADI_WERROR=ON` (`-g0`, Pd on, JUCE off) and Clang 14.0.6 `-Werror`.
+
+### Summary table
+
+| Branch | SHA | DF-M62 local patch | GCC 12.2 `-DADI_WERROR=ON` | Clang 14.0.6 `-Werror` (changed headless TUs) | CTest | Owner / Notes |
+|---|---|---|---|---|---|---|
+| `land/clones-1123` (combined 7-stack train incl. `engine-win`, `engine`, `window`, `window-fn`, `mixview`, `devices`, `clones`) | `de85bc60` | **None** (`d22b81c1` in train) | **PASS** (136 targets, 0 warnings) | **FAIL** (86/89 headless TUs clean; only the same 3 engine TUs fail on `timeline_clips.hpp:13` + pre-existing DF-E69 `midi_clips.cpp:867`; 15 JUCE-off skipped) | **PASS** (**134/134** affected suites + **10/10** `--repeat until-fail:10` on `adi_ui_document_tests`) | `win` / `engine-win` — confirms DF-M62 clean across full train, DF-E17 clean, and `c5407f3d` eliminates the `test_ui_document.cpp:1282` DF-E64 flake |
+| `window/shortcut-ids` (WIN-04, carries `window/function-keys` `c4a62e25`) | `2cfaacbd` | Yes (pre-existing) | **PASS** (`adi_core`, 0 warnings) | N/A (5/5 modified TUs are JUCE-gated) | compile-only (headless) | `window` — headless build unaffected; JUCE leg for win/CI |
+| `window-fn/param-touched` (SRF-01) | `7ebeac6b` | Yes (pre-existing) | **PASS** (0 warnings) | **PASS** (1/1 headless TU `project_document.cpp`; 1 JUCE-off skipped) | **PASS** (1/1: `adi_mix_parameter_feed_tests`) | `window-fn` — clean on headless leg |
+
+### Status of Round 3 findings on `de85bc60`
+
+- **Resolved:** `adi_daw/tests/test_ui_document.cpp:1282` (`FAIL and it plays`) — `c5407f3d` ("the dropped clip's test primes the playing target") passed **10/10 consecutive repeats** (`110.54 s`, 0 failures) on `de85bc60`.
+- **Still open (Clang 14.0.6 + libstdc++ 12):** `adi_daw/src/adi/engine/timeline_clips.hpp:13` (`std::views::filter`, owner: `engine-win`, introduced by `8c088dcb`) still fails Clang 14.0.6 in `clip_playback.cpp`, `midi_clips.cpp`, and `scale_timeline.cpp`. No other warning or error across all 89 headless TUs of the 7-stack train.
+
+(No PR requested; run-only verification round.)
+
+---
+
 ## 2026-11-23 — Queue item 2 (PR-BUILDS, Round 3): all seven `land/*-1123` landing stacks on GCC 12.2 and Clang 14.0.6 `-DADI_WERROR=ON`
 
 **For win (before landing the 23 November stacks).** Verified all seven staged `land/*-1123` heads (`origin/main` at `4836cb61`) with `-DADI_WERROR=ON -DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF` on Linux GCC 12.2.0 (`-g0`) and Clang 14.0.6 (`-Werror` across every changed headless TU), running all affected CTests plus `adi_acceptance_wts01` (`-DADI_ACCEPTANCE=ON`) where relevant. Transient local DF-M62 patch (`FloatRealTransform.h:61`) was applied ONLY where DF-M62 was absent (and never committed); `land/mixview-1123` was built with **no** local DF-M62 patch.
