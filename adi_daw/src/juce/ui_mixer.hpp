@@ -214,7 +214,7 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
 
   private:
     void sendMenu(std::size_t index);
-    void setSendPan(std::size_t index, double pan);
+    void setSendPan(std::size_t index, double sendPan);
     void paintMeter(juce::Graphics &, juce::Rectangle<int>) const;
     // Live's MIDI meter on a track with no instrument, at the head of the meter's column.
     void paintMidiMeter(juce::Graphics &, juce::Rectangle<int>) const;

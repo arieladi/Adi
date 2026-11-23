@@ -1158,11 +1158,11 @@ void MixerStrip::enableSend(std::size_t index, bool on) {
     else
         panel_.root.submitEdits(std::move(edit.ops));
 }
-void MixerStrip::setSendPan(std::size_t index, double pan) {
+void MixerStrip::setSendPan(std::size_t index, double sendPan) {
     const auto current = panel_.root.current();
     if (!current || index >= returns_.size())
         return;
-    auto edit = adi::ui::setSendPan(*current, track_, returns_[index], pan);
+    auto edit = adi::ui::setSendPan(*current, track_, returns_[index], sendPan);
     if (!edit.refusal.empty())
         panel_.root.say(edit.refusal);
     else
