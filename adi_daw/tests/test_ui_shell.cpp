@@ -10078,12 +10078,16 @@ void stripParamUndo(AppCommands &commands, const std::filesystem::path &dir) {
     {
         // SRF-01: the feed names who moved it last: ADI's own control, and only that parameter.
         int mouse = 0;
+        std::string which;
         if (const auto feed = document->parameterFeed().current())
             for (const auto &device : *feed)
                 if (device.id == 3)
                     for (const auto &record : device.records)
-                        mouse += record.lastTouchedBy == panel::Source::Mouse ? 1 : 0;
-        check(mouse == 1, "the feed says Cutoff was last moved from ADI's own control, and nothing else was");
+                        if (record.lastTouchedBy == panel::Source::Mouse) {
+                            ++mouse;
+                            which = record.name;
+                        }
+        check(mouse == 1 && which == "Cutoff", "the feed says Cutoff was last moved from ADI's own control, and nothing else was");
     }
     if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
         juce::Image picture(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});

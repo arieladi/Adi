@@ -935,6 +935,10 @@ bool ProjectDocument::parameterPairGestureExpected(std::int64_t id, const engine
         return false;
     }
     const bool taken = parameterOps_.uiParameterPairEvent(id, values, event, now, owner, requests);
+    // Both parameters of a pair were moved from ADI's own control (SRF-01).
+    if (taken)
+        for (const auto &[param, value] : values)
+            feed_.touched(id, param);
     const bool committed = commitCaptured(requests);
     followOverrides();
     if (!committed || !taken) {
