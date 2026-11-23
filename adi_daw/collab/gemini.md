@@ -4,6 +4,43 @@ Trial seat (22 November 2026, `collab/win.md`): Linux environment (Debian 12, GC
 
 ---
 
+## 2026-11-23 — Queue item 2 (PR-BUILDS, Round 3): all seven `land/*-1123` landing stacks on GCC 12.2 and Clang 14.0.6 `-DADI_WERROR=ON`
+
+**For win (before landing the 23 November stacks).** Verified all seven staged `land/*-1123` heads (`origin/main` at `4836cb61`) with `-DADI_WERROR=ON -DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF` on Linux GCC 12.2.0 (`-g0`) and Clang 14.0.6 (`-Werror` across every changed headless TU), running all affected CTests plus `adi_acceptance_wts01` (`-DADI_ACCEPTANCE=ON`) where relevant. Transient local DF-M62 patch (`FloatRealTransform.h:61`) was applied ONLY where DF-M62 was absent (and never committed); `land/mixview-1123` was built with **no** local DF-M62 patch.
+
+### Summary table
+
+| Stack | SHA | DF-M62 local patch | GCC 12.2 `-DADI_WERROR=ON` | Clang 14.0.6 `-Werror` (changed headless TUs) | CTest (affected suites) | Owner / Notes |
+|---|---|---|---|---|---|---|
+| `land/mixview-1123` | `a8891323` | **None** (`d22b81c1` in stack) | **PASS** (0 warnings) | **PASS** (9/9 TUs; 1 JUCE-off skipped) | **PASS** (10/10) | `mixview` — confirms DF-M62 clean on landing stack |
+| `land/clones-1123` | `7db8c191` | Yes (pre-existing) | **PASS** (0 warnings) | **PASS** (8/8 TUs) | **PASS** (7/7 shaper suites; WTS-01 fails only on pre-DF-E64 2b) | `clones` — clean |
+| `land/devices-1123` | `83f71d5e` | Yes (pre-existing) | **PASS** (0 warnings) | **PASS** (21/21 TUs) | **PASS** (44/44 device suites; WTS-01 fails only on pre-DF-E64 2b) | `devices` — clean |
+| `land/engine-win-1123` | `46eaba97` | Yes (pre-existing) | **PASS** (0 warnings) | **FAIL** (11/12 TUs; **NEW** `timeline_clips.hpp:13` in `clip_playback.cpp`; 2 JUCE-off skipped) | **PASS** (39/39 incl. **`adi_acceptance_wts01` PASS**) | `engine-win` — WTS-01 2b fixed; new Clang 14 `<ranges>` failure below |
+| `land/engine-1123` | `c4c61cbe` | Yes (pre-existing) | **PASS** (0 warnings) | **FAIL** (44/47 TUs; **NEW** `timeline_clips.hpp:13` in `clip_playback.cpp`, `midi_clips.cpp`, `scale_timeline.cpp` + pre-existing DF-E69 `midi_clips.cpp:867`; 4 JUCE-off skipped) | **PASS** (82/82 incl. **`adi_acceptance_wts01` PASS**) | `engine` / `engine-win` — GCC + all 82 CTests + WTS-01 green |
+| `land/window-fn-1123` | `1012a2c2` | Yes (pre-existing) | **PASS** (0 warnings) | **PASS** (3/3 headless TUs; 5 JUCE-off skipped) | **PASS** (2/2: `adi_mix_document_tests`, `adi_ui_document_tests`) | `window-fn` — clean on headless leg |
+| `land/window-1123` | `a084f5d9` | Yes (pre-existing) | **PASS** (0 warnings) | **FAIL** (46/49 headless TUs — all window TUs PASS; only inherited 3 engine TUs fail on `timeline_clips.hpp:13` + DF-E69 `midi_clips.cpp:867`; 12 JUCE-off skipped) | **FAIL** (82/84: **NEW** flake in `adi_ui_document_tests` + expected WTS-01 Step 5b trigger) | `window` / `engine-win` / `win` — details below |
+
+### New findings (do not fix here; for win / owners)
+
+1. **NEW Clang 14.0.6 + libstdc++ 12 compile failure — `adi_daw/src/adi/engine/timeline_clips.hpp:13` (owner: `engine-win`, introduced by `8c088dcb` in `engine-win/take-lane-snapshot` `430ea825`, affects `land/engine-win-1123` `46eaba97`, `land/engine-1123` `c4c61cbe`, `land/window-1123` `a084f5d9`)**
+   - Diagnostic:
+     - `src/adi/engine/timeline_clips.hpp:13:24: error: invalid operands to binary expression ('const std::vector<Clip>' and '_Partial<std::ranges::views::_Filter, ...>')` (cascading from `libstdc++` 12 `bits/ranges_util.h:133:24: error: constraints not satisfied for alias template 'sentinel_t'`).
+   - Affected TUs: `src/adi/engine/clip_playback.cpp`, `src/adi/engine/midi_clips.cpp`, `src/adi/engine/scale_timeline.cpp`. (Same Clang 14 + libstdc++ 12 `<ranges>` incompatibility family as DF-E69; replacing `std::views::filter` with a small iterator/loop or non-ranges helper avoids it.)
+   - Smallest repro: checkout `46eaba97` and compile `src/adi/engine/clip_playback.cpp` with `clang++` 14.0.6 `-std=c++20` using the build's include flags.
+
+2. **NEW intermittent CTest failure (`FAIL and it plays`) — `adi_daw/tests/test_ui_document.cpp:1282` on `land/window-1123` (`a084f5d9`) (owner: `window` / `engine-win`, DF-E64 interaction)**
+   - Observed: `adi_ui_document_tests` failed `FAIL and it plays` (`343 checks, 1 failures`) under `ctest -j4`, passed once standalone, then failed again on iteration 2/10 of `ctest -R '^adi_ui_document_tests$' --repeat until-fail:10` (2 failures in 3 runs on Linux GCC 12.2).
+   - Mechanism: `test_ui_document.cpp:1273-1281` runs a tight loop of 64 blocks with zero sleep (`dropped->process(out)` + `dropped->session().clips()->prime()`). Because DF-E64 (`a7983164`, in `land/engine-win-1123` / `land/engine-1123` / `land/window-1123`) holds `Command::Play` in `TransportMailbox::drain` (`window_state.hpp:197`) until `block.sourcesReadyAt(sample, io.frames, true)` returns true (`project_document.cpp:1164`), all 64 no-sleep iterations can finish before the async audio decoder/reader makes the dropped WAV ready, leaving `Play` held and `heard == false`.
+   - Smallest repro: on `a084f5d9`, run `ctest -R '^adi_ui_document_tests$' --repeat until-fail:10 --output-on-failure`.
+
+3. **WTS-01 Step 5b trigger confirmed on `land/window-1123` (`a084f5d9`) (owner: `win`, `tests/acceptance/test_session_wts01.cpp`)**
+   - On `land/engine-win-1123` (`46eaba97`) and `land/engine-1123` (`c4c61cbe`), `adi_acceptance_wts01` passes **100%** (confirming DF-E64 fixes Step 2b on Linux).
+   - On `land/window-1123` (`a084f5d9`, which adds DF-W33 `window/return-in-group`), Step 2b passes and Step 5b now triggers win's expected placeholder failure: `WTS01 5b FAIL | Group Tracks accepted the return; this harness does not test it yet | update the acceptance test now that grouped returns are built`. Ready for win's Step 5b acceptance update once DF-W33 lands.
+
+(No PR requested; run-only verification round.)
+
+---
+
 ## 2026-11-23 — PLAN row 4 (CO-01): the collaboration core
 
 Branch: `gemini/co01-collab-core` at `909961ae` (from `origin/main` `4836cb61`, lent paths only under `src/adi/collab/**`, `tests/test_collab_*.cpp`, and `CMakeLists.txt` per ADR-0252 and `collab/RESERVATIONS.md`).
