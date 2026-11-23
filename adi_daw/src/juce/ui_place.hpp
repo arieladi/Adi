@@ -19,7 +19,8 @@ inline juce::Rectangle<int> fromPlace(const place::Rect &r) noexcept { return {r
 inline std::vector<place::Monitor> desktopMonitors() {
     std::vector<place::Monitor> out;
     for (const auto &d : juce::Desktop::getInstance().getDisplays().displays)
-        out.push_back({displayId(d), toPlace(d.totalArea), toPlace(d.userArea), static_cast<int>(d.dpi), d.isMain});
+        out.push_back({displayId(d), toPlace(d.logicalBounds.toNearestInt()), toPlace(d.userBounds.toNearestInt()),
+                       static_cast<int>(d.dpi), d.isMain});
     return out;
 }
 // Where a window stands for its record: its bounds out of full screen, and whether it is in it.
@@ -36,9 +37,11 @@ inline place::Rect standing(juce::ResizableWindow &w, bool &fullScreen) {
         return toPlace(w.getBounds());
     return {t[at].getIntValue(), t[at + 1].getIntValue(), t[at + 2].getIntValue(), t[at + 3].getIntValue()};
 }
-// The window at its kept place, window.places[name] by the one rule, full screen again when it was;
-// with none, or one the rule cannot read, `width` by `height` centred on the main display.
-inline void restorePlace(juce::ResizableWindow &w, const settings::AppSettings &s, const std::string &name, int width,
+// The window at its kept place, window.places[name] by the one rule; with none, or one the rule cannot
+// read, `width` by `height` centred on the main display. True when it was full screen and is to be put
+// back so once it shows: JUCE keeps the bounds a window returns to only while it shows, so full screen
+// set before would lose them (the caller calls setFullScreen(true) after setVisible(true)).
+inline bool restorePlace(juce::ResizableWindow &w, const settings::AppSettings &s, const std::string &name, int width,
                          int height, const std::vector<place::Monitor> &monitors) {
     const auto *limits = w.getConstrainer();
     const int minW = limits != nullptr ? limits->getMinimumWidth() : 1;
@@ -52,22 +55,27 @@ inline void restorePlace(juce::ResizableWindow &w, const settings::AppSettings &
         const int main = place::mainOf(monitors);
         if (main < 0) {
             w.centreWithSize(width, height);
-            return;
+            return false;
         }
         const auto &usable = monitors[static_cast<std::size_t>(main)].usable;
         place::Rect r{0, 0, std::min(width, usable.w), std::min(height, usable.h)};
         r.x = usable.x + (usable.w - r.w) / 2;
         r.y = usable.y + (usable.h - r.h) / 2;
         w.setBounds(fromPlace(r));
-        return;
+        return false;
     }
     w.setBounds(fromPlace(place::restore(*kept, monitors, minW, minH)));
-    if (kept->fullScreen && !w.isFullScreen())
+    if (!kept->fullScreen || w.isFullScreen())
+        return false;
+    if (w.isShowing()) {
         w.setFullScreen(true);
+        return false;
+    }
+    return true;
 }
-inline void restorePlace(juce::ResizableWindow &w, const settings::AppSettings &s, const std::string &name, int width,
+inline bool restorePlace(juce::ResizableWindow &w, const settings::AppSettings &s, const std::string &name, int width,
                          int height) {
-    restorePlace(w, s, name, width, height, desktopMonitors());
+    return restorePlace(w, s, name, width, height, desktopMonitors());
 }
 // window.places[name] brought up to date with where the window stands; written only when it moved.
 inline bool keepPlace(juce::ResizableWindow &w, settings::AppSettings &s, const std::string &name, std::string &why,
@@ -88,18 +96,21 @@ inline bool keepPlace(juce::ResizableWindow &w, settings::AppSettings &s, const 
 }
 // After the displays change: a window whose title bar no screen holds now is moved the least that
 // gives it one again, on the monitor showing most of it (else the main display). True when it moved.
-inline bool keepReachable(juce::Component &w, const std::vector<place::Monitor> &monitors) {
+// A window that may not be sized (a plug-in's own, at the plug-in's size) is moved, never sized.
+inline bool keepReachable(juce::Component &w, const std::vector<place::Monitor> &monitors, bool mayResize = true) {
     const auto r = toPlace(w.getBounds());
     if (monitors.empty() || place::reachable(r, monitors))
         return false;
     const auto &m = monitors[static_cast<std::size_t>(place::monitorOf(r, monitors))];
     auto moved = r;
-    moved.w = std::min(moved.w, m.usable.w);
-    moved.h = std::min(moved.h, m.usable.h);
+    if (mayResize) {
+        moved.w = std::min(moved.w, m.usable.w);
+        moved.h = std::min(moved.h, m.usable.h);
+    }
     w.setBounds(fromPlace(place::keptReachable(moved, m.usable)));
     return true;
 }
-inline bool keepReachable(juce::Component &w) { return keepReachable(w, desktopMonitors()); }
+inline bool keepReachable(juce::Component &w, bool mayResize = true) { return keepReachable(w, desktopMonitors(), mayResize); }
 // A window's moves and sizes, debounced into one save once it has stood still (WIN-02: places are
 // saved on move, so a window keeps its place after a kill).
 class PlaceWatch final : private juce::Timer {
