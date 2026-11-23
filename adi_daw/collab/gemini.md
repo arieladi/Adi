@@ -4,6 +4,26 @@ Trial seat (22 November 2026, `collab/win.md`): Linux environment (Debian 12, GC
 
 ---
 
+## 2026-11-22 — Queue item 11 (ASAN): all 275 headless suites under ASan, LSan and UBSan
+
+Head: `main` (`abbc32ab`), GCC 12.2.0 (`-O1 -g1 -fsanitize=address,undefined -fno-omit-frame-pointer`, `-DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF -DADI_WERROR=OFF`).
+- **Clang 14.0.6**: cannot link `-fsanitize=address,undefined` on this VM (`libclang_rt.asan-x86_64.a` / `compiler-rt` is not installed; also blocked by the 5 pre-existing `adi_core` Clang 14 errors listed in item 10).
+
+### Overall counts (GCC 12.2.0, all 275 CTest suites)
+
+- **Strict run** (`ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1`): **239 / 275 PASS**, **35 FAIL**, **1 BUILD_FAIL** (`adi_ui_seams_tests`, pre-existing GCC 12 `-fsanitize-trap=signed-integer-overflow` at `CMakeLists.txt:2083-2084`).
+- **Verification re-run** of the 34 non-UAF failing suites with `ASAN_OPTIONS=detect_leaks=0:alloc_dealloc_mismatch=0:halt_on_error=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1`: **34 / 34 PASS** (**273 / 274 runnable suites clean** for memory safety and UB; **0 UBSan reports** across all 274 runnable suites).
+
+### Findings
+
+| # | Severity / Type | Location | Suites affected | Smallest repro | Owner |
+|---|---|---|---|---|---|
+| 1 | **ASan heap-use-after-free** (real memory-safety bug) | Read: `adi_daw/src/adi/mix/filters/FiniteInput.hpp:15` (`sanitizeProgramme<float>`) <- `src/adi/mix/gate/Core.cpp:490,571` (`Core::processRequest`) <- `tests/test_mix_gate.cpp:858` (`completeRequestRefusal`). Freed: `tests/test_mix_gate.cpp:828` (move-assigning `std::array<std::vector<float>, 2>` invalidates raw channel pointers still passed to `processRequest` at line 858; allocated at `test_mix_gate.cpp:57,794`, 32,768 B). | `adi_mix_gate_tests` (1) | Build with GCC 12 `-O1 -g1 -fsanitize=address,undefined` and run `./adi_mix_gate_tests` | `mixview` |
+| 2 | **ASan `alloc-dealloc-mismatch`** (`operator new(nothrow)` / aligned `operator new` vs custom `operator delete` -> `std::free`) | Test harnesses override global `operator new(size_t)` and `operator delete` with `malloc`/`free`, omitting `operator new(size_t, std::nothrow_t const&)` (tripped by libstdc++ `std::stable_sort` -> `std::get_temporary_buffer`) and/or aligned `operator new` (`adi_shaper_tilde.cpp:36`). Sites: `tests/test_automation_recording.cpp:22`, `tests/test_clip_envelopes.cpp:26`, `tests/test_freeze_commands.cpp:32`, `tests/test_midi_capture.cpp:31`, `tests/test_scala_import.cpp:46`, `tests/test_send_automation.cpp:21`, `tests/test_warp_playback.cpp:29` (`engine`); `tests/test_builtin_devices.cpp:38`, `tests/test_oneshot.cpp:40-42`, `tests/test_pd_native_devices.cpp:34`, `tests/test_sampler.cpp:42` (`devices`). | 11 suites (7 `engine`, 4 `devices`); all 11 PASS with `alloc_dealloc_mismatch=0` | Build with GCC 12 `-fsanitize=address` and run `./adi_builtin_devices_tests` or `./adi_warp_playback_tests` | `engine` (7) / `devices` (4) |
+| 3 | **LSan memory leak** (1 B per canvas/instance load, up to 960 B / 276 allocs in `adi_pd_engine_tests`) | `third_party/libpd/pure-data/src/m_memory.c:21,41` (`getbytes`/`copybytes`) <- `pd-loader-fixed/g_canvas.c:233` (`canvas_setargs` stores `THISGUI->i_newargv = copybytes(argv, argc * sizeof(t_atom))`; `getbytes(0)` allocates 1 byte via `calloc`, never freed on `pdinstance_free` / teardown). | 23 Pd suites (`adi_pd_engine_tests`, `adi_pd_object_walk_tests`, `adi_pd_amxd_tests`, `adi_pd_template_tests`, `adi_pd_zero_delay_tests`, `adi_shaper_pd_tests`, `adi_auto_filter_pd_tests`, `adi_chorus_ensemble_pd_tests`, `adi_colorbass_pd_tests`, `adi_delay_pd_tests`, `adi_echo_pd_tests`, `adi_eq_eight_pd_tests`, `adi_multiband_dynamics_pd_tests`, `adi_oneshot_pd_tests`, `adi_overdrive_pd_tests`, `adi_phaser_flanger_pd_tests`, `adi_redux_pd_tests`, `adi_resonators_pd_tests`, `adi_reverb_pd_tests`, `adi_saturator_pd_tests`, `adi_shifter_pd_tests`, `adi_utility_pd_tests`, `adi_vocoder_pd_tests`); all 23 PASS with `detect_leaks=0` | Build with GCC 12 `-fsanitize=address` (`ASAN_OPTIONS=detect_leaks=1`) and run `./adi_pd_engine_tests` | `devices` |
+
+---
+
 ## 2026-11-22 — Queue item 10 (WERROR-SWEEP): full-tree `-DADI_WERROR=ON` sweep on GCC 12.2 and Clang 14.0.6
 
 Head: `main` (`abbc32ab`, includes `#712 land/mixview2-1122`), Debug (`-g0`), `-DADI_WERROR=ON -DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF -DADI_ACCEPTANCE=ON -DADI_BUILD_BENCHMARKS=ON`, DF-M62 (`adi_daw/src/adi/mix/limiter/Dsp/FloatRealTransform.h:61`) patched locally and reverted after the run. Every `.o` translation unit in the tree (**739 / 739**) was compiled with `ninja -k 0`.
