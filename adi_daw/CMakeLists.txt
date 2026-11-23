@@ -375,6 +375,10 @@ add_library(adi_core STATIC
     src/adi/automation_shapes.cpp
     src/adi/engine/automation_recording.cpp
     src/adi/controller_maps.cpp
+    src/adi/collab/fractional_key.cpp
+    src/adi/collab/batch.cpp
+    src/adi/collab/fake_object_store.cpp
+    src/adi/collab/replica.cpp
     src/adi/gesture_session.cpp
     src/adi/gesture_producers.cpp
     src/adi/quiet_gesture.cpp
@@ -2323,6 +2327,14 @@ add_test(NAME adi_midi_capture_input_tests COMMAND adi_midi_capture_input_tests)
 add_executable(adi_midi_capture_tests tests/test_midi_capture.cpp)
 target_link_libraries(adi_midi_capture_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_midi_capture_tests COMMAND adi_midi_capture_tests)
+
+add_executable(adi_collab_fractional_tests tests/test_collab_fractional.cpp)
+target_link_libraries(adi_collab_fractional_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_collab_fractional_tests COMMAND adi_collab_fractional_tests)
+
+add_executable(adi_collab_sync_tests tests/test_collab_sync.cpp)
+target_link_libraries(adi_collab_sync_tests PRIVATE adi_core adi_warnings Threads::Threads)
+add_test(NAME adi_collab_sync_tests COMMAND adi_collab_sync_tests)
 # Test modules from the director's research are available on Windows hosting builds.
 if(ADI_WITH_JUCE)
     include(tests/research_intake/plugins/targets.cmake)
