@@ -156,7 +156,7 @@ void themeAndDensityTables() {
 // WIN-02: the one placement rule, headless (adi/ui/window_place.hpp). The laptop is 1366 by 768 at
 // 125 %: 1093 by 614 units, a 32-unit task bar at the foot.
 void placementRule() {
-    using namespace place;
+    using namespace window_place;
     const Monitor laptop{"laptop", {0, 0, 1093, 614}, {0, 0, 1093, 582}, 120, true};
     const Monitor wide{"wide", {1093, 0, 1920, 1080}, {1093, 0, 1920, 1040}, 96, false};
     const Monitor left{"left", {-1920, 0, 1920, 1080}, {-1920, 0, 1920, 1040}, 96, false};
@@ -354,11 +354,11 @@ int main() {
         check(reopened != nullptr, "the project opens again after the kill");
         if (reopened) {
             const auto back = ViewStateStore(*reopened).loadFloating("Mix View");
-            place::Place p{back.monitor, {back.areaX, back.areaY, back.areaWidth, back.areaHeight}, back.dpi,
+            window_place::Place p{back.monitor, {back.areaX, back.areaY, back.areaWidth, back.areaHeight}, back.dpi,
                            {back.x, back.y, back.width, back.height}, false};
-            const std::vector<place::Monitor> desk{{"laptop", {0, 0, 1093, 614}, {0, 0, 1093, 582}, 120, true},
+            const std::vector<window_place::Monitor> desk{{"laptop", {0, 0, 1093, 614}, {0, 0, 1093, 582}, 120, true},
                                                    {"wide", {1093, 0, 1920, 1080}, {1093, 0, 1920, 1040}, 96, false}};
-            check(back.areaWidth == 1920 && back.dpi == 96 && place::restore(p, desk, 100, 100) == place::Rect{1593, 200, 800, 500},
+            check(back.areaWidth == 1920 && back.dpi == 96 && window_place::restore(p, desk, 100, 100) == window_place::Rect{1593, 200, 800, 500},
                   "a moved floating window keeps its place after a kill");
         }
         store->db().exec("UPDATE ui_view SET value='{\"monitor\":\"m\",\"x\":1,\"y\":2,\"width\":300,\"height\":200,\"open\":true}' WHERE key='floating.Mix View'");

@@ -13161,7 +13161,7 @@ void appearanceSettingsView(settings::AppSettings &settings, AppCommands &comman
 // 1366 x 768 laptop at 125 % (1093 x 614 units): at first run centred, no larger than the screen; kept on
 // move, written only when it moved; after a kill, back where it stood with its title bar on the screen.
 void windowPlaces(const std::filesystem::path &dir) {
-    const std::vector<place::Monitor> laptop{{"laptop", {0, 0, 1093, 614}, {0, 0, 1093, 582}, 120, true}};
+    const std::vector<window_place::Monitor> laptop{{"laptop", {0, 0, 1093, 614}, {0, 0, 1093, 582}, 120, true}};
     const auto file = dir / "places.json";
     {
         settings::AppSettings first(appdata::App::Daw, file);
