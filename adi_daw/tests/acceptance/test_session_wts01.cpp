@@ -513,15 +513,15 @@ void step5(Session &s, Report &report) {
                         static_cast<long long>(clip), clip > 0 ? "" : (" " + importError).c_str(), off ? 1 : 0,
                         sends.c_str(), sendDb, sum, sumGain, startBlocks, started, half, halfGain),
                  format("Main == 2(x4+x5) within 1e-6; then == %.6f(x4+x5) within 1e-6", 1 + gainOf(-12)));
-    // The group: Group Tracks with the return among the selected (ui::groupTracks), and a drag of the return
-    // into a group (ui::moveTracks) are both refused by the window today.
+    // The group: Group Tracks with the return among the selected (ui::groupTracks), as the window's command
+    // builds it (DF-W33, ADR-0247 d2). A window that refuses it has not built the rule yet.
     auto snap = doc.view().current();
     const auto refused = ui::groupTracks(snap->tracks, {4, 5, 6});
     if (!refused.refusal.empty()) {
         report.step("5b", V::NotBuilt, "Group Tracks with A Return selected: \"" + refused.refusal + "\"",
                     "tracks 4, 5 and A Return in one group; the return heard inside it; a send from outside refused",
-                    "grouped returns: engine DF-E22 in #677 (engine/df-e23-plugin-workers, waits behind #651), owner "
-                    "engine; the window's grouping rules for a return, owner window-fn");
+                    "the window's grouping rule for a return: DF-W33 on window/return-in-group, owner window lane; "
+                    "the engine's half (DF-E22) is on main since #677");
         // The engine as it stands: group 4 and 5, put the return in the group by a raw op, the group at -12 dB.
         auto grouped = ui::groupTracks(snap->tracks, {4, 5});
         const auto group = grouped.select;
@@ -555,11 +555,74 @@ void step5(Session &s, Report &report) {
                                    static_cast<long long>(group), moved.ok ? "accepted" : ("refused: " + moved.error).c_str(),
                                    k, steps, restored ? 1 : 0),
                       format("the return heard inside the group: x%.4f (group x (1 + A Return's %.1f dB)); the return "
-                             "straight to Main instead: x%.4f (group + return); pre-#677 engine",
+                             "straight to Main instead: x%.4f (group + return); engine with DF-E22 (#677, on main)",
                              gainOf(-12) * (1 + s.returnGain), dbOf(s.returnGain), gainOf(-12) + s.returnGain));
-    } else
-        report.step("5b", V::Fail, "Group Tracks accepted the return; this harness does not test it yet",
-                    "update the acceptance test now that grouped returns are built");
+    } else {
+        // Group Tracks with A Return selected (the window's submit): one step, the group holding 4, 5 and
+        // the return. The group's fader to -12 dB, then Play: the return sums into the group before the
+        // group's fader, so Main is the group's gain times (x4 + x5) and the return's share of them.
+        const auto group = refused.select;
+        const auto routesBefore = scalar(doc, "SELECT count(*) FROM routing");
+        int steps = 0;
+        std::string groupError;
+        const bool groupedAll = submitEdits(doc, refused.ops, &groupError);
+        if (groupedAll)
+            ++steps;
+        const auto inside =
+            scalar(doc, format("SELECT count(*) FROM tracks WHERE parent_id=%lld AND id IN (4,5,6)", static_cast<long long>(group)));
+        const bool pulledGroup = groupedAll && dragTo(doc, fader(group), -12, "Change Track Volume");
+        if (pulledGroup)
+            ++steps;
+        windowPlayFrom(doc, 0);
+        Stereo inGroup;
+        driver.runFromPlay(200, inGroup);
+        windowStop(doc);
+        driver.run(4);
+        const double expected = gainOf(-12) * (1 + s.returnGain);
+        const double k = fitGain(inGroup, both, stepStart(16), inGroup.size());
+        const double heardInside = maxDiff(inGroup, scaled(expected), stepStart(16), inGroup.size());
+        // The knobs: track 4's include the group's return; track 2, outside the group, has none for it, and
+        // the batch its knob would make is refused whole by the engine (route.groupReturnScope).
+        const auto now = doc.view().current();
+        std::vector<std::int64_t> knobs4, knobs2;
+        ui::returnsFor(now->tracks, 4, knobs4);
+        ui::returnsFor(now->tracks, 2, knobs2);
+        const bool knobInside = std::find(knobs4.begin(), knobs4.end(), 6) != knobs4.end();
+        const bool noKnobOutside = std::find(knobs2.begin(), knobs2.end(), 6) == knobs2.end();
+        auto outside = ui::setSend(*now, 2, 6, 0);
+        const auto opsBeforeOutside = scalar(doc, "SELECT count(*) FROM ops");
+        std::string outsideError;
+        const bool outsideLanded =
+            outside.refusal.empty() && !outside.ops.empty() && submitEdits(doc, std::move(outside.ops), &outsideError);
+        if (outsideLanded)
+            ++steps;
+        const bool outsideRefused = !outsideLanded && (!outside.refusal.empty() || !outsideError.empty()) &&
+                                    scalar(doc, "SELECT count(*) FROM ops") == opsBeforeOutside;
+        doc.synchronise();
+        bool restored = true;
+        for (int i = 0; i < steps; ++i)
+            restored = restored && doc.ops().undo().ok;
+        doc.synchronise();
+        restored = restored && scalar(doc, "SELECT count(*) FROM tracks WHERE parent_id IS NOT NULL") == 0 &&
+                   scalar(doc, "SELECT count(*) FROM tracks") == 7 &&
+                   scalar(doc, "SELECT count(*) FROM routing") == routesBefore;
+        report.check("5b",
+                     groupedAll && inside == 3 && pulledGroup && heardInside <= 1e-6 && knobInside && noKnobOutside &&
+                         outsideRefused && restored,
+                     format("Group Tracks with A Return selected: %s; group %lld holds %lld of 4, 5, 6; group at -12 dB "
+                            "%d; Main vs %.6f(x4+x5) max|d| %.3g from block 16 (gain x%.6f); track 4 has a knob for A "
+                            "Return %d, track 2 none %d; track 2's send into A Return %s; %d steps undone, project back %d",
+                            groupedAll ? "one step" : ("refused: " + groupError).c_str(), static_cast<long long>(group),
+                            static_cast<long long>(inside), pulledGroup ? 1 : 0, expected, heardInside, k,
+                            knobInside ? 1 : 0, noKnobOutside ? 1 : 0,
+                            outsideLanded ? "accepted"
+                                          : ("refused: " + (outside.refusal.empty() ? outsideError : outside.refusal)).c_str(),
+                            steps, restored ? 1 : 0),
+                     format("tracks 4, 5 and A Return in one group, one step; the return heard inside it: Main == %.6f(x4+x5) "
+                            "(group x (1 + A Return's %.1f dB)) within 1e-6, not x%.6f (the return straight to Main); a "
+                            "send from outside refused, with no knob for it; Undo restores the project",
+                            expected, dbOf(s.returnGain), gainOf(-12) + s.returnGain));
+    }
 }
 
 // 6. One automated parameter: a track's Volume (Automation Mode), and a built-in device's parameter.
