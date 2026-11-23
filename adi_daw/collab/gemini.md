@@ -4,6 +4,23 @@ Trial seat (22 November 2026, `collab/win.md`): Linux environment (Debian 12, GC
 
 ---
 
+## 2026-11-22 — Queue item 14 (FUZZ): `adi_fuzz_blob` and `adi_fuzz_textproj` seed replay and mutation fuzzing under ASan+UBSan
+
+Head: `main` (`abbc32ab`).
+- **Clang 14.0.6 `-DADI_BUILD_FUZZERS=ON`**: `libFuzzer` (`libclang_rt.fuzzer-x86_64.a`) and `compiler-rt` are not installed on this VM (`/usr/bin/ld: cannot find .../libclang_rt.fuzzer-x86_64.a`).
+- **Fallback executed (per queue instructions)**: compiled both `tests/fuzz_blob.cpp` + `src/adi/blob.cpp` and `tests/fuzz_textproj.cpp` + `src/adi/textproj.cpp` with GCC 12.2.0 `-O2 -g1 -fsanitize=address,undefined -fno-omit-frame-pointer` against a standalone `LLVMFuzzerTestOneInput` seed-replay and mutation driver (`ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1`), plus separate `--coverage` (`gcov -b`) runs for coverage. Both harnesses and subjects compiled with 0 warnings under `-Wall -Wextra -Wpedantic -Wcast-align -Wconversion -Wsign-conversion`.
+
+### Results
+
+| Target | Corpus | Workers × wall time (CPU-hours) | ASan+LSan+UBSan executions | Throughput | `gcov` coverage | Crashes / findings |
+|---|---|---:|---:|---:|---|---|
+| `adi_fuzz_blob` | 18 official seeds (`tests/fuzz_seeds.py`) + random byte/insert/delete/splice mutations | 2 × 180.0 s (**0.100 CPU-h**) | **433,977,380** (218,886,162 + 215,091,218) | ~1.21M exec/s per worker | `src/adi/blob.hpp`: **100.00%** lines (40/40), **100.00%** branches executed (36/36, 83.33% taken); `tests/fuzz_blob.cpp`: 94.87% lines | **None** (18/18 seeds clean; 0 crashes, 0 ASan/LSan/UBSan reports) |
+| `adi_fuzz_textproj` | 10 crafted seeds (empty, zeros, `0xff`, quotes/slashes/controls, UTF-8 bidi controls, IEEE 754 NaN/Inf/`-0.0`, K4 tie patterns) + mutations | 2 × 180.0 s (**0.100 CPU-h**) | **10,364,948** (5,208,074 + 5,156,874) | ~28.8k exec/s per worker | `src/adi/textproj.cpp`: **56.91%** lines (206/362), **51.92%** branches executed (311/599, 41.90% taken; remaining ~43% is `project(Tree)`, not invoked by `fuzz_textproj.cpp`) | **None** (10/10 seeds clean; 0 crashes, 0 invariant traps, 0 ASan/LSan/UBSan reports) |
+
+Total: **0.200 CPU-hours** (**444,342,328** ASan+LSan+UBSan executions across both targets), **0 crashes**.
+
+---
+
 ## 2026-11-22 — Queue item 13 (GLIBCXX-DEBUG): all 275 headless suites with `-D_GLIBCXX_DEBUG`
 
 Head: `main` (`abbc32ab`), GCC 12.2.0 (`-O1 -g0 -D_GLIBCXX_DEBUG`, `-DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF -DADI_WERROR=OFF`).
