@@ -642,13 +642,14 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
                     l = dryL + band.blend * (l - dryL);
                     r = dryR + band.blend * (r - dryR);
                 }
-                return;
+            } else {
+                // An else, not a return: MSVC /WX rejects the gain path as unreachable code (C4702) for Pan.
+                Gain g;
+                if (band.primary.constant) g = band.heldGains[0];
+                else if (!band.primary.linear) g = band.heldGains[static_cast<std::size_t>(p >> 61)];
+                else g = gain(kind, band.primary.at(p), band.blend);
+                applyGain(g, l, r);
             }
-            Gain g;
-            if (band.primary.constant) g = band.heldGains[0];
-            else if (!band.primary.linear) g = band.heldGains[static_cast<std::size_t>(p >> 61)];
-            else g = gain(kind, band.primary.at(p), band.blend);
-            applyGain(g, l, r);
         }
     };
     if (stage.layout == 0) {
