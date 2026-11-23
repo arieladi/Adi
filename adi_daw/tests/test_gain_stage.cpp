@@ -134,8 +134,8 @@ void firstBlockMeasurement() {
             {4,10*std::log10((.125*.125+.25*.25)*.5*48/19200)}
         }};
         for (const auto& [track,db] : expected) {
-            const auto measured=std::find_if(result.tracks.begin(),result.tracks.end(),[&](const auto& item) {
-                return item.trackId==track;
+            const auto measured=std::find_if(result.tracks.begin(),result.tracks.end(),[trackId=track](const auto& item) {
+                return item.trackId==trackId;
             });
             check(result.commit.ok && measured!=result.tracks.end() && !measured->silent &&
                       std::abs(measured->measuredDb-db)<.001,
