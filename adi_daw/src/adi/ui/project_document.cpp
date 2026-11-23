@@ -8,12 +8,14 @@
 #include "adi/device_key_routes.hpp"
 #include "adi/recording_commands.hpp"
 #include "adi/gesture_presentation.hpp"
+#include "adi/ui/tap_tempo.hpp"
 #include "juce/mix_function_host.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <sqlite3.h>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <limits>
 #include <mutex>
 #include <thread>
 namespace adi::ui {
@@ -144,6 +146,7 @@ std::string ProjectDocument::snapshotName(std::int64_t nowUtc, int utcOffsetMinu
 }
 bool ProjectDocument::saveAs(const std::filesystem::path &path) {
     warning_.clear();
+    (void)endTapTempo(); // a Tap Tempo run is a step of the file it was tapped in
     // The store refuses an existing file too, in its own words; the Status Bar gets ours, with
     // the name, since Live would have asked here and replaced it.
     std::error_code ignored;
@@ -182,7 +185,8 @@ bool ProjectDocument::saveAs(const std::filesystem::path &path) {
     // through synchronise(), and every window follows at its next frame. The store has switched
     // by now, so false would lie ("nothing moved"): a session that fails to re-read is a warning
     // on a save that stands, and the next synchronise() tries again.
-    view_.refresh(*store_);
+    // With the session's overridden lanes, so the marks stand and one refresh does (DF-W30 b).
+    view_.refresh(*store_, session_.overriddenLanes());
     if (!synchronise()) {
         if (!warning_.empty())
             warning_ += ' ';
@@ -229,7 +233,8 @@ bool ProjectDocument::collectAllAndSave() {
         return false;
     }
     // The media rows point at the copies now: the view and the session read them again.
-    view_.refresh(*store_);
+    // With the session's overridden lanes, so the marks stand and one refresh does (DF-W30 b).
+    view_.refresh(*store_, session_.overriddenLanes());
     if (!synchronise()) {
         if (!warning_.empty())
             warning_ += ' ';
@@ -371,6 +376,20 @@ bool ProjectDocument::commitCaptured(std::vector<OpRequest> &requests) {
     }
     return synchronise();
 }
+bool ProjectDocument::settleParameters() {
+    // ParamOps closes an unbracketed value after 150 ms with no input (param_ops.cpp's drain): a
+    // drain dated that far on closes every one now. Each drain offers one finished gesture.
+    constexpr std::int64_t kQuietMs = 150;
+    std::vector<OpRequest> requests;
+    for (int round = 0; round < 256; ++round) {
+        requests.clear();
+        if (parameterOps_.drain(captureNowMs() + kQuietMs, requests) == 0)
+            return true;
+        if (!commitCaptured(requests))
+            return false;
+    }
+    return true;
+}
 void ProjectDocument::tick(std::int64_t milliseconds) {
     synchronise();
     session_.tick(milliseconds);
@@ -486,7 +505,8 @@ bool ProjectDocument::autoGainStage(bool lufs) {
     error_ = result.commit.error;
     if (!result.commit.ok)
         return false;
-    view_.refresh(*store_);
+    // With the session's overridden lanes, so the marks stand and one refresh does (DF-W30 b).
+    view_.refresh(*store_, session_.overriddenLanes());
     return synchronise();
 }
 bool ProjectDocument::deviceAction(const std::string &op, Payload payload) {
@@ -1083,6 +1103,81 @@ bool ProjectDocument::settleRecording() {
     }
     return !landing_;
 }
+bool ProjectDocument::tapTempo(double bpm, std::int64_t eventTick, std::uint64_t nowMs) {
+    const auto value = [&]() -> std::unique_ptr<const gesture::Input> {
+        if (tapInserts_)
+            return std::make_unique<gesture::TempoInsertInput>(bpm, 0);
+        return std::make_unique<gesture::TempoInput>(bpm);
+    };
+    if (tap_) {
+        auto updated = tap_->update(value(), nowMs);
+        if (updated.status.ok()) {
+            error_.clear();
+            return true;
+        }
+        // A tap after the run's quiet end, before the tick saw it: that run ends, and this tap begins another.
+        if (!endTapTempo())
+            return false;
+    }
+    auto attached = gesture::Coordinator::attach(*store_, std::make_shared<gesture::EnginePresentation>(view_, session_));
+    if (!attached.status.ok() || !attached.value) {
+        error_ = "Tap Tempo cannot be heard live: " + attached.status.message;
+        return false;
+    }
+    tapCoordinator_ = std::move(attached.value);
+    // Tempo has no live-value path: the gesture previews it structurally, the snapshot rebuilt per tap.
+    gesture::Spec spec;
+    spec.strategy = gesture::Strategy::Structural;
+    spec.label = "Tap Tempo";
+    // The event's row, else (none at that position) an inserted one.
+    tapInserts_ = false;
+    auto begun = tapCoordinator_->begin(spec, gesture::tempoProducer(eventTick));
+    if (!begun.status.ok() || !begun.session) {
+        tapInserts_ = true;
+        begun = tapCoordinator_->begin(spec, gesture::tempoInsertProducer(eventTick));
+    }
+    if (!begun.status.ok() || !begun.session) {
+        error_ = begun.status.message.empty() ? "Tap Tempo could not begin." : begun.status.message;
+        return false;
+    }
+    tap_ = std::make_unique<gesture::QuietSession>(std::move(begun.session),
+                                                   static_cast<std::uint64_t>(TapTempo::kPauseMs));
+    const auto updated = tap_->update(value(), nowMs);
+    if (!updated.status.ok()) {
+        error_ = updated.status.message;
+        (void)tap_->cancel();
+        tap_.reset();
+        return false;
+    }
+    error_.clear();
+    return true;
+}
+bool ProjectDocument::pollTapTempo(std::uint64_t nowMs) {
+    if (!tap_)
+        return true;
+    const auto polled = tap_->poll(nowMs);
+    if (!polled.ended)
+        return true;
+    tap_.reset();
+    synchronise();
+    if (!polled.ended->status.ok()) {
+        error_ = "Tap Tempo was not kept: " + polled.ended->status.message;
+        return false;
+    }
+    return true;
+}
+bool ProjectDocument::endTapTempo() {
+    if (!tap_)
+        return true;
+    const auto ended = tap_->end();
+    tap_.reset();
+    synchronise();
+    if (!ended.status.ok()) {
+        error_ = ended.status.message;
+        return false;
+    }
+    return true;
+}
 bool ProjectDocument::beginMixerDrag(const gesture::RelativeScalarSelection &selection, std::optional<double> coordinate,
                                      const std::string &label) {
     if (mixerDrag_)
@@ -1139,7 +1234,7 @@ bool ProjectDocument::endMixerDrag() {
         return false;
     }
     // The committed rows reach the view and the session as any commit does.
-    view_.refresh(*store_);
+    view_.refresh(*store_, session_.overriddenLanes());
     synchronise();
     error_.clear();
     return true;
@@ -1158,15 +1253,17 @@ void ProjectDocument::process(const engine::AudioIo &io) noexcept {
     mailbox_.drain(session_.transport(), [&block, this](std::int64_t insertTick) noexcept {
         if (!block.startPlayback(insertTick, true))
             session_.transport().play(true);
+    }, [&block, &io](std::int64_t sample) noexcept {
+        // Keep the first audible block at the held playhead. A source that
+        // has already failed is silent and cannot hold otherwise valid clips.
+        return block.sourcesReadyAt(sample, io.frames, true);
     });
     (void)block.process(io);
     mailbox_.publish(session_.transport());
 }
 RecordStates ProjectDocument::recordStates() const {
-    RecordStates out;
-    for (const auto &t : session_.model().tracks)
-        out[t.id] = {t.recordArmed, t.monitorMode == 1 ? Monitor::In : t.monitorMode == 2 ? Monitor::Auto : Monitor::Off};
-    return out;
+    const auto current = view_.current();
+    return current ? recordStatesOf(current->tracks) : RecordStates{};
 }
 bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t inputs, bool playing) {
     if (recording_ || landing_) {
@@ -1188,11 +1285,34 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
         error_ = "The audio device has no inputs to record from. Choose an input device in the Settings' Audio page.";
         return false;
     }
-    // A loop pass is a take of its own in Live; ADI's recorder captures loop passes, but their publication
-    // as takes is not on main yet (CT-02), and a linear capture fails at the loop's end.
+    // With the loop on, each pass is a take of its own, as in Live (CT-02): the recorder captures every pass
+    // against the loop as the engine plays it, in samples (`Session::TimingView::sampleForTick`'s rounding).
+    std::optional<engine::AudioRecordingLoop> loop;
     if (current->transport.loopEnabled) {
-        error_ = "Recording with the loop on waits for take lanes (CT-02); turn the loop off to record.";
-        return false;
+        if (!current->transport.hasLoop || !current->tempo) {
+            error_ = "Recording with the loop on needs a loop: set the loop brace first.";
+            return false;
+        }
+        // The engine's own tempo map for the loop (`Session`'s TimingView): the stored events as they are, 120 BPM
+        // only for a project with none. The snapshot's map adds a 120 at the start that the engine does not.
+        engine::TempoMap tempo;
+        for (const auto &e : session_.model().tempo)
+            tempo.events.push_back({e.posTicks, e.bpm, static_cast<int>(e.curve)});
+        if (tempo.events.empty())
+            tempo.events.push_back({0, 120.0, 0});
+        const auto sampleAt = [&](std::int64_t tick) {
+            const long double sample = static_cast<long double>(tempo.ticksToSeconds(tick)) * engineRate_;
+            constexpr auto limit = std::numeric_limits<std::int64_t>::max();
+            if (!std::isfinite(sample) || sample >= static_cast<long double>(limit))
+                return limit;
+            return sample <= 0 ? std::int64_t{0} : static_cast<std::int64_t>(std::llround(sample));
+        };
+        engine::AudioRecordingLoop frozen;
+        frozen.beginSample = sampleAt(current->transport.loopStartTicks);
+        frozen.endSample = sampleAt(current->transport.loopEndTicks);
+        if (frozen.endSample <= frozen.beginSample && frozen.beginSample < std::numeric_limits<std::int64_t>::max())
+            frozen.endSample = frozen.beginSample + 1; // as the engine plays a sub-sample loop: one frame
+        loop = frozen;
     }
     engine::AudioRecordingSpec spec;
     spec.workFolder = media::projectFolder(*store_);
@@ -1200,6 +1320,7 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
     spec.maxFrames = static_cast<std::uint32_t>(std::max<std::int32_t>(1, engineFrames_));
     // Two seconds of input between the callback and the writer, at least eight blocks.
     spec.ringFrames = std::max<std::uint32_t>(spec.sampleRate * 2, spec.maxFrames * 8);
+    spec.loop = loop;
     const std::vector<std::uint32_t> channels = inputs >= 2 ? std::vector<std::uint32_t>{0, 1} : std::vector<std::uint32_t>{0};
     for (const auto id : armed.audio)
         spec.targets.push_back({id, channels});
@@ -1269,17 +1390,66 @@ void ProjectDocument::landTake(engine::AudioRecordingResult &result) {
         landed_ = std::move(outcome);
         return;
     }
+    auto &db = store_->db();
+    const auto current = view_.current();
+    const auto takeName = [&](std::int64_t track) {
+        const auto *t = current ? current->findTrack(track) : nullptr;
+        return t != nullptr ? t->name : std::string("Take");
+    };
+    if (result.loopSpec()) {
+        // A loop recording (CT-02): each pass a take on a take lane of its track, the last pass's audio copied to
+        // the main lane, one media per track; the engine's commit makes an undo step per pass.
+        // Ids past every live row and every id a remark holds (DF-E16's rule).
+        RowIds rowIds(db);
+        std::vector<recording::LoopTrackIds> loopIds;
+        for (const auto &track : result.tracks) {
+            recording::LoopTrackIds ids{rowIds.next("media_files"), {}};
+            for (std::size_t pass = 0; pass < result.passes().size(); ++pass) {
+                const auto lane = rowIds.next("lanes");
+                ids.passes.push_back({lane, rowIds.next("clips"), takeName(track.trackId)});
+            }
+            loopIds.push_back(std::move(ids));
+        }
+        auto edit = recording::prepareLoopCommit(*store_, result, loopIds);
+        if (!edit.ok) {
+            outcome.clips.clear();
+            outcome.message =
+                "The loop's takes were recorded but could not be added: " + edit.error + "." + discardTake(result);
+            landed_ = std::move(outcome);
+            return;
+        }
+        const auto committed =
+            ops_.commitPrepared(edit.requests, [&](Store &s, Actor actor) { return recording::commit(s, edit, actor); });
+        if (!committed) {
+            outcome.clips.clear();
+            outcome.message = "The loop's takes were recorded but could not be added: " + committed.error + ".";
+            landed_ = std::move(outcome);
+            return;
+        }
+        synchronise();
+        // The clip chosen is the one that plays: each track's main-lane copy of its last pass.
+        for (const auto &track : result.tracks) {
+            SQLite::Statement main(db, "SELECT id FROM clips WHERE track_id = ? AND lane_id IS NULL ORDER BY id DESC LIMIT 1");
+            main.bind(1, track.trackId);
+            if (main.executeStep())
+                outcome.clips.push_back(main.getColumn(0).getInt64());
+        }
+        outcome.ok = true;
+        const auto passes = result.passes().size();
+        outcome.message = passes == 1 ? "Recorded one pass of the loop." : "Recorded " + std::to_string(passes) +
+                                                                               " passes of the loop, a take each.";
+        landed_ = std::move(outcome);
+        return;
+    }
     // The clips and their media take the next free ids, named after their tracks (Live names a take by
     // its track).
     // One `RowIds` for the take's rows (DF-E16): past every clip and media row, and past a clip id a
     // remark still holds.
-    RowIds rows(store_->db());
+    RowIds rows(db);
     std::vector<recording::ClipIds> ids;
-    const auto current = view_.current();
     for (const auto &track : result.tracks) {
-        const auto *t = current ? current->findTrack(track.trackId) : nullptr;
         const auto clip = rows.next("clips");
-        ids.push_back({clip, rows.next("media_files"), t != nullptr ? t->name : std::string("Take")});
+        ids.push_back({clip, rows.next("media_files"), takeName(track.trackId)});
         outcome.clips.push_back(ids.back().clip);
     }
     auto edit = recording::prepareCommit(*store_, result, ids);

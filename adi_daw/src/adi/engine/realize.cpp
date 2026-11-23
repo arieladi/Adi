@@ -137,9 +137,10 @@ std::unique_ptr<RealizedGraph> realize(const GraphPlan& plan,
     r->graph_.setChannels(opts.channels);
     // Every placement, including feedback and monitor nodes, owns the same
     // lifetime/binding contract. No candidate mutates a shared Node binding.
-    const auto add = [&](Node& node) {
+    const auto add = [&](Node& node, std::optional<std::int64_t> track = std::nullopt) {
         if (auto owner = node.sourceLifetime()) r->sourceOwners_.push_back(std::move(owner));
-        const NodeId id = r->graph_.addNode(node);
+        const NodeId id = r->graph_.addNode(node, track,
+            opts.fixedLatencyFor ? opts.fixedLatencyFor(node) : std::nullopt);
         if (opts.eventSourceFor) {
             if (auto binding = opts.eventSourceFor(node))
                 (void)r->graph_.setEventSource(id, std::move(*binding));
@@ -165,7 +166,7 @@ std::unique_ptr<RealizedGraph> realize(const GraphPlan& plan,
         if (pn.kind == PlannedKind::Vca) continue;
 
         auto mix = std::make_unique<MixNode>();
-        const NodeId head = add(*mix);
+        const NodeId head = add(*mix, pn.trackId);
         r->owned_.push_back(std::move(mix));
 
         NodeId tail = head;
@@ -181,7 +182,7 @@ std::unique_ptr<RealizedGraph> realize(const GraphPlan& plan,
                     continue;
                 }
                 if (!placeOnce(s, trackRef(pn.trackId), "a source")) continue;
-                const NodeId id = add(*s);
+                const NodeId id = add(*s, pn.trackId);
                 // A source the session builds afresh at every rebuild names
                 // itself; any other is keyed by the object it is.
                 const std::uint64_t name = s->historyName();
@@ -208,7 +209,7 @@ std::unique_ptr<RealizedGraph> realize(const GraphPlan& plan,
                 if (!placeOnce(d, trackRef(pn.trackId), "a chain node")) continue;
                 // ADR-0164: a chain node may hold data the audio thread reads
                 // -- a strip's automation lanes -- and this graph keeps it alive.
-                const NodeId id = add(*d);
+                const NodeId id = add(*d, pn.trackId);
                 if (r->graph_.connect(tail, id))
                     r->chainEdges_.push_back({{pn.trackId, RealizedGraph::ChainKey::Leg::Next, prev, 0},
                                               tail, id, Bus::Main});
@@ -264,7 +265,7 @@ std::unique_ptr<RealizedGraph> realize(const GraphPlan& plan,
                 r->problems_.push_back(ref+": invalid key source/tap/gain");continue;
             }
             auto gain=std::make_unique<KeyGain>(e.keyGainDb,e.keyPan);
-            const auto gainId=add(*gain);r->owned_.push_back(std::move(gain));
+            const auto gainId=add(*gain, srcId);r->owned_.push_back(std::move(gain));
             if(!r->graph_.connect(source,gainId) || !r->graph_.connect(gainId,targetId,Bus::Sidechain)) {
                 r->problems_.push_back(ref+": graph refused device key");continue;
             }
@@ -330,9 +331,9 @@ std::unique_ptr<RealizedGraph> realize(const GraphPlan& plan,
                 }
                 if (!placeOnce(loop.writer, ref, "a loop's writer") || !placeOnce(loop.reader, ref, "a loop's reader"))
                     continue;
-                const NodeId sid = add(*send);
-                const NodeId wid = add(*loop.writer);
-                const NodeId rid = add(*loop.reader);
+                const NodeId sid = add(*send, srcId);
+                const NodeId wid = add(*loop.writer, srcId);
+                const NodeId rid = add(*loop.reader, dstId);
                 if (!r->graph_.connect(at, sid) || !r->graph_.connect(sid, wid) || !r->graph_.connect(rid, to)) {
                     r->problems_.push_back(ref + ": the graph refused the loop");
                     continue;
@@ -351,8 +352,8 @@ std::unique_ptr<RealizedGraph> realize(const GraphPlan& plan,
             // is the same with summing on or off. Null for any other place.
             Node* half = opts.sendTailFor ? opts.sendTailFor(e.routingId) : nullptr;
             if (half != nullptr && !placeOnce(half, ref, "a send's channel half")) continue;
-            const NodeId sid = add(*send);
-            const NodeId hid = half != nullptr ? add(*half) : kInvalidNode;
+            const NodeId sid = add(*send, srcId);
+            const NodeId hid = half != nullptr ? add(*half, srcId) : kInvalidNode;
             const bool joined = r->graph_.connect(at, sid) &&
                                 (half == nullptr ? r->graph_.connect(sid, to)
                                                  : r->graph_.connect(sid, hid) && r->graph_.connect(hid, to));
@@ -401,7 +402,7 @@ std::unique_ptr<RealizedGraph> realize(const GraphPlan& plan,
         const auto source=monitor.source?r->graph_.find(*monitor.source):r->inputFor(monitor.trackId);
         if(source==kInvalidNode || mainOutput==kInvalidNode)continue;
         if(!placeOnce(monitor.gain,"cue", "a monitor gain") || !placeOnce(monitor.aligned,"cue","a monitor sink"))continue;
-        const auto gain=add(*monitor.gain),aligned=add(*monitor.aligned);
+        const auto gain=add(*monitor.gain, monitor.trackId),aligned=add(*monitor.aligned, monitor.trackId);
         r->graph_.connect(source,gain);r->graph_.connect(gain,aligned);r->graph_.connect(mainOutput,aligned,Bus::Sidechain);
         r->chainEdges_.push_back({{monitor.trackId,RealizedGraph::ChainKey::Leg::Monitor,monitor.source,0},source,gain,Bus::Main});
         r->chainEdges_.push_back({{monitor.trackId,RealizedGraph::ChainKey::Leg::Monitor,monitor.gain,1},gain,aligned,Bus::Main});

@@ -83,6 +83,65 @@ void markerCodec() {
           callbackAllocations.load()==allocations+cost && audio::callbackFileIo.load()==io,"marker preparation refuses on callback before allocating or doing I/O");
 }
 
+void markerEditing() {
+    using audio::WarpMapError;
+    const std::array<WarpMarker, 4> markers{{{0, 0}, {20, 500}, {80, 1000}, {100, 1500}}};
+    auto original = writeStream<WarpMarker>(FourCC::WarpMap, markers, 1, 0);
+    const std::array trailer{std::byte{0xf0}, std::byte{0}, std::byte{3}};
+    original.insert(original.end(), trailer.begin(), trailer.end());
+    const auto before = original;
+    const auto inserted = audio::editWarpMarker(original, 100, {}, WarpMarker{45, 630});
+    const auto moved = audio::editWarpMarker(inserted.bytes, 100, WarpMarker{45, 630},
+                                             WarpMarker{56, 880});
+    const auto removed = audio::editWarpMarker(moved.bytes, 100, WarpMarker{56, 880}, {});
+    const auto decoded = audio::readWarpMap(moved.bytes, 100);
+    const auto expected = std::vector<WarpMarker>{{0, 0}, {20, 500}, {56, 880}, {80, 1000}, {100, 1500}};
+    check(inserted && moved && decoded && decoded.markers == expected && original == before,
+          "interior insert and move replace only the explicitly addressed material");
+    check(removed && removed.bytes == before,
+          "interior remove restores exact original map flags, neighbor bytes and trailer");
+    const auto noop = audio::editWarpMarker(original, 100, markers[1], markers[1]);
+    check(noop && noop.bytes == before, "same-marker move produces exact original bytes");
+    check(audio::editWarpMarker(original, 100, WarpMarker{20, 499}, {}).error ==
+              WarpMapError::StaleMarker &&
+              audio::editWarpMarker(original, 100, WarpMarker{19, 500}, markers[1]).error ==
+                  WarpMapError::StaleMarker,
+          "existing marker operations require the original frame and tick");
+    check(audio::editWarpMarker(original, 100, {}, WarpMarker{20, 600}).error == WarpMapError::Order &&
+              audio::editWarpMarker(original, 100, {}, WarpMarker{50, 500}).error == WarpMapError::Order &&
+              audio::editWarpMarker(original, 100, markers[1], WarpMarker{85, 900}).error ==
+                  WarpMapError::Order &&
+              audio::editWarpMarker(original, 100, markers[1], WarpMarker{30, 1100}).error ==
+                  WarpMapError::Order,
+          "duplicates and crossings on either clock refuse before generating bytes");
+    check(audio::editWarpMarker(original, 100, markers.front(), {}).error == WarpMapError::Bounds &&
+              audio::editWarpMarker(original, 100, markers.back(), WarpMarker{90, 1490}).error ==
+                  WarpMapError::Bounds &&
+              audio::editWarpMarker(original, 100, {}, WarpMarker{100, 1600}).error ==
+                  WarpMapError::Bounds,
+          "origin and terminal coverage remain fixed");
+    auto future = original;
+    auto header = StreamHeader{};
+    std::memcpy(&header, future.data(), sizeof header);
+    header.version = 2;
+    std::memcpy(future.data(), &header, sizeof header);
+    const auto futureEdit = audio::editWarpMarker(future, 100, markers[1], {});
+    const auto wrongCoverage = audio::editWarpMarker(original, 99, markers[1], {});
+    check(futureEdit.error == WarpMapError::FutureLayout && futureEdit.bytes.empty() &&
+              !wrongCoverage && wrongCoverage.bytes.empty(),
+          "unknown version and incompatible source coverage refuse without a partial map");
+    const auto cost = emptyResultCost<audio::WarpMapWrite>();
+    const auto allocations = callbackAllocations.load(), io = audio::callbackFileIo.load();
+    audio::WarpMapWrite refused;
+    {
+        audio::CallbackScope callback;
+        refused = audio::editWarpMarker(original, 100, markers[1], {});
+    }
+    check(refused.error == WarpMapError::Realtime && callbackAllocations.load() == allocations + cost &&
+              audio::callbackFileIo.load() == io,
+          "marker edit refuses on callback before decoding, allocation or file I/O");
+}
+
 void renderModes() {
     for(const std::uint32_t sourceRate:{44100u,48000u})for(const auto mode:{audio::WarpMode::Tones,audio::WarpMode::Complex,audio::WarpMode::ComplexPro}) {
         test::TempDirectory temporary{"warp","r3"};const auto source=temporary.path()/"source.wav";
@@ -155,6 +214,102 @@ void rePitch() {
     }
 }
 
+void nativeInterpolation() {
+    test::TempDirectory temporary{"warp", "interpolation"};
+    const auto file = temporary.path() / "four-taps.wav";
+    constexpr std::int64_t frames = 8201;
+    constexpr std::int64_t sourceStart = 17;
+    const auto sourceAt = [](std::int64_t frame) {
+        return frame < 0 || frame >= frames ? 0.0f :
+            static_cast<float>(static_cast<int>(frame % 7) - 3) * 0.125f;
+    };
+    std::vector<float> input(static_cast<std::size_t>(sourceStart + frames + 2) * 2, 0.9375f);
+    for (std::int64_t i = 0; i < frames; ++i) {
+        const auto offset = static_cast<std::size_t>(sourceStart + i) * 2;
+        input[offset] = sourceAt(i);
+        input[offset + 1] = input[offset] * -0.5f;
+    }
+    {
+        audio::WavWriter writer(file, 48000, 2, audio::WavFormat::Float32);
+        writer.write(input.data(), static_cast<std::uint32_t>(input.size() / 2));
+        writer.close();
+    }
+    audio::WarpRenderPlan plan;
+    plan.source = file;
+    plan.workFolder = temporary.path() / "work";
+    plan.sourceStart = sourceStart;
+    plan.sourceFrames = frames;
+    plan.anchors = {{0, 0}, {frames, 2 * frames}};
+    plan.transients = {0};
+    plan.transientLoop = audio::TransientLoop::Off;
+    plan.transposeSemis = -12;
+    const auto prepared = audio::prepareWarp(plan);
+    if (!prepared)
+        throw std::runtime_error(prepared.detail);
+    const auto output = read(*prepared.prepared);
+    bool exact = output.size() == static_cast<std::size_t>(frames) * 4;
+    bool differentFromLinear = false;
+    if (exact) {
+        for (std::int64_t i = 0; i < frames; ++i) {
+            // Independent half-phase Catmull-Rom weights.
+            const auto middle = (-sourceAt(i - 1) + 9 * sourceAt(i) + 9 * sourceAt(i + 1) -
+                                 sourceAt(i + 2)) / 16;
+            const auto offset = static_cast<std::size_t>(i) * 4;
+            exact = exact && output[offset] == sourceAt(i) &&
+                    output[offset + 1] == -0.5f * sourceAt(i) &&
+                    output[offset + 2] == middle && output[offset + 3] == -0.5f * middle;
+            differentFromLinear = differentFromLinear ||
+                                  middle != (sourceAt(i) + sourceAt(i + 1)) * 0.5f;
+        }
+    }
+    check(exact && differentFromLinear,
+          "native Warp PCM matches four-tap half-phase weights across pages and source window edges");
+}
+void beatsMidpointLoops() {
+    test::TempDirectory temporary{"warp", "beat-loop"};
+    const auto file = temporary.path() / "crossing.wav";
+    constexpr std::uint64_t length = 1000;
+    std::vector<float> input(length * 4);
+    for (std::size_t i = 0; i < length; ++i) {
+        // Two crossings within five percent. The second is closer to the
+        // middle and between samples. The second slice has no crossing.
+        const float first = i < 475 ? 0.25f :
+            std::clamp((static_cast<float>(i) - 520.5f) * 0.0625f, -0.5f, 0.5f);
+        const float second = 0.125f + static_cast<float>(i) / 4096.0f;
+        input[i * 2] = first;
+        input[i * 2 + 1] = -first;
+        input[(i + length) * 2] = second;
+        input[(i + length) * 2 + 1] = -second;
+    }
+    {
+        audio::WavWriter writer(file, 48000, 2, audio::WavFormat::Float32);
+        writer.write(input.data(), static_cast<std::uint32_t>(2 * length));
+        writer.close();
+    }
+    audio::WarpRenderPlan plan;
+    plan.source = file;
+    plan.workFolder = temporary.path() / "work";
+    plan.sourceFrames = 2 * length;
+    plan.anchors = {{0, 0}, {length, 2 * length}, {2 * length, 4 * length}};
+    plan.transients = {0, length};
+    const auto forward = audio::prepareWarp(plan);
+    if (!forward)
+        throw std::runtime_error(forward.detail);
+    const auto repeat = read(*forward.prepared);
+    check(repeat.size() == 8 * length && repeat[2000] == 0 && repeat[2001] == 0 &&
+              repeat[2002] == 0.0625f && repeat[2003] == -0.0625f,
+          "Forward chooses the nearest fractional crossing at a shared stereo loop point");
+    check(repeat[6000] == input[3000] && repeat[6001] == input[3001],
+          "a noncrossing slice starts its loop at the bounded midpoint");
+    plan.transientLoop = audio::TransientLoop::PingPong;
+    const auto alternating = audio::prepareWarp(plan);
+    if (!alternating)
+        throw std::runtime_error(alternating.detail);
+    const auto bounce = read(*alternating.prepared);
+    check(bounce[2 * 1477] == 0.03125f && bounce[2 * 1478] == 0.03125f &&
+              bounce[2 * 1476] == 0.09375f && bounce[2 * 1479] == 0.09375f,
+          "PingPong mirrors around the same fractional crossing on both read directions");
+}
 void nativeModesAndOnsets() {
     for(const std::uint32_t sourceRate:{44100u,48000u}) {
         test::TempDirectory temporary{"warp","native"};const auto file=temporary.path()/"impulses.wav";
@@ -283,4 +438,4 @@ void guardsAndLifetime() {
           audio::callbackFileIo.load()==io && !std::filesystem::exists(changed.workFolder),"callback refuses before allocation or file I/O");
 }
 }
-int main(){try{markerCodec();renderModes();rePitch();nativeModesAndOnsets();formants();guardsAndLifetime();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{markerCodec();markerEditing();renderModes();rePitch();nativeInterpolation();beatsMidpointLoops();nativeModesAndOnsets();formants();guardsAndLifetime();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

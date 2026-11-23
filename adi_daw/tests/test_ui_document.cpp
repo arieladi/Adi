@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/audio/wav_file.hpp"
 #include "adi/automation_lanes.hpp"
+#include "adi/history.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/settings/store.hpp"
 #include "adi/ui/project_document.hpp"
+#include "adi/ui/tap_tempo.hpp"
 #include "knobs_device.hpp"
 #include "temp_directory.hpp"
 #include "juce/device_core.hpp"
@@ -825,6 +827,122 @@ void arrangementRecord(const std::filesystem::path &dir) {
     check(settled && settled->ok && !doc->recording() && !doc->landingTake(),
           "a take whose device stopped is settled into the project, not lost");
 }
+// HI-01: a run of Tap Tempo taps is one quiet gesture: heard at each tap, one undo step once the taps stop, and
+// no undo-and-recommit, so the history has no forked branch.
+void tapTempoQuiet(const std::filesystem::path &dir) {
+    std::string error;
+    auto doc = ui::ProjectDocument::open(dir / "tap.adi", true, {}, error);
+    check(doc != nullptr, "a project to tap in");
+    if (!doc)
+        return;
+    const auto ops = [&] { return doc->store().db().execAndGet("SELECT count(*) FROM ops").getInt(); };
+    const auto heardBpm = [&] {
+        const auto current = doc->view().current();
+        return current && current->tempo && !current->tempo->events.empty() ? current->tempo->events.front().bpm : 0.0;
+    };
+    const auto before = ops();
+    std::uint64_t now = 10000;
+    for (const double bpm : {100.0, 101.0, 102.0, 103.0}) {
+        check(doc->tapTempo(bpm, 0, now) && doc->tapping(), "a tap");
+        doc->pollTapTempo(now + 100);
+        now += 500;
+    }
+    check(ops() == before && std::abs(heardBpm() - 103) < 1e-9,
+          "four taps: the last tempo heard, nothing written while the taps go on");
+    doc->pollTapTempo(now - 500 + 1999);
+    check(doc->tapping(), "still the run, short of Tap Tempo's pause");
+    doc->pollTapTempo(now - 500 + ui::TapTempo::kPauseMs);
+    const auto timeline = History(doc->store()).readTimeline();
+    check(!doc->tapping() && ops() > before && doc->ops().nextUndo() && doc->ops().nextUndo()->label == "Tap Tempo" &&
+              std::abs(heardBpm() - 103) < 1e-9 && timeline.error.empty() && timeline.branches.size() <= 1 &&
+              timeline.steps.size() == 1,
+          "the pause ends the run: one undo step \"Tap Tempo\" at 103, and no forked branch in the timeline");
+    check(doc->ops().undo().ok && doc->synchronise() && std::abs(heardBpm() - 120) < 1e-9 && !doc->ops().canUndo(),
+          "one Undo takes the run back to 120");
+    // A tap after the pause, before the tick saw it, ends that run and begins another.
+    now += 10000;
+    check(doc->tapTempo(90, 0, now) && doc->tapTempo(91, 0, now + 3000) && doc->tapping(),
+          "a late tap begins a new run");
+    const auto opsBeforeEnd = ops();
+    check(doc->endTapTempo() && !doc->tapping() && std::abs(heardBpm() - 91) < 1e-9 && ops() > opsBeforeEnd &&
+              doc->ops().nextUndo() && doc->ops().nextUndo()->label == "Tap Tempo",
+          "the late tap's run ends at once with endTapTempo, as its own step at 91");
+    check(doc->ops().undo().ok && doc->synchronise() && std::abs(heardBpm() - 90) < 1e-9 && doc->ops().canUndo() &&
+              doc->ops().nextUndo()->label == "Tap Tempo",
+          "two runs, two steps: one Undo goes back to the first run's 90, a step that is still there");
+    check(History(doc->store()).readTimeline().error.empty() && doc->pollTapTempo(now + 100000),
+          "and with no run open, a poll has nothing to end");
+}
+// CT-02: Record with the loop on: a take per pass on its own take lane and the last pass's audio on the main lane.
+void loopRecord(const std::filesystem::path &dir) {
+    std::string error;
+    auto doc = ui::ProjectDocument::open(dir / "loop.adi", true, {}, error);
+    check(doc != nullptr, "a project to loop-record into");
+    if (!doc)
+        return;
+    doc->prepare(48000, 64);
+    const auto beat = doc->view().current()->tempo->secondsToTicks(.5); // a quarter at 120 BPM: 24000 frames
+    std::vector<OpRequest> setup(2);
+    setup[0].opType = "track.setArm";
+    setup[0].payload = {{"id", 4}, {"armed", true}};
+    setup[1].opType = "transport.setLoop";
+    setup[1].payload = {{"on", true}, {"start", 0}, {"end", beat}};
+    check(doc->ops().submit(std::move(setup)).ok && doc->synchronise(), "3 Audio armed, a one-beat loop on");
+    std::array<float, 64> in{}, l{}, r{};
+    const float *inputs[]{in.data()};
+    float *outputs[]{l.data(), r.data()};
+    engine::AudioIo io;
+    io.in = inputs;
+    io.numIn = 1;
+    io.out = outputs;
+    io.numOut = 2;
+    io.frames = 64;
+    std::int64_t stream = 0;
+    const auto block = [&] {
+        for (int i = 0; i < 64; ++i)
+            in[static_cast<std::size_t>(i)] = static_cast<float>((stream + i) % 29) / 64.f - .2f;
+        io.streamTimeSamples = stream;
+        doc->process(io);
+        stream += 64;
+    };
+    const auto count = [&](const char *sql) { return doc->store().db().execAndGet(sql).getInt(); };
+    const auto lanesBefore = count("SELECT count(*) FROM lanes WHERE track_id = 4 AND kind = 'take'");
+    const auto clipsBefore = count("SELECT count(*) FROM clips WHERE track_id = 4");
+    check(doc->startRecording(0, 1, false) && doc->recording(), "Record with the loop on is no longer refused");
+    for (int b = 0; b < 760; ++b) // two whole passes (750 blocks) and the start of a third
+        block();
+    doc->stopRecording();
+    for (int b = 0; b < 8; ++b)
+        block();
+    doc->release();
+    doc->settleRecording();
+    const auto landed = doc->takeLanded();
+    if (landed && !landed->ok)
+        std::printf("loop take: %s\n", landed->message.c_str());
+    const auto takeLanes = count("SELECT count(*) FROM lanes WHERE track_id = 4 AND kind = 'take'") - lanesBefore;
+    const auto onLanes = count("SELECT count(*) FROM clips WHERE track_id = 4 AND lane_id IS NOT NULL");
+    const auto onMain = count("SELECT count(*) FROM clips WHERE track_id = 4 AND lane_id IS NULL");
+    std::printf("loop record: %s; take lanes +%d, takes %d, main-lane clips %d\n",
+                landed ? landed->message.c_str() : "(none)", takeLanes, onLanes, onMain);
+    // 760 blocks of 64 from 0 over a 24000-frame loop: two whole passes and 640 frames of a third.
+    check(landed && landed->ok && takeLanes == 3 && onLanes == 3 && onMain >= 1 &&
+              landed->message.find("3 passes") != std::string::npos && landed->clips.size() == 1 &&
+              count(("SELECT count(*) FROM clips WHERE lane_id IS NULL AND id = " + std::to_string(landed->clips.front())).c_str()) == 1,
+          "each of the three passes a take on its own take lane of 3 Audio, the last pass's audio on the main lane, "
+          "the main-lane clip chosen");
+    int undone = 0;
+    while (doc->ops().canUndo() && doc->ops().nextUndo() && doc->ops().nextUndo()->label != "Arm Recording" &&
+           count("SELECT count(*) FROM clips WHERE track_id = 4") > clipsBefore && undone < 8) {
+        check(doc->ops().undo().ok, "undo a pass");
+        ++undone;
+    }
+    doc->synchronise();
+    check(count("SELECT count(*) FROM clips WHERE track_id = 4") == clipsBefore &&
+              count("SELECT count(*) FROM lanes WHERE track_id = 4 AND kind = 'take'") == lanesBefore && undone >= 1,
+          "Undo takes the loop's takes back (the engine makes a step per pass)");
+    check(undone == 3, "three passes, three undo steps");
+    std::printf("loop record: %d undo steps\n", undone);
+}
 // MX-23 and SRF-02: a fader dragged is heard while it moves, writes nothing until the mouse lets go, then
 // lands as one undo step; Esc puts it back (Live 12 manual 18.1).
 void mixerDragHeard(const std::filesystem::path &dir) {
@@ -837,9 +955,11 @@ void mixerDragHeard(const std::filesystem::path &dir) {
     add.opType = "track.create";
     add.payload = {{"id", 8}, {"kind", "audio"}, {"name", "Tone"}};
     check(doc->ops().submit(add).ok && doc->synchronise(), "a track for the tone");
-    Tone tone;
+    Tone tone, second;
     doc->session().setSourcesFor([&](std::int64_t id) {
-        return id == 8 ? std::vector<engine::Node *>{&tone} : std::vector<engine::Node *>{};
+        return id == 8    ? std::vector<engine::Node *>{&tone}
+               : id == 10 ? std::vector<engine::Node *>{&second}
+                          : std::vector<engine::Node *>{};
     });
     check(doc->session().rebuild(), "the tone in the graph");
     doc->prepare(48000, 64);
@@ -902,6 +1022,60 @@ void mixerDragHeard(const std::filesystem::path &dir) {
               std::abs(doc->store().db().execAndGet("SELECT pan FROM mixer_strip WHERE track_id = 8").getDouble() - .5) < 1e-9 &&
               doc->ops().nextUndo()->label == "Change Track Panning",
           "a pan drag lands as one step too");
+    // MX-23: a summing group's drive, heard while it is dragged (ADR-0174). The tone is one cycle a block, so a
+    // block is the waveform. A console's channel and buss stages cancel for one source; the drive colours a sum,
+    // so a second tone goes into the group too (it colours, it does not change the level).
+    std::vector<OpRequest> group(6);
+    group[0].opType = "track.create";
+    group[0].payload = {{"id", 9}, {"kind", "group"}, {"name", "Bus"}};
+    group[1].opType = "track.create";
+    group[1].payload = {{"id", 10}, {"kind", "audio"}, {"name", "Second"}};
+    group[2].opType = "track.setParent";
+    group[2].payload = {{"id", 8}, {"parent", 9}};
+    group[3].opType = "track.setParent";
+    group[3].payload = {{"id", 10}, {"parent", 9}};
+    group[4].opType = "group.setSumming";
+    group[4].payload = {{"id", 9}, {"enabled", true}};
+    group[5].opType = "mixer.setVolume";
+    group[5].payload = {{"id", 8}, {"db", 0.0}};
+    check(doc->ops().submit(std::move(group)).ok && doc->synchronise() && doc->session().rebuild(),
+          "Tone and a second tone inside a group whose summing is on");
+    const auto block = [&] {
+        (void)heard();
+        return std::vector<float>(l.begin(), l.end());
+    };
+    const auto apart = [](const std::vector<float> &a, const std::vector<float> &b) {
+        float worst = 0;
+        for (std::size_t i = 0; i < a.size() && i < b.size(); ++i)
+            worst = std::max(worst, std::abs(a[i] - b[i]));
+        return worst;
+    };
+    const auto driveDb = [&] {
+        SQLite::Statement q(doc->store().db(), "SELECT drive_db FROM group_summing WHERE track_id = 9");
+        return q.executeStep() ? q.getColumn(0).getDouble() : 0.0;
+    };
+    const auto clean = block();
+    const auto steps = doc->store().db().execAndGet("SELECT count(*) FROM ops").getInt();
+    check(apart(clean, block()) < 1e-6, "the summed tone repeats block for block");
+    gesture::RelativeScalarSelection drive{gesture::ScalarKind::GroupSummingDrive, 9, {}, {-12, 24, std::nullopt}};
+    check(doc->beginMixerDrag(drive, 24, "Change Summing Drive") && doc->mixerDragging(), "the drive drag begins");
+    const auto driven = block();
+    std::printf("summing drive: +24 dB moves the waveform by up to %.4f\n", static_cast<double>(apart(clean, driven)));
+    check(apart(clean, driven) > 1e-3 && driveDb() == 0 &&
+              doc->store().db().execAndGet("SELECT count(*) FROM ops").getInt() == steps,
+          "dragged to +24 dB, the drive is heard while nothing is written");
+    doc->cancelMixerDrag();
+    check(!doc->mixerDragging() && apart(clean, block()) < 1e-5 && driveDb() == 0 &&
+              doc->store().db().execAndGet("SELECT count(*) FROM ops").getInt() == steps,
+          "Esc puts the drive back: the clean waveform again, nothing written");
+    check(doc->beginMixerDrag(drive, 12, "Change Summing Drive") && doc->mixerDrag(24) && doc->endMixerDrag() &&
+              std::abs(driveDb() - 24) < 1e-9 && doc->ops().nextUndo() &&
+              doc->ops().nextUndo()->label == "Change Summing Drive" &&
+              doc->store().db().execAndGet("SELECT count(*) FROM ops").getInt() == steps + 1 &&
+              apart(driven, block()) < 1e-5,
+          "let go at +24 dB: one op, one undo step, heard as it was let go");
+    check(doc->ops().undo().ok && doc->synchronise() && driveDb() == 0 && apart(clean, block()) < 1e-5,
+          "one Undo puts the drive and the sound back");
     doc->release();
 }
 void peakSpans() {
@@ -1053,8 +1227,12 @@ int main(int argc, char **argv) {
         saveAsKeepsTheTake(guardDir.path());
         test::TempDirectory refusedDir("ui_document", "refused");
         discardRefusalSaid(refusedDir.path());
+        test::TempDirectory loopDir("ui_document", "loop");
+        loopRecord(loopDir.path());
         test::TempDirectory dragDir("ui_document", "drag");
         mixerDragHeard(dragDir.path());
+        test::TempDirectory tapDir("ui_document", "tap");
+        tapTempoQuiet(tapDir.path());
     }
     test::TempDirectory temp("ui_document", "lifetime");
     std::string error;
@@ -1273,9 +1451,14 @@ int main(int argc, char **argv) {
             for (int block = 0; block < 64 && !heard; ++block) {
                 out.streamTimeSamples = block * 64;
                 dropped->process(out);
-                // The clip's reader fills on the message thread, as #308's own test primes it.
-                if (dropped->session().clips() != nullptr)
-                    dropped->session().clips()->prime();
+                // The clip's reader fills on the message thread, as #308's own test primes it. A held
+                // Play (DF-E64) leaves the transport stopped until its pages are in, so the pages primed
+                // are the playing target's, which is what the held Play waits for.
+                if (auto *clips = dropped->session().clips()) {
+                    engine::Transport target = dropped->session().transport();
+                    target.play();
+                    (void)clips->primeAt(target);
+                }
                 for (const float v : left)
                     heard = heard || std::abs(v) > 1.e-4f;
             }
@@ -1780,6 +1963,21 @@ int main(int argc, char **argv) {
                       strip->parameterGesture(3,"cutoff", ParamEventKind::End, .4) && strip->ops().nextUndo() &&
                       strip->ops().nextUndo()->opCount == 1 && strip->ops().nextUndo()->label == "UI knobs: Cutoff",
                   "a later gesture on the same parameter needs no opener: one op, one step");
+            // DF-W29: an unbracketed value still in its quiet interval when Undo comes. Settled first,
+            // it is its own step, and the undo takes that step back, not the one before it.
+            const auto settledBefore = strip->ops().nextUndo() ? strip->ops().nextUndo()->txnId : 0;
+            check(strip->parameterGesture(3, "gain", ParamEventKind::Value, .2) && rowOf("gain") &&
+                      std::abs(*rowOf("gain") - .9) < 1e-9,
+                  "a gain value waits in its quiet interval, not yet a step");
+            check(strip->settleParameters() && rowOf("gain") && std::abs(*rowOf("gain") - .2) < 1e-9 &&
+                      strip->ops().nextUndo() && strip->ops().nextUndo()->txnId != settledBefore &&
+                      strip->ops().nextUndo()->label == "UI knobs: Gain",
+                  "settled, it is a step of its own at once");
+            check(strip->ops().undo().ok && strip->synchronise() && rowOf("gain") && std::abs(*rowOf("gain") - .9) < 1e-9 &&
+                      strip->ops().nextUndo() && strip->ops().nextUndo()->txnId == settledBefore,
+                  "the undo after it takes back that gain edit, and the step before stays");
+            check(strip->settleParameters() && strip->ops().nextUndo()->txnId == settledBefore,
+                  "with nothing held, settling commits nothing");
         } catch (const std::exception &e) {
             check(false, e.what());
         }
@@ -1862,6 +2060,12 @@ int main(int argc, char **argv) {
             check(armed->ops().undo().ok && armed->synchronise() && snapshot()->automationOverridden && laneOverridden() &&
                       armed->ops().redo().ok && armed->synchronise() && snapshot()->automationOverridden,
                   "undo and redo of the move edit the stored value, not the override: it stands (not an op)");
+            // DF-W30 (b): Collect All and Save reads the rows again with the override standing: one
+            // refresh, and the marks stay.
+            const auto generationBeforeCollect = armed->view().generation();
+            check(armed->collectAllAndSave() && snapshot()->automationOverridden && laneOverridden() &&
+                      armed->view().generation() == generationBeforeCollect + 1,
+                  "Collect All and Save keeps the override marks, in one refresh");
             const auto opsBeforeReenable = opCount();
             const auto txnBeforeReenable = headTxn();
             check(armed->reenableAutomation() && armed->error().empty() && !armed->session().automationOverridden() &&

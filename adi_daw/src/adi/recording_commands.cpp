@@ -146,7 +146,8 @@ std::vector<RecordingEdit::PreparedSource> RecordingEdit::prepareSources(Store& 
     }
     return sources;
 }
-RecordingEdit prepareCommit(Store& store,const engine::AudioRecordingResult& recorded,std::span<const ClipIds> ids) {
+RecordingEdit prepareCommit(Store& store,const engine::AudioRecordingResult& recorded,std::span<const ClipIds> ids,
+                            std::int64_t placementOffsetSamples) {
     RecordingEdit result;
     try {
         if(store.readOnly())throw std::runtime_error("project is read-only");
@@ -158,8 +159,14 @@ RecordingEdit prepareCommit(Store& store,const engine::AudioRecordingResult& rec
            recorded.startSample<0 || recorded.frames>static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()-recorded.startSample) ||
            recorded.sampleRate<8000 || recorded.sampleRate>768000)
             throw std::runtime_error("recording is not a completed attachable take");
-        const auto first=tickAt(tempo,recorded.startSample,recorded.sampleRate);
-        const auto last=tickAt(tempo,recorded.startSample+static_cast<std::int64_t>(recorded.frames),recorded.sampleRate);
+        constexpr auto ceiling=std::numeric_limits<std::int64_t>::max();
+        if(placementOffsetSamples<0 && recorded.startSample>ceiling+placementOffsetSamples)
+            throw std::runtime_error("recording latency placement overflows the song clock");
+        const auto start=placementOffsetSamples>recorded.startSample ? 0 : recorded.startSample-placementOffsetSamples;
+        if(recorded.frames>static_cast<std::uint64_t>(ceiling-start))
+            throw std::runtime_error("recording latency placement overflows the song clock");
+        const auto first=tickAt(tempo,start,recorded.sampleRate);
+        const auto last=tickAt(tempo,start+static_cast<std::int64_t>(recorded.frames),recorded.sampleRate);
         if(last<=first)throw std::runtime_error("recording has no representable musical extent");
         auto sources=RecordingEdit::prepareSources(store,recorded,ids,result);
         for(std::size_t index=0;index<ids.size();++index) {
@@ -382,6 +389,113 @@ RecordingEdit prepareLoopCommit(Store& store,const engine::AudioRecordingResult&
         result.ok=true;
     }catch(const std::exception& exception){result.error=exception.what();result.requests.clear();result.groupEnds_.clear();}
     return result;
+}
+
+RecordingEdit prepareMidiLoopCommit(Store& store,const MidiLoopPlacement& placement,std::span<const MidiTakePass> passes) {
+    RecordingEdit result;
+    try {
+        if(store.readOnly() || audio::onAudioThread)throw std::runtime_error("MIDI recording requires a writable owner");
+        if(placement.start<0 || placement.length<=0 ||
+           placement.start>std::numeric_limits<std::int64_t>::max()-placement.length ||
+           placement.mainClip<=0 || placement.mainStream<=0 || passes.empty())
+            throw std::runtime_error("invalid MIDI loop placement");
+        Read read(store.db());
+        SQLite::Statement track(store.db(),"SELECT kind,locked FROM tracks WHERE id=?");
+        track.bind(1,placement.track);
+        if(!track.executeStep() || track.getColumn(1).getInt()!=0 ||
+           (track.getColumn(0).getString()!="midi" && track.getColumn(0).getString()!="instrument"))
+            throw std::runtime_error("MIDI recording target is missing, locked or not a MIDI track");
+        const auto main=notes::captureNotesForNewClip(store,placement.mainClip,placement.mainStream);
+        if(!main.ok)throw std::runtime_error(main.error);
+        result.sourceProject=identity(store);
+        result.owner_=&store;
+        result.client_=store.clientId();
+        result.options.expectHead.emplace(OpJournal(store).headSeq());
+        result.files_=std::make_shared<RecordingEdit::Files>(); // a MIDI take has no published media assets
+        std::vector<std::int64_t> lanes;
+        SQLite::Statement existing(store.db(),"SELECT id FROM lanes WHERE track_id=? AND kind='take' ORDER BY ord,id");
+        existing.bind(1,placement.track);
+        while(existing.executeStep())lanes.push_back(existing.getColumn(0).getInt64());
+        std::set<std::int64_t> clipIds{placement.mainClip},streamIds{placement.mainStream},laneIds;
+        const auto append=[&](OpRequest request) {
+            request.label="Record MIDI";
+            result.requests.push_back(std::move(request));
+        };
+        const auto newClip=[&](std::int64_t clip,std::int64_t length,const std::string& name) {
+            OpRequest request;request.opType="clip.create";request.targetKind="clip";request.targetId=clip;
+            request.payload={{"id",clip},{"track",placement.track},{"kind","midi"},{"name",name},
+                             {"pos",placement.start},{"length",length}};
+            append(std::move(request));
+        };
+        const auto writeNotes=[&](const notes::Snapshot& snapshot,std::span<const notes::NoteValues> input,
+                                  std::int64_t length,bool closeAtEnd) {
+            notes::Diff diff;diff.added.reserve(input.size());
+            std::string error;
+            for(auto note:input) {
+                if(note.start<0 || note.start>=length || note.duration<=0)
+                    throw std::runtime_error("MIDI recorded note starts outside its pass");
+                if(closeAtEnd && note.duration>length-note.start) {
+                    note.duration=length-note.start;
+                    note.releaseVelocity=0;
+                }
+                auto record=notes::makeRecord(note,{},error);
+                if(!record)throw std::runtime_error(error);
+                diff.added.push_back(std::move(*record));
+            }
+            auto edit=notes::prepareDiff(snapshot,diff);
+            if(!edit.ok)throw std::runtime_error(edit.error);
+            for(auto& request:edit.requests)append(std::move(request));
+        };
+        const auto name=placement.name.empty()?std::string("MIDI Recording"):placement.name;
+        for(std::size_t index=0;index<passes.size();++index) {
+            const auto& pass=passes[index];
+            if(pass.length<=0 || pass.length>placement.length ||
+               (index+1<passes.size() && pass.length!=placement.length) ||
+               pass.take.lane<=0 || pass.take.clip<=0 || pass.stream<=0 ||
+               !laneIds.insert(pass.take.lane).second || !clipIds.insert(pass.take.clip).second ||
+               !streamIds.insert(pass.stream).second || edit::row(store.db(),"lanes",pass.take.lane))
+                throw std::runtime_error("invalid MIDI take length or occupied identity");
+            const auto take=notes::captureNotesForNewClip(store,pass.take.clip,pass.stream);
+            if(!take.ok)throw std::runtime_error(take.error);
+            append(createTakeLane(store,pass.take.lane,placement.track));
+            lanes.insert(lanes.begin()+static_cast<std::ptrdiff_t>(index),pass.take.lane);
+            if(index!=0) {
+                OpRequest order;order.opType="lane.reorder";
+                order.payload={{"track",placement.track},{"lanes",lanes}};
+                append(std::move(order));
+            }
+            newClip(pass.take.clip,pass.length,pass.take.name.empty()?name:pass.take.name);
+            OpRequest lane;lane.opType="clip.setLane";lane.targetKind="clip";lane.targetId=pass.take.clip;
+            lane.payload={{"id",pass.take.clip},{"lane",pass.take.lane}};
+            append(std::move(lane));
+            writeNotes(take,pass.takeNotes,pass.length,true);
+            if(index!=0) {
+                // Only replace this capture's previous main image. Keeping the
+                // same identity gives each pass an exact previous-image Undo.
+                OpRequest previous;previous.opType="clip.delete";previous.targetKind="clip";previous.targetId=placement.mainClip;
+                previous.payload={{"id",placement.mainClip}};
+                append(std::move(previous));
+            }
+            newClip(placement.mainClip,placement.length,name);
+            writeNotes(main,pass.mainNotes,placement.length,false);
+            result.groupEnds_.push_back(result.requests.size());
+        }
+        result.ok=true;
+    } catch(const std::exception& error) {
+        result={};
+        result.error=error.what();
+    }
+    return result;
+}
+
+notes::PreparedDiff prepareRecordQuantize(Store& store,std::int64_t clip,const notes::Diff& diff) {
+    if(!diff.added.empty() || !diff.removed.empty()) {
+        notes::PreparedDiff refused;refused.error="Record Quantize changes existing notes";
+        return refused;
+    }
+    auto edit=notes::prepareDiff(notes::captureNotes(store,clip),diff);
+    for(auto& request:edit.requests)request.label="Record Quantize";
+    return edit;
 }
 
 CommitResult commit(Store& store,RecordingEdit& edit,Actor actor) {

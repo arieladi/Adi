@@ -77,6 +77,11 @@ inline constexpr std::int64_t kInfiniteTail = INT64_MAX;
 /// this one; it arrives when something needs it.
 enum class Bus : std::uint8_t { Main = 0, Sidechain = 1 };
 
+class ScaleContext;
+struct DeviceScalePosition {
+    const ScaleContext* scale = nullptr;
+    std::int64_t nextChange = std::numeric_limits<std::int64_t>::max();
+};
 /// Transport at the first sample of a hosted device's current segment.
 struct DeviceTransport {
     std::int64_t sample = 0;
@@ -93,6 +98,9 @@ struct DeviceTransport {
     double loopBeginQuarterNotes = 0;
     double loopEndQuarterNotes = 0;
     std::int64_t nextChange = std::numeric_limits<std::int64_t>::max();
+    /// Immutable context borrowed from this graph for the current process call.
+    const ScaleContext* scale = nullptr;
+    std::int64_t nextScaleChange = std::numeric_limits<std::int64_t>::max();
 };
 
 /// Session transport at the first sample of a BLOCK, shared by all segments.
@@ -114,6 +122,8 @@ struct TransportInfo {
     const Transport* deviceClock = nullptr;
     const void* deviceClockContext = nullptr;
     DeviceTransport (*devicePosition)(const void*, std::int64_t) noexcept = nullptr;
+    DeviceScalePosition (*trackScalePosition)(const void*, std::int64_t track,
+                                               std::int64_t sample) noexcept = nullptr;
 };
 
 /// What a node is handed for one SEGMENT of one block.
@@ -218,6 +228,7 @@ public:
     virtual void prepare(double /*sampleRate*/, std::int32_t /*maxFrames*/) {}
     virtual void release() {}
     [[nodiscard]] virtual bool wantsDeviceTransport() const noexcept { return false; }
+    [[nodiscard]] virtual bool wantsDeviceScale() const noexcept { return false; }
     /// Owner-side shape admission for staged graphs. DeviceNode forwards its
     /// instance's shape epoch. Native fixed-shape nodes retain zero.
     [[nodiscard]] virtual std::uint64_t preparationShapeEpoch() const noexcept { return 0; }
@@ -905,6 +916,14 @@ private:
 
 /// A DAG of nodes, scheduled per block.
 class RenderWorkers;
+struct TrackProcessingTime {
+    std::int64_t track = 0;
+    std::uint64_t nanoseconds = 0;
+};
+struct TrackProcessingBlock {
+    std::uint64_t block = 0, frames = 0;
+    std::vector<TrackProcessingTime> tracks;
+};
 class Graph final : public BlockProcessor {
     friend struct GraphPdcTestAccess;
 public:
@@ -916,7 +935,15 @@ public:
     /// Adds a node and returns its id. The graph does not own it; nodes outlive
     /// the graph, because ADR-0042's decision 5 says a device change must not
     /// disturb the project and the project is where nodes come from.
-    NodeId addNode(Node& node);
+    NodeId addNode(Node& node, std::optional<std::int64_t> track = std::nullopt,
+                   std::optional<std::int32_t> fixedLatency = std::nullopt);
+    using ProcessingClock = std::uint64_t (*)() noexcept; ///< monotonic nanoseconds
+    /// Driver-side opt in for one physical callback. All process calls with
+    /// this block ID accumulate until finishTrackTiming. Null uses the native clock.
+    void beginTrackTiming(std::uint64_t block, ProcessingClock = nullptr) noexcept;
+    void finishTrackTiming(std::uint64_t block) noexcept;
+    /// Owner-side snapshot of one complete physical callback.
+    [[nodiscard]] std::optional<TrackProcessingBlock> trackProcessingTime() const;
     // Owner preflight on a newly constructed graph. No node prepare, SDK calls,
     // buffers or publication; reuse the same topology authority as prepare.
     [[nodiscard]] bool validateTopology() { error_.clear(); return topoSort(); }
@@ -1235,6 +1262,14 @@ private:
     void* workerInitializationContext_=nullptr;
     struct Slot {
         Node* node = nullptr;
+        std::optional<std::int32_t> fixedLatency;
+        [[nodiscard]] std::int32_t latency() const noexcept {
+            if (fixedLatency) return *fixedLatency;
+            return node ? node->latencySamples() : 0;
+        }
+        std::optional<std::int64_t> track;
+        std::size_t timingTrack = std::numeric_limits<std::size_t>::max();
+        std::uint64_t processingNs = 0;
         EventSourceBinding eventSource;
         bool explicitEventSource = false;
         std::uint64_t preparationRevision = 0;
@@ -1403,6 +1438,12 @@ private:
 
     Precision precision_ = Precision::Float32;   ///< ADR-0207 d2
     bool delayCompensation_ = true;
+    std::vector<std::int64_t> timingTracks_;
+    std::vector<std::uint64_t> timingTotals_;
+    std::unique_ptr<std::atomic<std::uint64_t>[]> publishedTiming_;
+    std::atomic<std::uint64_t> trackTimingSequence_{0}, publishedBlock_{0}, publishedFrames_{0};
+    std::uint64_t timingBlock_ = 0, timingFrames_ = 0;
+    ProcessingClock timingClock_ = nullptr;
     double sampleRate_ = 0.0;
     std::int32_t maxFrames_ = 0;
     std::int32_t channels_ = 2;

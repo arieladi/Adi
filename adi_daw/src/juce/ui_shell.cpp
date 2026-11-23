@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_shell.hpp"
+#include "adi/note_diff.hpp"
 #include "adi/edit_plan.hpp"
 #include "ui_controls.hpp"
 #include "ui_floating.hpp"
@@ -27,13 +28,6 @@ namespace {
 bool deviceOrTrackEditCommand(int id) noexcept {
     return id == AppCommands::Cut || id == AppCommands::Copy || id == AppCommands::Paste ||
            id == AppCommands::Duplicate || id == AppCommands::RenameTrack || id == AppCommands::DeleteTrack;
-}
-// A letter's key is down whichever case its code names.
-bool keyIsDown(int code) {
-    return juce::KeyPress::isKeyCurrentlyDown(code) ||
-           (code > 0 && code < 128 && std::isalpha(code) &&
-            (juce::KeyPress::isKeyCurrentlyDown(std::toupper(code)) ||
-             juce::KeyPress::isKeyCurrentlyDown(std::tolower(code))));
 }
 // Live's measures, in points at 100 %: the AI tab, the Info View's width and the browser's preview strip.
 constexpr int kTabHeight = 20;
@@ -232,12 +226,10 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
     const auto cmd = juce::ModifierKeys::commandModifier;
     const auto alt = juce::ModifierKeys::altModifier;
     const auto shift = juce::ModifierKeys::shiftModifier;
-    // Live's Activate/Deactivate Track 1…8 (§42.19): F1 to F8.
+    // Live's Activate/Deactivate Track 1…8 (§42.19). The commands stay, for a user's own keys, but
+    // with no default (WIN-01): the function keys do functions (ADR-0209 d9). F4 is the Mix View's;
+    // F3 and F7 stay free, held for the Session View and offline processing.
     if (id >= ActivateTrack1 && id <= ActivateTrack8) {
-        static const std::array<int, 8> keys{juce::KeyPress::F1Key, juce::KeyPress::F2Key, juce::KeyPress::F3Key,
-                                             juce::KeyPress::F4Key, juce::KeyPress::F5Key, juce::KeyPress::F6Key,
-                                             juce::KeyPress::F7Key, juce::KeyPress::F8Key};
-        info.addDefaultKeypress(keys[static_cast<std::size_t>(id - ActivateTrack1)], 0);
         info.setActive(active_ != nullptr);
         return;
     }
@@ -752,9 +744,9 @@ bool AppCommands::key(const juce::KeyPress &key, AdiRootComponent &root) {
     // A latching key runs its command once while it is held (Live 42.25): the root times it. One let
     // go where the window could not see it (the focus elsewhere) goes down anew, and nothing goes back.
     if (const auto id = manager.getKeyMappings()->findCommandForKeyPress(key); AdiRootComponent::latches(id)) {
-        if (root.latch().held() && !keyIsDown(root.latch().key()))
+        if (root.latch().held() && !root.input.down(root.latch().key()))
             root.letGoUnseen();
-        return root.latchKey(id, key.getKeyCode(), true, static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
+        return root.latchKey(id, key.getKeyCode(), true, root.input.ms());
     }
     return manager.getKeyMappings()->keyPressed(key, &root);
 }
@@ -925,7 +917,7 @@ void StatusBar::paint(juce::Graphics &g) {
     const auto rows = root_.arrangement.geometry.rows(root_.reader());
     if (const auto i = rows.find(root_.arrangement.geometry.selection.track); i < rows.size()) {
         g.setFont(look::font(look::fontBody));
-        g.drawText(juce::String::fromUTF8(displayName(rows[i].track->name, i + 1).c_str()),
+        g.drawText(juce::String::fromUTF8(displayName(rows[i].track->name, rows[i].number()).c_str()),
                    track.reduced(6, 0).withWidth(44), juce::Justification::centredLeft);
     }
 }
@@ -1622,13 +1614,13 @@ bool AdiRootComponent::referenceKey(bool down, std::int64_t nowMs) {
     return true;
 }
 bool AdiRootComponent::keyStateChanged(bool isKeyDown) {
-    const auto now = static_cast<std::int64_t>(juce::Time::getMillisecondCounter());
+    const auto now = input.ms();
     // A latching key let go: after a hold, the window goes back (Live 42.25).
     bool handled = false;
-    if (latch_.held() && !keyIsDown(latch_.key()))
+    if (latch_.held() && !input.down(latch_.key()))
         handled = latchKey(0, latch_.key(), false, now);
     // Shift+R let go: a hold of the ★ Reference ends, a tap latches it (ADR-0209 d9).
-    if (reference_.held() && !keyIsDown('r'))
+    if (reference_.held() && !input.down('r'))
         return referenceKey(false, now) || handled;
     return handled || juce::Component::keyStateChanged(isKeyDown);
 }
@@ -1654,6 +1646,9 @@ bool AdiRootComponent::latchKey(int id, int keyCode, bool down, std::int64_t now
         return command(AppCommands::ZoomBack);
     // Only the step the press made, while it is still the latest: an edit since then stays, and so
     // does what the press made under it. Going back pauses no Follow, as an undo from the menu does.
+    // A knob edit still held commits first (DF-W29), so the check sees the step that is latest.
+    if (settleEdits && !settleEdits())
+        return false;
     const auto last = submitter_.nextUndo();
     if (back->step == 0 || !last || last->txnId != back->step)
         return false;
@@ -1743,9 +1738,51 @@ bool AdiRootComponent::submitEdit(const std::string &op, Payload payload, const 
     request.selBefore = session_.advisory();
     return edited(submitter_.submit(std::move(request)));
 }
+namespace {
+// The clip a batch edits when every op of it is one of the scalar note ops on that one clip (MI-01), else none.
+std::optional<std::int64_t> noteBatchClip(const std::vector<OpRequest> &ops) {
+    static const std::set<std::string> noteOps{"note.insert", "note.delete", "note.move",
+                                               "note.resize", "note.setVelocity", "note.setMute"};
+    std::optional<std::int64_t> clip;
+    for (const auto &op : ops) {
+        if (!noteOps.contains(op.opType))
+            return std::nullopt;
+        const auto it = op.payload.find("clip");
+        if (it == op.payload.end() || !it->is_number_integer())
+            return std::nullopt;
+        const auto id = it->get<std::int64_t>();
+        if (clip && *clip != id)
+            return std::nullopt;
+        clip = id;
+    }
+    return clip;
+}
+} // namespace
 bool AdiRootComponent::submitEdits(std::vector<OpRequest> ops) {
     if (ops.empty())
         return true;
+    // A note edit of any size writes the clip's stream once, one op in the history (MI-01): the engine applies
+    // the legacy note ops in turn, each with its overlap rule (`notes::prepareBatch`, N63).
+    if (const auto clip = noteBatchClip(ops)) {
+        // A clip with no notes yet has no stream: the batch creates it under the next free id.
+        auto &db = submitter_.store().db();
+        std::optional<std::int64_t> newStream;
+        {
+            SQLite::Statement held(db, "SELECT 1 FROM event_streams WHERE clip_id = ? AND stream_kind = 'notes'");
+            held.bind(1, *clip);
+            if (!held.executeStep())
+                newStream = db.execAndGet("SELECT COALESCE(MAX(id), 0) + 1 FROM event_streams").getInt64();
+        }
+        auto prepared = notes::prepareBatch(notes::captureNotes(submitter_.store(), *clip, newStream), ops);
+        if (!prepared.ok)
+            return fail(prepared.error.empty() ? "The note edit could not be prepared." : prepared.error);
+        if (prepared.requests.empty())
+            return true;
+        prepared.requests.front().selBefore = session_.advisory();
+        return edited(submitter_.commitPrepared(std::move(prepared), [](Store &store, notes::PreparedDiff &p, Actor actor) {
+            return notes::commitDiff(store, p, actor);
+        }));
+    }
     ops.front().selBefore = session_.advisory();
     return edited(submitter_.submit(std::move(ops)));
 }
@@ -2415,6 +2452,9 @@ std::string AdiRootComponent::undoTitle(bool redo) const {
     const std::string verb = redo ? "Redo" : "Undo";
     if (!canUndo(redo))
         return "Nothing to " + verb;
+    // A held knob edit is the step Undo takes back: its own label once committed, the verb meanwhile.
+    if (!redo && editsHeld && editsHeld())
+        return verb;
     return verb + (step && !step->label.empty() ? " " + step->label : "");
 }
 bool AdiRootComponent::fail(std::string message) {
@@ -2479,26 +2519,49 @@ bool AdiRootComponent::insertMidiClips(const std::vector<std::int64_t> &tracks, 
     publishSelection();
     return true;
 }
-bool AdiRootComponent::insertReturnTrack() {
+bool AdiRootComponent::insertReturnTrack(std::int64_t group) {
     // From the CURRENT cell (ADR-0201). The new return comes after the others, as every return
-    // stands after the tracks (TrackOrder), and takes the next letter, as Live names it.
+    // stands after the tracks (TrackOrder), and takes the next letter, as Live names it. Inside a
+    // group (Insert Return Track in Group, ADR-0247 d2), after what the group holds, and plays into
+    // it; its letter is the group's initial and its place among the group's returns ("DA").
     const auto current = view_.current();
     if (!current)
         return fail("Inserting a return needs an open project.");
     const auto &tracks = current->tracks;
-    std::int64_t returns = 0;
+    const engine::TrackNode *into = nullptr;
     for (const auto &t : tracks)
-        if (t->kind == "return")
+        if (group != 0 && t->id == group && t->kind == "group")
+            into = t.get();
+    if (group != 0 && into == nullptr)
+        return fail("Choose a group to put the return in.");
+    std::int64_t returns = 0, held = 0;
+    for (const auto &t : tracks) {
+        if (t->kind == "return" && t->parent == group)
             ++returns;
+        if (t->parent == group)
+            ++held;
+    }
     RowIds ids(submitter_.store().db()); // DF-E16: never an id a remark still holds
     const auto id = ids.next("tracks");
+    std::string letter(1, static_cast<char>('A' + returns % 26));
+    if (into != nullptr) {
+        char initial = 'G';
+        for (const char c : into->name)
+            if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) {
+                initial = static_cast<char>(c >= 'a' ? c - 'a' + 'A' : c);
+                break;
+            }
+        letter.insert(letter.begin(), initial);
+    }
     OpRequest request;
     request.opType = "track.create";
     request.payload = {{"id", id},
                        {"kind", "return"},
-                       {"name", std::string(1, static_cast<char>('A' + returns % 26)) + " Return"},
-                       {"index", static_cast<std::int64_t>(tracks.size())}};
-    request.label = "Insert Return Track";
+                       {"name", letter + " Return"},
+                       {"index", static_cast<std::int64_t>(into != nullptr ? held : static_cast<std::int64_t>(tracks.size()))}};
+    if (into != nullptr)
+        request.payload["parent"] = group;
+    request.label = into != nullptr ? "Insert Return Track in Group" : "Insert Return Track";
     request.selBefore = session_.advisory();
     const auto result = submitter_.submit(std::move(request));
     if (!result)
@@ -2815,10 +2878,11 @@ void AdiRootComponent::selectClip(std::int64_t clip) {
                 }
 }
 TrackRecordState AdiRootComponent::recordState(std::int64_t track) const {
-    return ::adi::ui::recordState(recordStates_, track);
+    const auto *t = reader().findTrack(track);
+    return t != nullptr ? recordStateOf(*t) : TrackRecordState{};
 }
 bool AdiRootComponent::armTrack(std::int64_t id, bool add) {
-    // From the CURRENT cell (ADR-0201) and the rows the application hands over; one batch.
+    // From the CURRENT cell (ADR-0201), its arm and monitoring included (N64); one batch.
     const auto current = view_.current();
     if (!current)
         return fail("Arming needs an open project.");
@@ -3064,6 +3128,9 @@ bool AdiRootComponent::setCueOutput(int firstChannel) {
     return submitCue(current ? cueOutputEdit(*current, firstChannel) : TrackEdit{}, "Cue Out needs an open project.");
 }
 bool AdiRootComponent::restoreStep(std::int64_t txnId) {
+    endTapRun();
+    if (settleEdits && !settleEdits())
+        return false;
     const auto result = submitter_.restore(txnId);
     if (!result.ok)
         return fail(result.error.empty() ? "That step could not be restored." : result.error);
@@ -3378,6 +3445,11 @@ bool AdiRootComponent::setMeterAtPlay(const std::string &text) {
         return submitStartEdit(std::move(edit.ops), setMeterAt(current->meters, at, text, true).ops);
     return submitEdits(std::move(edit.ops));
 }
+void AdiRootComponent::endTapRun() {
+    tapBpm_ = 0;
+    if (endTapTempoGesture)
+        (void)endTapTempoGesture();
+}
 bool AdiRootComponent::tapTempo(std::int64_t nowMs) {
     const auto bpm = tap_.tap(nowMs);
     if (!bpm) {
@@ -3386,9 +3458,28 @@ bool AdiRootComponent::tapTempo(std::int64_t nowMs) {
         return true;
     }
     const double value = std::round(std::clamp(*bpm, kMinTempo, kMaxTempo) * 100) / 100;
-    if (std::abs(value - tapBpm_) < .005)
+    // A tap that gives the same tempo still keeps the run going, as one gesture (HI-01).
+    if (std::abs(value - tapBpm_) < .005 && !tapTempoGesture)
         return true;
-    // The run's step gives way to this tap's, while it is still the latest: one step for the run.
+    if (tapTempoGesture) {
+        // The event in force at the playhead, as Change Tempo picks it; the gesture keeps it for the run.
+        const auto current = view_.current();
+        if (!current || !current->tempo)
+            return fail("The tempo needs an open project.");
+        std::int64_t eventTick = 0;
+        const auto at = timelineTick();
+        for (const auto &event : current->tempo->events)
+            if (event.posTicks <= at)
+                eventTick = std::max(eventTick, event.posTicks);
+        if (!tapTempoGesture(value, eventTick, nowMs))
+            return false;
+        tapBpm_ = value;
+        return true;
+    }
+    // The run's step gives way to this tap's, while it is still the latest: one step for the run. A
+    // knob edit still held commits first (DF-W29), so the check sees the step that is latest.
+    if (settleEdits)
+        settleEdits();
     if (const auto last = submitter_.nextUndo(); tapStep_ != 0 && last && last->txnId == tapStep_) {
         const bool paused = arrangement.followPaused;
         command(AppCommands::Undo);
@@ -3559,6 +3650,7 @@ bool AdiRootComponent::command(int id) {
     if (id == AppCommands::Undo || id == AppCommands::Redo) {
         mixViewPanel.stack.cancelInteractions();
         devices.cancelFunctionInteractions();
+        endTapRun();
     }
     if (mixViewPanel.stack.hasDeviceContext()) {
         if (id == AppCommands::Cut || id == AppCommands::Copy || id == AppCommands::Paste ||
@@ -3670,6 +3762,10 @@ bool AdiRootComponent::command(int id) {
         break;
     case AppCommands::Undo:
     case AppCommands::Redo: {
+        // A knob's last edit, still held for its quiet interval, is the step the user sees last: it
+        // commits first, so Undo takes it back and nothing commits on top of a Redo (DF-W29).
+        if (settleEdits && !settleEdits())
+            return false;
         const auto result = id == AppCommands::Undo ? submitter_.undo() : submitter_.redo();
         if (!result.ok)
             return fail(result.error);
@@ -3724,11 +3820,15 @@ bool AdiRootComponent::command(int id) {
         arrangement.firstShownIfHidden();
         break;
     case AppCommands::PlayReference:
-        // The key goes down; keyStateChanged lets it go. From a menu, a tap.
-        referenceKey(true, static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
-        if (!juce::KeyPress::isKeyCurrentlyDown('r') && !juce::KeyPress::isKeyCurrentlyDown('R'))
-            referenceKey(false, static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
+    {
+        // The key goes down; keyStateChanged lets it go. From a menu, a tap: up at the moment it went
+        // down, however long the machine took between the two (DF-W18).
+        const auto now = input.ms();
+        referenceKey(true, now);
+        if (!input.down('r'))
+            referenceKey(false, now);
         return true;
+    }
     case AppCommands::ToggleMixView:
         return setMixView(!state_.mixView, state_.mixViewDetached);
     case AppCommands::ToggleClipView:
