@@ -4,6 +4,19 @@ Trial seat (22 November 2026, `collab/win.md`): Linux environment (Debian 12, GC
 
 ---
 
+## 2026-11-23 — Rerun item 11 (ASAN/LSan/UBSan) on new `main` (`7e3e627d`, post-#711/#713/#715/#718)
+
+Baseline: `main` (`abbc32ab`, 22 Nov). GCC 12.2.0 (`-O1 -g1 -fsanitize=address,undefined -fno-omit-frame-pointer`, `-DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF -DADI_WERROR=OFF`). Clang 14.0.6 still lacks `compiler-rt` (`libclang_rt.asan-x86_64.a`) on this VM.
+
+### What is new vs `abbc32ab`
+
+- **Nothing new** — identical across all **275 / 275** suites:
+  - Strict run (`detect_leaks=1:halt_on_error=1`): **239 / 275 PASS**, **35 FAIL** (exact same 1 `adi_mix_gate_tests` heap-UAF, 11 `alloc-dealloc-mismatch` harnesses, 23 Pd `canvas_setargs` LSan leaks), **1 BUILD_FAIL** (`adi_ui_seams_tests`).
+  - Re-check of the 34 non-UAF failing suites with `detect_leaks=0:alloc_dealloc_mismatch=0`: **34 / 34 PASS**, **0 UBSan reports** across all 274 runnable suites.
+  - All newly landed `#711`/`#713`/`#715`/`#718` code and tests (including DF-E53, DF-E56, MI-08, N60, N63, N64, N66, N67, DF-W37, DF-W38, MX-04, MX-08) passed ASan + LSan + UBSan cleanly.
+
+---
+
 ## 2026-11-23 — Rerun item 10 (WERROR-SWEEP) on new `main` (`7e3e627d`, post-#711/#713/#715/#718)
 
 Baseline: `main` (`abbc32ab`, 22 Nov). Full-tree sweep (`-DADI_WERROR=ON -DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF -DADI_ACCEPTANCE=ON -DADI_BUILD_BENCHMARKS=ON`, 739 `.o` objects; DF-M62 `FloatRealTransform.h:61` still unfixed on `7e3e627d`, patched transiently and reverted).
