@@ -2,6 +2,7 @@
 #include "adi/dsp/adi_shaper.hpp"
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <numbers>
 #if defined(_M_X64) || defined(__SSE2__)
 #include <emmintrin.h>
@@ -249,12 +250,21 @@ void AdiShaper::tempo(double bpm) noexcept {
 void AdiShaper::sync(double quarterNotes, bool playing) noexcept {
     if (!std::isfinite(quarterNotes) || std::abs(quarterNotes) > 0x1p52) return;
     const bool changed = playing != playing_;
+    // The host and the running clock can round the same next beat differently.
+    // Reanchoring a continuous Crush clock can move the transition into or out
+    // of full-rate sampling by one frame and change the held samples that follow.
+    const double beatRoundoff = 4.0 * std::numeric_limits<double>::epsilon()
+                              * std::max(1.0, std::abs(quarterNotes));
+    const double quarterSampleInBeats = bpm_ / (240.0 * sampleRate_);
+    const bool continuous = !changed && std::abs(quarterNotes - quarterNotes_)
+                                      <= std::min(beatRoundoff, quarterSampleInBeats);
     playing_ = playing;
     quarterNotes_ = quarterNotes;
     for (auto& stage : stages_) {
         if (!stage.enabled) continue;
+        const bool retainHoldClock = continuous && &stage == &stages_[static_cast<std::size_t>(Stage::Crush)];
         for (auto& band : stage.bands) {
-            if (band.hertz) continue;
+            if (band.hertz || (retainHoldClock && !band.secondary.constant)) continue;
             band.phase = cyclePhase(quarterNotes / band.beats);
             if (changed) updateStep(band);
         }
