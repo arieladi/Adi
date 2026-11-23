@@ -4603,10 +4603,16 @@ template <class Submitter> bool undoStepIs(Submitter &submitter, const char *lab
     const auto step = submitter.nextUndo();
     if (!step || step->label != label)
         return false;
-    SQLite::Statement last(submitter.store().db(), "SELECT op_type FROM ops WHERE seq = ?");
+    SQLite::Statement last(submitter.store().db(), "SELECT op_type, payload FROM ops WHERE seq = ?");
     last.bind(1, step->lastSeq);
-    const bool diff = last.executeStep() && last.getColumn(0).getString() == "note.applyDiff";
-    return step->opCount == (diff && ops > 0 ? 1 : ops);
+    if (!last.executeStep() || last.getColumn(0).getString() != "note.applyDiff" || ops <= 0)
+        return step->opCount == ops;
+    // The diff applies the edit's legacy note ops in turn: as many steps as the edit has ops.
+    const auto *bytes = static_cast<const std::uint8_t *>(last.getColumn(1).getBlob());
+    const auto payload = Payload::from_cbor(std::vector<std::uint8_t>(bytes, bytes + last.getColumn(1).getBytes()));
+    const auto sequence = payload.find("_sequence");
+    return step->opCount == 1 && sequence != payload.end() && sequence->contains("steps") &&
+           (*sequence)["steps"].size() == static_cast<std::size_t>(ops);
 }
 // An undo step's op count, read as `undoStepIs` reads it: a note.applyDiff step is one op for the edit (MI-01).
 template <class Submitter> bool undoOpsAre(Submitter &submitter, int ops) {
@@ -4710,6 +4716,13 @@ void clipViewNotes(AppCommands &commands, const std::filesystem::path &dir) {
               note(0).key == 64 && note(0).velocity == 100 && ed.selected() == std::vector<std::uint64_t>{note(0).id} &&
               undoIs("Add Note", 1),
           "a double-click adds E3 on the second beat, a beat long, velocity 100, selected, one undo step");
+    {
+        // MI-01: the note went in as one note.applyDiff, the clip's notes stream made with it.
+        SQLite::Statement last(submitter.store().db(), "SELECT op_type FROM ops WHERE seq = ?");
+        last.bind(1, submitter.nextUndo()->lastSeq);
+        check(last.executeStep() && last.getColumn(0).getString() == "note.applyDiff" && submitter.nextUndo()->opCount == 1,
+              "the note edit is one note.applyDiff, its stream made with it");
+    }
 
     // Dragged by its body: a grid step later and two keys up, previewed while held, one step on release.
     auto from = centre(0);
