@@ -166,7 +166,15 @@ class Driver {
     }
     // Capture from the callback that actually starts playback. A cold Locate
     // followed by Play can keep the device clock running while the song waits.
+    // While Play is held the song stays at 0 and plays nothing; a track that
+    // monitors its input while stopped (In, or armed on Auto, N67) is heard
+    // during the hold as in any stopped callback, so silence is required only
+    // when no track does.
     int firstPlayingBlock(Stereo &heard) {
+        bool inputHeardWhileStopped = false;
+        for (const auto &[track, state] : doc_->recordStates())
+            inputHeardWhileStopped = inputHeardWhileStopped || state.monitor == ui::Monitor::In ||
+                                     (state.armed && state.monitor == ui::Monitor::Auto);
         for (int held = 0; held < 32; ++held) {
             Stereo audio;
             block(&audio);
@@ -174,11 +182,12 @@ class Driver {
                 heard = std::move(audio);
                 return held;
             }
-            if (doc_->mailbox().position() != 0 || std::any_of(audio.c.begin(), audio.c.end(),
-                    [](const auto &channel) {
-                        return std::any_of(channel.begin(), channel.end(), [](float value) { return value != 0; });
-                    }))
-                throw std::runtime_error("pending Play advanced the playhead or leaked audio");
+            if (doc_->mailbox().position() != 0)
+                throw std::runtime_error("pending Play advanced the playhead");
+            if (!inputHeardWhileStopped && std::any_of(audio.c.begin(), audio.c.end(), [](const auto &channel) {
+                    return std::any_of(channel.begin(), channel.end(), [](float value) { return value != 0; });
+                }))
+                throw std::runtime_error("pending Play leaked audio with no input monitored");
         }
         throw std::runtime_error("transport did not start after 32 primed callbacks");
     }
