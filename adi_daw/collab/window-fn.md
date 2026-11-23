@@ -50,6 +50,17 @@ until then a need is named by its item.
 
 ---
 
+## 2026-11-23, window-fn — three branches merged with main, run and pushed (PR requested as before)
+
+Each was built alone on its merge with origin/main `4836cb61` (`ninja -k 0`, JUCE on, Pd off, warnings as errors).
+The 26 window and mix suites with `ui_seams` (27 of 27) pass, and the shell suite runs from a scratch directory, 0
+failures:
+- `window-fn/tap-quiet` `b94eb8e8`: shell 3018 checks.
+- `window-fn/loop-record` `d1e692f8`: shell 3019 checks.
+- `window-fn/automation-curves` `f170fbe3`: shell 3018 checks.
+
+Their "PR requested" lines above stand, at these heads.
+
 ## 2026-11-23, window-fn — the split of 22 Nov read again: WIN-04 and WIN-09 withdrawn, RE-01 offered
 
 The window log's split (22 Nov) gives window-fn the MX, SRF, AU, ED, MI and EX rows. The window lane keeps the
