@@ -4,6 +4,26 @@ Trial seat (22 November 2026, `collab/win.md`): Linux environment (Debian 12, GC
 
 ---
 
+## 2026-11-22 — Queue item 13 (GLIBCXX-DEBUG): all 275 headless suites with `-D_GLIBCXX_DEBUG`
+
+Head: `main` (`abbc32ab`), GCC 12.2.0 (`-O1 -g0 -D_GLIBCXX_DEBUG`, `-DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF -DADI_WERROR=OFF`).
+
+### Overall counts (275 CTest suites)
+
+- **272 / 275 PASS**
+- **1 `_GLIBCXX_DEBUG` abort** (`adi_mix_opto_gain_tests`)
+- **1 non-abort test-harness assertion failure** (`adi_link_playback_tests`, expected interaction between `RealtimeAudit` mutex interception and libstdc++ debug safe-iterator mutexes)
+- **1 pre-existing build-blocked suite** (`adi_ui_seams_tests`, GCC 12 `-fsanitize-trap=signed-integer-overflow` at `CMakeLists.txt:2083-2084`)
+
+### Findings
+
+| Suite | Type | Location | Details & smallest repro | Owner |
+|---|---|---|---|---|
+| `adi_mix_opto_gain_tests` | **`_GLIBCXX_DEBUG` abort** (`SIGABRT` in `std::span` ctor `/usr/include/c++/12/span:163`: `function requires a valid iterator range [first, first + count)`) | `adi_daw/tests/test_mix_opto_gain.cpp:170,181` (`refusalAndAlias`) | Line 170 fabricates `overflow = reinterpret_cast<float*>(UINTPTR_MAX - 3)`, and line 181 constructs `std::span<const float>(overflow, 1)`. Computing `overflow + 1` wraps past the end of the address space (`0xfffffffffffffffc + 4 == 0`), violating `std::span`'s valid-range precondition (and C++ pointer-arithmetic UB). Repro: build `adi_mix_opto_gain_tests` with GCC 12 `-D_GLIBCXX_DEBUG` and run `./adi_mix_opto_gain_tests`. | `mixview` |
+| `adi_link_playback_tests` | Harness note (0 `_GLIBCXX_DEBUG` aborts; 16/139 `audit.clean()` checks fail) | `adi_daw/tests/test_link_playback.cpp:318-319` | `RealtimeAudit` counts `pthread_mutex_lock` calls inside audio callbacks; under `-D_GLIBCXX_DEBUG`, libstdc++'s `__gnu_debug::_Safe_sequence_base` locks its internal safe-iterator mutex on every `std::__debug` container iteration. Not a `_GLIBCXX_DEBUG` invariant violation. | `engine` (informational) |
+
+---
+
 ## 2026-11-22 — Queue item 12 (TSAN): 39 threaded suites under ThreadSanitizer
 
 Head: `main` (`abbc32ab`).
