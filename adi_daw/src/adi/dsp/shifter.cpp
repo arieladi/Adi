@@ -35,6 +35,8 @@ namespace adi::dsp {
 namespace {
 constexpr double pi=std::numbers::pi;
 double wrap(double x){return x-std::floor(x);}
+/// Recursive states settle on exact zero instead of decaying into subnormals.
+double clean(double x) noexcept {return std::abs(x)<1e-30?0:x;}
 // Pitch mode, after Live 12.4 as measured (the director's research, DV-06):
 // the device reports no latency, its Window runs 10..350 ms, and at unison its
 // output is a clean copy of the input exactly half the Window late (240, 1920
@@ -108,6 +110,7 @@ struct Shifter::State {
     std::array<double,Count> p{};
     std::array<Lane,2> lanes;
     double rate=48000,bpm=120,noteTarget=60,noteCurrent=60,bendValue=0;
+    std::uint64_t clock=0;  // samples since prepare: the Hilbert states settle on every 64th
     bool prepared=false;
     State(){for(int i=0;i<Count;++i)p[static_cast<std::size_t>(i)]=ranges[i].initial;}
     /// The Window in samples: Live's milliseconds at this rate, not rounded.
@@ -123,7 +126,7 @@ void Shifter::prepare(double rate){
         l.delay.assign(static_cast<std::size_t>(s.rate*30)+2,0);l.dry.assign(8193,0);
         l.write=l.dryWrite=0;l.oscillator=l.lfo=l.envelope=l.tone=l.randomFrom=l.randomTo=0;
         l.random=0x12345678u+static_cast<std::uint32_t>(c);
-    }s.noteCurrent=s.noteTarget;s.prepared=true;
+    }s.noteCurrent=s.noteTarget;s.clock=0;s.prepared=true;
 }
 void Shifter::set(Param p,double value) noexcept {
     if(p<0 || p>=Count || !std::isfinite(value))return;
@@ -144,6 +147,7 @@ void Shifter::process(const float* inL,const float* inR,float* outL,float* outR,
     for(std::size_t frame=0;frame<frames;++frame){
         const double glide=p[Glide]<=0?1:1-std::exp(-1000/(p[Glide]*s.rate));
         s.noteCurrent+=(s.noteTarget-s.noteCurrent)*glide;
+        if(std::abs(s.noteTarget-s.noteCurrent)<1e-12){s.noteCurrent=s.noteTarget;}
         double leftRandom=0;
         const std::array<float,2> inputs{inL[frame],inR[frame]};
         for(std::size_t channel=0;channel<2;++channel){auto& l=s.lanes[channel];
@@ -171,6 +175,7 @@ void Shifter::process(const float* inL,const float* inR,float* outL,float* outR,
             const double target=std::abs(input);
             const double time=target>l.envelope?p[Attack]:p[Release];
             l.envelope+=(target-l.envelope)*(1-std::exp(-1000/(s.rate*time)));
+            if(l.envelope<1e-30){l.envelope=0;}
             const double motion=p[LfoAmount]*modulation+(p[EnvOn]>=0.5?p[EnvAmount]*l.envelope:0);
             const double spread=p[Spread]*(channel==1 && p[Wide]>=0.5?-1:1);
             const double tunedNote=s.noteCurrent+s.bendValue*p[BendRange];
@@ -180,7 +185,7 @@ void Shifter::process(const float* inL,const float* inR,float* outL,float* outR,
             const double frac=delaySamples-static_cast<double>(offset);
             const auto at=(l.write+l.delay.size()-offset)%l.delay.size();
             const double delayed=l.delay[at]*(1-frac)+l.delay[(at+l.delay.size()-1)%l.delay.size()]*frac;
-            l.tone+=(delayed-l.tone)*(1-std::exp(-2*pi*std::min(p[Tone],s.rate*0.45)/s.rate));
+            l.tone=clean(l.tone+(delayed-l.tone)*(1-std::exp(-2*pi*std::min(p[Tone],s.rate*0.45)/s.rate)));
             const double feed=input+(p[Delay]>=0.5?l.tone*p[Feedback]/100:0);
             double wet=0;
             if(mode==0)wet=l.pitch.sample(static_cast<float>(feed),std::exp2(std::clamp(shift,-48.,48.)/12),s.window(),1/(Pitch::kRestSeconds*s.rate));
@@ -189,10 +194,23 @@ void Shifter::process(const float* inL,const float* inR,float* outL,float* outR,
                 if(mode==1){const auto [re,im]=l.hilbert.stepPair(static_cast<float>(feed));wet=re*std::cos(2*pi*l.oscillator)+im*std::sin(2*pi*l.oscillator);}
                 else {wet=feed*std::sin(2*pi*l.oscillator);if(p[DriveOn]>=0.5)wet=std::tanh(wet*std::pow(10.,p[Drive]/20));}
             }
-            l.delay[l.write]=static_cast<float>(wet);l.write=(l.write+1)%l.delay.size();
+            l.delay[l.write]=static_cast<float>(clean(wet));l.write=(l.write+1)%l.delay.size();
             if(p[Delay]>=0.5)wet=delayed;
             const float output=static_cast<float>(dry+(wet-dry)*p[Mix]/100);
             if(channel==0)outL[frame]=output;else outR[frame]=output;
+        }
+        // The vendored Hilbert all-pass states settle on every 64th sample
+        // since prepare: a grid of absolute positions, so where the host cuts
+        // its blocks never changes a sample (a found defect at block ends).
+        if((++s.clock&63u)==0){
+            for(auto& l:s.lanes){
+                for(auto& row:l.hilbert.allpass){
+                    for(auto& bq:row){
+                        if(std::abs(bq.reg0)<1e-30f){bq.reg0=0.f;}
+                        if(std::abs(bq.reg1)<1e-30f){bq.reg1=0.f;}
+                    }
+                }
+            }
         }
     }
 }
