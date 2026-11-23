@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/audio/wav_file.hpp"
 #include "adi/automation_lanes.hpp"
+#include "adi/history.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/settings/store.hpp"
 #include "adi/ui/project_document.hpp"
+#include "adi/ui/tap_tempo.hpp"
 #include "knobs_device.hpp"
 #include "temp_directory.hpp"
 #include "juce/device_core.hpp"
@@ -825,6 +827,52 @@ void arrangementRecord(const std::filesystem::path &dir) {
     check(settled && settled->ok && !doc->recording() && !doc->landingTake(),
           "a take whose device stopped is settled into the project, not lost");
 }
+// HI-01: a run of Tap Tempo taps is one quiet gesture: heard at each tap, one undo step once the taps stop, and
+// no undo-and-recommit, so the history has no forked branch.
+void tapTempoQuiet(const std::filesystem::path &dir) {
+    std::string error;
+    auto doc = ui::ProjectDocument::open(dir / "tap.adi", true, {}, error);
+    check(doc != nullptr, "a project to tap in");
+    if (!doc)
+        return;
+    const auto ops = [&] { return doc->store().db().execAndGet("SELECT count(*) FROM ops").getInt(); };
+    const auto heardBpm = [&] {
+        const auto current = doc->view().current();
+        return current && current->tempo && !current->tempo->events.empty() ? current->tempo->events.front().bpm : 0.0;
+    };
+    const auto before = ops();
+    std::uint64_t now = 10000;
+    for (const double bpm : {100.0, 101.0, 102.0, 103.0}) {
+        check(doc->tapTempo(bpm, 0, now) && doc->tapping(), "a tap");
+        doc->pollTapTempo(now + 100);
+        now += 500;
+    }
+    check(ops() == before && std::abs(heardBpm() - 103) < 1e-9,
+          "four taps: the last tempo heard, nothing written while the taps go on");
+    doc->pollTapTempo(now - 500 + 1999);
+    check(doc->tapping(), "still the run, short of Tap Tempo's pause");
+    doc->pollTapTempo(now - 500 + ui::TapTempo::kPauseMs);
+    const auto timeline = History(doc->store()).readTimeline();
+    check(!doc->tapping() && ops() > before && doc->ops().nextUndo() && doc->ops().nextUndo()->label == "Tap Tempo" &&
+              std::abs(heardBpm() - 103) < 1e-9 && timeline.error.empty() && timeline.branches.size() <= 1 &&
+              timeline.steps.size() == 1,
+          "the pause ends the run: one undo step \"Tap Tempo\" at 103, and no forked branch in the timeline");
+    check(doc->ops().undo().ok && doc->synchronise() && std::abs(heardBpm() - 120) < 1e-9 && !doc->ops().canUndo(),
+          "one Undo takes the run back to 120");
+    // A tap after the pause, before the tick saw it, ends that run and begins another.
+    now += 10000;
+    check(doc->tapTempo(90, 0, now) && doc->tapTempo(91, 0, now + 3000) && doc->tapping(),
+          "a late tap begins a new run");
+    const auto opsBeforeEnd = ops();
+    check(doc->endTapTempo() && !doc->tapping() && std::abs(heardBpm() - 91) < 1e-9 && ops() > opsBeforeEnd &&
+              doc->ops().nextUndo() && doc->ops().nextUndo()->label == "Tap Tempo",
+          "the late tap's run ends at once with endTapTempo, as its own step at 91");
+    check(doc->ops().undo().ok && doc->synchronise() && std::abs(heardBpm() - 90) < 1e-9 && doc->ops().canUndo() &&
+              doc->ops().nextUndo()->label == "Tap Tempo",
+          "two runs, two steps: one Undo goes back to the first run's 90, a step that is still there");
+    check(History(doc->store()).readTimeline().error.empty() && doc->pollTapTempo(now + 100000),
+          "and with no run open, a poll has nothing to end");
+}
 // MX-23 and SRF-02: a fader dragged is heard while it moves, writes nothing until the mouse lets go, then
 // lands as one undo step; Esc puts it back (Live 12 manual 18.1).
 void mixerDragHeard(const std::filesystem::path &dir) {
@@ -1111,6 +1159,8 @@ int main(int argc, char **argv) {
         discardRefusalSaid(refusedDir.path());
         test::TempDirectory dragDir("ui_document", "drag");
         mixerDragHeard(dragDir.path());
+        test::TempDirectory tapDir("ui_document", "tap");
+        tapTempoQuiet(tapDir.path());
     }
     test::TempDirectory temp("ui_document", "lifetime");
     std::string error;
