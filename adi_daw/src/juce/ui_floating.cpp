@@ -182,7 +182,12 @@ FloatingHost::FloatingHost(AdiRootComponent &r, AppCommands &c, ViewStateStore &
                            engine::ProjectView &p, std::function<bool(std::int64_t)> alive,
                            bool native)
     : root_(r), commands_(c), states_(s), project_(p), alive_(std::move(alive)), native_(native) {}
-FloatingHost::~FloatingHost() { closeAll(true); }
+FloatingHost::~FloatingHost() {
+    // The main window's activation and minimise callbacks never reach a host that is gone (WIN-03).
+    if (root_.pluginHost == this)
+        root_.pluginHost = nullptr;
+    closeAll(true);
+}
 bool FloatingHost::install(std::unique_ptr<Entry> e) {
     if (entries_.contains(e->key) || !e->component || !alive_(e->device))
         return false;
@@ -300,9 +305,17 @@ void FloatingHost::ownerMinimised(bool minimised) {
         }
 }
 void FloatingHost::ownerToFront() {
+#if JUCE_LINUX || JUCE_BSD
+    // JUCE's X11 toFront activates the window whatever it is asked (_NET_ACTIVE_WINDOW): it would take the
+    // keys from the main window and bring back one the user minimised. On X11 the owned windows wait for
+    // the transient-for hint, with the other platforms' owner windows.
+    return;
+#else
+    // A raise that takes no focus; a window the user minimised stays down (Windows' toFront restores one).
     for (auto &[key, e] : entries_)
-        if (e->ownedKind && e->window && e->window->isVisible())
+        if (e->ownedKind && e->window && !e->closing && e->window->isVisible() && !e->window->isMinimised())
             e->window->toFront(false);
+#endif
 }
 bool FloatingHost::owned(const std::string &key) const {
     const auto it = entries_.find(key);
