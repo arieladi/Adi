@@ -104,13 +104,18 @@ void StripNode::setDelay(std::int64_t projectSamples, std::int64_t projectRate) 
 }
 
 std::int32_t StripNode::latencySamples() const noexcept {
+    return delayLatency(delayProject_.load(std::memory_order_relaxed), delayRate_.load(std::memory_order_relaxed),
+                        sampleRate_.load(std::memory_order_relaxed));
+}
+
+std::int32_t StripNode::delayLatency(std::int64_t projectSamples, std::int64_t projectRate,
+                                     double renderRate) noexcept {
     // Samples at the project's rate, played at the session's: a project at
     // 48 kHz opened at 96 kHz delays the same TIME, twice the samples.
-    const double seconds = static_cast<double>(delayProject_.load(std::memory_order_relaxed)) /
-                           static_cast<double>(delayRate_.load(std::memory_order_relaxed));
-    const double rate = sampleRate_.load(std::memory_order_relaxed);
-    const double limit = kMaxDelaySeconds * rate;
-    const double samples = std::clamp(std::round(seconds * rate), -limit, limit);
+    const double seconds = static_cast<double>(projectSamples) /
+                           static_cast<double>(projectRate > 0 ? projectRate : 48000);
+    const double limit = kMaxDelaySeconds * renderRate;
+    const double samples = std::clamp(std::round(seconds * renderRate), -limit, limit);
     return static_cast<std::int32_t>(-samples);
 }
 
@@ -612,6 +617,16 @@ void StripNode::applyPublishedControls(const StripControlImage& value) noexcept 
 void MixerControlBatch::captureLanes(StripLaneBindings& captured) const {
     for(const auto& value:strips_)captured.add(*value.node,value.image.config.lanes,value.image.config.keepAlive);
     for(const auto& value:sends_)value.node->captureLanes(captured,value.image);
+}
+void MixerControlBatch::captureLatencies(std::map<const Node*, std::int32_t>& captured, double renderRate) const {
+    for (const auto& entry : strips_) {
+        const auto& config = entry.image.config;
+        captured.emplace(entry.node, StripNode::delayLatency(config.delaySamples, config.delayRate, renderRate));
+    }
+    for (const auto& entry : sends_) {
+        const auto& config = entry.image.source.config;
+        captured.emplace(entry.node, StripNode::delayLatency(config.delaySamples, config.delayRate, renderRate));
+    }
 }
 void MixerControlBatch::apply() const noexcept {
     for(const auto& value:strips_)value.node->applyPublishedControls(value.image);

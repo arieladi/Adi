@@ -90,6 +90,7 @@ public:
         std::function<void(engine::GraphPlan &)> transformPlan{};
         std::shared_ptr<const engine::GraphTransportState> transportState{};
         engine::EventSourceFn eventSourceFor;
+        std::function<std::optional<std::int32_t>(const engine::Node&)> fixedLatencyFor;
         engine::NodePreparePolicy nodePreparation = engine::NodePreparePolicy::PrepareAll;
     };
 
@@ -100,6 +101,8 @@ public:
     /// shape report demanded one, collect. The coalescer re-reads the host's
     /// current graph on every poll, so nothing has to re-attach after a swap.
     void attachHost(engine::GraphHost& host, RebuildSpec spec);
+    /// Owner-only view of the attached graph's source and routing bindings.
+    [[nodiscard]] const RebuildSpec& rebuildSpec() const noexcept { return spec_; }
 
     /// Realise and publish a new graph from the current model, now. Returns
     /// false with `lastRebuildError()` set.
