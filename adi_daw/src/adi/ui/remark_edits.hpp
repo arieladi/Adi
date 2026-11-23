@@ -8,6 +8,7 @@
 #include "adi/ui/track_edits.hpp"
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -41,7 +42,7 @@ inline const engine::RemarkNode *find(const engine::Snapshot &snapshot, std::int
     return nullptr;
 }
 } // namespace remark_edits_detail
-// A remark of the user's on `kind` #`target` (`param` for a parameter's), written at `nowUtc`, with the next id
+// A remark of the user's on `kind` #`target` (`param` for a parameter's), written at `nowUtc` (microseconds, UTC), with the next id
 // past every remark the snapshot holds. Refused, with the reason, for empty text or a kind no remark anchors to.
 inline TrackEdit addRemark(const engine::Snapshot &snapshot, std::string_view kind, std::int64_t target,
                            std::optional<std::string> param, std::string_view text, std::int64_t nowUtc) {
@@ -57,8 +58,13 @@ inline TrackEdit addRemark(const engine::Snapshot &snapshot, std::string_view ki
     }
     std::int64_t id = 1;
     for (const auto &r : snapshot.remarks)
-        if (r)
+        if (r) {
+            if (r->id == std::numeric_limits<std::int64_t>::max()) {
+                edit.refusal = "No remark id is left.";
+                return edit;
+            }
             id = std::max(id, r->id + 1);
+        }
     Payload payload{{"id", id},         {"kind", std::string(kind)}, {"target", target},
                     {"author", "user"}, {"text", body},              {"created", nowUtc}};
     if (param)

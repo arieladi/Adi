@@ -4364,7 +4364,7 @@ bool AdiRootComponent::addRemark(const std::string &kind, std::int64_t target, s
     const auto current = view_.current();
     if (!current)
         return fail("Remarks need an open project.");
-    auto edit = ::adi::ui::addRemark(*current, kind, target, std::move(param), text, juce::Time::currentTimeMillis() / 1000);
+    auto edit = ::adi::ui::addRemark(*current, kind, target, std::move(param), text, juce::Time::currentTimeMillis() * 1000);
     if (!edit.refusal.empty())
         return fail(std::move(edit.refusal));
     return submitEdits(std::move(edit.ops));
@@ -4446,7 +4446,8 @@ void AdiRootComponent::addRemarkItems(juce::PopupMenu &menu, const std::string &
             if (safe)
                 safe->removeRemark(id);
         });
-        auto title = juce::String::fromUTF8(text.c_str());
+        // One line in the menu: a remark's line breaks read as spaces there.
+        auto title = juce::String::fromUTF8(text.c_str()).replaceCharacters("\r\n", "  ");
         if (title.length() > 40)
             title = title.substring(0, 39) + juce::String(juce::CharPointer_UTF8("\xe2\x80\xa6"));
         menu.addSubMenu((r->resolved ? "Resolved: " : "Remark: ") + title, one);
