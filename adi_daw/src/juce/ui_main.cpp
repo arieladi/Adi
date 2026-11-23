@@ -510,7 +510,9 @@ class AdiApplication final : public juce::JUCEApplication,
         return key;
     }
     // A project opened while a discovery runs waits for its adoption, so the plug-ins it finds load
-    // (`PluginCatalogueService::settleThen`); the Status Bar says why the open waits.
+    // (`PluginCatalogueService::settleThen`); the Status Bar says why the open waits. The open then runs with no
+    // job beside it, which is when the loader probes a plug-in the catalogue lacks at the path the project saved
+    // (N68): a plug-in installed since the last scan still loads on open.
     void openSettled(const juce::File &file, bool create) {
         if (!catalogue_ || !catalogue_->running()) {
             install(file, create);

@@ -3011,7 +3011,8 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
         service.poll();
         check(opened == 1 && !jobBesideOpen && listedAtOpen > listedBefore && !service.running() &&
                   service.state().listing.plugins.size() == 2,
-              "it opens once the job is adopted, with no job beside it, the plug-in the job found listed");
+              "it opens once the job is adopted, with no job beside it (when the loader probes a saved path, N68), "
+              "the plug-in the job found listed");
         service.settleThen([&] { ++opened; });
         check(opened == 2, "with no job running, an open runs at once");
         // The open runs between jobs: after the running job's adoption, before the job queued behind it.
