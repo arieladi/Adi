@@ -110,10 +110,18 @@ void AdiShaperCrush::quantize(Stereo& sample) noexcept {
     }
 }
 
-void AdiShaperCrush::hold(Stereo& sample) noexcept {
+void AdiShaperCrush::hold(Stereo& sample, bool flatHold) noexcept {
     if (step_ >= 1.0) {
-        previousHoldInput_ = held_ = sample;
-        phase_ = 0;
+        if (flatHold && clock_ == 1.f) {
+            held_ = sample;
+        } else {
+            // The direct output spans one whole clock cycle. Keep its
+            // remainder and interpolate the capture for the next slower frame.
+            const double fraction = 1.0 - phase_;
+            for (unsigned ch = 0; ch < 2; ++ch)
+                held_[ch] = previousHoldInput_[ch] + fraction * (sample[ch] - previousHoldInput_[ch]);
+        }
+        previousHoldInput_ = sample;
         return;
     }
     const auto input = sample;
@@ -135,14 +143,14 @@ void AdiShaperCrush::hold(Stereo& sample) noexcept {
 }
 
 void AdiShaperCrush::processStereo(float& left, float& right, float bitsHeight,
-                                   float resampleHeight) noexcept {
+                                   float resampleHeight, bool flatHold) noexcept {
     if (rate_ == 0) return;
     const auto u = sanitized(bitsHeight), r = sanitized(resampleHeight);
     if (u != bits_) updateResolution(u);
     if (r != clock_) updateClock(r);
     Stereo sample{left, right};
     quantize(sample);
-    hold(sample);
+    hold(sample, flatHold);
     for (unsigned ch = 0; ch < 2; ++ch) {
         const double difference = sample[ch] - low_[ch];
         low_[ch] += highpassAmount_ * difference;

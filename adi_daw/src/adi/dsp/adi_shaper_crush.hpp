@@ -15,7 +15,7 @@ public:
     void reset() noexcept;
     void setDither(bool enabled) noexcept { dither_ = enabled; }
     void processStereo(float& left, float& right, float bitsHeight,
-                       float resampleHeight) noexcept;
+                       float resampleHeight, bool flatHold = true) noexcept;
     bool finishBlock() noexcept;
 
 private:
@@ -24,7 +24,7 @@ private:
     void updateClock(float height) noexcept;
     double noise() noexcept;
     void quantize(Stereo& sample) noexcept;
-    void hold(Stereo& sample) noexcept;
+    void hold(Stereo& sample, bool flatHold) noexcept;
 
     double rate_ = 0, highpassAmount_ = 0, highpassGain_ = 1;
     double levels_ = 1, quantizedGain_ = 1, step_ = 1, period_ = 1, phase_ = 0;
