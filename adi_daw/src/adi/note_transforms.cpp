@@ -280,6 +280,16 @@ const OpDescriptor descriptors[] = {
     {"note.restoreNotes", "Restore an exact notes stream with the same note identities", Scope::Edit,
      EngineImpact::Snapshot, restoreFields, false, false, restoreApply, captureStream, ""}};
 
+double scaleTonic(const engine::ScaleContext &context, std::optional<double> tonic) {
+    const auto *scale = context.scale();
+    if (!scale || (!tonic && scale->tuningId))
+        throw std::runtime_error("pitch utility needs a scale and an absolute tonic for a custom tuning");
+    const auto root = tonic.value_or(static_cast<double>(scale->root) * 100.0);
+    if (!std::isfinite(root))
+        throw std::runtime_error("scale tonic must be finite");
+    return root;
+}
+
 template <class Destination>
 PreparedDiff preparePitches(const Snapshot &snapshot, std::span<const std::uint64_t> ids,
                              std::string_view label, Destination destination) {
@@ -347,12 +357,7 @@ PreparedDiff prepareFitToScale(const Snapshot &snapshot, std::span<const std::ui
     if (!snapshot.ok || ids.empty())
         return prepareDiff(snapshot, {});
     try {
-        const auto *scale = context.scale();
-        if (!scale || (!tonic && scale->tuningId))
-            throw std::runtime_error("Fit to Scale needs a scale and an absolute tonic for a custom tuning");
-        const auto rootCents = tonic.value_or(static_cast<double>(scale->root) * 100.0);
-        if (!std::isfinite(rootCents))
-            throw std::runtime_error("Fit to Scale tonic must be finite");
+        const auto rootCents = scaleTonic(context, tonic);
         return preparePitches(snapshot, ids, "Fit to Scale", [&](double cents) {
             const auto target = context.nearest(cents, rootCents, true);
             if (!target)
@@ -398,6 +403,30 @@ PreparedDiff prepareInvertPitches(const Snapshot &snapshot, std::span<const std:
             throw std::runtime_error("pitch inversion axis must be finite");
         return preparePitches(snapshot, ids, "Invert Pitches",
                               [=](double cents) { return axisCents + (axisCents - cents); });
+    } catch (const std::exception &error) {
+        PreparedDiff result;
+        result.error = error.what();
+        return result;
+    }
+}
+
+PreparedDiff prepareTransposeDegrees(const Snapshot &snapshot, std::span<const std::uint64_t> ids,
+                                      const engine::ScaleContext &context, std::int64_t steps,
+                                      std::optional<double> tonic) {
+    if (!snapshot.ok || ids.empty() || steps == 0)
+        return prepareDiff(snapshot, {});
+    try {
+        const auto root = scaleTonic(context, tonic);
+        return preparePitches(snapshot, ids, "Transpose Scale Degrees", [&](double cents) {
+            const auto source = context.nearest(cents, root, true);
+            const auto native = source ? engine::encodeMidiPitch(source->cents) : std::nullopt;
+            if (!native || cents != static_cast<double>(native->key) * 100.0 + native->tuningCents)
+                throw std::runtime_error("degree transposition needs an in-scale pitch");
+            const auto destination = context.stepDegree(source->degree, source->period, steps, root);
+            if (!destination)
+                throw std::runtime_error("scale degree transposition exceeds the supported pitch range");
+            return destination->cents;
+        });
     } catch (const std::exception &error) {
         PreparedDiff result;
         result.error = error.what();
