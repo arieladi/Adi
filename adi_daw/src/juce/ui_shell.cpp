@@ -82,6 +82,8 @@ void AppCommands::reload() {
     manager.clearCommands();
     manager.registerAllCommandsForTarget(this);
     manager.getKeyMappings()->resetToDefaultMappings();
+    // The user's keys go back on top after every reload, so a preset switch keeps them (WIN-04).
+    applyShortcutOverrides();
 }
 bool AppCommands::setInfoView(bool on, std::string &why) {
     if (!settings_.set("lookfeel.showInfoView", on, {}, why) || !settings_.save(why))
@@ -153,6 +155,193 @@ int noteEditorItem(int id, const NoteEditor &notes) {
     }
 }
 } // namespace
+// WIN-04 (ADR-0180 d6): each command's stable text id, its enum name in lower camel case. The list only grows: an
+// id never changes or goes, so a user's keys (`shortcuts.overrides`) find their command after any update.
+std::string AppCommands::stableId(juce::CommandID id) {
+    if (id >= ActivateTrack1 && id <= ActivateTrack8)
+        return "activateTrack" + std::to_string(id - ActivateTrack1 + 1);
+    switch (id) {
+    case PlayStop: return "playStop";
+    case Stop: return "stop";
+    case Undo: return "undo";
+    case Redo: return "redo";
+    case SwapPanels: return "swapPanels";
+    case ToggleBrowser: return "toggleBrowser";
+    case ToggleMixer: return "toggleMixer";
+    case ToggleDeviceView: return "toggleDeviceView";
+    case ToggleInfoView: return "toggleInfoView";
+    case ZoomIn: return "zoomIn";
+    case ZoomOut: return "zoomOut";
+    case NewProject: return "newProject";
+    case OpenProject: return "openProject";
+    case TakeSnapshot: return "takeSnapshot";
+    case SaveAs: return "saveAs";
+    case Settings: return "settings";
+    case TimeZoomIn: return "timeZoomIn";
+    case TimeZoomOut: return "timeZoomOut";
+    case ZoomToSelection: return "zoomToSelection";
+    case ZoomBack: return "zoomBack";
+    case OptimizeWidth: return "optimizeWidth";
+    case OptimizeHeight: return "optimizeHeight";
+    case GoStart: return "goStart";
+    case ContinuePlay: return "continuePlay";
+    case InsertAudioTrack: return "insertAudioTrack";
+    case InsertMidiTrack: return "insertMidiTrack";
+    case DeleteTrack: return "deleteTrack";
+    case RenameTrack: return "renameTrack";
+    case ToggleMixerView: return "toggleMixerView";
+    case ShowChannelEq: return "showChannelEq";
+    case Quit: return "quit";
+    case FocusControlBar: return "focusControlBar";
+    case FocusArrangement: return "focusArrangement";
+    case FocusDeviceView: return "focusDeviceView";
+    case FocusBrowser: return "focusBrowser";
+    case SearchBrowser: return "searchBrowser";
+    case TabMovesFocus: return "tabMovesFocus";
+    case Follow: return "follow";
+    case InsertMarkerToPlayhead: return "insertMarkerToPlayhead";
+    case GrowTracks: return "growTracks";
+    case ShrinkTracks: return "shrinkTracks";
+    case FocusMixer: return "focusMixer";
+    case NextNeighbor: return "nextNeighbor";
+    case PreviousNeighbor: return "previousNeighbor";
+    case FullScreen: return "fullScreen";
+    case ToggleOverview: return "toggleOverview";
+    case ToggleInOut: return "toggleInOut";
+    case NarrowGrid: return "narrowGrid";
+    case WidenGrid: return "widenGrid";
+    case TripletGrid: return "tripletGrid";
+    case SnapToGrid: return "snapToGrid";
+    case FixedGrid: return "fixedGrid";
+    case WrapTabNavigation: return "wrapTabNavigation";
+    case LargeTracks: return "largeTracks";
+    case GroupTracks: return "groupTracks";
+    case UngroupTracks: return "ungroupTracks";
+    case ToggleMixView: return "toggleMixView";
+    case DetachMixView: return "detachMixView";
+    case ToggleReferenceTrack: return "toggleReferenceTrack";
+    case PlayReference: return "playReference";
+    case SelectAll: return "selectAll";
+    case InsertReturnTrack: return "insertReturnTrack";
+    case ToggleReturnTracks: return "toggleReturnTracks";
+    case ToggleSends: return "toggleSends";
+    case ToggleMixerInOut: return "toggleMixerInOut";
+    case SoloSelected: return "soloSelected";
+    case DeactivateSelected: return "deactivateSelected";
+    case ToggleMixerSends: return "toggleMixerSends";
+    case InsertTimeSignatureChange: return "insertTimeSignatureChange";
+    case SoloInPlace: return "soloInPlace";
+    case ToggleTrackOptions: return "toggleTrackOptions";
+    case ToggleMixerTrackOptions: return "toggleMixerTrackOptions";
+    case Metronome: return "metronome";
+    case LoopSelection: return "loopSelection";
+    case SelectLoop: return "selectLoop";
+    case AddLocator: return "addLocator";
+    case DeleteLocator: return "deleteLocator";
+    case EditInfoText: return "editInfoText";
+    case UndoHistory: return "undoHistory";
+    case SaveCopy: return "saveCopy";
+    case CollectAllAndSave: return "collectAllAndSave";
+    case CollectAndExport: return "collectAndExport";
+    case Cut: return "cut";
+    case Copy: return "copy";
+    case Paste: return "paste";
+    case Duplicate: return "duplicate";
+    case TogglePluginWindows: return "togglePluginWindows";
+    case Split: return "split";
+    case ToggleClipView: return "toggleClipView";
+    case InsertMidiClip: return "insertMidiClip";
+    case CutTime: return "cutTime";
+    case CopyTime: return "copyTime";
+    case PasteTime: return "pasteTime";
+    case DuplicateTime: return "duplicateTime";
+    case DeleteTime: return "deleteTime";
+    case InsertSilence: return "insertSilence";
+    case CreateFade: return "createFade";
+    case DeleteFades: return "deleteFades";
+    case InvertSelection: return "invertSelection";
+    case Quantize: return "quantize";
+    case QuantizeSettings: return "quantizeSettings";
+    case CropClip: return "cropClip";
+    case ExpandClipView: return "expandClipView";
+    case FoldToNotes: return "foldToNotes";
+    case FoldToScale: return "foldToScale";
+    case HighlightScales: return "highlightScales";
+    case DrawMode: return "drawMode";
+    case ArrangePanelsAutomatically: return "arrangePanelsAutomatically";
+    case ArrangePanelsHorizontally: return "arrangePanelsHorizontally";
+    case ArrangePanelsVertically: return "arrangePanelsVertically";
+    case FocusClipView: return "focusClipView";
+    case FitToTimeRange: return "fitToTimeRange";
+    case ArrangementRecord: return "arrangementRecord";
+    case ExportAudio: return "exportAudio";
+    default: return {};
+    }
+}
+juce::CommandID AppCommands::commandFor(const std::string &stable) {
+    for (int id = PlayStop; id <= LastId; ++id)
+        if (stableId(id) == stable)
+            return id;
+    return 0;
+}
+// The user's keys on top of the key map (WIN-04): each override replaces its command's keys with its chords, the
+// canonical texts of JUCE's KeyPress. An id no command has, or a chord no key reads, is left out and said.
+void AppCommands::applyShortcutOverrides() {
+    overrideProblems_.clear();
+    const auto overrides = settings_.get("shortcuts.overrides");
+    if (!overrides.is_object())
+        return;
+    auto *keys = manager.getKeyMappings();
+    for (const auto &[stable, chords] : overrides.items()) {
+        const auto id = commandFor(stable);
+        if (id == 0 || !chords.is_array()) {
+            overrideProblems_.push_back("no command " + stable);
+            continue;
+        }
+        keys->clearAllKeyPresses(id);
+        for (const auto &chord : chords) {
+            const auto key = chord.is_string() ? juce::KeyPress::createFromDescription(chord.get<std::string>())
+                                               : juce::KeyPress();
+            if (!key.isValid()) {
+                overrideProblems_.push_back(stable + ": no key reads " + (chord.is_string() ? chord.get<std::string>() : "?"));
+                continue;
+            }
+            // A key the user gives one command is taken from any other that has it by default.
+            keys->removeKeyPress(key);
+            keys->addKeyPress(id, key);
+        }
+    }
+}
+// Writes one command's keys as overrides (WIN-04): compared with the key map's own first, so keys that match the
+// defaults remove the override instead of storing a copy, and an unchanged record is not written.
+bool AppCommands::setShortcut(juce::CommandID id, const std::vector<juce::KeyPress> &keys, std::string &why) {
+    const auto stable = stableId(id);
+    if (stable.empty()) {
+        why = "That command has no stable id.";
+        return false;
+    }
+    juce::ApplicationCommandInfo info(id);
+    getCommandInfo(id, info);
+    std::vector<std::string> chords, defaults;
+    for (const auto &key : keys)
+        chords.push_back(key.getTextDescription().toStdString());
+    for (const auto &key : info.defaultKeypresses)
+        defaults.push_back(key.getTextDescription().toStdString());
+    auto overrides = settings_.get("shortcuts.overrides");
+    if (!overrides.is_object())
+        overrides = settings::Value::object();
+    auto next = overrides;
+    if (chords == defaults)
+        next.erase(stable);
+    else
+        next[stable] = chords;
+    if (next == overrides)
+        return true;
+    if (!settings_.set("shortcuts.overrides", next, {}, why) || !settings_.save(why))
+        return false;
+    reload();
+    return true;
+}
 void AppCommands::getAllCommands(juce::Array<juce::CommandID> &ids) {
     for (int id = PlayStop; id <= LastId; ++id)
         ids.add(id);

@@ -13147,6 +13147,54 @@ void appearanceSettingsView(settings::AppSettings &settings, AppCommands &comman
     }
 }
 } // namespace
+// WIN-04 (ADR-0180 d6): every command has one stable id, and the user's keys survive a reload and a preset switch.
+void shortcutOverrides(settings::AppSettings &settings, AppCommands &commands) {
+    std::set<std::string> ids;
+    bool roundTrip = true;
+    juce::Array<juce::CommandID> all;
+    commands.getAllCommands(all);
+    for (const auto id : all) {
+        const auto stable = AppCommands::stableId(id);
+        roundTrip = roundTrip && !stable.empty() && AppCommands::commandFor(stable) == id;
+        ids.insert(stable);
+    }
+    check(roundTrip && ids.size() == static_cast<std::size_t>(all.size()) &&
+              AppCommands::stableId(AppCommands::PlayStop) == "playStop" &&
+              AppCommands::stableId(AppCommands::ActivateTrack1 + 3) == "activateTrack4",
+          "every command has its own stable id, and the id finds it again");
+    const auto keysOf = [&](juce::CommandID id) {
+        return commands.manager.getKeyMappings()->getKeyPressesAssignedToCommand(id);
+    };
+    const auto beforePreset = settings.get("shortcuts.preset");
+    const juce::KeyPress mine('p', juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier, 0);
+    std::string why;
+    check(commands.setShortcut(AppCommands::PlayStop, {mine}, why) && why.empty(), "Play / stop set to the user's key");
+    const auto stored = settings.get("shortcuts.overrides");
+    check(stored.contains("playStop") && stored["playStop"].size() == 1 &&
+              stored["playStop"][0] == mine.getTextDescription().toStdString() && keysOf(AppCommands::PlayStop).contains(mine) &&
+              !keysOf(AppCommands::PlayStop).contains(juce::KeyPress(juce::KeyPress::spaceKey)),
+          "the override is stored under the stable id as the chord's text, and the command has that key alone");
+    check(settings.set("shortcuts.preset", "cubase", {}, why), "another key map");
+    commands.reload();
+    check(keysOf(AppCommands::PlayStop).contains(mine) && keysOf(AppCommands::PlayStop).size() == 1,
+          "a preset switch keeps the user's key on top");
+    check(settings.set("shortcuts.preset", beforePreset, {}, why), "the key map back");
+    commands.reload();
+    juce::ApplicationCommandInfo info(AppCommands::PlayStop);
+    commands.getCommandInfo(AppCommands::PlayStop, info);
+    std::vector<juce::KeyPress> defaults(info.defaultKeypresses.begin(), info.defaultKeypresses.end());
+    check(commands.setShortcut(AppCommands::PlayStop, defaults, why) && !settings.get("shortcuts.overrides").contains("playStop") &&
+              keysOf(AppCommands::PlayStop).contains(juce::KeyPress(juce::KeyPress::spaceKey)),
+          "set back to the key map's own keys, the override goes rather than storing a copy");
+    auto bogus = settings::Value::object();
+    bogus["noSuchCommand"] = settings::Value::array({"ctrl + Q"});
+    check(settings.set("shortcuts.overrides", bogus, {}, why), "an override for an id no command has");
+    commands.reload();
+    check(!commands.shortcutProblems().empty() && keysOf(AppCommands::PlayStop).contains(juce::KeyPress(juce::KeyPress::spaceKey)),
+          "it is left out and said, and nothing else changes");
+    check(settings.set("shortcuts.overrides", settings::Value::object(), {}, why), "the overrides cleared");
+    commands.reload();
+}
 int main(int argc, char **argv) {
 #if defined(_MSC_VER) && defined(_DEBUG)
     _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
@@ -16335,6 +16383,7 @@ int main(int argc, char **argv) {
                 juce::PNGImageFormat{}.writeImageToStream(linkImage, *stream);
         }
     }
+    trace("shortcutOverrides", [&] { shortcutOverrides(settings, commands); });
     trace("liveParity", [&] { liveParity(commands, temp.path(), write); });
     trace("groupTracks", [&] { groupTracks(commands, temp.path()); });
     trace("footRows", [&] { footRows(commands, temp.path()); });

@@ -163,6 +163,12 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
+    // WIN-04: a command's stable text id (empty for none), the command an id names (0 for none), one command's keys
+    // written as the user's overrides, and what the last reload could not apply of them.
+    static std::string stableId(juce::CommandID);
+    static juce::CommandID commandFor(const std::string &stable);
+    bool setShortcut(juce::CommandID, const std::vector<juce::KeyPress> &keys, std::string &why);
+    const std::vector<std::string> &shortcutProblems() const noexcept { return overrideProblems_; }
     bool key(const juce::KeyPress &, AdiRootComponent &);
     void activate(AdiRootComponent &);
     void detach(AdiRootComponent &);
@@ -242,6 +248,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     juce::ApplicationCommandManager manager;
 
   private:
+    void applyShortcutOverrides();
+    std::vector<std::string> overrideProblems_;
     settings::AppSettings &settings_;
     AdiRootComponent *active_ = nullptr;
     bool live_ = true;
