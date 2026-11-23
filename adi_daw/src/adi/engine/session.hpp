@@ -590,9 +590,9 @@ private:
     void renderMetronome(const TimingView&,const AudioIo&) noexcept;
     std::shared_ptr<const ClipProject> clipProject_;
     // Published graphs retain their own old source generations until reclamation.
-    std::unique_ptr<ClipPlayback> clips_;
+    std::shared_ptr<ClipPlayback> clips_;
     std::shared_ptr<MidiClipState> midiState_ = makeMidiClipState();
-    std::unique_ptr<MidiClips> midi_;
+    std::shared_ptr<MidiClips> midi_;
     // ADR-0163: one strip per track, for the whole session. Declared before
     // the graphs so it outlives every graph that names one of its strips.
     MixerStrips strips_;
