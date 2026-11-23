@@ -52,11 +52,89 @@ until then a need is named by its item.
 | Reserve: one N row. A dropped audio file should clear what it lands on, as a move, Paste and Duplicate do (DF-W28): `clip_edit::prepareImportAudio` placed through the planner (`PlacementBatch::clear`), or a planner entry that clears a track span in the same prepared edit as the window's `clip.create`/`clip.attachAudio` batch | engine (`src/adi/material_commands.cpp`, `src/adi/edit_plan*`) | DF-W28: a file dropped onto a clip replaces the covered part in one step | the drop lands over the clip, as before |
 | Reserve: one N row. A loop recording keeps the passes it has when it ends early: today a tempo change (Tap Tempo included), a loop edit or running out of passes during a loop recording ends the capture ("musical loop retiming ends this job") and every pass recorded so far is lost | engine (`src/adi/engine/audio_recording.*`, `src/adi/recording_commands.*`) | CT-02: a loop take survives a tempo tap or a loop nudge | nothing: the take is lost and the Status Bar says why |
 | Reserve: one N row, or a ruling. Live's undo for a loop recording: one step for the whole recording, or one per pass as `prepareLoopCommit` commits today (the window queue's test asked for one step) | engine and win | CT-02: Undo after a loop recording | the window follows the engine: a step per pass |
+| AU-08's lane-scoped range commands (cut, copy, paste, delete, duplicate and insert time on one automation lane's selection) through the time edits' automation splice | engine seat (the range producers' automation half) | AU-08: Live's commands on an automation lane's selection | the lanes' menu has Insert Shape, Simplify Envelope and Delete Automation only |
 | Insert Shape's guards through one shared splice (PLAN AU-02's engine half): a guard or split at a selection's edge that keeps a bent segment's bend (ADR-0159's curve slices), written by the planner, so a shape leaves every curve outside the selection exact (AT-1) | engine seat (`automation_shapes.cpp`) | AU-02: the window writes its own guards, exact for holds and straight segments only | the window's guards (`insertAutomationShape`) |
 | A GCC 12 build of `src/adi/mix/limiter/Dsp/FloatRealTransform.h:61`: `bit < std::bit_width(length) - 1` compares an `int` with `std::size_t` under GCC 12.4's libstdc++ (its `bit_width` returns the argument's type; GCC 13's returns `int`), which `-Wsign-compare` with warnings as errors refuses. `static_cast<int>(std::bit_width(length)) - 1` builds on both | the mix seat (the limiter core) | DF-W39's test is a GCC 12 build; every suite that links the limiter stops there | DF-W39 was tested with that cast made locally and not committed |
 | Reserve: one N row (MX-07's registry half). `mixing.soloInFront`, `mixing.soloInFrontDb` and `mixing.soloBus` labelled "not built" in their titles or descriptions, as the PLAN row asks, and Live's Options rows `preFollowsSolo` and `keepAllReturns` (they change only on readings, AWAITING 5) | engine-win (`src/adi/settings/registry.cpp`) | MX-07: the Settings say plainly which solo options do nothing yet | the window shows the rows as the registry gives them |
 
 ---
+
+## 2026-11-23, window-fn — what is left in the lane's prefixes, and what each row waits on
+
+The queue of 22 Nov is done, and so is every unbuilt window row of M1 to M3 in MX, SRF, AU, ED, MI and EX that
+waits on nothing. What remains, row by row (main 4836cb61):
+- **Waiting on the engine:**
+  - SRF-06, the Focus Dial: SRF-04's resolver and takeover gate are not built.
+  - SRF-05's Remote route, the binding half: a bound control needs SRF-04 before it can become an op.
+  - ED-05, Slip: no slip intent or op.
+  - ED-06, Consolidate: no `clip.consolidate`.
+  - ED-07 and ED-08: the planner's ripple and its frozen and grouped policy.
+  - AU-03's pass coordinator: guards, latch, loop and punch.
+  - AU-08's lane-scoped range commands: the time edits' automation splice.
+  - AU-07: AU-06's composition of clip gain, its modulation and the curve.
+  - EX-07, and EX-02 to EX-09.
+- **Waiting on the window lane's placement:** MX-11's summing controls (ADR-0243); the drive's gesture is on
+  `window-fn/summing-drive`.
+- **M4's MX rows:** each waits on MX-22's or MX-33's measurement, or on MX-30's taps, except MX-24, which is
+  built.
+- **Built on main since the PLAN's audit:** MI-04 (Split, Chop, Join, Reverse, Invert, Legato, Fit to Scale and the
+  rest are in `note_edits.hpp`), MX-24 (the device's Sidechain Input menu on `prepareDeviceKey`), and AU-03's
+  window half (Automation Arm).
+
+Until a row frees up, the lane takes the next PLAN rows of P2 (AU-09, MI-05, MI-07, MI-09, MX-15, MX-16, MX-19,
+MX-20, MX-21, MX-31, SRF-07 to SRF-10, SRF-13 to SRF-15) whose window half needs nothing unbuilt.
+
+## 2026-11-23, window-fn — PLAN AU-08 (window half): Simplify Envelope and Delete Automation (PR requested)
+
+**Window lane, read first:** this item touches `src/adi/ui/automation_mode.hpp` (`simplifyAutomation`,
+`simplifyTolerance`, `deleteAutomation`; `envelopeOf`'s disabled-lane match now uses `sameParam`),
+`src/juce/ui_shell.*` (`simplifyAutomation`, `deleteAutomation`; Delete Automation added to
+`addReenableAutomation`, and so to every automation menu) and `src/juce/ui_arrangement.cpp`
+(`automationLaneAt`).
+
+- **Simplify Envelope** sits on the lanes' menu beside Insert Shape. Over the time selection, the breakpoints that
+  a straight line between their kept neighbours already draws, within half a percent of the parameter's travel
+  (0.38 dB on a fader), go: Ramer-Douglas-Peucker on the value, with an explicit stack.
+  - The line is measured where the engine plays it, in seconds through the tempo map, so a point on the line in
+    ticks but not in time stays.
+  - The selection's first and last breakpoints stay, so the curve outside is untouched, and so do both points of
+    a jump.
+  - It is refused, with the reason, on a switch's lane, on a selection holding a hold or a bent segment, and
+    where there is nothing to remove.
+  - It is one undo step, "Simplify Envelope".
+- **Delete Automation** sits beside Re-Enable Automation in every automation menu (the lanes', a fader's, a pan's,
+  a send's, a device parameter's). Every lane of that parameter goes, its clips' envelopes with it; a device
+  parameter's ref is matched as the engine binds it. It is one undo step.
+- **The lanes' menu** now acts on the lane the track shows (DF-W37's chooser), not always its Volume. Re-Enable
+  Automation there follows too.
+- **Not here:** AU-08's lane-scoped range commands reuse the time edits' automation splice, which is the
+  engine's (needs table).
+
+**Test** (`tests/test_ui_shell.cpp`, after Insert Shape):
+- on the ramp, the two breakpoints lying on it go and the ramp plays the same;
+- a Sine simplified keeps more than ten points, every old one within the 0.38 dB pinned in the test, the outside
+  unchanged; Undo gives them all back;
+- a Square's holds are refused;
+- a 0.2 dB jump inside the selection keeps both its points;
+- across a tempo change from 120 to 60 BPM, a point on the line in ticks stays;
+- Delete Automation from the lane's menu: one step, and Undo with its points;
+- the fader's menu now holds both items.
+
+**Review** (three dimensions, each finding checked by a skeptic): five findings, all fixed in the branch's one
+commit:
+- collinearity was measured in ticks (two reviewers);
+- Delete Automation matched a device ref by its spelling;
+- the sine check could pass at any tolerance;
+- the jump rule was never exercised.
+
+Five were refuted, among them that Undo of Delete Automation loses the lane's override (the session's override
+is runtime state, as Live's).
+
+**Run:** JUCE on, Pd off, warnings as errors (GCC 13, Debug, `ninja -k 0`): the 27 window and mix suites pass, the
+shell suite 3048 checks from a scratch directory, 0 failures.
+
+PR requested: `window-fn/simplify-automation` → main, "AU-08: Simplify Envelope and Delete Automation". **Depends
+on `window-fn/insert-shape`** (AU-02; one commit on top of it).
 
 ## 2026-11-23, window-fn — PLAN AU-02 (window half): Insert Shape on a lane's time selection (PR requested)
 
