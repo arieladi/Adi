@@ -4,6 +4,28 @@ Trial seat (22 November 2026, `collab/win.md`): Linux environment (Debian 12, GC
 
 ---
 
+## 2026-11-23 — PLAN row 1 (SRF-09): OSC 1.0 decoder, fixed namespace, and no-echo feedback core
+
+Branch: `gemini/srf09-osc-core` at `5e42fa61` (from `origin/main` `7aa3ab58`, lent paths only per ADR-0252 and `collab/RESERVATIONS.md`).
+
+### What changed
+
+- `adi_daw/src/adi/osc_codec.hpp`, `adi_daw/src/adi/osc_codec.cpp`: self-contained OSC 1.0 packet decoder (C++20 stdlib only, zero `adi_core`/JSON/SQLite/JUCE dependencies so `ADI_BUILD_FUZZERS` compiles `tests/fuzz_osc_codec.cpp` + `src/adi/osc_codec.cpp` alone). Decodes OSC 1.0 messages (`i`, `f`, `s`, `b`) and bundles (`#bundle\0` + 64-bit NTP `TimeTag`) with strict 4-byte alignment checks, zero-byte padding verification, negative/overflowing blob rejection, trailing-byte rejection, and explicit `DecodeLimits` (`maxPacketBytes = 65536`, `maxBundleDepth = 8`, `maxElements = 256`, `maxArguments = 64`).
+- `adi_daw/src/adi/osc_namespace.hpp`, `adi_daw/src/adi/osc_namespace.cpp`: fixed namespace resolver and dispatcher over `/adi/transport/...`, `/adi/track/{n}/...`, `/adi/master/...`, and `/adi/focused/...` (1-based canonical positive indices; unknown, malformed, and structural paths refused). Off by default (`ClientPolicy::enabled = false`, ADR-0188 d7) with optional `allowedClients` allow-list. Every write emitted to `WriteSink` is stamped `actor = Actor::User` and `actorDetail = "osc:<client>"` (ADR-0181 d2, ADR-0185 d4). Momentary releases (`<= 0` on `play`, `stop`, `re_enable_automation`) are ignored and never stop transport; relative nudges are never coalesced. `flushFeedback()` emits on change only, suppresses echoing any address back to its sender within the flush it arrived in while updating other peers immediately, and confirms settled values (or delivers later changes) on subsequent flushes.
+- `adi_daw/tests/test_osc_codec.cpp`, `adi_daw/tests/test_osc_namespace.cpp`, `adi_daw/tests/fuzz_osc_codec.cpp`, `adi_daw/CMakeLists.txt`: unit tests (`adi_osc_codec_tests`, `adi_osc_namespace_tests`) and standalone libFuzzer harness (`adi_fuzz_osc_codec`).
+
+### Verification
+
+- **GCC 12.2 (`-DADI_WERROR=ON`, CMake + ctest, transient local DF-M62 patch reverted):** `adi_osc_codec_tests` PASS (`208/208` checks), `adi_osc_namespace_tests` PASS (`217/217` checks); 0 warnings.
+- **Clang 14.0.6 (`-Wall -Wextra -Wpedantic -Wcast-align -Wconversion -Wsign-conversion -Wshadow -Wswitch-enum -Werror`):** all 5 new TUs (`osc_codec.cpp`, `osc_namespace.cpp`, `test_osc_codec.cpp`, `test_osc_namespace.cpp`, `fuzz_osc_codec.cpp`) compile with 0 warnings; both unit suites PASS (`208/208` and `217/217`).
+- **GCC 12.2 ASan + LSan + UBSan (`-O1 -g1 -fsanitize=address,undefined`):** both unit suites PASS (`208/208`, `217/217`), 0 leaks, 0 UB.
+- **GCC 12.2 `_GLIBCXX_DEBUG` (`-O1 -D_GLIBCXX_DEBUG`):** both unit suites PASS (`208/208`, `217/217`).
+- **Standalone `fuzz_osc_codec` (`tests/fuzz_osc_codec.cpp` + `src/adi/osc_codec.cpp`, ASan + LSan + UBSan):** replayed 10 OSC seeds + 3,786,762 mutated executions in 5.00 s (757,341 exec/s) with 0 crashes, 0 UB, 0 leaks. (MSVC `/W4 /WX` and macOS legs remain for win.)
+
+Review requested (engine): `gemini/srf09-osc-core` at `5e42fa61` (lands after 3 December; PR requested only after engine review in `collab/engine.md` passes this head).
+
+---
+
 ## 2026-11-23 — Queue item 2 (PR-BUILDS, Round 2): new/updated requested heads on GCC 12.2 and Clang 14.0.6 `-DADI_WERROR=ON`
 
 Checked all 7 seat logs (`engine/log` `7da7b726`, `engine-win/log` `975577e2`, `devices/log` `cec2d176`, `mixview/log` `a3aa0127`, `clones/log` `1142e6fc`, `window/log` `d6584386`, `window-fn/log` `6fb4f996`) and open `land/*` stacks against Round 1 (`5b471614`). Only one new/updated unmerged landing stack exists: **PR `#716` `land/clones-panel-1122b` (`1baf1fd8`)** (DF-M62 `FloatRealTransform.h:61` patched transiently locally to see past it and reverted).
