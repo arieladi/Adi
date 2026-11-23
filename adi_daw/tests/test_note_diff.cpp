@@ -1221,9 +1221,51 @@ void fitToScale() {
                                        6240.0).requests.empty(),
           "custom fitted pitches remain stable on repeat even with float note storage");
 }
+void invertPitches() {
+    Fixture f("invert_pitches");
+    auto left = native(wideId, -4); left.key = 60; left.tuning_cents = 12.5f;
+    auto right = native(2, 10); right.key = 65; right.tuning_cents = 50.0f;
+    auto onAxis = native(3, 20); onAxis.key = 62; onAxis.tuning_cents = 50.25f;
+    auto boundary = native(4, 30); boundary.key = 0; boundary.tuning_cents = -1200.0f;
+    constexpr std::uint16_t stride = 48;
+    const auto a = rawRecord(left, stride), b = rawRecord(right, stride);
+    const auto c = rawRecord(onAxis, stride), d = rawRecord(boundary, stride);
+    const std::vector trailer{std::byte{0x8c}, std::byte{0x42}};
+    const auto original = envelope({a, b, c, d}, stride, true, 1, trailer);
+    f.seed(2, original);
+    f.expression(2, 2, 74);
+    const auto snapshot = notes::captureNotes(*f.store, 2);
+    const std::array<std::uint64_t, 3> selected{wideId, 3, 2};
+    const auto prepared = notes::prepareInvertPitches(snapshot, selected, 6250.25);
+    check(prepared.ok && prepared.requests.size() == 1 && prepared.effects.changed.size() == 2 &&
+              prepared.requests.front().label == "Invert Pitches" && f.blob(2) == original,
+          "pitch inversion prepares one literal edit for selected pitches off the supplied axis");
+    const auto invalid = notes::prepareInvertPitches(
+        snapshot, std::array<std::uint64_t, 2>{wideId, 4}, 6500.0);
+    const auto infinite = notes::prepareInvertPitches(
+        snapshot, selected, std::numeric_limits<double>::infinity());
+    check(!invalid.ok && invalid.requests.empty() && !infinite.ok && infinite.requests.empty(),
+          "one unrepresentable reflected pitch or invalid axis refuses the entire selection");
+    auto mirrorLeft = changeRecord(a, [](auto &n) { n.key = 65; n.tuning_cents = -12.0f; });
+    auto mirrorRight = changeRecord(b, [](auto &n) { n.key = 60; n.tuning_cents = -49.5f; });
+    const auto mirrored = envelope({mirrorLeft, mirrorRight, c, d}, stride, true, 1, trailer);
+    check(notes::commitDiff(*f.store, prepared).ok && f.blob(2) == mirrored &&
+              f.expressionCount(2, 2) == 1,
+          "reflection preserves timings, selected axis pitch, expression and unselected records");
+    History history(*f.store);
+    check(history.undo().ok && f.blob(2) == original &&
+              history.redo().ok && f.blob(2) == mirrored,
+          "pitch inversion undoes and redoes exact note bytes");
+    const auto second = notes::prepareInvertPitches(notes::captureNotes(*f.store, 2),
+                                                   selected, 6250.25);
+    require(second.ok && second.effects.changed.size() == 2, second.error);
+    const auto reflected = readRecord(second.effects.changed.back().newRecord);
+    check(100.0 * reflected.key + reflected.tuning_cents == 6550.0,
+          "a second reflection restores the original physical pitch");
+}
 } // namespace
 int main() {
-    const std::array<std::pair<const char*, void (*)()>, 15> cases = {{
+    const std::array<std::pair<const char*, void (*)()>, 16> cases = {{
         {"immutable and pure", immutableAndPure}, {"10,000 notes", tenThousandOneWrite},
         {"future and expressions", futureAndExpressions}, {"creation", creationAndSignedRows},
         {"numeric and malformed", numericAndMalformed}, {"stale guards", staleGuards},
@@ -1234,7 +1276,8 @@ int main() {
         {"ordered note membership", orderedNoteMembership},
         {"large ordered note batch", largeOrderedNoteBatch},
         {"late failures", lateFailures},
-        {"Fit to Scale", fitToScale}}};
+        {"Fit to Scale", fitToScale},
+        {"pitch inversion", invertPitches}}};
     for (const auto& [name, run] : cases) {
         try { run(); }
         catch (const std::exception& error) {

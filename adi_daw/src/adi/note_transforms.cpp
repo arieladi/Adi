@@ -279,6 +279,43 @@ const OpDescriptor descriptors[] = {
      transposeFields, false, false, transposeApply, transposeInverse, ""},
     {"note.restoreNotes", "Restore an exact notes stream with the same note identities", Scope::Edit,
      EngineImpact::Snapshot, restoreFields, false, false, restoreApply, captureStream, ""}};
+
+template <class Destination>
+PreparedDiff preparePitches(const Snapshot &snapshot, std::span<const std::uint64_t> ids,
+                             std::string_view label, Destination destination) {
+    std::set<std::uint64_t> remaining(ids.begin(), ids.end());
+    if (remaining.contains(0) || remaining.size() != ids.size())
+        throw std::runtime_error("pitch utility needs unique assigned note IDs");
+    Diff diff;
+    std::string error;
+    for (const auto &record : snapshot.records()) {
+        if (remaining.empty())
+            break;
+        auto note = values(record, error);
+        if (!note)
+            throw std::runtime_error(error);
+        if (!remaining.erase(note->id))
+            continue;
+        const auto cents = static_cast<double>(note->key) * 100.0 + note->cents;
+        const auto encoded = engine::encodeMidiPitch(destination(cents));
+        if (!encoded)
+            throw std::runtime_error("target is outside the native pitch range or precision");
+        if (cents == static_cast<double>(encoded->key) * 100.0 + encoded->tuningCents)
+            continue;
+        note->key = encoded->key;
+        note->cents = encoded->tuningCents;
+        auto changed = withValues(record, *note, error);
+        if (!changed)
+            throw std::runtime_error(error);
+        diff.changed.push_back({record, std::move(*changed)});
+    }
+    if (!remaining.empty())
+        throw std::runtime_error("pitch utility selection contains an unknown note ID");
+    auto result = prepareDiff(snapshot, diff);
+    for (auto &request : result.requests)
+        request.label = label;
+    return result;
+}
 } // namespace
 OpRequest quantizeRequest(std::int64_t clip, std::span<const std::uint64_t> ids,
                           const QuantizeSettings &settings) {
@@ -316,41 +353,12 @@ PreparedDiff prepareFitToScale(const Snapshot &snapshot, std::span<const std::ui
         const auto rootCents = tonic.value_or(static_cast<double>(scale->root) * 100.0);
         if (!std::isfinite(rootCents))
             throw std::runtime_error("Fit to Scale tonic must be finite");
-        std::set<std::uint64_t> remaining(ids.begin(), ids.end());
-        if (remaining.contains(0) || remaining.size() != ids.size())
-            throw std::runtime_error("Fit to Scale needs unique assigned note IDs");
-        Diff diff;
-        std::string error;
-        for (const auto &record : snapshot.records()) {
-            if (remaining.empty())
-                break;
-            auto note = values(record, error);
-            if (!note)
-                throw std::runtime_error(error);
-            if (!remaining.erase(note->id))
-                continue;
-            const auto cents = static_cast<double>(note->key) * 100.0 + note->cents;
+        return preparePitches(snapshot, ids, "Fit to Scale", [&](double cents) {
             const auto target = context.nearest(cents, rootCents, true);
             if (!target)
                 throw std::runtime_error("Fit to Scale cannot resolve a selected pitch");
-            const auto encoded = engine::encodeMidiPitch(target->cents);
-            if (!encoded)
-                throw std::runtime_error("Fit to Scale target is outside the native pitch range or precision");
-            if (cents == static_cast<double>(encoded->key) * 100.0 + encoded->tuningCents)
-                continue;
-            note->key = encoded->key;
-            note->cents = encoded->tuningCents;
-            auto changed = withValues(record, *note, error);
-            if (!changed)
-                throw std::runtime_error(error);
-            diff.changed.push_back({record, std::move(*changed)});
-        }
-        if (!remaining.empty())
-            throw std::runtime_error("Fit to Scale selection contains an unknown note ID");
-        auto result = prepareDiff(snapshot, diff);
-        for (auto &request : result.requests)
-            request.label = "Fit to Scale";
-        return result;
+            return target->cents;
+        });
     } catch (const std::exception &error) {
         PreparedDiff result;
         result.error = error.what();
@@ -374,6 +382,22 @@ PreparedDiff prepareClipFitToScale(Store &store, std::int64_t clip,
         if (!scale.context)
             throw std::runtime_error(scale.error);
         return prepareFitToScale(snapshot, ids, *scale.context, tonic);
+    } catch (const std::exception &error) {
+        PreparedDiff result;
+        result.error = error.what();
+        return result;
+    }
+}
+
+PreparedDiff prepareInvertPitches(const Snapshot &snapshot, std::span<const std::uint64_t> ids,
+                                  double axisCents) {
+    if (!snapshot.ok || ids.empty())
+        return prepareDiff(snapshot, {});
+    try {
+        if (!std::isfinite(axisCents))
+            throw std::runtime_error("pitch inversion axis must be finite");
+        return preparePitches(snapshot, ids, "Invert Pitches",
+                              [=](double cents) { return axisCents + (axisCents - cents); });
     } catch (const std::exception &error) {
         PreparedDiff result;
         result.error = error.what();
