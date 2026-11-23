@@ -223,12 +223,10 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
     const auto cmd = juce::ModifierKeys::commandModifier;
     const auto alt = juce::ModifierKeys::altModifier;
     const auto shift = juce::ModifierKeys::shiftModifier;
-    // Live's Activate/Deactivate Track 1…8 (§42.19): F1 to F8.
+    // Live's Activate/Deactivate Track 1…8 (§42.19), unbound (WIN-01; ADR-0209 d9): ADI's function keys do
+    // functions (F4 the Mix View; F3 and F7 held for Session View and offline processing). The eight commands stay
+    // for the palette and the Shortcuts page.
     if (id >= ActivateTrack1 && id <= ActivateTrack8) {
-        static const std::array<int, 8> keys{juce::KeyPress::F1Key, juce::KeyPress::F2Key, juce::KeyPress::F3Key,
-                                             juce::KeyPress::F4Key, juce::KeyPress::F5Key, juce::KeyPress::F6Key,
-                                             juce::KeyPress::F7Key, juce::KeyPress::F8Key};
-        info.addDefaultKeypress(keys[static_cast<std::size_t>(id - ActivateTrack1)], 0);
         info.setActive(active_ != nullptr);
         return;
     }

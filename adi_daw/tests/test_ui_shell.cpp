@@ -2295,9 +2295,11 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
     check(muted() == std::vector<std::int64_t>{1, 2} && submitter.nextUndo()->label == "Deactivate Track" &&
               submitter.nextUndo()->opCount == 2,
           "1 MIDI's activator, with 1 and 2 MIDI selected, deactivates both, one step");
-    check(root.keyPressed(juce::KeyPress(juce::KeyPress::F3Key, 0, 0)), "F3");
+    // Activate Track 3 from the palette: F3 is free (WIN-01), the command stays.
+    check(!root.keyPressed(juce::KeyPress(juce::KeyPress::F3Key, 0, 0)) && root.command(AppCommands::ActivateTrack1 + 2),
+          "F3 does nothing; Activate Track 3 runs from its command");
     root.frame();
-    check(muted() == std::vector<std::int64_t>{1, 2, 3}, "F3 deactivates the third track, alone");
+    check(muted() == std::vector<std::int64_t>{1, 2, 3}, "it deactivates the third track, alone");
     render("adi-activators.png");
     root.arrangement.geometry.selection.toTrack = 0;
     check(root.keyPressed(juce::KeyPress('0', 0, 0)), "0");
@@ -13147,6 +13149,45 @@ void appearanceSettingsView(settings::AppSettings &settings, AppCommands &comman
     }
 }
 } // namespace
+// WIN-01 (ADR-0209 d9): every preset's default key map has no key bound to two commands; F1 to F8 activate no
+// track, F4 opens the Mix View, F3 and F7 are free.
+void functionKeys(settings::AppSettings &settings, AppCommands &commands) {
+    const auto before = settings.get("shortcuts.preset");
+    for (const char *preset : {"live", "cubase", "bitwig"}) {
+        std::string why;
+        check(settings.set("shortcuts.preset", preset, {}, why), (std::string("the ") + preset + " key map").c_str());
+        commands.reload();
+        juce::Array<juce::CommandID> ids;
+        commands.getAllCommands(ids);
+        std::map<juce::String, std::vector<juce::CommandID>> byKey;
+        std::map<juce::CommandID, std::vector<juce::KeyPress>> keysOf;
+        for (const auto id : ids) {
+            juce::ApplicationCommandInfo info(id);
+            commands.getCommandInfo(id, info);
+            for (const auto &key : info.defaultKeypresses) {
+                byKey[key.getTextDescription()].push_back(id);
+                keysOf[id].push_back(key);
+            }
+        }
+        std::string clashes;
+        for (const auto &[key, owners] : byKey)
+            if (owners.size() > 1)
+                clashes += " " + key.toStdString();
+        const auto noClash = std::string(preset) + ": no key is two commands' default" +
+                             (clashes.empty() ? std::string() : " (clash:" + clashes + ")");
+        check(clashes.empty(), noClash.c_str());
+        bool activators = false;
+        for (int i = 0; i < 8; ++i)
+            activators = activators || !keysOf[AppCommands::ActivateTrack1 + i].empty();
+        const auto f = [&](int key) { return byKey[juce::KeyPress(key).getTextDescription()]; };
+        check(!activators && f(juce::KeyPress::F4Key) == std::vector<juce::CommandID>{AppCommands::ToggleMixView} &&
+                  f(juce::KeyPress::F3Key).empty() && f(juce::KeyPress::F7Key).empty(),
+              (std::string(preset) + ": F1 to F8 activate no track, F4 is the Mix View, F3 and F7 are free").c_str());
+    }
+    std::string why;
+    (void)settings.set("shortcuts.preset", before, {}, why);
+    commands.reload();
+}
 int main(int argc, char **argv) {
 #if defined(_MSC_VER) && defined(_DEBUG)
     _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
@@ -16335,6 +16376,7 @@ int main(int argc, char **argv) {
                 juce::PNGImageFormat{}.writeImageToStream(linkImage, *stream);
         }
     }
+    trace("functionKeys", [&] { functionKeys(settings, commands); });
     trace("liveParity", [&] { liveParity(commands, temp.path(), write); });
     trace("groupTracks", [&] { groupTracks(commands, temp.path()); });
     trace("footRows", [&] { footRows(commands, temp.path()); });
