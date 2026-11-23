@@ -4,6 +4,44 @@ Trial seat (22 November 2026, `collab/win.md`): Linux environment (Debian 12, GC
 
 ---
 
+## 2026-11-22 — Queue item 12 (TSAN): 39 threaded suites under ThreadSanitizer
+
+Head: `main` (`abbc32ab`).
+- **Clang 14.0.6**: cannot link `-fsanitize=thread` on this VM (`libclang_rt.tsan-x86_64.a` / `compiler-rt` is not installed; also blocked by the 5 pre-existing `adi_core` Clang 14 errors in item 10).
+- **GCC 12.2.0**: built with `-O1 -g1 -fsanitize=thread -fno-omit-frame-pointer` (`-DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF -DADI_WERROR=OFF`) and run under `setarch x86_64 -R` with `TSAN_OPTIONS=halt_on_error=0:second_deadlock_stack=1:exitcode=66` (verified active with a synthetic data-race probe returning exit code 66 with both stacks).
+
+### Results (39 threaded suites: **38 / 39 PASS**, **1 FAIL**)
+
+- **Clean (38 / 39 PASS, 0 data races, 0 deadlocks)**:
+  - Graph workers: `adi_graph_workers_tests`
+  - Host / device / CLAP / session / transport: `adi_host_tests`, `adi_device_host_tests`, `adi_clap_tests`, `adi_session_tests`, `adi_transport_generation_tests`, `adi_cue_monitor_tests`
+  - Gesture: `adi_gesture_tests`, `adi_gesture_graph_tests`, `adi_gesture_playback_tests`, `adi_quiet_gesture_tests`
+  - Recording / capture: `adi_audio_recording_tests`, `adi_recording_commands_tests`, `adi_track_recording_tests`, `adi_automation_recording_tests`, `adi_audio_memory_capture_tests`, `adi_midi_capture_input_tests`, `adi_midi_capture_tests`, `adi_offline_capture_tests`, `adi_freeze_capture_tests`
+  - Decode: `adi_decode_tests`, `adi_decode_space_tests`, `adi_decode_cache_consistency_tests`
+  - Scanner: `adi_plugin_scanner_tests`, `adi_scan_self_test_tests`, `adi_scan_cache_tests`, `adi_scan_prune_tests`, `adi_scan_catalogue_tests`, `adi_scan_process_tests`, `adi_scan_quarantine_tests`
+  - Link: `adi_link_session_tests`, `adi_link_playback_tests`
+  - Render / Mix View owners / control: `adi_render_queue_tests`, `adi_mix_limiter_owner_tests`, `adi_mix_focus_tests`, `adi_mix_eq_chain_tests`, `adi_mix_eq_chain_backend_tests`, `adi_control_mcp_tests`
+
+### Finding: data race in Ogg Vorbis decoder initialization (owner: `engine`)
+
+- **Suite**: `adi_progressive_decode_tests` (`WARNING: ThreadSanitizer: data race` on global `uint32 crc_table[256]`, `100 checks, 0 failures`, exit code 66).
+- **Root cause**: `stb_vorbis.c:3707` (`start_decoder`) unconditionally calls `crc32_init()` (`adi_daw/third_party/miniaudio/extras/stb_vorbis.c:999`), overwriting the process-global `crc_table[0..255]` on every `stb_vorbis_open_file_section` call (`adi_daw/src/adi/audio/decode.cpp:223`). `ProgressiveDecoder` calls `VorbisDecoder` concurrently on the caller thread (`inspectPcm`) and worker threads (`Impl::run`), causing concurrent unsynchronized writes (and concurrent reads via `crc32_update` at `stb_vorbis.c:1005`).
+- **Write 1 (main thread)**:
+  - `#0 crc32_init` `third_party/miniaudio/extras/stb_vorbis.c:999`
+  - `#1 start_decoder` `third_party/miniaudio/extras/stb_vorbis.c:3707`
+  - `#2 stb_vorbis_open_file_section` `third_party/miniaudio/extras/stb_vorbis.c:5060`
+  - `#3 VorbisDecoder` `src/adi/audio/decode.cpp:223` -> `openDecoder` (`:263`) -> `openPcmStream` (`:395`)
+  - `#7 inspectPcm` `src/adi/audio/progressive_decode.cpp:51` -> `ProgressiveDecoder::openHashed` (`:338`) -> `open` (`:296`) -> `publication` (`tests/test_progressive_decode.cpp:404`)
+- **Previous write (worker thread T19, created at `progressive_decode.cpp:125`)**:
+  - `#0 crc32_init` `third_party/miniaudio/extras/stb_vorbis.c:999`
+  - `#1 start_decoder` `third_party/miniaudio/extras/stb_vorbis.c:3707`
+  - `#2 stb_vorbis_open_file_section` `third_party/miniaudio/extras/stb_vorbis.c:5060`
+  - `#3 VorbisDecoder` `src/adi/audio/decode.cpp:223` -> `openDecoder` (`:263`) -> `openPcmStream` (`:395`)
+  - `#7 ProgressiveDecoder::Impl::run` `src/adi/audio/progressive_decode.cpp:255` -> `ProgressiveDecoder::Impl::work` (`:167`)
+- **Smallest repro**: build `adi_progressive_decode_tests` with GCC 12 `-O1 -g1 -fsanitize=thread` and run `setarch x86_64 -R ./adi_progressive_decode_tests`.
+
+---
+
 ## 2026-11-22 — Queue item 11 (ASAN): all 275 headless suites under ASan, LSan and UBSan
 
 Head: `main` (`abbc32ab`), GCC 12.2.0 (`-O1 -g1 -fsanitize=address,undefined -fno-omit-frame-pointer`, `-DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF -DADI_WERROR=OFF`).
