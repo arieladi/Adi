@@ -44,8 +44,93 @@ until then a need is named by its item.
 | Reserve: one N row. After a discovery job, an ordinary project open should still probe a plug-in's saved path when the catalogue lacks it, as it does before any job. Today `managedDiscovery_` is set by the first `startDiscovery` and never cleared, so `makeVst3` and `makeClap` answer "needs discovery" for every miss for the rest of the run (and `hydrateCatalogue` returns at once). A proposal: suppress the hint only while a job is in flight (`discoveryJob_`) | engine-win (`src/juce/juce_device_loader.cpp`, N58) | DF-W34: a project that names a plug-in installed since the last scan loads it on open, as before the window started discovery at launch | an open while a job runs waits for its adoption (engine-win's handoff); an open with no job running loads catalogue hits only |
 | Reserve: one N row. `Session::refresh` should re-read the project's identity (`recordingProject_`, read once in `Session::load` from `PRAGMA database_list`). After a Save As every take is refused, "recording belongs to a different project", until the project is reopened | engine (`src/adi/engine/session.cpp`) | PD06-SAVEAS-GUARD: recording after a Save As keeps its take | nothing: the take is refused and the Status Bar says why |
 | Reserve: one N row. A dropped audio file should clear what it lands on, as a move, Paste and Duplicate do (DF-W28): `clip_edit::prepareImportAudio` placed through the planner (`PlacementBatch::clear`), or a planner entry that clears a track span in the same prepared edit as the window's `clip.create`/`clip.attachAudio` batch | engine (`src/adi/material_commands.cpp`, `src/adi/edit_plan*`) | DF-W28: a file dropped onto a clip replaces the covered part in one step | the drop lands over the clip, as before |
+| Reserve: one N row. A loop recording keeps the passes it has when it ends early: today a tempo change (Tap Tempo included), a loop edit or running out of passes during a loop recording ends the capture ("musical loop retiming ends this job") and every pass recorded so far is lost | engine (`src/adi/engine/audio_recording.*`, `src/adi/recording_commands.*`) | CT-02: a loop take survives a tempo tap or a loop nudge | nothing: the take is lost and the Status Bar says why |
+| Reserve: one N row, or a ruling. Live's undo for a loop recording: one step for the whole recording, or one per pass as `prepareLoopCommit` commits today (the window queue's test asked for one step) | engine and win | CT-02: Undo after a loop recording | the window follows the engine: a step per pass |
 
 ---
+
+## 2026-11-23, window-fn — queue item 12, CT-02's window half: Record with the loop on, a take per pass (PR requested)
+
+**Window lane, read first:** this item touches `src/adi/ui/project_document.cpp` (`startRecording`, `landTake`) and
+replaces the shell check that expected the old refusal.
+
+- **Record with the loop on.** It is no longer refused. The window freezes the loop in samples as the engine plays
+  it: the engine's own tempo map (the stored events, 120 BPM only for a project with none, as `Session`'s
+  TimingView builds it) and `sampleForTick`'s rounding, with a sub-sample loop playing one frame. It passes this to
+  the recorder as `AudioRecordingSpec::loop`.
+- **A loop take lands** through `recording::prepareLoopCommit`:
+  - each pass is a take on a take lane of its track, and the last pass's audio is copied to the main lane;
+  - each track gets one media, and lane, clip and media ids come from RowIds;
+  - the engine commits one undo step per pass;
+  - the clip chosen afterwards is each track's main-lane copy, the one that plays;
+  - the Status Bar says "Recorded N passes of the loop, a take each."
+- **The queue's wording:** its test says the takes and the main-lane copy land "in one undo step". The engine's
+  contract (`prepareLoopCommit`, `recording_commands.hpp`) is one undo per pass. The window follows the engine.
+  If Live's is one step for the whole recording, that is the engine's to change; see the needs table.
+- **Test** (`tests/test_ui_document.cpp`, `loopRecord`): a one-beat loop at 120 BPM, recorded for 760 blocks of 64
+  frames: two whole passes and 640 frames of a third. It expects exactly three takes on three take lanes, main-lane
+  audio, the main-lane clip chosen, and three undo steps that take everything back. The shell's Record check now
+  expects Record with the loop on to record.
+- **Review** (three dimensions, each finding checked by a skeptic). Fixed in `e2164d45`:
+  - the frozen loop used the snapshot's tempo map, which puts a 120 at the start of a project whose first stored
+    tempo comes later, so such a project's loop never recorded;
+  - ids were MAX+1 rather than RowIds;
+  - the take-lane clip, not the main-lane clip, was chosen.
+
+  Two findings are the engine's (needs table): a tempo or loop change during a loop recording, Tap Tempo
+  included, and running out of passes each end the capture and lose every pass recorded so far.
+
+PR requested: `window-fn/loop-record` → main, "CT-02: record with the loop on, a take per pass". Depends on nothing
+beyond main. With `window-fn/tap-quiet` landed too, a Tap Tempo run during a loop recording ends that capture
+(the engine's retime rule above).
+
+## 2026-11-23, window-fn — queue item 11, HI-01: Tap Tempo through a quiet gesture (PR requested)
+
+**Window lane, read first:** this item touches `src/adi/ui/project_document.*` (`tapTempo`, `pollTapTempo`,
+`endTapTempo`), `src/juce/ui_shell.*` (the root's `tapTempo`, `endTapRun`, two hooks) and `src/juce/ui_main.cpp` (the
+hooks, the timer's poll, ending a run before a project goes or a copy is saved).
+
+A run of taps was a commit per tap, each undone and committed again by the next tap, which forked the history at
+every tap. The run is now one quiet gesture (`gesture::QuietSession`) on the tempo event in force at the playhead,
+or an inserted one where the start's 120 is only the snapshot's.
+- Every tap is heard at once (a structural preview: tempo has no live-value path) and nothing is written.
+- The application's timer ends the run Tap Tempo's own pause (2 s) after its last tap, as one undo step "Tap Tempo".
+- A late tap ends a run and begins another.
+- The run is ended first by Undo, Redo, a jump in the Undo History, Save As, Save a Copy, Open, New and Quit (an
+  open gesture refuses history moves, and a document closed with it open would cancel the tempo heard).
+- A tap that rounds to the same tempo keeps the run going.
+- A run whose end is refused says so.
+
+**Test** (`tests/test_ui_document.cpp`, `tapTempoQuiet`): four taps heard with nothing written; still one run short
+of the pause; at the pause one step at 103 and one line in the history's timeline; Undo to 120; a late tap's run as
+its own step; Undo to the first run's 90.
+
+**Review** (three dimensions, each finding checked by a skeptic): five findings, all fixed in `608e3c02` (the history
+moves, the project switch and Quit, same-value taps, the silent refused end, the second run's test).
+
+PR requested: `window-fn/tap-quiet` → main, "Tap Tempo through a quiet gesture: one undo step, no forked history".
+Depends on nothing beyond main.
+
+## 2026-11-23, window-fn — queue item 10, MX-23 (drive): a summing group's drive heard while dragging (PR requested, the dial parked)
+
+- **The document half needed no code.** `ProjectDocument::beginMixerDrag` already takes any of the gesture
+  producers' scalar kinds, `GroupSummingDrive` included. The branch adds the test the queue asked for
+  (`tests/test_ui_document.cpp`, in `mixerDragHeard`): two tones in a summing group. A console's channel and buss
+  stages cancel for one source; the drive colours a sum. Dragged to +24 dB, the waveform moves (by up to 0.124) with
+  nothing written. Esc gives the clean tone back. The release is one op and one undo step, heard as it was let go,
+  and Undo restores both.
+- **Parked: the drive dial.** No window control writes the drive. MX-11's summing controls (on/off, the flavour, the
+  drive dial) are not built, and where the dial sits on a group's strip is the window lane's (ADR-0243). The dial's
+  gesture is a few lines on the strip once it has a place: `beginLive(gesture::ScalarKind::GroupSummingDrive,
+  track_, {-12, 24, std::nullopt}, "Change Summing Drive")`, as the fader does. The window reads the drive from
+  `Session::model().summing` until the snapshot carries it.
+
+PR requested: `window-fn/summing-drive` → main, "Test a summing group's drive heard while it is dragged (MX-23)".
+Depends on nothing beyond main.
+
+**Run for items 10, 11 and 12, built together** (they touch different functions; the one shared test file,
+`tests/test_ui_document.cpp`, takes a two-line conflict in `main`, where all three calls stay): JUCE on, Pd off,
+warnings as errors, `ninja -k 0`. the 26 window and mix suites pass, the document suite 338 checks and the shell suite 2955 from a scratch directory, 0 failures. WTS-01 (Pd on, acceptance on): 2a PASS; 2b FAILs as on main (DF-E64).
 
 ## 2026-11-22, window-fn — review of items 3, 5, 6 and 7: four findings fixed (branches updated, PR requested as before)
 
