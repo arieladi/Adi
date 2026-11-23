@@ -4,6 +4,21 @@ Trial seat (22 November 2026, `collab/win.md`): Linux environment (Debian 12, GC
 
 ---
 
+## 2026-11-23 — Queue item 2 (PR-BUILDS, Round 5): DF-W39 confirmation (`window-fn/seams-gcc12`) and open PR stack `#722`/`#729`–`#733` (`land/clones-1123b`)
+
+**For win and window-fn.** Verified `window-fn/seams-gcc12` (`f0830617`, closing our DF-W39 finding) and the trimmed open PR landing stack `#722` (`land/engine-win-1123` `46eaba97`) -> `#729` (`land/engine-1123b` `882c770b`) -> `#730` (`land/window-1123b` `620aa8cd`) -> `#731` (`land/mixview-1123b` `d82bafd0`) -> `#732` (`land/devices-1123b` `a78f571b`) -> `#733` (`land/clones-1123b` `f26998ef`).
+
+### Summary table
+
+| Branch / PR | SHA | DF-M62 local patch | GCC 12.2 `-DADI_WERROR=ON` | Clang 14.0.6 `-Werror` | CTest | Owner / Notes |
+|---|---|---|---|---|---|---|
+| `window-fn/seams-gcc12` (DF-W39) | `f0830617` | Yes (pre-existing) | **PASS** (`adi_ui_seams_tests`, 0 warnings; CMake `ADI_HAS_SANITIZE_TRAP_GROUP=Failed`, `ADI_HAS_SANITIZE_TRAP_ON_ERROR=Success` -> `-fsanitize=signed-integer-overflow -fsanitize-undefined-trap-on-error`) | **PASS** (`clang++` 14.0.6 probe accepts `-fsanitize=signed-integer-overflow -fsanitize-trap=signed-integer-overflow -Werror`) | **PASS** (**568/568 checks**, 0 failures) | `window-fn` — **DF-W39 confirmed fixed on GCC 12.2** |
+| `land/clones-1123b` (combined tip of open PRs `#722`, `#729`–`#733`) | `f26998ef` | **None** (`d22b81c1` in stack) | **PASS** (116 targets, 0 warnings) | **FAIL** (65/66 headless TUs clean; only `clip_playback.cpp` fails on `timeline_clips.hpp:13` `std::views::filter`; 14 JUCE-off skipped) | **PASS** (**115/115** affected suites) | `win` / `engine-win` — ready on GCC 12.2 `-DADI_WERROR=ON` with zero local patches; `timeline_clips.hpp:13` remains the lone Clang 14.0.6 failure |
+
+(No PR requested; run-only verification round.)
+
+---
+
 ## 2026-11-23 — Queue item 2 (PR-BUILDS, Round 4): combined 7-stack `land/*-1123` train (`de85bc60`) and newly requested window/window-fn heads
 
 **For win (follow-up to Round 3).** Win chained the six updated `land/*-1123` stacks together onto `land/engine-win-1123` (`46eaba97`) -> `land/engine-1123` (`d5163723`, adding DF-E17 `4eda2b5b` and `c5407f3d` for `test_ui_document`) -> `land/window-1123` (`3413cb86`) -> `land/window-fn-1123` (`854e0ba5`) -> `land/mixview-1123` (`f5c59c0c`, DF-M62 `d22b81c1`) -> `land/devices-1123` (`94a2c796`) -> `land/clones-1123` (`de85bc60`), and `window` / `window-fn` requested two new branches. Verified on Linux GCC 12.2.0 `-DADI_WERROR=ON` (`-g0`, Pd on, JUCE off) and Clang 14.0.6 `-Werror`.
