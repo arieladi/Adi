@@ -10663,15 +10663,32 @@ void exportPage(AppCommands &commands, const std::filesystem::path &dir) {
         auto shaped = one;
         shaped.bitDepth = 16;
         shaped.dither = "Shaped 2";
+        // At a rate the shaping tables cover; at one they do not, the page refuses rather than dither triangular.
+        for (const int rate : kExportSampleRates)
+            if (audio::effectiveDither(audio::WavDither::Shaped2, static_cast<std::uint32_t>(rate)) == audio::WavDither::Shaped2) {
+                shaped.sampleRate = rate;
+                break;
+            }
+        for (const int rate : kExportSampleRates)
+            if (audio::effectiveDither(audio::WavDither::Shaped2, static_cast<std::uint32_t>(rate)) != audio::WavDither::Shaped2) {
+                auto uncovered = shaped;
+                uncovered.sampleRate = rate;
+                const auto refused = "Shaped 2 at " + std::to_string(rate) + " Hz, which its tables do not cover, is refused, saying so";
+                check(!exportRefusals(uncovered).empty(), refused.c_str());
+                uncovered.bitDepth = 32;
+                check(exportRefusals(uncovered).empty(), "and a 32-bit float file, which is not dithered, is not");
+                break;
+            }
         const auto refusals = exportRefusals(shaped);
         const auto shapedJob = exportJob(shaped, dir / "export-empty.adi", dir / "Shaped {mix}.wav", *tempo);
         const auto rendered = render::renderWav(shapedJob, {});
         if (rendered.state != render::JobState::Completed)
             std::printf("shaped render: %s\n", rendered.error.c_str());
+        const auto expectedShaped = exportSample(*tempo, textproj::kWhole, shaped.sampleRate);
         check(std::find(kExportDithers.begin(), kExportDithers.end(), std::string_view("Shaped 3")) != kExportDithers.end() &&
                   refusals.empty() && shapedJob.encoding.dither == audio::WavDither::Shaped2 &&
                   rendered.state == render::JobState::Completed && std::filesystem::exists(rendered.output) &&
-                  rendered.framesWritten == static_cast<std::uint64_t>(expected),
+                  rendered.framesWritten == static_cast<std::uint64_t>(expectedShaped),
               "Shaped 2 is offered, refused no longer, and renders the whole range");
     }
     document->release();
