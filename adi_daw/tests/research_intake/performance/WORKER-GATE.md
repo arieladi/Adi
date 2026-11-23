@@ -33,8 +33,10 @@ The hardware script waits for the player's first-callback READY marker. It
 checks the actual ASIO device, format and requested worker cap before collecting
 an explicit-PID process sample and QPC-aligned callback data. It alternates
 worker order between repetitions. Outputs include the raw device receipt,
-callback CSV, process/PDH samples, file hashes and rejection reasons. Each
-accepted callback falls wholly inside the retained window. The report retains
+callback CSV, process/PDH samples, file hashes and rejection reasons. A refused process interval retains its snapshots, elapsed window and CPU
+counter delta in the corresponding `cpu.json`. Such an arm has no reported
+CPU percentage or accepted timing summary. Each accepted callback falls
+wholly inside the retained window. The report retains
 the actual allocation and worker activity because a serial graph can cap its
 pool at zero.
 

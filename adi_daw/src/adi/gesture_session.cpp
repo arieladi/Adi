@@ -510,7 +510,9 @@ Status screen(const Entry& entry, const Proposal& proposal) {
         if (!descriptor || !descriptor->apply || !descriptor->buildInverse || descriptor->ephemeral)
             return fail(Error::InvalidOperation, "gesture operation has no reversible descriptor: " + request.opType);
         if (!validateSubmission(*descriptor, request.payload).empty()) return fail(Error::InvalidOperation, "gesture operation payload is invalid: " + request.opType);
-        if (descriptor->scope != Scope::Edit || (descriptor->engineImpact != EngineImpact::None && descriptor->engineImpact != EngineImpact::Snapshot))
+        const bool trackDelay = request.opType == "mixer.setDelay" && entry.spec.strategy == Strategy::Structural;
+        if (descriptor->scope != Scope::Edit ||
+            (descriptor->engineImpact != EngineImpact::None && descriptor->engineImpact != EngineImpact::Snapshot && !trackDelay))
             return fail(Error::UnsupportedPreview, "gesture operation requires unsupported external/topology effects: " + request.opType);
         const bool device = request.opType == "device.setParam" || request.opType == "device.loadState";
         if (device && (entry.spec.strategy != Strategy::LiveValues || !entry.presentation->supportsDeviceValues()))
