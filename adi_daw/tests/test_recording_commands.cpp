@@ -95,6 +95,82 @@ void latencyCompensatedPlacement() {
         check(exact,"corrected song position shifts the whole take without changing its recorded samples");
     }
 }
+void midiLoopTakes() {
+    constexpr std::int64_t width=5765760;
+    Fixture f;
+    auto& store=*f.store;
+    store.db().exec("INSERT INTO tracks(id,kind,name) VALUES(23,'midi','MIDI Takes')");
+    const std::array<notes::NoteValues,1> held{{{.start=3*width/4,.duration=width/2,.id=17,
+        .key=60,.velocity=100,.releaseVelocity=71}}};
+    std::array<std::array<notes::NoteValues,1>,3> later{};
+    for(std::size_t i=0;i<later.size();++i)
+        later[i][0]={.start=width/8,.duration=width/8,.id=18+i,.key=64,.velocity=90};
+    const std::array<recording::MidiTakePass,4> passes{{
+        {{101,201,"First"},301,width,held,held},
+        {{102,202,"Second"},302,width,later[0],held},
+        {{103,203,"Third"},303,width,later[1],held},
+        {{104,204,"Partial"},304,width/2,later[2],held},
+    }};
+    const recording::MidiLoopPlacement placement{23,2*width,width,200,300,"MIDI Take"};
+    const auto before=digestProject(store).text;
+    auto invalid=passes;
+    invalid[1].length=width/2;
+    check(!recording::prepareMidiLoopCommit(store,placement,invalid).ok && digestProject(store).text==before,
+          "a partial MIDI pass in the middle is refused without creating a clip");
+    auto prepared=recording::prepareMidiLoopCommit(store,placement,passes);
+    if(!prepared.ok)throw std::runtime_error(prepared.error);
+    check(digestProject(store).text==before,"MIDI take preparation publishes no files or project rows");
+    const auto commit=recording::commit(store,prepared);
+    if(!commit.ok)throw std::runtime_error(commit.error);
+    const auto count=[&](const char* sql){return store.db().execAndGet(sql).getInt();};
+    check(count("SELECT count(*) FROM clips WHERE track_id=23 AND lane_id IS NOT NULL")==4 &&
+          count("SELECT count(*) FROM clips WHERE track_id=23 AND lane_id IS NULL")==1 &&
+          count("SELECT count(*) FROM lanes WHERE track_id=23 AND kind='take' AND id=101+ord")==4 &&
+          count("SELECT count(*) FROM clips WHERE id=204 AND length_ticks=2882880")==1,
+          "3.5 captured passes create four ordered take clips, one main clip and a half-length final take");
+    const auto readSingle=[&](std::int64_t clip) {
+        const auto snapshot=notes::captureNotes(store,clip);
+        if(!snapshot.ok || snapshot.records().size()!=1)throw std::runtime_error("expected one stored MIDI note");
+        std::string error;
+        const auto decoded=notes::values(snapshot.records().front(),error);
+        if(!decoded)throw std::runtime_error(error);
+        return *decoded;
+    };
+    const auto first=readSingle(201),main=readSingle(200);
+    check(first.id==17 && first.duration==width/4 && first.releaseVelocity==0 &&
+          main.id==17 && main.duration==width/2 && main.releaseVelocity==71,
+          "the take closes the held note at the pass end while the main copy retains its hold and real release");
+    {
+        const auto last=notes::captureNotes(store,204);
+        auto snapped=readSingle(204);snapped.start=0;
+        std::string error;
+        auto replacement=notes::withValues(last.records().front(),snapped,error);
+        if(!replacement)throw std::runtime_error(error);
+        notes::Diff diff;
+        diff.changed.push_back({last.records().front(),*replacement});
+        const auto quantize=recording::prepareRecordQuantize(store,204,diff);
+        History history(store);
+        check(quantize.ok && notes::commitDiff(store,quantize).ok && readSingle(204).start==0 &&
+              history.nextUndo() && history.nextUndo()->label=="Record Quantize",
+              "record quantize commits as a distinct Undo step after the raw pass");
+        check(history.undo().ok && readSingle(204).start==width/8 &&
+              count("SELECT count(*) FROM clips WHERE track_id=23")==5,
+              "Undo Record Quantize restores the raw note and keeps every take");
+    }
+    History history(store);
+    for(int remaining=3;remaining>=0;--remaining) {
+        const auto next=history.nextUndo();
+        check(next && next->label=="Record MIDI" && history.undo().ok &&
+              count("SELECT count(*) FROM clips WHERE track_id=23 AND lane_id IS NOT NULL")==remaining &&
+              count("SELECT count(*) FROM clips WHERE track_id=23 AND lane_id IS NULL")== (remaining>0?1:0),
+              "one Record MIDI Undo removes one take and restores the previous main image");
+    }
+    for(int restored=1;restored<=4;++restored)
+        check(history.redo().ok && count("SELECT count(*) FROM clips WHERE track_id=23 AND lane_id IS NOT NULL")==restored,
+              "Redo restores one literal MIDI pass");
+    check(readSingle(200)==main && readSingle(204).start==width/8,
+          "pass redo preserves note identities and the unquantized captured timing");
+}
 void publicationStagingOwnership() {
     namespace fs=std::filesystem;
     Fixture f;auto recorded=f.capture();const auto before=digestProject(*f.store).text;
@@ -582,6 +658,7 @@ void loopReuseRefusesUnprovedExtents() {
 }
 int main(int argc,char** argv){try{
     latencyCompensatedPlacement();
+    midiLoopTakes();
     if(argc!=1 && (argc!=3 || std::string(argv[1])!="--cross-volume-work-folder"))throw std::runtime_error("usage: recording tests [--cross-volume-work-folder PATH]");
     publicationStagingOwnership();heardPlacementAndHistory();rollbackNeverDeletesLaterWriter();lateSqlAndOwnedReuse();existingMediaAndHistoryPaths();groupDedupAndGuards();loopPublicationRefusesFlattening();
     loopPassesAndHistory();loopPartialEdgesAndPriorComp();loopSinglePassBoundaries();loopAtomicRefusalAndDedup();
