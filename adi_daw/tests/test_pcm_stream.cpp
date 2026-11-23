@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+#include "adi/audio/decode.hpp"
 #include "adi/audio/pcm_stream.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/audio/io_audit.hpp"
@@ -7,11 +8,13 @@
 #include <array>
 #include <atomic>
 #include <bit>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
+#include <mutex>
 #include <new>
 #include <numbers>
 #include <span>
@@ -177,5 +180,26 @@ void concurrentVorbisOpens(){
     }
     check(thrown.load()==0 && opened==workers*rounds && same,"eight workers opening Ogg Vorbis at once each get the exact length, format and prefix of a lone open");
 }
+// DF-E65, on every build: the stress above only shows the race under ThreadSanitizer,
+// so this pins the lock itself. While the test holds stbVorbisTableLock(), an Ogg open
+// on another thread must not finish; once it is released, the open completes with the
+// lone open's result. Removing the lock, or moving the open outside it, fails here.
+// A slow machine can only make the open look blocked longer, never fail the check.
+void vorbisOpenWaitsForTableLock(){
+    const auto source=fixture("tone.ogg");constexpr std::uint32_t prefixFrames=64;
+    const auto reference=openVorbisPrefix(source,prefixFrames);
+    std::atomic<bool> finished{false};VorbisOpen got;
+    std::unique_lock<std::mutex> held(stbVorbisTableLock());
+    std::thread opener([&]{
+        try {got=openVorbisPrefix(source,prefixFrames);} catch(...){got=VorbisOpen{};}
+        finished=true;
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    const bool waited=!finished.load();
+    held.unlock();
+    opener.join();
+    check(waited,"an Ogg Vorbis open waits while the stb_vorbis table lock is held");
+    check(finished.load() && reference.ready && got.ready && got.info.frames==reference.info.frames && got.prefix==reference.prefix,"the waiting Ogg Vorbis open completes with the lone open's result once the lock is released");
 }
-int main(){try{formats();controls();sourcesAndErrors();streaming();concurrentVorbisOpens();}catch(const std::exception& error){++failures;std::printf("EXCEPTION: %s\n",error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+}
+int main(){try{formats();controls();sourcesAndErrors();streaming();concurrentVorbisOpens();vorbisOpenWaitsForTableLock();}catch(const std::exception& error){++failures;std::printf("EXCEPTION: %s\n",error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

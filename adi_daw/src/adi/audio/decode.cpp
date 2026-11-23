@@ -57,6 +57,19 @@ const char* toString(DecodeProblem p) {
 DecodeError::DecodeError(DecodeProblem problem, const std::string& detail)
     : std::runtime_error(std::string(toString(problem)) + ": " + detail), problem_(problem) {}
 
+// DF-E65: stb_vorbis keeps one process-wide CRC table. Every open rewrites it
+// (start_decoder calls crc32_init), and finding a page reads it, which only
+// stb_vorbis_stream_length_in_samples and the seek functions do here (the push
+// API is compiled out). Rewriting it with the same values is still a data race,
+// so every stb_vorbis call that can reach the table holds this one lock, and the
+// fetched copy stays unpatched. Header parsing and the bounded end-of-stream
+// length probe run one at a time; decoding packets never touches the table and
+// stays parallel.
+std::mutex& stbVorbisTableLock() {
+    static std::mutex lock;
+    return lock;
+}
+
 namespace {
 void cancelled(std::stop_token stop) {
     if(stop.stop_requested())throw DecodeError(DecodeProblem::Cancelled,"decoding cancelled");
@@ -196,19 +209,6 @@ private:
     drmp3 mp3_{};
     bool open_ = false;
 };
-
-// DF-E65: stb_vorbis keeps one process-wide CRC table. Every open rewrites it
-// (start_decoder calls crc32_init), and finding a page reads it, which only
-// stb_vorbis_stream_length_in_samples and the seek functions do here (the push
-// API is compiled out). Rewriting it with the same values is still a data race,
-// so every stb_vorbis call that can reach the table holds this one lock, and the
-// fetched copy stays unpatched. Header parsing and the bounded end-of-stream
-// length probe run one at a time; decoding packets never touches the table and
-// stays parallel.
-std::mutex& stbVorbisTableLock() {
-    static std::mutex lock;
-    return lock;
-}
 
 class VorbisDecoder final : public Decoder {
 public:
