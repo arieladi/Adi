@@ -157,8 +157,10 @@ class SettingsWindow final : public juce::DocumentWindow {
     void resized() override;
     void parentSizeChanged() override;
     SettingsPanel &panel() noexcept { return *panel_; }
-    // Where it stands, kept in window.places after each move (WIN-02).
+    // Where it stands, kept in window.places after each move (WIN-02); full screen once it first shows,
+    // when it was.
     PlaceWatch place;
+    bool fullScreenOwed = false;
 
   private:
     SettingsPanel *panel_ = nullptr;

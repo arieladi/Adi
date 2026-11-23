@@ -25,7 +25,8 @@ juce::Rectangle<int> restoreFloating(const FloatingState &s, const std::vector<M
 std::vector<MonitorArea> currentMonitors() {
     std::vector<MonitorArea> result;
     for (const auto &d : juce::Desktop::getInstance().getDisplays().displays)
-        result.push_back({displayId(d), d.userArea, d.totalArea, static_cast<int>(d.dpi), d.isMain});
+        result.push_back({displayId(d), d.userBounds.toNearestInt(), d.logicalBounds.toNearestInt(),
+                          static_cast<int>(d.dpi), d.isMain});
     return result;
 }
 AnalyserModel::AnalyserModel(std::shared_ptr<const engine::ScopeTap> tap) : tap_(std::move(tap)) {
@@ -138,7 +139,7 @@ struct FloatingHost::Entry {
         }
         void parentSizeChanged() override {
             DocumentWindow::parentSizeChanged();
-            if (keepReachable(*this))
+            if (keepReachable(*this, isResizable()))
                 place.moved();
         }
         void minimisationStateChanged(bool minimised) override {

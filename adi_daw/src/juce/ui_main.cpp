@@ -941,13 +941,12 @@ class AdiApplication final : public juce::JUCEApplication,
         window_ = std::make_unique<AdiWindow>(std::move(root), *commands_);
         window_->onClose = [this] { systemRequestedQuit(); };
         window_->setName("ADI - " + file.getFileNameWithoutExtension());
-        // Where it was when the application last stood (window.places, WIN-02), at first run centred.
-        if (standingAt) {
+        // Where it was when the application last stood (window.places, WIN-02), at first run centred; full
+        // screen again once it shows, so JUCE keeps the rectangle it goes back to.
+        if (standingAt)
             window_->setBounds(fromPlace(*standingAt));
-            if (fullScreen)
-                window_->setFullScreen(true);
-        } else
-            restorePlace(*window_, *settings_, "main", 1200, 720);
+        else
+            fullScreen = restorePlace(*window_, *settings_, "main", 1200, 720);
         window_->place.save = [this] {
             std::string why;
             if (window_ && !keepPlace(*window_, *settings_, "main", why))
@@ -996,6 +995,8 @@ class AdiApplication final : public juce::JUCEApplication,
             return out;
         };
         window_->setVisible(true);
+        if (fullScreen)
+            window_->setFullScreen(true);
         // A Mix View kept open in its own window opens there again.
         syncMixView(*floating_, *root_, true);
         if (!noAudio_)
@@ -1266,6 +1267,8 @@ class AdiApplication final : public juce::JUCEApplication,
                 };
             }
             settingsWindow_->setVisible(true);
+            if (std::exchange(settingsWindow_->fullScreenOwed, false))
+                settingsWindow_->setFullScreen(true);
             settingsWindow_->toFront(true);
             return true;
         }

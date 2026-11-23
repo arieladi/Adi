@@ -641,7 +641,7 @@ SettingsWindow::SettingsWindow(settings::AppSettings &store,
     setResizeLimits(500, 560, 2000, 1600);
     // Live 11's Preferences open 500 by 607; ADI's has more pages and its Find box. Then where it was
     // left, as the main window (window.places, WIN-02).
-    restorePlace(*this, store, "settings", 560, 680);
+    fullScreenOwed = restorePlace(*this, store, "settings", 560, 680);
     place.save = [this, &store] {
         std::string why;
         if (!keepPlace(*this, store, "settings", why))
