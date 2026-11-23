@@ -214,6 +214,8 @@ struct MpeOut {
     std::int32_t frame = 0;
     std::uint32_t exprType = 0;
     std::uint32_t paramId = kNoParam;
+    // An ordinary Controller event, separate from controls generated for MPE.
+    bool fromControllerEvent = false;
     std::uint64_t noteId = 0;
     /// Velocity 0..1, an expression's normalised value, poly pressure, or a
     /// Control's parameter value. A double: the route decides what is
@@ -236,6 +238,13 @@ public:
         : data_(storage), capacity_(capacity) {}
 
     [[nodiscard]] std::int32_t size() const noexcept { return size_; }
+    [[nodiscard]] std::int32_t capacity() const noexcept {
+        return data_ == nullptr || capacity_ < 0 ? 0 : capacity_;
+    }
+    [[nodiscard]] std::int32_t remaining() const noexcept {
+        const std::int32_t cap = capacity();
+        return size_ < cap ? cap - size_ : 0;
+    }
     [[nodiscard]] std::int64_t dropped() const noexcept { return dropped_; }
     [[nodiscard]] const MpeOut* begin() const noexcept { return data_; }
     [[nodiscard]] const MpeOut* end() const noexcept { return data_ + size_; }
@@ -248,6 +257,9 @@ public:
         if (data_ == nullptr || size_ >= capacity_) { ++dropped_; return false; }
         data_[size_++] = o;
         return true;
+    }
+    void drop(std::int32_t count) noexcept {
+        if (count > 0) dropped_ += count;
     }
     void clear() noexcept { size_ = 0; }
 
@@ -297,6 +309,9 @@ public:
 
     [[nodiscard]] ExpressionRoute current() const noexcept { return route_; }
     [[nodiscard]] int liveNotes() const noexcept;
+    /// Note-offs that could not fit in the output list and will be sent first
+    /// on the next `route()` or `switchTo()`.
+    [[nodiscard]] int pendingNoteOffs() const noexcept { return pendingCount_; }
     /// The member channel a sounding note was given, or -1.
     [[nodiscard]] int channelOf(std::uint64_t noteId) const noexcept;
 
@@ -326,12 +341,22 @@ private:
         std::uint8_t channel = 0;
     };
 
+    struct PendingNoteOff {
+        std::uint8_t channel = 0;
+        std::int16_t key = 0;
+        std::uint64_t id = 0;
+        double velocity = 0.0;
+    };
+
+    void resetLiveState() noexcept;
+    void enqueuePendingOff(const Note& nt, double velocity) noexcept;
+    void drainPendingOffs(std::int32_t frame, MpeOutList& out) noexcept;
     void noteOn(const Event* events, std::int32_t n, std::int32_t i, MpeOutList& out) noexcept;
     void noteOff(const Event& e, MpeOutList& out) noexcept;
     void expression(const Event& e, MpeOutList& out) noexcept;
     void sendMcm(std::int32_t frame, MpeOutList& out) noexcept;
     void control(std::uint8_t chan, std::uint16_t ctrl, double unit, std::int32_t frame,
-                 std::uint64_t noteId, MpeOutList& out) noexcept;
+                 std::uint64_t noteId, MpeOutList& out, bool fromControllerEvent = false) noexcept;
     int allocate() noexcept;
     Note* find(std::uint64_t id) noexcept;
     [[nodiscard]] const Note* find(std::uint64_t id) const noexcept;
@@ -342,6 +367,8 @@ private:
     bool mcmPending_ = false;
 
     std::array<Note, kMaxNotes> notes_{};
+    std::array<PendingNoteOff, kMaxNotes> pendingOffs_{};
+    int pendingCount_ = 0;
     std::array<int, 16> active_{};             ///< notes sounding per channel
     std::array<std::uint64_t, 16> lastOn_{};   ///< clock of the last note-on
     std::array<std::uint64_t, 16> lastOff_{};  ///< clock of the last release

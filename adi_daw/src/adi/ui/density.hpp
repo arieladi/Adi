@@ -26,6 +26,36 @@ enum class DensityId { Compact, Open };
     ADI_DENSITY_INT(border) /* a panel's dark edge */ \
     ADI_DENSITY_INT(fieldHeight) /* a Control Bar field, a chooser's row */ \
     ADI_DENSITY_INT(detailHeight) /* the Info View and the Device View, with their edges */ \
+    ADI_DENSITY_INT(workspaceSegmentWidth) /* Arrangement and Mix View in the Control Bar */ \
+    ADI_DENSITY_INT(workspaceCompactSegmentWidth) /* the abbreviated workspace labels */ \
+    ADI_DENSITY_INT(mixSongHeight) /* the overview and the ruler */ \
+    ADI_DENSITY_INT(mixSongRulerHeight) \
+    ADI_DENSITY_INT(mixSongLabelSpacing) /* minimum space between printed bar numbers */ \
+    ADI_DENSITY_INT(mixSongLoopBraceHeight) \
+    ADI_DENSITY_INT(mixStackRow) /* a resting channel */ \
+    ADI_DENSITY_INT(mixStackNearRow) /* one row from the centre of the lens */ \
+    ADI_DENSITY_INT(mixStackOuterRow) /* two rows from the centre of the lens */ \
+    ADI_DENSITY_INT(mixStackFocusedRow) /* the centre of the lens */ \
+    ADI_DENSITY_INT(mixPageWidth) /* a Mix View page tab */ \
+    ADI_DENSITY_INT(mixFocusChipWidth) \
+    ADI_DENSITY_INT(mixFocusChipHeight) \
+    ADI_DENSITY_INT(mixFocusSourceWidth) \
+    ADI_DENSITY_INT(mixFocusAddWidth) \
+    ADI_DENSITY_INT(mixHeaderHeight) /* one row of workspace controls */ \
+    ADI_DENSITY_INT(mixHeaderSingleRowWidth) /* space to keep those controls on one row */ \
+    ADI_DENSITY_INT(mixFloatButtonWidth) \
+    ADI_DENSITY_INT(mixDockButtonWidth) \
+    ADI_DENSITY_INT(mixReferenceHeight) /* the reference timeline and its controls */ \
+    ADI_DENSITY_INT(mixReferenceLabelWidth) \
+    ADI_DENSITY_INT(mixReferenceNameWidth) \
+    ADI_DENSITY_INT(mixReferenceButtonWidth) \
+    ADI_DENSITY_INT(mixReferenceVisibilityWidth) \
+    ADI_DENSITY_INT(mixChannelMinWidth) /* left channel column */ \
+    ADI_DENSITY_INT(mixChannelMaxWidth) \
+    ADI_DENSITY_INT(mixChannelRowHeight) \
+    ADI_DENSITY_INT(mixChannelLevelWidth) \
+    ADI_DENSITY_INT(mixInfoHeight) /* the compact analyser in the left column */ \
+    ADI_DENSITY_INT(mixPluginChipWidth) /* the label of an external insert */ \
     /* corners */ \
     ADI_DENSITY_FLOAT(radiusSmall) /* a small mark, a pill's ends at the smallest */ \
     ADI_DENSITY_FLOAT(radiusThumb) /* a scroll bar's thumb */ \
@@ -51,7 +81,22 @@ enum class DensityId { Compact, Open };
     /* the ring knob, its radius in points (language.png part C) */ \
     ADI_DENSITY_FLOAT(knobSmall) \
     ADI_DENSITY_FLOAT(knobMedium) \
-    ADI_DENSITY_FLOAT(knobLarge)
+    ADI_DENSITY_FLOAT(knobLarge) \
+    /* the permanent Main meter */ \
+    ADI_DENSITY_INT(mixMeterMinWidth) \
+    ADI_DENSITY_INT(mixMeterMaxWidth) \
+    ADI_DENSITY_INT(mixMeterMinHeight) \
+    ADI_DENSITY_INT(mixMeterControlHeight) \
+    ADI_DENSITY_INT(mixMeterTitleHeight) \
+    ADI_DENSITY_INT(mixMeterRailHeight) \
+    ADI_DENSITY_INT(mixMeterRailLabelHeight) \
+    ADI_DENSITY_INT(mixMeterReadingHeight) \
+    ADI_DENSITY_INT(mixMeterChannelLabelHeight) \
+    ADI_DENSITY_INT(mixMeterMinimumBarHeight) \
+    ADI_DENSITY_INT(mixMeterLoudnessMinimumHeight) \
+    ADI_DENSITY_INT(mixMeterDenseScaleHeight) \
+    ADI_DENSITY_INT(mixMeterMaxBarWidth) \
+    ADI_DENSITY_INT(mixMeterSegmentHeight)
 struct Density {
 #define ADI_DENSITY_INT_MEMBER(name) int name;
 #define ADI_DENSITY_FLOAT_MEMBER(name) float name;

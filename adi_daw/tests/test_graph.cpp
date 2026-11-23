@@ -382,6 +382,55 @@ void testSilenceSuspends() {
           "and the scheduler counted the suspension");
 }
 
+void testBypassedTransitionWakesOnlyClaimedBlock() {
+    section("DF-M15 -- a bypassed transition services private segments and preserves dry");
+    class Transition final : public Node {
+    public:
+        [[nodiscard]] bool hasBypass() const noexcept override { return true; }
+        [[nodiscard]] bool bypassed() const noexcept override { return true; }
+        [[nodiscard]] std::int64_t tailSamples() const noexcept override { return 0; }
+        [[nodiscard]] std::int32_t latencySamples() const noexcept override { return 17; }
+        bool needsBypassTransition(std::int32_t configuredLatency) noexcept override {
+            ++checks;
+            return owed && configuredLatency == 17;
+        }
+        void processBypassTransition(const NodeIo& io) noexcept override {
+            privateOutput = privateOutput && !io.out && !io.out64 && io.inputSilent && io.renderBlock == 2;
+            frames += io.frames;
+            owed = false;
+        }
+        void process(const NodeIo&) noexcept override { ++wetCalls; }
+        int checks = 0, frames = 0, wetCalls = 0;
+        bool owed = false, privateOutput = true;
+    };
+    ConstNode source(0.f);
+    Transition transition;
+    Graph g;
+    const auto input = g.addNode(source), bypassed = g.addNode(transition);
+    check(g.connect(input, bypassed), "a silent source feeds the bypassed transition node");
+    g.setOutput(bypassed);
+    g.prepare(48000., 256);
+    check(g.ok(), "the transition graph prepared");
+
+    Out output(128);
+    auto io = makeIo(output, 128);
+    io.renderBlock = 1;
+    g.process(io);
+    check(transition.checks == 1 && transition.frames == 0, "an idle bypass does no transition work");
+    transition.owed = true;
+    io.renderBlock = 2;
+    g.process(io);
+    g.process(io);
+    check(transition.checks == 2 && transition.frames == 256 && transition.privateOutput &&
+              g.latencySamples() == 17,
+          "one pinned demand covers both segments without access to audible buffers");
+    io.renderBlock = 3;
+    g.process(io);
+    check(transition.checks == 3 && transition.frames == 256 && transition.wetCalls == 0 &&
+              g.stats().nodesSuspended > 0,
+          "settlement restores suspension on the next physical block");
+}
+
 void testSuspendedNodeClearsOnceToCapacity() {
     section("ADR-0043 / ADR-0102 d5 -- a sleeping node clears its buffer once, "
             "to capacity, and costs nothing per block after that");
@@ -390,6 +439,7 @@ void testSuspendedNodeClearsOnceToCapacity() {
     // audio when it falls asleep. TailNode writes zeros and could never leak.
     class PassNode final : public Node {
     public:
+        void didSuspend() noexcept override { ++suspensions; }
         void process(const NodeIo& io) noexcept override {
             for (std::int32_t c = 0; c < io.channels; ++c) {
                 const float* in = io.in != nullptr ? io.in[c] + io.blockOffset : nullptr;
@@ -399,6 +449,7 @@ void testSuspendedNodeClearsOnceToCapacity() {
         }
         [[nodiscard]] std::int64_t tailSamples() const noexcept override { return 0; }
         [[nodiscard]] const char* name() const noexcept override { return "pass"; }
+        int suspensions = 0;
     };
 
     ConstNode src(1.0f);
@@ -443,6 +494,7 @@ void testSuspendedNodeClearsOnceToCapacity() {
           "and five more silent blocks cleared nothing: " +
               std::to_string(g.stats().suspendClears));
     check(g.stats().nodesSuspended >= 6, "while the node stayed suspended");
+    check(pass.suspensions == 1, "the suspension hook is delivered only on entry");
 
     // Wake, then sleep again: the flag was dropped when the node wrote, so the
     // second sleep clears again. A plant that never drops the flag leaks the
@@ -457,6 +509,7 @@ void testSuspendedNodeClearsOnceToCapacity() {
     check(g.stats().suspendClears == clearsAfterSleep + 1,
           "which took exactly one more clear: " +
               std::to_string(g.stats().suspendClears));
+    check(pass.suspensions == 2, "a later wake and sleep deliver the next transition");
 }
 
 void testMixSkipsSleepingSources() {
@@ -2435,6 +2488,7 @@ int main() {
         testFloorCoalesces();
         testFloorBound();
         testSilenceSuspends();
+        testBypassedTransitionWakesOnlyClaimedBlock();
         testSuspendedNodeClearsOnceToCapacity();
         testMixSkipsSleepingSources();
         testTheAudioThreadNeverAsksALatency();

@@ -32,6 +32,34 @@ class SoloButton final : public juce::TextButton {
 };
 // Live's peak level (manual 18.1): the highest peak since the last click, in dB, red once
 // it has clipped. A click resets it.
+// A mixer control the left button moves; the right one opens the strip's menu for it and moves nothing (AU-04):
+// JUCE's Slider starts a drag on any button when its own menu is off.
+class PrimaryButtonSlider final : public juce::Slider {
+  public:
+    // A gesture belongs to the press that began it: a primary press's drag and release reach the Slider whatever
+    // keys or buttons join it (a Ctrl held at the release is a popup click on macOS), and a popup press's never do.
+    void mouseDown(const juce::MouseEvent &e) override {
+        primary_ = !e.mods.isPopupMenu();
+        if (primary_)
+            juce::Slider::mouseDown(e);
+    }
+    void mouseDrag(const juce::MouseEvent &e) override {
+        if (primary_)
+            juce::Slider::mouseDrag(e);
+    }
+    void mouseUp(const juce::MouseEvent &e) override {
+        if (primary_)
+            juce::Slider::mouseUp(e);
+        primary_ = false;
+    }
+    void mouseDoubleClick(const juce::MouseEvent &e) override {
+        if (!e.mods.isPopupMenu())
+            juce::Slider::mouseDoubleClick(e);
+    }
+
+  private:
+    bool primary_ = false;
+};
 class PeakHold final : public juce::Button {
   public:
     PeakHold();
@@ -77,12 +105,21 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     // Finds the engine's meter for the track again (MixerPanel::meter): on binding, on every
     // refresh, and when the panel is asked to (MixerPanel::resolveMeters).
     void resolveMeter();
-    juce::Slider volume, pan;
+    PrimaryButtonSlider volume, pan;
     // Live's Track Delay (manual 18.7): a value box in milliseconds, typed or dragged up or down, a
     // negative value pre-delaying; its "ms" unit box beside it. Shown by Live's Track Options: on
     // the row after the sends in the track controls, and as the section under the mixer in the
     // Mixer View.
     juce::Slider delay;
+    void setDelayTooltip(const juce::String &tip);
+    // Live's Cue Volume on Main (manual 18.6; MX-08): how loud the cued tracks play to Cue Out. Main's
+    // only, in the Mixer View, where a track has its Activator. One transport op at release or when
+    // typed, outside undo.
+    juce::Slider cueVolume;
+    // Cue Out's chooser on Main (painted in the In/Out section): its stereo pairs; the pick is written.
+    void cueOutMenu();
+    // Whether `at` is on Main's Cue Out chooser, where `paintMixerInOut` draws it.
+    bool onCueOut(juce::Point<int> at) const noexcept;
     // Live 12's Keep Latency toggle under Track Delay in the Mixer's Track Options (manual 18.8, its
     // figure): Keep Monitoring Latency in Recorded Audio, lit from the snapshot (#397, N31), on a
     // track that records.
@@ -92,6 +129,8 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     static constexpr int kDelayDragPixels = 20000;
     juce::TextButton active;
     SoloButton solo{"S"};
+    bool cueMode_ = false; // the Solo button is the Cue button (Options > Cue Switches)
+    bool cueDragging_ = false;
     ArmButton arm;
     // A return's Pre/Post switch, where a track has Arm (ADR-0203 d3: one switch on each return);
     // lit while its sends tap after the fader, as Live's.
@@ -167,6 +206,13 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     // The Mixer View strip's meter, under its fader.
     juce::Rectangle<int> meterArea() const noexcept;
     void panMenu();
+    void volumeMenu();
+
+  public:
+    // The volume fader's menu as its right-click shows it: empty when the track has no Volume lane.
+    juce::PopupMenu volumeMenuItems();
+
+  private:
     void sendMenu(std::size_t index);
     void paintMeter(juce::Graphics &, juce::Rectangle<int>) const;
     // Live's MIDI meter on a track with no instrument, at the head of the meter's column.

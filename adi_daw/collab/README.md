@@ -6,9 +6,10 @@ before your first commit, and re-read it if you have been away.
 
 ## Roster
 
-As of 19 November 2026 (ADR-0208, ADR-0236, ADR-0246 d4 and d5, ADR-0247 d5, ADR-0248 d3 and d14, ADR-0249 d8).
+As of 23 November 2026 (ADR-0208, ADR-0236, ADR-0246 d4 and d5, ADR-0247 d5, ADR-0248 d3 and d14, ADR-0249 d8, ADR-0252).
 Each seat writes only its own log, on its own log branch; win lands the logs with the seat's work.
 The window-fn seat runs since 19 November (ADR-0248 d14); its split with the window lane is ruled by win on 22 November (below).
+The gemini seat, a trial from 22 November, is permanent since 23 November (ADR-0252).
 
 | Seat | Runs as | Log | Branches | Owns, in short |
 |---|---|---|---|---|
@@ -20,6 +21,7 @@ The window-fn seat runs since 19 November (ADR-0248 d14); its split with the win
 | **mixview** | Codex, on the director's PC | `collab/mixview.md` on `mixview/log` | `mixview/<topic>` | the Mix View (ADR-0236) |
 | **clones** | Codex, on the director's PC | `collab/clones.md` on `clones/log` | `clones/<topic>` | ADI-Shaper and the measured contracts of OScope 2 and PsyScope Pro (ADR-0247 d5) |
 | **window-fn** | Claude, a cloud session (since 19 November, ADR-0248 d14) | `collab/window-fn.md` on `window-fn/log` | `window-fn/<topic>` | the window's function rows: commands, keys, gestures, undo steps and the wiring from the window to the engine (recording, MIDI input, export, plug-in loading, faders heard while dragging); it changes no look |
+| **gemini** | Gemini, a Linux machine with GCC 12.2 and Clang 14 (since 22 November; permanent since 23 November, ADR-0252) | `collab/gemini.md` on `gemini/log` | `gemini/<topic>` | verification: other seats' requested branches on the older toolchains, the sanitizers, the fuzzers, WTS-01 on Linux, second checks of landed rows; its findings go to win to register, never fixed by it; code only on loans and, after 3 December, in the engine PLAN rows reserved for it (ADR-0252 d2 to d4) |
 
 **Who owns which paths** (ADR-0248 d3). One owner per shared path. A seat that needs another seat's
 path asks its owner in its log; the owner answers or lends. No seat edits `.github/**`: it asks win.
@@ -33,7 +35,7 @@ path asks its owner in its log; the owner answers or lends. No seat edits `.gith
 | devices | device DSP (`src/adi/dsp/**`, `src/adi/pd_builtins/**`, `cmake/devices/**`, `pd/**`) and the Pd tier (`src/juce/pd_*`) |
 | mixview | `src/adi/mix/**`; the Mix View's own `src/juce/ui_mix*` files (`src/juce/ui_mixer.*`, the Mixer, stays the window's); the STACK and the shared analyser (`src/juce/ui_stack.*`, `ui_stack_picker.*`, `ui_analysis.*`); the classic scope (`src/juce/ui_scope_classic.*`, `src/juce/smexoscope/**`); the function hosts (`src/juce/mix_*_host.*`); in `src/adi/ui/`: `shared_analysis.*`, `analysis_comparison.*`, `analysis_palettes.hpp` and `palettes/**`, `spectrum_slope.hpp`, `stack_model.*`, `mix_view_provider.hpp`, `parameter_feed.*` and `focus_scope.hpp`. `ui_stack_picker`, `ui_scope_classic`, `smexoscope`, `mix_compressor_host` and `focus_scope` are so far only on its branches. Its device-key routing (`src/adi/device_key_routes.*`, `device_key_edit.cpp`) until #651 lands, then the engine's; loans: `src/adi/dsp/stereo_envelope_meter.*` (devices lane's tree), `src/adi/engine/main_audition.hpp` (engine's) |
 | clones | `adi_shaper*` wherever they sit; its hunks in shared files are agreed with the devices lane through the logs |
-| gemini (trial, 22 November) | no paths of its own: only the rows win lends it, named in the loans below; branches `gemini/<topic>`, log `collab/gemini.md` on `gemini/log` |
+| gemini (permanent, ADR-0252) | no source paths of its own: code only on a loan named below, and, on branches that land after 3 December, in the engine PLAN rows reserved for it in `collab/RESERVATIONS.md`, each on that row's named paths, lent and reviewed by the engine; never `.github/**`; branches `gemini/<topic>`, log `collab/gemini.md` on `gemini/log` |
 | a tool | `tools/**`: the seat whose code the tool drives (`tools/benchmark_blocks.cpp` is the engine's); `src/adi/audio/**` is the engine's (win, 22 November) |
 | win | `.github/**`, `docs/DECISIONS.md`, `docs/PLAN.md`, `docs/DEFERRED.md`, `collab/RESERVATIONS.md`, this file; `src/adi/builtin_catalog.cpp` and `src/juce/builtin_host.cpp`, lent to the devices lane |
 
@@ -52,8 +54,9 @@ Freeze's extent loop (`src/adi/freeze_commands.cpp`) and Bounce in Place's exten
 `src/adi/midi_capture.cpp` and `TempoMap::secondsToTicks` in `src/adi/engine/snapshot.cpp` for DF-E45, and
 `src/adi/check.cpp` for DF-E54 (a) (win, 20 November; withdrawn the same day, the engine had fixed them);
 for DF-E64 only, the engine lends engine-win `src/adi/engine/clip_playback.cpp`'s read-ahead and the hold on
-`RenderBlock::sourcesReadyAt` (win, 20 November); for its trial, the engine lends the gemini seat
+`RenderBlock::sourcesReadyAt` (win, 20 November); for its trial (ended when #713 landed on 23 November), the engine lent the gemini seat
 `src/adi/engine/param_automation.cpp` for DF-E53 and `src/adi/engine/mpe_output.cpp` for DF-E56 (win, 22 November), and for the fixes its review asked (win, 22 November): DF-E53's refusal in `src/adi/automation_lanes.cpp`, its check in `src/adi/check.cpp`, the canonical-form sentence in `docs/format/SPEC.md` §6.3.3, and DF-E56's `src/adi/engine/mpe_output.hpp`;
+after 3 December, the engine lends the gemini seat the paths of each engine PLAN row reserved for it in `collab/RESERVATIONS.md`, for that row only, and reviews its branch before the pull request is asked (ADR-0252 d4);
 for ADI-Shaper's own panel, the window lends the clones seat the device editor factory in `src/juce/ui_main.cpp`
 and the two wrench-visibility checks in `src/juce/ui_devices.cpp`, for its UID only (win, 22 November);
 each owner reviews its part.
@@ -335,6 +338,7 @@ subject, say so in your log instead of writing it twice.
 | 0249 | win | `win/adr-0249-racks-forward` | racks, macros and modulation right after 3 December; Live's Beat Repeat the first device for his glitch-effect racks; his own rack presets read-only; the seats' parts, `device_copy.*` to the engine (director; d8's placements win's) | used |
 | 0250 | win | `win/adr-0249-racks-forward` | an interrupted recording comes back (Q-I); Live's three Pow-r slots are Shaped 1, 2 and 3 (Q-J) (director) | used |
 | 0251 | win | `win/adr-0251-classic-scope` | the classic scope keeps its source's own images and is named Classic Scope (director) | used |
+| 0252 | win | `win/adr-0252-gemini-seat` | the gemini seat is permanent: the verification seat; engine PLAN rows after 3 December on loan, reviewed by the engine; win's pick of SRF-09, SRF-10, PD-15 and CO-01 (director) | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a

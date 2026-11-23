@@ -2138,6 +2138,7 @@ endforeach()
 
 # Step 7: headless state and the optional JUCE window shell.
 include(src/juce/ui_shell.cmake)
+include(cmake/stereo_envelope_meter.cmake)
 include(cmake/triggered_scope.cmake)
 # WTS-01, win's weekly headless proof of the one usable session (ADR-0248 d2, d12). Off by default: it
 # reports the session's open steps and known defects, so it is not part of every pull request's gate.
@@ -2322,3 +2323,8 @@ add_test(NAME adi_midi_capture_input_tests COMMAND adi_midi_capture_input_tests)
 add_executable(adi_midi_capture_tests tests/test_midi_capture.cpp)
 target_link_libraries(adi_midi_capture_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_midi_capture_tests COMMAND adi_midi_capture_tests)
+# Test modules from the director's research are available on Windows hosting builds.
+if(ADI_WITH_JUCE)
+    include(tests/research_intake/plugins/targets.cmake)
+endif()
+include(tests/research_intake/df_e21/targets.cmake)

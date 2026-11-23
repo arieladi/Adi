@@ -4,6 +4,7 @@
 #include "adi/gesture_navigation_detail.hpp"
 #include "adi/media/collect_export.hpp"
 #include "adi/mix_function_edit.hpp"
+#include "adi/row_ids.hpp"
 #include "adi/device_key_routes.hpp"
 #include "adi/recording_commands.hpp"
 #include "adi/gesture_presentation.hpp"
@@ -77,7 +78,11 @@ ProjectDocument::ProjectDocument(std::unique_ptr<Store> s, std::string name)
             if (!lifetime.expired()) analysisSources_.erase(source);
         });
 }
-ProjectDocument::~ProjectDocument() { analysis_->shutdown(); }
+ProjectDocument::~ProjectDocument() {
+    for (const auto& item : limiterReductionSources_)
+        if (const auto mailbox = item.second.mailbox.lock()) mailbox->revokeObservers();
+    analysis_->shutdown();
+}
 std::unique_ptr<ProjectDocument> ProjectDocument::open(const std::filesystem::path &path,
                                                        bool create, engine::DeviceLoader loader,
                                                        std::string &error, const RecordingDefaults *defaults) {
@@ -94,6 +99,11 @@ std::unique_ptr<ProjectDocument> ProjectDocument::open(const std::filesystem::pa
             error = "Cannot open project: " + std::string(toString(result));
             return {};
         }
+        // New's audio and MIDI tracks monitor on Auto, as Live's (N67, ruled by win under ADR-0203 d1),
+        // where the store's seed writes Off. Part of the new file, as the seed is: no op, no undo step.
+        if (create)
+            store->db().exec("UPDATE tracks SET monitor_mode = " + std::to_string(kNewTrackMonitorMode) +
+                             " WHERE kind IN ('audio', 'midi')");
         const auto stem = path.stem().u8string();
         auto document = std::unique_ptr<ProjectDocument>(new ProjectDocument(
             std::move(store), std::string(reinterpret_cast<const char *>(stem.data()), stem.size())));
@@ -143,6 +153,13 @@ bool ProjectDocument::saveAs(const std::filesystem::path &path) {
                  " already exists; ADI never replaces a project. Choose another name.";
         return false;
     }
+    // A take recording or landing goes into the file it was recorded in, before the file switches
+    // (PD06-SAVEAS-GUARD): Record stops, the take lands as its one undo step, then Save As goes on.
+    const bool wasRecording = recording_;
+    if (!landTakeHere()) {
+        error_ = "The take is still being saved; try Save As again in a moment.";
+        return false;
+    }
     // No History, OpJournal or Statement of ours is alive here: every one is made per call, and
     // the members hold the Store itself, which keeps its identity across the switch.
     refreshReportedLatenciesForSave();
@@ -152,6 +169,9 @@ bool ProjectDocument::saveAs(const std::filesystem::path &path) {
         return false;
     }
     warning_ = result.warning;
+    // Said only of a take that landed; one that was not kept says so itself (`takeLanded`).
+    if (wasRecording && landed_ && landed_->ok)
+        warning_ = std::string("Recording stopped, its take kept, before Save As.") + (warning_.empty() ? "" : " ") + warning_;
     {
         std::lock_guard lock(waveformSource_->mutex);
         waveformSource_->path = store_->path();
@@ -238,14 +258,18 @@ StoreFileResult ProjectDocument::runCollectAndExport(const ExportJob &job) {
 bool ProjectDocument::synchronise() {
     if (realisedGeneration_ != view_.generation()) {
         const auto keyed = session_.refreshDeviceKeys(*store_, view_.committedImage());
-        if (!(keyed ? *keyed : session_.refresh(*store_))) {
+        const bool refreshed = keyed ? *keyed : session_.refresh(*store_);
+        refreshLimiterReductionSources();
+        if (!refreshed) {
             error_ = session_.error();
             return false;
         }
         realisedGeneration_ = view_.generation();
+        // A retained retiree can share its row ID with a newer instance.
+        // Detach by ID only while the retiree still owns the session's binding.
         for (std::size_t i = 0; i < session_.entryCount(); ++i) {
             const auto &entry = session_.entryAt(i);
-            if (entry.retired)
+            if (entry.retired && session_.entryFor(entry.deviceId) == &entry)
                 parameterOps_.detach(entry.deviceId);
         }
         parameterOps_.attachSession(session_);
@@ -255,7 +279,30 @@ bool ProjectDocument::synchronise() {
     // The session re-read the rows after the submitter's refresh, so an override it found there,
     // or one a gesture set since the last frame, reaches the snapshot now.
     followOverrides();
+    syncMonitorInputs(); // a track added or removed is fed or let go (N65)
     return true;
+}
+void ProjectDocument::setInputChannels(std::int32_t inputs) {
+    inputChannels_ = std::max(0, inputs);
+    syncMonitorInputs();
+}
+void ProjectDocument::syncMonitorInputs() {
+    std::vector<std::pair<std::int64_t, std::vector<std::uint32_t>>> wanted;
+    if (inputChannels_ > 0) {
+        const std::vector<std::uint32_t> channels =
+            inputChannels_ >= 2 ? std::vector<std::uint32_t>{0, 1} : std::vector<std::uint32_t>{0};
+        for (const auto &t : session_.model().tracks)
+            if (t.kind == "audio")
+                wanted.emplace_back(t.id, channels);
+    }
+    if (wanted == monitorInputs_)
+        return;
+    std::vector<engine::RecordingTarget> targets;
+    for (const auto &[track, channels] : wanted)
+        targets.push_back({track, channels});
+    // A refusal keeps the inputs the session had; the next change tries again.
+    if (session_.setAudioMonitorInputs(targets))
+        monitorInputs_ = std::move(wanted);
 }
 void ProjectDocument::followOverrides() {
     const auto snapshot = view_.current();
@@ -286,6 +333,14 @@ bool ProjectDocument::reenableAutomation() {
     feed_.publish(session_, realisedGeneration_);
     error_ = refusal;
     return ok;
+}
+bool ProjectDocument::setDelayCompensation(bool on) {
+    if (session_.setDelayCompensation(on)) {
+        error_.clear();
+        return true;
+    }
+    error_ = session_.error().empty() ? std::string("The session could not change Delay Compensation.") : session_.error();
+    return false;
 }
 bool ProjectDocument::reenableAutomation(std::int64_t laneId) {
     const bool ok = session_.reenableAutomation(laneId);
@@ -319,6 +374,9 @@ bool ProjectDocument::commitCaptured(std::vector<OpRequest> &requests) {
 void ProjectDocument::tick(std::int64_t milliseconds) {
     synchronise();
     session_.tick(milliseconds);
+    if (!limiterReductionSources_.empty() &&
+        limiterReductionPublication_ != session_.graph().stats().published)
+        refreshLimiterReductionSources();
     // A take, once the driver has moved past it and its worker has finished: a stopped one, or one that
     // ended on its own while recording (a locate, an overflow, a device change), which lands at once and
     // turns Record off. A healthy capture returns nothing. With the device stopped, nothing moves the
@@ -389,6 +447,37 @@ void ProjectDocument::persistReportedLatencies() {
 void ProjectDocument::setParameterDemand(const void *consumer, const std::vector<std::int64_t> &devices) {
     if (feed_.setDemand(consumer, devices)) feed_.publish(session_, realisedGeneration_);
 }
+device::DeviceInstance* ProjectDocument::limiterReductionTarget(
+    std::int64_t id, const engine::DeviceRuntimeToken& expected) {
+    const auto* entry = session_.entryFor(id);
+    if (!entry || entry->retired || entry->parked || entry->placeholder ||
+        entry->resolvedUid != "org.adidaw.mix.limiter") return nullptr;
+    auto* instance = session_.resolveDevice(expected);
+    if (!instance || instance != session_.instanceFor(id) || !instance->loaded() ||
+        session_.devices().nodeAt(entry->hostIndex).bypassed()) return nullptr;
+    return instance;
+}
+void ProjectDocument::refreshLimiterReductionSources() {
+    limiterReductionPublication_ = session_.graph().stats().published;
+    std::erase_if(limiterReductionSources_, [this](const auto& item) {
+        const auto& [id, source] = item;
+        const auto mailbox = source.mailbox.lock();
+        if (!mailbox || !mailbox->observed()) return true;
+        if (limiterReductionTarget(id, source.expected)) return false;
+        mailbox->revokeObservers();
+        return true;
+    });
+}
+mix::limiter::ReductionMailbox::Lease ProjectDocument::observeLimiterReduction(
+    std::int64_t id, const engine::DeviceRuntimeToken& expected) {
+    refreshLimiterReductionSources();
+    auto* target = limiterReductionTarget(id, expected);
+    if (!target) return {};
+    auto mailbox = device::limiterReductionSource(*target);
+    auto lease = mix::limiter::ReductionMailbox::observe(mailbox);
+    if (lease) limiterReductionSources_.insert_or_assign(id, ReductionSource{expected, mailbox});
+    return lease;
+}
 bool ProjectDocument::autoGainStage(bool lufs) {
     engine::GainStageOptions options;
     options.measure =
@@ -434,12 +523,19 @@ bool ProjectDocument::copyDevice(std::int64_t id, DeviceCopy &out) {
     error_.clear();
     return true;
 }
+std::int64_t ProjectDocument::retainedDeviceId() const noexcept {
+    // Removed instances stay alive for Undo, even after their store rows leave.
+    std::int64_t id = 0;
+    for (std::size_t i = 0; i < session_.entryCount(); ++i)
+        id = std::max(id, session_.entryAt(i).deviceId);
+    return id;
+}
 bool ProjectDocument::insertBuiltin(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before) {
-    return finishInsert(prepareBuiltinInsert(*store_, uid, track, before));
+    return finishInsert(prepareBuiltinInsert(*store_, uid, track, before, retainedDeviceId()));
 }
 bool ProjectDocument::insertPlugin(const rows::PluginRef &ref, std::int64_t track,
                                    std::optional<std::int64_t> before, const PluginInsertOptions& options) {
-    return finishInsert(preparePluginInsert(*store_, ref, track, before, options));
+    return finishInsert(preparePluginInsert(*store_, ref, track, before, options, retainedDeviceId()));
 }
 bool ProjectDocument::finishInsert(PreparedBuiltinInsert prepared) {
     if (!prepared.ok) {
@@ -505,12 +601,7 @@ bool ProjectDocument::setDeviceKey(const DevicePanelData& target,std::optional<s
 bool ProjectDocument::addMixFunction(mix::Function kind, std::int64_t track) {
     const auto available = device::mixFunctionAvailability(kind);
     if (!available.ready) { error_ = available.reason; return false; }
-    // Removed instances stay alive for Undo. A fresh authored row must not
-    // claim an ID that the current session still uses for one of those instances.
-    std::int64_t retainedDeviceId = 0;
-    for (std::size_t i = 0; i < session_.entryCount(); ++i)
-        retainedDeviceId = std::max(retainedDeviceId, session_.entryAt(i).deviceId);
-    auto prepared = mix::prepareFunctionInsert(*store_, kind, track, available.ready, retainedDeviceId);
+    auto prepared = mix::prepareFunctionInsert(*store_, kind, track, available.ready, retainedDeviceId());
     if (!prepared.ok) { error_ = prepared.error; return false; }
     const auto result = ops_.commitPrepared(std::move(prepared), [](Store &s, mix::PreparedFunctionEdit &p, Actor a) {
         return mix::commitFunctionEdit(s, p, a);
@@ -594,41 +685,53 @@ std::string ProjectDocument::deviceCopyIdentity() const {
     return {};
 }
 bool ProjectDocument::pasteDevice(const DeviceCopy &copy, std::int64_t track, std::optional<std::int64_t> before) {
-    if (copy.reference && mix::functionForReference(copy.reference->format, copy.reference->uid)) {
-        SQLite::Statement exists(store_->db(),
-            "WITH RECURSIVE chains(id) AS (SELECT id FROM device_chains WHERE track_id=? "
-            "UNION SELECT c.id FROM device_chains c JOIN devices owner ON owner.id=c.parent_device_id "
-            "JOIN chains parent ON parent.id=owner.chain_id) "
-            "SELECT 1 FROM devices d JOIN chains c ON c.id=d.chain_id JOIN plugin_refs p ON p.id=d.plugin_ref_id "
-            "WHERE p.format='internal' AND p.uid=? LIMIT 1");
-        exists.bind(1,track); exists.bind(2,copy.reference->uid);
-        if (exists.executeStep()) { error_ = "That function is already present on this channel."; return false; }
-    }
-    // The chain the device goes into: the one holding `before`, else the track's own (a rack's
-    // nested chains belong to a device, never to the track).
-    std::int64_t chain = 0;
-    if (before) {
-        SQLite::Statement q(store_->db(), "SELECT chain_id FROM devices WHERE id = ?");
-        q.bind(1, *before);
-        if (q.executeStep())
-            chain = q.getColumn(0).getInt64();
-    } else {
-        SQLite::Statement q(store_->db(), "SELECT id FROM device_chains WHERE track_id = ? AND parent_device_id IS NULL "
-                                          "ORDER BY ord, id LIMIT 1");
-        q.bind(1, track);
-        if (q.executeStep())
-            chain = q.getColumn(0).getInt64();
-    }
-    // The next free id, never the copy's own: a cut device's id is free again, and the engine
-    // refuses a paste that would take it ("device copy needs a new identity").
-    auto id = store_->db().execAndGet("SELECT COALESCE(MAX(id), 0) + 1 FROM devices").getInt64();
-    if (copy.ok && copy.insert.contains("id") && copy.insert.at("id").is_number_integer() &&
-        id == copy.insert.at("id").get<std::int64_t>())
-        ++id;
-    // With no chain the engine still checks the copy first, so a copy from another project or a rack
-    // says so rather than that the track has no chain.
-    auto prepared = !before && chain == 0 ? prepareDevicePasteForTrack(*store_, copy, id, track)
+    PreparedDevicePaste prepared;
+    try {
+        auto &db = store_->db();
+        std::optional<SQLite::Transaction> read;
+        if (sqlite3_get_autocommit(db.getHandle()) != 0)
+            read.emplace(db, SQLite::TransactionBehavior::DEFERRED);
+        if (copy.reference && mix::functionForReference(copy.reference->format, copy.reference->uid)) {
+            SQLite::Statement exists(db,
+                "WITH RECURSIVE chains(id) AS (SELECT id FROM device_chains WHERE track_id=? "
+                "UNION SELECT c.id FROM device_chains c JOIN devices owner ON owner.id=c.parent_device_id "
+                "JOIN chains parent ON parent.id=owner.chain_id) "
+                "SELECT 1 FROM devices d JOIN chains c ON c.id=d.chain_id JOIN plugin_refs p ON p.id=d.plugin_ref_id "
+                "WHERE p.format='internal' AND p.uid=? LIMIT 1");
+            exists.bind(1, track);
+            exists.bind(2, copy.reference->uid);
+            if (exists.executeStep()) {
+                error_ = "That function is already present on this channel.";
+                return false;
+            }
+        }
+        // A paste can go before a device in a nested chain or at the end of
+        // the track chain. The first paste can also create that track chain.
+        std::int64_t chain = 0;
+        if (before) {
+            SQLite::Statement q(db, "SELECT chain_id FROM devices WHERE id = ?");
+            q.bind(1, *before);
+            if (q.executeStep())
+                chain = q.getColumn(0).getInt64();
+        } else {
+            SQLite::Statement q(db, "SELECT id FROM device_chains WHERE track_id = ? AND parent_device_id IS NULL "
+                                    "ORDER BY ord, id LIMIT 1");
+            q.bind(1, track);
+            if (q.executeStep())
+                chain = q.getColumn(0).getInt64();
+        }
+        auto floor = retainedDeviceId();
+        if (copy.ok && copy.insert.contains("id") && copy.insert.at("id").is_number_integer())
+            floor = std::max(floor, copy.insert.at("id").get<std::int64_t>());
+        RowIds ids(db);
+        ids.reserve("devices", floor);
+        const auto id = ids.next("devices");
+        prepared = !before && chain == 0 ? prepareDevicePasteForTrack(*store_, copy, id, track)
                                          : prepareDevicePaste(*store_, copy, id, chain, before);
+    } catch (const std::exception &e) {
+        error_ = e.what();
+        return false;
+    }
     if (!prepared.ok) {
         error_ = prepared.error == "destination chain is missing" ? "The track has no device chain to paste into."
                  : prepared.error.empty()                         ? "The device could not be pasted."
@@ -648,8 +751,11 @@ bool ProjectDocument::prepareImport(const std::string &utf8Path, std::int64_t no
     // A new pool row takes the next id; a file already in the pool keeps its own (the capture
     // reuses it by content).
     // Past what files captured before it in the same drop took (AudioImport::firstFreeId).
-    const auto id = std::max(out.firstFreeId,
-                             store_->db().execAndGet("SELECT COALESCE(MAX(id), 0) + 1 FROM media_files").getInt64());
+    // One `RowIds` for the prepared row (DF-E16), past what the drop's earlier files took.
+    RowIds rows(store_->db());
+    if (out.firstFreeId > 1)
+        rows.reserve("media_files", out.firstFreeId - 1);
+    const auto id = rows.next("media_files");
     OpRequest captured;
     const auto result = media::prepareImport(*store_, pathFromUtf8(utf8Path), id, nowUtc, captured);
     if (!result.ok) {
@@ -679,8 +785,9 @@ ProjectDocument::MaterialJob ProjectDocument::materialJob(const std::string &utf
     job.choices = choices;
     job.rate = engineRate_ > 0 ? engineRate_ : 48000.0;
     // The next free ids as the project stands; a project changed before the commit refuses as stale.
-    job.clipId = store_->db().execAndGet("SELECT COALESCE(MAX(id), 0) + 1 FROM clips").getInt64();
-    job.mediaId = store_->db().execAndGet("SELECT COALESCE(MAX(id), 0) + 1 FROM media_files").getInt64();
+    RowIds rows(store_->db()); // DF-E16: never an id a remark still holds
+    job.clipId = rows.next("clips");
+    job.mediaId = rows.next("media_files");
     return job;
 }
 clip_edit::MaterialEdit ProjectDocument::prepareMaterial(const MaterialJob &job, std::stop_token stop) {
@@ -767,7 +874,7 @@ bool ProjectDocument::parameterGestureExpected(std::int64_t id, const std::strin
     const auto key = std::make_pair(id, param);
     if (kind == engine::ParamEventKind::Begin && !surfaceGestures_.contains(key)) {
         for (const auto &pending : parameterOps_.pendingGestures())
-            if (pending.deviceId == id && pending.parameterId == param) {
+            if (pending.deviceId == id && (pending.parameterId == param || pending.pairedParameterId == param)) {
                 error_ = "Another editor is still editing that parameter.";
                 return false;
             }
@@ -847,6 +954,63 @@ bool ProjectDocument::parameterGesture(std::int64_t id, const std::string &param
     error_.clear();
     return true;
 }
+bool ProjectDocument::parameterPairGestureExpected(std::int64_t id, const engine::ParameterPair &values,
+                                                   engine::ParameterPairEvent event,
+                                                   const engine::DeviceRuntimeToken &expected, std::uint64_t stamp,
+                                                   std::shared_ptr<const gesture::OwnerToken> &owner) {
+    using Event = engine::ParameterPairEvent;
+    std::vector<OpRequest> requests;
+    const auto now = captureNowMs();
+    const auto cancel = [&] {
+        return !owner || parameterOps_.uiParameterPairEvent(id, values, Event::Cancel, now, owner, requests);
+    };
+    if (event == Event::Cancel) {
+        const bool cancelled = cancel();
+        if (cancelled) {
+            feed_.publish(session_, realisedGeneration_);
+            error_.clear();
+        } else error_ = "The paired EQ edit is waiting to restore its values.";
+        return cancelled;
+    }
+    const auto published = feed_.current();
+    const bool available = std::any_of(published->begin(), published->end(), [&](const auto &device) {
+        return device.id == id && device.instance == stamp && device.available;
+    });
+    if (!available || !deviceTargetCurrent(id, expected, stamp) || !session_.resolveDevice(expected)) {
+        (void)cancel();
+        error_ = "That device changed while it was being edited. Start a new edit.";
+        return false;
+    }
+    const bool taken = parameterOps_.uiParameterPairEvent(id, values, event, now, owner, requests);
+    const bool committed = commitCaptured(requests);
+    followOverrides();
+    if (!committed || !taken) {
+        (void)cancel();
+        feed_.publish(session_, realisedGeneration_);
+        if (committed) error_ = "The plug-in did not take the paired EQ edit.";
+        return false;
+    }
+    if (event == Event::End) {
+        const auto result = ops_.commitPrepared([&](Store &, Actor) -> CommitResult {
+            auto outcome = parameterOps_.commitPending(*owner, now);
+            if (outcome.durable) return std::move(*outcome.durable);
+            CommitResult refused;
+            refused.error = std::move(outcome.status.message);
+            return refused;
+        });
+        if (!result.ok) {
+            (void)cancel();
+            feed_.publish(session_, realisedGeneration_);
+            error_ = result.error;
+            return false;
+        }
+        owner.reset();
+        if (!synchronise()) return false;
+        feed_.publish(session_, realisedGeneration_);
+    }
+    error_.clear();
+    return true;
+}
 std::string ProjectDocument::refusalReason(std::int64_t id, const std::string &param) {
     // The producer says only no; the Status Bar says what was wrong, in the producer's order:
     // the device, then the parameter, then the value.
@@ -880,13 +1044,31 @@ void ProjectDocument::prepare(double rate, std::int32_t frames) {
     else
         session_.prepare(rate, frames);
     mailbox_.setSampleRate(rate);
+    refreshLimiterReductionSources();
     analysis_->refreshSources(true);
 }
 void ProjectDocument::release() {
     session_.release(); // stops a running capture; the timer lands what it holds
     deviceStopped_.store(true, std::memory_order_release);
 }
-void ProjectDocument::settleRecording() {
+bool ProjectDocument::landTakeHere() {
+    if (!recording_ && !landing_)
+        return true;
+    if (recording_)
+        stopRecording();
+    // The device's callback moves the capture past its end while it runs; a stopped device settles it
+    // here, as `settleRecording` does. Up to ten seconds for the recorder's worker.
+    for (int waited = 0; landing_ && waited < 5000; ++waited) {
+        if (auto result = session_.recording().poll(deviceStopped_.load(std::memory_order_acquire))) {
+            landing_ = false;
+            landTake(*result);
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return !landing_;
+}
+bool ProjectDocument::settleRecording() {
     // The driver is detached: nothing will move the callback past the capture, so it is settled here.
     if (recording_)
         stopRecording();
@@ -895,10 +1077,11 @@ void ProjectDocument::settleRecording() {
         if (auto result = session_.recording().poll(true)) {
             landing_ = false;
             landTake(*result);
-            return;
+            return true;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
+    return !landing_;
 }
 bool ProjectDocument::beginMixerDrag(const gesture::RelativeScalarSelection &selection, std::optional<double> coordinate,
                                      const std::string &label) {
@@ -1031,11 +1214,12 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
     }
     if (!playing && !mailbox_.post(TransportMailbox::Command::Record, insertTick)) {
         session_.recording().stop(true);
+        std::string kept;
         if (auto dropped = session_.recording().poll())
-            dropped->discard();
+            kept = discardTake(*dropped);
         else
             landing_ = true; // the cancelled capture is collected and dropped on the timer
-        error_ = "Transport command queue is full";
+        error_ = "Transport command queue is full" + (kept.empty() ? std::string() : "." + kept);
         return false;
     }
     recording_ = true;
@@ -1072,33 +1256,40 @@ std::string recordingFailure(const engine::AudioRecordingResult &r) {
     return r.error;
 }
 } // namespace
+// A take that is not kept goes with its private files (DF-E44): a folder the system would not remove stays
+// in the project's folder, and the Status Bar says so, with the system's words, rather than nothing.
+std::string ProjectDocument::discardTake(engine::AudioRecordingResult &result) {
+    const auto refused = result.discard();
+    if (!refused)
+        return {};
+    return " Its recorded files could not be removed (" + refused.message() + "); they stay in " +
+           media::pathUtf8(result.directory().filename()) + " in the project's folder.";
+}
 void ProjectDocument::landTake(engine::AudioRecordingResult &result) {
     TakeLanded outcome;
-    if (result.failure != engine::RecordingFailure::None) {
-        outcome.message = "The take was not kept: " + recordingFailure(result) + ".";
-        // Nothing recovers a failed capture yet, so its private files go with it rather than stay hidden in
-        // the project's folder.
-        result.discard();
+    const auto interruption = recordingFailure(result);
+    if (!result.hasAttachableAudio()) {
+        outcome.message = "The take was not kept: " + interruption + "." + discardTake(result);
         landed_ = std::move(outcome);
         return;
     }
     // The clips and their media take the next free ids, named after their tracks (Live names a take by
     // its track).
-    auto &db = store_->db();
-    auto clip = db.execAndGet("SELECT COALESCE(MAX(id), 0) + 1 FROM clips").getInt64();
-    auto media = db.execAndGet("SELECT COALESCE(MAX(id), 0) + 1 FROM media_files").getInt64();
+    // One `RowIds` for the take's rows (DF-E16): past every clip and media row, and past a clip id a
+    // remark still holds.
+    RowIds rows(store_->db());
     std::vector<recording::ClipIds> ids;
     const auto current = view_.current();
     for (const auto &track : result.tracks) {
         const auto *t = current ? current->findTrack(track.trackId) : nullptr;
-        ids.push_back({clip++, media++, t != nullptr ? t->name : std::string("Take")});
+        const auto clip = rows.next("clips");
+        ids.push_back({clip, rows.next("media_files"), t != nullptr ? t->name : std::string("Take")});
         outcome.clips.push_back(ids.back().clip);
     }
     auto edit = recording::prepareCommit(*store_, result, ids);
     if (!edit.ok) {
         outcome.clips.clear();
-        outcome.message = "The take was recorded but could not be added: " + edit.error + ".";
-        result.discard();
+        outcome.message = "The take was recorded but could not be added: " + edit.error + "." + discardTake(result);
         landed_ = std::move(outcome);
         return;
     }
@@ -1112,7 +1303,10 @@ void ProjectDocument::landTake(engine::AudioRecordingResult &result) {
     }
     synchronise();
     outcome.ok = true;
-    outcome.message = result.tracks.size() == 1 ? "Recorded one take." : "Recorded " + std::to_string(result.tracks.size()) + " takes.";
+    if (!interruption.empty())
+        outcome.message = "Kept the audio recorded before the interruption: " + interruption + ".";
+    else
+        outcome.message = result.tracks.size() == 1 ? "Recorded one take." : "Recorded " + std::to_string(result.tracks.size()) + " takes.";
     landed_ = std::move(outcome);
 }
 } // namespace adi::ui

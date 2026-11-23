@@ -460,6 +460,7 @@ void testEndToEnd() {
        "  defaults 1\n"
        "trk Keys\n"
        "  kind midi\n"
+       "  monitor 2\n"
        "  clip Riff\n"
        "    at 1|1|0\n"
        "    len 1/1\n"
@@ -467,6 +468,7 @@ void testEndToEnd() {
        "    note \"#0\"\n"
        "      at 1|1|0 key 60 dur 1/4 vel 96\n"
        "trk Bass\n"
+       "  monitor 2\n"
        "  vol -6.0\n",
        "the whole projection of a real project, byte for byte");
 }
@@ -692,6 +694,7 @@ void testRemarksEndToEnd() {
        "  ppq 5765760\n"
        "  defaults 1\n"
        "trk Bass\n"
+       "  monitor 2\n"
        "  remark \"#0\"\n"
        "    by agent\n"
        "    detail model-x\n"
