@@ -10326,7 +10326,6 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     surfacePeer.setVisible(true);
     surfacePeer.addToDesktop(0);
     root.afterEdit = [&] { document->synchronise(); };
-    root.readRecordStates = [&] { return document->recordStates(); };
     root.startRecording = [&](std::int64_t insertTick, bool playing) {
         const bool ok = document->startRecording(insertTick, 2, playing);
         if (!ok)
@@ -10336,11 +10335,11 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     root.stopRecording = [&] { document->stopRecording(); };
     root.recording = [&] { return document->recording(); };
     root.setSize(1440, 900);
-    // The application's frame: the timer's tick, the rows handed over, the window's frame.
+    // The application's frame: the timer's tick, then the window's frame (arm and monitoring are the
+    // snapshot's, N64).
     std::int64_t now = 0;
     const auto frame = [&] {
         document->tick(++now);
-        root.setRecordStates(document->recordStates());
         root.frame();
     };
     frame();

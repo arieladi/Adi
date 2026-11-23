@@ -382,19 +382,11 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     void addReenableAutomation(juce::PopupMenu &menu, const engine::AutomationLaneNode *lane);
     std::function<bool()> automationArmed;
     std::function<void(bool)> armAutomation;
-    // Arm, monitoring and Arrangement Record (MX-09). The session's rows hold a track's arm and its
-    // monitoring, which the snapshot does not carry yet, so the application hands them over: once a
-    // frame through `setRecordStates` (kept only when they changed, so a steady frame allocates
-    // nothing), and fresh for an action through `readRecordStates`. `startRecording(insertTick,
-    // playing)` prepares the recorder and, stopped, starts the transport as a recording start;
-    // `stopRecording` stops the recorder (the transport goes on, as Live's Record button);
-    // `recording` reads whether it runs. A refusal comes back as false and the application has said
-    // why. Unset outside the application.
-    std::function<RecordStates()> readRecordStates;
-    void setRecordStates(RecordStates states) {
-        if (states != recordStates_)
-            recordStates_ = std::move(states);
-    }
+    // Arm, monitoring and Arrangement Record (MX-09). A track's arm and monitoring are the snapshot's (N64).
+    // `startRecording(insertTick, playing)` prepares the recorder and, stopped, starts the transport as a
+    // recording start; `stopRecording` stops the recorder (the transport goes on, as Live's Record button);
+    // `recording` reads whether it runs. A refusal comes back as false and the application has said why.
+    // Unset outside the application.
     std::function<bool(std::int64_t insertTick, bool playing)> startRecording;
     std::function<void()> stopRecording;
     std::function<bool()> recording;
@@ -762,8 +754,10 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     unsigned lastDrain_ = 0;
     bool playing_ = false;
     bool midiOverdub_ = false; // Live's MIDI Arrangement Overdub, off in a new Set
-    RecordStates recordStates_; // the arm and monitoring the application last handed over (MX-09)
-    RecordStates freshRecordStates() const { return readRecordStates ? readRecordStates() : recordStates_; }
+    RecordStates freshRecordStates() const {
+        const auto current = view_.current();
+        return current ? recordStatesOf(current->tracks) : RecordStates{};
+    }
     bool midiIn_ = false;
     bool automationMode_ = false;
     bool infoShown_ = true;

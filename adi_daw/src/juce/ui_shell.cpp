@@ -2792,10 +2792,11 @@ void AdiRootComponent::selectClip(std::int64_t clip) {
                 }
 }
 TrackRecordState AdiRootComponent::recordState(std::int64_t track) const {
-    return ::adi::ui::recordState(recordStates_, track);
+    const auto *t = reader().findTrack(track);
+    return t != nullptr ? recordStateOf(*t) : TrackRecordState{};
 }
 bool AdiRootComponent::armTrack(std::int64_t id, bool add) {
-    // From the CURRENT cell (ADR-0201) and the rows the application hands over; one batch.
+    // From the CURRENT cell (ADR-0201), its arm and monitoring included (N64); one batch.
     const auto current = view_.current();
     if (!current)
         return fail("Arming needs an open project.");

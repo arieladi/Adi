@@ -825,8 +825,6 @@ class AdiApplication final : public juce::JUCEApplication,
         root->automationArmed = [this] { return document_->automationArmed(); };
         root->armAutomation = [this](bool armed) { document_->setAutomationArmed(armed); };
         // Arm, monitoring and Arrangement Record (MX-09): the session's rows, and the recorder.
-        root->readRecordStates = [this] { return document_->recordStates(); };
-        root->setRecordStates(document_->recordStates());
         root->startRecording = [this](std::int64_t insertTick, bool playing) {
             const auto *device = manager_.getCurrentAudioDevice();
             const int inputs = device != nullptr ? device->getActiveInputChannels().countNumberOfSetBits() : 0;
@@ -1306,7 +1304,6 @@ class AdiApplication final : public juce::JUCEApplication,
             return;
         document_->tick(static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
         if (root_) {
-            root_->setRecordStates(document_->recordStates());
             // A take landed (MX-09): its outcome in the Status Bar, its clips selected.
             if (auto landed = document_->takeLanded()) {
                 root_->say(landed->message);
