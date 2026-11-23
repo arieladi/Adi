@@ -26,7 +26,9 @@ class AssertionWatch final : public juce::Logger {
     // a headless suite posts messages and never runs a message loop to take them, so the queue fills.
     // It says nothing about the window's code; counted apart, said at the end, never failing the run.
     int queueFull() const noexcept { return queueFull_.load(); }
-    static bool isQueueFull(const juce::String &message) { return message.contains("juce_Messaging_linux.cpp"); }
+    // Only that one line, InternalMessageQueue::postMessage's jassertfalse in the vendored JUCE: every other
+    // assertion in the file still fails the run, and if a JUCE update moves the line, this one does too.
+    static bool isQueueFull(const juce::String &message) { return message.endsWith("juce_Messaging_linux.cpp:87"); }
     juce::String last() const {
         const juce::ScopedLock held(lock_);
         return last_;
@@ -35,7 +37,8 @@ class AssertionWatch final : public juce::Logger {
   protected:
     void logMessage(const juce::String &message) override {
         if (message.startsWith("JUCE Assertion failure") && isQueueFull(message)) {
-            ++queueFull_;
+            if (++queueFull_ == 1) // the first said, the rest counted
+                std::fputs((message + " (the headless message queue; counted apart)\n").toRawUTF8(), stderr);
             return;
         }
         if (message.startsWith("JUCE Assertion failure")) {
