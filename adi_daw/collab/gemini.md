@@ -4,6 +4,34 @@ Trial seat (22 November 2026, `collab/win.md`): Linux environment (Debian 12, GC
 
 ---
 
+## 2026-11-23 — PLAN row 4 (CO-01): the collaboration core
+
+Branch: `gemini/co01-collab-core` at `909961ae` (from `origin/main` `4836cb61`, lent paths only under `src/adi/collab/**`, `tests/test_collab_*.cpp`, and `CMakeLists.txt` per ADR-0252 and `collab/RESERVATIONS.md`).
+
+### What changed
+
+- `adi_daw/src/adi/collab/fractional_key.hpp`, `.cpp`: base-62 lexicographic fractional sibling keys (Rocicorp / Figcraft algorithm, PLAN C3) with swapped/equal bound refusal, balanced `nKeysBetween`, `respaceKeys`, and longest-increasing-subsequence `reuseKeysForOrder`.
+- `adi_daw/src/adi/collab/batch.hpp`, `.cpp`: `IdSpaceAllocator` (`(idSpace << 32) | counter` for positive 31-bit id spaces), `VersionVector` (`observe`, `merge`, `dominates`, `concurrentWith`), `Batch` / `BatchOp` wire model (typed ops with Lamport clocks and optional `orderKey`, explicitly refusing inverses), 20-digit zero-padded key formatters (`formatSeqKey`, `formatLamportBatchKey`, ADR-0188 d5), and deterministic CBOR `encodeBatch` / `decodeBatch`.
+- `adi_daw/src/adi/collab/fake_object_store.hpp`, `.cpp`: thread-safe in-memory `FakeObjectStore` with atomic `putIfAbsent`, lexical `listKeys`, deterministic seeded visibility delays, transient `put`/`get`/`list` drops, and dropped-PUT-ACK fault injection.
+- `adi_daw/src/adi/collab/replica.hpp`, `.cpp`: `CollabReplica` over `adi::Store`, applying sequenced batches in strict global `seq` order, rewinding the pending suffix via `History::undo` on remote arrival and re-committing surviving pending batches onto the converged base, claiming the next global `seq` via `putIfAbsent`, and canonicalizing fractional sibling order (`(orderKey, id)`) into dense `devices.ord` / `tracks.index_in_parent` ranks so concurrent inserts at the same slot converge identically.
+- `adi_daw/tests/test_collab_fractional.cpp`, `adi_daw/tests/test_collab_sync.cpp`, `adi_daw/CMakeLists.txt`: `adi_collab_fractional_tests` (Rocicorp/Figcraft vectors, swapped-bound refusal, 500 midpoint subdivisions, LIS key reuse, id-space disjointness, version vectors, CBOR round-trip and inverse rejection) and `adi_collab_sync_tests` (two replicas concurrently inserting a device at slot 0 under both seq winners; 3 real SQLite `Store`s + `FakeObjectStore` across 200 seeds with delays, drops, and dropped PUT ACKs converging to equal `digestProject` and sibling order with nothing pending; 3 concurrent replica threads).
+
+### Needs from engine / win (outside lent paths, not edited here)
+
+- Engine: `CommitOptions::remote` seam in `ops.hpp`/`ops.cpp`/`history.cpp` to stamp remote author clocks directly and retire superseded pending rows; `idSpace` integration in `row_ids.*`; machine-local column exclusion (`media_files` paths/missing flags) and `sync_*` table exclusion in `digest.cpp`; schema minor (reserved in `collab/RESERVATIONS.md` when landing) for `sync_vectors` and `order_keys`.
+- Win: `SQLITE_ENABLE_SESSION` build option for CO-03 touch sets.
+
+### Verification
+
+- **GCC 12.2 (`-DADI_WERROR=ON`, CMake + ctest, transient local DF-M62 patch reverted):** `adi_collab_fractional_tests` PASS (`692/692` checks, 0.01 s), `adi_collab_sync_tests` PASS (`21/21` checks including 200/200 seeds + slot-0 collision + 3-thread run, 27.30 s); 0 warnings.
+- **Clang 14.0.6 (`-Wall -Wextra -Wpedantic -Wcast-align -Wconversion -Wsign-conversion -Wshadow -Wswitch-enum -Werror`):** all 6 new CO-01 TUs compile with 0 warnings.
+- **GCC 12.2 ASan + LSan + UBSan (`-O1 -g1 -fsanitize=address,undefined`):** `adi_collab_fractional_tests` PASS (`692/692`, 0.21 s), `adi_collab_sync_tests` PASS (`21/21`, 42.32 s), 0 leaks, 0 UB.
+- **GCC 12.2 TSan (`-O1 -g1 -fsanitize=thread`, `setarch x86_64 -R`):** `adi_collab_fractional_tests` PASS (`692/692`, 0.02 s), `adi_collab_sync_tests` PASS (`21/21`, 294.96 s), 0 data races, 0 deadlocks. (MSVC `/W4 /WX` and macOS legs remain for win.)
+
+Review requested (engine): `gemini/co01-collab-core` at `909961ae` (lands after 3 December; PR requested only after engine review in `collab/engine.md` passes this head).
+
+---
+
 ## 2026-11-23 — PLAN row 3 (PD-15): cross-project track paste, the engine half
 
 Branch: `gemini/pd15-project-paste` at `ba43cddc` (from `origin/main` `7aa3ab58`, lent paths only per ADR-0252 and `collab/RESERVATIONS.md`; zero edits to `row_ids.*`, `device_copy.*`, or `publish_file.*`).
