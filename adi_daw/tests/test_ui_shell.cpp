@@ -4597,6 +4597,22 @@ void clipView(AppCommands &commands, const std::filesystem::path &dir, bool writ
 // on an empty MIDI lane, Insert Empty MIDI Clip(s) on a time selection), and its notes are added,
 // moved, resized, given velocities and deleted with the mouse and the keys, each gesture one undo
 // step, a drag previewed while it is held, and a refused op leaving the notes as they were.
+// An undo step's label and its op count. A note edit of any size is one note.applyDiff (MI-01): `ops` counts
+// the legacy note ops the edit is made of, and such a step holds the one op that applies them in turn.
+template <class Submitter> bool undoStepIs(Submitter &submitter, const char *label, int ops) {
+    const auto step = submitter.nextUndo();
+    if (!step || step->label != label)
+        return false;
+    SQLite::Statement last(submitter.store().db(), "SELECT op_type FROM ops WHERE seq = ?");
+    last.bind(1, step->lastSeq);
+    const bool diff = last.executeStep() && last.getColumn(0).getString() == "note.applyDiff";
+    return step->opCount == (diff && ops > 0 ? 1 : ops);
+}
+// An undo step's op count, read as `undoStepIs` reads it: a note.applyDiff step is one op for the edit (MI-01).
+template <class Submitter> bool undoOpsAre(Submitter &submitter, int ops) {
+    const auto step = submitter.nextUndo();
+    return step && undoStepIs(submitter, step->label.c_str(), ops);
+}
 void clipViewNotes(AppCommands &commands, const std::filesystem::path &dir) {
     StoreError err{};
     auto store = Store::createEmpty(dir / "clip-view-notes.adi", err);
@@ -4641,7 +4657,7 @@ void clipViewNotes(AppCommands &commands, const std::filesystem::path &dir) {
     const auto *made1 = panel.details();
     check(root.state().clipView && made1 != nullptr && panel.midi() && made1->posTicks == 2 * bar &&
               made1->lengthTicks == bar && made1->notes.empty() && geo.selection.clip == made1->id &&
-              submitter.nextUndo()->label == "Insert MIDI Clip" && submitter.nextUndo()->opCount == 1,
+              submitter.nextUndo()->label == "Insert MIDI Clip" && undoOpsAre(submitter, 1),
           "a double-click on an empty MIDI lane makes a one-bar clip there, selects and opens it, one undo step");
     if (made1 == nullptr)
         return;
@@ -4685,9 +4701,7 @@ void clipViewNotes(AppCommands &commands, const std::filesystem::path &dir) {
         return juce::Point<float>(static_cast<float>(static_cast<int>(box.x + box.width / 2)),
                                   static_cast<float>(box.y + box.height / 2));
     };
-    const auto undoIs = [&](const char *label, int ops) {
-        return submitter.nextUndo()->label == label && submitter.nextUndo()->opCount == ops;
-    };
+    const auto undoIs = [&](const char *label, int ops) { return undoStepIs(submitter, label, ops); };
 
     // A double-click on empty space adds a note a grid step long, snapped to the grid, selected.
     ed.mouseDoubleClick(pressAt(ed, {xAt(2 * bar + beat) + 10.f, yOf(64)}));
@@ -4875,7 +4889,7 @@ void clipViewFields(AppCommands &commands, const std::filesystem::path &dir) {
               panel.readings().position == "1. 1. 1" && panel.readings().length == "2. 0. 0" && !panel.readings().loop,
           "the clip as made: Start 1.1.1, End 3.1.1, the loop off over its two bars");
     const auto undoIs = [&](const char *label) {
-        return submitter.nextUndo()->label == label && submitter.nextUndo()->opCount == 1;
+        return submitter.nextUndo()->label == label && undoOpsAre(submitter, 1);
     };
     const auto details = [&]() -> const engine::ClipDetails & { return *panel.details(); };
     const auto centreOf = [](juce::Rectangle<int> r) { return r.getCentre().toFloat(); };
@@ -5058,7 +5072,7 @@ void clipViewTools(AppCommands &commands, const std::filesystem::path &dir) {
         return engine::ClipNote{};
     };
     const auto undoIs = [&](const char *label, int ops) {
-        return submitter.nextUndo()->label == label && submitter.nextUndo()->opCount == ops;
+        return undoStepIs(submitter, label, ops);
     };
 
     // An audio clip has the Main panel only; a MIDI clip has the Pitch and Time panel beside it.
@@ -5340,7 +5354,7 @@ void clipViewMore(AppCommands &commands, const std::filesystem::path &dir) {
         return engine::ClipNote{};
     };
     const auto undoIs = [&](const char *label, int ops) {
-        return submitter.nextUndo()->label == label && submitter.nextUndo()->opCount == ops;
+        return undoStepIs(submitter, label, ops);
     };
     const int kh = ed.keys.keyHeight;
 
@@ -5451,8 +5465,7 @@ void clipViewMore(AppCommands &commands, const std::filesystem::path &dir) {
     ed.select({41});
     for (int i = 0; i < 3; ++i)
         check(ed.keyPressed(juce::KeyPress(juce::KeyPress::leftKey)), "Left");
-    check(note(41).startTicks == 2 * beat && note(40).durationTicks == 2 * beat && submitter.nextUndo()->opCount == 2 &&
-              submitter.nextUndo()->label == "Move Note",
+    check(note(41).startTicks == 2 * beat && note(40).durationTicks == 2 * beat && undoStepIs(submitter, "Move Note", 2),
           "moved into the long note, the short one survives whole and the long one now ends where it begins: one undo step");
     check(root.command(AppCommands::Undo), "undo");
     root.frame();
@@ -5765,7 +5778,7 @@ void clipViewTime(AppCommands &commands, const std::filesystem::path &dir) {
     ed.selectTime(4 * beat + beat / 2, 7 * beat);
     check(ed.keyPressed(key('e', command)) && panel.details()->notes.size() == 6 && note(1).durationTicks == beat / 2 &&
               note(3).durationTicks == beat && note(4).durationTicks == beat && note(2).durationTicks == beat &&
-              submitter.nextUndo()->label == "Split Notes" && submitter.nextUndo()->opCount == 4,
+              undoStepIs(submitter, "Split Notes", 4),
           "Ctrl+E with time selected and no note cuts the notes crossing its two edges: one undo step");
     check(root.command(AppCommands::Undo), "undo");
     root.frame();
@@ -5859,7 +5872,7 @@ void clipViewTime(AppCommands &commands, const std::filesystem::path &dir) {
                 ed.mouseUp(dragAt(ed, a, b));
         };
         const auto undoIs = [&](const char *label, int ops) {
-            return submitter.nextUndo()->label == label && submitter.nextUndo()->opCount == ops;
+            return undoStepIs(submitter, label, ops);
         };
         // The clip never looped: its loop is its whole length, from beat 4 to beat 12 of the song.
         check(!details().loopEnabled && loopLengthOf(details()) == 8 * beat && details().startMarkerTicks == 0 && endMarkerOf(details()) == 8 * beat,
@@ -5940,7 +5953,7 @@ void clipViewTime(AppCommands &commands, const std::filesystem::path &dir) {
             return juce::Point<float>(static_cast<float>(lane.getX() + static_cast<int>(ed.time.x(tick))), yOf(velocity));
         };
         const auto undoIs = [&](const char *label, int ops) {
-            return submitter.nextUndo()->label == label && submitter.nextUndo()->opCount == ops;
+            return undoStepIs(submitter, label, ops);
         };
 #if JUCE_MAC
         const juce::ModifierKeys bypass(command);
@@ -6041,7 +6054,7 @@ void clipViewTime(AppCommands &commands, const std::filesystem::path &dir) {
     {
         using Field = ClipViewPanel::Field;
         const auto undoIs = [&](const char *label, int ops) {
-            return submitter.nextUndo()->label == label && submitter.nextUndo()->opCount == ops;
+            return undoStepIs(submitter, label, ops);
         };
         const auto click = [&](juce::Rectangle<int> box) {
             panel.mouseDown(pressAt(panel, box.getCentre().toFloat()));
@@ -6108,7 +6121,7 @@ void clipViewTime(AppCommands &commands, const std::filesystem::path &dir) {
     {
         const auto details = [&]() -> const engine::ClipDetails & { return *panel.details(); };
         const auto undoIs = [&](const char *label, int ops) {
-            return submitter.nextUndo()->label == label && submitter.nextUndo()->opCount == ops;
+            return undoStepIs(submitter, label, ops);
         };
         const auto click = [&](juce::Rectangle<int> box) {
             panel.mouseDown(pressAt(panel, box.getCentre().toFloat()));
@@ -6285,7 +6298,7 @@ void clipViewTime(AppCommands &commands, const std::filesystem::path &dir) {
             panel.mouseUp(pressAt(panel, box.getCentre().toFloat()));
         };
         const auto undoIs = [&](const char *label, int ops) {
-            return submitter.nextUndo()->label == label && submitter.nextUndo()->opCount == ops;
+            return undoStepIs(submitter, label, ops);
         };
         panel.setToolsTab(0);
         check(ed.keyPressed(key('u', command | shift)) && panel.toolsTab() == 1, "Ctrl+Shift+U shows the Quantize settings: the Functions tab");
@@ -6618,7 +6631,7 @@ void clipViewClipTime(AppCommands &commands, const std::filesystem::path &dir) {
     }
     check(ed.keyPressed(key('d', command)) && details().loopLengthTicks == 5 * beat && details().loopStartTicks == 3 * beat && details().loopEnabled &&
               details().notes.size() == 6 && note(5).startTicks == 9 * beat + beat / 2 && note(4).startTicks == 5 * beat && undoIs("Duplicate Loop") &&
-              submitter.nextUndo()->opCount == 3,
+              undoOpsAre(submitter, 3),
           "Ctrl+D doubles the loop, copies the note that begins in it and moves the later note on by the loop's length: one undo step");
     bool copied = false;
     for (const auto &n : details().notes)
@@ -6711,7 +6724,7 @@ void clipViewClipTime(AppCommands &commands, const std::filesystem::path &dir) {
               "the Duration chooser: the editing grid's step first, then fixed lengths; 1/4 chosen");
         ed.select({3});
         click(panel.toolBox(Tool::FixedLength));
-        check(note(3).durationTicks == beat && note(4).durationTicks == beat && undoIs("Set Length") && submitter.nextUndo()->opCount == 1,
+        check(note(3).durationTicks == beat && note(4).durationTicks == beat && undoIs("Set Length") && undoOpsAre(submitter, 1),
               "Set Length gives the selected note the chosen length");
         check(panel.chooseDuration(5), "1/8");
         ed.select({});
@@ -6719,7 +6732,7 @@ void clipViewClipTime(AppCommands &commands, const std::filesystem::path &dir) {
         bool allEighths = true;
         for (const auto &n : details().notes)
             allEighths = allEighths && n.durationTicks == beat / 2;
-        check(allEighths && submitter.nextUndo()->opCount == 5 && undo() && undo() && note(3).durationTicks == 2 * beat && panel.chooseDuration(2),
+        check(allEighths && undoOpsAre(submitter, 5) && undo() && undo() && note(3).durationTicks == 2 * beat && panel.chooseDuration(2),
               "with no note selected, every note; undone, and the Duration back on Grid");
     }
 
@@ -7427,7 +7440,7 @@ void clipViewMulti(AppCommands &commands, const std::filesystem::path &dir) {
     const auto mineStart = mine().startTicks, theirStart = theirs().startTicks;
     const int mineKey = mine().key, theirKey = theirs().key;
     check(ed.keyPressed(juce::KeyPress(juce::KeyPress::rightKey)) && mine().startTicks == mineStart + beat &&
-              theirs().startTicks == theirStart + beat && submitter.nextUndo()->opCount == 2,
+              theirs().startTicks == theirStart + beat && undoOpsAre(submitter, 2),
           "Right moves both clips' notes a grid step later, as one undo step of two ops");
     check(ed.keyPressed(juce::KeyPress(juce::KeyPress::upKey, juce::ModifierKeys::shiftModifier, 0)) && mine().key == mineKey + 12 &&
               theirs().key == theirKey + 12 && ed.selectedIn(12).size() == 1,
@@ -7447,13 +7460,13 @@ void clipViewMulti(AppCommands &commands, const std::filesystem::path &dir) {
               theirs().startTicks == theirStart,
           "while the drag is held both clips' notes are drawn a step later, nothing written");
     ed.mouseUp(pressAt(ed, {grab.x + stepPx, grab.y}));
-    check(mine().startTicks == mineStart + beat && theirs().startTicks == theirStart + beat && submitter.nextUndo()->opCount == 2,
+    check(mine().startTicks == mineStart + beat && theirs().startTicks == theirStart + beat && undoOpsAre(submitter, 2),
           "let go, both have moved: one undo step");
     check(root.command(AppCommands::Undo), "undo");
     root.frame();
     // Delete takes the selected notes of both clips; one Undo brings both back.
     check(ed.keyPressed(all) && ed.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)) && panel.details()->notes.empty() &&
-              panel.others()[0].details.notes.empty() && submitter.nextUndo()->opCount == 2 && !ed.anySelected(),
+              panel.others()[0].details.notes.empty() && undoOpsAre(submitter, 2) && !ed.anySelected(),
           "Delete removes the selected notes of both clips, one undo step");
     check(root.command(AppCommands::Undo), "undo");
     root.frame();
@@ -7474,7 +7487,7 @@ void clipViewMulti(AppCommands &commands, const std::filesystem::path &dir) {
     panel.setFocus(true);
     check(ed.keyPressed(all) && ed.selected().size() == 1 && ed.selectedIn(12).empty(), "with Focus on, Ctrl/Cmd+A selects the edited clip's notes only");
     check(ed.keyPressed(juce::KeyPress(juce::KeyPress::rightKey)) && mine().startTicks == mineStart + beat && theirs().startTicks == theirStart &&
-              submitter.nextUndo()->opCount == 1,
+              undoOpsAre(submitter, 1),
           "and Right moves them only");
     check(root.command(AppCommands::Undo), "undo");
     root.frame();
@@ -7502,17 +7515,17 @@ void clipViewMulti(AppCommands &commands, const std::filesystem::path &dir) {
         check(panel.others().size() == 1 && panel.readings().title == "2 MIDI Clips" && !panel.readings().loopMixed && panel.readings().scale != "*",
               "with two clips shown the title reads their number; they agree on looping and on the scale");
         const bool looped = edited().loopEnabled;
-        check(panel.toggleLoop() && edited().loopEnabled == !looped && another().loopEnabled == !looped && submitter.nextUndo()->opCount == 2,
+        check(panel.toggleLoop() && edited().loopEnabled == !looped && another().loopEnabled == !looped && undoOpsAre(submitter, 2),
               "the Loop switch switches both clips: one undo step");
         check(submitter.submit(op("clip.setLoop", {{"id", another().id}, {"on", false}}, "Deactivate Loop")).ok, "the other clip's loop switched off alone");
         root.frame();
         if (edited().loopEnabled) {
             check(panel.readings().loopMixed, "one looped and one not: the Loop button is half lit");
-            check(panel.toggleLoop() && !edited().loopEnabled && !another().loopEnabled && !panel.readings().loopMixed && submitter.nextUndo()->opCount == 1,
+            check(panel.toggleLoop() && !edited().loopEnabled && !another().loopEnabled && !panel.readings().loopMixed && undoOpsAre(submitter, 1),
                   "switched off, only the clip that still looped is written");
         }
         check(panel.typeField(Field::Signature, "3/4") && edited().signature.numerator == 3 && another().signature.numerator == 3 &&
-                  another().signature.local && submitter.nextUndo()->opCount == 2,
+                  another().signature.local && undoOpsAre(submitter, 2),
               "a time signature typed is both clips'");
         check(panel.chooseScale(true, 3) && edited().scale.root == 2 && another().scale.root == 2 && another().scale.local && edited().scale.local,
               "a root chosen is both clips'");
@@ -7525,7 +7538,7 @@ void clipViewMulti(AppCommands &commands, const std::filesystem::path &dir) {
               "a scale chosen brings them together again");
         panel.mouseDown(pressAt(panel, panel.scaleModeBox().getCentre().toFloat()));
         panel.mouseUp(pressAt(panel, panel.scaleModeBox().getCentre().toFloat()));
-        check(!edited().scale.local && !another().scale.local && submitter.nextUndo()->label == "Deactivate Scale" && submitter.nextUndo()->opCount == 2,
+        check(!edited().scale.local && !another().scale.local && submitter.nextUndo()->label == "Deactivate Scale" && undoOpsAre(submitter, 2),
               "Scale Mode switched off is switched off in both");
 
         // Copy from both clips; paste goes back into both.
@@ -7560,12 +7573,12 @@ void clipViewMulti(AppCommands &commands, const std::filesystem::path &dir) {
         check(panel.titleMenu().getNumItems() == 4 && panel.chooseTitleItem(1),
               "the title's menu: Rename, Color, Arrange Clip View Panels Automatically and Fold; Rename opens the name for typing");
         check(panel.typeField(ClipViewPanel::Field::Name, "  Verse A ") && edited().name == "Verse A" && another().name == "Verse A" &&
-                  submitter.nextUndo()->label == "Rename Clip" && submitter.nextUndo()->opCount == 2 && panel.readings().title == "2 MIDI Clips",
+                  submitter.nextUndo()->label == "Rename Clip" && undoOpsAre(submitter, 2) && panel.readings().title == "2 MIDI Clips",
               "a name typed names both shown clips, without the spaces at its ends: one undo step");
         const auto renamed = submitter.nextUndo()->txnId;
         check(panel.rename("Verse A") && submitter.nextUndo()->txnId == renamed, "the same name again writes nothing");
         check(panel.chooseTitleItem(105) && edited().color == 5 && another().color == 5 && submitter.nextUndo()->label == "Change Clip Color" &&
-                  submitter.nextUndo()->opCount == 2 && !panel.chooseTitleItem(100 + ClipViewPanel::kTitleColours) && !panel.chooseTitleItem(4),
+                  undoOpsAre(submitter, 2) && !panel.chooseTitleItem(100 + ClipViewPanel::kTitleColours) && !panel.chooseTitleItem(4),
               "a colour chosen colours both: one undo step");
         root.frame();
         check(panel.colour() == look::paletteColour(5) && panel.others()[0].colour == look::paletteColour(5), "and the editor draws both clips in it");
