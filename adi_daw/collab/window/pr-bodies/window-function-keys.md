@@ -5,7 +5,7 @@ What it does
 - **The key-map golden** (a new shell scene, `keymapGolden`): each shortcut preset's default map (live, cubase, bitwig) as text the same across a platform family. Modifiers are read as Cmd for the command key, Ctrl for the Mac's own, then Alt and Shift.
   - No key may be the default of two commands. Main fails here at F4 (Mix View and Activate Track 4).
   - The map is compared with its golden, `ADI_UI_REFERENCES/keymap-<preset>-<pc|mac>.txt`. Each run leaves `keymap-<preset>-<family>-actual.txt` in the working directory.
-  - The PC goldens follow as one more commit on this branch, from the Linux run's output. Until then the scene says no golden is there and runs the no-clash half. The Mac's are written on a Mac with `--write-references` (the director's question in the window log).
+  - The PC goldens are in `tests/fixtures/ui/keymap-<preset>-pc.txt` (`c4a62e25`), written from the Linux run's output. The Mac's are written on a Mac with `--write-references` (the director's question in the window log).
 - **F4, headless:** the Mix View opens once and no track's activator changes (MX-14).
 
 Tests
