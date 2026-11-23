@@ -149,7 +149,12 @@ void Shifter::process(const float* inL,const float* inR,float* outL,float* outR,
         s.noteCurrent+=(s.noteTarget-s.noteCurrent)*glide;
         if(std::abs(s.noteTarget-s.noteCurrent)<1e-12){s.noteCurrent=s.noteTarget;}
         double leftRandom=0;
-        const std::array<float,2> inputs{inL[frame],inR[frame]};
+        // A non-finite sample enters as silence, and a finite one is bounded
+        // at 1e6 (120 dB over full scale): the pitch, delay and dry lines
+        // would keep a NaN for good, and near the float's limit the Hilbert
+        // filters' products overflow into one.
+        const auto finite=[](float v){return std::isfinite(v)?std::clamp(v,-1e6f,1e6f):0.f;};
+        const std::array<float,2> inputs{finite(inL[frame]),finite(inR[frame])};
         for(std::size_t channel=0;channel<2;++channel){auto& l=s.lanes[channel];
             const double input=inputs[channel];
             l.dry[l.dryWrite]=static_cast<float>(input);
