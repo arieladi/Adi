@@ -4,6 +4,22 @@ Trial seat (22 November 2026, `collab/win.md`): Linux environment (Debian 12, GC
 
 ---
 
+## 2026-11-23 — Rerun item 3 (WTS-01 on Linux) on new `main` (`7e3e627d`, post-#711/#713/#715/#718)
+
+Baseline: `main` (`abbc32ab`, 22 Nov). Built with GCC 12.2.0 (`-DADI_ACCEPTANCE=ON -DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF`), run via `ctest -L acceptance -E adi_builtin_realtime_tests` (40.52 s).
+
+### What is new vs `abbc32ab`
+
+| Step | Previous (`abbc32ab`) | New (`7e3e627d`) | Change |
+|---|---|---|---|
+| **3b** (Live keyboard into OneShot) | `NOT_BUILT` | **PASS** | Now passes through the app's MIDI consumer (`first sound at +1 frames; peak 0.1256; 0 refused`; N60 window half landed in `#718`). |
+| **6b** (Built-in parameter automated) | `NOT_BUILT` | **PASS** | Now passes through the lane chooser (`Utility Gain` drawn in 4 steps; `x1.995262` before 2 bars, `x1.000000` after, `max\|d\| 2.2e-08`; DF-W37 landed in `#718`). |
+| **2a / 2b** (Monitoring default) | `monitor Off` | `monitor Auto` | Reflects N67 landing (`#713`/`#718`); step 2a still `PASS` (`max\|d\| 0`), step 2b remains the sole `FAIL` (DF-E64, 256 underrun frames). |
+
+Everything else is unchanged (`1, 2a, 3a, 4, 5a, 6a, 7a, 7b, 7c` `PASS`; `5b` sole remaining headless `NOT_BUILT` with `ENGINE` ok; `3c, 3d, 7d, 7e` JUCE-only; summary `1 FAIL`).
+
+---
+
 ## 2026-11-22 — Queue cycle 2: WTS-01 on new `main` (`abbc32ab`), DF-E64 Linux WTS-01 confirmation (`01b1e723`), and Round 2 PR-BUILDS check
 
 All 15 standing queue items are complete on `main` (`abbc32ab`, post-`#712 land/mixview2-1122`); per the standing queue's empty-list rule, checked for new PR-requested branches and re-ran item 3 on the new `main` (items 10–13 were already run on `abbc32ab`).
