@@ -586,6 +586,16 @@ private:
     double clickPhase_=0,clickEnvelope_=0,clickFrequency_=880;
     double countInBeatSamples_ = 24000;
     std::int64_t countInBeatsPerBar_ = 4;
+    // DF-E6 (a): a count-in delayed by the render latency still owes its last
+    // clicks (at most one beat) when the roll starts. They play on, on the
+    // count-in grid, until the compensated program is heard; the transport
+    // revision of that roll guards them against stop, locate and restart.
+    bool countInTail_ = false;
+    std::uint64_t countInTailRevision_ = 0;
+    std::int64_t countInTailTotal_ = 0, countInTailLag_ = 0;
+    [[nodiscard]] std::int64_t countInLag(std::int32_t latency) const noexcept;
+    [[nodiscard]] bool countInTailActive() const noexcept;
+    double countInClick(std::int64_t heard, double rate, double decay) noexcept;
     void renderCountIn(const TimingView &, const AudioIo &) noexcept;
     void renderMetronome(const TimingView&,const AudioIo&) noexcept;
     std::shared_ptr<const ClipProject> clipProject_;
