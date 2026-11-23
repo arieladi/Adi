@@ -375,6 +375,7 @@ add_library(adi_core STATIC
     src/adi/automation_shapes.cpp
     src/adi/engine/automation_recording.cpp
     src/adi/controller_maps.cpp
+    src/adi/project_paste.cpp
     src/adi/gesture_session.cpp
     src/adi/gesture_producers.cpp
     src/adi/quiet_gesture.cpp
@@ -2323,6 +2324,10 @@ add_test(NAME adi_midi_capture_input_tests COMMAND adi_midi_capture_input_tests)
 add_executable(adi_midi_capture_tests tests/test_midi_capture.cpp)
 target_link_libraries(adi_midi_capture_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_midi_capture_tests COMMAND adi_midi_capture_tests)
+
+add_executable(adi_project_paste_tests tests/test_project_paste.cpp)
+target_link_libraries(adi_project_paste_tests PRIVATE adi_core adi_warnings Threads::Threads)
+add_test(NAME adi_project_paste_tests COMMAND adi_project_paste_tests)
 # Test modules from the director's research are available on Windows hosting builds.
 if(ADI_WITH_JUCE)
     include(tests/research_intake/plugins/targets.cmake)
