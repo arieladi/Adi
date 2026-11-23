@@ -34,7 +34,7 @@ struct ExportChoices {
     bool encodePcm = true;
     std::string fileType = "WAV";            // WAV, AIFF, FLAC
     int bitDepth = 24;                       // 16, 24, 32 (float)
-    std::string dither = "Triangular";       // No Dither, Rectangular, Triangular, POW-r 1, 2, 3
+    std::string dither = "Triangular";       // No Dither, Rectangular, Triangular, Shaped 1, 2, 3
     bool encodeMp3 = false;
     bool video = false;
 };
@@ -42,7 +42,7 @@ inline constexpr std::array<int, 6> kExportSampleRates{22050, 32000, 44100, 4800
 inline constexpr std::array<const char *, 3> kExportFileTypes{"WAV", "AIFF", "FLAC"};
 inline constexpr std::array<int, 3> kExportBitDepths{16, 24, 32};
 inline constexpr std::array<const char *, 6> kExportDithers{"No Dither", "Rectangular", "Triangular",
-                                                            "POW-r 1", "POW-r 2", "POW-r 3"};
+                                                            "Shaped 1", "Shaped 2", "Shaped 3"};
 // Why a choice cannot be made yet, for the page to show beside it; empty when the renderer takes it.
 inline std::string unsupported(const ExportChoices &c, const char *choice) {
     const std::string what(choice);
@@ -59,8 +59,6 @@ inline std::string unsupported(const ExportChoices &c, const char *choice) {
         return "Analysis files wait for the engine's export (EX-07).";
     if (what == "fileType" && c.fileType != "WAV")
         return c.fileType + " waits for the engine's encoders (EX-08); WAV renders now.";
-    if (what == "dither" && c.dither.rfind("POW-r", 0) == 0)
-        return "The shaped dithers wait for the engine's noise shaping (EX-06).";
     if (what == "encodeMp3" && c.encodeMp3)
         return "MP3 waits for the engine's encoders (EX-08).";
     if (what == "video" && c.video)
@@ -151,8 +149,13 @@ inline render::Job exportJob(const ExportChoices &c, const std::filesystem::path
     job.encoding.format = c.bitDepth == 16 ? audio::WavFormat::Pcm16
                           : c.bitDepth == 32 ? audio::WavFormat::Float32
                                              : audio::WavFormat::Pcm24;
-    job.encoding.dither = c.dither == "No Dither" ? audio::WavDither::None
+    // Live's three POW-r slots are ADI's three noise-shaped dithers (EX-06; the engine's shaping tables). At a
+    // rate the tables do not cover, the engine dithers triangular instead (`audio::effectiveDither`).
+    job.encoding.dither = c.dither == "No Dither"     ? audio::WavDither::None
                           : c.dither == "Rectangular" ? audio::WavDither::Rectangular
+                          : c.dither == "Shaped 1"    ? audio::WavDither::Shaped1
+                          : c.dither == "Shaped 2"    ? audio::WavDither::Shaped2
+                          : c.dither == "Shaped 3"    ? audio::WavDither::Shaped3
                                                       : audio::WavDither::Triangular;
     if (c.normalize) {
         job.normalization.mode = render::NormalizeMode::Peak;

@@ -10658,6 +10658,22 @@ void exportPage(AppCommands &commands, const std::filesystem::path &dir) {
     check(result.state == render::JobState::Completed && result.output == dir / "Song {mix}.wav" &&
               std::filesystem::exists(result.output) && result.framesWritten == static_cast<std::uint64_t>(expected),
           "the renderer writes the chosen file, the whole range");
+    // EX-06: the shaped dithers are offered and render, no longer refused (Live's three POW-r slots).
+    {
+        auto shaped = one;
+        shaped.bitDepth = 16;
+        shaped.dither = "Shaped 2";
+        const auto refusals = exportRefusals(shaped);
+        const auto shapedJob = exportJob(shaped, dir / "export-empty.adi", dir / "Shaped {mix}.wav", *tempo);
+        const auto rendered = render::renderWav(shapedJob, {});
+        if (rendered.state != render::JobState::Completed)
+            std::printf("shaped render: %s\n", rendered.error.c_str());
+        check(std::find(kExportDithers.begin(), kExportDithers.end(), std::string_view("Shaped 3")) != kExportDithers.end() &&
+                  refusals.empty() && shapedJob.encoding.dither == audio::WavDither::Shaped2 &&
+                  rendered.state == render::JobState::Completed && std::filesystem::exists(rendered.output) &&
+                  rendered.framesWritten == static_cast<std::uint64_t>(expected),
+              "Shaped 2 is offered, refused no longer, and renders the whole range");
+    }
     document->release();
 }
 // MX-23 and SRF-02 from the strip: the fader's own drag is the document's live gesture, one undo step at
