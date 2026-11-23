@@ -4,6 +4,17 @@ Trial seat (22 November 2026, `collab/win.md`): Linux environment (Debian 12, GC
 
 ---
 
+## 2026-11-23 — Rerun item 13 (GLIBCXX-DEBUG) on new `main` (`7e3e627d`, post-#711/#713/#715/#718)
+
+Baseline: `main` (`abbc32ab`, 22 Nov). GCC 12.2.0 (`-O1 -g0 -D_GLIBCXX_DEBUG`, `-DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF -DADI_WERROR=OFF`).
+
+### What is new vs `abbc32ab`
+
+- **Nothing new** — **272 / 275 PASS**, **0 new `_GLIBCXX_DEBUG` aborts**.
+- Exact same 3 pre-existing non-pass suites (`adi_mix_opto_gain_tests` `std::span(UINTPTR_MAX - 3, 1)` abort, `adi_link_playback_tests` safe-iterator mutex interaction with `RealtimeAudit`, `adi_ui_seams_tests` GCC 12 flag build-block). All newly landed `#711`/`#713`/`#715`/`#718` code passed `-D_GLIBCXX_DEBUG` cleanly.
+
+---
+
 ## 2026-11-23 — Rerun item 12 (TSAN) on new `main` (`7e3e627d`, post-#711/#713/#715/#718)
 
 Baseline: `main` (`abbc32ab`, 22 Nov). GCC 12.2.0 (`-O1 -g1 -fsanitize=thread -fno-omit-frame-pointer`, `setarch x86_64 -R`, `TSAN_OPTIONS=halt_on_error=0:second_deadlock_stack=1:exitcode=66`). Clang 14.0.6 still lacks `libclang_rt.tsan-x86_64.a` on this VM. Expanded from 39 to **42** suites to also cover `adi_ui_document_tests`, `adi_collect_export_tests`, and `adi_mpe_output_tests`.
