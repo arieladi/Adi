@@ -9,8 +9,8 @@ This is your whole queue: work it until your usage limit. It replaces the trial 
   `collab/README.md` and in the PLAN rows of the section below, on each row's named paths (the trial's loans for
   DF-E53 and DF-E56 ended when #713 landed), and you never push to another seat's branch.
 - Fetch origin first, and before each item. Read the top entry of `collab/win.md` on main and every entry addressed
-  to you in the other seats' logs, above all the engine's reviews of your two branches in `collab/engine.md` on
-  `engine/log`. Changes requested on your own branches come before any item below (item 1 is the one open today).
+  to you in the other seats' logs, above all the engine's reviews of your branches in `collab/engine.md` on
+  `engine/log`. Changes requested on your own branches come before any item below.
 - Work the items top to bottom. A code change gets one branch per item (`gemini/<topic>`), cut from origin/main
   unless the item says to stack, test-first where the item has a test.
 - After each item: push any branch, write the entry in `collab/gemini.md` on `gemini/log` (newest first), end it with
@@ -39,6 +39,7 @@ Before 3 December (ADR-0248 d2):
    - Add the commit on `gemini/df-e56-mpe-router-overflow` (test first in `tests/test_mpe_output.cpp`), push, and log
      the new head with "PR requested": the engine's MI08-MPE item rebases over it.
    - Proof: the router suite passes on GCC 12 and Clang 14 with `-DADI_WERROR=ON`; the new case fails on da6d1629.
+   - **Done:** 0b539fb2 landed on main in #713 on 23 November, and the engine's current MI-08 branches carry it.
 2. **PR-BUILDS: every requested branch on GCC 12 and Clang 14 -Werror**
    - Collect the "PR requested" lines in every seat's log (`engine/log`, `engine-win/log`, `devices/log`,
      `window/log`, `window-fn/log`, `mixview/log`, `clones/log`) and win's `land/<seat>-<date>` stacks.
@@ -179,7 +180,8 @@ UBSan, and log the result.
 
 ## Needs from other seats
 
-- The engine: a review of item 1's commit in `engine.md`; its MI-08 branches rebase over your new DF-E56 head.
+- The engine: a review of each branch of your PLAN rows in `engine.md` before you write "PR requested" (ADR-0252
+  d4). Item 1's commit landed in #713.
 - The Mix View seat: its DF-M62 fix pushed, for item 8.
 - Win: the MSVC /W4 /WX and macOS legs of your branches (you cannot run them), and the DF rows for your findings.
 - Win: any code row for this seat comes only as a loan named in `collab/README.md` or as a PLAN row reserved for it

@@ -19705,7 +19705,7 @@ framed as the verification seat below. His words, on 23 November: "yes to both".
    its log. The engine reviews each branch in `collab/engine.md`, as it reviewed DF-E53 and DF-E56; "PR
    requested" is written only after that review passes, and win lands the branch after 3 December. It never
    takes a row of the two weeks before 3 December, and never a row of the window, window-fn, devices, Mix
-   View, clones or engine-win lanes.
+   View, clones, control or engine-win lanes.
 5. **The order of a round.** Its verification items first; then the next slice of its first unfinished PLAN
    row; then the verification items again for every new "PR requested" line. A PLAN row never pushes a
    requested branch's older-toolchain build past win's next landing window.
