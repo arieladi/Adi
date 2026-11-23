@@ -1225,13 +1225,16 @@ void MixerStrip::sendMenu(std::size_t index) {
     if (const auto current = panel_.root.current(); current && index < returns_.size()) {
         m.addSeparator();
         const auto tap = adi::ui::sendTap(*current, track_, returns_[index]);
-        for (const auto &[name, which] : {std::pair{"Pre FX", IndividualSendTap::PreFx},
-                                          std::pair{"Post FX", IndividualSendTap::PostFx},
-                                          std::pair{"Post Mixer", IndividualSendTap::PostMixer}})
-            m.addItem(name, true, tap == which, [safe = SafePointer<MixerStrip>(this), index, which] {
+        // A plain local for the lambda: Clang 14 rejects a lambda capturing a structured binding.
+        for (const auto &place : {std::pair{"Pre FX", IndividualSendTap::PreFx},
+                                  std::pair{"Post FX", IndividualSendTap::PostFx},
+                                  std::pair{"Post Mixer", IndividualSendTap::PostMixer}}) {
+            const IndividualSendTap which = place.second;
+            m.addItem(place.first, true, tap == which, [safe = SafePointer<MixerStrip>(this), index, which] {
                 if (safe)
                     safe->chooseSendTap(index, which);
             });
+        }
     }
     // Live's Re-Enable Automation for this send's level, owned by its routing row (AU-04).
     if (const auto current = panel_.root.current())
