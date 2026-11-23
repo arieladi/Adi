@@ -159,7 +159,10 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         FitToTimeRange, // the Note Editor's (manual 10.5.5), Ctrl/Cmd+Alt+J
         ArrangementRecord, // the Control Bar's Arrangement Record (manual 21.1), F9
         ExportAudio,       // the File menu's Export Audio/Video (manual 5.2.1), Ctrl/Cmd+Shift+R
-        LastId = ExportAudio
+        DelayCompensation, // Live's Options > Delay Compensation (manual 18.7; MX-04)
+        SoloSwitches,      // Live's Options menu (manual 18.6; MX-08): the Solo buttons solo
+        CueSwitches,       // ... or cue, sending the track to Cue Out
+        LastId = CueSwitches
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -180,6 +183,11 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     // How Follow keeps the playhead on screen: by page (Live's default), or by scrolling.
     bool followByPage() const noexcept { return followByPage_; }
     bool setTabMovesFocus(bool on, std::string &why);
+    // Live's Options > Delay Compensation (manual 18.7; MX-04; `audio.delayCompensation`, on by
+    // default): every track lined up with the slowest chain. Off, nothing is compensated and Track
+    // Delay is unavailable, its stored values kept. An application setting, not an undo step.
+    bool delayCompensation() const noexcept { return delayCompensation_; }
+    bool setDelayCompensation(bool on, std::string &why);
     // Live's Wrap Tab Navigation (§41.1.1), on by default: Tab from an area's last control
     // returns to its first; off, it stops there.
     bool wrapTabNavigation() const noexcept { return wrapTab_; }
@@ -250,6 +258,7 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     int tooltipDelayMs_ = 600;
     bool zoomOnSelection_ = true;
     bool tabMovesFocus_ = false;
+    bool delayCompensation_ = true;
     bool multiplePluginWindows_ = false, autoHidePluginWindows_ = true, pluginWindowsOnTop_ = true;
     bool wrapTab_ = true, arrowKeysMoveClips_ = true;
     bool followByPage_ = true;
@@ -380,6 +389,13 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // gesture refuses). False with the reason said.
     std::function<bool()> endTapTempoGesture;
     std::function<bool()> reenableAutomation;
+    // The session follows Options > Delay Compensation (MX-04): set by the application, called when
+    // the command toggles the setting. Unset, the setting changes and the session hears it at the next
+    // project open.
+    std::function<bool(bool)> applyDelayCompensation; // false: refused, and the reason said
+    // How many outputs the audio device has open (the highest open channel's number), for Cue Out's
+    // stereo pairs (MX-08). Unset or 0: none known, and Cue Out offers only 1/2.
+    std::function<int()> outputChannels;
     // Live's per-parameter Re-Enable Automation (manual 25.4; AU-04): one overridden lane follows its
     // envelope again; false with the reason said. Session state, no undo step, as the global switch.
     std::function<bool(std::int64_t)> reenableLane;
@@ -625,12 +641,38 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     bool automationMode() const noexcept { return automationMode_; }
     void setAutomationMode(bool on);
     bool addAutomationPoint(std::int64_t track, std::int64_t tick, double value);
+    // Live's lane chooser (DF-W37; manual 25.2): what a track's lane shows in Automation Mode, its
+    // Volume until another is chosen; a choice whose device or send is gone reads as Volume again.
+    // Window state, kept while the window lives.
+    AutomationTarget automationTarget(std::int64_t track) const;
+    std::vector<AutomationTarget> automationChoices(std::int64_t track) const;
+    // Shows `target` on its track's lane and turns Automation Mode on (Live's Show Automation).
+    void showAutomation(std::int64_t track, const AutomationTarget &target);
+    // A device parameter's Show Automation, from its control's menu: false when it has no lane to show.
+    bool showDeviceAutomation(std::int64_t device, const std::string &parameter);
+    // The track and target a device parameter's Show Automation would show; none for one the engine
+    // would not play.
+    std::optional<std::pair<std::int64_t, AutomationTarget>> deviceAutomationTarget(std::int64_t device,
+                                                                                   const std::string &parameter) const;
+    // The target's value now, where its control stands: the line drawn while its lane has no point.
+    double automationCurrent(const AutomationTarget &target) const;
+    // The feed publishes a device's parameters only to a surface that demands it: while Automation
+    // Mode is on, or a chooser is built, this window demands every device, so any track's chooser lists
+    // its devices' parameters. Off, the demand goes.
+    void demandAutomationDevices(bool on);
     bool moveAutomationPoint(std::int64_t track, std::uint64_t point, std::int64_t tick, double value);
     bool deleteAutomationPoint(std::int64_t track, std::uint64_t point);
     // Live's Solo in Place (manual 18.6): soloing leaves the returns audible. The project's one
     // field, which the Solo button's menu and the Options menu's entry share (`mixer.setSoloInPlace`,
     // #412); outside undo, saved with the project; the session re-reads the project after it.
     bool setSoloInPlace(bool on);
+    // Live's cueing (manual 18.6; MX-08), each one transport op outside undo, saved with the project:
+    // Solo Switches or Cue Switches; a track's Cue button; Main's Cue Volume; Cue Out's stereo pair.
+    bool setCueMode(bool cue);
+    bool cueTrack(std::int64_t track);
+    bool setCueVolume(double db);
+    bool setCueOutput(int firstChannel);
+    bool submitCue(TrackEdit edit, const char *needs);
     // A track's Rec-Q or Play-Q ("off" or a grid) and its Keep Monitoring Latency in Recorded Audio
     // (#397, N31; MR V.2 §9; Live 12 manual 18.8), each one undo step. Nothing follows them yet.
     bool setQuantize(std::int64_t track, bool record, const std::string &choice);
@@ -774,6 +816,8 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     RecordStates freshRecordStates() const { return readRecordStates ? readRecordStates() : recordStates_; }
     bool midiIn_ = false;
     bool automationMode_ = false;
+    std::map<std::int64_t, AutomationTarget> automationTargets_;
+    std::vector<std::int64_t> automationDemand_;
     bool infoShown_ = true;
     std::int64_t position_ = 0;
     double sampleRate_ = 0; // the device's granted rate, once a driver runs

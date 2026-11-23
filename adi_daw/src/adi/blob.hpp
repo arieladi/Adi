@@ -126,6 +126,7 @@ enum class ExpressionDim : std::uint8_t {
     Pitch = 0, Pressure = 1, Timbre = 2, Gain = 3, Pan = 4,
     // >= 64 is plugin-defined
 };
+inline constexpr auto kStandardExpressionDimensionCount = static_cast<std::size_t>(ExpressionDim::Pan) + 1;
 
 // ---------------------------------------------------------------------------
 // The spec's size and offset claims, proved at compile time.

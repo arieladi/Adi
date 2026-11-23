@@ -1,0 +1,464 @@
+[
+  {
+    "path": "silence_44100_1ch_f32.wav",
+    "rate": 44100,
+    "channels": 1,
+    "frames": 176400,
+    "sha256": "482308b8b23ba495188a6ef922ace4d125a0cd5ed1ac667419185c76a25fb164"
+  },
+  {
+    "path": "silence_44100_2ch_f32.wav",
+    "rate": 44100,
+    "channels": 2,
+    "frames": 176400,
+    "sha256": "13d9d8d191b924c5c684f69d1e3883ba980103009e3783d21e60326139bc05a0"
+  },
+  {
+    "path": "impulse_44100_1ch_f32.wav",
+    "rate": 44100,
+    "channels": 1,
+    "frames": 176400,
+    "sha256": "9d1577f8d6dc5708945a9a7515d73882d21dc921c9996b890040d57fef95f787"
+  },
+  {
+    "path": "impulse_44100_2ch_f32.wav",
+    "rate": 44100,
+    "channels": 2,
+    "frames": 176400,
+    "sha256": "33afd5a78b0adf7d9f21bf49e82ea305c371841fd204cf8262329d986bce2710"
+  },
+  {
+    "path": "step_44100_1ch_f32.wav",
+    "rate": 44100,
+    "channels": 1,
+    "frames": 176400,
+    "sha256": "8537d11e981c5109eef2d9882eaab496b6ec19ebd42fe23dd83bde590f652572"
+  },
+  {
+    "path": "step_44100_2ch_f32.wav",
+    "rate": 44100,
+    "channels": 2,
+    "frames": 176400,
+    "sha256": "69d1e4975941cea3c5bf49fa93f35568ef2a0047e6b444687395d6aab1eaff2f"
+  },
+  {
+    "path": "dc_44100_1ch_f32.wav",
+    "rate": 44100,
+    "channels": 1,
+    "frames": 176400,
+    "sha256": "11d45ac2af6851715631fdc0a2f62c8aede0c9828a995437d50f9cff687a2ca6"
+  },
+  {
+    "path": "dc_44100_2ch_f32.wav",
+    "rate": 44100,
+    "channels": 2,
+    "frames": 176400,
+    "sha256": "5d5c2b66abb1f3e2ae948cd8f9a3ee16661f1a3a59e5411a4923b502fd60c098"
+  },
+  {
+    "path": "sine_997_44100_1ch_f32.wav",
+    "rate": 44100,
+    "channels": 1,
+    "frames": 176400,
+    "sha256": "6ce8ee88ae773a9ec1909e4b0b84161482f679a4aadca6f461e78c65bc3ef0f0"
+  },
+  {
+    "path": "sine_997_44100_2ch_f32.wav",
+    "rate": 44100,
+    "channels": 2,
+    "frames": 176400,
+    "sha256": "ab7d91f69b2457791adb207ff3a846ac474637688205c64ee388323c3c39038b"
+  },
+  {
+    "path": "sweep_20_18000_44100_1ch_f32.wav",
+    "rate": 44100,
+    "channels": 1,
+    "frames": 176400,
+    "sha256": "3c5c4ee7d214259972f05cb3b7f39a60551c8ea95c428ce7d1726d54e4b54bc8"
+  },
+  {
+    "path": "sweep_20_18000_44100_2ch_f32.wav",
+    "rate": 44100,
+    "channels": 2,
+    "frames": 176400,
+    "sha256": "1d12df162cd97319c03754ae5bf68bda4bc262a6676d9416b7307712fb5a7c53"
+  },
+  {
+    "path": "multitone_44100_1ch_f32.wav",
+    "rate": 44100,
+    "channels": 1,
+    "frames": 176400,
+    "sha256": "a5f7b1dd47711a2650046c57e1f41816403b80a36e574823784c60d4dc17ab5a"
+  },
+  {
+    "path": "multitone_44100_2ch_f32.wav",
+    "rate": 44100,
+    "channels": 2,
+    "frames": 176400,
+    "sha256": "d3286fd795311d7769075c31f515039f3b6e172aab650e3c822943a0c48c3d15"
+  },
+  {
+    "path": "noise_44100_1ch_f32.wav",
+    "rate": 44100,
+    "channels": 1,
+    "frames": 176400,
+    "sha256": "8ec32584613333b59c42f97f825ad1324a1c034d7232ef5ff3ee09345cef3bcf"
+  },
+  {
+    "path": "noise_44100_2ch_f32.wav",
+    "rate": 44100,
+    "channels": 2,
+    "frames": 176400,
+    "sha256": "f1ca38f9383f9e308d29c177ca4612537cc45b8206cd1f2544af74b32fd78fed"
+  },
+  {
+    "path": "precision_A_44100_1ch_f32.wav",
+    "rate": 44100,
+    "channels": 1,
+    "frames": 176400,
+    "sha256": "e1da855ca904bb22942a9bf7b30e8c3dfdebaf8ea480430ead800a1954c816f7"
+  },
+  {
+    "path": "precision_A_44100_2ch_f32.wav",
+    "rate": 44100,
+    "channels": 2,
+    "frames": 176400,
+    "sha256": "64e9e5b5bbd6635c619afd0e1007d413a4024e9e86b2f67728258a944bd41e77"
+  },
+  {
+    "path": "precision_B_44100_1ch_f32.wav",
+    "rate": 44100,
+    "channels": 1,
+    "frames": 176400,
+    "sha256": "87bec7391f86f8266ce90c024057a5e46af02af1e33bf337f810bac33a146f0e"
+  },
+  {
+    "path": "precision_B_44100_2ch_f32.wav",
+    "rate": 44100,
+    "channels": 2,
+    "frames": 176400,
+    "sha256": "46e6ca67697da264c091308070ad1106278186abad7d685413a2d8c5f763765a"
+  },
+  {
+    "path": "precision_minus_A_44100_1ch_f32.wav",
+    "rate": 44100,
+    "channels": 1,
+    "frames": 176400,
+    "sha256": "cd4e90adc1b4369b2f093ff538523844c783e75d04261fc65b33374a5dbe2d53"
+  },
+  {
+    "path": "precision_minus_A_44100_2ch_f32.wav",
+    "rate": 44100,
+    "channels": 2,
+    "frames": 176400,
+    "sha256": "d24249c325b9da86142c9ed625786a09289ac0a16574239c8358118ab9260d4a"
+  },
+  {
+    "path": "silence_48000_1ch_f32.wav",
+    "rate": 48000,
+    "channels": 1,
+    "frames": 192000,
+    "sha256": "c93f2d6c987f4c2ae7967e3bd40e424f6c7191bd026940a5c2f23adeab4eb473"
+  },
+  {
+    "path": "silence_48000_2ch_f32.wav",
+    "rate": 48000,
+    "channels": 2,
+    "frames": 192000,
+    "sha256": "70ad03061efb008e7ccf2e031613a12d7c8ba85dd9fb41c732cdf7e9b74b02cf"
+  },
+  {
+    "path": "impulse_48000_1ch_f32.wav",
+    "rate": 48000,
+    "channels": 1,
+    "frames": 192000,
+    "sha256": "a2103c0867b11b90ecf8ff3eab4748a7d902d8b3768e47f8b29efbb2586e09cd"
+  },
+  {
+    "path": "impulse_48000_2ch_f32.wav",
+    "rate": 48000,
+    "channels": 2,
+    "frames": 192000,
+    "sha256": "47463b565cd5cd8c3381e33c684ea00cf9feb84d18cb35c1bc00620606cd595e"
+  },
+  {
+    "path": "step_48000_1ch_f32.wav",
+    "rate": 48000,
+    "channels": 1,
+    "frames": 192000,
+    "sha256": "d06e9d9a6358db1b38b8c9af79b4016e022aa0c974707f782139e72fdbec2d86"
+  },
+  {
+    "path": "step_48000_2ch_f32.wav",
+    "rate": 48000,
+    "channels": 2,
+    "frames": 192000,
+    "sha256": "3b0c38010df62a9cc9adee0ac79a4492b3feabeae2edc692ded91b30772b98b7"
+  },
+  {
+    "path": "dc_48000_1ch_f32.wav",
+    "rate": 48000,
+    "channels": 1,
+    "frames": 192000,
+    "sha256": "8b723a592a5ead28cf9fd8a8290e8e608d4c23989496cb571347feb8671dd424"
+  },
+  {
+    "path": "dc_48000_2ch_f32.wav",
+    "rate": 48000,
+    "channels": 2,
+    "frames": 192000,
+    "sha256": "7c099a000f76011f9147196f1e67de486c20a0ad7e599630e511c47e42c44e88"
+  },
+  {
+    "path": "sine_997_48000_1ch_f32.wav",
+    "rate": 48000,
+    "channels": 1,
+    "frames": 192000,
+    "sha256": "db4d17cf0542d2e894bfdff2c0e618a6f412103b149e158ddf8b397b6bf15168"
+  },
+  {
+    "path": "sine_997_48000_2ch_f32.wav",
+    "rate": 48000,
+    "channels": 2,
+    "frames": 192000,
+    "sha256": "a5ebdfa06e8d106b38d9f13b6e37c229582b61d3888effcc9d66ee7ceda03822"
+  },
+  {
+    "path": "sweep_20_18000_48000_1ch_f32.wav",
+    "rate": 48000,
+    "channels": 1,
+    "frames": 192000,
+    "sha256": "ac3dfbe87ca3e4364621009637536b3005289079bbab172c0e32727978dbe523"
+  },
+  {
+    "path": "sweep_20_18000_48000_2ch_f32.wav",
+    "rate": 48000,
+    "channels": 2,
+    "frames": 192000,
+    "sha256": "e9721d70d323437ef7d1a206708c4b153cdad8c4a49e0907eb8458b140a3a358"
+  },
+  {
+    "path": "multitone_48000_1ch_f32.wav",
+    "rate": 48000,
+    "channels": 1,
+    "frames": 192000,
+    "sha256": "8e46cf865170f5ebd23c5efebc541acf0079af4178d413015f159939ca2cc063"
+  },
+  {
+    "path": "multitone_48000_2ch_f32.wav",
+    "rate": 48000,
+    "channels": 2,
+    "frames": 192000,
+    "sha256": "a058429ba3b06e10606c99937bfbca5d4b514d139602839f06a2b92d5353af13"
+  },
+  {
+    "path": "noise_48000_1ch_f32.wav",
+    "rate": 48000,
+    "channels": 1,
+    "frames": 192000,
+    "sha256": "b7d59dce90a7a86ff87f70c55ca5300f72c33c0b8d8729057a5b8a6d3d5d6509"
+  },
+  {
+    "path": "noise_48000_2ch_f32.wav",
+    "rate": 48000,
+    "channels": 2,
+    "frames": 192000,
+    "sha256": "96354336591dc0deed9be3e1adfe58b05ca4f3ec05227813f10bde13ede4eb3f"
+  },
+  {
+    "path": "precision_A_48000_1ch_f32.wav",
+    "rate": 48000,
+    "channels": 1,
+    "frames": 192000,
+    "sha256": "d5af5710582bf6eb6c1e8f2488e650e06e096ae8bc0c52812441fe7a5710f255"
+  },
+  {
+    "path": "precision_A_48000_2ch_f32.wav",
+    "rate": 48000,
+    "channels": 2,
+    "frames": 192000,
+    "sha256": "4183d89437c839b9a52d4863d727571a3e979bed03dfe99c195464db1cc8c915"
+  },
+  {
+    "path": "precision_B_48000_1ch_f32.wav",
+    "rate": 48000,
+    "channels": 1,
+    "frames": 192000,
+    "sha256": "5d744caef846712938ca1d09713cc80cd501ec659050de27d0ccb7cb95563ff7"
+  },
+  {
+    "path": "precision_B_48000_2ch_f32.wav",
+    "rate": 48000,
+    "channels": 2,
+    "frames": 192000,
+    "sha256": "ed8aa9c01c03b2a8b02b9f15b28e1d556c2371673eefb3bd891cd7897939fe4c"
+  },
+  {
+    "path": "precision_minus_A_48000_1ch_f32.wav",
+    "rate": 48000,
+    "channels": 1,
+    "frames": 192000,
+    "sha256": "685ade8805daee720a79a54bda8777c68a3ab6231c04ac0003e1bcd574c1e8e5"
+  },
+  {
+    "path": "precision_minus_A_48000_2ch_f32.wav",
+    "rate": 48000,
+    "channels": 2,
+    "frames": 192000,
+    "sha256": "0522ae8cb435b638c597357957f97bd812a64dcdc873e2b894323b9ec0d11776"
+  },
+  {
+    "path": "silence_96000_1ch_f32.wav",
+    "rate": 96000,
+    "channels": 1,
+    "frames": 384000,
+    "sha256": "9f3d5e33f39b8c8ffe8914d6f1dd2027f401f3dec3c88ff1ec6005ca88acb436"
+  },
+  {
+    "path": "silence_96000_2ch_f32.wav",
+    "rate": 96000,
+    "channels": 2,
+    "frames": 384000,
+    "sha256": "cfaaafcc6300f66b7add566819000f11b7e564498ddfc9f5c96dc4504774885d"
+  },
+  {
+    "path": "impulse_96000_1ch_f32.wav",
+    "rate": 96000,
+    "channels": 1,
+    "frames": 384000,
+    "sha256": "4bef6842757d253922f719af9ae9e8a2ff3e3e16237bd11c18e4dc9f9dd714fe"
+  },
+  {
+    "path": "impulse_96000_2ch_f32.wav",
+    "rate": 96000,
+    "channels": 2,
+    "frames": 384000,
+    "sha256": "a17343a78c703a083acafc368beddfb71e6bad12c23c45b794e6e5d5c82f12cf"
+  },
+  {
+    "path": "step_96000_1ch_f32.wav",
+    "rate": 96000,
+    "channels": 1,
+    "frames": 384000,
+    "sha256": "750d438382e0b920aa8e7245a28f5615b18f522f05df662d6c74f8b4983f32b7"
+  },
+  {
+    "path": "step_96000_2ch_f32.wav",
+    "rate": 96000,
+    "channels": 2,
+    "frames": 384000,
+    "sha256": "cffd7d4dd1214874fbb8cc4cb09fe64623e5c2f1001efb383d837af8c8f824b0"
+  },
+  {
+    "path": "dc_96000_1ch_f32.wav",
+    "rate": 96000,
+    "channels": 1,
+    "frames": 384000,
+    "sha256": "adf16a67e6a206cc7b27fb6028955ab213bb68b3fd0dca2f8ca276248cf39621"
+  },
+  {
+    "path": "dc_96000_2ch_f32.wav",
+    "rate": 96000,
+    "channels": 2,
+    "frames": 384000,
+    "sha256": "de8246e11bcf593be5f8dc5e46f485ad75ca266e786aa50122ee43980fcd819f"
+  },
+  {
+    "path": "sine_997_96000_1ch_f32.wav",
+    "rate": 96000,
+    "channels": 1,
+    "frames": 384000,
+    "sha256": "bd1b70fd9ef67b2c0523942e6d72acc7bee24abc88e4dc9c8281d2a4b918b36e"
+  },
+  {
+    "path": "sine_997_96000_2ch_f32.wav",
+    "rate": 96000,
+    "channels": 2,
+    "frames": 384000,
+    "sha256": "5b6585954cdc61ba7db2f989f38281d51bec5092445de81c20b050b0d78e39e7"
+  },
+  {
+    "path": "sweep_20_18000_96000_1ch_f32.wav",
+    "rate": 96000,
+    "channels": 1,
+    "frames": 384000,
+    "sha256": "050925abebfd3ca3372f6db6df28155694423a1fca6a549f8a4ffdef4fd39000"
+  },
+  {
+    "path": "sweep_20_18000_96000_2ch_f32.wav",
+    "rate": 96000,
+    "channels": 2,
+    "frames": 384000,
+    "sha256": "085b5f2bae394729a7bad88c54ef08b0131a02b8adb24bc5fea412c66337ccf6"
+  },
+  {
+    "path": "multitone_96000_1ch_f32.wav",
+    "rate": 96000,
+    "channels": 1,
+    "frames": 384000,
+    "sha256": "cb6d222115597fbb3a51320d9d2c4439aef79fdfd31edd8d1864416158382532"
+  },
+  {
+    "path": "multitone_96000_2ch_f32.wav",
+    "rate": 96000,
+    "channels": 2,
+    "frames": 384000,
+    "sha256": "fa9f2fc31efedc3198eb078544f8f5a32d46edab4ca2e973f87b3320c55ee045"
+  },
+  {
+    "path": "noise_96000_1ch_f32.wav",
+    "rate": 96000,
+    "channels": 1,
+    "frames": 384000,
+    "sha256": "98d5b2a47529867edadb4bccb7dfea87a0003f00efe3f0422d0cd885ab389142"
+  },
+  {
+    "path": "noise_96000_2ch_f32.wav",
+    "rate": 96000,
+    "channels": 2,
+    "frames": 384000,
+    "sha256": "d1035330015622a7565d6ebd36d3c68b7f3c1090f4953658f9d67828786893dc"
+  },
+  {
+    "path": "precision_A_96000_1ch_f32.wav",
+    "rate": 96000,
+    "channels": 1,
+    "frames": 384000,
+    "sha256": "8951175bbd9d563e5b22ad932dab2cc2b0ea89a7a3cc23353b4527c194fa09b8"
+  },
+  {
+    "path": "precision_A_96000_2ch_f32.wav",
+    "rate": 96000,
+    "channels": 2,
+    "frames": 384000,
+    "sha256": "cfa28bf469dfd484ff9d73ad79f1f29ba3fb6b88491a153a1e429b2a23ced8d9"
+  },
+  {
+    "path": "precision_B_96000_1ch_f32.wav",
+    "rate": 96000,
+    "channels": 1,
+    "frames": 384000,
+    "sha256": "6468b2b07618f75e93d952bc5e112701cb9473d871fdb8149c973b8ea712ab1c"
+  },
+  {
+    "path": "precision_B_96000_2ch_f32.wav",
+    "rate": 96000,
+    "channels": 2,
+    "frames": 384000,
+    "sha256": "34250dd832a84acf10dddd8587080dc7f0e566024cb7b56ffaa80dd5320c3259"
+  },
+  {
+    "path": "precision_minus_A_96000_1ch_f32.wav",
+    "rate": 96000,
+    "channels": 1,
+    "frames": 384000,
+    "sha256": "6eb106b8ec2720b31ea610a3dc064e99449220d0bd6c4d0d90381bdf5fb8e886"
+  },
+  {
+    "path": "precision_minus_A_96000_2ch_f32.wav",
+    "rate": 96000,
+    "channels": 2,
+    "frames": 384000,
+    "sha256": "f9a2d1f98fce07fb0b970589fee395dcf1f58ba50befd926521feb865f2cfa4b"
+  }
+]
