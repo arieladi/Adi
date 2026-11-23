@@ -8,6 +8,10 @@
 #include <numbers>
 #include <stdexcept>
 namespace adi::dsp {
+namespace {
+// Recursive states settle on exact 0 instead of decaying into subnormals.
+double clean(double x) noexcept { return std::abs(x) < 1e-30 ? 0 : x; }
+} // namespace
 HybridImpulse prepareHybridImpulse(std::span<const float> samples, int channels, double rate,
                                    HybridImpulseOptions options) {
     if (channels < 1 || channels > 2 || samples.empty() ||
@@ -210,7 +214,7 @@ void HybridReverb::process(const float *left, const float *right, float *outL, f
             const auto position = (delayAt_ + predelay_[c].size() - delay) % predelay_[c].size();
             const double old = predelay_[c][position];
             const double drive = in[c] * send + (delay ? old * p_[Feedback] : 0);
-            predelay_[c][delayAt_] = static_cast<float>(drive);
+            predelay_[c][delayAt_] = static_cast<float>(clean(drive));
             const double wet = delay ? old : drive;
             convolution[c] = output_[c][cursor_];
             input_[c][cursor_] = wet;
@@ -221,7 +225,19 @@ void HybridReverb::process(const float *left, const float *right, float *outL, f
             algoIn[0] = algoIn[1] = 0;
         algorithm_.process(&algoIn[0], &algoIn[1], &algoOut[0], &algoOut[1], 1);
         mix_ += (p_[Mix] / 100 - mix_) * smoothing;
+        {
+            const double target = p_[Mix] / 100;
+            if (std::abs(target - mix_) < 1e-12) {
+                mix_ = target;
+            }
+        }
         blend_ += (p_[Blend] / 100 - blend_) * smoothing;
+        {
+            const double target = p_[Blend] / 100;
+            if (std::abs(target - blend_) < 1e-12) {
+                blend_ = target;
+            }
+        }
         double wet[2]{};
         for (std::size_t c = 0; c < 2; ++c)
             wet[c] = route == 2   ? algoOut[c]

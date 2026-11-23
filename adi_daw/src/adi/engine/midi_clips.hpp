@@ -12,6 +12,7 @@ namespace adi::engine {
 // identity only while their authored properties still match; tempo alone does
 // not release/retrigger them. Missing/ambiguous identities use release/chase.
 struct MidiClipState;
+struct NoteExpressionsRead;
 std::shared_ptr<MidiClipState> makeMidiClipState();
 class MidiClips {
 public:
@@ -19,6 +20,8 @@ public:
     // first consumer/stop. Audio effects after a consumer do not own its notes.
     MidiClips(const rows::Model&, Transport&, double rate, std::shared_ptr<MidiClipState>,
               const DeviceChainFn& eventPathFor = {});
+    MidiClips(const rows::Model&,Transport&,double rate,std::shared_ptr<MidiClipState>,
+              const DeviceChainFn& eventPathFor,const NoteExpressionsRead&);
     ~MidiClips();
     std::vector<Node*> sourcesFor(std::int64_t track);
     const std::vector<std::string>& problems() const noexcept;

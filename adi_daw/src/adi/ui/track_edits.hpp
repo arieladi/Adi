@@ -78,8 +78,10 @@ inline void renumber(std::vector<OpRequest> &ops, const std::vector<const engine
 }
 } // namespace track_edits_detail
 // Live groups audio and MIDI tracks and groups; Main and the returns stay where they are.
+// What Group Tracks takes: every track but Main. A return may go into a group (ADR-0245 d9, ADR-0247
+// d2): it then takes sends only from inside it, and plays into it (#677, DF-E22).
 inline bool groupable(const engine::TrackNode &t) noexcept {
-    return t.kind == "audio" || t.kind == "midi" || t.kind == "instrument" || t.kind == "group";
+    return t.kind == "audio" || t.kind == "midi" || t.kind == "instrument" || t.kind == "group" || t.kind == "return";
 }
 inline bool canGroup(const SnapshotTracks &tracks, std::int64_t id) noexcept {
     const auto *t = track_edits_detail::find(tracks, id);
@@ -196,7 +198,8 @@ inline bool canUngroup(const SnapshotTracks &tracks, std::int64_t id) noexcept {
 // takes the first one's place and is selected. A track whose group is selected as well goes with
 // its group. They stand in one group, or at the top; Main and the returns are never grouped. The
 // group's name is "# Group": '#' shows its number, as a new track's does (manual 18.2).
-inline TrackEdit groupTracks(const SnapshotTracks &tracks, const std::vector<std::int64_t> &ids) {
+// `newId`, when given, is the group's id from the caller's `RowIds` (DF-E16); else past the live tracks.
+inline TrackEdit groupTracks(const SnapshotTracks &tracks, const std::vector<std::int64_t> &ids, std::int64_t newId = 0) {
     using namespace track_edits_detail;
     constexpr const char *label = "Group Tracks";
     TrackEdit edit;
@@ -220,7 +223,7 @@ inline TrackEdit groupTracks(const SnapshotTracks &tracks, const std::vector<std
     const auto parent = chosen.front()->parent;
     for (const auto *t : chosen) {
         if (!groupable(*t)) {
-            edit.refusal = "Main and return tracks can't be grouped.";
+            edit.refusal = "Main can't be grouped.";
             return edit;
         }
         if (t->parent != parent) {
@@ -232,6 +235,8 @@ inline TrackEdit groupTracks(const SnapshotTracks &tracks, const std::vector<std
     for (const auto &k : tracks)
         if (k)
             group = std::max(group, k->id + 1);
+    if (newId > 0)
+        group = newId;
     // Into the group, in their order; the rest of their group's tracks around it, the group at the
     // first one's place.
     std::vector<const engine::TrackNode *> inside, rest;
@@ -281,14 +286,25 @@ struct RecordingDefaults {
     std::string quantize = "1/16";
     bool keepMonitoringLatency = true;
 };
+// Live's monitoring for a new audio or MIDI track: Auto (N67, ruled by win under ADR-0203 d1), where
+// `track.create` stores Off. Carried in the creating batch, the same undo step.
+inline constexpr std::int64_t kNewTrackMonitorMode = 2; // `tracks.monitor_mode`: 0 Off, 1 In, 2 Auto
+inline OpRequest newTrackMonitorOp(std::int64_t track, const char *label) {
+    OpRequest r;
+    r.opType = "track.setMonitorMode";
+    r.payload = {{"id", track}, {"mode", kNewTrackMonitorMode}};
+    r.label = label;
+    return r;
+}
 inline std::vector<OpRequest> recordingDefaultOps(std::int64_t track, const RecordingDefaults &defaults, const char *label) {
     auto ops = trackRecordingDefaults(track, defaults.quantize, defaults.keepMonitoringLatency);
     for (auto &o : ops)
         o.label = label;
     return ops;
 }
+// `newId`, when given, is the track's id from the caller's `RowIds` (DF-E16); else past the live tracks.
 inline TrackEdit insertTrack(const SnapshotTracks &tracks, std::int64_t selected, bool midi,
-                             const RecordingDefaults *defaults = nullptr) {
+                             const RecordingDefaults *defaults = nullptr, std::int64_t newId = 0) {
     using namespace track_edits_detail;
     const char *label = midi ? "Insert MIDI Track" : "Insert Audio Track";
     TrackEdit edit;
@@ -296,6 +312,8 @@ inline TrackEdit insertTrack(const SnapshotTracks &tracks, std::int64_t selected
     for (const auto &k : tracks)
         if (k)
             id = std::max(id, k->id + 1);
+    if (newId > 0)
+        id = newId;
     const auto *t = find(tracks, selected);
     if (t != nullptr && rank(*t) != 0)
         t = nullptr;
@@ -313,6 +331,7 @@ inline TrackEdit insertTrack(const SnapshotTracks &tracks, std::int64_t selected
                            {"parent", parentValue(parent)},
                            {"index", static_cast<std::int64_t>(at)}},
                           label));
+    edit.ops.push_back(newTrackMonitorOp(id, label));
     if (defaults != nullptr)
         for (auto &o : recordingDefaultOps(id, *defaults, label))
             edit.ops.push_back(std::move(o));
@@ -332,8 +351,8 @@ struct TrackDrop {
 // Live's track drag (Live 12 manual, Arrangement View: "Tracks can be reordered by selecting and
 // dragging them above or below other tracks"; 18.3: "tracks can be dragged into or out of the
 // group"): the selected tracks, in the arrangement's order, to `to`, side by side. A track whose
-// group is selected as well goes with its group. The returns move among themselves, at the foot
-// (`to.before` a return, or 0 for after the last); Main stays last; a group never goes inside
+// group is selected as well goes with its group. The returns move among themselves, at the foot or
+// in a group (`to.before` a return, or 0 for after the last); Main stays last; a group never goes inside
 // itself. Tracks moved into or out of a group are routed as Group Tracks routes
 // them (`track.setParent`). One batch, so one undo step; no ops when nothing would move.
 inline TrackEdit moveTracks(const SnapshotTracks &tracks, const std::vector<std::int64_t> &ids, TrackDrop to) {
@@ -378,7 +397,8 @@ inline TrackEdit moveTracks(const SnapshotTracks &tracks, const std::vector<std:
             edit.refusal = "Main stays last.";
             return edit;
         }
-    if (returns != 0 && (returns != chosen.size() || to.parent != 0)) {
+    // A return goes into a group too, among its returns (ADR-0247 d2), and out again to the foot.
+    if (returns != 0 && returns != chosen.size()) {
         edit.refusal = "Return tracks move among the returns only.";
         return edit;
     }

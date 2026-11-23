@@ -47,7 +47,7 @@ FadeTarget target(OpContext& context,const Payload& payload,bool needSpan) {
         if(!std::isfinite(bound) || bound>static_cast<long double>(std::numeric_limits<std::int64_t>::max())-4096)
             throw std::runtime_error("linear fade exceeds supported tick range");
         if(tempo.events.empty() || tempo.events.front().posTicks!=0)tempo.events.insert(tempo.events.begin(),{0,120,0});
-        result.span=tempo.secondsToTicks(static_cast<double>(begin+length)/1e9)-tempo.secondsToTicks(static_cast<double>(begin)/1e9);
+        result.span=tempo.storedNanosecondsToTicks(begin+length)-tempo.storedNanosecondsToTicks(begin);
     }
     if(result.span<0)throw std::runtime_error("fade needs a nonnegative clip length");
     return result;

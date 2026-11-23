@@ -9,6 +9,9 @@ foreach(suite IN ITEMS adi_shaper adi_shaper_filter adi_shaper_sweep adi_shaper_
 endforeach()
 if(ADI_WITH_PD)
     target_sources(adi_pd_builtins PRIVATE src/adi/pd_builtins/adi_shaper_tilde.cpp)
+    add_executable(adi_shaper_session_tests tests/test_adi_shaper_session.cpp)
+    target_link_libraries(adi_shaper_session_tests PRIVATE adi_core adi_warnings)
+    add_test(NAME adi_shaper_session_tests COMMAND adi_shaper_session_tests)
     add_executable(adi_shaper_pd_tests tests/test_adi_shaper_pd.cpp)
     target_link_libraries(adi_shaper_pd_tests PRIVATE adi_core adi_warnings)
     target_compile_definitions(adi_shaper_pd_tests PRIVATE

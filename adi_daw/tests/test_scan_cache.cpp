@@ -468,6 +468,20 @@ void stampsAndTransaction(const fs::path& self) {
     write(macBinary,"extensionless code changed");fs::last_write_time(macBinary,macTime);
     const auto macChanged=candidateStamp("vst3",macCanonical,hash,error);
     check(macStamp && macChanged && *macStamp!=*macChanged,"relocated macOS-style bundle stamps its extensionless Contents/MacOS binary");
+    const auto mixed=f.temp.path()/"CaseLayout.vst3";
+    fs::create_directories(mixed/"cOnTenTs"/"mAcOs");
+    const auto mixedBinary=mixed/"cOnTenTs"/"mAcOs"/"CaseLayout";
+    write(mixedBinary,"extensionless binary");
+    write(mixed/"cOnTenTs"/"readme","ordinary resource");
+    const auto mixedCanonical=fs::canonical(mixed);
+    const auto mixedBefore=candidateStamp("vst3",mixedCanonical,hash,error);
+    write(mixed/"cOnTenTs"/"readme","new ordinary resource");
+    const auto assetChanged=candidateStamp("vst3",mixedCanonical,hash,error);
+    write(mixedBinary,"new version of the extensionless binary");
+    const auto binaryChanged=candidateStamp("vst3",mixedCanonical,hash,error);
+    check(mixedBefore && assetChanged && binaryChanged && *mixedBefore==*assetChanged &&
+          *mixedBefore!=*binaryChanged,
+          "mixed-case macOS bundle layout stamps the extensionless executable and skips an ordinary asset");
     const auto path=utf8(fs::canonical(binary(bundle)));auto registry=f.registry();
     auto ticket=registry->beginScan("clap",path,1,error);if(!ticket)throw std::runtime_error(error);
     auto other=f.registry();
@@ -535,16 +549,21 @@ void uncacheableBundle(const fs::path& self) {
     check(scanner->probe("clap",empty).state==State::Failed && launches(empty)==1,
           "empty malformed bundle still reaches its isolated child instead of aborting discovery as unavailable");
     const auto large=f.temp.path()/"large.clap";fs::create_directories(large/"Contents");write(binary(large),"bounded child");
+    check(scanner->probe("clap",large).state==State::Ready && launches(large)==1,
+          "the original version seeds a positive cache row");
     for(unsigned i=0;i<4097;++i)write(large/"Contents"/(std::to_string(i)+".dll"),"");
     const auto result=scanner->probe("clap",large);
-    check(result.state==State::Ready && !result.cacheHit && !result.cacheWarning.empty() && launches(large)==1,
+    check(result.state==State::Ready && !result.cacheHit && !result.cacheWarning.empty() && launches(large)==2,
           "unreliable oversized fingerprint is explicit uncached discovery, not an unavailable plug-in");
-    check(scanner->probe("clap",large).state==State::Ready && launches(large)==2,
+    SQLite::Database read(utf8(f.config.registry),SQLite::OPEN_READONLY);
+    check(read.execAndGet("SELECT count(*) FROM plugin_scan_cache").getInt64()==0,
+          "a fresh unstamped success retires the old version from the positive catalogue");
+    check(scanner->probe("clap",large).state==State::Ready && launches(large)==3,
           "unstampable result is not reused as a weak cache entry");
     write(binary(large),"reject");const auto uncachedNegative=scanner->probe("clap",large);
     check(uncachedNegative.state==State::Failed && !uncachedNegative.cacheWarning.empty() &&
         !uncachedNegative.failureCacheHit && scanner->probe("clap",large).state==State::Failed &&
-        launches(large)==4 && f.registry()->scanBlocks(f.error)->empty(),
+        launches(large)==5 && f.registry()->scanBlocks(f.error)->empty(),
         "unstampable deterministic failure remains uncached and never quarantines the candidate");
     const auto outside=f.temp.path()/"external";fs::create_directory(outside);write(outside/"test.clap","external module");
     const auto linked=f.temp.path()/"linked.clap";fs::create_directory(linked);std::error_code ec;

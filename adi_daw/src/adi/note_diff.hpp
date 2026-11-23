@@ -89,6 +89,12 @@ private:
 [[nodiscard]] Snapshot captureNotes(Store&, std::int64_t clip,
     std::optional<std::int64_t> newStreamId = std::nullopt);
 
+/// Capture an absent MIDI clip and its canonical stream on the owner connection.
+/// Prepare with prepareDiff, then append its requests after the clip creation
+/// in the same journal batch. Use the prepared source and expected head, and
+/// reserve distinct stream IDs for every new clip in that batch.
+[[nodiscard]] Snapshot captureNotesForNewClip(Store&, std::int64_t clip, std::int64_t newStreamId);
+
 struct PreparedDiff {
     bool ok = false;
     std::string error;
@@ -107,6 +113,10 @@ struct PreparedDiff {
 /// diff is a no-op even without a creation ID. Nonempty creation requires the
 /// owner's previously captured full creation row.
 [[nodiscard]] PreparedDiff prepareDiff(const Snapshot&, const Diff&);
+
+/// Apply a single clip's scalar note requests in their submitted order, with
+/// one final stream write and at most one journal operation.
+[[nodiscard]] PreparedDiff prepareBatch(const Snapshot&, std::span<const OpRequest>);
 
 /// Owner connection: check source-file identity, stamp actor, then commit via
 /// OpJournal with the captured expected head (including a real null head).

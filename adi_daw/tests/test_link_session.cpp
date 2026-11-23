@@ -52,7 +52,20 @@ void local() {
     buffer.callbackMicros+=500000;const auto next=callback(*session,buffer);check(next.valid && near(next.beat,1) && near(next.phase,1) && !next.hasLaunchTime,"SDK beat/phase advance at 120 BPM with output latency included once");
     LinkCommand slow;slow.tempo=60;const auto change=callback(*session,buffer,slow);check(change.valid && near(change.beat,next.beat) && near(change.tempo,60),"a local tempo command changes rate while retaining the audible beat boundary");
     buffer.callbackMicros+=1000000;auto later=callback(*session,buffer);check(near(later.beat,2) && near(later.tempo,60),"committed SDK tempo affects the next captured audio state");
-    LinkCommand stop;stop.transport=LinkTransport::Stop;const auto stopped=callback(*session,buffer,stop);buffer.callbackMicros+=1000000;later=callback(*session,buffer);check(!stopped.requestedPlaying && !later.requestedPlaying && near(later.beat,3),"shared musical timeline continues while local transport is stopped");
+    LinkCommand stop;
+    stop.transport = LinkTransport::Stop;
+    const auto stopped = callback(*session, buffer, stop);
+    buffer.callbackMicros += 1000000;
+    later = callback(*session, buffer);
+    const bool advancedWhileStopped = !stopped.requestedPlaying && !later.requestedPlaying && near(later.beat, 3);
+    check(advancedWhileStopped, "shared musical timeline continues while local transport is stopped");
+    if (!advancedWhileStopped) {
+        std::printf("  Stop capture valid=%d requestedPlaying=%d beat=%.17g tempo=%.17g\n"
+                    "  Following capture valid=%d requestedPlaying=%d beat=%.17g tempo=%.17g\n",
+                    static_cast<int>(stopped.valid), static_cast<int>(stopped.requestedPlaying),
+                    stopped.beat, stopped.tempo, static_cast<int>(later.valid),
+                    static_cast<int>(later.requestedPlaying), later.beat, later.tempo);
+    }
     LinkCommand negative;negative.requestBeat=true;negative.beat=-.25;const auto preRoll=callback(*session,buffer,negative);check(preRoll.valid && near(preRoll.beat,-.25) && near(preRoll.phase,3.75),"negative beats use the SDK's nonnegative quantum phase");
     check(session->enableStartStopSync(true),"owner explicitly enables separate start/stop synchronization");check(callback(*session,buffer).startStopSync,"audio view exposes the explicit start/stop option");check(session->enableStartStopSync(false) && session->enable(false),"owner can disable start/stop and networking independently");
     // Deterministic only because those owner calls change nothing the SDK
