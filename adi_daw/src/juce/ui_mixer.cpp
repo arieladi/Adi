@@ -1193,9 +1193,12 @@ void MixerStrip::sendMenu(std::size_t index) {
         const auto *send = current ? findSend(current->sends, track_, returns_[index]) : nullptr;
         const double now = send != nullptr ? send->pan : 0.0;
         juce::PopupMenu panned;
-        for (const auto &[name, value] : std::initializer_list<std::pair<const char *, double>>{
-                 {"Left", -1.0}, {"50L", -.5}, {"Center", 0.0}, {"50R", .5}, {"Right", 1.0}})
-            panned.addItem(name, true, std::abs(now - value) < 1e-6, [this, index, value] { setSendPan(index, value); });
+        // A plain local for the lambda: Clang 14 rejects a lambda capturing a structured binding.
+        for (const auto &place : std::initializer_list<std::pair<const char *, double>>{
+                 {"Left", -1.0}, {"50L", -.5}, {"Center", 0.0}, {"50R", .5}, {"Right", 1.0}}) {
+            const double value = place.second;
+            panned.addItem(place.first, true, std::abs(now - value) < 1e-6, [this, index, value] { setSendPan(index, value); });
+        }
         m.addSubMenu("Send Pan", panned);
     }
     // Live's Re-Enable Automation for this send's level, owned by its routing row (AU-04).
