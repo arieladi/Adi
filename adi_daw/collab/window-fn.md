@@ -100,7 +100,7 @@ them from PLAN after my queue ran out, without reading that list.
     - problems are said when the Settings change.
 - **WIN-09** `window-fn/help-menu` (`4ee1578e`, local, not pushed): withdrawn in favour of `window/help-menu`.
 - **WIN-01** as in the entry below.
-- **RE-01** is in neither list. `window-fn/remarks` (`a06a05e2`, local) holds its function half: Add, Edit,
+- **RE-01** is in neither list. `window-fn/remarks` (now pushed at `a1e78539`, with review fixes: a remark's time in microseconds as the format's, no id past INT64_MAX, one line in the menu; 27 of 27 suites, shell 3020 checks, 0 failures) holds its function half: Add, Edit,
   Resolve or Reopen, and Delete from a track's and a clip's menu, each one undo step (`remark_edits.hpp`), with
   seams and shell tests. Its pips and Info View are looks. **For win:** whose row is RE-01? If window-fn's, I push
   and request it; if the window lane's, it can take the branch.
