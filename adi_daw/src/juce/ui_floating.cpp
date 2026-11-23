@@ -212,13 +212,13 @@ bool FloatingHost::install(std::unique_ptr<Entry> e) {
                     home = m;
                     break;
                 }
-            std::vector<place::Rect> others;
+            std::vector<window_place::Rect> others;
             for (const auto &[k, other] : entries_)
                 if (other.get() != raw && other->window)
                     others.push_back(toPlace(other->window->getBounds()));
-            const auto corner = home.usable.getPosition() + juce::Point<int>(2 * place::kCascade, 2 * place::kCascade);
+            const auto corner = home.usable.getPosition() + juce::Point<int>(2 * window_place::kCascade, 2 * window_place::kCascade);
             const auto start = toPlace(raw->window->getBounds().withPosition(corner));
-            raw->window->setTopLeftPosition(fromPlace(place::cascade(start, others, toPlace(home.usable))).getTopLeft());
+            raw->window->setTopLeftPosition(fromPlace(window_place::cascade(start, others, toPlace(home.usable))).getTopLeft());
         }
         if (native_)
             raw->window->setVisible(true);
