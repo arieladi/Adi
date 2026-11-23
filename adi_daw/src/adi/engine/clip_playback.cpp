@@ -643,12 +643,13 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             }
             clip->fadeIn = duration(row.fadeInTicks);
             if (row.fadeOutTicks < 0) throw std::runtime_error("invalid fade-out duration");
-            // Resize can leave a legacy fade wider than the placement. Its
-            // fallback shape stays inside the rendered span. Retained split
-            // domains are evaluated independently in shaped().
+            // A fade-out covering the whole placement spans exactly the
+            // rendered frames. A legacy resize can leave one wider, and
+            // clip.resize clamps it to the span: both render the same.
+            // Retained split domains are evaluated independently in shaped().
             const auto tickSpan = endTicks - origin;
             const auto frameSpan = clip->end - clip->start;
-            clip->fadeOut = row.fadeOutTicks > tickSpan ? frameSpan : std::min(frameSpan,
+            clip->fadeOut = row.fadeOutTicks > 0 && row.fadeOutTicks >= tickSpan ? frameSpan : std::min(frameSpan,
                 samples(tempo.ticksToSeconds(endTicks) - tempo.ticksToSeconds(endTicks - row.fadeOutTicks), rate));
             clip->inCurve=row.fadeInCurve;clip->outCurve=row.fadeOutCurve;
             if((row.fadeInTension && (!std::isfinite(*row.fadeInTension) || std::abs(*row.fadeInTension)>1)) ||

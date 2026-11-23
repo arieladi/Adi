@@ -426,6 +426,29 @@ void resizeClampsFades() {
           "the clamped fade-in ramps over the whole remaining span");
     check(History(*plain.store).undo().ok && plain.session.refresh(*plain.store) && render() == before,
           "Undo of the unwarped resize restores the entire authored fade-in exactly");
+
+    // A fade-out clamped to the span renders exactly as the wider one it
+    // replaced, also when the clip edges fall between samples (here at 0.4
+    // and 400.6 frames, so the rounded span and the rounded edges differ).
+    Fixture tail(48000, 2, 4000, -1);
+    tail.add(1, 0, 800, 0, 1000);
+    tail.store->db().exec("UPDATE clips SET time_base=0,pos_ticks=96,length_ticks=192192,pos_ns=NULL,length_ns=NULL");
+    check(commit(*tail.store, "clip.setFades", {{"id",1},{"out",{{"ticks",192192}}}}).ok,
+          "author a fade-out over the entire unaligned clip");
+    tail.load(1024);
+    check(commit(*tail.store, "clip.resize", {{"id",1},{"pos",96},{"length",96144}}).ok &&
+              tail.session.refresh(*tail.store) && fades(*tail.store) == std::array<std::int64_t, 3>{0, 96144, 96144},
+          "resize the unaligned clip under its fade-out clamps the fade-out to the span");
+    const auto renderTail = [&] {
+        tail.session.transport().locate(0);
+        return tail.render(1024);
+    };
+    const auto clamped = renderTail();
+    tail.store->db().exec("UPDATE clips SET fade_out_ticks=192192 WHERE id=1");
+    check(tail.session.refresh(*tail.store), "reload the unclamped fade-out");
+    const auto wider = renderTail();
+    check(clamped == wider && clamped[0] > 0.0f && clamped[0] < 0.5f && clamped[399] > 0.0f && clamped[401] == 0.0f,
+          "the clamped fade-out renders bit-exact as the wider one over the whole span");
 }
 void splitSourceClocks() {
     for(const auto sourceRate:{44100u,48000u})for(const bool loop:{false,true}) {
