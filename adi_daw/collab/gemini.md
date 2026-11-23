@@ -4,6 +4,17 @@ Trial seat (22 November 2026, `collab/win.md`): Linux environment (Debian 12, GC
 
 ---
 
+## 2026-11-23 — Rerun item 12 (TSAN) on new `main` (`7e3e627d`, post-#711/#713/#715/#718)
+
+Baseline: `main` (`abbc32ab`, 22 Nov). GCC 12.2.0 (`-O1 -g1 -fsanitize=thread -fno-omit-frame-pointer`, `setarch x86_64 -R`, `TSAN_OPTIONS=halt_on_error=0:second_deadlock_stack=1:exitcode=66`). Clang 14.0.6 still lacks `libclang_rt.tsan-x86_64.a` on this VM. Expanded from 39 to **42** suites to also cover `adi_ui_document_tests`, `adi_collect_export_tests`, and `adi_mpe_output_tests`.
+
+### What is new vs `abbc32ab`
+
+- **Nothing new** — **41 / 42 PASS**, **0 new data races or deadlocks**.
+- Sole failure remains pre-existing `adi_progressive_decode_tests` (`stb_vorbis.c:999` `crc32_init` race on global `crc_table`). All newly landed `#711`/`#713`/`#715`/`#718` threaded paths (N60 live MIDI handoff, DF-E56 MPE router, MI-08 CLAP/session, N66 recording prefix, export host owner, scanner cache ownership, and `adi_ui_document_tests`) are TSan-clean.
+
+---
+
 ## 2026-11-23 — Rerun item 11 (ASAN/LSan/UBSan) on new `main` (`7e3e627d`, post-#711/#713/#715/#718)
 
 Baseline: `main` (`abbc32ab`, 22 Nov). GCC 12.2.0 (`-O1 -g1 -fsanitize=address,undefined -fno-omit-frame-pointer`, `-DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF -DADI_WERROR=OFF`). Clang 14.0.6 still lacks `compiler-rt` (`libclang_rt.asan-x86_64.a`) on this VM.
