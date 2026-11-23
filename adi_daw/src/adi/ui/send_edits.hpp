@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
+#include <cmath>
 #include "adi/ui/track_edits.hpp"
 #include <algorithm>
 #include <cstddef>
@@ -217,6 +218,34 @@ inline TrackEdit enableAllSends(const engine::Snapshot &snapshot, std::int64_t s
     }
     if (edit.ops.empty())
         edit.refusal = "Every send of this return is on already.";
+    return edit;
+}
+// A pan on a send (MX-06, ADR-0203 d3): the send's row panned to `pan` (-1 left to 1 right), one undo step. A send
+// with no row gets one first, as Change Send Level makes it: fully down, as the knob shows it, and following its
+// return's switch, so a pan alone never makes a silent send heard. Nothing to do when the pan would not change.
+inline TrackEdit setSendPan(const engine::Snapshot &snapshot, std::int64_t source, std::int64_t destination, double pan) {
+    using namespace send_edits_detail;
+    constexpr const char *label = "Change Send Panning";
+    TrackEdit edit;
+    pan = std::clamp(std::isfinite(pan) ? pan : 0.0, -1.0, 1.0);
+    const auto *s = findSend(snapshot.sends, source, destination);
+    if (s != nullptr && std::abs(s->pan - pan) < 1e-9)
+        return edit;
+    if (s == nullptr && std::abs(pan) < 1e-9)
+        return edit; // a new row is centred already
+    const auto id = s != nullptr ? s->id : newIds(snapshot, 1);
+    if (s == nullptr) {
+        if (id == 0) {
+            edit.refusal = kSendNoIdLeft;
+            return edit;
+        }
+        edit.ops.push_back(connect(id, source, destination, label));
+        follow(edit, snapshot.findTrack(destination), id, label);
+        edit.ops.push_back(track_edits_detail::op("routing.setGain", {{"id", id}, {"db", kSendSilenceDb}}, label));
+        if (!readsOn(snapshot, source, nullptr))
+            edit.ops.push_back(track_edits_detail::op("routing.setEnabled", {{"id", id}, {"enabled", false}}, label));
+    }
+    edit.ops.push_back(track_edits_detail::op("routing.setPan", {{"id", id}, {"pan", pan}}, label));
     return edit;
 }
 } // namespace adi::ui
