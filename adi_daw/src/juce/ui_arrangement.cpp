@@ -1600,7 +1600,8 @@ const engine::AutomationLaneNode *ArrangementView::automationLaneAt(int y) const
         return nullptr;
     const auto *current = root.current().get(); // the root holds it: the pointer outlives this call
     const auto *t = current != nullptr ? geometry.trackAt(reader(), y) : nullptr;
-    return t != nullptr ? laneOf(*current, "track", t->id, "volume") : nullptr;
+    // The lane the track shows (DF-W37's chooser), not always its Volume.
+    return t != nullptr ? envelopeOf(*current, root.automationTarget(t->id)).lane : nullptr;
 }
 bool ArrangementView::keepsSelectionAt(int x, int y) const {
     const auto &sel = geometry.selection;

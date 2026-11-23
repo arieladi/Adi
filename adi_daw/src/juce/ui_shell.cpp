@@ -3034,6 +3034,35 @@ void AdiRootComponent::addInsertShape(juce::PopupMenu &menu, std::int64_t track)
     if (menu.getNumItems() > 0)
         menu.addSeparator();
     menu.addSubMenu("Insert Shape", shapes);
+    const auto env = envelopeOf(*view_.current(), automationTarget(track));
+    menu.addItem("Simplify Envelope", env.data != nullptr && env.data->points.size() > 2, false,
+                 [safe = SafePointer<AdiRootComponent>(this), track, start = sel.start, end = sel.end] {
+                     if (safe)
+                         safe->simplifyAutomation(track, start, end);
+                 });
+}
+bool AdiRootComponent::simplifyAutomation(std::int64_t track, std::int64_t start, std::int64_t end) {
+    const auto current = view_.current();
+    if (current == nullptr || current->findTrack(track) == nullptr)
+        return fail("That track is gone.");
+    const auto target = automationTarget(track);
+    std::string refusal;
+    auto ops = ::adi::ui::simplifyAutomation(envelopeOf(*current, target), start, end, simplifyTolerance(target), refusal,
+                                             current->tempo.get());
+    if (!refusal.empty())
+        return fail(refusal);
+    return submitEdits(std::move(ops));
+}
+bool AdiRootComponent::deleteAutomation(std::int64_t lane) {
+    const auto current = view_.current();
+    const engine::AutomationLaneNode *found = nullptr;
+    if (current)
+        for (const auto &l : current->automationLanes)
+            if (l && l->id == lane)
+                found = l.get();
+    if (found == nullptr)
+        return fail("That automation is gone.");
+    return submitEdits(::adi::ui::deleteAutomation(*current, *found));
 }
 bool AdiRootComponent::moveAutomationPoint(std::int64_t track, std::uint64_t point, std::int64_t tick, double value) {
     const auto current = view_.current();
@@ -4414,6 +4443,10 @@ void AdiRootComponent::addReenableAutomation(juce::PopupMenu &menu, const engine
             safe->say("Re-Enable Automation needs the project's session.");
         else
             safe->reenableLane(id); // a refusal says why
+    });
+    menu.addItem("Delete Automation", [safe = SafePointer<AdiRootComponent>(this), id] {
+        if (safe)
+            safe->deleteAutomation(id);
     });
 }
 } // namespace adi::ui

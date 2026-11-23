@@ -154,7 +154,8 @@ inline TrackEnvelope envelopeOf(const engine::Snapshot &snapshot, const Automati
     if (out.lane == nullptr)
         for (const auto &lane : snapshot.automationLanes)
             if (lane && lane->ownerKind == target.ownerKind && lane->ownerId == target.ownerId &&
-                lane->paramRef == target.paramRef && lane->valueDomain == target.valueDomain) {
+                automation_override_detail::sameParam(target.ownerKind, lane->paramRef, target.paramRef) &&
+                lane->valueDomain == target.valueDomain) {
                 out.lane = lane.get();
                 break;
             }
@@ -453,6 +454,112 @@ inline std::vector<OpRequest> insertAutomationShape(const TrackEnvelope &env, co
     ops.push_back(automation::writePoints(data, lane, nullptr, std::move(written)));
     for (auto &op : ops)
         op.label = "Insert Shape";
+    return ops;
+}
+// Live's Simplify Envelope (AU-08) over [start, end]: the breakpoints there that a straight line between
+// their kept neighbours already draws within `tolerance` go (Ramer-Douglas-Peucker on the value), one
+// batch, one undo step "Simplify Envelope". The selection's first and last breakpoints stay, so the curve
+// outside it is untouched, as do both points of a jump (two at one time). Refused, with the reason, for a
+// switch's lane (its values are steps), a selection holding a hold or a bent segment (the reduction is for
+// straight lines), and one with nothing to take away. `tolerance` is in the lane's units. The line is
+// measured where the engine draws it, in seconds through `tempo` (a segment is straight in samples, so
+// across a tempo change a point on the line in ticks is not on the line played); none measures in ticks.
+inline std::vector<OpRequest> simplifyAutomation(const TrackEnvelope &env, std::int64_t start, std::int64_t end,
+                                                 double tolerance, std::string &refusal,
+                                                 const engine::TempoMap *tempo = nullptr) {
+    std::vector<OpRequest> ops;
+    refusal.clear();
+    if (env.lane == nullptr || env.data == nullptr || env.data->points.empty()) {
+        refusal = "This lane has no automation to simplify.";
+        return ops;
+    }
+    if (!editableEnvelope(env)) {
+        refusal = "This envelope runs in seconds; the window leaves it as it is.";
+        return ops;
+    }
+    if (env.lane->valueDomain == "enum") {
+        refusal = "A switch's automation is steps; there is nothing to simplify.";
+        return ops;
+    }
+    if (start > end)
+        std::swap(start, end);
+    std::vector<const engine::AutomationPointNode *> in;
+    for (const auto &p : env.data->points)
+        if (p.time >= start && p.time <= end)
+            in.push_back(&p);
+    // Every segment inside, and the one leaving the last point kept, straight; the last point's own curve
+    // runs outside the selection and stays as it is.
+    for (std::size_t i = 0; i + 1 < in.size(); ++i)
+        if (in[i]->curve != 1) {
+            refusal = "Simplify Envelope works on straight segments; this selection holds a hold or a curve.";
+            return ops;
+        }
+    std::vector<bool> keep(in.size(), false);
+    if (!in.empty()) {
+        keep.front() = keep.back() = true;
+        for (std::size_t i = 0; i + 1 < in.size(); ++i)
+            if (in[i]->time == in[i + 1]->time)
+                keep[i] = keep[i + 1] = true; // a jump stays a jump
+    }
+    // Between each pair of kept points, the one furthest from their line stays while it is further than the
+    // tolerance; an explicit stack, so a long recording cannot overflow the call stack.
+    std::vector<std::pair<std::size_t, std::size_t>> spans;
+    for (std::size_t a = 0, b = 1; b < in.size(); ++b)
+        if (keep[b]) {
+            spans.emplace_back(a, b);
+            a = b;
+        }
+    while (!spans.empty()) {
+        const auto [a, b] = spans.back();
+        spans.pop_back();
+        if (b <= a + 1)
+            continue;
+        const auto &pa = *in[a], &pb = *in[b];
+        const auto when = [&](std::int64_t tick) {
+            return tempo != nullptr ? tempo->ticksToSeconds(tick) : static_cast<double>(tick);
+        };
+        const double from = when(pa.time), span = when(pb.time) - from;
+        std::size_t worst = a;
+        double far = -1;
+        for (std::size_t i = a + 1; i < b; ++i) {
+            const double t = span > 0 ? (when(in[i]->time) - from) / span : 0.0;
+            const double d = std::abs(in[i]->value - (pa.value + (pb.value - pa.value) * t));
+            if (d > far) {
+                far = d;
+                worst = i;
+            }
+        }
+        if (far > tolerance) {
+            keep[worst] = true;
+            spans.emplace_back(a, worst);
+            spans.emplace_back(worst, b);
+        }
+    }
+    Payload gone = Payload::array();
+    for (std::size_t i = 0; i < in.size(); ++i)
+        if (!keep[i])
+            gone.push_back(in[i]->id);
+    if (gone.empty()) {
+        refusal = in.size() < 3 ? "Select a time range holding more than two breakpoints to simplify."
+                                : "This envelope is already as simple as it can be drawn.";
+        return ops;
+    }
+    ops.push_back(automation::deletePoints(env.data->id, env.lane->id, nullptr, std::move(gone)));
+    ops.back().label = "Simplify Envelope";
+    return ops;
+}
+// How close Simplify Envelope keeps to the drawn line: half a percent of the target's travel.
+inline double simplifyTolerance(const AutomationTarget &target) { return (target.maximum - target.minimum) * 0.005; }
+// Live's Delete Automation (AU-08): every lane of the parameter `lane` automates (its arrangement envelope
+// and its clips' envelopes with it), one batch, one undo step; the control then plays its own value again.
+inline std::vector<OpRequest> deleteAutomation(const engine::Snapshot &snapshot, const engine::AutomationLaneNode &lane) {
+    std::vector<OpRequest> ops;
+    for (const auto &l : snapshot.automationLanes)
+        if (l && l->ownerKind == lane.ownerKind && l->ownerId == lane.ownerId &&
+            automation_override_detail::sameParam(lane.ownerKind, l->paramRef, lane.paramRef)) {
+            ops.push_back(automation::deleteLane(l->id));
+            ops.back().label = "Delete Automation";
+        }
     return ops;
 }
 } // namespace adi::ui

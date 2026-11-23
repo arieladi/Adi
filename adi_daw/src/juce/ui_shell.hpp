@@ -395,6 +395,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     std::function<bool(std::int64_t)> reenableLane;
     // The item in a control's context menu while the control has a lane (`lane`, null for none):
     // available while that lane is overridden, as Live's.
+    // With Delete Automation beside it (AU-08), for the same lane.
     void addReenableAutomation(juce::PopupMenu &menu, const engine::AutomationLaneNode *lane);
     std::function<bool()> automationArmed;
     std::function<void(bool)> armAutomation;
@@ -640,7 +641,13 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     bool insertAutomationShape(std::int64_t track, automation::Shape shape, std::int64_t start, std::int64_t end);
     // The lanes' menu's Insert Shape submenu, in Automation Mode with a time selection holding `track` (the
     // one right-clicked; 0 for the selection's own): Live's top row, then the ramps and the ADSR.
+    // Simplify Envelope beside it (AU-08) on the same selection.
     void addInsertShape(juce::PopupMenu &menu, std::int64_t track = 0);
+    // Live's Simplify Envelope (AU-08) on the envelope `track`'s lane shows, over [start, end]; one undo step,
+    // a refusal said.
+    bool simplifyAutomation(std::int64_t track, std::int64_t start, std::int64_t end);
+    // Live's Delete Automation (AU-08): every lane of the parameter lane `lane` automates, one undo step.
+    bool deleteAutomation(std::int64_t lane);
     // Live's lane chooser (DF-W37; manual 25.2): what a track's lane shows in Automation Mode, its
     // Volume until another is chosen; a choice whose device or send is gone reads as Volume again.
     // Window state, kept while the window lives.

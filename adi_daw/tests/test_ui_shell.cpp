@@ -10607,6 +10607,116 @@ void automationArm(AppCommands &commands, const std::filesystem::path &dir) {
                           !root.arrangement.keepsSelectionAt(static_cast<int>(geo.x(10 * q)), y + 20),
                       "a right-click inside the time selection keeps it, for Insert Shape to act on; outside, it does not");
             }
+            {
+                bool simplifyItem = false;
+                for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+                    simplifyItem = simplifyItem || (it.getItem().text == "Simplify Envelope" && it.getItem().isEnabled);
+                check(simplifyItem, "and Simplify Envelope beside it (AU-08)");
+            }
+            // Simplify Envelope (AU-08): the breakpoints a straight line already draws go, one undo step.
+            {
+                const double tolerance = (6.0 - (-70.0)) * 0.005; // half a percent of the fader's travel: 0.38 dB
+                check(std::abs(simplifyTolerance(volumeTarget(2)) - tolerance) < 1e-12,
+                      "Simplify Envelope keeps within half a percent of the travel");
+                check(volume().data != nullptr && volume().data->points.size() == 4 &&
+                          root.simplifyAutomation(2, 0, 12 * q) && document->synchronise() &&
+                          volume().data->points.size() == 2 && root.undoTitle(false) == "Undo Simplify Envelope" &&
+                          std::abs(at(6 * q) - (-3.0)) < 1e-9,
+                      "on the ramp, the two breakpoints lying on it go and the ramp is the same");
+                root.command(AppCommands::Undo);
+                document->synchronise();
+                check(root.insertAutomationShape(2, automation::Shape::Sine, start, end) && document->synchronise(),
+                      "a Sine to simplify");
+                std::vector<engine::AutomationPointNode> drawn;
+                for (const auto &p : volume().data->points)
+                    drawn.push_back(p);
+                const auto before = drawn.size();
+                check(root.simplifyAutomation(2, start, end) && document->synchronise(), "Simplify Envelope over it");
+                const auto after = volume().data->points.size();
+                bool within = true;
+                for (const auto &p : drawn)
+                    if (p.time > start && p.time < end)
+                        within = within && std::abs(at(p.time) - p.value) <= tolerance + 1e-9;
+                check(after < before && after > 10 && within && std::abs(at(2 * q) - before2) < 1e-9 &&
+                          std::abs(at(10 * q) - before10) < 1e-9,
+                      "fewer breakpoints, every old one within half a percent of the travel, the curve outside the same");
+                check(root.command(AppCommands::Undo) && document->synchronise() && volume().data->points.size() == before,
+                      "and Undo gives every breakpoint back");
+                root.command(AppCommands::Undo);
+                document->synchronise();
+                check(root.insertAutomationShape(2, automation::Shape::Square, start, end) && document->synchronise(),
+                      "a Square, whose points hold");
+                root.say({});
+                const auto undoSquare = root.undoTitle(false);
+                check(!root.simplifyAutomation(2, start, end) && root.error().find("straight") != std::string::npos &&
+                          root.undoTitle(false) == undoSquare,
+                      "a selection holding holds is refused, with the reason");
+                root.command(AppCommands::Undo);
+                document->synchronise();
+            }
+            // A jump inside the selection stays a jump; the points a line draws around it go.
+            {
+                engine::AutomationEnvelopeNode data;
+                engine::AutomationLaneNode lane;
+                lane.id = 1;
+                lane.valueDomain = "real";
+                data.id = 1;
+                const std::pair<std::int64_t, double> drawn[] = {{0, -10},     {q, -10},       {2 * q, -10},
+                                                                 {2 * q, -9.8}, {3 * q, -9.8}, {4 * q, -9.8}};
+                std::uint64_t id = 1;
+                for (const auto &[time, value] : drawn) {
+                    engine::AutomationPointNode p;
+                    p.id = id++;
+                    p.time = time;
+                    p.value = value;
+                    data.points.push_back(p);
+                }
+                const TrackEnvelope jump{&lane, &data};
+                std::string why;
+                const auto ops = simplifyAutomation(jump, 0, 4 * q, 0.38, why);
+                const auto gone = ops.size() == 1 ? ops.front().payload.at("ids") : Payload::array();
+                check(why.empty() && gone == Payload::array({2, 5}),
+                      "a 0.2 dB jump inside the selection keeps both its points; only the points the flat lines draw go");
+            }
+            // Measured as the engine plays it: across a tempo change, a point on the line in ticks is off the line
+            // in time, and stays.
+            {
+                engine::AutomationEnvelopeNode data;
+                engine::AutomationLaneNode lane;
+                lane.id = 1;
+                lane.valueDomain = "normalized";
+                data.id = 1;
+                const std::pair<std::int64_t, double> drawn[] = {{0, 0.0}, {4 * q, 0.5}, {8 * q, 1.0}};
+                std::uint64_t id = 1;
+                for (const auto &[time, value] : drawn) {
+                    engine::AutomationPointNode p;
+                    p.id = id++;
+                    p.time = time;
+                    p.value = value;
+                    data.points.push_back(p);
+                }
+                const engine::TempoMap tempo{{{0, 120.0, 0}, {4 * q, 60.0, 0}}};
+                std::string inTicks, inTime;
+                const auto ticksOps = simplifyAutomation({&lane, &data}, 0, 8 * q, 0.005, inTicks);
+                const auto timeOps = simplifyAutomation({&lane, &data}, 0, 8 * q, 0.005, inTime, &tempo);
+                check(ticksOps.size() == 1 && timeOps.empty() && !inTime.empty(),
+                      "the middle point of a line in ticks stays when the tempo halves at it");
+            }
+            // Delete Automation (AU-08), from the lane's menu: the parameter's lane goes, one step.
+            {
+                const auto *lane = volume().lane;
+                juce::PopupMenu laneMenu;
+                root.addReenableAutomation(laneMenu, lane);
+                bool deleteItem = false;
+                for (juce::PopupMenu::MenuItemIterator it(laneMenu); it.next();)
+                    deleteItem = deleteItem || it.getItem().text == "Delete Automation";
+                check(lane != nullptr && deleteItem && root.deleteAutomation(lane->id) && document->synchronise() &&
+                          volume().lane == nullptr && root.undoTitle(false) == "Undo Delete Automation",
+                      "Delete Automation takes the Volume lane away, one undo step");
+                check(root.command(AppCommands::Undo) && document->synchronise() && volume().data != nullptr &&
+                          volume().data->points.size() == 4,
+                      "and Undo brings it back with its breakpoints");
+            }
             juce::PopupMenu elsewhere;
             root.addInsertShape(elsewhere, 999);
             check(elsewhere.getNumItems() == 0, "not for a track outside the selection");
@@ -11098,8 +11208,12 @@ void mixerDragLive(AppCommands &commands, const std::filesystem::path &dir) {
         root.frame();
         const auto fader = three->volumeMenuItems();
         const auto *item = reenable(fader);
-        check(item != nullptr && !item->isEnabled && fader.getNumItems() == 1,
-              "the fader's menu is the Volume lane's Re-Enable Automation, unavailable while it follows its lane");
+        bool deletes = false;
+        for (juce::PopupMenu::MenuItemIterator it(fader); it.next();)
+            deletes = deletes || (it.getItem().text == "Delete Automation" && it.getItem().isEnabled);
+        check(item != nullptr && !item->isEnabled && fader.getNumItems() == 2 && deletes,
+              "the fader's menu is the Volume lane's Re-Enable Automation, unavailable while it follows its lane, "
+              "and Delete Automation (AU-08)");
         const int y = laneTop(root, 4) + 4;
         check(root.arrangement.automationLaneAt(y) == nullptr, "outside Automation Mode a lane's menu has no envelope item");
         root.setAutomationMode(true);
