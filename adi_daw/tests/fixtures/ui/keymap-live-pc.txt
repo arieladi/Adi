@@ -1,0 +1,122 @@
+28928 Play / stop: Space
+28929 Stop: 
+28930 Undo: Cmd+Z
+28931 Redo: Cmd+Y
+28932 Flip Sides: 
+28933 Hide/Show Browser: Cmd+Alt+B, Cmd+Alt+5
+28934 Arrangement Track Controls: 
+28935 Hide/Show Device View: Cmd+Alt+4
+28936 Hide/Show Info View: Shift+?, Shift+/
+28937 Zoom In Window: Cmd++, Cmd+Shift++, Cmd+=
+28938 Zoom Out Window: Cmd+-
+28939 New Project: Cmd+N
+28940 Open Project...: Cmd+O
+28941 Take Snapshot...: Cmd+S
+28942 Save Project As...: Cmd+Shift+S
+28943 Settings...: Cmd+,
+28944 Zoom In: +, Shift++, =
+28945 Zoom Out: -
+28946 Zoom to Arrangement Time Selection: Z
+28947 Zoom Back: X
+28948 Optimize Arrangement Width: W
+28949 Optimize Arrangement Height: H
+28950 Move Insert Marker to Beginning: Home
+28951 Continue Play from Stop Point: Shift+Space
+28952 Insert Audio Track: Cmd+T
+28953 Insert MIDI Track: Cmd+Shift+T
+28954 Delete Track: 
+28955 Rename: Cmd+R
+28956 Mixer: Cmd+Alt+M
+28957 Channel EQ: 
+28958 Quit: Cmd+Q
+28959 Control Bar: Alt+0
+28960 Arrangement View: Alt+2
+28961 Device View: Alt+4
+28962 Browser: Alt+5
+28963 Search in Browser: Cmd+F
+28964 Use Tab Key to Move Focus: 
+28965 Follow: Cmd+Shift+F, Alt+Shift+F
+28966 Move Insert Marker to Playhead Position: Cmd+Shift+Space
+28967 Increase Height of Selected Tracks: Alt++, Alt+Shift++, Alt+=
+28968 Decrease Height of Selected Tracks: Alt+-
+28969 Move Focus to Mixer: Alt+Shift+M
+28970 Next Neighbor: Cmd+Tab
+28971 Previous Neighbor: Cmd+Shift+Tab
+28972 Full Screen: F11
+28973 Overview: Cmd+Alt+O
+28974 In/Out: Cmd+Alt+I
+28975 Narrow Grid: Cmd+1
+28976 Widen Grid: Cmd+2
+28977 Triplet Grid: Cmd+3
+28978 Snap to Grid: Cmd+4
+28979 Fixed Grid: Cmd+5
+28980 Wrap Tab Navigation: 
+28981 Use Large Track Height: 
+28982 Group Tracks: Cmd+G
+28983 Ungroup Tracks: Cmd+Shift+G
+28984 Mix View: F4
+28985 Mix View in a Window: 
+28986 Reference Track: 
+28987 Play Reference: Shift+R
+28988 Select All: Cmd+A
+28989 Insert Return Track: Cmd+Alt+T
+28990 Return Tracks: Cmd+Alt+R
+28991 Sends: Cmd+Alt+S
+28992 Mixer In/Out: 
+28993 Solo Selected Tracks: S
+28994 Deactivate Selected Track: 0
+28995 Activate/Deactivate Track 1: 
+28996 Activate/Deactivate Track 2: 
+28997 Activate/Deactivate Track 3: 
+28998 Activate/Deactivate Track 4: 
+28999 Activate/Deactivate Track 5: 
+29000 Activate/Deactivate Track 6: 
+29001 Activate/Deactivate Track 7: 
+29002 Activate/Deactivate Track 8: 
+29003 Mixer Sends: 
+29004 Insert Time Signature Change: 
+29005 Solo in Place: 
+29006 Track Options: 
+29007 Mixer Track Options: 
+29008 Metronome: O
+29009 Loop Selection: Cmd+L
+29010 Select Loop: Cmd+Shift+L
+29011 Add Locator: 
+29012 Delete Locator: 
+29013 Edit Info Text: 
+29014 Undo History: Cmd+Alt+Z
+29015 Save a Copy...: 
+29016 Collect All and Save: 
+29017 Collect and Export...: 
+29018 Cut: Cmd+X
+29019 Copy: Cmd+C
+29020 Paste: Cmd+V
+29021 Duplicate: Cmd+D
+29022 Show Plug-In Windows: Cmd+Alt+P
+29023 Split: Cmd+E
+29024 Clip View: Cmd+Alt+3
+29025 Insert Empty MIDI Clip(s): Cmd+Shift+M
+29026 Cut Time: Cmd+Shift+X
+29027 Copy Time: Cmd+Shift+C
+29028 Paste Time: Cmd+Shift+V
+29029 Duplicate Time: Cmd+Shift+D
+29030 Delete Time: Cmd+Shift+Delete, Cmd+Shift+Backspace
+29031 Insert Silence: Cmd+I
+29032 Create Fade In/Out: Cmd+Alt+F
+29033 Delete Fades/Crossfades: Cmd+Alt+Backspace, Cmd+Alt+Delete
+29034 Invert Selection: Cmd+Shift+A
+29035 Quantize: Cmd+U
+29036 Quantize Settings...: Cmd+Shift+U
+29037 Crop Clip: Cmd+Shift+J
+29038 Expand Clip View: Cmd+Alt+E
+29039 Fold to Notes: F
+29040 Fold to Scale: G
+29041 Highlight Scales: K
+29042 Draw Mode: B
+29043 Arrange Clip View Panels Automatically: 
+29044 Arrange Clip View Panels Horizontally: 
+29045 Arrange Clip View Panels Vertically: 
+29046 Clip View: Alt+3
+29047 Fit to Time Range: Cmd+Alt+J
+29048 Arrangement Record: F9
+29049 Export Audio/Video...: Cmd+Shift+R
