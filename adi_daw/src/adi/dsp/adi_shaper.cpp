@@ -222,9 +222,15 @@ bool AdiShaper::Split::finishBlock() noexcept {
 }
 
 void AdiShaper::updateSplits(StageData& stage) const noexcept {
-    stage.low.prepare(stage.lowHz, sampleRate_);
-    const double upper = stage.layout == 3 ? std::max(stage.lowHz, stage.highHz) : stage.highHz;
-    stage.high.prepare(upper, sampleRate_);
+    // The two cutoff controls span ten octaves, with half an octave
+    // reserved above the lower edge. Keep the requested Hz for later edits.
+    constexpr double bottomHz = 20.601722307054366;
+    constexpr double lowestUpperHz = bottomHz * std::numbers::sqrt2;
+    constexpr double highestLowerHz = 512.0 * lowestUpperHz;
+    const double lower = std::clamp(stage.lowHz, bottomHz, highestLowerHz);
+    const double upperFloor = stage.layout == 3 ? lower * std::numbers::sqrt2 : lowestUpperHz;
+    stage.low.prepare(lower, sampleRate_);
+    stage.high.prepare(std::max(stage.highHz, upperFloor), sampleRate_);
 }
 
 void AdiShaper::updateStep(CurveBand& band) const noexcept {
