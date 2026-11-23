@@ -22,13 +22,23 @@ class AssertionWatch final : public juce::Logger {
     AssertionWatch(const AssertionWatch &) = delete;
     AssertionWatch &operator=(const AssertionWatch &) = delete;
     int count() const noexcept { return count_.load(); }
-    // JUCE's Linux message queue filling up (juce_Messaging_linux.cpp, "is the message thread overloaded"):
-    // a headless suite posts messages and never runs a message loop to take them, so the queue fills.
-    // It says nothing about the window's code; counted apart, said at the end, never failing the run.
+    // What the machine, not the window's code, makes JUCE assert in a headless run: each one line of the
+    // vendored JUCE, counted apart and said once, never failing the run. Every other assertion, in these
+    // files too, fails it; and if a JUCE update moves a line, that assertion fails the run again.
+    //  - juce_Messaging_linux.cpp:87, the message queue full: the suite posts messages and runs no loop;
+    //  - juce_XWindowSystem_linux.cpp:2623, a cursor shown on no window: there is no X display;
+    //  - juce_Midi_linux.cpp:539, the ALSA sequencer refused: there is no MIDI system.
     int queueFull() const noexcept { return queueFull_.load(); }
-    // Only that one line, InternalMessageQueue::postMessage's jassertfalse in the vendored JUCE: every other
-    // assertion in the file still fails the run, and if a JUCE update moves the line, this one does too.
-    static bool isQueueFull(const juce::String &message) { return message.endsWith("juce_Messaging_linux.cpp:87"); }
+    static const char *environment(const juce::String &message) {
+        if (message.endsWith("juce_Messaging_linux.cpp:87"))
+            return "the headless message queue";
+        if (message.endsWith("juce_XWindowSystem_linux.cpp:2623"))
+            return "no X display";
+        if (message.endsWith("juce_Midi_linux.cpp:539"))
+            return "no ALSA MIDI";
+        return nullptr;
+    }
+    static bool isQueueFull(const juce::String &message) { return environment(message) != nullptr; }
     juce::String last() const {
         const juce::ScopedLock held(lock_);
         return last_;
@@ -37,8 +47,11 @@ class AssertionWatch final : public juce::Logger {
   protected:
     void logMessage(const juce::String &message) override {
         if (message.startsWith("JUCE Assertion failure") && isQueueFull(message)) {
-            if (++queueFull_ == 1) // the first said, the rest counted
-                std::fputs((message + " (the headless message queue; counted apart)\n").toRawUTF8(), stderr);
+            ++queueFull_;
+            const juce::ScopedLock held(lock_);
+            if (seen_.addIfNotAlreadyThere(message)) { // each said once, the rest counted
+                std::fputs((message + " (" + environment(message) + "; counted apart)\n").toRawUTF8(), stderr);
+            }
             return;
         }
         if (message.startsWith("JUCE Assertion failure")) {
@@ -52,6 +65,7 @@ class AssertionWatch final : public juce::Logger {
   private:
     juce::Logger *previous_ = nullptr;
     std::atomic<int> count_{0}, queueFull_{0};
+    juce::StringArray seen_;
     juce::CriticalSection lock_;
     juce::String last_;
 };

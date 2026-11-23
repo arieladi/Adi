@@ -295,7 +295,7 @@ DevicePanelView::DevicePanelView(DeviceChainStrip &s, const DevicePanelData &d)
     search.setTextToShowWhenEmpty("Find parameter", juce::Colours::grey);
     search.setTitle("Find parameter");
     title.addMouseListener(this, false);
-    title.onClick = [this] { grabKeyboardFocus(); };
+    title.onClick = [this] { focusIfShowing(*this); };
     enabled.onClick = [this] {
         const auto safe = SafePointer<DevicePanelView>(this);
         if (!validTarget()) return;
@@ -1013,7 +1013,7 @@ bool DevicePanelView::beginRename() {
     rename.selectAll();
     rename.setVisible(true);
     if (rename.isShowing())
-        rename.grabKeyboardFocus();
+        focusIfShowing(rename);
     return true;
 }
 void DevicePanelView::endRename(bool commit) {
@@ -1025,7 +1025,7 @@ void DevicePanelView::endRename(bool commit) {
     if (commit && validTarget() && data != nullptr && !name.empty() && name != data->name)
         strip.action("device.rename", {{"id", id}, {"name", name}});
     if (isShowing())
-        grabKeyboardFocus();
+        focusIfShowing(*this);
     endInteraction(Interaction::Text);
 }
 void DevicePanelView::configure() {
@@ -1111,7 +1111,7 @@ DeviceChainStrip::DeviceChainStrip(AdiRootComponent &r) : root(r) {
 void DeviceChainStrip::mouseDown(const juce::MouseEvent &e) {
     if (e.eventComponent == &content && e.x >= end_ - 11 && !e.mods.isPopupMenu()) {
         chosen_.reset();
-        grabKeyboardFocus();
+        focusIfShowing(*this);
     }
 }
 std::optional<std::int64_t> DeviceChainStrip::insertPoint() const {
@@ -1512,9 +1512,9 @@ bool DeviceChainStrip::focusNext(std::int64_t from, bool forward) {
     for (std::size_t i = 0; i < panels.size(); ++i)
         if (panels[i]->id == from) {
             if (forward && i + 1 < panels.size())
-                panels[i + 1]->grabKeyboardFocus();
+                focusIfShowing(*panels[i + 1]);
             else if (!forward && i > 0)
-                panels[i - 1]->grabKeyboardFocus();
+                focusIfShowing(*panels[i - 1]);
             return true;
         }
     return false;

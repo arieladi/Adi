@@ -3302,7 +3302,7 @@ bool AdiRootComponent::focusView(int id) {
         transport.focus();
         return true;
     case AppCommands::FocusArrangement:
-        arrangement.canvas.grabKeyboardFocus();
+        focusIfShowing(arrangement.canvas);
         return true;
     case AppCommands::FocusClipView:
         // The editor of the clip shown: the Note Editor or the Sample Editor. With no clip, the
@@ -3310,29 +3310,29 @@ bool AdiRootComponent::focusView(int id) {
         if (!showClipView())
             return false;
         if (clipView.details() == nullptr)
-            clipView.grabKeyboardFocus();
+            focusIfShowing(clipView);
         else if (clipView.midi())
-            clipView.notes.grabKeyboardFocus();
+            focusIfShowing(clipView.notes);
         else
-            clipView.sample.grabKeyboardFocus();
+            focusIfShowing(clipView.sample);
         return true;
     case AppCommands::FocusDeviceView:
         if (!state_.docked && !command(AppCommands::ToggleDeviceView))
             return false;
         if (devices.panels.empty())
             return fail("The selected track has no devices.");
-        devices.panels.front()->grabKeyboardFocus();
+        focusIfShowing(*devices.panels.front());
         return true;
     case AppCommands::FocusBrowser:
     case AppCommands::SearchBrowser:
         if (state_.panels.find(Panel::Browser)->collapsed && !command(AppCommands::ToggleBrowser))
             return false;
         if (id == AppCommands::FocusBrowser) {
-            browser.grabKeyboardFocus();
+            focusIfShowing(browser);
             return true;
         }
         // Ctrl/Cmd+F, from anywhere: the search field, its words selected to type over.
-        browser.search.grabKeyboardFocus();
+        focusIfShowing(browser.search);
         browser.search.selectAll();
         return true;
     case AppCommands::FocusMixer: {
@@ -3712,7 +3712,7 @@ bool AdiRootComponent::command(int id) {
         if (applicationCommand)
             applicationCommand(AppCommands::UndoHistory);
         if (undoHistory.isShowing())
-            undoHistory.list.grabKeyboardFocus();
+            focusIfShowing(undoHistory.list);
         return true;
     // The metronome and the loop are complete on their own too (submitTransport).
     case AppCommands::Metronome:
@@ -4103,7 +4103,7 @@ bool AdiRootComponent::ImportPrompt::keyPressed(const juce::KeyPress &key) {
         for (std::size_t n = 1; n <= order.size(); ++n) {
             auto *next = order[(from + n * step) % order.size()];
             if (next->isEnabled()) {
-                next->grabKeyboardFocus();
+                focusIfShowing(*next);
                 break;
             }
         }
