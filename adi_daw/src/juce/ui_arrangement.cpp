@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_arrangement.hpp"
 #include "adi/ui/audio_drop.hpp"
+#include "adi/ui/automation_override.hpp"
 #include "adi/engine/clip_details.hpp"
 #include "adi/engine/clip_fade.hpp"
 #include "adi/ui/fade_edits.hpp"
@@ -1553,6 +1554,31 @@ juce::PopupMenu ArrangementView::headerMenu() {
     menu.addSeparator();
     menu.addCommandItem(&commands.manager, AppCommands::RenameTrack);
     menu.addCommandItem(&commands.manager, AppCommands::DeleteTrack);
+    // Live's lane chooser (DF-W37; manual 25.2): the track's mixer, then each device's parameters; the
+    // one chosen shows on the track's lane in Automation Mode.
+    {
+        const auto track = geometry.selection.track;
+        root.demandAutomationDevices(true); // the parameters of a device the Device View does not show
+        const auto shown = root.automationTarget(track);
+        juce::PopupMenu show;
+        std::map<std::string, juce::PopupMenu> byDevice;
+        std::vector<std::string> order;
+        for (const auto &t : root.automationChoices(track)) {
+            const auto key = t.ownerKind == "device" ? t.device + "#" + std::to_string(t.ownerId) : std::string("Mixer");
+            if (!byDevice.count(key))
+                order.push_back(key);
+            byDevice[key].addItem(juce::String::fromUTF8(t.paramName.c_str()), true, t == shown,
+                                  [this, track, t] { root.showAutomation(track, t); });
+        }
+        for (const auto &key : order)
+            show.addSubMenu(juce::String::fromUTF8(key.substr(0, key.rfind('#') == std::string::npos ? key.size() : key.rfind('#')).c_str()),
+                            byDevice[key]);
+        // The choices are read: with Automation Mode off, this window keeps no demand on the feed.
+        if (!root.automationMode())
+            root.demandAutomationDevices(false);
+        menu.addSeparator();
+        menu.addSubMenu("Show Automation", show, show.getNumItems() > 0);
+    }
     menu.addSeparator();
     menu.addCommandItem(&commands.manager, AppCommands::GroupTracks);
     menu.addCommandItem(&commands.manager, AppCommands::UngroupTracks);
@@ -1565,7 +1591,18 @@ juce::PopupMenu ArrangementView::headerMenu() {
                        "Colour");
     return menu;
 }
-void ArrangementView::contextMenu(juce::Point<int> where, bool header) {
+void ArrangementView::contextMenu(juce::Point<int> where, bool header, const engine::AutomationLaneNode *lane) {
+    contextMenuItems(header, lane).showMenuAsync(juce::PopupMenu::Options{}.withTargetScreenArea(
+        juce::Rectangle<int>(where.x, where.y, 1, 1)));
+}
+const engine::AutomationLaneNode *ArrangementView::automationLaneAt(int y) const {
+    if (!root.automationMode())
+        return nullptr;
+    const auto *current = root.current().get(); // the root holds it: the pointer outlives this call
+    const auto *t = current != nullptr ? geometry.trackAt(reader(), y) : nullptr;
+    return t != nullptr ? laneOf(*current, "track", t->id, "volume") : nullptr;
+}
+juce::PopupMenu ArrangementView::contextMenuItems(bool header, const engine::AutomationLaneNode *lane) {
     auto menu = header ? headerMenu() : juce::PopupMenu();
     if (!header) {
         auto &commands = root.commands();
@@ -1587,9 +1624,9 @@ void ArrangementView::contextMenu(juce::Point<int> where, bool header) {
         // The lanes' menu sets the grid as well (§6.10).
         menu.addSeparator();
         addGridItems(menu);
+        root.addReenableAutomation(menu, lane);
     }
-    menu.showMenuAsync(juce::PopupMenu::Options{}.withTargetScreenArea(
-        juce::Rectangle<int>(where.x, where.y, 1, 1)));
+    return menu;
 }
 std::int64_t ArrangementView::colourIndex(std::int64_t track) const {
     const auto rows = geometry.rows(reader());
@@ -2394,11 +2431,12 @@ std::optional<ArrangementCanvas::AutomationPick> ArrangementCanvas::automationPo
     const auto current = view.root.current();
     if (!current)
         return std::nullopt;
-    const auto range = automationRange("volume");
     for (const auto &body : laneBodies()) {
         if (at.y < body.top - kPointHit || at.y > body.bottom + kPointHit)
             continue;
-        const auto env = trackEnvelope(*current, body.track->id);
+        const auto target = view.root.automationTarget(body.track->id);
+        const auto range = automationRange(target);
+        const auto env = envelopeOf(*current, target);
         if (env.data == nullptr)
             continue;
         for (const auto &p : env.data->points)
@@ -2414,10 +2452,12 @@ void ArrangementCanvas::paintAutomation(juce::Graphics &g) const {
     const auto current = view.root.current();
     if (!current)
         return;
-    const auto range = automationRange("volume");
     const auto &geo = view.geometry;
     for (const auto &body : laneBodies()) {
-        const auto env = trackEnvelope(*current, body.track->id);
+        // The chosen target's envelope (DF-W37), the track's Volume until another is chosen.
+        const auto target = view.root.automationTarget(body.track->id);
+        const auto range = automationRange(target);
+        const auto env = envelopeOf(*current, target);
         // Drawn inside the lane's visible strip only: a lane under the foot is not drawn over it.
         juce::Graphics::ScopedSaveState keep(g);
         g.reduceClipRegion(0, static_cast<int>(body.top) - 4, getWidth(), static_cast<int>(body.bottom - body.top) + 8);
@@ -2453,7 +2493,7 @@ void ArrangementCanvas::paintAutomation(juce::Graphics &g) const {
         g.setColour(look::record.withAlpha(.9f));
         const float right = static_cast<float>(getWidth());
         if (points.empty()) {
-            const float y = automationY(body.track->volumeDb, range, body.top, body.scaleBottom);
+            const float y = automationY(view.root.automationCurrent(target), range, body.top, body.scaleBottom);
             g.drawLine(0, y, right, y, 1.f);
             continue;
         }
@@ -2498,7 +2538,7 @@ bool ArrangementCanvas::automationDown(const juce::MouseEvent &e) {
         pointDrag_ = hit;
         pointTick_ = 0;
         if (const auto current = view.root.current())
-            if (const auto env = trackEnvelope(*current, hit->track); env.data != nullptr)
+            if (const auto env = envelopeOf(*current, view.root.automationTarget(hit->track)); env.data != nullptr)
                 for (const auto &p : env.data->points)
                     if (p.id == hit->point) {
                         pointTick_ = p.time;
@@ -2518,7 +2558,8 @@ bool ArrangementCanvas::automationDown(const juce::MouseEvent &e) {
             const auto raw = std::max<std::int64_t>(0, view.geometry.tick(at.x));
             const auto tick = view.snaps(e.mods) ? view.geometry.snap(raw, false) : raw;
             view.root.addAutomationPoint(body.track->id, tick,
-                                         automationValue(at.y, automationRange("volume"), body.top, body.scaleBottom));
+                                         automationValue(at.y, automationRange(view.root.automationTarget(body.track->id)),
+                                                         body.top, body.scaleBottom));
             pointAdded_ = true;
             repaint();
             return true;
@@ -2870,7 +2911,8 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
         return;
     if (e.mods.isPopupMenu()) {
         view.select(e.x, e.y, view.snaps(e.mods));
-        view.contextMenu(e.getScreenPosition(), false);
+        // In Automation Mode the menu is the envelope's too: its lane's Re-Enable Automation (AU-04).
+        view.contextMenu(e.getScreenPosition(), false, view.automationLaneAt(e.y));
     } else if (!panning) {
         // Held still at the lanes' edge, a drag repeats, so they keep scrolling.
         beginDragAutoRepeat(ArrangementView::kAutoRepeatMs);
@@ -3026,7 +3068,8 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
             if (body.track->id == pointDrag_->track) {
                 const auto raw = std::max<std::int64_t>(0, view.geometry.tick(e.position.x));
                 pointTick_ = view.snaps(e.mods) ? view.geometry.snap(raw, false) : raw;
-                pointValue_ = automationValue(e.position.y, automationRange("volume"), body.top, body.scaleBottom);
+                pointValue_ = automationValue(e.position.y, automationRange(view.root.automationTarget(body.track->id)),
+                                              body.top, body.scaleBottom);
             }
         repaint();
         return;

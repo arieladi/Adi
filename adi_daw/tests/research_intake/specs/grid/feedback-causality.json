@@ -1,0 +1,42 @@
+{
+  "schema": "adi-research-input-grid9-1",
+  "id": "feedback-causality",
+  "kind": "graph_spec",
+  "input": {
+    "edges": [
+      [
+        "gain",
+        "delay"
+      ],
+      [
+        "delay",
+        "gain"
+      ]
+    ],
+    "delays_samples": [
+      0,
+      1,
+      4,
+      63,
+      64,
+      65
+    ],
+    "sample_rates": [
+      44100,
+      48000,
+      96000
+    ],
+    "gains": [
+      0,
+      0.5,
+      0.99
+    ],
+    "input": "one low-amplitude impulse",
+    "delays_samples_domain": "Proposed test delay measured in host-rate samples; separately record requested control units, actual feedback delay and Grid internal-rate conversion. Never equate a Grid sample with a host frame or an unspecified block."
+  },
+  "question": "Which cycles are legal, what minimum delay is imposed, and does block size affect the impulse sequence? No unstable gain is needed.",
+  "bitwig_result": "NOT RUN",
+  "adi_result": "NOT RUN",
+  "limits": "Authored diagnostic specification, not a Bitwig patch, Pd implementation or observed result.",
+  "provenance": "The director's research."
+}

@@ -10,6 +10,12 @@ add_subdirectory(src/adi/mix/carve)
 add_subdirectory(src/adi/mix/focus)
 add_subdirectory(src/adi/mix/eq_chain)
 add_subdirectory(src/adi/mix/compressor)
+add_subdirectory(src/adi/mix/filters)
+add_subdirectory(src/adi/mix/gate)
+add_subdirectory(src/adi/mix/key_eq)
+add_subdirectory(src/adi/mix/clean_key)
+add_subdirectory(src/adi/mix/opto)
+add_subdirectory(src/adi/mix/deesser)
 target_sources(adi_core PRIVATE src/adi/mix/eq/Backend.cpp)
 target_link_libraries(adi_core PRIVATE adi_mix_eq adi_mix_eq_chain_backend)
 target_sources(adi_core PRIVATE src/adi/mix_functions.cpp src/adi/mix_function_edit.cpp
@@ -46,3 +52,36 @@ add_test(NAME adi_mix_eq_chain_backend_tests COMMAND adi_mix_eq_chain_backend_te
 add_executable(adi_mix_compressor_tests tests/test_mix_compressor.cpp)
 target_link_libraries(adi_mix_compressor_tests PRIVATE adi_mix_compressor adi_warnings)
 add_test(NAME adi_mix_compressor_tests COMMAND adi_mix_compressor_tests)
+
+add_executable(adi_mix_filters_tests tests/test_mix_filters.cpp)
+target_link_libraries(adi_mix_filters_tests PRIVATE adi_mix_filters adi_warnings)
+add_test(NAME adi_mix_filters_tests COMMAND adi_mix_filters_tests)
+
+add_executable(adi_mix_deesser_tests tests/test_mix_deesser.cpp)
+target_link_libraries(adi_mix_deesser_tests PRIVATE adi_mix_deesser adi_warnings)
+add_test(NAME adi_mix_deesser_tests COMMAND adi_mix_deesser_tests)
+
+add_executable(adi_mix_key_eq_tests tests/test_mix_key_eq.cpp)
+target_link_libraries(adi_mix_key_eq_tests PRIVATE adi_mix_key_eq adi_warnings)
+add_test(NAME adi_mix_key_eq_tests COMMAND adi_mix_key_eq_tests)
+
+add_executable(adi_mix_clean_key_tests tests/test_mix_clean_key.cpp)
+target_link_libraries(adi_mix_clean_key_tests PRIVATE adi_mix_clean_key adi_warnings)
+add_test(NAME adi_mix_clean_key_tests COMMAND adi_mix_clean_key_tests)
+
+adi_add_opto_gain_tests()
+
+add_executable(adi_mix_gate_tests tests/test_mix_gate.cpp)
+target_link_libraries(adi_mix_gate_tests PRIVATE adi_mix_gate adi_warnings)
+add_test(NAME adi_mix_gate_tests COMMAND adi_mix_gate_tests)
+
+# The cores compile with -ffp-contract=off, and so do these suites in each
+# core's own CMakeLists. Registered here they would otherwise take the
+# compiler's default: Apple clang contracts by default (fused multiply-adds
+# on arm64), which no other leg does under -std=c++20. Keep the tests on the
+# cores' arithmetic contract. The Opto suite sets this in its own function.
+if(NOT MSVC)
+    foreach(_adi_mix_core_suite compressor filters deesser key_eq clean_key gate)
+        target_compile_options(adi_mix_${_adi_mix_core_suite}_tests PRIVATE -ffp-contract=off)
+    endforeach()
+endif()

@@ -137,6 +137,9 @@ struct TrackNode {
     double panLeft = -1.0, panRight = 1.0;
     std::vector<std::shared_ptr<const ClipNode>> clips;
     std::optional<ReturnSendTap> returnSendTap{};
+    bool recordArmed = false;
+    std::int64_t monitorMode = 0;
+    std::optional<std::string> inputRef;
 };
 
 /// A routing row with kind='send', including disabled rows. Destinations can

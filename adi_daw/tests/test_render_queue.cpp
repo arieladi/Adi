@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "temp_directory.hpp"
 #include "adi/render/queue.hpp"
+#include "adi/render/host_dispatch.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/media/media_ops.hpp"
@@ -605,6 +606,80 @@ void pcmExports() {
     check(renderWav(j,{}).state==JobState::Failed && f.noStage(),"unsupported dither has no silent fallback");
 }
 
+void hostOwnerLifecycle() {
+    Fixture f;
+    f.effect();
+    std::array<std::byte,1> bytes{std::byte{1}};
+    const auto hash=media::blake3Bytes(bytes).hex;
+    SQLite::Statement blob(f.store->db(),"INSERT INTO state_blobs(hash_blake3,data,size_bytes) VALUES(?,?,1)");
+    blob.bind(1,hash);
+    blob.bind(2,bytes.data(),1);
+    blob.exec();
+    SQLite::Statement state(f.store->db(),
+        "INSERT INTO plugin_state(device_id,stream_role,state_hash,format_hint) VALUES(1,'state',?,'opaque')");
+    state.bind(1,hash);
+    state.exec();
+    const auto owner=std::this_thread::get_id();
+    for(const bool cancel:{false,true}) {
+        struct Trace {
+            std::thread::id owner;
+            bool correct=true,restored=false;
+            unsigned created=0,offline=0,prepared=0,rendered=0,serviced=0,destroyed=0;
+            void onOwner() { correct=correct && std::this_thread::get_id()==owner; }
+        } trace{owner};
+        struct Device final:Delay {
+            Trace& trace;
+            explicit Device(Trace& events):trace(events) {
+                trace.onOwner();
+                ++trace.created;
+            }
+            ~Device() override { trace.onOwner(); ++trace.destroyed; }
+            void setOffline(bool offline) noexcept override {
+                trace.onOwner();
+                if(offline)++trace.offline;
+            }
+            bool loadState(const std::string&,const std::vector<std::uint8_t>& data) override {
+                trace.onOwner();
+                trace.restored=data==std::vector<std::uint8_t>{1};
+                gain=0.5;
+                return trace.restored;
+            }
+            void prepare(double,std::int32_t) override { trace.onOwner(); ++trace.prepared; }
+            void pumpMainThread() override { trace.onOwner(); ++trace.serviced; }
+            void process(const NodeIo& io) noexcept override {
+                trace.correct=trace.correct && std::this_thread::get_id()!=trace.owner && trace.restored;
+                ++trace.rendered;
+                Delay::process(io);
+            }
+        };
+        HostDispatch host;
+        std::stop_source stop;
+        Control control;
+        control.stop=stop.get_token();
+        control.onHost=[&](std::function<void()> action) { host.invoke(std::move(action)); };
+        control.serviceHost=[&] {
+            trace.onOwner();
+            if(cancel && trace.rendered!=0)stop.request_stop();
+        };
+        std::packaged_task<Result()> task([&] {
+            return renderWav(f.job(cancel?"host-cancel":"host-complete"),
+                [&](const DeviceRequest&,std::string&) {return std::make_unique<Device>(trace);},control);
+        });
+        auto done=task.get_future();
+        std::jthread worker(std::move(task));
+        host.wait(done);
+        const auto result=done.get();
+        check(trace.correct && trace.created==1 && trace.offline==1 && trace.prepared!=0 &&
+              trace.restored && trace.rendered!=0 && trace.serviced!=0 && trace.destroyed==1,
+              "load, offline mode, state, prepare, service and destruction run on the host owner");
+        if(cancel) {
+            check(result.state==JobState::Cancelled && !fs::exists(result.output) && f.noStage(),
+                  "owner remains available to dismantle a cancelled render without publishing it");
+        } else {
+            check(matches(read(result,866),137,0.5),"the worker renders the saved plug-in state into the WAV");
+        }
+    }
+}
 void normalizedRenders() {
     for(const auto precision:{Precision::Float32,Precision::Float64}) {
         Fixture f;f.effect();auto job=f.job(precision==Precision::Float64?"normalized-wide":"normalized-float");
@@ -1474,7 +1549,7 @@ void mediaIdentities() {
 }
 } // namespace
 int main() {
-    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); mediaIdentities();}
+    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); hostOwnerLifecycle(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); mediaIdentities();}
     catch(const std::exception& e) {check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures ? "FAIL" : "PASS",checks,failures);
     return failures ? 1 : 0;
