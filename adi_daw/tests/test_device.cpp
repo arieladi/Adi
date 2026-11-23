@@ -16,8 +16,10 @@
 #include "adi/audio/floating_point_control.hpp"
 #include "adi/engine/render_workers.hpp"
 
+#include <array>
 #include <atomic>
 #include <cfenv>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
@@ -335,6 +337,52 @@ void testCallbackFlushesDenormals() {
     core.close();
 }
 
+std::size_t loadClockIndex = 0;
+std::int64_t loadClock() noexcept {
+    constexpr std::array<std::int64_t, 8> ticks{
+        1000000000, 1005000000, 1020000000, 1027500000,
+        1040000000, 1045000000, 1060000000, 1062500000
+    };
+    if (loadClockIndex == ticks.size())
+        return ticks.back();
+    return ticks[loadClockIndex++];
+}
+void testCallbackLoad() {
+    section("DEV-24 -- measured callback deadline use");
+    loadClockIndex = 0;
+    DeviceCore core(loadClock);
+    SilenceProcessor silence;
+    Buffers buffers(2, 1024, 1.0f);
+    check(core.open(silence, 48000, 480, 480).opened && !core.callbackLoad(),
+          "a new stream has no measured load before a callback");
+    core.process(buffers.out(), 2, nullptr, 0, 480);
+    const auto first = core.callbackLoad();
+    check(first && first->current == 0.5 && first->average == 0.5 && first->overBudget == 0,
+          "five milliseconds of work uses half of a 480-frame callback budget");
+    core.process(buffers.out(), 2, nullptr, 0, 240);
+    const auto overload = core.callbackLoad();
+    const auto expectedAverage = 0.5 + (1.0 - std::exp(-0.005 / 0.25));
+    check(overload && overload->current == 1.5 && overload->overBudget == 1 &&
+              std::abs(overload->average - expectedAverage) < 1e-12,
+          "a short callback uses its actual budget and reports loads above 100 percent");
+    core.process(buffers.out(), 2, nullptr, 0, 240);
+    const auto full = core.callbackLoad();
+    check(full && full->current == 1 && full->overBudget == 1,
+          "work exactly at the deadline does not increment the over-budget count");
+    core.process(buffers.out(), 2, nullptr, 0, 600);
+    check(core.oversizeRefusals() == 1 && loadClockIndex == 6 && core.callbackLoad() &&
+              core.callbackLoad()->current == 1,
+          "a rejected oversized callback does not publish or replace a load reading");
+    check(core.changeBlockSize(96000, 480, 480).opened,
+          "driver reconfiguration can change the live callback deadline");
+    core.process(buffers.out(), 2, nullptr, 0, 480);
+    const auto reconfigured = core.callbackLoad();
+    check(reconfigured && reconfigured->current == 0.5 && reconfigured->overBudget == 1,
+          "a reconfigured stream uses its granted rate and keeps its continuous overload count");
+    core.close();
+    check(!core.callbackLoad(), "closing the stream clears the public load reading");
+}
+
 }  // namespace
 
 int main() {
@@ -351,6 +399,7 @@ int main() {
     testLifecycle();
     testProcessDoesNotAllocate();
     testCallbackFlushesDenormals();
+    testCallbackLoad();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;
