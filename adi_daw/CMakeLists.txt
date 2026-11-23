@@ -296,6 +296,7 @@ add_library(adi_core STATIC
     src/adi/media/zip_writer.cpp
     src/adi/interchange/smf.cpp
     src/adi/note_timing_randomize.cpp
+    src/adi/interchange/compound_file.cpp
     src/adi/audio/wav_file.cpp
     src/adi/audio/mp4_aac.cpp
     src/adi/audio/stem_manifest.cpp
@@ -2143,6 +2144,10 @@ add_test(NAME adi_mcu_fader_tests COMMAND adi_mcu_fader_tests)
 add_executable(adi_smf_tests tests/test_smf.cpp)
 target_link_libraries(adi_smf_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_smf_tests COMMAND adi_smf_tests)
+
+add_executable(adi_compound_file_tests tests/test_compound_file.cpp)
+target_link_libraries(adi_compound_file_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_compound_file_tests COMMAND adi_compound_file_tests)
 
 
 
