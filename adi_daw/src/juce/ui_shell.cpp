@@ -1807,6 +1807,74 @@ bool AdiRootComponent::placeClips(const std::vector<ClipPlace> &places, const ch
         prepared.requests.front().label = label;
     return commitEdit(std::move(prepared));
 }
+bool AdiRootComponent::resizeClip(std::int64_t clipId, std::int64_t begin, std::int64_t end) {
+    const auto current = view_.current();
+    if (!current)
+        return fail("Select a clip to resize.");
+    const engine::ClipNode *clip = nullptr;
+    std::int64_t track = 0;
+    for (const auto &t : current->tracks)
+        if (t)
+            for (const auto &c : t->clips)
+                if (c && c->id == clipId) {
+                    clip = c.get();
+                    track = t->id;
+                }
+    if (clip == nullptr)
+        return fail("That clip is gone.");
+    const auto pos = clip->posTicks, stop = clip->posTicks + clip->lengthTicks;
+    if (begin == pos && end == stop)
+        return true;
+    if (begin != pos && end != stop)
+        return fail("Move one edge of a clip at a time.");
+    if (begin < 0 || begin >= end)
+        return fail("A clip needs some length.");
+    // A clip on the seconds clock (a bounce, a freeze) shows its span floored to ticks; one tick more
+    // covers its real end, which the planner's scope must hold.
+    const bool seconds = clip->timeBase != 0;
+    const std::int64_t tracks[] = {track};
+    const auto scope = edit_plan::materialScope(tracks, edit_plan::PlacementClock::Ticks,
+                                                {std::min(begin, pos), std::max(end, stop) + (seconds ? 1 : 0)});
+    edit_plan::Options options;
+    options.referenceRate = editRate();
+    options.policy = edit_plan::capturePolicy(commands_.settings());
+    // A resize moves no material, so no envelope follows it (as a recording's placement).
+    options.policy.automationFollowsClips = false;
+    constexpr auto label = "Resize Clip";
+    if (begin != pos) {
+        auto prepared = edit_plan::prepareTrim(submitter_.store(), scope, {clipId, {0, begin}}, options);
+        if (!prepared.ok)
+            return fail("The clip's start stays: the engine will not trim it here (" + prepared.error + ").");
+        // Where the audio begins, the planner keeps the clip as it was; the batch may still clear an overlap
+        // around it, which is not what the drag asked for. Only a start that moved is committed.
+        const auto described = edit_plan::describe(prepared);
+        const bool moved = std::any_of(described.effects.begin(), described.effects.end(), [&](const auto &e) {
+            return e.before && e.before->id == clipId && e.after.size() == 1 &&
+                   e.after.front().nativeSpan.begin != e.before->nativeSpan.begin;
+        });
+        if (prepared.requests.empty() || !moved)
+            return fail("The clip's audio begins there; its start cannot move earlier.");
+        prepared.requests.front().label = label;
+        return commitEdit(std::move(prepared));
+    }
+    auto prepared = edit_plan::prepareResizeEnd(submitter_.store(), scope, {clipId, {0, end}}, options);
+    if (prepared.ok) {
+        if (!prepared.requests.empty())
+            prepared.requests.front().label = label;
+        return commitEdit(std::move(prepared));
+    }
+    // The planner will not place here (automation that follows its clips, AU-05; a frozen track; an editing
+    // setting off Live's rule; clips that already overlap): the end moves as before, keeping what it covers.
+    const auto why = prepared.error;
+    // clip.resize writes ticks; a clip on the seconds clock is left as it is rather than given a span in
+    // the wrong clock.
+    if (seconds)
+        return fail("The clip's end stays: the engine will not resize it here (" + why + ").");
+    if (!submitEdit("clip.resize", {{"id", clipId}, {"pos", pos}, {"length", end - pos}}, label))
+        return false;
+    say("Resized, keeping what the clip now covers: the engine does not place it here yet (" + why + ").");
+    return true;
+}
 bool AdiRootComponent::commitEdit(clip_edit::PreparedEdit prepared, std::optional<OpRequest> appended) {
     if (!prepared.ok)
         return fail(prepared.error.empty() ? "The edit could not be prepared." : prepared.error);

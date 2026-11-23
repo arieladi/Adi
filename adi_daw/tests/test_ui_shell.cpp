@@ -15110,6 +15110,37 @@ int main(int argc, char **argv) {
                 const bool shortened = integrated.command(AppCommands::Undo);
                 integrated.frame();
                 check(shortened && clipAt() != nullptr && clipAt()->lengthTicks == length0, "and Undo restores its length");
+                // The left edge moves the start, the end and the audio staying where they are in time
+                // (ED-04): the content offset moves with the edge, one undo step.
+                const auto offsetTicks = [&] {
+                    return value(document->store(), "SELECT content_offset_ticks FROM clips WHERE id=1");
+                };
+                const auto offset0 = offsetTicks();
+                const auto leftEdge =
+                    peerRoot
+                        .getLocalPoint(&arrangement.canvas, juce::Point<int>{static_cast<int>(geo.x(pos0)) + 1, barTop + 5})
+                        .toFloat();
+                when += 1000;
+                mouse(leftEdge, 0);
+                const bool leftBracket = arrangement.canvas.getMouseCursor() == juce::MouseCursor::LeftRightResizeCursor;
+                mouse(leftEdge, juce::ModifierKeys::leftButtonModifier);
+                mouse(leftEdge.translated(40, 0), juce::ModifierKeys::leftButtonModifier);
+                const bool trimming = arrangement.canvas.resizingStart() && arrangement.canvas.resizedStart() > pos0 &&
+                                      arrangement.canvas.resizedStart() + arrangement.canvas.resizedLength() == pos0 + length0;
+                mouse(leftEdge.translated(40, 0), 0);
+                integrated.frame();
+                const auto *trimmed = clipAt();
+                check(leftBracket && trimming && trimmed != nullptr && trimmed->posTicks > pos0 &&
+                          trimmed->posTicks % gridTicks == 0 && trimmed->posTicks + trimmed->lengthTicks == pos0 + length0 &&
+                          offsetTicks() == std::to_string(std::stoll(offset0) + trimmed->posTicks - pos0) &&
+                          geo.selection.start == trimmed->posTicks &&
+                          geo.selection.end == pos0 + length0 && integrated.undoTitle(false) == "Undo Resize Clip",
+                      "dragging a clip's left edge moves its start to the grid, its end and its audio where they were");
+                const bool untrimmed = integrated.command(AppCommands::Undo);
+                integrated.frame();
+                check(untrimmed && clipAt() != nullptr && clipAt()->posTicks == pos0 && clipAt()->lengthTicks == length0 &&
+                          offsetTicks() == offset0,
+                      "and Undo restores its start and its audio's offset");
                 // Live's Arrangement keys (online §41.4.1.3, §42.16), each edit one undo step.
                 {
                     auto press = [&clipKeys](int code, int mods = 0) {
@@ -15174,11 +15205,102 @@ int main(int argc, char **argv) {
                               sel.end == pos0 + step && clipAt() != nullptr && clipAt()->posTicks == pos0 &&
                               integrated.error().find("split") != std::string::npos,
                           "a selection holding part of a clip stays, and the Status Bar says it waits for split");
+                    // Enter at a clip's start (ED-04): the arrows move its start, its end fixed.
                     point(pos0);
-                    integrated.say({});
-                    check(press(juce::KeyPress::returnKey) && !arrangement.canvas.keyResizing() &&
-                              integrated.error().find("content offset") != std::string::npos,
-                          "Enter at a clip's start says moving its start waits for a content offset");
+                    check(press(juce::KeyPress::returnKey) && arrangement.canvas.keyResizing() &&
+                              arrangement.canvas.resizingStart() && press(juce::KeyPress::rightKey) &&
+                              arrangement.canvas.resizedStart() == pos0 + step &&
+                              arrangement.canvas.resizedLength() == length0 - step,
+                          "Enter at a clip's start, then Right, moves its start by the grid, its end fixed");
+                    const bool startKept = press(juce::KeyPress::returnKey);
+                    integrated.frame();
+                    check(startKept && !arrangement.canvas.keyResizing() && clipAt() != nullptr &&
+                              clipAt()->posTicks == pos0 + step && clipAt()->posTicks + clipAt()->lengthTicks == end0 &&
+                              sel.insert == pos0 + step && integrated.undoTitle(false) == "Undo Resize Clip",
+                          "Enter keeps the new start, one undo step named Resize Clip, the insert marker there");
+                    const bool startBack = integrated.command(AppCommands::Undo);
+                    integrated.frame();
+                    check(startBack && clipAt() != nullptr && clipAt()->posTicks == pos0 && clipAt()->lengthTicks == length0,
+                          "and Undo puts the start back");
+                    // On a track with automation (the default keeps envelopes with their clips), a trim moves no
+                    // envelope, so the planner takes it all the same.
+                    {
+                        const bool automated = integrated.addAutomationPoint(clipTrack, 0, -6);
+                        integrated.frame();
+                        integrated.say({});
+                        const bool trimmedThere = integrated.resizeClip(1, pos0 + step, end0);
+                        integrated.frame();
+                        check(automated && trimmedThere && clipAt() != nullptr && clipAt()->posTicks == pos0 + step &&
+                                  integrated.undoTitle(false) == "Undo Resize Clip" && integrated.error().empty(),
+                              "a trim on a track with an automation lane moves the start, one undo step");
+                        integrated.command(AppCommands::Undo);
+                        integrated.command(AppCommands::Undo);
+                        integrated.frame();
+                        check(clipAt() != nullptr && clipAt()->posTicks == pos0, "and Undo puts both back");
+                    }
+                    // The clip's audio begins at its start: a start moved earlier is refused, and says why.
+                    {
+                        OpRequest later;
+                        later.opType = "clip.move";
+                        later.payload = {{"id", 1}, {"to", pos0 + 2 * step}, {"track", clipTrack}};
+                        const bool placed = offset0 == "0" && document->ops().submit(later).ok;
+                        integrated.frame();
+                        const auto undoBefore = integrated.undoTitle(false);
+                        integrated.say({});
+                        const bool earlier = integrated.resizeClip(1, pos0 + step, pos0 + 2 * step + length0);
+                        integrated.frame();
+                        check(placed && !earlier && clipAt() != nullptr && clipAt()->posTicks == pos0 + 2 * step &&
+                                  clipAt()->lengthTicks == length0 && integrated.undoTitle(false) == undoBefore &&
+                                  integrated.error().find("begins there") != std::string::npos,
+                              "a start moved before the audio's first frame is refused, and the Status Bar says why");
+                        integrated.command(AppCommands::Undo);
+                        integrated.frame();
+                    }
+                    // The right edge clears what the clip now covers, as Live (ED-04 through the planner): a
+                    // clip it reaches into loses that part, in the same undo step.
+                    {
+                        OpRequest next;
+                        next.opType = "clip.create";
+                        next.payload = {{"id", 77},        {"track", clipTrack}, {"kind", "audio"},
+                                        {"name", "Next"},  {"pos", end0 + step}, {"length", 4 * step}};
+                        const bool made = document->ops().submit(next).ok;
+                        integrated.frame();
+                        const auto *track = integrated.reader().findTrack(clipTrack);
+                        auto spanOf = [&](std::int64_t id) -> std::pair<std::int64_t, std::int64_t> {
+                            if (const auto *t = integrated.reader().findTrack(clipTrack))
+                                for (const auto &c : t->clips)
+                                    if (c->id == id)
+                                        return {c->posTicks, c->posTicks + c->lengthTicks};
+                            return {-1, -1};
+                        };
+                        const bool longer = track != nullptr && integrated.resizeClip(1, pos0, end0 + 3 * step);
+                        integrated.frame();
+                        check(made && longer && spanOf(1) == std::pair{pos0, end0 + 3 * step} &&
+                                  spanOf(77) == std::pair{end0 + 3 * step, end0 + 5 * step} &&
+                                  integrated.undoTitle(false) == "Undo Resize Clip",
+                              "the right edge dragged over the next clip trims that clip where it now ends, one undo step");
+                        // Back to back: Enter takes the clip that ends at the marker, Shift+Enter the one that begins there.
+                        point(end0 + 3 * step);
+                        const bool endFirst = press(juce::KeyPress::returnKey) && arrangement.canvas.keyResizing() &&
+                                              !arrangement.canvas.resizingStart() && arrangement.canvas.resizingClip() == 1;
+                        press(juce::KeyPress::escapeKey);
+                        point(end0 + 3 * step);
+                        const bool startSecond = press(juce::KeyPress::returnKey, juce::ModifierKeys::shiftModifier) &&
+                                                 arrangement.canvas.keyResizing() && arrangement.canvas.resizingStart() &&
+                                                 arrangement.canvas.resizingClip() == 77;
+                        press(juce::KeyPress::escapeKey);
+                        check(endFirst && startSecond,
+                              "where two clips meet, Enter resizes the one that ends there, Shift+Enter the one that begins there");
+                        const bool both = integrated.command(AppCommands::Undo);
+                        integrated.frame();
+                        check(both && spanOf(1) == std::pair{pos0, end0} && spanOf(77) == std::pair{end0 + step, end0 + 5 * step},
+                              "and Undo gives both clips back");
+                        OpRequest gone;
+                        gone.opType = "clip.delete";
+                        gone.payload = {{"id", 77}};
+                        check(document->ops().submit(gone).ok, "the next clip removed again");
+                        integrated.frame();
+                    }
                     point(end0);
                     const auto undoBefore = integrated.undoTitle(false);
                     check(press(juce::KeyPress::returnKey) && arrangement.canvas.keyResizing() &&

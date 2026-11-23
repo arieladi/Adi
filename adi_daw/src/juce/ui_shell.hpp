@@ -630,6 +630,13 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
         std::int64_t clip = 0, track = 0, position = 0;
     };
     bool placeClips(const std::vector<ClipPlace> &, const char *label);
+    // A clip's edges moved (ED-04; Live 12 manual 6.7): its start to `begin` and its end to `end`, in ticks.
+    // The start moves through the engine's planner (`edit_plan::prepareTrim`), which keeps the material
+    // anchored in time (the content offset moves with the edge; audio stops at its source's first frame,
+    // MIDI does not); the end through `prepareResizeEnd`. Either clears what the clip now covers, as Live
+    // does, one undo step "Resize Clip". The end alone falls back to `clip.resize` where the planner will
+    // not place, and says why; the start has no fallback, since that would slide the material.
+    bool resizeClip(std::int64_t clip, std::int64_t begin, std::int64_t end);
     // Live's Automation Mode (AU-01; manual 25.2): each track's Volume envelope drawn on its lane, and its
     // breakpoints edited there, each edit one undo step. Off in a new window, as Live's.
     bool automationMode() const noexcept { return automationMode_; }

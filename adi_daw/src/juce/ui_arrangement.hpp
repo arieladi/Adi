@@ -257,15 +257,19 @@ class ArrangementCanvas final : public juce::Component,
     // that can take it.
     std::int64_t movingTrack() const noexcept { return movingTrack_; }
     std::int64_t movingTo() const noexcept { return movingTo_; }
-    // The clip whose right edge is being dragged (§6.7), and its length so far; 0 when none.
+    // The clip whose edge is being dragged (§6.7), its start and length so far; 0 when none. The
+    // left edge moves the start with the end fixed (ED-04), the right edge the end.
     std::int64_t resizingClip() const noexcept { return resizing_; }
     std::int64_t resizedLength() const noexcept { return resizeLength_; }
+    std::int64_t resizedStart() const noexcept { return resizeStart_; }
+    bool resizingStart() const noexcept { return resizing_ != 0 && resizeLeft_; }
     // A clip's bar, Live's clip title strip: where a drag moves the clip (§6.7), and the
-    // width of its right edge, where a drag changes its length.
+    // width of each edge, where a drag changes its start or its end.
     static constexpr int kClipBarHeight = 11, kClipEdge = 4;
     void mouseMove(const juce::MouseEvent &) override;
     // Whether the clip's length is being changed from the keyboard: Enter with the insert
-    // marker at its end, the arrows, then Enter to keep it or Esc to cancel (§41.4.1.3).
+    // marker at its end (or its start, ED-04), the arrows, then Enter to keep it or Esc to cancel
+    // (§41.4.1.3).
     bool keyResizing() const noexcept { return resizing_ != 0 && keyResize_; }
     // Live's fade handles on audio clips (Live 12 manual 6.8; E4): a square at each fade's peak sets
     // its length, a diamond on its curve its shape. They show over the clip under the mouse, on the
@@ -322,15 +326,20 @@ class ArrangementCanvas final : public juce::Component,
     bool arrow(bool forward, const juce::ModifierKeys &);
     // The nearest clip edge on the selected track after `tick`, or before it; `tick` if none.
     std::int64_t clipEdge(std::int64_t tick, bool forward) const;
-    // Deletes or switches the selected clip: one op, through the root.
-    bool clipEdit(const char *op, Payload payload, const char *label);
     // Shift+click: the selection from its anchor to the point clicked, across tracks too (§6.9).
     void extendTo(int x, int y, bool snapToGrid);
     // Delete or 0 on a time selection, on every selected track, as one undo step.
     bool rangeEdit(bool deactivate);
     std::int64_t moving_ = 0, movingFrom_ = 0, movingTo_ = 0, grabTicks_ = 0, movingSource_ = 0, movingTrack_ = 0;
-    std::int64_t resizing_ = 0, resizeStart_ = 0, resizeFrom_ = 0, resizeLength_ = 0;
-    bool keyResize_ = false;
+    // resizeStart_ and resizeLength_ are the clip's span as drawn while resizing; resizeOrigin_ and
+    // resizeFrom_ its start and length when the resize began; resizeLeft_ when its start moves.
+    std::int64_t resizing_ = 0, resizeStart_ = 0, resizeFrom_ = 0, resizeLength_ = 0, resizeOrigin_ = 0;
+    bool keyResize_ = false, resizeLeft_ = false;
+    void beginResize(const engine::ClipNode &, bool left, bool fromKeyboard);
+    // Ends a resize: the clip's new span through the root (`resizeClip`), one undo step. The selection
+    // is then the clip's span as it landed, or, from the keyboard, the insert marker at the edge moved.
+    // True when an edit was made.
+    bool endResize();
     // A plain press on the bar of one of several selected clips keeps them for the drag; released
     // without one, it selects that clip alone, from where it was pressed.
     bool selectOnUp_ = false;
@@ -342,8 +351,9 @@ class ArrangementCanvas final : public juce::Component,
     // with the track it lands on (`clipsAcross`); the track a clip is drawn on while dragging.
     std::vector<std::pair<std::int64_t, std::int64_t>> movingAcross_;
     std::int64_t movingTargetOf(std::int64_t clip) const noexcept;
-    // The clip's bar under a point, and whether the point is on its right edge.
-    const engine::ClipNode *barAt(int x, int y, std::int64_t &track, bool &edge) const;
+    // The clip's bar under a point, and whether the point is on an edge: its right edge, or, when
+    // `left` is given, its left edge (set true then). The right edge wins on a clip too narrow for both.
+    const engine::ClipNode *barAt(int x, int y, std::int64_t &track, bool &edge, bool *left = nullptr) const;
     // A group's lane, row `at`: Live's overview of the clips of what it holds.
     void paintGroupLane(juce::Graphics &, std::size_t at, int y, int h, juce::Colour) const;
     // An audio clip's waveform in its body, from `left` to `right` and `top` to `bottom`, the clip
