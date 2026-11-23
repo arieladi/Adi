@@ -837,9 +837,11 @@ void mixerDragHeard(const std::filesystem::path &dir) {
     add.opType = "track.create";
     add.payload = {{"id", 8}, {"kind", "audio"}, {"name", "Tone"}};
     check(doc->ops().submit(add).ok && doc->synchronise(), "a track for the tone");
-    Tone tone;
+    Tone tone, second;
     doc->session().setSourcesFor([&](std::int64_t id) {
-        return id == 8 ? std::vector<engine::Node *>{&tone} : std::vector<engine::Node *>{};
+        return id == 8    ? std::vector<engine::Node *>{&tone}
+               : id == 10 ? std::vector<engine::Node *>{&second}
+                          : std::vector<engine::Node *>{};
     });
     check(doc->session().rebuild(), "the tone in the graph");
     doc->prepare(48000, 64);
@@ -902,6 +904,60 @@ void mixerDragHeard(const std::filesystem::path &dir) {
               std::abs(doc->store().db().execAndGet("SELECT pan FROM mixer_strip WHERE track_id = 8").getDouble() - .5) < 1e-9 &&
               doc->ops().nextUndo()->label == "Change Track Panning",
           "a pan drag lands as one step too");
+    // MX-23: a summing group's drive, heard while it is dragged (ADR-0174). The tone is one cycle a block, so a
+    // block is the waveform. A console's channel and buss stages cancel for one source; the drive colours a sum,
+    // so a second tone goes into the group too (it colours, it does not change the level).
+    std::vector<OpRequest> group(6);
+    group[0].opType = "track.create";
+    group[0].payload = {{"id", 9}, {"kind", "group"}, {"name", "Bus"}};
+    group[1].opType = "track.create";
+    group[1].payload = {{"id", 10}, {"kind", "audio"}, {"name", "Second"}};
+    group[2].opType = "track.setParent";
+    group[2].payload = {{"id", 8}, {"parent", 9}};
+    group[3].opType = "track.setParent";
+    group[3].payload = {{"id", 10}, {"parent", 9}};
+    group[4].opType = "group.setSumming";
+    group[4].payload = {{"id", 9}, {"enabled", true}};
+    group[5].opType = "mixer.setVolume";
+    group[5].payload = {{"id", 8}, {"db", 0.0}};
+    check(doc->ops().submit(std::move(group)).ok && doc->synchronise() && doc->session().rebuild(),
+          "Tone and a second tone inside a group whose summing is on");
+    const auto block = [&] {
+        (void)heard();
+        return std::vector<float>(l.begin(), l.end());
+    };
+    const auto apart = [](const std::vector<float> &a, const std::vector<float> &b) {
+        float worst = 0;
+        for (std::size_t i = 0; i < a.size() && i < b.size(); ++i)
+            worst = std::max(worst, std::abs(a[i] - b[i]));
+        return worst;
+    };
+    const auto driveDb = [&] {
+        SQLite::Statement q(doc->store().db(), "SELECT drive_db FROM group_summing WHERE track_id = 9");
+        return q.executeStep() ? q.getColumn(0).getDouble() : 0.0;
+    };
+    const auto clean = block();
+    const auto steps = doc->store().db().execAndGet("SELECT count(*) FROM ops").getInt();
+    check(apart(clean, block()) < 1e-6, "the summed tone repeats block for block");
+    gesture::RelativeScalarSelection drive{gesture::ScalarKind::GroupSummingDrive, 9, {}, {-12, 24, std::nullopt}};
+    check(doc->beginMixerDrag(drive, 24, "Change Summing Drive") && doc->mixerDragging(), "the drive drag begins");
+    const auto driven = block();
+    std::printf("summing drive: +24 dB moves the waveform by up to %.4f\n", static_cast<double>(apart(clean, driven)));
+    check(apart(clean, driven) > 1e-3 && driveDb() == 0 &&
+              doc->store().db().execAndGet("SELECT count(*) FROM ops").getInt() == steps,
+          "dragged to +24 dB, the drive is heard while nothing is written");
+    doc->cancelMixerDrag();
+    check(!doc->mixerDragging() && apart(clean, block()) < 1e-5 && driveDb() == 0 &&
+              doc->store().db().execAndGet("SELECT count(*) FROM ops").getInt() == steps,
+          "Esc puts the drive back: the clean waveform again, nothing written");
+    check(doc->beginMixerDrag(drive, 12, "Change Summing Drive") && doc->mixerDrag(24) && doc->endMixerDrag() &&
+              std::abs(driveDb() - 24) < 1e-9 && doc->ops().nextUndo() &&
+              doc->ops().nextUndo()->label == "Change Summing Drive" &&
+              doc->store().db().execAndGet("SELECT count(*) FROM ops").getInt() == steps + 1 &&
+              apart(driven, block()) < 1e-5,
+          "let go at +24 dB: one op, one undo step, heard as it was let go");
+    check(doc->ops().undo().ok && doc->synchronise() && driveDb() == 0 && apart(clean, block()) < 1e-5,
+          "one Undo puts the drive and the sound back");
     doc->release();
 }
 void peakSpans() {
