@@ -680,4 +680,8 @@ void SettingsWindow::parentSizeChanged() {
     if (keepReachable(*this))
         place.moved();
 }
+void SettingsWindow::visibilityChanged() {
+    if (!quiet)
+        DocumentWindow::visibilityChanged();
+}
 } // namespace adi::ui
