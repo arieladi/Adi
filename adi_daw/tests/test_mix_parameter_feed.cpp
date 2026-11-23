@@ -9,6 +9,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <stdexcept>
 #if defined(_MSC_VER) && defined(_DEBUG)
 #include <crtdbg.h>
@@ -82,6 +83,7 @@ class SparsePlugin final : public device::DeviceInstance {
     std::vector<device::ParamDescriptor> descriptors;
     mutable int values = 0, texts = 0;
     std::int32_t keyChannels = 0;
+    std::string issue;
     SparsePlugin() : descriptors(4096) {
         for (std::size_t i = 0; i < descriptors.size(); ++i) {
             auto &d = descriptors[i];
@@ -94,6 +96,7 @@ class SparsePlugin final : public device::DeviceInstance {
     bool loaded() const noexcept override { return true; }
     void process(const engine::NodeIo &io) noexcept override { device::passThrough(io); }
     std::int32_t sidechainInputChannels() const noexcept override { return keyChannels; }
+    std::string_view processingIssue() const noexcept override { return issue; }
     std::int32_t paramCount() const noexcept override {
         return static_cast<std::int32_t>(descriptors.size());
     }
@@ -168,10 +171,26 @@ void sparseVisibility() {
     publish();
     check(feed.current() == stereo && plugin->values == 0 && plugin->texts == 0,
           "a stable auxiliary width keeps the same publication and reads no hidden parameters");
+    plugin->issue = "Pending device geometry was refused";
+    publish();
+    const auto parked = feed.current();
+    check(parked != stereo && parked->front().processingIssue == plugin->issue &&
+              parked->front().sidechainChannels == 2 && stereo->front().processingIssue.empty() &&
+              parked->front().runtime.sameInstance(stereo->front().runtime),
+          "a processing issue alone republishes the live instance without changing its key width");
+    publish();
+    check(feed.current() == parked && plugin->values == 0 && plugin->texts == 0,
+          "a stable processing issue does not republish or poll hidden controls");
+    plugin->issue.clear();
+    publish();
+    const auto recovered = feed.current();
+    check(recovered != parked && recovered->front().processingIssue.empty() &&
+              !parked->front().processingIssue.empty() && recovered->front().sidechainChannels == 2,
+          "a recovered instance clears its current issue and leaves the held snapshot intact");
     plugin->keyChannels = 0;
     publish();
-    check(feed.current() != stereo && feed.current()->front().sidechainChannels == 0 &&
-              stereo->front().sidechainChannels == 2,
+    check(feed.current() != recovered && feed.current()->front().sidechainChannels == 0 &&
+              recovered->front().sidechainChannels == 2,
           "losing the auxiliary input republishes zero without mutating the previous width");
 }
 

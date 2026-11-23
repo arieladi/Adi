@@ -10,7 +10,7 @@ Your memory index for this repo (MEMORY.md) loads with the session; read `adi-da
 `adi-suite-sessions.md`, `default-to-ableton-way.md`, `critique-not-compliance.md`,
 `control-mcp-slice.md`, `engine-lane-pr-requests.md` and `never-limit-agent-tools.md` first.
 
-Your scope is the ADI repository (`D:\Documents\GitHub\Adi`, public repo arieladi/Adi, the DAW in
+Your scope is the ADI repository (the main checkout, public repo arieladi/Adi, the DAW in
 `adi_daw/`). The director's research folders belong to the Codex seats; you work from the repo.
 
 ## How the work is organised now

@@ -4,6 +4,7 @@
 #include "adi/media/media_ops.hpp"
 #include "adi/row_capture.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <sqlite3.h>
 //
 // The session. See session.hpp for the three decisions; this file is their
 // mechanics. ADR-0122.
@@ -1015,13 +1016,14 @@ bool Session::rebuild() {
     // from time_signature_map, sorted by position and id.
     timing->signatures = model_.signatures;
     timing->prepareDeviceClockChanges();
-    std::unique_ptr<ClipPlayback> nextClips;
-    std::unique_ptr<MidiClips> nextMidi;
+    std::shared_ptr<ClipPlayback> nextClips;
+    std::shared_ptr<MidiClips> nextMidi;
     try {
         const DeviceChainFn eventPath = eventPathFor(model_);
-        nextClips = std::make_unique<ClipPlayback>(clipProject_, transport_, spec_.sampleRate,
+        nextClips = std::make_shared<ClipPlayback>(clipProject_, transport_, spec_.sampleRate,
                                                 spec_.channels, spec_.maxFrames, spec_.progressiveDecoder);
-        nextMidi = std::make_unique<MidiClips>(playbackModel_, transport_, spec_.sampleRate, midiState_, eventPath);
+        nextMidi = std::make_shared<MidiClips>(playbackModel_,transport_,spec_.sampleRate,midiState_,
+                                               eventPath,clipNoteExpressions(*clipProject_));
         prepareInputMonitors(*timing, model_, *nextClips);
     } catch (const std::exception& e) { error_ = e.what(); return false; }
     // ADR-0164: the automation this graph plays, bound to strips, less every
@@ -1184,6 +1186,13 @@ std::vector<rows::TempoEvent> Session::playbackTempo(const rows::Model& model) c
 }
 bool Session::readPlayback(const Store &store) {
     try {
+        auto& db = const_cast<SQLite::Database&>(store.db());
+        std::optional<SQLite::Transaction> read;
+        if (sqlite3_get_autocommit(db.getHandle()) != 0)
+            read.emplace(db, SQLite::TransactionBehavior::DEFERRED);
+        model_ = rows::readModel(store);
+        transportSettings_ = readTransportSettings(store);
+        cueSettings_ = readCueSettings(store);
         // A malformed/stale cache never falls back to a different live sound.
         freeze::validate(const_cast<Store &>(store));
         freeze::remember(const_cast<Store &>(store));
@@ -1299,6 +1308,7 @@ bool Session::readPlayback(const Store &store) {
                    lane.paramRef == "input_gain";
         });
         clipProject_ = readClipProject(store, playbackModel_);
+        if (read) read->commit();
         return true;
     } catch (const std::exception &e) {
         error_ = e.what();
@@ -1482,11 +1492,8 @@ bool Session::load(const Store& store, DeviceLoader loader, SessionSpec spec) {
     graph_.setPrecision(spec_.precision);   // ADR-0207 d2
     graph_.setDelayCompensation(spec_.delayCompensation);
     stats_ = Stats{};
-    model_ = rows::readModel(store);
-    transportSettings_=readTransportSettings(store);
     SQLite::Statement recordingIdentity(store.db(),"PRAGMA database_list");
     while(recordingIdentity.executeStep())if(recordingIdentity.getColumn(1).getString()=="main")recordingProject_=recordingIdentity.getColumn(2).getString();
-    cueSettings_=readCueSettings(store);
     if (!readPlayback(store))
         return false;
     loaded_ = true;
@@ -1568,9 +1575,8 @@ bool Session::refresh(const Store& store) {
     const std::map<std::pair<std::int64_t, std::string>, double> paramsBefore = paramValues(model_);
     std::map<std::int64_t, double> sendsBefore;
     for (const auto& route : model_.routing) if (route.kind == "send") sendsBefore[route.id] = route.gainDb;
-    model_ = rows::readModel(store);
-    transportSettings_=readTransportSettings(store);
-    cueSettings_=readCueSettings(store);
+    if (!readPlayback(store))
+        return false;
     // ADR-0162: an automated strip value that changed is overridden. Compared
     // BEFORE the rebuild, so the new graph already plays the manual value.
     if (stripAutomation_) {
@@ -1611,8 +1617,6 @@ bool Session::refresh(const Store& store) {
             if (had != has || (had && b->second != a->second)) overridden_.insert(laneId);
         }
     }
-    if (!readPlayback(store))
-        return false;
     resolveNewRows(store);
     retireDepartedRows();
     syncFlags();
@@ -2299,21 +2303,23 @@ double Session::RenderBlock::beatAtSample(std::int64_t sample) const noexcept {
     const auto* timing = dynamic_cast<const TimingView*>(graph_.transportState());
     return timing && sample > 0 ? timing->quartersAt(sample) : 0;
 }
-bool Session::RenderBlock::sourcesReadyAt(std::int64_t sample, std::int32_t frames) const noexcept {
+bool Session::RenderBlock::sourcesReadyAt(std::int64_t sample, std::int32_t frames,
+                                         bool allowFailedSources) const noexcept {
     if (sample < 0) return false;
     Transport requested = session_.transport_; // this is the single driver, not the owner
     requested.locate(sample);
     requested.play();
-    return sourcesReady(requested, frames);
+    return sourcesReady(requested, frames, allowFailedSources);
 }
-bool Session::RenderBlock::sourcesReady(const Transport& requested, std::int32_t frames) const noexcept {
+bool Session::RenderBlock::sourcesReady(const Transport& requested, std::int32_t frames,
+                                        bool allowFailedSources) const noexcept {
     const auto* timing = dynamic_cast<const TimingView*>(graph_.transportState());
     if (!timing || frames <= 0 || frames > timing->spec.maxFrames || !timing->sourceReadiness)
         return false;
     Transport target = requested;
     if (timing->settings.hasLoop)
         target.retimeLoop(timing->loopBegin, timing->loopEnd, timing->settings.loopEnabled);
-    return timing->sourceReadiness(target, frames);
+    return timing->sourceReadiness(target, frames, allowFailedSources);
 }
 std::int64_t Session::RenderBlock::sampleAtTick(std::int64_t tick) const noexcept {
     const auto* timing = dynamic_cast<const TimingView*>(graph_.transportState());

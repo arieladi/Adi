@@ -355,6 +355,57 @@ struct DiscoveryGate {
     }
 };
 
+inline void savedPathAfterDiscovery(const juce::PluginDescription& instrument) {
+    using namespace std::chrono_literals;
+    using device::DiscoveryMode;using device::DiscoveryOutcome;using device::DiscoveryPhase;
+    TempDirectory scratch("discovery_operation","saved_path");
+    const auto root=fs::canonical(scratch.path());
+    const auto empty=root/"empty";fs::create_directory(empty);
+    const auto clap=root/"outside.clap";copyClap(clap);
+    const auto source=media::pathFromUtf8(ADI_CATALOGUE_FIXTURE);
+    const auto vst3=root/source.filename();
+    fs::copy(source,vst3,fs::copy_options::recursive);
+    scan::Config config;
+    config.registry=root/"registry.sqlite";
+    config.executable=root/"saved-path-scanner.exe";
+    fs::copy_file(media::pathFromUtf8(ADI_CATALOGUE_SCANNER),config.executable);
+    device::JuceDeviceLoader loader(false);
+    loader.setScanConfig(config);
+    loader.addSearchPath(juce::File(juce::String::fromUTF8(text(empty).c_str())));
+    const auto job=loader.startDiscovery(DiscoveryMode::Incremental,1);
+    const auto deadline=std::chrono::steady_clock::now()+15s;
+    while(loader.discoveryProgress().phase!=DiscoveryPhase::Ready && std::chrono::steady_clock::now()<deadline)
+        std::this_thread::sleep_for(1ms);
+    const auto initial=loader.adoptDiscovery(job.job);
+    std::string error;
+    require(initial && initial->outcome==DiscoveryOutcome::Published && initial->catalogue &&
+            initial->catalogue->clap.empty() && initial->catalogue->vst3.empty() && loader.hydrateCatalogue(error),
+            "an adopted empty Browser catalogue starts the saved-path fixture");
+    rows::PluginRef ref;
+    ref.format="clap";ref.uid="org.adi.catalogue.runtime";ref.pathHint=text(clap);
+    engine::DeviceRequest request;request.ref=&ref;request.sampleRate=48000;request.maxFrames=64;
+    {
+        auto registry=PluginRegistry::open(config.registry,error);
+        require(registry && registry->blockScan("clap",text(fs::canonical(clap)),"blocked fixture",1,error),
+                "block the installed saved-path fixture before its first lookup");
+        require(!loader.fn()(request,error) && pids(clap).child==0 && pids(clap).parent==0,
+                "an explicitly blocked saved path stays blocked after discovery");
+        require(registry->unblockScan("clap",text(fs::canonical(clap)),error),"enable the saved CLAP fixture");
+    }
+    const auto nativeClap=loader.fn()(request,error);
+    require(nativeClap && nativeClap->loaded() && pids(clap).child==1 && pids(clap).parent==1,
+            "a saved CLAP outside the search roots is probed in a child before loading");
+    auto description=instrument;
+    description.fileOrIdentifier=juce::File(juce::String::fromUTF8(text(vst3).c_str())).getFullPathName();
+    ref.format="vst3";ref.uid=description.createIdentifierString().toStdString();ref.pathHint=text(vst3);
+    const auto nativeVst3=loader.fn()(request,error);
+    require(nativeVst3 && nativeVst3->loaded(),"a saved VST3 outside the search roots loads after discovery");
+    ref.uid="unknown identity";ref.pathHint.clear();
+    require(!loader.fn()(request,error) && error.find("NeedsDiscovery")!=error.npos &&
+            loader.stats().scans==1 && loader.catalogue()==initial->catalogue &&
+            initial->catalogue->clap.empty() && initial->catalogue->vst3.empty(),
+            "a request without a path does not start a new scan or republish the Browser catalogue");
+}
 inline void asynchronousDiscovery() {
     using namespace std::chrono_literals;
     using namespace device;
@@ -412,6 +463,9 @@ inline void asynchronousDiscovery() {
     const auto instance=loader.fn()(request,error);
     require(instance && instance->loaded() && pids(clap).child==1 && pids(clap).parent==1,
         "the adopted catalogue serves an ordinary device request without another helper");
+    const auto instrument=std::find_if(first->catalogue->vst3.begin(),first->catalogue->vst3.end(),
+        [](const auto& description){return description.isInstrument;});
+    savedPathAfterDiscovery(*instrument);
     const auto warmStart=loader.startDiscovery(DiscoveryMode::Incremental,1);
     require(warmStart.status==DiscoveryStart::Started,"start an explicit one-worker Incremental");
     const auto warm=finish(warmStart.job);

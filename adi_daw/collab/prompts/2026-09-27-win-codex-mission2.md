@@ -50,7 +50,7 @@ TASK C -- the Dynamic EQ (ADR-0195 d1, d2), after B.
 - Make the gestures testable headless: pure functions from (drag delta, wheel, modifiers, filter type)
   to parameter changes, with tests for every row of the table. The GUI calls them.
 - The DSP keeps ZL's response: test that the adapted filters match ZL's own magnitude response.
-- By morning the drone will have summarised ZL's source: D:\adi-drone\missions\ref-zleq-dsp.md,
+- By morning the drone will have summarised ZL's source: ref-zleq-dsp.md in the drone's private missions folder,
   ref-zleq-panel.md and ref-zleq-gui.md. Names are reliable there; any number must be checked in the
   source before you use it.
 

@@ -3,6 +3,7 @@
 #include <cmath>
 #include "adi/ui/track_edits.hpp"
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -26,19 +27,82 @@ using SnapshotSends = std::vector<std::shared_ptr<const engine::SendRoute>>;
 inline constexpr double kSendFloorDb = -70, kSendTopDb = 0, kSendSilenceDb = -150;
 // Whether a track has send knobs: every track but Main.
 inline bool hasSends(const engine::TrackNode &t) noexcept { return t.kind != "master"; }
-// The returns, in the arrangement's order (TrackOrder's: by index_in_parent, then by place in the
-// snapshot). Refilled in place, so the same returns allocate nothing.
+// The returns `parent` holds (0: the top level), in the arrangement's order (TrackOrder's: by
+// index_in_parent, then by place in the snapshot), appended to `out` without allocating once it has
+// room. An insertion sort: stable, so returns that share an index keep the snapshot's order, and
+// unlike std::stable_sort it takes no buffer. A project has a handful of returns.
+inline void appendReturnsOf(const SnapshotTracks &tracks, std::int64_t parent, std::vector<std::int64_t> &out) {
+    const auto from = out.size();
+    for (const auto &t : tracks)
+        if (t && t->kind == "return" && t->parent == parent)
+            out.push_back(t->id);
+    auto placeOf = [&tracks](std::int64_t id) { return track_edits_detail::find(tracks, id)->indexInParent; };
+    for (std::size_t i = from + 1; i < out.size(); ++i)
+        for (std::size_t j = i; j > from && placeOf(out[j]) < placeOf(out[j - 1]); --j)
+            std::swap(out[j], out[j - 1]);
+}
+// Every return: the top-level ones in the arrangement's order, then each group's, the groups in the
+// snapshot's order (Main's Pre/Post switches). Refilled in place, so the same returns allocate nothing.
 inline void returnsInOrder(const SnapshotTracks &tracks, std::vector<std::int64_t> &out) {
     out.clear();
-    for (const auto &t : tracks)
-        if (t && t->kind == "return")
-            out.push_back(t->id);
-    // An insertion sort: stable, so returns that share an index keep the snapshot's order, and
-    // unlike std::stable_sort it takes no buffer. A project has a handful of returns.
-    auto placeOf = [&tracks](std::int64_t id) { return track_edits_detail::find(tracks, id)->indexInParent; };
-    for (std::size_t i = 1; i < out.size(); ++i)
-        for (std::size_t j = i; j > 0 && placeOf(out[j]) < placeOf(out[j - 1]); --j)
-            std::swap(out[j], out[j - 1]);
+    appendReturnsOf(tracks, 0, out);
+    for (const auto &g : tracks)
+        if (g && g->kind == "group")
+            appendReturnsOf(tracks, g->id, out);
+}
+// The returns a track's send knobs go to (DF-W33; ADR-0247 d2; ADR-0245 d9): the top-level returns,
+// then the returns of every group that holds it, at any depth, the outermost first. A group's return
+// takes sends only from inside its group, so a track outside it has no knob for it; nor has a group's
+// return a knob for itself, as the agreed sheet draws it (a top-level return keeps Live's, greyed).
+inline void returnsFor(const SnapshotTracks &tracks, std::int64_t track, std::vector<std::int64_t> &out) {
+    out.clear();
+    appendReturnsOf(tracks, 0, out);
+    // The groups that hold `track`, innermost first, then walked outermost first. A loop of parents,
+    // which a project never holds, stops at the snapshot's size.
+    std::array<std::int64_t, 32> holders{};
+    std::size_t held = 0;
+    const auto *t = track_edits_detail::find(tracks, track);
+    for (std::size_t steps = 0; t != nullptr && t->parent != 0 && held < holders.size() && steps < tracks.size(); ++steps) {
+        holders[held++] = t->parent;
+        t = track_edits_detail::find(tracks, t->parent);
+    }
+    while (held > 0)
+        appendReturnsOf(tracks, holders[--held], out);
+    if (const auto *self = track_edits_detail::find(tracks, track); self != nullptr && self->kind == "return" && self->parent != 0)
+        out.erase(std::remove(out.begin(), out.end(), track), out.end());
+}
+// A return's letter, as its knobs, its activator and its column show it (ADR-0247 d2): a top-level
+// return's by its place among the top-level ones ("A", "B"); a group's return's is the group's
+// initial, then its place among that group's returns ("DA" for the Drums group's first), so A and B
+// keep their letters everywhere. Written into `out`, nothing allocated; its length is returned.
+inline std::size_t returnLetter(const SnapshotTracks &tracks, std::int64_t ret, std::array<char, 2> &out) {
+    // Its place as appendReturnsOf orders them: by index_in_parent, then by place in the snapshot.
+    std::size_t at = tracks.size();
+    for (std::size_t i = 0; i < tracks.size(); ++i)
+        if (tracks[i] && tracks[i]->id == ret)
+            at = i;
+    const auto *r = at < tracks.size() ? tracks[at].get() : nullptr;
+    const auto parent = r != nullptr ? r->parent : 0;
+    std::size_t place = 0;
+    for (std::size_t i = 0; r != nullptr && i < tracks.size(); ++i)
+        if (const auto &t = tracks[i]; t && i != at && t->kind == "return" && t->parent == parent &&
+                                       (t->indexInParent < r->indexInParent || (t->indexInParent == r->indexInParent && i < at)))
+            ++place;
+    const auto letter = static_cast<char>('A' + place % 26);
+    if (parent == 0) {
+        out[0] = letter;
+        return 1;
+    }
+    char initial = 'G';
+    if (const auto *g = track_edits_detail::find(tracks, parent))
+        for (const char c : g->name)
+            if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) {
+                initial = static_cast<char>(c >= 'a' ? c - 'a' + 'A' : c);
+                break;
+            }
+    out[0] = initial;
+    out[1] = letter;
+    return 2;
 }
 // The send from track `source` to track `destination`: of its rows, the first by `order`, then by
 // id (the snapshot keeps them by id). Null when there is none.
@@ -110,12 +174,55 @@ inline void follow(TrackEdit &edit, const engine::TrackNode *ret, std::int64_t i
         edit.ops.push_back(track_edits_detail::op("routing.setPreFader", {{"id", id}, {"pre", true}}, label));
 }
 } // namespace send_edits_detail
+// A send's own tap (ADR-0245 d10; DF-W33): Pre FX, Post FX or Post Mixer, which the send knob's menu
+// chooses; where the send has none of its own, the return's switch decides (Pre is Post FX, Post is
+// Post Mixer). Nothing for a track with no send row to that return.
+inline std::optional<IndividualSendTap> sendTap(const engine::Snapshot &snapshot, std::int64_t source,
+                                                std::int64_t ret) {
+    const auto *s = findSend(snapshot.sends, source, ret);
+    if (s == nullptr)
+        return std::nullopt;
+    if (s->sendTap)
+        return s->sendTap;
+    return returnPre(snapshot.tracks, ret) || s->preFader ? IndividualSendTap::PostFx : IndividualSendTap::PostMixer;
+}
+// One `routing.setSendTap` on the send from `source` to `ret` (#677): one undo step. Refused, with the
+// reason, while the send has no row (it is fully down: turn it up first); no ops when it already taps
+// there, through its own tap or its return's switch; the switch's own tap clears the send's, so it
+// follows the switch again rather than being pinned against it.
+inline TrackEdit setSendTap(const engine::Snapshot &snapshot, std::int64_t source, std::int64_t ret,
+                            IndividualSendTap tap) {
+    TrackEdit edit;
+    const auto *s = findSend(snapshot.sends, source, ret);
+    if (s == nullptr) {
+        edit.refusal = "This send is fully down: turn it up first, then choose where it taps.";
+        return edit;
+    }
+    // Where it taps without a tap of its own: the return's switch (or an older file's own flag).
+    const auto given = returnPre(snapshot.tracks, ret) || s->preFader ? IndividualSendTap::PostFx : IndividualSendTap::PostMixer;
+    if ((s->sendTap ? *s->sendTap : given) == tap)
+        return edit; // it taps there already: no step
+    if (tap == given) // the switch's own tap: the send follows the switch again, its own tap cleared
+        edit.ops.push_back(track_edits_detail::op("routing.setSendTap", {{"id", s->id}}, "Change Send Tap"));
+    else
+        edit.ops.push_back(track_edits_detail::op(
+            "routing.setSendTap", {{"id", s->id}, {"tap", std::string(individualSendTapName(tap))}}, "Change Send Tap"));
+    return edit;
+}
 // The return's switch thrown: one `return.setSendTap`, which the engine spreads over every send into
 // the return, those it has and each one connected after. It holds with no send, so it never refuses.
 inline TrackEdit setReturnPre(std::int64_t ret, bool pre) {
     TrackEdit edit;
     edit.ops.push_back(track_edits_detail::op("return.setSendTap", {{"id", ret}, {"pre", pre}}, "Change Pre/Post"));
     return edit;
+}
+// Whether a return's Pre/Post switch is mixed (ADR-0247 d2, the sheet's "the sends differ"): the taps
+// its sends play from differ among themselves, each send's own or the switch's, as the engine reads
+// them (`ReturnSendTap::legacyMixed`, any file, #677). One send with a tap of its own is not mixed: its
+// knob carries no mark, its menu says it.
+inline bool returnTapMixed(const engine::Snapshot &snapshot, std::int64_t ret) noexcept {
+    const auto *r = track_edits_detail::find(snapshot.tracks, ret);
+    return r != nullptr && r->returnSendTap && r->returnSendTap->legacyMixed;
 }
 // The send from `source` to `destination` set to `db`, as one batch: the row's level when the row
 // exists; else the row, then its level (a new row starts at the format's 0 dB, and the batch lands

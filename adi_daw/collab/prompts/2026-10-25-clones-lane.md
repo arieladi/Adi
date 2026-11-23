@@ -11,7 +11,7 @@ and merges; you never merge.
 
 Your clones are built **from measurements only**, under their own names (ADI-Q, ADI-L, ADI Still,
 ADI Prism) and interfaces; decompiled or copied proprietary code is never used. Start with LANES
-§4 item 1 (ADI-Q). The FilmCraft contribution (item 7) runs on adi-ubuntu for its Linux gate, from
+§4 item 1 (ADI-Q). The FilmCraft contribution (item 7) runs on the director's Linux desktop for its Linux gate, from
 `adi_daw/collab/prompts/2026-10-25-codex-filmcraft-pr1-waveforms.md`, only after the director
 approves the toolchain there. When an item is blocked, log why and take the next. When you hit a
 usage limit, stop cleanly; the director types "continue" and you resume from your log. Ask the
