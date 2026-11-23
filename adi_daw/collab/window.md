@@ -101,6 +101,16 @@ Questions only the director can answer. Each says what the window lane recommend
 | N58 | The plug-in catalogue off the message thread: a scan service, Rescan, a default worker count, and each VST3's kind with its instrument flag (ADR-0248 d7: engine-win's third item, under DEV-25) | engine-win | the Browser's Plug-Ins with progress, and each VST3's icon | the window scans on its own worker with the one loader (DF-W34 a), the loader locked while it scans; no progress count; a VST3 shows the plug-in icon |
 | N59 | The project's key and scale, if the Control Bar's Key group (step 2) shows the project's and not the selected clip's: an op and a snapshot field (ADR-0248, `collab/RESERVATIONS.md`) | engine, when asked | the Control Bar's Key and Scale | step 2 waits on the Mix View's switch and theme rows; not asked yet |
 
+## 2026-11-23, window lane — queue item 17: WIN-06 (PR requested)
+
+**Item 17, WIN-06. PR requested.** Branch `window/command-palette`, on `window/shortcut-ids`, head `0606b477`. Title: **adi_daw: window: the command palette, Ctrl/Cmd+P, ranked by fzy (WIN-06)**. Body: [`collab/window/pr-bodies/window-command-palette.md`](window/pr-bodies/window-command-palette.md). It lands after 3 December, as the queue says.
+- **Tests:** shell 2973, seams 553, document 313, window_state 136, 0 failures; the `ui.yml` six green; the sweeps clean on its lines (`ui_palette.cpp` included).
+- **The review's one defect:** fixed in `e9af9bdb` (the older check of AppCommands' tail).
+- **The key-map goldens** carry the palette's line; whichever of this and `window/help-menu` lands second adds the other's stable ids.
+- **Still to build:** the plug-ins under V/ (once the Browser's list is reachable from the root); S/ and P/ wait for the store.
+
+---
+
 ## 2026-11-23, window lane — queue item 16: WIN-05 (PR requested)
 
 **Item 16, WIN-05. PR requested.** Branch `window/shortcut-sets`, on `window/shortcut-ids`, head `ba513cdc`. Title: **adi_daw: window: keys under any layout; key sets that move between platforms (WIN-05, part)**. Body: [`collab/window/pr-bodies/window-shortcut-sets.md`](window/pr-bodies/window-shortcut-sets.md). It lands after 3 December, as the queue says.
