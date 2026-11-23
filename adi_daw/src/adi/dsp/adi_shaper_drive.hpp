@@ -16,6 +16,7 @@ class AdiShaperDrive {
     void setMode(Mode mode) noexcept;
     void setTrims(float inputNormalized, float outputNormalized) noexcept;
     void process(float& left, float& right, float driveNormalized) noexcept;
+    bool finishBlock() noexcept;
 
   private:
     static constexpr int maxFactor = 4, inputs = 17, maxTaps = 16 * maxFactor + 1;
@@ -36,6 +37,7 @@ class AdiShaperDrive {
     Mode mode_ = Mode::Saturate;
     float previousDrive_ = -1.0f, inputTrim_ = 0.5f, outputTrim_ = 0.5f;
     double inputGain_ = 1.0, outputGain_ = 1.0, pre_ = 1.0, post_ = 1.0;
+    double driveFade_ = 0.0;
     double dcRate_ = 0.0, sampleRate_ = 0.0;
     void tune(float amount) noexcept;
     [[nodiscard]] double transfer(double z) const noexcept;
