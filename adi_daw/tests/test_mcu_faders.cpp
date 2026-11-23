@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/engine/mcu_faders.hpp"
 #include "adi/engine/hui_wire.hpp"
+#include "adi/engine/mackie_vpots.hpp"
 #include "adi/engine/mcu_lcd.hpp"
 
 #include <algorithm>
@@ -194,6 +195,60 @@ void lcdWire() {
               extension[1]->bytes()[4] == 0x15,
           "MCU Extender uses its own SysEx device ID and baseline");
 }
+
+void vpotWire() {
+    using namespace adi::engine::mackie;
+    using Protocol = VpotProtocol;
+    using Mode = VpotMode;
+    bool exact = true;
+    for (std::size_t strip = 0; strip < vpotCount; ++strip) {
+        for (int step = 1; step <= 63; ++step) {
+            const auto magnitude = static_cast<std::uint8_t>(step);
+            const auto flagged = static_cast<std::uint8_t>(magnitude | 0x40);
+            const auto mcuId = static_cast<std::uint8_t>(0x10 + strip);
+            const auto huiId = static_cast<std::uint8_t>(0x40 + strip);
+            exact = exact &&
+                decodeVpotTurn(Protocol::Mcu, VpotPacket{0xb0, mcuId, magnitude}) == VpotTurn{strip, step} &&
+                decodeVpotTurn(Protocol::Mcu, VpotPacket{0xb0, mcuId, flagged}) == VpotTurn{strip, -step} &&
+                decodeVpotTurn(Protocol::Hui, VpotPacket{0xb0, huiId, magnitude}) == VpotTurn{strip, -step} &&
+                decodeVpotTurn(Protocol::Hui, VpotPacket{0xb0, huiId, flagged}) == VpotTurn{strip, step};
+        }
+    }
+    check(exact, "all MCU and HUI rotary magnitudes preserve their opposite wire polarities");
+    check(!decodeVpotTurn(Protocol::Mcu, VpotPacket{0xb0, 0x10, 0}) &&
+              !decodeVpotTurn(Protocol::Hui, VpotPacket{0xb0, 0x40, 0x40}) &&
+              !decodeVpotTurn(Protocol::Mcu, VpotPacket{0xb0, 0x18, 1}) &&
+              !decodeVpotTurn(Protocol::Hui, VpotPacket{0xb0, 0x48, 1}) &&
+              !decodeVpotTurn(Protocol::Mcu, VpotPacket{0xb1, 0x10, 1}) &&
+              !decodeVpotTurn(Protocol::Hui, VpotPacket{0xb0, 0x40, 0xff}) &&
+              !decodeVpotTurn(Protocol::Mcu, std::array<std::uint8_t, 2>{0xb0, 0x10}),
+          "no-step, malformed and unrelated strip packets are filtered");
+    check(encodeVpotRing(Protocol::Mcu, 7, {Mode::Dot, 11, false}) == VpotPacket{0xb0, 0x37, 0x0b} &&
+              encodeVpotRing(Protocol::Mcu, 1, {Mode::BoostCut, 6, true}) == VpotPacket{0xb0, 0x31, 0x56} &&
+              encodeVpotRing(Protocol::Mcu, 3, {Mode::Spread, 6, false}) == VpotPacket{0xb0, 0x33, 0x36} &&
+              encodeVpotRing(Protocol::Hui, 3, {Mode::Wrap, 10, false}) == VpotPacket{0xb0, 0x13, 0x2a} &&
+              encodeVpotRing(Protocol::Hui, 0, {Mode::Wrap, 0, false}) == VpotPacket{0xb0, 0x10, 0},
+          "ring feedback emits each display mode and protocol address");
+    check(!encodeVpotRing(Protocol::Mcu, 8, {}) &&
+              !encodeVpotRing(Protocol::Mcu, 1, {Mode::Spread, 7}) &&
+              !encodeVpotRing(Protocol::Hui, 1, {Mode::Wrap, 12}) &&
+              !encodeVpotRing(Protocol::Hui, 1, {Mode::Dot, 4, true}) &&
+              !encodeVpotRing(Protocol::Mcu, 0, {static_cast<Mode>(4), 1}),
+          "unsupported display values cannot become wire packets");
+    VpotFeedback mcu(Protocol::Mcu), huiOutput(Protocol::Hui);
+    constexpr VpotRing centered{Mode::Dot, 6};
+    const auto dirty = mcu.prepare(5, centered);
+    check(dirty && dirty == mcu.prepare(5, centered), "uncertain ring sends retry");
+    if (!dirty)
+        return;
+    mcu.sent(*dirty);
+    huiOutput.sent(*dirty);
+    check(!mcu.prepare(5, centered) && mcu.prepare(4, centered).has_value() &&
+              huiOutput.prepare(5, centered).has_value(),
+          "confirmed ring state is scoped to one protocol and strip");
+    mcu.reset();
+    check(mcu.prepare(5, centered) == dirty, "reconnect republishes otherwise unchanged rings");
+}
 } // namespace
 
 int main() {
@@ -203,6 +258,7 @@ int main() {
     huiFaders();
     huiHeartbeat();
     lcdWire();
+    vpotWire();
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
