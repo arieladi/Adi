@@ -631,7 +631,7 @@ class AdiApplication final : public juce::JUCEApplication,
         floating_.reset();
         historyWindow_.reset();
         // A project opened keeps the main window where it stands, full screen or not (WIN-02).
-        std::optional<place::Rect> standingAt;
+        std::optional<window_place::Rect> standingAt;
         bool fullScreen = false;
         if (window_) {
             window_->place.flush();

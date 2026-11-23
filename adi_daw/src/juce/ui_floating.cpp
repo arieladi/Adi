@@ -3,8 +3,8 @@
 #include <chrono>
 namespace adi::ui {
 namespace {
-std::vector<place::Monitor> asPlaces(const std::vector<MonitorArea> &screens) {
-    std::vector<place::Monitor> out;
+std::vector<window_place::Monitor> asPlaces(const std::vector<MonitorArea> &screens) {
+    std::vector<window_place::Monitor> out;
     for (const auto &s : screens)
         out.push_back({s.id, toPlace(s.area.isEmpty() ? s.usable : s.area), toPlace(s.usable), s.dpi, s.main});
     return out;
@@ -15,12 +15,12 @@ std::vector<place::Monitor> asPlaces(const std::vector<MonitorArea> &screens) {
 juce::Rectangle<int> restoreFloating(const FloatingState &s, const std::vector<MonitorArea> &screens) {
     if (screens.empty())
         return {0, 0, 800, 420};
-    place::Place p;
+    window_place::Place p;
     p.display = s.monitor;
     p.area = {s.areaX, s.areaY, s.areaWidth, s.areaHeight};
     p.dpi = s.dpi;
     p.rect = {s.x, s.y, s.width, s.height};
-    return fromPlace(place::restore(p, asPlaces(screens), 100, 100));
+    return fromPlace(window_place::restore(p, asPlaces(screens), 100, 100));
 }
 std::vector<MonitorArea> currentMonitors() {
     std::vector<MonitorArea> result;
@@ -236,12 +236,12 @@ bool FloatingHost::install(std::unique_ptr<Entry> e) {
         // Never placed and nowhere asked: cascaded off the windows already open (WIN-02).
         const auto screens = currentMonitors();
         const auto start = restoreFloating(kept, screens);
-        std::vector<place::Rect> others;
+        std::vector<window_place::Rect> others;
         for (const auto &[k, other] : entries_)
             if (other.get() != raw && other->window)
                 others.push_back(toPlace(other->window->getBounds()));
         const auto usable = screens.empty() ? start : screens.front().usable;
-        raw->window->setBounds(fromPlace(place::cascade(toPlace(start), others, toPlace(usable))));
+        raw->window->setBounds(fromPlace(window_place::cascade(toPlace(start), others, toPlace(usable))));
     } else
         raw->window->setBounds(restoreFloating(kept, currentMonitors()));
     // An ADI view's window opens at the zoom kept for it on its display (N4).
@@ -399,7 +399,7 @@ void FloatingHost::save(Entry &e, bool open) {
     state.height = b.getHeight();
     state.open = open;
     // The monitor showing most of it, with its area and DPI then (WIN-02).
-    const auto at = place::placeOf(toPlace(b), false, asPlaces(currentMonitors()));
+    const auto at = window_place::placeOf(toPlace(b), false, asPlaces(currentMonitors()));
     if (!at.display.empty()) {
         state.monitor = at.display;
         state.areaX = at.area.x;

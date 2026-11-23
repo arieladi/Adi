@@ -16,7 +16,7 @@
 #include <optional>
 #include <string>
 #include <vector>
-namespace adi::ui::place {
+namespace adi::ui::window_place {
 struct Rect {
     int x = 0, y = 0, w = 0, h = 0;
     int right() const noexcept { return x + w; }
@@ -234,4 +234,4 @@ inline std::optional<Place> fromJson(const nlohmann::json &j) {
         p.fullScreen = f->get<bool>();
     return p;
 }
-} // namespace adi::ui::place
+} // namespace adi::ui::window_place
