@@ -6,6 +6,81 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-23 — what landed 22-23 November; gemini's sanitizer round; rulings
+
+**For every seat — read first.** Main is at 7e3e627d (#718). What landed on 22 and 23 November:
+- **#677 (engine):** a return can sit inside a group and a send has its tap (DF-E22); hosted plug-ins can
+  run on the graph's workers (DF-E23's first half; on by default only after the Windows measurement); EQ Eight
+  bit-exact again on macOS.
+- **#706 and #708:** the devices lane's and the clones seat's landing windows.
+- **#707 and #709 (win):** the review of the gemini trial; a standing queue for every seat.
+- **#710 and #712 (Mix View, windows 1 and 2):** #651's follow-ups, the device keys (DF-M60 (a), (b), (d)) and
+  the folded pill; #712 carried #555, #558, #560-#562, #564, #566, #567, #570, #572 and #573: the filters, the
+  de-esser, the key EQ, the clean key, the opto gain and the gate.
+- **#714 (win):** PROVENANCE read as UTF-8.
+- **The 22 November stack, landed through its top, #718, on 23 November** (#711, #713 and #715 show as merged):
+  - **#711 engine-win:** the recorder no longer sticks after a disk error (DF-E44, with N66), the scan cache
+    drops and refreshes what it should (DF-E62), N62, N68, #642's acceptance CI and the worker measurement kit.
+  - **#713 gemini:** DF-E53 (a lane's `param_ref` canonical) and DF-E56 (MpeRouter on a full list), with the
+    review's fixes.
+  - **#715 engine:** one nanosecond-to-tick conversion (DF-E63); MI-08's note expressions read, their units and
+    playback; CT-03's notes for a new clip; N63, N64, N67; DF-E55 (a); the parameter receipts; DF-E27 (f) and (g);
+    one buffer per VST3 bus (DF-E24 (a)); a diagnostic for DF-E10; PD-03's snapshot of everything; and win's N67
+    changeset patch (90da32b0).
+  - **#718 window-fn:** live MIDI into a track (N60), the lane chooser (DF-W37), Auto monitoring, Delay
+    Compensation (MX-04), cueing (MX-08), the browser fixture, the window's row ids (DF-E16's half), the Save As
+    guard, DF-E44's discard in the window, the MIDI port name, Re-Enable Automation (DF-W38), and the test that
+    Duplicate and Paste clear what they land on (DF-W28).
+- **Held:** #716, the clones panel (draft), for the window lane's four items and the GCC `-Wconversion` casts.
+
+**DEFERRED, on this PR** (each row checked against the code and its tests on main; nothing built or run).
+Closed: DF-W1, W9, W25, W34, W35, W36, W37, W38; DF-E1, E2, E3, E4, E5, E7, E9, E11, E13, E14, E15, E18,
+E24, E27, E44, E48, E49, E53, E55, E56, E62, E63; DF-M14, M43, M44, M45, M56, M57, M58, M59, M60. Partly done,
+still open: DF-W28 (a dropped file, the planner's refusals, Live's measurement), DF-E26 ((c) is win's for the
+director), DF-E29 ((e) is parked for the director), DF-M46 (the audible CLAP key). DF-E10 stays open: only a
+diagnostic landed, and the row's remedy (`RESOURCE_LOCK adi_link_network`) was in place before the failure; it
+becomes "watch for a recurrence with the diagnostic". Read more lightly, to close after a full check: DF-E16,
+E22, E30, E57, E59, E60, E61 (done); DF-E20 (a, b) and DF-E23's first half (done, the rest open). New: DF-M63,
+M64, DF-W39, DF-E65 to E69, and DF-E12's cause (below).
+
+**WTS-01 on the new top: 17 of 18.**
+- **2b** (play the take back) still fails: DF-E64. engine-win's `engine-win/play-first-block` (01b1e723) passes
+  2b on Linux bit for bit, and 5a, 7b and 7c from frame 0 too (gemini, fe76899d). **The engine** re-reviews that
+  head; **engine-win** then writes "PR requested" for it.
+- **5b** (a return inside a group): the engine's half is on main since #677. Left: **window-fn**'s grouping rule
+  for a return, then **win**'s acceptance step. The harness's 5b text (`tests/acceptance/test_session_wts01.cpp`
+  523 and 558) still names #677 as missing; win corrects it with that step.
+
+**Asks.**
+- **The engine:** review win's N67 changeset patch (90da32b0, on main through #715): in the inverse,
+  `track.create`'s `monitorMode` is replay data, not a before-state. And re-review `engine-win/play-first-block`
+  at 01b1e723.
+- **engine-win:** "PR requested" for `engine-win/play-first-block` after that review. DF-E12 is yours now
+  (publication, ADR-0246 d4): gemini found its cause.
+- **devices:** write "PR requested" for `devices/perf-debug-timeout` (a4146193): it runs
+  `adi_builtin_realtime_tests` in 152.8 s in Debug, where main runs past the 900 s timeout (DF-E68 (c)).
+- **The window lane:** the four items #716 waits on, then the GCC `-Wconversion` casts on its branch.
+- **Closing:** `engine/df-e23-followups-staged` (72dfdc77) is superseded by #677, as the engine log says;
+  delete it when you next push.
+
+**Rulings (win, 23 November).**
+- **Gemini's findings are registered as rows for their owners; gemini does not fix them.** From its sanitizer
+  and compiler round on main abbc32ab: DF-M63 (the gate's test processes freed buffers, ASan) and DF-M64 (the
+  opto gain test's wrapping span, `_GLIBCXX_DEBUG`), the Mix View seat's; DF-E65 (two Ogg decoders race on
+  stb_vorbis's CRC table, TSan), the engine's; DF-E12's cause (a lease keyed on an inode that ext4 recycles
+  while its lock is held; an orphan file on a refused lock; an unchecked pointer in the test), engine-win's;
+  DF-E66 and DF-E67 (test harnesses replacing `operator new` without its nothrow and aligned forms; the Pd
+  tier's one-byte leak in `canvas_setargs`; low), the engine's and the devices lane's; DF-E68 (Vocoder's p99,
+  Hybrid Reverb's cost, the Debug timeout), the devices lane's; DF-E69 (Clang 14's five front-end errors), the
+  engine's; DF-W39 (`adi_ui_seams_tests` with GCC 12), window-fn's.
+- The review's candidate, a warped clip shortened past its fade-in failing Freeze and Split
+  (`clip_commands.cpp` 122-124, the twin of DF-E27 (a)), becomes a row only after a probe, at the next free id.
+- **Public text:** the private research folder's path is gone from `docs/DAW-RESEARCH-INTEGRATION.md` and
+  `collab/clones.md`, and the other local paths from the logs, prompts and docs.
+- **Next free:** ADR-0252; DF-E70, DF-W40, DF-M65.
+
+---
+
 ## 2026-11-22 — standing queues for every seat; the window-fn split
 
 **For every seat — read first.** The director asked why the seats keep stopping. The cause was win's: the
@@ -1050,7 +1125,7 @@ view says UNKNOWN. The window lane rebases it and win merges it when green.
 `tools/test_all.sh build` **9915 checks across 107 suites**, validators clean. The README's count
 line is set to that in this PR.
 
-**The director's build refreshed (ADR-0210 d6, LANES §5):** `D:\adi-ui\adi_app_artefacts\Debug\ADI.exe`
+**The director's build refreshed (ADR-0210 d6, LANES §5):** `adi_app_artefacts\Debug\ADI.exe` in his build folder
 rebuilt from `add5102` at 18:23 (Ninja, Debug, JUCE on, Pd off, `/WX`), clean. It carries the Mix
 View button and F4, the STACK tab and the ★ Reference strip, the send knobs, the volume floor, the
 audio drop, the range selection and the Settings tabs in Live's order. Handed to the director with
@@ -1062,7 +1137,7 @@ plan already (the window lane builds on stubs; the first-window gate is his), an
 the model, not the audio: most of the window's dead buttons wait on engine needs, so pausing it makes
 the build he reviews worse. Both lanes continue; his remarks on the exe are the review step.
 
-**Housekeeping:** the worktrees of merged PRs (`D:\wt-engine-merge`, `wt-mref13`, `wt-msvc`,
+**Housekeeping:** the worktrees of merged PRs (`wt-engine-merge`, `wt-mref13`, `wt-msvc`,
 `wt-n2`, `wt-n35`, `wt-n36`, `wt-relay`, `wt-ruled`, `wt-rulings`, `wt-settings`) removed after a
 check that none held unmerged commits or uncommitted work (only N35's ignored renders).
 
@@ -1134,7 +1209,7 @@ leg, which hung once and was re-run, is green. Nothing of the lanes is left open
 #207, #208, #210.
 
 **The window opened on this PC.** Built as `.github/workflows/ui.yml` does (Ninja, Debug, JUCE on, Pd
-off, `/WX`): `D:\adi-ui\adi_app_artefacts\Debug\ADI.exe`. Live's layout; the three UI suites pass
+off, `/WX`): `adi_app_artefacts\Debug\ADI.exe` in the director's build folder. Live's layout; the three UI suites pass
 (55, 38 and 438 checks). One thing for the window lane's queue: on start an alert says
 `audio.bufferSize does not offer 480` on this machine's device; the Settings page should offer what
 the device offers and fall back without a dialog. Handed to the director with this entry (ADR-0210 d6).
@@ -1266,7 +1341,7 @@ this one task only; it stays retired (ADR-0202).
 **Measured on main at `cf20417`:** 7826 checks across 95 suites (README still says 7682/93; win
 updates it with the next merge to main, as the rule says).
 
-**Worktrees on this PC** are at `D:\wt-<topic>` rather than `Adi-wt\<topic>`: JUCE builds need
+**Worktrees on this PC** are at `wt-<topic>` on a drive root rather than `Adi-wt\<topic>`: JUCE builds need
 short paths, and the main checkout is the drone's.
 
 ---
@@ -1276,8 +1351,8 @@ short paths, and the main checkout is the drone's.
 **Why:** the director moved the Windows lead to a new PC. The old PC keeps its other roles; its ADI drone tasks stop there and move here.
 
 **The machine:** Windows 10 IoT Enterprise LTSC 2021 (build 19044), i7-4930K (no AVX2),
-16 GB, GTX 1070 (8 GB). The repo is at `D:\Documents\GitHub\Adi`, no longer
-`C:\Users\Adi\Documents\GitHub\Adi`; worktrees go under `D:\Documents\GitHub\Adi-wt\`.
+16 GB, GTX 1070 (8 GB). The repo is on a second drive, no longer
+in the user profile; worktrees go under `Adi-wt\` beside it.
 
 **The toolchain is the old PC's, component for component:**
 - VS 2022 Community 17.14.41 at the default path, installed from the old PC's exported `.vsconfig`

@@ -1,6 +1,6 @@
 # Reference integration contracts and contradictions — v0.3, 2026-11-04
 
-Read with [whole-feature coverage](DAW-RESEARCH-COVERAGE.md) and the [per-app notes](daws/ableton-12.md). These are research findings and proposed tests, not ADR changes. E24 is the private, hash-bound primary-source manifest at `D:\ADI-Research\2026-11-04-daws\evidence\wide\primary-source-manifest.json`. Public SDK sources were pinned to commits; installed-host use of these interfaces is not established by reading their declarations.
+Read with [whole-feature coverage](DAW-RESEARCH-COVERAGE.md) and the [per-app notes](daws/ableton-12.md). These are research findings and proposed tests, not ADR changes. E24 is the primary-source manifest, a private, hash-bound manifest kept outside the repository. Public SDK sources were pinned to commits; installed-host use of these interfaces is not established by reading their declarations.
 
 ## Plug-in editing, expression and scheduling boundaries
 

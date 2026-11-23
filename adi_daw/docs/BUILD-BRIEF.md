@@ -293,7 +293,7 @@ registry default that says "once measured" changes on the reading, as an amendme
 
 ## 9. What the orchestrator must not do
 
-Commit to `main`; use the main checkout (`D:\Documents\GitHub\Adi`) for work; edit the README's
+Commit to `main`; use the main checkout for work; edit the README's
 count line, another agent's log or claim rows; take an ADR number outside the reservation table;
 change a licence or ask the director about one; publish anything under `AdiGuard/` or `adi-vst/`;
 undo a listed deviation because Live differs; hide an addition in Settings; call a step "done" that

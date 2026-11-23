@@ -241,7 +241,7 @@ bridge) stay P2 in their own lanes.
 2. **Reading the references** in `adi_daw/reference/` (the DAWs: Ardour, Zrythm, Tracktion, Helio,
    magda; SoundCraft and FilmCraft for ADR-0206; the DSP references of the plug-in line): each a
    short report in `collab/clones.md` naming what ADI should copy (behaviour) and what it already
-   does better; the drone's summaries in `D:\adi-drone\missions\` are the starting point.
+   does better; the drone's summaries in its private missions folder are the starting point.
 3. **Withdrawn (ADR-0234).** ~~**The FilmCraft contribution**~~ (the stale-waveform PR 1, `collab/prompts/2026-10-25-codex-filmcraft-pr1-waveforms.md`), on **adi-ubuntu** (192.168.1.97) for the Linux gate: the director's own Linux box, so no new machine is needed.
 4. **ADI Spacer and ADI Fuser (ADR-0209 d12, ruled 1 November):** the SPAN, s(M)exoscope and VISU
    work is a parity pass on the existing analyser and Scope, not this lane's; **ADI Spacer** (the
