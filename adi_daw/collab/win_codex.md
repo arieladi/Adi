@@ -232,7 +232,7 @@ also build with /W4 /WX; upstream oracle warnings are not suppressed by editing
 upstream code. Build/test instructions and explicit limitations are in
 plugins/dynamic-eq/README.md.
 
-Local products: `C:/Users/Adi/adi-build/dynamic-eq/`, CLAP under
+Local products: `adi-build/dynamic-eq/` in the user profile, CLAP under
 `adi_dynamic_eq_artefacts/Release/CLAP/ADI Dynamic EQ.clap`. Never installed or
 played. Win reviews/merges this PR. Task B remains next, gated on #150 merged.
 
@@ -415,7 +415,7 @@ who moved that checkout.
 
 ## 2026-09-27 — phase 1: Chord Comb and Color Cab cores (ADR-0193)
 
-Branch `codex/colorbass-dsp`, in `C:/Users/Adi/Documents/GitHub/Adi-wt/codex-colorbass`.
+Branch `codex/colorbass-dsp`, in the `Adi-wt/codex-colorbass` worktree.
 The main checkout's branch was never moved. Its ignored dependencies are shared
 by a junction. No other agent, drone or chat was messaged; coordination is here
 and in the PR. #146 supplied the assignment, claims and ADR-0193 reservation.

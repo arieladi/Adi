@@ -14,7 +14,7 @@ after 2026-10-01), and a local drone (qwen, managed by win). Your Codex chat lis
 win's Claude Code sessions: they are read-only history, not a channel. You and win talk only through
 git: PRs, your log, the prompts in adi_daw/collab/prompts/.
 
-READ FIRST, in the repo C:\Users\Adi\Documents\GitHub\Adi:
+READ FIRST, in the repo (the main checkout):
 - adi_daw/README.md, adi_daw/collab/README.md (roster, the three rules, reservations, claims, building,
   what "done" means), OPEN_SOURCE_POLICY.md.
 - adi_daw/docs/DECISIONS.md: ADR-0010 (the audio thread's rules), ADR-0096 (tested maths lives in
@@ -27,14 +27,14 @@ READ FIRST, in the repo C:\Users\Adi\Documents\GitHub\Adi:
   the commit).
 
 YOUR SETUP (once):
-1. Never work in C:\Users\Adi\Documents\GitHub\Adi itself: win and the drone use that checkout, and
+1. Never work in the main checkout itself: win and the drone use that checkout, and
    its branch must not move under them. Make your own worktree:
-       cd C:\Users\Adi\Documents\GitHub\Adi
+       cd <main checkout>
        git fetch origin
        git worktree add ..\Adi-wt\codex-colorbass -b codex/colorbass-dsp origin/main
 2. adi_daw/third_party is git-ignored (fetched). In your worktree, link the main checkout's copy
    (mklink is a cmd built-in, so from PowerShell call it through cmd):
-       cmd /c mklink /J ..\Adi-wt\codex-colorbass\adi_daw\third_party C:\Users\Adi\Documents\GitHub\Adi\adi_daw\third_party
+       cmd /c mklink /J ..\Adi-wt\codex-colorbass\adi_daw\third_party <main checkout>\adi_daw\third_party
 3. Build from your worktree's adi_daw folder: cmd /c tools\build.bat werror (MSVC, warnings are
    errors). Test with Git Bash named in full, because a bare `bash` can start WSL instead:
        & "C:\Program Files\Git\bin\bash.exe" tools/test_all.sh build
@@ -120,7 +120,7 @@ NOT NOW: the Chord Comb's MIDI mode (MIDI into Pd devices is not built yet), the
 mac's UI).
 
 TO HEAR IT: after PR 1, render a few short WAVs from the cores to
-C:\Users\Adi\Documents\ADI-renders\color-bass\ (not committed): a bass through a minor chord in Saw
+A private renders folder, color-bass (not committed): a bass through a minor chord in Saw
 and in Square, and Color Cab fed by a vocal-like sample. Tell the director where they are. Never play
 them yourself.
 

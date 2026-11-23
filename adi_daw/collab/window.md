@@ -271,9 +271,9 @@ only engine-side file touched is `registry.cpp`'s section table, which `adi_sett
 ## 2026-11-03, win — the director's R1, R2, R3 and R6 [#372](https://github.com/arieladi/Adi/pull/372), [#373](https://github.com/arieladi/Adi/pull/373), [#374](https://github.com/arieladi/Adi/pull/374), on #370
 
 **A fresh seat**, after the last one's usage limit, resuming from `collab/prompts/2026-11-03-window-lane.md`
-(#371). From today the lane runs on the director's Windows PC: worktree `D:\wt-window`, built as
+(#371). From today the lane runs on the director's Windows PC: worktree `wt-window`, built as
 `ui.yml` builds on Windows (Ninja, Debug, MSVC `/WX`, `ADI_WITH_JUCE=ON`, `ADI_WITH_PD=OFF`) in
-`D:\bw`. The app is not driven on the desktop: that is the director's own screen, in use. Pictures
+a short build folder. The app is not driven on the desktop: that is the director's own screen, in use. Pictures
 come from the shell tests' software renders (`ADI_UI_PARITY`).
 
 **The director's remarks on build `add5102` first** (`collab/director.md`, LANES §4 window item 4),
