@@ -60,7 +60,7 @@ Before 3 December (ADR-0248 d2 and d6)
 
 After 3 December (branches marked "lands after 3 December"; ADR-0249 d3 order: racks first, then DEV-32, then the rest)
 
-9. **DEV-01: racks play (level 1)**
+9. **DEV-01: racks play (level 1)** (ADR-0253 on main, 23 November: before it lands, make the branch changes of its d10)
    Splice racks into the track graph: the router, chain gates, serial chains, chain strips and the double rack sum. Retire ADR-0122 d8's rack skip. Keep unknown latency distinct from zero. Use the RK1, RK2 and RK4 designs.
    Files: `engine/graph.*`, `plan.*`, `realize.cpp`, `session.cpp`, `tests/test_session.cpp`.
    Test: test_session's rack fixture is inverted. Two chains at 0 and 64 samples line up and the rack reports 64, nested too. An empty chain passes the signal dry.
@@ -76,7 +76,7 @@ After 3 December (branches marked "lands after 3 December"; ADR-0249 d3 order: r
     Files: `engine/graph.*`, `param_automation.*`, `ops_catalog.cpp`.
     Test: A8D-018's 16 macros, takeover, and d15's sum in real units, clamped.
 
-12. **DEV-07: modulation, engine side** (blocked: the devices lane's LFO and Shaper kernels do not exist yet, and no schema minor is reserved for the route tables; skip to the next)
+12. **DEV-07: modulation, engine side** (blocked: the devices lane's LFO and Shaper kernels do not exist yet; schema 1.25 is reserved for the route tables; skip to the next)
     Under ADR-0230: route side tables, modulator nodes emitting ParamMod, and one evaluator per block (the base plus one summed offset per target), with mono and global scope. The evaluator must clear a withdrawn or disabled source.
     Test: one source modulating a CLAP, a VST3 and a built-in gives the same curve. The base survives stop, save and reopen. Deleting a source is one undo step.
 
@@ -110,7 +110,7 @@ After 3 December (branches marked "lands after 3 December"; ADR-0249 d3 order: r
     Test: Main's readings equal `dsp::LoudnessMeter`'s on the Tech 3341 cases, with zero allocations and Main's CPU cost measured.
     Auto Gain Stage's LUFS mode waits on win's rule for a selection under 400 ms. Do the meter part first.
 
-19. **MI-08: noteExpression ops** (blocked: `noteExpression.write` and `noteExpression.clear` are not reserved in RESERVATIONS.md; skip to the next)
+19. **MI-08: noteExpression ops** (both names reserved in RESERVATIONS.md, 23 November)
     The two ops ride in `note.applyDiff` with exact Undo over the AEXP table. Add the gain and pan dimensions for DF-W12.
     Files: `note_diff*`, `ops_catalog.cpp`, `docs/OPS.md`, `tests/test_note_diff.cpp`.
     Test: write and clear Undo restore the exact AEXP bytes, and the OPS validator passes. The check with real MPE synths stays win's.
@@ -148,7 +148,6 @@ Do not redo these; they wait for win to land or close them.
 
 ## Needs from other seats
 
-- **win:** reserve `noteExpression.write` and `noteExpression.clear` in RESERVATIONS.md (item 19; asked since 19 November). Reserve a schema minor for DEV-07's route tables.
 - **win:** write the ADR-0060 d1 amendment before DEV-01 lands. Write the DEV-14 ADR on kinds, Consume and [clone] voices. Rule what an Auto Gain Stage selection under 400 ms reads.
 - **win:** move to Done only what landed whole: DF-E1, E2/E5 (#530), E3, E4, E7, E9, E11 to E15, E18, E26(a,b), E27(a-d), E29(a-d), E48, E49. For DF-E45, E47, E51, E52, E54 and E16, close only the parts item 5 confirms. DF-E12's cause stays open.
 - **win:** land the parts of #677 in order with the other seats' `session.cpp` work (engine-win's DF-E64 Play path and PD-06 Session fix).

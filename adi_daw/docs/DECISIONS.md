@@ -19737,3 +19737,152 @@ framed as the verification seat below. His words, on 23 November: "yes to both".
 | `collab/README.md` | the roster gains gemini, permanent (d1); its paths row: no source paths, loans and its own PLAN rows (d3, d4); the engine's loan of those rows' paths (d4); the trial's loans ended with #713; ADR 0252 used |
 | `collab/prompts/2026-11-22-gemini-queue.md` | the two answers; PLAN rows after the verification items each round, never a row before 3 December; the four rows with their paths and tests (d4 to d6) |
 | `collab/RESERVATIONS.md` | PLAN rows on loan, a new table, with d6's four rows reserved for gemini (d4); the next free ADR is 0253 |
+
+## ADR-0253 — A rack is spliced into its track's graph, not a node that owns one; ADR-0060's other decisions stand — `DECIDED` (2026-11-23) — **WIN'S AMENDMENT UNDER ADR-0249 d8 AND ADR-0203 d1; AMENDS ADR-0060 d1; READS ADR-0060 d2 ON THE SPLICE; DECIDES ADR-0091 d6'S RACK CASE; NARROWS ADR-0122 d8 WHEN DEV-01 LANDS; THE DIRECTOR MAY STRIKE IT**
+
+**What this records.** ADR-0060 d1 (20 September) made a rack a `Node` that owns a nested `Graph`: the
+outer graph sees one node with one latency and one tail, and the inner graph is scheduled by the same code.
+That node was never built. Until it exists, ADR-0122 d8 skips every rack and every device inside one, and
+names them. The plan of 5 November (`docs/PLAN.md`, DEV-01) proposed a different mechanism: splice the
+rack into the track's own graph. A nested graph would break the per-block event sources, the global
+splits, the workers and ADR-0092's edge history. ADR-0060's other decisions would stand, and win would
+amend d1. ADR-0249 d8 names that amendment as win's, and the director agreed it on 19 November. The
+engine's standing queue of 22 November (item 9) says DEV-01 cannot land before this entry. The engine
+built DEV-01 on `engine/dev01-rack-playback` at cb8b4fb6, to land after 3 December. Win read the branch
+against d1 and against Live's manual (chapter 24).
+
+The branch conflicts with d1 in four places:
+- no nested `Graph` exists;
+- the rack is several nodes in the track's graph, not one;
+- the outer graph sees all of them;
+- the rack's latency is read from the applied compensation between two of its nodes, not declared by one.
+
+It conflicts with nothing else in ADR-0060. In five places the branch's behaviour differs from what
+Live's manual documents. Those are decided here the Live way (ADR-0203 d1), and the branch changes
+before it lands (d10). The director's call above ADR-0060 is unchanged: a rack container wrapping several
+plug-ins, with macros for modulation and hardware mapping. This entry changes how the engine builds a
+rack and applies Live's documented rack behaviour. Nothing here differs from Live. It is win's under
+ADR-0249 d8, ADR-0203 d1 and ADR-0109 §2 and §3.
+
+### Decisions
+
+1. **A rack is spliced into its track's graph.** This replaces ADR-0060 d1's sentence "A rack is a
+   `Node` that owns a nested `Graph`". No nested `Graph` type is built. When the realiser meets a rack in
+   a track's chain, it places these nodes in the track's one `Graph`:
+   - a router;
+   - for each of the rack's chains, in stored order: a chain gate, that chain's devices in series, and a
+     chain strip. A rack inside a chain is spliced the same way, and racks nest without limit, as in
+     Live;
+   - a dry leg, made of a gate and a strip;
+   - the rack sum, which adds every leg in double precision (ADR-0207 d2).
+
+   The router feeds every gate, and every chain strip and the dry strip feed the sum. The rack itself
+   has no plug-in instance. Its children load as any device does, and a child that will not load is a
+   placeholder (ADR-0122 d4). The rack's device row stays the rack, and its storage is unchanged:
+   `is_rack`, `device_chains`, the zones, the macros and the mappings.
+
+   `rack_kind` gains its values, which are Live's four kinds: `audio_effect`, `instrument`, `drum` and
+   `midi_effect`. A rack stored with no kind is read as the kind its contents give it under Live's
+   rules in ch. 24.2: an instrument inside makes it an Instrument Rack. Any other value is a problem
+   that names the rack, and that rack is skipped. SPEC and the schema comment list the four values.
+2. **The reason for d1, kept by the splice.** d1 nested the type so that ADR-0042's splitting,
+   ADR-0043's suspension and ADR-0058's compensation would work inside a rack for free. In one graph
+   they do: every node of a rack is an ordinary node, scheduled by the same code under the same rules.
+   The workers, the per-block event sources and ADR-0092's edge history also keep working. A nested
+   graph would have broken them or needed them rebuilt. `ChainKey` gains two legs:
+   - Branch, from the router into a chain's gate;
+   - Join, from a chain into the sum.
+
+   Each is keyed on that chain's own gate and strip nodes, which the session keeps for as long as the
+   chain exists. So a reorder, a mute or a rebuild keeps every edge's delayed audio and events, and
+   never re-creates a device.
+3. **d2 stands, read on the splice.** A rack's latency is the applied compensation between its router
+   and its sum. That equals its longest chain's latency, because ADR-0058 aligns every leg where it
+   rejoins at the sum, the dry leg included. A nested rack's latency is read the same way and counts
+   in its outer chain. It is read from the applied graph, not declared by one node. A rack's tail is
+   its children's tails, which their own nodes hold in the one graph, so ADR-0043's suspension sees
+   it without a rule of its own. Only deleting a device releases its delay (ADR-0203 d4), and that
+   holds inside a rack too.
+4. **An unknown latency is told apart from zero.** A device's latency is unknown when it is:
+   - a placeholder;
+   - a plug-in that is not loaded or not yet active;
+   - a plug-in whose latency extension is malformed;
+   - a plug-in that reports a negative latency or one beyond the 32-bit range.
+
+   The graph compensates such a device as zero, ADR-0058 d1's default. That changes one case on every
+   track: a value beyond the 32-bit range was clamped to the maximum on main. A rack that contains an
+   unknown latency reports its own latency as unknown, not as a number, and so does every rack around
+   it. Inside a rack this is only a report: the audio is the same either way. Where the report is shown
+   belongs to the window, from an agreed sheet (ADR-0243).
+5. **A rack's chains at level 1, as in Live (ch. 24.1.1, 24.4).** Chains run in parallel and are
+   summed, and each chain's devices run in series.
+   - Every chain hears the rack's whole input. Each gate is open, which is Live's full-range zone.
+     DEV-02 (P2, ADR-0249 d3) puts the key, velocity and chain-select zones at the gate. Until then, a
+     stored chain whose zones are not NULL is named in `problems()`, because it plays the full range.
+   - A chain's activator and its solo act at its chain strip. They ramp in 5 ms with no rebuild
+     (`chain.setMute`, `chain.setSolo`, OPS §9.7). A solo silences only the soloed chain's siblings
+     inside the same rack.
+   - In an Audio Effect Rack, a chain with no devices passes its input dry. A rack whose chains are
+     all off is silent.
+   - In an Instrument Rack the dry leg carries no audio, and an empty chain is silent. Live's
+     Instrument Rack has no audio input. On ADI's hybrid tracks (ADR-0045), clip audio does not pass
+     through an Instrument Rack.
+   - Switching a rack off follows ADR-0203 d4: its children are not calculated, and its delay stays in
+     the compensation. An Audio Effect Rack that is off passes its input through the dry leg, delayed
+     by the rack's latency. An Instrument Rack that is off is silent.
+6. **Notes pass a rack once, as Live (the rack's decision that ADR-0091 d6 left to it).**
+   - Every chain's devices hear the input notes, and each chain strip stops the notes of its own chain,
+     so a rack never multiplies notes.
+   - In an Audio Effect Rack, one copy of the input's notes leaves through the dry leg, delayed by the
+     rack's latency like the audio beside it (ADR-0091). This is the same as an audio effect outside a
+     rack (`EventFlow::Through`).
+   - An Instrument Rack consumes notes, as a bare instrument does (`EventFlow::Consume`). In Live a
+     chain runs MIDI effects, then an instrument, then audio effects (ch. 24.2), so no MIDI leaves the
+     rack.
+   - A MIDI Effect Rack's output is the merge of its chains' outputs (ch. 24.5.1). It stays skipped
+     until that is built (d7, DF-E74).
+7. **ADR-0122 d8 is narrowed when DEV-01 lands.** Its condition, "until ADR-0060's rack node exists",
+   is met by the spliced rack for Audio Effect and Instrument Racks. They and their devices are no
+   longer skipped, counted or named. Drum Racks stay skipped and named until DEV-04, because every pad
+   chain would otherwise hear every note. MIDI Effect Racks stay skipped and named until their chains
+   merge (DF-E74). A `rack_kind` outside d1's four values also stays skipped and named. Until DEV-01
+   is on main, d8 stands on main as written.
+8. **What stays open.** Each question below takes Live's behaviour as the reference, and each is a
+   register row:
+   - whether an Audio Effect Rack with no chains passes its input or mutes. This is the Live 12
+     reading that PLAN DEV-01 names (DF-E75);
+   - chain volume and pan: their storage (`device_chains` has no columns for them, so a side table in a
+     schema minor, reserved in RESERVATIONS.md before its branch uses it), the 5 ms ramp and the chain
+     pan-law reading (DF-E73). Until then chains play at Live's defaults, 0 dB and
+     centre;
+   - the Drum Rack's Receive, Play, choke and return chains (DEV-04).
+9. **What stands.** ADR-0060 d3 (a macro is a modulator), d4 (no macro count in the format) and d5
+   (hardware maps through `controller_maps`) stand as written, and so does ADR-0114's amendment of
+   ADR-0060. ADR-0072 argued that a rack declares one latency to the graph above it, which was d1's old
+   mechanism. ADR-0203 d3 already reversed ADR-0072, and nothing here reopens it.
+10. **Landing.** DEV-01 lands after 3 December (ADR-0249 d3), in win's landing window (ADR-0248 d12),
+    after this entry is on main and in order with the other seats' `session.cpp` work. Before it lands,
+    the branch is rebased onto main and makes these changes:
+    - the Instrument Rack's dry leg carries no notes and no audio (d5, d6);
+    - switching a rack off stops its children being calculated (d5);
+    - Drum Racks, MIDI Effect Racks and unknown kinds stay skipped and named (d7);
+    - non-NULL zones are named (d5);
+    - each of these has a test.
+
+    DEV-03 and DEV-06, stacked on DEV-01, follow it.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0060 d1 | a rack is spliced into its track's graph (router, chain gates, chains in series, chain strips, a dry leg, a double-precision sum), not a `Node` that owns a nested `Graph`; `ChainKey` gains Branch and Join legs; `rack_kind` takes Live's four values (d1, d2) |
+| ADR-0060 d2 | stands, read on the splice: a rack's latency is the applied compensation from router to sum, and its tail is its children's; an unknown latency is reported apart from zero (d3, d4) |
+| ADR-0091 d6 | the rack's decision: each chain strip stops its own chain's notes; one copy of the input's notes leaves an Audio Effect Rack; an Instrument Rack consumes notes (d6) |
+| ADR-0122 d8 | narrowed when DEV-01 lands: Audio Effect and Instrument Racks play; Drum Racks, MIDI Effect Racks and unknown kinds stay skipped and named (d7) |
+| `docs/PLAN.md` DEV-01 | the cross-check's amendment of ADR-0060 d1 is this entry; "Audio Effect and Instrument Racks forward the input notes exactly once" becomes d6; chain volume moves to DF-E73; MIDI Effect Racks to DF-E74 |
+| `docs/format/SPEC.md`, `docs/format/schema.sql` comment | `rack_kind`'s four values and what NULL means, written by DEV-01's branch when it lands (d1, d10) |
+| `docs/DEFERRED.md` | DF-E73 (chain volume and pan, their storage, ramp and pan law), DF-E74 (MIDI Effect Racks merge their chains' outputs), DF-E75 (an Audio Effect Rack with no chains: the Live 12 reading) (d6, d8) |
+| `collab/prompts/2026-11-22-engine-queue.md` | item 9's condition and the "Needs from other seats" line for the amendment are met; d10's branch changes are added to item 9 |
+| `collab/README.md` | ADR 0253 used |
+| `collab/RESERVATIONS.md` | the next free ADR is 0254, the next free DF-E id DF-E76 |
+| `collab/win.md` | the entry of 23 November |
