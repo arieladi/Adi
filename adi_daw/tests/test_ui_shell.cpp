@@ -8474,6 +8474,12 @@ void newProject(AppCommands &commands, const std::filesystem::path &dir) {
           "New shows Live's default Set: 1 MIDI, 2 MIDI, 3 Audio, 4 Audio, A Reverb, B Delay, then Main (N41)");
     check(!root.canUndo(false) && root.undoTitle(false) == "Nothing to Undo" && root.undoTitle(true) == "Nothing to Redo",
           "and has nothing to undo: the Edit menu's items read Nothing to Undo and Nothing to Redo, as Live 12's (LK-02)");
+    // DF-W29: a knob edit still held makes Undo act, a project's first edit included; Redo waits.
+    root.editsHeld = [] { return true; };
+    check(root.canUndo(false) && !root.canUndo(true) && root.undoTitle(false) == "Undo" &&
+              root.undoTitle(true) == "Nothing to Redo",
+          "a knob edit held: Undo acts (it commits the edit, then takes it back), Redo waits");
+    root.editsHeld = nullptr;
     if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
         juce::Image picture(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
         {

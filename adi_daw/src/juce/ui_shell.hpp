@@ -344,7 +344,12 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // What the Status Bar says when there is no message: Live's line for the insert
     // marker or the time selection.
     juce::String selectionText() const;
-    bool canUndo(bool redo) const { return redo ? submitter_.canRedo() : submitter_.canUndo(); }
+    // Undo can act with a knob edit still held (DF-W29): it commits it first, then takes it back, so
+    // a project's first edit is undoable at once. Redo cannot: that commit clears what Redo would do.
+    bool canUndo(bool redo) const {
+        const bool held = editsHeld && editsHeld();
+        return redo ? submitter_.canRedo() && !held : submitter_.canUndo() || held;
+    }
     // What Live's Edit menu shows: "Undo" and the step's own label, or "Nothing to Undo" with no
     // step (Live 12's menu, the director's LK-02 capture; Readings M1-16a); the same for Redo.
     std::string undoTitle(bool redo) const;
@@ -352,6 +357,11 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // the engine refresh after an edit belong to whoever owns the document.
     std::function<bool(int)> applicationCommand;
     std::function<void()> afterEdit;
+    // Commits the parameter edits the document still holds before Undo, Redo or a restored step acts
+    // (DF-W29); false, with the document's reason said, when it could not.
+    std::function<bool()> settleEdits;
+    // Whether the document holds parameter edits Undo would commit first (DF-W29).
+    std::function<bool()> editsHeld;
     // Reads a dropped file and captures its media row, writing nothing (the document's
     // `prepareImport`, #308); false with `why` when it can't. Unset, a drop says it needs one.
     std::function<bool(const std::string &utf8Path, AudioImport &, std::string &why)> importAudio;
