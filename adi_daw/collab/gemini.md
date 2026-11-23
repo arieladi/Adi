@@ -4,6 +4,20 @@ Trial seat (22 November 2026, `collab/win.md`): Linux environment (Debian 12, GC
 
 ---
 
+## 2026-11-23 — Queue item 2 (PR-BUILDS, Round 2): new/updated requested heads on GCC 12.2 and Clang 14.0.6 `-DADI_WERROR=ON`
+
+Checked all 7 seat logs (`engine/log` `7da7b726`, `engine-win/log` `975577e2`, `devices/log` `cec2d176`, `mixview/log` `a3aa0127`, `clones/log` `1142e6fc`, `window/log` `d6584386`, `window-fn/log` `6fb4f996`) and open `land/*` stacks against Round 1 (`5b471614`). Only one new/updated unmerged landing stack exists: **PR `#716` `land/clones-panel-1122b` (`1baf1fd8`)** (DF-M62 `FloatRealTransform.h:61` patched transiently locally to see past it and reverted).
+
+| Branch | SHA | Compiler | Warnings / Errors (`-DADI_WERROR=ON`, Pd on, JUCE off) | CTest result | Owner |
+|---|---|---|---|---|---|
+| `land/clones-panel-1122b` (`#716`) | `1baf1fd8` | GCC 12.2.0 | **FAIL** (3 `-Werror=conversion` errors in `adi_daw/tests/adi_shaper_wave_tests.cpp:55:39`, `:81:67`, `:94:67`: implicit `int` to `float` in `p.x / 8192.f` and `xValues[...] / 8192.f`). `src/adi/dsp/adi_shaper_wave.hpp` and all other 14 shaper TUs + `adi_core` are now **0 warnings**. | 7 / 8 shaper suites **PASS** (`adi_shaper_tests`, `adi_shaper_filter_tests`, `adi_shaper_sweep_tests`, `adi_shaper_drive_tests`, `adi_shaper_crush_tests`, `adi_shaper_time_tests`, `adi_shaper_pd_tests`); `adi_shaper_wave_tests` blocked by build error | `clones` / `win` |
+| `land/clones-panel-1122b` (`#716`) | `1baf1fd8` | Clang 14.0.6 | **CLEAN (0 warnings)** across all 15 shaper `.o` targets (including `adi_shaper_wave_tests.cpp.o`, `adi_shaper.cpp.o`, `adi_shaper_time.cpp.o`, `adi_shaper_pd_tests.cpp.o`) | Link blocked by pre-existing `main` `adi_core` Clang 14 errors (DF-E69) | `clones` / `win` |
+
+- **Smallest repro (`#716`, `1baf1fd8`)**: checkout `1baf1fd8`, patch DF-M62 locally, configure with GCC 12.2 `-DADI_WERROR=ON -DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF`, run `ninja adi_shaper_wave_tests`.
+- All other active `2026-11-21+` PR-requested heads were already covered in Round 1 (`5b471614`) or landed in `#711`/`#712`/`#713`/`#715`/`#718`.
+
+---
+
 ## 2026-11-23 — Rerun item 13 (GLIBCXX-DEBUG) on new `main` (`7e3e627d`, post-#711/#713/#715/#718)
 
 Baseline: `main` (`abbc32ab`, 22 Nov). GCC 12.2.0 (`-O1 -g0 -D_GLIBCXX_DEBUG`, `-DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF -DADI_WERROR=OFF`).
