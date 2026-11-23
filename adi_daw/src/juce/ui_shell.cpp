@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_shell.hpp"
+#include "adi/note_diff.hpp"
 #include "adi/edit_plan.hpp"
 #include "ui_controls.hpp"
 #include "ui_floating.hpp"
@@ -1743,9 +1744,51 @@ bool AdiRootComponent::submitEdit(const std::string &op, Payload payload, const 
     request.selBefore = session_.advisory();
     return edited(submitter_.submit(std::move(request)));
 }
+namespace {
+// The clip a batch edits when every op of it is one of the scalar note ops on that one clip (MI-01), else none.
+std::optional<std::int64_t> noteBatchClip(const std::vector<OpRequest> &ops) {
+    static const std::set<std::string> noteOps{"note.insert", "note.delete", "note.move",
+                                               "note.resize", "note.setVelocity", "note.setMute"};
+    std::optional<std::int64_t> clip;
+    for (const auto &op : ops) {
+        if (!noteOps.contains(op.opType))
+            return std::nullopt;
+        const auto it = op.payload.find("clip");
+        if (it == op.payload.end() || !it->is_number_integer())
+            return std::nullopt;
+        const auto id = it->get<std::int64_t>();
+        if (clip && *clip != id)
+            return std::nullopt;
+        clip = id;
+    }
+    return clip;
+}
+} // namespace
 bool AdiRootComponent::submitEdits(std::vector<OpRequest> ops) {
     if (ops.empty())
         return true;
+    // A note edit of any size writes the clip's stream once, one op in the history (MI-01): the engine applies
+    // the legacy note ops in turn, each with its overlap rule (`notes::prepareBatch`, N63).
+    if (const auto clip = noteBatchClip(ops)) {
+        // A clip with no notes yet has no stream: the batch creates it under the next free id.
+        auto &db = submitter_.store().db();
+        std::optional<std::int64_t> newStream;
+        {
+            SQLite::Statement held(db, "SELECT 1 FROM event_streams WHERE clip_id = ? AND stream_kind = 'notes'");
+            held.bind(1, *clip);
+            if (!held.executeStep())
+                newStream = db.execAndGet("SELECT COALESCE(MAX(id), 0) + 1 FROM event_streams").getInt64();
+        }
+        auto prepared = notes::prepareBatch(notes::captureNotes(submitter_.store(), *clip, newStream), ops);
+        if (!prepared.ok)
+            return fail(prepared.error.empty() ? "The note edit could not be prepared." : prepared.error);
+        if (prepared.requests.empty())
+            return true;
+        prepared.requests.front().selBefore = session_.advisory();
+        return edited(submitter_.commitPrepared(std::move(prepared), [](Store &store, notes::PreparedDiff &p, Actor actor) {
+            return notes::commitDiff(store, p, actor);
+        }));
+    }
     ops.front().selBefore = session_.advisory();
     return edited(submitter_.submit(std::move(ops)));
 }
