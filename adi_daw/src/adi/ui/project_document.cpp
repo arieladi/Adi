@@ -1241,10 +1241,8 @@ void ProjectDocument::process(const engine::AudioIo &io) noexcept {
     mailbox_.publish(session_.transport());
 }
 RecordStates ProjectDocument::recordStates() const {
-    RecordStates out;
-    for (const auto &t : session_.model().tracks)
-        out[t.id] = {t.recordArmed, t.monitorMode == 1 ? Monitor::In : t.monitorMode == 2 ? Monitor::Auto : Monitor::Off};
-    return out;
+    const auto current = view_.current();
+    return current ? recordStatesOf(current->tracks) : RecordStates{};
 }
 bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t inputs, bool playing) {
     if (recording_ || landing_) {

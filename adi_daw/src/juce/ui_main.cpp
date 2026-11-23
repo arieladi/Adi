@@ -863,8 +863,6 @@ class AdiApplication final : public juce::JUCEApplication,
         root->automationArmed = [this] { return document_->automationArmed(); };
         root->armAutomation = [this](bool armed) { document_->setAutomationArmed(armed); };
         // Arm, monitoring and Arrangement Record (MX-09): the session's rows, and the recorder.
-        root->readRecordStates = [this] { return document_->recordStates(); };
-        root->setRecordStates(document_->recordStates());
         root->startRecording = [this](std::int64_t insertTick, bool playing) {
             const auto *device = manager_.getCurrentAudioDevice();
             const int inputs = device != nullptr ? device->getActiveInputChannels().countNumberOfSetBits() : 0;
@@ -1383,7 +1381,6 @@ class AdiApplication final : public juce::JUCEApplication,
             return;
         document_->tick(static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
         if (root_) {
-            root_->setRecordStates(document_->recordStates());
             // A Tap Tempo run ends once the taps stop (HI-01), on the taps' clock; a refused end says why.
             if (!document_->pollTapTempo(juce::Time::getMillisecondCounter()))
                 root_->say(document_->error());
