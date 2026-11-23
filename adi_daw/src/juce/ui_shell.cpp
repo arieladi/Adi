@@ -298,14 +298,21 @@ void AppCommands::applyShortcutOverrides() {
             overrideProblems_.push_back("no command " + stable);
             continue;
         }
-        keys->clearAllKeyPresses(id);
+        // The chords that read back as themselves (JUCE reads most unknown text as its last letter); if none
+        // does, the command keeps its own keys.
+        std::vector<juce::KeyPress> taken;
         for (const auto &chord : chords) {
-            const auto key = chord.is_string() ? juce::KeyPress::createFromDescription(chord.get<std::string>())
-                                               : juce::KeyPress();
-            if (!key.isValid()) {
-                overrideProblems_.push_back(stable + ": no key reads " + (chord.is_string() ? chord.get<std::string>() : "?"));
-                continue;
-            }
+            const auto text = chord.is_string() ? juce::String(chord.get<std::string>()) : juce::String();
+            const auto key = juce::KeyPress::createFromDescription(text);
+            if (!key.isValid() || !key.getTextDescription().equalsIgnoreCase(text.trim()))
+                overrideProblems_.push_back(stable + ": no key reads " + text.toStdString());
+            else
+                taken.push_back(key);
+        }
+        if (taken.empty() && !chords.empty())
+            continue;
+        keys->clearAllKeyPresses(id);
+        for (const auto &key : taken) {
             // A key the user gives one command is taken from any other that has it by default.
             keys->removeKeyPress(key);
             keys->addKeyPress(id, key);
@@ -331,6 +338,17 @@ bool AppCommands::setShortcut(juce::CommandID id, const std::vector<juce::KeyPre
     if (!overrides.is_object())
         overrides = settings::Value::object();
     auto next = overrides;
+    // The keys given here are this command's now: taken from any other command's override, so the latest
+    // assignment holds whatever order the record is read in.
+    for (auto &[other, list] : next.items()) {
+        if (other == stable || !list.is_array())
+            continue;
+        auto kept = settings::Value::array();
+        for (const auto &c : list)
+            if (!c.is_string() || std::find(chords.begin(), chords.end(), c.get<std::string>()) == chords.end())
+                kept.push_back(c);
+        list = kept;
+    }
     if (chords == defaults)
         next.erase(stable);
     else
@@ -918,8 +936,13 @@ bool AppCommands::key(const juce::KeyPress &key, AdiRootComponent &root) {
     activate(root);
     // F, G, K and B are the Note Editor's own keys: it takes them itself while it has the keyboard.
     // A key that comes here was pressed elsewhere, where they are no command's.
-    if (const auto id = manager.getKeyMappings()->findCommandForKeyPress(key); id >= FoldToNotes && id <= DrawMode)
-        return false;
+    // Only their own plain letters: a key the user gave one of them (WIN-04) runs it from anywhere.
+    if (const auto id = manager.getKeyMappings()->findCommandForKeyPress(key); id >= FoldToNotes && id <= DrawMode) {
+        const juce::juce_wchar own = id == FoldToNotes ? 'f' : id == FoldToScale ? 'g' : id == HighlightScales ? 'k' : 'b';
+        if (!key.getModifiers().isAnyModifierKeyDown() &&
+            juce::CharacterFunctions::toLowerCase(static_cast<juce::juce_wchar>(key.getKeyCode())) == own)
+            return false;
+    }
     // A latching key runs its command once while it is held (Live 42.25): the root times it. One let
     // go where the window could not see it (the focus elsewhere) goes down anew, and nothing goes back.
     if (const auto id = manager.getKeyMappings()->findCommandForKeyPress(key); AdiRootComponent::latches(id)) {

@@ -1237,6 +1237,10 @@ class AdiApplication final : public juce::JUCEApplication,
                     };
                 settingsWindow_->panel().onChange = [this] {
                     commands_->reload();
+                    // A key of the user's that could not be applied is said, not lost (WIN-04).
+                    if (!commands_->shortcutProblems().empty() && root_)
+                        root_->say("Some of your keys were not applied: " + commands_->shortcutProblems().front() +
+                                   (commands_->shortcutProblems().size() > 1 ? " (and more)." : "."));
                     pluginSourcesChanged();
                     // The MIDI Ports' switches open or close inputs: after the row's commit has unwound.
                     juce::MessageManager::callAsync([this] {

@@ -13190,8 +13190,29 @@ void shortcutOverrides(settings::AppSettings &settings, AppCommands &commands) {
     bogus["noSuchCommand"] = settings::Value::array({"ctrl + Q"});
     check(settings.set("shortcuts.overrides", bogus, {}, why), "an override for an id no command has");
     commands.reload();
-    check(!commands.shortcutProblems().empty() && keysOf(AppCommands::PlayStop).contains(juce::KeyPress(juce::KeyPress::spaceKey)),
+    // Ctrl/Cmd+Q is Quit's own key on Windows and Linux: an unknown id must not take it.
+    check(!commands.shortcutProblems().empty()
+#if !JUCE_MAC
+              && keysOf(AppCommands::Quit).contains(juce::KeyPress('q', juce::ModifierKeys::commandModifier, 0))
+#endif
+              ,
           "it is left out and said, and nothing else changes");
+    // A chord that does not read back as itself is refused, not read as its last letter.
+    auto garbled = settings::Value::object();
+    garbled["playStop"] = settings::Value::array({"ctrl + Plus"});
+    check(settings.set("shortcuts.overrides", garbled, {}, why), "an override whose chord no key reads");
+    commands.reload();
+    check(!commands.shortcutProblems().empty() && keysOf(AppCommands::PlayStop).contains(juce::KeyPress(juce::KeyPress::spaceKey)) &&
+              !keysOf(AppCommands::PlayStop).contains(juce::KeyPress('s', juce::ModifierKeys::commandModifier, 0)),
+          "it is refused and said; Play / stop keeps its own key and takes no Ctrl+S");
+    // Two commands given one key in turn: the latest holds it, whatever order the record is read in.
+    check(settings.set("shortcuts.overrides", settings::Value::object(), {}, why), "the overrides cleared");
+    commands.reload();
+    const juce::KeyPress shared('j', juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier |
+                                         juce::ModifierKeys::shiftModifier, 0);
+    check(commands.setShortcut(AppCommands::Undo, {shared}, why) && commands.setShortcut(AppCommands::PlayStop, {shared}, why) &&
+              keysOf(AppCommands::PlayStop).contains(shared) && !keysOf(AppCommands::Undo).contains(shared),
+          "the key given last, to Play / stop after Undo, is Play / stop's");
     check(settings.set("shortcuts.overrides", settings::Value::object(), {}, why), "the overrides cleared");
     commands.reload();
 }
