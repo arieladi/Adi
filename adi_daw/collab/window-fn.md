@@ -20,7 +20,13 @@ headless. MSVC `/WX` and macOS are not run here; the `Step 7 UI` workflow runs t
 
 ## FOR THE DIRECTOR
 
-None open.
+- **Insert Shape's lower row (AU-02, L-AUTO-8 unresolved): which values do Live's ramps and ADSR join?** The
+  window's rule now: a rise runs from the lower of the envelope's two edge values to the higher, a fall from the
+  higher to the lower; on a flat envelope a rise goes to the parameter's top and a fall to its foot; the ADSR
+  rises from the lower edge value to the top. **Recommendation:** keep this rule until a Live 12 reading
+  (L-AUTO-8) says otherwise. It joins both edges whenever the envelope's direction matches the shape, and on a
+  flat lane it gives a full-range ramp, which is the useful case. A reading changes three lines of
+  `insertAutomationShape`.
 
 ---
 
@@ -46,10 +52,69 @@ until then a need is named by its item.
 | Reserve: one N row. A dropped audio file should clear what it lands on, as a move, Paste and Duplicate do (DF-W28): `clip_edit::prepareImportAudio` placed through the planner (`PlacementBatch::clear`), or a planner entry that clears a track span in the same prepared edit as the window's `clip.create`/`clip.attachAudio` batch | engine (`src/adi/material_commands.cpp`, `src/adi/edit_plan*`) | DF-W28: a file dropped onto a clip replaces the covered part in one step | the drop lands over the clip, as before |
 | Reserve: one N row. A loop recording keeps the passes it has when it ends early: today a tempo change (Tap Tempo included), a loop edit or running out of passes during a loop recording ends the capture ("musical loop retiming ends this job") and every pass recorded so far is lost | engine (`src/adi/engine/audio_recording.*`, `src/adi/recording_commands.*`) | CT-02: a loop take survives a tempo tap or a loop nudge | nothing: the take is lost and the Status Bar says why |
 | Reserve: one N row, or a ruling. Live's undo for a loop recording: one step for the whole recording, or one per pass as `prepareLoopCommit` commits today (the window queue's test asked for one step) | engine and win | CT-02: Undo after a loop recording | the window follows the engine: a step per pass |
+| Insert Shape's guards through one shared splice (PLAN AU-02's engine half): a guard or split at a selection's edge that keeps a bent segment's bend (ADR-0159's curve slices), written by the planner, so a shape leaves every curve outside the selection exact (AT-1) | engine seat (`automation_shapes.cpp`) | AU-02: the window writes its own guards, exact for holds and straight segments only | the window's guards (`insertAutomationShape`) |
 | A GCC 12 build of `src/adi/mix/limiter/Dsp/FloatRealTransform.h:61`: `bit < std::bit_width(length) - 1` compares an `int` with `std::size_t` under GCC 12.4's libstdc++ (its `bit_width` returns the argument's type; GCC 13's returns `int`), which `-Wsign-compare` with warnings as errors refuses. `static_cast<int>(std::bit_width(length)) - 1` builds on both | the mix seat (the limiter core) | DF-W39's test is a GCC 12 build; every suite that links the limiter stops there | DF-W39 was tested with that cast made locally and not committed |
 | Reserve: one N row (MX-07's registry half). `mixing.soloInFront`, `mixing.soloInFrontDb` and `mixing.soloBus` labelled "not built" in their titles or descriptions, as the PLAN row asks, and Live's Options rows `preFollowsSolo` and `keepAllReturns` (they change only on readings, AWAITING 5) | engine-win (`src/adi/settings/registry.cpp`) | MX-07: the Settings say plainly which solo options do nothing yet | the window shows the rows as the registry gives them |
 
 ---
+
+## 2026-11-23, window-fn — PLAN AU-02 (window half): Insert Shape on a lane's time selection (PR requested)
+
+**Window lane, read first:** this item touches `src/adi/ui/automation_mode.hpp` (`playedEnvelope`,
+`kAutomationShapes`, `insertAutomationShape`), `src/juce/ui_shell.*` (`insertAutomationShape`,
+`addInsertShape`) and `src/juce/ui_arrangement.*` (the lanes' menu; a right-click inside the time selection keeps
+it, `keepsSelectionAt`; `menuTrack`).
+
+- **The menu.** In Automation Mode, with a time selection holding the track right-clicked, the lanes' menu has
+  Insert Shape with Live's ten shapes in two rows: Sine, Triangle, Sawtooth, Inverse Sawtooth and Square; then
+  Exponential and Logarithmic Rise and Fall, and ADSR. A right-click inside the time selection now keeps it
+  (before, it collapsed the selection, or took a clip's span, before the menu was built).
+- **The edit.** The engine's `automation::generateShape` makes the points. The window removes the breakpoints
+  inside the selection (edges included), writes the shape, and makes the lane and its data first where the
+  envelope has none. It is one batch and one undo step, "Insert Shape", with ids from `RowIds`.
+  - The top row spans the parameter's travel (the fader's foot written as silence).
+  - Ramps join the envelope's values at the edges: a rise from the lower to the higher, a fall from the higher
+    to the lower. On a flat envelope, a rise goes to the top and a fall to the foot.
+  - The ADSR rises from the lower edge value to the top.
+- **Guards.** The curve outside stays as the engine played it: a breakpoint at each edge holds the value
+  `engine::valueAt`'s rule gives there (the left point's curve, a hold kept, the last point at a time winning),
+  as stored (a ramp from silence keeps its foot). The end's guard has the curve and tension of the segment it
+  played from, unless the shape already ends on it. This is exact where the segment crossing an edge holds or is
+  straight; a bent one keeps its ends and its kind, not its exact bend.
+- **Asked of the engine (needs table):** the PLAN's guards "through one shared splice" that keep a bent
+  segment's bend (ADR-0159's slices) would let the window drop its guards.
+- **For the director (L-AUTO-8, unresolved):** which ends Live's ramps and ADSR join. The window's rule is the
+  one above; a reading of Live 12 decides it.
+
+**Test** (`tests/test_ui_shell.cpp`, the lane chooser's block), on a Volume ramp with old breakpoints on the
+selection's start and inside it:
+- Sine: one undo step, 131 points inside (129 and two guards), the old ones gone, top +6 dB, foot silence, the
+  ramp outside unchanged at both edges; Undo gives the four breakpoints back;
+- Exponential Rise: two points joining the edge values, no guard;
+- a Sine inside a Square's hold leaves the hold after it as played;
+- a shape after a ramp from silence leaves that ramp as it was;
+- a too-short selection is refused with the reason;
+- the submenu's ten items and one separator; none for a track outside the selection or outside Automation
+  Mode;
+- the right-click rule inside and outside the selection.
+
+**Review** (three dimensions, each finding checked by a skeptic): six findings, all fixed in the branch's one
+commit:
+- a right-click wiped the selection;
+- the guards read a straight line where the segment held;
+- a point on the end edge lost its curve kind;
+- the guards ignored the segment's curve;
+- a guard below the travel was pulled to the foot;
+- the deletion of old points was untested.
+
+Five were refuted.
+
+**Run:** JUCE on, Pd off, warnings as errors (GCC 13, Debug, `ninja -k 0`): the 27 window and mix suites pass, the
+shell suite 3035 checks from a scratch directory, 0 failures.
+
+PR requested: `window-fn/insert-shape` → main, "AU-02: Insert Shape on an automation lane's time selection".
+Depends on nothing beyond main. With `window-fn/automation-curves` landed too, both touch
+`automation_mode.hpp`'s end (a textual conflict; keep both).
 
 ## 2026-11-23, window-fn — PLAN ED-04 (window half): a clip's start moved, its material anchored in time (PR requested)
 
