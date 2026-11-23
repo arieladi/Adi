@@ -176,10 +176,16 @@ std::optional<juce::KeyPress> AppCommands::latinKey(const juce::KeyPress &k) {
     return std::nullopt;
 }
 bool AppCommands::exportShortcuts(const juce::File &file, std::string &why) const {
+    // The user's keys as the record keeps them, a later build's commands' keys among them.
+    auto overrides = userKeys();
+    if (const auto held = settings_.get("shortcuts.overrides"); held.is_object())
+        for (const auto &[stable, chords] : held.items())
+            if (commandFor(stable) == 0)
+                overrides[stable] = chords;
     const settings::Value set{{"format", "adi-shortcuts"},
                               {"version", 1},
                               {"preset", settings_.get("shortcuts.preset")},
-                              {"overrides", userKeys()}};
+                              {"overrides", overrides}};
     if (!file.replaceWithText(juce::String::fromUTF8(set.dump(2).c_str()), false, false, "\n")) {
         why = "The key set could not be written to " + file.getFullPathName().toStdString() + ".";
         return false;
@@ -194,12 +200,15 @@ bool AppCommands::importShortcuts(const juce::File &file, std::string &why) {
         why = file.getFileName().toStdString() + " is not a key set.";
         return false;
     }
-    if (!set.is_object() || set.value("format", "") != "adi-shortcuts" || !set.contains("overrides") ||
-        !set["overrides"].is_object()) {
+    // Each field's type checked before it is read: a wrong type is a file that is not a key set.
+    const auto format = set.is_object() ? set.find("format") : set.end();
+    const auto overrides = set.is_object() ? set.find("overrides") : set.end();
+    if (!set.is_object() || format == set.end() || !format->is_string() || *format != "adi-shortcuts" ||
+        overrides == set.end() || !overrides->is_object()) {
         why = file.getFileName().toStdString() + " is not a key set.";
         return false;
     }
-    if (set.value("version", 0) != 1) {
+    if (const auto version = set.find("version"); version == set.end() || !version->is_number_integer() || *version != 1) {
         why = file.getFileName().toStdString() + " is a key set of another version.";
         return false;
     }
@@ -242,7 +251,7 @@ ShortcutsPage::ShortcutsPage(AppCommands &commands)
                               });
     };
     exportButton.onClick = [this] {
-        chooser_ = std::make_unique<juce::FileChooser>("Export your keys", juce::File("ADI Shortcuts.json"), "*.json");
+        chooser_ = std::make_unique<juce::FileChooser>("Export your keys", juce::File::getSpecialLocation(juce::File::userDocumentsDirectory).getChildFile("ADI Shortcuts.json"), "*.json");
         chooser_->launchAsync(juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::warnAboutOverwriting,
                               [this](const juce::FileChooser &fc) {
                                   if (fc.getResult() == juce::File())

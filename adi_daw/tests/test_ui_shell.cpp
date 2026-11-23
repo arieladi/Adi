@@ -12530,6 +12530,7 @@ void shortcutSets(AppCommands &commands, settings::AppSettings &settings, const 
     check(back["format"] == "adi-shortcuts" && back["version"] == 1 && back["preset"] == "cubase" &&
               back["overrides"]["view.browser"] == settings::Value::array({"Cmd+Alt+F9"}) && back["overrides"]["edit.undo"].empty(),
           "the exported file holds the preset and the user's keys in canonical text");
+    check(back["overrides"].contains("help.not-here-yet"), "and the keys of a command this build lacks");
     settings.set("shortcuts.overrides", settings::Value::object(), {}, why);
     commands.reload();
     check(commands.importShortcuts(exported, why) &&
@@ -12538,6 +12539,10 @@ void shortcutSets(AppCommands &commands, settings::AppSettings &settings, const 
     const auto bad = juce::File(juce::String((dir / "bad-shortcuts.json").string()));
     bad.replaceWithText("[1, 2]");
     check(!commands.importShortcuts(bad, why) && why.find("not a key set") != std::string::npos, "a file that is not a key set is refused");
+    bad.replaceWithText(R"({"format": 5, "version": 1, "overrides": {}})");
+    check(!commands.importShortcuts(bad, why) && why.find("not a key set") != std::string::npos, "a format of the wrong type is refused, not thrown");
+    bad.replaceWithText(R"({"format": "adi-shortcuts", "version": "1", "overrides": {}})");
+    check(!commands.importShortcuts(bad, why) && why.find("another version") != std::string::npos, "and a version of the wrong type");
     bad.replaceWithText(R"({"format": "adi-shortcuts", "version": 1, "overrides": {"edit.redo": ["Hyper+"]}})");
     check(!commands.importShortcuts(bad, why) && why.find("edit.redo") != std::string::npos &&
               mappings->getKeyPressesAssignedToCommand(AppCommands::ToggleBrowser).size() == 1,
