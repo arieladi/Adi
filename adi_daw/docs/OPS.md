@@ -1596,8 +1596,8 @@ arrangement playback remain. Empty streams do not mask arrangement data. The cli
 must belong to the lane owner's track (including nested-device chains). Unknown
 clocks, aliases, unsupported owners and loops shorter than one session sample
 remain explicitly refused; clip-owned relative gain/modulation semantics are not
-claimed. Ramp tempos remain a reported step-tempo fallback, as in arrangement
-playback. No schema/opcode/UI change or measured Live parity claim is introduced.
+claimed. Tempo ramps are integrated as in arrangement playback (TM-TT-01).
+No schema/opcode/UI change or measured Live parity claim is introduced.
 
 Send gain automation addresses an existing track-origin `routing` row of kind
 `send`, with `owner_kind="routing"`, its row ID as `owner_id`,

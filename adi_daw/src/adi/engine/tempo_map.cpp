@@ -165,18 +165,18 @@ long double TempoMap::secondsAtPosition(long double ticks) const noexcept {
         return ticksToSeconds(highestTick);
     const auto anchor = static_cast<std::int64_t>(ticks);
     const auto start = static_cast<long double>(ticksToSeconds(anchor));
-    if (ticks == anchor) return start;
+    if (ticks == static_cast<long double>(anchor)) return start;
     const auto finish = static_cast<long double>(ticksToSeconds(anchor + 1));
-    return std::lerp(start, finish, ticks - anchor);
+    return std::lerp(start, finish, ticks - static_cast<long double>(anchor));
 }
 
 long double TempoMap::positionAtSeconds(long double seconds) const noexcept {
     if (seconds < 0) return seconds * (ticksPerQuarter * bpmAt(0)) / 60;
     const auto anchor = secondsToTicks(static_cast<double>(seconds));
-    if (anchor == highestTick) return anchor;
+    if (anchor == highestTick) return static_cast<long double>(anchor);
     const auto start = static_cast<long double>(ticksToSeconds(anchor));
     const auto finish = static_cast<long double>(ticksToSeconds(anchor + 1));
-    if (finish <= start) return anchor;
+    if (finish <= start) return static_cast<long double>(anchor);
     return static_cast<long double>(anchor) + std::clamp((seconds - start) / (finish - start), 0.0L, 1.0L);
 }
 }  // namespace adi::engine
