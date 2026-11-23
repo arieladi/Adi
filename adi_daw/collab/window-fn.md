@@ -50,6 +50,38 @@ until then a need is named by its item.
 
 ---
 
+## 2026-11-23, window-fn — PLAN ED-09: object snapping for a dragged clip (PR requested)
+
+**Window lane, read first:** this item touches the clip drag in `src/juce/ui_arrangement.cpp` (where `movingTo_` is
+set from the grid) and adds `src/adi/ui/object_snap.hpp` (no JUCE).
+
+- **What it does** (Live's object snapping; ADR-0129). With snapping on, a dragged clip's start or end lands on a
+  nearby object when it comes within a few pixels, ahead of the grid. The modifier that turns the grid off turns
+  this off too. Nothing in the engine changes.
+- **The candidates** come from the snapshot:
+  - the starts and ends of every clip on the tracks the lanes show, except the dragged ones;
+  - the locators the Arrangement draws (`locatorsOf`);
+  - the time signature changes.
+- **A clip in seconds** snaps by its start only: its length in ticks changes with the tempo where it lands.
+- **The distance** is 8 pixels, provisional until Live's is measured (M6-A6C-077).
+- **Test** (seams):
+  - the candidates, with a cycle marker, a locator in seconds and a hidden track left out;
+  - the shift, forwards and backwards;
+  - the nearer edge, either way, with the start winning a tie.
+- **Review** (three dimensions, each finding checked by a skeptic). Fixed:
+  - every marker kind was a candidate;
+  - clips on hidden tracks were candidates;
+  - a clip in seconds snapped its end by a length it does not keep;
+  - three test gaps.
+
+  Three findings refuted; one (rebuilding the candidates per mouse move) judged no worse than the handler's existing
+  walk.
+- **Run:** JUCE on, Pd off, warnings as errors (`ninja -k 0`): seams 575 checks; 27 of 27 suites; shell 3018
+  checks; 0 failures.
+
+PR requested: `window-fn/object-snap` → main, "ED-09: object snapping for a dragged clip". Depends on nothing beyond
+main.
+
 ## 2026-11-23, window-fn — PLAN SRF-01: the feed says which parameter was last moved from ADI's controls (PR requested)
 
 **Window lane, read first:** this item touches `src/adi/ui/parameter_feed.hpp` (`touched` takes a source) and
