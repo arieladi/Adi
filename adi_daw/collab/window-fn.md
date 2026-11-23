@@ -49,6 +49,60 @@ until then a need is named by its item.
 
 ---
 
+## 2026-11-23, window-fn — queue items 14 to 18 (PR requested; 14, 15, 16 and 17 land after their engine branches)
+
+**Run for the five, built together** (`ninja -k 0`, JUCE on, Pd off, warnings as errors): seams 571 checks; the 26
+window and mix suites with `note_diff`, `wav_file`, `render_queue` and `normalization` (30 of 30); shell 2958 checks;
+0 failures. **Review** (three dimensions, each finding checked by a skeptic): six findings confirmed and fixed (under
+each item), three refuted.
+
+- **Item 18, AU-01 curves** — `window-fn/automation-curves` (from main), "AU-01: draw curved automation segments as
+  the engine plays them". **Window lane, read first:** `src/adi/ui/automation_mode.hpp` (`envelopeValueAt`) and the
+  Automation Mode painter in `src/juce/ui_arrangement.cpp`.
+  - Every segment is traced every two pixels with the engine's own evaluator (SPEC 6.3.2, `curveSliceValue`): the
+    outgoing point's curve and tension, and a trimmed source's curve, measured in seconds as the engine places points
+    in samples. A linear segment bends where the tempo changes inside it.
+  - While a point is dragged, a segment keeps its trimmed source's curve only where `automation.movePoints` will
+    keep it.
+  - Test (seams): the drawn value equals `engine::valueAt` within 0.002 dB for every curve and three tensions, across
+    a tempo change inside the segment.
+  - Review fixed: linear segments were straight joins in ticks; the drag preview kept slices the move drops.
+- **Item 17, N68** — `window-fn/open-saved-path` on `engine-win/project-plugin-saved-path` `43787b7b` plus main,
+  "N68: an open after a plug-in scan loads a plug-in by its saved path".
+  - The open rule already runs a project only once a job is adopted, with no job beside it, which is exactly when
+    N68's loader probes a saved path. The comment and the shell check now say so. The stand-in discovery port
+    cannot load a real plug-in, so the load itself is engine-win's test (`scanner_discovery.hpp`).
+  - Needs row "after a discovery job, an ordinary open should still probe a saved path" closes when N68 lands.
+  - Lands after N68.
+- **Item 16, EX-06** — `window-fn/shaped-dither` on `engine-win/export-quantizer` `7a9fe563` plus main, "EX-06: the
+  Export page offers the shaped dithers". **Window lane, read first:** `src/adi/ui/export_choices.hpp` (the list's
+  names).
+  - Live's three POW-r slots are ADI's three noise-shaped dithers, listed as Shaped 1, 2 and 3 (the engine's are
+    SoX shaping tables, not POW-r).
+  - They are no longer refused, except at a rate their tables do not cover, for a 16 or 24-bit file. There the
+    engine would dither triangular without a word, so the page says so instead (review fix).
+  - Test (shell): Shaped 2 renders at a covered rate; the uncovered rate is refused; a 32-bit float file is not.
+  - Lands after `engine-win/export-quantizer`.
+- **Item 15, MI-01** — `window-fn/note-batch` on `engine/n63-ordered-note-batch` `c97f2a96` plus main, "MI-01:
+  every note batch is one note.applyDiff". **Window lane, read first:** `AdiRootComponent::submitEdits` in
+  `src/juce/ui_shell.cpp`.
+  - A batch of scalar note ops on one clip goes through `notes::prepareBatch`, which applies the legacy ops in turn,
+    each with its overlap rule. It commits as one `note.applyDiff`: the stream is written once, one op in the
+    history. A clip with no notes yet gets its stream under the next free id. Other batches are as before.
+  - The 13 checks that failed the November translator pass all pass: moved into a longer note, chop, stretch, Fit to
+    Time Range, Set Length.
+  - The shell's note checks read a step through one helper: an applyDiff step must hold one op whose sequence has as
+    many steps as the edit's legacy ops. A note added to a new clip must be one `note.applyDiff` (review fixes).
+  - Lands after N63.
+- **Item 14, N64** — `window-fn/n64-snapshot-arm` on `engine/n64-recording-snapshot` `8a32d9e3` plus main, "N64: Arm
+  and monitoring read the snapshot". **Window lane, read first:** `src/adi/ui/arm_edits.hpp` (`recordStatesOf`),
+  `src/juce/ui_shell.*`, `src/juce/ui_main.cpp`.
+  - The strips' Arm and monitoring, their actions, and the document's armed tracks for Record read the frame's
+    snapshot.
+  - The once-a-frame handoff of the session's rows and the root's `readRecordStates`/`setRecordStates` go.
+  - Lands after N64. WTS-01 2a was not run on this branch: it needs the Pd tree and the engine branch merged, and
+    the Record path reads the same states.
+
 ## 2026-11-23, window-fn — PLAN WIN-01: the function keys do functions (PR requested)
 
 **Window lane, read first:** this item touches `src/juce/ui_shell.cpp` (`AppCommands::getCommandInfo`) and a shell
