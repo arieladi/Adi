@@ -1,8 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/dsp/adi_shaper.hpp"
 #include <algorithm>
+#include <bit>
 #include <cmath>
+#include <limits>
+#include <new>
 #include <numbers>
+#if defined(_M_X64) || defined(__SSE2__)
+#include <emmintrin.h>
+#endif
 
 namespace adi::dsp {
 namespace {
@@ -38,6 +44,13 @@ void sanitizeStereo(const float* inL, const float* inR, float* outL, float* outR
         std::transform(inR, inR + frames, outR, finiteOrZero);
     }
 }
+void applyWidth(float width, float& left, float& right) noexcept {
+    if (width == 1.0f) return;
+    const float mid = 0.5f * left + 0.5f * right;
+    const float side = (0.5f * left - 0.5f * right) * width;
+    left = mid + side;
+    right = mid - side;
+}
 } // namespace
 
 AdiShaper::AdiShaper() noexcept {
@@ -64,6 +77,7 @@ void AdiShaper::prepare(double sampleRate) noexcept {
     for (auto& filter : filters_) filter.prepare(sampleRate);
     for (auto& sweep : sweeps_) (void)sweep.prepare(sampleRate);
     for (auto& drive : drives_) drive.prepare(sampleRate);
+    for (auto& pan : panHistory_) pan.prepare(sampleRate);
     for (auto& crusher : crush_) (void)crusher.prepare(sampleRate);
     driveDry_ = {};
     driveSource_ = {};
@@ -87,7 +101,8 @@ void AdiShaper::Split::prepare(double hz, double sampleRate) noexcept {
 }
 
 void AdiShaper::Split::reset() noexcept {
-    channels = {};
+    poles = {};
+    pairs = {};
     compensation = {};
 }
 
@@ -96,6 +111,46 @@ double AdiShaper::Split::pole(double input, double& state) const noexcept {
     const double low = state + increment;
     state = low + increment;
     return low;
+}
+
+AdiShaper::StageData::Bands AdiShaper::StageData::firstOrderBands(float left, float right) noexcept {
+    // Each outer band crosses its own edge first. Swapping the two filters
+    // changes the response while either cutoff moves.
+#if defined(_M_X64) || defined(__SSE2__)
+    const auto input = _mm_set_pd(right, left);
+    const auto subtract = [](__m128d a, __m128d b) { return _mm_sub_pd(a, b); };
+    const auto pole = [](__m128d signal, Split& split, std::size_t index) {
+        auto& history = split.poles[index];
+        const auto state = _mm_loadu_pd(history.data());
+        const auto delta = _mm_sub_pd(signal, state);
+        const auto increment = _mm_mul_pd(delta, _mm_set1_pd(split.coefficient));
+        const auto output = _mm_add_pd(state, increment);
+        _mm_storeu_pd(history.data(), _mm_add_pd(output, increment));
+        return output;
+    };
+    const auto asFloats = [](__m128d pair) -> std::array<float, 2> {
+        std::array<float, 4> values;
+        _mm_storeu_ps(values.data(), _mm_cvtpd_ps(pair));
+        return {values[0], values[1]};
+    };
+#else
+    using Pair = Split::StereoPole;
+    const Pair input{left, right};
+    const auto subtract = [](const Pair& a, const Pair& b) -> Pair {
+        return {a[0] - b[0], a[1] - b[1]};
+    };
+    const auto pole = [](const Pair& signal, Split& split, std::size_t index) -> Pair {
+        auto& history = split.poles[index];
+        return {split.pole(signal[0], history[0]), split.pole(signal[1], history[1])};
+    };
+    const auto asFloats = [](const Pair& pair) -> std::array<float, 2> {
+        return {static_cast<float>(pair[0]), static_cast<float>(pair[1])};
+    };
+#endif
+    const auto bass = pole(pole(input, low, 0), high, 1);
+    const auto upperHigh = subtract(input, pole(input, high, 0));
+    const auto treble = subtract(upperHigh, pole(upperHigh, low, 1));
+    return {asFloats(bass), asFloats(subtract(subtract(input, bass), treble)), asFloats(treble)};
 }
 
 void AdiShaper::Split::butterworth(double x, Integrator& state, double& low,
@@ -110,25 +165,25 @@ void AdiShaper::Split::butterworth(double x, Integrator& state, double& low,
 }
 
 AdiShaper::Split::Bands AdiShaper::Split::split(float input, std::size_t channel) noexcept {
-    auto& state = channels[channel];
+    auto& channelPairs = pairs[channel];
     if (slope == 0) {
-        const auto low = static_cast<float>(pole(input, state.poles[0]));
+        const auto low = static_cast<float>(pole(input, poles[0][channel]));
         return {low, input - low};
     }
     if (slope == 1) {
         // Both LR2 branches pass through one additional first-order allpass.
         // The aligned high branch has inverted polarity, so the sum is AP^2.
-        const double phase = 2.0 * pole(input, state.poles[0]) - input;
-        const double low1 = pole(phase, state.poles[1]);
+        const double phase = 2.0 * pole(input, poles[0][channel]) - input;
+        const double low1 = pole(phase, poles[1][channel]);
         const double high1 = phase - low1;
-        const double low = pole(low1, state.poles[2]);
-        const double high = pole(high1, state.poles[3]) - high1;
+        const double low = pole(low1, poles[2][channel]);
+        const double high = pole(high1, poles[3][channel]) - high1;
         return {static_cast<float>(low), static_cast<float>(high)};
     }
     double low1, high1, low, high, unused1, unused2;
-    butterworth(input, state.pairs[0], low1, high1, unused1);
-    butterworth(low1, state.pairs[1], low, unused1, unused2);
-    butterworth(high1, state.pairs[2], unused1, high, unused2);
+    butterworth(input, channelPairs[0], low1, high1, unused1);
+    butterworth(low1, channelPairs[1], low, unused1, unused2);
+    butterworth(high1, channelPairs[2], unused1, high, unused2);
     return {static_cast<float>(low), static_cast<float>(high)};
 }
 
@@ -146,15 +201,14 @@ float AdiShaper::Split::align(float input, std::size_t channel) noexcept {
 
 bool AdiShaper::Split::finishBlock() noexcept {
     bool repaired = false;
-    for (std::size_t ch = 0; ch < channels.size(); ++ch) {
+    for (std::size_t ch = 0; ch < pairs.size(); ++ch) {
         bool bad = false;
         const auto flush = [&bad](double& x) {
             bad |= !std::isfinite(x);
             if (std::abs(x) < 1.0e-280) x = 0;
         };
-        auto& state = channels[ch];
-        for (auto& poleState : state.poles) flush(poleState);
-        for (auto& pair : state.pairs) {
+        for (auto& history : poles) flush(history[ch]);
+        for (auto& pair : pairs[ch]) {
             flush(pair.band);
             flush(pair.low);
         }
@@ -162,7 +216,8 @@ bool AdiShaper::Split::finishBlock() noexcept {
         flush(pair.band);
         flush(pair.low);
         if (bad) {
-            state = {};
+            for (auto& history : poles) history[ch] = 0.0;
+            pairs[ch] = {};
             pair = {};
             repaired = true;
         }
@@ -171,9 +226,15 @@ bool AdiShaper::Split::finishBlock() noexcept {
 }
 
 void AdiShaper::updateSplits(StageData& stage) const noexcept {
-    stage.low.prepare(stage.lowHz, sampleRate_);
-    const double upper = stage.layout == 3 ? std::max(stage.lowHz, stage.highHz) : stage.highHz;
-    stage.high.prepare(upper, sampleRate_);
+    // The two cutoff controls span ten octaves, with half an octave
+    // reserved above the lower edge. Keep the requested Hz for later edits.
+    constexpr double bottomHz = 20.601722307054366;
+    constexpr double lowestUpperHz = bottomHz * std::numbers::sqrt2;
+    constexpr double highestLowerHz = 512.0 * lowestUpperHz;
+    const double lower = std::clamp(stage.lowHz, bottomHz, highestLowerHz);
+    const double upperFloor = stage.layout == 3 ? lower * std::numbers::sqrt2 : lowestUpperHz;
+    stage.low.prepare(lower, sampleRate_);
+    stage.high.prepare(std::max(stage.highHz, upperFloor), sampleRate_);
 }
 
 void AdiShaper::updateStep(CurveBand& band) const noexcept {
@@ -192,12 +253,21 @@ void AdiShaper::tempo(double bpm) noexcept {
 void AdiShaper::sync(double quarterNotes, bool playing) noexcept {
     if (!std::isfinite(quarterNotes) || std::abs(quarterNotes) > 0x1p52) return;
     const bool changed = playing != playing_;
+    // The host and the running clock can round the same next beat differently.
+    // Reanchoring a continuous Crush clock can move the transition into or out
+    // of full-rate sampling by one frame and change the held samples that follow.
+    const double beatRoundoff = 4.0 * std::numeric_limits<double>::epsilon()
+                              * std::max(1.0, std::abs(quarterNotes));
+    const double quarterSampleInBeats = bpm_ / (240.0 * sampleRate_);
+    const bool continuous = !changed && std::abs(quarterNotes - quarterNotes_)
+                                      <= std::min(beatRoundoff, quarterSampleInBeats);
     playing_ = playing;
     quarterNotes_ = quarterNotes;
     for (auto& stage : stages_) {
         if (!stage.enabled) continue;
+        const bool retainHoldClock = continuous && &stage == &stages_[static_cast<std::size_t>(Stage::Crush)];
         for (auto& band : stage.bands) {
-            if (band.hertz) continue;
+            if (band.hertz || (retainHoldClock && !band.secondary.constant)) continue;
             band.phase = cyclePhase(quarterNotes / band.beats);
             if (changed) updateStep(band);
         }
@@ -278,6 +348,7 @@ void AdiShaper::restart(Stage kind) noexcept {
 }
 
 void AdiShaper::resetKernels(Stage kind) noexcept {
+    if (kind == Stage::Pan) for (auto& pan : panHistory_) pan.valid = 0;
     if (kind == Stage::Filter) for (auto& filter : filters_) filter.reset();
     if (kind == Stage::Sweep) for (auto& sweep : sweeps_) sweep.reset();
     if (kind == Stage::Crush) for (auto& crusher : crush_) crusher.reset();
@@ -366,8 +437,14 @@ void AdiShaper::setMod(Param id, float value) noexcept {
 
 void AdiShaper::set(Param id, float value) noexcept {
     if (id < MasterMix || id >= Count || !std::isfinite(value)) return;
+    if (id >= PanLowDelayBlend) {
+        panHistory_[static_cast<std::size_t>(id - PanLowDelayBlend)].setBlend(value);
+        return;
+    }
+    if (id >= BaseCount) return;
     if (id == MasterMix) {
         masterMix_ = std::clamp(value, 0.0f, 100.0f) * 0.01f;
+        if (masterMix_ == 0.f) resetKernels(Stage::Pan);
         for (std::size_t i = 0; i < stages_.size(); ++i) updateStage(static_cast<Stage>(i));
         return;
     }
@@ -387,19 +464,24 @@ void AdiShaper::set(Param id, float value) noexcept {
     const auto local = index % stageParameterCount;
     if (local < stageHeaderSize) {
         if (local == 0) {
-            layout(stage, static_cast<int>(std::round(std::clamp(value, 0.0f, 3.0f))));
+            const auto selected = static_cast<int>(std::round(std::clamp(value, 0.0f, 3.0f)));
+            if (kind == Stage::Pan && stage.layout != selected) resetKernels(kind);
+            layout(stage, selected);
             return;
         }
         else if (local == 1) stage.lowHz = std::clamp(value, 20.0f, 20000.0f);
         else stage.highHz = std::clamp(value, 20.0f, 20000.0f);
         updateSplits(stage);
     } else {
-        auto& band = stage.bands[(local - stageHeaderSize) / bandParameterCount];
+        const auto bandIndex = (local - stageHeaderSize) / bandParameterCount;
+        auto& band = stage.bands[bandIndex];
         const auto control = (local - stageHeaderSize) % bandParameterCount;
         switch (control) {
         case Mix: band.mix = std::clamp(value, 0.0f, 100.0f) * 0.01f; break;
         case Clock: case Cycle: case Rate: clock(band, static_cast<BandControl>(control), value); return;
-        case Curve: band.primary.linear = value >= 0.5f; return;
+        case Curve:
+            band.primary.linear = value >= 0.5f;
+            return;
         default: {
             const float lo = kind == Stage::Pan ? -100.0f : 0.0f;
             const float hi = kind == Stage::Width ? 200.0f : 100.0f;
@@ -408,6 +490,7 @@ void AdiShaper::set(Param id, float value) noexcept {
         }
         }
         updateBand(kind, band);
+        if (kind == Stage::Pan && !band.active) panHistory_[bandIndex].valid = 0;
     }
     updateActivity(stage);
 }
@@ -428,6 +511,77 @@ float AdiShaper::Contour::at(std::uint64_t position) const noexcept {
     return points[index] + fraction * differences[index];
 }
 
+double AdiShaper::Contour::heldPanAt(std::uint64_t position) const noexcept {
+    // A held segment occupies 1,024 of the 8,192 contour samples. Only the
+    // samples next to a step need the four-point interpolation.
+    // Round the sub-cell fraction before splitting it. A host beat restored
+    // at a block boundary and one reached by phase increments can differ by
+    // a few low bits at the very same knot.
+    const auto rounded = position + (std::uint64_t{1} << 26);
+    const auto cell = static_cast<unsigned>(rounded >> 51);
+    const auto within = cell & 1023u;
+    const double a = points[cell >> 10];
+    if (within > 0 && within < 1022) return a;
+    const auto point = [&](unsigned k) { return static_cast<double>(points[(k & 8191u) >> 10]); };
+    const double l = point(cell - 1), b = point(cell + 1), r = point(cell + 2);
+    const double t = static_cast<double>((rounded >> 27) & 0xffffffu) * 0x1p-24;
+    return a + .5 * t * (b - l + t * (2*l - 5*a + 4*b - r + t * (3*(a-b) + r-l)));
+}
+
+void AdiShaper::PanHistory::prepare(double rate) noexcept {
+    head = valid = 0;
+    if (rate > 1536000.) { frames.clear(); return; }
+    // The 2 ms far-ear delay reaches 2.87 ms while the contour overshoots.
+    const auto length = static_cast<std::size_t>(std::ceil(.003 * rate)) + 2;
+    try {
+        frames.resize(std::bit_ceil(length));
+    } catch (const std::bad_alloc&) {
+        frames.clear();
+    }
+}
+
+void AdiShaper::PanHistory::setBlend(float percent) noexcept {
+    const float twice = std::clamp(percent, 0.f, 100.f) * .02f;
+    const float direct = std::max(0.f, 1.f - twice);
+    current = direct * direct * direct;
+    unity = std::max(0.f, twice - 1.f);
+}
+
+AdiShaper::PanHistory::Tap AdiShaper::PanHistory::tap(double position, double rate, bool constant) const noexcept {
+    const double height = std::clamp(.5 + .5 * position, 0., 1.);
+    const float leftGain = panGain(height), rightGain = panGain(1. - height);
+    Tap result;
+    result.gain = {leftGain + unity * (1.f - leftGain), rightGain + unity * (1.f - rightGain)};
+    if (current == 1.f || frames.empty()) return result;
+    // At the two-millisecond range a stationary contour reads a whole frame.
+    // A moving contour also interpolates between the two neighboring frames.
+    const double far = std::abs(position);
+    const double ms = far * (.710640 + far * (-.505011 + far * 1.794401));
+    const double delay = ms * (.001 * rate);
+    result.age = static_cast<std::size_t>(delay);
+    result.fraction = constant ? 0. : delay - static_cast<double>(result.age);
+    result.channel = position > 0. ? 1u : 0u;
+    return result;
+}
+
+void AdiShaper::PanHistory::process(const Tap& tap, float& left, float& right) noexcept {
+    left *= tap.gain.left;
+    right *= tap.gain.right;
+    if (frames.empty()) return;
+    frames[head] = {finiteOrZero(left), finiteOrZero(right)};
+    valid = std::min(valid + 1, frames.size());
+    const auto mask = frames.size() - 1;
+    if (tap.age != 0 || tap.fraction != 0.) {
+        const auto read = [&](std::size_t age) { return age < valid ? frames[(head-age) & mask][tap.channel] : 0.f; };
+        const float a = read(tap.age);
+        const float historical = tap.fraction == 0. ? a :
+            static_cast<float>(a + tap.fraction * (static_cast<double>(read(tap.age + 1)) - a));
+        auto& far = tap.channel == 0 ? left : right;
+        far = historical + current * (far - historical);
+    }
+    head = (head + 1) & mask;
+}
+
 void AdiShaper::DriveDryDelay::advance(float& l, float& r) noexcept {
     const auto previous = samples[index];
     // A preceding stage can overflow even with finite rack input. Do not put
@@ -441,13 +595,16 @@ void AdiShaper::DriveDryDelay::advance(float& l, float& r) noexcept {
 template <AdiShaper::Stage kind>
 void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
                        float* outL, float* outR, std::size_t frames) noexcept {
+    if constexpr (kind == Stage::Pan) {
+        for (std::size_t i = 0; i < stage.bands.size(); ++i) {
+            const auto& band = stage.bands[i];
+            if (band.active && band.primary.constant)
+                panHistory_[i].constantTap = panHistory_[i].tap(band.primary.points[0], sampleRate_, true);
+        }
+    }
     auto applyGain = [](Gain g, float& l, float& r) {
         if constexpr (kind == Stage::Width) {
-            if (g.left == 1.0f) return;
-            const float mid = 0.5f * l + 0.5f * r;
-            const float side = (0.5f * l - 0.5f * r) * g.left;
-            l = mid + side;
-            r = mid - side;
+            applyWidth(g.left, l, r);
         } else {
             l *= g.left;
             r *= g.right;
@@ -466,7 +623,7 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
             } else if constexpr (kind == Stage::Sweep) {
                 sweeps_[index].processStereo(l, r, primary, band.secondary.at(p));
             } else {
-                crush_[index].processStereo(l, r, primary, band.secondary.at(p));
+                crush_[index].processStereo(l, r, primary, band.secondary.at(p), band.secondary.constant);
             }
             if (band.blend == 0.0f) { l = dryL; r = dryR; }
             else if (band.blend != 1.0f) {
@@ -474,15 +631,29 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
                 r = dryR + band.blend * (r - dryR);
             }
         } else {
-            Gain g;
-            if (band.primary.constant) g = band.heldGains[0];
-            else if (!band.primary.linear) g = band.heldGains[static_cast<std::size_t>(p >> 61)];
-            else g = gain(kind, band.primary.at(p), band.blend);
-            applyGain(g, l, r);
+            if constexpr (kind == Stage::Pan) {
+                auto& history = panHistory_[index];
+                if (band.primary.constant) history.process(history.constantTap, l, r);
+                else {
+                    const double position = band.primary.linear ? band.primary.at(p) : band.primary.heldPanAt(p);
+                    history.process(history.tap(position, sampleRate_, false), l, r);
+                }
+                if (band.blend != 1.f) {
+                    l = dryL + band.blend * (l - dryL);
+                    r = dryR + band.blend * (r - dryR);
+                }
+            } else {
+                // An else, not a return: MSVC /WX rejects the gain path as unreachable code (C4702) for Pan.
+                Gain g;
+                if (band.primary.constant) g = band.heldGains[0];
+                else if (!band.primary.linear) g = band.heldGains[static_cast<std::size_t>(p >> 61)];
+                else g = gain(kind, band.primary.at(p), band.blend);
+                applyGain(g, l, r);
+            }
         }
     };
     if (stage.layout == 0) {
-        if constexpr (kind == Stage::Volume || kind == Stage::Pan) {
+        if constexpr (kind == Stage::Volume) {
             const auto& band = stage.bands[1];
             if (band.primary.constant) {
                 for (std::size_t i = 0; i < frames; ++i) {
@@ -523,30 +694,64 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
                 sumR += wetR;
             }
         };
-        if (hasLow) {
-            auto l = stage.low.split(midL, 0);
-            auto r = stage.low.split(midR, 1);
-            midL = l.high;
-            midR = r.high;
-            // The low band bypasses the upper split and needs its summed
-            // allpass phase for coherent three-way reconstruction.
-            if (hasHigh) {
-                l.low = stage.high.align(l.low, 0);
-                r.low = stage.high.align(r.low, 1);
+        if (flatPhase && hasLow && hasHigh) {
+            const auto split = stage.firstOrderBands(midL, midR);
+            accumulate(0, split.low[0], split.low[1]);
+            accumulate(2, split.high[0], split.high[1]);
+            midL = split.mid[0];
+            midR = split.mid[1];
+        } else {
+            if (hasLow) {
+                auto l = stage.low.split(midL, 0);
+                auto r = stage.low.split(midR, 1);
+                midL = l.high;
+                midR = r.high;
+                // Steeper three-way splits align the low band to the upper allpass.
+                if (hasHigh) {
+                    l.low = stage.high.align(l.low, 0);
+                    r.low = stage.high.align(r.low, 1);
+                }
+                accumulate(0, l.low, r.low);
             }
-            accumulate(0, l.low, r.low);
-        }
-        if (hasHigh) {
-            const auto l = stage.high.split(midL, 0);
-            const auto r = stage.high.split(midR, 1);
-            accumulate(2, l.high, r.high);
-            midL = l.low;
-            midR = r.low;
+            if (hasHigh) {
+                const auto l = stage.high.split(midL, 0);
+                const auto r = stage.high.split(midR, 1);
+                accumulate(2, l.high, r.high);
+                midL = l.low;
+                midR = r.low;
+            }
         }
         accumulate(1, midL, midR);
         outL[i] = !flatPhase ? sumL : (sumL == 0.0f ? dryL : dryL + sumL);
         outR[i] = !flatPhase ? sumR : (sumR == 0.0f ? dryR : dryR + sumR);
     }
+}
+
+bool AdiShaper::renderFixedWidth(StageData& stage, float* left, float* right, std::size_t frames) noexcept {
+    if (stage.layout != 3 || stage.low.slope != 0 || stage.high.slope != 0) return false;
+    std::array<float, 3> widths;
+    for (std::size_t i = 0; i < widths.size(); ++i) {
+        const auto& band = stage.bands[i];
+        if (!band.primary.constant) return false;
+        widths[i] = band.active ? band.heldGains[0].left : 1.0f;
+    }
+    for (std::size_t i = 0; i < frames; ++i) {
+        const float dryL = left[i], dryR = right[i];
+        const auto bands = stage.firstOrderBands(dryL, dryR);
+        float sumL = 0.0f, sumR = 0.0f;
+        const auto addBand = [&](const std::array<float, 2>& dry, float width) {
+            float l = dry[0], r = dry[1];
+            applyWidth(width, l, r);
+            sumL += l - dry[0];
+            sumR += r - dry[1];
+        };
+        addBand(bands.low, widths[0]);
+        addBand(bands.high, widths[2]);
+        addBand(bands.mid, widths[1]);
+        left[i] = sumL == 0.0f ? dryL : dryL + sumL;
+        right[i] = sumR == 0.0f ? dryR : dryR + sumR;
+    }
+    return true;
 }
 
 void AdiShaper::process(const float* inL, const float* inR, float* outL, float* outR,
@@ -561,7 +766,9 @@ void AdiShaper::process(const float* inL, const float* inR, float* outL, float* 
             if (!stage.enabled) return;
         }
         if (!stage.active && stage.layout == 0) return;
-        render<kind>(stage, outL, outR, outL, outR, frames);
+        bool rendered = false;
+        if constexpr (kind == Stage::Width) rendered = renderFixedWidth(stage, outL, outR, frames);
+        if (!rendered) render<kind>(stage, outL, outR, outL, outR, frames);
         bool repaired = false;
         if (stage.layout != 0) {
             repaired |= stage.low.finishBlock();

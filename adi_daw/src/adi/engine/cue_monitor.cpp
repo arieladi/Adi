@@ -185,6 +185,12 @@ bool CueMonitor::publish(const CueSettings& settings,double rate,int maxFrames,i
 void CueControlBatch::captureLanes(StripLaneBindings& captured) const {
     for(const auto& entry:entries_)captured.add(*entry.node,entry.image.config.lanes,entry.image.config.keepAlive);
 }
+void CueControlBatch::captureLatencies(std::map<const Node*, std::int32_t>& captured, double renderRate) const {
+    for (const auto& entry : entries_) {
+        const auto& config = entry.image.config;
+        captured.emplace(entry.target, StripNode::delayLatency(config.delaySamples, config.delayRate, renderRate));
+    }
+}
 void CueControlBatch::apply() const noexcept {
     for(const auto& entry:entries_)entry.apply(entry.target,entry.image);
 }
@@ -209,7 +215,7 @@ std::shared_ptr<const CueControlBatch> CueMonitor::prepareControls(const rows::M
             value.config.lanes=&held->lanes;value.config.keepAlive=std::move(held);
         }
         result->entries_.push_back({&found->second->gain,
-            [](void* target,const StripControlImage& image) noexcept {static_cast<CueGain*>(target)->published(image);},std::move(value),&found->second->gain.node()});
+            [](Node* target,const StripControlImage& image) noexcept {static_cast<CueGain*>(target)->published(image);},std::move(value),&found->second->gain.node()});
     }
     return result;
 }

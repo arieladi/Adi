@@ -14,6 +14,7 @@
 #include "adi/ui/momentary_latch.hpp"
 #include "adi/ui/reference_audition.hpp"
 #include "adi/ui/tap_tempo.hpp"
+#include "ui_input_clock.hpp"
 #include "adi/ui/snapshot_reader.hpp"
 #include "adi/ui/window_state.hpp"
 #include "ui_arrangement.hpp"
@@ -311,6 +312,10 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // of 500 ms or more goes back (Live 42.25).
     bool keyStateChanged(bool isKeyDown) override;
     bool command(int);
+    // Live's Insert Return Track (§18.4; Ctrl/Cmd+Alt+T): a return after the others, named by its
+    // letter, selected; the returns shown again if they were hidden. With `group`, Insert Return Track
+    // in Group (ADR-0247 d2): inside it, after what it holds, lettered with its initial ("DA").
+    bool insertReturnTrack(std::int64_t group = 0);
     void mark(unsigned bits) noexcept { dirty_.mark(bits); }
     const SnapshotReader &reader() const noexcept { return *reader_; }
     bool playing() const noexcept { return playing_; }
@@ -339,7 +344,12 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // What the Status Bar says when there is no message: Live's line for the insert
     // marker or the time selection.
     juce::String selectionText() const;
-    bool canUndo(bool redo) const { return redo ? submitter_.canRedo() : submitter_.canUndo(); }
+    // Undo can act with a knob edit still held (DF-W29): it commits it first, then takes it back, so
+    // a project's first edit is undoable at once. Redo cannot: that commit clears what Redo would do.
+    bool canUndo(bool redo) const {
+        const bool held = editsHeld && editsHeld();
+        return redo ? submitter_.canRedo() && !held : submitter_.canUndo() || held;
+    }
     // What Live's Edit menu shows: "Undo" and the step's own label, or "Nothing to Undo" with no
     // step (Live 12's menu, the director's LK-02 capture; Readings M1-16a); the same for Redo.
     std::string undoTitle(bool redo) const;
@@ -347,6 +357,11 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // the engine refresh after an edit belong to whoever owns the document.
     std::function<bool(int)> applicationCommand;
     std::function<void()> afterEdit;
+    // Commits the parameter edits the document still holds before Undo, Redo or a restored step acts
+    // (DF-W29); false, with the document's reason said, when it could not.
+    std::function<bool()> settleEdits;
+    // Whether the document holds parameter edits Undo would commit first (DF-W29).
+    std::function<bool()> editsHeld;
     // Reads a dropped file and captures its media row, writing nothing (the document's
     // `prepareImport`, #308); false with `why` when it can't. Unset, a drop says it needs one.
     std::function<bool(const std::string &utf8Path, AudioImport &, std::string &why)> importAudio;
@@ -545,6 +560,9 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     const MomentaryLatch &latch() const noexcept { return latch_; }
     void letGoUnseen() noexcept { latch_.letGo(); }
     const ReferenceAudition &reference() const noexcept { return reference_; }
+    // Where the window reads the time and the keys held (ADR-0231 d2; DF-W18): the system's unless a
+    // test gives its own.
+    InputClock input;
     // The ★ Reference track, or 0 when no track is it.
     std::int64_t referenceTrack() const noexcept;
     MixerViewResizer mixerViewResizer{*this};
@@ -773,9 +791,6 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
 
   private:
     bool insertTrack(bool midi);
-    // Live's Insert Return Track (§18.4; Ctrl/Cmd+Alt+T): a return after the others, named by its
-    // letter, selected; the returns shown again if they were hidden.
-    bool insertReturnTrack();
     bool deleteTrack();
     // Live's Group Tracks and Ungroup Tracks (manual 18.3), each one undo step.
     bool groupTracks(bool ungroup);

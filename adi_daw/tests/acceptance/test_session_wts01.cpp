@@ -221,7 +221,7 @@ void step2(Session &s, Report &report) {
     const auto underrunsBefore = driver.underruns();
     windowPlayFrom(doc, 0);
     Stereo heard;
-    driver.run(1, &heard); // the block Play starts in
+    const auto held = driver.firstPlayingBlock(heard);
     const auto firstBlockUnderruns = driver.underruns() - underrunsBefore;
     driver.run(1507, &heard);
     const auto underruns = driver.underruns() - underrunsBefore;
@@ -239,10 +239,10 @@ void step2(Session &s, Report &report) {
         }
     const auto playback = format("playback vs take max|d| %.3g at frame %zu (heard %.4f, take %.4f); %zu of %zu frames "
                                  "differ, from %zu to %zu; clip underruns %llu (%llu in the block Play starts in); "
-                                 "monitoring %s",
+                                 "monitoring %s, held %d callbacks before the first song frame",
                                  best, worstAt, heard.at(0, worstAt), s.take.at(0, worstAt), differing, s.take.size(),
                                  firstDiffering, lastDiffering, static_cast<unsigned long long>(underruns),
-                                 static_cast<unsigned long long>(firstBlockUnderruns), ui::monitorName(monitor));
+                                 static_cast<unsigned long long>(firstBlockUnderruns), ui::monitorName(monitor), held);
     const char *playbackExpected = "output == take delayed by 0 samples (max|d| <= 1e-6); the live input is not heard";
     std::string cause;
     // The same start with the locate one callback ahead of Play (the playhead already at 0 when Play comes):
@@ -387,7 +387,7 @@ void step4(Session &s, Report &report) {
     }
     windowPlayFrom(doc, 0);
     Stereo heard;
-    driver.run(24, &heard);
+    driver.runFromPlay(24, heard);
     const auto volume = [&] { return real(doc, "SELECT volume_db FROM mixer_strip WHERE track_id=4"); };
     const auto opsNow = [&] { return scalar(doc, "SELECT count(*) FROM ops"); };
     // The level heard over the last 12 of `blocks` blocks.
@@ -479,7 +479,7 @@ void step5(Session &s, Report &report) {
     const auto sendDb = real(doc, "SELECT MIN(gain_db) FROM routing WHERE kind='send' AND dst_id=6 AND src_id IN (4,5)");
     windowPlayFrom(doc, 0);
     Stereo heard;
-    driver.run(200, &heard);
+    driver.runFromPlay(200, heard);
     // x4 + x5 at each timeline sample of what was heard.
     Stereo both;
     for (std::size_t c = 0; c < 2; ++c)
@@ -513,8 +513,8 @@ void step5(Session &s, Report &report) {
                         static_cast<long long>(clip), clip > 0 ? "" : (" " + importError).c_str(), off ? 1 : 0,
                         sends.c_str(), sendDb, sum, sumGain, startBlocks, started, half, halfGain),
                  format("Main == 2(x4+x5) within 1e-6; then == %.6f(x4+x5) within 1e-6", 1 + gainOf(-12)));
-    // The group: Group Tracks with the return among the selected (ui::groupTracks), and a drag of the return
-    // into a group (ui::moveTracks) are both refused by the window today.
+    // The group: Group Tracks with the return among the selected (ui::groupTracks), as the window's command
+    // builds it (DF-W33, ADR-0247 d2). A window that refuses it has not built the rule yet.
     auto snap = doc.view().current();
     const auto refused = ui::groupTracks(snap->tracks, {4, 5, 6});
     if (!refused.refusal.empty()) {
@@ -540,7 +540,7 @@ void step5(Session &s, Report &report) {
             ++steps;
         windowPlayFrom(doc, 0);
         Stereo grouped0;
-        driver.run(200, &grouped0);
+        driver.runFromPlay(200, grouped0);
         windowStop(doc);
         driver.run(4);
         const double k = fitGain(grouped0, both, stepStart(16), grouped0.size());
@@ -557,9 +557,72 @@ void step5(Session &s, Report &report) {
                       format("the return heard inside the group: x%.4f (group x (1 + A Return's %.1f dB)); the return "
                              "straight to Main instead: x%.4f (group + return); engine with DF-E22 (#677, on main)",
                              gainOf(-12) * (1 + s.returnGain), dbOf(s.returnGain), gainOf(-12) + s.returnGain));
-    } else
-        report.step("5b", V::Fail, "Group Tracks accepted the return; this harness does not test it yet",
-                    "update the acceptance test now that grouped returns are built");
+    } else {
+        // Group Tracks with A Return selected (the window's submit): one step, the group holding 4, 5 and
+        // the return. The group's fader to -12 dB, then Play: the return sums into the group before the
+        // group's fader, so Main is the group's gain times (x4 + x5) and the return's share of them.
+        const auto group = refused.select;
+        const auto routesBefore = scalar(doc, "SELECT count(*) FROM routing");
+        int steps = 0;
+        std::string groupError;
+        const bool groupedAll = submitEdits(doc, refused.ops, &groupError);
+        if (groupedAll)
+            ++steps;
+        const auto inside =
+            scalar(doc, format("SELECT count(*) FROM tracks WHERE parent_id=%lld AND id IN (4,5,6)", static_cast<long long>(group)));
+        const bool pulledGroup = groupedAll && dragTo(doc, fader(group), -12, "Change Track Volume");
+        if (pulledGroup)
+            ++steps;
+        windowPlayFrom(doc, 0);
+        Stereo inGroup;
+        driver.runFromPlay(200, inGroup);
+        windowStop(doc);
+        driver.run(4);
+        const double expected = gainOf(-12) * (1 + s.returnGain);
+        const double k = fitGain(inGroup, both, stepStart(16), inGroup.size());
+        const double heardInside = maxDiff(inGroup, scaled(expected), stepStart(16), inGroup.size());
+        // The knobs: track 4's include the group's return; track 2, outside the group, has none for it, and
+        // the batch its knob would make is refused whole by the engine (route.groupReturnScope).
+        const auto now = doc.view().current();
+        std::vector<std::int64_t> knobs4, knobs2;
+        ui::returnsFor(now->tracks, 4, knobs4);
+        ui::returnsFor(now->tracks, 2, knobs2);
+        const bool knobInside = std::find(knobs4.begin(), knobs4.end(), 6) != knobs4.end();
+        const bool noKnobOutside = std::find(knobs2.begin(), knobs2.end(), 6) == knobs2.end();
+        auto outside = ui::setSend(*now, 2, 6, 0);
+        const auto opsBeforeOutside = scalar(doc, "SELECT count(*) FROM ops");
+        std::string outsideError;
+        const bool outsideLanded =
+            outside.refusal.empty() && !outside.ops.empty() && submitEdits(doc, std::move(outside.ops), &outsideError);
+        if (outsideLanded)
+            ++steps;
+        const bool outsideRefused = !outsideLanded && (!outside.refusal.empty() || !outsideError.empty()) &&
+                                    scalar(doc, "SELECT count(*) FROM ops") == opsBeforeOutside;
+        doc.synchronise();
+        bool restored = true;
+        for (int i = 0; i < steps; ++i)
+            restored = restored && doc.ops().undo().ok;
+        doc.synchronise();
+        restored = restored && scalar(doc, "SELECT count(*) FROM tracks WHERE parent_id IS NOT NULL") == 0 &&
+                   scalar(doc, "SELECT count(*) FROM tracks") == 7 &&
+                   scalar(doc, "SELECT count(*) FROM routing") == routesBefore;
+        report.check("5b",
+                     groupedAll && inside == 3 && pulledGroup && heardInside <= 1e-6 && knobInside && noKnobOutside &&
+                         outsideRefused && restored,
+                     format("Group Tracks with A Return selected: %s; group %lld holds %lld of 4, 5, 6; group at -12 dB "
+                            "%d; Main vs %.6f(x4+x5) max|d| %.3g from block 16 (gain x%.6f); track 4 has a knob for A "
+                            "Return %d, track 2 none %d; track 2's send into A Return %s; %d steps undone, project back %d",
+                            groupedAll ? "one step" : ("refused: " + groupError).c_str(), static_cast<long long>(group),
+                            static_cast<long long>(inside), pulledGroup ? 1 : 0, expected, heardInside, k,
+                            knobInside ? 1 : 0, noKnobOutside ? 1 : 0,
+                            outsideLanded ? "accepted"
+                                          : ("refused: " + (outside.refusal.empty() ? outsideError : outside.refusal)).c_str(),
+                            steps, restored ? 1 : 0),
+                     format("tracks 4, 5 and A Return in one group, one step; the return heard inside it: Main == %.6f(x4+x5) "
+                            "(group x (1 + A Return's %.1f dB)) within 1e-6, not x%.6f (the return straight to Main); a "
+                            "send from outside refused, with no knob for it; Undo restores the project",
+                            expected, dbOf(s.returnGain), gainOf(-12) + s.returnGain));
+    }
 }
 
 // 6. One automated parameter: a track's Volume (Automation Mode), and a built-in device's parameter.
@@ -589,7 +652,7 @@ void step6(Session &s, Report &report) {
     const auto env = ui::trackEnvelope(*snap, 4);
     windowPlayFrom(doc, 0);
     Stereo heard;
-    driver.run(1500, &heard);
+    driver.runFromPlay(1500, heard);
     windowStop(doc);
     driver.run(4);
     // Main = (1 + return)(g4 x4 + x5): g4 per block, against the envelope at the block's middle.
@@ -655,7 +718,7 @@ void step6(Session &s, Report &report) {
     doc.parameterFeed().setDemand(&demandOwner, {});
     windowPlayFrom(doc, 0);
     Stereo gained;
-    driver.run(1500, &gained);
+    driver.runFromPlay(1500, gained);
     windowStop(doc);
     driver.run(4);
     double first = 0, second = 0, spread = 0, spreadGain = 0;
@@ -717,7 +780,7 @@ void step7(Session &s, Report &report) {
     const auto playTwice = [&](ui::ProjectDocument &d, Stereo &first, Stereo &second) {
         for (auto *heard : {&first, &second}) {
             windowPlayFrom(d, 0);
-            driver.run(static_cast<int>(liveBlocks), heard);
+            driver.runFromPlay(static_cast<int>(liveBlocks), *heard);
             windowStop(d);
             driver.run(4);
         }
