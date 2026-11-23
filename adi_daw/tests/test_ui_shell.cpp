@@ -9230,7 +9230,12 @@ void returnInGroup(AppCommands &commands, const std::filesystem::path &dir) {
     root.frame();
     root.frame();
     const auto grouped = returns(40);
-    const auto *made = grouped.size() == 1 ? root.reader().findTrack(grouped.front()) : nullptr;
+    // A copy of the return's node: the reader's snapshot is replaced at a later refresh, and a pointer
+    // into it would dangle for the checks below (main's frame-snapshot handoff frees it sooner).
+    const auto *found = grouped.size() == 1 ? root.reader().findTrack(grouped.front()) : nullptr;
+    const std::optional<engine::TrackNode> madeCopy =
+        found != nullptr ? std::optional<engine::TrackNode>(*found) : std::nullopt;
+    const engine::TrackNode *made = madeCopy ? &*madeCopy : nullptr;
     check(made != nullptr && made->name == "DA Return" && returns(0) == topBefore &&
               document->ops().nextUndo() && document->ops().nextUndo()->label == "Insert Return Track in Group",
           "a return inside Drums, named DA, the top-level returns untouched, one undo step");
