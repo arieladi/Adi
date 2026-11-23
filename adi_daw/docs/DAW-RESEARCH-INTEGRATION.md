@@ -55,7 +55,7 @@ The 610-entry Live contents inventory retains stable IDs and now links 373 entri
 
 358 additional research contracts across 62 named devices, each with source, ADI implication, evidence status and a paired unexecuted case. [Live v0.7](daws/ableton-12.md) now includes all 42 native audio effects, four Max audio effects, eight native MIDI effects, six Max MIDI effects, and the explicitly named Sampler/Simpler exceptions. Other built-in instruments remain excluded. Historical exclusions describe earlier passes and are superseded for this scope.
 
-A7A/A7B/A7M describe device behavior and edge cases; A7R adds bounded preset/schema and Push controls; A7N records selected REA/Ghidra observations. The private DEVICE-RESEARCH-MISSIONS-7.md contains matching cases and nine device censuses. Thirteen original fixtures supply precise audio/event inputs, with all runtime results NOT RUN. Earlier host gaps and all L01–L10 questions stay open.
+A7A/A7B/A7M describe device behavior and edge cases; A7R adds bounded preset/schema and Push controls; A7N records selected static-inspection observations. The private milestone-7 mission file contains matching cases and nine device censuses. Thirteen original fixtures supply precise audio/event inputs, with all runtime results NOT RUN. Earlier host gaps and all L01–L10 questions stay open.
 
 Current FEATURES/decisions/parity remain authoritative. ADR-0169 defines the existing device priorities; ADR-0187 candidates remain candidates. ADR-0203 d7 governs randomness, and ADR-0207 d2 already sets ADI precision. These findings add no priority, DSP implementation or new ADR. The manual and bounded installed-file evidence do not prove factory defaults, exact DSP curves, numeric latency, audio equivalence or CPU advantage.
 

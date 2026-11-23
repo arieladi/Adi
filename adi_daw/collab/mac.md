@@ -2176,10 +2176,10 @@ completes; nothing blocks 7.1.
 
 ### Two resources from win (2026-09-29) — use them before deriving anything
 
-- **Parity checklist rows come from the A2000, checked.** It is turning the Live
+- **Parity checklist rows come from the drone, checked.** It is turning the Live
   12 manual into rows (behaviour, page, verbatim quote). **Ask win for the
   chapter's rows before building a piece**; do not write them from scratch.
-  Writing a second checklist for a behaviour the A2000 has already covered is
+  Writing a second checklist for a behaviour the drone has already covered is
   ADR-0108's duplication arriving from a new direction — and mine would be the
   unchecked one.
 - **GUI reference maps** of helio-sequencer (JUCE, the closest cousin), Ardour's

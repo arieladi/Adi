@@ -18,7 +18,7 @@ MSVC `/WX` and Linux are not run here; the `Step 7 UI` workflow runs all three.
 
 **The Live 12 manual.** `reference/DOCS/_text/Ableton_live12/` is not on this Mac. The parity
 checklists are drafted from `adi_daw/References/live12-manual-en.pdf` in the director's main
-checkout, read to text locally; pages cited are the PDF's. Where the A2000's rows exist, they win.
+checkout, read to text locally; pages cited are the PDF's. Where the drone's rows exist, they win.
 The checklists live in `collab/window/parity-*.md`, one per item, in that item's PR.
 
 ---

@@ -84,8 +84,8 @@ these; it never contradicts them on purpose.
   short (JUCE). CI builds seven ABIs including macOS and Linux on every PR.
 - **The Mac and Linux versions are built immediately after the Windows version works, and alongside
   it wherever that is easier (ADR-0203 d23).** Not "after the suite ships".
-- Python 3 with `python-docx`, `pypdf`, `Pillow` for the document tools; a local LLM (qwen2.5-coder
-  on the drone) for mechanical edits only, never review.
+- Python 3 with `python-docx`, `pypdf`, `Pillow` for the document tools; a local LLM
+  for mechanical edits only, never review.
 
 ## 4. What is built (read off `main`, 2026-10-12)
 
