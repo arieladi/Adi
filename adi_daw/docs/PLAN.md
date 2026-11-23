@@ -3582,6 +3582,10 @@ Live reading named in a card is NOT RUN.
 - **Research IDs:** A11N-001; A6H-042; A8D-001, A8D-022; N11H-006, N11H-035, N11H-036, N11H-037; B-G01; M6-A6H-042..051; hosts10 portable-rack-boundary; hosts11 rack-relationship-rewrite.
 - **Unresolved test (NOT RUN):** `test_session.cpp`'s rack fixture inverted (nothing skipped, the nested device realised); two chains at 0 and 64 samples line up, and the rack reports 64; a nested rack lines up too; an empty chain passes dry; mute, solo and volume ramp without a rebuild; a nested device's automation plays (`test_param_automation.cpp:467` inverted); **Live 12 readings:** whether a rack with no chains passes or mutes; the chain pan law; M6-A6H-042..051, NOT RUN.
 - **Cross-check and this plan:** Win amends ADR-0060 d1's mechanism (devices K4); side tables only.
+  **ADR-0253 (23 November) is that amendment.** It takes Live's rack behaviour: an Instrument Rack consumes
+  notes and carries no audio through its dry leg; a rack switched off stops calculating its children; Drum
+  and MIDI Effect Racks stay skipped and named until DEV-04 and DF-E74; chain volume and pan are DF-E73; an
+  Audio Effect Rack with no chains is DF-E75.
   ADR-0249 d3 brings the row forward from P2 to R, right after 3 December: the director's own racks
   need it, with DEV-03, DEV-06 and DEV-07.
 

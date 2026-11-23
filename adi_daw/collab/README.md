@@ -6,7 +6,7 @@ before your first commit, and re-read it if you have been away.
 
 ## Roster
 
-As of 23 November 2026 (ADR-0208, ADR-0236, ADR-0246 d4 and d5, ADR-0247 d5, ADR-0248 d3 and d14, ADR-0249 d8, ADR-0252).
+As of 23 November 2026 (ADR-0208, ADR-0236, ADR-0246 d4 and d5, ADR-0247 d5, ADR-0248 d3 and d14, ADR-0249 d8, ADR-0252, ADR-0253).
 Each seat writes only its own log, on its own log branch; win lands the logs with the seat's work.
 The window-fn seat runs since 19 November (ADR-0248 d14); its split with the window lane is ruled by win on 22 November (below).
 The gemini seat, a trial from 22 November, is permanent since 23 November (ADR-0252).
@@ -339,6 +339,7 @@ subject, say so in your log instead of writing it twice.
 | 0250 | win | `win/adr-0249-racks-forward` | an interrupted recording comes back (Q-I); Live's three Pow-r slots are Shaped 1, 2 and 3 (Q-J) (director) | used |
 | 0251 | win | `win/adr-0251-classic-scope` | the classic scope keeps its source's own images and is named Classic Scope (director) | used |
 | 0252 | win | `win/adr-0252-gemini-seat` | the gemini seat is permanent: the verification seat; engine PLAN rows after 3 December on loan, reviewed by the engine; win's pick of SRF-09, SRF-10, PD-15 and CO-01 (director) | used |
+| 0253 | win | `win/adr-0253` | a rack is spliced into its track's graph (ADR-0060 d1 amended for DEV-01); Live's rack kinds, notes and rack-off; ADR-0122 d8 narrowed | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a

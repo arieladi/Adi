@@ -6,6 +6,30 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-23, night (second entry) — ADR-0253 for DEV-01; the engine seat's reservations
+
+**ADR-0253** (on this PR): the amendment of ADR-0060 d1 the engine's queue (item 9) waited on. A rack is spliced into
+its track's graph: router, chain gates, chains in series, chain strips, a dry leg, a double-precision sum. Win read
+`engine/dev01-rack-playback` (cb8b4fb6) against Live's manual (ch. 24), and the ADR takes Live's way where the branch
+differs, so **the branch changes before it lands** (d10): an Instrument Rack consumes notes and carries no audio through
+its dry leg; a rack switched off stops calculating its children (ADR-0203 d4); Drum Racks, MIDI Effect Racks and unknown
+kinds stay skipped and named; stored zones are named until DEV-02. New rows: DF-E73 (chain volume and pan), DF-E74
+(MIDI Effect Racks merge their chains), DF-E75 (an empty Audio Effect Rack: the Live reading). The draft was read by a
+second, skeptical reader, whose corrections are in.
+
+**Reserved** (`collab/RESERVATIONS.md`): `noteExpression.write` and `noteExpression.clear` for MI-08 (engine queue item
+19, asked since 19 November; both already in OPS.md §9.5; DF-W12's gain and pan are existing dimensions). Schema **1.24**
+for DEV-06's rack macro side tables (asked 22 November) and **1.25** for DEV-07's route tables, in landing order (ADR-0249
+d3). Minors land in order with no gap (check 9): a minor that lands sooner takes the lower number and the reserved rows
+move up, recorded there. 1.22 (#651) and 1.23 (#677) and their ops are marked landed. The register-id table is current.
+
+**Still open for win from the engine's log:** RE-03's and TM-WT-02's op names, TM-WT-02's settings and transients minor,
+the TM-IC-01 drop-frame table (all after 3 December).
+
+**Next free:** schema 1.26, ADR-0254, DF-E76, DF-W41, DF-M68.
+
+---
+
 ## 2026-11-23, night — win covers the engine lane until its limit resets; main green
 
 **The director's order:** win takes the engine lane until the engine seat's next limit reset. Win does not write
