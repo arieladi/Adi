@@ -230,7 +230,8 @@ int usage() {
 
 bool parse(int argc, char** argv, Options& o) {
     const auto bounded=[](const char* text,int minimum,int maximum,int& value) {
-        if(!text)return false;const auto length=std::char_traits<char>::length(text);
+        if(!text)return false;
+        const auto length=std::char_traits<char>::length(text);
         const auto result=std::from_chars(text,text+length,value);
         return result.ec==std::errc{} && result.ptr==text+length && value>=minimum && value<=maximum;
     };
