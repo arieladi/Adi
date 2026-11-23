@@ -3118,15 +3118,18 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
         // turns this off too.
         if (view.snaps(e.mods))
             if (const auto current = view.root.current()) {
+                // A clip in seconds keeps its seconds where it lands, so its length in ticks there is not its
+                // length here: only its start snaps.
                 std::int64_t length = 0;
                 for (const auto &t : current->tracks)
                     if (t)
                         for (const auto &c : t->clips)
-                            if (c && c->id == moving_)
+                            if (c && c->id == moving_ && c->timeBase == 0)
                                 length = c->lengthTicks;
-                const auto candidates = snapCandidates(*current, [this](std::int64_t clip) {
-                    return clip == moving_ || view.geometry.clipSelected(clip);
-                });
+                const auto &hidden = view.geometry.hidden;
+                const auto candidates = snapCandidates(
+                    *current, [this](std::int64_t clip) { return clip == moving_ || view.geometry.clipSelected(clip); },
+                    [&hidden](std::int64_t track) { return std::find(hidden.begin(), hidden.end(), track) != hidden.end(); });
                 const auto near = std::llabs(view.geometry.tick(e.x + kObjectSnapPixels) - view.geometry.tick(e.x));
                 if (const auto shift = objectSnap(candidates, raw, length, near))
                     movingTo_ = std::max<std::int64_t>(0, raw + *shift);
