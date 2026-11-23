@@ -464,15 +464,20 @@ private:
     std::int32_t latency_;
 };
 // Runs a one-bar record count-in at 120 BPM in 4/4 (one beat is 24000 frames
-// at 48 kHz) through a Main source of `latency` samples, and returns the Cue
-// pair's left channel from the first count-in frame on. Every callback runs
-// inside the audio-thread scope, so it also counts callback allocations.
+// at 48 kHz) through a Main source of `latency` samples in callbacks of
+// `callback` frames, and returns the Cue pair's left channel from the first
+// count-in frame on. Every callback runs inside the audio-thread scope, so it
+// also counts callback allocations. Between callbacks, once `breakAt` frames
+// have played, `interrupt` stops and restarts the roll, locates it while it
+// plays, or stops and restarts the device at the same format.
 struct CountInRun {
     std::vector<float> audio;
     unsigned allocations = 0, frees = 0;
     bool started = false;
 };
-CountInRun runCountIn(Precision width, std::int32_t latency, bool metronome, int frames) {
+enum class Interrupt { none, restart, locate, deviceStop };
+CountInRun runCountIn(Precision width, std::int32_t latency, bool metronome, int frames,
+                      int callback = 128, Interrupt interrupt = Interrupt::none, int breakAt = 0) {
     CountInRun run;
     Fixture f;
     check(f.op("transport.setCountIn", {{"bars", 1}}).ok &&
@@ -507,14 +512,28 @@ CountInRun runCountIn(Precision width, std::int32_t latency, bool metronome, int
     if (width == Precision::Float64)
         io.out64 = wide;
     const auto alloc = callbackStartAllocations.load(), freed = callbackStartFrees.load();
-    {
-        audio::CallbackScope scope;
-        for (int at = 0; at < frames;) {
-            io.frames = std::min(frames - at, 128);
-            session.process(io);
-            std::copy_n(l.begin(), io.frames, run.audio.begin() + at);
-            at += io.frames;
+    for (int at = 0; at < frames;) {
+        if (interrupt != Interrupt::none && at == breakAt) {
+            check(session.transport().playing() && session.transport().countInRemaining() == 0,
+                  "the interruption comes after the count-in, while the roll plays");
+            if (interrupt == Interrupt::restart) {
+                session.transport().play(false);
+                session.transport().play();
+            } else if (interrupt == Interrupt::locate) {
+                session.transport().locate(4800);
+            } else {
+                session.release();
+                session.prepare(48000, 128);
+                session.transport().play();
+            }
         }
+        io.frames = std::min(frames - at, callback);
+        {
+            audio::CallbackScope scope;
+            session.process(io);
+        }
+        std::copy_n(l.begin(), io.frames, run.audio.begin() + at);
+        at += io.frames;
     }
     run.allocations = callbackStartAllocations.load() - alloc;
     run.frees = callbackStartFrees.load() - freed;
@@ -586,6 +605,39 @@ void countInCompensated() {
               "above one beat of latency the count-in keeps its immediate grid");
         check(silent(run.audio, 96000, 30000) && audible(run.audio, 126000, 80),
               "above one beat the roll waits for the compensated bar one, unchanged");
+
+        // A callback of 127 frames ends the count-in inside it (96000 is not a
+        // multiple of 127): the split prefix call sets the tail and the same
+        // callback's remainder already plays it.
+        run = runCountIn(width, 24000, false, 96000 + 24000 + 24000, 127);
+        bool whole = run.started && run.audio.size() == 144000;
+        for (std::size_t k = 0; whole && k < 600; ++k)
+            whole = std::abs(run.audio[95885 + k] - run.audio[47885 + k]) < 1e-6f;
+        check(whole && audible(run.audio, 96000, 80),
+              "the last count-in click plays whole across the callback that ends the count-in");
+        check(!audible(run.audio, 100000, 44000) && silent(run.audio, 120000, 24000),
+              "after a crossing callback nothing clicks with the metronome off");
+        check(run.allocations == 0 && run.frees == 0,
+              "the crossing callback's tail allocates nothing");
+        run = runCountIn(width, 23950, true, 96000 + 23950 + 24000, 127);
+        whole = run.started && audible(run.audio, 95950, 50) && run.audio.size() > 96300;
+        for (std::size_t k = 0; whole && k < 300; ++k)
+            whole = std::abs(run.audio[95950 + k] - run.audio[47950 + k]) < 1e-6f;
+        check(whole && silent(run.audio, 119900, 50) && audible(run.audio, 119950, 80),
+              "a crossing callback carries the near-beat click into bar one's accent");
+
+        // The tail belongs to the roll the count-in started: a stop and Play,
+        // or a Locate while playing, a few callbacks into it does not play the
+        // last count-in click again; a device stop clears what it still owed.
+        run = runCountIn(width, 24000, false, 96256 + 30000, 128, Interrupt::restart, 96256);
+        check(run.started && audible(run.audio, 96000, 80) && silent(run.audio, 96256, 30000),
+              "stop and Play during the tail leave the new roll silent");
+        run = runCountIn(width, 24000, false, 96256 + 30000, 128, Interrupt::locate, 96256);
+        check(run.started && audible(run.audio, 96000, 80) && silent(run.audio, 96256, 30000),
+              "a Locate during the tail leaves the located roll silent");
+        run = runCountIn(width, 24000, false, 96000 + 30000, 128, Interrupt::deviceStop, 96000);
+        check(run.started && audible(run.audio, 72000, 80) && silent(run.audio, 96000, 30000),
+              "a device stop as the roll starts clears the count-in's owed click");
     }
 }
 AudioRecordingResult finishStartRecording(AudioInputRecorder &recorder) {
