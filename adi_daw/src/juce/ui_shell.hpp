@@ -376,6 +376,9 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // Tap Tempo's run as the document's quiet gesture (HI-01): the tempo heard at each tap, one undo step once
     // the taps stop. Unset (outside the application), each tap's value is committed as before.
     std::function<bool(double bpm, std::int64_t eventTick, std::int64_t nowMs)> tapTempoGesture;
+    // Ends a Tap Tempo run at once, its step committed (before Undo, Redo or a jump in the history, which an open
+    // gesture refuses). False with the reason said.
+    std::function<bool()> endTapTempoGesture;
     std::function<bool()> reenableAutomation;
     // Live's per-parameter Re-Enable Automation (manual 25.4; AU-04): one overridden lane follows its
     // envelope again; false with the reason said. Session state, no undo step, as the global switch.
@@ -656,6 +659,8 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // tempo follows the taps. A run is one undo step ("Tap Tempo"): each tap replaces the run's step
     // while it is still the latest.
     bool tapTempo(std::int64_t nowMs);
+    // A Tap Tempo run ends now (HI-01): its value committed as one step, the next tap a new run.
+    void endTapRun();
     // Live's Arrangement Position fields (manual 6.1): "Adjusting the Arrangement Position fields
     // automatically moves the insert marker". A position typed, bar.beat.sixteenth in the project's
     // meters, puts the insert marker and the playhead there; up and down step a bar from the play

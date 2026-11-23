@@ -1066,14 +1066,19 @@ bool ProjectDocument::tapTempo(double bpm, std::int64_t eventTick, std::uint64_t
     error_.clear();
     return true;
 }
-void ProjectDocument::pollTapTempo(std::uint64_t nowMs) {
+bool ProjectDocument::pollTapTempo(std::uint64_t nowMs) {
     if (!tap_)
-        return;
+        return true;
     const auto polled = tap_->poll(nowMs);
-    if (polled.ended) {
-        tap_.reset();
-        synchronise();
+    if (!polled.ended)
+        return true;
+    tap_.reset();
+    synchronise();
+    if (!polled.ended->status.ok()) {
+        error_ = "Tap Tempo was not kept: " + polled.ended->status.message;
+        return false;
     }
+    return true;
 }
 bool ProjectDocument::endTapTempo() {
     if (!tap_)

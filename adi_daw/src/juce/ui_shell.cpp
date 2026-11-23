@@ -2917,6 +2917,7 @@ bool AdiRootComponent::setSoloInPlace(bool on) {
     return true;
 }
 bool AdiRootComponent::restoreStep(std::int64_t txnId) {
+    endTapRun();
     const auto result = submitter_.restore(txnId);
     if (!result.ok)
         return fail(result.error.empty() ? "That step could not be restored." : result.error);
@@ -3231,6 +3232,11 @@ bool AdiRootComponent::setMeterAtPlay(const std::string &text) {
         return submitStartEdit(std::move(edit.ops), setMeterAt(current->meters, at, text, true).ops);
     return submitEdits(std::move(edit.ops));
 }
+void AdiRootComponent::endTapRun() {
+    tapBpm_ = 0;
+    if (endTapTempoGesture)
+        (void)endTapTempoGesture();
+}
 bool AdiRootComponent::tapTempo(std::int64_t nowMs) {
     const auto bpm = tap_.tap(nowMs);
     if (!bpm) {
@@ -3239,7 +3245,8 @@ bool AdiRootComponent::tapTempo(std::int64_t nowMs) {
         return true;
     }
     const double value = std::round(std::clamp(*bpm, kMinTempo, kMaxTempo) * 100) / 100;
-    if (std::abs(value - tapBpm_) < .005)
+    // A tap that gives the same tempo still keeps the run going, as one gesture (HI-01).
+    if (std::abs(value - tapBpm_) < .005 && !tapTempoGesture)
         return true;
     if (tapTempoGesture) {
         // The event in force at the playhead, as Change Tempo picks it; the gesture keeps it for the run.
@@ -3427,6 +3434,7 @@ bool AdiRootComponent::command(int id) {
     if (id == AppCommands::Undo || id == AppCommands::Redo) {
         mixViewPanel.stack.cancelInteractions();
         devices.cancelFunctionInteractions();
+        endTapRun();
     }
     if (mixViewPanel.stack.hasDeviceContext()) {
         if (id == AppCommands::Cut || id == AppCommands::Copy || id == AppCommands::Paste ||

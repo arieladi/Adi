@@ -792,9 +792,15 @@ void tapTempoQuiet(const std::filesystem::path &dir) {
     now += 10000;
     check(doc->tapTempo(90, 0, now) && doc->tapTempo(91, 0, now + 3000) && doc->tapping(),
           "a late tap begins a new run");
-    check(doc->endTapTempo() && !doc->tapping() && std::abs(heardBpm() - 91) < 1e-9 &&
-              History(doc->store()).readTimeline().branches.size() <= 2,
-          "two runs, two steps; ended at once by endTapTempo");
+    const auto opsBeforeEnd = ops();
+    check(doc->endTapTempo() && !doc->tapping() && std::abs(heardBpm() - 91) < 1e-9 && ops() > opsBeforeEnd &&
+              doc->ops().nextUndo() && doc->ops().nextUndo()->label == "Tap Tempo",
+          "the late tap's run ends at once with endTapTempo, as its own step at 91");
+    check(doc->ops().undo().ok && doc->synchronise() && std::abs(heardBpm() - 90) < 1e-9 && doc->ops().canUndo() &&
+              doc->ops().nextUndo()->label == "Tap Tempo",
+          "two runs, two steps: one Undo goes back to the first run's 90, a step that is still there");
+    check(History(doc->store()).readTimeline().error.empty() && doc->pollTapTempo(now + 100000),
+          "and with no run open, a poll has nothing to end");
 }
 // MX-23 and SRF-02: a fader dragged is heard while it moves, writes nothing until the mouse lets go, then
 // lands as one undo step; Esc puts it back (Live 12 manual 18.1).

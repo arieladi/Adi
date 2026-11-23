@@ -189,7 +189,8 @@ class ProjectDocument final : public engine::BlockProcessor {
     // start's 120 can be the snapshot's own), the run inserts one there. `nowMs` and `pollTapTempo`'s clock are
     // one monotonic clock; the run ends `TapTempo::kPauseMs` after its last tap, or at `endTapTempo`.
     bool tapTempo(double bpm, std::int64_t eventTick, std::uint64_t nowMs);
-    void pollTapTempo(std::uint64_t nowMs);
+    // False when the run ended and its step was refused; `error()` says why, and the tempo goes back.
+    bool pollTapTempo(std::uint64_t nowMs);
     bool endTapTempo();
     bool tapping() const noexcept { return tap_ != nullptr; }
     // Auto Gain Stage (ADR-0195 d4): one offline command, one undo step.
