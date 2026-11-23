@@ -10075,6 +10075,16 @@ void stripParamUndo(AppCommands &commands, const std::filesystem::path &dir) {
     check(root.undoTitle(false) == "Undo UI knobs: Cutoff" && root.error().empty() &&
               std::abs(root.devices.panels[0]->controls[0]->slider.getValue() - .8) < 1e-9,
           "mouse up: ONE undo step, named for the device and its control, and the knob stays where it was left");
+    {
+        // SRF-01: the feed names who moved it last: ADI's own control, and only that parameter.
+        int mouse = 0;
+        if (const auto feed = document->parameterFeed().current())
+            for (const auto &device : *feed)
+                if (device.id == 3)
+                    for (const auto &record : device.records)
+                        mouse += record.lastTouchedBy == panel::Source::Mouse ? 1 : 0;
+        check(mouse == 1, "the feed says Cutoff was last moved from ADI's own control, and nothing else was");
+    }
     if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
         juce::Image picture(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
         {

@@ -890,6 +890,9 @@ bool ProjectDocument::parameterGesture(std::int64_t id, const std::string &param
         // untouched, and never send an End to an authored id's replacement.
         (void)parameterOps_.cancelPending(*newOwner, captureNowMs());
     }
+    // The parameter was moved from ADI's own control (SRF-01): the feed says so at its next publish.
+    if (taken)
+        feed_.touched(id, param);
     // A value taken overrode its lane with no op (ADR-0162): the snapshot says so before any
     // frame, so Re-Enable Automation lights with the knob's move.
     followOverrides();
