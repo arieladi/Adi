@@ -1129,6 +1129,35 @@ void sendsAsBatches() {
     check(sub.undo().ok && ui::findSend(view.current()->sends, 2, 10) == nullptr, "and then removes the row");
     check(sub.redo().ok && ui::findSend(view.current()->sends, 2, 10) != nullptr, "redo");
 
+    // MX-06: a pan on a send, one undo step. On a row, its pan; with no row, the row first, fully down, so the pan
+    // alone makes nothing heard; a pan that would not change writes nothing.
+    {
+        auto panned = ui::setSendPan(*view.current(), 2, 10, -.5);
+        check(panned.refusal.empty() && panned.ops.size() == 1 && panned.ops[0].opType == "routing.setPan" &&
+                  panned.ops[0].payload["id"] == first && panned.ops[0].payload["pan"] == -.5 &&
+                  sub.submit(std::move(panned.ops)).ok && ui::findSend(view.current()->sends, 2, 10)->pan == -.5 &&
+                  sub.nextUndo()->label == "Change Send Panning",
+              "Kick's send A panned 50L: one op on its row, one undo step");
+        check(ui::setSendPan(*view.current(), 2, 10, -.5).ops.empty(), "the same pan again writes nothing");
+        check(ui::setSendPan(*view.current(), 2, 10, -7).ops.size() == 1 &&
+                  ui::setSendPan(*view.current(), 2, 10, -7).ops[0].payload["pan"] == -1.0,
+              "past the left stops at Left");
+        check(ui::setSendPan(*view.current(), 3, 10, 0).ops.empty(), "a send with no row is centred already");
+        auto fresh = ui::setSendPan(*view.current(), 3, 10, 1);
+        const bool silent = std::any_of(fresh.ops.begin(), fresh.ops.end(), [](const OpRequest &o) {
+            return o.opType == "routing.setGain" && o.payload["db"] == ui::kSendSilenceDb;
+        });
+        check(fresh.ops.size() >= 3 && fresh.ops.front().opType == "routing.connect" && silent &&
+                  fresh.ops.back().opType == "routing.setPan" && fresh.ops.back().payload["pan"] == 1.0 &&
+                  sub.submit(std::move(fresh.ops)).ok && ui::findSend(view.current()->sends, 3, 10) != nullptr &&
+                  ui::findSend(view.current()->sends, 3, 10)->gainDb == ui::kSendSilenceDb &&
+                  ui::findSend(view.current()->sends, 3, 10)->pan == 1.0,
+              "a send with no row panned Right: the row made fully down, then panned, as one step");
+        check(sub.undo().ok && ui::findSend(view.current()->sends, 3, 10) == nullptr && sub.undo().ok &&
+                  ui::findSend(view.current()->sends, 2, 10)->pan == 0.0,
+              "undo takes both back");
+    }
+
     // A second send gets the next id.
     auto second = ui::setSend(*view.current(), 3, 11, -6);
     check(second.ops.size() == 2 && second.ops[0].payload["id"] == first + 1 && sub.submit(std::move(second.ops)).ok &&
