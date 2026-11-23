@@ -6,6 +6,57 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-23, evening — the landing window of 23 November is on main (#733); nine rows closed
+
+**Landed** as one stack through its top, #733 (c0a8f9bb4): #722 engine-win, #729 engine, #730 window, #731 Mix
+View, #732 devices, #733 clones. #729 to #732 are closed as landed; #665 is closed (superseded by
+`engine-win/hosted-workers-current-main`). The first build of this stack (#723 to #728) carried rows that come
+after 3 December by the queues' own wording, so it was rebuilt without them (`-1123b`) and those PRs closed.
+- **engine-win:** play-first-block (DF-E64), take-lane-snapshot (DF-E35 (a)), take-lane-edit-scope (CT-01),
+  recording-placement-offset (MX-09), midi-loop-takes (CT-03), hosted-workers-current-main and
+  worker-rejection-evidence (DEV-23).
+- **engine:** empty-project-cost, mx23-track-delay-preview (MX-23, joined to the cost work), the DF-E17 edit
+  invariants.
+- **window:** return-in-group (DF-W33), input-clock (DF-W18), menu-parameters (DF-W19), undo-settles (DF-W29),
+  grid-ticks (DF-W30), function-keys (WIN-01, with the `browserDevices` fixture under Pd).
+- **Mix View:** the cumulative branch of 22 November (DF-M62, Focus FIR work for DF-M13, the neutral EQ for
+  DF-M34, DF-M36's compressor test).
+- **devices:** perf-sampler, perf-debug-timeout (DF-E68 (c)), denormal-tail, shifter-nan.
+- **clones:** nine ADI-Shaper repairs, with win's casts and one `else` (C4702).
+- **win's own fixes on the links:** WTS-01's harness (a pending Play keeps the song position at 0; silence is
+  required only when no track monitors while stopped), `test_ui_document`'s `primeAt`, a Clang 14 capture in
+  `ui_mixer.cpp`, `returnInGroup` holding a copy of the node, and WTS-01 step 5b's real step (grouping takes the
+  return, the group is heard at -12 dB, a send from outside is refused, Undo restores). **WTS-01: 13 of 13.**
+
+**Held, not in this window.**
+- **engine:** the 15 PLAN rows logged after #715 (SRF-08, TM-IC-02/04, TM-SV-03/04, DEV-02/04/19/24,
+  TM-WT-02/03, MI-05, MX-32) and MI-04/MI-06 (fit-to-scale, invert, step): not among the queue's items 1 to 8.
+  tm-tt01-tempo-ramps fails `adi_transport_info_tests` (6) and `adi_scale_context_tests` (1), whose expectations
+  it changes on purpose, and has two implicit `int64_t` to `long double` returns (C4244).
+- **window-fn:** every branch. Items 9 to 18 and send-pan come after 3 December; `window-fn/function-keys` is a
+  second WIN-01 (the window lane's landed).
+- **window:** held-peak (DF-W32) waits for the Mixer sheet. WIN-01's moved tip c4a62e25d (the PC key-map goldens)
+  is not taken: the goldens lack Options ids 29050 to 29052, and `*.txt` has no `eol=lf` rule for a Windows
+  checkout.
+- **clones:** shaper-split-slew contradicts shaper-split-spacing (its 32 kHz case needs an edge above spacing's
+  measured limit); shaper-audio-retrigger is after 3 December; #716 (the panel) waits on the window lane's four
+  findings, all in the seat's files.
+- **devices:** the .amxd chain, the DEV-22 effects stack, hybrid-reverb-nupc (after 3 December).
+- **engine-win:** the export chains, the 19 November set, export-format-name-tokens (needs a rebuild on main and
+  a ruling: it serves multi-format delivery), and three withdrawn branches.
+
+**DEFERRED, on this PR** (each row checked against the code at c0a8f9bb4 by a reader and a second, skeptical
+reader; nothing run here beyond the landing's own CI).
+- **Closed:** DF-E35, E47, E64; DF-W18, W19, W29, W30, W33; DF-M62.
+- **Partly, still open:** DF-E17 ((a)'s overlap only), DF-E68 ((c) done), DF-M13 (counted work cut; the timed
+  pass waits on the director), DF-M34 (Limiter and stateful EQ modes left), DF-M36 (built-in host test and the
+  engine's review left).
+- **New:** DF-E71 (engine-win: GCC 13 rejects a range loop in `tests/scanner_session_reopen.hpp`, from the window
+  log), DF-E72 (engine-win: a held Play has no time limit).
+- **Next free:** DF-E73, DF-W40, DF-M66, ADR-0253.
+
+---
+
 ## 2026-11-23, later — follow-ups: nine rows closed, two rows added, step 5b's text, a scrub
 
 **DEFERRED, on this PR** (main 7aa3ab58, #720; each closed row checked against its code and tests).
