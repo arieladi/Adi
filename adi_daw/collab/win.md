@@ -77,7 +77,8 @@ M64, DF-W39, DF-E65 to E69, and DF-E12's cause (below).
   (`clip_commands.cpp` 122-124, the twin of DF-E27 (a)), becomes a row only after a probe, at the next free id.
 - **Public text:** the private research folder's path is gone from `docs/DAW-RESEARCH-INTEGRATION.md` and
   `collab/clones.md`, and the other local paths from the logs, prompts and docs.
-- **Next free:** ADR-0252; DF-E70, DF-W40, DF-M65.
+- **Next free:** ADR-0253 (ADR-0252, the gemini seat made permanent as the verification seat, landed in
+  #719 on 23 November); DF-E70, DF-W40, DF-M65.
 
 ---
 
