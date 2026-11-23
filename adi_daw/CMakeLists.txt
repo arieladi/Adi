@@ -2260,6 +2260,9 @@ add_test(NAME adi_automation_shapes_tests COMMAND adi_automation_shapes_tests)
 add_executable(adi_automation_recording_tests tests/test_automation_recording.cpp)
 target_link_libraries(adi_automation_recording_tests PRIVATE adi_core adi_warnings Threads::Threads)
 add_test(NAME adi_automation_recording_tests COMMAND adi_automation_recording_tests)
+add_executable(adi_replace_operator_new_tests tests/test_replace_operator_new.cpp)
+target_link_libraries(adi_replace_operator_new_tests PRIVATE adi_warnings)
+add_test(NAME adi_replace_operator_new_tests COMMAND adi_replace_operator_new_tests)
 
 
 

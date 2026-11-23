@@ -618,7 +618,7 @@ bool audioDetachInverse(OpContext& c,const Payload& p,Payload& inv,std::string& 
 
 Payload captureClipPlacement(SQLite::Database& db, std::int64_t id) {
     SQLite::Statement st(db, "SELECT id,track_id,lane_id,time_base,pos_ticks,pos_ns,"
-                             "length_ticks,length_ns FROM clips WHERE id=?");
+                             "length_ticks,length_ns,fade_in_ticks,fade_out_ticks FROM clips WHERE id=?");
     st.bind(1, id);
     if (!st.executeStep()) throw std::runtime_error("no such clip");
     return detail::captureQueryRow(st);
@@ -630,6 +630,17 @@ bool legacyClipPlacement(const OpContext& c) {
     const auto inverse = decodeFromLog(c.replay->inverse, error);
     if (!inverse) throw std::runtime_error("cannot decode clip placement inverse: " + error);
     return !inverse->contains("_placement");
+}
+// A resize journalled before fades were clamped recorded a placement image
+// without fade columns, so its Undo could not restore them. Its Redo keeps the
+// row effects that build recorded, as the legacy placement guard above does.
+bool placementClampsFades(const OpContext& c) {
+    if (!c.replay) return true;
+    std::string error;
+    const auto inverse = decodeFromLog(c.replay->inverse, error);
+    if (!inverse) throw std::runtime_error("cannot decode clip placement inverse: " + error);
+    const auto placement = inverse->find("_placement");
+    return placement != inverse->end() && placement->is_object() && placement->contains("fade_in_ticks");
 }
 bool clipPlacementApply(OpContext& c, const Payload& p, std::string& err, bool move) {
     try {
@@ -677,6 +688,17 @@ bool clipPlacementApply(OpContext& c, const Payload& p, std::string& err, bool m
             if (ticks < 0) throw std::runtime_error("clip length must be nonnegative");
             const auto end = edit::addTime(start, ticks);
             values[lengthKey] = time ? time->nanos(end) - position : ticks;
+            if (placementClampsFades(c)) {
+                // Fades are stored in ticks. Fit both inside the new visible
+                // span, measured as the Warp freeze and end resize measure it.
+                const auto span = time ? time->ticks(time->nanos(end)) - time->ticks(position) : ticks;
+                if (span < 0) throw std::runtime_error("clip resize has an invalid musical span");
+                for (const char* fade : {"fade_in_ticks", "fade_out_ticks"}) {
+                    const auto value = detail::signedInteger(before.at(fade));
+                    if (value < 0) throw std::runtime_error("clip resize needs valid fades");
+                    values[fade] = std::min(value, span);
+                }
+            }
         }
         detail::restoreRow(c.db, "clips", values, "id");
         return true;
