@@ -49,6 +49,21 @@ def time_sample(snapshot, pid):
     return cpu, midpoint
 
 
+def process_interval(snapshots, pid, keep):
+    first_cpu, first_midpoint = time_sample(snapshots[0], pid)
+    last_cpu, last_midpoint = time_sample(snapshots[-1], pid)
+    wall = (last_midpoint - first_midpoint) / 1e9
+    cpu_delta = last_cpu - first_cpu
+    refusal = None
+    if abs(wall - keep) > 0.5:
+        refusal = f"retained process interval was {wall:.6f} s, expected {keep} s"
+    elif cpu_delta < 0:
+        refusal = f"process CPU counter decreased by {-cpu_delta} ticks (100 ns units)"
+    return {"wall_seconds": wall, "cpu_delta_100ns": cpu_delta,
+            "cpu_percent_one_logical_cpu": None if refusal else cpu_delta / 1e5 / wall,
+            "process_capture_refusal": refusal}
+
+
 def summarize_callbacks(path, first, last, rate, frequency):
     durations, budgets, gaps = [], [], []
     previous_start, previous_frames, sequence = None, None, None
@@ -106,14 +121,9 @@ def capture_process(process, ticks_frequency, warm, keep, build):
         last_ticks = lean_cpu.api.qpc()
     finally:
         collector.close()
-    first_cpu, first_midpoint = time_sample(snapshots[0], process.pid)
-    last_cpu, last_midpoint = time_sample(snapshots[-1], process.pid)
-    wall = (last_midpoint - first_midpoint) / 1e9
-    if abs(wall - keep) > 0.5 or last_cpu < first_cpu:
-        raise RuntimeError("process interval or counters are outside the capture contract")
     return {"header": lean_cpu.environment(manifest), "snapshots": snapshots,
             "window_ticks": [first_ticks, last_ticks], "qpc_frequency": ticks_frequency,
-            "wall_seconds": wall, "cpu_percent_one_logical_cpu": (last_cpu - first_cpu) / 1e5 / wall}
+            **process_interval(snapshots, process.pid, keep)}
 
 
 def run_one(args, fixtures, base, topology, block, workers, repeat):
@@ -161,6 +171,8 @@ def run_one(args, fixtures, base, topology, block, workers, repeat):
             raise RuntimeError("callback and observer QPC frequencies differ")
         sample = capture_process(process, frequency, args.warm, args.keep, args.build)
         lean_cpu.api.atomic(root / "cpu.json", sample)
+        if sample["process_capture_refusal"]:
+            raise RuntimeError(sample["process_capture_refusal"])
         if process.wait(timeout=25) != 0:
             raise RuntimeError(f"ADI exited with code {process.returncode}")
         final = json.loads(diagnostic.with_suffix(".json").read_text(encoding="utf-8-sig"))

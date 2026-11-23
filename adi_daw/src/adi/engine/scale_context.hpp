@@ -48,6 +48,10 @@ public:
     // tonicCents is an explicit absolute pitch of degree zero. It is never
     // inferred from a non-octave period or reconstructed from a MIDI channel.
     [[nodiscard]] std::optional<ScalePitch> nearest(double pitchCents,double tonicCents,bool scaleOnly=false) const noexcept;
+    // Shift a resolved member by the ordered selected degrees, across
+    // repeating periods. The starting degree is its authored ID.
+    [[nodiscard]] std::optional<ScalePitch> stepDegree(std::int64_t degree, std::int64_t period,
+                                                       std::int64_t steps, double tonicCents) const noexcept;
     [[nodiscard]] std::optional<ScalePitch> match(double pitchCents,double tonicCents,double toleranceCents=0.0001) const noexcept;
     [[nodiscard]] bool contains(double pitchCents,double tonicCents,double toleranceCents=0.0001) const noexcept;
     // Owner-only ruler/fold projection. Names are authored degree names, or

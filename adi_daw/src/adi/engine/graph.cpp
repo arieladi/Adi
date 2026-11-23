@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <chrono>
 #include <cstring>
 #include <functional>
 #include <map>
@@ -15,6 +16,29 @@
 #include <type_traits>
 
 namespace adi::engine {
+namespace {
+std::uint64_t processingNow() noexcept {
+    using namespace std::chrono;
+    return static_cast<std::uint64_t>(
+        duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count());
+}
+class SlotProcessingTimer {
+public:
+    SlotProcessingTimer(Graph::ProcessingClock clock, std::uint64_t &total) noexcept
+        : clock_(clock), total_(total), begin_(clock ? clock() : 0) {}
+    ~SlotProcessingTimer() {
+        if (clock_) {
+            const auto end = clock_();
+            if (end >= begin_)
+                total_ += end - begin_;
+        }
+    }
+private:
+    Graph::ProcessingClock clock_;
+    std::uint64_t &total_;
+    std::uint64_t begin_;
+};
+} // namespace
 
 Graph::Graph() = default;
 Graph::~Graph() {workers_.reset();}
@@ -29,11 +53,63 @@ std::uint32_t Graph::renderWorkerCount() const noexcept{return static_cast<std::
 // Construction
 // ---------------------------------------------------------------------------
 
-NodeId Graph::addNode(Node& node) {
+NodeId Graph::addNode(Node& node, std::optional<std::int64_t> track,
+                      std::optional<std::int32_t> fixedLatency) {
     slots_.push_back(Slot{});
     slots_.back().node = &node;
+    slots_.back().fixedLatency = fixedLatency;
+    slots_.back().track = track;
     prepared_ = false;
     return static_cast<NodeId>(slots_.size() - 1);
+}
+
+void Graph::beginTrackTiming(std::uint64_t block, ProcessingClock clock) noexcept {
+    if (!prepared_ || block == 0 || timingTracks_.empty())
+        return;
+    timingBlock_ = block;
+    timingFrames_ = 0;
+    timingClock_ = clock ? clock : processingNow;
+    for (auto &slot : slots_)
+        slot.processingNs = 0;
+}
+
+void Graph::finishTrackTiming(std::uint64_t block) noexcept {
+    static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
+    if (!timingClock_ || block != timingBlock_)
+        return;
+    timingClock_ = nullptr;
+    if (timingFrames_ == 0)
+        return;
+    std::fill(timingTotals_.begin(), timingTotals_.end(), 0);
+    for (const auto &slot : slots_) {
+        if (slot.timingTrack < timingTotals_.size())
+            timingTotals_[slot.timingTrack] += slot.processingNs;
+    }
+    trackTimingSequence_.fetch_add(1);
+    for (std::size_t i = 0; i < timingTotals_.size(); ++i)
+        publishedTiming_[i].store(timingTotals_[i]);
+    publishedFrames_.store(timingFrames_);
+    publishedBlock_.store(block);
+    trackTimingSequence_.fetch_add(1);
+}
+
+std::optional<TrackProcessingBlock> Graph::trackProcessingTime() const {
+    if (timingTracks_.empty() || publishedBlock_.load() == 0)
+        return {};
+    TrackProcessingBlock result;
+    result.tracks.resize(timingTracks_.size());
+    for (int attempt = 0; attempt < 4; ++attempt) {
+        const auto first = trackTimingSequence_.load();
+        if (first & 1u)
+            continue;
+        result.block = publishedBlock_.load();
+        result.frames = publishedFrames_.load();
+        for (std::size_t i = 0; i < timingTracks_.size(); ++i)
+            result.tracks[i] = {timingTracks_[i], publishedTiming_[i].load()};
+        if (first == trackTimingSequence_.load())
+            return result;
+    }
+    return {};
 }
 
 bool Graph::setEventSource(NodeId id, EventSourceBinding binding) {
@@ -698,7 +774,7 @@ void Graph::computeCompensation() {
         for (NodeId in : s.inputs) {
             const Slot& u = slots_[static_cast<std::size_t>(in)];
             const std::int64_t ready = static_cast<std::int64_t>(u.arrival) +
-                (u.node != nullptr ? u.node->latencySamples() : 0);
+                u.latency();
             if (ready > latest) latest = ready;
         }
         // ADR-0058 decision 5: a sidechain is compensated WITH the rest, not
@@ -707,7 +783,7 @@ void Graph::computeCompensation() {
         for (NodeId in : s.sidechains) {
             const Slot& u = slots_[static_cast<std::size_t>(in)];
             const std::int64_t ready = static_cast<std::int64_t>(u.arrival) +
-                (u.node != nullptr ? u.node->latencySamples() : 0);
+                u.latency();
             if (ready > latest) latest = ready;
         }
         s.arrival = static_cast<std::int32_t>(latest);
@@ -716,11 +792,11 @@ void Graph::computeCompensation() {
     for (NodeId id : order_) {
         Slot& s = slots_[static_cast<std::size_t>(id)];
         s.inDelays.resize(s.inputs.size());
-        if (s.hasBypass) prepareLine(s.dryDelay, s.node->latencySamples());
+        if (s.hasBypass) prepareLine(s.dryDelay, s.latency());
         for (std::size_t k = 0; k < s.inputs.size(); ++k) {
             const Slot& u = slots_[static_cast<std::size_t>(s.inputs[k])];
             const std::int32_t ready =
-                u.arrival + (u.node != nullptr ? u.node->latencySamples() : 0);
+                u.arrival + u.latency();
             if (!delayCompensation_ || loopEdge(u.node, s.node)) {
                 // No ring at all, not even the headroom: it never delays,
                 // so a retap that tried to move it would be refused.
@@ -734,7 +810,7 @@ void Graph::computeCompensation() {
         for (std::size_t k = 0; k < s.sidechains.size(); ++k) {
             const Slot& u = slots_[static_cast<std::size_t>(s.sidechains[k])];
             const std::int32_t ready =
-                u.arrival + (u.node != nullptr ? u.node->latencySamples() : 0);
+                u.arrival + u.latency();
             const std::int32_t d = delayCompensation_ ? s.arrival - ready : 0;
             if(delayCompensation_)prepareLine(s.sideDelays[k],d);
             else {
@@ -752,12 +828,12 @@ void Graph::computeCompensation() {
     if (slotArrival_.size() != slots_.size())
         slotArrival_ = std::vector<std::atomic<std::int32_t>>(slots_.size());
     for (std::size_t i = 0; i < slots_.size(); ++i) {
-        slotLatency_[i].store(slots_[i].node != nullptr ? slots_[i].node->latencySamples() : 0,
+        slotLatency_[i].store(slots_[i].latency(),
                               std::memory_order_relaxed);
         slotArrival_[i].store(slots_[i].arrival, std::memory_order_relaxed);
     }
     const Slot& out = slots_[static_cast<std::size_t>(output_)];
-    graphLatency_.store(out.arrival + (out.node != nullptr ? out.node->latencySamples() : 0),
+    graphLatency_.store(out.arrival + out.latency(),
                         std::memory_order_release);
     preparePdcStorage();
 }
@@ -788,7 +864,7 @@ void Graph::preparePdcStorage() {
 bool Graph::computePdcOwner() noexcept {
     const auto n=slots_.size();
     // Main-thread-only SDK calls: one answer per node for the complete plan.
-    for(std::size_t i=0;i<n;++i)pdcOwner_[i]=slots_[i].node?slots_[i].node->latencySamples():0;
+    for(std::size_t i=0;i<n;++i)pdcOwner_[i]=slots_[i].latency();
     bool allFit = true;
     for (NodeId id : order_) {
         Slot& s = slots_[static_cast<std::size_t>(id)];
@@ -1179,6 +1255,25 @@ void Graph::prepare(double sampleRate, std::int32_t maxFrames) {
     // buffer too, and `process` may not allocate.
     computeCompensation();
 
+    timingTracks_.clear();
+    for (const auto &slot : slots_) {
+        if (slot.track)
+            timingTracks_.push_back(*slot.track);
+    }
+    std::sort(timingTracks_.begin(), timingTracks_.end());
+    timingTracks_.erase(std::unique(timingTracks_.begin(), timingTracks_.end()), timingTracks_.end());
+    timingTotals_.assign(timingTracks_.size(), 0);
+    publishedTiming_ = timingTracks_.empty()
+        ? nullptr : std::make_unique<std::atomic<std::uint64_t>[]>(timingTracks_.size());
+    for (auto &slot : slots_) {
+        slot.timingTrack = timingTracks_.size();
+        if (slot.track) {
+            const auto it = std::lower_bound(timingTracks_.begin(), timingTracks_.end(), *slot.track);
+            slot.timingTrack = static_cast<std::size_t>(it - timingTracks_.begin());
+        }
+    }
+    publishedBlock_.store(0);
+    timingClock_ = nullptr;
 
     ok_ = true;
     prepared_ = true;
@@ -1695,6 +1790,8 @@ void Graph::narrow(const std::vector<double*>& from, std::vector<float*>& to,
 
 void Graph::runNode(RenderState& r, Slot& s, std::int32_t frames, std::int32_t nsplit,
                     const TransportInfo* transport) noexcept {
+    const SlotProcessingTimer timer(timingBlock_ == renderBlock_ && s.track ? timingClock_ : nullptr,
+                                   s.processingNs);
     const auto ch = static_cast<std::size_t>(channels_);
     const bool wide = precision_ == Precision::Float64;
     const bool bypass = s.hasBypass && s.node->bypassed();
@@ -1866,8 +1963,10 @@ void Graph::runNode(RenderState& r, Slot& s, std::int32_t frames, std::int32_t n
         if (s.tailRemaining < 0) s.tailRemaining = 0;
     }
 
+    const bool scaleTiming = s.node->wantsDeviceScale();
     const bool deviceTiming = !bypass && transport && transport->deviceClock &&
-                              transport->devicePosition && s.node->wantsDeviceTransport();
+                              transport->devicePosition &&
+                              (s.node->wantsDeviceTransport() || scaleTiming);
     for (std::int32_t seg = 0, nextBegin = 0; seg < nsplit;) {
         const std::int32_t begin = nextBegin;
         const std::int32_t boundary = splits_[static_cast<std::size_t>(seg + 1)];
@@ -1877,9 +1976,23 @@ void Graph::runNode(RenderState& r, Slot& s, std::int32_t frames, std::int32_t n
             const auto sample = transport->deviceClock->inputSample(begin, arrival);
             end = begin + transport->deviceClock->inputContiguousFrames(sample, boundary - begin);
             devicePosition = transport->devicePosition(transport->deviceClockContext, sample);
-            if (devicePosition.playing && devicePosition.nextChange > sample &&
-                sample > devicePosition.nextChange - (end - begin)) {
-                end = begin + static_cast<std::int32_t>(devicePosition.nextChange - sample);
+            if (scaleTiming && s.track && transport->trackScalePosition) {
+                const auto local = transport->trackScalePosition(transport->deviceClockContext,
+                                                                  *s.track, sample);
+                if (local.scale) {
+                    devicePosition.scale = local.scale;
+                    devicePosition.nextScaleChange = local.nextChange;
+                } else {
+                    devicePosition.nextScaleChange = std::min(devicePosition.nextScaleChange,
+                                                              local.nextChange);
+                }
+            }
+            const auto nextChange = scaleTiming
+                ? std::min(devicePosition.nextChange, devicePosition.nextScaleChange)
+                : devicePosition.nextChange;
+            if (devicePosition.playing && nextChange > sample &&
+                sample > nextChange - (end - begin)) {
+                end = begin + static_cast<std::int32_t>(nextChange - sample);
             }
         }
         nextBegin = end;
@@ -2168,7 +2281,8 @@ void Graph::process(const AudioIo& io) noexcept {
         // ADR-0165: automation addressed to this node, beside what it sources.
         if (EventSource* source = s.eventSource.source) {
             const auto index = static_cast<std::size_t>(&s - slots_.data());
-            const auto arrival = delayCompensation_ && s.node->wantsDeviceTransport()
+            const auto arrival = delayCompensation_ &&
+                    (s.node->wantsDeviceTransport() || s.node->wantsDeviceScale())
                 ? pdcActiveArrival_[index] : 0;
             source->emitAtInput(s.events, frames, arrival);
         }
@@ -2235,6 +2349,8 @@ void Graph::process(const AudioIo& io) noexcept {
     // to it, so advancing it early would make everything due one block late.
     now_ += frames;
     renderedFrames_ = frames;
+    if (timingClock_ && timingBlock_ == renderBlock_)
+        timingFrames_ += static_cast<std::uint64_t>(frames);
 }
 
 // ---------------------------------------------------------------------------
