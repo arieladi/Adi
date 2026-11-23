@@ -52,12 +52,36 @@ until then a need is named by its item.
 | Reserve: one N row. A dropped audio file should clear what it lands on, as a move, Paste and Duplicate do (DF-W28): `clip_edit::prepareImportAudio` placed through the planner (`PlacementBatch::clear`), or a planner entry that clears a track span in the same prepared edit as the window's `clip.create`/`clip.attachAudio` batch | engine (`src/adi/material_commands.cpp`, `src/adi/edit_plan*`) | DF-W28: a file dropped onto a clip replaces the covered part in one step | the drop lands over the clip, as before |
 | Reserve: one N row. A loop recording keeps the passes it has when it ends early: today a tempo change (Tap Tempo included), a loop edit or running out of passes during a loop recording ends the capture ("musical loop retiming ends this job") and every pass recorded so far is lost | engine (`src/adi/engine/audio_recording.*`, `src/adi/recording_commands.*`) | CT-02: a loop take survives a tempo tap or a loop nudge | nothing: the take is lost and the Status Bar says why |
 | Reserve: one N row, or a ruling. Live's undo for a loop recording: one step for the whole recording, or one per pass as `prepareLoopCommit` commits today (the window queue's test asked for one step) | engine and win | CT-02: Undo after a loop recording | the window follows the engine: a step per pass |
+| `adi_play_render_tests` fails "same canonical module projects saved alias spelling without rewriting its exact VST3 UID" (`tests/test_play_render.cpp:138`) on Linux, GCC 13: the VST3 fixture loaded through a symlinked `alias.vst3` is not found as the same module (JUCE assertion `juce_VST3PluginFormatImpl.h:1117`). Hidden until now because the test did not compile under GCC 13 (DF-E71) | engine-win (the device loader's canonical module identity) | `ctest` on a GCC 13 build is red on this test | nothing; the window's suites do not use it |
 | AU-08's lane-scoped range commands (cut, copy, paste, delete, duplicate and insert time on one automation lane's selection) through the time edits' automation splice | engine seat (the range producers' automation half) | AU-08: Live's commands on an automation lane's selection | the lanes' menu has Insert Shape, Simplify Envelope and Delete Automation only |
 | Insert Shape's guards through one shared splice (PLAN AU-02's engine half): a guard or split at a selection's edge that keeps a bent segment's bend (ADR-0159's curve slices), written by the planner, so a shape leaves every curve outside the selection exact (AT-1) | engine seat (`automation_shapes.cpp`) | AU-02: the window writes its own guards, exact for holds and straight segments only | the window's guards (`insertAutomationShape`) |
 | A GCC 12 build of `src/adi/mix/limiter/Dsp/FloatRealTransform.h:61`: `bit < std::bit_width(length) - 1` compares an `int` with `std::size_t` under GCC 12.4's libstdc++ (its `bit_width` returns the argument's type; GCC 13's returns `int`), which `-Wsign-compare` with warnings as errors refuses. `static_cast<int>(std::bit_width(length)) - 1` builds on both | the mix seat (the limiter core) | DF-W39's test is a GCC 12 build; every suite that links the limiter stops there | DF-W39 was tested with that cast made locally and not committed |
 | Reserve: one N row (MX-07's registry half). `mixing.soloInFront`, `mixing.soloInFrontDb` and `mixing.soloBus` labelled "not built" in their titles or descriptions, as the PLAN row asks, and Live's Options rows `preFollowsSolo` and `keepAllReturns` (they change only on readings, AWAITING 5) | engine-win (`src/adi/settings/registry.cpp`) | MX-07: the Settings say plainly which solo options do nothing yet | the window shows the rows as the registry gives them |
 
 ---
+
+## 2026-11-23, window-fn — DF-E71 too, at the director's request; main now builds under GCC 13 (PR requested)
+
+On the same branch as the `adi_play` fix: `tests/scanner_session_reopen.hpp:208` binds the seek pairs by reference
+(`const auto &[position,count]`), as DF-E71's row says. The temporary array lives for the whole loop, so nothing
+else changes.
+
+**Run** (main dbf98b0c with both fixes, JUCE on, Pd off, warnings as errors, GCC 13, `ninja -k 0`): **the whole tree
+builds with no error.** `adi_play_quantize_tests` passes. The 27 window and mix suites pass, and so does the shell
+suite (3083 checks, 0 failures).
+
+**`adi_play_render_tests` now builds, and fails one check** that GCC 13 had kept from compiling:
+- the check: "same canonical module projects saved alias spelling without rewriting its exact VST3 UID"
+  (`tests/test_play_render.cpp:138`);
+- what happens: on Linux the test reaches the VST3 fixture through a symlinked `alias.vst3`, and loading by that
+  alias fails, with a JUCE assertion at `juce_VST3PluginFormatImpl.h:1117`;
+- not from these fixes: it fails the same way built from main's own loop (the copy kept, the warning silenced by
+  a pragma, freshly built and run);
+- left to its owner, in the needs table.
+
+PR requested: `window-fn/play-indent` (now two commits) → main, "adi_play and DF-E71: GCC 13 builds with warnings as
+errors". Depends on nothing beyond main. Closes DEFERRED DF-E71. Outside the lane's files, done because the
+director asked.
 
 ## 2026-11-23, window-fn — main's GCC 13 build break in adi_play, at the director's request (PR requested)
 
