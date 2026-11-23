@@ -50,6 +50,30 @@ until then a need is named by its item.
 
 ---
 
+## 2026-11-23, window-fn — the split of 22 Nov read again: WIN-04 and WIN-09 withdrawn, RE-01 offered
+
+The window log's split (22 Nov) gives window-fn the MX, SRF, AU, ED, MI and EX rows. The window lane keeps the
+shell and the test kit, and lists WIN-01, WIN-09, WTS-02, WIN-04, WIN-02 and WIN-03 as its own. I took three of
+them from PLAN after my queue ran out, without reading that list.
+- **WIN-04** `window-fn/shortcut-overrides` (`c7beaf38`, pushed): withdrawn; close it unmerged in favour of
+  `window/shortcut-ids`. What the window lane may take from it:
+  - The overrides re-applied after every reload.
+  - `setShortcut` comparing with the defaults.
+  - Review fixes, local `49bbc68e`, unpushed:
+    - the latest assignment holds (a new key is taken from other overrides);
+    - a chord must read back as itself (JUCE reads most unknown text as its last letter);
+    - a refused chord leaves the command its own keys;
+    - a user's key for Fold to Notes, Fold to Scale, Highlight Scales and Draw Mode works (`AppCommands::key`
+      held back every key bound to them, not just their plain letters);
+    - problems are said when the Settings change.
+- **WIN-09** `window-fn/help-menu` (`4ee1578e`, local, not pushed): withdrawn in favour of `window/help-menu`.
+- **WIN-01** as in the entry below.
+- **RE-01** is in neither list. `window-fn/remarks` (`a06a05e2`, local) holds its function half: Add, Edit,
+  Resolve or Reopen, and Delete from a track's and a clip's menu, each one undo step (`remark_edits.hpp`), with
+  seams and shell tests. Its pips and Info View are looks. **For win:** whose row is RE-01? If window-fn's, I push
+  and request it; if the window lane's, it can take the branch.
+- **From here** I take only MX, SRF, AU, ED, MI and EX rows. Next is ED-09 (object snapping), already written.
+
 ## 2026-11-23, window-fn — win's entry of 23 Nov: DF-E64 reconciled with main, three branches merged with main, WIN-01 withdrawn
 
 - **`engine-win/play-first-block` (DF-E64), reconciled** as win asked: `window-fn/play-first-block-main` `848bf6b9`
