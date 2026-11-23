@@ -916,6 +916,14 @@ private:
 
 /// A DAG of nodes, scheduled per block.
 class RenderWorkers;
+struct TrackProcessingTime {
+    std::int64_t track = 0;
+    std::uint64_t nanoseconds = 0;
+};
+struct TrackProcessingBlock {
+    std::uint64_t block = 0, frames = 0;
+    std::vector<TrackProcessingTime> tracks;
+};
 class Graph final : public BlockProcessor {
     friend struct GraphPdcTestAccess;
 public:
@@ -927,8 +935,15 @@ public:
     /// Adds a node and returns its id. The graph does not own it; nodes outlive
     /// the graph, because ADR-0042's decision 5 says a device change must not
     /// disturb the project and the project is where nodes come from.
-    NodeId addNode(Node& node, std::int64_t track = 0,
+    NodeId addNode(Node& node, std::optional<std::int64_t> track = std::nullopt,
                    std::optional<std::int32_t> fixedLatency = std::nullopt);
+    using ProcessingClock = std::uint64_t (*)() noexcept; ///< monotonic nanoseconds
+    /// Driver-side opt in for one physical callback. All process calls with
+    /// this block ID accumulate until finishTrackTiming. Null uses the native clock.
+    void beginTrackTiming(std::uint64_t block, ProcessingClock = nullptr) noexcept;
+    void finishTrackTiming(std::uint64_t block) noexcept;
+    /// Owner-side snapshot of one complete physical callback.
+    [[nodiscard]] std::optional<TrackProcessingBlock> trackProcessingTime() const;
     // Owner preflight on a newly constructed graph. No node prepare, SDK calls,
     // buffers or publication; reuse the same topology authority as prepare.
     [[nodiscard]] bool validateTopology() { error_.clear(); return topoSort(); }
@@ -1252,7 +1267,9 @@ private:
             if (fixedLatency) return *fixedLatency;
             return node ? node->latencySamples() : 0;
         }
-        std::int64_t track = 0;
+        std::optional<std::int64_t> track;
+        std::size_t timingTrack = std::numeric_limits<std::size_t>::max();
+        std::uint64_t processingNs = 0;
         EventSourceBinding eventSource;
         bool explicitEventSource = false;
         std::uint64_t preparationRevision = 0;
@@ -1421,6 +1438,12 @@ private:
 
     Precision precision_ = Precision::Float32;   ///< ADR-0207 d2
     bool delayCompensation_ = true;
+    std::vector<std::int64_t> timingTracks_;
+    std::vector<std::uint64_t> timingTotals_;
+    std::unique_ptr<std::atomic<std::uint64_t>[]> publishedTiming_;
+    std::atomic<std::uint64_t> trackTimingSequence_{0}, publishedBlock_{0}, publishedFrames_{0};
+    std::uint64_t timingBlock_ = 0, timingFrames_ = 0;
+    ProcessingClock timingClock_ = nullptr;
     double sampleRate_ = 0.0;
     std::int32_t maxFrames_ = 0;
     std::int32_t channels_ = 2;

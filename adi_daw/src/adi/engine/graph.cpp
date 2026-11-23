@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <chrono>
 #include <cstring>
 #include <functional>
 #include <map>
@@ -15,6 +16,29 @@
 #include <type_traits>
 
 namespace adi::engine {
+namespace {
+std::uint64_t processingNow() noexcept {
+    using namespace std::chrono;
+    return static_cast<std::uint64_t>(
+        duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count());
+}
+class SlotProcessingTimer {
+public:
+    SlotProcessingTimer(Graph::ProcessingClock clock, std::uint64_t &total) noexcept
+        : clock_(clock), total_(total), begin_(clock ? clock() : 0) {}
+    ~SlotProcessingTimer() {
+        if (clock_) {
+            const auto end = clock_();
+            if (end >= begin_)
+                total_ += end - begin_;
+        }
+    }
+private:
+    Graph::ProcessingClock clock_;
+    std::uint64_t &total_;
+    std::uint64_t begin_;
+};
+} // namespace
 
 Graph::Graph() = default;
 Graph::~Graph() {workers_.reset();}
@@ -29,13 +53,63 @@ std::uint32_t Graph::renderWorkerCount() const noexcept{return static_cast<std::
 // Construction
 // ---------------------------------------------------------------------------
 
-NodeId Graph::addNode(Node& node, std::int64_t track, std::optional<std::int32_t> fixedLatency) {
+NodeId Graph::addNode(Node& node, std::optional<std::int64_t> track,
+                      std::optional<std::int32_t> fixedLatency) {
     slots_.push_back(Slot{});
     slots_.back().node = &node;
     slots_.back().fixedLatency = fixedLatency;
     slots_.back().track = track;
     prepared_ = false;
     return static_cast<NodeId>(slots_.size() - 1);
+}
+
+void Graph::beginTrackTiming(std::uint64_t block, ProcessingClock clock) noexcept {
+    if (!prepared_ || block == 0 || timingTracks_.empty())
+        return;
+    timingBlock_ = block;
+    timingFrames_ = 0;
+    timingClock_ = clock ? clock : processingNow;
+    for (auto &slot : slots_)
+        slot.processingNs = 0;
+}
+
+void Graph::finishTrackTiming(std::uint64_t block) noexcept {
+    static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
+    if (!timingClock_ || block != timingBlock_)
+        return;
+    timingClock_ = nullptr;
+    if (timingFrames_ == 0)
+        return;
+    std::fill(timingTotals_.begin(), timingTotals_.end(), 0);
+    for (const auto &slot : slots_) {
+        if (slot.timingTrack < timingTotals_.size())
+            timingTotals_[slot.timingTrack] += slot.processingNs;
+    }
+    trackTimingSequence_.fetch_add(1);
+    for (std::size_t i = 0; i < timingTotals_.size(); ++i)
+        publishedTiming_[i].store(timingTotals_[i]);
+    publishedFrames_.store(timingFrames_);
+    publishedBlock_.store(block);
+    trackTimingSequence_.fetch_add(1);
+}
+
+std::optional<TrackProcessingBlock> Graph::trackProcessingTime() const {
+    if (timingTracks_.empty() || publishedBlock_.load() == 0)
+        return {};
+    TrackProcessingBlock result;
+    result.tracks.resize(timingTracks_.size());
+    for (int attempt = 0; attempt < 4; ++attempt) {
+        const auto first = trackTimingSequence_.load();
+        if (first & 1u)
+            continue;
+        result.block = publishedBlock_.load();
+        result.frames = publishedFrames_.load();
+        for (std::size_t i = 0; i < timingTracks_.size(); ++i)
+            result.tracks[i] = {timingTracks_[i], publishedTiming_[i].load()};
+        if (first == trackTimingSequence_.load())
+            return result;
+    }
+    return {};
 }
 
 bool Graph::setEventSource(NodeId id, EventSourceBinding binding) {
@@ -1181,6 +1255,25 @@ void Graph::prepare(double sampleRate, std::int32_t maxFrames) {
     // buffer too, and `process` may not allocate.
     computeCompensation();
 
+    timingTracks_.clear();
+    for (const auto &slot : slots_) {
+        if (slot.track)
+            timingTracks_.push_back(*slot.track);
+    }
+    std::sort(timingTracks_.begin(), timingTracks_.end());
+    timingTracks_.erase(std::unique(timingTracks_.begin(), timingTracks_.end()), timingTracks_.end());
+    timingTotals_.assign(timingTracks_.size(), 0);
+    publishedTiming_ = timingTracks_.empty()
+        ? nullptr : std::make_unique<std::atomic<std::uint64_t>[]>(timingTracks_.size());
+    for (auto &slot : slots_) {
+        slot.timingTrack = timingTracks_.size();
+        if (slot.track) {
+            const auto it = std::lower_bound(timingTracks_.begin(), timingTracks_.end(), *slot.track);
+            slot.timingTrack = static_cast<std::size_t>(it - timingTracks_.begin());
+        }
+    }
+    publishedBlock_.store(0);
+    timingClock_ = nullptr;
 
     ok_ = true;
     prepared_ = true;
@@ -1697,6 +1790,8 @@ void Graph::narrow(const std::vector<double*>& from, std::vector<float*>& to,
 
 void Graph::runNode(RenderState& r, Slot& s, std::int32_t frames, std::int32_t nsplit,
                     const TransportInfo* transport) noexcept {
+    const SlotProcessingTimer timer(timingBlock_ == renderBlock_ && s.track ? timingClock_ : nullptr,
+                                   s.processingNs);
     const auto ch = static_cast<std::size_t>(channels_);
     const bool wide = precision_ == Precision::Float64;
     const bool bypass = s.hasBypass && s.node->bypassed();
@@ -1881,9 +1976,9 @@ void Graph::runNode(RenderState& r, Slot& s, std::int32_t frames, std::int32_t n
             const auto sample = transport->deviceClock->inputSample(begin, arrival);
             end = begin + transport->deviceClock->inputContiguousFrames(sample, boundary - begin);
             devicePosition = transport->devicePosition(transport->deviceClockContext, sample);
-            if (scaleTiming && s.track != 0 && transport->trackScalePosition) {
+            if (scaleTiming && s.track && transport->trackScalePosition) {
                 const auto local = transport->trackScalePosition(transport->deviceClockContext,
-                                                                  s.track, sample);
+                                                                  *s.track, sample);
                 if (local.scale) {
                     devicePosition.scale = local.scale;
                     devicePosition.nextScaleChange = local.nextChange;
@@ -2254,6 +2349,8 @@ void Graph::process(const AudioIo& io) noexcept {
     // to it, so advancing it early would make everything due one block late.
     now_ += frames;
     renderedFrames_ = frames;
+    if (timingClock_ && timingBlock_ == renderBlock_)
+        timingFrames_ += static_cast<std::uint64_t>(frames);
 }
 
 // ---------------------------------------------------------------------------
