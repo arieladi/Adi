@@ -46,9 +46,27 @@ until then a need is named by its item.
 | Reserve: one N row. A dropped audio file should clear what it lands on, as a move, Paste and Duplicate do (DF-W28): `clip_edit::prepareImportAudio` placed through the planner (`PlacementBatch::clear`), or a planner entry that clears a track span in the same prepared edit as the window's `clip.create`/`clip.attachAudio` batch | engine (`src/adi/material_commands.cpp`, `src/adi/edit_plan*`) | DF-W28: a file dropped onto a clip replaces the covered part in one step | the drop lands over the clip, as before |
 | Reserve: one N row. A loop recording keeps the passes it has when it ends early: today a tempo change (Tap Tempo included), a loop edit or running out of passes during a loop recording ends the capture ("musical loop retiming ends this job") and every pass recorded so far is lost | engine (`src/adi/engine/audio_recording.*`, `src/adi/recording_commands.*`) | CT-02: a loop take survives a tempo tap or a loop nudge | nothing: the take is lost and the Status Bar says why |
 | Reserve: one N row, or a ruling. Live's undo for a loop recording: one step for the whole recording, or one per pass as `prepareLoopCommit` commits today (the window queue's test asked for one step) | engine and win | CT-02: Undo after a loop recording | the window follows the engine: a step per pass |
+| A GCC 12 build of `src/adi/mix/limiter/Dsp/FloatRealTransform.h:61`: `bit < std::bit_width(length) - 1` compares an `int` with `std::size_t` under GCC 12.4's libstdc++ (its `bit_width` returns the argument's type; GCC 13's returns `int`), which `-Wsign-compare` with warnings as errors refuses. `static_cast<int>(std::bit_width(length)) - 1` builds on both | the mix seat (the limiter core) | DF-W39's test is a GCC 12 build; every suite that links the limiter stops there | DF-W39 was tested with that cast made locally and not committed |
 | Reserve: one N row (MX-07's registry half). `mixing.soloInFront`, `mixing.soloInFrontDb` and `mixing.soloBus` labelled "not built" in their titles or descriptions, as the PLAN row asks, and Live's Options rows `preFollowsSolo` and `keepAllReturns` (they change only on readings, AWAITING 5) | engine-win (`src/adi/settings/registry.cpp`) | MX-07: the Settings say plainly which solo options do nothing yet | the window shows the rows as the registry gives them |
 
 ---
+
+## 2026-11-23, window-fn — DF-W39: the seams suite builds with GCC 12 (PR requested)
+
+`CMakeLists.txt` added `-fsanitize-trap=signed-integer-overflow` (DF-W35 (b)'s test) for every compiler but MSVC.
+GCC accepts that option only from version 13. The trap now goes where the compiler has it, checked with
+`check_cxx_compiler_flag` under `-fsanitize=signed-integer-overflow`:
+- `-fsanitize-trap=signed-integer-overflow` where it exists (GCC 13, Clang);
+- otherwise `-fsanitize-undefined-trap-on-error` (GCC 12's spelling, the same trap for this one sanitizer);
+- otherwise no trap flag.
+
+**Run:** `adi_ui_seams_tests`, warnings as errors, 568 checks, 0 failures, with GCC 12.4 (the check picks
+`-fsanitize-undefined-trap-on-error`) and with GCC 13 (it keeps `-fsanitize-trap=signed-integer-overflow`). The
+GCC 12 build stops before the suite at a limiter line of the mix lane's (`FloatRealTransform.h:61`, `-Wsign-compare`);
+the run made a one-line cast there locally and did not commit it. That line is in the needs table for the mix seat.
+
+PR requested: `window-fn/seams-gcc12` → main, "DF-W39: the seams suite's overflow trap where the compiler has it".
+Depends on nothing beyond main. Closes DEFERRED DF-W39.
 
 ## 2026-11-23, window-fn — PLAN ED-09: object snapping for a dragged clip (PR requested)
 
