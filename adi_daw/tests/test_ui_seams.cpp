@@ -39,6 +39,8 @@
 #include "adi/ui/session_state.hpp"
 #include "adi/ui/send_edits.hpp"
 #include "adi/ui/automation_override.hpp"
+#include "adi/ui/automation_mode.hpp"
+#include "adi/engine/automation.hpp"
 #include "adi/ui/snapshot_reader.hpp"
 #include "adi/ui/track_edits.hpp"
 #include "adi/ui/track_order.hpp"
@@ -2359,7 +2361,45 @@ void reenableFindsThePlayedLane() {
           "no lane: none; an id a CLAP cannot spell: none");
 }
 
+// AU-01: a curved automation segment is drawn where the engine plays it: the window's value at a tick equals the
+// engine's valueAt at that tick's sample, for each curve, across a tempo change.
+void automationCurvesDrawn() {
+    engine::TempoMap steady;
+    steady.events = {{0, 120.0, 0}};
+    const auto quarter = steady.secondsToTicks(.5);
+    engine::TempoMap tempo;
+    tempo.events = {{0, 120.0, 0}, {4 * quarter, 90.0, 0}}; // a tempo change inside the segment
+    const double rate = 48000;
+    for (std::uint8_t curve = 0; curve <= engine::kMaxCurve; ++curve)
+        for (const float tension : {-.6f, 0.f, .45f}) {
+            engine::AutomationPointNode a, b;
+            a.time = quarter;
+            a.value = -24;
+            a.curve = curve;
+            a.tension = tension;
+            b.time = 8 * quarter;
+            b.value = 3;
+            engine::AutomationLaneProgram lane;
+            const auto sample = [&](std::int64_t tick) {
+                return static_cast<std::int64_t>(std::llround(tempo.ticksToSeconds(tick) * rate));
+            };
+            lane.points = {{sample(a.time), a.value, a.tension, a.curve, nullptr},
+                           {sample(b.time), b.value, b.tension, b.curve, nullptr}};
+            double worst = 0;
+            for (std::int64_t tick = a.time; tick <= b.time; tick += quarter / 50 + 1) {
+                const double drawn = ui::envelopeValueAt(a, b, tick, &tempo);
+                const double played = engine::valueAt(lane, sample(tick));
+                worst = std::max(worst, std::abs(drawn - played));
+            }
+            check(worst < 2e-3, "curve " + std::to_string(curve) + " tension " + std::to_string(tension) +
+                                    ": drawn as played within 0.002 dB (worst " + std::to_string(worst) + ")");
+        }
+    engine::AutomationPointNode linear, held;
+    held.curve = 0;
+    check(ui::straightSegment(linear) && !ui::straightSegment(held), "a linear segment is a straight join; a held one is not");
+}
 int main() {
+    automationCurvesDrawn();
     theWrongThingDoesNotCompile();
     reenableFindsThePlayedLane();
     invalidReaderAnswersEmpty();

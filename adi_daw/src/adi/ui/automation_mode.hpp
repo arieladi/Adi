@@ -11,6 +11,7 @@
 #pragma once
 #include "adi/automation_edits.hpp"
 #include "adi/automation_lanes.hpp"
+#include "adi/engine/curves.hpp"
 #include "adi/engine/snapshot.hpp"
 #include <algorithm>
 #include <cmath>
@@ -53,6 +54,30 @@ inline TrackEnvelope trackEnvelope(const engine::Snapshot &snapshot, std::int64_
             break;
         }
     return out;
+}
+// The value an envelope plays at `tick` on its segment from breakpoint `a` to the next, `b` (AU-01; SPEC 6.3.2):
+// `a`'s curve and tension, and the curve `a` keeps from a trimmed source, over the segment's span in seconds, as
+// the engine places the points in samples (`engine::valueAt`). Before `a`, `a`'s value; from `b`, `b`'s. Without a
+// tempo map the span is measured in ticks.
+inline double envelopeValueAt(const engine::AutomationPointNode &a, const engine::AutomationPointNode &b,
+                              std::int64_t tick, const engine::TempoMap *tempo) noexcept {
+    if (tick <= a.time)
+        return a.value;
+    if (tick >= b.time)
+        return b.value;
+    const auto at = [&](std::int64_t t) {
+        return tempo != nullptr ? tempo->ticksToSeconds(t) : static_cast<double>(t);
+    };
+    const double from = at(a.time), to = at(b.time);
+    const double x = to > from ? (at(tick) - from) / (to - from) : 1.0;
+    engine::CurveSlice slice;
+    if (a.curveSlice)
+        slice = {a.curveSlice->begin, a.curveSlice->end, a.curveSlice->sourceFirst, a.curveSlice->sourceLast};
+    return engine::curveSliceValue(a.value, b.value, x, a.curve, a.tension, a.curveSlice ? &slice : nullptr);
+}
+// Whether a segment from `a` is drawn as a straight join: a linear one the source has not trimmed.
+inline bool straightSegment(const engine::AutomationPointNode &a) noexcept {
+    return a.curve == static_cast<std::uint8_t>(engine::CurveShape::Linear) && !a.curveSlice;
 }
 // Whether the window edits this envelope: a lane in ticks and real units (one in nanoseconds or another
 // domain is shown as it is and left alone).
