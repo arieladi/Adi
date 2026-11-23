@@ -117,13 +117,32 @@ settings::Value AppCommands::userKeys() const {
     return out;
 }
 bool AppCommands::storeUserKeys(std::string &why) {
-    // A stable id this build does not know (a later build's command) keeps its keys.
     const auto held = settings_.get("shortcuts.overrides");
     auto keys = userKeys();
-    if (held.is_object())
-        for (const auto &[stable, chords] : held.items())
-            if (commandFor(stable) == 0)
+    if (held.is_object()) {
+        const auto *mappings = manager.getKeyMappings();
+        for (const auto &[stable, chords] : held.items()) {
+            const int command = commandFor(stable);
+            // A stable id this build does not know (a later build's command) keeps its keys.
+            if (command == 0) {
                 keys[stable] = chords;
+                continue;
+            }
+            // A held entry the command still has keeps its place even where it equals the preset's keys,
+            // so reload()'s own change messages, or a preset whose keys match, never drop it.
+            std::vector<std::string> now, kept;
+            for (const auto &k : mappings->getKeyPressesAssignedToCommand(command))
+                now.push_back(chordText(k));
+            if (chords.is_array())
+                for (const auto &chord : chords)
+                    if (chord.is_string())
+                        kept.push_back(chord.get<std::string>());
+            std::sort(now.begin(), now.end());
+            std::sort(kept.begin(), kept.end());
+            if (now == kept && !keys.contains(stable))
+                keys[stable] = chords;
+        }
+    }
     if (keys == held)
         return true;
     return settings_.set("shortcuts.overrides", keys, {}, why) && settings_.save(why);
@@ -205,8 +224,8 @@ bool AppCommands::importShortcuts(const juce::File &file, std::string &why) {
 }
 ShortcutsPage::ShortcutsPage(AppCommands &commands)
     : commands_(commands), editor_(*commands.manager.getKeyMappings(), true) {
-    editor_.setColour(juce::KeyMappingEditorComponent::backgroundColourId, look::panel);
-    editor_.setColour(juce::KeyMappingEditorComponent::textColourId, look::text);
+    // setColours, not setColour: only it reaches the editor's tree, which fills most of it.
+    editor_.setColours(look::panel, look::text);
     addAndMakeVisible(editor_);
     for (auto *b : {&importButton, &exportButton})
         addAndMakeVisible(*b);
@@ -277,7 +296,7 @@ const StableEntry *stableEntry(int id) noexcept {
         {"edit.redo", "Edit"}, // Redo
         {"view.swap-panels", "View"}, // SwapPanels
         {"view.browser", "View"}, // ToggleBrowser
-        {"arrangement.mixer", "Arrangement"}, // ToggleMixer
+        {"arrangement.mixer", "View"}, // ToggleMixer
         {"view.device-view", "View"}, // ToggleDeviceView
         {"view.info-view", "View"}, // ToggleInfoView
         {"view.zoom-in", "View"}, // ZoomIn
@@ -333,9 +352,9 @@ const StableEntry *stableEntry(int id) noexcept {
         {"view.play-reference", "View"}, // PlayReference
         {"edit.select-all", "Edit"}, // SelectAll
         {"create.insert-return-track", "Create"}, // InsertReturnTrack
-        {"arrangement.return-tracks", "Arrangement"}, // ToggleReturnTracks
-        {"arrangement.sends", "Arrangement"}, // ToggleSends
-        {"arrangement.mixer-in-out", "Arrangement"}, // ToggleMixerInOut
+        {"arrangement.return-tracks", "View"}, // ToggleReturnTracks
+        {"arrangement.sends", "View"}, // ToggleSends
+        {"arrangement.mixer-in-out", "View"}, // ToggleMixerInOut
         {"mixer.solo-selected", "Mixer"}, // SoloSelected
         {"mixer.deactivate-selected", "Mixer"}, // DeactivateSelected
         {"mixer.activate-track-1", "Mixer"}, // ActivateTrack1
@@ -346,11 +365,11 @@ const StableEntry *stableEntry(int id) noexcept {
         {"mixer.activate-track-6", "Mixer"}, // ActivateTrack6
         {"mixer.activate-track-7", "Mixer"}, // ActivateTrack7
         {"mixer.activate-track-8", "Mixer"}, // ActivateTrack8
-        {"arrangement.mixer-sends", "Arrangement"}, // ToggleMixerSends
+        {"arrangement.mixer-sends", "View"}, // ToggleMixerSends
         {"create.insert-time-signature-change", "Create"}, // InsertTimeSignatureChange
         {"options.solo-in-place", "Options"}, // SoloInPlace
         {"arrangement.track-options", "Arrangement"}, // ToggleTrackOptions
-        {"arrangement.mixer-track-options", "Arrangement"}, // ToggleMixerTrackOptions
+        {"arrangement.mixer-track-options", "View"}, // ToggleMixerTrackOptions
         {"transport.metronome", "Transport"}, // Metronome
         {"edit.loop-selection", "Edit"}, // LoopSelection
         {"edit.select-loop", "Edit"}, // SelectLoop

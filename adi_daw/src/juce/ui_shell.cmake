@@ -75,7 +75,7 @@ if(ADI_WITH_JUCE)
         endif()
     endif()
     add_library(adi_ui_shell STATIC src/juce/ui_shell.cpp src/juce/ui_arrangement.cpp src/juce/ui_browser.cpp src/juce/ui_controlbar.cpp src/juce/ui_devices.cpp src/juce/ui_floating.cpp src/juce/ui_look.cpp src/juce/ui_controls.cpp src/juce/ui_mixer.cpp src/juce/ui_mixview.cpp src/juce/ui_settings.cpp src/juce/ui_stack.cpp src/juce/ui_analysis.cpp src/juce/ui_channel_config.cpp src/juce/ui_history.cpp src/juce/ui_clipview.cpp src/juce/ui_export.cpp)
-    target_link_libraries(adi_ui_shell PUBLIC adi_settings juce::juce_gui_basics)
+    target_link_libraries(adi_ui_shell PUBLIC adi_settings juce::juce_gui_basics juce::juce_gui_extra)
     # SRF-05: the MIDI ports stay on the Win32 backend; Windows MIDI Services and WinRT MIDI are pinned off so
     # every target that compiles juce_audio_devices through the shell agrees on the backend.
     target_compile_definitions(adi_ui_shell PUBLIC JUCE_STANDALONE_APPLICATION=1 JUCE_USE_CURL=0 JUCE_WEB_BROWSER=0

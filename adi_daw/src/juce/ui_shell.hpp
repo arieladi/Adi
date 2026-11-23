@@ -28,6 +28,7 @@
 #include "ui_mixer.hpp"
 #include "ui_mixview.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
+#include <juce_gui_extra/juce_gui_extra.h> // the Shortcuts page's key editor (WIN-04)
 #include <functional>
 #include <memory>
 #include <optional>
@@ -164,7 +165,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     explicit AppCommands(settings::AppSettings &);
     void reload();
     // WIN-04: each command's stable text id ("view.browser", "edit.redo"), never renumbered, the list
-    // only growing; its category, the Live menu that holds it; the command a stable id names (0: none).
+    // only growing; its category, the Live menu that holds it (Transport, Arrangement and Mixer for the
+    // commands no menu holds: keys and controls only); the command a stable id names (0: none).
     static const char *stableId(int id) noexcept;
     static const char *category(int id) noexcept;
     static int commandFor(const std::string &stableId) noexcept;
