@@ -377,6 +377,7 @@ add_library(adi_core STATIC
     src/adi/controller_maps.cpp
     src/adi/osc_codec.cpp
     src/adi/osc_namespace.cpp
+    src/adi/oscquery.cpp
     src/adi/gesture_session.cpp
     src/adi/gesture_producers.cpp
     src/adi/quiet_gesture.cpp
@@ -1436,6 +1437,12 @@ if(ADI_BUILD_FUZZERS)
         COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/fuzz_seeds.py"
                 "$<TARGET_FILE_DIR:adi_fuzz_blob>/fuzz_corpus/blob"
         VERBATIM)
+
+    # oscquery uses header-only nlohmann::json (ADR-0188 d7), so every byte is
+    # still compiled into adi_fuzz_oscquery with full fuzzer instrumentation.
+    if(TARGET adi_fuzz_oscquery)
+        target_link_libraries(adi_fuzz_oscquery PRIVATE nlohmann_json::nlohmann_json)
+    endif()
 endif()
 
 # ---------------------------------------------------------------------------
@@ -2333,6 +2340,10 @@ add_test(NAME adi_osc_codec_tests COMMAND adi_osc_codec_tests)
 add_executable(adi_osc_namespace_tests tests/test_osc_namespace.cpp)
 target_link_libraries(adi_osc_namespace_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_osc_namespace_tests COMMAND adi_osc_namespace_tests)
+
+add_executable(adi_oscquery_tests tests/test_oscquery.cpp)
+target_link_libraries(adi_oscquery_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_oscquery_tests COMMAND adi_oscquery_tests)
 # Test modules from the director's research are available on Windows hosting builds.
 if(ADI_WITH_JUCE)
     include(tests/research_intake/plugins/targets.cmake)
