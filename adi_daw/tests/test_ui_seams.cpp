@@ -41,6 +41,7 @@
 #include "adi/row_ids.hpp"
 #include "adi/ui/audio_drop.hpp"
 #include "adi/ui/automation_override.hpp"
+#include "adi/ui/remark_edits.hpp"
 #include "adi/ui/snapshot_reader.hpp"
 #include "adi/ui/track_edits.hpp"
 #include "adi/ui/track_order.hpp"
@@ -1130,6 +1131,43 @@ void sendsAsBatches() {
     check(sub.undo().ok && ui::findSend(view.current()->sends, 2, 10)->gainDb == -12.0, "undo brings -12 dB back");
     check(sub.undo().ok && ui::findSend(view.current()->sends, 2, 10) == nullptr, "and then removes the row");
     check(sub.redo().ok && ui::findSend(view.current()->sends, 2, 10) != nullptr, "redo");
+
+    // RE-01: remarks from the window, each one undo step.
+    {
+        check(!ui::addRemark(*view.current(), "track", 2, std::nullopt, "   ", 1000).refusal.empty(), "an empty remark is refused");
+        check(!ui::addRemark(*view.current(), "routing", 2, std::nullopt, "x", 1000).refusal.empty(),
+              "a remark on what no remark anchors to is refused");
+        auto added = ui::addRemark(*view.current(), "track", 2, std::nullopt, "  Kick too loud in the chorus ", 1000);
+        check(added.refusal.empty() && added.ops.size() == 1 && added.ops[0].opType == "remark.add" &&
+                  added.ops[0].payload["text"] == "Kick too loud in the chorus" && added.ops[0].payload["author"] == "user" &&
+                  sub.submit(std::move(added.ops)).ok && sub.nextUndo()->label == "Add Remark",
+              "a remark on Kick, trimmed, the user's, one undo step");
+        const auto on = ui::remarksOn(*view.current(), "track", 2);
+        check(on.size() == 1 && on[0]->text == "Kick too loud in the chorus" && !on[0]->resolved &&
+                  ui::remarksOn(*view.current(), "track", 3).empty(),
+              "Kick holds it; another track holds none");
+        const auto id = on.empty() ? 0 : on[0]->id;
+        check(ui::editRemark(*view.current(), id, "Kick too loud in the chorus").ops.empty() &&
+                  !ui::editRemark(*view.current(), id, "").refusal.empty(),
+              "the same text writes nothing; empty text is refused");
+        auto edited = ui::editRemark(*view.current(), id, "Kick -2 dB in the chorus");
+        check(sub.submit(std::move(edited.ops)).ok && ui::remarksOn(*view.current(), "track", 2)[0]->text == "Kick -2 dB in the chorus" &&
+                  sub.nextUndo()->label == "Edit Remark",
+              "edited, one step");
+        auto resolved = ui::resolveRemark(*view.current(), id, true);
+        check(sub.submit(std::move(resolved.ops)).ok && ui::remarksOn(*view.current(), "track", 2)[0]->resolved &&
+                  sub.nextUndo()->label == "Resolve Remark" && ui::resolveRemark(*view.current(), id, true).ops.empty(),
+              "resolved, one step; resolving again writes nothing");
+        auto removed = ui::removeRemark(*view.current(), id);
+        check(sub.submit(std::move(removed.ops)).ok && ui::remarksOn(*view.current(), "track", 2).empty() &&
+                  !ui::removeRemark(*view.current(), id).refusal.empty(),
+              "deleted, one step; a deleted remark is gone");
+        for (int i = 0; i < 4; ++i)
+            check(sub.undo().ok, "undo a remark step");
+        check(ui::remarksOn(*view.current(), "track", 2).empty(), "four undos take the remark back out");
+        check(sub.redo().ok && ui::remarksOn(*view.current(), "track", 2).size() == 1 && sub.undo().ok,
+              "redo brings it back; undo again");
+    }
 
     // A second send gets the next id.
     auto second = ui::setSend(*view.current(), 3, 11, -6);

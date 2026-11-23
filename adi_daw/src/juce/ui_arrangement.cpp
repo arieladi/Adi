@@ -1582,6 +1582,9 @@ juce::PopupMenu ArrangementView::headerMenu() {
     menu.addSeparator();
     menu.addCommandItem(&commands.manager, AppCommands::GroupTracks);
     menu.addCommandItem(&commands.manager, AppCommands::UngroupTracks);
+    // The track's remarks (RE-01): add one, or edit, resolve or delete those it holds.
+    if (geometry.selection.track != 0)
+        root.addRemarkItems(menu, "track", geometry.selection.track);
     // Live's colour chooser at the menu's foot (Live 12 manual 2.3.2); on a group, the command that
     // gives what it holds its colour (manual 18.3).
     menu.addSeparator();
@@ -1614,6 +1617,8 @@ juce::PopupMenu ArrangementView::contextMenuItems(bool header, const engine::Aut
                 menu.addCommandItem(&commands.manager, id);
             menu.addSeparator();
             menu.addCommandItem(&commands.manager, AppCommands::Split);
+            // The clip's remarks (RE-01).
+            root.addRemarkItems(menu, "clip", geometry.selection.clip);
             menu.addSeparator();
         } else if (!commands.clipClipboard().empty()) {
             menu.addCommandItem(&commands.manager, AppCommands::Paste);

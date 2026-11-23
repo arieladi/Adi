@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_shell.hpp"
+#include "adi/ui/remark_edits.hpp"
 #include "adi/edit_plan.hpp"
 #include "ui_controls.hpp"
 #include "ui_floating.hpp"
@@ -4357,6 +4358,99 @@ void AdiRootComponent::ImportPrompt::resized() {
     cancel.setBounds(foot.removeFromRight(80));
     foot.removeFromRight(8);
     import.setBounds(foot.removeFromRight(80));
+}
+bool AdiRootComponent::addRemark(const std::string &kind, std::int64_t target, std::optional<std::string> param,
+                                 const std::string &text) {
+    const auto current = view_.current();
+    if (!current)
+        return fail("Remarks need an open project.");
+    auto edit = ::adi::ui::addRemark(*current, kind, target, std::move(param), text, juce::Time::currentTimeMillis() / 1000);
+    if (!edit.refusal.empty())
+        return fail(std::move(edit.refusal));
+    return submitEdits(std::move(edit.ops));
+}
+bool AdiRootComponent::editRemark(std::int64_t id, const std::string &text) {
+    const auto current = view_.current();
+    if (!current)
+        return fail("Remarks need an open project.");
+    auto edit = ::adi::ui::editRemark(*current, id, text);
+    if (!edit.refusal.empty())
+        return fail(std::move(edit.refusal));
+    return submitEdits(std::move(edit.ops));
+}
+bool AdiRootComponent::resolveRemark(std::int64_t id, bool resolved) {
+    const auto current = view_.current();
+    if (!current)
+        return fail("Remarks need an open project.");
+    auto edit = ::adi::ui::resolveRemark(*current, id, resolved);
+    if (!edit.refusal.empty())
+        return fail(std::move(edit.refusal));
+    return submitEdits(std::move(edit.ops));
+}
+bool AdiRootComponent::removeRemark(std::int64_t id) {
+    const auto current = view_.current();
+    if (!current)
+        return fail("Remarks need an open project.");
+    auto edit = ::adi::ui::removeRemark(*current, id);
+    if (!edit.refusal.empty())
+        return fail(std::move(edit.refusal));
+    return submitEdits(std::move(edit.ops));
+}
+void AdiRootComponent::addRemarkItems(juce::PopupMenu &menu, const std::string &kind, std::int64_t target,
+                                      std::optional<std::string> param) {
+    const auto current = view_.current();
+    if (!current)
+        return;
+    if (menu.getNumItems() > 0)
+        menu.addSeparator();
+    // The prompt: the window's own when set, else JUCE's dialog in the shared look (the look is the window lane's).
+    const auto ask = [safe = SafePointer<AdiRootComponent>(this)](const std::string &title, const std::string &initial,
+                                                                   std::function<void(std::string)> answer) {
+        if (!safe)
+            return;
+        if (safe->askText) {
+            safe->askText(title, initial, std::move(answer));
+            return;
+        }
+        auto *window = new juce::AlertWindow(title, {}, juce::MessageBoxIconType::NoIcon, safe.getComponent());
+        window->addTextEditor("text", juce::String::fromUTF8(initial.c_str()));
+        window->addButton("OK", 1, juce::KeyPress(juce::KeyPress::returnKey));
+        window->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+        window->enterModalState(true, juce::ModalCallbackFunction::create([window, answer = std::move(answer)](int result) {
+                                    if (result == 1)
+                                        answer(window->getTextEditorContents("text").toStdString());
+                                }),
+                                true);
+    };
+    menu.addItem("Add Remark...", [safe = SafePointer<AdiRootComponent>(this), ask, kind, target, param] {
+        ask("Add Remark", {}, [safe, kind, target, param](std::string text) {
+            if (safe)
+                safe->addRemark(kind, target, param, text);
+        });
+    });
+    for (const auto *r : remarksOn(*current, kind, target, param)) {
+        juce::PopupMenu one;
+        const auto id = r->id;
+        const auto text = r->text;
+        one.addItem("Edit...", [safe = SafePointer<AdiRootComponent>(this), ask, id, text] {
+            ask("Edit Remark", text, [safe, id](std::string edited) {
+                if (safe)
+                    safe->editRemark(id, edited);
+            });
+        });
+        one.addItem(r->resolved ? "Reopen" : "Resolve", [safe = SafePointer<AdiRootComponent>(this), id, resolved = r->resolved] {
+            if (safe)
+                safe->resolveRemark(id, !resolved);
+        });
+        one.addItem("Delete", [safe = SafePointer<AdiRootComponent>(this), id] {
+            if (safe)
+                safe->removeRemark(id);
+        });
+        auto title = juce::String::fromUTF8(text.c_str());
+        if (title.length() > 40)
+            title = title.substring(0, 39) + juce::String(juce::CharPointer_UTF8("\xe2\x80\xa6"));
+        menu.addSubMenu((r->resolved ? "Resolved: " : "Remark: ") + title, one);
+    }
 }
 void AdiRootComponent::addReenableAutomation(juce::PopupMenu &menu, const engine::AutomationLaneNode *lane) {
     if (lane == nullptr)

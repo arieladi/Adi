@@ -964,6 +964,26 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
         };
         lanes.selection.track = 10;
         lanes.selection.toTrack = 0;
+        // RE-01: the track's menu offers Add Remark; a remark added through its prompt is listed there after.
+        {
+            root.askText = [](const std::string &, const std::string &, std::function<void(std::string)> answer) {
+                answer("Check the bus level");
+            };
+            const auto menu = root.arrangement.headerMenu();
+            bool offered = false;
+            for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+                if (it.getItem().text == "Add Remark..." && it.getItem().action) {
+                    offered = true;
+                    it.getItem().action();
+                    break;
+                }
+            refresh();
+            check(offered && headerItems().contains("Remark: Check the bus level") && root.error().empty(),
+                  "Add Remark... in the track's menu asks for the text, and the remark is listed there after");
+            check(root.command(AppCommands::Undo), "undo the remark");
+            refresh();
+            root.askText = nullptr;
+        }
         check(headerItems().contains("Assign Track Color to Grouped Tracks and Clips") &&
                   headerItems()[headerItems().size() - 1] == "Colour (swatches)",
               "a group's menu ends with Assign Track Color to Grouped Tracks and Clips, then the colour chooser");
