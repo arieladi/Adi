@@ -1,0 +1,37 @@
+[
+  {
+    "path": "impulse_at_0_48k_stereo_2s.wav",
+    "bytes": 768044,
+    "sha256": "341f1189f1cb8bea530f53ea133a2a2c2fcb048838a67ac68c6ebbdcdfff2e49"
+  },
+  {
+    "path": "impulse_at_1_48k_stereo_2s.wav",
+    "bytes": 768044,
+    "sha256": "155a743649917b29e0416ac9d184d28a3bd0b5582bc8b324b597b7ab118032af"
+  },
+  {
+    "path": "impulse_at_2_48k_stereo_2s.wav",
+    "bytes": 768044,
+    "sha256": "9432a31bb63eeda83e10582344f2b457229138057663cbafc597a847f8ea27ee"
+  },
+  {
+    "path": "impulse_at_16_48k_stereo_2s.wav",
+    "bytes": 768044,
+    "sha256": "3810591fd3a5a5ada6bd75a1eb0caf557ff0ee06a08b5ea4843a71951ad31f37"
+  },
+  {
+    "path": "impulse_at_64_48k_stereo_2s.wav",
+    "bytes": 768044,
+    "sha256": "33a5a10f10b7ed9223bd528d4846d650119130ec686b293e3db2913a1ef4ee63"
+  },
+  {
+    "path": "dc_0p1_48k_stereo_2s.wav",
+    "bytes": 768044,
+    "sha256": "3fbb77b2d8c78200dd4a5d7f3387091aed2a2a228b1be5a7694c447e03a843c2"
+  },
+  {
+    "path": "dense_code_48k_stereo_40s.wav",
+    "bytes": 15360044,
+    "sha256": "0679198c377700583b2a419c42c091ed483bce22f8dd15bb261aa2d4d207f347"
+  }
+]

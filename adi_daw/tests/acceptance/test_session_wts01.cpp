@@ -111,6 +111,7 @@ bool step1(Session &s, Report &report) {
     }
     auto &doc = *s.doc;
     doc.prepare(kRate, kFrames); // the driver's prepare, at the device's rate
+    doc.setInputChannels(2);    // the device's two inputs, as the app gives them once it opens (N65)
     s.driver.emplace(doc);
     const auto snap = doc.view().current();
     // By id: the snapshot lists them in the Arrangement's order, Main last.
@@ -150,7 +151,7 @@ void step2(Session &s, Report &report) {
     const auto snap = doc.view().current();
     auto arm = ui::armTracks(snap->tracks, doc.recordStates(), 4, {4}, true, false); // Exclusive Arm, as Live's
     const bool armed = arm.refusal.empty() && submitEdits(doc, std::move(arm.ops)) && doc.recordStates().at(4).armed;
-    const auto monitor = doc.recordStates().at(4).monitor;
+    const auto recordMonitor = doc.recordStates().at(4).monitor;
     driver.input = fedInput;
     const auto clipsBefore = scalar(doc, "SELECT count(*) FROM clips WHERE track_id=4");
     const auto startStream = driver.stream;
@@ -203,7 +204,7 @@ void step2(Session &s, Report &report) {
     report.check("2a", recorded,
                  format("armed %d (monitor %s); record %s; landed %s \"%s\"; clips +%lld; undo \"%s\" (%d ops); "
                         "pos %lld, length %lld ticks, %lld frames; take vs fed max|d| %.3g%s",
-                        armed ? 1 : 0, ui::monitorName(monitor), started ? "started" : startError.c_str(),
+                        armed ? 1 : 0, ui::monitorName(recordMonitor), started ? "started" : startError.c_str(),
                         landed ? (landed->ok ? "ok" : "refused") : "never", landed ? landed->message.c_str() : "",
                         static_cast<long long>(clips), undo ? undo->label.c_str() : "", undo ? undo->opCount : 0,
                         static_cast<long long>(pos), static_cast<long long>(len), static_cast<long long>(srcFrames),
@@ -214,7 +215,9 @@ void step2(Session &s, Report &report) {
                  "sample for sample (0)");
     if (s.take.size() == 0)
         return;
-    // Play it back from the start: the live input is still fed, and monitoring Off keeps it out.
+    // Play it back from the start: the live input is still fed, and monitoring keeps it out: Auto (New's,
+    // N67) while the armed track's take plays, as Off would.
+    const auto monitor = doc.recordStates().at(4).monitor; // in force while the take plays
     const auto underrunsBefore = driver.underruns();
     windowPlayFrom(doc, 0);
     Stereo heard;
@@ -295,7 +298,7 @@ void step2(Session &s, Report &report) {
                            "until sourcesReadyAt",
                            static_cast<unsigned long long>(firstBlockUnderruns));
     }
-    if (best <= 1e-6 && monitor == ui::Monitor::Off)
+    if (best <= 1e-6 && monitor != ui::Monitor::In)
         report.step("2b", V::Pass, playback, playbackExpected);
     else
         report.step("2b", V::Fail, playback, playbackExpected, cause);
@@ -339,36 +342,37 @@ void step3(Session &s, Report &report) {
                         entry && !entry->placeholder ? 1 : 0, assigned ? "assigned" : assignError.c_str(), slot ? 1 : 0,
                         armed ? 1 : 0),
                  "OneShot on track 2, \"Insert OneShot\"; loaded; the sample in slot 1; track 2 armed");
-    // Live notes: the app throws the keyboard's events away (ui_main.cpp, `midiPorts_->drain({})` lights the MIDI
-    // indicators only) and ProjectDocument has no live-MIDI entry point.
-    report.step("3b", V::NotBuilt, "the app's MIDI port rings are drained into the indicators only; no document call",
-                "a key played on an armed MIDI track is heard at its time",
-                "the app consumer from MidiPortHost to Session::enqueueMidiInput, port time as stream samples "
-                "(SRF-05 window half); owner window-fn");
-    // The engine call that consumer would make: a note 37 frames into a block, released 0.25 s later.
+    // Live notes (N60): a key played on a port reaches the session through the app's consumer, the feed
+    // the device callback pumps in front of the document (ui_main.cpp, LiveMidiProcessor).
+    ui::MidiInputFeed feed;
+    ui::MidiInputFeed::Ring keyboard;
+    const std::array<ui::MidiInputFeed::Source, 1> port{ui::MidiInputFeed::Source{&keyboard, 0, true, false, false, 1}};
+    feed.publish(port);
+    driver.feed = &feed;
+    // A note 37 frames into a block, released 0.25 s later.
     const auto blockStart = driver.stream;
     constexpr std::int64_t k = 37;
-    const bool queued =
-        doc.session().enqueueMidiInput(blockStart + k, engine::Event{0, engine::EventType::NoteOn, 0, 60, 1, 0, 1.0}) &&
-        doc.session().enqueueMidiInput(blockStart + k + 12000, engine::Event{0, engine::EventType::NoteOff, 0, 60, 1, 0, 0.0});
     Stereo heard;
-    driver.run(300, &heard);
+    driver.play(keyboard, {{blockStart + k, {0x90, 60, 127}}, {blockStart + k + 12000, {0x80, 60, 0}}}, 300, &heard);
+    driver.feed = nullptr;
     std::int64_t first = -1;
     for (std::size_t i = 0; i < heard.size() && first < 0; ++i)
         if (std::abs(heard.c[0][i]) > 1e-4f)
             first = static_cast<std::int64_t>(i);
     const double loud = peak(heard, 0, heard.size());
     const double expected = .5 * gainOf(-12);
-    report.engine("3b", format("queued %d; first sound at +%lld frames from the note's sample; peak %.4f",
-                               queued ? 1 : 0, static_cast<long long>(first < 0 ? -1 : first - k), loud),
-                  format("onset at +1 (the note's own frame plays the sine's first sample, 0); peak %.4f (0.5 at "
-                         "OneShot's -12 dB)",
-                         expected));
+    report.check("3b", first - k == 1 && std::abs(loud - expected) < 1e-3,
+                 format("through the app's MIDI consumer: first sound at +%lld frames from the note's sample; peak %.4f; "
+                        "%llu refused",
+                        static_cast<long long>(first < 0 ? -1 : first - k), loud,
+                        static_cast<unsigned long long>(feed.refused())),
+                 format("a key played on an armed MIDI track is heard at its time: onset at +1, peak %.4f", expected));
 #else
     report.step("3a", V::NotBuilt, "this build has no Pd", "OneShot on a MIDI track", "build with ADI_WITH_PD=ON; owner win");
-    report.step("3b", V::NotBuilt, "the app's MIDI port rings are drained into the indicators only",
-                "a key played on an armed MIDI track is heard at its time",
-                "the app consumer from MidiPortHost to Session::enqueueMidiInput; owner window-fn");
+    (void)doc; // a build without Pd plays nothing here
+    (void)driver;
+    report.step("3b", V::NotBuilt, "this build has no Pd, so no OneShot to play",
+                "a key played on an armed MIDI track is heard at its time", "build with ADI_WITH_PD=ON; owner win");
 #endif
     std::printf("WTS01 3c, 3d: the VST3 instrument, in adi_acceptance_wts01_vst3 (JUCE)\n");
 }
@@ -613,13 +617,10 @@ void step6(Session &s, Report &report) {
                         labels.c_str(), worst, worstBlock),
                  "each point one step \"Add Automation Point\"; the gain follows (0, 0 dB) (2 bars, -24) (4 bars, -6) "
                  "within 0.1 dB");
-    // A built-in device's parameter: the window offers only Volume.
-    report.step("6b", V::NotBuilt, "Automation Mode shows each track's Volume only (automation_mode.hpp)",
-                "a device parameter's envelope drawn and followed",
-                "the lane chooser for a device parameter from an agreed sheet (AU-01 window half, ADR-0243), or "
-                "automation recording wired to the session (AU-03); owner window-fn");
-    // The engine as it stands: Utility on track 5 (track 4 deactivated so only x5 is heard), a lane on its Gain
-    // (+6 dB for 2 bars, then 0 dB).
+    // 6b. A built-in device's parameter, through the window's lane chooser (DF-W37): Utility on track 5
+    // (track 4 deactivated so only x5 is heard), its Gain chosen among the track's choices as the track
+    // header's Show Automation lists them, and its envelope drawn point by point as Automation Mode adds
+    // them (+6 dB for 2 bars, then 0 dB), each one step.
     int steps = 0;
     auto mute = ui::activateTracks(snap->tracks, 4, {});
     if (mute.refusal.empty() && submitEdits(doc, std::move(mute.ops)))
@@ -628,26 +629,30 @@ void step6(Session &s, Report &report) {
     if (utility)
         ++steps;
     const auto dev = scalar(doc, "SELECT MAX(id) FROM devices");
-    automation::LaneSpec lane;
-    lane.id = scalar(doc, "SELECT COALESCE(MAX(id), 0) + 1 FROM automation_lanes");
-    lane.ownerKind = "device";
-    lane.ownerId = dev;
-    lane.paramRef = "11";
-    lane.paramName = "Gain";
-    lane.valueDomain = "normalized";
-    const auto data = scalar(doc, "SELECT COALESCE(MAX(id), 0) + 1 FROM automation_data");
-    const auto point = [](std::uint64_t id, std::int64_t time, double value) {
-        return Payload{{"id", id}, {"time", time}, {"value", value}, {"curve", 1}, {"tension", 0.0}};
-    };
-    std::vector<OpRequest> laneOps{automation::createLane(lane),
-                                   automation::writePoints(data, lane.id, nullptr,
-                                                           Payload::array({point(1, 0, 126.0 / 155),
-                                                                           point(2, 2 * kBarTicks, 126.0 / 155),
-                                                                           point(3, 2 * kBarTicks + 1, 120.0 / 155),
-                                                                           point(4, 4 * kBarTicks, 120.0 / 155)}))};
+    // The window demands the devices' parameters while Automation Mode is on; the timer publishes them.
+    const int demandOwner = 0;
+    doc.parameterFeed().setDemand(&demandOwner, {dev});
+    driver.frame();
+    std::optional<ui::AutomationTarget> gain;
+    for (const auto &t : ui::automationChoices(*doc.view().current(), 5, doc.parameterFeed().current().get()))
+        if (t.ownerKind == "device" && t.ownerId == dev && t.paramName == "Gain")
+            gain = t;
     std::string laneError;
-    if (utility && submitEdits(doc, std::move(laneOps), &laneError))
-        ++steps;
+    bool drawn = gain.has_value();
+    for (const auto &[tick, value] : {std::pair<std::int64_t, double>{0, 126.0 / 155}, {2 * kBarTicks, 126.0 / 155},
+                                      {2 * kBarTicks + 1, 120.0 / 155}, {4 * kBarTicks, 120.0 / 155}}) {
+        if (!drawn)
+            break;
+        const auto now = doc.view().current();
+        ui::AutomationIds ids;
+        ids.lane = scalar(doc, "SELECT COALESCE(MAX(id), 0) + 1 FROM automation_lanes");
+        ids.data = scalar(doc, "SELECT COALESCE(MAX(id), 0) + 1 FROM automation_data");
+        ids.point = 1;
+        drawn = submitEdits(doc, ui::addAutomationPoint(ui::envelopeOf(*now, *gain), *gain, tick, value, 0.5, ids), &laneError);
+        if (drawn)
+            ++steps;
+    }
+    doc.parameterFeed().setDemand(&demandOwner, {});
     windowPlayFrom(doc, 0);
     Stereo gained;
     driver.run(1500, &gained);
@@ -674,12 +679,15 @@ void step6(Session &s, Report &report) {
         }
         (b < 750 ? first : second) = u;
     }
-    report.engine("6b", format("Utility %s; device lane %s; Utility's gain x%.6f before 2 bars, x%.6f after; max |d| "
-                               "%.2g (block %zu: x%.6f)",
-                               utility ? "inserted" : doc.error().c_str(),
-                               steps == 3 ? "submitted" : ("refused: " + laneError).c_str(), first, second, spread,
-                               spreadAt, spreadGain),
-                  format("x%.6f (+6 dB) then x1.000000 (0 dB), within 2e-5 outside blocks 746-789 (the jump)", gainOf(6)));
+    report.check("6b", utility && drawn && spread <= 2e-5,
+                 format("Utility %s; Gain %s in the chooser, its envelope %s; Utility's gain x%.6f before 2 bars, "
+                        "x%.6f after; max |d| %.2g (block %zu: x%.6f)",
+                        utility ? "inserted" : doc.error().c_str(), gain ? "offered" : "not offered",
+                        drawn ? "drawn in 4 steps" : ("refused: " + laneError).c_str(), first, second, spread, spreadAt,
+                        spreadGain),
+                 format("a device parameter's envelope drawn through the lane chooser and followed: x%.6f (+6 dB) then "
+                        "x1.000000 (0 dB), within 2e-5 outside blocks 746-789 (the jump)",
+                        gainOf(6)));
     for (int i = 0; i < steps; ++i)
         (void)doc.ops().undo();
     doc.synchronise();
@@ -727,15 +735,9 @@ void step7(Session &s, Report &report) {
     choices.normalize = false;
     const auto refusals = ui::exportRefusals(choices);
     const auto exportTo = [&](ui::ProjectDocument &d, const char *name) {
-        render::Result result;
-        if (exportPrecheckRefuses(d)) {
-            result.state = render::JobState::Failed;
-            result.error = kExportRefusal;
-            return result;
-        }
         const auto current = d.view().current();
         return render::renderWav(ui::exportJob(choices, d.store().path(), s.temp.path() / name, *current->tempo),
-                                 exportLoader(device::withBuiltinDevices()));
+                                 device::withBuiltinDevices());
     };
     const auto a = exportTo(doc, "A.wav");
     const std::array<const char *, 7> tables{
@@ -763,6 +765,7 @@ void step7(Session &s, Report &report) {
     }
     auto &again = *s.doc;
     again.prepare(kRate, kFrames);
+    again.setInputChannels(2);
     driver.attach(again);
     bool same = true;
     std::string differs;
@@ -807,7 +810,7 @@ void step7(Session &s, Report &report) {
         auto spec = job.session;
         spec.performanceState = false;
         spec.exporting = true;
-        if (store && session.load(*store, exportLoader(device::withBuiltinDevices()), spec)) {
+        if (store && session.load(*store, device::withBuiltinDevices(), spec)) {
             session.transport().loop(0, 0, false);
             session.transport().locate(0);
             session.transport().play();
