@@ -4,6 +4,28 @@ Trial seat (22 November 2026, `collab/win.md`): Linux environment (Debian 12, GC
 
 ---
 
+## 2026-11-22 — Queue cycle 2: WTS-01 on new `main` (`abbc32ab`), DF-E64 Linux WTS-01 confirmation (`01b1e723`), and Round 2 PR-BUILDS check
+
+All 15 standing queue items are complete on `main` (`abbc32ab`, post-`#712 land/mixview2-1122`); per the standing queue's empty-list rule, checked for new PR-requested branches and re-ran item 3 on the new `main` (items 10–13 were already run on `abbc32ab`).
+
+### 1. Item 3 rerun (`WTS-01 on Linux`, GCC 12.2.0 `-DADI_ACCEPTANCE=ON`)
+
+| Branch / Head | `adi_acceptance_wts01` result | Wall time | Notes |
+|---|---|---:|---|
+| `main` (`abbc32ab`, post-`#712`) | **1 FAIL** (step 2b DF-E64 only) | 39.39 s | Exact match with `73f13028` and win's 20 Nov table: steps 1, 2a, 3a, 4, 5a, 6a, 7a, 7b, 7c `PASS`; 3b, 5b, 6b `NOT_BUILT` (`ENGINE` ok); 3c, 3d, 7d, 7e JUCE-only. Also verified all 6 newly landed `#712` Mix View 2 suites (`adi_mix_filters_tests`, `adi_mix_deesser_tests`, `adi_mix_key_eq_tests`, `adi_mix_clean_key_tests`, `adi_mix_opto_gain_tests`, `adi_mix_gate_tests`) pass on `abbc32ab` (`6/6 PASS`, 2.00 s). |
+| `engine-win/play-first-block` (`01b1e723`, DF-E64) | **0 FAIL — PASS** | 38.55 s | **For win and `engine-win`:** step 2b now passes bit-exact (`max|d| 0` at frame 0, 0 underruns, held 1 callback); steps 5a, 7b first-play, and 7c live-render also improve to `max|d| 0` from frame 0. |
+
+### 2. Round 2 `PR-BUILDS` check
+
+Fetched `origin --prune` against all 7 seat logs (`engine/log` `7da7b726`, `engine-win/log` `975577e2`, `devices/log` `cec2d176`, `mixview/log` `a3aa0127`, `clones/log` `1142e6fc`, `window/log` `d6584386`, `window-fn/log` `6fb4f996`): **0 new active unmerged PR-requested heads** since Round 1 (the sole unmerged `2026-11-21+` ref not an ancestor of Round 1's 46 tested heads is the superseded `engine/df-e23-followups-staged` `72dfdc77`, already noted in `engine.md` as identical to `main` and ready to close).
+
+### Standing queue status
+
+- **Items 1–15**: all 15 completed and logged (`gemini/df-e53-canonical-param-ref` at `03be0b99` and `gemini/df-e56-mpe-router-overflow` at `0b539fb2` still wait on win's landing; engine review pending on item 1's `0b539fb2`).
+- **PLAN rows**: held per queue instructions pending the director's decision on whether `gemini` takes post-3-December PLAN rows or becomes a permanent seat with owned paths.
+
+---
+
 ## 2026-11-22 — Queue item 15 (REGISTER-AUDIT): second check of the engine seat's landed DF-E rows on `main` (`abbc32ab`)
 
 **For win (ready to move confirmed rows to Done in one PR).** Verified against `adi_daw/docs/DEFERRED.md` and `origin/main` (`abbc32ab`) by checking every commit is an ancestor of `main`, reading every implementation hunk, and running all 21 corresponding test suites under GCC 12.2.0 (`21 / 21 PASS`, 4,904 checks, 0 failures).
