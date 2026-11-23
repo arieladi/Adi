@@ -848,7 +848,7 @@ finisher from the start.
 **The Live 12 readings, first checkpoint.** His seats on his second PC ran the brief of the 5th: measured
 the 70-colour palette in both themes, the Pre/Post colours through save and reopen, Insert Return with
 its undo; read the build, the settings census and the export census; the rest not run, the true-peak
-method invalid. Mission 2 is written, the mission-2 brief (private measurement folder): 113
+method invalid. Mission 2 is written, in the private measurement folder: 113
 readings, part A for the Claude seat, part B for Codex, on his account with the manual's defaults.
 
 **ADI-View combined, the headless round.** Group 1 of the plan of the 5th ran while the builds ran:
@@ -930,12 +930,12 @@ his words, STACK as each track's own devices until his list; Q-C (a), the contro
 its own (ADR-0232). M0 started at once: the records (landed on the 8th as #464 and #466) and W1, the
 StackModel, whose PR #463 opened in the evening.
 
-**The Live 12 readings and ADI-View.** The readings brief is written,
-the 5 November readings brief (private measurement folder): 122 readings by milestone, on a fresh Live profile
+**The Live 12 readings and ADI-View.** The readings brief of 5 November is written,
+in the private measurement folder: 122 readings by milestone, on a fresh Live profile
 on his second PC; G-1 answered, he runs it with his own seats, from Sunday. He called the three plug-ins'
 current builds good enough and handed a new brief, the ADI-View combined retest against five analyser
 references, with a standalone test app to be built by Codex; the plan is in
-the 5 November combined-view reference round (private test folder) (plan, handoff to Codex, report,
+the 5 November combined-view reference round, in the private test folder (plan, handoff to Codex, report,
 evidence index, three mock-ups, decisions D1 to D13): group 1 headless tonight while Codex builds,
 group 2's CPU cells once the machine is quiet.
 
