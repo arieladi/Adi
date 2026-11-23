@@ -12365,9 +12365,14 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
               "Play Reference on Shift+R; Ctrl/Cmd+R stays Live's Rename (d9)");
         check(root.referenceTrack() == 0 && panel.referenceText() == "None yet",
               "the stub names no Reference track until the format carries a track's role (N38)");
+        // The window's clock is the test's (ADR-0231 d2; DF-W18): no key is held, and every reading is
+        // 300 ms after the last, slower than any machine; the menu's Play Reference is still a tap.
+        auto clockMs = std::make_shared<std::int64_t>(0);
+        root.input.keyDown = [](int) { return false; };
+        root.input.now = [clockMs] { return *clockMs += 300; };
         check(root.keyPressed(juce::KeyPress('r', juce::ModifierKeys::shiftModifier, 0)) &&
-                  root.error().find("No track is the Reference") != std::string::npos,
-              "Shift+R with none says so");
+                  root.error().find("No track is the Reference") != std::string::npos && !root.reference().held(),
+              "Shift+R with none says so, and lets go at once: a tap, however slow the machine");
         root.referenceKey(true, 0);
         root.referenceKey(false, 50);
         // A provider that names Lead, as the snapshot's will once tracks carry their role.
@@ -12399,12 +12404,39 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
         check(root.command(AppCommands::ToggleReferenceTrack) && !root.arrangement.geometry.inView(12),
               "and hides it again");
         // [REF] and Shift+R: a tap latches, a second tap lets go, a hold auditions.
+        check(root.command(AppCommands::PlayReference) && root.reference().latched() && !root.reference().held(),
+              "Play Reference from the menu latches it, with the clock 300 ms on at each reading");
+        check(root.command(AppCommands::PlayReference) && !root.reference().on(), "and a second lets it go");
         check(root.referenceKey(true, 1000) && root.reference().on() && root.reference().held(), "down: it plays");
         check(!root.referenceKey(false, 1100) && root.reference().latched() &&
                   root.error().find("cue path") != std::string::npos,
               "a tap under 200 ms latches it; the Status Bar says it waits for the cue path (N23)");
         root.frame();
         check(panel.ref.getToggleState(), "[REF] lit while it is on");
+        // [REF] clicked times its press through the seam too (DF-W18): with the test's clock 600 ms
+        // between press and release it is a hold, which plays only while held, however fast the
+        // machine delivers the click.
+        {
+            const bool wasOn = root.reference().on();
+            if (wasOn) {
+                root.referenceKey(true, 2000);
+                root.referenceKey(false, 2050); // a second tap lets it go
+            }
+            const auto kept = root.input.now;
+            std::int64_t reading = 3000;
+            root.input.now = [&reading] { const auto t = reading; reading += 600; return t; };
+            const auto at = panel.ref.getLocalBounds().getCentre().toFloat();
+            panel.ref.mouseDown(pressAt(panel.ref, at));
+            const bool playing = root.reference().on();
+            panel.ref.mouseUp(dragAt(panel.ref, at, at));
+            check(!root.reference().latched() && playing && !root.reference().on(),
+                  "[REF] held 600 ms by the test's clock plays while held and stops on release: a hold, not a tap");
+            root.input.now = kept;
+            if (wasOn) { // latched again, as the checks after this one expect
+                root.referenceKey(true, 2500);
+                root.referenceKey(false, 2550);
+            }
+        }
         if (const auto out = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); !headlessOnly && out.isNotEmpty()) {
             // Lead with two clips, the Reference latched, for the picture; undone after.
             int made = 0;
