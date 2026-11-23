@@ -184,7 +184,8 @@ bool ProjectDocument::saveAs(const std::filesystem::path &path) {
     // through synchronise(), and every window follows at its next frame. The store has switched
     // by now, so false would lie ("nothing moved"): a session that fails to re-read is a warning
     // on a save that stands, and the next synchronise() tries again.
-    view_.refresh(*store_);
+    // With the session's overridden lanes, so the marks stand and one refresh does (DF-W30 b).
+    view_.refresh(*store_, session_.overriddenLanes());
     if (!synchronise()) {
         if (!warning_.empty())
             warning_ += ' ';
@@ -231,7 +232,8 @@ bool ProjectDocument::collectAllAndSave() {
         return false;
     }
     // The media rows point at the copies now: the view and the session read them again.
-    view_.refresh(*store_);
+    // With the session's overridden lanes, so the marks stand and one refresh does (DF-W30 b).
+    view_.refresh(*store_, session_.overriddenLanes());
     if (!synchronise()) {
         if (!warning_.empty())
             warning_ += ' ';
@@ -373,6 +375,20 @@ bool ProjectDocument::commitCaptured(std::vector<OpRequest> &requests) {
     }
     return synchronise();
 }
+bool ProjectDocument::settleParameters() {
+    // ParamOps closes an unbracketed value after 150 ms with no input (param_ops.cpp's drain): a
+    // drain dated that far on closes every one now. Each drain offers one finished gesture.
+    constexpr std::int64_t kQuietMs = 150;
+    std::vector<OpRequest> requests;
+    for (int round = 0; round < 256; ++round) {
+        requests.clear();
+        if (parameterOps_.drain(captureNowMs() + kQuietMs, requests) == 0)
+            return true;
+        if (!commitCaptured(requests))
+            return false;
+    }
+    return true;
+}
 void ProjectDocument::tick(std::int64_t milliseconds) {
     synchronise();
     session_.tick(milliseconds);
@@ -488,7 +504,8 @@ bool ProjectDocument::autoGainStage(bool lufs) {
     error_ = result.commit.error;
     if (!result.commit.ok)
         return false;
-    view_.refresh(*store_);
+    // With the session's overridden lanes, so the marks stand and one refresh does (DF-W30 b).
+    view_.refresh(*store_, session_.overriddenLanes());
     return synchronise();
 }
 bool ProjectDocument::deviceAction(const std::string &op, Payload payload) {
@@ -1216,7 +1233,7 @@ bool ProjectDocument::endMixerDrag() {
         return false;
     }
     // The committed rows reach the view and the session as any commit does.
-    view_.refresh(*store_);
+    view_.refresh(*store_, session_.overriddenLanes());
     synchronise();
     error_.clear();
     return true;
@@ -1235,6 +1252,10 @@ void ProjectDocument::process(const engine::AudioIo &io) noexcept {
     mailbox_.drain(session_.transport(), [&block, this](std::int64_t insertTick) noexcept {
         if (!block.startPlayback(insertTick, true))
             session_.transport().play(true);
+    }, [&block, &io](std::int64_t sample) noexcept {
+        // Keep the first audible block at the held playhead. A source that
+        // has already failed is silent and cannot hold otherwise valid clips.
+        return block.sourcesReadyAt(sample, io.frames, true);
     });
     (void)block.process(io);
     mailbox_.publish(session_.transport());

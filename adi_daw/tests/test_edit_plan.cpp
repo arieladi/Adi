@@ -506,8 +506,8 @@ void explicitScopeAndConversions() {
     reject(limited,{{7,{22,{}},{0,4*q}}},{},"duplicate literal targets refuse");
     limited=scope();limited.targets.push_back({999,{}});
     reject(limited,{{7,{22,{}},{0,4*q}}},{},"nonexistent target track refuses");
-    limited=scope();limited.targets.push_back({21,301});
-    reject(limited,{{7,{22,{}},{0,4*q}}},{},"unsupported take-lane scope refuses instead of flattening lanes");
+    limited=scope();limited.targets.push_back({22,301});
+    reject(limited,{{7,{22,{}},{0,4*q}}},{},"a take lane from the wrong track refuses");
     limited=scope();limited.domains=limited.domains|Domains::Markers;
     reject(limited,{{7,{22,{}},{0,4*q}}},{},"unimplemented scope domains refuse explicitly");
     limited=scope();limited.clock=static_cast<PlacementClock>(19);
@@ -549,6 +549,66 @@ void explicitScopeAndConversions() {
     const auto unrepresentable=move(*cut.store,scope(1,10000),{{8,{21,{}},{1,1}}});
     check(!unrepresentable.ok && cutBefore.unchanged(*cut.store),
           "a required positive survivor that collapses in its native clock refuses rather than dropping material");
+}
+void takeLaneEdits() {
+    Project project;
+    auto& store=*project.store;
+    store.db().exec("INSERT INTO lanes(id,track_id,kind) VALUES(301,21,'take'),(302,21,'take');"
+                    "INSERT INTO automation_lanes(id,owner_kind,owner_id,param_ref) VALUES(91,'track',21,'pan')");
+    addClip(store,7,21,0,q,9*q);
+    addClip(store,8,21,0,q,3*q);
+    addClip(store,9,21,0,q,7*q);
+    store.db().exec("UPDATE clips SET lane_id=301 WHERE id=8;"
+                    "UPDATE clips SET lane_id=302 WHERE id=9");
+    auto take=scope();
+    take.targets={{21,301}};
+    const auto initial=typedRows(store);
+    const auto untouched=tableRows(store,"clips","WHERE id IN (7,9)");
+    const auto automation=tableRows(store,"automation_lanes");
+    const auto unaffected=[&] {
+        return tableRows(store,"clips","WHERE id IN (7,9)")==untouched &&
+               tableRows(store,"automation_lanes")==automation;
+    };
+    const auto staysInTake=[&] {
+        return store.db().execAndGet("SELECT lane_id FROM clips WHERE id=8").getInt64()==301;
+    };
+    const auto undo=[&] {return History(store).undo().ok && typedRows(store)==initial;};
+    const auto moved=move(store,take,{{8,{21,301},{0,2*q}}});
+    check(moved.ok && commit(store,moved) && staysInTake() && spanIs(store,8,21,0,2*q,3*q) && unaffected(),
+          "moving a take keeps its lane and leaves overlapping main and sibling clips and automation unchanged");
+    check(undo(),"one Undo restores the take move");
+    const auto resized=prepareResizeEnd(store,take,{8,{0,5*q}},{});
+    check(resized.ok && commit(store,resized) && staysInTake() && spanIs(store,8,21,0,q,4*q) && unaffected(),
+          "resize-end changes only the take extension");
+    check(undo(),"one Undo restores the take resize");
+    const auto trimmed=prepareTrim(store,take,{8,{0,2*q}},{});
+    check(trimmed.ok && commit(store,trimmed) && staysInTake() &&
+          store.db().execAndGet("SELECT pos_ticks+length_ticks FROM clips WHERE id=8").getInt64()==4*q &&
+          store.db().execAndGet("SELECT pos_ticks FROM clips WHERE id=8").getInt64()==2*q && unaffected(),
+          "left trim moves the take start with its original end and other lanes intact");
+    check(undo(),"one Undo restores the take trim");
+    auto common=take;
+    common.targets.push_back({22,{}});
+    common.targets.push_back({21,302});
+    check(!move(store,common,{{8,{22,{}},{0,2*q}}}).ok &&
+          !move(store,common,{{8,{21,302},{0,2*q}}}).ok &&
+          typedRows(store)==initial,
+          "take moves require an explicit detach or lane change before moving outside the existing lane");
+    const std::array<std::int64_t,1> ids{8};
+    check(!prepareDelete(store,scope(),ids,{}).ok && typedRows(store)==initial,
+          "main scope cannot delete an overlapping take");
+    addClip(store,10,21,0,2*q,q);
+    store.db().exec("UPDATE clips SET lane_id=301 WHERE id=10");
+    const auto beforeDelete=typedRows(store);
+    const auto sibling=tableRows(store,"clips","WHERE id=10");
+    const auto removed=prepareDelete(store,take,ids,{});
+    const auto removal=describe(removed);
+    check(removed.ok && removal.ok && removal.effects.size()==1 &&
+          removal.effects[0].before && removal.effects[0].before->lane==PlacementLane{21,301} &&
+          commit(store,removed) && !store.db().execAndGet("SELECT count(*) FROM clips WHERE id=8").getInt() &&
+          tableRows(store,"clips","WHERE id=10")==sibling && unaffected(),
+          "Delete removes the selected take only, even with an overlapping clip in the same lane");
+    check(History(store).undo().ok && typedRows(store)==beforeDelete,"one Undo restores exactly the removed take");
 }
 void roundedPhysicalBoundaries() {
     Project p;auto& store=*p.store;addClip(store,7,21,1,0,900);addClip(store,8,22,0,100,10);
@@ -1032,7 +1092,7 @@ void seededTransactions() {
 
 int main() {
     try {
-        clipEditBoundaries();anchoredLeftTrim();trimSourceZeroAndCollapse();trimPhysicalPinsAndCapture();trimWarpFadeDomains();relationsAndSurvivors();swapsAndSparseGroups();completeChildrenAndResize();explicitScopeAndConversions();roundedPhysicalBoundaries();
+        clipEditBoundaries();anchoredLeftTrim();trimSourceZeroAndCollapse();trimPhysicalPinsAndCapture();trimWarpFadeDomains();relationsAndSurvivors();swapsAndSparseGroups();completeChildrenAndResize();explicitScopeAndConversions();takeLaneEdits();roundedPhysicalBoundaries();
         signedIdentitiesAndKinds();preparationAndTransactions();descriptionBinding();automationAdmissionAndPolicy();
         irrelevantRowsAndAliasDeletion();placementAdapters();seededTransactions();
     } catch(const std::exception& error) {check(false,error.what());}
