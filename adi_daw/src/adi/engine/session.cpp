@@ -1015,14 +1015,19 @@ bool Session::rebuild() {
     // Snapshot has tempo but no meter data. rows::readModel reads this vector
     // from time_signature_map, sorted by position and id.
     timing->signatures = model_.signatures;
+    auto scale = compileScaleTimeline(model_);
+    timing->scaleTimeline = std::move(scale.timeline);
+    deviceScaleProblem_ = std::move(scale.error);
+    timing->trackScaleTimeline = compileTrackScaleTimeline(playbackModel_, timing->tempo,
+                                                           spec_.sampleRate, trackScaleProblem_);
     timing->prepareDeviceClockChanges();
-    std::unique_ptr<ClipPlayback> nextClips;
-    std::unique_ptr<MidiClips> nextMidi;
+    std::shared_ptr<ClipPlayback> nextClips;
+    std::shared_ptr<MidiClips> nextMidi;
     try {
         const DeviceChainFn eventPath = eventPathFor(model_);
-        nextClips = std::make_unique<ClipPlayback>(clipProject_, transport_, spec_.sampleRate,
+        nextClips = std::make_shared<ClipPlayback>(clipProject_, transport_, spec_.sampleRate,
                                                 spec_.channels, spec_.maxFrames, spec_.progressiveDecoder);
-        nextMidi = std::make_unique<MidiClips>(playbackModel_,transport_,spec_.sampleRate,midiState_,
+        nextMidi = std::make_shared<MidiClips>(playbackModel_,transport_,spec_.sampleRate,midiState_,
                                                eventPath,clipNoteExpressions(*clipProject_));
         prepareInputMonitors(*timing, model_, *nextClips);
     } catch (const std::exception& e) { error_ = e.what(); return false; }
@@ -1140,6 +1145,10 @@ bool Session::rebuild() {
 
 void Session::refreshProblems() {
     problems_ = model_.problems;
+    if (!deviceScaleProblem_.empty())
+        problems_.push_back("Device scale unavailable: " + deviceScaleProblem_);
+    if (!trackScaleProblem_.empty())
+        problems_.push_back("Clip scale unavailable for devices: " + trackScaleProblem_);
     if (midi_) problems_.insert(problems_.end(), midi_->problems().begin(), midi_->problems().end());
     if (auto* c = clips()) problems_.insert(problems_.end(), c->problems().begin(), c->problems().end());
     problems_.insert(problems_.end(), sessionProblems_.begin(), sessionProblems_.end());
@@ -2140,6 +2149,17 @@ void Session::TimingView::prepareDeviceClockChanges() {
     for (const auto& event : tempo.events) add(event.posTicks);
     for (const auto& meter : signatures) add(meter.posTicks);
     std::sort(deviceClockChanges.begin(), deviceClockChanges.end());
+    deviceScaleChanges.clear();
+    if (scaleTimeline) {
+        deviceScaleChanges.reserve(scaleTimeline->events().size());
+        for (const auto &event : scaleTimeline->events()) {
+            const auto sample = sampleForTick(event.posTicks);
+            if (!deviceScaleChanges.empty() && deviceScaleChanges.back().first == sample)
+                deviceScaleChanges.back().second = &event.context;
+            else
+                deviceScaleChanges.emplace_back(sample, &event.context);
+        }
+    }
 }
 
 double Session::TimingView::quartersAt(std::int64_t sample) const noexcept {
@@ -2160,6 +2180,16 @@ DeviceTransport Session::TimingView::deviceAt(std::int64_t sample) const noexcep
     DeviceTransport result;
     result.sample = sample;
     result.quarterNotes = quartersAt(sample);
+    if (scaleTimeline) {
+        const auto scale = std::upper_bound(deviceScaleChanges.begin(), deviceScaleChanges.end(),
+                                            sample, [](auto at, const auto &row) {
+                                                return at < row.first;
+                                            });
+        result.scale = scale == deviceScaleChanges.begin() ? scaleTimeline->atTicks(-1)
+                                                          : std::prev(scale)->second;
+        if (scale != deviceScaleChanges.end())
+            result.nextScaleChange = scale->first;
+    }
     const auto next = std::upper_bound(deviceClockChanges.begin(), deviceClockChanges.end(), sample,
         [](std::int64_t value, const auto& change) { return value < change.first; });
     if (next != deviceClockChanges.end()) result.nextChange = next->first;
@@ -2224,6 +2254,10 @@ const TransportInfo* Session::TimingView::beginBlock()const noexcept {
     blockInfo.deviceClockContext = this;
     blockInfo.devicePosition = [](const void* context, std::int64_t sample) noexcept {
         return static_cast<const TimingView*>(context)->deviceAt(sample);
+    };
+    blockInfo.trackScalePosition = [](const void *context, std::int64_t track,
+                                      std::int64_t sample) noexcept {
+        return static_cast<const TimingView *>(context)->trackScaleTimeline.at(track, sample);
     };
     if(overlay)blockInfo.stripLanes=overlay;
     return &blockInfo;
@@ -2303,21 +2337,23 @@ double Session::RenderBlock::beatAtSample(std::int64_t sample) const noexcept {
     const auto* timing = dynamic_cast<const TimingView*>(graph_.transportState());
     return timing && sample > 0 ? timing->quartersAt(sample) : 0;
 }
-bool Session::RenderBlock::sourcesReadyAt(std::int64_t sample, std::int32_t frames) const noexcept {
+bool Session::RenderBlock::sourcesReadyAt(std::int64_t sample, std::int32_t frames,
+                                         bool allowFailedSources) const noexcept {
     if (sample < 0) return false;
     Transport requested = session_.transport_; // this is the single driver, not the owner
     requested.locate(sample);
     requested.play();
-    return sourcesReady(requested, frames);
+    return sourcesReady(requested, frames, allowFailedSources);
 }
-bool Session::RenderBlock::sourcesReady(const Transport& requested, std::int32_t frames) const noexcept {
+bool Session::RenderBlock::sourcesReady(const Transport& requested, std::int32_t frames,
+                                        bool allowFailedSources) const noexcept {
     const auto* timing = dynamic_cast<const TimingView*>(graph_.transportState());
     if (!timing || frames <= 0 || frames > timing->spec.maxFrames || !timing->sourceReadiness)
         return false;
     Transport target = requested;
     if (timing->settings.hasLoop)
         target.retimeLoop(timing->loopBegin, timing->loopEnd, timing->settings.loopEnabled);
-    return timing->sourceReadiness(target, frames);
+    return timing->sourceReadiness(target, frames, allowFailedSources);
 }
 std::int64_t Session::RenderBlock::sampleAtTick(std::int64_t tick) const noexcept {
     const auto* timing = dynamic_cast<const TimingView*>(graph_.transportState());

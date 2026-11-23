@@ -330,7 +330,7 @@ void ArmButton::paintButton(juce::Graphics &g, bool over, bool down) {
 }
 void MixerStrip::bind(std::int64_t id) {
     track_ = id;
-    position_ = 0;
+    position_ = number_ = 0;
     peak_ = rms_ = 0;
     lastFrame_ = -1;
     frame(true);
@@ -365,15 +365,18 @@ void MixerStrip::frame(bool changed) noexcept {
         const auto rows = panel_.root.arrangement.geometry.rows(panel_.root.reader());
         if (const auto at = rows.find(track_); at < rows.size()) {
             position_ = at + 1;
+            number_ = rows[at].number();
             // A return's activator shows its letter, as Live's ("A", "B"); a track's its number. The
             // text changes only when the label does, so a steady frame allocates nothing.
-            const int label = kind_ == "return"
-                                  ? -1 - static_cast<int>(std::find(returns_.begin(), returns_.end(), track_) - returns_.begin())
-                                  : static_cast<int>(position_);
+            // A group's return is lettered with the group's initial first ("DA"; ADR-0247 d2), coded
+            // here as a negative number so a steady frame compares and allocates nothing.
+            std::array<char, 2> letter{};
+            const auto letters = kind_ == "return" ? returnLetter(panel_.root.reader().tracks(), track_, letter) : 0;
+            const int label = letters > 0 ? -1 - (letter[0] * 128 + (letters > 1 ? letter[1] : 0))
+                                          : static_cast<int>(number_);
             if (label != label_) {
                 label_ = label;
-                active.setButtonText(label < 0 ? juce::String::charToString(static_cast<juce::juce_wchar>('A' + (-1 - label) % 26))
-                                               : juce::String(label));
+                active.setButtonText(letters > 0 ? juce::String(letter.data(), letters) : juce::String(label));
             }
             const auto parent = rows[at].place.parent;
             const auto group = parent == 0 ? rows.size() : rows.find(parent);
@@ -441,12 +444,19 @@ void MixerStrip::frame(bool changed) noexcept {
         // Pre/Post, lit while the return's sends tap after the fader: the return's own switch
         // (`TrackNode::returnSendTap`, #405), on its row and on Main's strip for each return in the
         // Mixer View.
+        // Mixed, a send's own tap differing (ADR-0247 d2): a dash in an accent edge, unlit.
         const auto &reader = panel_.root.reader();
-        auto showPost = [&reader](juce::TextButton &b, std::int64_t ret) {
-            const bool post = !returnPre(reader.findTrack(ret));
-            if (post != b.getToggleState() || post != (b.getButtonText() == "Post")) {
-                b.setButtonText(post ? "Post" : "Pre");
+        const auto current = panel_.root.current();
+        auto showPost = [&reader, &current](juce::TextButton &b, std::int64_t ret) {
+            const bool mixed = current && returnTapMixed(*current, ret);
+            const bool post = !mixed && !returnPre(reader.findTrack(ret));
+            const char *text = mixed ? "\xe2\x80\x93" : post ? "Post" : "Pre";
+            if (post != b.getToggleState() || b.getButtonText() != juce::CharPointer_UTF8(text) ||
+                mixed != static_cast<bool>(b.getProperties()["live.mixed"])) {
+                b.setButtonText(juce::CharPointer_UTF8(text));
                 b.setToggleState(post, juce::dontSendNotification);
+                b.getProperties().set("live.mixed", mixed);
+                b.repaint();
             }
         };
         if (kind_ == "return")
@@ -647,8 +657,8 @@ void MixerStrip::paint(juce::Graphics &g) {
             for (std::size_t i = 0; i < std::min(shown_, sends_.size()); ++i) {
                 const auto b = sendBounds(i);
                 g.setColour(look::text.withAlpha(sendOn_[i] != 0 ? 1.f : .45f));
-                g.drawText(juce::String::charToString(static_cast<juce::juce_wchar>('A' + i % 26)), b.getX(),
-                           b.getBottom() - 9, b.getWidth(), 12, juce::Justification::centred);
+                g.drawText(i < letters_.size() ? letters_[i] : juce::String(), b.getX(), b.getBottom() - 9,
+                           b.getWidth(), 12, juce::Justification::centred);
             }
         }
         if (delay_ > 0) {
@@ -678,7 +688,7 @@ void MixerStrip::paint(juce::Graphics &g) {
             if (const auto *track = panel_.root.reader().findTrack(track_)) {
                 g.setColour(look::ink);
                 g.setFont(look::font(look::fontBody, true));
-                g.drawText(juce::String::fromUTF8(displayName(track->name, position_).c_str()), 4, 0, w - 8,
+                g.drawText(juce::String::fromUTF8(displayName(track->name, number_).c_str()), 4, 0, w - 8,
                            17, juce::Justification::centredLeft);
             }
         }
@@ -979,7 +989,12 @@ void MixerStrip::mouseDown(const juce::MouseEvent &e) {
 void MixerStrip::syncSends(const std::vector<DevicePanelData> *devices) {
     const auto &reader = panel_.root.reader();
     const auto *t = reader.findTrack(track_);
-    returnsInOrder(reader.tracks(), order_);
+    // A track's knobs go to the top-level returns and its own groups' (DF-W33); Main's switches to
+    // every return.
+    if (t != nullptr && t->kind == "master")
+        returnsInOrder(reader.tracks(), order_);
+    else
+        returnsFor(reader.tracks(), track_, order_);
     static const std::string none;
     const std::string &kind = t != nullptr ? t->kind : none;
     const bool midi = t != nullptr && isMidiTrack(*t);
@@ -989,7 +1004,20 @@ void MixerStrip::syncSends(const std::vector<DevicePanelData> *devices) {
     // strip, each return's Pre/Post switch instead (Live's Mixer).
     const auto knobs = t != nullptr && hasSends(*t) && audio ? order_.size() : 0;
     const auto switches = kind == "master" && panel_.vertical() ? order_.size() : 0;
-    if (order_ == returns_ && kind == kind_ && knobs == sends_.size() && switches == returnSwitches_.size() &&
+    // Every strip keeps a row per return in the project, so the mixers line up; a strip whose track
+    // has no knob for a group's return leaves its row empty (DF-W33).
+    std::size_t returnCount = 0;
+    for (const auto &r : reader.tracks())
+        if (r && r->kind == "return")
+            ++returnCount;
+    // A letter follows its group's name and the group it sits in, which the ids alone don't show.
+    bool sameLetters = letterCodes_.size() == order_.size();
+    for (std::size_t i = 0; sameLetters && i < order_.size(); ++i) {
+        std::array<char, 2> letter{};
+        const auto n = returnLetter(reader.tracks(), order_[i], letter);
+        sameLetters = letterCodes_[i] == std::array<char, 2>{letter[0], n > 1 ? letter[1] : '\0'};
+    }
+    if (sameLetters && returnCount == returnCount_ && order_ == returns_ && kind == kind_ && knobs == sends_.size() && switches == returnSwitches_.size() &&
         midi == midi_ && audio == audio_ && grouped == inGroup_)
         return;
     kind_ = kind;
@@ -997,15 +1025,27 @@ void MixerStrip::syncSends(const std::vector<DevicePanelData> *devices) {
     audio_ = audio;
     inGroup_ = grouped;
     returns_ = order_;
-    returnCount_ = returns_.size();
+    returnCount_ = returnCount;
     sends_.resize(std::min(sends_.size(), knobs));
     while (sends_.size() < knobs)
         sends_.push_back(makeSend(sends_.size()));
+    // Each knob named for its return's letter, which a grouped return or a moved one changes.
+    letters_.clear();
+    letterCodes_.clear();
+    for (std::size_t i = 0; i < returns_.size(); ++i) {
+        std::array<char, 2> letter{};
+        const auto n = returnLetter(reader.tracks(), returns_[i], letter);
+        letters_.push_back(juce::String(letter.data(), n));
+        letterCodes_.push_back({letter[0], n > 1 ? letter[1] : '\0'});
+        if (i < sends_.size()) {
+            sends_[i]->setTitle("Send " + letters_.back());
+            sends_[i]->setTooltip("Sets how much of the track goes to return track " + letters_.back() + ".");
+        }
+    }
     returnSwitches_.resize(std::min(returnSwitches_.size(), switches));
     while (returnSwitches_.size() < switches) {
         auto button = std::make_unique<juce::TextButton>("Post");
         const auto index = returnSwitches_.size();
-        button->setTitle("Pre/Post " + juce::String::charToString(static_cast<juce::juce_wchar>('A' + index % 26)));
         button->setTooltip("Whether this return's sends tap before or after their tracks' faders.");
         button->setClickingTogglesState(false);
         button->setColour(juce::TextButton::buttonColourId, look::button);
@@ -1019,13 +1059,17 @@ void MixerStrip::syncSends(const std::vector<DevicePanelData> *devices) {
         addAndMakeVisible(*button);
         returnSwitches_.push_back(std::move(button));
     }
+    // Each switch titled for its return's letter, which a rename or a move changes.
+    for (std::size_t i = 0; i < returnSwitches_.size(); ++i)
+        returnSwitches_[i]->setTitle("Pre/Post " + (i < letters_.size() ? letters_[i] : juce::String()));
     sendOn_.assign(knobs, 1);
     resized();
     repaint();
 }
 void MixerStrip::throwPrePost(std::int64_t ret) {
     // From the CURRENT cell (ADR-0201): the return's own switch thrown, one op and one undo step,
-    // which the engine spreads over every send into the return. Mixed taps choose Post first.
+    // which the engine spreads over every send into the return; it holds with no send (#405). A
+    // mixed switch goes to Post first, every send's own tap cleared (the engine's click, ADR-0247 d2).
     const auto current = panel_.root.current();
     if (!current)
         return;
@@ -1201,11 +1245,39 @@ void MixerStrip::sendMenu(std::size_t index) {
         }
         m.addSubMenu("Send Pan", panned);
     }
+    // Where this send taps its track (ADR-0245 d10; DF-W33): Live's three, the one it uses ticked.
+    if (const auto current = panel_.root.current(); current && index < returns_.size()) {
+        m.addSeparator();
+        const auto tap = adi::ui::sendTap(*current, track_, returns_[index]);
+        // A plain local for the lambda: Clang 14 rejects a lambda capturing a structured binding.
+        for (const auto &place : {std::pair{"Pre FX", IndividualSendTap::PreFx},
+                                  std::pair{"Post FX", IndividualSendTap::PostFx},
+                                  std::pair{"Post Mixer", IndividualSendTap::PostMixer}}) {
+            const IndividualSendTap which = place.second;
+            m.addItem(place.first, true, tap == which, [safe = SafePointer<MixerStrip>(this), index, which] {
+                if (safe)
+                    safe->chooseSendTap(index, which);
+            });
+        }
+    }
     // Live's Re-Enable Automation for this send's level, owned by its routing row (AU-04).
     if (const auto current = panel_.root.current())
         if (const auto *send = findSend(current->sends, track_, returns_[index]))
             panel_.root.addReenableAutomation(m, laneOf(*current, "routing", send->id, "gain_db"));
     m.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(sends_[index].get()));
+}
+void MixerStrip::chooseSendTap(std::size_t index, IndividualSendTap tap) {
+    // From the CURRENT cell (ADR-0201), as every send edit.
+    const auto current = panel_.root.current();
+    if (!current || index >= returns_.size())
+        return;
+    auto edit = adi::ui::setSendTap(*current, track_, returns_[index], tap);
+    if (!edit.refusal.empty()) {
+        panel_.root.say(edit.refusal);
+        return;
+    }
+    if (!edit.ops.empty())
+        panel_.root.submitEdits(std::move(edit.ops));
 }
 juce::PopupMenu MixerStrip::soloMenu() {
     // Live's Solo button menu (manual 18.6): Solo in Place, ticked from the project's one field, on

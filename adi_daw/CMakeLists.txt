@@ -294,6 +294,9 @@ add_library(adi_core STATIC
     src/adi/scan_stamp.cpp
     src/adi/media/blake3.cpp
     src/adi/media/zip_writer.cpp
+    src/adi/interchange/smf.cpp
+    src/adi/note_timing_randomize.cpp
+    src/adi/interchange/compound_file.cpp
     src/adi/audio/wav_file.cpp
     src/adi/audio/mp4_aac.cpp
     src/adi/audio/stem_manifest.cpp
@@ -1336,7 +1339,7 @@ add_test(NAME adi_textproj_store_tests COMMAND adi_textproj_store_tests)
 option(ADI_BUILD_BENCHMARKS "Build headless diagnostic benchmarks" OFF)
 if(ADI_BUILD_BENCHMARKS)
     add_executable(adi_block_benchmark tools/benchmark_blocks.cpp)
-    target_link_libraries(adi_block_benchmark PRIVATE adi_core adi_warnings)
+    target_link_libraries(adi_block_benchmark PRIVATE adi_core adi_settings adi_warnings)
     add_executable(adi_edit_placement_measure tools/measure_edit_placement.cpp)
     target_link_libraries(adi_edit_placement_measure PRIVATE adi_core adi_warnings Threads::Threads)
 endif()
@@ -2043,6 +2046,12 @@ target_sources(adi_core PRIVATE src/adi/engine/curves.cpp)
 add_executable(adi_transport_tests tests/test_transport.cpp)
 target_link_libraries(adi_transport_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_transport_tests COMMAND adi_transport_tests)
+
+add_executable(adi_launch_gesture_tests tests/test_launch_gestures.cpp)
+target_include_directories(adi_launch_gesture_tests PRIVATE src)
+target_link_libraries(adi_launch_gesture_tests PRIVATE adi_warnings Threads::Threads)
+add_test(NAME adi_launch_gesture_tests COMMAND adi_launch_gesture_tests)
+
 add_executable(adi_link_session_tests tests/test_link_session.cpp)
 target_link_libraries(adi_link_session_tests PRIVATE adi_core adi_warnings)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -2126,6 +2135,19 @@ add_test(NAME adi_audio_memory_capture_tests COMMAND adi_audio_memory_capture_te
 add_executable(adi_controller_maps_tests tests/test_controller_maps.cpp)
 target_link_libraries(adi_controller_maps_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_controller_maps_tests COMMAND adi_controller_maps_tests)
+
+add_executable(adi_mcu_fader_tests tests/test_mcu_faders.cpp)
+target_include_directories(adi_mcu_fader_tests PRIVATE src)
+target_link_libraries(adi_mcu_fader_tests PRIVATE adi_warnings)
+add_test(NAME adi_mcu_fader_tests COMMAND adi_mcu_fader_tests)
+
+add_executable(adi_smf_tests tests/test_smf.cpp)
+target_link_libraries(adi_smf_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_smf_tests COMMAND adi_smf_tests)
+
+add_executable(adi_compound_file_tests tests/test_compound_file.cpp)
+target_link_libraries(adi_compound_file_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_compound_file_tests COMMAND adi_compound_file_tests)
 
 
 

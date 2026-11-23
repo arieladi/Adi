@@ -227,6 +227,8 @@ public:
 
     /// Minus the delay, at the rate passed to `prepare`: see setDelay.
     [[nodiscard]] std::int32_t latencySamples() const noexcept override;
+    static std::int32_t delayLatency(std::int64_t projectSamples, std::int64_t projectRate,
+                                     double renderRate) noexcept;
 
     void prepare(double sampleRate, std::int32_t maxFrames) override;
     void process(const NodeIo& io) noexcept override;
@@ -657,6 +659,7 @@ public:
     void apply() const noexcept;
     /// Owner: every lane this batch leaves running, as graph-independent bindings.
     void captureLanes(StripLaneBindings&) const;
+    void captureLatencies(std::map<const Node*, std::int32_t>&, double renderRate) const;
 private:
     struct Strip { StripNode* node; StripControlImage image; };
     struct Send { SendNode* node; SendNode::Controls image; };

@@ -76,7 +76,10 @@ struct ArrangementGeometry {
     struct Row {
         const engine::TrackNode *track; // never null
         TrackPlace place;
-        std::size_t position; // down the rows, from 0: Live's track number less one
+        std::size_t position; // down the rows, from 0
+        // The number a # in its name and its activator show: Live's track number, which skips the
+        // returns (one may stand in a group, DF-W33); a return or Main keeps its place's.
+        std::size_t number() const noexcept { return place.number != 0 ? place.number : position + 1; }
     };
     // The tracks in the arrangement's order: `order` when it was built for this snapshot, else
     // the snapshot's own, every track at the top (a geometry used without its view).
@@ -249,22 +252,37 @@ struct ArrangementGeometry {
     std::int64_t snap(std::int64_t tick, bool up) const noexcept {
         if (!metered() || tick < 0) {
             const double step = gridQuarters() * textproj::kPPQ;
-            const double cells = static_cast<double>(tick) / step;
-            return std::llround((up ? std::ceil(cells - 1e-9) : std::floor(cells + 1e-9)) * step);
+            return pickLine(tick, static_cast<double>(tick) / step, up,
+                            [step](std::int64_t k) { return std::llround(static_cast<double>(k) * step); });
         }
         const auto bar = barHolding(tick);
         const double plain = plainGridQuarters();
         if (plain < 4) {
             const double step = gridQuarters() * textproj::kPPQ;
-            const double cells = static_cast<double>(tick - bar.start) / step;
-            const auto line = bar.start + std::llround((up ? std::ceil(cells - 1e-9) : std::floor(cells + 1e-9)) * step);
+            const auto line = pickLine(tick, static_cast<double>(tick - bar.start) / step, up, [&bar, step](std::int64_t k) {
+                return bar.start + std::llround(static_cast<double>(k) * step);
+            });
             return up ? std::min<std::int64_t>(line, bar.end) : line;
         }
         const double unit = plain / 4 * (grid.triplet ? 2. / 3 : 1.);
         const double at = static_cast<double>(bar.index) +
                           static_cast<double>(tick - bar.start) / static_cast<double>(std::max<std::int64_t>(1, bar.end - bar.start));
-        const double cells = at / unit;
-        return tickOfBars((up ? std::ceil(cells - 1e-9) : std::floor(cells + 1e-9)) * unit);
+        return pickLine(tick, at / unit, up,
+                        [this, unit](std::int64_t k) { return tickOfBars(static_cast<double>(k) * unit); });
+    }
+    // The line at or before `tick` (or, `up`, at or after it) among `lineOf(k)` for whole k, lines in
+    // order. `cells` only says where to start looking: the line is chosen by comparing ticks, so a line
+    // a tick away is never taken for the tick itself, however long the bar or wide the grid (DF-W30 a:
+    // a bar past 22 quarters on the 8 Bars grid put one tick inside a fixed 1e-9 of a cell).
+    template <class LineOf>
+    static std::int64_t pickLine(std::int64_t tick, double cells, bool up, LineOf lineOf) noexcept {
+        auto k = static_cast<std::int64_t>(std::floor(cells));
+        while (lineOf(k) > tick)
+            --k;
+        while (lineOf(k + 1) <= tick)
+            ++k;
+        const auto at = lineOf(k);
+        return !up || at == tick ? at : lineOf(k + 1);
     }
     // Every grid line from `from` to `to`, in order.
     template <class Visit>

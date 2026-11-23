@@ -5,6 +5,7 @@
 #include "adi/store.hpp"
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -70,5 +71,96 @@ void nativeSession() {
 void foreignContext() {
     Counts counts;Tag source(counts,400);test::TempDirectory temp{"transport_generation","foreign"};StoreError error{};auto store=Store::createEmpty(temp.path()/"song.adi",error);if(!store)throw std::runtime_error("foreign project");store->db().exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(1,'audio','Source',0),(9,'master','Main',1)");Session session;if(!session.load(*store,{},SessionSpec{2,48000,64}))throw std::runtime_error(session.error());auto clock=std::make_shared<Clock>(counts,400);check(session.graph().rebuild(model(),options(source),48000,64,{},clock),"a caller may install a different transport-state type through the public graph host");Buffer buffer(Precision::Float32);const auto a=allocations.load(),f=frees.load();{audio::CallbackScope callback;session.process(buffer.io);}check(counts.bad==0 && std::abs(buffer.first()-.4)<1e-7 && a==allocations.load() && f==frees.load(),"Session renders a foreign graph clock safely without treating its storage as native metronome state");
 }
+std::atomic<std::uint64_t> processingClock{0};
+std::uint64_t testProcessingTime() noexcept {
+    return processingClock.fetch_add(100, std::memory_order_relaxed);
 }
-int main(){try{lifetime();deviceHost();nativeSession();foreignContext();}catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+void trackProcessingTiming() {
+    struct Signal final : Node {
+        [[nodiscard]] bool canProcessOnWorker() const noexcept override { return true; }
+        void process(const NodeIo &io) noexcept override {
+            for (int channel = 0; channel < io.channels; ++channel)
+                std::fill_n(io.out[channel] + io.blockOffset, io.frames, 0.125f);
+        }
+    } a, b, c;
+    SumNode output;
+    Graph graph;
+    const auto sa = graph.addNode(a, 7), sb = graph.addNode(b, 7);
+    const auto sc = graph.addNode(c, 0), sink = graph.addNode(output);
+    check(graph.connect(sa, sink) && graph.connect(sb, sink) && graph.connect(sc, sink),
+          "track timing fixture feeds three scheduled nodes into a shared output");
+    graph.setOutput(sink);
+    graph.prepare(48000, 64);
+    Buffer buffer(Precision::Float32);
+    const auto alloc = allocations.load(), free = frees.load(), io = audio::callbackFileIo.load();
+    {
+        audio::CallbackScope callback;
+        graph.beginTrackTiming(21, testProcessingTime);
+        buffer.io.renderBlock = 21;
+        buffer.io.frames = 20;
+        graph.process(buffer.io);
+        buffer.io.frames = 44;
+        graph.process(buffer.io);
+        graph.finishTrackTiming(21);
+    }
+    const auto timed = graph.trackProcessingTime();
+    check(timed && timed->block == 21 && timed->frames == 64 && timed->tracks.size() == 2 &&
+              timed->tracks[0].track == 0 && timed->tracks[0].nanoseconds == 200 &&
+              timed->tracks[1].track == 7 && timed->tracks[1].nanoseconds == 400,
+          "owner receives exact node totals by track after both slices of one physical block");
+    check(alloc == allocations.load() && free == frees.load() && io == audio::callbackFileIo.load(),
+          "track timing performs no allocation, reclamation or file I/O on the audio thread");
+    check(graph.setParallelRendering(2, 1, 2), "enable the real worker path on timed slots");
+    graph.prepare(48000, 64);
+    {
+        audio::CallbackScope callback;
+        buffer.io.renderBlock = 0;
+        buffer.io.frames = 64;
+        graph.process(buffer.io); // make the source nodes audible before dispatch
+        graph.beginTrackTiming(22, testProcessingTime);
+        buffer.io.renderBlock = 22;
+        graph.process(buffer.io);
+        graph.finishTrackTiming(22);
+    }
+    const auto parallel = graph.trackProcessingTime();
+    check(parallel && parallel->block == 22 && parallel->frames == 64 &&
+              parallel->tracks.size() == 2 &&
+              parallel->tracks[0].nanoseconds >= 100 && parallel->tracks[1].nanoseconds >= 200 &&
+              graph.stats().parallelLevels > 0,
+          "worker-enabled timing counts every assigned slot after the render barrier");
+
+    Counts counts;
+    Tag tag(counts, 100);
+    GraphHost host;
+    TransportInfo clock;
+    clock.bpm = 100;
+    buffer.io.transport = &clock;
+    check(host.rebuild(model(), options(tag), 48000, 64) && !host.trackProcessingTime(),
+          "track profiling is idle before the owner enables it");
+    host.setTrackTimingEnabled(true);
+    {
+        audio::CallbackScope callback;
+        auto block = host.beginRender();
+        buffer.io.frames = 11;
+        check(block.process(buffer.io), "first hosted audio slice renders");
+        buffer.io.frames = 53;
+        check(block.process(buffer.io), "second hosted audio slice renders");
+    }
+    const auto published = host.trackProcessingTime();
+    check(published && published->frames == 64 && published->tracks.size() == 2 &&
+              published->tracks[0].track == 1 && published->tracks[1].track == 9 &&
+              counts.bad == 0 && std::abs(buffer.first() - .1) < 1e-7,
+          "GraphHost publishes the complete physical block with explicit track IDs and original PCM");
+    {
+        audio::CallbackScope callback;
+        auto idle = host.beginRender();
+        (void)idle;
+    }
+    const auto afterIdle = host.trackProcessingTime();
+    check(published && afterIdle && afterIdle->block == published->block,
+          "acquiring an empty physical block keeps the last completed reading");
+    host.setTrackTimingEnabled(false);
+    check(!host.trackProcessingTime(), "disabling track timing hides the last reading immediately");
+}
+}
+int main(){try{lifetime();deviceHost();nativeSession();foreignContext();trackProcessingTiming();}catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

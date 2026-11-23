@@ -1451,9 +1451,14 @@ int main(int argc, char **argv) {
             for (int block = 0; block < 64 && !heard; ++block) {
                 out.streamTimeSamples = block * 64;
                 dropped->process(out);
-                // The clip's reader fills on the message thread, as #308's own test primes it.
-                if (dropped->session().clips() != nullptr)
-                    dropped->session().clips()->prime();
+                // The clip's reader fills on the message thread, as #308's own test primes it. A held
+                // Play (DF-E64) leaves the transport stopped until its pages are in, so the pages primed
+                // are the playing target's, which is what the held Play waits for.
+                if (auto *clips = dropped->session().clips()) {
+                    engine::Transport target = dropped->session().transport();
+                    target.play();
+                    (void)clips->primeAt(target);
+                }
                 for (const float v : left)
                     heard = heard || std::abs(v) > 1.e-4f;
             }
@@ -1958,6 +1963,21 @@ int main(int argc, char **argv) {
                       strip->parameterGesture(3,"cutoff", ParamEventKind::End, .4) && strip->ops().nextUndo() &&
                       strip->ops().nextUndo()->opCount == 1 && strip->ops().nextUndo()->label == "UI knobs: Cutoff",
                   "a later gesture on the same parameter needs no opener: one op, one step");
+            // DF-W29: an unbracketed value still in its quiet interval when Undo comes. Settled first,
+            // it is its own step, and the undo takes that step back, not the one before it.
+            const auto settledBefore = strip->ops().nextUndo() ? strip->ops().nextUndo()->txnId : 0;
+            check(strip->parameterGesture(3, "gain", ParamEventKind::Value, .2) && rowOf("gain") &&
+                      std::abs(*rowOf("gain") - .9) < 1e-9,
+                  "a gain value waits in its quiet interval, not yet a step");
+            check(strip->settleParameters() && rowOf("gain") && std::abs(*rowOf("gain") - .2) < 1e-9 &&
+                      strip->ops().nextUndo() && strip->ops().nextUndo()->txnId != settledBefore &&
+                      strip->ops().nextUndo()->label == "UI knobs: Gain",
+                  "settled, it is a step of its own at once");
+            check(strip->ops().undo().ok && strip->synchronise() && rowOf("gain") && std::abs(*rowOf("gain") - .9) < 1e-9 &&
+                      strip->ops().nextUndo() && strip->ops().nextUndo()->txnId == settledBefore,
+                  "the undo after it takes back that gain edit, and the step before stays");
+            check(strip->settleParameters() && strip->ops().nextUndo()->txnId == settledBefore,
+                  "with nothing held, settling commits nothing");
         } catch (const std::exception &e) {
             check(false, e.what());
         }
@@ -2040,6 +2060,12 @@ int main(int argc, char **argv) {
             check(armed->ops().undo().ok && armed->synchronise() && snapshot()->automationOverridden && laneOverridden() &&
                       armed->ops().redo().ok && armed->synchronise() && snapshot()->automationOverridden,
                   "undo and redo of the move edit the stored value, not the override: it stands (not an op)");
+            // DF-W30 (b): Collect All and Save reads the rows again with the override standing: one
+            // refresh, and the marks stay.
+            const auto generationBeforeCollect = armed->view().generation();
+            check(armed->collectAllAndSave() && snapshot()->automationOverridden && laneOverridden() &&
+                      armed->view().generation() == generationBeforeCollect + 1,
+                  "Collect All and Save keeps the override marks, in one refresh");
             const auto opsBeforeReenable = opCount();
             const auto txnBeforeReenable = headTxn();
             check(armed->reenableAutomation() && armed->error().empty() && !armed->session().automationOverridden() &&

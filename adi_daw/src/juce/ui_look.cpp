@@ -108,6 +108,11 @@ void LiveLook::drawButtonBackground(juce::Graphics &g, juce::Button &b, const ju
         g.setColour(litColour(litOf(b)));
         g.fillPath(half);
     }
+    // A mixed switch (a return's Pre/Post whose sends differ, ADR-0247 d2): an accent edge.
+    if (b.getProperties()["live.mixed"]) {
+        g.setColour(accent);
+        g.drawRoundedRectangle(r.reduced(.75f), std::min(radiusControl, r.getHeight() / 2), 1.5f);
+    }
     // Live 12's focus ring, on a switch that only the keyboard can focus.
     if (b.getProperties()["live.focusRing"] && b.hasKeyboardFocus(false)) {
         g.setColour(accent);
