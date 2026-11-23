@@ -7,6 +7,8 @@
 #include "adi/store.hpp"
 #include "adi/media/media_ops.hpp"
 #include "juce/builtin_samples.hpp"
+#include "juce/pd_declarations.hpp"
+#include "adi/builtin_catalog.hpp"
 #include <filesystem>
 
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -27,7 +29,8 @@ namespace {
 bool same(const SendRoute& a, const SendRoute& b) {
     return a.id==b.id && a.sourceKind==b.sourceKind && a.destinationKind==b.destinationKind &&
         a.sourceId==b.sourceId && a.destinationId==b.destinationId && a.order==b.order &&
-        a.gainDb==b.gainDb && a.pan==b.pan && a.preFader==b.preFader && a.enabled==b.enabled;
+        a.gainDb==b.gainDb && a.pan==b.pan && a.preFader==b.preFader && a.enabled==b.enabled &&
+        a.sendTap==b.sendTap;
 }
 
 constexpr double kTicksPerQuarter = 5765760.0;   // ADI_PPQ, SPEC §4.2
@@ -229,6 +232,7 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
     if(sqlite3_get_autocommit(db.getHandle())!=0)
         readSnapshot.emplace(db,SQLite::TransactionBehavior::DEFERRED);
     const auto returnTaps=readReturnSendTaps(store);
+    const auto individualTaps = readIndividualSendTaps(db);
     std::optional<SQLite::Transaction> transaction;
     if (sqlite3_get_autocommit(db.getHandle()) != 0)
         transaction.emplace(db, SQLite::TransactionBehavior::DEFERRED);
@@ -523,6 +527,8 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
             send.order=st.getColumn(5).getInt64();send.gainDb=st.getColumn(6).getDouble();
             send.pan=st.getColumn(7).getDouble();send.preFader=st.getColumn(8).getInt()!=0;
             send.enabled=st.getColumn(9).getInt()!=0;
+            if (const auto tap = individualTaps.find(send.id); tap != individualTaps.end())
+                send.sendTap = tap->second;
             if(send.destinationKind=="track")if(const auto tap=returnTaps.find(send.destinationId);tap!=returnTaps.end() && tap->second.explicitChoice)send.preFader=tap->second.preFader;
 
             const auto prior=prevSends.find(send.id);
@@ -599,13 +605,38 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
     for(const auto& slot:previous.sampleSlots)previousSlots[{slot->deviceId,slot->slot}]=slot;
     SQLite::Statement slots(db,"SELECT s.device_id,s.stream_role,s.state_hash,p.uid FROM plugin_state s "
         "JOIN devices d ON d.id=s.device_id JOIN plugin_refs p ON p.id=d.plugin_ref_id "
-        "WHERE p.format='internal' AND s.stream_role LIKE 'sample:%' ORDER BY s.device_id,s.stream_role");
+        "WHERE p.format='internal' AND s.stream_role LIKE 'sample:%' "
+        "ORDER BY s.device_id,CAST(substr(s.stream_role,8) AS INTEGER),s.stream_role");
+    // DEV-21: a slot is any one the device declares (the Sampler declares 32),
+    // named as it is declared. Parsed once per device kind per rebuild.
+    std::map<std::string,device::PdDeclarations> declared;
     while(slots.executeStep()) {
         SampleSlotNode node;node.deviceId=slots.getColumn(0).getInt64();node.stateHash=slots.getColumn(2).getString();
         try {
             const auto role=slots.getColumn(1).getString();
-            if(role!="sample:1")throw std::runtime_error("unknown built-in sample role");
-            node.slot=1;node.name="Impulse";const auto old=previousSlots.find({node.deviceId,node.slot});
+            const auto uid=slots.getColumn(3).getString();
+            auto found=declared.find(uid);
+            if(found==declared.end()) {
+                found=declared.emplace(uid,device::parsePdDeclarations(builtinDeclarations(uid))).first;
+            }
+            std::int32_t slot=0;
+            const auto digits=role.substr(7);
+            if(digits.empty() || digits.size()>9 || digits.front()=='0' ||
+               !std::all_of(digits.begin(),digits.end(),[](char c){return c>='0' && c<='9';})) {
+                throw std::runtime_error("unknown built-in sample role");
+            }
+            slot=static_cast<std::int32_t>(std::stol(digits));
+            const auto& samples=found->second.samples;
+            const auto declaration=std::find_if(samples.begin(),samples.end(),[&](const auto& d){return d.id==slot;});
+            if(declaration!=samples.end()) {
+                node.slot=slot;node.name=declaration->name;
+            } else if(samples.empty() && slot==1) {
+                // A build that cannot read the declarations keeps the one slot it always had.
+                node.slot=1;node.name="Impulse";
+            } else {
+                throw std::runtime_error("unknown built-in sample role");
+            }
+            const auto old=previousSlots.find({node.deviceId,node.slot});
             if(old!=previousSlots.end() && old->second->stateHash==node.stateHash && old->second->problem.empty())node=*old->second;
             else {
                 SQLite::Statement size(db,"SELECT length(data) FROM state_blobs WHERE hash_blake3=?");size.bind(1,node.stateHash);

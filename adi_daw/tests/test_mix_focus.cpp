@@ -13,6 +13,7 @@
 #include <complex>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <new>
 #include <stdexcept>
@@ -24,6 +25,8 @@
 namespace f=adi::mix::focus;
 namespace {
 thread_local bool inAudio=false;
+thread_local bool countOwnerAllocations=false;
+thread_local std::size_t ownerAllocationBytes=0;
 std::uint64_t allocations=0,deallocations=0;
 int checks=0,failures=0;
 std::uint64_t comparedSamples=0;
@@ -209,6 +212,69 @@ bool stage(f::Core &core,const f::Settings &settings,std::uint64_t physical,std:
 f::Settings firSettings(double q=3.) {
     f::Settings s;s.engine=f::Engine::Fir;s.nodes[0].enabled=true;
     s.nodes[0].q=q;s.nodes[0].frequencyHz=1000.;s.nodes[0].thresholdDb=-60.;return s;
+}
+void lazyOwnerStorage() {
+    struct CountOwnerStorage {
+        CountOwnerStorage() { ownerAllocationBytes=0;countOwnerAllocations=true; }
+        ~CountOwnerStorage() { countOwnerAllocations=false; }
+    };
+    const f::PrepareSpec spec{48000,256,2};
+    const GeneratedAudio signal(32768);
+    auto iir=firSettings();
+    iir.engine=f::Engine::Iir;
+    f::Core core,reference;
+    {
+        CountOwnerStorage count;
+        core.prepare(spec,iir);
+    }
+    check(ownerAllocationBytes==0,"fresh native IIR prepares without allocating phase or FIR storage");
+    iir.nodes[0].q=2.;
+    check(core.requestConfiguration(iir),"coefficient-only IIR request is accepted");
+    bool built=false;
+    {
+        CountOwnerStorage count;
+        built=core.serviceConfiguration();
+    }
+    check(built && ownerAllocationBytes==0,"ordinary IIR coefficient updates allocate no transform storage");
+    { AudioScope scope;static_cast<void>(core.beginBlock(101,0,iir)); }
+
+    auto phase=iir;
+    phase.phaseMode=f::PhaseMode::Match;
+    phase.matchAmount=1.;
+    phase.externalKey=true;
+    // Isolate the dormant phase buffers from the IIR filter history, which
+    // correctly stays active across a phase-only configuration change.
+    phase.nodes[0].enabled=false;
+    auto fir=iir;
+    fir.engine=f::Engine::Fir;
+    std::uint64_t block=102;
+    const auto exercise=[&](const f::Settings &configured,std::int32_t latency) {
+        check(core.requestConfiguration(configured),"first transform configuration is requested");
+        bool ready=false;
+        {
+            CountOwnerStorage count;
+            ready=core.serviceConfiguration();
+        }
+        const auto offer=core.pendingLatencyChange();
+        check(ready && offer.token!=0 && offer.samples==latency && core.latencySamples()==0 &&
+                  ownerAllocationBytes>0,
+              "first transform storage is prepared by the owner before latency admission");
+        { AudioScope scope;static_cast<void>(core.beginBlock(block++,latency,configured)); }
+        reference.prepare(spec,configured);
+        auto actual=signal,expected=signal;
+        check(actual.run(core,configured) && expected.run(reference,configured) && compare(actual,expected)==0.,
+              "first live transform render is sample-identical to fresh preparation");
+        check(stage(core,iir,block++,0),"the live transform path retires before re-entry");
+        auto gap=signal;
+        check(gap.run(core,iir) && stage(core,configured,block++,latency),
+              "IIR advances source time before re-entering the transform path");
+        actual=signal;
+        check(actual.run(core,configured) && compare(actual,expected)==0.,
+              "re-entry resets dormant signal history and matches the same fresh render exactly");
+        check(stage(core,iir,block++,0),"the completed transform path returns to IIR");
+    };
+    exercise(phase,1024);
+    exercise(fir,12288);
 }
 void coherentFirPolicy() {
     constexpr std::size_t hop=8192,count=65536;constexpr std::int32_t latency=12288;
@@ -723,6 +789,136 @@ void causalFirGenerations() {
     check(core.pendingLatencyChange().token==offer.token,"five-slot pressure cannot overwrite the retained offer");
     check(consume(p-1)&&core.statistics().firDeadlineMisses==0,"retained source generations drain without missing a deadline");
 }
+void firCallbackWorkDistribution() {
+    constexpr std::size_t block = 512;
+    for (const auto nodes : {std::size_t{1}, f::kNodes}) {
+        auto settings = firSettings(1.3);
+        for (std::size_t i = 0; i < settings.nodes.size(); ++i)
+            settings.nodes[i].enabled = i < nodes;
+        f::Core core;
+        core.prepare({192000., static_cast<std::int32_t>(block), 2}, settings);
+        const auto partition = static_cast<std::size_t>(core.latencySamples() / 3);
+        std::array<double, block> left{}, right{}, keyLeft{}, keyRight{};
+        std::array<double *, 2> main{left.data(), right.data()};
+        std::array<const double *, 2> key{keyLeft.data(), keyRight.data()};
+        keyLeft.fill(.2);
+        keyRight.fill(-.15);
+        bool accepted = true;
+        std::uint64_t least = std::numeric_limits<std::uint64_t>::max(), most = 0;
+        for (std::size_t first = 0; first < 3 * partition; first += block) {
+            left.fill(.07);
+            right.fill(-.11);
+            const auto before = core.statistics();
+            {
+                AudioScope scope;
+                accepted = core.process(main.data(), key.data(), 2, static_cast<std::int32_t>(block), settings,
+                    core.beginBlock(0, core.latencySamples(), settings)) && accepted;
+            }
+            const auto after = core.statistics();
+            if (first >= partition) {
+                const auto work = after.firWorkUnits - before.firWorkUnits;
+                least = std::min(least, work);
+                most = std::max(most, work);
+            }
+        }
+        const auto final = core.statistics();
+        check(accepted && final.firJobsCompleted == 2 && final.firJobsStarted == 3 && final.firDeadlineMisses == 0,
+              "192 kHz stereo main and key meet both partition deadlines at 512 frames");
+        check(least > 0 && most - least <= 1,
+              nodes == 1 ? "one enabled node spreads counted FIR work through the entire callback interval" :
+                           "ten enabled nodes bound every callback to the same counted FIR work");
+    }
+}
+template<class Sample>
+void firInternalKeyReuse(double rate, std::size_t enabledNodes, bool changeRoutes) {
+    constexpr std::int32_t block = 512;
+    auto external = firSettings(1.3);
+    for (std::size_t node = 0; node < enabledNodes; ++node) {
+        external.nodes[node] = external.nodes[0];
+        external.nodes[node].frequencyHz += 550. * static_cast<double>(node);
+    }
+    auto selected = external;
+    selected.externalKey = changeRoutes;
+    f::Core subject, reference;
+    subject.prepare({rate, block, 2}, selected);
+    reference.prepare({rate, block, 2}, external);
+    const auto latency = reference.latencySamples();
+    const bool aligned = latency >= 3 * block && latency % (3 * block) == 0 && subject.latencySamples() == latency;
+    check(aligned,
+          "internal key and explicit key share the same prepared FIR delay and block grid");
+    if (!aligned) return;
+    const auto capture = static_cast<std::size_t>(latency / 3);
+    const auto sourceFrames = 5 * capture;
+    const auto totalFrames = sourceFrames + static_cast<std::size_t>(latency);
+    const GeneratedAudio input(sourceFrames);
+    std::array<std::array<Sample, block>, 2> actual{}, expected{}, key{};
+    bool accepted = true, exact = true, reduced = false;
+    std::uint64_t subjectPeakWork = 0, referencePeakWork = 0;
+    for (std::size_t first = 0; first < totalFrames; first += block) {
+        // Capture a different external key first, then two fully internal
+        // captures while older overlap is still audible. A later capture
+        // also changes back to external after the first block has been tagged.
+        selected.externalKey = changeRoutes && (first < capture || first == 3 * capture + block);
+        for (std::size_t ch = 0; ch < actual.size(); ++ch) {
+            for (std::size_t frame = 0; frame < actual[ch].size(); ++frame) {
+                const auto at = first + frame;
+                const auto programme = at < sourceFrames ? static_cast<Sample>(input.main[ch][at]) : Sample{};
+                actual[ch][frame] = expected[ch][frame] = programme;
+                key[ch][frame] = selected.externalKey && at < sourceFrames
+                    ? static_cast<Sample>(input.key[ch][at]) : programme;
+            }
+        }
+        std::array<Sample*, 2> main{actual[0].data(), actual[1].data()};
+        std::array<Sample*, 2> oracle{expected[0].data(), expected[1].data()};
+        const std::array<const Sample*, 2> externalKey{key[0].data(), key[1].data()};
+        const auto physical = static_cast<std::uint64_t>(first / block + 1);
+        const auto subjectBefore = subject.statistics().firWorkUnits;
+        const auto referenceBefore = reference.statistics().firWorkUnits;
+        {
+            AudioScope scope;
+            const auto subjectBlock = subject.beginBlock(physical, latency, selected);
+            const auto referenceBlock = reference.beginBlock(physical, latency, external);
+            const bool tookSubject = subject.process(main.data(), selected.externalKey ? externalKey.data() : nullptr,
+                selected.externalKey ? 2 : 0, block, selected, subjectBlock);
+            const bool tookReference = reference.process(oracle.data(), externalKey.data(), 2, block, external, referenceBlock);
+            accepted = accepted && tookSubject && tookReference;
+        }
+        subjectPeakWork = std::max(subjectPeakWork, subject.statistics().firWorkUnits - subjectBefore);
+        referencePeakWork = std::max(referencePeakWork, reference.statistics().firWorkUnits - referenceBefore);
+        for (std::size_t ch = 0; ch < actual.size(); ++ch) {
+            const bool matches = std::memcmp(actual[ch].data(), expected[ch].data(), sizeof(Sample) * actual[ch].size()) == 0;
+            exact = exact && matches;
+            if (first >= static_cast<std::size_t>(latency)) {
+                const auto dryStart = first - static_cast<std::size_t>(latency);
+                for (std::size_t frame = 0; frame < actual[ch].size(); ++frame) {
+                    const auto dry = static_cast<Sample>(input.main[ch][dryStart + frame]);
+                    reduced = reduced || std::abs(actual[ch][frame] - dry) > Sample{1} / Sample{10000};
+                }
+            }
+            comparedSamples += actual[ch].size();
+        }
+    }
+    const auto ran = subject.statistics(), baseline = reference.statistics();
+    check(accepted && exact && reduced, changeRoutes
+        ? "external and internal captures keep distinct overlap across route changes"
+        : "internal and sample-identical external keys produce bit-identical wet audio through the drain");
+    check(ran.firJobsStarted == totalFrames / capture && ran.firJobsCompleted + 1 == ran.firJobsStarted &&
+          ran.firJobsCompleted == baseline.firJobsCompleted && ran.firJobsStarted == baseline.firJobsStarted &&
+          ran.firDeadlineMisses == 0 && baseline.firDeadlineMisses == 0 && subject.latencySamples() == latency,
+          "both key routes finish the same FIR jobs on time while retaining the same delay");
+    if (!changeRoutes) {
+        const bool lessWork = baseline.firWorkUnits > 0 && ran.firWorkUnits * 10 < baseline.firWorkUnits * 7 &&
+                              referencePeakWork > 0 && subjectPeakWork * 10 < referencePeakWork * 7;
+        if (!lessWork)
+            std::printf("  Focus FIR work at %.0f Hz, %zu nodes, %zu-bit: total %llu/%llu, peak %llu/%llu\n",
+                        rate, enabledNodes, sizeof(Sample) * 8,
+                        static_cast<unsigned long long>(ran.firWorkUnits),
+                        static_cast<unsigned long long>(baseline.firWorkUnits),
+                        static_cast<unsigned long long>(subjectPeakWork),
+                        static_cast<unsigned long long>(referencePeakWork));
+        check(lessWork, "at 192 kHz/512, internal key uses under 70% of the total and peak external FIR work");
+    }
+}
 void firCallbackPartitions() {
     for(const double rate:{44100.,96000.,192000.}) {
         auto settings=firSettings(1.3);settings.nodes[1]=settings.nodes[0];settings.nodes[1].enabled=true;
@@ -1037,7 +1233,7 @@ void latencyAndSafety() {
     check(error<1.e-12,"missing Difference key cannot demand unlimited cut");
 }
 }
-void* operator new(std::size_t n){if(inAudio)++allocations;if(void*p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
+void* operator new(std::size_t n){if(countOwnerAllocations)ownerAllocationBytes+=n;if(inAudio)++allocations;if(void*p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
 void operator delete(void*p)noexcept{if(inAudio&&p)++deallocations;std::free(p);}
 void operator delete(void*p,std::size_t)noexcept{::operator delete(p);}
 void* operator new[](std::size_t n){return ::operator new(n);}
@@ -1051,6 +1247,7 @@ int main(){
     _set_abort_behavior(0,_WRITE_ABORT_MSG|_CALL_REPORTFAULT);
 #endif
     try {
+        lazyOwnerStorage();
         nonfiniteInputs<float>();
         nonfiniteInputs<double>();
         sourceTaggedFirOracle();
@@ -1060,6 +1257,13 @@ int main(){
         firSampleBudget();
         causalFirGenerations();
         firCallbackPartitions();
+        firCallbackWorkDistribution();
+        for (const auto nodes : {std::size_t{1}, f::kNodes}) {
+            firInternalKeyReuse<float>(192000., nodes, false);
+            firInternalKeyReuse<double>(192000., nodes, false);
+        }
+        firInternalKeyReuse<float>(48000., 1, true);
+        firInternalKeyReuse<double>(48000., 1, true);
         fftChecks();
         mailboxConcurrency();
         defaultsAndReadiness();
