@@ -6,8 +6,11 @@
 #include <atomic>
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <set>
+#include <span>
 #include <string>
+#include <vector>
 namespace adi {
 class Store;
 }
@@ -67,6 +70,9 @@ struct WindowState {
     // Where it opens: docked in the centre, or in a window of its own onto any display (ADR-0209
     // d11, ADR-0180 d3); the window's place is kept as every floating window's.
     bool mixViewDetached = false;
+    // STACK search and resting row size belong to this window. Pins belong to the project.
+    std::string mixStackSearch;
+    std::optional<int> mixStackBaseHeight;
     // Optional right-side shared analyzer presentation; never audio parameters.
     bool mixAnalyzerDock = false;
     int mixAnalyzerWidth = 300, mixAnalyzerSource = 0, mixAnalyzerPoint = 0, mixAnalyzerChannel = 0;
@@ -119,9 +125,16 @@ class ViewStateStore {
     bool saveFloating(const std::string& key,const FloatingState&,std::string& error);
     WindowState load(const std::string &window, DesktopDefaults defaults = {}) const;
     bool save(const std::string &window, const WindowState &, std::string &error);
+    struct StackPins {
+        std::uint64_t revision = 1;
+        std::vector<std::int64_t> ids;
+    };
+    const StackPins &stackPins() const;
+    bool saveStackPins(std::span<const std::int64_t> before, std::span<const std::int64_t> after, std::string &error);
 
   private:
     Store &store_;
+    mutable std::optional<StackPins> stackPins_;
 };
 class DirtySet {
   public:
@@ -160,25 +173,50 @@ class TransportMailbox {
     }
     // `record(insertTick)` starts a recording: the driver's `RenderBlock::startPlayback(tick, true)`.
     template <class Record> void drain(engine::Transport &transport, Record &&record) noexcept {
+        drain(transport, record, [](std::int64_t) noexcept { return true; });
+    }
+    template <class Record, class Ready>
+    void drain(engine::Transport &transport, Record &&record, Ready &&ready) noexcept {
         auto r = read_.load(std::memory_order_relaxed);
         const auto w = write_.load(std::memory_order_acquire);
+        bool pending = playPending_.load(std::memory_order_relaxed);
         while (r != w) {
             const auto item = queue_[r % queue_.size()];
-            if (item.command == Command::Locate)
+            if (item.command == Command::Locate) {
                 transport.locate(item.sample);
-            else if (item.command == Command::Record)
+                locateRevision_.store(transport.revision(), std::memory_order_relaxed);
+            } else if (item.command == Command::Record) {
+                pending = false;
                 record(item.sample);
-            else
-                transport.play(item.command == Command::Play);
+            } else if (item.command == Command::Stop) {
+                pending = false;
+                transport.play(false);
+            } else if (!transport.playing()) {
+                // A later Locate in this drain moves the pending Play target.
+                transport.play(false);
+                pending = true;
+            }
             ++r;
         }
+        if (pending && ready(transport.position())) {
+            transport.play();
+            pending = false;
+        }
         publish(transport);
+        playPending_.store(pending, std::memory_order_release);
         read_.store(r, std::memory_order_release);
     }
     void publish(const engine::Transport &t) noexcept {
         // A Count-In before a recording is playing for the window: Space or Stop then stops it.
         playing_.store(t.playing() || t.countInRemaining() > 0, std::memory_order_relaxed);
         position_.store(t.position(), std::memory_order_relaxed);
+    }
+    // Only the UI producer calls this. The read index acknowledges the
+    // applied Locate, including its revision, before a capture can use it.
+    [[nodiscard]] std::optional<std::uint64_t> settledLocateRevision() const noexcept {
+        if (write_.load(std::memory_order_relaxed) != read_.load(std::memory_order_acquire))
+            return std::nullopt;
+        return locateRevision_.load(std::memory_order_relaxed);
     }
     // UI producer sees the last queued intent until the driver acknowledges it.
     bool desiredPlaying() const noexcept {
@@ -189,7 +227,7 @@ class TransportMailbox {
             if (c != Command::Locate)
                 return c == Command::Play || c == Command::Record;
         }
-        return playing();
+        return playPending_.load(std::memory_order_acquire) || playing();
     }
     void setSampleRate(double rate) noexcept { sampleRate_.store(rate, std::memory_order_relaxed); }
     double sampleRate() const noexcept { return sampleRate_.load(std::memory_order_relaxed); }
@@ -197,6 +235,7 @@ class TransportMailbox {
     std::int64_t position() const noexcept { return position_.load(std::memory_order_relaxed); }
 
   private:
+    std::atomic<bool> playPending_{false};
     struct Item {
         Command command = Command::Stop;
         std::int64_t sample = 0;
@@ -206,5 +245,6 @@ class TransportMailbox {
     std::atomic<bool> playing_{false};
     std::atomic<double> sampleRate_{0};
     std::atomic<std::int64_t> position_{0};
+    std::atomic<std::uint64_t> locateRevision_{0};
 };
 } // namespace adi::ui

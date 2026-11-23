@@ -436,6 +436,17 @@ public:
 
     int getLatencySamples() const noexcept { return latency; }
     float getGainReductionDb() const noexcept { return -20.0f * std::log10(std::max(1.0e-8f, 1.0f - meterReduction)); }
+
+    bool readPeakReduction(int frames, float& peakLoss) const noexcept
+    {
+        // The bypass ramp is monotonic within a process call. Its endpoints
+        // already exist in the controls the audio used.
+        const auto first = frameControls.front().bypassMix;
+        const auto last = frameControls[static_cast<std::size_t>(frames - 1)].bypassMix;
+        if (first != last || (first != 0.f && first != 1.f)) return false;
+        peakLoss = first == 1.f ? 0.f : std::clamp(meterReduction, 0.f, 1.f);
+        return true;
+    }
     int getForkCount() const noexcept { return forkCount; }
     std::size_t getShadowSynchronizationBytes() const noexcept { return shadowSynchronizationBytes; }
     std::size_t getShadowSynchronizationBudget() const noexcept { return shadowSynchronizationBudget; }

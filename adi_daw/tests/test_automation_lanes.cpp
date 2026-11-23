@@ -103,6 +103,63 @@ void run() {
     check(journal.commit(automation::createLane(bad)).ok,"clip owner supported");
     bad.id=4;bad.ownerKind="project";
     check(journal.commit(automation::createLane(bad)).ok,"project owner supported");
+
+    // DF-E53: device lanes require a canonical decimal uint32 parameter id.
+    s->db().exec(
+        "INSERT INTO plugin_refs(id,format,uid,name,subtype) VALUES(1,'vst3','test.dev','Dev','effect');"
+        "INSERT INTO device_chains(id,track_id) VALUES(1,1);"
+        "INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name) VALUES(1,1,0,1,'Dev')");
+    automation::LaneSpec dev;
+    dev.ownerKind = "device";
+    dev.ownerId = 1;
+    dev.valueDomain = "normalized";
+    dev.defaultValue = 0.5;
+    dev.minValue = 0.0;
+    dev.maxValue = 1.0;
+    dev.id = 10;
+    dev.paramRef = "0";
+    check(journal.commit(automation::createLane(dev)).ok, "device lane accepts canonical zero param_ref");
+    dev.id = 11;
+    dev.paramRef = "1";
+    check(journal.commit(automation::createLane(dev)).ok, "device lane accepts canonical decimal param_ref");
+    dev.id = 12;
+    dev.paramRef = "4294967295";
+    check(journal.commit(automation::createLane(dev)).ok, "device lane accepts UINT32_MAX param_ref");
+    std::int64_t badId = 13;
+    for (const char* nonCanonical : {"00", "01", "001", "+1", "-1", " 1", "1 ", "4294967296", "cutoff"}) {
+        dev.id = badId++;
+        dev.paramRef = nonCanonical;
+        check(!journal.commit(automation::createLane(dev)).ok,
+              "device lane refuses non-canonical or invalid param_ref");
+    }
+    // Undo of a deleted legacy device lane still restores stored non-canonical metadata.
+    s->db().exec(
+        "INSERT INTO automation_lanes(id,owner_kind,owner_id,param_ref,value_domain,default_value) "
+        "VALUES(30,'device',1,'001','normalized',0.25)");
+    const auto legacyDevice = digestProject(*s).text;
+    check(journal.commit(automation::deleteLane(30)).ok && history.undo().ok &&
+              digestProject(*s).text == legacyDevice,
+          "legacy non-canonical device param_ref survives delete undo");
+
+    // Replay (Redo / branch switch) must still accept a legacy logged createLane with "001".
+    dev.id = 31;
+    dev.paramRef = "1";
+    const auto replayReq = automation::createLane(dev);
+    const auto committed = journal.commit(replayReq);
+    check(committed.ok && !committed.seqs.empty(), "create canonical device lane before legacy replay test");
+    Payload legacyPayload = replayReq.payload;
+    legacyPayload["row"]["param_ref"] = "001";
+    const auto encoded = encodePayload(legacyPayload);
+    {
+        SQLite::Statement update(s->db(), "UPDATE ops SET payload=? WHERE seq=?");
+        update.bind(1, encoded.data(), static_cast<int>(encoded.size()));
+        update.bind(2, committed.seqs.back());
+        check(update.exec() == 1, "rewrite logged createLane payload to legacy '001'");
+    }
+    check(history.undo().ok, "undo device lane before replaying legacy '001'");
+    check(history.redo().ok &&
+              s->db().execAndGet("SELECT param_ref FROM automation_lanes WHERE id=31").getString() == "001",
+          "redo replays legacy logged createLane with non-canonical '001'");
 }
 } // namespace
 int main() {

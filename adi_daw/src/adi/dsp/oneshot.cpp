@@ -108,6 +108,18 @@ bool OneShot::setParam(const std::string &id, const ParamValue &v) {
         }
     return false;
 }
+void OneShot::setParamAt(int i, double n) noexcept {
+    if (i < 0 || i >= Count || !std::isfinite(n)) {
+        return;
+    }
+    values_[static_cast<std::size_t>(i)].store(normal(i, real(i, n)), std::memory_order_relaxed);
+}
+void OneShot::setRealAt(int i, double value) noexcept {
+    if (i < 0 || i >= Count || !std::isfinite(value)) {
+        return;
+    }
+    setParamAt(i, normal(i, value));
+}
 std::string OneShot::paramText(const std::string &id, double n) const {
     if (!std::isfinite(n))
         return {};
@@ -188,6 +200,9 @@ std::shared_ptr<const OneShot::PreparedSample> OneShot::prepareSample(
             last = i;
         }
         envelope = .995 * envelope + .005 * level;
+        if (envelope < 1e-30) {
+            envelope = 0;
+        }
     }
     return s;
 }
@@ -281,12 +296,19 @@ bool OneShot::loadState(const std::string &role, const std::vector<std::uint8_t>
         return false;
     }
 }
-double OneShot::Filter::run(double x, double g, double q, int type) noexcept {
-    const double r = 1 / q;
-    const double v1 = (a + g * (x - b)) / (1 + g * (g + r));
+double OneShot::Filter::run(double x, double g, double r, double d, int type) noexcept {
+    // r = 1 / q and d = 1 + g * (g + r), the caller's once for every stage
+    // and channel of a voice's sample (the same values, so the same bits).
+    const double v1 = (a + g * (x - b)) / d;
     const double v2 = b + g * v1;
     a = 2 * v1 - a;
     b = 2 * v2 - b;
+    if (std::abs(a) < 1e-30) {
+        a = 0;
+    }
+    if (std::abs(b) < 1e-30) {
+        b = 0;
+    }
     const double high = x - r * v1 - v2;
     return type == 0 ? v2 : type == 1 ? high : type == 2 ? v1 : high + v2;
 }
@@ -298,6 +320,20 @@ double OneShot::read(const Sample &s, double position, int channel) const noexce
                stride = static_cast<std::size_t>(s.channels);
     const double x = s.data[a * stride + ch];
     return x + (s.data[b * stride + ch] - x) * (position - static_cast<double>(a));
+}
+void OneShot::readBoth(const Sample &s, double position, double *x) const noexcept {
+    // read() for channels 0 and 1 at one position: the same arithmetic, the
+    // position's clamp and index taken once.
+    position = std::clamp(position, 0., static_cast<double>(s.frames() - 1));
+    const auto a = static_cast<std::size_t>(position);
+    const auto b = std::min(a + 1, s.frames() - 1);
+    const auto stride = static_cast<std::size_t>(s.channels);
+    const double t = position - static_cast<double>(a);
+    for (int c = 0; c < 2; ++c) {
+        const auto ch = static_cast<std::size_t>(std::min(c, s.channels - 1));
+        const double y = s.data[a * stride + ch];
+        x[c] = y + (s.data[b * stride + ch] - y) * t;
+    }
 }
 void OneShot::queueNoteGain(double gain) noexcept {
     if (noteGainCount_ == noteGains_.size() || !std::isfinite(gain)) return;
@@ -455,22 +491,89 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
             real(i, values_[static_cast<std::size_t>(i)].load(std::memory_order_relaxed) +
                         modulation_[static_cast<std::size_t>(i)]);
     int next = 0;
-    for (int i = 0; i < io.frames; ++i) {
-        const int frame = io.blockOffset + i;
-        while (next < io.events.count && io.events.first[next].frame <= frame) {
+    // Silent and no note to come this block: the events still apply, in
+    // order, and the block is silence (a voice's filter is its own, so an
+    // idle OneShot has no tail). The Sampler runs 32 of these a block.
+    bool sounding = false;
+    for (const auto &v : voices_)
+        sounding = sounding || v.active;
+    bool noteComing = false;
+    if (s)
+        for (int k = 0; k < io.events.count; ++k)
+            noteComing = noteComing || io.events.first[k].type == engine::EventType::NoteOn;
+    if (!sounding && !noteComing) {
+        const int last = io.blockOffset + io.frames - 1;
+        while (next < io.events.count && io.events.first[next].frame <= last) {
             event(io.events.first[next], s, p);
             ++next;
         }
-        double output[2]{};
-        // Live 12.4 shows Sustain in dB, -70 dB to 0 dB (its level runs
-        // 0.000316..1); Vel > Vol blends a fixed level with the velocity.
-        // Both laws are ADI's until a Live render measures them (DEV-21).
-        const double sustain = std::pow(10., p[Sustain] / 20.);
-        const double velocityAmount = p[VelToVol] / 100.;
+        if (io.out)
+            for (int c = 0; c < io.channels; ++c)
+                if (io.out[c])
+                    std::fill_n(io.out[c] + io.blockOffset, io.frames, 0.f);
+        return;
+    }
+    // Live 12.4 shows Sustain in dB, -70 dB to 0 dB (its level runs
+    // 0.000316..1); Vel > Vol blends a fixed level with the velocity. Both
+    // laws are ADI's until a Live render measures them (DEV-21). These read
+    // only the parameters, so they change only at an event.
+    // With every LFO amount at 0 the LFO's value reaches nothing (each use is
+    // a product with 0, and x + (-0) is x), so only its phase runs. With LFO
+    // filter at 0 the filter's coefficients are the block's (exp2(+-0) is
+    // exactly 1), not each voice's each sample.
+    double sustain = 0, velocityAmount = 0, level = 0, gFixed = 0, qFixed = 0, rFixed = 0, dFixed = 0;
+    double lfoStep = 0;  // the LFO's phase a sample: block-constant
+    bool classic = true, lfoHeard = true, filterFixed = false;
+    const auto coefficients = [&](double lfo, double &g, double &q) {
+        const double hz = std::clamp(p[Cutoff] * std::exp2(lfo * p[LfoFilter]), 5., rate_ * .45);
+        g = std::tan(pi * hz / rate_);
+        // Res 0..125 % (Live's 0..1.25) onto the state-variable filter's Q
+        // from 1/sqrt(2) to 10: ADI's law, unmeasured.
+        const double res = p[Resonance] / 125.;
+        q = .7071067811865476 + res * res * 9.292893218813452;
+    };
+    const auto settle = [&] {
+        sustain = std::pow(10., p[Sustain] / 20.);
+        velocityAmount = p[VelToVol] / 100.;
+        level = std::pow(10., (p[Gain] + p[Volume]) / 20.);
+        classic = p[Mode] == 0;
+        lfoHeard = p[LfoPitch] != 0 || p[LfoVolume] != 0 || p[LfoPan] != 0 || p[LfoFilter] != 0;
+        filterFixed = p[FilterOn] > 0 && p[LfoFilter] == 0;
+        const double hz =
+            p[LfoSync] > 0 ? (io.transport ? io.transport->bpm : 120.) / 60 / p[LfoBeat] : p[LfoRate];
+        lfoStep = hz / rate_;
+        if (filterFixed) {
+            coefficients(0, gFixed, qFixed);
+            rFixed = 1 / qFixed;
+            dFixed = 1 + gFixed * (gFixed + rFixed);
+        }
+    };
+    settle();
+    // Voice by voice over each stretch between events (a voice's state stays
+    // in registers across the stretch), in stretches of at most kStretch for
+    // the accumulator on the stack. Each output sample still sums the voices
+    // from 0 in voice order, so the result is the sample-by-sample loop's,
+    // bit for bit.
+    constexpr int kStretch = 64;
+    double acc[2][kStretch];
+    for (int i = 0; i < io.frames;) {
+        const int frame = io.blockOffset + i;
+        bool moved = false;
+        while (next < io.events.count && io.events.first[next].frame <= frame) {
+            event(io.events.first[next], s, p);
+            ++next;
+            moved = true;
+        }
+        if (moved)
+            settle();
+        int n = std::min(io.frames - i, kStretch);
+        if (next < io.events.count)
+            n = std::clamp(io.events.first[next].frame - frame, 1, n);
+        for (int c = 0; c < 2; ++c)
+            std::fill_n(acc[c], n, 0.);
         if (s)
             for (auto &v : voices_)
-                if (v.active) {
-                    const bool classic = p[Mode] == 0;
+                for (int k = 0; k < n && v.active; ++k) {
                     // DF-E37 (d): a Classic voice with Loop on keeps looping
                     // through its release (Live's manual for Sampler; reading 3
                     // in the devices log for Simpler) and ends when the release
@@ -483,14 +586,14 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
                                          std::fmod(v.position - v.end, v.end - v.loop - overlap);
                         } else {
                             v.active = false;
-                            continue;
+                            break;
                         }
                     }
                     if (v.stage == 3) {
                         v.env = std::max(0., v.env - v.releaseStep);
                         if (v.env == 0) {
                             v.active = false;
-                            continue;
+                            break;
                         }
                     } else if (classic) {
                         if (v.stage == 0) {
@@ -512,17 +615,14 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
                     double lfo = 0;
                     if (p[LfoOn] > 0) {
                         const int shape = static_cast<int>(p[LfoShape]);
-                        lfo = shape == 0   ? std::sin(2 * pi * v.phase)
-                              : shape == 1 ? (v.phase < .5 ? 1. : -1.)
-                              : shape == 2 ? 1 - 4 * std::abs(v.phase - .5)
-                              : shape == 3 ? 1 - 2 * v.phase
-                              : shape == 4 ? 2 * v.phase - 1
-                                           : v.random;
-                        const double hz =
-                            p[LfoSync] > 0
-                                ? (io.transport ? io.transport->bpm : 120.) / 60 / p[LfoBeat]
-                                : p[LfoRate];
-                        v.phase += hz / rate_;
+                        if (lfoHeard)
+                            lfo = shape == 0   ? std::sin(2 * pi * v.phase)
+                                  : shape == 1 ? (v.phase < .5 ? 1. : -1.)
+                                  : shape == 2 ? 1 - 4 * std::abs(v.phase - .5)
+                                  : shape == 3 ? 1 - 2 * v.phase
+                                  : shape == 4 ? 2 * v.phase - 1
+                                               : v.random;
+                        v.phase += lfoStep;
                         if (v.phase >= 1) {
                             v.phase -= std::floor(v.phase);
                             v.rng = 1664525u * v.rng + 1013904223u;
@@ -531,16 +631,31 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
                     }
                     const double pitch = (p[Mode] == 2 ? 0 : v.key - rootKey_) + p[Transpose] +
                                          p[Detune] / 100. + v.tuning + lfo * p[LfoPitch];
-                    const double increment = s->rate / rate_ * std::exp2(pitch / 12.);
+                    // exp2 only when the pitch moves (an LFO, an expression):
+                    // the same pitch gives the same increment, bit for bit.
+                    if (!(pitch == v.pitchSeen)) {
+                        v.pitchSeen = pitch;
+                        v.increment = s->rate / rate_ * std::exp2(pitch / 12.);
+                    }
+                    const double increment = v.increment;
                     double amplitude = v.gain * v.env * (1 - velocityAmount + velocityAmount * v.velocity) *
-                                       std::pow(10., (p[Gain] + p[Volume]) / 20.) *
-                                       (1 - p[LfoVolume] / 200. * (1 - lfo));
+                                       level * (1 - p[LfoVolume] / 200. * (1 - lfo));
                     if (!classic)
                         amplitude *= std::min(1., (v.end - v.position) / increment /
                                                       std::max(1., rate_ * p[FadeOut] * .001));
                     const double fade = looping ? (v.end - v.loop) * p[Fade] / 200. : 0;
+                    // The filter's coefficients: the block's, or this voice's
+                    // this sample when the LFO moves the cutoff.
+                    double g = gFixed, q = qFixed, r = rFixed, d = dFixed;
+                    if (p[FilterOn] > 0 && !filterFixed) {
+                        coefficients(lfo, g, q);
+                        r = 1 / q;
+                        d = 1 + g * (g + r);
+                    }
+                    double both[2];
+                    readBoth(*s, v.position, both);
                     for (int c = 0; c < 2; ++c) {
-                        double x = read(*s, v.position, c);
+                        double x = both[c];
                         if (fade > 0 && v.position > v.end - fade) {
                             const auto t = (v.position - (v.end - fade)) / fade;
                             x = x * std::cos(t * pi * .5) +
@@ -548,22 +663,14 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
                                     std::sin(t * pi * .5);
                         }
                         if (p[FilterOn] > 0) {
-                            const double hz = std::clamp(p[Cutoff] * std::exp2(lfo * p[LfoFilter]),
-                                                         5., rate_ * .45);
-                            const double g = std::tan(pi * hz / rate_);
-                            // Res 0..125 % (Live's 0..1.25) onto the state-variable
-                            // filter's Q from 1/sqrt(2) to 10: ADI's law, unmeasured.
-                            const double res = p[Resonance] / 125.;
-                            const double q = .7071067811865476 + res * res * 9.292893218813452;
-                            x = v.filters[c][0].run(x, g, q,
-                                                    static_cast<int>(p[FilterType]));
+                            x = v.filters[c][0].run(x, g, r, d, static_cast<int>(p[FilterType]));
                             if (p[Slope] > 0)
-                                x = v.filters[c][1].run(x, g, q,
-                                                        static_cast<int>(p[FilterType]));
+                                x = v.filters[c][1].run(x, g, r, d, static_cast<int>(p[FilterType]));
                         }
                         const double pan = lfo * p[LfoPan] / 100.;
-                        output[c] += x * amplitude *
-                                     std::sqrt(std::clamp(1 + (c == 0 ? -pan : pan), 0., 2.));
+                        // sqrt(1) is exactly 1: no pan, no square root.
+                        acc[c][k] += x * amplitude *
+                                     (pan == 0 ? 1. : std::sqrt(std::clamp(1 + (c == 0 ? -pan : pan), 0., 2.)));
                     }
                     v.position += increment;
                     ++v.played;
@@ -571,7 +678,9 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
         if (io.out)
             for (int c = 0; c < io.channels; ++c)
                 if (io.out[c])
-                    io.out[c][frame] = static_cast<float>(c < 2 ? output[c] : 0);
+                    for (int k = 0; k < n; ++k)
+                        io.out[c][frame + k] = static_cast<float>(c < 2 ? acc[c][k] : 0);
+        i += n;
     }
 }
 } // namespace adi::device

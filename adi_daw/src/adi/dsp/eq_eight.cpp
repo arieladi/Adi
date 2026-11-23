@@ -3,6 +3,13 @@
 #include <algorithm>
 #include <cmath>
 #include <numbers>
+// A band at 0 dB (Live's default curve, or Scale 0) must be bit-exact unity:
+// x*b1 - a1*y cancels only when both products round alike, so no fused
+// multiply-adds (cmake/devices/eq_eight.cmake also passes -ffp-contract=off,
+// because GCC ignores this pragma).
+#if defined(__clang__)
+#pragma STDC FP_CONTRACT OFF
+#endif
 namespace adi::dsp {
 EqEight::EqEight() noexcept {
     // DEV-22: Live 12.4's browser default, per curve (A, B) and band: on, type,
@@ -129,7 +136,12 @@ double EqEight::channel(double x, std::size_t c) noexcept {
         }
         const double dry = x;
         for (auto &s : band.section) {
-            auto blend = [&](double &a, double b) { a = b + smooth_ * (a - b); };
+            auto blend = [&](double &a, double b) {
+                a = b + smooth_ * (a - b);
+                if (std::abs(a - b) < 1e-12) {
+                    a = b;
+                }
+            };
             blend(s.now.b0, s.target.b0);
             blend(s.now.b1, s.target.b1);
             blend(s.now.b2, s.target.b2);
@@ -138,6 +150,12 @@ double EqEight::channel(double x, std::size_t c) noexcept {
             const double y = x * s.now.b0 + s.z1;
             s.z1 = x * s.now.b1 - s.now.a1 * y + s.z2;
             s.z2 = x * s.now.b2 - s.now.a2 * y;
+            if (std::abs(s.z1) < 1e-30) {
+                s.z1 = 0;
+            }
+            if (std::abs(s.z2) < 1e-30) {
+                s.z2 = 0;
+            }
             x = y;
         }
         x = dry + band.wet * (x - dry);

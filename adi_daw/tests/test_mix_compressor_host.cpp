@@ -5,17 +5,21 @@
 #include "adi/ui/project_document.hpp"
 #include "adi/row_capture.hpp"
 #include "juce/builtin_host.hpp"
+#include "juce/mix_compressor_host.hpp"
 #include "juce/mix_function_host.hpp"
 #include "temp_directory.hpp"
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <limits>
 #include <new>
+#include <thread>
 #include <type_traits>
 #if defined(_M_X64) || defined(__SSE2__)
 #include <emmintrin.h>
@@ -160,6 +164,98 @@ template <class T> void exactAudio(double rate) {
                  "direct Clean samples");
     check(reduces, "loaded native compressor actually reduces programme level");
 }
+void duplicatePrepareKeepsGraphProcessing() {
+    constexpr double rate = 48000.;
+    constexpr int frames = 64;
+    auto compressor = make(), reference = make();
+    if (!compressor || !reference) {
+        check(false, "the no-op graph prepare fixture loads two native compressors");
+        return;
+    }
+    auto *gate = device::detail::mixCompressorGateForTesting(*compressor);
+    if (!gate) {
+        check(false, "the native compressor exposes its gate to the prepare probe");
+        return;
+    }
+    for (auto *instance : {compressor.get(), reference.get()}) {
+        for (const auto *id : {"0", "2", "4", "7"})
+            instance->setParam(id, device::ParamValue::fromNormalized(0.));
+    }
+    struct Programme final : engine::Node {
+        float value = .95f;
+        void process(const engine::NodeIo &io) noexcept override {
+            for (auto ch = 0; ch < io.channels; ++ch)
+                std::fill_n(io.out[ch] + io.blockOffset, io.frames, value);
+        }
+    };
+    Programme liveSource, nextSource;
+    device::DeviceNode liveNode(*compressor), nextNode(*compressor);
+    engine::Graph live, next;
+    const auto connect = [](engine::Graph &graph, Programme &source, device::DeviceNode &node) {
+        const auto input = graph.addNode(source), output = graph.addNode(node);
+        graph.connect(input, output);
+        graph.setOutput(output);
+    };
+    connect(live, liveSource, liveNode);
+    connect(next, nextSource, nextNode);
+    live.prepare(rate, frames);
+    reference->prepare(rate, frames);
+
+    Audio<float> produced{}, dry{};
+    for (auto &lane : dry) lane.fill(liveSource.value);
+    float *outputs[]{produced[0].data(), produced[1].data()};
+    engine::AudioIo io;
+    io.frames = frames;
+    io.numOut = 2;
+    io.out = outputs;
+    const auto render = [&] {
+        audio = true;
+        live.process(io);
+        audio = false;
+    };
+    auto warm = dry;
+    process(*reference, warm, 1, false);
+    render();
+    check(live.ok() && produced == warm && warm != dry, "the live graph starts with known wet Clean audio");
+    auto expected = dry;
+    process(*reference, expected, 2, false);
+
+    std::atomic<bool> finished{false};
+    const auto done = [&] { return finished.load(std::memory_order_acquire); };
+    const auto waitFor = [](auto predicate) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (!predicate()) {
+            if (std::chrono::steady_clock::now() >= deadline) return false;
+            std::this_thread::yield();
+        }
+        return true;
+    };
+    std::exception_ptr prepareFailure;
+    std::jthread owner;
+    bool admitted = false;
+    {
+        // With a call inside the gate, a misplaced Hold stays closed until this
+        // Pass leaves. Wait for closure or completion without timing the prepare.
+        const device::ReactivationGate::Pass inFlight(*gate);
+        owner = std::jthread([&] {
+            try { next.prepare(rate, frames); }
+            catch (...) { prepareFailure = std::current_exception(); }
+            finished.store(true, std::memory_order_release);
+        });
+        if (waitFor([&] { return done() || gate->closed(); })) {
+            admitted = static_cast<bool>(inFlight) && !gate->closed();
+            render();
+        }
+    }
+    if (!waitFor(done)) {
+        std::fputs("FAIL replacement graph prepare did not unwind after the test released its gate pass\n", stderr);
+        std::abort();
+    }
+    owner.join();
+    check(!prepareFailure && next.ok(), "the same-format replacement graph prepares");
+    check(admitted && expected != dry && produced == expected,
+          "same-format graph rebuild does not pass an unprocessed Clean segment");
+}
 void quietEnvelope() {
     auto device = make();
     check(device != nullptr, "quiet-envelope fixture creates native Clean");
@@ -198,6 +294,132 @@ void quietEnvelope() {
     check(std::isfinite(data[0][63]) && data[0][63] < .95f,
           "compression resumes after the long quiet interval");
 }
+void cleanGraphSuspension() {
+    constexpr double rate = 48000.;
+    constexpr int frames = 64;
+    auto device = make(), continuous = make(), cold = make();
+    check(device && continuous && cold, "graph suspension fixture creates three native Clean devices");
+    if (!device || !continuous || !cold) return;
+    for (auto *instance : {device.get(), continuous.get(), cold.get()}) {
+        instance->setParam("0", device::ParamValue::fromNormalized(0.));
+        instance->setParam("2", device::ParamValue::fromNormalized(0.));
+        instance->setParam("4", device::ParamValue::fromNormalized(0.));
+        instance->setParam("5", device::ParamValue::fromNormalized(1.));
+        instance->setParam("7", device::ParamValue::fromNormalized(0.));
+    }
+    continuous->prepare(rate, frames);
+    cold->prepare(rate, frames);
+    struct Programme final : engine::Node {
+        float value = .95f;
+        void process(const engine::NodeIo &io) noexcept override {
+            for (auto ch = 0; ch < io.channels; ++ch)
+                std::fill_n(io.out[ch] + io.blockOffset, io.frames, value);
+        }
+    } programme;
+    device::DeviceNode node(*device);
+    engine::Graph graph;
+    const auto input = graph.addNode(programme), effect = graph.addNode(node);
+    graph.connect(input, effect);
+    graph.setOutput(effect);
+    graph.prepare(rate, frames);
+    const auto tail = node.tailSamples();
+    check(tail == static_cast<std::int64_t>(rate * c::Core::quietTailSeconds) && tail < engine::kInfiniteTail,
+          "the scheduler sees the finite maximum prepared Clean release");
+    if (tail <= 0 || tail == engine::kInfiniteTail) return;
+
+    Audio<float> produced{}, unsuspended{}, restarted{};
+    float *outputs[]{produced[0].data(), produced[1].data()};
+    engine::AudioIo io;
+    io.frames = frames;
+    io.numOut = 2;
+    io.out = outputs;
+    const auto render = [&] {
+        audio = true;
+        graph.process(io);
+        audio = false;
+    };
+    std::uint64_t nextBlock = 1;
+    const auto continuousRender = [&] {
+        for (auto &lane : unsuspended) lane.fill(programme.value);
+        process(*continuous, unsuspended, nextBlock++, false);
+    };
+    const auto alloc = allocations.load(), free = frees.load();
+    for (int i = 0; i < 512; ++i) { render(); continuousRender(); }
+    check(produced == unsuspended && produced[0].back() < programme.value * .25f,
+          "the real graph drives a substantial Clean envelope before the quiet drain");
+    const auto awake = graph.stats().nodesSuspended;
+    programme.value = 0.f;
+    for (int i = 0; i < 32; ++i) { render(); continuousRender(); }
+    programme.value = .95f;
+    render(); continuousRender();
+    check(graph.stats().nodesSuspended == awake && produced == unsuspended,
+          "brief silent gaps keep the monitored release continuous");
+
+    programme.value = 0.f;
+    const auto tailBlocks = (tail + frames - 1) / frames;
+    for (std::int64_t i = 0; i < tailBlocks; ++i) { render(); continuousRender(); }
+    check(graph.stats().nodesSuspended == awake, "the complete quiet release runs before suspension");
+    const auto clears = graph.stats().suspendClears;
+    for (int i = 0; i < 5; ++i) { render(); continuousRender(); }
+    check(graph.stats().nodesSuspended == awake + 5 && graph.stats().suspendClears == clears + 1 &&
+              produced == Audio<float>{}, "the resting Clean node stops DSP and clears the output once");
+    programme.value = .95f;
+    render(); continuousRender();
+    for (auto &lane : restarted) lane.fill(programme.value);
+    process(*cold, restarted, 1, false);
+    double peakDifference = 0.;
+    for (std::size_t channel = 0; channel < produced.size(); ++channel)
+        for (std::size_t i = 0; i < produced[channel].size(); ++i)
+            peakDifference = std::max(peakDifference, std::abs(static_cast<double>(produced[channel][i]) -
+                                                             unsuspended[channel][i]));
+    check(produced == restarted && peakDifference <= 1.e-7 && graph.stats().nodesSuspended == awake + 5,
+          "Clean wakes on the first sample with fresh state within float tolerance of uninterrupted DSP");
+
+    device->setOffline(true);
+    check(node.tailSamples() == engine::kInfiniteTail,
+          "offline Clean keeps processing after the same silent interval that suspends in realtime");
+    programme.value = 0.f;
+    const auto suspendedBeforeRender = graph.stats().nodesSuspended;
+    for (std::int64_t i = 0; i < tailBlocks + 5; ++i) {
+        render();
+        continuousRender();
+    }
+    check(graph.stats().nodesSuspended == suspendedBeforeRender && produced == unsuspended,
+          "offline Clean runs beyond the realtime tail and preserves digital silence");
+    device->setOffline(false);
+    check(node.tailSamples() == tail, "returning to realtime restores the prepared Clean tail");
+    check(allocations.load() == alloc && frees.load() == free, "drain, suspend, and wake allocate or free no DSP storage");
+}
+void thresholdEditWhileSuspended() {
+    auto parked = make(), cold = make();
+    check(parked && cold, "parked-edit fixture creates two native Clean devices");
+    if (!parked || !cold)
+        return;
+
+    const auto previousThreshold = device::ParamValue::fromNormalized(.8);
+    const auto editedThreshold = device::ParamValue::fromNormalized(.45);
+    const auto autoGainOn = device::ParamValue::fromNormalized(1.);
+    check(parked->setParam("0", previousThreshold) && parked->setParam("7", autoGainOn) &&
+              cold->setParam("0", editedThreshold) && cold->setParam("7", autoGainOn),
+          "fixture stages distinct settled make-up targets");
+    parked->prepare(48000, 64);
+    cold->prepare(48000, 64);
+
+    Audio<float> programme{};
+    programme[0].fill(.001f);
+    programme[1].fill(-.0015f);
+    auto previous = programme;
+    process(*parked, previous, 1, false);
+    device::DeviceNode parkedNode(*parked);
+    parkedNode.didSuspend();
+    check(parked->setParam("0", editedThreshold), "owner edits the parked compressor");
+
+    auto woke = programme, fresh = programme;
+    process(*parked, woke, 2, false);
+    process(*cold, fresh, 1, false);
+    check(fresh[0][0] > previous[0][0], "edited Threshold raises first-sample make-up in a fresh instance");
+    check(woke == fresh, "a Threshold edit while parked takes effect on the first sample after wake");
+}
 void stateAndDescriptors() {
     auto a = make(), b = make();
     check(a && b && a->paramCount() == 8 && a->latencySamples() == 0,
@@ -234,6 +456,52 @@ void stateAndDescriptors() {
               !b->setParam("style", device::ParamValue::fromNormalized(0)),
           "out-of-range and unavailable style edits refuse");
 }
+template <class T> void dryOutsidePreparedStream() {
+    auto device = make();
+    check(device != nullptr, "unprepared pass-through fixture loads");
+    if (!device) return;
+
+    const Audio<T> input{[] {
+        std::array<T, 64> channel{};
+        for (std::size_t i = 0; i < channel.size(); ++i)
+            channel[i] = static_cast<T>(i + 1) / static_cast<T>(64);
+        return channel;
+    }(), {}};
+    Audio<T> output{};
+    const T *in[]{input[0].data(), nullptr};
+    T *out[]{output[0].data(), output[1].data()};
+    engine::NodeIo io;
+    io.channels = 2;
+    io.blockOffset = 17;
+    io.frames = 47;
+    if constexpr (std::is_same_v<T, float>) {
+        io.in = in;
+        io.out = out;
+    } else {
+        io.in64 = in;
+        io.out64 = out;
+    }
+
+    const auto expectDry = [&](const char *label) {
+        for (auto &channel : output) channel.fill(static_cast<T>(-3));
+        audio = true;
+        device->process(io);
+        audio = false;
+        bool exact = true;
+        for (std::size_t i = 0; i < output[0].size(); ++i) {
+            const bool segment = i >= static_cast<std::size_t>(io.blockOffset);
+            exact &= output[0][i] == (segment ? input[0][i] : static_cast<T>(-3));
+            exact &= output[1][i] == (segment ? T{} : static_cast<T>(-3));
+        }
+        check(exact, label);
+    };
+
+    expectDry("first unprepared callback copies only its offset segment, including missing-input silence");
+    device->prepare(48000, 32);
+    device->release();
+    expectDry("released adapter passes the valid segment without applying the previous stream maximum");
+}
+
 void automationAndRefusal() {
     auto a = make(), b = make();
     a->prepare(48000, 64);
@@ -384,10 +652,15 @@ void documentPipeline() {
 int main() {
     stateAndDescriptors();
     quietEnvelope();
+    cleanGraphSuspension();
+    duplicatePrepareKeepsGraphProcessing();
+    thresholdEditWhileSuspended();
     for (double rate : {44100., 48000., 96000., 176400., 192000., 384000., 768000.}) {
         exactAudio<float>(rate);
         exactAudio<double>(rate);
     }
+    dryOutsidePreparedStream<float>();
+    dryOutsidePreparedStream<double>();
     automationAndRefusal();
     documentPipeline();
     check(allocations.load() == 0 && frees.load() == 0,

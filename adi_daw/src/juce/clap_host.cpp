@@ -4,6 +4,7 @@
 
 #include "juce/clap_host.hpp"
 #include "adi/audio/io_audit.hpp"
+#include "adi/engine/graph.hpp"
 #include "adi/scan_batch.hpp"
 
 #include <algorithm>
@@ -35,6 +36,14 @@
 namespace adi::device {
 
 namespace {
+void stopClapProcessing(const clap_plugin_t* plugin, bool& processing) noexcept {
+    if (processing && plugin->stop_processing) {
+        const audio::CallbackScope callback;
+        plugin->stop_processing(plugin);
+    }
+    processing = false;
+}
+
 std::int64_t transportFixedPoint(double position, std::int64_t factor) noexcept {
     const auto scaled = std::round(position * static_cast<double>(factor));
     constexpr auto maximum = std::numeric_limits<std::int64_t>::max();
@@ -249,7 +258,7 @@ bool ClapEventList::addOut(const engine::MpeOut& o, ClapDialect dialect,
                 // is what the engine carries. The plain value, not VST3's.
                 slot.expr.value = (id == CLAP_NOTE_EXPRESSION_TUNING)
                                     ? semitonesToClapTuning(o.plain)
-                                    : std::clamp(o.plain, 0.0, 1.0);
+                                    : std::clamp(o.plain, 0.0, id == CLAP_NOTE_EXPRESSION_VOLUME ? 4.0 : 1.0);
                 break;
             }
             case K::PolyPressure:
@@ -472,7 +481,7 @@ ClapDevice::~ClapDevice() {
         // Only what started: plugin.h makes stop_processing legal only while
         // processing, and a plug-in whose start_processing failed is active
         // but not processing -- the guard `prepare` and `release` have.
-        if (processing_ && plugin_->stop_processing != nullptr) plugin_->stop_processing(plugin_);
+        stopClapProcessing(plugin_, processing_);
         if (plugin_->deactivate != nullptr) plugin_->deactivate(plugin_);
     }
     // DEFENSIVE, AND SAY SO: this line is NOT what closes the use-after-free.
@@ -965,10 +974,8 @@ std::int64_t ClapDevice::tailSamples() const noexcept {
     // is ADR-0055's default: never suspend something we cannot ask about.
     if (!activated_) return engine::kInfiniteTail;
     const std::uint32_t t = tailExt_->get(plugin_);
-    // CLAP spells an unbounded tail UINT32_MAX; ours is INT64_MAX. Mapped
-    // rather than cast, or "never suspend" becomes 4294967295 samples --
-    // twenty-four hours, which is wrong in a way nobody would ever see.
-    if (t == UINT32_MAX) return engine::kInfiniteTail;
+    // clap.ext.tail defines the entire range from INT32_MAX as unbounded.
+    if (t >= static_cast<std::uint32_t>(INT32_MAX)) return engine::kInfiniteTail;
     return static_cast<std::int64_t>(t);
 }
 
@@ -1058,8 +1065,7 @@ void ClapDevice::prepare(double sampleRate, std::int32_t maxFrames) {
     shapeSeen_ = shapeNow;
 
     if (activated_) {
-        if (processing_ && plugin_->stop_processing != nullptr) plugin_->stop_processing(plugin_);
-        processing_ = false;
+        stopClapProcessing(plugin_, processing_);
         if (plugin_->deactivate != nullptr) plugin_->deactivate(plugin_);
     }
     if (requestedOffline_ != preparedOffline_ && plugin_->get_extension != nullptr) {
@@ -1161,30 +1167,29 @@ void ClapDevice::prepare(double sampleRate, std::int32_t maxFrames) {
     // only while processing (plugin.h). A start that failed leaves the plugin
     // active and silent: `process` passes audio through, and the refusal is
     // counted where a host can see it (C2; ADR-0123).
-    processing_ = activated_ && plugin_->start_processing != nullptr &&
-                  plugin_->start_processing(plugin_);
+    if (activated_ && plugin_->start_processing) {
+        const audio::CallbackScope callback;
+        processing_ = plugin_->start_processing(plugin_);
+    }
     if (activated_ && !processing_) ++startFailures_;
 
     inBufs_.assign(inBuses_.size(), clap_audio_buffer_t{});
     outBufs_.assign(outBuses_.size(), clap_audio_buffer_t{});
 
-    // ADR-0056's arithmetic, applied to this device rather than re-derived:
-    // 500 Hz MPE+ across the block, three dimensions per note, at the
-    // polyphony the graph is configured for -- plus room for note on/off.
-    const double frames = static_cast<double>(maxFrames);
-    const double updateFrames = (sampleRate > 0.0) ? (frames / sampleRate) * 500.0 : 1.0;
-    const auto perNote = static_cast<std::int32_t>(updateFrames * 3.0) + 2;
-    events_.reserve((perNote > 0 ? perNote : 8) * 16);
-    // The route can turn one note-on into four outputs (three channel resets
-    // and the note), plus the Configuration Message once.
-    const std::int32_t routedCap = (perNote > 0 ? perNote : 8) * 16 + 16 * 4 + 8;
+    // The plug-in input must hold the same expression block as the graph.
+    const auto eventCapacity = engine::Graph::deriveEventCapacity(sampleRate, maxFrames, 16);
+    events_.reserve(eventCapacity);
+    // Room for channel resets on note-on and one configuration message.
+    constexpr std::int32_t routerHeadroom = 16 * 4 + 8;
+    const auto routedCap =
+        std::min(eventCapacity, std::numeric_limits<std::int32_t>::max() - routerHeadroom) + routerHeadroom;
     routedStore_.assign(static_cast<std::size_t>(routedCap), engine::MpeOut{});
     routed_ = engine::MpeOutList(routedStore_.data(), routedCap);
 
     pending_.assign(257, PendingParam{}); // 256 usable slots plus the SPSC sentinel
     pendingRead_.store(0,std::memory_order_relaxed);
     pendingWrite_.store(0,std::memory_order_relaxed);
-    injected_.assign(static_cast<std::size_t>((perNote > 0 ? perNote : 8) * 16),
+    injected_.assign(static_cast<std::size_t>(eventCapacity),
                      engine::Event{});
     injectedUsed_ = 0;
 
@@ -1240,8 +1245,7 @@ void ClapDevice::release() {
     // "stop_processing: guarded=2 calls=3" -- which I read and did not act
     // on. Counting is not checking. And stop is legal only while processing
     // (plugin.h), so a plugin whose start failed is not stopped (ADR-0123).
-    if (processing_ && plugin_->stop_processing != nullptr) plugin_->stop_processing(plugin_);
-    processing_ = false;
+    stopClapProcessing(plugin_, processing_);
     if (plugin_->deactivate != nullptr) plugin_->deactivate(plugin_);
     activated_ = false;
     flushPendingParams();
@@ -1311,6 +1315,7 @@ bool ClapDevice::outPush(const clap_output_events_t* list, const clap_event_head
 }
 
 void ClapDevice::process(const engine::NodeIo& io) noexcept {
+    const audio::CallbackScope callback;
     // A reactivation in progress on the message thread owns the plug-in and
     // its buses: this call passes the audio through (`ReactivationGate`).
     const ReactivationGate::Pass pass(gate_);
@@ -1731,10 +1736,22 @@ const void* ClapHostGlue::getExtension(const clap_host_t* h, const char* id) {
     if (std::strcmp(id, CLAP_EXT_PARAMS) == 0)      return &self->hostParamsExt_;
     if (std::strcmp(id, CLAP_EXT_GUI) == 0)         return &self->guiExt_;
     if (std::strcmp(id, CLAP_EXT_STATE) == 0)       return &self->hostStateExt_;
+    if (std::strcmp(id, CLAP_EXT_THREAD_CHECK) == 0) return &self->threadCheckExt_;
+    // Whole-device graph workers run independently. Plug-ins retain CLAP's
+    // own fallback for nested voice tasks.
     // Returning nullptr for an unknown id is the contract, and a host that
     // lied here would have plugins calling into functions it does not
     // implement.
     return nullptr;
+}
+
+bool ClapHostGlue::isMainThread(const clap_host_t* host) {
+    const auto* self = static_cast<const ClapHostGlue*>(host->host_data);
+    return std::this_thread::get_id() == self->ownerThread_;
+}
+
+bool ClapHostGlue::isAudioThread(const clap_host_t*) {
+    return audio::onAudioThread;
 }
 
 bool ClapHostGlue::portsRescanSupported(const clap_host_t*, std::uint32_t flag) {

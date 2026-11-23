@@ -28,6 +28,13 @@
 // requirement signals (cases 1-6, 9-23) and Tech 3342's (1-4); see
 // tests/test_loudness.cpp. It does not claim "EBU Mode compliant".
 //
+// PROVENANCE (DEV-28; LD1). Written here from ITU-R BS.1770-4 and EBU Tech
+// 3341 and 3342. The plan's LD1 named FilmCraft's meter as the base; its
+// source was not on the machine this was written on and none of it is here,
+// so no notice is carried for it. The K-weighting is AutoGain's, whose
+// prototypes are libebur128's (credited in auto_gain.cpp); the histograms,
+// sub-blocks and gating are ADI's own.
+//
 // prepare() allocates; process(), reset() and setRunning() do not.
 
 #pragma once
@@ -71,6 +78,11 @@ public:
 
     /// Clears every reading and all history: a new programme.
     void reset() noexcept;
+    /// The end of a programme: the true-peak interpolator reads its last
+    /// samples, run over its tail with silence; the loudness readings are
+    /// left exactly as they are (no padding reaches I). Allocation-free.
+    /// reset() before measuring another programme.
+    void finish() noexcept;
     /// Run (true) or pause (false) the integrated, range and maximum readings.
     /// A window that holds any paused audio stays out of them after resuming.
     void setRunning(bool running) noexcept;
@@ -131,6 +143,8 @@ private:
     std::int64_t runningSince_ = 0;      ///< first sub-block wholly measured while running
 
     TruePeakMeter truePeak_;
+    std::vector<double> tailZeros_;             ///< prepare(): finish()'s silence
+    std::vector<const double*> tailChannels_;   ///< one pointer to it per channel
     bool truePeakOn_ = false;
 };
 

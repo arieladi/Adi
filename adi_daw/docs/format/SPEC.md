@@ -78,7 +78,7 @@ is merely advisory is a trap. See ADR-0029.
 
 ```sql
 PRAGMA application_id = 1094994225;
-PRAGMA user_version   = 1022;          -- schema 1.22
+PRAGMA user_version   = 1023;          -- schema 1.23
 PRAGMA page_size      = 4096;          -- set before the first write; see §3.4
 PRAGMA encoding       = 'UTF-8';
 PRAGMA foreign_keys   = ON;
@@ -595,10 +595,14 @@ meaningless, while `real` survives. Where both are knowable, writers SHOULD stor
 `real` and let the runtime map.
 
 **A device lane** (`owner_kind = 'device'`, ADR-0165) names its parameter in
-`param_ref` by the plug-in's numeric id, in decimal: a VST3 `ParamID` or a
-CLAP id. The reference runtime plays `normalized` device lanes today. A `real`
-device lane is kept and reported until the plug-in's mapping is available to
-the engine. A track lane's `param_ref` is a strip parameter (§6.9).
+`param_ref` by the plug-in's numeric id (a VST3 `ParamID`, a CLAP id, or a
+built-in's id) in canonical unsigned decimal: digits only, no sign, no leading
+zero (`"0"` allowed), at most `4294967295`. Writers MUST write the canonical
+form; a reader plays a numeric non-canonical ref (such as `"001"`) as its
+numeric value and reports it. The reference runtime plays `normalized` device
+lanes today. A `real` device lane is kept and reported until the plug-in's
+mapping is available to the engine. A track lane's `param_ref` is a strip
+parameter (§6.9).
 
 ### 6.4 Audio clips and warping
 
@@ -1586,3 +1590,12 @@ source fader, pan, mute and solo; the two earlier taps do not. The key enters
 that device's sidechain bus and never its channel's main junction. Device and
 track removal capture the connection and tap together for one Undo. N-bus and
 arbitrary key channel remapping are outside this first device-key contract.
+
+### Individual send taps (schema 1.23)
+
+`routing_send_taps(routing_id,tap)` belongs to its `routing` row (delete
+cascades). `tap` is `pre_fx`, `post_fx` or `post_mixer` and is chosen for one
+send (ADR-0245 d10). An absent row inherits the return's tap, or the row's
+legacy `pre_fader` where the return has no explicit choice; the migration adds
+only the empty table, so no existing send changes its sound. OPS.md
+`routing.setSendTap` has the edit and its undo.

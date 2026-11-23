@@ -7,24 +7,41 @@
 
 namespace adi::dsp {
 namespace {
-// The small offset above 3 kHz is audible on long fractional hold captures.
-constexpr double holdLow = 8.82;
-constexpr double holdMid = 3000.00500679;
-constexpr double holdHigh = 44100.0;
-constexpr double holdRatio = (holdHigh - holdMid) / (holdMid - holdLow);
-constexpr double holdScale = (holdMid - holdLow) / (holdRatio - 1.0);
 constexpr double totalLevelRange = 32767.0;
 constexpr double linearLevelRange = 14.0 * totalLevelRange / 32768.0;
-constexpr unsigned clockIntervals = 256;
-const std::array<double, clockIntervals + 1> exponent = [] {
-    std::array<double, clockIntervals + 1> table{};
-    for (unsigned i = 0; i <= clockIntervals; ++i)
-        table[i] = std::pow(holdRatio, 2.0 * i / clockIntervals);
+
+// Logarithmic endpoints at 8.82 and 44100 Hz with the measured 225.96 Hz offset.
+constexpr float logMinimum = 5.45864868f;
+constexpr float logSpan = 5.24067688f;
+constexpr float frequencyOffset = 225.96f;
+constexpr unsigned clockPartBits = 7;
+constexpr unsigned clockHighShift = 2 * clockPartBits;
+constexpr unsigned clockPartMask = (1u << clockPartBits) - 1;
+constexpr unsigned firstCell = static_cast<unsigned>(logMinimum * 0x1p21f) >> clockHighShift;
+constexpr unsigned lastCell = static_cast<unsigned>((logMinimum + logSpan) * 0x1p21f) >> clockHighShift;
+
+template <std::size_t N>
+std::array<double, N> clockFactors(unsigned first, double unit) noexcept {
+    std::array<double, N> table{};
+    for (std::size_t i = 0; i < N; ++i)
+        table[i] = std::exp((static_cast<double>(i) + first) * unit);
     return table;
-}();
-const double logStep = 2 * std::log(holdRatio) / clockIntervals;
+}
+const auto clockHigh = clockFactors<lastCell - firstCell + 1>(firstCell, 0x1p-7);
+const auto clockMiddle = clockFactors<clockPartMask + 1>(0, 0x1p-14);
+const auto clockLow = clockFactors<clockPartMask + 1>(0, 0x1p-21);
+
+float clockExponential(float logFrequency) noexcept {
+    // The calibrated binary32 log frequencies are exact multiples of 2^-21.
+    // Splitting that integer into three parts keeps the shared tables below 8 KiB.
+    const auto ticks = static_cast<unsigned>(logFrequency * 0x1p21f);
+    const auto cell = (ticks >> clockHighShift) - firstCell;
+    return static_cast<float>(clockHigh[cell] * clockMiddle[(ticks >> clockPartBits) & clockPartMask] *
+                              clockLow[ticks & clockPartMask]);
+}
 
 float sanitized(float height) noexcept {
+    if (height >= 0.f && height <= 1.f) return height;
     return std::isfinite(height) ? std::clamp(height, 0.f, 1.f) : 1.f;
 }
 } // namespace
@@ -43,7 +60,7 @@ void AdiShaperCrush::reset() noexcept {
     bits_ = clock_ = -1;
     phase_ = 0;
     seed_ = 0x297a04b3u;
-    previousQuantInput_ = previousHoldInput_ = held_ = low_ = {};
+    previousQuantInput_ = previousCode_ = previousHoldInput_ = held_ = low_ = {};
 }
 
 void AdiShaperCrush::updateResolution(float height) noexcept {
@@ -58,18 +75,16 @@ void AdiShaperCrush::updateResolution(float height) noexcept {
 void AdiShaperCrush::updateClock(float height) noexcept {
     clock_ = height;
     if (height == 1.f) {
-        step_ = period_ = 1;
+        step_ = 1;
+        period_ = 1;
         return;
     }
-    const double index = static_cast<double>(height) * clockIntervals;
-    const auto slot = static_cast<unsigned>(index);
-    const double x = (index - slot) * logStep;
-    // A short residual polynomial keeps the fractional sample clock precise
-    // while a moving contour avoids a transcendental function at audio rate.
-    const double power = exponent[slot] * (1.0 + x * (1.0 + x * (.5 + x / 6.0)));
-    const double hz = holdLow + holdScale * (power - 1.0);
-    step_ = std::min(hz / rate_, 1.0);
-    period_ = 1.0 / step_;
+    // The multiply rounds to float before the add. Contraction shifts the
+    // capture position on sustained contours, so force that rounding here.
+    const volatile float scaled = logSpan * height;
+    const float hz = clockExponential(logMinimum + scaled) - frequencyOffset;
+    step_ = static_cast<float>(std::min(static_cast<double>(hz) / rate_, 1.0));
+    period_ = 0.0; // Recompute on the first capture at this rate.
 }
 
 double AdiShaperCrush::noise() noexcept {
@@ -85,7 +100,7 @@ double AdiShaperCrush::noise() noexcept {
     return .5 * (first - uniform());
 }
 
-void AdiShaperCrush::quantize(Stereo& sample) noexcept {
+void AdiShaperCrush::quantize(Stereo& sample, double previousLevels, double codeScale) noexcept {
     if (bits_ == 1.f) {
         previousQuantInput_ = sample;
         return;
@@ -93,35 +108,48 @@ void AdiShaperCrush::quantize(Stereo& sample) noexcept {
     const double perturbation = dither_ ? noise() / levels_ : 0.0;
     for (unsigned ch = 0; ch < 2; ++ch) {
         const double value = sample[ch] + perturbation;
-        const double before = previousQuantInput_[ch] * levels_;
+        const double before = previousQuantInput_[ch] * previousLevels;
         const double now = value * levels_;
-        const double priorCode = std::floor(before + .5);
+        const double priorCode = previousCode_[ch];
         const double code = std::floor(now + .5);
         if (code == priorCode) {
             sample[ch] = quantizedGain_ * code;
         } else {
-            // Integrated staircase over the linear transition from before to
-            // now. This centered form avoids subtracting two large primitives.
+            // Find the crossing in code space. The previous output step keeps
+            // its original amplitude when expressed in units of the new step.
+            const double priorOutput = priorCode * codeScale;
             const double residuals = (now - code) + (before - priorCode);
-            const double mean = .5 * ((code + priorCode) + (code - priorCode) * residuals / (now - before));
+            const double mean = .5 * ((code + priorOutput) + (code - priorOutput) * residuals / (now - before));
             sample[ch] = quantizedGain_ * mean;
         }
         previousQuantInput_[ch] = value;
+        previousCode_[ch] = code;
     }
 }
 
-void AdiShaperCrush::hold(Stereo& sample) noexcept {
+void AdiShaperCrush::hold(Stereo& sample, bool flatHold) noexcept {
     if (step_ >= 1.0) {
-        previousHoldInput_ = held_ = sample;
-        phase_ = 0;
+        if (flatHold && clock_ == 1.f) {
+            held_ = sample;
+        } else {
+            // The direct output spans one whole clock cycle. Keep its
+            // remainder and interpolate the capture for the next slower frame.
+            const double fraction = 1.0 - phase_;
+            for (unsigned ch = 0; ch < 2; ++ch)
+                held_[ch] = previousHoldInput_[ch] + fraction * (sample[ch] - previousHoldInput_[ch]);
+        }
+        previousHoldInput_ = sample;
         return;
     }
     const auto input = sample;
-    const double next = phase_ + step_;
-    if (next < 1.0) {
+    // The sum rounds before the wrap. Higher precision changes the rate
+    // enough to capture different source frames during sustained playback.
+    const float next = phase_ + step_;
+    if (next < 1.f) {
         sample = held_;
         phase_ = next;
     } else {
+        if (period_ == 0.0) period_ = 1.0 / step_;
         const double fraction = std::clamp((1.0 - phase_) * period_, 0.0, 1.0);
         for (unsigned ch = 0; ch < 2; ++ch) {
             const double captured = previousHoldInput_[ch] +
@@ -129,20 +157,31 @@ void AdiShaperCrush::hold(Stereo& sample) noexcept {
             sample[ch] = held_[ch] + (1.0 - fraction) * (captured - held_[ch]);
             held_[ch] = captured;
         }
-        phase_ = next - 1.0;
+        phase_ = next - 1.f;
     }
     previousHoldInput_ = input;
 }
 
 void AdiShaperCrush::processStereo(float& left, float& right, float bitsHeight,
-                                   float resampleHeight) noexcept {
+                                   float resampleHeight, bool flatHold) noexcept {
     if (rate_ == 0) return;
     const auto u = sanitized(bitsHeight), r = sanitized(resampleHeight);
-    if (u != bits_) updateResolution(u);
+    const double previousLevels = levels_;
+    double codeScale = 1.0;
+    if (u != bits_) {
+        // Bypass records its input without quantizing. Recover that final
+        // sample's code only when leaving bypass.
+        if (bits_ == 1.f) {
+            for (unsigned ch = 0; ch < 2; ++ch)
+                previousCode_[ch] = std::floor(previousQuantInput_[ch] * previousLevels + .5);
+        }
+        updateResolution(u);
+        codeScale = levels_ / previousLevels;
+    }
     if (r != clock_) updateClock(r);
     Stereo sample{left, right};
-    quantize(sample);
-    hold(sample);
+    quantize(sample, previousLevels, codeScale);
+    hold(sample, flatHold);
     for (unsigned ch = 0; ch < 2; ++ch) {
         const double difference = sample[ch] - low_[ch];
         low_[ch] += highpassAmount_ * difference;
@@ -151,5 +190,17 @@ void AdiShaperCrush::processStereo(float& left, float& right, float bitsHeight,
     }
     left = static_cast<float>(sample[0]);
     right = static_cast<float>(sample[1]);
+}
+
+bool AdiShaperCrush::finishBlock() noexcept {
+    bool repaired = false;
+    for (std::size_t ch = 0; ch < low_.size(); ++ch) {
+        if (!std::isfinite(low_[ch]) || !std::isfinite(held_[ch]) ||
+            !std::isfinite(previousHoldInput_[ch]) || !std::isfinite(previousQuantInput_[ch])) {
+            low_[ch] = held_[ch] = previousHoldInput_[ch] = previousQuantInput_[ch] = previousCode_[ch] = 0.0;
+            repaired = true;
+        }
+    }
+    return repaired;
 }
 } // namespace adi::dsp

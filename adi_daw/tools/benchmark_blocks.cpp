@@ -1,18 +1,27 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // ADR-0102: synthetic callback timing, without an audio device or platform API.
 // Build Release with ADI_BUILD_BENCHMARKS=ON; run --self-test before measuring.
+#include "adi/dsp/loudness.hpp"
 #include "adi/engine/graph.hpp"
+#include "adi/audio/io_audit.hpp"
+#include "adi/ui/project_document.hpp"
+#include "juce/builtin_host.hpp"
+#include "../tests/temp_directory.hpp"
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <charconv>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <memory>
 #include <numeric>
 #include <stdexcept>
+#include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -53,6 +62,68 @@ struct NodeTiming {
     double bodyUs = 0.0;
     std::size_t calls = 0;
 };
+
+void measureEmptyProject(std::int32_t frames, std::size_t iterations, bool playing) {
+    adi::test::TempDirectory temp("benchmark_blocks", "empty");
+    std::string error;
+    const adi::ui::RecordingDefaults defaults;
+    auto document = adi::ui::ProjectDocument::open(temp.path() / "New.adi", true,
+        adi::device::withBuiltinDevices(), error, &defaults);
+    if (!document) throw std::runtime_error(error);
+
+    document->prepare(kRate, frames);
+    auto& session = document->session();
+    if (session.model().tracks.size() != 7 || !session.model().clips.empty())
+        throw std::runtime_error("empty measurement needs a factory New project");
+    for (const auto deviceId : {1, 2}) {
+        const auto* instance = session.instanceFor(deviceId);
+        if (!instance || !instance->loaded())
+            throw std::runtime_error("empty measurement needs the two factory return devices");
+    }
+    if (playing) session.transport().play();
+
+    std::array<float, 128> inputLeft{}, inputRight{}, left{}, right{};
+    const float* input[]{inputLeft.data(), inputRight.data()};
+    float* output[]{left.data(), right.data()};
+    AudioIo io;
+    io.in = input;
+    io.numIn = 2;
+    io.out = output;
+    io.numOut = 2;
+    io.frames = frames;
+    const auto process = [&] {
+        const adi::audio::CallbackScope callback;
+        document->process(io);
+        io.streamTimeSamples += frames;
+    };
+    // Warm the default FX and the meter's full three-second window.
+    while (io.streamTimeSamples < static_cast<std::int64_t>(5 * kRate)) process();
+    const auto* graph = session.graph().currentGraph();
+    if (!graph) throw std::runtime_error("New has no prepared graph");
+    const auto before = graph->stats();
+    std::vector<double> times(iterations);
+    const auto zero = [](float sample) { return std::bit_cast<std::uint32_t>(sample) == 0; };
+    for (auto& elapsed : times) {
+        std::fill_n(left.data(), frames, 0.25f);
+        std::fill_n(right.data(), frames, -0.25f);
+        const auto start = std::chrono::steady_clock::now();
+        process();
+        elapsed = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count();
+        if (!std::all_of(left.data(), left.data() + frames, zero) ||
+            !std::all_of(right.data(), right.data() + frames, zero))
+            throw std::runtime_error("New failed to publish byte-exact silence");
+    }
+    if (graph != session.graph().currentGraph())
+        throw std::runtime_error("empty measurement requires a stable prepared graph");
+    const auto after = graph->stats();
+    const auto measured = summarize(std::move(times), static_cast<double>(frames) * 1e6 / kRate);
+    const auto count = static_cast<double>(iterations);
+    std::printf("empty-new,%s,%d,%zu,%zu,%.3f,%.3f,%.3f,%.3f,%.3f,%zu\n",
+        playing ? "playing" : "stopped", frames, iterations, graph->nodeCount(),
+        static_cast<double>(after.nodeCalls - before.nodeCalls) / count,
+        static_cast<double>(after.nodesSuspended - before.nodesSuspended) / count,
+        measured.p50, measured.p99, measured.maximum, measured.deadlineMisses);
+}
 
 // Benchmark-only decorator. Routing/suspension follow the inner node; its
 // shared NodeTiming accumulator keeps this decorator callback-only. Clock
@@ -251,6 +322,66 @@ void measure(const Project& project, std::int32_t frames, std::size_t iterations
     }
     processor.release();
 }
+// DEV-28 (ADR-0203 d7: Main's meter is always on, so its cost is measured).
+// The one loudness meter, dsp::LoudnessMeter, which Main reads once N13 is
+// rewired onto it (the engine's; until then Main runs its own): true peak on,
+// over a -20 dBFS 997 Hz tone on every channel, the time of each process()
+// call at each block size beside the callback's deadline. Stereo, and 5.1
+// with BS.1770's weights. Timed only at steady state: 3.1 s of tone first,
+// so every window, the maxima and the range histogram are already working.
+bool measureLoudness(std::size_t channels, std::int32_t frames, std::size_t iterations) {
+    std::vector<double> weights(channels, 1.0);
+    if (channels == 6) {
+        weights = {1.0, 1.0, 1.0, 0.0, adi::dsp::LoudnessMeter::kSurroundWeight,
+                   adi::dsp::LoudnessMeter::kSurroundWeight};
+    }
+    adi::dsp::LoudnessMeter meter;
+    meter.prepare(kRate, weights);
+    std::vector<std::vector<float>> audio(channels, std::vector<float>(static_cast<std::size_t>(frames)));
+    std::vector<const float*> pointers(channels);
+    for (std::size_t c = 0; c < channels; ++c) pointers[c] = audio[c].data();
+    std::vector<double> times(iterations);   // no allocation while measuring
+    const double amplitude = std::pow(10.0, -20.0 / 20.0);
+    const double step = 2.0 * 3.14159265358979323846 * 997.0 / kRate;
+    std::int64_t clock = 0;
+    // One block of the tone on a global sample clock, made outside the
+    // timing; returns the time of the process() call alone.
+    const auto block = [&] {
+        for (std::int32_t frame = 0; frame < frames; ++frame) {
+            const auto value = static_cast<float>(amplitude * std::sin(step * static_cast<double>(clock + frame)));
+            for (auto& channel : audio) channel[static_cast<std::size_t>(frame)] = value;
+        }
+        const auto start = std::chrono::steady_clock::now();
+        meter.process(pointers.data(), frames);
+        const auto end = std::chrono::steady_clock::now();
+        clock += frames;
+        return std::chrono::duration<double, std::micro>(end - start).count();
+    };
+    while (static_cast<double>(clock) < 3.1 * kRate) {   // to steady state
+        (void)block();
+    }
+    for (std::size_t i = 0; i < kWarmup; ++i) {
+        (void)block();
+    }
+    for (std::size_t i = 0; i < iterations; ++i) {
+        times[i] = block();
+    }
+    const auto s = summarize(times, static_cast<double>(frames) * 1e6 / kRate);
+    const auto r = meter.readings();
+    // A broken fixture must not publish timings: the tone must read as
+    // itself. Its true peak is -20 dBTP; momentary and short-term are -20
+    // LUFS in stereo (Tech 3341 case 1's rule), and on any layout -20 + 10
+    // log10 of the weights' sum over 2; the range histogram is in use.
+    double weightSum = 0.0;
+    for (double w : weights) weightSum += w;
+    const double expected = -20.0 + 10.0 * std::log10(weightSum / 2.0);
+    const bool valid = std::abs(r.truePeak + 20.0) < 0.2 && std::abs(r.momentary - expected) < 0.2 &&
+                       std::abs(r.shortTerm - expected) < 0.2 && r.rangeValid;
+    std::printf("loudness,%zu,%d,%zu,%.3f,%.3f,%.3f,%zu,%.2f,%.2f,%.3f\n", channels, frames, iterations, s.p50, s.p99,
+                s.maximum, s.deadlineMisses, r.momentary, r.truePeak,
+                100.0 * s.p99 / (static_cast<double>(frames) * 1e6 / kRate));
+    return valid;
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -258,6 +389,8 @@ int main(int argc, char** argv) {
     if (argc == 2 && std::string_view(argv[1]) == "--self-test") return selfTest() ? 0 : 1;
     if (argc == 2 && std::string_view(argv[1]) == "--help") {
         std::puts("adi_block_benchmark [--iterations N] [--breakdown] [--precision 32|64] [--workers 0..16] [--parallel-min-frames 1..4096] [--parallel-min-nodes 2..65536] | --self-test\n"
+                  "adi_block_benchmark --empty-project [--iterations N]\n"
+                  "--empty-project measures factory New in 32-bit stereo at 64 and 128 frames, with Pd enabled.\n"
                   "N: 1..1000000, default 1000; 32 warmup callbacks per row.\n"
                   "--precision: the graph's Processing Precision (ADR-0207 d2), 32 by default.\n"
                   "--workers: persistent workers 0..16, default 0 (serial).\n"
@@ -271,17 +404,25 @@ int main(int argc, char** argv) {
                   "Fixed fixtures: 8x4 active, 64x4 silence-heavy/all-active, 8x4 MPE+.\n"
                   "MPE+ = 16 notes x 3 dimensions at 500 Hz into the first track.\n"
                   "--breakdown: per-callback rows for both 64-track projects.\n"
+                  "--loudness: instead, the one loudness meter alone (dsp::LoudnessMeter,\n"
+                  "  DEV-28; Main reads it once N13 is rewired), true peak on, at steady\n"
+                  "  state, stereo and 5.1, every block size; p99 is also given as a\n"
+                  "  percentage of the callback's deadline. Takes only --iterations.\n"
                   "Node body clocks perturb the measurement; normal mode is the control.\n"
                   "Residual includes Graph overhead and skipped work; skipped time is NA\n"
                   "because Node does not expose the suspended scheduler path.\n"
                   "This is synthetic timing, not an Ableton comparison.");
         return 0;
     }
-    bool breakdown = false;
+    bool breakdown = false, loudness = false, emptyProject = false, graphOption = false;
     Precision precision = Precision::Float32;
     std::uint32_t workers=0,minimumNodes=4;std::int32_t minimumFrames=256;bool explicitFrames=false;
     for (int arg = 1; arg < argc; ++arg) {
         const std::string_view option(argv[arg]);
+        if (option == "--loudness") { loudness = true; continue; }
+        if (option == "--empty-project") { emptyProject = true; continue; }
+        // Every option but --iterations configures the graph's fixtures.
+        if (option != "--iterations") graphOption = true;
         if (option == "--breakdown") { breakdown = true; continue; }
         if (option == "--precision" && arg + 1 < argc) {
             const std::string_view value(argv[++arg]);
@@ -306,8 +447,39 @@ int main(int argc, char** argv) {
             std::fputs("iterations must be an integer in 1..1000000\n", stderr); return 2;
         }
     }
+    if ((loudness && emptyProject) || ((loudness || emptyProject) && graphOption)) {
+        std::fputs("Specify one separate measurement mode with only --iterations.\n", stderr);
+        return 2;
+    }
+    if (emptyProject) {
+        try {
+            std::puts("project,transport,frames,callbacks,nodes,processed_per_block,suspended_per_block,p50_us,p99_us,max_us,dropouts");
+            for (const std::int32_t frames : {64, 128}) {
+                measureEmptyProject(frames, iterations, false);
+                measureEmptyProject(frames, iterations, true);
+            }
+        } catch (const std::exception& error) {
+            std::fprintf(stderr, "empty project benchmark failed: %s\n", error.what());
+            return 1;
+        }
+        return 0;
+    }
     if(workers>0 && !explicitFrames){std::fputs("workers require explicit --parallel-min-frames; use 1 to measure wake cost\n",stderr);return 2;}
     if(breakdown && workers>0){std::fputs("breakdown clocks share a serial accumulator; use ordinary mode for workers\n",stderr);return 2;}
+    if (loudness) {
+        std::puts("meter,channels,frames,callbacks,p50_us,p99_us,max_us,dropouts,momentary_lufs,true_peak_dbtp,p99_percent_of_deadline");
+        bool valid = true;
+        for (std::size_t channels : {std::size_t{2}, std::size_t{6}}) {
+            for (std::int32_t frames : {32, 64, 128, 256, 512, 1024, 2048, 4096}) {
+                valid = measureLoudness(channels, frames, iterations) && valid;
+            }
+        }
+        if (!valid) {
+            std::fputs("benchmark failed: the loudness fixture did not read as itself\n", stderr);
+            return 1;
+        }
+        return 0;
+    }
     std::puts(breakdown ?
         "project,frames,callback,processed_nodes,skipped_nodes,callback_us,node_body_us,residual_us,body_us_per_processed_node,skipped_scheduler_us" :
         "project,tracks,effects_per_track,frames,nodes,callbacks,p50_us,p99_us,max_us,dropouts,event_drops,rejected_events,requested_workers,created_workers,parallel_levels,worker_node_blocks");

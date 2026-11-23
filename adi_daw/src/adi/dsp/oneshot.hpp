@@ -6,6 +6,7 @@
 #include "juce/device_model.hpp"
 #include <algorithm>
 #include <filesystem>
+#include <limits>
 #include <span>
 namespace adi::device {
 class OneShot final : public DeviceInstance {
@@ -90,6 +91,14 @@ class OneShot final : public DeviceInstance {
     void processPrepared(const engine::NodeIo&, const PreparedSample*,
                          std::uint64_t generation) noexcept;
     void resetVoices() noexcept { voices_ = {}; }
+    /// Audio thread: whether any voice sounds. A OneShot with none, given no
+    /// note-on, plays exact silence (each voice's filter is its own: no tail).
+    [[nodiscard]] bool sounding() const noexcept {
+        for (const auto &v : voices_)
+            if (v.active)
+                return true;
+        return false;
+    }
     /// The next prepare() starts fresh (DF-E37 f).
     void release() override { prepared_ = false; }
     void pumpMainThread() override;
@@ -97,6 +106,11 @@ class OneShot final : public DeviceInstance {
     const ParamDescriptor *paramAt(std::int32_t) const noexcept override;
     ParamValue getParam(const std::string &) const noexcept override;
     bool setParam(const std::string &, const ParamValue &) override;
+    /// Any thread (an atomic store): parameter index i to a normalized value,
+    /// canonical as setParam stores it, without a string lookup (DEV-21).
+    void setParamAt(int i, double normalized) noexcept;
+    /// The same, from a value in the parameter's own unit.
+    void setRealAt(int i, double value) noexcept;
     std::string paramText(const std::string &, double) const override;
     std::vector<std::string> stateRoles() const override { return {"component"}; }
     std::vector<std::uint8_t> saveState(const std::string &) const override;
@@ -119,7 +133,7 @@ class OneShot final : public DeviceInstance {
     };
     struct Filter {
         double a = 0, b = 0;
-        double run(double, double, double, int) noexcept;
+        double run(double x, double g, double r, double d, int type) noexcept;
     };
     struct Voice {
         bool active = false, held = false;
@@ -129,6 +143,8 @@ class OneShot final : public DeviceInstance {
                phase = 0, random = 0, tuning = 0, gain = 1;
         std::uint32_t rng = 1;
         std::uint64_t played = 0;
+        // The last pitch's read increment (exp2 is per pitch, not per sample).
+        double pitchSeen = std::numeric_limits<double>::quiet_NaN(), increment = 0;
         Filter filters[2][2];
     };
     /// Gains for the next note-ons, in order (a zone weight from the Sampler).
@@ -139,6 +155,7 @@ class OneShot final : public DeviceInstance {
                       double &end) noexcept;
     void noteOn(const engine::Event &, const Sample &, const std::array<double, Count> &) noexcept;
     double read(const Sample &, double, int) const noexcept;
+    void readBoth(const Sample &, double position, double *x) const noexcept;
     void processSample(const engine::NodeIo&, const Sample*, std::uint64_t,
                        bool borrowed) noexcept;
     std::array<ParamDescriptor, Count> params_;

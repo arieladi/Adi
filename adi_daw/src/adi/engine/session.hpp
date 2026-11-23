@@ -303,8 +303,10 @@ public:
         [[nodiscard]] double bpmAtTick(std::int64_t) const noexcept;
         /// Driver only, immediately before rendering this target. Posts bounded
         /// read-ahead and checks mandatory pages without waiting or doing I/O.
-        [[nodiscard]] bool sourcesReadyAt(std::int64_t sample, std::int32_t frames) const noexcept;
-        [[nodiscard]] bool sourcesReady(const Transport& requested, std::int32_t frames) const noexcept;
+        [[nodiscard]] bool sourcesReadyAt(std::int64_t sample, std::int32_t frames,
+                                          bool allowFailedSources = false) const noexcept;
+        [[nodiscard]] bool sourcesReady(const Transport& requested, std::int32_t frames,
+                                        bool allowFailedSources = false) const noexcept;
         /// Driver command between slices. Saved song start overrides the
         /// insert marker; only a record start uses the saved count-in. Prepare
         /// the recorder on its owner first. Explicit locate/play bypasses this
@@ -411,6 +413,8 @@ public:
     [[nodiscard]] const GroupSumming& summing() const noexcept { return summing_; }
     /// ADR-0163, ADR-0203 d3: the strips, sends and loops it plays. Message thread.
     [[nodiscard]] const MixerStrips& strips() const noexcept { return strips_; }
+    /// Ephemeral monitoring choice for the live stereo device pair.
+    void setMainAudition(MainAudition mode) noexcept { cueMonitor_.setMainAudition(mode); }
     /// Main's post-output live LUFS/true peak. Independent relaxed scalar reads;
     /// requestReset is an off-thread command consumed at the next callback.
     [[nodiscard]] const MainLoudness& mainLoudness() const noexcept { return mainLoudness_; }
@@ -586,9 +590,9 @@ private:
     void renderMetronome(const TimingView&,const AudioIo&) noexcept;
     std::shared_ptr<const ClipProject> clipProject_;
     // Published graphs retain their own old source generations until reclamation.
-    std::unique_ptr<ClipPlayback> clips_;
+    std::shared_ptr<ClipPlayback> clips_;
     std::shared_ptr<MidiClipState> midiState_ = makeMidiClipState();
-    std::unique_ptr<MidiClips> midi_;
+    std::shared_ptr<MidiClips> midi_;
     // ADR-0163: one strip per track, for the whole session. Declared before
     // the graphs so it outlives every graph that names one of its strips.
     MixerStrips strips_;

@@ -172,6 +172,19 @@ void testEventListCarriesNoteIdAndDouble() {
     check(clipNote && liveNote && livePitch && clipNote->note_id != liveNote->note_id &&
           liveNote->note_id == livePitch->note_id, "CLAP keeps overlapping live and clip note IDs distinct");
     check(sizeof(x->value) == 8, "the expression value is 8 bytes");
+
+    auto gain=expr(7,ExpressionDim::Gain,6.020599913279624);
+    auto pan=expr(7,ExpressionDim::Pan,-0.5);
+    gain.paramId=pan.paramId=engine::kNativeNoteExpressionUnits;
+    list.clear();
+    check(list.add(noteOn(7, 60, 0.75)) && list.add(gain) && list.add(pan),
+          "CLAP accepts a note and its authored AEXP values");
+    const auto* volume = reinterpret_cast<const clap_event_note_expression_t*>(list.at(1));
+    const auto* balance = reinterpret_cast<const clap_event_note_expression_t*>(list.at(2));
+    check(volume && volume->expression_id==CLAP_NOTE_EXPRESSION_VOLUME && volume->note_id==7 &&
+          std::abs(volume->value-2.0)<1e-14,"CLAP volume uses the authored linear amplitude above unity");
+    check(balance && balance->expression_id==CLAP_NOTE_EXPRESSION_PAN && balance->value==0.25,
+          "CLAP pan converts signed AEXP to the SDK's left-to-right range");
 }
 
 void testModulationIsItsOwnEvent() {
@@ -625,10 +638,13 @@ void testAgainstAFakePlugin() {
         // inside get() when a host does it.
         d.prepare(48000.0, 512);
 
-        // THE MAPPING THE PLANTED DEFECT SLIPPED THROUGH. CLAP spells an
-        // unbounded tail UINT32_MAX; ours is INT64_MAX. A plain cast makes
-        // "never suspend" into 4294967295 samples -- about twenty-four hours,
-        // which is wrong in a way nobody would ever notice.
+        constexpr auto infinite = static_cast<std::uint32_t>(INT32_MAX);
+        f.tailValue = infinite - 1;
+        check(d.tailSamples() == INT32_MAX - 1, "INT32_MAX minus one is still a finite tail");
+        f.tailValue = infinite;
+        check(d.tailSamples() == engine::kInfiniteTail, "INT32_MAX is an unbounded tail");
+        f.tailValue = infinite + 1;
+        check(d.tailSamples() == engine::kInfiniteTail, "INT32_MAX plus one is an unbounded tail");
         f.tailValue = UINT32_MAX;
         check(d.tailSamples() == engine::kInfiniteTail,
               "UINT32_MAX is MAPPED to kInfiniteTail, not cast");
@@ -978,6 +994,106 @@ void testEventOverflowIsCountedNotTruncated() {
 }
 
 // --- the whole pipeline, through the real scheduler --------------------------
+
+void testSavedExpressionBurstThroughClap() {
+    section("MI-08 -- five dimensions at the CLAP segment boundary");
+    constexpr std::int32_t block = 4096, frames = 43, voices = 16;
+    constexpr std::array dimensions{ExpressionDim::Pitch, ExpressionDim::Pressure,
+                                    ExpressionDim::Timbre, ExpressionDim::Gain, ExpressionDim::Pan};
+    const auto authored = [](std::int32_t update) {
+        const double position = static_cast<double>(update) / frames;
+        return std::array{12.0 * position, position, position, -12.0 * (1.0 - position), position - 0.5};
+    };
+    struct Log final : Fake {
+        std::vector<std::pair<std::int64_t, clap_event_note_expression_t>> expression;
+        std::vector<std::int32_t> onset, release;
+        Log() {
+            declareNotePorts = true;
+            expression.reserve(3440);
+            onset.reserve(16);
+            release.reserve(16);
+            plugin.process = [](const clap_plugin_t* p, const clap_process_t* pd) -> clap_process_status {
+                auto& log = static_cast<Log&>(Fake::self(p));
+                const auto* events = pd->in_events;
+                for (std::uint32_t i = 0; i < events->size(events); ++i) {
+                    const auto* header = events->get(events, i);
+                    if (header->type == CLAP_EVENT_NOTE_EXPRESSION) {
+                        const auto* value = reinterpret_cast<const clap_event_note_expression_t*>(header);
+                        log.expression.emplace_back(pd->steady_time + header->time, *value);
+                    } else if (header->type == CLAP_EVENT_NOTE_ON || header->type == CLAP_EVENT_NOTE_OFF) {
+                        const auto* note = reinterpret_cast<const clap_event_note_t*>(header);
+                        auto& logNotes = header->type == CLAP_EVENT_NOTE_ON ? log.onset : log.release;
+                        logNotes.push_back(note->note_id);
+                    }
+                }
+                return CLAP_PROCESS_CONTINUE;
+            };
+        }
+    };
+    for (std::int32_t spacing : {96, 1}) {
+        Log log;
+        DeviceIdentity identity;
+        identity.format = "clap";
+        ClapDevice device(&log.plugin, identity);
+        DeviceNode node(device);
+        engine::Graph graph;
+        const auto receiver = graph.addNode(node);
+        graph.setOutput(receiver);
+        graph.prepare(48000.0, block);
+
+        bool queued = true;
+        for (std::int32_t voice = 1; voice <= voices; ++voice)
+            queued = graph.pushInputEvent(receiver, noteOn(static_cast<std::uint64_t>(voice), 47 + voice, .75)) && queued;
+        for (std::int32_t update = 0; update < frames; ++update) {
+            const auto values = authored(update);
+            for (std::int32_t voice = 1; voice <= voices; ++voice) {
+                for (std::size_t dimension = 0; dimension < dimensions.size(); ++dimension) {
+                    auto event = expr(static_cast<std::uint64_t>(voice), dimensions[dimension], values[dimension]);
+                    event.frame = update * spacing;
+                    event.paramId = engine::kNativeNoteExpressionUnits;
+                    queued = graph.pushInputEvent(receiver, event) && queued;
+                }
+            }
+        }
+        for (std::int32_t voice = 1; voice <= voices; ++voice) {
+            auto event = noteOn(static_cast<std::uint64_t>(voice), 47 + voice, .5, (frames - 1) * spacing + 1);
+            event.type = engine::EventType::NoteOff;
+            queued = graph.pushInputEvent(receiver, event) && queued;
+        }
+        std::array<float, block> left{}, right{};
+        float* output[]{left.data(), right.data()};
+        engine::AudioIo io;
+        io.out = output;
+        io.numOut = 2;
+        io.frames = block;
+        graph.process(io);
+
+        constexpr auto expected = frames * voices * dimensions.size();
+        bool exact = log.expression.size() == expected;
+        std::size_t index = 0;
+        for (std::int32_t update = 0; exact && update < frames; ++update) {
+            auto values = authored(update);
+            values[3] = std::pow(10.0, values[3] / 20.0);
+            values[4] = (values[4] + 1) / 2;
+            for (std::int32_t voice = 1; voice <= voices; ++voice) {
+                for (std::size_t dimension = 0; dimension < dimensions.size(); ++dimension) {
+                    const auto& [time, expression] = log.expression[index++];
+                    exact = exact && time == update * spacing && expression.note_id == voice &&
+                        expression.key == 47 + voice && expression.expression_id == clapExprFor(dimensions[dimension]) &&
+                        std::abs(expression.value - values[dimension]) < 1e-12;
+                }
+            }
+        }
+        check(queued && graph.stats().eventsDropped == 0, "the outer graph admits every event");
+        check(graph.stats().segments == (spacing == 1 ? 1 : 43),
+              "dense authored points share one segment while grid points split");
+        std::printf("  spacing %d: %zu/%zu expressions, %zu/%d releases, %lld reported host drops\n",
+                    spacing, log.expression.size(), expected, log.release.size(), voices,
+                    static_cast<long long>(device.eventsDropped()));
+        check(exact, "every tagged expression reaches the CLAP processor at its exact time");
+        check(log.onset.size() == voices && log.release == log.onset, "every sounding note receives its release");
+    }
+}
 
 void testMpePlusReachesThePluginThroughTheGraph() {
     section("ADR-0054/0075 -- 500 Hz MPE+ through the real split path, no quantisation");
@@ -1524,6 +1640,166 @@ void testDialectsThroughTheDevice() {
         check(f.seenEvents.size() == 2 && f.seenEvents[0].type == CLAP_EVENT_PARAM_VALUE &&
                   f.seenEvents[0].time == 0 && f.seenEvents[1].time == 100,
               "the queued parameter at 0, then the note at 100 -- it used to arrive after it");
+    }
+}
+
+struct DialectNote {
+    ClapDialect wire;
+    bool on;
+    int key, channel, id;
+    std::uint32_t frame;
+};
+
+std::vector<DialectNote> dialectNotes(const Fake& f) {
+    std::vector<DialectNote> notes;
+    std::size_t midi = 0, native = 0;
+    // The fake keeps each wire payload separately. Walk the common header
+    // sequence so a release sent after an attack at the same frame still fails.
+    for (const auto& event : f.seenEvents) {
+        if (event.type == CLAP_EVENT_MIDI) {
+            const auto& message = f.seenMidi[midi++];
+            const int status = message.data[0] & 0xf0;
+            if (status == 0x80 || status == 0x90)
+                notes.push_back({ClapDialect::MidiMpe, status == 0x90, message.data[1],
+                                 message.data[0] & 0x0f, -1, event.time});
+        } else if (event.type == CLAP_EVENT_NOTE_ON || event.type == CLAP_EVENT_NOTE_OFF) {
+            const auto& note = f.seenNotes[native++];
+            notes.push_back({ClapDialect::Clap, event.type == CLAP_EVENT_NOTE_ON, note.key,
+                             note.channel, note.note_id, event.time});
+        }
+    }
+    return notes;
+}
+
+bool releasesOnOriginalWire(const DialectNote& attack, const DialectNote& release) {
+    return !release.on && release.wire == attack.wire && release.channel == attack.channel &&
+           release.key == attack.key && release.id == attack.id && release.frame == 0;
+}
+
+void testFullClapDialectSwitch() {
+    section("DF-E56 -- a full router switches CLAP and MPE MIDI in both directions");
+    constexpr std::int32_t frames = 16;
+    constexpr int voices = engine::MpeRouter::kMaxNotes;
+    constexpr int newVoices = 16;
+    for (const bool nativeFirst : {false, true}) {
+        Fake f;
+        f.declareNotePorts = true;
+        f.noteSupported = CLAP_NOTE_DIALECT_CLAP | CLAP_NOTE_DIALECT_MIDI_MPE;
+        DeviceIdentity id;
+        id.format = "clap";
+        ClapDevice d(&f.plugin, id);
+        d.setNoteDialect(nativeFirst ? ClapDialectChoice::Clap : ClapDialectChoice::MidiMpe);
+        d.prepare(48000.0, frames);
+        const auto oldWire = nativeFirst ? ClapDialect::Clap : ClapDialect::MidiMpe;
+        const auto newWire = nativeFirst ? ClapDialect::MidiMpe : ClapDialect::Clap;
+
+        std::array<float, frames> left{}, right{};
+        float* out[]{left.data(), right.data()};
+        engine::NodeIo io;
+        io.out = out;
+        io.channels = 2;
+        io.frames = frames;
+        std::vector<DialectNote> held;
+        bool accepted = true;
+        for (int key = 0; key < voices; ++key) {
+            accepted = d.pushEvent(noteOn(static_cast<std::uint64_t>(key + 1), key, .75)) && accepted;
+            if ((key + 1) % 4 == 0) {
+                d.process(io);
+                const auto batch = dialectNotes(f);
+                held.insert(held.end(), batch.begin(), batch.end());
+            }
+        }
+        check(accepted && held.size() == voices && d.noteRouter().liveNotes() == voices &&
+                  d.noteDialect() == oldWire && std::all_of(held.begin(), held.end(),
+                      [oldWire](const auto& note) { return note.on && note.wire == oldWire; }),
+              "all 128 voices are sounding on the original wire");
+
+        d.setNoteDialect(nativeFirst ? ClapDialectChoice::MidiMpe : ClapDialectChoice::Clap);
+        for (int key = 0; key < newVoices; ++key)
+            accepted = d.pushEvent(noteOn(static_cast<std::uint64_t>(1001 + key), key, .75)) && accepted;
+        d.process(io);
+        const auto switched = dialectNotes(f);
+        bool ordered = held.size() == voices && switched.size() == voices + newVoices;
+        if (ordered) {
+            for (std::size_t i = 0; i < held.size(); ++i)
+                ordered = releasesOnOriginalWire(held[i], switched[i]) && ordered;
+            for (int key = 0; key < newVoices; ++key) {
+                const auto& attack = switched[static_cast<std::size_t>(voices + key)];
+                ordered = attack.on && attack.wire == newWire && attack.key == key && attack.frame == 0 &&
+                          (newWire != ClapDialect::Clap || attack.id == 1001 + key) && ordered;
+            }
+        }
+        check(accepted && ordered, "the switch sends all 128 original releases before all 16 new-wire attacks");
+        check(d.noteRouter().pendingNoteOffs() == 0 && d.eventsDropped() == 0 &&
+                  d.eventsOutOfRange() == 0 && d.noteDialect() == newWire,
+              "a full switch finishes without pending releases or host drops");
+        d.process(io);
+        check(dialectNotes(f).empty(), "the next callback does not duplicate any note");
+    }
+}
+
+void testPendingClapDialectRelease() {
+    section("DF-E56 -- switching drains an already pending release on its original wire");
+    constexpr std::int32_t frames = 16;
+    for (const bool nativeFirst : {false, true}) {
+        Fake f;
+        f.declareNotePorts = true;
+        f.noteSupported = CLAP_NOTE_DIALECT_CLAP | CLAP_NOTE_DIALECT_MIDI_MPE;
+        DeviceIdentity id;
+        id.format = "clap";
+        ClapDevice d(&f.plugin, id);
+        d.setNoteDialect(nativeFirst ? ClapDialectChoice::Clap : ClapDialectChoice::MidiMpe);
+        d.prepare(48000.0, frames);
+        const auto oldWire = nativeFirst ? ClapDialect::Clap : ClapDialect::MidiMpe;
+        const auto newWire = nativeFirst ? ClapDialect::MidiMpe : ClapDialect::Clap;
+
+        std::array<float, frames> left{}, right{};
+        float* out[]{left.data(), right.data()};
+        engine::NodeIo io;
+        io.out = out;
+        io.channels = 2;
+        io.frames = frames;
+        const bool accepted = d.pushEvent(noteOn(77, 60, .75));
+        d.process(io);
+        const auto held = dialectNotes(f);
+        check(accepted && held.size() == 1 && held.front().on && held.front().wire == oldWire,
+              "one note starts before the deliberately oversized segment");
+
+        // At 16 frames the graph budget is 256 and the router has 72 more
+        // slots. Use the graph-facing span to deliberately fill all 328,
+        // beyond pushEvent's input budget, then ask it to release the note.
+        engine::Event controller;
+        controller.type = engine::EventType::Controller;
+        controller.paramId = 1;
+        controller.value = .5;
+        std::array<engine::Event, 329> oversized{};
+        oversized.fill(controller);
+        oversized.back() = noteOn(77, 60, .5, frames - 1);
+        oversized.back().type = engine::EventType::NoteOff;
+        io.events = {oversized.data(), static_cast<std::int32_t>(oversized.size())};
+        d.process(io);
+        const auto earlierDrops = d.eventsDropped();
+        check(d.noteRouter().pendingNoteOffs() == 1 && dialectNotes(f).empty(),
+              "the oversized segment leaves just the release pending");
+
+        d.setNoteDialect(nativeFirst ? ClapDialectChoice::MidiMpe : ClapDialectChoice::Clap);
+        io.blockOffset = 7;
+        io.frames = frames - io.blockOffset;
+        const auto fresh = noteOn(99, 64, .75, io.blockOffset);
+        io.events = {&fresh, 1};
+        d.process(io);
+        const auto switched = dialectNotes(f);
+        check(held.size() == 1 && switched.size() == 2 &&
+                  releasesOnOriginalWire(held.front(), switched[0]) &&
+                  switched[1].on && switched[1].wire == newWire && switched[1].key == 64 &&
+                  switched[1].frame == 0 && (newWire != ClapDialect::Clap || switched[1].id == 99),
+              "the next segment first sends the pending release on its original wire, then the new attack");
+        check(d.noteRouter().pendingNoteOffs() == 0 && d.eventsDropped() == earlierDrops &&
+                  d.eventsOutOfRange() == 0 && d.noteDialect() == newWire,
+              "the next segment clears the pending release with no added drops or range errors");
+        io.events = {};
+        d.process(io);
+        check(dialectNotes(f).empty(), "a retried release is not duplicated");
     }
 }
 
@@ -3197,6 +3473,121 @@ void testTransportAtDeviceInput() {
     }
 }
 
+void testHostedWorkers() {
+    section("DF-E23 -- hosted CLAP on graph workers");
+    struct WorkerProbe : Fake {
+        float gain = 1.0f;
+        std::atomic<int> active{0}, overlapping{0}, workerCalls{0}, badThread{0};
+        std::atomic<int> badClock{0};
+        WorkerProbe() {
+            plugin.process = [](const clap_plugin_t* p, const clap_process_t* pd) -> clap_process_status {
+                auto& probe = static_cast<WorkerProbe&>(self(p));
+                if (probe.active.fetch_add(1) != 0) ++probe.overlapping;
+                const auto* threads = static_cast<const clap_host_thread_check_t*>(
+                    probe.host->get_extension(probe.host, CLAP_EXT_THREAD_CHECK));
+                if (!threads || !threads->is_audio_thread(probe.host)) ++probe.badThread;
+                if (threads && !threads->is_main_thread(probe.host)) ++probe.workerCalls;
+                if (!pd->transport || pd->transport->tempo != 120.0 ||
+                    std::llround(static_cast<double>(pd->transport->song_pos_seconds) *
+                                 48000.0 / static_cast<double>(CLAP_SECTIME_FACTOR)) != 4096)
+                    ++probe.badClock;
+                const auto& input = pd->audio_inputs[0];
+                const auto& output = pd->audio_outputs[0];
+                for (std::uint32_t c = 0; c < output.channel_count; ++c)
+                    for (std::uint32_t i = 0; i < pd->frames_count; ++i)
+                        output.data32[c][i] = input.data32[c][i] * probe.gain;
+                probe.active.fetch_sub(1);
+                return CLAP_PROCESS_CONTINUE;
+            };
+        }
+    };
+    class PatternSource final : public engine::Node {
+    public:
+        void process(const engine::NodeIo& io) noexcept override {
+            for (int c = 0; c < io.channels; ++c)
+                for (int i = io.blockOffset; i < io.blockOffset + io.frames; ++i)
+                    io.out[c][i] = static_cast<float>((i * 17 + c * 13) % 101 - 50) / 64.0f;
+        }
+    };
+    constexpr int frames = 256;
+    using Audio = std::array<std::array<float, frames>, 2>;
+    auto run = [&](bool parallel, bool cancel) {
+        std::array<WorkerProbe, 4> probes;
+        std::array<std::unique_ptr<ClapDevice>, 4> devices;
+        std::array<std::unique_ptr<DeviceNode>, 4> nodes;
+        PatternSource pattern;
+        engine::SumNode sink;
+        engine::Graph graph;
+        graph.setChannels(2);
+        const auto source = graph.addNode(pattern);
+        const auto output = graph.addNode(sink);
+        graph.setOutput(output);
+        for (std::size_t i = 0; i < probes.size(); ++i) {
+            auto glue = std::make_unique<ClapHostGlue>();
+            probes[i].host = glue->host();
+            DeviceIdentity identity;
+            identity.format = "clap";
+            probes[i].gain = cancel ? (i % 2 == 0 ? 1.0f : -1.0f) : 0.25f;
+            devices[i] = std::make_unique<ClapDevice>(&probes[i].plugin, identity);
+            const auto* threadCheck = static_cast<const clap_host_thread_check_t*>(
+                probes[i].host->get_extension(probes[i].host, CLAP_EXT_THREAD_CHECK));
+            check(threadCheck && threadCheck->is_main_thread(probes[i].host) &&
+                  !threadCheck->is_audio_thread(probes[i].host) &&
+                  probes[i].host->get_extension(probes[i].host, CLAP_EXT_THREAD_POOL) == nullptr,
+                  "the owner is main, and the host does not advertise a nested thread pool");
+            devices[i]->adoptGlue(std::move(glue));
+            nodes[i] = std::make_unique<DeviceNode>(*devices[i]);
+            const auto node = graph.addNode(*nodes[i]);
+            graph.connect(source, node);
+            graph.connect(node, output);
+        }
+        // Two different adapters for one device may not run concurrently.
+        DeviceNode alias(*devices[0]);
+        const auto aliased = graph.addNode(alias);
+        graph.connect(source, aliased);
+        if (!cancel) graph.connect(aliased, output);
+        if (parallel) check(graph.setParallelRendering(2, 1, 2), "enable two graph workers");
+        graph.prepare(48000, frames);
+        Audio audio{};
+        float* channels[]{audio[0].data(), audio[1].data()};
+        engine::Transport transport;
+        transport.locate(4096);
+        transport.play();
+        engine::TransportInfo block;
+        block.playing = true;
+        block.timelineSample = 4096;
+        block.deviceClock = &transport;
+        block.devicePosition = [](const void*, std::int64_t sample) noexcept {
+            engine::DeviceTransport clock;
+            clock.sample = sample;
+            clock.playing = true;
+            return clock;
+        };
+        engine::AudioIo io;
+        io.out = channels;
+        io.numOut = 2;
+        io.frames = frames;
+        io.transport = &block;
+        graph.process(io);
+        const bool valid = std::all_of(probes.begin(), probes.end(), [](const auto& probe) {
+            return probe.badThread == 0 && probe.overlapping == 0 && probe.badClock == 0;
+        });
+        check(valid && probes[0].workerCalls == 0, "every call sees the audio clock and the aliased plug-in stays serial");
+        if (parallel)
+            check(graph.stats().workerNodeBlocks > 0 &&
+                  std::any_of(probes.begin() + 1, probes.end(), [](const auto& probe) {
+                      return probe.workerCalls > 0;
+                  }), "a real hosted plug-in processed on a graph worker");
+        return audio;
+    };
+    const auto dense = run(false, false);
+    check(dense == run(true, false) && dense[0][0] != 0,
+          "dense serial and parallel hosted audio match sample for sample");
+    const auto null = run(false, true);
+    check(null == Audio{} && null == run(true, true),
+          "the hosted plug-in cancellation null is exact in both execution modes");
+}
+
 void testThePortsAreReadOnlyWhileDeactivated() {
     section("audio-ports.h / ADR-0123 item 6 -- the layout, 64-bit flags and all, is read deactivated");
 
@@ -3589,6 +3980,7 @@ int main() {
     testClapProcessHonoursTheSegmentOffset();
     testProcessErrorSilencesRatherThanLeaking();
     testEventOverflowIsCountedNotTruncated();
+    testSavedExpressionBurstThroughClap();
     testMpePlusReachesThePluginThroughTheGraph();
     testTheSegmentBoundItself();
     testRestartCausesAreDistinguished();
@@ -3597,6 +3989,8 @@ int main() {
     testDialectEncodings();
     testTheListIsSortedByTime();
     testDialectsThroughTheDevice();
+    testFullClapDialectSwitch();
+    testPendingClapDialectRelease();
     testOrdinaryControllerPorts();
     testTheHostSaysWhichDialectsItSpeaks();
     testBundleSearchIsRecursive();
@@ -3620,6 +4014,7 @@ int main() {
     testAt64AFloatOnlyPluginIsConverted();
     testAt64TheSegmentAndTheErrorAreHonoured();
     testTransportAtDeviceInput();
+    testHostedWorkers();
     testThePortsAreReadOnlyWhileDeactivated();
     testTheAnswerIsReadAgainAtEachActivation();
     testAReactivationWaitsForTheCallInFlight();

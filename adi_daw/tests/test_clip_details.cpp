@@ -7,6 +7,7 @@
 #include "adi/store.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <cstring>
@@ -33,8 +34,8 @@ struct Fixture {
         store->db().exec("INSERT INTO clips(id,track_id,kind,name,color,pos_ticks,length_ticks,content_offset_ticks,loop_enabled,loop_start_ticks,loop_len_ticks,muted,gain_db,fade_in_ticks,fade_out_ticks,fade_in_curve,fade_out_curve) "
                         "VALUES(10,1,'midi','Phrase',0,11531520,23063040,23,1,31,5765760,1,-6,17,19,2,4)");
     }
-    ClipDetails read(std::int64_t id = 10) {
-        auto result = readClipDetails(*store, id);
+    ClipDetails read(std::int64_t id = 10,bool includeExpression=false) {
+        auto result = readClipDetails(*store,id,true,includeExpression);
         if (!result.clip) throw std::runtime_error(result.error);
         return std::move(*result.clip);
     }
@@ -178,9 +179,82 @@ void corruptAndIndependentStreams() {
         check(false, "read-only reopened clip view");
     }
 }
+void storedExpression() {
+    Fixture f("expression");
+    const auto wideId=std::numeric_limits<std::uint64_t>::max();
+    check(f.store->putEventStream(10,"notes",stream({note(wideId,0),note(77,quarter),note(77,2*quarter),note(333,3*quarter)})),
+          "expression fixture includes a full-width note and an ambiguous pair");
+    auto& db=f.store->db();
+    db.exec("INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks) VALUES(11,1,'midi',0,4608)");
+    const auto point=[](std::int64_t tick,float v,std::uint8_t shape=1,float tension=0) {
+        ExpressionPoint p{};p.time_ticks=tick;p.value=v;p.curve=shape;p.tension=tension;return p;
+    };
+    const auto encode=[](const std::vector<ExpressionPoint>& points,std::uint32_t flags=StreamFlags::SortedByTime) {
+        return writeStream<ExpressionPoint>(FourCC::Expression,points,1,flags);
+    };
+    const auto insert=[&](int id,int clip,std::int64_t noteId,int dimension,const std::vector<std::byte>& bytes) {
+        SQLite::Statement row(db,"INSERT INTO note_expression(id,clip_id,note_id,dimension,data) VALUES(?,?,?,?,?)");
+        row.bind(1,id);row.bind(2,clip);row.bind(3,noteId);row.bind(4,dimension);
+        row.bind(5,bytes.data(),static_cast<int>(bytes.size()));row.exec();
+    };
+    auto future=encode({point(-7,12,5,std::numeric_limits<float>::quiet_NaN())});
+    StreamHeader header{};std::memcpy(&header,future.data(),sizeof header);
+    header.rec_size=28;header.version=2;std::memcpy(future.data(),&header,sizeof header);
+    future.resize(future.size()+4,std::byte{0xa5});
+    insert(11,10,-1,0,future);
+    insert(12,10,-1,1,encode({point(40,0.5f,1,-2),point(0,0.25f)},0));
+    insert(13,10,-1,2,encode({point(0,0.875f)}));
+    insert(14,10,-1,3,encode({point(0,-18.0f)}));
+    insert(15,10,-1,4,encode({point(0,-0.375f)}));
+    insert(16,10,-1,72,encode({point(0,17.0f)}));
+    insert(17,10,333,0,encode({point(0,1.0f,6)}));
+    insert(18,10,333,1,encode({point(0,0.25f),point(0,0.875f)}));
+    insert(19,10,333,2,{std::byte{13}});
+    insert(20,10,333,4,encode({point(0,1.5f)}));
+    insert(21,10,77,4,encode({point(0,0.25f)}));
+    insert(22,10,999,4,encode({point(0,0.25f)}));
+    insert(23,11,500,3,{std::byte{97}});
+
+    const auto value=f.read(10,true);
+    const auto& curves=value.noteExpressions.curves;
+    check(curves.size()==6 && std::all_of(curves.begin(),curves.end(),[&](const auto& c){return c.noteId==wideId && c.clipId==10;}),
+          "Clip Details binds six curves to the exact note ID and excludes ambiguous and orphaned rows");
+    if(curves.size()==6) {
+        check(curves[0].dimension==0 && curves[0].recordSize==28 && curves[0].points.size()==1 &&
+              curves[0].points[0].time_ticks==-7 && curves[0].points[0].value==12 &&
+              curves[0].points[0].curve==5 && curves[0].points[0].tension==0,
+              "future AEXP stride preserves interpreted prefix and signed time with neutral NaN tension");
+        check(curves[1].points.size()==2 && curves[1].points[0].time_ticks==0 && curves[1].points[1].time_ticks==40 &&
+              curves[1].points[1].tension==-1.0f,"unflagged expression sorts by time and clamps tension for display");
+        check(curves[2].dimension==2 && curves[2].points[0].value==0.875f && curves[3].dimension==3 &&
+              curves[3].points[0].value==-18.0f && curves[4].dimension==4 && curves[4].points[0].value==-0.375f &&
+              curves[5].dimension==72 && curves[5].points[0].value==17.0f,
+              "slide, decibel gain, signed pan and plug-in dimensions keep their native values");
+    }
+    const auto& problems=value.noteExpressions.problems;
+    const auto mentions=[&](std::string_view needle){return std::any_of(problems.begin(),problems.end(),
+        [&](const auto& problem){return problem.find(needle)!=std::string::npos;});};
+    check(problems.size()==6 && mentions("note_expression#17") && mentions("note_expression#18") &&
+          mentions("note_expression#19") && mentions("note_expression#20") && mentions("note 77") && mentions("note 999") &&
+          !mentions("note_expression#23"),"scoped read names only the damaged and unbound expression rows of that clip");
+    const auto all=readNoteExpressions(*f.store);
+    check(all.curves.size()==8 && all.problems.size()==5,"project projection returns each decodable row for later playback admission");
+    const auto noNotes=readClipDetails(*f.store,10,false,true);
+    check(noNotes.clip && noNotes.clip->noteExpressions.curves.empty() && noNotes.clip->noteExpressions.problems.empty() &&
+          f.read().noteExpressions.curves.empty(),"metadata and ordinary Clip View reads skip expression decoding");
+    check(db.execAndGet("SELECT hex(substr(data,-4)) FROM note_expression WHERE id=11").getString()=="A5A5A5A5",
+          "read projection leaves the original future AEXP bytes on disk");
+}
 } // namespace
 int main() {
-    try { propertiesAndIdentity(); linearAndTuningContext(); exactLinearEnd(); optionalLocalProperties(); corruptAndIndependentStreams(); }
+    try {
+        propertiesAndIdentity();
+        linearAndTuningContext();
+        exactLinearEnd();
+        optionalLocalProperties();
+        corruptAndIndependentStreams();
+        storedExpression();
+    }
     catch (const std::exception& error) { check(false,std::string("exception: ")+error.what()); }
     std::printf("%d checks, %d failures\n",checks,failures);
     return failures ? 1 : 0;

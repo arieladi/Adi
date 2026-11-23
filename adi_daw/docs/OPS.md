@@ -172,8 +172,9 @@ produce a correct inverse, the op does not commit.
 
 ### 6.2 Three shapes, in order of preference
 
-1. **Symmetric** (`sym`) — same op, swapped arguments. `clip.move {id, from, to}`
-   inverts to `clip.move {id, to, from}`. Most ops should be built to land here.
+1. **Symmetric** (`sym`) — same op with the prior arguments. A `track.rename`
+   inverse carries the track ID and its previous name. Most ops should be built
+   to land here.
 2. **Paired** (`pair`) — a dedicated opposite. `track.create` ↔ `track.delete`.
 3. **State capture** (`cap`) — a CBOR blob of everything the forward op
    destroyed. Required for anything lossy.
@@ -513,8 +514,8 @@ schema. The snapshot reads null on older schemas and preserves native role text
 | `clip.delete` | e | S | cap | P0 |
 | `clip.attachAudio` | e | G | pair `clip.detachAudio` | P0 |
 | `clip.detachAudio` | e | G | cap | P0 |
-| `clip.move` | e | S | sym | P0 |
-| `clip.resize` | e | S | sym | P0 |
+| `clip.move` | e | S | cap | P0 |
+| `clip.resize` | e | S | cap | P0 |
 | `clip.split` | e | G | pair `clip.join` | P0 |
 | `clip.join` | e | G | cap | P1 |
 | `clip.duplicate` | e | G | pair `clip.delete` | P0 |
@@ -548,6 +549,12 @@ physical source limit, and a loop-window edit clears both physical loop
 endpoints. A switch-only loop edit retains the dormant window. Inverses capture
 the full typed details row, including future fields or row absence; undo and
 redo restore it. This optional SQL seam adds no dependency on N17's schema.
+
+`clip.move {id,to,track}` and `clip.resize {id,pos,length}` take arrangement
+ticks. Linear clips store the converted position in nanoseconds. A linear
+resize converts both endpoints through the tempo map. A same-track move keeps
+its lane. Undo restores the exact native placement. Historical scalar inverses
+retain their recorded effects.
 
 N33 Main Clip Properties: `clip.setStartMarker {id,ticks}` and
 `clip.setEndMarker {id,ticks}` use source-relative musical ticks (0..2^50).
@@ -806,6 +813,14 @@ d1/d7, with measured Live boundary/channel/expression parity still open.
 Intentional stretch expression scaling is a separate producer requirement.
 The exact table, preview contract and limits are in
 [ENGINE-NOTE-OVERLAP.md](ENGINE-NOTE-OVERLAP.md).
+
+`notes::prepareBatch(snapshot, ops)` accepts the editor's ordered scalar note
+operations for one captured clip, including any resize or delete it already
+added to handle overlaps. It emits one `note.applyDiff` request and writes the
+canonical stream at most once. The batch preserves the scalar operation order
+for equal-time notes, changes between an absent and an empty stream, and the
+expression rows a deletion removes when an ID is reused. Its versioned
+sequence and inverse preserve those results on Undo and Redo.
 
 The five original P0 entries (`note.insert`, `note.delete`, `note.move`,
 `note.resize`, `note.setVelocity`) delegate to the same checked full-stride
@@ -1435,6 +1450,8 @@ Every point-edit request contains `id` (explicit automation_data row ID), `lane`
 an existing clip ID). The complete address must match the stored row; an absent
 row can be created only by writePoints and only if its lane/clip slot is free.
 No handler generates IDs, reads UI selection, or consults the grid.
+New point values must meet the lane's inclusive minimum and maximum where
+present. History can replay values stored by earlier versions.
 
 - `writePoints.points`: array of `{id,time,value,curve,tension}`. Positive full
   uint64 point IDs upsert existing points or insert new ones. Time is nonnegative
@@ -1665,12 +1682,17 @@ so delayed replay does not read a newer transaction's rows. See
 [Live parameter replay](ENGINE-PARAM-REPLAY.md) for ownership and admission.
 
 Device clipboard (N18): readDeviceCopy(Store&,id), in device_copy.hpp,
-returns the registered device.remove inverse as a device.insert payload, plus
-the referenced plug-in metadata. It is a read on the Store's owner, including
+returns the device's stored root as a device.insert payload, plus the referenced
+plug-in metadata. The clipboard excludes the removal's identity-bound contents.
+It is a read on the Store's owner, including
 read-only projects: no live plug-in call, state-byte copy or op. Stored params,
 state hashes, panel order, expression route, nullable rack kind and remote host
 reference are retained. Native order/latency/parameter flags remain signed
 64-bit; device.insert accepts optional rackKind and remoteHost (null clears).
+
+Undo of rack removal restores its nested chains, devices, macros, and the
+macro mappings that cascaded at removal. It also restores typed child rows
+and shared-state references. The clipboard retains the rack's root metadata.
 
 prepareDevicePaste captures an ordered batch with a caller-supplied new ID,
 destination chain and optional before-device. It normalizes that chain's
@@ -1736,6 +1758,7 @@ rate conversion, missing-file snapshot and immutable-content publication limit.
 | `routing.setGain` | e | S | sym, coalescable | P0 |
 | `routing.setPan` | e | S | sym, coalescable | P1 |
 | `routing.setPreFader` | e | G | sym | P0 |
+| `routing.setSendTap` | e | G | cap, sym | P1 |
 | `routing.setEnabled` | e | S | sym | P0 |
 | `routing.reorder` | e | S | sym | P1 |
 | `mixer.setVolume` | e | S | sym, coalescable | P0 |
@@ -1766,13 +1789,30 @@ lanes `panLeft` and `panRight` use real -1..+1 units and the existing override /
 Re-Enable Automation path. The window does not implement the panning matrix.
 
 `return.setSendTap {id, pre}` is one return-owned Pre/Post choice (ADR-0203 d3).
-It persists with zero sends and changes every incoming send as one undo step.
+`return.setSendTap {id, click: true}` is the physical switch. A mixed return
+chooses Post first. A uniform return toggles its setting. The click clears
+individual tap overrides on every incoming send, including disabled sends,
+and captures their complete rows in the same Undo step.
+It persists with zero sends and changes the inherited tap in one undo step.
 Ordinary new routing.connect sends inherit an explicit choice on their return.
 A conflicting new per-edge routing.setPreFader edit refuses; the same value is
 allowed. Historical scalar payloads retain their old apply semantics. Absent
 preferences preserve legacy row taps and expose uniform or mixed state; no
 migration rewrites existing audio. A producer for a new send captures the
 uniform legacy choice as literal ops before creating it.
+
+`routing.setSendTap {id, tap}` chooses `pre_fx`, `post_fx`, or `post_mixer`
+for one send (ADR-0245 d10). Omit `tap` to inherit the return's setting again.
+The inverse restores the prior tap or inheritance. An explicit change to the
+return default with `pre` preserves individual choices. The snapshot marks unequal
+effective taps as mixed.
+
+A return inside a group accepts sends from descendants of that group. Its
+output joins those descendants before the group's devices. Moving a track or
+subgroup out removes any sends it loses access to, with the rows and their
+taps captured in the same undo step. Group-copy producers append
+`copyGroupSendRequests` after the cloned track ops in one transaction so
+internal sends target the copied returns.
 
 Its captured inverse uses internal optional restore {current, target}, each with
 nullable choice and ordered incoming {id, pre} values. It checks current flags,
