@@ -1273,9 +1273,14 @@ int main(int argc, char **argv) {
             for (int block = 0; block < 64 && !heard; ++block) {
                 out.streamTimeSamples = block * 64;
                 dropped->process(out);
-                // The clip's reader fills on the message thread, as #308's own test primes it.
-                if (dropped->session().clips() != nullptr)
-                    dropped->session().clips()->prime();
+                // The clip's reader fills on the message thread, as #308's own test primes it. A held
+                // Play (DF-E64) leaves the transport stopped until its pages are in, so the pages primed
+                // are the playing target's, which is what the held Play waits for.
+                if (auto *clips = dropped->session().clips()) {
+                    engine::Transport target = dropped->session().transport();
+                    target.play();
+                    (void)clips->primeAt(target);
+                }
                 for (const float v : left)
                     heard = heard || std::abs(v) > 1.e-4f;
             }
