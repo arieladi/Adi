@@ -15652,6 +15652,9 @@ int main(int argc, char **argv) {
     trace("locators", [&] { locators(commands, temp.path()); });
     trace("paintHygiene", [&] { paintHygiene(commands, temp.path()); });
     check(assertions.count() == 0, ("no JUCE assertion in the run; the last: " + assertions.last().toStdString()).c_str());
+    if (assertions.queueFull() > 0)
+        std::fprintf(stderr, "[shell] JUCE's message queue filled %d times: a headless run dispatches no messages\n",
+                     assertions.queueFull());
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

@@ -22,6 +22,11 @@ class AssertionWatch final : public juce::Logger {
     AssertionWatch(const AssertionWatch &) = delete;
     AssertionWatch &operator=(const AssertionWatch &) = delete;
     int count() const noexcept { return count_.load(); }
+    // JUCE's Linux message queue filling up (juce_Messaging_linux.cpp, "is the message thread overloaded"):
+    // a headless suite posts messages and never runs a message loop to take them, so the queue fills.
+    // It says nothing about the window's code; counted apart, said at the end, never failing the run.
+    int queueFull() const noexcept { return queueFull_.load(); }
+    static bool isQueueFull(const juce::String &message) { return message.contains("juce_Messaging_linux.cpp"); }
     juce::String last() const {
         const juce::ScopedLock held(lock_);
         return last_;
@@ -29,6 +34,10 @@ class AssertionWatch final : public juce::Logger {
 
   protected:
     void logMessage(const juce::String &message) override {
+        if (message.startsWith("JUCE Assertion failure") && isQueueFull(message)) {
+            ++queueFull_;
+            return;
+        }
         if (message.startsWith("JUCE Assertion failure")) {
             ++count_;
             const juce::ScopedLock held(lock_);
@@ -39,7 +48,7 @@ class AssertionWatch final : public juce::Logger {
 
   private:
     juce::Logger *previous_ = nullptr;
-    std::atomic<int> count_{0};
+    std::atomic<int> count_{0}, queueFull_{0};
     juce::CriticalSection lock_;
     juce::String last_;
 };
