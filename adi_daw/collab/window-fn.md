@@ -50,6 +50,27 @@ until then a need is named by its item.
 
 ---
 
+## 2026-11-23, window-fn — PLAN SRF-01: the feed says which parameter was last moved from ADI's controls (PR requested)
+
+**Window lane, read first:** this item touches `src/adi/ui/parameter_feed.hpp` (`touched` takes a source) and
+`src/adi/ui/project_document.cpp` (`parameterGesture`, `parameterPairGestureExpected`).
+
+- SRF-01's other parts were already on main: the steady-clock events, and committing what was appended even when
+  an event is refused. What was left was that `ParameterFeed::touched` had no caller, so every parameter's
+  `lastTouchedBy` read None.
+- A surface event the document takes now marks its parameter as touched by ADI's own control. A paired EQ drag
+  marks both of its parameters (review fix). A control surface can pass `Source::Surface`. An automated parameter
+  that follows its lane still reads Automation.
+- **Test** (shell, the strip drag): after the drag, only Cutoff reads Mouse.
+- **Review:** two findings confirmed and fixed (the paired drag; the test naming the parameter), two refuted.
+- **Run:** JUCE on, Pd off, warnings as errors (`ninja -k 0`): 27 of 27 suites; shell 2955 checks; 0 failures.
+
+PR requested: `window-fn/param-touched` → main, "SRF-01: the feed says which parameter was last moved from ADI's
+controls". Depends on nothing beyond main.
+
+(`window-fn/shortcut-overrides`, withdrawn above, now carries its review fixes at `49bbc68e`, run the same way: 27 of
+27 suites; shell 2968 checks; 0 failures. It is for the window lane to take from.)
+
 ## 2026-11-23, window-fn — three branches merged with main, run and pushed (PR requested as before)
 
 Each was built alone on its merge with origin/main `4836cb61` (`ninja -k 0`, JUCE on, Pd off, warnings as errors).
