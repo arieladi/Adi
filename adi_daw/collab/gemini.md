@@ -4,6 +4,52 @@ Trial seat (22 November 2026, `collab/win.md`): Linux environment (Debian 12, GC
 
 ---
 
+## 2026-11-23 — Queue item 2 (PR-BUILDS, Round 6): after-3-December combined tips and remaining standalone heads (`mixview`, `clones`, `devices`, `engine-win`, `window`, `window-fn`)
+
+**For win and seat owners.** Verified 17 remaining PR-requested maximal tips sitting outside `land/*-1123b` on Linux GCC 12.2.0 `-DADI_WERROR=ON` (`-g0`, Pd on, JUCE off) and Clang 14.0.6 `-Werror` across every changed headless TU, plus affected CTest suites. Transient local DF-M62 patch (`FloatRealTransform.h:61`) was applied ONLY where DF-M62 was absent (`mixview/review-scope-lands-after-2026-12-03` built with **no** local DF-M62 patch).
+
+### Summary table
+
+| Branch | SHA | DF-M62 local patch | GCC 12.2 `-DADI_WERROR=ON` | Clang 14.0.6 `-Werror` (changed headless TUs) | CTest (affected suites) | Owner / Notes |
+|---|---|---|---|---|---|---|
+| `mixview/review-scope-lands-after-2026-12-03` | `58817912` | **None** (`d22b81c1` in stack) | **PASS** (0 warnings) | **FAIL** (10/11 TUs; **NEW** `shared_analysis.cpp:561:19`; 9 JUCE-off skipped) | **PASS** (14/14) | `mixview` — finding 1 below |
+| `clones/shaper-filter-steep` | `5fff5d0a` | Yes | **PASS** (0 warnings) | **PASS** (5/5 TUs) | **PASS** (6/6) | `clones` — clean |
+| `devices/amxd-audit` | `9fc81e1d` | Yes | **PASS** (0 warnings) | **PASS** (2/2 TUs) | **PASS** (1/1: `adi_pd_amxd_tests`) | `devices` — clean |
+| `devices/pd-midi-out` | `52782524` | Yes | **PASS** (0 warnings) | **PASS** (3/3 TUs) | **PASS** (2/2: `adi_engine_tests`, `adi_pd_engine_tests`) | `devices` — clean |
+| `devices/spectral-resonator` (full DEV-22 after-3-Dec stack) | `9a6ea54f` | Yes | **FAIL** (`tests/test_vinyl_distortion.cpp:178:68` `-Werror=sign-conversion`; `ninja -k 0` confirms 0 other GCC errors across all 86 TUs) | **PASS** (86/86 TUs) | SKIP (build failed) | `devices` — finding 2 below |
+| `engine-win/export-profile-validation` (combined export stack) | `2b3b7e5c` | Yes | **FAIL** (`tests/test_render_queue.cpp:827,873` `-Werror=unused-function`) | **FAIL** (14/15 TUs; same `tests/test_render_queue.cpp:827,873`) | SKIP (build failed) | `engine-win` — finding 3 below |
+| `engine-win/source-hash-flac-proof` | `ab4fab82` | Yes | **PASS** (0 warnings) | **PASS** (10/10 TUs) | **PASS** (7/7) | `engine-win` — clean |
+| `engine-win/project-cloud-backup` | `25bf2855` | Yes | **PASS** (0 warnings) | **PASS** (2/2 TUs) | **PASS** (6/6) | `engine-win` — clean |
+| `engine-win/project-sync-folder` | `2a2d0f96` | Yes | **PASS** (0 warnings) | **PASS** (2/2 TUs) | **PASS** (3/3) | `engine-win` — clean |
+| `engine-win/scanner-paused-reader-proof` | `b944e252` | Yes | **PASS** (0 warnings) | **PASS** (1/1 TU) | **PASS** (7/7) | `engine-win` — clean |
+| `engine-win/scanner-clean-mode` | `9a1928bb` | Yes | **PASS** (0 warnings) | **PASS** (3/3 TUs; 1 JUCE-off skipped) | **PASS** (8/8) | `engine-win` — clean |
+| `engine-win/vst3-class-id-packets` | `7d4128dc` | Yes | **PASS** (0 warnings) | **PASS** (3/3 TUs) | **PASS** (9/9) | `engine-win` — clean |
+| `engine-win/recording-launch-discovery` | `0b88a229` | Yes | **PASS** (0 warnings) | **PASS** (6/6 TUs) | **PASS** (6/6) | `engine-win` — clean |
+| `engine-win/comp-take-splice` | `2d911206` | Yes | **PASS** (0 warnings) | **PASS** (2/2 TUs) | **PASS** (10/10) | `engine-win` — clean |
+| `window/test-hygiene` | `9e946f45` | Yes | **PASS** (`adi_core`, 0 warnings) | N/A (9/9 JUCE-gated) | compile-only (headless) | `window` — headless unaffected |
+| `window/held-peak` | `8b527bbb` | Yes | **PASS** (0 warnings) | **PASS** (1/1 headless TU; 3 JUCE-off skipped) | **PASS** (1/1: `adi_ui_window_state_tests`) | `window` — clean |
+| `window-fn/shaped-dither` | `93f7541b` | Yes | **PASS** (0 warnings) | **PASS** (7/7 headless TUs; 1 JUCE-off skipped) | **PASS** (6/6) | `window-fn` — clean |
+
+### New findings (do not fix here; for win / owners)
+
+1. **Clang 14.0.6 compile error — `adi_daw/src/adi/ui/shared_analysis.cpp:561:19` (`mixview/review-scope-lands-after-2026-12-03` `58817912`, introduced by `9d7559ac` `mixview/mx21-spectrum-crest-lands-after-2026-12-03`, owner: `mixview`)**
+   - Diagnostic: `src/adi/ui/shared_analysis.cpp:561:19: error: no matching member function for call to 'emplace'` on `completed.emplace();` inside `completeWindow()`.
+   - Smallest repro: checkout `58817912` and compile `src/adi/ui/shared_analysis.cpp` with `clang++` 14.0.6 `-std=c++20` using the target's include flags.
+
+2. **GCC 12.2 `-Werror=sign-conversion` — `adi_daw/tests/test_vinyl_distortion.cpp:178:68` (`devices/spectral-resonator` `9a6ea54f` / `devices/vinyl-distortion`, owner: `devices`)**
+   - Diagnostic: `tests/test_vinyl_distortion.cpp:178:68: error: conversion to 'std::size_t' {aka 'long unsigned int'} from 'int' may change the sign of the result [-Werror=sign-conversion]` on `clicks += std::abs(l[i]) > std::abs(l[i - 1]) + 0.1f ? 1 : 0;`. (Only GCC 12.2 error across all 86 TUs of `9a6ea54f`; Clang 14.0.6 passes 86/86.)
+   - Smallest repro: checkout `9a6ea54f`, build `adi_vinyl_distortion_tests` with GCC 12.2 `-DADI_WERROR=ON`.
+
+3. **GCC 12.2 and Clang 14.0.6 `-Werror=unused-function` — `adi_daw/tests/test_render_queue.cpp:827,873` (`engine-win/export-profile-validation` `2b3b7e5c`, owner: `engine-win`)**
+   - Diagnostics (both GCC 12.2 and Clang 14.0.6 `-DADI_WERROR=ON`):
+     - `tests/test_render_queue.cpp:827:6: error: unused function 'explicitDirectTaps' [-Werror=unused-function]`
+     - `tests/test_render_queue.cpp:873:6: error: unused function 'directStemBatch' [-Werror=unused-function]`
+   - Smallest repro: checkout `2b3b7e5c`, build `adi_render_queue_tests` with GCC 12.2 or Clang 14.0.6 `-DADI_WERROR=ON`.
+
+(No PR requested; run-only verification round.)
+
+---
+
 ## 2026-11-23 — Queue item 2 (PR-BUILDS, Round 5): DF-W39 confirmation (`window-fn/seams-gcc12`) and open PR stack `#722`/`#729`–`#733` (`land/clones-1123b`)
 
 **For win and window-fn.** Verified `window-fn/seams-gcc12` (`f0830617`, closing our DF-W39 finding) and the trimmed open PR landing stack `#722` (`land/engine-win-1123` `46eaba97`) -> `#729` (`land/engine-1123b` `882c770b`) -> `#730` (`land/window-1123b` `620aa8cd`) -> `#731` (`land/mixview-1123b` `d82bafd0`) -> `#732` (`land/devices-1123b` `a78f571b`) -> `#733` (`land/clones-1123b` `f26998ef`).
