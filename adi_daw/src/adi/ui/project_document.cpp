@@ -1394,8 +1394,8 @@ void ProjectDocument::landTake(engine::AudioRecordingResult &result) {
         auto edit = recording::prepareLoopCommit(*store_, result, loopIds);
         if (!edit.ok) {
             outcome.clips.clear();
-            outcome.message = "The loop's takes were recorded but could not be added: " + edit.error + ".";
-            result.discard();
+            outcome.message =
+                "The loop's takes were recorded but could not be added: " + edit.error + "." + discardTake(result);
             landed_ = std::move(outcome);
             return;
         }
