@@ -840,7 +840,7 @@ MidiClips::MidiClips(const rows::Model& model,Transport& transport,double rate,s
             source->events.push_back({source->notes[i].on,i,true});source->events.push_back({source->notes[i].off,i,false});
             if(source->notes[i].identity.note)source->byIdentity.push_back(i);
         }
-        std::sort(source->byIdentity.begin(),source->byIdentity.end(),[&](std::size_t a,std::size_t b){return source->notes[a].identity<source->notes[b].identity;});
+        std::sort(source->byIdentity.begin(),source->byIdentity.end(),[&notes=source->notes](std::size_t a,std::size_t b){return notes[a].identity<notes[b].identity;});
         std::stable_sort(source->events.begin(),source->events.end(),[](const auto& a,const auto& b){return a.time==b.time?a.on<b.on:a.time<b.time;});
     }
 }
