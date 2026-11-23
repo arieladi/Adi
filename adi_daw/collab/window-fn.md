@@ -51,6 +51,64 @@ until then a need is named by its item.
 
 ---
 
+## 2026-11-23, window-fn — PLAN ED-04 (window half): a clip's start moved, its material anchored in time (PR requested)
+
+**Window lane, read first:** this item touches `src/juce/ui_arrangement.*` (the clip bar's left edge, the resize
+drag, release, keys and paint; `clipEdit` removed, no caller left) and `src/juce/ui_shell.*` (a new
+`resizeClip`).
+
+- **The left edge.** The clip bar's left 4 px (on a clip at least 16 px wide; the right edge wins on a narrower
+  one) now drag the clip's start, its end fixed, to the grid while snapping, never shorter than a grid step (or
+  than the clip, when it is shorter). The release goes through the engine's planner, `edit_plan::prepareTrim`:
+  the content offset moves with the edge, so the material stays where it is in time. Audio stops at its
+  source's first frame; MIDI does not. It is one undo step, "Resize Clip". A start moved before the audio's
+  first frame is refused: "The clip's audio begins there; its start cannot move earlier."
+- **Enter at a clip's start.** It no longer says "waits for a content offset". It begins the same resize from the
+  keyboard: Left and Right move the start by the grid, Enter keeps it, Esc cancels. The insert marker lands on
+  the start as it landed. Where one clip ends and the next begins, Enter takes the one that ends there (as
+  before) and Shift+Enter the one that begins there.
+- **While an edge moves,** the clip's outline follows it and its material is drawn where it is in time.
+- **A resize moves no envelope,** so the planner is asked with automation-follow off, as a recording's placement
+  is. With the default setting it otherwise refused every trim on a track that has an automation lane.
+- **The right edge** now goes through `edit_plan::prepareResizeEnd`, so a clip lengthened over the next one
+  clears what it now covers, as Live (the next clip begins where the first now ends, the same undo step). Where
+  the planner will not place (automation that follows its clips, a frozen track, an editing setting off Live's
+  rule), the end moves by `clip.resize` as before and the Status Bar says why. The start has no such fallback:
+  without the planner it would slide the material. Nor does a clip on the seconds clock (a bounce, a freeze):
+  `clip.resize` writes ticks, so on main its right edge wrote a tick span onto a seconds row; it is now left as
+  it is, with the reason. Its scope is padded one tick, since its span shows floored to ticks.
+- **Not here (ED-04's other half):** Crop of a clip in the Arrangement (Live's rule: unlooped start to end,
+  looped to the loop) waits for a planner intent; `edit_plan.hpp` names it as separate and has none yet. The
+  Clip View's note Crop is on main already.
+
+**Test** (`tests/test_ui_shell.cpp`, the Arrangement's clip editing):
+- a drag on the left edge moves the start to the grid, the end where it was, and `content_offset_ticks` by
+  exactly the ticks trimmed; one undo step; Undo restores the start and the offset;
+- Enter at the start, then Right, then Enter: the start one grid step later, the end fixed, the insert marker
+  there; Undo;
+- with the clip two steps in, a start one step earlier than its first frame is refused, nothing written, the
+  Status Bar names it;
+- the right edge lengthened two steps over a following clip trims that clip to begin where the first ends, one
+  undo step; Undo gives both back; where the two clips now meet, Enter takes the first and Shift+Enter the second;
+- a trim on a track with a Volume breakpoint moves the start, one undo step (without the automation-follow fix
+  this check fails).
+
+**Review** (three dimensions, each finding checked by a skeptic): five findings, all fixed in the branch's one
+commit:
+- the drag's preview slid the material with the edge;
+- back-to-back clips left Enter no way to reach the second clip's start (Shift+Enter now);
+- a seconds-clock clip's scope missed its real end, and its fallback wrote ticks;
+- with the default Lock Envelopes setting, a trim on an automated track was always refused;
+- a trim stopped at the audio's first frame could still commit an overlap's clearing as "Resize Clip".
+
+Four were refuted.
+
+**Run:** JUCE on, Pd off, warnings as errors (GCC 13, Debug, `ninja -k 0`): the 27 window and mix suites pass,
+the shell suite 3029 checks from a scratch directory, 0 failures.
+
+PR requested: `window-fn/left-trim` → main, "ED-04: a clip's left edge and Enter at its start, through the
+planner". Depends on nothing beyond main.
+
 ## 2026-11-23, window-fn — DF-W39: the seams suite builds with GCC 12 (PR requested)
 
 `CMakeLists.txt` added `-fsanitize-trap=signed-integer-overflow` (DF-W35 (b)'s test) for every compiler but MSVC.
