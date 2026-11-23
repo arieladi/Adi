@@ -52,12 +52,40 @@ until then a need is named by its item.
 | Reserve: one N row. A dropped audio file should clear what it lands on, as a move, Paste and Duplicate do (DF-W28): `clip_edit::prepareImportAudio` placed through the planner (`PlacementBatch::clear`), or a planner entry that clears a track span in the same prepared edit as the window's `clip.create`/`clip.attachAudio` batch | engine (`src/adi/material_commands.cpp`, `src/adi/edit_plan*`) | DF-W28: a file dropped onto a clip replaces the covered part in one step | the drop lands over the clip, as before |
 | Reserve: one N row. A loop recording keeps the passes it has when it ends early: today a tempo change (Tap Tempo included), a loop edit or running out of passes during a loop recording ends the capture ("musical loop retiming ends this job") and every pass recorded so far is lost | engine (`src/adi/engine/audio_recording.*`, `src/adi/recording_commands.*`) | CT-02: a loop take survives a tempo tap or a loop nudge | nothing: the take is lost and the Status Bar says why |
 | Reserve: one N row, or a ruling. Live's undo for a loop recording: one step for the whole recording, or one per pass as `prepareLoopCommit` commits today (the window queue's test asked for one step) | engine and win | CT-02: Undo after a loop recording | the window follows the engine: a step per pass |
+| Main's 593bf21f fails `-Wmisleading-indentation` under GCC 13 with warnings as errors: `src/juce/play.cpp:233` and `tests/test_play_render.cpp:269` (a statement after an unbraced `if`/`while` on the same line) | the seat of 593bf21f (hosted graph workers' evidence) | every full build with `ADI_WERROR` on GCC 13 stops at `adi_play` and its test | the window's runs build with `-k 0` and do not use those targets |
 | AU-08's lane-scoped range commands (cut, copy, paste, delete, duplicate and insert time on one automation lane's selection) through the time edits' automation splice | engine seat (the range producers' automation half) | AU-08: Live's commands on an automation lane's selection | the lanes' menu has Insert Shape, Simplify Envelope and Delete Automation only |
 | Insert Shape's guards through one shared splice (PLAN AU-02's engine half): a guard or split at a selection's edge that keeps a bent segment's bend (ADR-0159's curve slices), written by the planner, so a shape leaves every curve outside the selection exact (AT-1) | engine seat (`automation_shapes.cpp`) | AU-02: the window writes its own guards, exact for holds and straight segments only | the window's guards (`insertAutomationShape`) |
 | A GCC 12 build of `src/adi/mix/limiter/Dsp/FloatRealTransform.h:61`: `bit < std::bit_width(length) - 1` compares an `int` with `std::size_t` under GCC 12.4's libstdc++ (its `bit_width` returns the argument's type; GCC 13's returns `int`), which `-Wsign-compare` with warnings as errors refuses. `static_cast<int>(std::bit_width(length)) - 1` builds on both | the mix seat (the limiter core) | DF-W39's test is a GCC 12 build; every suite that links the limiter stops there | DF-W39 was tested with that cast made locally and not committed |
 | Reserve: one N row (MX-07's registry half). `mixing.soloInFront`, `mixing.soloInFrontDb` and `mixing.soloBus` labelled "not built" in their titles or descriptions, as the PLAN row asks, and Live's Options rows `preFollowsSolo` and `keepAllReturns` (they change only on readings, AWAITING 5) | engine-win (`src/adi/settings/registry.cpp`) | MX-07: the Settings say plainly which solo options do nothing yet | the window shows the rows as the registry gives them |
 
 ---
+
+## 2026-11-23, window-fn — five branches that no longer merged into main: three merged with main, two superseded
+
+Main moved past several of the lane's requests. Each branch below was checked against main c0a8f9bb with
+`git merge-tree`. The other twenty window-fn branches merge cleanly.
+- **`window-fn/tap-quiet` → 96ad25fc** (HI-01). Main's DF-W29 settles held knob edits in the same two places.
+  `restoreStep` now ends the tap run, then settles; a tap settles before the run's gesture or its step.
+- **`window-fn/split-pan` → 5c583341** (MX-02). Main made the pan and fader `PrimaryButtonSlider`s (AU-04: a
+  right press opens the menu and moves nothing), so the split halves are too. The pan menu keeps its source, and
+  the volume menu comes from main.
+- **`window-fn/send-pan` → 1a9e2dab** (MX-06). The send's menu keeps the Send Pan submenu and main's three send
+  taps (DF-W33).
+- **Superseded, nothing to land:**
+  - `window-fn/play-first-block-main`: DF-E64 landed through engine-win's own reconcile (a7983164).
+  - `window-fn/lane-ref-canonical`: an earlier DF-W38, which landed as `window-fn/df-w38-param-ref`.
+  - `window-fn/function-keys` and `window-fn/shortcut-overrides`: withdrawn before.
+
+**Run** (each merge, JUCE on, Pd off, warnings as errors, `ninja -k 0`): the 27 window and mix suites pass, and the
+shell suite from a scratch directory passes with 0 failures (3083, 3093 and 3083 checks).
+
+**Main does not build under GCC 13 with warnings as errors** (`-Wmisleading-indentation`, 593bf21f "Capture driver
+and callback evidence for hosted graph workers"): `src/juce/play.cpp:233`
+(`if(!text)return false;const auto length=...`) and `tests/test_play_render.cpp:269`
+(`while(std::getline(csv,line))++lines;if(lines!=3)return 1;`). Each wants the statement after the `if` or `while`
+on its own line. It is in the needs table. The suites above do not use those targets.
+
+PR requested as before for the three: `window-fn/tap-quiet`, `window-fn/split-pan`, `window-fn/send-pan`.
 
 ## 2026-11-23, window-fn — what is left in the lane's prefixes, and what each row waits on
 
