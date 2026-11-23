@@ -23,7 +23,7 @@ private:
     std::shared_ptr<Files> files_;
     const Store* owner_=nullptr;
     std::string client_;
-    friend RecordingEdit prepareCommit(Store&,const engine::AudioRecordingResult&,std::span<const ClipIds>);
+    friend RecordingEdit prepareCommit(Store&,const engine::AudioRecordingResult&,std::span<const ClipIds>,std::int64_t);
     friend RecordingEdit prepareLoopCommit(Store&,const engine::AudioRecordingResult&,std::span<const LoopTrackIds>,std::span<const std::optional<Payload>>);
     friend CommitResult commit(Store&,RecordingEdit&,Actor);
 };
@@ -40,7 +40,10 @@ private:
 /// current musical clock exactly. Does not change project rows or publish files.
 /// Opted-in loop captures are refused, including a single partial pass: their
 /// take-lane/main-copy publication and per-pass history are a separate contract.
-[[nodiscard]] RecordingEdit prepareCommit(Store&,const engine::AudioRecordingResult&,std::span<const ClipIds>);
+/// Subtract the caller's signed latency offset from the timeline start. A
+/// correction past song zero places the first captured frame at zero.
+[[nodiscard]] RecordingEdit prepareCommit(Store&,const engine::AudioRecordingResult&,std::span<const ClipIds>,
+    std::int64_t placementOffsetSamples=0);
 /// Complete pass log to eligible existing or new take lanes and main-lane copies.
 /// A pre-existing same-track take lane is eligible when every clip provably ends
 /// at/before this pass's start. First visible (ord,id) wins; each is used once.

@@ -146,7 +146,8 @@ std::vector<RecordingEdit::PreparedSource> RecordingEdit::prepareSources(Store& 
     }
     return sources;
 }
-RecordingEdit prepareCommit(Store& store,const engine::AudioRecordingResult& recorded,std::span<const ClipIds> ids) {
+RecordingEdit prepareCommit(Store& store,const engine::AudioRecordingResult& recorded,std::span<const ClipIds> ids,
+                            std::int64_t placementOffsetSamples) {
     RecordingEdit result;
     try {
         if(store.readOnly())throw std::runtime_error("project is read-only");
@@ -158,8 +159,14 @@ RecordingEdit prepareCommit(Store& store,const engine::AudioRecordingResult& rec
            recorded.startSample<0 || recorded.frames>static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()-recorded.startSample) ||
            recorded.sampleRate<8000 || recorded.sampleRate>768000)
             throw std::runtime_error("recording is not a completed attachable take");
-        const auto first=tickAt(tempo,recorded.startSample,recorded.sampleRate);
-        const auto last=tickAt(tempo,recorded.startSample+static_cast<std::int64_t>(recorded.frames),recorded.sampleRate);
+        constexpr auto ceiling=std::numeric_limits<std::int64_t>::max();
+        if(placementOffsetSamples<0 && recorded.startSample>ceiling+placementOffsetSamples)
+            throw std::runtime_error("recording latency placement overflows the song clock");
+        const auto start=placementOffsetSamples>recorded.startSample ? 0 : recorded.startSample-placementOffsetSamples;
+        if(recorded.frames>static_cast<std::uint64_t>(ceiling-start))
+            throw std::runtime_error("recording latency placement overflows the song clock");
+        const auto first=tickAt(tempo,start,recorded.sampleRate);
+        const auto last=tickAt(tempo,start+static_cast<std::int64_t>(recorded.frames),recorded.sampleRate);
         if(last<=first)throw std::runtime_error("recording has no representable musical extent");
         auto sources=RecordingEdit::prepareSources(store,recorded,ids,result);
         for(std::size_t index=0;index<ids.size();++index) {
