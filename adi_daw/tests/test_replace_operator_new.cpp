@@ -116,8 +116,13 @@ void explicitCalls() {
           "small explicit alignment counted once");
 }
 void libraryBuffer() {
-    // The reported path: the standard library's temporary buffer for a stable
-    // sort comes from a nothrow new and goes back through the library's delete.
+    // Counting only. The standard library takes a stable sort's temporary
+    // buffer from a nothrow new, and this checks the hook sees it. It is NOT a
+    // regression test for the alloc-dealloc mismatch DF-E66 reports: without
+    // a sanitizer the library's nothrow new forwards to the replaced plain
+    // form, so the old harness passed this too. The mismatch shows only under
+    // a sanitizer runtime that supplies its own nothrow new; the CI leg
+    // `asan-new-forms` runs this suite and the seven under ASan for that.
     std::vector<int> values(1 << 16);
     for (std::size_t i = 0; i < values.size(); ++i) values[i] = static_cast<int>((i * 7919u) % 1021u);
     check(counted([&values] { std::stable_sort(values.begin(), values.end()); }) >= 1,

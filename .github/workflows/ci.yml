@@ -856,6 +856,115 @@ jobs:
           if-no-files-found: ignore
 
   # ---------------------------------------------------------------------------
+  # asan-new-forms -- the allocation-counting suites under AddressSanitizer.
+  #
+  # DF-E66. Eight suites count allocations by replacing the global operator
+  # new and delete (tests/replace_operator_new.hpp). Seven of them once
+  # replaced only the plain and sized forms. Under a sanitizer the runtime
+  # then supplied its own nothrow new, the standard library took a stable
+  # sort's buffer from it, and the suite's replaced delete freed that with
+  # free(): ASan's alloc-dealloc-mismatch. Without a sanitizer nothing shows
+  # it (the library's nothrow new forwards to the replaced plain form), and
+  # the Windows ASan runtime does not show it either, so no other leg in this
+  # file can.
+  #
+  # The canary first: the old harness, alone, must still be caught here. A
+  # leg that stopped seeing the mismatch -- a runtime that no longer supplies
+  # the nothrow form, the check switched off -- would otherwise pass every
+  # suite and prove nothing.
+  # ---------------------------------------------------------------------------
+  asan-new-forms:
+    name: 'operator new suites (gcc · ASan)'
+    runs-on: ubuntu-latest
+    # needs plan only for its answers: not on a draft, not for Markdown alone
+    needs: plan
+    if: needs.plan.outputs.code != 'false'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Canary -- the old partial harness is caught
+        run: |
+          set -euo pipefail
+          g++ --version | head -1
+          cat > /tmp/partial_harness.cpp <<'EOF'
+          #include <algorithm>
+          #include <cstddef>
+          #include <cstdlib>
+          #include <new>
+          #include <vector>
+          void* operator new(std::size_t n) {
+              if (void* p = std::malloc(n ? n : 1)) return p;
+              throw std::bad_alloc();
+          }
+          void* operator new[](std::size_t n) { return operator new(n); }
+          void operator delete(void* p) noexcept { std::free(p); }
+          void operator delete[](void* p) noexcept { std::free(p); }
+          void operator delete(void* p, std::size_t) noexcept { std::free(p); }
+          void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
+          int main() {
+              std::vector<int> v(1 << 16);
+              for (std::size_t i = 0; i < v.size(); ++i) v[i] = static_cast<int>((i * 7919u) % 1021u);
+              std::stable_sort(v.begin(), v.end());
+              return std::is_sorted(v.begin(), v.end()) ? 0 : 2;
+          }
+          EOF
+          g++ -std=c++20 -g -fsanitize=address -fno-omit-frame-pointer \
+              /tmp/partial_harness.cpp -o /tmp/partial_harness
+          if ASAN_OPTIONS=detect_leaks=0:alloc_dealloc_mismatch=1 \
+               /tmp/partial_harness > /tmp/partial_harness.log 2>&1; then
+            echo "::error::the old partial harness ran clean under ASan: this" \
+                 "leg no longer sees the alloc-dealloc mismatch it exists for"
+            cat /tmp/partial_harness.log
+            exit 1
+          fi
+          if ! grep -q 'alloc-dealloc-mismatch' /tmp/partial_harness.log; then
+            echo "::error::the old partial harness failed, but not with the" \
+                 "alloc-dealloc mismatch"
+            cat /tmp/partial_harness.log
+            exit 1
+          fi
+          echo "ok    the old partial harness is caught: alloc-dealloc-mismatch"
+
+      - name: Fetch build dependencies, at their pinned commits
+        run: bash adi_daw/tools/fetch_external.sh --build-only
+
+      - name: Configure with ASan, and build the eight suites
+        env:
+          CC: gcc
+          CXX: g++
+        run: |
+          set -euo pipefail
+          asan='-fsanitize=address -fno-omit-frame-pointer'
+          cmake -S adi_daw -B adi_daw/build-asan -DCMAKE_BUILD_TYPE=Debug \
+                "-DCMAKE_C_FLAGS=$asan" "-DCMAKE_CXX_FLAGS=$asan" \
+                "-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address" \
+                "-DCMAKE_SHARED_LINKER_FLAGS=-fsanitize=address" \
+                "-DCMAKE_MODULE_LINKER_FLAGS=-fsanitize=address"
+          cmake --build adi_daw/build-asan \
+                --parallel "$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)" \
+                --target adi_replace_operator_new_tests \
+                         adi_automation_recording_tests adi_clip_envelopes_tests \
+                         adi_freeze_commands_tests adi_midi_capture_tests \
+                         adi_scala_import_tests adi_send_automation_tests \
+                         adi_warp_playback_tests
+
+      # Counted: a renamed suite would leave the regex matching seven, and the
+      # leg would go on passing without it.
+      - name: The eight suites, under ASan
+        timeout-minutes: 45
+        run: |
+          set -euo pipefail
+          re='^adi_(replace_operator_new|automation_recording|clip_envelopes|freeze_commands|midi_capture|scala_import|send_automation|warp_playback)_tests$'
+          n=$(ctest --test-dir adi_daw/build-asan -N -R "$re" | grep -c 'Test *#' || true)
+          if [ "$n" -ne 8 ]; then
+            echo "::error::expected 8 suites to match, found $n"
+            exit 1
+          fi
+          ASAN_OPTIONS=detect_leaks=0:alloc_dealloc_mismatch=1 \
+            ctest --test-dir adi_daw/build-asan -R "$re" --output-on-failure \
+                  --timeout 900
+
+  # ---------------------------------------------------------------------------
   # JUCE-ON. One job, deliberately, and NOT required.
   #
   # ADR-0036 built the engine headless so the snapshot handoff could be proved
@@ -1294,7 +1403,7 @@ jobs:
   gate:
     name: gate
     runs-on: ubuntu-latest
-    needs: [plan, research-assets, validators, build, abi-ilp32, abi-big-endian, strict, provenance, fuzz, juce, pd-double]
+    needs: [plan, research-assets, validators, build, abi-ilp32, abi-big-endian, strict, provenance, fuzz, asan-new-forms, juce, pd-double]
     if: ${{ always() && !github.event.pull_request.draft }}
     steps:
       - name: Every job passed, or was skipped on purpose
