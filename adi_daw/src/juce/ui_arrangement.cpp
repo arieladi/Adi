@@ -2481,9 +2481,9 @@ void ArrangementCanvas::paintAutomation(juce::Graphics &g) const {
                     continue;
                 const auto at = std::find_if(stored.begin(), stored.end(), [&](const auto &q) { return q.id == nodes[i].id; });
                 const bool next = i + 1 < nodes.size(), hadNext = at != stored.end() && at + 1 != stored.end();
-                const bool keep = at != stored.end() && at->value == nodes[i].value && next == hadNext &&
-                                  (!next || (nodes[i + 1].id == (at + 1)->id && nodes[i + 1].value == (at + 1)->value));
-                if (!keep)
+                const bool keepsSlice = at != stored.end() && at->value == nodes[i].value && next == hadNext &&
+                                        (!next || (nodes[i + 1].id == (at + 1)->id && nodes[i + 1].value == (at + 1)->value));
+                if (!keepsSlice)
                     nodes[i].curveSlice.reset();
             }
         }
