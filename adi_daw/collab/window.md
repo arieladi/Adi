@@ -101,6 +101,17 @@ Questions only the director can answer. Each says what the window lane recommend
 | N58 | The plug-in catalogue off the message thread: a scan service, Rescan, a default worker count, and each VST3's kind with its instrument flag (ADR-0248 d7: engine-win's third item, under DEV-25) | engine-win | the Browser's Plug-Ins with progress, and each VST3's icon | the window scans on its own worker with the one loader (DF-W34 a), the loader locked while it scans; no progress count; a VST3 shows the plug-in icon |
 | N59 | The project's key and scale, if the Control Bar's Key group (step 2) shows the project's and not the selected clip's: an op and a snapshot field (ADR-0248, `collab/RESERVATIONS.md`) | engine, when asked | the Control Bar's Key and Scale | step 2 waits on the Mix View's switch and theme rows; not asked yet |
 
+## 2026-11-23, window lane — queue item 14: WIN-03 (PR requested)
+
+**Item 14, WIN-03. PR requested.** Branch `window/window-kinds`, on `window/window-places`, head `e969e387`. Title: **adi_daw: window: owned plug-in windows, Esc to close, Auto-Open, cascading (WIN-03)**. Body: [`collab/window/pr-bodies/window-window-kinds.md`](window/pr-bodies/window-window-kinds.md).
+- **Tests:** shell 2988, window_state 160, seams 553, document 317, 0 failures; the `ui.yml` six green; the sweeps clean on its lines.
+- **The review's two defects:** fixed in `e3472d65`.
+- **Partial, and AWAITING:**
+  - on Linux the owned windows are not raised with the main window: JUCE's X11 raise always activates. It waits for the transient-for hint, with the other platforms' owner windows (parity-7.5 row 12).
+  - AWAITING (Live 12): are plug-in windows above other applications, on the task bar, closed by Esc?
+
+---
+
 ## 2026-11-23, window lane — queue item 13: WIN-02 (PR requested)
 
 **Item 13, WIN-02. PR requested.** Branch `window/window-places`, from main `87ea349c`, head `a8c1b6a7`. Title: **adi_daw: window: every window reopens where it was, by one placement rule (WIN-02)**. Body: [`collab/window/pr-bodies/window-window-places.md`](window/pr-bodies/window-window-places.md).
