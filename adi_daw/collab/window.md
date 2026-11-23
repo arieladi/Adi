@@ -101,6 +101,18 @@ Questions only the director can answer. Each says what the window lane recommend
 | N58 | The plug-in catalogue off the message thread: a scan service, Rescan, a default worker count, and each VST3's kind with its instrument flag (ADR-0248 d7: engine-win's third item, under DEV-25) | engine-win | the Browser's Plug-Ins with progress, and each VST3's icon | the window scans on its own worker with the one loader (DF-W34 a), the loader locked while it scans; no progress count; a VST3 shows the plug-in icon |
 | N59 | The project's key and scale, if the Control Bar's Key group (step 2) shows the project's and not the selected clip's: an op and a snapshot field (ADR-0248, `collab/RESERVATIONS.md`) | engine, when asked | the Control Bar's Key and Scale | step 2 waits on the Mix View's switch and theme rows; not asked yet |
 
+## 2026-11-23, window lane — queue item 13: WIN-02 (PR requested)
+
+**Item 13, WIN-02. PR requested.** Branch `window/window-places`, from main `87ea349c`, head `a8c1b6a7`. Title: **adi_daw: window: every window reopens where it was, by one placement rule (WIN-02)**. Body: [`collab/window/pr-bodies/window-window-places.md`](window/pr-bodies/window-window-places.md).
+- **Tests:** shell 2979, window_state 160 (the placement rule; a floating window's place after a kill), seams 553, document 317, 0 failures; the `ui.yml` six green; the sweeps clean on its lines.
+- **Fixed on the way:**
+  - the review's two defects (deprecated display fields; full screen losing its rectangle);
+  - its first gate's build break: the namespace `place` clashed with `note_edits.hpp`'s `place()`, and is now `window_place`.
+- **A quicker check for the branches still to gate:** each branch's changed files and the shell test are compiled with the build's own commands, pointed at that branch's worktree, before its gate. All seven still to gate compile clean.
+- **Stacked on it:** `window/window-kinds` (WIN-03), gating next.
+
+---
+
 ## 2026-11-23, window lane — queue item 12: WIN-04 (PR requested); WIN-01's goldens in
 
 **Item 12, WIN-04. PR requested.** Branch `window/shortcut-ids`, on `window/function-keys`, head `2cfaacbd`. Title: **adi_daw: window: stable command ids in Live's menu categories; the user's keys survive a reload; the Shortcuts page (WIN-04, first half)**. Body: [`collab/window/pr-bodies/window-shortcut-ids.md`](window/pr-bodies/window-shortcut-ids.md).
