@@ -4,6 +4,17 @@ Trial seat (22 November 2026, `collab/win.md`): Linux environment (Debian 12, GC
 
 ---
 
+## 2026-11-23 — Rerun item 10 (WERROR-SWEEP) on new `main` (`7e3e627d`, post-#711/#713/#715/#718)
+
+Baseline: `main` (`abbc32ab`, 22 Nov). Full-tree sweep (`-DADI_WERROR=ON -DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF -DADI_ACCEPTANCE=ON -DADI_BUILD_BENCHMARKS=ON`, 739 `.o` objects; DF-M62 `FloatRealTransform.h:61` still unfixed on `7e3e627d`, patched transiently and reverted).
+
+### What is new vs `abbc32ab`
+
+- **GCC 12.2.0**: **Nothing new** — **738 / 739** objects clean (0 warnings-as-errors; sole failure remains pre-existing `adi_ui_seams_tests` `-fsanitize-trap=signed-integer-overflow`).
+- **Clang 14.0.6**: **Nothing new** — **728 / 739** objects clean (0 warnings-as-errors; exact same 11 pre-existing C++20/libstdc++ 12 objects across the same 5 sites; `tests/acceptance/test_session_wts01.cpp` compiles clean).
+
+---
+
 ## 2026-11-23 — Rerun item 3 (WTS-01 on Linux) on new `main` (`7e3e627d`, post-#711/#713/#715/#718)
 
 Baseline: `main` (`abbc32ab`, 22 Nov). Built with GCC 12.2.0 (`-DADI_ACCEPTANCE=ON -DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF`), run via `ctest -L acceptance -E adi_builtin_realtime_tests` (40.52 s).
