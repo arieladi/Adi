@@ -27,7 +27,7 @@ milestones win (BUILD-BRIEF §6.0).
 | **sidecar seat** (P2) | a seat named when the agent's user side starts | `adi_daw/agent/**` | everything else; ADR numbers |
 | **Stream Deck seat** (P2) | a seat named when the surfaces start | `adi_daw/tools/streamdeck/**` | everything else; ADR numbers |
 
-The drone (qwen on the 1070 and the A2000) keeps summarising files and manuals; win feeds it.
+The drone (a local LLM) keeps summarising files and manuals; win feeds it.
 
 ## 2. Rules that keep the lanes apart (all existing rules, collected)
 

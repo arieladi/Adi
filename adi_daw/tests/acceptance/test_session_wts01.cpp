@@ -520,8 +520,8 @@ void step5(Session &s, Report &report) {
     if (!refused.refusal.empty()) {
         report.step("5b", V::NotBuilt, "Group Tracks with A Return selected: \"" + refused.refusal + "\"",
                     "tracks 4, 5 and A Return in one group; the return heard inside it; a send from outside refused",
-                    "grouped returns: engine DF-E22 in #677 (engine/df-e23-plugin-workers, waits behind #651), owner "
-                    "engine; the window's grouping rules for a return, owner window-fn");
+                    "the window's grouping rule for a return: DF-W33 on window/return-in-group, owner window lane; "
+                    "the engine's half (DF-E22) is on main since #677");
         // The engine as it stands: group 4 and 5, put the return in the group by a raw op, the group at -12 dB.
         auto grouped = ui::groupTracks(snap->tracks, {4, 5});
         const auto group = grouped.select;
@@ -555,7 +555,7 @@ void step5(Session &s, Report &report) {
                                    static_cast<long long>(group), moved.ok ? "accepted" : ("refused: " + moved.error).c_str(),
                                    k, steps, restored ? 1 : 0),
                       format("the return heard inside the group: x%.4f (group x (1 + A Return's %.1f dB)); the return "
-                             "straight to Main instead: x%.4f (group + return); pre-#677 engine",
+                             "straight to Main instead: x%.4f (group + return); engine with DF-E22 (#677, on main)",
                              gainOf(-12) * (1 + s.returnGain), dbOf(s.returnGain), gainOf(-12) + s.returnGain));
     } else
         report.step("5b", V::Fail, "Group Tracks accepted the return; this harness does not test it yet",
