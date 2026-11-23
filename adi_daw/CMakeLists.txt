@@ -294,6 +294,7 @@ add_library(adi_core STATIC
     src/adi/scan_stamp.cpp
     src/adi/media/blake3.cpp
     src/adi/media/zip_writer.cpp
+    src/adi/interchange/smf.cpp
     src/adi/audio/wav_file.cpp
     src/adi/audio/mp4_aac.cpp
     src/adi/audio/stem_manifest.cpp
@@ -2137,6 +2138,10 @@ add_executable(adi_mcu_fader_tests tests/test_mcu_faders.cpp)
 target_include_directories(adi_mcu_fader_tests PRIVATE src)
 target_link_libraries(adi_mcu_fader_tests PRIVATE adi_warnings)
 add_test(NAME adi_mcu_fader_tests COMMAND adi_mcu_fader_tests)
+
+add_executable(adi_smf_tests tests/test_smf.cpp)
+target_link_libraries(adi_smf_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_smf_tests COMMAND adi_smf_tests)
 
 
 
