@@ -4,6 +4,52 @@ Trial seat (22 November 2026, `collab/win.md`): Linux environment (Debian 12, GC
 
 ---
 
+## 2026-11-23 — Queue item 2 (PR-BUILDS, Round 7): all 17 remaining unmerged `engine` maximal tips on GCC 12.2 and Clang 14.0.6 `-DADI_WERROR=ON`
+
+**For win and the engine seat.** Verified all 17 remaining live `engine/*` PR-requested maximal tips sitting outside `land/engine-1123` / `land/engine-1123b` on Linux GCC 12.2.0 `-DADI_WERROR=ON` (`-g0`, Pd on, JUCE off, transient local DF-M62 patch) and Clang 14.0.6 `-Werror` across every changed headless TU, plus affected CTest suites.
+
+### Summary table
+
+| Branch | SHA | GCC 12.2 `-DADI_WERROR=ON` | Clang 14.0.6 `-Werror` (changed headless TUs) | CTest (affected suites) | Owner / Notes |
+|---|---|---|---|---|---|
+| `engine/au08-simplify-envelope` | `be846d1b` | **PASS** (0 warnings) | **PASS** (6/6 TUs) | **PASS** (12/12) | `engine` — clean |
+| `engine/au08-envelope-clipboard` | `9ad32e5e` | **PASS** (0 warnings) | **PASS** (5/5 TUs) | **PASS** (12/12) | `engine` — clean |
+| `engine/au08-clear-clip-envelope` | `75ae50ef` | **PASS** (0 warnings) | **PASS** (2/2 TUs) | **PASS** (12/12) | `engine` — clean |
+| `engine/tm-ls03-midi-transport-edges` | `eb545c1e` | **PASS** (0 warnings) | **PASS** (6/6 TUs) | **PASS** (10/10) | `engine` — clean |
+| `engine/tm-ic04-otio-linear-writer` | `2f414469` | **PASS** (0 warnings) | **PASS** (5/5 TUs) | **PASS** (4/4) | `engine` — clean |
+| `engine/ex02-via-main-routing` | `99c36e2e` | **PASS** (0 warnings) | **PASS** (6/6 TUs) | **PASS** (9/9) | `engine` — clean |
+| `engine/pd14-project-templates` | `ca5cd357` | **PASS** (0 warnings) | **PASS on new code** (2/3 TUs; `project_files.cpp:386` is pre-existing DF-E69 from `main:308`) | **PASS** (9/9) | `engine` — clean |
+| `engine/tm-fc01-bounce-mixer` | `8bc053ca` | **PASS** (0 warnings) | **PASS** (4/4 TUs) | **PASS** (4/4) | `engine` — clean |
+| `engine/mx33-sync-spikes` | `53fad1c3` | **PASS** (0 warnings) | **PASS** (7/7 TUs) | **PASS** (3/3) | `engine` — clean |
+| `engine/srf04-controller-nudge` | `45e69a22` | **PASS** (0 warnings) | **PASS** (3/3 TUs) | **PASS** (12/12) | `engine` — clean |
+| `engine/pd04-analysis-publication` | `da074f14` | **PASS** (0 warnings) | **PASS** (2/2 TUs) | **PASS** (4/4) | `engine` — clean |
+| `engine/tm-md04-wave-metadata` | `d59778d7` | **PASS** (0 warnings) | **PASS** (2/2 TUs) | **PASS** (4/4) | `engine` — clean |
+| `engine/tm-tt01-tempo-ramps` | `8f0705db` | **PASS** (0 warnings) | **FAIL** (25/29 TUs; 4 fail on inherited `timeline_clips.hpp:13` + pre-existing DF-E69 `midi_clips.cpp:656`) | **FAIL** (50/51: **`adi_transport_info_tests` 6 failures**) | `engine` — finding 1 below |
+| `engine/tm-sv01-launch-quantization` | `a676ca80` | **PASS** (0 warnings) | **PASS** (9/9 TUs) | **PASS** (11/11) | `engine` — clean |
+| `engine/dev28-main-loudness-meter` | `f8308a55` | **PASS** (0 warnings) | **PASS** (2/2 TUs) | **PASS** (1/1) | `engine` — clean |
+| `engine/dev13-node-segment-quantum` | `59453a16` | **PASS** (0 warnings) | **PASS** (2/2 TUs) | **PASS** (4/4) | `engine` — clean |
+| `engine/dev17-note-identity` | `4af8d018` | **PASS** (0 warnings) | **FAIL** (8/10 TUs; 2 fail on inherited `timeline_clips.hpp:13` + pre-existing DF-E69 `midi_clips.cpp:662`; 3 JUCE-off skipped) | **FAIL** (19/20: **`adi_midi_capture_tests` 3 failures**) | `engine` — finding 2 below |
+
+### New findings (do not fix here; for win / engine)
+
+1. **CTest failure on `engine/tm-tt01-tempo-ramps` (`8f0705db`) — `adi_transport_info_tests` (owner: `engine`)**
+   - 6 failed assertions in `adi_transport_info_tests` (`50/51` other affected suites passed):
+     - `FAIL stored ramp uses step BPM including change boundary` (×3)
+     - `FAIL known bar/beat at tempo change`
+     - `FAIL known bar/beat at truncated-bar meter change`
+     - `FAIL quarter remainder independent of signature denominator`
+   - Smallest repro: checkout `8f0705db`, build and run `adi_transport_info_tests` (Linux GCC 12.2 Debug).
+
+2. **CTest failure on `engine/dev17-note-identity` (`4af8d018`) — `adi_midi_capture_tests` (owner: `engine`)**
+   - 3 failed assertions in `adi_midi_capture_tests` (`19/20` other affected suites passed):
+     - `FAIL: stored ANOT retains original full uint64 identities and exact source/release velocity words` (×2)
+     - `FAIL: native Capture validates binary records, addresses, IDs and closed packets and rolls back every late refusal`
+   - Smallest repro: checkout `4af8d018`, build and run `adi_midi_capture_tests` (Linux GCC 12.2 Debug).
+
+(No PR requested; run-only verification round.)
+
+---
+
 ## 2026-11-23 — Queue item 2 (PR-BUILDS, Round 6): after-3-December combined tips and remaining standalone heads (`mixview`, `clones`, `devices`, `engine-win`, `window`, `window-fn`)
 
 **For win and seat owners.** Verified 17 remaining PR-requested maximal tips sitting outside `land/*-1123b` on Linux GCC 12.2.0 `-DADI_WERROR=ON` (`-g0`, Pd on, JUCE off) and Clang 14.0.6 `-Werror` across every changed headless TU, plus affected CTest suites. Transient local DF-M62 patch (`FloatRealTransform.h:61`) was applied ONLY where DF-M62 was absent (`mixview/review-scope-lands-after-2026-12-03` built with **no** local DF-M62 patch).
