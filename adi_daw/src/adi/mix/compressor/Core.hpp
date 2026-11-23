@@ -50,8 +50,10 @@ class Core final {
     // A successful prepare starts a fresh stream. Failure preserves the prior
     // prepared stream. Mono supports fully linked processing only; a stereo key
     // still contributes both planes to that linked detector. Key source, link
-    // amount and link mode are fixed until prepare; changes return
+    // amount, link mode and Hold are fixed until prepare; changes return
     // UnsupportedConfiguration. Auto Gain with link above 1 is unsupported.
+    // Hold above float epsilon requires internal-key fully linked stereo and Auto controls
+    // off. Its prepared maximum and post-envelope retain running history.
     [[nodiscard]] Status prepare(const PrepareSpec &, const Settings & = {}) noexcept;
     // Longest Clean release is two cascaded detector stages at at most 2.2 s
     // per decade. Two 24 s intervals bound the remaining reduction below
@@ -72,7 +74,7 @@ class Core final {
 
     // Pointers address the physical block's start; offset is block-relative.
     // Settings apply at this segment's first sample. Settings-only restore is
-    // therefore another settings update, retaining the two envelope histories.
+    // therefore another settings update, retaining the envelope/maximum histories.
     // Ordinary edits to make-up gain keep their continuous transition.
     // Main planes are mandatory and distinct. Key has 0, 1 or 2 complete planes:
     // an absent external key is zero; a mono key feeds both stereo detectors.

@@ -12,7 +12,7 @@ path.
 | `merge_stack.sh N...` | Ready, retarget to main, wait for mergeability, merge. A hand merge lands in the PR's **base**, so the retarget comes first. |
 | `land_window_poll.sh` | Poll for `window/*` PRs (not `window/log`) and land each in number order, for `HOURS` hours. |
 | `open_engine_prs2.py DIR` | Open a PR for every "PR requested" entry in `origin/engine/log`'s `engine.md` whose branch has none. The body is the entry, verbatim. Base: the requested one, or the topmost dependency that is an ancestor. |
-| `chain_run.sh START` | Build the engine chain in `D:/wt-refresh`, one merge per link, tagging `chain/engine/<b>`. `CHAIN_ORDER`, `CHAIN_PREV` and `CHAIN_RESOLVE=1` override. It resets the worktree on start, so commit and tag a hand resolution before rerunning. |
+| `chain_run.sh START` | Build the engine chain in the `wt-refresh` worktree, one merge per link, tagging `chain/engine/<b>`. `CHAIN_ORDER`, `CHAIN_PREV` and `CHAIN_RESOLVE=1` override. It resets the worktree on start, so commit and tag a hand resolution before rerunning. |
 | `chain_step.py` | One chain link: diff3 merge with the conflict rules in its docstring, schema-minor renumbering, frozen schema history. |
 | `chain_push.sh` | Push the chain tags fast-forward only and retarget each PR to its predecessor (`CHAIN_FIRST_BASE`). |
 

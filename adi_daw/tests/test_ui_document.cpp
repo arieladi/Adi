@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/audio/wav_file.hpp"
 #include "adi/automation_lanes.hpp"
+#include "adi/media/media_ops.hpp"
 #include "adi/settings/store.hpp"
 #include "adi/ui/project_document.hpp"
 #include "knobs_device.hpp"
@@ -9,6 +10,7 @@
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <filesystem>
 #include <chrono>
 #include <cmath>
@@ -17,6 +19,10 @@
 #include <cstdlib>
 #include <optional>
 #include <thread>
+#if !defined(_WIN32)
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 #if defined(_MSC_VER) && defined(_DEBUG)
 #include <crtdbg.h>
 #endif
@@ -649,6 +655,52 @@ void importWithChoices(const std::filesystem::path &dir) {
 // input through the document's callback; stopped, the take lands on the timer as one undo step, its
 // samples the input's, and Undo takes it back. Nothing armed, only MIDI armed and a device with no
 // inputs are refused with a reason.
+// DF-E44: a take that is not kept goes with its files; a folder the system would not remove stays, and the
+// Status Bar says so. POSIX only: a read-only work folder refuses the removal of its entries, except to root.
+void discardRefusalSaid(const std::filesystem::path &dir) {
+#if defined(_WIN32)
+    (void)dir;
+#else
+    if (::geteuid() == 0) {
+        std::printf("skip: a discard refusal needs a non-root user (root removes from a read-only folder)\n");
+        return;
+    }
+    std::string error;
+    auto doc = ui::ProjectDocument::open(dir / "refused.adi", true, {}, error);
+    check(doc != nullptr, "a project to record into");
+    if (!doc)
+        return;
+    doc->prepare(48000, 64);
+    OpRequest arm;
+    arm.opType = "track.setArm";
+    arm.payload = {{"id", 4}, {"armed", true}};
+    check(doc->ops().submit(arm).ok && doc->synchronise(), "3 Audio armed");
+    const auto work = media::projectFolder(doc->store());
+    const auto entries = [&] {
+        std::size_t n = 0;
+        for ([[maybe_unused]] const auto &entry : std::filesystem::directory_iterator(work))
+            ++n;
+        return n;
+    };
+    const auto before = entries();
+    check(doc->startRecording(0, 1, false) && entries() == before + 1, "Record makes the take's private folder");
+    // Nothing recorded: the take is not kept, and its folder cannot be removed.
+    check(::chmod(work.c_str(), 0555) == 0, "the work folder made read-only");
+    doc->stopRecording();
+    doc->release();
+    doc->settleRecording();
+    const bool landed = !doc->landingTake();
+    const auto said = doc->takeLanded();
+    (void)::chmod(work.c_str(), 0755);
+    check(landed && said && !said->ok && said->message.find("The take was not kept") != std::string::npos &&
+              said->message.find("could not be removed") != std::string::npos &&
+              said->message.find("in the project's folder") != std::string::npos,
+          "the Status Bar says the take's files stay, and where");
+    if (said)
+        std::printf("discard refused: %s\n", said->message.c_str());
+    check(entries() == before + 1, "the folder stays for the next attempt");
+#endif
+}
 void arrangementRecord(const std::filesystem::path &dir) {
     std::string error;
     auto doc = ui::ProjectDocument::open(dir / "record.adi", true, {}, error);
@@ -717,8 +769,7 @@ void arrangementRecord(const std::filesystem::path &dir) {
     check(doc->ops().canUndo() && doc->ops().undo().ok && doc->synchronise() &&
               db.execAndGet("SELECT count(*) FROM clips").getInt() == clipsBefore,
           "one Undo takes the whole take back");
-    // A capture that ends on its own while recording (here a locate mid-take: a discontinuity) ends the
-    // recording on the next tick, says why, and leaves no private take behind.
+    // A locate mid-take lands the recorded prefix and reports why recording stopped.
     const auto before = std::distance(std::filesystem::directory_iterator(dir), std::filesystem::directory_iterator{});
     check(doc->startRecording(0, 1, true) && doc->recording(), "Record while playing");
     for (int b = 0; b < 4; ++b) {
@@ -726,6 +777,7 @@ void arrangementRecord(const std::filesystem::path &dir) {
         doc->process(io);
         stream += 64;
     }
+    const auto heldInput = in;
     doc->mailbox().post(ui::TransportMailbox::Command::Locate, 48000);
     std::optional<ui::ProjectDocument::TakeLanded> failed;
     for (int i = 0; i < 5000 && !failed; ++i) {
@@ -737,8 +789,27 @@ void arrangementRecord(const std::filesystem::path &dir) {
         if (!failed)
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    check(failed && !failed->ok && failed->message.find("jumped") != std::string::npos && !doc->recording(),
-          "a locate mid-take ends the recording at once and says the take was not kept");
+    check(failed && failed->ok && failed->clips.size() == 1 &&
+              failed->message.find("Kept the audio") != std::string::npos &&
+              failed->message.find("jumped") != std::string::npos && !doc->recording(),
+          "a locate mid-take ends recording, warns about the discontinuity and places the prefix");
+    if (failed && failed->ok && failed->clips.size() == 1) {
+        SQLite::Statement path(db, "SELECT m.rel_path FROM audio_clips a JOIN media_files m ON m.id=a.media_id "
+                                   "WHERE a.clip_id=?");
+        path.bind(1, failed->clips.front());
+        if (!path.executeStep())
+            throw std::runtime_error("placed recording has no media");
+        audio::WavReader saved(media::projectFolder(doc->store()) / media::pathFromUtf8(path.getColumn(0).getString()));
+        std::array<float, 256> samples{};
+        bool exact = saved.frames() == samples.size() &&
+                     saved.read(samples.data(), static_cast<std::uint32_t>(samples.size())) == samples.size();
+        for (std::size_t i = 0; i < samples.size(); ++i)
+            exact = exact && samples[i] == heldInput[i % heldInput.size()];
+        check(exact, "the placed WAV contains exactly the four blocks accepted before the locate");
+        check(doc->ops().undo().ok && doc->synchronise() &&
+                  db.execAndGet("SELECT count(*) FROM clips").getInt() == clipsBefore,
+              "one Undo removes the whole interrupted take");
+    }
     check(std::distance(std::filesystem::directory_iterator(dir), std::filesystem::directory_iterator{}) == before,
           "and leaves no private take in the project's folder");
     // The device stopped while a take lands: settled when the document is told the driver is gone.
@@ -933,6 +1004,99 @@ void peakSpans() {
     check(is(ui::peakSpan(p, 0., 256., 1), 9.f, 9.f), "peak span: the second channel reads its own bins");
 }
 
+// PD06-SAVEAS-GUARD: Save As during Record, or while a take's placement is pending, lands the take in
+// the file it was recorded in first, as one undo step, and then switches; the saved file holds it.
+void saveAsKeepsTheTake(const std::filesystem::path &dir) {
+    std::string error;
+    auto doc = ui::ProjectDocument::open(dir / "guard.adi", true, {}, error);
+    check(doc != nullptr, "a project to record into");
+    if (!doc)
+        return;
+    doc->prepare(48000, 64);
+    OpRequest arm;
+    arm.opType = "track.setArm";
+    arm.payload = {{"id", 4}, {"armed", true}};
+    check(doc->ops().submit(arm).ok && doc->synchronise(), "3 Audio armed");
+    std::array<float, 64> in{}, l{}, r{};
+    const float *inputs[]{in.data()};
+    float *outputs[]{l.data(), r.data()};
+    engine::AudioIo io;
+    io.in = inputs;
+    io.numIn = 1;
+    io.out = outputs;
+    io.numOut = 2;
+    io.frames = 64;
+    std::int64_t stream = 0;
+    const auto block = [&] {
+        for (int i = 0; i < 64; ++i)
+            in[static_cast<std::size_t>(i)] = static_cast<float>((stream + i) % 13) / 32.f - .2f;
+        io.streamTimeSamples = stream;
+        doc->process(io);
+        stream += 64;
+    };
+    const auto clipsIn = [](const std::filesystem::path &file) {
+        SQLite::Database db(file.string(), SQLite::OPEN_READONLY);
+        return db.execAndGet("SELECT count(*) FROM clips WHERE track_id = 4").getInt();
+    };
+    const auto clipsBefore = doc->store().db().execAndGet("SELECT count(*) FROM clips WHERE track_id = 4").getInt();
+    // 1. During Record, the device still calling back on its own thread, as the app's does.
+    check(doc->startRecording(0, 1, false) && doc->recording(), "Record");
+    for (int b = 0; b < 16; ++b)
+        block();
+    std::atomic<bool> running{true};
+    std::thread callback([&] {
+        while (running.load()) {
+            block();
+            std::this_thread::sleep_for(std::chrono::microseconds(200));
+        }
+    });
+    const auto first = dir / "guard-as.adi";
+    const bool saved = doc->saveAs(first);
+    running = false;
+    callback.join();
+    const auto landed = doc->takeLanded();
+    check(saved && !doc->recording() && !doc->landingTake() && landed && landed->ok && landed->clips.size() == 1,
+          "Save As during Record stops it, lands the take, then saves");
+    check(doc->store().path() == first && clipsIn(first) == clipsBefore + 1 && clipsIn(dir / "guard.adi") == clipsBefore + 1 &&
+              doc->ops().nextUndo() && doc->ops().nextUndo()->label == "Record Audio" &&
+              doc->warning().find("Recording stopped") != std::string::npos,
+          "the take is one undo step in the file it was recorded in, and in the saved file; the Status Bar says so");
+    // 2. While the take's placement is pending: stopped, the device gone, the take not yet landed. A
+    // project of its own: a take recorded after a Save As waits on the session re-reading the file's
+    // identity (the engine's need in window-fn's log).
+    doc.reset();
+    doc = ui::ProjectDocument::open(dir / "pending.adi", true, {}, error);
+    check(doc != nullptr, "a second project to record into");
+    if (!doc)
+        return;
+    doc->prepare(48000, 64);
+    check(doc->ops().submit(arm).ok && doc->synchronise(), "3 Audio armed there");
+    check(doc->startRecording(0, 1, false), "Record again");
+    for (int b = 0; b < 16; ++b)
+        block();
+    doc->stopRecording();
+    doc->release();
+    check(doc->landingTake(), "stopped: the take is pending");
+    const auto second = dir / "pending-as.adi";
+    check(doc->saveAs(second) && !doc->landingTake() && clipsIn(second) == clipsBefore + 1 &&
+              clipsIn(dir / "pending.adi") == clipsBefore + 1 && doc->warning().find("Recording stopped") == std::string::npos,
+          "Save As with the take pending lands it first, in the file it was recorded in, then saves");
+    const auto again = doc->takeLanded();
+    check(again && again->ok && again->clips.size() == 1 && doc->ops().nextUndo() &&
+              doc->ops().nextUndo()->label == "Record Audio",
+          "as one undo step");
+    // 3. Save As during a Record that recorded nothing (the device gone before a block): no take is kept, and
+    // Save As does not say one was.
+    doc->prepare(48000, 64);
+    check(doc->startRecording(0, 1, false), "Record once more");
+    doc->release();
+    const auto third = dir / "nothing-as.adi";
+    const bool savedThird = doc->saveAs(third);
+    const auto dropped = doc->takeLanded();
+    check(savedThird && dropped && !dropped->ok && dropped->message.find("not kept") != std::string::npos &&
+              doc->warning().find("its take kept") == std::string::npos && clipsIn(third) == clipsBefore + 1,
+          "Save As after a Record with nothing recorded: the take is not kept, says so, and Save As does not claim it");
+}
 int main(int argc, char **argv) {
 #if defined(_MSC_VER) && defined(_DEBUG)
     _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
@@ -957,6 +1121,10 @@ int main(int argc, char **argv) {
         arrangementRecord(recordDir.path());
         test::TempDirectory loopDir("ui_document", "loop");
         loopRecord(loopDir.path());
+        test::TempDirectory guardDir("ui_document", "guard");
+        saveAsKeepsTheTake(guardDir.path());
+        test::TempDirectory refusedDir("ui_document", "refused");
+        discardRefusalSaid(refusedDir.path());
         test::TempDirectory dragDir("ui_document", "drag");
         mixerDragHeard(dragDir.path());
     }

@@ -4,7 +4,7 @@ You are the **engine** lane of ADI (`adi_daw` in the `arieladi/Adi` monorepo), a
 session. Your queue, your rules and your gates are in `adi_daw/docs/LANES.md` §3, §2 and §5; the
 order of work and what is built is `adi_daw/docs/BUILD-BRIEF.md`; the decisions are
 `adi_daw/docs/DECISIONS.md` (ADR-0001 to ADR-0207; read ADR-0203 to ADR-0207 in full first). You
-commit as `engine`: branches `engine/<topic>`, one worktree per item (`D:\wt-engine-<topic>` on
+commit as `engine`: branches `engine/<topic>`, one worktree per item (`wt-engine-<topic>` at a short path on
 Windows), never the main checkout, never `git add -A`, never `main`. You log in
 `adi_daw/collab/engine.md`, newest first. win reviews and merges; you never merge.
 

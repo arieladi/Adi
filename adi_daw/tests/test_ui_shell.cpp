@@ -22,6 +22,7 @@
 #include "adi/ui/recording_edits.hpp"
 #include "adi/ui/audio_drop.hpp"
 #include "adi/ui/send_edits.hpp"
+#include "adi/ui/cue_edits.hpp"
 #include "adi/ui/automation_override.hpp"
 #include "knobs_device.hpp"
 #include "mix_seek_fixture.hpp"
@@ -2038,6 +2039,59 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
               !mainStrip->returnSwitches()[0]->isVisible(),
           "the Mixer View strips lose their Sends section, Main's Pre/Post switches with it");
     render("adi-sends-hidden.png");
+    // Live's cueing (manual 18.6; MX-08): Cue Switches turn the Solo buttons into Cue buttons; Main's
+    // Cue Volume and Cue Out. Every one is the project's, outside undo.
+    {
+        const auto title = root.undoTitle(false);
+        const auto ticked = [&](int id) {
+            juce::ApplicationCommandInfo info(id);
+            commands.getCommandInfo(id, info);
+            return (info.flags & juce::ApplicationCommandInfo::isTicked) != 0;
+        };
+        check(ticked(AppCommands::SoloSwitches) && !ticked(AppCommands::CueSwitches), "Solo Switches by default");
+        check(root.command(AppCommands::CueSwitches) && root.current()->cue.cueMode && ticked(AppCommands::CueSwitches) &&
+                  !ticked(AppCommands::SoloSwitches) && root.undoTitle(false) == title,
+              "Cue Switches: the project's cue mode, ticked, no undo step");
+        root.frame();
+        column = rowOf(root.mixerView, 3);
+        check(column != nullptr && column->solo.getButtonText() == "C" && column->solo.getTitle() == "Cue",
+              "a track's Solo button is its Cue button");
+        if (column != nullptr) {
+            column->solo.onClick();
+            root.frame();
+            check(cued(*root.current(), 3) && !root.current()->findTrack(3)->soloed && root.undoTitle(false) == title,
+                  "a click cues the track without soloing it, no undo step");
+            column = rowOf(root.mixerView, 3);
+            check(column != nullptr && column->solo.getToggleState(), "and lights its Cue button");
+            if (column != nullptr)
+                column->solo.onClick();
+            root.frame();
+            check(!cued(*root.current(), 3), "a second click uncues it");
+            root.arrangement.geometry.selection.track = 3;
+            check(root.command(AppCommands::SoloSelected) && cued(*root.current(), 3) &&
+                      !root.current()->findTrack(3)->soloed && root.undoTitle(false) == title,
+                  "S cues the selected track in Cue mode, no undo step");
+            check(root.command(AppCommands::SoloSelected) && !cued(*root.current(), 3), "and uncues it");
+        }
+        mainStrip = rowOf(root.mixerView, 7);
+        check(mainStrip != nullptr && mainStrip->cueVolume.isVisible() && mainStrip->cueVolume.getTitle() == "Cue Volume",
+              "Main has its Cue Volume");
+        if (mainStrip != nullptr) {
+            mainStrip->cueVolume.setValue(-12, juce::sendNotificationSync);
+            root.frame();
+            check(std::abs(root.current()->cue.volumeDb + 12) < 1e-9 && root.undoTitle(false) == title,
+                  "a typed Cue Volume is the project's at once, no undo step");
+        }
+        check(root.setCueOutput(2) && root.current()->cue.firstOutputChannel == 2 && !root.setCueOutput(3) &&
+                  root.current()->cue.firstOutputChannel == 2,
+              "Cue Out takes a stereo pair (3/4); an odd first channel is refused");
+        check(root.command(AppCommands::SoloSwitches) && !root.current()->cue.cueMode, "Solo Switches again");
+        root.frame();
+        column = rowOf(root.mixerView, 3);
+        check(column != nullptr && column->solo.getButtonText() == "S" && column->solo.getTitle() == "Solo",
+              "the Solo button is Solo's again");
+        root.say({});
+    }
     check(root.keyPressed(sendsKey) && root.state().sends && a.isVisible() && a.getY() == 37,
           "Ctrl/Cmd+Alt+S shows the track controls' again");
     column = rowOf(root.mixerView, 3);
@@ -2130,6 +2184,48 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
             check(column != nullptr && delayed != nullptr && delayed->delaySamples == 441 &&
                       column->delay.getTextFromValue(column->delay.getValue()) == "10.00",
                   "undone, 3 Audio reads 10.00 ms again");
+        }
+        if (column != nullptr) {
+            // Options > Delay Compensation (manual 18.7; MX-04): off, Track Delay is unavailable and
+            // keeps its value; an application setting the session follows, and no undo step.
+            bool applied = true;
+            int calls = 0;
+            root.applyDelayCompensation = [&](bool on) {
+                applied = on;
+                ++calls;
+                return true;
+            };
+            const auto delayStepBefore = submitter.nextUndo() ? submitter.nextUndo()->txnId : 0;
+            const auto ticked = [&commands] {
+                juce::ApplicationCommandInfo info(AppCommands::DelayCompensation);
+                commands.getCommandInfo(AppCommands::DelayCompensation, info);
+                return (info.flags & juce::ApplicationCommandInfo::isTicked) != 0 && info.shortName == "Delay Compensation";
+            };
+            check(commands.delayCompensation() && ticked() && column->delay.isEnabled(),
+                  "Delay Compensation is on by default, ticked, and Track Delay is available");
+            check(root.command(AppCommands::DelayCompensation), "the Options menu's Delay Compensation, chosen");
+            root.frame();
+            column = rowOf(root.mixerView, 3);
+            check(!commands.delayCompensation() && !ticked() && calls == 1 && !applied && column != nullptr &&
+                      !column->delay.isEnabled() && boxAt(column->delay, 10.) &&
+                      (submitter.nextUndo() ? submitter.nextUndo()->txnId : 0) == delayStepBefore,
+                  "off: the session told, Track Delay unavailable and still 10.00 ms, no undo step");
+            check(root.command(AppCommands::DelayCompensation), "chosen again");
+            root.frame();
+            column = rowOf(root.mixerView, 3);
+            check(commands.delayCompensation() && ticked() && calls == 2 && applied && column != nullptr &&
+                      column->delay.isEnabled(),
+                  "on again: Track Delay available");
+            // A session that refuses keeps its reason in the Status Bar.
+            root.applyDelayCompensation = [&](bool) {
+                root.say("The session refused it.");
+                return false;
+            };
+            check(root.command(AppCommands::DelayCompensation) && root.error() == "The session refused it.",
+                  "a session's refusal is said, not cleared");
+            check(root.command(AppCommands::DelayCompensation), "and put back");
+            root.applyDelayCompensation = nullptr;
+            root.say({});
         }
         if (column != nullptr) {
             // The box's own grid is a hundredth: 10.004 snaps to the 10.00 it holds and nothing
@@ -2568,9 +2664,9 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
     for (const auto &r : browser.rows()) {
         if (r.heading.isNotEmpty())
             folders.push_back(r.heading);
-        // Every entry loads but Hybrid Reverb with Pd on; none with it off.
+        // Every entry loads with Pd on (Hybrid Reverb too, since its native core landed); none with it off.
 #if ADI_WITH_PD
-        const bool expected = r.device == nullptr || r.device->name != "Hybrid Reverb";
+        const bool expected = true;
 #else
         const bool expected = r.device == nullptr;
 #endif
@@ -2582,8 +2678,19 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
               dimmedRight && find("Auto Filter") >= 0 && find("Chord Comb") < 0,
           "Audio Effects lists Live's seven folders with their effects, each dimmed when this build cannot load it");
     rowOf = find("Hybrid Reverb");
-    check(rowOf >= 0 && !browser.load(rowOf) && root.error().find("not built in ADI yet") != std::string::npos,
-          "Hybrid Reverb is dimmed always, and a double-click says why");
+#if ADI_WITH_PD
+    // It loads on 3 Audio, one step; undone, the track is as it was, still the one chosen.
+    check(rowOf >= 0 && browser.load(rowOf) && document->ops().nextUndo() &&
+              document->ops().nextUndo()->label == "Insert Hybrid Reverb",
+          "Hybrid Reverb loads, one step");
+    check(root.command(AppCommands::Undo), "undo");
+    refresh();
+    root.arrangement.geometry.selection.track = 4;
+    root.say({});
+#else
+    check(rowOf >= 0 && !browser.load(rowOf) && root.error().find("Pd devices") != std::string::npos,
+          "without Pd, Hybrid Reverb is dimmed as the other Pd devices are, and a double-click says why");
+#endif
     browser.choose(pdDevices);
     check(browser.rows().size() == 3 && browser.rows()[0].device != nullptr && browser.rows()[1].device != nullptr &&
               browser.rows()[2].device != nullptr,
@@ -2714,6 +2821,7 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
         check(!browser.load(echoRow) && loaded.size() == 3 && root.error().rfind("Select a track", 0) == 0,
               "with no track selected it says to select one");
         root.loadPlugin = nullptr;
+        root.arrangement.geometry.selection.track = 4; // 3 Audio again, for the built-ins below
         browser.search.setText("zeta", false);
         browser.search.onTextChange();
         layout.clear();
@@ -3019,7 +3127,8 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
     refresh();
     check(root.devices.panels.size() == 1, "the strip shows it");
     // In front of the device chosen in the strip, though the browser now has the focus.
-    root.devices.chose(root.devices.panels[0]->id);
+    if (!root.devices.panels.empty())
+        root.devices.chose(root.devices.panels[0]->id);
     check(browser.load(find("EQ Eight")), "EQ Eight with Utility chosen");
     refresh();
     check(chainOf(4) == std::vector<std::string>{"EQ Eight", "Utility"}, "goes in front of it");
@@ -3692,6 +3801,51 @@ void clipClipboard(AppCommands &commands, const std::filesystem::path &dir) {
     sel.toTrack = 3;
     check(root.command(AppCommands::Copy) && std::holds_alternative<clip_edit::RangeCopy>(commands.clipClipboard().held),
           "a clip's span on two tracks copies as a range");
+    // DF-W28: a Duplicate or a Paste onto clips removes the part it covers (a clip it reaches into is trimmed),
+    // in the same undo step, as Live places them (manual 6.9); Undo brings them back.
+    {
+        const auto idsOf = [&](std::int64_t track) {
+            std::vector<std::int64_t> out;
+            if (const auto *t = root.reader().findTrack(track))
+                for (const auto &c : t->clips)
+                    out.push_back(c->id);
+            std::sort(out.begin(), out.end());
+            return out;
+        };
+        OpRequest later;
+        later.opType = "clip.create";
+        later.payload = {{"id", 60}, {"track", 3}, {"kind", "midi"}, {"pos", bar / 2}, {"length", bar / 2}};
+        later.label = "Insert MIDI Clip";
+        check(document->ops().submit(later).ok && document->synchronise(), "a second half bar on 2 MIDI, right after its clip");
+        root.frame();
+        clickClip(3, 51, 0, bar / 2);
+        check(root.keyPressed(duplicateKey), "Duplicate onto the clip after it");
+        root.frame();
+        const auto duplicated = idsOf(3);
+        check(clipsOf(3) == Clips{{0, bar / 2}, {bar / 2, bar / 2}} && duplicated.size() == 2 &&
+                  std::find(duplicated.begin(), duplicated.end(), 60) == duplicated.end() &&
+                  document->ops().nextUndo() && document->ops().nextUndo()->label == "Duplicate Clip",
+              "the duplicate replaces the clip it covers, one undo step");
+        check(root.command(AppCommands::Undo), "undo the Duplicate");
+        root.frame();
+        check(idsOf(3) == std::vector<std::int64_t>{51, 60} && clipsOf(3) == Clips{{0, bar / 2}, {bar / 2, bar / 2}},
+              "Undo brings the covered clip back");
+        clickClip(2, 50, 0, bar);
+        check(root.command(AppCommands::Copy), "copy 1 MIDI's bar");
+        marker(3, bar / 4);
+        check(root.keyPressed(pasteKey), "paste it a quarter bar into 2 MIDI's clips");
+        root.frame();
+        check(clipsOf(3) == Clips{{0, bar / 4}, {bar / 4, bar}} && document->ops().nextUndo() &&
+                  document->ops().nextUndo()->label == "Paste Clip",
+              "the clip it reaches into is trimmed, the one it covers removed, one undo step");
+        check(root.command(AppCommands::Undo), "undo the Paste");
+        root.frame();
+        check(idsOf(3) == std::vector<std::int64_t>{51, 60} && clipsOf(3) == Clips{{0, bar / 2}, {bar / 2, bar / 2}},
+              "Undo restores both");
+        check(root.command(AppCommands::Undo), "undo the second clip");
+        root.frame();
+        check(idsOf(3) == std::vector<std::int64_t>{51}, "2 MIDI as before");
+    }
     // A Duplicate over empty time works, and clears an earlier refusal.
     marker(6, 0);
     root.command(AppCommands::Paste);
@@ -10251,6 +10405,8 @@ void automationArm(AppCommands &commands, const std::filesystem::path &dir) {
     arm.onClick();
     root.frame();
     check(arm.getToggleState() && document->automationArmed(), "and on again");
+    check(document->setDelayCompensation(false) && document->setDelayCompensation(true) && document->error().empty(),
+          "the session takes Delay Compensation off and on (MX-04)");
     // Live's per-parameter Re-Enable Automation (manual 25.4; AU-04): the knob's context menu offers it
     // while its lane is overridden, and it is no undo step.
     root.reenableLane = [&](std::int64_t lane) {
@@ -10294,6 +10450,47 @@ void automationArm(AppCommands &commands, const std::filesystem::path &dir) {
         juce::PopupMenu none;
         root.addReenableAutomation(none, nullptr);
         check(none.getNumItems() == 0, "a control with no lane gets no item");
+    }
+    // Live's lane chooser (DF-W37; manual 25.2): the track's mixer and every device's parameters.
+    {
+        const auto choices = root.automationChoices(2);
+        const auto has = [&](const char *kind, std::int64_t owner, const char *ref) {
+            return std::any_of(choices.begin(), choices.end(), [&](const AutomationTarget &t) {
+                return t.ownerKind == kind && t.ownerId == owner && t.paramRef == ref;
+            });
+        };
+        check(choices.size() >= 3 && choices[0].paramRef == "volume" && choices[1].paramRef == "pan" &&
+                  has("device", 3, "7") && !has("device", 3, "gain") && root.automationTarget(2).paramRef == "volume",
+              "1 MIDI's chooser: Mixer Volume and Pan, then UI knobs' Cutoff; Gain, whose id the engine cannot bind, "
+              "is not offered; Volume shows until another is chosen");
+        root.setAutomationMode(false);
+        check(root.showDeviceAutomation(3, "7") && root.automationMode() && root.automationTarget(2).ownerKind == "device" &&
+                  root.automationTarget(2).paramName == "Cutoff" && root.automationTarget(2).device == "UI knobs",
+              "Show Automation from Cutoff's knob: Automation Mode on, the lane shows UI knobs: Cutoff");
+        const auto ops = document->ops().nextUndo() ? document->ops().nextUndo()->txnId : 0;
+        check(root.addAutomationPoint(2, 0, .25) && root.addAutomationPoint(2, 960, .75) &&
+                  document->ops().nextUndo()->label == "Add Automation Point",
+              "two breakpoints on Cutoff, each one step");
+        document->synchronise();
+        auto env = envelopeOf(*root.current(), root.automationTarget(2));
+        check(env.lane != nullptr && env.lane->id == 1 && env.data != nullptr && env.data->points.size() == 2 &&
+                  std::abs(env.data->points.front().value - .25) < 1e-9 && ops != 0,
+              "on the lane the device already had (its normalized Cutoff), not a second one");
+        const auto first = env.data ? env.data->points.front().id : 0;
+        check(root.moveAutomationPoint(2, first, 480, 1.5) && document->synchronise(), "the first moved past the top");
+        env = envelopeOf(*root.current(), root.automationTarget(2));
+        check(env.data != nullptr && env.data->points.front().time == 480 && env.data->points.front().value == 1.0,
+              "it moves in time, and its value stays inside the parameter's 0 to 1");
+        check(root.deleteAutomationPoint(2, first) && document->synchronise() &&
+                  envelopeOf(*root.current(), root.automationTarget(2)).data->points.size() == 1,
+              "and is deleted, one step");
+        // Back to Volume: the track's own lane, made with its first point.
+        root.showAutomation(2, volumeTarget(2));
+        check(root.addAutomationPoint(2, 0, -6) && document->synchronise() &&
+                  envelopeOf(*root.current(), volumeTarget(2)).lane != nullptr &&
+                  envelopeOf(*root.current(), volumeTarget(2)).lane->valueDomain == "real",
+              "Volume chosen again: its own lane in dB, made with the first point");
+        root.setAutomationMode(false);
     }
     // A root with no session (the hooks unset) says so instead of toggling.
     root.reenableAutomation = nullptr;
@@ -10358,7 +10555,8 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
         return;
     }
     const auto states = [&] { return document->recordStates(); };
-    check(states().at(4).monitor == Monitor::Off, "New's tracks store monitoring Off (Live's default is Auto: AWAITING 20)");
+    check(states().at(4).monitor == Monitor::Auto && states().at(3).monitor == Monitor::Auto,
+          "New's audio and MIDI tracks monitor on Auto, as Live's (N67)");
     three->arm.onClick();
     frame();
     check(states().at(4).armed && three->arm.getToggleState() && root.error().empty(),
@@ -10392,14 +10590,14 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     root.command(AppCommands::ToggleMixerView);
     check(root.setMonitor(4, Monitor::In), "3 Audio's monitoring to In");
     frame();
-    check(states().at(4).monitor == Monitor::In && states().at(5).monitor == Monitor::Off &&
+    check(states().at(4).monitor == Monitor::In && states().at(5).monitor == Monitor::Auto &&
               root.recordState(4).monitor == Monitor::In,
           "track.setMonitorMode In on 3 Audio alone");
     check(root.setMonitor(4, Monitor::In) && root.error().empty(), "the same choice again is accepted");
     frame();
     check(root.command(AppCommands::Undo), "undo");
     frame();
-    check(states().at(4).monitor == Monitor::Off, "the same choice again changed nothing: one Undo puts 3 Audio back on Off");
+    check(states().at(4).monitor == Monitor::Auto, "the same choice again changed nothing: one Undo puts 3 Audio back on Auto");
     check(root.command(AppCommands::Redo), "redo");
     frame();
     check(!root.setMonitor(1, Monitor::In) && root.error().find("no input") != std::string::npos, "Main has no monitoring");
@@ -10742,6 +10940,56 @@ void mixerDragLive(AppCommands &commands, const std::filesystem::path &dir) {
           "with 2 MIDI and 3 Audio selected, a drag on 2 MIDI moves both by -6 dB, in one step");
     check(root.command(AppCommands::Undo) && std::abs(volumeOf(3)) < 1e-6 && std::abs(volumeOf(4) + 9) < 1e-6,
           "one Undo takes both back");
+    // AU-04: the right button opens the fader's menu and moves nothing (JUCE's Slider would drag on it).
+    {
+        root.frame();
+        const auto value = three->volume.getValue();
+        const auto ops = opCount();
+        const juce::ModifierKeys right(juce::ModifierKeys::rightButtonModifier);
+        const auto centre = three->volume.getLocalBounds().getCentre().toFloat();
+        three->volume.mouseDown(pressAt(three->volume, centre, right));
+        three->volume.mouseDrag(dragAt(three->volume, centre, centre.translated(0, -40), right));
+        three->volume.mouseUp(dragAt(three->volume, centre, centre.translated(0, -40), right));
+        root.frame();
+        check(three->volume.getValue() == value && !document->mixerDragging() && opCount() == ops &&
+                  std::abs(volumeOf(4) + 9) < 1e-6,
+              "a right-button drag on the fader moves nothing and writes nothing");
+        juce::PopupMenu::dismissAllActiveMenus();
+        // The menus: the fader's and, in Automation Mode, the lanes', each with the Volume lane's item.
+        const auto reenable = [](const juce::PopupMenu &menu) -> const juce::PopupMenu::Item * {
+            for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+                if (it.getItem().text == "Re-Enable Automation")
+                    return &it.getItem();
+            return nullptr;
+        };
+        check(three->volumeMenuItems().getNumItems() == 0, "with no Volume lane, the fader has no menu");
+        automation::LaneSpec spec;
+        spec.id = 90;
+        spec.ownerId = 4;
+        spec.paramRef = "volume";
+        spec.paramName = "Volume";
+        spec.valueDomain = "real";
+        auto made = automation::createLane(spec);
+        made.label = "Add Automation Lane";
+        check(document->ops().submit(made).ok && document->synchronise(), "a Volume lane on 3 Audio");
+        root.frame();
+        const auto fader = three->volumeMenuItems();
+        const auto *item = reenable(fader);
+        check(item != nullptr && !item->isEnabled && fader.getNumItems() == 1,
+              "the fader's menu is the Volume lane's Re-Enable Automation, unavailable while it follows its lane");
+        const int y = laneTop(root, 4) + 4;
+        check(root.arrangement.automationLaneAt(y) == nullptr, "outside Automation Mode a lane's menu has no envelope item");
+        root.setAutomationMode(true);
+        const auto *lane = root.arrangement.automationLaneAt(y);
+        const auto lanes = root.arrangement.contextMenuItems(false, lane);
+        check(lane != nullptr && lane->id == 90 && reenable(lanes) != nullptr &&
+                  root.arrangement.automationLaneAt(laneTop(root, 3) + 4) == nullptr,
+              "in Automation Mode, a right-click on 3 Audio's lane ends the lanes' menu with its Re-Enable Automation; "
+              "2 MIDI has no Volume lane, and no item");
+        root.setAutomationMode(false);
+        check(root.command(AppCommands::Undo), "undo the lane");
+        root.frame();
+    }
     sel.track = sel.toTrack = 0;
     root.frame();
     // Esc while dragging puts the value back, and the release commits nothing.
@@ -13149,6 +13397,114 @@ void appearanceSettingsView(settings::AppSettings &settings, AppCommands &comman
         commands.reload();
     }
 }
+// The keyboard into the session (N60's window half): the feed drains every port's ring on the
+// audio thread, in time order across ports, each event stamped in the block's stream samples.
+// A function of its own, so its rings and feed are not in main's frame: MSVC's Debug build gives
+// every block of main its own stack space for the whole run.
+void midiInputFeedCases() {
+    MidiInputFeed feed;
+    MidiInputFeed::Ring keys, pads, remoteOnly;
+    const auto msg = [](double ms, std::uint8_t a, std::uint8_t b, std::uint8_t c) {
+        MidiPortEvent e;
+        e.timeMs = ms;
+        e.bytes = {a, b, c};
+        e.size = midiMessageSize(a);
+        return e;
+    };
+    const std::array<MidiInputFeed::Source, 3> sources{
+        MidiInputFeed::Source{&keys, 0, true, false, false, 1}, MidiInputFeed::Source{&pads, 1, true, false, false, 2},
+        MidiInputFeed::Source{&remoteOnly, 2, false, true, false, 3}};
+    feed.publish(sources);
+    keys.push(msg(100, 0x90, 60, 127));  // note on, channel 1, key 60, full velocity: before this block's span
+    pads.push(msg(105, 0xb1, 64, 127));  // sustain down, channel 2
+    keys.push(msg(110, 0x80, 60, 0));    // note off
+    remoteOnly.push(msg(106, 0x90, 62, 100));
+    struct Got {
+        std::int64_t sample;
+        engine::Event event;
+    };
+    std::vector<Got> got;
+    const auto take = [&got](std::int64_t sample, const engine::Event &e) {
+        got.push_back({sample, e});
+        return true;
+    };
+    // A 480-frame block at 48 kHz starting at stream sample 4800; the ports' clock reads 112 ms. What
+    // arrived over the last block's span plays one block later at the same offset.
+    const auto n = feed.pump(4800, 480, 48000, 112, take);
+    check(n == 3 && got.size() == 3, "three events from the two Track ports; the Remote-only port reaches no track");
+    if (got.size() == 3) {
+        check(got[0].event.type == engine::EventType::NoteOn && got[0].event.channel == 0 && got[0].event.dim == 60 &&
+                  std::abs(got[0].event.value - 1.0) < 1e-9 && got[0].event.noteId != 0 &&
+                  (got[0].event.noteId >> 40) == 1 && got[0].sample == 4800,
+              "the note on: channel 0-based, key 60, velocity 1, a nonzero id in port 0's space, on the block's "
+              "first sample (it arrived before the last block's span)");
+        check(got[1].event.type == engine::EventType::Controller && got[1].event.channel == 1 &&
+                  got[1].event.paramId == 64 && got[1].sample == 4800 + 480 - 7 * 48,
+              "the sustain from the other port, in time order between them, 7 ms before the clock: 336 samples "
+              "before the block's end");
+        check(got[2].event.type == engine::EventType::NoteOff && got[2].event.noteId == got[0].event.noteId &&
+                  got[2].sample == 4800 + 480 - 2 * 48 && got[0].sample <= got[1].sample && got[1].sample <= got[2].sample,
+              "the note off with its note's id, 2 ms before the clock; the stamps never go back");
+    }
+    // An event stamped earlier than one already given is put at that one's sample, never before it.
+    got.clear();
+    keys.push(msg(120, 0x90, 64, 64));
+    pads.push(msg(119, 0x91, 65, 64)); // earlier, from the other port
+    feed.pump(5280, 480, 48000, 121, take);
+    check(got.size() == 2 && got[0].event.dim == 65 && got[1].event.dim == 64 && got[0].sample <= got[1].sample &&
+              got[0].sample >= 5280 && got[1].sample < 5760,
+          "within the block and in time order across the ports, whatever order they were drained in");
+    got.clear();
+    keys.push(msg(122, 0x80, 64, 0));
+    pads.push(msg(122, 0x81, 65, 0));
+    feed.pump(5760, 480, 48000, 123, take);
+    got.clear();
+    // A refused event is counted; a restart forgets held notes, so a note off with no note on is nothing.
+    got.clear();
+    keys.push(msg(130, 0x90, 67, 90));
+    feed.pump(6240, 480, 48000, 131, [](std::int64_t, const engine::Event &) { return false; });
+    check(feed.refused() == 1, "a full session queue refuses the note, and it is counted");
+    feed.restart();
+    keys.push(msg(140, 0x80, 67, 0));
+    feed.pump(0, 480, 48000, 141, take);
+    check(got.empty(), "after a restart, a note off whose note on came before it sounds nothing");
+    // Unpublished: the audio thread reads no ring.
+    feed.publish({});
+    keys.push(msg(150, 0x90, 60, 100));
+    feed.pump(480, 480, 48000, 151, take);
+    MidiPortEvent left;
+    check(got.empty() && keys.pop(left) && left.bytes[1] == 60, "with nothing published the rings are left alone");
+    // A port with its MPE switch on reads MPE's lower zone: a member channel's note keeps its channel.
+    MidiInputFeed::Ring mpe;
+    const std::array<MidiInputFeed::Source, 1> mpeSource{MidiInputFeed::Source{&mpe, 3, true, false, true, 4}};
+    feed.publish(mpeSource);
+    mpe.push(msg(160, 0x93, 72, 100)); // channel 4, a member of the lower zone
+    feed.pump(960, 480, 48000, 161, take);
+    check(got.size() >= 1 && got[0].event.type == engine::EventType::NoteOn && got[0].event.channel == 3 &&
+              (got[0].event.noteId >> 40) == 4,
+          "an MPE port's member note: channel 3 zero-based, its id in that port's space");
+    // Its MPE switch turned off with the key held: the zone changes, the key keeps its release.
+    got.clear();
+    const std::array<MidiInputFeed::Source, 1> plain{MidiInputFeed::Source{&mpe, 3, true, false, false, 4}};
+    feed.publish(plain);
+    mpe.push(msg(170, 0x83, 72, 0));
+    feed.pump(1440, 480, 48000, 171, take);
+    check(got.size() == 1 && got[0].event.type == engine::EventType::NoteOff && (got[0].event.noteId >> 40) == 4,
+          "the MPE switch changed under a held key: its note off still arrives, with its note's id");
+    // A busy port does not starve the others: the block's budget is shared.
+    got.clear();
+    MidiInputFeed::Ring busy, calm;
+    const std::array<MidiInputFeed::Source, 2> two{MidiInputFeed::Source{&busy, 5, true, false, false, 5},
+                                                   MidiInputFeed::Source{&calm, 6, true, false, false, 6}};
+    feed.publish(two);
+    for (int i = 0; i < 900; ++i)
+        busy.push(msg(180, 0xb0, 1, static_cast<std::uint8_t>(i % 128)));
+    calm.push(msg(180.5, 0x90, 50, 90));
+    feed.pump(1920, 480, 48000, 181, take);
+    check(std::any_of(got.begin(), got.end(), [](const Got &g) { return g.event.type == engine::EventType::NoteOn; }) &&
+              got.size() <= MidiInputFeed::kMaxPerBlock,
+          "the quiet port's note gets through in the same block as 900 messages from a busy port");
+}
 } // namespace
 int main(int argc, char **argv) {
 #if defined(_MSC_VER) && defined(_DEBUG)
@@ -14011,8 +14367,10 @@ int main(int argc, char **argv) {
         check(names == juce::StringArray{"File", "Edit", "Create", "View", "Options", "Navigate"},
               "the Mac's menu bar: File, Edit, Create, View, Options, Navigate");
         check(items("Options") == std::vector<int>{C::Follow, 0, C::DrawMode, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid,
-                                                   C::SnapToGrid, C::FixedGrid, 0, C::SoloInPlace},
-              "the Options menu: Follow (§6.2), Draw Mode (§10.4.1), the grid (§6.10), then Solo in Place (§18.6)");
+                                                   C::SnapToGrid, C::FixedGrid, 0, C::DelayCompensation, 0, C::SoloSwitches,
+                                                   C::CueSwitches, C::SoloInPlace},
+              "the Options menu: Follow (§6.2), Draw Mode (§10.4.1), the grid (§6.10), Delay Compensation (§18.7), then "
+              "Solo in Place (§18.6)");
         check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0, C::TakeSnapshot, C::SaveAs,
                                                 C::SaveCopy, C::CollectAllAndSave, C::CollectAndExport, 0, C::ExportAudio},
               "the File menu: Save As, then Save a Copy and Collect All and Save (5.4.1, 5.7), ADI's "
@@ -14026,8 +14384,11 @@ int main(int argc, char **argv) {
               "the File menu: Save As, then Save a Copy and Collect All and Save (5.4.1, 5.7), ADI's "
               "Collect and Export after them, then Export Audio/Video (5.2.1); it ends with Quit and no longer holds Settings");
         check(items("Options") == std::vector<int>{C::Follow, 0, C::DrawMode, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid,
-                                                   C::SnapToGrid, C::FixedGrid, 0, C::SoloInPlace, 0, C::Settings},
-              "the Options menu: Follow (§6.2), Draw Mode (§10.4.1), the grid (§6.10), Solo in Place (§18.6), then Settings off the Mac "
+                                                   C::SnapToGrid, C::FixedGrid, 0, C::DelayCompensation, 0, C::SoloSwitches,
+                                                   C::CueSwitches, C::SoloInPlace, 0,
+                                                   C::Settings},
+              "the Options menu: Follow (§6.2), Draw Mode (§10.4.1), the grid (§6.10), Delay Compensation (§18.7), Solo in "
+              "Place (§18.6), then Settings off the Mac "
               "(§2.3)");
 #endif
         // The new ids' names through getCommandInfo: `names[id - PlayStop]` is a table by position, so
@@ -14067,11 +14428,13 @@ int main(int argc, char **argv) {
                       C::InvertSelection == C::DeleteFades + 1 && C::ArrangePanelsAutomatically == C::DrawMode + 1 &&
                       C::FocusClipView == C::ArrangePanelsVertically + 1 && C::FitToTimeRange == C::FocusClipView + 1 &&
                       C::ArrangementRecord == C::FitToTimeRange + 1 && C::ExportAudio == C::ArrangementRecord + 1 &&
-                      C::LastId == C::ExportAudio,
+                      C::DelayCompensation == C::ExportAudio + 1 && C::SoloSwitches == C::DelayCompensation + 1 &&
+                      C::CueSwitches == C::SoloSwitches + 1 && C::LastId == C::CueSwitches,
                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
                   "Select Loop, Save a Copy, Collect All and Save, Collect and Export, Cut, Copy, Paste, Duplicate, "
                   "Show/Hide Plug-In Windows, Split, Clip View, Insert Empty MIDI Clip(s), the …Time commands and "
-                  "Insert Silence, then Create Fade In/Out and Delete Fades/Crossfades, then the Note Editor's nine, each named");
+                  "Insert Silence, then Create Fade In/Out and Delete Fades/Crossfades, then the Note Editor's nine, "
+                  "Arrangement Record and Delay Compensation, each named");
             // The Note Editor's commands, the last ids: named in the table's order, each on the editor's key.
             {
                 const auto named = [&](int id) {
@@ -15831,8 +16194,9 @@ int main(int argc, char **argv) {
         check(inputs == 0 || portHost.ports().front().input, "inputs are listed first");
         panel.showPage("Audio");
         check(table != nullptr && !table->isVisible(), "the table shows on its own page only");
-        check(portHost.drain({}) == 0 && portHost.dropped() == 0, "with nothing played, nothing to drain");
+        check(portHost.activity() == 0 && portHost.dropped() == 0, "with nothing played, nothing arrived");
     }
+    midiInputFeedCases();
     {
         // Two ports, as a machine with a keyboard and a synth lists them: the switches write the record.
         std::string refused;
@@ -15868,6 +16232,40 @@ int main(int argc, char **argv) {
               "a click on Track writes the port's record at once, and the host follows");
         table.rebuild();
         check(table.rows()[0]->switches[0]->getToggleState() != midiPortDefault("track"), "the table shows what is kept");
+        check(settings.get("midi.ports")["in:port-1"].value("name", std::string()) == "Keystation 61",
+              "the record keeps the port's name (N61)");
+        check(settings.set("midi.ports", settings::Value::object(), {}, refused), "the records cleared again");
+    }
+    {
+        // N61: the keyboard on another USB socket, under a new identifier: its record follows it by name.
+        std::string refused;
+        auto oldRecord = settings::Value::object();
+        oldRecord["in:socket-1"] = {{"track", !midiPortDefault("track")}, {"mpe", !midiPortDefault("mpe")}, {"name", "Keystation 61"}};
+        check(settings.set("midi.ports", oldRecord, {}, refused), "a record under the old identifier");
+        MidiPortHost::Port keys, pads;
+        keys.id = "in:socket-2";
+        keys.name = "Keystation 61";
+        keys.input = true;
+        pads.id = "in:socket-3";
+        pads.name = "Pad Controller";
+        pads.input = true;
+        int writes = 0;
+        MidiPortHost portHost([&settings] { return settings.get("midi.ports"); }, {keys, pads},
+                              [&](const settings::Value &ports) {
+                                  ++writes;
+                                  std::string why;
+                                  return settings.set("midi.ports", ports, {}, why);
+                              });
+        const auto after = settings.get("midi.ports");
+        const auto moved = std::find_if(portHost.ports().begin(), portHost.ports().end(),
+                                        [](const MidiPortHost::Port &p) { return p.id == "in:socket-2"; });
+        check(writes == 1 && !after.contains("in:socket-1") && after.contains("in:socket-2") &&
+                  !after.contains("in:socket-3") && moved != portHost.ports().end() &&
+                  moved->switches.track != midiPortDefault("track") && moved->switches.mpe != midiPortDefault("mpe"),
+              "the identifier changes, the name is kept: the record moves, Track and MPE survive from the first "
+              "listing; the unrelated port gets no record");
+        portHost.refresh();
+        check(writes == 1, "a record that agrees is not written again");
         check(settings.set("midi.ports", settings::Value::object(), {}, refused), "the records cleared again");
     }
     // The Settings window in Live's shape (ADR-0203 d11, Master Reference V.1).
