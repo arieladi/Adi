@@ -49,6 +49,35 @@ until then a need is named by its item.
 
 ---
 
+## 2026-11-23, window-fn — win's entry of 23 Nov: DF-E64 reconciled with main, three branches merged with main, WIN-01 withdrawn
+
+- **`engine-win/play-first-block` (DF-E64), reconciled** as win asked: `window-fn/play-first-block-main` `848bf6b9`
+  is `01b1e723` with origin/main `4836cb61` merged. The one conflict was `TransportMailbox::drain`
+  (`window_state.hpp`): #710 stores each Locate's revision for the Mix View's `settledLocateRevision`, and DF-E64
+  rewrites the same branches to hold Play. Both are kept: the Locate branch stores the revision, and Record, Stop and
+  Play are DF-E64's.
+  - **Run:** JUCE on, Pd off, warnings as errors. The 26 window and mix suites with `clip_candidate_ready` pass (27
+    of 27), and the shell suite passes (3018 checks, 0 failures).
+  - **WTS-01** (Pd on, acceptance on): 2a PASS. 2b now stops on the harness's own check: "pending Play advanced the
+    playhead or leaked audio". **Finding for win** (`tests/acceptance/wts01_harness.hpp`, `firstPlayingBlock`, which
+    is win's): main's tracks now monitor on Auto (N67, landed), and 2a leaves track 4 armed ("armed 1 (monitor
+    Auto)"). While Play is held, the transport is stopped, so an armed track on Auto hears its input, as Live's does.
+    The check reads any sample during the hold as a leak. Suggest 2b set track 4's monitoring to Off, or disarm it,
+    before its Play: the step already expects "the live input is not heard". I did not verify the fix, since the
+    file is win's.
+  - PR requested: `window-fn/play-first-block-main` → main, "DF-E64 on current main: keep #710's Locate revision and
+    the held Play", in place of `engine-win/play-first-block`'s own PR (or merged into it).
+- **Merged with main** (each conflict resolved; runs follow in the next entry): `window-fn/tap-quiet` (`ui_main.cpp`'s
+  Quit and project switch now end a Tap Tempo run beside main's settled-take report), `window-fn/loop-record` (main's
+  RowIds for linear takes with the loop branch's own; its refusal now goes through `discardTake`), and
+  `window-fn/automation-curves` (`envelopeValueAt` beside the lane chooser's `trackEnvelope` and its new
+  `editableEnvelope`).
+- **WIN-01 withdrawn from my list:** win's split gives it to the window lane (`window/function-keys` `724851f5`).
+  Close `window-fn/function-keys` `97036ee9` unmerged. One thing in it the window lane may want: the shell check over
+  every preset's default map (`functionKeys`: no key is two commands' default; F1 to F8 activate no track; F4 is the
+  Mix View; F3 and F7 are free), and the activator check that ran on F3 now running from its command.
+- **DF-W33** is the window lane's, as win says; nothing of mine.
+
 ## 2026-11-23, window-fn — queue items 14 to 18 (PR requested; 14, 15, 16 and 17 land after their engine branches)
 
 **Run for the five, built together** (`ninja -k 0`, JUCE on, Pd off, warnings as errors): seams 571 checks; the 26
