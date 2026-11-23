@@ -1602,6 +1602,16 @@ const engine::AutomationLaneNode *ArrangementView::automationLaneAt(int y) const
     const auto *t = current != nullptr ? geometry.trackAt(reader(), y) : nullptr;
     return t != nullptr ? laneOf(*current, "track", t->id, "volume") : nullptr;
 }
+bool ArrangementView::keepsSelectionAt(int x, int y) const {
+    const auto &sel = geometry.selection;
+    const auto *t = geometry.trackAt(reader(), y);
+    if (sel.start == sel.end || t == nullptr)
+        return false;
+    const auto tracks = geometry.selectedTracks(reader());
+    const auto at = geometry.tick(x);
+    return std::find(tracks.begin(), tracks.end(), t->id) != tracks.end() && at >= std::min(sel.start, sel.end) &&
+           at <= std::max(sel.start, sel.end);
+}
 juce::PopupMenu ArrangementView::contextMenuItems(bool header, const engine::AutomationLaneNode *lane) {
     auto menu = header ? headerMenu() : juce::PopupMenu();
     if (!header) {
@@ -1624,6 +1634,7 @@ juce::PopupMenu ArrangementView::contextMenuItems(bool header, const engine::Aut
         // The lanes' menu sets the grid as well (§6.10).
         menu.addSeparator();
         addGridItems(menu);
+        root.addInsertShape(menu, menuTrack);
         root.addReenableAutomation(menu, lane);
     }
     return menu;
@@ -2880,7 +2891,12 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
     if (!panning && automationDown(e))
         return;
     if (e.mods.isPopupMenu()) {
-        view.select(e.x, e.y, view.snaps(e.mods));
+        // A right-click inside the time selection keeps it, for the menu's commands to act on (Insert
+        // Shape, AU-02); anywhere else it selects as a click does.
+        const auto *t = view.geometry.trackAt(view.reader(), e.y);
+        view.menuTrack = t != nullptr ? t->id : 0;
+        if (!view.keepsSelectionAt(e.x, e.y))
+            view.select(e.x, e.y, view.snaps(e.mods));
         // In Automation Mode the menu is the envelope's too: its lane's Re-Enable Automation (AU-04).
         view.contextMenu(e.getScreenPosition(), false, view.automationLaneAt(e.y));
     } else if (!panning) {

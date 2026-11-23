@@ -2992,6 +2992,49 @@ bool AdiRootComponent::addAutomationPoint(std::int64_t track, std::int64_t tick,
     return submitEdits(::adi::ui::addAutomationPoint(envelopeOf(*current, target), target, tick, value,
                                                      automationCurrent(target), ids));
 }
+bool AdiRootComponent::insertAutomationShape(std::int64_t track, automation::Shape shape, std::int64_t start,
+                                             std::int64_t end) {
+    const auto current = view_.current();
+    if (current == nullptr || current->findTrack(track) == nullptr)
+        return fail("That track is gone.");
+    const auto target = automationTarget(track);
+    RowIds rows(submitter_.store().db()); // one allocation context for the edit (DF-E16)
+    AutomationIds ids;
+    ids.lane = rows.next("automation_lanes");
+    ids.data = rows.next("automation_data");
+    ids.point = 1;
+    std::string refusal;
+    auto ops = ::adi::ui::insertAutomationShape(envelopeOf(*current, target), target, shape, std::min(start, end),
+                                                std::max(start, end), automationCurrent(target), ids, refusal);
+    if (!refusal.empty())
+        return fail(refusal);
+    return submitEdits(std::move(ops));
+}
+void AdiRootComponent::addInsertShape(juce::PopupMenu &menu, std::int64_t track) {
+    const auto &sel = arrangement.geometry.selection;
+    if (track == 0)
+        track = sel.track;
+    const auto tracks = arrangement.geometry.selectedTracks(reader());
+    if (!automationMode_ || track == 0 || sel.start == sel.end ||
+        std::find(tracks.begin(), tracks.end(), track) == tracks.end())
+        return;
+    juce::PopupMenu shapes;
+    bool lower = false;
+    for (const auto &choice : kAutomationShapes) {
+        if (choice.joins && !lower) {
+            shapes.addSeparator();
+            lower = true;
+        }
+        shapes.addItem(choice.name, [safe = SafePointer<AdiRootComponent>(this), shape = choice.shape,
+                                     track, start = sel.start, end = sel.end] {
+            if (safe)
+                safe->insertAutomationShape(track, shape, start, end);
+        });
+    }
+    if (menu.getNumItems() > 0)
+        menu.addSeparator();
+    menu.addSubMenu("Insert Shape", shapes);
+}
 bool AdiRootComponent::moveAutomationPoint(std::int64_t track, std::uint64_t point, std::int64_t tick, double value) {
     const auto current = view_.current();
     if (!current)

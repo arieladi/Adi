@@ -13,6 +13,8 @@
 #pragma once
 #include "adi/automation_edits.hpp"
 #include "adi/automation_lanes.hpp"
+#include "adi/automation_shapes.hpp"
+#include "adi/engine/curves.hpp"
 #include "adi/engine/snapshot.hpp"
 #include "adi/ui/automation_override.hpp"
 #include "adi/ui/parameter_feed.hpp"
@@ -20,6 +22,7 @@
 #include <cmath>
 #include <cstdint>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <vector>
 namespace adi::ui {
@@ -264,5 +267,192 @@ inline std::optional<double> envelopeValue(const engine::AutomationEnvelopeNode 
             return p[i - 1].value + (p[i].value - p[i - 1].value) * t;
         }
     return p.back().value;
+}
+// What the engine plays around `tick` (`engine::valueAt`'s rule: a segment takes its left point's curve
+// and tension, and of several points at one time the last wins): the value it reaches from the left, the
+// value it plays from `tick` on, and the curve and tension of the segment that plays then.
+struct PlayedEnvelope {
+    double left = 0, right = 0;
+    std::uint8_t curve = 1;
+    double tension = 0;
+};
+inline std::optional<PlayedEnvelope> playedEnvelope(const engine::AutomationEnvelopeNode &data, std::int64_t tick) {
+    const auto &p = data.points;
+    if (p.empty())
+        return std::nullopt;
+    const auto segment = [&](const engine::AutomationPointNode &a, const engine::AutomationPointNode &b, double x) {
+        engine::CurveSlice slice;
+        if (a.curveSlice)
+            slice = {a.curveSlice->begin, a.curveSlice->end, a.curveSlice->sourceFirst, a.curveSlice->sourceLast};
+        return engine::curveSliceValue(a.value, b.value, x, a.curve, static_cast<double>(a.tension),
+                                       a.curveSlice ? &slice : nullptr);
+    };
+    const auto x = [](const engine::AutomationPointNode &a, const engine::AutomationPointNode &b, std::int64_t t) {
+        return static_cast<double>(t - a.time) / static_cast<double>(b.time - a.time);
+    };
+    PlayedEnvelope out;
+    // From `tick` on: the segment from the last point at or before it.
+    std::size_t i = 0;
+    while (i < p.size() && p[i].time <= tick)
+        ++i;
+    if (i == 0)
+        out.right = p.front().value;
+    else {
+        const auto &a = p[i - 1];
+        out.curve = a.curve;
+        out.tension = static_cast<double>(a.tension);
+        out.right = i == p.size() ? a.value : segment(a, p[i], x(a, p[i], tick));
+    }
+    // Up to `tick`: the segment that ends at or after it, approached from the left (a Hold keeps its value).
+    std::size_t j = 0;
+    while (j < p.size() && p[j].time < tick)
+        ++j;
+    if (j == 0)
+        out.left = p.front().value;
+    else if (j == p.size())
+        out.left = p.back().value;
+    else {
+        const auto &a = p[j - 1];
+        const auto at = x(a, p[j], tick);
+        out.left = a.curve == 0 && at >= 1 ? a.value : segment(a, p[j], at);
+    }
+    return out;
+}
+// Live's Insert Shape (AU-02; Live 12 manual 25.5.5), in the menu's order: the top row scaled to the
+// parameter's travel, then the ramps and the ADSR, which join the envelope around the selection.
+struct AutomationShapeChoice {
+    automation::Shape shape;
+    const char *name;
+    bool joins; // the lower row
+};
+inline constexpr AutomationShapeChoice kAutomationShapes[] = {
+    {automation::Shape::Sine, "Sine", false},
+    {automation::Shape::Triangle, "Triangle", false},
+    {automation::Shape::Sawtooth, "Sawtooth", false},
+    {automation::Shape::InverseSawtooth, "Inverse Sawtooth", false},
+    {automation::Shape::Square, "Square", false},
+    {automation::Shape::ExponentialRise, "Exponential Rise", true},
+    {automation::Shape::ExponentialFall, "Exponential Fall", true},
+    {automation::Shape::LogarithmicRise, "Logarithmic Rise", true},
+    {automation::Shape::LogarithmicFall, "Logarithmic Fall", true},
+    {automation::Shape::ADSR, "ADSR", true},
+};
+// A shape inserted over [start, end] of the envelope: the breakpoints inside go and the shape's take their
+// place, one batch, one undo step "Insert Shape". The lane and its data are made first when the target has
+// none, as a first breakpoint makes them.
+// - Top row: one cycle over the selection, from the travel's foot to its top.
+// - Ramps join the values the envelope has at the selection's edges: a rise from the lower of the two to
+//   the higher, a fall from the higher to the lower; where both are the same, a rise goes from it to the
+//   top and a fall to the foot. The ADSR rises from the lower edge value to the top and returns to it.
+// - Guard points keep the curve outside the selection: a breakpoint at each edge with the value the engine
+//   played there (reached from the left at the start, played from the end on), the end's with the curve
+//   and tension of the segment it played from the end, unless the shape already lands on it. Exact where
+//   the segment crossing an edge holds or is straight; a bent one keeps its ends and its kind, not its exact
+//   bend (a split that keeps the bend is the engine's: ADR-0159's slices, written by the planner).
+// Refused, with the reason, on a lane in nanoseconds, an empty selection, or one too short for the shape.
+inline std::vector<OpRequest> insertAutomationShape(const TrackEnvelope &env, const AutomationTarget &target,
+                                                    automation::Shape shape, std::int64_t start, std::int64_t end,
+                                                    double currentValue, const AutomationIds &ids,
+                                                    std::string &refusal) {
+    std::vector<OpRequest> ops;
+    refusal.clear();
+    if (!editableEnvelope(env)) {
+        refusal = "This envelope runs in seconds; the window leaves it as it is.";
+        return ops;
+    }
+    start = std::max<std::int64_t>(0, start);
+    if (end <= start) {
+        refusal = "Select a time range on the lane first.";
+        return ops;
+    }
+    const auto travel = [&](double v) { return std::clamp(std::isfinite(v) ? v : target.minimum, target.minimum, target.maximum); };
+    const auto now = travel(currentValue);
+    // The edges as stored (below the travel where the foot is silence), for the guards; inside the
+    // travel, for the shapes that join them.
+    const double floor = target.footIsSilence ? kAutomationSilenceDb : target.minimum;
+    const auto stored = [&](double v) { return std::clamp(std::isfinite(v) ? v : floor, floor, target.maximum); };
+    const auto played = env.data != nullptr ? playedEnvelope(*env.data, start) : std::nullopt;
+    const auto playedEnd = env.data != nullptr ? playedEnvelope(*env.data, end) : std::nullopt;
+    const double storedBefore = played ? stored(played->left) : writtenAutomationValue(target, now);
+    const double storedAfter = playedEnd ? stored(playedEnd->right) : writtenAutomationValue(target, now);
+    const std::uint8_t endCurve = playedEnd ? playedEnd->curve : 1;
+    const double endTension = playedEnd ? playedEnd->tension : 0.0;
+    const double before = travel(storedBefore), after = travel(storedAfter);
+    automation::ShapeSpec spec;
+    spec.shape = shape;
+    spec.start = start;
+    spec.end = end;
+    const bool rise = shape == automation::Shape::ExponentialRise || shape == automation::Shape::LogarithmicRise;
+    const bool fall = shape == automation::Shape::ExponentialFall || shape == automation::Shape::LogarithmicFall;
+    if (rise || fall) {
+        spec.low = std::min(before, after);
+        spec.high = std::max(before, after);
+        if (spec.low == spec.high) {
+            if (rise)
+                spec.high = target.maximum;
+            else
+                spec.low = target.minimum;
+        }
+    } else if (shape == automation::Shape::ADSR) {
+        spec.low = std::min(before, after);
+        spec.high = target.maximum;
+    } else {
+        spec.low = target.minimum;
+        spec.high = target.maximum;
+    }
+    std::vector<AutomationPoint> generated;
+    try {
+        generated = automation::generateShape(spec);
+    } catch (const std::exception &) {
+        refusal = "The selection is too short for this shape.";
+        return ops;
+    }
+    std::int64_t lane = 0;
+    if (env.lane == nullptr) {
+        automation::LaneSpec laneSpec;
+        laneSpec.id = ids.lane;
+        laneSpec.ownerKind = target.ownerKind;
+        laneSpec.ownerId = target.ownerId;
+        laneSpec.paramRef = target.paramRef;
+        laneSpec.paramName = target.paramName;
+        laneSpec.valueDomain = target.valueDomain;
+        laneSpec.unit = target.unit;
+        laneSpec.defaultValue = writtenAutomationValue(target, now);
+        laneSpec.minValue = target.footIsSilence ? kAutomationSilenceDb : target.minimum;
+        laneSpec.maxValue = target.maximum;
+        ops.push_back(automation::createLane(laneSpec));
+        lane = ids.lane;
+    } else
+        lane = env.lane->id;
+    const auto data = env.data != nullptr ? env.data->id : ids.data;
+    std::uint64_t point = std::max<std::uint64_t>(1, ids.point);
+    Payload inside = Payload::array();
+    if (env.data != nullptr)
+        for (const auto &p : env.data->points) {
+            point = std::max(point, p.id + 1);
+            if (p.time >= start && p.time <= end)
+                inside.push_back(p.id);
+        }
+    if (!inside.empty())
+        ops.push_back(automation::deletePoints(data, lane, nullptr, std::move(inside)));
+    // In time order; at a shared time the later point wins, so the start's guard goes first and the
+    // end's last.
+    Payload written = Payload::array();
+    const auto add = [&](std::int64_t time, double value, std::uint8_t curve, double tension) {
+        written.push_back(
+            Payload{{"id", point++}, {"time", time}, {"value", value}, {"curve", curve}, {"tension", tension}});
+    };
+    const auto &first = generated.front(), &last = generated.back();
+    if (first.time != start || writtenAutomationValue(target, first.value) != storedBefore)
+        add(start, storedBefore, 1, 0.0); // a later point at the start follows at once: its curve is moot
+    for (const auto &p : generated)
+        add(p.time, writtenAutomationValue(target, p.value), p.curve, static_cast<double>(p.tension));
+    if (last.time != end || writtenAutomationValue(target, last.value) != storedAfter || last.curve != endCurve ||
+        static_cast<double>(last.tension) != endTension)
+        add(end, storedAfter, endCurve, endTension);
+    ops.push_back(automation::writePoints(data, lane, nullptr, std::move(written)));
+    for (auto &op : ops)
+        op.label = "Insert Shape";
+    return ops;
 }
 } // namespace adi::ui

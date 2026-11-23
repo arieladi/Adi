@@ -635,6 +635,12 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     bool automationMode() const noexcept { return automationMode_; }
     void setAutomationMode(bool on);
     bool addAutomationPoint(std::int64_t track, std::int64_t tick, double value);
+    // Live's Insert Shape (AU-02; manual 25.5.5) on the envelope `track`'s lane shows, over [start, end]:
+    // one batch, one undo step "Insert Shape" (`ui::insertAutomationShape`). A refusal is said.
+    bool insertAutomationShape(std::int64_t track, automation::Shape shape, std::int64_t start, std::int64_t end);
+    // The lanes' menu's Insert Shape submenu, in Automation Mode with a time selection holding `track` (the
+    // one right-clicked; 0 for the selection's own): Live's top row, then the ramps and the ADSR.
+    void addInsertShape(juce::PopupMenu &menu, std::int64_t track = 0);
     // Live's lane chooser (DF-W37; manual 25.2): what a track's lane shows in Automation Mode, its
     // Volume until another is chosen; a choice whose device or send is gone reads as Volume again.
     // Window state, kept while the window lives.

@@ -478,6 +478,9 @@ class ArrangementView final : public juce::Component {
     // In Automation Mode, the Volume lane of the track at `y` that the engine plays, else null; a pointer into
     // the root's current snapshot, for use at once.
     const engine::AutomationLaneNode *automationLaneAt(int y) const;
+    // Whether a right-click at (x, y) falls inside the time selection, on one of its tracks: it then keeps
+    // the selection for the menu's commands (Insert Shape, AU-02) rather than selecting as a click does.
+    bool keepsSelectionAt(int x, int y) const;
     // A track header's menu: Insert Audio and MIDI Track; with a track selected, Rename, Delete, Group
     // and Ungroup, then Live's colour chooser (Live 12 manual 2.3.2), and on a group Assign Track
     // Color to Grouped Tracks and Clips (manual 18.3).
@@ -504,6 +507,8 @@ class ArrangementView final : public juce::Component {
     // The selected time signature marker's position (Live 12 manual 6.5), or -1. A click in the
     // lanes or on a track's title lets it go; Delete and Ctrl/Cmd+R act on it while it is selected.
     std::int64_t selectedMeter = -1;
+    // The track under the last right-click in the lanes, for that menu's items (Insert Shape); 0 for none.
+    std::int64_t menuTrack = 0;
     // The loop brace, selected by a press on it (Live 12 manual 6.6): the arrows act on it while it
     // is (§42.8), and a click in the lanes, on a title or on a marker lets it go.
     bool loopSelected = false;

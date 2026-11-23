@@ -10490,6 +10490,132 @@ void automationArm(AppCommands &commands, const std::filesystem::path &dir) {
                   envelopeOf(*root.current(), volumeTarget(2)).lane != nullptr &&
                   envelopeOf(*root.current(), volumeTarget(2)).lane->valueDomain == "real",
               "Volume chosen again: its own lane in dB, made with the first point");
+        // Live's Insert Shape (AU-02; manual 25.5.5) over a time selection, each one undo step.
+        {
+            const auto q = static_cast<std::int64_t>(textproj::kPPQ);
+            const auto start = 4 * q, end = 8 * q;
+            auto volume = [&] { return envelopeOf(*root.current(), volumeTarget(2)); };
+            // What the engine plays at `tick` (the last point at a time wins; a segment takes its left
+            // point's curve).
+            auto at = [&](std::int64_t tick) {
+                const auto env = volume();
+                const auto played = env.data != nullptr ? playedEnvelope(*env.data, tick) : std::nullopt;
+                return played ? played->right : -999.0;
+            };
+            // A straight ramp from -6 dB at 0 to 0 dB at bar 4, with breakpoints on it at the selection's start
+            // and inside it: the curve outside the selection stays exact, and those inside go.
+            check(root.addAutomationPoint(2, 12 * q, 0) && document->synchronise(), "a ramp to shape over");
+            check(root.addAutomationPoint(2, start, at(start)) && document->synchronise() &&
+                      root.addAutomationPoint(2, 6 * q, at(6 * q)) && document->synchronise(),
+                  "old breakpoints on the selection's start and inside it");
+            const double before2 = at(2 * q), before10 = at(10 * q), atStart = at(start), atEnd = at(end);
+            const auto undoBefore = root.undoTitle(false);
+            check(root.insertAutomationShape(2, automation::Shape::Sine, start, end) && document->synchronise() &&
+                      root.undoTitle(false) == "Undo Insert Shape",
+                  "Insert Shape: Sine over the selection, one undo step named Insert Shape");
+            auto env = volume();
+            std::size_t inside = 0;
+            double top = -999, foot = 999;
+            if (env.data != nullptr)
+                for (const auto &p : env.data->points)
+                    if (p.time >= start && p.time <= end) {
+                        ++inside;
+                        top = std::max(top, p.value);
+                        foot = std::min(foot, p.value);
+                    }
+            check(env.data != nullptr && inside == 131 && std::abs(top - 6) < 1e-9 && foot == kAutomationSilenceDb,
+                  "one cycle over the travel, the old points inside gone: the fader's top, its foot written as "
+                  "silence, a guard at each edge");
+            check(std::abs(at(2 * q) - before2) < 1e-9 && std::abs(at(10 * q) - before10) < 1e-9 &&
+                      env.data != nullptr && playedEnvelope(*env.data, start) &&
+                      std::abs(playedEnvelope(*env.data, start)->left - atStart) < 1e-9 && std::abs(at(end) - atEnd) < 1e-9,
+                  "the ramp outside the selection is unchanged, reached at the start and resumed at the end");
+            check(root.command(AppCommands::Undo) && document->synchronise() && volume().data != nullptr &&
+                      volume().data->points.size() == 4 && root.undoTitle(false) == undoBefore,
+                  "Undo takes the shape back, the four breakpoints as they were");
+            // A rise joins the envelope: from the lower of its values at the edges to the higher.
+            check(root.insertAutomationShape(2, automation::Shape::ExponentialRise, start, end) &&
+                      document->synchronise(),
+                  "Insert Shape: Exponential Rise");
+            env = volume();
+            std::vector<engine::AutomationPointNode> rise;
+            if (env.data != nullptr)
+                for (const auto &p : env.data->points)
+                    if (p.time >= start && p.time <= end)
+                        rise.push_back(p);
+            check(rise.size() == 2 && rise.front().time == start && std::abs(rise.front().value - atStart) < 1e-9 &&
+                      rise.front().curve == 2 && rise.back().time == end && std::abs(rise.back().value - atEnd) < 1e-9,
+                  "an exponential rise from the envelope's value at the start to its value at the end, no guard needed");
+            root.command(AppCommands::Undo);
+            document->synchronise();
+            // A hold crossing the end keeps holding after it: a Square over bars 1 to 3, then a Sine inside its
+            // first half.
+            check(root.insertAutomationShape(2, automation::Shape::Square, 0, 8 * q) && document->synchronise(),
+                  "a Square, whose points hold");
+            const double held = at(7 * q / 2);
+            check(root.insertAutomationShape(2, automation::Shape::Sine, q, 3 * q) && document->synchronise() &&
+                      std::abs(at(7 * q / 2) - held) < 1e-9 && std::abs(at(q / 2) - at(0)) < 1e-9,
+                  "a Sine inside it leaves the hold after it as the engine played it");
+            root.command(AppCommands::Undo);
+            root.command(AppCommands::Undo);
+            document->synchronise();
+            // From the fader's foot: a ramp from silence keeps its slope outside the selection, the foot not
+            // pulled up to the travel's -70 dB.
+            {
+                const auto first = volume().data != nullptr ? volume().data->points.front().id : 0;
+                check(root.moveAutomationPoint(2, first, 0, -70) && document->synchronise() &&
+                          volume().data->points.front().value == kAutomationSilenceDb,
+                      "the ramp now starts at silence");
+                const double slope = at(start - q);
+                check(root.insertAutomationShape(2, automation::Shape::Sine, start, end) && document->synchronise() &&
+                          std::abs(at(start - q) - slope) < 1e-9,
+                      "a shape after it leaves the ramp up from silence as it was");
+                root.command(AppCommands::Undo);
+                root.command(AppCommands::Undo);
+                document->synchronise();
+            }
+            root.say({});
+            const auto undoNow = root.undoTitle(false);
+            check(!root.insertAutomationShape(2, automation::Shape::Sine, start, start + 3) &&
+                      root.error().find("too short") != std::string::npos && root.undoTitle(false) == undoNow,
+                  "a selection too short for the shape is refused, with the reason");
+            // The lanes' menu offers it in Automation Mode with a time selection: Live's ten shapes, in two rows.
+            auto &sel = root.arrangement.geometry.selection;
+            sel.track = 2;
+            sel.toTrack = 0;
+            sel.clip = 0;
+            sel.start = start;
+            sel.end = end;
+            juce::PopupMenu menu;
+            root.addInsertShape(menu);
+            int shapes = 0, separators = 0;
+            for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+                if (it.getItem().text == "Insert Shape" && it.getItem().subMenu != nullptr)
+                    for (juce::PopupMenu::MenuItemIterator sub(*it.getItem().subMenu); sub.next();)
+                        (sub.getItem().isSeparator ? separators : shapes) += 1;
+            check(shapes == 10 && separators == 1, "the lanes' menu has Insert Shape: five shapes, then the ramps and ADSR");
+            // A right-click inside the selection keeps it for the menu; outside it, it selects as a click does.
+            {
+                auto &geo = root.arrangement.geometry;
+                int y = -geo.scrollY;
+                for (const auto row : geo.rows(root.reader())) {
+                    if (row.track->id == 2)
+                        break;
+                    y += geo.heightFor(row.track->id);
+                }
+                check(root.arrangement.keepsSelectionAt(static_cast<int>(geo.x(6 * q)), y + 20) &&
+                          !root.arrangement.keepsSelectionAt(static_cast<int>(geo.x(10 * q)), y + 20),
+                      "a right-click inside the time selection keeps it, for Insert Shape to act on; outside, it does not");
+            }
+            juce::PopupMenu elsewhere;
+            root.addInsertShape(elsewhere, 999);
+            check(elsewhere.getNumItems() == 0, "not for a track outside the selection");
+            root.setAutomationMode(false);
+            juce::PopupMenu off;
+            root.addInsertShape(off);
+            check(off.getNumItems() == 0, "outside Automation Mode it has none");
+            root.setAutomationMode(true);
+        }
         root.setAutomationMode(false);
     }
     // A root with no session (the hooks unset) says so instead of toggling.
