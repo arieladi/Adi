@@ -4,6 +4,34 @@ Trial seat (22 November 2026, `collab/win.md`): Linux environment (Debian 12, GC
 
 ---
 
+## 2026-11-22 — Queue item 15 (REGISTER-AUDIT): second check of the engine seat's landed DF-E rows on `main` (`abbc32ab`)
+
+**For win (ready to move confirmed rows to Done in one PR).** Verified against `adi_daw/docs/DEFERRED.md` and `origin/main` (`abbc32ab`) by checking every commit is an ancestor of `main`, reading every implementation hunk, and running all 21 corresponding test suites under GCC 12.2.0 (`21 / 21 PASS`, 4,904 checks, 0 failures).
+
+| Row | Verdict | Commit on `main` | Test (live on `abbc32ab`) | Residual |
+|---|---|---|---|---|
+| **DF-E1** | **CONFIRMED** | `55fd8bbd`, `9cc16085` | `adi_engine_tests` (147/147), `adi_clip_details_tests` (`exactLinearEnd`, 32/32), `adi_clip_playback_tests` (`absoluteLinearEndSamples`, 575/575) | None for DF-E1 itself (`DF-E63` separately tracks three other nanosecond-to-tick readers). |
+| **DF-E3** | **CONFIRMED** | `83cca8a5` | `adi_progressive_decode_tests` (100/100; last lease drops `pending`/`admitted`/`reserved` immediately) | None. |
+| **DF-E4** | **CONFIRMED** | `47243494` | `adi_library_tests` (`vanishedDirectoryKeepsSiblings`, `failedCommitReleasesStagedHashes`, 74/74) | None. |
+| **DF-E7** | **CONFIRMED** | `f6215fb1` | `adi_edit_plan_tests` (`clipEditBoundaries`, 670/670) | None. |
+| **DF-E9** | **CONFIRMED** | `ab5feee1` | `adi_automation_range_undo_tests` (`forwardCompatibleUndo` with CASCADE children, extra columns, `BEFORE INSERT` trigger, 93/93) | None. |
+| **DF-E13** | **CONFIRMED** | `f3656b3a` | `adi_automation_splice_store_tests` (`exactBoundaries` + untouched segment range skip + prefix boundary value, 216/216) | None. |
+| **DF-E14** | **CONFIRMED** | `9aa23bec` | `adi_history_move_tests` (pinned vs unpinned childless root + `legacyOrigin`, 54/54) | None (`ENGINE-HISTORY-RETENTION.md` updated). |
+| **DF-E15** | **CONFIRMED** | `f60f7f53` | `adi_quiet_gesture_tests` (`transitions`: `Cancelling` -> `Closed`, `Committing` -> `Reentrant`, 185/185) | None. |
+| **DF-E18** | **CONFIRMED** | `f28eacd0` | `adi_history_tests` (`testBranchSwitchPreservesRedoTip`, cycle, rollback `opsApplied==0`, 148/148), `adi_dsp_tests` (NaN/Inf true peak, 433/433), `adi_marker_tests` (bounds + replay, 155/155); dead `captureDeleted`/`restoreDeleted` removed | None. |
+| **DF-E26 (a, b)** | **CONFIRMED** | `a548544d` | `adi_history_compaction_tests` (`undoneHead`, `connectedRedo`, liveTip skipped, ordinal branch naming, 85/85) | **DF-E26 (c)** remains open for win / director (abandoned-branch budget policy; explicitly outside `(a, b)`). |
+| **DF-E27 (a)** | **CONFIRMED** | `2accc015` | `adi_clip_playback_tests` (`shortenedFade`, 575/575) | Meets DF-E27(a) (`fadeOut` clamped in `clip_playback.cpp:630-636`, `freezeWarpFades`, `freezeAudio`). Minor follow-up note outside DF-E27(a)'s fade-out scope: `freezeWarpFades` (`src/adi/clip_commands.cpp:124`) still checks `in > span` without clamping `fade_in_ticks` if a warped clip is shortened past its fade-in. |
+| **DF-E27 (b)** | **CONFIRMED** | `25ba8fce` | `adi_clip_playback_tests` (`endSourceClocks`, 575/575), `adi_sample_defaults_tests` (81/81) | None. |
+| **DF-E27 (c)** | **CONFIRMED** | `4f7815a3` | `adi_midi_clock_continuity_tests` (`queuedNoteAtSwap`, 121/121) | None. |
+| **DF-E27 (d)** | **CONFIRMED** | `2414ac7c` | `adi_history_tests` (all-ephemeral skip + `op_branches` dedup, 148/148) | **DF-E27 (e)** was folded into DF-E29(b) (confirmed below). **DF-E27 (f, g)** remain open on unmerged engine branches (`d0cf6d3c`, `0d14bd14`). |
+| **DF-E29 (a–d)** | **CONFIRMED** | `dfab28af` | `adi_transport_settings_tests` (`receivingLoopClock`, 195/195), `adi_clap_tests` (drain-adopted volume, tempo preview, cancel, 48/44.1 kHz, 585/585); VST3 leg (`src/juce/vst3_probe.cpp`) inspected on `main`, JUCE-only build not run here | **DF-E29 (e)** (`setDelayCompensation(false)` note forwarding) remains parked for the director (excluded from `a–d`). |
+| **DF-E48** | **CONFIRMED** | `c5f4ae0c` | `adi_freeze_capture_tests` (`scopesOnlyPlayingAssets`, 31/31), `adi_freeze_commands_tests` (`mutedMidiDoesNotForward`, 144/144) | None. |
+| **DF-E49** | **CONFIRMED** | `b57638c8` | `adi_gesture_tests` (`concurrentFaultRemainsLatched` + `Coordinator::drain` comment, 780/780) | None. |
+
+**Move-to-Done summary for win**: **11 whole rows** (`DF-E1`, `DF-E3`, `DF-E4`, `DF-E7`, `DF-E9`, `DF-E13`, `DF-E14`, `DF-E15`, `DF-E18`, `DF-E48`, `DF-E49`) plus sub-parts **`DF-E26 (a, b)`**, **`DF-E27 (a–d, e)`**, and **`DF-E29 (a–d)`** are independently confirmed landed and green on `main` (`abbc32ab`).
+
+---
+
 ## 2026-11-22 — Queue item 14 (FUZZ): `adi_fuzz_blob` and `adi_fuzz_textproj` seed replay and mutation fuzzing under ASan+UBSan
 
 Head: `main` (`abbc32ab`).
