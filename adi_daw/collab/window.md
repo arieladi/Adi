@@ -101,6 +101,40 @@ Questions only the director can answer. Each says what the window lane recommend
 | N58 | The plug-in catalogue off the message thread: a scan service, Rescan, a default worker count, and each VST3's kind with its instrument flag (ADR-0248 d7: engine-win's third item, under DEV-25) | engine-win | the Browser's Plug-Ins with progress, and each VST3's icon | the window scans on its own worker with the one loader (DF-W34 a), the loader locked while it scans; no progress count; a VST3 shows the plug-in icon |
 | N59 | The project's key and scale, if the Control Bar's Key group (step 2) shows the project's and not the selected clip's: an op and a snapshot field (ADR-0248, `collab/RESERVATIONS.md`) | engine, when asked | the Control Bar's Key and Scale | step 2 waits on the Mix View's switch and theme rows; not asked yet |
 
+## 2026-11-23, window lane — queue item 11: WTS-02 (PR requested); a review of the nine ungated branches; the gates' disk
+
+**Item 11, WTS-02. PR requested.** Branch `window/test-hygiene`, on `window/input-clock`, head `9e946f45`. Title: **adi_daw: window: the shell suite fails on a JUCE assertion, opens no dialog, checks its repaints; the window asks for the keys only where it is shown (WTS-02, first half)**. Body: [`collab/window/pr-bodies/window-test-hygiene.md`](window/pr-bodies/window-test-hygiene.md).
+- **Tests:** shell 2936 checks with the watch on, seams 553, document 313, window_state 109, 0 failures; the `ui.yml` six green; the sweeps clean on its lines.
+- **What the watch found:** 112 JUCE assertions in main's shell suite, almost all `grabKeyboardFocus` on a view not on the screen. `focusIfShowing` now asks only where the view is shown, at 33 sites, including three in the shared `ui_mixer.cpp` (window-fn's).
+- **Counted apart:** what the machine causes (no message loop, no X display, no ALSA MIDI), one pinned line each.
+
+**A review of the nine ungated branches.** An adversarial review, each finding checked by a skeptic, confirmed 13 defects across seven branches. All are fixed and pushed.
+- **WIN-04, `window/shortcut-ids`:**
+  - the build: the key editor needs `juce_gui_extra`;
+  - a preset switch with the Shortcuts page open could erase a user's key;
+  - a shadowed local.
+- **WIN-05, `window/shortcut-sets`:**
+  - an import of wrongly typed fields threw;
+  - an export dropped a later build's keys;
+  - the chooser started from a relative path.
+- **WIN-06, `window/command-palette`:** the commands' tail check.
+- **WIN-02, `window/window-places`:**
+  - deprecated display fields under `-Werror`;
+  - full screen restored lost its rectangle.
+- **WIN-03, `window/window-kinds`:**
+  - on Linux the owned windows' raise took the focus and restored minimised windows;
+  - the host pointer was left behind after the host was destroyed.
+- **WTS-01, `window/launch-isolation`:** a smoke run's Settings window took the foreground.
+- **WTS-02:** the watch set apart a whole JUCE file, not one line.
+
+**The gates' "transient" link failures were the disk.** The session's write allowance is about 12 GB whatever `df` says.
+- **Fix:** the build tree links without debug info (`-Wl,--strip-debug`). The compile flags are CI's, so every warning still shows.
+- **Faster:** a gate builds once with `-k 0`, so main's GCC 13 stop no longer leaves targets unbuilt.
+
+**Next:** the gates run on, in this order: shortcut-ids, window-places, window-kinds, shortcut-sets, command-palette, parity-bookkeeping, text-goldens, help-menu, launch-isolation. Each gets its "PR requested" here.
+
+---
+
 ## 2026-11-22, late night, window lane — queue items 16 to 18 written; WTS-01's window half; WIN-09's older checks fixed
 
 All pushed, each gating in turn after the six in the entry below. Each gets its "PR requested" when its gate passes.
