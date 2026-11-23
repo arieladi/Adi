@@ -74,6 +74,7 @@ AnalysisComparison::Metadata AnalysisComparison::metadata(const SharedAnalysis::
     m.sourceEpoch = r.sourceEpoch;
     m.generation = r.generation;
     m.windowSerial = r.windowSerial;
+    m.transportRevision = r.transportRevision;
     m.firstStamp = r.firstStamp;
     m.firstSequence = r.firstSequence;
     m.sampleRate = r.sampleRate;

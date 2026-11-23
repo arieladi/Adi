@@ -128,6 +128,7 @@ public:
     /// change what it supports.
     [[nodiscard]] bool processesDouble() const noexcept override { return canDouble_; }
     [[nodiscard]] bool wantsDeviceTransport() const noexcept override { return true; }
+    [[nodiscard]] bool canProcessOnWorker() const noexcept override { return true; }
     /// The graph's width for the next `prepare`. A VST3 fixes its sample
     /// size in `setupProcessing`, at activation, so it is set up at 64 only
     /// when it will be handed double, and at 32 in a graph at 32 whatever it

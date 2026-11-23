@@ -7,6 +7,8 @@
 #include "adi/ui/project_document.hpp"
 #include "adi/row_capture.hpp"
 #include "adi/store.hpp"
+#include "juce/builtin_host.hpp"
+#include "juce/device_core.hpp"
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <array>
@@ -14,6 +16,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <new>
+#include <numbers>
 #include <stdexcept>
 namespace {
 thread_local bool realtime = false;
@@ -99,6 +102,146 @@ struct ContinuousTone final : Node {
             std::fill_n(io.out[c]+io.blockOffset,io.frames,.25f);
     }
 };
+
+struct RefusingKeyInstance final : device::DeviceInstance {
+    const device::DeviceIdentity id{"internal", "owned-refusing-key", "Refusing key", "ADI", "1"};
+    bool requested = false, preparedKey = false, refuseNext;
+    explicit RefusingKeyInstance(bool refuse = true) : refuseNext(refuse) {}
+    unsigned keyPrepares = 0, processes = 0;
+    float lastKey = 0;
+
+    const device::DeviceIdentity& identity() const noexcept override { return id; }
+    bool loaded() const noexcept override { return true; }
+    std::int32_t sidechainInputChannels() const noexcept override { return 2; }
+    bool configureSidechain(bool active) override { requested = active; return true; }
+    std::uint64_t preparationShapeEpoch() const noexcept override {
+        return (requested ? 1U : 0U) | (preparedKey ? 2U : 0U);
+    }
+    void prepare(double, std::int32_t) override {
+        if (requested) {
+            ++keyPrepares;
+            if (refuseNext) {
+                refuseNext = false;
+                throw std::runtime_error("Owned fixture refused key preparation");
+            }
+        }
+        preparedKey = requested;
+    }
+    void process(const NodeIo& io) noexcept override {
+        ++processes;
+        lastKey = preparedKey && io.sidechain && io.sidechain[0] ? io.sidechain[0][io.blockOffset] : 0.f;
+        for (int channel = 0; channel < io.channels; ++channel) {
+            const auto* input = io.in ? io.in[channel] : nullptr;
+            for (int sample = io.blockOffset; sample < io.blockOffset + io.frames; ++sample)
+                io.out[channel][sample] = input ? .5f * input[sample] : 0.f;
+        }
+    }
+};
+
+void resumeRefusedKeyPreparation() {
+    Fixture fixture;
+    fixture.store->db().exec("INSERT INTO plugin_refs(id,format,uid,name) "
+                             "VALUES(77,'internal','owned-refusing-key','Refusing key');"
+                             "UPDATE devices SET plugin_ref_id=77 WHERE id=30");
+    fixture.store.reset();
+
+    ContinuousTone key, programme;
+    std::string error;
+    auto document = ui::ProjectDocument::open(fixture.temp.path() / "keys.adi", false,
+        [](const DeviceRequest&, std::string&) { return std::make_unique<RefusingKeyInstance>(); }, error);
+    check(document != nullptr, "open the owned key prepare refusal fixture");
+    if (!document) return;
+    auto& session = document->session();
+    session.setSourcesFor([&](std::int64_t track) {
+        if (track == 2) return std::vector<Node*>{&key};
+        if (track == 3) return std::vector<Node*>{&programme};
+        return std::vector<Node*>{};
+    });
+    constexpr int frames = 256;
+    document->prepare(48000, frames);
+    session.graph().setFadeFrames(0);
+    session.transport().play();
+    document->tick(0);
+    const auto publication = document->parameterFeed().current();
+    auto* instance = dynamic_cast<RefusingKeyInstance*>(session.instanceFor(30));
+    check(instance && publication && publication->size() == 1, "prepare the real document route and recipient");
+    if (!instance || !publication || publication->size() != 1) return;
+
+    using Audio = std::array<std::array<float, frames>, 2>;
+    const auto render = [](ui::ProjectDocument& project) {
+        Audio audio{};
+        std::array<float*, 2> output{audio[0].data(), audio[1].data()};
+        AudioIo io;
+        io.out = output.data();
+        io.numOut = 2;
+        io.frames = frames;
+        project.process(io);
+        return audio;
+    };
+    const auto baseline = render(*document);
+    const auto before = OpJournal(document->store()).headSeq();
+    const auto oldSequence = session.realisedAppliedSequence();
+    const auto* oldGraph = session.graph().currentGraph();
+    check(instance->processes > 0 && baseline[0].front() > 0.f && !instance->preparedKey && instance->lastKey == 0.f,
+          "the running unkeyed baseline invokes the recipient DSP");
+
+    const bool accepted = document->setDeviceKey(publication->front(), 2, "post_fx");
+    const auto authored = OpJournal(document->store()).headSeq();
+    const auto authoredSequence = appliedSource(document->store()).sequence();
+    const auto step = History(document->store()).nextUndo();
+    const auto storedRoutes = rows::readModel(document->store()).routing;
+    check(session.instanceFor(30) == instance, "the refused key keeps the same recipient instance");
+    if (session.instanceFor(30) != instance) return;
+    check(!accepted && !document->error().empty() && instance->keyPrepares == 1,
+          "one real key preparation refusal is reported by the document");
+    check(authored != before && authoredSequence > oldSequence && step && step->opCount == 1 &&
+              storedRoutes.size() == 1 && storedRoutes.front().srcId == 2 && storedRoutes.front().dstId == 30 &&
+              storedRoutes.front().keyTap == "post_fx",
+          "the refused presentation has one already committed route and Undo step");
+    check(session.graph().currentGraph() == oldGraph && session.realisedAppliedSequence() == oldSequence &&
+              session.model().routing.empty(), "the refused candidate leaves the prior route and receipt running");
+    auto processed = instance->processes;
+    const auto afterRefusal = render(*document);
+    check(afterRefusal == baseline && instance->processes > processed && !instance->requested &&
+              !instance->preparedKey && instance->lastKey == 0.f,
+          "the failed candidate restores inactive intent and the old unkeyed DSP");
+
+    const bool resumed = document->synchronise();
+    check(session.instanceFor(30) == instance, "the retried key keeps the same recipient instance");
+    if (session.instanceFor(30) != instance) return;
+    processed = instance->processes;
+    const auto afterRetry = render(*document);
+    check(resumed && instance->keyPrepares == 2 && instance->preparedKey && instance->processes > processed &&
+              afterRetry == baseline && instance->lastKey == .25f && session.realisedAppliedSequence() == authoredSequence,
+          "retrying the same receipt admits the intended key on the next callback");
+    const auto afterStep = History(document->store()).nextUndo();
+    check(OpJournal(document->store()).headSeq() == authored && afterStep && step && afterStep->txnId == step->txnId,
+          "successful retry does not add another history entry");
+
+    document->release();
+    document.reset();
+    auto reopened = ui::ProjectDocument::open(fixture.temp.path() / "keys.adi", false,
+        [](const DeviceRequest&, std::string&) { return std::make_unique<RefusingKeyInstance>(false); }, error);
+    check(reopened != nullptr, "reopen the project with its stored key");
+    if (!reopened) return;
+    auto& reopenedSession = reopened->session();
+    auto* reopenedInstance = dynamic_cast<RefusingKeyInstance*>(reopenedSession.instanceFor(30));
+    check(reopenedInstance && reopenedInstance->requested && reopenedInstance->preparedKey &&
+              !reopenedSession.model().routing.empty(),
+          "stored intent configures the recipient before the initial graph prepares");
+    reopenedSession.setSourcesFor([&](std::int64_t track) {
+        if (track == 2) return std::vector<Node*>{&key};
+        if (track == 3) return std::vector<Node*>{&programme};
+        return std::vector<Node*>{};
+    });
+    reopened->prepare(48000, frames);
+    reopenedSession.graph().setFadeFrames(0);
+    reopenedSession.transport().play();
+    const auto afterReopen = render(*reopened);
+    check(reopenedInstance && afterReopen == baseline && reopenedInstance->lastKey == .25f,
+          "the first reopened block uses the stored key and unchanged programme");
+}
+
 void preparedAndDocument(){
     Fixture f;auto& store=*f.store;
     auto prepared=prepareDeviceKey(store,30,2,"post_fx");
@@ -239,6 +382,103 @@ void persistence() {
     f.store = Store::open(path, e);
     check(f.store && rows::readModel(*f.store).routing.front().keyTap == "post_mixer",
           "key default survives file reopen");
+}
+// The source is audible on Main. Common-mode key audio cancels when reading
+// only the programme's opposite-polarity stereo lane.
+struct RoutingTone final : Node {
+    RoutingTone(double peak, bool opposite) : amplitude(peak), antiphase(opposite) {}
+    double amplitude;
+    bool antiphase;
+    double rate = 48000.;
+    std::int64_t position = 0;
+    void prepare(double sampleRate, std::int32_t) override { rate = sampleRate; position = 0; }
+    void process(const NodeIo &io) noexcept override {
+        for (std::int32_t sample = 0; sample < io.frames; ++sample) {
+            const auto phase = 2. * std::numbers::pi * 1000. * static_cast<double>(position++) / rate;
+            const auto value = static_cast<float>(amplitude * std::sin(phase));
+            for (std::int32_t channel = 0; channel < io.channels; ++channel)
+                io.out[channel][io.blockOffset + sample] = channel == 1 && antiphase ? -value : value;
+        }
+    }
+};
+void nativeSerialEqThroughDeviceCallback() {
+    Fixture fixture;
+    fixture.store->db().exec("INSERT INTO plugin_refs(id,format,uid,name) "
+                             "VALUES(77,'internal','org.adidaw.mix.eq','EQ')");
+    fixture.store->db().exec("UPDATE devices SET plugin_ref_id=77 WHERE id=30");
+    const auto file = fixture.store->path();
+    fixture.store.reset();
+    std::string error;
+    RoutingTone key(.5, false), programme(std::pow(10., -.9), true);
+    auto document = ui::ProjectDocument::open(file, false, device::withBuiltinDevices(), error);
+    check(document != nullptr, "device callback fixture opens native EQ");
+    if (!document) return;
+    auto &session = document->session();
+    document->tick(0);
+    auto *eq = session.instanceFor(30);
+    const auto set = [&](const char *id, double value) {
+        return eq && eq->setParam(id, device::ParamValue::fromNormalized(value));
+    };
+    const bool ready = set("9", 1.) && set("17", 1.) && set("15", .3) && set("1", 1.);
+    check(ready, "native EQ callback fixture selects external dynamic reduction");
+    if (!ready) return;
+    session.setSourcesFor([&](std::int64_t track) {
+        if (track == 2) return std::vector<Node *>{&key};
+        if (track == 3) return std::vector<Node *>{&programme};
+        return std::vector<Node *>{};
+    });
+    constexpr int frames = 256;
+    device::DeviceCore stream;
+    const auto opened = stream.open(*document, 48000., frames, frames);
+    check(opened.opened, "device callback fixture prepares the project");
+    if (!opened.opened) return;
+    session.graph().setFadeFrames(0);
+    session.transport().play();
+    gesture::EnginePresentation presentation(document->view(), session);
+    const auto source = appliedSource(document->store());
+    const auto installed = presentation.adoptCommitted(
+        document->store(), {source, History(document->store()).head(), source.sequence()}, nullptr);
+    document->tick(1);
+    const auto publication = document->parameterFeed().current();
+    if (installed.state == gesture::PresentationState::Refused || !publication || publication->empty()) {
+        check(false, "device callback fixture publishes the real prepared programme");
+        stream.close();
+        return;
+    }
+    const auto target = publication->front();
+    std::array<float, frames> left{}, right{};
+    const std::array<float *, 2> output{left.data(), right.data()};
+    const auto energy = [&] {
+        double sum = 0.;
+        for (int block = 0; block < 650; ++block) {
+            stream.process(output.data(), 2, nullptr, 0, frames);
+            if (block < 550) continue;
+            for (std::size_t sample = 0; sample < left.size(); ++sample) {
+                const double programmeOnly = static_cast<double>(left[sample]) - right[sample];
+                sum += programmeOnly * programmeOnly;
+            }
+        }
+        return sum;
+    };
+    const double absent = energy();
+    check(absent > 0. && target.sidechainChannels == 2, "absent external key leaves the real programme audible");
+    if (absent > 0.) {
+        const auto beforeRoute = OpJournal(document->store()).headSeq();
+        const bool routed = document->setDeviceKey(target, 2, "post_fx");
+        check(routed && energy() / absent < .1, "real device key reaches the serial EQ and reduces programme by over 10 dB");
+        const auto afterRoute = OpJournal(document->store()).headSeq();
+        const bool undone = routed && document->ops().undo().ok && document->synchronise();
+        check(undone && OpJournal(document->store()).headSeq() == beforeRoute &&
+                  document->session().instanceFor(30) == eq && std::abs(energy() / absent - 1.) < .003,
+              "one key-route Undo restores the missing-key signal through the same EQ");
+        const bool redone = undone && document->ops().redo().ok && document->synchronise();
+        check(redone && OpJournal(document->store()).headSeq() == afterRoute && energy() / absent < .1,
+              "one key-route Redo restores serial EQ reduction");
+        key.amplitude = 0.;
+        check(redone && std::abs(energy() / absent - 1.) < .003,
+              "routed silence and an absent route settle to the same programme");
+    }
+    stream.close();
 }
 struct Pulse final : Node {
     explicit Pulse(double v) : value(v) {}
@@ -393,6 +633,8 @@ int main() {
     try {
         persistence();
         preparedAndDocument();
+        resumeRefusedKeyPreparation();
+        nativeSerialEqThroughDeviceCallback();
         for (const auto p : {Precision::Float32, Precision::Float64})
             for (int c : {1, 2})
                 for (const auto *tap : {"pre_fx", "post_fx", "post_mixer"})

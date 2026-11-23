@@ -87,32 +87,80 @@ void HybridReverb::prepare(double rate) {
     dry_ = {};
     aligned_ = {};
     cursor_ = head_ = used_ = delayAt_ = 0;
+    pending_ = {};
+    pendingDone_ = pendingParts_ = 0;
+    pendingIr_ = nullptr;
     mix_ = p_[Mix] / 100;
     blend_ = p_[Blend] / 100;
 }
+void HybridReverb::accumulatePartition(std::size_t p) noexcept {
+    // Partition p (from 1) of the NEXT block: the block p blocks before the
+    // one that block will write at head_.
+    const auto capacity = history_[0].size();
+    for (std::size_t c = 0; c < 2; ++c) {
+        if (p >= pendingIr_->spectra[c].size())
+            continue;
+        const auto &prior = history_[c][(head_ + capacity - p) % capacity];
+        const auto &kernel = pendingIr_->spectra[c][p];
+        auto &sum = pending_[c];
+        // The complex product written out: std::complex's operator* recovers
+        // infinities (Annex G) at a cost paid on every bin of every partition,
+        // and neither factor can hold one (a finite FFT of finite samples).
+        for (std::size_t k = 0; k < sum.size(); ++k) {
+            const double ar = prior[k].real(), ai = prior[k].imag();
+            const double br = kernel[k].real(), bi = kernel[k].imag();
+            sum[k] = {sum[k].real() + (ar * br - ai * bi), sum[k].imag() + (ar * bi + ai * br)};
+        }
+    }
+}
+
+void HybridReverb::accumulate(std::size_t position, const HybridImpulse *ir) noexcept {
+    // Only the impulse this call was given is alive for it (the sample slot's
+    // rule); a new one is summed afresh at the boundary instead.
+    if (pendingIr_ == nullptr || pendingParts_ == 0 || ir != pendingIr_)
+        return;
+    // By sample `position` of 256, that share of the partitions is done. The
+    // schedule depends on the position alone, never on the callback's size,
+    // so any blocking renders the same bits.
+    const auto target = (pendingParts_ * position + 255) / 256;
+    while (pendingDone_ < target)
+        accumulatePartition(1 + pendingDone_++);
+}
+
 void HybridReverb::partition(const HybridImpulse *ir) noexcept {
     const auto capacity = history_[0].size();
     used_ = std::min(used_ + 1, capacity);
+    const bool usable = ir && ir->sampleRate == rate_;
+    if (pendingIr_ != (usable ? ir : nullptr)) {
+        // The impulse changed during the block (a new sample published): the
+        // older partitions are summed again from the new one, here, once.
+        for (auto &sum : pending_)
+            sum.fill({});
+        pendingIr_ = usable ? ir : nullptr;
+        pendingDone_ = 0;
+        pendingParts_ = 0;
+        if (pendingIr_) {
+            const auto parts = std::min(used_, std::max(ir->spectra[0].size(), ir->spectra[1].size()));
+            pendingParts_ = parts > 0 ? parts - 1 : 0;
+        }
+    }
+    accumulate(256, pendingIr_);   // anything left undone, from the impulse this call was given
     for (std::size_t c = 0; c < 2; ++c) {
         auto &newest = history_[c][head_];
         std::array<float, HybridImpulse::fftSize> frame{};
         for (std::size_t i = 0; i < 256; ++i)
             frame[i] = static_cast<float>(input_[c][i]);
         fft_.forward(frame, newest);
-        // Accumulate partitions in double, then round once before the float
-        // inverse. This avoids a long-IR error growing with float additions.
-        std::array<std::complex<double>, HybridImpulse::fftSize / 2 + 1> accumulated{};
-        HybridImpulse::Spectrum sum{};
-        if (ir && ir->sampleRate == rate_) {
-            const auto parts = std::min(used_, ir->spectra[c].size());
-            for (std::size_t p = 0; p < parts; ++p) {
-                const auto &prior = history_[c][(head_ + capacity - p) % capacity];
-                const auto &kernel = ir->spectra[c][p];
-                for (std::size_t k = 0; k < sum.size(); ++k)
-                    accumulated[k] += std::complex<double>(prior[k]) *
-                                      std::complex<double>(kernel[k]);
-            }
+        // Accumulated in double (the older partitions, then the newest), then
+        // rounded once before the float inverse: a long IR's error does not
+        // grow with float additions.
+        auto &accumulated = pending_[c];
+        if (pendingIr_ && !pendingIr_->spectra[c].empty()) {
+            const auto &kernel = pendingIr_->spectra[c][0];
+            for (std::size_t k = 0; k < accumulated.size(); ++k)
+                accumulated[k] += std::complex<double>(newest[k]) * std::complex<double>(kernel[k]);
         }
+        HybridImpulse::Spectrum sum{};
         for (std::size_t k = 0; k < sum.size(); ++k)
             sum[k] = static_cast<std::complex<float>>(accumulated[k]);
         fft_.inverse(sum, frame);
@@ -120,8 +168,19 @@ void HybridReverb::partition(const HybridImpulse *ir) noexcept {
             output_[c][i] = static_cast<double>(frame[i]) + overlap_[c][i];
             overlap_[c][i] = frame[i + 256];
         }
+        accumulated.fill({});
     }
     head_ = (head_ + 1) % capacity;
+    // The next block: its older partitions are p = 1 to parts - 1, summed
+    // over the 256 samples to come from blocks already transformed.
+    pendingIr_ = usable ? ir : nullptr;
+    pendingDone_ = 0;
+    pendingParts_ = 0;
+    if (pendingIr_) {
+        const auto next = std::min(used_ + 1, capacity);
+        const auto parts = std::min(next, std::max(ir->spectra[0].size(), ir->spectra[1].size()));
+        pendingParts_ = parts > 0 ? parts - 1 : 0;
+    }
 }
 void HybridReverb::process(const float *left, const float *right, float *outL, float *outR,
                            std::size_t frames, const HybridImpulse *ir) noexcept {
@@ -175,7 +234,8 @@ void HybridReverb::process(const float *left, const float *right, float *outL, f
         outL[i] = static_cast<float>(dry[0] * dryGain + (mid + side) * wetGain);
         outR[i] = static_cast<float>(dry[1] * dryGain + (mid - side) * wetGain);
         delayAt_ = (delayAt_ + 1) % predelay_[0].size();
-        if (++cursor_ == 256) {
+        accumulate(++cursor_, ir);
+        if (cursor_ == 256) {
             partition(ir);
             cursor_ = 0;
         }

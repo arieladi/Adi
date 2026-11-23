@@ -3,6 +3,7 @@
 #include "adi/audio/io_audit.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/media/blake3.hpp"
+#include "adi/sampler_declarations.hpp"
 #if ADI_WITH_PD
 #include "adi/pd_builtins/colorcab_sample.hpp"
 #include "adi/pd_builtins/hybrid_reverb_sample.hpp"
@@ -74,7 +75,12 @@ BuiltinSampleInfo inspectBuiltinSample(const Payload& value) {
     if(!kind.is_string() || kind.get_ref<const std::string&>()!="adi.builtin.sample" || value.at("version")!=1)throw std::runtime_error("unsupported built-in sample state");
     BuiltinSampleInfo info;info.uid=value.at("uid").get<std::string>();
     const auto slot=value.at("slot").get<std::int64_t>();
-    if(!value.at("slot").is_number_integer()||slot!=1||(info.uid!=colorCabUid && info.uid!=oneShotUid && info.uid!=hybridReverbUid))throw std::runtime_error("unsupported built-in sample slot");
+    // Color Cab, OneShot and Hybrid Reverb declare slot 1; the Sampler 1..32 (DEV-21).
+    const bool single=info.uid==colorCabUid || info.uid==oneShotUid || info.uid==hybridReverbUid;
+    const bool sampler=info.uid==samplerUid;
+    if(!value.at("slot").is_number_integer() || !((single && slot==1) || (sampler && slot>=1 && slot<=32))) {
+        throw std::runtime_error("unsupported built-in sample slot");
+    }
     info.slot=static_cast<std::int32_t>(slot);info.empty=value.at("empty").get<bool>();
     if(!info.empty){info.mediaHash=value.at("mediaHash").get<std::string>();if(!hashValid(info.mediaHash))throw std::runtime_error("invalid sample media hash");}
     return info;
@@ -86,10 +92,13 @@ Payload captureBuiltinSample(std::string_view uid,std::int32_t slot,const std::f
     audio::WavReader reader(playable);
     if(reader.frames()==0||reader.frames()>builtinSampleMaxFrames||reader.channels()==0||reader.channels()>64)
         throw std::runtime_error("sample is empty or exceeds the 8M-frame preparation limit");
-    if(info.uid==oneShotUid || info.uid==hybridReverbUid) {
+    if(info.uid==oneShotUid || info.uid==hybridReverbUid || info.uid==samplerUid) {
         // DEV-21: OneShot plays the source itself, and Hybrid Reverb convolves with it, in stereo when it has two
         // channels or more (the first two), at the source's own rate.
         const std::uint16_t channels=reader.channels()>=2?2:1;
+        if(!builtinSampleStateFits(reader.frames(),channels)) {
+            throw std::runtime_error("sample is too long for a built-in's state (a stereo sample holds at most 4M frames)");
+        }
         std::vector<float> interleaved(static_cast<std::size_t>(reader.frames())*channels);
         std::vector<float> block(4096u*reader.channels());std::size_t done=0;
         while(done<static_cast<std::size_t>(reader.frames())) {
@@ -142,7 +151,8 @@ Payload captureBuiltinSample(std::string_view uid,std::int32_t slot,const std::f
 std::unique_ptr<PdSampleBuffer> restoreBuiltinSample(const Payload& value,double rate) {
     offThread();const auto info=inspectBuiltinSample(value);validRate(rate);
 #if ADI_WITH_PD
-    if(info.uid==oneShotUid) {
+    if(info.uid==oneShotUid || info.uid==samplerUid) {
+        // DEV-21: a Sampler slot is a OneShot sample, as OneShot's own slot is.
         if(info.empty)return clearOneShotSample(info.slot);
         const auto channels=value.at("channels").get<int>();const double sourceRate=value.at("sourceRate").get<double>();validRate(sourceRate);
         if(channels<1||channels>2)throw std::runtime_error("invalid OneShot sample channels");

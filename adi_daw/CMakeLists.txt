@@ -2138,6 +2138,7 @@ endforeach()
 
 # Step 7: headless state and the optional JUCE window shell.
 include(src/juce/ui_shell.cmake)
+include(cmake/stereo_envelope_meter.cmake)
 include(cmake/triggered_scope.cmake)
 # WTS-01, win's weekly headless proof of the one usable session (ADR-0248 d2, d12). Off by default: it
 # reports the session's open steps and known defects, so it is not part of every pull request's gate.
