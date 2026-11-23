@@ -12449,8 +12449,8 @@ void userShortcuts(AppCommands &commands, settings::AppSettings &settings) {
                                            [](const auto &row) { return row->setting.key == "shortcuts.overrides"; });
         check(page != nullptr && page->isVisible() && !recordRow && page->getHeight() == ShortcutsPage::kHeight,
               "the Shortcuts page shows the key editor, not the record's text");
-        const auto categories = commands.manager.getCommandCategories();
-        check(categories.contains("Edit") && categories.contains("View") && !categories.contains("ADI"),
+        const auto groups = commands.manager.getCommandCategories();
+        check(groups.contains("Edit") && groups.contains("View") && !groups.contains("ADI"),
               "the editor's groups are Live's menus");
         if (page != nullptr) {
             commands.manager.getKeyMappings()->clearAllKeyPresses(AppCommands::Redo);
@@ -12461,6 +12461,24 @@ void userShortcuts(AppCommands &commands, settings::AppSettings &settings) {
         }
         panel.showPage("Audio");
         check(page != nullptr && !page->isVisible(), "the editor shows on its own page only");
+        // A user's key that equals another preset's own: a switch to that preset, with the page open and
+        // its change messages coming in, keeps the key in the record, so switching back still has it.
+        if (page != nullptr) {
+            auto mine = settings::Value::object();
+            mine["edit.redo"] = cubaseRedo;
+            settings.set("shortcuts.overrides", mine, {}, why);
+            settings.set("shortcuts.preset", std::string("live"), {}, why);
+            commands.reload();
+            page->store();
+            settings.set("shortcuts.preset", std::string("cubase"), {}, why);
+            commands.reload();
+            page->store();
+            check(settings.get("shortcuts.overrides").contains("edit.redo"),
+                  "a preset switch with the page open keeps a user's key that equals the new preset's");
+            settings.set("shortcuts.preset", std::string("live"), {}, why);
+            commands.reload();
+            check(keysOf(AppCommands::Redo) == cubaseRedo, "and back on the first preset the key is still the user's");
+        }
     }
     settings.set("shortcuts.overrides", settings::Value::object(), {}, why);
     settings.set("shortcuts.preset", std::string("live"), {}, why);
