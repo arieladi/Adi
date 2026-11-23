@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_arrangement.hpp"
 #include "adi/ui/audio_drop.hpp"
+#include "adi/ui/object_snap.hpp"
 #include "adi/ui/automation_override.hpp"
 #include "adi/engine/clip_details.hpp"
 #include "adi/engine/clip_fade.hpp"
@@ -3112,6 +3113,24 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
         const auto raw = std::max<std::int64_t>(0, view.geometry.tick(e.x) - grabTicks_);
         const auto down = view.geometry.snap(raw, false), up = view.geometry.snap(raw, true);
         movingTo_ = !view.snaps(e.mods) ? raw : (raw - down <= up - raw ? down : up);
+        // Live's object snapping (ED-09): with snapping on, the clip's start or end lands on a clip edge, a locator
+        // or a signature change within a few pixels, ahead of the grid. The modifier that turns the grid off
+        // turns this off too.
+        if (view.snaps(e.mods))
+            if (const auto current = view.root.current()) {
+                std::int64_t length = 0;
+                for (const auto &t : current->tracks)
+                    if (t)
+                        for (const auto &c : t->clips)
+                            if (c && c->id == moving_)
+                                length = c->lengthTicks;
+                const auto candidates = snapCandidates(*current, [this](std::int64_t clip) {
+                    return clip == moving_ || view.geometry.clipSelected(clip);
+                });
+                const auto near = std::llabs(view.geometry.tick(e.x + kObjectSnapPixels) - view.geometry.tick(e.x));
+                if (const auto shift = objectSnap(candidates, raw, length, near))
+                    movingTo_ = std::max<std::int64_t>(0, raw + *shift);
+            }
         if (several) {
             // None of them goes before the arrangement's start.
             std::int64_t earliest = movingFrom_;

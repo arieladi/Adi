@@ -41,6 +41,7 @@
 #include "adi/row_ids.hpp"
 #include "adi/ui/audio_drop.hpp"
 #include "adi/ui/automation_override.hpp"
+#include "adi/ui/object_snap.hpp"
 #include "adi/ui/snapshot_reader.hpp"
 #include "adi/ui/track_edits.hpp"
 #include "adi/ui/track_order.hpp"
@@ -2424,7 +2425,40 @@ void heldIdsAreSkipped() {
           "Redo deletes it again and puts the new track back as 5");
 }
 
+// ED-09: object snapping's candidates and the shift that lands a dragged clip's nearest edge.
+void objectSnapping() {
+    engine::Snapshot snap;
+    auto track = std::make_shared<engine::TrackNode>();
+    track->id = 2;
+    auto clipA = std::make_shared<engine::ClipNode>();
+    clipA->id = 1;
+    clipA->posTicks = 1000;
+    clipA->lengthTicks = 500;
+    auto clipB = std::make_shared<engine::ClipNode>();
+    clipB->id = 2;
+    clipB->posTicks = 4000;
+    clipB->lengthTicks = 1000;
+    track->clips = {clipA, clipB};
+    snap.tracks.push_back(track);
+    auto locator = std::make_shared<engine::MarkerNode>();
+    locator->posTicks = 7000;
+    snap.markers.push_back(locator);
+    snap.meters.push_back({9000, 3, 4});
+    const auto all = ui::snapCandidates(snap);
+    check(all == std::vector<std::int64_t>{1000, 1500, 4000, 5000, 7000, 9000},
+          "the candidates: every clip's start and end, the locator, the signature change, sorted once each");
+    const auto others = ui::snapCandidates(snap, [](std::int64_t clip) { return clip == 2; });
+    check(others == std::vector<std::int64_t>{1000, 1500, 7000, 9000}, "a dragged clip is no candidate of its own");
+    check(ui::objectSnap(all, 1490, 0, 20) == std::optional<std::int64_t>{10}, "a start 10 short of an end lands on it");
+    check(ui::objectSnap(all, 6400, 590, 20) == std::optional<std::int64_t>{10},
+          "a clip whose end comes 10 short of the locator moves so its end lands on it");
+    check(!ui::objectSnap(all, 2500, 100, 20), "nothing near: no snap, the grid decides");
+    check(ui::objectSnap(all, 990, 3000, 20) == std::optional<std::int64_t>{10} &&
+              ui::objectSnap(all, 985, 3010, 20) == std::optional<std::int64_t>{5},
+          "of a start and an end both near, the nearer one wins");
+}
 int main() {
+    objectSnapping();
     theWrongThingDoesNotCompile();
     heldIdsAreSkipped();
     reenableFindsThePlayedLane();
