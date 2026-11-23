@@ -77,6 +77,7 @@ inline constexpr std::int64_t kInfiniteTail = INT64_MAX;
 /// this one; it arrives when something needs it.
 enum class Bus : std::uint8_t { Main = 0, Sidechain = 1 };
 
+class ScaleContext;
 /// Transport at the first sample of a hosted device's current segment.
 struct DeviceTransport {
     std::int64_t sample = 0;
@@ -93,6 +94,9 @@ struct DeviceTransport {
     double loopBeginQuarterNotes = 0;
     double loopEndQuarterNotes = 0;
     std::int64_t nextChange = std::numeric_limits<std::int64_t>::max();
+    /// Immutable context borrowed from this graph for the current process call.
+    const ScaleContext* scale = nullptr;
+    std::int64_t nextScaleChange = std::numeric_limits<std::int64_t>::max();
 };
 
 /// Session transport at the first sample of a BLOCK, shared by all segments.
@@ -218,6 +222,7 @@ public:
     virtual void prepare(double /*sampleRate*/, std::int32_t /*maxFrames*/) {}
     virtual void release() {}
     [[nodiscard]] virtual bool wantsDeviceTransport() const noexcept { return false; }
+    [[nodiscard]] virtual bool wantsDeviceScale() const noexcept { return false; }
     /// Owner-side shape admission for staged graphs. DeviceNode forwards its
     /// instance's shape epoch. Native fixed-shape nodes retain zero.
     [[nodiscard]] virtual std::uint64_t preparationShapeEpoch() const noexcept { return 0; }

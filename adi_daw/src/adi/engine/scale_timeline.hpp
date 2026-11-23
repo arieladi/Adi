@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include "adi/engine/scale_context.hpp"
+namespace adi::rows { struct Model; }
 namespace adi::engine {
 struct ScaleKeyChange {std::int64_t id=0,posTicks=0;ClipScale scale;};
 struct ScaleTimelineEvent {std::int64_t keyId=0,posTicks=0;ScaleContext context;};
@@ -22,6 +23,8 @@ private:
 // C major/12-TET applies before the first key, including negative pre-roll.
 std::optional<ScaleTimeline> compileScaleTimeline(std::span<const ScaleKeyChange>,std::span<const TuningDefinition>,std::string& error);
 struct ScaleTimelineRead {std::optional<ScaleTimeline> timeline;std::string error;};
+// Compile the project map from the graph owner's already captured rows.
+ScaleTimelineRead compileScaleTimeline(const rows::Model&);
 // One coherent owner snapshot of the five scale tables, with no note reads.
 // Clip-local scales remain separate explicit overrides of this global map.
 ScaleTimelineRead readScaleTimeline(const Store&);

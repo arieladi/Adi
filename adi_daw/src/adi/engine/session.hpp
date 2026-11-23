@@ -58,6 +58,7 @@
 #include "adi/engine/summing.hpp"
 #include "adi/engine/param_automation.hpp"
 #include "adi/engine/process.hpp"
+#include "adi/engine/scale_timeline.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/engine/realize.hpp"
 #include "adi/store_rows.hpp"
@@ -539,6 +540,8 @@ private:
         TempoMap tempo;
         std::vector<rows::TimeSignature> signatures;
         std::vector<std::pair<std::int64_t, std::int64_t>> deviceClockChanges; ///< sample, tick
+        std::optional<ScaleTimeline> scaleTimeline;
+        std::vector<std::pair<std::int64_t, const ScaleContext*>> deviceScaleChanges;
         std::vector<LiveMidiInput::Route> midiInputRoutes;
         std::shared_ptr<const StripLaneBindings> stripLanes;
         ClipPlayback::Readiness sourceReadiness;
@@ -616,6 +619,7 @@ private:
     device::DeviceHost devices_;
     GraphHost graph_;
     rows::Model model_;
+    std::string deviceScaleProblem_;
     AppliedSource appliedSource_;
     void observeKeyRoutes();
     void refreshProblems();
