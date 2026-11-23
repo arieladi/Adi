@@ -40,6 +40,10 @@ class Transform final {
     void startForward(std::span<const double> input, std::span<Complex> output) noexcept {
         timeIn_ = input; spectrumOut_ = output; inverse_ = false; cursor_ = 0; stage_ = Stage::Pack;
     }
+    void startHalfPaddedForward(std::span<const double> input, std::span<Complex> output) noexcept {
+        startForward(input, output);
+        if (input.size() == n_ / 2) stage_ = Stage::PackHalf;
+    }
     void startInverse(std::span<const Complex> input, std::span<double> output) noexcept {
         spectrumIn_ = input; timeOut_ = output; inverse_ = true; cursor_ = 0; stage_ = Stage::Recombine;
     }
@@ -55,27 +59,64 @@ class Transform final {
         startInverse(input, output); advance(std::numeric_limits<std::size_t>::max());
     }
   private:
-    enum class Stage { Idle, Pack, Recombine, Permute, Butterflies, Normalise, Unpack, Post };
+    enum class Stage { Idle, Pack, PackHalf, Recombine, Butterflies, Unpack, Post };
+    void startButterflies(std::size_t extent = 2) noexcept {
+        cursor_ = start_ = offset_ = 0;
+        extent_ = extent;
+        midpoint_ = extent / 2;
+        stride_ = n_ / extent;
+        stage_ = Stage::Butterflies;
+    }
+    void storeFirstButterfly(std::size_t slot, Complex upper, Complex lower) noexcept {
+        packed_[slot] = upper + lower;
+        packed_[slot + 1] = upper - lower;
+    }
     std::size_t chunk(std::size_t budget) noexcept {
         const auto half = n_ / 2;
         switch (stage_) {
         case Stage::Pack: {
-            if (cursor_ == half) { cursor_ = 0; stage_ = Stage::Permute; return 1; }
+            if (cursor_ == half) { startButterflies(); return 1; }
+            // Write directly to the slot each pair would occupy after bit reversal.
             auto count = std::min(budget, half-cursor_);
             const auto pairs = timeIn_.size()/2;
             if (cursor_ < pairs) {
                 count = std::min(count,pairs-cursor_);
-                for (std::size_t i=0;i<count;++i)
-                    packed_[cursor_+i] = {timeIn_[2*(cursor_+i)],timeIn_[2*(cursor_+i)+1]};
+                for (std::size_t i = cursor_; i < cursor_ + count; ++i)
+                    packed_[permutation_[i]] = {timeIn_[2*i], timeIn_[2*i+1]};
             } else if (2*cursor_ < timeIn_.size()) {
-                count=1;packed_[cursor_] = {timeIn_[2*cursor_],0.};
+                count = 1;
+                packed_[permutation_[cursor_]] = {timeIn_[2*cursor_], 0.};
             } else {
-                for (std::size_t i=0;i<count;++i) packed_[cursor_+i] = Complex{};
+                for (std::size_t i = cursor_; i < cursor_ + count; ++i)
+                    packed_[permutation_[i]] = Complex{};
             }
             cursor_ += count; return count;
         }
+        case Stage::PackHalf: {
+            if (cursor_ == half) { startButterflies(4); return 1; }
+            // After bit reversal every input pair occupies an even slot. The adjacent
+            // odd slot is padding, so we can run the first butterfly without writing it.
+            if (cursor_ & 1U) {
+                const auto slot = permutation_[cursor_ / 2];
+                storeFirstButterfly(slot, packed_[slot], Complex{} * twiddles_[0]);
+                ++cursor_;
+                return 1;
+            }
+            if (budget == 1) {
+                packed_[permutation_[cursor_ / 2]] = {timeIn_[cursor_], timeIn_[cursor_ + 1]};
+                ++cursor_;
+                return 1;
+            }
+            const auto first = cursor_ / 2;
+            const auto count = std::min(budget / 2, (half - cursor_) / 2);
+            const auto lower = Complex{} * twiddles_[0];
+            for (std::size_t i = first; i < first + count; ++i)
+                storeFirstButterfly(permutation_[i], {timeIn_[2 * i], timeIn_[2 * i + 1]}, lower);
+            cursor_ += 2 * count;
+            return 2 * count;
+        }
         case Stage::Recombine: {
-            if (cursor_ == half) { cursor_ = 0; stage_ = Stage::Permute; return 1; }
+            if (cursor_ == half) { startButterflies(); return 1; }
             if (cursor_ == 0) {
                 packed_[0] = {(spectrumIn_[0].real()+spectrumIn_[half].real())*.5,
                               (spectrumIn_[0].real()-spectrumIn_[half].real())*.5};
@@ -86,23 +127,13 @@ class Transform final {
                 const auto i=cursor_+j;
                 const auto reflected = std::conj(spectrumIn_[half-i]);
                 const auto rotated = std::conj(twiddles_[i]) * (spectrumIn_[i] - reflected);
-                packed_[i] = (spectrumIn_[i] + reflected + Complex{-rotated.imag(), rotated.real()}) * .5;
-            }
-            cursor_+=count;return count;
-        }
-        case Stage::Permute: {
-            if (cursor_ == half) {
-                cursor_=start_=offset_=0;extent_=2;midpoint_=1;stride_=n_/2;stage_=Stage::Butterflies;return 1;
-            }
-            const auto count=std::min(budget,half-cursor_);
-            for (std::size_t j=0;j<count;++j) {
-                const auto i=cursor_+j;
-                if (i < permutation_[i]) std::swap(packed_[i],packed_[permutation_[i]]);
+                packed_[permutation_[i]] =
+                    (spectrumIn_[i] + reflected + Complex{-rotated.imag(), rotated.real()}) * .5;
             }
             cursor_+=count;return count;
         }
         case Stage::Butterflies: {
-            if (extent_ > half) { cursor_=0;stage_=inverse_?Stage::Normalise:Stage::Post;return 1; }
+            if (extent_ > half) { cursor_=0;stage_=inverse_?Stage::Unpack:Stage::Post;return 1; }
             if (cursor_ == half/2) {
                 cursor_=start_=offset_=0;extent_*=2;midpoint_*=2;stride_/=2;return 1;
             }
@@ -122,17 +153,14 @@ class Transform final {
             }
             return used;
         }
-        case Stage::Normalise: {
-            if (cursor_ == half) {cursor_=0;stage_=Stage::Unpack;return 1;}
-            const auto count=std::min(budget,half-cursor_);
-            for (std::size_t i=0;i<count;++i) packed_[cursor_+i]/=static_cast<double>(half);
-            cursor_+=count;return count;
-        }
         case Stage::Unpack: {
             if (cursor_ == half) {stage_=Stage::Idle;return 1;}
             const auto count=std::min(budget,half-cursor_);
-            for (std::size_t j=0;j<count;++j) {
-                const auto i=cursor_+j;timeOut_[2*i]=packed_[i].real();timeOut_[2*i+1]=packed_[i].imag();
+            for (std::size_t i = cursor_; i < cursor_ + count; ++i) {
+                auto pair = packed_[i];
+                pair /= static_cast<double>(half);
+                timeOut_[2*i] = pair.real();
+                timeOut_[2*i+1] = pair.imag();
             }
             cursor_+=count;return count;
         }

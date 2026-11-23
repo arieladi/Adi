@@ -71,6 +71,11 @@ inline FadeEdit createFades(const SnapshotTracks &tracks, const std::vector<std:
         return edit;
     }
     std::vector<OpRequest> ins, outs;
+    // A fade the selection gives the length it already has, playing as a plain fade of that length, is
+    // no change, and no op: one the limit clamped to where it was would otherwise make an empty undo
+    // step (DF-W30 c). A fade whose clock an edit pinned (a move, a split; it plays at another length
+    // once the tempo changes) still takes the op, which puts it back on its ticks.
+    bool unchanged = false;
     for (const auto id : selected) {
         const auto *t = track_edits_detail::find(tracks, id);
         if (t == nullptr)
@@ -86,20 +91,30 @@ inline FadeEdit createFades(const SnapshotTracks &tracks, const std::vector<std:
                 in = fadeLimit(*c, true, to - a);
             if (holdsEnd)
                 out = fadeLimit(*c, false, b - from);
-            if (!in && !out)
-                continue;
-            // A clip that ends where another begins, and both get their fade: a crossfade.
+            // A clip that ends where another begins, and both get their fade: a crossfade, so named even
+            // when one side is already that long and makes no op.
             if (holdsEnd)
                 for (const auto &n : t->clips)
                     if (n && n.get() != c.get() && fade_edits_detail::isAudio(*n) && n->posTicks == b && b < to &&
                         to < n->posTicks + n->lengthTicks)
                         edit.crossfade = true;
+            if (in && *in == c->fadeInTicks && c->fadeInHandles == engine::ClipFadeHandles{0, *in}) {
+                in.reset();
+                unchanged = true;
+            }
+            if (out && *out == c->fadeOutTicks && c->fadeOutHandles == engine::ClipFadeHandles{0, *out}) {
+                out.reset();
+                unchanged = true;
+            }
+            if (!in && !out)
+                continue;
             edit.ops.push_back(fade_edits_detail::setFades(c->id, in, out, "Create Fade"));
         }
     }
     if (edit.ops.empty()) {
-        edit.refusal = "The selection holds no audio clip's start or end: select from before a clip's start, or "
-                       "past its end.";
+        edit.refusal = unchanged ? "The fades are already that long."
+                                 : "The selection holds no audio clip's start or end: select from before a clip's "
+                                   "start, or past its end.";
         return edit;
     }
     if (edit.crossfade)
