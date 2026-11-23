@@ -49,6 +49,47 @@ until then a need is named by its item.
 
 ---
 
+## 2026-11-23, window-fn — PLAN WIN-01: the function keys do functions (PR requested)
+
+**Window lane, read first:** this item touches `src/juce/ui_shell.cpp` (`AppCommands::getCommandInfo`) and a shell
+check.
+
+F1 to F8 were Live's Activate Track 1 to 8 by default, and F4 was also the Mix View (ADR-0209 d9), so the default
+map bound F4 twice. The eight activators keep their commands, for the palette and the Shortcuts page, but lose
+their keys. F4 opens the Mix View, and F3 and F7 stay free for Session View and offline processing.
+
+**Test** (`tests/test_ui_shell.cpp`, `functionKeys`), for every preset's default map (Live, Cubase, Bitwig): no key is
+two commands' default; F1 to F8 activate no track; F4 is the Mix View; F3 and F7 are free. The activator check that
+pressed F3 now finds F3 does nothing and runs Activate Track 3 from its command.
+
+**Run:** JUCE on, Pd off, warnings as errors (`ninja -k 0`): the 26 window and mix suites pass, and the shell suite
+from a scratch directory passes (2963 checks, 0 failures).
+
+PR requested: `window-fn/function-keys` → main, "WIN-01: the function keys do functions". Depends on nothing beyond
+main. The parity-7.6 row 6 amendment the PLAN row names is the window lane's checklist.
+
+## 2026-11-23, window-fn — PLAN MX-06 (half): a pan on a send (PR requested; Send to Track parked)
+
+**Window lane, read first:** this item touches `src/adi/ui/send_edits.hpp` (a new `setSendPan`) and
+`src/juce/ui_mixer.*` (the send knob's menu).
+
+- **A pan on a send** (ADR-0203 d3). The send knob's menu gains Send Pan, with Live's five most read places (Left,
+  50L, Center, 50R, Right), the current one ticked.
+- A pick is one undo step, "Change Send Panning": the row's pan. A send with no row gets its row first, fully down
+  and following its return's switch, so a pan alone never makes a silent send heard. A pan that would not change
+  writes nothing.
+- **Parked: Send to Track…** (a send into any track). The strip lays out one knob per return; a send into an
+  ordinary track needs a knob of its own on the strip, which is the window lane's to place. Once it has one, the
+  connect is `setSend`'s with any destination.
+
+**Test** (`tests/test_ui_seams.cpp`): a row's pan, the same pan again, the clamp at Left, the centred rowless send, a
+rowless send panned Right (made fully down, then panned, one step), and Undo.
+
+**Run:** seams 559 checks; the 26 window and mix suites; shell 2954 checks; 0 failures.
+
+PR requested: `window-fn/send-pan` → main, "MX-06: a pan on a send, from the send knob's menu". Depends on nothing
+beyond main.
+
 ## 2026-11-23, window-fn — queue item 12, CT-02's window half: Record with the loop on, a take per pass (PR requested)
 
 **Window lane, read first:** this item touches `src/adi/ui/project_document.cpp` (`startRecording`, `landTake`) and
