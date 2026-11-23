@@ -2,8 +2,9 @@
 
 Win keeps this file (ADR-0248 d5). A seat reserves here before it numbers a schema minor, an ADR or a
 register row: it asks in its log, win writes the row on main, and only then does the number go into a
-branch. On 19 November two seats that numbered alone both took schema 1.22, and four pull requests
-wrote the same "212 ops" headline.
+branch. A PLAN row lent to a seat other than its owner is reserved here the same way (ADR-0252 d4).
+On 19 November two seats that numbered alone both took schema 1.22, and four pull requests wrote the
+same "212 ops" headline.
 
 **The rule.**
 - Ask in your log ("Reserve: schema minor for …", "Reserve: two DF-E rows for …"). Win writes the row
@@ -31,7 +32,7 @@ The reservation table stays in `collab/README.md` ("Reserved ADR numbers"), wher
 `tools/validate_schema.py` reads it. #210, win's earlier fix that makes check 8 catch stray and missing
 rows, is kept open and folded into this work.
 
-Next free: **ADR-0252**.
+Next free: **ADR-0253**.
 
 ## Register ids (`docs/DEFERRED.md`)
 
@@ -54,6 +55,21 @@ Claimed by open pull requests. #674 carries #651's op and #665 carries #677's: o
 | `routing.setKeyTap` | #651, #674 | mixview |
 | `routing.setSendTap` | #677, #665 | engine |
 | `lane.restore` | #662 | engine-win |
+
+## PLAN rows on loan (ADR-0252)
+
+A row of `docs/PLAN.md` taken by a seat that is not its owner. The owner lends the row's paths, named
+below, for that row only, and reviews the branch before "PR requested". Each row's paths, test and order
+are in the seat's queue (`collab/prompts/2026-11-22-gemini-queue.md` for gemini).
+
+| Row | Owner | Seat | Paths lent | Lands | Status |
+|---|---|---|---|---|---|
+| SRF-09, OSC: the core | engine | gemini | `src/adi/osc_codec.*`, `src/adi/osc_namespace.*`, their tests and the fuzz harness `tests/fuzz_osc_codec.cpp`, their lines in `CMakeLists.txt` | after 3 December | reserved |
+| SRF-10, OSCQuery v1: the core | engine | gemini | `src/adi/oscquery.*`, its tests and `tests/fuzz_oscquery.cpp`, their lines in `CMakeLists.txt`; stacked on SRF-09 | after 3 December | reserved |
+| PD-15, paste between projects: the engine half | engine | gemini | `src/adi/project_paste.*`, `tests/test_project_paste.cpp`, its lines in `CMakeLists.txt` | after 3 December | reserved |
+| CO-01, the collaboration core | engine | gemini | `src/adi/collab/**` (new), `tests/test_collab_*.cpp`, their lines in `CMakeLists.txt`; its schema minor, if a slice needs one, reserved in the table above first | after 3 December | reserved |
+
+None of the four needs a schema minor, an op name or a register id today.
 
 ## The window's needs-table numbers (`collab/window.md`)
 

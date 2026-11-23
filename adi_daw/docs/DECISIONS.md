@@ -19662,3 +19662,78 @@ product's name. His words: "agreed with your recommendation".
 | ADR-0244 d4, d5 | the classic scope keeps its source's images (d1); its name is Classic Scope (d2) |
 | `collab/README.md` | ADR 0251 used |
 | `collab/RESERVATIONS.md` | the next free ADR is 0252 |
+
+## ADR-0252 — The gemini seat is permanent: the verification seat, and engine PLAN rows after 3 December — `DECIDED` (2026-11-23) — **DIRECTOR'S ANSWERS OF 23 NOVEMBER TO THE TWO QUESTIONS OF THE GEMINI QUEUE; ADDS A SEAT UNDER ADR-0208 AND ADR-0248 d3; WIN'S PICK OF ROWS IN d6, THE DIRECTOR MAY STRIKE IT**
+
+**What this records.** On 22 November the director connected Gemini to the repository as a seat, on trial
+(win's log, 22 November): a Linux machine with GCC 12.2 and Clang 14, two small engine register rows on loan
+from the engine, DF-E53 (a device lane's `param_ref` made canonical) and DF-E56 (the MPE router's state when
+its output list is full), and a run-only queue. Both branches were reviewed by win and by the engine seat,
+fixed as the reviews asked, and landed on main in #713 on 23 November; the engine's MI-08 branches build on
+them. The queue's verification items found what no other leg had: under ASan, a heap use after free in the
+Mix View gate's request path; under TSan, a data race on the Vorbis decoder's process-wide CRC table; the
+cause of DF-E12, the flaky `Store::create` of `Cached.adi` (a project lease keyed on an inode the file system
+reuses after a replace); and libstdc++ 12 and Clang 14 errors that no CI leg builds. Its standing queue
+(`collab/prompts/2026-11-22-gemini-queue.md`) put two questions to the director: may the seat take engine
+PLAN rows that land after 3 December, and does it become permanent. Win recommended both, with the seat
+framed as the verification seat below. His words, on 23 November: "yes to both".
+
+### Decisions
+
+1. **The seat is permanent (his second answer).** gemini is a seat like the others (ADR-0208, ADR-0248 d3):
+   Gemini on a Linux machine with GCC 12.2 and Clang 14; its log `collab/gemini.md` on `gemini/log`; its
+   branches `gemini/<topic>`; "PR requested" in its log; win lands its branches in the landing windows
+   (ADR-0248 d12). Before each item it reads `collab/win.md` on main and every log entry addressed to it, and
+   it works until its usage limit (ADR-0246 d6). Its standing queue is
+   `collab/prompts/2026-11-22-gemini-queue.md` until win replaces it.
+2. **It is the verification seat.** Each round it builds the other seats' "PR requested" heads on the older
+   toolchains (GCC 12, Clang 14, `-DADI_WERROR=ON`) and runs their tests; it runs the sanitizers (ASan, UBSan,
+   LSan, TSan) and `_GLIBCXX_DEBUG`, the fuzzers, WTS-01's headless steps on Linux, and second checks of
+   register rows another seat reports landed. A finding goes in its log with the file and line, the tool, the
+   smallest repro and the owner from `collab/README.md`; win registers it as a DF row in the owner's section.
+   **It does not fix another seat's registered finding:** the owner does (ADR-0248 d1), unless the owner
+   lends that finding by name through win.
+3. **No source paths of its own.** Its log and its branches are its own. It changes code only on a loan win
+   names in `collab/README.md`, and in the PLAN rows it takes under d4, on the paths named for each row.
+   `.github/**` is win's: it asks win, as every seat does (ADR-0248 d3).
+4. **Engine PLAN rows after 3 December (his first answer).** It may take engine rows of `docs/PLAN.md` that
+   come after the one usable session (ADR-0248 d2), on branches that land after 3 December. Each row is on
+   loan from the engine for that row's named paths only, and is reserved for it in `collab/RESERVATIONS.md`
+   by win before its branch starts; any schema minor, op name or register id the row needs is reserved there
+   the same way. A row in another seat's standing queue, reserved, or on an open `engine/*` or `engine-win/*`
+   branch is not taken. A change it needs in an engine file outside the row's paths is asked of the engine in
+   its log. The engine reviews each branch in `collab/engine.md`, as it reviewed DF-E53 and DF-E56; "PR
+   requested" is written only after that review passes, and win lands the branch after 3 December. It never
+   takes a row of the two weeks before 3 December, and never a row of the window, window-fn, devices, Mix
+   View, clones or engine-win lanes.
+5. **The order of a round.** Its verification items first; then the next slice of its first unfinished PLAN
+   row; then the verification items again for every new "PR requested" line. A PLAN row never pushes a
+   requested branch's older-toolchain build past win's next landing window.
+6. **Win's pick of its first rows** (win's placement; the director may strike any). Each is an engine row at
+   P2 in the plan, in no seat's standing queue, reserved by nobody and on no branch; each is headless and
+   JUCE-free, with a test the plan names; its window half and its network listener stay with their owners.
+   1. **SRF-09, OSC: the core.** The decoder for OSC 1.0 messages and bundles, ADI's fixed namespace
+      (`/adi/transport`, `/adi/track/{n}`, `/adi/master`, `/adi/focused`) resolved to typed writes stamped
+      `osc:<client>`, the client list, and feedback never echoed into the flush its value arrived in. A
+      decoder of bytes from the network is what this seat's fuzzers and sanitizers prove. The UDP loop and
+      the encoding stay on the network stack (`src/juce/net_*`, the engine's); the engine parked only the
+      host integration, which waits on the control feed.
+   2. **SRF-10, OSCQuery v1: the core.** The tree with stable ids, float types, 0 to 1 ranges and ACCESS 3;
+      HOST_INFO; GET only (`/`, a path, `?HOST_INFO`) as a pure request-to-response function. Stacked on
+      SRF-09. The HTTP listener and DNS-SD stay on the network stack.
+   3. **PD-15, paste between projects: the engine half.** A track with its devices, clips and media pasted
+      from a second, read-only Store as one transaction, ids remapped through the one allocator, media by
+      hash. The tabs, the browser import and the historical tab are the window's.
+   4. **CO-01, the collaboration core.** Batches ordered by a global sequence, rebase by rewinding the
+      pending suffix, fractional sibling keys, ids from the one allocator, on in-memory Stores and a fake
+      object store. Its test is a seeded convergence run of the kind this seat already does (DF-E10's 500
+      repeats). Q-N1 and Q-N2 decide CO-02 and CO-04, not this core, so it is built and tested before Q-N is
+      answered; nothing reaches a user until collaboration starts. The bucket client is CO-05's.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| `collab/README.md` | the roster gains gemini, permanent (d1); its paths row: no source paths, loans and its own PLAN rows (d3, d4); the engine's loan of those rows' paths (d4); the trial's loans ended with #713; ADR 0252 used |
+| `collab/prompts/2026-11-22-gemini-queue.md` | the two answers; PLAN rows after the verification items each round, never a row before 3 December; the four rows with their paths and tests (d4 to d6) |
+| `collab/RESERVATIONS.md` | PLAN rows on loan, a new table, with d6's four rows reserved for gemini (d4); the next free ADR is 0253 |
