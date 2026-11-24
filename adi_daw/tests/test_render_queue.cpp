@@ -695,7 +695,7 @@ void normalizedRenders() {
         double peak=0;for(std::int64_t frame=200;frame<220;++frame)for(int channel=0;channel<2;++channel)peak=std::max(peak,std::abs(static_cast<double>(source(frame,channel))));
         bool exact=samples.size()==40;
         for(std::size_t frame=0;frame<samples.size()/2;++frame)for(int channel=0;channel<2;++channel)exact=exact && samples[frame*2+static_cast<std::size_t>(channel)]==static_cast<float>(source(200+static_cast<std::int64_t>(frame),channel)/peak);
-        check(exact && result.normalization && result.normalization->sourceSamplePeakDb && std::abs(*result.normalization->sourceSamplePeakDb-20*std::log10(peak*(precision==Precision::Float64?2:1)))<1e-10,"normalization measures only the selected compensated range, excluding preroll, and preserves either source width");
+        check(exact && result.normalization && result.normalization->sourceSamplePeakDb && std::abs(*result.normalization->sourceSamplePeakDb-20*std::log10(peak*(precision==Precision::Float64?2:1)))<1e-10,"normalization measures only the selected compensated range, excluding preroll, and preserves either source width [P:export#16]");
         check(loads==1 && processed==297 && f.noStage(),"normalization captures one continuous plugin run and cleans private double PCM after publication");
     }
     Fixture f;auto job=f.job("normalized-cancel");job.normalization.mode=NormalizeMode::Peak;std::stop_source stop;Control control;control.stop=stop.get_token();bool duringEncoding=false;
