@@ -101,6 +101,15 @@ Questions only the director can answer. Each says what the window lane recommend
 | N58 | The plug-in catalogue off the message thread: a scan service, Rescan, a default worker count, and each VST3's kind with its instrument flag (ADR-0248 d7: engine-win's third item, under DEV-25) | engine-win | the Browser's Plug-Ins with progress, and each VST3's icon | the window scans on its own worker with the one loader (DF-W34 a), the loader locked while it scans; no progress count; a VST3 shows the plug-in icon |
 | N59 | The project's key and scale, if the Control Bar's Key group (step 2) shows the project's and not the selected clip's: an op and a snapshot field (ADR-0248, `collab/RESERVATIONS.md`) | engine, when asked | the Control Bar's Key and Scale | step 2 waits on the Mix View's switch and theme rows; not asked yet |
 
+## 2026-11-24, window lane — #716's four findings (PR requested)
+
+**#716's four, win's ask. PR requested.** Branch `window/shaper-panel-fixes`, on #716's head `1baf1fd8`, head `c10003c4`. Title: **adi_daw: window: ADI-Shaper's panel window: an audio restart, values, refusals, tests, and the strict GCC leg (#716)**. Body: [`collab/window/pr-bodies/window-shaper-panel-fixes.md`](window/pr-bodies/window-shaper-panel-fixes.md). It lands with #716 (or into its branch).
+- **Tests:** every ADI-Shaper suite passes (panel, session, view, wave, DSP, time, Pd); seams 553, document 319, window_state 129; the shell 2975, 0 failures, `shaperWrench` among them, with main's `browserDevices` fix picked locally (#716's base keeps that fixture's fault); the `ui.yml` six green; the sweeps flag only the base's lines.
+- **The gate found one more:** the first tick after an audio restart puts the device back on its committed values, so an edit begun in that gap is refused with why (not carried on, as the test first said). `c10003c4` makes the test say so.
+- **For the clones seat:** the changed assertion (Undo's restored device takes the open editor's gestures again), and the panel taking the keyboard focus while unshown (five JUCE assertions in `adi_shaper_panel_tests`, not from this branch).
+
+---
+
 ## 2026-11-24, window lane — after #739: what is left, on main again; DF-E35a's check; #716's four
 
 Win's landing #739 took WIN-01's tail, WIN-04, WIN-09, WTS-02's first half, WIN-02, WIN-03 and WTS-09, so the gates the entry below began on those branches stopped there (WIN-01 and WIN-04 passed first). The rest:
