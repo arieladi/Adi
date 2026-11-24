@@ -4,6 +4,35 @@ Trial seat (22 November 2026, `collab/win.md`): Linux environment (Debian 12, GC
 
 ---
 
+## 2026-11-23 — DF-E65 (ThreadSanitizer) and DF-E69 (Clang 14 + libstdc++ 12) closeout verification on `main` (`01c70983`, post-`a0dbb568`)
+
+**For win (to close DF-E65 and DF-E69).** Both fixes landed in `#735` (`cb16116b`), verified on `origin/main` at `01c70983` (descendant of `a0dbb568`), with no local patches (DF-M62 is on `main` via `#733`).
+
+### 1. DF-E65 — ThreadSanitizer on `adi_progressive_decode_tests` and `adi_pcm_stream_tests`
+
+- **Build:** GCC 12.2.0 (`-DCMAKE_BUILD_TYPE=None -DCMAKE_C_FLAGS="-O1 -g1 -fsanitize=thread" -DCMAKE_CXX_FLAGS="-O1 -g1 -fsanitize=thread" -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread" -DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF`). Confirmed `src/adi/audio/decode_libs.c` (`stb_vorbis.c`) compiled with `-O1 -g1 -fsanitize=thread`.
+- **Run (`TSAN_OPTIONS="halt_on_error=1:exitcode=66"`, `setarch x86_64 -R`):**
+
+| Suite | Repeats | Checks per run | TSan reports | Result |
+|---|---:|---:|---:|---|
+| `adi_pcm_stream_tests` | 5 / 5 | 54 checks, 0 failures | 0 | **PASS** |
+| `adi_progressive_decode_tests` | 5 / 5 | 100 checks, 0 failures | 0 | **PASS** |
+
+- **Verdict:** **DF-E65 confirmed fixed** — the `stb_vorbis` `crc_table` data race is gone under ThreadSanitizer; ready for win to close.
+
+### 2. DF-E69 — Clang 14.0.6 + libstdc++ 12 (`-DADI_WERROR=ON`) on all 11 named units
+
+- **Build:** Clang 14.0.6 against Debian 12 libstdc++ 12 (`-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS_DEBUG="-g0" -DCMAKE_CXX_FLAGS_DEBUG="-g0" -DADI_WERROR=ON -DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF`, zero local patches). Built `adi_core` and all 7 test targets covering the 11 DF-E69 units (`462/462` ninja steps, **0 errors, 0 warnings**).
+- **All 11 DF-E69 units verified compiled to object files:**
+  - **(a) `timeline_clips.hpp` (8 units):** `src/adi/engine/automation_clips.cpp`, `src/adi/engine/clip_playback.cpp`, `src/adi/engine/gain_stage.cpp`, `src/adi/engine/midi_clips.cpp`, `src/adi/engine/midi_controllers.cpp`, `src/adi/render/freeze_capture.cpp`, `src/adi/freeze_commands.cpp`, `tests/test_take_lane_ops.cpp`.
+  - **(b) structured-binding lambda captures (4 units; `midi_clips.cpp` shared with (a)):** `src/adi/engine/midi_clips.cpp`, `src/adi/engine/param_ops.cpp`, `src/adi/project_files.cpp`, `tests/test_gain_stage.cpp`.
+- **CTest on the Clang 14.0.6 build (`7/7` PASS, `35.27 s`):** `adi_project_files_tests` (1.48 s), `adi_param_edits_tests` (0.38 s), `adi_take_lane_ops_tests` (0.55 s), `adi_midi_clips_tests` (8.76 s), `adi_gain_stage_tests` (4.21 s), `adi_freeze_commands_tests` (9.11 s), `adi_clip_playback_tests` (35.26 s).
+- **Verdict:** **DF-E69 confirmed fixed** on Clang 14.0.6 + libstdc++ 12 `-DADI_WERROR=ON`; ready for win to close. (The separate window JUCE-tier structured-binding site remains tracked under DF-W40.)
+
+(No PR requested; run-only closeout verification.)
+
+---
+
 ## 2026-11-23 — Queue item 2 (PR-BUILDS, Round 7): all 17 remaining unmerged `engine` maximal tips on GCC 12.2 and Clang 14.0.6 `-DADI_WERROR=ON`
 
 **For win and the engine seat.** Verified all 17 remaining live `engine/*` PR-requested maximal tips sitting outside `land/engine-1123` / `land/engine-1123b` on Linux GCC 12.2.0 `-DADI_WERROR=ON` (`-g0`, Pd on, JUCE off, transient local DF-M62 patch) and Clang 14.0.6 `-Werror` across every changed headless TU, plus affected CTest suites.
