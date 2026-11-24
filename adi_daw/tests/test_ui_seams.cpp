@@ -2510,8 +2510,10 @@ void takeClipsStayOffTheMainRow() {
     if (!store) return;
     store->db().exec("INSERT INTO tracks(id,kind,name) VALUES(1,'audio','Vocal')");
     store->db().exec("INSERT INTO lanes(id,track_id,ord,name) VALUES(7,1,0,'Take 1')");
+    // Clip 3 starts at quarter 64, far past the song's least end of 16 quarters.
+    const auto far = 64 * textproj::kPPQ;
     store->db().exec("INSERT INTO clips(id,track_id,lane_id,kind,pos_ticks,length_ticks) VALUES"
-                     "(1,1,NULL,'audio',0,960),(2,1,7,'audio',0,960),(3,1,7,'audio',200000,960)");
+                     "(1,1,NULL,'audio',0,960),(2,1,7,'audio',0,960),(3,1,7,'audio'," + std::to_string(far) + ",960)");
     engine::ProjectView view;
     view.refresh(*store);
     const ui::SnapshotReader reader(view.current());
@@ -2527,8 +2529,8 @@ void takeClipsStayOffTheMainRow() {
     ui::ArrangementGeometry geo;
     const auto *hit = geo.hit(*track, 480);
     check(hit != nullptr && hit->id == 1, "a click at 480 on the track hits clip 1, not the take under it");
-    check(geo.hit(*track, 200000 + 480) == nullptr, "nothing is hit where only a take lies");
-    check(geo.end(reader) < 200000, "the song's end ignores a take further right");
+    check(geo.hit(*track, far + 480) == nullptr, "nothing is hit where only a take lies");
+    check(geo.end(reader) < far, "the song's end ignores a take further right");
 }
 int main() {
     theWrongThingDoesNotCompile();
