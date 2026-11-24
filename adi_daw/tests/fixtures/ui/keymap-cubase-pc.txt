@@ -120,3 +120,6 @@
 29047 Fit to Time Range: Cmd+Alt+J
 29048 Arrangement Record: F9
 29049 Export Audio/Video...: Cmd+Shift+R
+29050 Delay Compensation: 
+29051 Solo Switches: 
+29052 Cue Switches: 
