@@ -65,7 +65,24 @@ void mailboxConcurrency() {
     };
     mailbox.publish(signature(0));std::atomic<bool> done{false};
     std::atomic<std::uint64_t> rejected{0};
-    std::thread producer([&]{for(std::uint64_t i=1;i<=100000;++i){AudioScope scope;if(mailbox.publish(signature(i))==0)rejected.fetch_add(1);}done.store(true,std::memory_order_release);});
+    // The producer keeps publishing until the reader has completed a set number
+    // of reads, so every counted read still races a live publish. A fixed run of
+    // publishes could end while a loaded runner had the reader descheduled
+    // (macOS CI), leaving no read at all. The deadline only stops a reader that
+    // never completes from hanging the test; the reads check then fails.
+    constexpr std::uint64_t minimumPublishes=100000,targetReads=1000;
+    std::atomic<std::uint64_t> completedReads{0},lastPublished{0};
+    std::thread producer([&]{
+        const auto limit=std::chrono::steady_clock::now()+std::chrono::seconds(30);
+        std::uint64_t i=1;
+        for(;;++i) {
+            {AudioScope scope;if(mailbox.publish(signature(i))==0)rejected.fetch_add(1);}
+            if(i<minimumPublishes)continue;
+            if(completedReads.load(std::memory_order_acquire)>=targetReads)break;
+            if(i%1024==0&&std::chrono::steady_clock::now()>=limit)break;
+        }
+        lastPublished.store(i,std::memory_order_relaxed);done.store(true,std::memory_order_release);
+    });
     std::uint64_t reads=0,mixed=0,last=0;
     while(!done.load(std::memory_order_acquire)) {
         f::Settings snapshot;std::uint64_t version=0;
@@ -73,11 +90,18 @@ void mailboxConcurrency() {
         ++reads;const auto n=static_cast<std::uint64_t>(snapshot.nodes[0].frequencyHz-1000.);
         if(!(snapshot==signature(n)))++mixed;
         if(version<last)++mixed;
-        last=version;
+        last=version;completedReads.store(reads,std::memory_order_release);
     }
     producer.join();f::Settings final;std::uint64_t version=0;
-    check(mailbox.read(final,version)&&final==signature(100000)&&version==100001,"mailbox latest complete snapshot converges");
-    check(reads>0&&mixed==0&&rejected.load()==0,"concurrent mailbox fields and serials never mix");
+    const auto published=lastPublished.load(std::memory_order_relaxed);
+    check(mailbox.read(final,version)&&final==signature(published)&&version==published+1,"mailbox latest complete snapshot converges");
+    if(reads<targetReads||mixed!=0||rejected.load()!=0)
+        std::printf("  mailbox reads %llu of %llu, mixed %llu, rejected publishes %llu, publishes %llu\n",
+            static_cast<unsigned long long>(reads),static_cast<unsigned long long>(targetReads),static_cast<unsigned long long>(mixed),
+            static_cast<unsigned long long>(rejected.load()),static_cast<unsigned long long>(published));
+    check(reads>=targetReads,"concurrent mailbox reader completes its reads during publishing");
+    check(mixed==0,"concurrent mailbox fields and serials never mix");
+    check(rejected.load()==0,"concurrent mailbox publish always finds a free slot");
 }
 void coreConcurrency() {
     f::Core core;f::Settings initial;initial.nodes[0].enabled=true;initial.nodes[0].q=1.;
