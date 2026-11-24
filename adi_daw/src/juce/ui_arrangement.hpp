@@ -161,8 +161,9 @@ class TrackHeaderList final : public juce::Component, public juce::SettableToolt
     };
     Drop dropAt(int y) const;
     // Where a dragged return would land: among the returns at the foot, before the one under the
-    // mouse's upper half or after the one under its lower half; over the tracks, before the first;
-    // over Main or below, after the last.
+    // mouse's upper half or after the one under its lower half; over a group's row or a row it
+    // holds, into that group, after its returns (ADR-0247 d2); over the other tracks, before the
+    // first; over Main or below, after the last.
     Drop returnDropAt(int y) const;
     // The drop shown while tracks are dragged; empty otherwise.
     std::optional<Drop> drop() const { return moving_ ? std::optional<Drop>(drop_) : std::nullopt; }

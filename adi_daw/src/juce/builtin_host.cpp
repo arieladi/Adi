@@ -102,6 +102,7 @@ public:
         }
         std::ostringstream text;text<<real;if(!declaration.unit.empty())text<<' '<<declaration.unit;return text.str();
     }
+    ReactivationGate& gateForTesting()noexcept{return gate_;}
     void prepare(double rate,std::int32_t frames)override {
         if(prepared_ && rate==rate_ && frames==frames_)return;
         if(!std::isfinite(rate) || rate<=0 || rate>768000 || frames<=0)throw std::runtime_error("invalid built-in format");
@@ -316,6 +317,12 @@ private:
     std::map<std::int32_t,Payload> sampleStates_;
 };
 #endif
+}
+ReactivationGate* detail::builtinGateForTesting([[maybe_unused]] DeviceInstance& instance)noexcept {
+#if ADI_WITH_PD
+    if(auto* builtin=dynamic_cast<BuiltinDevice*>(&instance))return &builtin->gateForTesting();
+#endif
+    return nullptr;
 }
 std::unique_ptr<DeviceInstance> makeBuiltinDevice(const engine::DeviceRequest& request,std::string& error) {
     try {

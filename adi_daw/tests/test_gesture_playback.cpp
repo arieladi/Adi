@@ -24,6 +24,7 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -43,14 +44,24 @@ void require(bool value, const std::string& name) {
 }
 struct Source final : Node {
     int prepares = 0;
+    std::optional<int> impulse;
+    std::array<double, 2> level{0.25, 0.5};
     void prepare(double, std::int32_t) override { ++prepares; }
     bool processesDouble() const noexcept override { return true; }
     const char* name() const noexcept override { return "gesture native source"; }
     void process(const NodeIo& io) noexcept override {
         for (int channel = 0; channel < io.channels; ++channel) {
-            const double value = channel == 0 ? 0.25 : 0.5;
-            if (io.wide()) std::fill_n(io.out64[channel] + io.blockOffset, io.frames, value);
-            else std::fill_n(io.out[channel] + io.blockOffset, io.frames, static_cast<float>(value));
+            const double value = level[channel == 0 ? 0 : 1];
+            const bool hasImpulse = impulse && *impulse >= io.blockOffset && *impulse - io.blockOffset < io.frames;
+            if (io.wide()) {
+                auto* out = io.out64[channel];
+                std::fill_n(out + io.blockOffset, io.frames, impulse ? 0.0 : value);
+                if (hasImpulse) out[*impulse] = value;
+            } else {
+                auto* out = io.out[channel];
+                std::fill_n(out + io.blockOffset, io.frames, impulse ? 0.0f : static_cast<float>(value));
+                if (hasImpulse) out[*impulse] = static_cast<float>(value);
+            }
         }
     }
 };
@@ -138,7 +149,7 @@ private:
 struct Fixture {
     test::TempDirectory directory{"gesture_playback", "native"};
     std::unique_ptr<Store> store;
-    Source source;
+    Source source, referenceSource;
     std::shared_ptr<Probe> probe = std::make_shared<Probe>();
     engine::Session session;
     ProjectView view;
@@ -148,7 +159,7 @@ struct Fixture {
     int loads = 0;
     std::int64_t clock = 0;
     explicit Fixture(Precision width, bool midi = false, bool automated = false, std::int32_t maxFrames = 64,
-                     bool pedal = false) : precision(width) {
+                     bool pedal = false, bool delayProbe = false) : precision(width) {
         StoreError error{};
         store = Store::createEmpty(directory.path() / "project.adi", error);
         require(static_cast<bool>(store), "create native gesture project");
@@ -180,7 +191,17 @@ struct Fixture {
             require(OpJournal(*store).commit(request).ok, "seed native AAUT");
         }
         session.graph().setFadeFrames(0);
-        if (!midi) session.setSourcesFor([this](std::int64_t track) { return track == 1 ? std::vector<Node*>{&source} : std::vector<Node*>{}; });
+        if (delayProbe) {
+            store->db().exec("UPDATE project SET sample_rate=48000; UPDATE routing SET gain_db=0 WHERE id=3");
+            referenceSource.level = {0.5, 0.25};
+        }
+        if (!midi) {
+            session.setSourcesFor([this, delayProbe](std::int64_t track) {
+                if (track == 1) return std::vector<Node*>{&source};
+                if (track == 2 && delayProbe) return std::vector<Node*>{&referenceSource};
+                return std::vector<Node*>{};
+            });
+        }
         SessionSpec spec; spec.sampleRate = 48000; spec.maxFrames = maxFrames; spec.precision = width;
         require(session.load(*store, [this, midi](const DeviceRequest&, std::string&) {
             ++loads; return std::make_unique<Device>(probe, store->db().getHandle(), midi);
@@ -301,6 +322,96 @@ void scalars(Precision precision) {
         f.session.tick(1000 + n); f.sound(0.25, 0.5, "retired scalar images cannot poison ordinary refreshed playback");
     }
     f.clean("scalar native gate");
+}
+
+void trackDelay(Precision precision) {
+    Fixture f(precision, false, false, 64, false, true);
+    const auto count = OpJournal(*f.store).count();
+    const auto head = OpJournal(*f.store).headSeq();
+    auto pulse = [&](int sourceAt, int referenceAt, const char* context) {
+        std::array<float, 64> left{}, right{};
+        std::array<double, 64> wideLeft{}, wideRight{};
+        float* outputs[]{left.data(), right.data()};
+        double* wide[]{wideLeft.data(), wideRight.data()};
+        AudioIo io;
+        io.out = outputs;
+        io.numOut = 2;
+        io.frames = 64;
+        if (precision == Precision::Float64) io.out64 = wide;
+        f.source.impulse = -1;
+        f.referenceSource.impulse = -1;
+        for (int block = 0; block < 8; ++block) {
+            io.streamTimeSamples = f.clock;
+            f.session.process(io);
+            f.clock += io.frames;
+        }
+        f.source.impulse = 0;
+        f.referenceSource.impulse = 0;
+        io.streamTimeSamples = f.clock;
+        f.session.process(io);
+        f.clock += io.frames;
+        bool match = true;
+        for (std::size_t i = 0; i < left.size(); ++i) {
+            const auto at = static_cast<int>(i);
+            const double expectedL = (at == sourceAt ? 0.5 : 0.0) + (at == referenceAt ? 0.5 : 0.0);
+            const double expectedR = (at == sourceAt ? 1.0 : 0.0) + (at == referenceAt ? 0.25 : 0.0);
+            const auto l = precision == Precision::Float64 ? wideLeft[i] : static_cast<double>(left[i]);
+            const auto r = precision == Precision::Float64 ? wideRight[i] : static_cast<double>(right[i]);
+            match = match && std::abs(l - expectedL) < 1e-7 && std::abs(r - expectedR) < 1e-7;
+        }
+        check(match, std::string(context) + ": dry strip and Post send land together on the expected samples");
+    };
+    pulse(0, 0, "default delay");
+    auto drag = f.begin(g::scalarProducer({g::ScalarKind::TrackDelay, 1}), g::Strategy::Structural);
+    auto* const readers = f.session.clips();
+    f.update(*drag, std::make_unique<g::ScalarInput>(21.2), "Track Delay late");
+    check(OpJournal(*f.store).count() == count && OpJournal(*f.store).headSeq() == head &&
+              f.view.current()->findTrack(1)->delaySamples == 21,
+          "a signed sample delay is visible during drag without a journal write");
+    check(f.session.clips() == readers, "the delay preview keeps the existing clip reader");
+    pulse(21, 0, "late before release");
+    require(f.session.graph().currentGraph()->retapLatency(), "retap prepared Track Delay graph");
+    pulse(21, 0, "late after a native latency retap");
+    f.update(*drag, std::make_unique<g::ScalarInput>(-19), "Track Delay early");
+    pulse(0, 19, "early before release");
+    f.cancel(*drag, "Track Delay Esc");
+    check(f.session.clips() == readers, "Esc keeps the existing clip reader");
+    pulse(0, 0, "restored after Esc");
+    check(OpJournal(*f.store).count() == count && f.view.current()->findTrack(1)->delaySamples == 0,
+          "cancel restores the original delay image");
+
+    g::RelativeScalarSelection selection{g::ScalarKind::TrackDelay, 1, {2, 1}, {-48000, 48000, {}}};
+    auto relative = f.begin(g::relativeScalarProducer(selection), g::Strategy::Structural);
+    f.update(*relative, std::make_unique<g::RelativeScalarInput>(30), "relative delay");
+    check(f.view.current()->findTrack(1)->delaySamples == 30 &&
+              f.view.current()->findTrack(2)->delaySamples == 30 && OpJournal(*f.store).count() == count,
+          "two tracks preview under one captured gesture");
+    const auto committed = relative->commit();
+    check(committed.status.ok() && committed.durable && committed.durable->ok &&
+              OpJournal(*f.store).count() == count + 2,
+          "two signed delays commit in one gesture transaction");
+    check(History(*f.store).undo().ok && f.coordinator->drain(601).status.ok() &&
+              f.view.current()->findTrack(1)->delaySamples == 0 &&
+              f.view.current()->findTrack(2)->delaySamples == 0,
+          "one Undo restores both captured delays");
+    pulse(0, 0, "restored after Undo");
+
+    auto unchanged = f.begin(g::scalarProducer({g::ScalarKind::TrackDelay, 1}), g::Strategy::Structural);
+    auto* const currentReaders = f.session.clips();
+    f.update(*unchanged, std::make_unique<g::ScalarInput>(23), "temporary delay");
+    f.update(*unchanged, std::make_unique<g::ScalarInput>(0), "delay back to Begin");
+    check(f.session.clips() == currentReaders, "returning to the origin keeps the existing clip reader");
+    check(unchanged->commit().semanticNoOp && OpJournal(*f.store).headSeq() == head,
+          "return to the original delay requires no step");
+    pulse(0, 0, "unchanged End");
+
+    require(f.session.setDelayCompensation(false), "disable Delay Compensation");
+    auto disabled = f.begin(g::scalarProducer({g::ScalarKind::TrackDelay, 1}), g::Strategy::Structural);
+    const auto refused = disabled->update(std::make_unique<g::ScalarInput>(9));
+    check(refused.status.error == g::Error::UnsupportedPreview && OpJournal(*f.store).headSeq() == head,
+          "Track Delay preview is unavailable while compensation is off");
+    f.cancel(*disabled, "release the disabled delay drag");
+    f.clean("Track Delay");
 }
 
 void relativeScalars(Precision precision) {
@@ -1079,6 +1190,8 @@ void countInAcrossGesture(Precision precision) {
 } // namespace
 int main() {
     for (const auto precision : {Precision::Float32, Precision::Float64}) {
+        try { trackDelay(precision); }
+        catch (const std::exception& exception) { check(false, std::string("unexpected Track Delay fixture exception: ") + exception.what()); }
         try { scalars(precision); relativeScalars(precision); relativeScalarAtomicFailure(precision); relativeScalarForeign(precision); switches(precision); foreignAndCommit(precision); structure(precision); automationPreview(precision); largeBlockPreview(precision); firstScalarOverAutomation(precision); pedalAcrossPreview(precision); linkAcrossGesture(precision); performedTempoAcrossGesture(precision); countInAcrossGesture(precision); retainedRefusal(precision); nativeMaterialGuard(precision); referenceAndCue(precision); }
         catch (const std::exception& exception) { check(false, std::string("unexpected native fixture exception: ") + exception.what()); }
     }

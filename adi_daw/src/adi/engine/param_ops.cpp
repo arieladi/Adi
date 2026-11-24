@@ -338,7 +338,7 @@ struct ParamOps::Runtime::DeviceProducer final : gesture::Producer {
                     resources.emplace(hash,bytes);
                 };
                 for(const auto& [role,bytes]:value->image.roles) {
-                    const auto existing=std::find_if(states.begin(),states.end(),[&](const auto& row){return row.at("stream_role")==role;});
+                    const auto existing=std::find_if(states.begin(),states.end(),[&wantRole=role](const auto& row){return row.at("stream_role")==wantRole;});
                     const auto hash=bytesHash(bytes);
                     if(existing!=states.end() && existing->at("state_hash")==hash)continue;
                     if(existing==states.end() && bytesHash(baseline.roles.at(role))!=hash)appendState(role,baseline.roles.at(role));
@@ -346,7 +346,7 @@ struct ParamOps::Runtime::DeviceProducer final : gesture::Producer {
                 }
                 if(value->image.roles.empty()) {
                     for(const auto& [id,wanted]:value->image.parameters) {
-                        const auto existing=std::find_if(parameters.begin(),parameters.end(),[&](const auto& row){return row.at("param_id")==id;});
+                        const auto existing=std::find_if(parameters.begin(),parameters.end(),[&wantId=id](const auto& row){return row.at("param_id")==wantId;});
                         const auto before=existing==parameters.end()?baseline.parameters.at(id):existing->at("normalized_value").template get<double>();
                         if(wanted==before)continue;
                         if(existing==parameters.end())appendParameter(id,before);
@@ -2150,7 +2150,7 @@ bool ParamOps::Runtime::capturePending(std::int64_t nowMs) {
             const auto* entry=attached.session->entryFor(id);
             if(!entry || entry->retired) {
                 const auto state=attached.stateFence?attached.stateFence->watermarks():gesture::detail::StateProducerFence::Watermarks{};
-                const bool owned=std::any_of(gestures_.begin(),gestures_.end(),[&](const auto& task){return !task->terminal() && task->deviceId==id;});
+                const bool owned=std::any_of(gestures_.begin(),gestures_.end(),[deviceId=id](const auto& task){return !task->terminal() && task->deviceId==deviceId;});
                 if(!owned && !attached.capture->hasPendingEvents() &&
                    attached.activityCursor==attached.activities.size() && state.reserved==state.consumed && !state.fault &&
                    attached.capture->stats().dropped==attached.recoveredDrops) {
@@ -2163,7 +2163,7 @@ bool ParamOps::Runtime::capturePending(std::int64_t nowMs) {
             if(attached.session->resolveDevice(attached.runtimeToken)!=attached.inst) {
                 const auto current=attached.session->deviceRuntimeToken(id);
                 const auto state=attached.stateFence?attached.stateFence->watermarks():gesture::detail::StateProducerFence::Watermarks{};
-                const bool owned=std::any_of(gestures_.begin(),gestures_.end(),[&](const auto& task){return !task->terminal() && task->deviceId==id;});
+                const bool owned=std::any_of(gestures_.begin(),gestures_.end(),[deviceId=id](const auto& task){return !task->terminal() && task->deviceId==deviceId;});
                 if(!current.sameInstance(attached.runtimeToken) || attached.session->resolveDevice(current)!=attached.inst ||
                    owned || attached.capture->hasPendingEvents() ||
                    attached.activityCursor!=attached.activities.size() || state.reserved!=state.consumed || state.fault) {

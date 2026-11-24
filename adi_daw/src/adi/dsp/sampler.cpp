@@ -238,6 +238,7 @@ void Sampler::playLayer(const engine::NodeIo &io, OneShot &engine, const Zone &z
         events.push(e);
     }
     double select = initial[params_.size() - 1], selectMod = modulation_[params_.size() - 1];
+    bool notes = false;  // a note-on this layer takes this block
     for (const auto &input : io.events) {
         auto e = input;
         if (e.type == engine::EventType::ParamValue || e.type == engine::EventType::ParamMod) {
@@ -267,13 +268,18 @@ void Sampler::playLayer(const engine::NodeIo &io, OneShot &engine, const Zone &z
             // note-on the layer will see, so later notes keep their own.
             if (events.push(e)) {
                 engine.queueNoteGain(w);
+                notes = true;
             }
             continue;
         }
         // Sized in prepare() for the block's events. Should one still not
         // fit, a lost note-off must not leave a voice sounding: stop them.
-        if (!events.push(e) && e.type == engine::EventType::NoteOff) {
-            engine.resetVoices();
+        if (!events.push(e)) {
+            if (e.type == engine::EventType::NoteOff) {
+                engine.resetVoices();
+            }
+        } else if (e.type == engine::EventType::NoteOn) {
+            notes = true;  // a velocity-0 note-on still reaches the engine
         }
     }
     float *channels[]{scratch_.data(), scratch_.data() + maxFrames_};
@@ -281,10 +287,16 @@ void Sampler::playLayer(const engine::NodeIo &io, OneShot &engine, const Zone &z
     child.out = channels;
     child.channels = 2;
     child.events = {events.begin(), events.size()};
+    // A layer with no voice sounding and no note-on plays exact silence
+    // (OneShot's own fast path): it is not mixed. 32 layers, most of them idle.
+    const bool silent = !notes && !engine.sounding();
     if (slot) {
         engine.processPrepared(child, sample, generation);
     } else {
         engine.process(child);
+    }
+    if (silent) {
+        return;
     }
     const double gain = std::pow(10., z.gainDb / 20.);
     if (io.out) {

@@ -164,6 +164,29 @@ void measurements() {
             check(render(other, x, block) == expected, "type output identical for all block sizes");
         }
     }
+    // Into a silent tail: the vendored states settle at the same samples
+    // whatever the host's blocks (a found defect: they settled at block ends,
+    // so a 32-frame render and a 4,096-frame one parted in the tail).
+    for (int circuit = 0; circuit < 4; ++circuit) {
+        for (int type : {0, 1, 2, 9}) {
+            std::vector<float> kick(96000);
+            kick[0] = 1.f;
+            std::vector<float> first;
+            for (std::size_t block : {32u, 100u, 4096u}) {
+                C c;
+                c.set(C::Type, type);
+                c.set(C::Circuit, circuit);
+                c.set(C::Resonance, .5);
+                c.prepare(48000);
+                const auto out = render(c, kick, block);
+                if (first.empty()) {
+                    first = out;
+                } else {
+                    check(out == first, "into a silent tail, every circuit's output is identical for all block sizes");
+                }
+            }
+        }
+    }
     for (int circuit = 0; circuit < 4; ++circuit)
         for (int type = 0; type < 5; ++type) {
             C c;

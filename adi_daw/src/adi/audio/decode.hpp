@@ -69,6 +69,11 @@ private:
 enum class SourceFormat { Riff, Aiff, Flac, Mp3, Ogg, Unknown, Mp4, Adts };
 [[nodiscard]] SourceFormat sniff(const std::filesystem::path&);
 
+/// DF-E65: the one process-wide lock held around every stb_vorbis call that can
+/// reach its shared CRC table (each Ogg Vorbis open and its stream-length probe).
+/// Declared here so a test can hold it and see an Ogg open wait for it.
+[[nodiscard]] std::mutex& stbVorbisTableLock();
+
 inline constexpr std::uint32_t kMaxDecodeRate = 768000;   // ADR-0157
 inline constexpr std::uint32_t kMaxDecodeChannels = 64;
 

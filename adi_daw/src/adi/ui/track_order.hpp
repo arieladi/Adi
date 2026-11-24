@@ -14,8 +14,12 @@ struct TrackPlace {
     std::int64_t id = 0, parent = 0; // parent: the group it sits in; 0 at the top
     bool group = false, main = false;
     bool ret = false; // a return track
-    // Live pins the returns and Main at the foot of the lanes (ArrangementGeometry::footStart).
-    bool foot() const noexcept { return main || ret; }
+    // Live's track number, from 1, counting only the tracks it numbers: a return (at the foot or in
+    // a group) and Main take none, so a grouped return moves no number (DF-W33). 0 when unnumbered.
+    std::uint32_t number = 0;
+    // Live pins the returns and Main at the foot of the lanes (ArrangementGeometry::footStart). A
+    // return inside a group stands in its group, after what the group holds (DF-W33; ADR-0247 d2).
+    bool foot() const noexcept { return main || (ret && parent == 0); }
 };
 // The one order every panel reads (UI-ARCHITECTURE §4; Live 12 manual 18.3): each group followed
 // by what it holds, in their order in it (index_in_parent, then id), at any depth; then the
@@ -121,6 +125,9 @@ class TrackOrder {
                 place.depth = 0;
                 places_.push_back(place);
             }
+        std::uint32_t numbered = 0;
+        for (auto &place : places_)
+            place.number = place.ret || place.main ? 0 : ++numbered;
     }
     const std::vector<TrackPlace> &places() const noexcept { return places_; }
     // Whether this order was built for `reader`'s snapshot. Compared, never followed.
