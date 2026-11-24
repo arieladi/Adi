@@ -6,6 +6,7 @@
 #include "adi/pd_builtins/colorcab_sample.hpp"
 #include "adi/pd_builtins/native_devices.hpp"
 #include "juce/pd_engine.hpp"
+#include "replace_operator_new.hpp"
 
 #include <algorithm>
 #include <array>
@@ -23,16 +24,9 @@ namespace {
 thread_local bool countAllocations = false;
 thread_local std::size_t allocations = 0;
 }
-void* operator new(std::size_t size) {
+void adi::test::countReplacedNew() noexcept {
     if (countAllocations) ++allocations;
-    if (auto* allocation = std::malloc(size ? size : 1)) return allocation;
-    throw std::bad_alloc();
 }
-void* operator new[](std::size_t size) { return operator new(size); }
-void operator delete(void* allocation) noexcept { std::free(allocation); }
-void operator delete[](void* allocation) noexcept { std::free(allocation); }
-void operator delete(void* allocation, std::size_t) noexcept { std::free(allocation); }
-void operator delete[](void* allocation, std::size_t) noexcept { std::free(allocation); }
 namespace {
 using adi::device::LibPdEngine;
 int checks = 0, failures = 0;

@@ -1147,7 +1147,7 @@ void MixerStrip::beginLive(gesture::ScalarKind kind, std::int64_t id, gesture::S
     // Begun where the rows stand: heard from the first move, and a click that does not move writes nothing.
     live_ = panel_.root.beginMixerDrag({kind, id, selected, domain}, std::nullopt, label);
     if (live_)
-        grabKeyboardFocus(); // Esc during the drag reaches keyPressed
+        focusIfShowing(*this); // Esc during the drag reaches keyPressed
     else
         panel_.root.say(panel_.root.error().empty() ? "This control cannot be dragged live." : panel_.root.error());
 }
@@ -1322,7 +1322,7 @@ bool MixerPanel::focusTrack(std::int64_t track) {
             target = s.get();
     if (target == nullptr)
         return false;
-    target->active.grabKeyboardFocus();
+    focusIfShowing(target->active);
     return true;
 }
 void MixerPanel::reveal(std::size_t index) {
@@ -1404,7 +1404,7 @@ bool MixerPanel::focusNeighbour(bool next) {
     reveal(to);
     for (const auto &other : strips_)
         if (other->isVisible() && other->track() == tracks[to].track->id)
-            other->switches()[slot]->grabKeyboardFocus();
+            focusIfShowing(*other->switches()[slot]);
     return true;
 }
 void MixerPanel::placeColumns() {

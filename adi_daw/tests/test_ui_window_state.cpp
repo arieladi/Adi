@@ -7,6 +7,7 @@
 #include "adi/ui/window_state.hpp"
 #include "adi/ui/fuzzy_match.hpp"
 #include <cmath>
+#include "adi/ui/window_place.hpp"
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <cstdint>
@@ -218,6 +219,112 @@ void fzyCases() {
           "a Hebrew query matches a Hebrew name as it is");
     check(hasMatch(utf32("\xd0\x9c\xd0\x98"), utf32("\xd0\xbc\xd0\xb8\xd0\xba\xd1\x81")), "Cyrillic matches either case");
 }
+// WIN-02: the one placement rule, headless (adi/ui/window_place.hpp). The laptop is 1366 by 768 at
+// 125 %: 1093 by 614 units, a 32-unit task bar at the foot.
+void placementRule() {
+    using namespace window_place;
+    const Monitor laptop{"laptop", {0, 0, 1093, 614}, {0, 0, 1093, 582}, 120, true};
+    const Monitor wide{"wide", {1093, 0, 1920, 1080}, {1093, 0, 1920, 1040}, 96, false};
+    const Monitor left{"left", {-1920, 0, 1920, 1080}, {-1920, 0, 1920, 1040}, 96, false};
+    const std::vector<Monitor> one{laptop}, two{laptop, wide};
+    // Sanitize: a record's nonsense made a rectangle.
+    check(sanitize({5, 5, -10, 0}, 520, 180) == Rect{5, 5, 520, 180} &&
+              sanitize({-900000, 900000, 900000, 50}, 1, 1) == Rect{-kLimit, kLimit, kLimit, 50},
+          "sanitize: a size below the least grows to it, one past the limit and a far corner come back in");
+    // The monitor by the area shown.
+    check(monitorOf({1000, 100, 400, 300}, two) == 1 && monitorOf({800, 100, 400, 300}, two) == 0 &&
+              monitorOf({9000, 9000, 10, 10}, two) == 0,
+          "the monitor showing most of a window is its monitor; one shown nowhere is the main display's");
+    // Identity: id, area, origin, the one of the same size and DPI, the main display.
+    Place p;
+    p.display = "wide";
+    check(identify(p, two).index == 1 && !identify(p, two).gone, "a monitor is found by its id");
+    p.display = "renamed";
+    p.area = {1093, 0, 1920, 1080};
+    check(identify(p, two).index == 1, "then by its area");
+    p.area = {1093, 0, 2560, 1440};
+    check(identify(p, two).index == 1, "then by its origin");
+    p.area = {5000, 0, 1920, 1080};
+    p.dpi = 96;
+    check(identify(p, two).index == 1, "then as the one monitor of its size and DPI");
+    check(identify(p, {laptop, wide, left}).gone && identify(p, {laptop, wide, left}).index == 0,
+          "two of that size and DPI answer neither: the main display stands in, the place's monitor gone");
+    // The laptop: a title bar is never above the screen, nor off its sides or foot.
+    Place onLaptop;
+    onLaptop.display = "laptop";
+    onLaptop.area = laptop.area;
+    onLaptop.rect = {200, -40, 700, 400};
+    check(restore(onLaptop, one, 520, 180).y == 0, "a window saved above the top opens with its title bar on the screen");
+    onLaptop.rect = {200, 600, 700, 400};
+    check(restore(onLaptop, one, 520, 180).y == 582 - 18, "one saved below the task bar keeps a grab of its title bar above it");
+    onLaptop.rect = {1080, 100, 700, 400};
+    check(restore(onLaptop, one, 520, 180).x == 1093 - 40, "one off the right edge keeps 40 units of its title bar on");
+    onLaptop.rect = {-690, 100, 700, 400};
+    check(restore(onLaptop, one, 520, 180).x == -700 + 40, "and off the left edge the same");
+    onLaptop.rect = {700, 100, 700, 400};
+    check(restore(onLaptop, one, 520, 180) == Rect{700, 100, 700, 400}, "a window partly off an edge stays where its owner put it");
+    onLaptop.rect = {0, 0, 1920, 1080};
+    check(restore(onLaptop, one, 520, 180) == Rect{0, 0, 1093, 582}, "a window bigger than the screen opens no bigger than its usable area");
+    // Every place a record may hold opens with its title bar reachable on the laptop.
+    bool always = true;
+    for (int x = -4000; x <= 4000; x += 250)
+        for (int y = -3000; y <= 3000; y += 250)
+            for (const auto &[w, h] : {std::pair{600, 300}, std::pair{1600, 1000}, std::pair{40, 20}}) {
+                Place any;
+                any.display = (x + y) % 500 == 0 ? "laptop" : "gone";
+                any.area = (x % 1000 == 0) ? Rect{1093, 0, 1920, 1080} : Rect{};
+                any.rect = {x, y, w, h};
+                const auto r = restore(any, one, 520, 180);
+                if (!reachable(r, one) || r.y < 0 || r.w > 1093 || r.h > 582)
+                    always = false;
+            }
+    check(always, "at 1366 x 768 and 125 %, every saved place opens with its title bar on the screen and no larger than it");
+    // Restore: same monitor; in proportion when it changed; on the main display when gone.
+    Place onWide;
+    onWide.display = "wide";
+    onWide.area = wide.area;
+    onWide.dpi = 96;
+    onWide.rect = {1593, 200, 800, 500};
+    check(restore(onWide, two, 520, 180) == Rect{1593, 200, 800, 500}, "on its own monitor a window opens where it was");
+    const Monitor wideNow{"wide@2560", {1093, 0, 2560, 1440}, {1093, 0, 2560, 1400}, 96, false};
+    check(restore(onWide, {laptop, wideNow}, 520, 180) == Rect{1093 + 666, 266, 1066, 666},
+          "on its monitor at another resolution, in proportion");
+    Place small = onWide;
+    small.rect = {1293, 100, 300, 200};
+    check(restore(small, one, 100, 100) == Rect{200, 100, 300, 200},
+          "with its monitor gone, on the main display at the same offset from its corner");
+    check(restore(onWide, one, 520, 180) == Rect{293, 82, 800, 500}, "and wholly on it, where the offset would leave it partly off");
+    Place onLeft;
+    onLeft.display = "left";
+    onLeft.area = left.area;
+    onLeft.rect = {-1600, 100, 400, 300};
+    check(restore(onLeft, {laptop, left}, 100, 100) == Rect{-1600, 100, 400, 300}, "negative desktop coordinates are kept");
+    const Monitor leftMoved{"left", {-2560, 0, 1920, 1080}, {-2560, 0, 1920, 1040}, 96, false};
+    check(restore(onLeft, {laptop, leftMoved}, 100, 100).x == -2240, "a monitor moved on the desktop takes its windows with it");
+    // Cascade.
+    const std::vector<Rect> open{{100, 100, 400, 300}, {122, 122, 400, 300}};
+    check(cascade({100, 100, 400, 300}, open, laptop.usable) == Rect{144, 144, 400, 300},
+          "a new window at another's corner steps 22 down and right past every one there [P:7.5-floating#15]");
+    check(cascade({700, 300, 400, 300}, {{700, 300, 400, 300}}, laptop.usable) == Rect{0, 0, 400, 300},
+          "a step past the screen's edge goes back to its corner");
+    check(cascade({10, 10, 400, 300}, open, laptop.usable) == Rect{10, 10, 400, 300}, "a free corner is kept");
+    // The record.
+    const auto kept = placeOf({1593, 200, 800, 500}, true, two);
+    const auto back = fromJson(toJson(kept));
+    check(kept.display == "wide" && kept.area == wide.area && kept.dpi == 96 && back && back->display == "wide" &&
+              back->area == wide.area && back->rect == kept.rect && back->fullScreen && back->dpi == 96,
+          "a place reads back from its record as it was written");
+    check(!fromJson(nlohmann::json::array()) && !fromJson({{"rect", {1, 2, 3}}}) && !fromJson({{"rect", {1, 2, 0, 5}}}) &&
+              !fromJson({{"rect", {1, "2", 3, 4}}}),
+          "a record the rule cannot read is none");
+    const auto partial = fromJson({{"rect", {10, 20, 300, 200}}});
+    check(partial && partial->display.empty() && partial->area.empty() && !partial->fullScreen,
+          "a record holding only a rectangle reads with its monitor unknown");
+    std::string why;
+    const auto *row = settings::find("window.places");
+    check(row != nullptr && settings::validate(*row, nlohmann::json{{"main", toJson(kept)}}, why),
+          "window.places takes the record as the rule writes it");
+}
 // SRF-05's JUCE-free half: a port's switches from the Settings' `midi.ports` record, the lock-free ring
 // a port's events go through, and a Universal MIDI Packet read as the MIDI 1.0 message it carries.
 void midiPortsCore() {
@@ -336,6 +443,7 @@ int main() {
     locateFence();
     midiPortsCore();
     fzyCases();
+    placementRule();
     test::TempDirectory temp("ui_state", "roundtrip");
     StoreError err{};
     auto store = Store::createEmpty(temp.path() / "p.adi", err);
@@ -344,6 +452,37 @@ int main() {
     store->db().exec("INSERT INTO project(id,name) VALUES(1,'UI test')");
     ViewStateStore views(*store);
     std::string error;
+    {
+        // WIN-02: a floating window's place keeps its monitor's area and DPI, and after a kill (the store
+        // opened again, nothing else said) the rule puts it back where it stood.
+        FloatingState moved;
+        moved.monitor = "wide";
+        moved.x = 1593;
+        moved.y = 200;
+        moved.width = 800;
+        moved.height = 500;
+        moved.open = true;
+        moved.areaX = 1093;
+        moved.areaWidth = 1920;
+        moved.areaHeight = 1080;
+        moved.dpi = 96;
+        check(views.saveFloating("Mix View", moved, error), "a moved floating window's place is saved");
+        auto reopened = Store::open(temp.path() / "p.adi", err);
+        check(reopened != nullptr, "the project opens again after the kill");
+        if (reopened) {
+            const auto back = ViewStateStore(*reopened).loadFloating("Mix View");
+            window_place::Place p{back.monitor, {back.areaX, back.areaY, back.areaWidth, back.areaHeight}, back.dpi,
+                           {back.x, back.y, back.width, back.height}, false};
+            const std::vector<window_place::Monitor> desk{{"laptop", {0, 0, 1093, 614}, {0, 0, 1093, 582}, 120, true},
+                                                   {"wide", {1093, 0, 1920, 1080}, {1093, 0, 1920, 1040}, 96, false}};
+            check(back.areaWidth == 1920 && back.dpi == 96 && window_place::restore(p, desk, 100, 100) == window_place::Rect{1593, 200, 800, 500},
+                  "a moved floating window keeps its place after a kill");
+        }
+        store->db().exec("UPDATE ui_view SET value='{\"monitor\":\"m\",\"x\":1,\"y\":2,\"width\":300,\"height\":200,\"open\":true}' WHERE key='floating.Mix View'");
+        const auto old = views.loadFloating("Mix View");
+        check(old.monitor == "m" && old.width == 300 && old.areaWidth == 0 && old.dpi == 0,
+              "a place saved before the area was kept reads with its area unknown");
+    }
     {
         WindowState stack;
         stack.zoom = 1.5;

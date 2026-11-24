@@ -1737,7 +1737,7 @@ bool NoteEditor::commit(NoteEdit edit) {
     return true;
 }
 void NoteEditor::mouseDown(const juce::MouseEvent &e) {
-    grabKeyboardFocus();
+    focusIfShowing(*this);
     drag_ = Drag::None;
     copying_ = false;
     dragTicks_ = 0;
@@ -4297,7 +4297,7 @@ void ClipViewPanel::openEditor(Field field) {
     editor_.setText(field == Field::Name ? juce::String(details_->name) : value.removeCharacters(" "), false);
     editor_.setVisible(true);
     editor_.selectAll();
-    editor_.grabKeyboardFocus();
+    focusIfShowing(editor_);
 }
 void ClipViewPanel::closeEditor() {
     editing_ = Field::None;
