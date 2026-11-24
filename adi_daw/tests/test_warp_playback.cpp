@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+#include "replace_operator_new.hpp"
 #include "temp_directory.hpp"
 #include "adi/audio/warp_map.hpp"
 #include "adi/audio/io_audit.hpp"
@@ -22,12 +23,7 @@
 #include <new>
 #include <numbers>
 namespace {std::atomic<unsigned> callbackAllocations{0};}
-void* operator new(std::size_t n){if(adi::audio::onAudioThread)++callbackAllocations;if(void* p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
-void* operator new[](std::size_t n){return operator new(n);}
-void operator delete(void* p)noexcept{std::free(p);}
-void operator delete[](void* p)noexcept{std::free(p);}
-void operator delete(void* p,std::size_t)noexcept{std::free(p);}
-void operator delete[](void* p,std::size_t)noexcept{std::free(p);}
+void adi::test::countReplacedNew() noexcept{if(adi::audio::onAudioThread)++callbackAllocations;}
 namespace {
 using namespace adi;using namespace adi::engine;constexpr std::int64_t q=textproj::kPPQ;
 int checks=0,failures=0;

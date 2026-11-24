@@ -134,6 +134,7 @@ void liveSections(std::vector<Setting>& r) {
         {"lookfeel.wheelChangesParameters", "Mouse and Pen Input"},
         // Theme & Colors
         {"lookfeel.theme", "Theme"},
+        {"lookfeel.density", "Theme"},
         {"lookfeel.paletteTone", "Theme"},
         {"lookfeel.contrast", "Theme"},
         {"lookfeel.gridIntensity", "Customization"},
@@ -803,9 +804,11 @@ std::vector<Setting> build() {
     std::vector<Setting> r;
     // --- Display & Input and Theme & Colors: the agent's whitelist lives mostly here (ADR-0125 d2) --
     r.push_back(choice("lookfeel.theme", "Theme & Colors", "Theme",
-                       "Colour theme of the whole application; by default it follows the "
-                       "operating system. Themes are files, so one can be shared.",
-                       {"os", "dark", "light"}, "os", true));
+                       "Colour theme of the application. Dark is the default.",
+                       {"dark", "midgrey", "light", "mixview", "os"}, "dark", true));
+    r.push_back(choice("lookfeel.density", "Theme & Colors", "Density",
+                       "Compact fits more controls on screen. Open increases control size and spacing.",
+                       {"compact", "open"}, "compact"));
     r.push_back(choice("lookfeel.language", "Display & Input", "Language",
                        "Interface language. Hebrew runs right to left in text containers only "
                        "(ADR-0125 d4).",

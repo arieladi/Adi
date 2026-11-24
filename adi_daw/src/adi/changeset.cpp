@@ -112,7 +112,12 @@ Change describe(const OpRequest& q, const OpDescriptor& d, const std::optional<P
         // op's inverse may have as many keys as its payload -- automation.
         // createLane is {id,row} against {id,state} -- and must not read as a
         // deletion.
-        const bool objects = inverse->is_object() && q.payload.is_object();
+        // N67: track.create's inverse carries the new track's monitorMode so
+        // Redo replays the default it was created with. That is not prior
+        // state, so it does not make a creation read as a capture.
+        Payload shape = *inverse;
+        if (q.opType == "track.create" && shape.is_object()) shape.erase("monitorMode");
+        const bool objects = shape.is_object() && q.payload.is_object();
         const auto everyKeyIn = [](const Payload& from, const Payload& in, bool equalValues) {
             for (auto it = from.begin(); it != from.end(); ++it) {
                 const auto found = in.find(it.key());
@@ -121,7 +126,7 @@ Change describe(const OpRequest& q, const OpDescriptor& d, const std::optional<P
             }
             return true;
         };
-        if (objects && everyKeyIn(*inverse, q.payload, true)) {
+        if (objects && everyKeyIn(shape, q.payload, true)) {
             // The inverse is only the identity, repeated from the payload: a creation.
             c.after = q.payload;
         } else if (objects && everyKeyIn(q.payload, *inverse, true)) {

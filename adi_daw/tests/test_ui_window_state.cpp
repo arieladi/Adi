@@ -7,7 +7,9 @@
 #include "adi/ui/window_state.hpp"
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <cstdint>
 #include <cstdio>
+#include <optional>
 #include <thread>
 #include <vector>
 #include <array>
@@ -21,6 +23,70 @@ void check(bool ok, const char *what) {
         ++failures;
         std::printf("FAIL %s\n", what);
     }
+}
+template <class Mailbox>
+std::optional<std::uint64_t> settledLocateRevision(const Mailbox &mailbox) noexcept {
+    if constexpr (requires { mailbox.settledLocateRevision(); })
+        return mailbox.settledLocateRevision();
+    else
+        // The previous mailbox has no Locate witness and treats every read as settled.
+        return std::uint64_t{0};
+}
+
+void locateFence() {
+    using Command = TransportMailbox::Command;
+    TransportMailbox mailbox;
+    engine::Transport transport;
+    check(settledLocateRevision(mailbox) == 0, "a new mailbox has a settled, neutral Locate revision");
+    check(mailbox.post(Command::Play), "queue playback for the Locate fixture");
+    mailbox.drain(transport);
+    constexpr std::int64_t position = 1024;
+    transport.advance(static_cast<std::int32_t>(position));
+    mailbox.publish(transport);
+    const auto before = transport.revision();
+
+    check(mailbox.post(Command::Locate, position) && mailbox.position() == position && mailbox.playing(),
+          "queue a Locate at the already published position while playing");
+    check(!settledLocateRevision(mailbox), "a same-position Locate is unsettled before the driver drains it");
+    mailbox.publish(transport);
+    check(!settledLocateRevision(mailbox), "ordinary position publication cannot acknowledge a queued Locate");
+    mailbox.drain(transport);
+    check(mailbox.position() == position && transport.revision() == before + 1 &&
+              settledLocateRevision(mailbox) == transport.revision(),
+          "the acknowledged same-position Locate exposes its applied revision");
+
+    const auto locateInMixedDrain = transport.revision() + 1;
+    check(mailbox.post(Command::Locate, position) && mailbox.post(Command::Stop) && mailbox.post(Command::Play),
+          "queue Locate followed by Stop and Play in one drain");
+    mailbox.drain(transport);
+    check(mailbox.playing() && mailbox.position() == position && transport.revision() == locateInMixedDrain + 2 &&
+              settledLocateRevision(mailbox) == locateInMixedDrain,
+          "the mixed drain exposes the Locate revision before its Stop and Play changes");
+
+    transport.locate(position); // Another driver action, with no mailbox command.
+    for (int i = 0; i < 4; ++i)
+        mailbox.drain(transport);
+    check(transport.revision() > locateInMixedDrain && settledLocateRevision(mailbox) == locateInMixedDrain,
+          "repeated empty drains leave the applied Locate witness alone");
+    transport.advance(64);
+    mailbox.publish(transport);
+    check(mailbox.position() == position + 64 && settledLocateRevision(mailbox) == locateInMixedDrain,
+          "ordinary position feedback after an empty drain leaves the Locate witness alone");
+
+    check(mailbox.post(Command::Stop) && mailbox.post(Command::Play), "queue playback commands without a Locate");
+    mailbox.drain(transport);
+    check(mailbox.playing() && settledLocateRevision(mailbox) == locateInMixedDrain,
+          "a Stop and Play drain leaves the applied Locate witness alone");
+
+    constexpr std::int64_t recordTick = 720;
+    std::int64_t observedRecordTick = -1;
+    check(mailbox.post(Command::Record, recordTick), "queue the existing Record command");
+    mailbox.drain(transport, [&](std::int64_t tick) noexcept {
+        observedRecordTick = tick;
+        transport.locate(position);
+    });
+    check(observedRecordTick == recordTick && settledLocateRevision(mailbox) == locateInMixedDrain,
+          "Record still dispatches its tick without replacing the last explicit Locate revision");
 }
 // The theme and density tables (DF-W24): the window's every colour and size, by role.
 void themeAndDensityTables() {
@@ -102,6 +168,56 @@ void midiPortsCore() {
     const auto *row = settings::find("midi.ports");
     std::string why;
     check(row != nullptr && settings::validate(*row, record, why), "the record written back is one the registry takes");
+    // N61: a port's record keeps its name, and follows the port to a new identifier.
+    {
+        const auto named = withMidiPortSwitch(settings::Value::object(), "in:a", "track", true, "Keys");
+        check(named["in:a"]["name"] == "Keys" && settings::validate(*row, named, why),
+              "a switch written keeps the port's name with its record (midi.port.name), and the registry takes it");
+        auto old = settings::Value::object();
+        old["in:a"] = {{"track", true}};
+        old["out:a"] = {{"remote", true}};
+        const auto stamped = reconcileMidiPorts(old, {{"in:a", "Keys"}, {"out:a", "Keys"}, {"in:b", "Pads"}});
+        check(stamped && (*stamped)["in:a"]["name"] == "Keys" && (*stamped)["out:a"]["name"] == "Keys" &&
+                  !stamped->contains("in:b") && settings::validate(*row, *stamped, why),
+              "a listed port's record is stamped with its name; a port with no record gets none");
+        check(!reconcileMidiPorts(*stamped, {{"in:a", "Keys"}, {"out:a", "Keys"}, {"in:b", "Pads"}}),
+              "a record that agrees is not written again");
+        auto kept = settings::Value::object();
+        kept["in:old"] = {{"track", true}, {"mpe", true}, {"name", "Keys"}};
+        kept["out:old"] = {{"remote", true}, {"name", "Keys"}};
+        const auto moved = reconcileMidiPorts(kept, {{"in:new", "Keys"}, {"out:new", "Keys"}});
+        const auto in = moved ? midiPortSwitches(*moved, "in:new") : MidiPortSwitches{};
+        check(moved && in.track && in.mpe && midiPortSwitches(*moved, "out:new").remote && !moved->contains("in:old") &&
+                  !moved->contains("out:old") && settings::validate(*row, *moved, why),
+              "the identifier changes, the name is kept: each direction's record moves to the new identifier, "
+              "Track and MPE kept");
+        const auto other = reconcileMidiPorts(kept, {{"in:new", "Pads"}});
+        check(!other, "a port of another name adopts no record");
+        const auto stillThere = reconcileMidiPorts(kept, {{"in:old", "Keys"}, {"in:new", "Keys"}});
+        check(!stillThere, "a record whose port is still listed stays with it; the second port of that name gets none");
+        const auto twoNew = reconcileMidiPorts(kept, {{"in:new", "Keys"}, {"in:newer", "Keys"}});
+        check(!twoNew, "two new ports of one name: which one the record was is unknown, so neither takes it");
+        auto pair = kept;
+        pair["in:older"] = {{"sync", true}, {"name", "Keys"}};
+        const auto ambiguous = reconcileMidiPorts(pair, {{"in:new", "Keys"}});
+        check(!ambiguous, "two records of one name and one new port: neither moves");
+        auto reused = settings::Value::object();
+        reused["in:1"] = {{"track", true}, {"name", "Keys"}};
+        check(!reconcileMidiPorts(reused, {{"in:1", "Pads"}}),
+              "another device at a record's identifier does not rename it, so its own device can still find it");
+        const auto back = reconcileMidiPorts(reused, {{"in:1", "Pads"}, {"in:2", "Keys"}});
+        check(back && back->contains("in:2") && (*back)["in:2"].value("name", std::string()) == "Keys" &&
+                  midiPortSwitches(*back, "in:2").track && !back->contains("in:1"),
+              "the keyboard back on another identifier takes its record from the one the other device now holds");
+        auto swapped = settings::Value::object();
+        swapped["in:1"] = {{"track", true}, {"name", "Keys"}};
+        swapped["in:2"] = {{"mpe", true}, {"name", "Pads"}};
+        const auto both = reconcileMidiPorts(swapped, {{"in:1", "Pads"}, {"in:2", "Keys"}});
+        check(both && (*both)["in:1"].value("name", std::string()) == "Pads" && midiPortSwitches(*both, "in:1").mpe &&
+                  (*both)["in:2"].value("name", std::string()) == "Keys" && midiPortSwitches(*both, "in:2").track &&
+                  settings::validate(*row, *both, why),
+              "two devices that swapped sockets each keep their own record");
+    }
     // The ring: in order, refusing when full, counting what it lost.
     MidiEventRing<4> ring;
     for (std::uint32_t i = 0; i < 5; ++i) {
@@ -151,6 +267,7 @@ void midiPortsCore() {
 } // namespace
 int main() {
     themeAndDensityTables();
+    locateFence();
     midiPortsCore();
     test::TempDirectory temp("ui_state", "roundtrip");
     StoreError err{};
@@ -160,6 +277,35 @@ int main() {
     store->db().exec("INSERT INTO project(id,name) VALUES(1,'UI test')");
     ViewStateStore views(*store);
     std::string error;
+    {
+        WindowState stack;
+        stack.zoom = 1.5;
+        stack.mixStackSearch = "Bass";
+        stack.mixStackBaseHeight = 140;
+        check(views.save("stack", stack, error) && views.load("stack").mixStackSearch == "Bass" &&
+                  views.load("stack").mixStackBaseHeight == 140 && !views.load("other").mixStackBaseHeight,
+              "Stack search and row size persist per project window");
+        store->db().exec(R"(INSERT INTO ui_view(scope_kind,scope_id,key,value) VALUES('project',NULL,'shell.old-stack',
+            '{"version":1,"zoom":1.5,"deviceHeight":196,"docked":true,"panels":[{"id":0,"width":300,"collapsed":false},
+             {"id":1,"width":200,"collapsed":false}],"mixview.stack.baseHeight":18446744073709551615,
+             "mixview.stack.search":42}'))");
+        const auto old = views.load("old-stack");
+        check(old.zoom == 1.5 && old.mixStackSearch.empty() && !old.mixStackBaseHeight,
+              "invalid optional Stack fields keep the rest of the window geometry");
+        constexpr std::array<std::int64_t, 1> first{7}, second{99};
+        check(views.saveStackPins({}, first, error) && views.saveStackPins({}, second, error) &&
+                  views.stackPins().ids == std::vector<std::int64_t>{7, 99},
+              "additions from two stale window projections do not overwrite each other");
+        check(views.saveStackPins(first, {}, error), "remove one project's pin without changing the others");
+        const ViewStateStore reopened(*store);
+        check(reopened.stackPins().ids == std::vector<std::int64_t>{99},
+              "a fresh view owner reloads stable project pins from storage");
+        store->db().exec(R"(UPDATE ui_view SET value='[99,7,7,0,-1,"99",18446744073709551615]'
+                            WHERE key='mixview.stack.pins')");
+        const ViewStateStore legacyPins(*store);
+        check(legacyPins.stackPins().ids == std::vector<std::int64_t>{7, 99},
+              "pin decoding deduplicates positive track IDs and ignores invalid entries");
+    }
     WindowState state;
     check(!state.panels.setWidth(Panel::Browser, 333, 1400), "resize browser");
     check(!state.panels.swapSides(1400), "swap panel identities");
@@ -360,6 +506,33 @@ int main() {
     check(!mailbox.post(TransportMailbox::Command::Play), "full queue refuses without overwrite");
     mailbox.drain(transport);
     check(!transport.playing(), "queued stop survives saturation");
+    {
+        bool ready = false;
+        std::int64_t requested = -1;
+        const auto apply = [&] {
+            mailbox.drain(transport, [](std::int64_t) noexcept {},
+                [&](std::int64_t sample) noexcept { requested = sample; return ready; });
+        };
+        check(mailbox.post(TransportMailbox::Command::Play), "request a cold Play");
+        apply();
+        transport.advance(64);
+        check(requested == 64 && transport.position() == 64 && !mailbox.playing() && mailbox.desiredPlaying(),
+              "pending Play holds the timeline and still exposes the intent for Stop");
+        check(mailbox.post(TransportMailbox::Command::Locate, 1024), "locate during a pending Play");
+        apply();
+        check(requested == 1024 && !transport.playing(), "the readiness target follows the latest Locate");
+        ready = true;
+        apply();
+        check(transport.playing() && transport.position() == 1024, "the first running block starts at that Locate");
+        mailbox.post(TransportMailbox::Command::Stop);
+        mailbox.post(TransportMailbox::Command::Play);
+        ready = false;
+        apply();
+        mailbox.post(TransportMailbox::Command::Stop);
+        ready = true;
+        apply();
+        check(!mailbox.playing() && !mailbox.desiredPlaying(), "Stop cancels a cold Play");
+    }
     // Two actual threads exercise release/acquire ownership, with a final stop sentinel.
     std::atomic<bool> finished{false};
     std::thread driver([&] {
