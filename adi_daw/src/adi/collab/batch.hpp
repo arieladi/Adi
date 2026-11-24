@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //
 // CO-01: collaboration batch wire model, id-space allocator, version vector,
-// and deterministic CBOR codec (ADR-0182 d1, d2, d5; ADR-0188 d5).
+// and bounded deterministic CBOR codec (ADR-0182 d1, d2, d5; ADR-0188 d5).
 
 #pragma once
 
@@ -25,6 +25,7 @@ namespace adi::collab {
 [[nodiscard]] std::uint32_t idCounterOf(std::int64_t id) noexcept;
 
 /// Per-replica deterministic id-space allocator ((idSpace << 32) | counter).
+/// Counters persist across restart via dumpCounters()/restoreCounters().
 class IdSpaceAllocator {
 public:
     explicit IdSpaceAllocator(std::uint32_t idSpace);
@@ -32,6 +33,12 @@ public:
     [[nodiscard]] std::uint32_t idSpace() const noexcept { return idSpace_; }
     [[nodiscard]] std::int64_t next(std::string_view table);
     void observe(std::string_view table, std::int64_t existingId);
+
+    [[nodiscard]] const std::map<std::string, std::uint32_t, std::less<>>& counters()
+        const noexcept {
+        return counters_;
+    }
+    void restoreCounter(std::string_view table, std::uint32_t counter);
 
 private:
     std::uint32_t idSpace_ = 1U;
@@ -80,6 +87,15 @@ struct Batch {
     friend bool operator==(const Batch&, const Batch&) = default;
 };
 
+/// Explicit wire-decoding caps protecting replicas against hostile bucket data.
+struct DecodeLimits {
+    std::size_t maxBatchBytes = 4U * 1024U * 1024U;  ///< 4 MiB
+    std::size_t maxCborDepth = 32U;
+    std::size_t maxCborItems = 65536U;
+    std::size_t maxOpsPerBatch = 4096U;
+    std::size_t maxBatchIdBytes = 128U;
+};
+
 /// Return true if `clientId` is 32 lowercase hexadecimal characters (ADR-0188 d5).
 [[nodiscard]] bool isValidClientId(std::string_view clientId) noexcept;
 
@@ -92,9 +108,16 @@ struct Batch {
 /// ADR-0188 d5 batch name: `batch_<20-digit zero-padded lamport>_<32-hex client_id>.cbor`.
 [[nodiscard]] std::string formatLamportBatchKey(std::int64_t lamport, std::string_view clientId);
 
+/// Validate CBOR framing, nesting depth, and item/byte caps iteratively (zero
+/// recursion) before handing untrusted bucket bytes to nlohmann::json::from_cbor.
+[[nodiscard]] bool validateCborLimits(std::span<const std::byte> cbor,
+                                      const DecodeLimits& limits,
+                                      std::string& error) noexcept;
+
 /// Deterministic CBOR serialization/deserialization for collaboration batches.
 [[nodiscard]] std::vector<std::byte> encodeBatch(const Batch& batch);
 [[nodiscard]] std::optional<Batch> decodeBatch(std::span<const std::byte> cbor,
-                                               std::string& error);
+                                               std::string& error,
+                                               const DecodeLimits& limits = {});
 
 }  // namespace adi::collab

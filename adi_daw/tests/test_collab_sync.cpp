@@ -446,12 +446,316 @@ void testConcurrentThreeThreadsTsan() {
           "threaded replicas converged to identical digestProject");
 }
 
+void testHostileCborAndStrictNumbers() {
+    section("hostile CBOR nesting caps and strict non-narrowing numeric decoding");
+
+    // 1. 10,000-deep nested CBOR array, map, and semantic tag must be refused iteratively without crash.
+    {
+        std::string err;
+        std::vector<std::byte> deepArray(10000U, std::byte{0x81});  // 1-element array x 10000
+        deepArray.push_back(std::byte{0x00});
+        check(!decodeBatch(deepArray, err).has_value(), "10k-deep CBOR array refused safely");
+
+        std::vector<std::byte> deepMap;
+        deepMap.reserve(20001U);
+        for (int i = 0; i < 10000; ++i) {
+            deepMap.push_back(std::byte{0xA1});  // 1-pair map
+            deepMap.push_back(std::byte{0x60});  // empty key ""
+        }
+        deepMap.push_back(std::byte{0x00});
+        check(!decodeBatch(deepMap, err).has_value(), "10k-deep CBOR map refused safely");
+
+        std::vector<std::byte> deepTags(10000U, std::byte{0xC0});  // tag 0 x 10000
+        deepTags.push_back(std::byte{0x00});
+        check(!decodeBatch(deepTags, err).has_value(), "10k-deep CBOR tag chain refused safely");
+
+        // Oversized batch refused before decoding.
+        DecodeLimits tiny;
+        tiny.maxBatchBytes = 16U;
+        std::vector<std::byte> big(32U, std::byte{0x00});
+        check(!decodeBatch(big, err, tiny).has_value(), "oversized CBOR batch refused");
+    }
+
+    // 2. Strict integer fields refuse floats, booleans, negatives, and >uint32 overflow (no silent narrowing).
+    auto makeValidDoc = []() -> Payload {
+        return Payload{
+            {"seq", std::uint64_t{1}},
+            {"batchId", "b1"},
+            {"author", kClient1},
+            {"idSpace", std::uint64_t{1}},
+            {"baseSeq", std::uint64_t{0}},
+            {"lamport", std::int64_t{1}},
+            {"vector", Payload::object()},
+            {"ops", Payload::array()},
+        };
+    };
+
+    {
+        std::string err;
+        const auto good = encodePayload(makeValidDoc());
+        check(decodeBatch(good, err).has_value(), "baseline valid batch decodes");
+
+        auto dFloatSpace = makeValidDoc();
+        dFloatSpace["idSpace"] = 1.5;
+        check(!decodeBatch(encodePayload(dFloatSpace), err).has_value(),
+              "float idSpace refused (no silent narrowing)");
+
+        auto dWideSpace = makeValidDoc();
+        dWideSpace["idSpace"] = (std::uint64_t{1} << 32U) | std::uint64_t{1};
+        check(!decodeBatch(encodePayload(dWideSpace), err).has_value(),
+              "64-bit overflowing idSpace refused (no silent uint32 truncation)");
+
+        auto dNegSpace = makeValidDoc();
+        dNegSpace["idSpace"] = std::int64_t{-1};
+        check(!decodeBatch(encodePayload(dNegSpace), err).has_value(),
+              "negative idSpace refused");
+
+        auto dBoolSpace = makeValidDoc();
+        dBoolSpace["idSpace"] = true;
+        check(!decodeBatch(encodePayload(dBoolSpace), err).has_value(),
+              "boolean idSpace refused");
+
+        auto dFloatSeq = makeValidDoc();
+        dFloatSeq["seq"] = 1.5;
+        check(!decodeBatch(encodePayload(dFloatSeq), err).has_value(),
+              "float seq refused");
+
+        auto dNegSeq = makeValidDoc();
+        dNegSeq["seq"] = std::int64_t{-5};
+        check(!decodeBatch(encodePayload(dNegSeq), err).has_value(),
+              "negative seq refused");
+    }
+}
+
+void testMalformedOpIdSpaceAndBadBatchNonWedging() {
+    section("malformed op payload, remote id-space check, and bad batch does not wedge sync");
+
+    test::TempDirectory temp{"collab_sync", "resilience"};
+    const fs::path tpl = createBaselineTemplate(temp.path());
+    auto s1 = openCopyFromTemplate(tpl, temp.path() / "r1.adi");
+    auto s2 = openCopyFromTemplate(tpl, temp.path() / "r2.adi");
+
+    CollabReplica r1(*s1, kClient1, 1U);
+    CollabReplica r2(*s2, kClient2, 2U);
+    FakeObjectStore bucket;
+
+    // seq 1: valid device insert from r1.
+    std::string err;
+    check(r1.commitLocal({makeDeviceInsertOp(r1, 0U, "Valid1")}, err), "r1 commit Valid1");
+    check(r1.syncStep(bucket).pushedOne, "r1 pushed seq 1");
+
+    // seq 2: hostile deeply-nested corrupt CBOR directly injected into bucket.
+    std::vector<std::byte> hostile(2000U, std::byte{0x81});
+    hostile.push_back(std::byte{0x00});
+    check(bucket.putIfAbsent(formatSeqKey(2U), hostile) == PutStatus::Created,
+          "injected hostile CBOR at seq 2");
+
+    // seq 3: decodable batch with malformed op payload (non-integer id & null chain).
+    {
+        Batch malformed;
+        malformed.seq = 3U;
+        malformed.batchId = std::string(kClient3) + "-bad-payload";
+        malformed.authorClientId = kClient3;
+        malformed.idSpace = 3U;
+        malformed.baseSeq = 2U;
+        malformed.lamport = 1;
+        BatchOp badOp;
+        badOp.opType = "device.insert";
+        badOp.payload = {{"id", "not_an_integer"}, {"chain", nullptr}};
+        badOp.lamport = 1;
+        malformed.ops.push_back(std::move(badOp));
+        check(bucket.putIfAbsent(formatSeqKey(3U), encodeBatch(malformed)) == PutStatus::Created,
+              "injected malformed-payload batch at seq 3");
+    }
+
+    // seq 4: decodable batch claiming idSpace=3 but trying to create a device in idSpace=1!
+    {
+        Batch wrongSpace;
+        wrongSpace.seq = 4U;
+        wrongSpace.batchId = std::string(kClient3) + "-wrong-space";
+        wrongSpace.authorClientId = kClient3;
+        wrongSpace.idSpace = 3U;
+        wrongSpace.baseSeq = 3U;
+        wrongSpace.lamport = 2;
+        BatchOp spoofed;
+        spoofed.opType = "device.insert";
+        spoofed.payload = {{"id", makeScopedId(1U, 777U)}, {"chain", kSharedChainId},
+                           {"ord", 0}, {"ref", nullptr}, {"name", "Spoofed"},
+                           {"enabled", true}, {"rack", false}};
+        spoofed.lamport = 2;
+        wrongSpace.ops.push_back(std::move(spoofed));
+        check(bucket.putIfAbsent(formatSeqKey(4U), encodeBatch(wrongSpace)) == PutStatus::Created,
+              "injected wrong-idSpace batch at seq 4");
+    }
+
+    // seq 5: valid batch from r2 after all three bad slots (proves sync never wedges!).
+    {
+        Batch good5;
+        good5.seq = 5U;
+        good5.batchId = std::string(kClient2) + "-good5";
+        good5.authorClientId = kClient2;
+        good5.idSpace = 2U;
+        good5.baseSeq = 4U;
+        good5.lamport = 5;
+        BatchOp op;
+        op.opType = "device.insert";
+        op.payload = {{"id", makeScopedId(2U, 50U)}, {"chain", kSharedChainId}, {"ord", 0},
+                      {"ref", nullptr}, {"name", "ValidAfterBad"}, {"enabled", true},
+                      {"rack", false}};
+        op.lamport = 5;
+        good5.ops.push_back(std::move(op));
+        check(bucket.putIfAbsent(formatSeqKey(5U), encodeBatch(good5)) == PutStatus::Created,
+              "injected valid batch at seq 5");
+    }
+
+    // Both replicas pull seq 1..5 cleanly without throwing and converge identically!
+    const auto st1 = r1.syncStep(bucket);
+    const auto st2 = r2.syncStep(bucket);
+    check(st1.status == SyncStatus::Progressed && st2.status == SyncStatus::Progressed,
+          "both replicas progressed past corrupt/malformed/spoofed batches");
+    check(r1.appliedSeq() == 5U && r2.appliedSeq() == 5U,
+          "both replicas advanced past all bad batches to seq 5");
+    check(st1.skippedBadBatchCount == 1U && st2.skippedBadBatchCount == 1U,
+          "hostile seq 2 skipped deterministically");
+    check(st1.rejectedRemoteBatchCount == 2U && st2.rejectedRemoteBatchCount == 2U,
+          "malformed seq 3 and wrong-idSpace seq 4 rejected deterministically");
+    check(r1.deviceOrderInChain(kSharedChainId) == r2.deviceOrderInChain(kSharedChainId) &&
+              r1.deviceOrderInChain(kSharedChainId).size() == 3U,
+          "only SeedDev + Valid1 + ValidAfterBad exist (spoofed & malformed never inserted)");
+    check(digestProject(*s1).text == digestProject(*s2).text,
+          "replicas converged to identical digest after bad batches");
+}
+
+void testRewindVerifiesTxnIdsAndRestartPersistence() {
+    section("verified rewind txnIds, restart order-key & batch-id persistence, RemoteCommitHook");
+
+    test::TempDirectory temp{"collab_sync", "rewind_and_restart"};
+    const fs::path tpl = createBaselineTemplate(temp.path());
+
+    // 1. Rewind refuses rather than blindly undoing an unrelated Store transaction.
+    {
+        auto s1 = openCopyFromTemplate(tpl, temp.path() / "rw1.adi");
+        auto s2 = openCopyFromTemplate(tpl, temp.path() / "rw2.adi");
+        CollabReplica r1(*s1, kClient1, 1U);
+        CollabReplica r2(*s2, kClient2, 2U);
+        FakeObjectStore bucket;
+
+        std::string err;
+        check(r1.commitLocal({makeDeviceInsertOp(r1, 0U, "Pending1")}, err), "r1 pending commit");
+        // Commit an unrelated direct OpJournal edit on s1 outside CollabReplica.
+        OpRequest direct;
+        direct.opType = "track.rename";
+        direct.payload = {{"id", kSharedTrackId}, {"name", "UnrelatedLocalEdit"}};
+        check(OpJournal(*s1).commit(direct).ok, "unrelated direct edit committed on s1");
+
+        // r2 pushes seq 1, forcing r1 to attempt rewind.
+        check(r2.commitLocal({makeDeviceInsertOp(r2, 0U, "Peer1")}, err), "r2 commit");
+        check(r2.syncStep(bucket).pushedOne, "r2 pushed seq 1");
+
+        const auto st = r1.syncStep(bucket);
+        check(st.status == SyncStatus::Error && st.error.find("txn mismatch") != std::string::npos,
+              "rewind refused with txn mismatch error instead of blindly undoing");
+        SQLite::Statement tq(s1->db(), "SELECT name FROM tracks WHERE id = ?");
+        tq.bind(1, kSharedTrackId);
+        check(tq.executeStep() && tq.getColumn(0).getString() == "UnrelatedLocalEdit",
+              "unrelated local transaction was NOT undone");
+    }
+
+    // 2. Restart preserves persisted order keys & monotonic batch ids, and invokes RemoteCommitHook.
+    {
+        const fs::path p1 = temp.path() / "pers1.adi";
+        const fs::path p2 = temp.path() / "pers2.adi";
+        auto s1 = openCopyFromTemplate(tpl, p1);
+        auto s2 = openCopyFromTemplate(tpl, p2);
+        FakeObjectStore bucket;
+
+        std::size_t remoteHookCalls = 0U;
+        RemoteCommitHook hook = [&](Store& st, const Batch& b,
+                                    const std::vector<OpRequest>& reqs) -> CommitResult {
+            if (!b.authorClientId.empty()) {
+                ++remoteHookCalls;
+            }
+            return OpJournal(st).commit(reqs);
+        };
+
+        std::vector<std::int64_t> orderBeforeRestart;
+        std::string slot0KeyBeforeRestart;
+        {
+            CollabReplica r1(*s1, kClient1, 1U, hook);
+            CollabReplica r2(*s2, kClient2, 2U);
+
+            std::string err;
+            check(r1.commitLocal({makeDeviceInsertOp(r1, 0U, "A1")}, err), "r1 A1");
+            check(r2.commitLocal({makeDeviceInsertOp(r2, 0U, "B1")}, err), "r2 B1");
+            for (int i = 0; i < 6; ++i) {
+                (void)r1.syncStep(bucket);
+                (void)r2.syncStep(bucket);
+            }
+            check(r1.appliedSeq() == 2U && r2.appliedSeq() == 2U, "converged at seq 2");
+            check(remoteHookCalls == 1U, "RemoteCommitHook invoked for peer batch");
+            orderBeforeRestart = r1.deviceOrderInChain(kSharedChainId);
+            slot0KeyBeforeRestart = r1.keyForDeviceSlot(kSharedChainId, 1U);
+            check(s1->close(), "closed s1 before simulated restart");
+        }
+
+        // Reopen s1 and attach a brand-new CollabReplica instance (simulated restart).
+        StoreError openErr{};
+        auto s1Reopened = Store::open(p1, openErr, false);
+        check(s1Reopened != nullptr, "reopened s1 after restart");
+        CollabReplica r1Restarted(*s1Reopened, kClient1, 1U);
+        CollabReplica r2Continued(*s2, kClient2, 2U);
+
+        check(r1Restarted.appliedSeq() == 2U, "restarted replica restored appliedSeq=2");
+        check(r1Restarted.deviceOrderInChain(kSharedChainId) == orderBeforeRestart,
+              "restarted replica preserved exact device order");
+        check(r1Restarted.keyForDeviceSlot(kSharedChainId, 1U) == slot0KeyBeforeRestart,
+              "restarted replica produces identical fractional slot key as before restart");
+
+        // Commit on restarted replica: batchId must NOT repeat kClient1-1, and concurrent
+        // inserts after restart must converge identically with peer r2.
+        std::string err;
+        check(r1Restarted.commitLocal({makeDeviceInsertOp(r1Restarted, 1U, "A2_after_restart")},
+                                      err),
+              "restarted r1 commits A2_after_restart");
+        check(r2Continued.commitLocal({makeDeviceInsertOp(r2Continued, 1U, "B2_after_restart")},
+                                      err),
+              "r2 commits B2_after_restart");
+        for (int i = 0; i < 6; ++i) {
+            (void)r1Restarted.syncStep(bucket);
+            (void)r2Continued.syncStep(bucket);
+        }
+        check(r1Restarted.appliedSeq() == 4U && r2Continued.appliedSeq() == 4U,
+              "post-restart concurrent edits sequenced to seq 4 (no repeated batchId collision)");
+        check(r1Restarted.deviceOrderInChain(kSharedChainId) ==
+                  r2Continued.deviceOrderInChain(kSharedChainId),
+              "restarted replica and peer agree on exact device order");
+        check(digestProject(*s1Reopened).text == digestProject(*s2).text,
+              "restarted replica and peer converge to identical digestProject");
+
+        // Inspect seq 3/4 in bucket to verify restarted r1's batchId is kClient1-2 (not -1).
+        bool sawCounter2 = false;
+        for (std::uint64_t seq = 3U; seq <= 4U; ++seq) {
+            const auto g = bucket.get(formatSeqKey(seq));
+            std::string decErr;
+            const auto b = decodeBatch(g.bytes, decErr);
+            if (b.has_value() && b->authorClientId == kClient1 &&
+                b->batchId == std::string(kClient1) + "-2") {
+                sawCounter2 = true;
+            }
+        }
+        check(sawCounter2, "restarted replica emitted strictly monotonic batchId (-2, never -1)");
+    }
+}
+
 }  // namespace
 
 int main() {
     testConcurrentDeviceInsertAtOneSlot();
     testThreeStores200SeedsWithDelaysAndDrops();
     testConcurrentThreeThreadsTsan();
+    testHostileCborAndStrictNumbers();
+    testMalformedOpIdSpaceAndBadBatchNonWedging();
+    testRewindVerifiesTxnIdsAndRestartPersistence();
 
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

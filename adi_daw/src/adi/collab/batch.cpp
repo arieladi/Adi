@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //
 // CO-01: collaboration batch wire model, id-space allocator, version vector,
-// and deterministic CBOR codec.
+// and bounded deterministic CBOR codec.
 
 #include "adi/collab/batch.hpp"
 
@@ -22,6 +22,81 @@ constexpr std::uint32_t kMaxIdSpace = 0x7FFFFFFFU;
     char buf[32];
     std::snprintf(buf, sizeof(buf), "%020llu", static_cast<unsigned long long>(value));
     return std::string(buf);
+}
+
+[[nodiscard]] bool readCborArgument(std::span<const std::byte> cbor,
+                                    std::size_t& pos,
+                                    std::uint8_t ai,
+                                    std::uint64_t& valueOut) noexcept {
+    if (ai < 24U) {
+        valueOut = ai;
+        return true;
+    }
+    std::size_t bytes = 0U;
+    if (ai == 24U) {
+        bytes = 1U;
+    } else if (ai == 25U) {
+        bytes = 2U;
+    } else if (ai == 26U) {
+        bytes = 4U;
+    } else if (ai == 27U) {
+        bytes = 8U;
+    } else {
+        return false;
+    }
+    if (cbor.size() - pos < bytes) {
+        return false;
+    }
+    std::uint64_t acc = 0ULL;
+    for (std::size_t i = 0U; i < bytes; ++i) {
+        acc = (acc << 8U) | static_cast<std::uint64_t>(std::to_integer<std::uint8_t>(cbor[pos++]));
+    }
+    valueOut = acc;
+    return true;
+}
+
+[[nodiscard]] bool readStrictUint64(const Payload& v, std::uint64_t& out) noexcept {
+    if (v.is_boolean() || !v.is_number_integer()) {
+        return false;
+    }
+    if (v.is_number_unsigned()) {
+        out = v.get<std::uint64_t>();
+        return true;
+    }
+    const auto s = v.get<std::int64_t>();
+    if (s < 0) {
+        return false;
+    }
+    out = static_cast<std::uint64_t>(s);
+    return true;
+}
+
+[[nodiscard]] bool readStrictInt64(const Payload& v, std::int64_t& out) noexcept {
+    if (v.is_boolean() || !v.is_number_integer()) {
+        return false;
+    }
+    if (v.is_number_unsigned()) {
+        const auto u = v.get<std::uint64_t>();
+        if (u > static_cast<std::uint64_t>((std::numeric_limits<std::int64_t>::max)())) {
+            return false;
+        }
+        out = static_cast<std::int64_t>(u);
+        return true;
+    }
+    out = v.get<std::int64_t>();
+    return true;
+}
+
+[[nodiscard]] bool readStrictUint32(const Payload& v, std::uint32_t& out) noexcept {
+    std::uint64_t wide = 0ULL;
+    if (!readStrictUint64(v, wide)) {
+        return false;
+    }
+    if (wide > static_cast<std::uint64_t>((std::numeric_limits<std::uint32_t>::max)())) {
+        return false;
+    }
+    out = static_cast<std::uint32_t>(wide);
+    return true;
 }
 
 }  // namespace
@@ -72,11 +147,15 @@ void IdSpaceAllocator::observe(std::string_view table, std::int64_t existingId) 
         return;
     }
     const std::uint32_t c = idCounterOf(existingId);
+    restoreCounter(table, c);
+}
+
+void IdSpaceAllocator::restoreCounter(std::string_view table, std::uint32_t counter) {
     auto it = counters_.find(table);
     if (it == counters_.end()) {
-        counters_.emplace(std::string(table), c);
-    } else if (c > it->second) {
-        it->second = c;
+        counters_.emplace(std::string(table), counter);
+    } else if (counter > it->second) {
+        it->second = counter;
     }
 }
 
@@ -165,6 +244,201 @@ std::string formatLamportBatchKey(std::int64_t lamport, std::string_view clientI
            std::string(clientId) + ".cbor";
 }
 
+bool validateCborLimits(std::span<const std::byte> cbor,
+                        const DecodeLimits& limits,
+                        std::string& error) noexcept {
+    if (cbor.empty()) {
+        error = "empty CBOR collaboration batch";
+        return false;
+    }
+    if (cbor.size() > limits.maxBatchBytes) {
+        error = "CBOR collaboration batch exceeds max size";
+        return false;
+    }
+
+    struct Frame {
+        bool indefinite = false;
+        bool isMap = false;
+        bool expectingKey = false;
+        std::uint64_t remaining = 0ULL;
+    };
+
+    try {
+        std::vector<Frame> stack;
+        stack.reserve((std::min)(limits.maxCborDepth, std::size_t{64U}));
+
+        auto unwindFinished = [&]() {
+            while (!stack.empty() && !stack.back().indefinite && stack.back().remaining == 0ULL) {
+                stack.pop_back();
+            }
+        };
+
+        std::size_t pos = 0U;
+        std::size_t items = 0U;
+        bool rootStarted = false;
+
+        while (pos < cbor.size()) {
+            const std::uint8_t head = std::to_integer<std::uint8_t>(cbor[pos]);
+
+            if (!stack.empty() && stack.back().indefinite && head == 0xFFU) {
+                if (stack.back().isMap && !stack.back().expectingKey) {
+                    error = "indefinite CBOR map has odd item count";
+                    return false;
+                }
+                ++pos;
+                stack.pop_back();
+                unwindFinished();
+                continue;
+            }
+
+            if (rootStarted && stack.empty()) {
+                error = "trailing bytes after CBOR root item";
+                return false;
+            }
+            rootStarted = true;
+
+            if (!stack.empty()) {
+                auto& top = stack.back();
+                if (!top.indefinite) {
+                    --top.remaining;
+                } else if (top.isMap) {
+                    top.expectingKey = !top.expectingKey;
+                }
+            }
+
+            ++pos;
+            ++items;
+            if (items > limits.maxCborItems) {
+                error = "CBOR collaboration batch exceeds max item count";
+                return false;
+            }
+
+            const std::uint8_t major = static_cast<std::uint8_t>(head >> 5U);
+            const std::uint8_t ai = static_cast<std::uint8_t>(head & 0x1FU);
+
+            if (ai == 28U || ai == 29U || ai == 30U) {
+                error = "invalid CBOR additional info";
+                return false;
+            }
+
+            if (ai == 31U) {
+                if (major == 4U || major == 5U) {
+                    if (stack.size() >= limits.maxCborDepth) {
+                        error = "CBOR nesting depth exceeds limit";
+                        return false;
+                    }
+                    stack.push_back(Frame{true, major == 5U, true, 0ULL});
+                    continue;
+                }
+                if (major == 2U || major == 3U) {
+                    // Indefinite byte/text string: definite chunks of same major type until 0xFF.
+                    bool closed = false;
+                    while (pos < cbor.size()) {
+                        const std::uint8_t cb = std::to_integer<std::uint8_t>(cbor[pos++]);
+                        if (cb == 0xFFU) {
+                            closed = true;
+                            break;
+                        }
+                        ++items;
+                        if (items > limits.maxCborItems) {
+                            error = "CBOR collaboration batch exceeds max item count";
+                            return false;
+                        }
+                        const std::uint8_t cm = static_cast<std::uint8_t>(cb >> 5U);
+                        const std::uint8_t cai = static_cast<std::uint8_t>(cb & 0x1FU);
+                        if (cm != major || cai > 27U) {
+                            error = "invalid chunk inside indefinite CBOR string";
+                            return false;
+                        }
+                        std::uint64_t chunkLen = 0ULL;
+                        if (!readCborArgument(cbor, pos, cai, chunkLen) ||
+                            chunkLen > static_cast<std::uint64_t>(cbor.size() - pos)) {
+                            error = "truncated CBOR string chunk";
+                            return false;
+                        }
+                        pos += static_cast<std::size_t>(chunkLen);
+                    }
+                    if (!closed) {
+                        error = "unterminated indefinite CBOR string";
+                        return false;
+                    }
+                    unwindFinished();
+                    continue;
+                }
+                error = "unexpected CBOR break or indefinite marker";
+                return false;
+            }
+
+            std::uint64_t arg = 0ULL;
+            if (!readCborArgument(cbor, pos, ai, arg)) {
+                error = "truncated CBOR argument";
+                return false;
+            }
+
+            if (major == 0U || major == 1U || major == 7U) {
+                unwindFinished();
+                continue;
+            }
+            if (major == 2U || major == 3U) {
+                if (arg > static_cast<std::uint64_t>(cbor.size() - pos)) {
+                    error = "truncated CBOR byte/text string";
+                    return false;
+                }
+                pos += static_cast<std::size_t>(arg);
+                unwindFinished();
+                continue;
+            }
+            if (major == 4U) {
+                if (arg == 0ULL) {
+                    unwindFinished();
+                    continue;
+                }
+                if (stack.size() >= limits.maxCborDepth) {
+                    error = "CBOR nesting depth exceeds limit";
+                    return false;
+                }
+                stack.push_back(Frame{false, false, false, arg});
+                continue;
+            }
+            if (major == 5U) {
+                if (arg == 0ULL) {
+                    unwindFinished();
+                    continue;
+                }
+                if (arg > ((std::numeric_limits<std::uint64_t>::max)() / 2ULL)) {
+                    error = "CBOR map length overflow";
+                    return false;
+                }
+                if (stack.size() >= limits.maxCborDepth) {
+                    error = "CBOR nesting depth exceeds limit";
+                    return false;
+                }
+                stack.push_back(Frame{false, true, false, arg * 2ULL});
+                continue;
+            }
+            if (major == 6U) {
+                // Semantic tag wraps one item and counts toward nesting depth so
+                // chained tags cannot stack-overflow the recursive decoder.
+                if (stack.size() >= limits.maxCborDepth) {
+                    error = "CBOR nesting depth exceeds limit";
+                    return false;
+                }
+                stack.push_back(Frame{false, false, false, 1ULL});
+                continue;
+            }
+        }
+
+        if (!rootStarted || !stack.empty()) {
+            error = "truncated CBOR container";
+            return false;
+        }
+        return true;
+    } catch (...) {
+        error = "out of memory validating CBOR batch";
+        return false;
+    }
+}
+
 std::vector<std::byte> encodeBatch(const Batch& batch) {
     Payload vec = Payload::object();
     for (const auto& [client, clk] : batch.vector.clocks) {
@@ -204,7 +478,13 @@ std::vector<std::byte> encodeBatch(const Batch& batch) {
     return encodePayload(doc);
 }
 
-std::optional<Batch> decodeBatch(std::span<const std::byte> cbor, std::string& error) {
+std::optional<Batch> decodeBatch(std::span<const std::byte> cbor,
+                                 std::string& error,
+                                 const DecodeLimits& limits) {
+    if (!validateCborLimits(cbor, limits, error)) {
+        return std::nullopt;
+    }
+
     const auto doc = decodeFromLog(cbor, error);
     if (!doc.has_value()) {
         return std::nullopt;
@@ -216,15 +496,23 @@ std::optional<Batch> decodeBatch(std::span<const std::byte> cbor, std::string& e
 
     try {
         Batch b;
-        b.seq = doc->at("seq").get<std::uint64_t>();
+        if (!readStrictUint64(doc->at("seq"), b.seq) ||
+            !readStrictUint32(doc->at("idSpace"), b.idSpace) ||
+            !readStrictUint64(doc->at("baseSeq"), b.baseSeq) ||
+            !readStrictInt64(doc->at("lamport"), b.lamport)) {
+            error = "collaboration batch header contains non-integer or out-of-range numeric field";
+            return std::nullopt;
+        }
+        if (!doc->at("batchId").is_string() || !doc->at("author").is_string()) {
+            error = "collaboration batchId and author must be strings";
+            return std::nullopt;
+        }
         b.batchId = doc->at("batchId").get<std::string>();
         b.authorClientId = doc->at("author").get<std::string>();
-        b.idSpace = doc->at("idSpace").get<std::uint32_t>();
-        b.baseSeq = doc->at("baseSeq").get<std::uint64_t>();
-        b.lamport = doc->at("lamport").get<std::int64_t>();
 
-        if (b.batchId.empty() || !isValidClientId(b.authorClientId) ||
-            b.idSpace == 0U || b.idSpace > kMaxIdSpace || b.lamport < 0) {
+        if (b.batchId.empty() || b.batchId.size() > limits.maxBatchIdBytes ||
+            !isValidClientId(b.authorClientId) || b.idSpace == 0U || b.idSpace > kMaxIdSpace ||
+            b.lamport < 0) {
             error = "invalid collaboration batch header fields";
             return std::nullopt;
         }
@@ -235,13 +523,9 @@ std::optional<Batch> decodeBatch(std::span<const std::byte> cbor, std::string& e
             return std::nullopt;
         }
         for (auto it = vec.begin(); it != vec.end(); ++it) {
-            if (!isValidClientId(it.key()) || !it.value().is_number_integer()) {
+            std::int64_t clk = 0;
+            if (!isValidClientId(it.key()) || !readStrictInt64(it.value(), clk) || clk < 0) {
                 error = "invalid version vector entry";
-                return std::nullopt;
-            }
-            const auto clk = it.value().get<std::int64_t>();
-            if (clk < 0) {
-                error = "negative version vector clock";
                 return std::nullopt;
             }
             b.vector.observe(it.key(), clk);
@@ -250,6 +534,10 @@ std::optional<Batch> decodeBatch(std::span<const std::byte> cbor, std::string& e
         const auto& ops = doc->at("ops");
         if (!ops.is_array()) {
             error = "collaboration batch ops must be an array";
+            return std::nullopt;
+        }
+        if (ops.size() > limits.maxOpsPerBatch) {
+            error = "collaboration batch exceeds max ops count";
             return std::nullopt;
         }
         b.ops.reserve(ops.size());
@@ -262,24 +550,48 @@ std::optional<Batch> decodeBatch(std::span<const std::byte> cbor, std::string& e
                 error = "collaboration ops must not carry inverses";
                 return std::nullopt;
             }
+            if (!item.at("opType").is_string()) {
+                error = "collaboration opType must be a string";
+                return std::nullopt;
+            }
             BatchOp op;
             op.opType = item.at("opType").get<std::string>();
             op.payload = item.at("payload");
-            op.lamport = item.at("lamport").get<std::int64_t>();
+            if (!readStrictInt64(item.at("lamport"), op.lamport)) {
+                error = "collaboration op lamport must be an int64";
+                return std::nullopt;
+            }
             if (op.opType.empty() || !op.payload.is_object() || op.lamport < 0) {
                 error = "invalid collaboration op fields";
                 return std::nullopt;
             }
             if (item.contains("label")) {
+                if (!item.at("label").is_string()) {
+                    error = "collaboration op label must be a string";
+                    return std::nullopt;
+                }
                 op.label = item.at("label").get<std::string>();
             }
             if (item.contains("targetKind")) {
+                if (!item.at("targetKind").is_string()) {
+                    error = "collaboration op targetKind must be a string";
+                    return std::nullopt;
+                }
                 op.targetKind = item.at("targetKind").get<std::string>();
             }
             if (item.contains("targetId") && !item.at("targetId").is_null()) {
-                op.targetId = item.at("targetId").get<std::int64_t>();
+                std::int64_t tid = 0;
+                if (!readStrictInt64(item.at("targetId"), tid)) {
+                    error = "collaboration op targetId must be an int64";
+                    return std::nullopt;
+                }
+                op.targetId = tid;
             }
             if (item.contains("orderKey") && !item.at("orderKey").is_null()) {
+                if (!item.at("orderKey").is_string()) {
+                    error = "collaboration op orderKey must be a string";
+                    return std::nullopt;
+                }
                 op.orderKey = item.at("orderKey").get<std::string>();
                 if (!validateFractionalKey(*op.orderKey)) {
                     error = "invalid fractional orderKey in batch op";
