@@ -1012,8 +1012,8 @@ void DevicePanelView::presentFunctionSelection(const DevicePanelData &next) {
             if (std::find(bandSections.begin(), bandSections.end(), metadata.sectionId) == bandSections.end())
                 bandSections.push_back(metadata.sectionId);
         }
-        if (!metadata.sectionId.empty() && std::none_of(sections.begin(), sections.end(), [&](const auto &section) {
-                return section.first == metadata.sectionId;
+        if (!metadata.sectionId.empty() && std::none_of(sections.begin(), sections.end(), [&sectionId = metadata.sectionId](const auto &section) {
+                return section.first == sectionId;
             })) sections.emplace_back(metadata.sectionId, metadata.sectionName.empty() ? metadata.sectionId : metadata.sectionName);
     }
     std::sort(bands.begin(), bands.end());
