@@ -101,6 +101,13 @@ Questions only the director can answer. Each says what the window lane recommend
 | N58 | The plug-in catalogue off the message thread: a scan service, Rescan, a default worker count, and each VST3's kind with its instrument flag (ADR-0248 d7: engine-win's third item, under DEV-25) | engine-win | the Browser's Plug-Ins with progress, and each VST3's icon | the window scans on its own worker with the one loader (DF-W34 a), the loader locked while it scans; no progress count; a VST3 shows the plug-in icon |
 | N59 | The project's key and scale, if the Control Bar's Key group (step 2) shows the project's and not the selected clip's: an op and a snapshot field (ADR-0248, `collab/RESERVATIONS.md`) | engine, when asked | the Control Bar's Key and Scale | step 2 waits on the Mix View's switch and theme rows; not asked yet |
 
+## 2026-11-24, window lane — DF-E35a withdrawn: win's landed (#744); DF-W41 noted
+
+- **`window/main-row-readers` is withdrawn**, its PR request with it. Win, covering this seat, landed DF-E35 (a) in #744 (`9d6c1193`, `c8961a1e`), and that one is the better: besides the same seams check it found that `newClipId` read only the main row, so a new clip could take a take's id, and fixed it. This lane's branch had only the check. It stays on origin, superseded.
+- **DF-W41** (`WaveformCache::follow` reads the main row only): the window lane's, with CT-04. Parked with CT-04 (queue item 22).
+
+---
+
 ## 2026-11-24, window lane — WIN-06 on main again (PR requested stands)
 
 **WIN-06.** Branch `window/command-palette`, head `051ec6c0` (main merged after #739; Command Palette is id 29055, after Help's two, stable table 128). PR requested stands, at this head; it lands after 3 December. Body updated: [`collab/window/pr-bodies/window-command-palette.md`](window/pr-bodies/window-command-palette.md).
