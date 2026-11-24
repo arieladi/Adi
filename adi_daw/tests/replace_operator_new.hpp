@@ -12,6 +12,11 @@
 // replacement functions are not inline) and define the hook there:
 //     void adi::test::countReplacedNew() noexcept { if(adi::audio::onAudioThread) ++allocations; }
 // The hook runs on every allocation from every thread, before the memory is taken.
+//
+// A suite that also counts releases defines ADI_TEST_COUNT_REPLACED_DELETE
+// before the include and defines a second hook, which every delete form calls
+// once, with the pointer, before the memory is freed (nullptr included):
+//     void adi::test::countReplacedDelete(void* p) noexcept { if(audit && p) ++deallocations; }
 #include <cstddef>
 #include <cstdlib>
 #include <new>
@@ -23,8 +28,20 @@
 
 namespace adi::test {
 void countReplacedNew() noexcept;
+#if defined(ADI_TEST_COUNT_REPLACED_DELETE)
+void countReplacedDelete(void* p) noexcept;
+#endif
 
 namespace replaced_new {
+inline void counted([[maybe_unused]] void* p) noexcept {
+#if defined(ADI_TEST_COUNT_REPLACED_DELETE)
+    countReplacedDelete(p);
+#endif
+}
+inline void release(void* p) noexcept {
+    counted(p);
+    std::free(p);
+}
 inline void* plain(std::size_t n) noexcept { return std::malloc(n == 0 ? 1 : n); }
 inline void* aligned(std::size_t n, std::align_val_t alignment) noexcept {
     const std::size_t size = n == 0 ? 1 : n;
@@ -38,6 +55,7 @@ inline void* aligned(std::size_t n, std::align_val_t alignment) noexcept {
 #endif
 }
 inline void releaseAligned(void* p) noexcept {
+    counted(p);
 #if defined(_WIN32)
     _aligned_free(p);
 #else
@@ -58,12 +76,12 @@ void* operator new(std::size_t n, const std::nothrow_t&) noexcept {
     return adi::test::replaced_new::plain(n);
 }
 void* operator new[](std::size_t n, const std::nothrow_t& tag) noexcept { return operator new(n, tag); }
-void operator delete(void* p) noexcept { std::free(p); }
-void operator delete[](void* p) noexcept { std::free(p); }
-void operator delete(void* p, std::size_t) noexcept { std::free(p); }
-void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
-void operator delete(void* p, const std::nothrow_t&) noexcept { std::free(p); }
-void operator delete[](void* p, const std::nothrow_t&) noexcept { std::free(p); }
+void operator delete(void* p) noexcept { adi::test::replaced_new::release(p); }
+void operator delete[](void* p) noexcept { adi::test::replaced_new::release(p); }
+void operator delete(void* p, std::size_t) noexcept { adi::test::replaced_new::release(p); }
+void operator delete[](void* p, std::size_t) noexcept { adi::test::replaced_new::release(p); }
+void operator delete(void* p, const std::nothrow_t&) noexcept { adi::test::replaced_new::release(p); }
+void operator delete[](void* p, const std::nothrow_t&) noexcept { adi::test::replaced_new::release(p); }
 
 void* operator new(std::size_t n, std::align_val_t a) {
     adi::test::countReplacedNew();

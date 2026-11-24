@@ -26,6 +26,7 @@
 #include "adi/ui/automation_override.hpp"
 #include "knobs_device.hpp"
 #include "mix_seek_fixture.hpp"
+#include "ui_test_hygiene.hpp"
 #include "temp_directory.hpp"
 #include "ui_fake_peer.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -940,7 +941,7 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
                    !strip->solo.getToggleState();
         };
         check(stripOf(10) != nullptr && stripOf(11) != nullptr && !stripOf(10)->arm.isVisible() && stripOf(11)->arm.isVisible(),
-              "Drums, a group, has no Arm; Clap/Snare inside it has");
+              "Drums, a group, has no Arm; Clap/Snare inside it has [P:recording#3]");
         check(root.submitEdit("track.setSolo", {{"id", 11}, {"soloed", true}}, "Solo Track"), "Clap/Snare soloed");
         refresh();
         check(halfLit(10) && !halfLit(13) && !halfLit(11), "Drums' Solo is half coloured; Body's and Clap/Snare's are not");
@@ -1914,10 +1915,10 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
     // a track has Arm; Main has no activator, Solo or Arm, its volume where the activator is.
     check(reverb->kind() == "return" && reverb->active.getButtonText() == "A" && reverb->prePost.isVisible() &&
               !reverb->arm.isVisible() && reverb->prePost.getButtonText() == "Post" && reverb->prePost.getToggleState(),
-          "A Reverb's row: \"A\", Solo, and Post lit where Arm is");
+          "A Reverb's row: \"A\", Solo, and Post lit where Arm is [P:recording#3]");
     check(main->kind() == "master" && !main->active.isVisible() && !main->solo.isVisible() && !main->arm.isVisible() &&
               !main->prePost.isVisible() && main->volume.getY() == 3,
-          "Main's row: no activator, Solo or Arm; its volume on the first row");
+          "Main's row: no activator, Solo or Arm; its volume on the first row [P:recording#3]");
     // Pre on A: one op the engine spreads over every send into A (3 Audio's), one undo step; the row
     // lights from the return's own switch.
     reverb->prePost.onClick();
@@ -10310,7 +10311,7 @@ void deviceClipboard(AppCommands &commands, const std::filesystem::path &dir) {
 // at its own size, never scaled, and a second closes it; one window at a time unless Ctrl/Cmd or
 // Multiple Plug-In Windows; Ctrl/Cmd+Alt+P hides and shows them all; Auto-Hide shows only the
 // selected track's; the opener's error and the editor's reach the Status Bar.
-void pluginWindows(AppCommands &commands, const std::filesystem::path &dir) {
+void pluginWindows(AppCommands &commands, settings::AppSettings &settings, const std::filesystem::path &dir) {
     std::string error;
     auto document = ProjectDocument::open(dir / "plugin-windows.adi", true, test::knobsLoader(), error);
     check(document != nullptr, "a project for the plug-in windows");
@@ -10424,7 +10425,7 @@ void pluginWindows(AppCommands &commands, const std::filesystem::path &dir) {
     check(opened == 1 && host.contains(key3) && host.content(key3) != nullptr &&
               host.content(key3)->getWidth() == 320 && host.content(key3)->getHeight() == 200 &&
               !host.zoom(key3, true) && host.alwaysOnTop(key3) && panels[0]->wrench.getToggleState(),
-          "a click opens the editor at the plug-in's own size, never scaled, on top, the wrench lit");
+          "a click opens the editor at the plug-in's own size, never scaled, on top, the wrench lit [P:7.5-floating#1]");
     {
         auto *window = dynamic_cast<juce::DocumentWindow *>(host.window(key3));
         const auto *track = root.reader().findTrack(2);
@@ -10457,7 +10458,7 @@ void pluginWindows(AppCommands &commands, const std::filesystem::path &dir) {
           "View > Hide Plug-In Windows on Ctrl/Cmd+Alt+P while they show");
     check(root.keyPressed(hideAll) && !root.pluginWindowsShown() && !host.shown(key3) && !host.shown(key5) &&
               host.contains(key3),
-          "Ctrl/Cmd+Alt+P hides every plug-in window, open still");
+          "Ctrl/Cmd+Alt+P hides every plug-in window, open still [P:7.5-floating#2]");
     commands.getCommandInfo(AppCommands::TogglePluginWindows, info);
     root.frame();
     check(info.shortName == "Show Plug-In Windows" && !host.shown(key3), "then the menu offers to show them");
@@ -10488,6 +10489,43 @@ void pluginWindows(AppCommands &commands, const std::filesystem::path &dir) {
     check(!host.contains(key3) && host.contains(key5) && !panels[0]->wrench.getToggleState(),
           "and the next collect closes it, the wrench unlit");
     editorGone = false;
+    // WIN-03: a plug-in's window is an owned one: no task bar button, minimised and back with the main
+    // window, closed by Esc when the plug-in leaves the key; the Mix View's window is a normal one.
+    {
+        check(host.owned(key5) && !host.taskbarButton(key5), "a plug-in's window is owned, with no task bar button");
+        host.ownerMinimised(true);
+        check(host.withOwner(key5) && host.contains(key5) && host.shown(key5), "the main window minimised takes it down, open still");
+        host.ownerMinimised(false);
+        check(!host.withOwner(key5), "and brings it back");
+        host.ownerToFront();
+        auto *window = host.window(key5);
+        auto *keys = dynamic_cast<juce::KeyListener *>(window);
+        check(keys != nullptr && keys->keyPressed(juce::KeyPress(juce::KeyPress::escapeKey), window), "Esc reaching its window closes it [P:7.5-floating#13]");
+        host.collect();
+        root.frame();
+        check(!host.contains(key5), "gone at the next collect");
+        juce::Component dock, content;
+        dock.addAndMakeVisible(content);
+        content.setBounds(0, 0, 200, 100);
+        check(host.detach("Mix View test", 0, content, dock) && !host.owned("Mix View test") &&
+                  host.taskbarButton("Mix View test"),
+              "a moved-out view, as the Mix View's, is a normal window with its task bar button");
+        host.close("Mix View test");
+        // Auto-Open Plug-In Windows: a plug-in added opens its window once the feed shows it.
+        host.closeAll(false);
+        root.pluginAdded(3);
+        root.frame();
+        check(host.contains(key3), "Auto-Open Plug-In Windows: a plug-in added opens its window [P:7.5-floating#14]");
+        host.closeAll(false);
+        std::string offWhy;
+        check(settings.set("plugins.autoOpenWindows", false, {}, offWhy), "Auto-Open off");
+        commands.reload();
+        root.pluginAdded(3);
+        root.frame();
+        check(!host.contains(key3), "with Auto-Open off, adding a plug-in opens nothing");
+        settings.set("plugins.autoOpenWindows", true, {}, offWhy);
+        commands.reload();
+    }
     host.closeAll(false);
     refuse = "This VST3 has no editor";
     check(!root.togglePluginWindow(3, false) && root.error() == refuse && !host.contains(key3),
@@ -10882,20 +10920,20 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     }
     const auto states = [&] { return document->recordStates(); };
     check(states().at(4).monitor == Monitor::Auto && states().at(3).monitor == Monitor::Auto,
-          "New's audio and MIDI tracks monitor on Auto, as Live's (N67)");
+          "New's audio and MIDI tracks monitor on Auto, as Live's (N67) [P:recording#11]");
     three->arm.onClick();
     frame();
     check(states().at(4).armed && three->arm.getToggleState() && root.error().empty(),
-          "a click on 3 Audio's Arm arms it (track.setArm), lit from the rows");
+          "a click on 3 Audio's Arm arms it (track.setArm), lit from the rows [P:recording#2]");
     midi->arm.onClick();
     frame();
     check(states().at(3).armed && !states().at(4).armed && midi->arm.getToggleState() && !three->arm.getToggleState(),
-          "Exclusive Arm: arming 2 MIDI disarms 3 Audio");
+          "Exclusive Arm: arming 2 MIDI disarms 3 Audio [P:recording#4]");
     check(root.armTrack(4, true) && root.armTrack(5, true), "Ctrl/Cmd adds 3 Audio and 4 Audio");
     frame();
     check(states().at(3).armed && states().at(4).armed && states().at(5).armed && three->arm.getToggleState(),
-          "with Ctrl/Cmd all three stay armed");
-    check(!root.armTrack(1, false) && root.error().find("no Arm") != std::string::npos, "Main has no Arm");
+          "with Ctrl/Cmd all three stay armed [P:recording#4]");
+    check(!root.armTrack(1, false) && root.error().find("no Arm") != std::string::npos, "Main has no Arm [P:recording#3]");
     // The monitoring switch: a click on In, Auto or Off in the Mixer View's In/Out section.
     root.command(AppCommands::ToggleMixerView);
     const bool inOutWasOn = root.state().mixerInOut;
@@ -10907,7 +10945,7 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
         wide->setSize(wide->getWidth(), 360);
         check(wide->monitorAt({10, 19 + 65}) == Monitor::In && wide->monitorAt({35, 19 + 65}) == Monitor::Auto &&
                   wide->monitorAt({58, 19 + 65}) == Monitor::Off && !wide->monitorAt({10, 19 + 20}),
-              "In, Auto and Off each where the switch draws them, Audio From not");
+              "In, Auto and Off each where the switch draws them, Audio From not [P:recording#9]");
         wide->setSize(wide->getWidth(), keptHeight);
     } else
         check(false, "3 Audio's strip in the Mixer View");
@@ -10918,26 +10956,26 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     frame();
     check(states().at(4).monitor == Monitor::In && states().at(5).monitor == Monitor::Auto &&
               root.recordState(4).monitor == Monitor::In,
-          "track.setMonitorMode In on 3 Audio alone");
+          "track.setMonitorMode In on 3 Audio alone [P:recording#9]");
     check(root.setMonitor(4, Monitor::In) && root.error().empty(), "the same choice again is accepted");
     frame();
     check(root.command(AppCommands::Undo), "undo");
     frame();
-    check(states().at(4).monitor == Monitor::Auto, "the same choice again changed nothing: one Undo puts 3 Audio back on Auto");
+    check(states().at(4).monitor == Monitor::Auto, "the same choice again changed nothing: one Undo puts 3 Audio back on Auto [P:recording#9]");
     check(root.command(AppCommands::Redo), "redo");
     frame();
-    check(!root.setMonitor(1, Monitor::In) && root.error().find("no input") != std::string::npos, "Main has no monitoring");
+    check(!root.setMonitor(1, Monitor::In) && root.error().find("no input") != std::string::npos, "Main has no monitoring [P:recording#9]");
     // Arrangement Record: F9 records both armed audio tracks; 2 MIDI, armed too, records nothing yet.
     juce::ApplicationCommandInfo recordInfo(AppCommands::ArrangementRecord);
     commands.getCommandInfo(AppCommands::ArrangementRecord, recordInfo);
     check(recordInfo.shortName == "Arrangement Record" &&
               recordInfo.defaultKeypresses.contains(juce::KeyPress(juce::KeyPress::F9Key)),
-          "Arrangement Record is named as Live's and on F9 (manual 21.1)");
+          "Arrangement Record is named as Live's and on F9 (manual 21.1) [P:recording#17]");
     auto &record = root.transport.record;
     check(record.getTitle() == "Arrangement Record" && !record.getToggleState(), "the Record switch, unlit");
     record.onClick();
     frame();
-    check(document->recording() && record.getToggleState() && root.error() == "", "Record records; lit");
+    check(document->recording() && record.getToggleState() && root.error() == "", "Record records; lit [P:recording#17]");
     std::array<float, 64> left{}, right{}, outL{}, outR{};
     const float *inputs[]{left.data(), right.data()};
     float *outputs[]{outL.data(), outR.data()};
@@ -10962,7 +11000,7 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     check(root.command(AppCommands::ArrangementRecord), "F9's command again");
     frame();
     check(!document->recording() && !record.getToggleState() && document->mailbox().desiredPlaying(),
-          "stops the recording; the transport plays on, as Live's");
+          "stops the recording; the transport plays on, as Live's [P:recording#21]");
     for (int i = 0; i < 5000 && document->landingTake(); ++i) {
         block();
         document->tick(++now);
@@ -10971,21 +11009,21 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     }
     auto landed = document->takeLanded();
     check(landed && landed->ok && landed->clips.size() == 2 && landed->message == "Recorded 2 takes.",
-          "both armed tracks' takes land together");
+          "both armed tracks' takes land together [P:recording#19]");
     frame();
     check(root.reader().findTrack(4)->clips.size() == 1 && root.reader().findTrack(5)->clips.size() == 1,
           "a clip on each armed track");
     check(root.command(AppCommands::Undo), "one Undo");
     frame();
     check(root.reader().findTrack(4)->clips.empty() && root.reader().findTrack(5)->clips.empty(),
-          "takes both takes back");
+          "takes both takes back [P:recording#23]");
     // Punch-in: Record while playing records from the playhead, and Stop ends the take with the transport.
     check(root.command(AppCommands::ArrangementRecord) && document->recording() && document->mailbox().desiredPlaying(),
-          "Record while playing records; the transport keeps rolling");
+          "Record while playing records; the transport keeps rolling [P:recording#22]");
     for (int b = 0; b < 8; ++b)
         block();
     check(root.command(AppCommands::Stop), "Stop mid-take");
-    check(!document->recording() && !document->mailbox().desiredPlaying(), "Stop ends the recording and the transport");
+    check(!document->recording() && !document->mailbox().desiredPlaying(), "Stop ends the recording and the transport [P:recording#21]");
     for (int i = 0; i < 5000 && document->landingTake(); ++i) {
         block();
         document->tick(++now);
@@ -11003,12 +11041,12 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
         check(document->ops().submit(countIn).ok && document->synchronise(), "Count-In of one bar");
         frame();
         block();
-        check(root.command(AppCommands::ArrangementRecord) && document->recording(), "Record from stopped, with a Count-In");
+        check(root.command(AppCommands::ArrangementRecord) && document->recording(), "Record from stopped, with a Count-In [P:recording#29]");
         block();
         check(document->mailbox().playing() && document->session().transport().countInRemaining() > 0,
               "during the Count-In the window reads the transport as playing");
         check(root.command(AppCommands::PlayStop) && !document->recording() && !document->mailbox().desiredPlaying(),
-              "Space during the Count-In stops it and the recording");
+              "Space during the Count-In stops it and the recording [P:recording#29]");
         block();
         check(!document->mailbox().playing() && document->session().transport().countInRemaining() == 0,
               "the Count-In is cancelled");
@@ -11063,7 +11101,7 @@ void exportPage(AppCommands &commands, const std::filesystem::path &dir) {
     commands.getCommandInfo(AppCommands::ExportAudio, info);
     check(info.shortName == "Export Audio/Video..." &&
               info.defaultKeypresses.contains(juce::KeyPress('r', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0)),
-          "Export Audio/Video, on Ctrl/Cmd+Shift+R");
+          "Export Audio/Video, on Ctrl/Cmd+Shift+R [P:export#1]");
     check(!root.command(AppCommands::ExportAudio) && root.error() == "Export runs in the application.",
           "outside the application it says where it runs");
     std::optional<ExportChoices> asked;
@@ -11080,7 +11118,7 @@ void exportPage(AppCommands &commands, const std::filesystem::path &dir) {
     sel.start = 3840;
     sel.end = 3840 * 5;
     check(root.command(AppCommands::ExportAudio) && asked->startTicks == 3840 && asked->lengthTicks == 3840 * 4,
-          "a time selection is the range, as Live's");
+          "a time selection is the range, as Live's [P:export#8]");
     sel.start = 3840 * 5;
     sel.end = 3840;
     check(root.command(AppCommands::ExportAudio) && asked->startTicks == 3840 && asked->lengthTicks == 3840 * 4,
@@ -11102,11 +11140,11 @@ void exportPage(AppCommands &commands, const std::filesystem::path &dir) {
                                               "Include Return and Main Effects", "Render as Loop", "Convert to Mono",
                                               "Normalize", "Create Analysis File", "Sample Rate", "Encode PCM",
                                               "File Type", "Bit Depth", "Dither Options", "Encode MP3", "Export Video"},
-          "Live's choices in Live's order");
+          "Live's choices in Live's order [P:export#2]");
     check(page.renderedTrack.getNumItems() == 3 && page.renderedTrack.getText() == "Main" &&
               page.start.getText() == "1.1.1" && page.length.getText() == "2.0.0" && page.refusals().empty() &&
               page.exportButton.isEnabled(),
-          "Main, from 1.1.1 for 2.0.0: Export is offered");
+          "Main, from 1.1.1 for 2.0.0: Export is offered [P:export#1] [P:export#3]");
     {
         // The range as filled is kept exact while its fields are unchanged; the project's rate is offered
         // when the list lacks it.
@@ -11116,7 +11154,7 @@ void exportPage(AppCommands &commands, const std::filesystem::path &dir) {
         ExportPage exact(odd, {}, root.reader().meters());
         check(exact.choices().lengthTicks == textproj::kWhole + 7 && exact.choices().sampleRate == 192000 &&
                   exact.sampleRate.getText() == "192000",
-              "an unedited range stays exact past the sixteenths it shows, and 192 kHz stays 192 kHz");
+              "an unedited range stays exact past the sixteenths it shows, and 192 kHz stays 192 kHz [P:export#7]");
     }
     page.encodeMp3.setToggleState(true, juce::dontSendNotification);
     page.encodeMp3.onClick();
@@ -11135,11 +11173,11 @@ void exportPage(AppCommands &commands, const std::filesystem::path &dir) {
     page.length.setText("one bar", false);
     page.length.onTextChange();
     check(!page.exportButton.isEnabled() && page.refusals()[0].find("Render Length is not a length") != std::string::npos,
-          "a length that is not one is refused");
+          "a length that is not one is refused [P:export#7]");
     page.length.setText("1.2.0", false);
     page.length.onTextChange();
     check(page.exportButton.isEnabled() && page.choices().lengthTicks == textproj::kWhole + textproj::kWhole / 2,
-          "1.2.0 is a bar and two beats");
+          "1.2.0 is a bar and two beats [P:export#7]");
     std::optional<ExportChoices> exported;
     page.onExport = [&](const ExportChoices &e) { exported = e; };
     page.exportButton.onClick();
@@ -11164,7 +11202,7 @@ void exportPage(AppCommands &commands, const std::filesystem::path &dir) {
               job.session.sampleRate == 44100 && job.encoding.format == audio::WavFormat::Pcm16 &&
               job.encoding.dither == audio::WavDither::None && job.normalization.mode == render::NormalizeMode::Peak &&
               job.source.trackId == 0,
-          "the job: the chosen folder and name, the range at the chosen rate, 16-bit, no dither, Normalize");
+          "the job: the chosen folder and name, the range at the chosen rate, 16-bit, no dither, Normalize [P:export#16] [P:export#3]");
     one.normalize = false; // a silent song has no peak to normalize
     // New's Set holds Reverb and Delay, which a build without Pd cannot load, and the renderer renders
     // only a project whose every device loads: an empty project here.
@@ -11181,7 +11219,7 @@ void exportPage(AppCommands &commands, const std::filesystem::path &dir) {
         std::printf("render: %s\n", result.error.c_str());
     check(result.state == render::JobState::Completed && result.output == dir / "Song {mix}.wav" &&
               std::filesystem::exists(result.output) && result.framesWritten == static_cast<std::uint64_t>(expected),
-          "the renderer writes the chosen file, the whole range");
+          "the renderer writes the chosen file, the whole range [P:export#3]");
     document->release();
 }
 // MX-23 and SRF-02 from the strip: the fader's own drag is the document's live gesture, one undo step at
@@ -13907,6 +13945,105 @@ void midiInputFeedCases() {
           "the quiet port's note gets through in the same block as 900 messages from a busy port");
 }
 } // namespace
+// WTS-02's paint checks: the window painted whole and painted in 37-pixel strips agree within 4 per
+// channel (repaint invariance: a component that paints outside its clip, or reads state a partial
+// repaint lacks, shows here), and a paint at each zoom limit finishes and trips no assertion.
+void paintHygiene(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "paint-hygiene.adi", true, {}, error);
+    check(document != nullptr, "a new project for the paint checks");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "paint-hygiene");
+    root.setSize(1440, 900);
+    root.frame();
+    root.frame();
+    const auto paint = [&root](int stripHeight) {
+        juce::Image image(juce::Image::ARGB, root.getWidth(), root.getHeight(), true, juce::SoftwareImageType{});
+        for (int y = 0; y < root.getHeight(); y += stripHeight) {
+            juce::Graphics g(image);
+            g.reduceClipRegion(0, y, root.getWidth(), stripHeight);
+            root.paintEntireComponent(g, true);
+        }
+        return image;
+    };
+    const auto whole = paint(root.getHeight());
+    const auto strips = paint(37);
+    int worst = 0;
+    std::int64_t beyond = 0;
+    for (int y = 0; y < whole.getHeight(); ++y)
+        for (int x = 0; x < whole.getWidth(); ++x) {
+            const auto a = whole.getPixelAt(x, y), b = strips.getPixelAt(x, y);
+            const int d = std::max({std::abs(a.getRed() - b.getRed()), std::abs(a.getGreen() - b.getGreen()),
+                                    std::abs(a.getBlue() - b.getBlue()), std::abs(a.getAlpha() - b.getAlpha())});
+            worst = std::max(worst, d);
+            beyond += d > 4 ? 1 : 0;
+        }
+    check(beyond == 0, ("painted whole and in 37-pixel strips the window agrees within 4 (worst " + std::to_string(worst) +
+                        ", " + std::to_string(beyond) + " pixels beyond)").c_str());
+    // The zoom's limits (1 and 4096 pixels a quarter), at the start and far into the song.
+    auto &geo = root.arrangement.geometry;
+    for (const double scale : {1., 4096.})
+        for (const double left : {0., 1e6}) {
+            geo.scale = scale;
+            geo.left = left;
+            root.frame();
+            const auto image = paint(root.getHeight());
+            check(image.isValid(), ("a paint at " + std::to_string(static_cast<int>(scale)) + " pixels a quarter, from quarter " +
+                                    std::to_string(static_cast<long long>(left)) + ", finishes").c_str());
+        }
+    document->release();
+}
+
+// WIN-02: the main window's and Settings' places in the App record window.places, by the one rule, on a
+// 1366 x 768 laptop at 125 % (1093 x 614 units): at first run centred, no larger than the screen; kept on
+// move, written only when it moved; after a kill, back where it stood with its title bar on the screen.
+void windowPlaces(const std::filesystem::path &dir) {
+    const std::vector<window_place::Monitor> laptop{{"laptop", {0, 0, 1093, 614}, {0, 0, 1093, 582}, 120, true}};
+    const auto file = dir / "places.json";
+    {
+        settings::AppSettings first(appdata::App::Daw, file);
+        juce::DocumentWindow w("main", juce::Colours::black, juce::DocumentWindow::allButtons, false);
+        w.setResizeLimits(520, 180, 10000, 10000);
+        restorePlace(w, first, "main", 1200, 720, laptop);
+        check(w.getBounds() == juce::Rectangle<int>(0, 0, 1093, 582), "at first run the main window opens centred, no larger than the screen");
+        w.setBounds(100, -50, 700, 400);
+        std::string why;
+        check(keepPlace(w, first, "main", why, laptop), ("the place is kept: " + why).c_str());
+        const auto places = first.get("window.places");
+        check(places.contains("main") && places["main"]["display"] == "laptop" &&
+                  places["main"]["rect"] == nlohmann::json::array({100, -50, 700, 400}) && !places["main"]["fullScreen"].get<bool>(),
+              "window.places holds its display, area and rectangle");
+        check(keepPlace(w, first, "main", why, laptop) && first.get("window.places") == places,
+              "the same place again writes nothing new");
+    }
+    {
+        settings::AppSettings afterKill(appdata::App::Daw, file);
+        juce::DocumentWindow w("main", juce::Colours::black, juce::DocumentWindow::allButtons, false);
+        w.setResizeLimits(520, 180, 10000, 10000);
+        restorePlace(w, afterKill, "main", 1200, 720, laptop);
+        check(w.getBounds() == juce::Rectangle<int>(100, 0, 700, 400),
+              "after a kill the main window opens where it stood, its title bar never above the screen");
+        juce::DocumentWindow settingsWindow("settings", juce::Colours::black, juce::DocumentWindow::closeButton, false);
+        restorePlace(settingsWindow, afterKill, "settings", 560, 680, laptop);
+        check(settingsWindow.getBounds() == juce::Rectangle<int>(266, 0, 560, 582), "Settings, never placed, opens centred and fits the screen");
+        // The displays change: the laptop alone at another place; a title bar no screen holds is brought back.
+        w.setBounds(2000, 300, 700, 400);
+        check(keepReachable(w, laptop) && w.getBounds() == juce::Rectangle<int>(1093 - 40, 300, 700, 400),
+              "after a display change a window off every screen keeps a grab of its title bar on one");
+        check(!keepReachable(w, laptop), "and one already reachable is left where it is");
+    }
+    PlaceWatch watch;
+    int saves = 0;
+    watch.save = [&] { ++saves; };
+    watch.moved();
+    watch.moved();
+    check(watch.pending() && saves == 0, "moves are held until the window stands still");
+    watch.flush();
+    watch.flush();
+    check(!watch.pending() && saves == 1, "then saved once");
+}
 // WIN-01: the default key map of every shortcut preset, as text the same on every platform family,
 // against its golden (ADI_UI_REFERENCES/keymap-<preset>-<family>.txt; --write-references writes it,
 // and each run leaves keymap-<preset>-<family>-actual.txt in the working directory),
@@ -14192,15 +14329,17 @@ void keymapGolden(AppCommands &commands, settings::AppSettings &settings, const 
 }
 
 int main(int argc, char **argv) {
-#if defined(_MSC_VER) && defined(_DEBUG)
-    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
-    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
-    _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
-#endif
+    // WTS-02: no dialog box on Windows; JUCE's assertions counted, the run failing on one.
+    adi::uitest::noDialogs();
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     juce::ScopedJuceInitialiser_GUI init;
+    adi::uitest::AssertionWatch assertions;
+    {
+        // The watch sees an assertion: one tripped on purpose under a watch of its own.
+        adi::uitest::AssertionWatch probe;
+        jassertfalse;
+        check(probe.count() == 1, "an assertion is logged and counted (JUCE_LOG_ASSERTIONS on this target)");
+    }
     const bool write = argc == 2 && std::string(argv[1]) == "--write-references";
     test::TempDirectory temp("ui_shell", "root");
     StoreError err{};
@@ -14240,7 +14379,7 @@ int main(int argc, char **argv) {
         mixChannelToolSearch(commands, temp.path());
         mixStackViewReopen(commands, temp.path());
         mixViewShell(commands, temp.path(), true);
-        pluginWindows(commands, temp.path());
+        pluginWindows(commands, settings, temp.path());
         std::printf("%d checks, %d failures (Mix View fake-peer components)\n", checks, failures);
         return failures ? 1 : 0;
     }
@@ -15049,8 +15188,8 @@ int main(int argc, char **argv) {
         };
         using C = AppCommands;
 #if JUCE_MAC
-        check(names == juce::StringArray{"File", "Edit", "Create", "View", "Options", "Navigate"},
-              "the Mac's menu bar: File, Edit, Create, View, Options, Navigate");
+        check(names == juce::StringArray{"File", "Edit", "Create", "View", "Options", "Navigate", "Help"},
+              "the Mac's menu bar: File, Edit, Create, View, Options, Navigate, Help");
         check(items("Options") == std::vector<int>{C::Follow, 0, C::DrawMode, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid,
                                                    C::SnapToGrid, C::FixedGrid, 0, C::DelayCompensation, 0, C::SoloSwitches,
                                                    C::CueSwitches, C::SoloInPlace},
@@ -15059,15 +15198,15 @@ int main(int argc, char **argv) {
         check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0, C::TakeSnapshot, C::SaveAs,
                                                 C::SaveCopy, C::CollectAllAndSave, C::CollectAndExport, 0, C::ExportAudio},
               "the File menu: Save As, then Save a Copy and Collect All and Save (5.4.1, 5.7), ADI's "
-              "Collect and Export after them, then Export Audio/Video (5.2.1); Quit is the application menu's on the Mac");
+              "Collect and Export after them, then Export Audio/Video (5.2.1); Quit is the application menu's on the Mac [P:export#1]");
 #else
-        check(names == juce::StringArray{"File", "Edit", "Create", "View", "Options", "Navigate"},
-              "the menu bar: File, Edit, Create, View, Options, Navigate");
+        check(names == juce::StringArray{"File", "Edit", "Create", "View", "Options", "Navigate", "Help"},
+              "the menu bar: File, Edit, Create, View, Options, Navigate, Help");
         check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0, C::TakeSnapshot, C::SaveAs,
                                                 C::SaveCopy, C::CollectAllAndSave, C::CollectAndExport, 0, C::ExportAudio, 0,
                                                 C::Quit},
               "the File menu: Save As, then Save a Copy and Collect All and Save (5.4.1, 5.7), ADI's "
-              "Collect and Export after them, then Export Audio/Video (5.2.1); it ends with Quit and no longer holds Settings");
+              "Collect and Export after them, then Export Audio/Video (5.2.1); it ends with Quit and no longer holds Settings [P:export#1]");
         check(items("Options") == std::vector<int>{C::Follow, 0, C::DrawMode, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid,
                                                    C::SnapToGrid, C::FixedGrid, 0, C::DelayCompensation, 0, C::SoloSwitches,
                                                    C::CueSwitches, C::SoloInPlace, 0,
@@ -15114,7 +15253,8 @@ int main(int argc, char **argv) {
                       C::FocusClipView == C::ArrangePanelsVertically + 1 && C::FitToTimeRange == C::FocusClipView + 1 &&
                       C::ArrangementRecord == C::FitToTimeRange + 1 && C::ExportAudio == C::ArrangementRecord + 1 &&
                       C::DelayCompensation == C::ExportAudio + 1 && C::SoloSwitches == C::DelayCompensation + 1 &&
-                      C::CueSwitches == C::SoloSwitches + 1 && C::LastId == C::CueSwitches,
+                      C::CueSwitches == C::SoloSwitches + 1 && C::HelpManual == C::CueSwitches + 1 &&
+                      C::KeyboardReference == C::HelpManual + 1 && C::LastId == C::KeyboardReference,
                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
                   "Select Loop, Save a Copy, Collect All and Save, Collect and Export, Cut, Copy, Paste, Duplicate, "
                   "Show/Hide Plug-In Windows, Split, Clip View, Insert Empty MIDI Clip(s), the …Time commands and "
@@ -15224,7 +15364,30 @@ int main(int argc, char **argv) {
                                                     C::NextNeighbor, C::PreviousNeighbor, 0,
                                                     C::TabMovesFocus, C::WrapTabNavigation},
               "the Navigate menu: the views ADI has, the neighbours, then Tab's two switches (§41.1.1)");
-        check(!names.contains("Help"), "a menu with no command yet is left out");
+        // WIN-09: the Help menu, last, with the manual and the keyboard reference (the Mac's Cmd+?
+        // search then finds ADI's menus); each opens its target.
+        check(names[names.size() - 1] == "Help" && items("Help") == std::vector<int>{C::HelpManual, C::KeyboardReference},
+              "the Help menu, last: the manual and the keyboard reference");
+        {
+            auto &helpRoot = window.root();
+            std::vector<juce::URL> opened;
+            helpRoot.openHelp = [&opened](const juce::URL &u) {
+                opened.push_back(u);
+                return true;
+            };
+            check(helpRoot.command(C::HelpManual) && opened.size() == 1 &&
+                      opened[0].toString(false) == juce::String(AdiRootComponent::kManualAddress),
+                  "the manual entry opens the manual's address");
+            check(helpRoot.command(C::KeyboardReference) && opened.size() == 2 && opened[1].isLocalFile(),
+                  "the keyboard reference entry opens a page written from the keys in force");
+            const auto page = opened.size() == 2 ? opened[1].getLocalFile().loadFileAsString() : juce::String();
+            check(page.contains("ADI Keyboard Shortcuts") && page.contains("Mix View") && page.contains("Undo") &&
+                      !page.contains("<script"),
+                  "the page lists the commands by name, with their keys");
+            helpRoot.openHelp = nullptr;
+            if (opened.size() == 2)
+                opened[1].getLocalFile().deleteFile();
+        }
         // Live 12's View menu: the track controls' and the Mixer View's controls in two submenus.
         {
             const auto viewMenu = bar->getMenuForIndex(names.indexOf("View"), "View");
@@ -15262,11 +15425,12 @@ int main(int argc, char **argv) {
         // Live on Windows (§42.28): Alt and a menu's first letter opens that menu.
         check(menuForKey(*bar, juce::KeyPress('f', alt, 0)) == names.indexOf("File") &&
                   menuForKey(*bar, juce::KeyPress('E', alt, 0)) == names.indexOf("Edit") &&
-                  menuForKey(*bar, juce::KeyPress('n', alt, 0)) == names.indexOf("Navigate"),
-              "Alt and a menu's first letter names that menu");
+                  menuForKey(*bar, juce::KeyPress('n', alt, 0)) == names.indexOf("Navigate") &&
+                  menuForKey(*bar, juce::KeyPress('h', alt, 0)) == names.indexOf("Help"),
+              "Alt and a menu's first letter names that menu, Help's H among them (WIN-09)");
         check(menuForKey(*bar, juce::KeyPress('f', 0, 0)) < 0 &&
                   menuForKey(*bar, juce::KeyPress('f', cmd | alt, 0)) < 0 &&
-                  menuForKey(*bar, juce::KeyPress('h', alt, 0)) < 0 &&
+                  menuForKey(*bar, juce::KeyPress('q', alt, 0)) < 0 &&
                   menuForKey(*bar, juce::KeyPress('2', alt, 0)) < 0,
               "only Alt alone opens a menu, and only one that is there");
         const auto appMenu = applicationMenu(commands);
@@ -16397,7 +16561,7 @@ int main(int argc, char **argv) {
             check(restoreFloating(
                       saved, {{"primary", {0, 0, 1000, 700}}, {"left", {-1920, 0, 1920, 1080}}})
                           .getX() == -1600,
-                  "monitor identity preserves negative desktop coordinates");
+                  "monitor identity preserves negative desktop coordinates [P:7.5-floating#5]");
             check(settings.set("lookfeel.showTooltips", true, {}, why), "tooltips back on");
             commands.reload();
             bool alive = true;
@@ -16409,11 +16573,19 @@ int main(int argc, char **argv) {
                 [&](std::int64_t) { return alive; }, false);
             check(floating.detach("test", 11, content, dock), "detach existing component");
             check(floating.content("test") == &content && content.getParentComponent() != &dock,
-                  "detach reparents same identity");
-            check(floating.hasTooltips("test"), "a floating window has its own tooltips");
+                  "detach reparents same identity [P:7.5-floating#3]");
+            check(floating.hasTooltips("test"), "a floating window has its own tooltips [P:7.5-floating#9]");
             floating.frame("test");
             floating.frame("test");
             check(floating.drains("test") == 2, "window drains on its own clock");
+            // WIN-02: a move is saved once the window stands still, so it keeps its place after a kill.
+            if (auto *moved = floating.window("test")) {
+                moved->setBounds(140, 160, 640, 380);
+                floating.flushPlaces();
+                const auto kept = document->views().loadFloating("test");
+                check(kept.x == 140 && kept.y == 160 && kept.width == 640 && kept.height == 380 && kept.open,
+                      "a moved floating window's place is saved without its closing");
+            }
             floating.close("test");
             check(content.getParentComponent() == &dock &&
                       content.getBounds() == juce::Rectangle<int>(10, 20, 300, 180),
@@ -16424,7 +16596,7 @@ int main(int argc, char **argv) {
             floating.frame("deleted");
             floating.collect();
             check(floating.count() == 0 && !document->views().loadFloating("deleted").open,
-                  "deleting the device closes its window and remembers it closed");
+                  "deleting the device closes its window and remembers it closed [P:7.5-floating#8]");
             alive = true;
             floating.collect();
             check(floating.count() == 0, "undo restores the device, not the window");
@@ -17427,7 +17599,7 @@ int main(int argc, char **argv) {
     trace("newProject", [&] { newProject(commands, temp.path()); });
     trace("stripParamUndo", [&] { stripParamUndo(commands, temp.path()); });
     trace("deviceClipboard", [&] { deviceClipboard(commands, temp.path()); });
-    trace("pluginWindows", [&] { pluginWindows(commands, temp.path()); });
+    trace("pluginWindows", [&] { pluginWindows(commands, settings, temp.path()); });
     trace("automationArm", [&] { automationArm(commands, temp.path()); });
     trace("armAndRecord", [&] { armAndRecord(commands, temp.path()); });
     trace("exportPage", [&] { exportPage(commands, temp.path()); });
@@ -17460,9 +17632,15 @@ int main(int argc, char **argv) {
     trace("returnInGroup", [&] { returnInGroup(commands, temp.path()); });
     trace("loopMetronome", [&] { loopMetronome(commands, settings, temp.path()); });
     trace("locators", [&] { locators(commands, temp.path()); });
+    trace("windowPlaces", [&] { windowPlaces(temp.path()); });
     trace("keymapGolden", [&] { keymapGolden(commands, settings, temp.path(), write); });
     trace("userShortcuts", [&] { userShortcuts(commands, settings); });
     trace("shortcutSets", [&] { shortcutSets(commands, settings, temp.path()); });
+    trace("paintHygiene", [&] { paintHygiene(commands, temp.path()); });
+    check(assertions.count() == 0, ("no JUCE assertion in the run; the last: " + assertions.last().toStdString()).c_str());
+    if (assertions.queueFull() > 0)
+        std::fprintf(stderr, "[shell] %d JUCE assertions came from the machine (no message loop, display or MIDI), counted apart\n",
+                     assertions.queueFull());
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

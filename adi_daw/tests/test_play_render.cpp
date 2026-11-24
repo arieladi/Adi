@@ -266,7 +266,8 @@ int main() {
         std::ifstream json(adi_play::diagnosticPath(prefix,".json"));const auto receipt=nlohmann::json::parse(json);
         if(receipt.at("capture").at("dropped")!=1 || receipt.at("after_ready").at("callbacks")!=2)return 1;
         std::ifstream csv(adi_play::diagnosticPath(prefix,".callbacks.csv"));std::string line;int lines=0;
-        while(std::getline(csv,line))++lines;if(lines!=3)return 1;
+        while(std::getline(csv,line))++lines;
+        if(lines!=3)return 1;
     }
     adi::StoreError error{};
     auto store=adi::Store::createEmpty(scratch.path()/"render.adi",error);

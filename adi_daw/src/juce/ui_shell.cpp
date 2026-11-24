@@ -52,6 +52,7 @@ void AppCommands::reload() {
     zoomOnSelection_ = flag(settings_, "lookfeel.zoomOnSelection", true);
     multiplePluginWindows_ = flag(settings_, "plugins.multipleWindows", false);
     autoHidePluginWindows_ = flag(settings_, "plugins.autoHideWindows", true);
+    autoOpenPluginWindows_ = flag(settings_, "plugins.autoOpenWindows", true);
     pluginWindowsOnTop_ = flag(settings_, "plugins.editorsAlwaysOnTop", true);
     tabMovesFocus_ = flag(settings_, "lookfeel.tabMovesFocus", false);
     delayCompensation_ = flag(settings_, "audio.delayCompensation", true);
@@ -293,7 +294,7 @@ struct StableEntry {
     const char *category;
 };
 const StableEntry *stableEntry(int id) noexcept {
-    static const std::array<StableEntry, 125> table{{
+    static const std::array<StableEntry, 127> table{{
         {"transport.play-stop", "Transport"}, // PlayStop
         {"transport.stop", "Transport"}, // Stop
         {"edit.undo", "Edit"}, // Undo
@@ -419,6 +420,8 @@ const StableEntry *stableEntry(int id) noexcept {
         {"options.delay-compensation", "Options"}, // DelayCompensation
         {"options.solo-switches", "Options"}, // SoloSwitches
         {"options.cue-switches", "Options"}, // CueSwitches
+        {"help.manual", "Help"}, // HelpManual
+        {"help.keyboard-shortcuts", "Help"}, // KeyboardReference
     }};
     const auto at = id - AppCommands::PlayStop;
     return at >= 0 && at < static_cast<int>(table.size()) ? &table[static_cast<std::size_t>(at)] : nullptr;
@@ -642,7 +645,8 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Crop Clip", "Expand Clip View", "Fold to Notes", "Fold to Scale", "Highlight Scales",
                                   "Draw Mode", "Arrange Clip View Panels Automatically", "Arrange Clip View Panels Horizontally",
                                   "Arrange Clip View Panels Vertically", "Clip View", "Fit to Time Range",
-                                  "Arrangement Record", "Export Audio/Video...", "Delay Compensation", "Solo Switches", "Cue Switches"};
+                                  "Arrangement Record", "Export Audio/Video...", "Delay Compensation", "Solo Switches", "Cue Switches",
+                                  "Live 12 Manual", "Keyboard Shortcuts"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], category(id), 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -1522,7 +1526,28 @@ bool AdiRootComponent::togglePluginWindow(std::int64_t device, bool several) {
     devices.repaint();
     return true;
 }
+void AdiRootComponent::pluginAdded(std::int64_t device) {
+    if (!commands_.autoOpenPluginWindows() || pluginHost == nullptr || !pluginEditor)
+        return;
+    autoOpen_ = device;
+    autoOpenFrames_ = 60;
+}
 void AdiRootComponent::followPluginWindows() {
+    // Auto-Open (WIN-03): the added plug-in's window, once the feed knows its track and name for the
+    // title. One the feed never shows within the frames given is let go.
+    if (autoOpen_ != 0) {
+        const auto feed = devices.publication ? devices.publication() : nullptr;
+        bool known = false;
+        if (feed)
+            for (const auto &d : *feed)
+                if (d.id == autoOpen_)
+                    known = d.plugin;
+        if (known || --autoOpenFrames_ <= 0) {
+            const auto device = std::exchange(autoOpen_, 0);
+            if (known && pluginHost != nullptr && !pluginHost->contains(pluginWindowKey(device)))
+                togglePluginWindow(device, false); // one with no editor says so, as its wrench would
+        }
+    }
     // Auto-Hide Plug-In Windows (manual 23.3.1.1): only the selected track's show; Show/Hide
     // Plug-In Windows hides them all. Always on top follows the setting.
     if (pluginHost == nullptr)
@@ -3962,7 +3987,7 @@ bool AdiRootComponent::focusView(int id) {
         transport.focus();
         return true;
     case AppCommands::FocusArrangement:
-        arrangement.canvas.grabKeyboardFocus();
+        focusIfShowing(arrangement.canvas);
         return true;
     case AppCommands::FocusClipView:
         // The editor of the clip shown: the Note Editor or the Sample Editor. With no clip, the
@@ -3970,18 +3995,18 @@ bool AdiRootComponent::focusView(int id) {
         if (!showClipView())
             return false;
         if (clipView.details() == nullptr)
-            clipView.grabKeyboardFocus();
+            focusIfShowing(clipView);
         else if (clipView.midi())
-            clipView.notes.grabKeyboardFocus();
+            focusIfShowing(clipView.notes);
         else
-            clipView.sample.grabKeyboardFocus();
+            focusIfShowing(clipView.sample);
         return true;
     case AppCommands::FocusDeviceView:
         if (!state_.docked && !command(AppCommands::ToggleDeviceView))
             return false;
         if (devices.panels.empty())
             return fail("The selected track has no devices.");
-        devices.panels.front()->grabKeyboardFocus();
+        focusIfShowing(*devices.panels.front());
         return true;
     case AppCommands::FocusBrowser:
     case AppCommands::SearchBrowser:
@@ -3990,11 +4015,11 @@ bool AdiRootComponent::focusView(int id) {
         if (state_.panels.find(Panel::Browser)->collapsed && !command(AppCommands::ToggleBrowser))
             return false;
         if (id == AppCommands::FocusBrowser) {
-            browser.grabKeyboardFocus();
+            focusIfShowing(browser);
             return true;
         }
         // Ctrl/Cmd+F, from anywhere: the search field, its words selected to type over.
-        browser.search.grabKeyboardFocus();
+        focusIfShowing(browser.search);
         browser.search.selectAll();
         return true;
     case AppCommands::FocusMixer: {
@@ -4010,6 +4035,28 @@ bool AdiRootComponent::focusView(int id) {
     default:
         return false;
     }
+}
+juce::File AdiRootComponent::writeKeyboardReference() const {
+    // Every command, in the order the menus know them, with the keys it has now (a user's own included).
+    auto *mappings = commands_.manager.getKeyMappings();
+    const auto escape = [](const juce::String &text) {
+        return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;");
+    };
+    juce::String html = "<!doctype html><meta charset=\"utf-8\"><title>ADI Keyboard Shortcuts</title>"
+                        "<h1>ADI Keyboard Shortcuts</h1><table>";
+    for (int id = AppCommands::PlayStop; id <= AppCommands::LastId; ++id) {
+        juce::ApplicationCommandInfo info(id);
+        commands_.getCommandInfo(id, info);
+        juce::StringArray keys;
+        if (mappings != nullptr)
+            for (const auto &k : mappings->getKeyPressesAssignedToCommand(id))
+                keys.add(k.getTextDescriptionWithIcons());
+        html << "<tr><td>" << escape(info.shortName) << "</td><td>" << escape(keys.joinIntoString(", "))
+             << "</td></tr>";
+    }
+    html << "</table>";
+    const auto file = juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("ADI Keyboard Shortcuts.html");
+    return file.replaceWithText(html, false, false, "\n") ? file : juce::File();
 }
 bool AdiRootComponent::command(int id) {
     if ((mixViewPanel.stack.hasToolbarFocus() || mixViewPanel.hasAnalyzerControlFocus() ||
@@ -4122,6 +4169,16 @@ bool AdiRootComponent::command(int id) {
         if (!toggleRecord())
             return false;
         break;
+    case AppCommands::HelpManual:
+    case AppCommands::KeyboardReference: {
+        const auto target = id == AppCommands::HelpManual ? juce::URL(kManualAddress)
+                                                          : juce::URL(writeKeyboardReference());
+        if (target.isEmpty())
+            return fail("The keyboard reference could not be written.");
+        if (!(openHelp ? openHelp(target) : target.launchInDefaultBrowser()))
+            return fail("The system could not open it.");
+        break;
+    }
     case AppCommands::ExportAudio:
         if (!exportAudio)
             return fail("Export runs in the application.");
@@ -4395,7 +4452,7 @@ bool AdiRootComponent::command(int id) {
         if (applicationCommand)
             applicationCommand(AppCommands::UndoHistory);
         if (undoHistory.isShowing())
-            undoHistory.list.grabKeyboardFocus();
+            focusIfShowing(undoHistory.list);
         return true;
     // The metronome and the loop are complete on their own too (submitTransport).
     case AppCommands::Metronome:
@@ -4549,7 +4606,9 @@ const std::vector<MenuEntries> &menuBar() {
          {C::FocusControlBar, C::FocusArrangement, C::FocusClipView, C::FocusDeviceView, C::FocusBrowser, 0,
           C::NextNeighbor, C::PreviousNeighbor, 0, C::TabMovesFocus,
           C::WrapTabNavigation}},
-        {"Help", {}}};
+        // WIN-09: the manual and the keyboard reference, so the Mac's Cmd+? search finds ADI's menus;
+        // the Help View (Learn View) joins it later.
+        {"Help", {C::HelpManual, C::KeyboardReference}}};
     return bar;
 }
 } // namespace
@@ -4671,8 +4730,27 @@ AdiWindow::AdiWindow(std::unique_ptr<AdiRootComponent> root, AppCommands &comman
 void AdiWindow::moved() {
     DocumentWindow::moved();
     root_->followDisplay();
+    place.moved();
+}
+void AdiWindow::resized() {
+    DocumentWindow::resized();
+    place.moved();
+}
+void AdiWindow::parentSizeChanged() {
+    DocumentWindow::parentSizeChanged();
+    if (!isFullScreen() && keepReachable(*this))
+        place.moved();
+}
+void AdiWindow::broughtToFront() {
+    DocumentWindow::broughtToFront();
+    // The owned windows stay above the main window (WIN-03).
+    if (root_->pluginHost != nullptr)
+        root_->pluginHost->ownerToFront();
 }
 void AdiWindow::minimisationStateChanged(bool minimised) {
+    // The owned windows go down and come back with it (WIN-03).
+    if (root_->pluginHost != nullptr)
+        root_->pluginHost->ownerMinimised(minimised);
     root_->infoSpectrum.suspend(minimised);
     root_->devices.suspendParameters(minimised);
     if (root_->mixViewPanel.getParentComponent() == root_) {
@@ -4788,7 +4866,7 @@ bool AdiRootComponent::ImportPrompt::keyPressed(const juce::KeyPress &key) {
         for (std::size_t n = 1; n <= order.size(); ++n) {
             auto *next = order[(from + n * step) % order.size()];
             if (next->isEnabled()) {
-                next->grabKeyboardFocus();
+                focusIfShowing(*next);
                 break;
             }
         }

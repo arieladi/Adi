@@ -9,8 +9,10 @@
 #include "adi/blob.hpp"
 #include <cstring>
 #include "temp_directory.hpp"
+#include "replace_operator_new.hpp"
 #include "adi/builtin_catalog.hpp"
 #include "juce/builtin_host.hpp"
+#include "juce/device_model.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/history.hpp"
@@ -19,24 +21,22 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <exception>
 #include <new>
 #include <set>
 #include <stdexcept>
+#include <thread>
 #include <utility>
 #include <vector>
 namespace {
 std::atomic<int> allocations{0};thread_local bool counting=false;
 }
-void* operator new(std::size_t bytes){if(counting)allocations.fetch_add(1,std::memory_order_relaxed);if(void* value=std::malloc(bytes?bytes:1))return value;throw std::bad_alloc();}
-void* operator new[](std::size_t bytes){return operator new(bytes);}
-void operator delete(void* value)noexcept{std::free(value);}
-void operator delete[](void* value)noexcept{std::free(value);}
-void operator delete(void* value,std::size_t)noexcept{std::free(value);}
-void operator delete[](void* value,std::size_t)noexcept{std::free(value);}
+void adi::test::countReplacedNew() noexcept{if(counting)allocations.fetch_add(1,std::memory_order_relaxed);}
 namespace {
 using namespace adi;using namespace adi::device;using namespace adi::engine;
 int checks=0,failures=0;
@@ -415,6 +415,85 @@ void playingSession() {
 #endif
     automationEvents();automatedSession();  // DF-E50
 }
+// DF-M36: session rebuilds prepare every node. A prepare that changes nothing
+// never takes the gate (a block in flight would pass unprocessed) and keeps
+// the device's state: here a delay's line, against an uninterrupted twin.
+void duplicatePrepareKeepsBuiltinState() {
+#if ADI_WITH_PD
+    constexpr double rate=48000;constexpr std::int32_t frames=64;
+    auto live=load("org.adidaw.builtin.delay"),reference=load("org.adidaw.builtin.delay"),
+         restarted=load("org.adidaw.builtin.delay");
+    auto* gate=adi::device::detail::builtinGateForTesting(*live);
+    if(!gate){check(false,"the built-in exposes its gate to the prepare probe");return;}
+    for(auto* device:{live.get(),reference.get(),restarted.get()})device->prepare(rate,frames);
+    std::uint64_t block=0;
+    const auto run=[&](DeviceInstance& device,std::array<std::array<float,64>,2>& audio) {
+        float* planes[]={audio[0].data(),audio[1].data()};
+        const float* inputs[]={planes[0],planes[1]};
+        NodeIo io;io.in=inputs;io.out=planes;io.channels=2;io.frames=frames;io.renderBlock=block;
+        device.process(io);
+    };
+    const auto programme=[&] {
+        std::array<std::array<float,64>,2> audio{};
+        for(std::size_t c=0;c<audio.size();++c)for(std::size_t i=0;i<audio[c].size();++i) {
+            const double t=static_cast<double>(block)*64.+static_cast<double>(i);
+            audio[c][i]=static_cast<float>(.5*std::sin(t*(c?.013:.031)));
+        }
+        return audio;
+    };
+    // One block through all three: whether live, then restarted, match the reference.
+    const auto step=[&] {
+        ++block;auto a=programme(),b=a,r=a;
+        run(*live,a);run(*restarted,b);run(*reference,r);
+        return std::pair{a==r,b==r};
+    };
+    bool same=true;
+    for(int i=0;i<400;++i)same=step().first&&same;
+    check(same,"three delays start with the same audio");
+
+    std::atomic<bool> finished{false};
+    const auto done=[&]{return finished.load(std::memory_order_acquire);};
+    const auto waitFor=[](auto predicate) {
+        const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(10);
+        while(!predicate()) {
+            if(std::chrono::steady_clock::now()>=deadline)return false;
+            std::this_thread::yield();
+        }
+        return true;
+    };
+    ++block;auto during=programme(),expected=during,restartedBlock=during;
+    run(*reference,expected);run(*restarted,restartedBlock);
+    std::exception_ptr prepareFailure;std::jthread owner;bool admitted=false;
+    {
+        // With this Pass held, a Hold taken by the prepare stays closed until
+        // the Pass leaves: the block below then passes unprocessed.
+        const ReactivationGate::Pass inFlight(*gate);
+        owner=std::jthread([&] {
+            try{live->prepare(rate,frames);}
+            catch(...){prepareFailure=std::current_exception();}
+            finished.store(true,std::memory_order_release);
+        });
+        if(waitFor([&]{return done()||gate->closed();})) {
+            admitted=static_cast<bool>(inFlight)&&!gate->closed();
+            run(*live,during);
+        }
+    }
+    if(!waitFor(done)) {
+        std::fputs("FAIL same-format built-in prepare did not unwind after the test released its gate pass\n",stderr);
+        std::abort();
+    }
+    owner.join();
+    check(!prepareFailure && admitted && during==expected,
+          "a same-format built-in prepare with a block in flight never takes the gate; the block is processed");
+    // The control: a real re-preparation loses the line. The native core keeps
+    // its line over a same-rate prepare by itself, so the control changes rate.
+    restarted->prepare(44100,frames);restarted->prepare(rate,frames);
+    bool kept=true,lost=false;
+    for(int i=0;i<400;++i){const auto [liveSame,restartedSame]=step();kept=kept&&liveSame;lost=lost||!restartedSame;}
+    check(kept,"a repeated identical prepare keeps the delay line: output equals an uninterrupted delay");
+    check(lost,"control: a delay re-prepared at another rate and back sounds different, so the comparison can see a reset");
+#endif
+}
 }
 // DEV-21: OneShot is a loadable instrument, so a MIDI clip sounds. Through
 // the product's own calls: the browser insert (registered as an instrument),
@@ -642,4 +721,4 @@ void instrumentSession() {
     hybridSession();  // DEV-22
     samplerSession();  // DEV-21
 }
-int main(){try{catalogueAndHost();paramsAndState();insertionAndHistory();thirdPartyPlacement();playingSession();instrumentSession();}catch(const std::exception& exception){counting=false;check(false,exception.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{catalogueAndHost();paramsAndState();insertionAndHistory();thirdPartyPlacement();playingSession();instrumentSession();duplicatePrepareKeepsBuiltinState();}catch(const std::exception& exception){counting=false;check(false,exception.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

@@ -7,8 +7,23 @@ device PRs do not conflict on one shared log file.
 
 ## FOR THE DIRECTOR
 
+**The rest of Live 12.4's audio effects chapter (DEV-22; asked 22 November).** With the standing queue
+built, the catalogue holds 31 of the chapter's audio effects. Eleven are missing: Amp, Cabinet,
+Corpus, Drum Buss, Dynamic Tube, Grain Delay, Looper, Pedal, Roar, Spectral Resonator and Spectral
+Time. Beat Repeat and External Audio Effect are left out of the count; they are covered elsewhere.
+- **Where things stand.** PLAN DEV-22 says the queue follows the manual's order and is checked against
+  the chapter. win's check of 20 November named three gaps (Auto Shift, External Audio Effect,
+  Spectrum), and those are built now. Nothing names the eleven, and nothing excludes them.
+- **Recommendation:** they are in DEV-22's queue, built after 3 December in the manual's order (Amp
+  first), each "built, not verified" with its reading on the ONE list.
+  - Looper stays out until the engine's recording and transport rows: its core is the engine's, as
+    External Audio Effect's routing is.
+  - This seat built them in the manual's order, each on its own branch: Amp, Cabinet, Corpus, Drum
+    Buss, Dynamic Tube, Grain Delay, Pedal, Roar, Spectral Time and Spectral Resonator. If the answer
+    is no, they simply wait.
+
 **The Live readings — the one list (ADR-0248 d8, d14).** Readings 1 to 18 are for the director's
-session; 19 to 21 (the post-3-December effects) may come in the same sitting or later. For the director's own Claude session on
+session; 19 to 44 (the post-3-December effects and kernels) may come in the same sitting or later. For the director's own Claude session on
 the PC with Live 12.4, in one sitting, from win's prompt. This seat does not drive Live. Each item
 is one device, one question. Live 12.4 at 48 kHz, a fresh Set, the device dragged from the browser
 (its default), nothing else on the track unless said. Bring back the statement (value, conditions,
@@ -106,8 +121,105 @@ method); Live's files and renders stay in the director's research.
     - Soft Clip: a 1 kHz sine at −20 dBFS, then at +6 dBFS, the output's peak and its first five
       harmonics.
     - M/S with a hard-left signal over the ceiling: the peak on each channel.
+22. **LFO (DEV-07's device side; built after 3 December).** A fresh LFO, every control as shown
+    (its shapes, Rate and its synced choices, Phase, Offset, Depth, Jitter, Smooth, and any other).
+    - Mapped to a Utility Gain at 1 Hz: one cycle of each shape.
+    - Jitter at 50 % and Smooth at 50 % on the Square: two cycles each.
+    - Synced at 1/4, 120 BPM: a locate to bar 3 beat 2, the value at the locate and whether the
+      phase is the song's or restarts.
+23. **Align Delay (built after 3 December).** A fresh Align Delay, every control as shown.
+    - An impulse: where it comes out in Time 10 ms, Samples 123, and Distance 3.432 m at its default
+      temperature, at 48 kHz.
+    - Whether a fractional delay is interpolated or rounded to a sample.
+    - Whether Live reports the delay as latency.
+    - What a changed delay does to audio in the line.
+24. **Auto Pan-Tremolo (built after 3 December).** A fresh Auto Pan-Tremolo, every control as shown,
+    in both modes.
+    - A 1 kHz sine at 1 Hz, Amount 100 %: each channel's level over one cycle, at Phase 180 and 90,
+      in Pan and in Tremolo.
+    - Shape at 50 % and 100 %.
+    - The level at the crest (unity, or less).
+25. **Channel EQ (built after 3 December).** A fresh Channel EQ, every control as shown.
+    - Pink noise through each band at its extremes, and through the low cut: the response, to settle
+      the corners, slopes and the bell's Q.
+    - Whether the Mid band's Q changes with its gain.
+26. **EQ Three (built after 3 December).** A fresh EQ Three, every control as shown.
+    - Pink noise with each band killed in turn, at 24 and at 48 dB/oct: the response, to settle the
+      crossover family.
+    - The gain law near its low end.
+27. **Tuner (built after 3 December).** A fresh Tuner, every control as shown (the Reference range
+    and default, the display modes' names).
+    - A 440 Hz sine, then 442 Hz: the note and cents shown.
+    - After the sine stops: how long the reading is held, and what it shows then.
+28. **Erosion (built after 3 December).** A fresh Erosion, every control as shown.
+    - Sine mode, Frequency 5 kHz, Amount at its top, a 1 kHz sine: the levels at 1, 4 and 6 kHz,
+      to settle the depth law.
+    - Noise and Wide Noise on a 1 kHz sine: the spectrum, and whether the channels differ.
+29. **Vinyl Distortion (built after 3 December).** A fresh Vinyl Distortion, every control as shown.
+    - A 1 kHz sine at −8 dBFS with Tracing at three drives: the second and third harmonics.
+    - Pinch, Soft and Hard, Stereo and Mono: the 3rd and 5th harmonics, and the mid and side.
+    - Crackle at full volume: the clicks' count in 10 s, their peak and decay, and their image.
+30. **Filter Delay (built after 3 December).** A fresh Filter Delay, every control as shown (each
+    line's Freq, Width, time and pan).
+    - An impulse through one line, its band off, then on: the echo times and the band's shape.
+    - Where the band sits (on the input or in the loop); a time change: a glide or a jump.
+31. **External Audio Effect (the engine's build, after 3 December).** A fresh External Audio Effect, as
+    shown: Gain's range and default, Hardware Latency's range and steps, the Audio To and Audio From
+    lists. With a loop-back cable and Dry/Wet 50 %: does the dry meet the return, or arrive early?
+32. **DJ Filter (built after 3 December).** The DJ Filter as Live 12.4 shows it: its controls and
+    ranges, and whether it has a resonance of its own. Pink noise at Filter −50 and +50: the response.
+33. **Auto Shift (built after 3 December).** A fresh Auto Shift, every control as shown (its scale
+    list, the Strength and Smooth ranges, the formant and vibrato sections).
+    - A 446 Hz sine through it at its defaults: the output's pitch, and how fast the correction comes.
+    - Its reported latency.
+34. **Spectrum (the device's controls, after 3 December).** A fresh Spectrum, every control as shown
+    (Block's default, Refresh's and Avg's ranges, the Graph and Scale choices). Avg 4 on a tone that
+    starts: how the reading rises over the first analyses. How long Max holds a peak.
+35. **Amp (built after 3 December).** A fresh Amp, every control as shown: the Amp Type list, the
+    knobs' ranges, Dual's default. Per type, a 220 Hz sine at −6 dBFS at Gain 0, 5 and 10: the first
+    nine harmonics. A −60 dBFS sine swept from 50 Hz to 10 kHz at the defaults: the response.
+36. **Cabinet (built after 3 December).** A fresh Cabinet, every control as shown (the cabinet and
+    microphone lists, the mic types, Dual's default). Pink noise through each cabinet with each
+    microphone: the response from 40 Hz to 16 kHz.
+37. **Corpus (built after 3 December).** A fresh Corpus, every control as shown (the type list,
+    Ratio and Opening, the LFO and filter sections, the defaults). For each type at its default, a
+    click: the first eight modes' frequencies against the first, and the first mode's decay time at
+    Decay 0, 50 and 100 %.
+38. **Drum Buss (built after 3 December).** A fresh Drum Buss, every control as shown. A drum loop
+    with Comp on, then off: the gain reduction. Drive at 0, 50 and 100 % in each Type, and Crunch at
+    0 and 100 %, on a 200 Hz sine at −6 dBFS: the harmonics. A click with Boom at 100 % at three Boom
+    Freq and Decay settings: the ring's pitch and length. Transients at ±100 on a kick: the attack.
+39. **Dynamic Tube (built after 3 December).** A fresh Dynamic Tube, every control as shown. A
+    200 Hz sine at −6 dBFS for each Tube at Drive 0, 12 and 24 dB, Bias 0 and 100 %: the first five
+    harmonics. A drum loop with Envelope at ±100 %: how the colour follows the level.
+40. **Grain Delay (built after 3 December).** A fresh Grain Delay, every control as shown (the delay's
+    range and default, Frequency's, Random Pitch's and Spray's ranges). An impulse at its defaults with
+    Pitch 0 and Spray 0: the echo times. A 440 Hz sine with Pitch +12 and −12 at Frequency 20 Hz: the
+    spectrum.
+41. **Pedal (built after 3 December).** A fresh Pedal, every control as shown. A 220 Hz sine at
+    −10 dBFS for each Type at Gain 0, 50 and 100 %: the first nine harmonics, and the output level. A
+    −60 dBFS sweep from 30 Hz to 10 kHz with Sub off and on: the response.
+42. **Roar (built after 3 December).** A fresh Roar, every control as shown: the routings, the shape
+    list, each stage's filter types, the feedback section, the compressor and the modulation matrix.
+    A 220 Hz sine at −10 dBFS through each shape at Amount 0, 50 and 100 %: the first nine harmonics.
+    Multiband with flat stages on pink noise: does it sum flat?
+43. **Spectral Time (built after 3 December).** A fresh Spectral Time, every control as shown (the
+    resolution choices, the delay's and the freeze's sections). An impulse through the delay at Time
+    250 ms, then with Tilt and Spray: when each band returns. A held chord frozen: its level and pitch
+    a few seconds on. The reported latency.
+44. **Spectral Resonator (built after 3 December).** A fresh Spectral Resonator, every control as
+    shown (its modes, Shift, Unison, the modulation). A burst of noise at its defaults: the partials it
+    rings at and how long. A tone between two partials: is it heard?
 14. **(Max, not Live; optional, DEV-16.)** A `[line~]` ramp 0 → 1 over 100 ms from a loadbang: the
-    value of its first sample. Two boxes at the same x fed from one outlet: which fires first.
+    value of its first sample. Two boxes at the same x fed from one outlet: which fires first. A lone
+    number into `[line~]` (a jump): does its right outlet bang, and when? A list cut short by a new
+    one: does the cut list bang? (The translator assumes no to both; DEV-16 step 7.) `[biquad~]`'s
+    smooth attribute (on by default): how it smooths, over how long, and whether coefficients given as
+    arguments are smoothed in at load. `[slide~]` with a signal in its slide inlets: read per sample?
+    A slide below 1, 0 or negative: clamped to 1? `[%]`: is a float input truncated or rounded? The sign
+    of `-7 % 3`, and what `% 0` gives. A float `[/]` by 0: −2^31, as the reference seems to say?
+    `[selector~]` told a negative choice: silence? A `$1` message box fed a message with a selector
+    (not a list): is `$1` the selector or its first argument?
 
 (The Shifter question is answered — Live's way, ADR-0247 d9 — and struck.)
 
@@ -120,6 +232,1423 @@ method); Live's files and renders stay in the director's research.
   - keep the Annex's reading, which matches the meter, and rely on the −1 dBTP ceiling's margin;
   - or have the export's brickwall read finer than the meter, at some CPU cost.
 - Nothing changes until you say.
+
+## 2026-11-23 — every open devices branch together on today's main: 303/303 at 32 and 64
+
+**For win (landing windows).** This lane has 43 branches not yet on main. Seven tips contain all the
+others:
+- `devices/spectral-resonator` (9a6ea54f), the whole effects stack from the Compressor up;
+- `devices/amxd-audit` (9fc81e1d), the `.amxd` translator, steps 1 to 10;
+- `devices/beat-repeat-contract`;
+- `devices/ext-audio-effect-contract`;
+- `devices/hybrid-reverb-nupc`, which carries items 1 to 3 and 10 (perf-pass, denormal-tail);
+- `devices/pd-midi-out`, which carries `devices/pd-block-quantum`;
+- `devices/shifter-nan`.
+
+All seven merged onto main at abbc32ab in a local trial, never pushed, and passed CTest 303/303 at
+PD_FLOATSIZE 32 and 64. Every build was clean. Two conflicts came up:
+- **`devices/pd-midi-out` (DEV-14) against main** (the AR8 change and the exact-position change):
+  four hunks in `pd_device.hpp`, `pd_engine.hpp` and `pd_engine.cpp`.
+  - Resolved by merging main into the branch, keeping both sides of each hunk (52782524, pushed).
+  - `adi_pd_engine_tests` 715, `adi_pd_tests` 78, native parity 287 and the template, OneShot and
+    object-walk suites all pass on it.
+  - `devices/pd-block-quantum` alone conflicts the same way. Take `devices/pd-midi-out`: it contains
+    pd-block-quantum, already merged with main.
+- **`devices/shifter-nan` against the denormal-tail fix (5fc71da8), in `tests/test_shifter.cpp` only.**
+  Both branches add a test function at the end of the file and edit the one-line `main()`. Git flags it
+  whichever lands second. The resolution: keep both functions, and have `main()` call
+  `nonFinite();measured();invariants();liveUnison();unisonAfterAMove();tailAcrossBlocks();`. That is
+  how the trial tree is built.
+
+## 2026-11-22 — DEV-16: the audit's last two open points
+
+**PR requested:** head `devices/amxd-audit` (9fc81e1d), in place of 00404789.
+
+**CTest, every head checked, at PD_FLOATSIZE 32 and 64:**
+- `devices/amxd-audit` at 9fc81e1d: 270/270.
+- `devices/spectral-resonator` at 9a6ea54f, the top of the effects stack with the Auto Shift revert:
+  295/295.
+
+Tidy is clean on both.
+- **Float-form operators** (`[+ 1.]`, `[* 2.]`) were the bare Pd object, so a `set` into them errored and
+  was lost. They now take the int form's front, with `[f]` cells in place of `[i]`. "set 2.5" then a
+  bang into `[+ 1.]` gives 3.5.
+- **A `set` into `[pack]` is refused.** Pd's `[pack]` cannot store its first slot without output.
+- `adi_pd_amxd_tests` 142. The plant fails the `set` check. Its list check passes even with the bare
+  object, because Pd's operators already spread a list over their inlets.
+
+**The audit's 28 are now fixed, refused or stated.** What stays as said: Pd's `[t s]` on a number;
+a selector message into `[t i]`/`[t f]`; a float `[/]` by 0; live.thisdevice's preset and save
+events; and the reading 14 questions.
+
+## 2026-11-22 — the eleventh review: 5 findings; one fix reverted, two trade-offs stated, two fixed
+
+Five findings were confirmed and none refuted. Two of them found that the tenth review's Auto Shift fix
+cost more than it bought.
+- **Auto Shift (`devices/auto-shift`, 73e35139).**
+  - The fault: when the dry signal followed the gliding tap (738a1a59), Dry/Wet 0 stopped being the
+    input one reported latency late, for seconds after every correction: 0.73 off on E2. And a ratio
+    leaving 1 mid-glide put shifted audio and a splice click into the dry path for 20 ms.
+  - Reverted. The trade-off it tried to remove is stated in the header instead:
+    - the glide back to the centre takes half a period at 0.1 % (about 1 s at 220 Hz, 6 s at 82 Hz);
+    - until it ends, a Dry/Wet below 100 % combs, fading as the glide ends;
+    - a faster glide is heard as pitch (0.5 % is 8.6 cents);
+    - the dry signal is always the input one latency late.
+  - A check now holds that last guarantee through a correction, sample for sample. 738a1a59 fails it.
+  - `adi_auto_shift_tests` 126.
+- **The detector (`devices/tuner`, 9e314efa).**
+  - The faults: the 5 % onset rule drops accurate readings where it is not needed. An E1 dying in
+    40 ms keeps 4 of 14 readings at 48 kHz. A vibrato under ±80 % tremolo keeps 72 to 89 of 137 hops.
+    The worst error is unchanged in both. The pluck check could not notice lost readings.
+  - The rule stays. A dropped reading holds (the Tuner's display, Auto Shift's correction), while a
+    wrong one is shown or applied, and the low-note onsets need the rule. The trade-off is now stated
+    where the rule is.
+  - The tests now count readings:
+    - the 300 ms pluck must keep 10 or more (it keeps 53 to 58);
+    - deep tremolo must keep half its hops, and ±40 % tremolo nine tenths.
+  - The 40 ms E1 pluck is under two of the window's periods before it dies, and gets no reading at
+    44.1 kHz.
+  - `adi_tuner_tests` 77.
+- **The translator (`devices/amxd-audit`, 00404789).**
+  - The fault: a `set` arriving at run time (through `[r]` or a gate) into a `---` message box with no
+    `$` was still copied into every part.
+  - A `[route set]` now leads such a box too.
+  - `adi_pd_amxd_tests` 139. The plant fails.
+
+**Rounds so far:** 17, 8, 5, 3, then 5 findings. This round's five were two trade-offs, a too-clever fix,
+and one real gap. The reviews have now reached choices rather than faults:
+- Dry/Wet combing against pitch accuracy;
+- readings dropped against readings wrong.
+
+Both are stated in the code and here. Further rounds wait unless a reading or a ruling changes them.
+
+**New heads:**
+- tuner 9e314efa, erosion 10b858ca, vinyl-distortion 8e8c0b4e, filter-delay d231b2c2, dj-filter
+  63103b8a, auto-shift 17619945;
+- spectrum-device bccefac4, live-amp a5966c33, live-cabinet 1c05af51, corpus 42a7d9f4, drum-buss
+  7ff47679, dynamic-tube b3c80c77, grain-delay 39278369, live-pedal 1c7cdac7, roar 331b8ebf,
+  spectral-time 0fbeac6f, spectral-resonator 9a6ea54f;
+- amxd-audit 00404789.
+
+**CTest:** spectral-resonator at 3788b9ff passed 295/295, and amxd-audit at f162ce3b passed 270/270, at 32
+and 64. The heads after those are running.
+
+## 2026-11-22 — the tenth review: 3 findings, all fixed
+
+This round reviewed only the last round's changes. Three findings were confirmed and one refuted: that
+high notes' clear onset readings were up to 114 cents off.
+- **The detector (`devices/tuner`, 36212226).**
+  - The fault: the onset rule measured its quarters after the window's mean was removed. A low note
+    starting in the window leaves a large mean, which fills the silent quarter. So bass onsets (E1 at
+    40 cents off) and fast plucked decays escaped the rule.
+  - Each quarter is now its own variance: its energy about its own mean. A window with a quarter under
+    5 % of its loudest counts as a note starting, stopping or dying fast.
+  - `adi_tuner_tests` 71 (12 new):
+    - E1 and B1 after silence, the onset anywhere in the window, at 44.1, 48 and 96 kHz: worst 26.5
+      and 12.0 cents. That is the floor for 3.5 periods of E1 in a 44.1 kHz window; the halves rule
+      read 21 to 22.
+    - 41.2 Hz plucks: worst 22.2 cents.
+    - The previous detector reads E1 40.3 cents off.
+- **Auto Shift (`devices/auto-shift`, 738a1a59).**
+  - The fault: the 0.1 % glide back to the centre takes seconds on a low note (6 s at 82 Hz). Dry/Wet
+    combed until it ended: E2 was 7 dB down at first.
+  - While the tap glides, the dry signal now reads the tap as well, crossfaded over 20 ms, so Dry/Wet
+    cannot comb. The header now says how long the glide takes, and that both signals are off the
+    reported latency until it ends.
+  - `adi_auto_shift_tests` 127. E2 and E1 at Dry/Wet 50 % stay within 0.5 dB in every half second.
+    The plant fails at 6.6 dB.
+  - Merged up the stack to `devices/spectral-resonator` (220043f8).
+- **The translator (`devices/amxd-audit`, 745b7c15).**
+  - The fault: a `set` into a `$` message box whose `;` parts send to `---` names reached every part.
+  - Such a set is now refused, as is a `[prepend set]` feeding that box. A set made at run time is
+    dropped.
+  - `adi_pd_amxd_tests` 138. The plant fails.
+
+**Rounds so far:** 17, 8, 5, then 3 findings. Each fix has a plant that fails without it.
+
+**New heads:**
+- tuner 36212226, erosion fc8aa714, vinyl-distortion 8747f19d, filter-delay ccb36d5d, dj-filter
+  a27d28ca, auto-shift 738a1a59;
+- spectrum-device 6b0ecf19, live-amp 746623a0, live-cabinet e66c4647, corpus 1ac5587e, drum-buss
+  697886df, dynamic-tube 8dd55896, grain-delay a8d7affd, live-pedal f951f52c, roar aac01e9a,
+  spectral-time 55a0ec33, spectral-resonator 220043f8;
+- amxd-audit 745b7c15.
+
+## 2026-11-22 — the ninth review: 5 findings, all fixed
+
+This round covered only the last round's changes. Five findings were confirmed and one refuted: that
+computing the seven copies every sample doubles the CPU at 768 kHz.
+- **The detector (`devices/tuner`, b4c027f2).**
+  - The fault: the onset rule (halves of the window differing by 1.5×) also caught a sung vibrato's
+    tremolo. At ±40 %, 110 Hz read 38 of 137 hops.
+  - Every bad onset reading had a near-silent quarter in its window: under 1e-30 of the loudest. A
+    ±50 % tremolo keeps every quarter above 13 %. So a window counts as an onset when its quietest
+    quarter is under 1 % of its loudest.
+  - `adi_tuner_tests` 59. Vibrato with tremolo now reads 137 of 137 hops, and the onsets stay within
+    7.8 cents. The halves rule and having no rule both fail.
+- **Auto Shift (`devices/auto-shift`, f10ea890).**
+  - The fault: the glide back to the centre, at 0.5 %, played an in-tune corrected note up to
+    8.6 cents off for 0.2 to 0.9 s.
+  - It now glides at 0.1 %: 1.7 cents, below hearing.
+  - A check driving a ratio that hovers on a band's top now tests the hysteresis. Before, nothing in
+    the suite did: the A3 check's move count could not fail, so it is dropped.
+  - `adi_auto_shift_tests` 125. Plants: the 0.5 % glide (8.6 cents off) and no hysteresis (2,250
+    moves in 3 s).
+  - Merged up the stack to `devices/spectral-resonator` (c20fa92c).
+- **The translator (`devices/amxd-audit`, f162ce3b).**
+  - `set` into a `$` message box changes its text again, rather than filling in its arguments and
+    sending.
+  - biquad~'s stability test now runs as Pd's own test, on the numbers Pd will read, in both 32-bit and
+    64-bit `t_float`. Coefficients unstable in either are refused. The earlier margin had also
+    refused stable resonances below 8 Hz; they now translate.
+  - `adi_pd_amxd_tests` 137. Two plants each fail.
+
+**New heads** (in place of the eighth review's):
+- `devices/tuner` b4c027f2, `devices/erosion` ecf7feb0, `devices/vinyl-distortion` 26cb6204,
+  `devices/filter-delay` a3a6aaa4, `devices/dj-filter` 66d3e8c3, `devices/auto-shift` f10ea890;
+- spectrum-device 07b71918, live-amp 66486705, live-cabinet 9c90fd3a, corpus 2e28e86a, drum-buss
+  e0238999, dynamic-tube c4cb36d4, grain-delay 67d93e7b, live-pedal fdc69a36, roar 5e37d549,
+  spectral-time 01038f92, spectral-resonator c20fa92c;
+- `devices/amxd-audit` f162ce3b.
+
+**CTest:** `devices/spectral-resonator` at 16f9631d passed 295/295 and `devices/amxd-audit` at 097e29a7
+passed 270/270, at PD_FLOATSIZE 32 and 64. The heads after that are running.
+
+## 2026-11-22 — the eighth review: this round's fixes; 8 findings, all fixed
+
+Two finders covered only the last round's changes, and three skeptics checked every finding. Eight were
+confirmed and none refuted.
+- **The detector (`devices/tuner`, 9dcd6cd2).**
+  - The fault: the range-only cut-off of 743f1e40 let a walk pulled by a note's onset through. A window
+    of silence then a tone read clearly sharp, by up to 280 cents. Auto Shift applied that as up to
+    49 cents of mis-correction at the start of every note.
+  - A window whose two halves differ in energy by more than half again holds a note starting or
+    stopping. There, the period must again stay within 1.5 samples of the coarse dip. A steady level
+    (vibrato, a glide) keeps the range rule.
+  - `adi_tuner_tests` 49:
+    - after silence, every clear reading is within 10 cents (worst 7.8);
+    - vibrato and glides still read 137 of 137 hops;
+    - without the rule the onsets read up to 188 cents off, and with it on every window, vibrato reads
+      0 to 18 hops.
+  - Two plants each fail. A first attempt at one plant hit MSVC's constant-condition warning and ran
+    nothing; it was redone so that it builds.
+- **Auto Shift (`devices/auto-shift`, c95041a9).**
+  - **Filter bursts.** Its one low-pass was retuned while it ran: a falling ratio burst up to +15 dB.
+  - **Stale filtering.** The copy was filtered for the ratio when each sample was written, so a shift up
+    aliased fully for one latency (107 ms).
+  - Seven fixed filtered copies now replace that low-pass, one per band of ratios (every four
+    semitones, to 4.5), each designed once in `prepare()`.
+  - **In-tune notes under Correction.** They gave a ratio a hair from 1: the tap never re-centred, and
+    the copies flickered with treble notches. A shift within 0.2 cents is now a ratio of exactly 1. The
+    input is read directly up to a ratio of 1.05, and a step down a band waits until the ratio is 2 %
+    below it.
+  - **Decimation.** It rounded down, so 88.2 kHz ran undecimated. It now rounds up.
+  - `adi_auto_shift_tests` 121:
+    - Shift changes downward never rise past the input's peak.
+    - A 15 kHz alias right after a shift up is under −40 dB.
+    - An in-tune corrected note at Dry/Wet 50 % keeps the input's level within 0.05 dB.
+    - Three plants each fail.
+  - Merged up the stack to `devices/spectral-resonator` (3788b9ff).
+- **The translator (`devices/amxd-audit`, 1d191219).**
+  - A message led by a word, stored for a later bang, is now made a list first, so a box sends
+    `hello 3` both when the message arrives and when banged. That `$1` is the first word in Max is
+    the reading of three skeptics; the question stays on reading 14.
+  - A biquad~ pole on the unit circle, to 1e-6, is refused. There Pd's float test decides differently
+    from this one's double test.
+  - `adi_pd_amxd_tests` 134. Two plants each fail.
+
+**New heads:** `devices/tuner` 9dcd6cd2, `devices/erosion` 6f515860, `devices/vinyl-distortion` 1f98221e,
+`devices/filter-delay` c3382443, `devices/dj-filter` c2589479, `devices/auto-shift` c95041a9, then
+spectrum-device 448f1573, live-amp ddf3cecc, live-cabinet fd5eb31e, corpus 94bccf8d, drum-buss 9374445c,
+dynamic-tube 297d725a, grain-delay 95125474, live-pedal 8ab3d650, roar 99c9b74c, spectral-time 1559ae3a,
+spectral-resonator 3788b9ff; `devices/amxd-audit` 1d191219. CTest of the previous tops is running; the
+new tops follow it.
+
+## 2026-11-22 — the seventh review: Auto Shift rebuilt again and the audit fixes; 17 findings, all fixed
+
+The review covered the spliced Auto Shift (b50591ad) and translator steps 9 and 10. Two finders worked on
+each, and three skeptics checked every finding. Seventeen were confirmed, some by two lenses; one was
+refuted.
+- **The detector (`devices/tuner`, 743f1e40).**
+  - The cut-off this lane added for the onset stall (a period more than 1.5 samples from the coarse
+    dip) threw away most readings of a moving pitch. 110 Hz with ±50 cents of vibrato read 26 of 137
+    hops at 48 kHz, and none at 96 kHz. That hit the Tuner and Auto Shift alike.
+  - The cut-off is now "a period walked out of the range read". That still ends the stall within its
+    bound.
+  - `adi_tuner_tests` 43. Vibrato and glides at 82.4 and 110 Hz, at 48 and 96 kHz, read 137 of 137
+    hops. The old cut-off reads 0 to 93 of them.
+- **Auto Shift (`devices/auto-shift`, 9aaf8b10).**
+  - **Low voices.** Periods were capped at 60 Hz's, so 40 Hz at +7 came out at 70 Hz, and a noisy
+    220 Hz read at its 7th subharmonic lost its shift. Every period the detector reads, down to
+    28.5 Hz, now splices whole.
+  - **The return to Shift 0.** After a shift, a ratio back at exactly 1 left the tap off-centre and
+    Dry/Wet combed, down to −131 dB. The tap now returns to the centre by whole periods, glides the
+    rest away at 0.5 % speed, and then stays there.
+  - **Aliasing.** Shifting up aliased: a sawtooth at +24 folded its 50th harmonic down to 4 kHz.
+    Shifting up now reads a copy low-passed by an eighth-order Butterworth, and the aliases measure
+    −51.5 and −96.3 dB.
+  - **The latency budget.** The taps strayed past the stated budget. The ratio is now held through
+    each crossfade, crossfades are a quarter period, and a splice that falls due during a filter
+    switch is made inside it. The budget is checked with the Shift jumping across its range for
+    20 s. The latency is now 5,371 samples at 48 kHz.
+  - **Cost at high rates.** Above 48 kHz the detector reads the input averaged down to 48 kHz or less.
+    A rate above 800 kHz leaves the device inert.
+  - `adi_auto_shift_tests` 112. Five plants each fail. Of the 48 jump checks, the worst uses 0.79 of
+    its allowance.
+  - Merged up the stack to `devices/spectral-resonator` (16f9631d).
+- **The translator (`devices/amxd-audit`, 097e29a7).**
+  - Stored `$` arguments: a symbol-led list keeps its `$1`, and symbols are stored.
+  - A number box's `set` is truncated and limited.
+  - A bang into a message box's right inlet sets it to "bang".
+  - `[gate]`'s `next` is refused.
+  - `live.thisdevice` re-fires only on a bang or "loadbang", so `[setwidth 300(` fed back into it no
+    longer loops.
+  - The biquad~ stability test is now Pd's own.
+  - `adi_pd_amxd_tests` 132. Six plants each fail.
+- **CTest:** the earlier tops, `devices/spectral-resonator` at a478fe52 and
+  `devices/amxd-modulo-biquad` at 22fd659f, passed 295/295 and 270/270 at PD_FLOATSIZE 32 and 64. That
+  includes the OneShot checks that failed before main was merged in. Both new tops are running.
+
+**PR heads in place of those named below:**
+
+| Branch | Head |
+|---|---|
+| `devices/tuner` | 743f1e40 |
+| `devices/erosion` | 908ac9e5 |
+| `devices/vinyl-distortion` | 09d4bc23 |
+| `devices/filter-delay` | d62f8cb5 |
+| `devices/dj-filter` | 8382342a |
+| `devices/auto-shift` | 9aaf8b10 |
+| `devices/spectrum-device` | 9600e519 |
+| `devices/live-amp` | 9d7c8d7b |
+| `devices/live-cabinet` | 230c2de4 |
+| `devices/corpus` | 1efa044c |
+| `devices/drum-buss` | ed09e822 |
+| `devices/dynamic-tube` | 274372f5 |
+| `devices/grain-delay` | ce77b777 |
+| `devices/live-pedal` | 2f13b2a4 |
+| `devices/roar` | c2c29384 |
+| `devices/spectral-time` | 0b4e3921 |
+| `devices/spectral-resonator` | 16f9631d |
+| `devices/amxd-translator` | 74aefaff |
+| `devices/amxd-bpatcher` | 97037b35 |
+| `devices/amxd-cycle-phase` | 0b89f7b2 |
+| `devices/amxd-line-ends` | 539cce65 |
+| `devices/amxd-modulo-biquad` | 22fd659f |
+| `devices/amxd-audit` | 097e29a7 |
+
+## 2026-11-22 — DEV-16, steps 9 and 10: the translation table audited against Max's reference pages (P2)
+
+**PR requested:** head `devices/amxd-audit` (6049ee08), base `main`, after
+`devices/amxd-modulo-biquad`. Two commits; the bodies are the commit messages.
+- **The audit.** Four finders read the translation table against docs.cycling74.com, by object group:
+  signal objects, arithmetic, flow and messages, and the live.* controls. Three skeptics checked each
+  finding, and 28 differences were confirmed: things a translated patch would hear or show differently
+  from Max. Two findings were refuted.
+- **Step 9 (f2264fe8): defaults, ranges and inlets.**
+  - A bare `[/~]` divides by 1, and a bare `[t]` has two int outlets.
+  - `[gate]` and `[selector~]` clamp a choice past their count. A bang into `[gate]` reports the open
+    outlet.
+  - `[loadbang]` and live.thisdevice take a bang in their inlet.
+  - plugin~ and plugout~ channel arguments do not route in Max, so only "1 2" or none translate.
+  - A message box's `---` names reach `[r ---name]`. Pd 0.56 does not expand `$0` in a `;` receiver,
+    so each part becomes its own message into `[s $0-name]`. The box's right inlet sets its contents.
+  - Number boxes keep their minimum and maximum, and their Decimal Floating-Point format.
+  - The fan-out order follows the destination inlet's x. One outlet into both inlets of `[*]` gives
+    9, not 0.
+  - Refused, named: quoted messages; a `---` name inside a message; hard sync into `[phasor~]`;
+    unstable biquad~ arguments; live.* Steps, and outlets past the first.
+- **Step 10 (6049ee08): the messages.**
+  - Lists and `set` into an int operator's left inlet.
+  - Int division by 0 divides by 1.
+  - `set` into `[i]`, `[f]` and number boxes.
+  - `set` into `[prepend]` and `[append]`, and a bang there becomes the word "bang".
+  - `reset` into `[cycle~]` and `[phasor~]`, and `clear` into biquad~.
+  - A list and a bang into `[pack]`, with its int slots truncated on the way out.
+  - An `[f]` in front of `[!- n.]`, so a list cannot change its multiplier.
+  - A message box keeps its `$` arguments for a later bang.
+  - Refused: slide~'s `reset`.
+- **Not made explicit, and said so in the header:**
+  - A number into Pd's `[t s]` gives "float" (Max gives "").
+  - A selector message into `[t i]` or `[t f]` gives 0 in Max and an error in Pd.
+  - A float division by 0 gives 0 in Pd (Max gives −2^31, by its reference; added to reading 14).
+- **Still open from the audit:**
+  - `set` into `[pack]`, and into a float-form operator (`[+ 1.]`);
+  - a coefficient list that turns biquad~ unstable at run time. Pd silences it; Max runs away.
+  - live.thisdevice also bangs when a preset is loaded or the device saved. ADI has no such event for
+    a device.
+- **Tests:** `adi_pd_amxd_tests` 124 (37 new), each played in libpd where it can be.
+  - 13 plants each fail: 6 for step 9 and 7 for step 10.
+  - Every plant build deletes the old binary first, so a build that fails cannot pass as a result.
+
+## 2026-11-22 — the sixth review: the overlap-add Auto Shift was wrong; rebuilt as a spliced delay line. The detector's stall fixed
+
+The review of e387e86e found eight faults, every one confirmed by all three skeptics with their own probe
+builds. The overlap-add design itself was wrong.
+- **A pure tone shifted lost its level or did not shift at all.** Grains cut from a sine on its own
+  period grid cancelled each other shifted up: −6 dB at +7, silence from +12 to +24. An octave or more
+  down, the tone came back unshifted, only delayed. The +12 check passed on a peak 40 dB down, because
+  it checked only where the peak was.
+- **Wet and dry did not line up.** The wet signal sat up to half a period off the dry one, so Dry/Wet
+  combed: 100 Hz at −125 dB.
+- **Readings came too early.** Each one was applied 25 to 50 ms before the audio it was read from.
+- **A downward pitch step jumped.** With a Shift set it jumped 10 to 38 times the input's own step.
+  The step checks ran only at Shift 0, where this cannot show.
+- **The detector stalled the audio thread at every onset after silence.** Its fine search ran some
+  37,000 passes: 0.4 s at 48 kHz, 1.8 s at 96 kHz. The detector is the one the Tuner uses too.
+- **An absurd sample rate hung `prepare()`**, in the core and in the detector.
+
+**Fixed:**
+- **The detector**, on `devices/tuner` (d8c3fd89):
+  - the fine search is bounded at 16 passes of 16 steps, and a walk that leaves the coarse dip ends
+    the reading;
+  - a rate past any host's leaves it inert;
+  - `adi_tuner_tests` 35. Onsets after silence at 44.1, 48 and 96 kHz stay within the bound, and a
+    clean 440 Hz still reads within 0.1 cent. The old detector does not finish the new test: its
+    `prepare(1e300)` hangs.
+- **The core**, on `devices/auto-shift` (b50591ad), rebuilt as a delay line read at the shift's speed:
+  - When the read tap has drifted half a period from its centre, a second tap takes over a whole
+    number of detected periods away, crossfaded over half a period. A periodic input reads the same
+    waveform in both, so the splice is not heard.
+  - At a ratio of exactly 1 the tap never moves from the centre, so wet is dry, sample for sample.
+  - Readings wait in a queue until the tap is within half a hop of the middle of their window.
+  - The latency is fixed and reported: 4,432 samples at 48 kHz.
+  - `adi_auto_shift_tests` 97:
+    - 220 Hz at eleven Shifts from −24 to +24 comes out at 220 × the ratio, at 0.000 dB, with nothing
+      left at 220 Hz.
+    - A sawtooth an octave down keeps every harmonic's level.
+    - Dry/Wet 50 % at Shift 0 keeps the input's level, and the wet signal is the input one latency
+      late, exactly.
+    - 446 then 330 Hz, corrected, gives 440.0 up to the step's arrival and 329.63 after it.
+    - 48 jump checks pass. The worst uses 0.89 of its allowance.
+  - Four plants each fail: readings applied at once (444.8 Hz before the step), splices by 0.9 of a
+    period, no crossfade, and the tap half a sample off the centre. Two checks had first passed under
+    their plants. Both were tightened after a probe measured where the output's frequency actually
+    changes.
+- **Merged up the stack and pushed:** from `devices/erosion` through `devices/spectral-resonator`
+  (a478fe52).
+
+**The translator branches now include today's main.** On `devices/amxd-line-ends`,
+`adi_oneshot_pd_tests` failed six checks at PD_FLOATSIZE 64. It fails the same way on
+`devices/amxd-translator`: that branch was cut from an old main, before the OneShot fixes. Main is now
+merged into `devices/amxd-translator` (74aefaff), and from there up the chain to
+`devices/amxd-modulo-biquad` (22fd659f).
+
+**CTest:** `devices/spectral-resonator` at 57e5c9be (before this round) passed 295/295 at 32 and 64.
+Both new tops are running.
+
+**Next:** the translator audit. Four finders went through the translation table against Max's reference
+pages, with three skeptics per finding. They confirmed 28 differences that a patch would hear or show.
+Some are wrong defaults: a bare `[/~]` divides by 0 instead of 1, and `[t]` with no arguments gives
+bangs. Others are missing messages (`set`, `reset`, `clear`), out-of-range choices in `[gate]` and
+`[selector~]`, number-box limits, and `plugout~`'s channel arguments. Each is fixed, or refused with
+its reason, step by step.
+
+## 2026-11-22 — DEV-16, step 8: Max's `%` is an integer modulo; `biquad~`'s smoothing is not ignored (P2)
+
+**PR requested:** head `devices/amxd-modulo-biquad` (0a1ea57b), base `main`, after
+`devices/amxd-line-ends`. Body: the commit message. Both are corrections, read from Max's own
+reference.
+- **`[%]`.** The translator refused `[% 2.5]` as a float modulo that Pd could not do. Max's reference
+  says a float is "converted to int" and the argument is an int, so Max has no float modulo here.
+  `[% 2.5]` now takes the integer path: fed 7.3 it gives 7 % 2 = 1.
+- **`[biquad~]`.** Max smooths coefficient changes. Its `smooth` attribute is on by default, and the
+  reference does not say how. Step 4 changed coefficients at once, which a Max patch would not do with
+  smoothing on.
+  - Coefficients that change at run time now translate only with smoothing off: `@smooth 0` typed,
+    or the attribute saved with the box.
+  - Arguments alone still translate.
+- **Still refused**, because the reference does not say whether a signal in these inlets is read per
+  sample: `[slide~]`'s and `[biquad~]`'s signal-rate inlets.
+- **The open points** go to reading 14:
+  - `biquad~`'s smoothing;
+  - `slide~` with a signal, and below 1;
+  - `%` with a float input, a negative input, and 0.
+- **Tests:** `adi_pd_amxd_tests` 87.
+  - `[% 3]` fed 8.9 gives 2, and `[% 2.5]` fed 7.3 gives 1.
+  - The `biquad~` list case with `@smooth 0` still starts at 1 and settles at 2.
+  - The default is refused, naming the smoothing. A saved `smooth` 0 translates.
+  - Three plants each fail: the old `%` refusal, the smoothing check removed, `@smooth` not read.
+  - The first run of the last two plants hit MSVC's constant-condition warning (`if (false && ...)`)
+    and ran a stale binary. They were redone with conditions the compiler cannot fold, and both fail.
+
+## 2026-11-22 — DEV-16, step 7: `[line~]`'s ramp time, end bang and initial value (P2)
+
+**PR requested:** head `devices/amxd-line-ends` (106c0232), base `main`, after
+`devices/amxd-cycle-phase`. Body: the commit message.
+- **Each from Max's reference for `line~`:**
+  - The right inlet's time carries the next lone number, then reverts to 0.
+  - The right outlet bangs when the whole list has played. This is a `[delay]` of the list's total
+    time that every new input reschedules.
+  - An argument is the initial value, set before the parent's loadbang.
+- **Where the reference is silent**, an assumption, added to reading 14:
+  - A lone jump does not bang. A jump that retriggered itself would also hold Pd's scheduler at one
+    instant.
+  - A sequence cut short does not bang.
+- **Tests:** `adi_pd_amxd_tests` 83 (6 new), played in libpd.
+  - 100 into the right inlet, then 1: a ramp over 100 ms. A later lone 0 jumps.
+  - "0 0 1 100" bangs at 100 ms, not after its first segment.
+  - Cut short at 50 ms by "0 100", it bangs once, at 150 ms.
+  - A lone jump does not bang.
+  - `[line~ 0.5]` starts at 0.5, and a ramp sent from a loadbang starts there.
+  - Three plants each fail: the time kept after use, a jump that bangs, a bang after the first
+    segment.
+- **The translator's refusal list** now holds float modulo, signal-rate biquad~ coefficients and
+  slide~ times, live.text's button mode, bpatchers of outside files, and MIDI devices and instruments.
+
+## 2026-11-22 — DEV-16, step 6: `[cycle~]`'s phase inlet, an offset as in Max (P2)
+
+**PR requested:** head `devices/amxd-cycle-phase` (c09df249), base `main`, after
+`devices/amxd-bpatcher`. Body: the commit message.
+- **The difference.** Max's `[cycle~]` adds a phase offset from its right inlet (0 to 1, a float or a
+  signal) to its running phase. Pd's `[osc~]` resets its phase there. Such a `[cycle~]` was refused;
+  it now becomes `[phasor~]` → `[+~]` → `[cos~]`.
+- **Tests:** `adi_pd_amxd_tests` 77.
+  - `[cycle~ 375]` with a signal offset of 0.25 matches cos(2π(ft + offset)) sample for sample in
+    libpd (worst under 1e-6).
+  - So does a float offset of 0.25 moved to 0.5 at 100 ms. That is half way through a period, where a
+    reset would land half a period away.
+  - Two plants fail both checks: the offset into `[phasor~]`'s reset inlet (Pd's meaning), and the
+    offset dropped.
+
+## 2026-11-22 — DEV-16, step 5: embedded bpatchers in the `.amxd` translator (P2)
+
+**PR requested:** head `devices/amxd-bpatcher` (9def72a5), base `main`, after
+`devices/amxd-translator` (steps 3 and 4, not yet on main). Body: the commit message.
+- **Why this row.** The queue is worked through; items 4, 5, 6, 13 and 14 stay parked on their
+  lines. Their blockers have not cleared on main: no `adi_shaper_scope.hpp`, no `syncAtSample`, no
+  DEV-17 or DEV-18. Every M-row of this lane waits on a ruling, a reading or another seat:
+  - DEV-09 and DEV-28: win's rulings;
+  - DEV-19 and DEV-14: the engine's DEV-17 and DEV-18;
+  - DEV-22: the readings and DEV-32's reader;
+  - DEV-10, DEV-15, DEV-11 and DEV-13: the engine, ADRs, the director.
+
+  So the next buildable piece in milestone order is DEV-16's.
+- **What it does.** A bpatcher whose patcher is embedded becomes a `[pd name]`, as a `[p]` does.
+  - Max replaces `#1` to `#9` in its boxes by the bpatcher's arguments, and `#0` by a name unique to
+    the instance. The translation does the same, writing `#0` as `$0-bp-<its path>`, so two
+    instances never share a send.
+  - Its `[p]`s take the same arguments; a bpatcher inside it takes its own.
+  - A float argument stays a float: `2.` keeps `[+ #1]` the float form.
+- **Refused, named, not guessed:**
+  - a `#` with no argument;
+  - an argument that is not a number or a plain word;
+  - a bpatcher naming a patcher file outside the device. That file is not in the `.amxd`.
+- **Tests:** `adi_pd_amxd_tests` 75 (15 new).
+  - A gain bpatcher at arguments 0.5 and 0.25 walks clean under PD4. In libpd it plays the input times
+    the argument.
+  - Two instances' `[s #0-v]` → `[r #0-v]` stay apart.
+  - `[+ #1]` fed 0.5 gives 2.5 with the argument 2.0, and 2 with the argument 2.
+  - The step-4 translator fails 14 of the checks. Four plants each fail: one `#0` for all, a `[p]`
+    without the arguments, a float argument without its point, and a missing argument read as 0.
+  - Tidy is clean. One older line in the file had built a `Fragment` with a field missing; it is now
+    filled field by field.
+- **Left in DEV-16:**
+  - MIDI devices (after DEV-14 and DEV-18) and Suite's modulators (after DEV-07);
+  - `[line~]`'s ramp-time inlet and end bang, and `[cycle~]`'s phase inlet;
+  - parity against Live (readings);
+  - the AI path for the rest;
+  - becoming a device (DEV-10).
+
+## 2026-11-22 — the fifth review: Roar, Auto Shift and the spectral pair, ten findings, all fixed
+
+Three skeptics per finding. Every fix is merged up the stack and pushed. The new heads are listed
+under "Heads" below.
+- **Auto Shift, rebuilt (e387e86e, on `devices/auto-shift`).** The review of 53080074 confirmed two
+  findings.
+  - Its window followed every new pitch reading, so the Shifter's read taps jumped whenever the pitch
+    moved. Under vibrato, a step or a glide the largest step was 0.13 to 0.38, against the input's own
+    0.013.
+  - Letting the correction go at unison dropped the level by up to 23 dB.
+  - The core is now a pitch-synchronous overlap-add on the detector's period:
+    - output marks lie P / ratio apart;
+    - each mark lays a Hann grain of the input around the input mark on the period's grid nearest the
+      output's time one latency back;
+    - the grains are normalised by their summed windows.
+  - The latency is fixed and reported: 4.5 times the longest period shifted (that of 60 Hz), 3,608
+    samples at 48 kHz. The dry signal is delayed with it.
+  - Tests: `adi_auto_shift_tests` 41.
+    - Vibrato, a step and a glide at 44.1, 48 and 192 kHz: no step past the input's own, within half
+      again.
+    - The correction let go at 48 points: the level never falls 1.5 dB.
+    - Dry/Wet 0 is the input one reported latency late, exactly.
+    - The old core fails 12 of these; at the let-go it measures −23.0 dB. Four plants each fail: no
+      normalisation, the input mark off the grid, half-width grains, an undelayed dry.
+  - Reading 33 (Auto Shift) asks for Live's latency and how fast it reacts; this core's are now fixed
+    numbers to compare.
+- **Roar (87d9de50).** The review of e94e310a confirmed two findings.
+  - A change of Shape with a Bias set left the bias offset stale: a thump of up to 0.12 out of silence.
+  - A change of routing reset stage 1 although every routing runs it: a step of 0.29 in a sample.
+  - Only stages that sat idle are reset now. `adi_roar_tests` 29; the five new checks fail on the old
+    core.
+- **Spectral Time (2be28788).** The review of b8436141 confirmed three findings.
+  - A finite burst near the float's limit overflowed the transform, and the NaN stayed in the
+    feedback for good. The input is now bounded at 1e6.
+  - The aliased-plane check could not fail; it now compares against a run with separate planes.
+  - The inert device reported latency it did not have. Dry/Wet also glides now.
+  - `adi_spectral_time_tests` 15.
+- **Spectral Resonator (765b3100).** The review of 1802596d confirmed three findings.
+  - At 192 kHz the fixed 2,048-sample window let a tone between partials through at −0.1 dB. The
+    window now scales with the rate, and the tone stays under −40 dB at 44.1, 96 and 192 kHz.
+  - A burst of 1e36 latched a ring at inf. The input is now bounded at 1e6.
+  - Dry/Wet stepped; it now glides.
+  - `adi_spectral_resonator_tests` 15; the three checks fail on the old core.
+- **Heads:**
+
+  | Branch | Head |
+  |---|---|
+  | `devices/auto-shift` | e387e86e |
+  | `devices/spectrum-device` | df4d6917 |
+  | `devices/live-amp` | 71fdc362 |
+  | `devices/live-cabinet` | ff74bb39 |
+  | `devices/corpus` | a26c64bd |
+  | `devices/drum-buss` | f2ff124b |
+  | `devices/dynamic-tube` | c3a67645 |
+  | `devices/grain-delay` | 182aa06b |
+  | `devices/live-pedal` | 6ada65ac |
+  | `devices/roar` | 6b411b96 |
+  | `devices/spectral-time` | d3b4b24f |
+  | `devices/spectral-resonator` | 57e5c9be |
+
+  PRs requested at these heads, in place of the heads named in the entries below.
+- **CTest.** `devices/spectral-resonator` at 1802596d, before these fixes, passed 295/295 at
+  PD_FLOATSIZE 32 and 64, and tidy was clean. The run at 57e5c9be is under way.
+
+## 2026-11-22 — DEV-22, the chapter's last missing effect: Spectral Resonator — lands after 3 December
+
+**PR requested:** head `devices/spectral-resonator` (1802596d), base `main`, after
+`devices/spectral-time`. It stops here if the FOR THE DIRECTOR answer on the missing effects is no.
+- **What it is.**
+  - The input's spectrum rings at the partials of a pitch, set by Frequency, Harmonics, Stretch,
+    Decay, Brightness and Dry/Wet.
+  - Each partial owns the bins within one bin of it. While a partial rings, its bins advance at the
+    partial's own frequency, so the ring is a tone at the partial.
+  - The latency is one window, reported.
+- **Not built:** its MIDI and internal modes, Shift, Unison and modulation.
+- **Tests:**
+  - `adi_spectral_resonator_tests` 10. After a burst of noise the output rings at the first four
+    partials within 1 Hz. A first version, advancing each bin at its own measured frequency, missed by
+    36 Hz.
+  - The ring falls 30 dB in a second at Decay 2 s, within 15 %. A tone between partials is not heard.
+    Dry/Wet 0 is the input one window late. Block sizes, NaN, no allocation.
+  - parity max error 0;
+  - the catalogue holds 46 built-ins.
+- **Reading 44, added to the ONE list.**
+
+**The chapter is built, as far as this lane's part goes.** All of Live 12.4's audio effects are now
+in the catalogue except Looper, whose core is the engine's. External Audio Effect's routing is also the
+engine's; its contract is written. Beat Repeat waits on reading 18.
+
+**CTest:** `devices/roar` at 46f2a71e passed 293/293 at PD_FLOATSIZE 32 and 64. The new top,
+`devices/spectral-resonator`, is running.
+
+## 2026-11-22 — DEV-22, the chapter's next missing effect: Spectral Time — lands after 3 December
+
+**PR requested:** head `devices/spectral-time` (b8436141), base `main`, after `devices/roar`. It stops
+here if the FOR THE DIRECTOR answer on the missing effects is no.
+- **What it is.**
+  - A 2,048-point Hann STFT at a hop of 512, rebuilt exactly.
+  - Each bin is delayed by whole frames, shaped by Time, Feedback, Tilt, Spray and Mask.
+  - Freeze holds the spectrum through a phase vocoder.
+  - The latency is one window, reported, and the dry signal is delayed with it.
+- **Not built:** the pitch shift, the resolution choices, stereo spread and sync.
+- **Tests:**
+  - `adi_spectral_time_tests` 13. An impulse returns after the latency plus the delay, alone and whole
+    within 1e-5, and each repeat is Feedback times the last.
+  - Dry/Wet 0 is the input one window late, exactly. Tilt, Mask and Spray shape the delays.
+  - A frozen tone rings on within 1 dB and 1 Hz. Block sizes, NaN, no allocation.
+  - parity max error 0;
+  - the catalogue holds 45 built-ins.
+- **Reading 43, added to the ONE list.**
+
+## 2026-11-22 — the glide sweep, the earlier branches; an Auto Shift jump found and fixed
+
+The same glide and the same test, on the earlier post-3-December cores. `dsp/glide.hpp` is added on
+`devices/auto-pan-tremolo` for them; it is identical to the one on `devices/live-amp`, so the merges
+are clean. Every branch above is merged up to the top, `devices/roar` (e94e310a). There, the touched
+suites, the catalogue and parity all pass (744/744).
+
+**PR requested** (the same branches; new heads):
+
+- **`devices/auto-pan-tremolo` (54eab5aa).** Amount had stepped 0.20 in a sample.
+- **`devices/channel-eq` (e5141d7b).** Output had stepped 0.70.
+- **`devices/eq-three` (c97c2582).** Each band's gain and its kill (a kill now fades). They had stepped
+  0.10 and 0.045.
+- **`devices/vinyl-distortion` (32a47da6).** The tracing's amount, the pinch's drive and switch, and the
+  crackle volume. They had stepped 0.25 and 0.42. The no-thump check now averages over 20 ms.
+- **`devices/filter-delay` (6594e91d).** Dry, each line's Volume and Pan, Feedback and On. They had
+  stepped from 0.04 to 0.59.
+- **`devices/auto-shift` (53080074).**
+  - **Dry/Wet** is now Auto Shift's own glided mix. It was the Shifter's Mix, which stepped.
+  - **A jump on a steady tone.** A held 220 Hz tone shifted +7 jumped 0.59 in a sample, repeatedly.
+    220 Hz is 5.5 periods in 25 ms, so the window's count flipped with the reading's last decimals.
+    Each flip moved the Shifter's taps by a whole period. The count now holds until the reading is
+    more than three quarters of a period from it. A plant without the hold jumps 0.59.
+  - Each check fails on the old core or on a plant.
+
+Erosion already glided its Amount. Not swept: Align Delay's times (a delay jump is its own question,
+a reading), and the Compressor stack (its own smoothing).
+
+**CTest:** `devices/roar` at 46f2a71e passed 293/293 at PD_FLOATSIZE 32. The 64 run, and a run on the
+new top, follow.
+
+## 2026-11-22 — the glide sweep: the newest cores' gain controls no longer step
+
+Pedal's review found gain controls applied as instant steps. Amp, Cabinet, Corpus, Drum Buss,
+Dynamic Tube, Grain Delay and Roar were built the same way.
+- **`dsp/glide.hpp`** (on `devices/live-amp`) is a one-pole glide of about 10 ms.
+  - Set before any audio, the value simply lands.
+  - Within 1e-12 of its target, it snaps, so a unit gain or a zero mix is exact.
+- **What glides now.**
+  - Each core's gain, level, output, mix and feedback controls.
+  - Drive-like controls (Dynamic Tube's Drive, Roar's Amount) glide over 50 ms. They move a curve's
+    DC or 36 dB of level.
+- **The test, per core:** moved at a tone's peak, the largest step while the control moves stays
+  within 1.5 times the signal's own step, before or after. On the old cores they jumped 0.03 to 1.47
+  in a sample.
+
+**PR requested** (the same branches; new heads), each merged up the stack:
+- `devices/live-amp` (58c9398b): Gain, Volume, Output, Dry/Wet.
+- `devices/live-cabinet` (936afef8): Output, Dry/Wet.
+- `devices/corpus` (c9dc2a78): Gain, Bleed, Dry/Wet.
+- `devices/drum-buss` (2a52e068): Trim, Drive, Crunch, Transients, Boom, Output, Dry/Wet.
+- `devices/dynamic-tube` (6f63ee37): Drive, Bias, Output, Dry/Wet.
+- `devices/grain-delay` (90e162b1): Feedback, Dry/Wet.
+- `devices/live-pedal` (65d0a2f4): the merges; its own glide came with the fourth review.
+- `devices/roar` (46f2a71e): Input, each stage's Amount, Bias and Level, Feedback, Output, Dry/Wet.
+
+**CTest:** `devices/live-pedal` at 77d27c3c (before the fourth review) passed 292/292 at PD_FLOATSIZE
+32 and 64. The new top, `devices/roar`, is running.
+
+**Still to sweep, on the earlier branches:**
+- Erosion, Vinyl Distortion, Filter Delay, Auto Shift's Dry/Wet, EQ Three, Channel EQ, Align Delay
+  and Auto Pan's depth;
+- the Compressor stack's makeup and mix.
+
+They are next in this lane's queue.
+
+## 2026-11-22 — Roar (DEV-22); the fourth review: Grain Delay and Pedal, four findings fixed
+
+**PR requested:** head `devices/roar` (0ac41161), base `main`, after `devices/live-pedal`. It stops
+here if the FOR THE DIRECTOR answer on the missing effects is no.
+- **What it is.**
+  - Three shaper stages in five routings: Single, Serial, Parallel, Mid Side, and Multiband (LR4 bands
+    that sum flat).
+  - Each stage: a shape (six, each with slope 1 at 0 except the crusher), Amount, a Bias with its DC
+    blocked, a filter and a level.
+  - Input, a bounded feedback path, Output and Dry/Wet.
+  - A change of routing restarts the stages.
+- **Not built:** Roar's compressor and modulation matrix.
+- **Tests:**
+  - `adi_roar_tests` 19. Four routings follow their documented structure within 0.05 dB, Mid Side's
+    side goes through stage 2, and Multiband with flat stages sums flat.
+  - The feedback loop matches its closed form. The shapes check out, and a bias makes a second
+    harmonic.
+  - A routing change does not replay an idle stage (a plant fails). Block sizes, NaN, no allocation.
+  - parity max error 0;
+  - the catalogue holds 44 built-ins.
+- **Reading 42, added to the ONE list.**
+
+**The fourth review** covered Grain Delay and Pedal (three skeptics each) and confirmed four findings:
+- **`devices/grain-delay` (c50bd30a).**
+  - **Fast grains read past the write head**, down to −19,195 samples. The clamp counted the
+    excursion twice, and the line ignored Random Pitch. The line now holds 7.6 s, and the clamp is
+    correct. `lowestDelay()` is at least 1 in six extreme settings.
+  - **A Frequency move rescaled running grains:** clicks, and up to twice the level. A new grain now
+    rises over its predecessor's fall, so a constant input stays at 1 within 1e-6 through five
+    moves.
+- **`devices/live-pedal` (41d658de).**
+  - **Gain, Output and Dry/Wet stepped at once.** They now glide over 10 ms.
+  - **A Type change thumped.** The voices now crossfade over 200 ms. All four new checks fail on the
+    old core.
+
+**A lane-wide follow-up, taken next.** Pedal's review found gain controls applied as instant steps.
+Amp, Cabinet, Corpus, Drum Buss, Dynamic Tube, Roar and the earlier post-3-December cores are built
+the same way, so they need the same glide on their gain, output and mix controls, and the same test.
+
+## 2026-11-22 — the third review: fourteen findings in Amp to Dynamic Tube, all fixed
+
+A third adversarial review covered Amp, Cabinet, Corpus, Drum Buss and Dynamic Tube (a finder for
+each, three skeptics for each finding). It confirmed fourteen findings, each by all three skeptics.
+Each fix carries a check that fails on the old code, apart from three that only tightened a test.
+Each is merged up the stack through Grain Delay and Pedal.
+
+**PR requested** (the same branches; new heads):
+
+- **`devices/live-amp` (b2d4855d).**
+  - **Dual off and on replayed the right amp's old state:** a 0.87 thump on silence. The right amp
+    now starts from the left's state.
+  - **The bias check was decided by drive.** It now compares at equal drive.
+  - **The bound check allowed 1e3.** It now holds the output to the power stage's bound at three
+    rates.
+- **`devices/live-cabinet` (d572786d).**
+  - **The same Dual thump** (0.89), fixed the same way.
+  - **Mono's mean was never tested.**
+- **`devices/corpus` (c812da0a).**
+  - **The level grew 6 dB per doubling of the rate.** The input is now scaled by 48 kHz/rate: a
+    2 ms hit is within 0.5 dB at every rate, against 12.1 dB before.
+  - **A tone held at a mode built up to 1,676 at Decay 100.** The resonance now passes a tanh.
+  - **The membrane skipped the Bessel zero j₇₁.** All sixteen modes are now checked against zeros
+    found by bisection.
+- **`devices/drum-buss` (52772ec5).**
+  - **Transients distorted held low tones** (up to 31 % THD at 50 Hz). It now compares a peak
+    envelope with its own lagged copy: a held tone passes with under 0.1 % THD.
+  - **Crunch lifted the band by up to 8 dB.** It is now the band's square, an octave up, and leaves
+    the band's level alone.
+  - **Drive cost full scale 20 dB.** It is now matched by peak at −6 dBFS.
+- **`devices/dynamic-tube` (5e496bf4).**
+  - **A biased tube's DC came out** (up to −4.0). A 5 Hz blocker now removes it.
+  - **Normalising by the slope at the bias gained up to +18 dB.** The tube is now divided by the
+    drive alone, so it never puts out more than it is given.
+- **`devices/grain-delay` (7389daf6) and `devices/live-pedal` (77d27c3c):** the merges above.
+
+**CTest (`ctest -LE acceptance`):**
+- `devices/live-amp` at c4d52f4b (the second review's stack): 286/286 at PD_FLOATSIZE 32 and 64.
+- `devices/shifter-nan` (14472a18): 270/270 at 32 and 64.
+- The top of the stack (`devices/live-pedal`) is running.
+
+## 2026-11-22 — DEV-22, the chapter's next missing effect: Pedal — lands after 3 December
+
+**PR requested:** head `devices/live-pedal` (998ee01f), base `main`, after `devices/grain-delay`. It
+stops here if the FOR THE DIRECTOR answer on the missing effects is no.
+- **What it is.**
+  - Three voices: Overdrive, Distortion and Fuzz.
+  - The drive is f(g x + b) − f(b) with the DC blocked, so it gets louder with Gain, as a pedal does.
+  - Sub, then the tone section: Bass, Mid at three frequencies, and Treble.
+  - Output and Dry/Wet.
+- **Tests:**
+  - `adi_live_pedal_tests` 15. At −140 dBFS, four settings follow the documented chain within
+    0.05 dB, with the drive's slope taken numerically.
+  - Gain raises the distortion; Overdrive's bias makes a second harmonic; Fuzz distorts most.
+  - Sub keeps 50 Hz, and the output stays bounded. Block sizes, NaN, no allocation.
+  - parity max error 0;
+  - the catalogue holds 43 built-ins.
+- **Reading 41, added to the ONE list.**
+
+## 2026-11-22 — DEV-22, the chapter's next missing effect: Grain Delay — lands after 3 December
+
+**PR requested:** head `devices/grain-delay` (6ec98033), base `main`, after `devices/dynamic-tube`. It
+stops here if the FOR THE DIRECTOR answer on the missing effects is no.
+- **What it is.** Grains start every 1/Frequency, last two periods under a periodic Hann window and
+  sum to exactly 1. Each reads at its Pitch, moved by Random Pitch, from the delay lengthened by
+  Spray. The controls also include Feedback, Sync or Time, and Dry/Wet. `prepare()` never throws.
+- **Tests:**
+  - `adi_grain_delay_tests` 16. An impulse returns after exactly the delay, alone, each repeat
+    Feedback times the last. Pitch ±12 moves 440 Hz to 880 and 220 Hz. Spray spreads the channels.
+    Sync. The longest reach at 192 kHz stays finite. Block sizes, NaN, no allocation.
+  - parity max error 0;
+  - the catalogue holds 42 built-ins.
+  - The −12 check caught a first draft that started grains at twice Frequency: its carrier cancelled.
+- **Reading 40, added to the ONE list.**
+
+## 2026-11-22 — DEV-22, the chapter's next missing effect: Dynamic Tube — lands after 3 December
+
+**PR requested:** head `devices/dynamic-tube` (2b507061), base `main`, after `devices/drum-buss`. It
+stops here if the FOR THE DIRECTOR answer on the missing effects is no.
+- **What it is.** Tube saturation. Its operating point is Bias plus Envelope times the input's
+  envelope, and it is normalised by its slope there, so a quiet signal passes at unity. Three
+  curves, a Tone tilt with its inverse, Output and Dry/Wet.
+- **Tests:**
+  - `adi_dynamic_tube_tests` 13. A quiet sine passes at Output's gain within 0.05 dB in all 81
+    combinations. Each curve's slope matches its numerical derivative. No bias, no second
+    harmonic; Bias or Envelope give one. Block sizes, NaN, no allocation.
+  - parity max error 0;
+  - the catalogue holds 41 built-ins.
+- **CTest:** the fixed stack at `devices/live-amp` (c4d52f4b) passed 286/286 at 32. The 64 run is
+  pending.
+- **Reading 39, added to the ONE list.**
+
+## 2026-11-22 — DEV-22, the chapter's next missing effect: Drum Buss — lands after 3 December
+
+**PR requested:** head `devices/drum-buss` (96fd37df), base `main`, after `devices/corpus`. It stops
+here if the FOR THE DIRECTOR answer on the missing effects is no.
+- **What it is.** Trim, a fixed compressor, Drive into three curves, Crunch above 1 kHz, Damp,
+  Transients, Boom, Output and Dry/Wet.
+- **Tests:**
+  - `adi_drum_buss_tests` 18. A quiet sine is Trim, Damp and Output within 0.05 dB. The
+    compressor's pull on a −6 dBFS square is its static curve within 0.05 dB. Boom rings at 60 Hz
+    within 1 %. Transients sharpen and soften a hit. Drive and its curves. Crunch brightens 1.5 kHz
+    and leaves 100 Hz alone. Block sizes, NaN, no allocation.
+  - parity max error 0;
+  - the catalogue holds 40 built-ins.
+- **Reading 38, added to the ONE list.**
+
+## 2026-11-22 — DEV-22, the chapter's next missing effect: Corpus — lands after 3 December
+
+**PR requested:** head `devices/corpus` (eb01d991), base `main`, after `devices/live-cabinet`. It
+stops here if the FOR THE DIRECTOR answer on the missing effects is no.
+- **What it is.** Sixteen two-pole resonant modes of a beam, a marimba bar, a string, a membrane, a
+  plate, a pipe or a tube, each at its textbook ratios. The controls are Tune, Fine, Decay, Material,
+  Hit, Brightness, Inharmonics, two listening positions, Bleed, Gain and Dry/Wet.
+- **Not built:** Ratio, Opening, the LFO, the filter, MIDI frequency and Spread.
+- **Tests:**
+  - `adi_corpus_tests` 22. An impulse rings at each model's first four textbook ratios within 0.1 %.
+    The first mode's T60 is within 2 %. A node at the hit or the listening position silences a
+    string's second mode. Fine, Inharmonics and the rate's limit. Bleed. Block sizes, NaN, no
+    allocation.
+  - parity max error 0;
+  - the catalogue holds 39 built-ins.
+- **Reading 37, added to the ONE list.**
+
+## 2026-11-22 — DEV-22, the chapter's next missing effect: Cabinet — lands after 3 December
+
+**PR requested:** head `devices/live-cabinet` (ad19a6b9), base `main`, after `devices/live-amp`. It
+stops here if the FOR THE DIRECTOR answer on the missing effects is no.
+- **What it is.** A fixed linear filter: five cabinets (each a low cut, a box resonance, a cone peak
+  and a two-section high cut), three microphone positions, two mic types, Output, Dry/Wet, and Mono
+  or Dual.
+- **Tests:**
+  - `adi_live_cabinet_tests` 39. All thirty combinations of cabinet, microphone and mic type match
+    the documented cascade within 0.01 dB. The cascade is computed apart from the signal path. Off
+    axis and far are duller. Mono and Dual. Block sizes, NaN, no allocation.
+  - parity max error 0;
+  - the catalogue holds 38 built-ins.
+- **Reading 36, added to the ONE list.**
+
+## 2026-11-22 — the second review: eight findings, all fixed
+
+A second adversarial review covered Auto Shift, the Spectrum device, the Shifter fix and the first
+review's fixes (a finder for each, three skeptics for each finding). It confirmed eight findings,
+each by all three skeptics. Each fix carries a test that fails on the old code, or a plant where the
+old code cannot build the test. Each is merged up the stack.
+
+**PR requested** (the same branches; new heads):
+
+- **`devices/filter-delay` (2c4a1a15).** `prepare()` could throw from Pd's DSP callback, and it set `size_`
+  before the lines were resized. It is now noexcept: a failure leaves the device inert, passing the
+  dry signal.
+- **`devices/dj-filter` (25c20908).** The DJ type seeded its low pass with the input at any cutoff. After
+  `prepare()` at Filter −100, a 1 kHz cosine rang at 0.5. It is now seeded only near the centre.
+- **`devices/auto-shift` (1d566e3a).**
+  - **A corrected tone dropped 40 dB at every crossfade** for pitches like 420, 460 or 300 Hz: the
+    fixed 50 ms window put the Shifter's taps in antiphase. The window now spans whole periods of the
+    reading. The level holds within 1 dB, and a plant with the fixed window brings the dips back.
+    Shift +12 now gives 880 Hz, not 874.
+  - **Detune plus the correction was clamped at ±100 cents.** The shift now goes through Coarse,
+    unclamped.
+  - **The NaN check looked at a later block.**
+- **`devices/spectrum-device` (bc803aef).**
+  - **Refresh was held at the averager's 65,536-sample hop.** It is now the hop at every rate, and
+    the averager still moves 1/Avg per analysis.
+  - **The clamp test started from the value it expected.**
+- **`devices/live-amp` (c4d52f4b):** the merges above.
+- **`devices/shifter-nan` (14472a18).** A finite 3e38 input still latched Frequency mode at NaN. Inputs are
+  now also bounded at 1e6.
+
+The review refuted one finding: that `analysis()` could be read during `set()`.
+
+**CTest:** `devices/auto-shift` at 9149da91 passed 284/284 at PD_FLOATSIZE 64. At 32,
+`adi_scan_cache_tests` (plug-in scanning, not this lane's) failed once under load at 48 s. Run alone it
+passed, in 16 s. The fixed stack is now running on `devices/live-amp` and `devices/shifter-nan`.
+
+## 2026-11-22 — DEV-22, the chapter's first missing effect: Amp — lands after 3 December
+
+**PR requested:** head `devices/live-amp` (c4d52f4b; first logged as 17130593), base `main`, after `devices/spectrum-device`.
+It stops at this branch if the FOR THE DIRECTOR answer on the missing effects is no.
+- **What it is.**
+  - Seven voices, each with an input high pass and a mid bell, a preamp gain and bias, and a power
+    drive.
+  - The preamp is tanh(g x + b) − tanh(b), with the DC blocked.
+  - The tone controls: Bass, Middle and Treble.
+  - The power stage is tanh(d y)/d, driven by Volume.
+  - Then Presence, Output, Dry/Wet, and Mono or Dual.
+- **Tests:**
+  - `adi_live_amp_tests` 17. At −100 dBFS, five settings follow the documented chain within 0.05 dB.
+    The chain is computed apart from the signal path, from the filters' designs and the preamp's slope.
+  - Gain raises the distortion, and the bias makes a second harmonic.
+  - A huge input stays bounded. Mono and Dual. Block sizes, NaN, no allocation.
+  - parity max error 0;
+  - the catalogue holds 37 built-ins.
+- **Not oversampled:** a high voice driven hard aliases.
+- **Reading 35, added to the ONE list.**
+
+## 2026-11-22 — PLAN DEV-22: Spectrum as a track device, the lane's side — lands after 3 December
+
+**PR requested:** head `devices/spectrum-device` (a4ec9d18), base `main`, after `devices/auto-shift`.
+- **What it is.**
+  - `dsp::SpectrumDevice` passes the signal untouched.
+  - It turns Block, Channel, Refresh and Avg into the settings for the shared analyser: the FFT size,
+    the channel, the hop, and the averager's decay, so that each analysis moves the average 1/Avg of
+    the way.
+  - The analysis runs on the Mix View's shared analyser (ADR-0183 d7, MX-12, MX-30). The device runs
+    no FFT of its own (CTL-07).
+  - `pd/devices/Spectrum.md` is the contract and the hand-off: the tap at the device's place, the
+    worker, the view, and no analysis while the panel is hidden.
+- **Tests:**
+  - `adi_spectrum_device_tests` 22. Driven with the device's settings, the analyser reads a sine of
+    0.5 at −6.02 dBFS at three sizes. L+R reads one side at half. Avg 4 gives 1 − (3/4)^k after k
+    analyses. Pass-through and no allocation.
+  - parity max error 0;
+  - the catalogue holds 36 built-ins.
+- **Needs the Mix View seat (not this seat's path):** the tap and the worker of §4.
+- **Reading 34, added to the ONE list.**
+
+## 2026-11-22 — the Shifter takes a non-finite input as silence (found building Auto Shift)
+
+**PR requested:** head `devices/shifter-nan` (90cb51cb), base `main`. A fix to a built device, not
+new work, so it is not held for 3 December.
+- **What it fixes.** A NaN or infinite input sample stayed in the Shifter's pitch, delay and dry lines,
+  so everything after it came out NaN, in every mode. Each input sample is now made finite first.
+- **Tests:** `adi_shifter_tests` 53. A NaN block with an inf in it, then a tone, in all three modes
+  with and without the delay: the tone comes out finite. The old core fails every case, and every
+  earlier measurement is unchanged.
+
+## 2026-11-22 — PLAN DEV-22: Auto Shift on the Tuner's detector and the Shifter — lands after 3 December
+
+**PR requested:** head `devices/auto-shift` (9149da91), base `main`, after `devices/dj-filter`.
+- **What it is.** `dsp::AutoShift` reads the pitch with the Tuner's `PitchDetector` and moves it with
+  the Shifter's Pitch mode. These are the two cores that PLAN DEV-22 names for it.
+  - Every 64th sample it retunes to Shift + Detune + the correction. The correction is Strength times
+    the distance to the nearest note of the scale, and Smooth glides it.
+  - An unclear reading holds the last correction.
+  - Formant, vibrato and the MIDI scale input are not built.
+- **Tests:**
+  - `adi_auto_shift_tests` 19: 446 Hz comes out at 440 within 1 cent; the 50 % Strength, C major,
+    Strength 0, Correction off and Detune cases; Shift +12 commands the right shift; the glide; the
+    hold through noise (a plant that resets it fails); block sizes; NaN; no allocation.
+  - parity max error 0;
+  - the catalogue holds 35 built-ins.
+- **Not claimed:** a large Shift sounds as the Shifter does. Its lines sit a crossfade rate apart under
+  an envelope at the commanded pitch; at 446 Hz × 2 the strongest line is 886 Hz, not 892. The
+  Shifter's own tests cover that sound.
+- **Reading 33, added to the ONE list.**
+
+## 2026-11-22 — items 19 to 22 reviewed: eleven findings, all fixed
+
+An adversarial review of the five new cores (a finder for each branch, three skeptics for each
+finding) confirmed eleven findings, each by all three skeptics. Each fix is on its own branch, with a
+test that fails on the old code. Each lower branch is merged up the stack, so the stacked PRs keep
+their order. The heads below replace those logged for items 19, 20 and 22.
+
+**PR requested** (the same branches; new heads):
+
+- **`devices/tuner` (485425e0).**
+  - **A DC offset read as a confident false pitch,** and the Tuner held it. Alone or under a low noise
+    floor, 56 of 72 cases did; none do now. The window's mean is removed, and a window under
+    −80 dBFS RMS reads nothing.
+  - **`prepare()` could throw out of Pd's DSP callback.** It is now noexcept: a failed allocation
+    leaves the detector inert, and the Tuner passes the signal.
+- **`devices/erosion` (993d8b26).**
+  - **The noise modulator was up to 12 dB short of its stated RMS.** It was scaled by a small-angle
+    bandwidth. It is now scaled by the band pass's exact noise gain, α/(1+α), and is 0.48 (0.5 clipped)
+    at every band.
+  - **Above about 600 kHz the swing left the ring.** It is now held at 61.5 samples.
+  - **The NaN check looked at a later block.**
+- **`devices/vinyl-distortion` (d6872b77).**
+  - **Stereo pinch kept the mid clean only when L = R.** The pinch now comes from the mid's band.
+  - **Moving Tracing Drive gave a 0.48 thump.** The DC is now blocked before Drive scales it.
+  - **A 1.5e19 input came out as inf.**
+- **`devices/filter-delay` (ecfcad4a).**
+  - **Synced times at 20–40 BPM were cut to 6 s.** The lines now hold 12 s.
+  - **The exact-arrival check allowed 1e-7.** It is now bit for bit, and fails without the snap.
+- **`devices/dj-filter` (664adb8c).**
+  - **Leaving the centre, or sweeping across it, clicked** (0.49 on a 0.5 sine). The fix is in Auto
+    Filter's DJ type: on a change of side, the SVF takes the new side's state at rest.
+  - Auto Filter's 166 checks and parity are unchanged.
+
+**CTest (`ctest -LE acceptance`):**
+- `devices/channel-eq` (776ad5eb): 277/277 at 32 and 64.
+- `devices/hybrid-reverb-nupc` (fb1c7e9a): 268/268 at 32 and 64.
+- `devices/dj-filter` (729bc803, before the fixes): 283/283 at 32 and 64. The fixed stack is being run
+  on `devices/auto-shift`.
+
+**Found in passing, not this branch's to change:** `dsp::Shifter` passes a NaN input into its delay
+line, where it stays (Auto Shift, next, sanitises its own input). Fixed on `devices/shifter-nan`
+(entry above).
+
+## 2026-11-22 — standing queue item 22: the DJ Filter on Auto Filter's cores — lands after 3 December
+
+**PR requested:** head `devices/dj-filter` (729bc803), base `main`, after `devices/filter-delay`.
+- **What it is.** `dsp::DjFilter` holds an `AutoFilter` at its DJ type. Filter drives Control, Output
+  drives Output, and Dry/Wet drives Mix. Its response is Auto Filter's by construction, so a fix to one
+  is a fix to both.
+- **Tests:**
+  - `adi_dj_filter_tests` 17: the output equals Auto Filter's (Type DJ, the same three controls) bit
+    for bit, at seven Filter values and under automation across the centre, at block sizes 1, 64, 333
+    and 4096. Another Auto Filter type does not (plant). 0 passes the signal, and each side filters.
+  - parity max error 0;
+  - the catalogue holds 34 built-ins.
+- **Reading 32, added to the ONE list.**
+
+**The standing queue is worked through.** Items 4, 5, 6, 13 and 14 stay parked on the lines logged
+earlier. Next: the lane's unbuilt PLAN rows (DEV-22's Auto Shift on the Tuner's pitch detector, then
+the Spectrum device's canvas).
+
+## 2026-11-22 — standing queue item 21: External Audio Effect's canvas and panel contract — lands after 3 December
+
+**PR requested:** head `devices/ext-audio-effect-contract` (4054d859, cut from `main`), base `main`. One file,
+`pd/devices/External Audio Effect.md`.
+- **The canvas.** It passes the dry signal at unity with 0 latency on the Pd path. The engine's node
+  takes its place, recognised by the canvas's bytes.
+- **The controls and ids:** 1 Gain, 2 Dry/Wet, 3 Hardware Latency, 4 its unit (display only),
+  5 Invert. Audio To and Audio From are routing rows the engine owns. They are not parameters.
+- **The latency fields:** the hardware's own, the interface's round trip, and the engine's block. Their
+  total is reported while bypassed, and the dry is delayed to meet the return.
+- **The hand-off to the engine (MX-24, DEV-05):**
+  - the routing rows, and the node;
+  - compensation;
+  - a broken path that reports itself;
+  - real-time renders;
+  - the meters (the same publishing need as the Tuner's reading).
+- **The tests the build must carry.**
+- **Reading 31, added to the ONE list.**
+
+## 2026-11-22 — standing queue item 20: Erosion, Vinyl Distortion and Filter Delay, cores and devices — land after 3 December
+
+Three branches, stacked for the catalogue. Each is built, not verified.
+
+**PR requested:** head `devices/erosion` (a1f60f9b), base `main`, after item 19.
+- **What it is.** A very short delay, D (1 + m), read by four-point Lagrange interpolation. Its
+  modulator is a sine (Sine), or white noise through a band pass at Frequency, Q = 1/Width (Noise: one
+  modulator; Wide Noise: one for each channel). At Amount 100 % the delay swings over 0.2 ms.
+- **Tests:**
+  - `adi_erosion_tests` 21: Sine mode's carrier and first sidebands equal J0 and J1 of β = 2π f D
+    within 0.05 dB, at three amounts. Noise peaks at the tone ± Frequency, and a narrow Width gathers
+    it. Noise is alike in both channels and Wide Noise is not. Amount 0 is the input itself. Block
+    sizes, NaN, no allocation, aliased planes.
+  - parity max error 0;
+  - the catalogue holds 31 built-ins.
+
+**PR requested:** head `devices/vinyl-distortion` (6f75c80a), base `main`, after `devices/erosion`.
+- **What it is.**
+  - Tracing: its band b adds 2 Drive b² with the DC blocked, an even distortion.
+  - Pinch: its own band adds f(g b)/g − b, with f tanh (Soft) or a hard clip (Hard). Stereo adds it to
+    the left and takes it from the right, so the mid stays clean.
+  - Crackle: decaying clicks at Density a second, up to Volume.
+- **Tests:**
+  - `adi_vinyl_distortion_tests` 34: the tracing's second harmonic is Drive A² within 0.05 dB, with
+    nothing odd. The pinch's 3rd and 5th harmonics match a numerical Fourier sum of its curve within
+    0.05 dB, Soft and Hard. Below the clip, Hard adds nothing. Stereo's mid is clean. Crackle count,
+    volume and off. Both Drives at 0 give the input itself.
+  - parity max error 0;
+  - the catalogue holds 32 built-ins.
+- **Not oversampled:** a hard pinch on a high tone aliases. Whether Live oversamples is in reading 29.
+
+**PR requested:** head `devices/filter-delay` (6d8614fe), base `main`, after `devices/vinyl-distortion`.
+- **What it is.** Three lines, fed from L, the mono sum and R. Each stores BP(in + Feedback y), so
+  every repeat passes its band (Width octaves at Freq). Its time is Sixteenths at the song's tempo, or
+  ms. A time change glides over 50 ms to a whole sample. Equal-power Pan, Volume, and a Dry for the
+  whole.
+- **The canvas** takes the tempo from `adi.transport`, as the Delay's does.
+- **Tests:**
+  - `adi_filter_delay_tests` 20: echoes at exactly Time, each Feedback times the last. Each line's
+    feed. Equal-power pan. On off lets the echoes ring out. Synced times at 120 and 90 BPM, arriving
+    at a whole sample. The band peaks at 0 dB at Freq and is 3 dB down at its edges. Feedback 95 %
+    stays bounded. Dry with the lines silent is the input itself.
+  - parity max error 0;
+  - the catalogue holds 33 built-ins.
+
+**CTest (`ctest -LE acceptance`):** `devices/channel-eq` 277/277 at PD_FLOATSIZE 32 and 64. The other
+tips are queued.
+
+**Readings 28, 29 and 30, added to the ONE list.**
+
+## 2026-11-22 — standing queue item 19: Tuner, core, shared pitch detector and device — lands after 3 December
+
+**PR requested:** head `devices/tuner` (eb460dc3), base `main`, after item 18 (stacked for the catalogue).
+- **What it is.**
+  - `dsp::PitchDetector`, for Auto Shift to share later. YIN's normalised difference, from an FFT
+    autocorrelation, picks the lag. The exact difference at 1, 4, 16 … times the period, walked to
+    its dip and interpolated there, refines it. The window holds two 30 Hz periods: 4,096 samples at
+    44.1/48 kHz, 8,192 at 96 kHz. It estimates every quarter window, and `push()` allocates nothing.
+  - `dsp::Tuner`: the signal passes untouched; the mono sum's pitch, note and cents against
+    Reference are published through atomics for the UI.
+- **Tests:**
+  - `adi_tuner_tests` 26: 75 sines from 40 Hz to 4 kHz, at 44.1, 48 and 96 kHz, from one window and
+    through the Tuner, all within 1 cent (worst 0.005 cents). The design's own 0.05 cent check fails
+    with the multiple refinement removed (worst 0.72). A sawtooth and a weak fundamental under its
+    octave read the fundamental. Silence and white noise read nothing. No allocation; aliased planes.
+  - parity max error 0;
+  - the catalogue holds 30 built-ins.
+- **Needs the engine (not this seat's path):** a way for a native device to publish a reading to the
+  UI (here: hz, note, cents, clarity). The Pd external passes audio only until then.
+- **Reading 27, added to the ONE list:** a fresh Tuner as shown; 440 and 442 Hz; the hold after a note.
+
+## 2026-11-22 — standing queue item 18: EQ Three, core and device — lands after 3 December
+
+**PR requested:** head `devices/eq-three` (617cd9e4), base `main`, after item 17 (stacked).
+- **What it is.** Linkwitz-Riley crossovers, LR4 (24 dB/oct) or LR8 (48 dB/oct). The low band passes
+  the high crossover's allpass, so the three bands sum flat at unity. Each band has a gain from
+  −70 dB (silence) to +6 dB, and a kill.
+- **Tests:**
+  - `adi_eq_three_tests` 19: the flat sum within 0.01 dB at both slopes; kills and gains against a
+    complex model of the crossovers within 0.01 dB; the kill's depth; a plant without the allpass
+    fails;
+  - parity max error 0;
+  - the catalogue holds 29 built-ins.
+- **Reading 26, added to the ONE list:** a fresh EQ Three as shown. Pink noise with each band killed
+  at both slopes, to settle the crossover family. The gain law near −∞.
+
+## 2026-11-22 — standing queue items 11, 12, 15 and 16: the LFO and Shaper kernels, Align Delay, Auto Pan-Tremolo; item 10's review fixed — all land after 3 December
+
+### Item 10's review, fixed
+
+Item 10's review, three skeptics per finding, upheld three findings; all are fixed, each with a check
+that fails on the code before it.
+- **A Hybrid Reverb stage with no impulse** (a first load while audio runs, or a swap from an impulse
+  too short for that stage) skipped its next period, a block-long hole in the tail. It now sums an
+  arriving impulse from the whole history, as the head does. The check: a 30,000-tap impulse
+  arriving at sample 5,000 must match the full convolution from A + 3,072 on. The error is 2.1e-9
+  now, 0.0125 on the earlier code.
+- **Delay's parity fixture** had LeftSync switched off, which made LeftNotes and the tempo change
+  inert. Sync now stays on, and the slot moves the filter instead.
+- **Echo's Post reverb**: see the previous entry.
+
+### Item 11, lfo-kernel: Live's LFO modulator, the kernel
+
+**PR requested:** head `devices/lfo-kernel` (46e5b70e), base `main`.
+- **What it is.** DEV-07's device side (ADR-0249 d8): a modulation signal rendered sample by sample
+  for the engine's evaluator to route (ADR-0230).
+  - Shapes: Sine, Triangle, Saw Up, Saw Down, Square, Random, Wander.
+  - Rate in Hz, or synced to a Division of the song.
+  - Phase, Offset, Depth, Jitter, Smooth.
+- **The same bits at every block size:**
+  - free running, the phase advances by the same addition every sample;
+  - synced, it is read from the song's sample position within its tempo segment, so a locate lands
+    on the song's own phase;
+  - random values hash the cycle's index.
+- `adi_lfo_modulator_tests` 25; two plants caught. Reading 22, below.
+
+### Item 12, shaper-mod-kernel: Live's Shaper modulator, the kernel
+
+**PR requested:** head `devices/shaper-mod-kernel` (4c8ad6df), base `main`, after item 11 (stacked).
+- **What it is.**
+  - Up to 64 breakpoints, each with a curve (an exponential of 8 times the curve); the last segment
+    runs into the next cycle, and two points at one time make a step.
+  - `setPoints()` copies and sorts in a fixed array, so it allocates nothing.
+- **The clock is shared.** The phase logic and the cycle hash move to `modulator_clock.hpp`, shared
+  with the LFO. The LFO's output is unchanged, bit for bit: an FNV hash over every configuration is
+  identical before and after.
+- `adi_shaper_modulator_tests` 15; two plants caught. Its default shape is ADI's until reading 11.
+
+### Item 15, align-delay: Align Delay, core and device
+
+**PR requested:** head `devices/align-delay` (caadc5ef), base `main`, after item 9 (stacked).
+- **What it is.** Left and right delayed apart in Time (ms), Samples, or Distance (metres or feet,
+  at the speed of sound for the set temperature), with Link.
+  - The delay is exact: a whole number of samples.
+  - **It reports no latency.** The delay is the effect, and a host would compensate it away; whether
+    Live reports it is on reading 23.
+- **A real defect, found by parity.** The loop wrote the left output before reading the right
+  input, and Pd hands an output plane that is an input plane. Both inputs are now read first, and a
+  new check fails on the old loop.
+- **Tests:** `adi_align_delay_tests` 14; parity max error 0; the catalogue holds 26 built-ins.
+
+### Item 16, auto-pan-tremolo: Auto Pan-Tremolo, core and device
+
+**PR requested:** head `devices/auto-pan-tremolo` (7e3c1e92), base `main`, after item 15 and item 12
+(it takes both in by merge).
+- **What it is.**
+  - Pan: two LFOs Phase apart. Tremolo: one LFO for both channels.
+  - Gain 1 − Amount × (1 − (1 + w)/2).
+  - Wave Sine, Triangle, Saw Down or Random, with Shape and Invert.
+  - Rate in Hz, or synced at the host's tempo.
+- **Tests:** `adi_auto_pan_tests` 12; parity max error 0; the catalogue holds 27 built-ins.
+- **Need, for the engine:** song position reaches only ADI-Shaper's native path, so a synced Auto
+  Pan-Tremolo follows the tempo from its own start, not the bar line. The adapter's position path,
+  given to every native core that has a `sync()`, would lock it, and the LFO and Shaper kernels'
+  hosts too.
+
+### Item 17, channel-eq: Channel EQ, core and device
+
+**PR requested:** head `devices/channel-eq` (776ad5eb), base `main`, after item 16 (stacked).
+- **What it is.** An 80 Hz Butterworth low cut, a 100 Hz low shelf, a bell of Q 0.7 at Mid Freq, an
+  8 kHz high shelf and Output, as direct-form-I biquads in double.
+- **Tests:**
+  - each band's measured response is within a stated 0.01 dB of the design's analytic magnitude,
+    and meets its anchor;
+  - `adi_channel_eq_tests` 16;
+  - parity max error 0;
+  - the catalogue holds 28 built-ins.
+
+### Readings added to the ONE list
+
+22 (LFO), 23 (Align Delay), 24 (Auto Pan-Tremolo) and 25 (Channel EQ).
+
+## 2026-11-22 — standing queue items 3, 7, 8, 9 and 10: every core settles after silence; Glue, Gate and Limiter are devices; Hybrid Reverb under the common bound
+
+One review of items 1–3 and 7–9 ran with three skeptics per finding, and six findings were
+confirmed. All six are fixed on their branches and merged up each stack; each fix comes with a
+check that fails on the code before it. Item 10 had its own review, whose three confirmed findings are fixed too (next entry). CTest 268/268 at PD_FLOATSIZE 32 and 64
+on item 10's tip (items 1-3 and 10), 271/271 on the Limiter's (items 7-9); lint clean.
+
+### Item 3, denormal-tail: every built-in core's recursive states settle on exact 0 after silence
+
+**PR requested:** head `devices/denormal-tail` (a53b1e68), base `main`, after items 1 and 2 (it is
+stacked on them).
+- **The audit.** 119 recursive states in the 16 built-in cores outside ADI-Shaper. Two skeptics
+  confirmed each claimed gap, and 67 decayed into subnormals with nothing to stop them. Each now
+  settles, in the codebase's own styles:
+  - a 1e-30 floor;
+  - a snap within 1e-12 of a smoother's target;
+  - a snap before a float delay-line write;
+  - for states in vendored headers, which stay untouched, a settle on every 64th sample since
+    prepare: a grid of absolute positions, so where the host cuts its blocks never changes a
+    sample;
+  - the Vocoder's band envelopes at 1e-300, since a 1e-30 floor would be audible through
+    `pow(sqrt(env), Depth)`.
+- **The proof**, Part 3 of `adi_builtin_realtime_tests` (an optimised build):
+  - **Settling.** Every built-in, at 64 and 128 frames: 8 s of signal, then 60 s of silence. Over
+    the last second, with flush-to-zero off, no operation may read a subnormal. The check is x86's
+    denormal-operand flag in the SSE status word.
+  - **Cost.** Under the callback's own flush scope, the steady silence (the last 2 s of 30) costs no
+    more than the steady signal at p99, within 25 % and 5 µs.
+  - **Before the fixes**, 12 of the 21 built-ins read subnormals; after, none does. A plant dropping
+    Utility's DC floor alone fails Utility alone.
+  - **What the flag can see**, stated exactly in the test:
+    - every float-held state, and every double whose time constant is under about 85 ms (a double
+      turns subnormal only 708 time constants down);
+    - a slower double's floor (Echo's envelope, Resonators' combs at a 2 s decay) is held by the
+      audit and the code, not by this check.
+- **The review's findings, fixed:**
+  - **Echo's room**, the Reverb's float tank, was missed. A new check (Reverb 100 %, Feedback 0)
+    reads subnormals from 17 to 22 s into the silence on the earlier code, and none now.
+  - **Auto Filter's and Shifter's block-end flushes** made the tail depend on the host's blocks. They
+    now settle on the grid. New impulse-into-silence checks at 32, 100 and 4,096 frames: 14 and 2 of
+    them fail on the earlier code, none now.
+  - **Part 3 now builds off x86.** Its guard excludes ARM64EC, as `floating_point_control.hpp` does.
+  - **From item 1:** the measured-count check now takes the catalogue's count apart from the loop,
+    and counts the Sampler's 32 slots. Restoring the old canvas filter fails both checks (20 of 21).
+- **Found on the way, then fixed:** Echo with Reverb raised at the default Feedback ran away (about
+  +23 dB). The Post reverb was fed back into the delay line; it now colours only the output, and
+  only the Feedback location puts the room in the loop. A check fails on the earlier code.
+- The Debug run skips Part 3; the CTest TIMEOUT is now 1800 s for the optimised run's 6 min.
+
+### Items 7, 8 and 9: the Glue Compressor, Gate and Limiter as loadable built-ins — land after 3 December
+
+Each takes the one before it in by merge, so the catalogue keeps ADR-0249 d7's order: Compressor,
+Glue, Gate, Limiter. Each has the same parts:
+- an external that prepares its core only when the sample rate changes, so a DSP rebuild keeps the
+  core's state, and the Limiter's allocating `prepare()` runs once per rate;
+- a canonical canvas, with ids fixed now and ranges ADI's until its reading;
+- native dispatch;
+- a catalogue entry (Audio Effects, Dynamics, stereo).
+
+- **Item 7, Glue Compressor.** **PR requested:** head `devices/glue-compressor` (98e479db), base
+  `main`, after `devices/compressor`.
+  - 8 controls; reading 19.
+  - Parity max error 0.
+- **Item 8, Gate.** **PR requested:** head `devices/live-gate` (c76d2952), base `main`, after item 7.
+  - 8 controls; reading 20.
+  - It reports its Lookahead as latency: 10 ms is 480 samples at 48 kHz, kept while bypassed. A new
+    check; a plant expecting 479 fails it.
+- **Item 9, Limiter.** **PR requested:** head `devices/live-limiter` (ac6c8718), base `main`, after
+  item 8 and `devices/limiter-offline`.
+  - 6 controls; reading 21.
+  - **Latency:** every Lookahead in both detector modes reports 72, 144 or 288 samples at 48 kHz,
+    plus 10 in True Peak mode, kept while bypassed.
+  - **Ceiling:** a -1 dB ceiling holds on +12 dB noise in every link (in M/S, on mid and side).
+  - `adi_live_limiter_tests` 58 and `adi_dsp_tests` 433 unchanged.
+- **The review's finding, fixed:** the Glue fixture's Release change set its default (Auto), so
+  parity never left Auto.
+  - The parity harness now checks that every fixture change moves a control off its canvas default.
+    That found three older no-op changes, all toggles set to their default: Delay's LeftSync,
+    Reverb's SpinOn and Saturator's HiQuality.
+  - All four are fixed. Parity stays at max error 0 for every fixture: 427 checks on the Limiter's
+    tip.
+- The catalogue holds 25 built-ins on the Limiter's tip.
+
+### Item 10, hybrid-reverb-nupc: Hybrid Reverb in non-uniform partitions — lands after 3 December
+
+**PR requested:** head `devices/hybrid-reverb-nupc` (fb1c7e9a), base `main`, after item 3 (stacked
+on it).
+- **The stages:**
+  - **the head:** the impulse's first 2,048 samples in 256-sample partitions, the existing code, so
+    every impulse up to 2,048 samples renders exactly as before;
+  - **then blocks of 1,024** from 2,048;
+  - **then blocks of 4,096** from 8,192.
+- **Why no callback carries a spike:** a stage of block B starting at S ≥ 2B − 256 has a whole block
+  period to compute in. Its parts are summed by sample position, so every callback size renders the
+  same bits. A 5 s impulse costs about 71 multiply-adds a sample, against about 940; the latency
+  stays 256.
+- **Tests:** impulses of 2,049 to 60,000 samples with taps on every stage edge.
+  - They match a direct convolution: largest error 1.3e-8, against a budget of 1.5e-6 to 4.1e-6.
+  - They render the same bits at callback sizes 1 to 4,097.
+  - Cutting the impulse at either stage edge fails.
+  - `adi_hybrid_reverb_tests` 72 (21 new), Pd 11.
+- **Measured:** Hybrid Reverb's p99 is 12.6 % of the deadline at 64 frames and 11.3 % at 128 (it was
+  17–28 %). Its 25 % exception is removed, and the whole realtime suite passes: 252 checks, 0
+  failures.
+
+## 2026-11-22 — standing queue items 1 and 2: the Sampler is timed and made cheap; the Debug run fits its timeout (#706's review)
+
+Win's standing queue (`collab/prompts/2026-11-22-devices-queue.md`) replaces this lane's earlier
+lists, and it is worked top to bottom. Items 1 and 2 are the two fixes #706's review asked of
+`devices/perf-pass`. Both are before 3 December.
+
+They are cut from #706's integration branch (`land/devices-1122`), because the suite (perf-pass)
+and the Sampler (sampler-loadable) first meet there. Once #706 lands, each branch's diff is its own
+commits.
+
+### Item 1, perf-sampler: the realtime suite times the Sampler
+
+**PR requested:** head `devices/perf-sampler` (f153556c, two commits on `land/devices-1122`), base
+`main`, after #706.
+- **The gap.** The suite measured only catalogue entries with a Pd canvas, so the Sampler (native
+  only) was skipped. Now every available built-in is measured:
+  - the count measured is checked against the count available;
+  - the Sampler is named;
+  - a plant that drops the Sampler fails both checks.
+- **The Sampler, timed.** With its 32 slots filled it took 38.5 % of the deadline at p99 (64
+  frames). Each filled slot is a OneShot engine over every key, so every note plays 32 layers.
+- **What made it cheap.** Every fix is bit-identical: an FNV checksum over every output sample of
+  OneShot and the Sampler, at 64 and 128 frames, matches before and after.
+  - **An idle engine plays silence without its sample loop.** OneShot takes this path when no
+    voice sounds and no note-on arrives; the events still apply, in order. Each voice's filter is
+    its own, so there is no tail. The Sampler skips mixing such a layer. An idle Sampler now costs
+    27 µs per 64-frame block, down from 179.
+  - **What reads only the parameters is computed per event, not per sample or voice:**
+    - the sustain level, Vel > Vol and the output level;
+    - the LFO's phase step;
+    - the filter's coefficients, when the LFO does not move the cutoff.
+  - **Work skipped when its result cannot change:**
+    - the LFO's value, when every LFO amount is 0 (each use is a product with 0; only its phase
+      and random state advance);
+    - a voice's `exp2`, except when its pitch changes;
+    - the filter's 1/q and denominator, now shared by both stages and both channels.
+  - **The voice loop runs voice by voice** over each stretch between events, so a voice's state
+    stays in registers. Each output sample still sums the voices in the same order.
+- **Measured** (RelWithDebInfo; this machine runs about 30 % slower this afternoon than this
+  morning):
+  - Sampler p99 12.9 % of the deadline at 64 frames, 12.4 % at 128;
+  - OneShot 0.3 % (it was 1.3 %);
+  - no allocations.
+- **Tests:**
+  - OneShot 359, OneShot Pd 38, Sampler 119, built-in devices 244 and native parity 287 all pass
+    unchanged;
+  - CTest 268/268 at PD_FLOATSIZE 32 and 64 (MSVC Debug, /W4 /WX);
+  - lint clean.
+
+### Item 2, perf-debug-timeout: the Debug run fits its CTest timeout
+
+**PR requested:** head `devices/perf-debug-timeout` (bb7f5c08, one commit on item 1), base `main`.
+- **The problem.** A Debug run took about 37 min against the 900 s TIMEOUT.
+- **The fix.** A debug build's times are not the product's, so Debug now counts allocations only,
+  for a tenth as long:
+  - every callback is still counted from the first, the warm-up second included;
+  - the timing-only parts run in an optimised build alone: three of the four contention variants,
+    and the breakdown from an empty project;
+  - the variant with the timer and gestures together still runs in Debug.
+- **Measured:** `ctest -L performance` in Debug finishes in 3 min 56 s, with 64 checks passing (44
+  of them allocation checks). RelWithDebInfo still runs all 168.
+- CTest 268/268 at 32 and 64; lint clean.
+
+### Parked, with one line each (taken when they clear)
+
+- **Item 4, DF-E39** (the MIDI effect kernels): waits on the engine's DEV-17 and DEV-18 reaching
+  main.
+- **Item 5, shaper-scope-feed:** `adi_shaper_scope.hpp` exists only on the clones panel stack held
+  in #708, and the `builtin_host.cpp` loan must be widened by win.
+- **Item 6, time-locate-revision:** waits on the clones seat's `AdiShaper::syncAtSample(quarterNotes,
+  playing, sample, revision)`, which exists only on `clones/shaper-time` and is in no landing
+  window. This lane's hunk is ready to write: in `native_devices.cpp`'s `syncShaper`,
+  `core.syncAtSample(position->quarterNotes, position->playing, position->sample,
+  io.transport ? io.transport->transportRevision : 0)` in place of `core.sync(...)`. Its test would
+  be the clones seat's same-position regression, which is not pushed either. Needs table: clones,
+  land `syncAtSample` or hand it over, and push the regression.
+- **Item 13, beat-repeat-core:** waits on reading 18 and the contract branch landing.
+- **Item 14, two-head-reader-shifter:** waits on the clones seat's extraction (step 1), which exists
+  nowhere yet.
 
 ## 2026-11-22 — the post-3-December queue: Compressor, Glue Compressor, Gate, Limiter, and Beat Repeat's contract (all land after 3 December)
 

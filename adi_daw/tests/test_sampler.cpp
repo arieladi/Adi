@@ -7,6 +7,7 @@
 #include <functional>
 #include "adi/engine/session.hpp"
 #include "adi/store.hpp"
+#include "replace_operator_new.hpp"
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
@@ -29,18 +30,10 @@ void check(bool b, const char *s) {
     }
 }
 } // namespace
-void *operator new(std::size_t n) {
+void adi::test::countReplacedNew() noexcept {
     if (audit)
         ++allocations;
-    if (auto *p = std::malloc(n ? n : 1))
-        return p;
-    throw std::bad_alloc();
 }
-void *operator new[](std::size_t n) { return ::operator new(n); }
-void operator delete(void *p) noexcept { std::free(p); }
-void operator delete[](void *p) noexcept { std::free(p); }
-void operator delete(void *p, std::size_t) noexcept { std::free(p); }
-void operator delete[](void *p, std::size_t) noexcept { std::free(p); }
 namespace {
 void set(device::Sampler &d, const std::string &id, double real) {
     for (int i = 0; i < d.paramCount(); ++i) {

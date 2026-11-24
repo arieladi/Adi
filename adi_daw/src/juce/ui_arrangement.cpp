@@ -188,7 +188,7 @@ bool ScrubArea::beginLocatorEdit(std::int64_t id, bool info) {
     editor.setVisible(true);
     editor.selectAll();
     if (editor.isShowing())
-        editor.grabKeyboardFocus();
+        focusIfShowing(editor);
     repaint();
     return true;
 }
@@ -324,7 +324,7 @@ void ScrubArea::mouseDown(const juce::MouseEvent &e) {
         view.selectedLocator = 0; // one thing selected: Delete and the arrows must not reach a locator
         view.selectLoop();
         view.loopSelected = true;
-        view.canvas.grabKeyboardFocus(); // the arrows go to the lanes, which act on the brace
+        focusIfShowing(view.canvas); // the arrows go to the lanes, which act on the brace
         repaint();
         return;
     }
@@ -353,7 +353,7 @@ void ScrubArea::mouseDown(const juce::MouseEvent &e) {
         locatorGrab_ = view.geometry.tick(e.position.x) - pos;
         locatorTo_ = pos;
         locatorMoved_ = false;
-        view.canvas.grabKeyboardFocus(); // Delete and the arrows go to the lanes, which act on it
+        focusIfShowing(view.canvas); // Delete and the arrows go to the lanes, which act on it
         repaint();
         return;
     }
@@ -371,7 +371,7 @@ void ScrubArea::mouseDown(const juce::MouseEvent &e) {
             auto &sel = view.geometry.selection;
             sel.clip = 0;
             sel.pickedClips.clear();
-            view.canvas.grabKeyboardFocus();
+            focusIfShowing(view.canvas);
         }
         repaint();
     }
@@ -540,7 +540,7 @@ bool ScrubArea::beginMeterEdit(std::int64_t pos, bool inserting) {
     editor.setVisible(true);
     editor.selectAll();
     if (editor.isShowing())
-        editor.grabKeyboardFocus();
+        focusIfShowing(editor);
     repaint();
     return true;
 }
@@ -549,7 +549,7 @@ void ScrubArea::endMeterEdit() {
     locatorEditing_ = 0;
     editor.setVisible(false);
     if (view.canvas.isShowing())
-        view.canvas.grabKeyboardFocus();
+        focusIfShowing(view.canvas);
     repaint();
 }
 TimelineRuler::TimelineRuler(ArrangementView &v) : view(v) {
@@ -1954,7 +1954,7 @@ bool TrackHeaderList::beginRename(std::int64_t track) {
     }
     editor.setVisible(true);
     if (editor.isShowing())
-        editor.grabKeyboardFocus();
+        focusIfShowing(editor);
     repaint();
     return true;
 }
@@ -1974,7 +1974,7 @@ void TrackHeaderList::endRename() {
     editor.setName({});
     editor.setVisible(false);
     if (view.canvas.isShowing())
-        view.canvas.grabKeyboardFocus();
+        focusIfShowing(view.canvas);
     repaint();
 }
 juce::Rectangle<int> TrackHeaderList::quantizeBox(std::uint32_t depth, int top, int height, bool record) const noexcept {
@@ -2890,7 +2890,7 @@ void ArrangementCanvas::paintGroupLane(juce::Graphics &g, std::size_t at, int y,
     }
 }
 void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
-    grabKeyboardFocus();
+    focusIfShowing(*this);
     if (view.loopSelected || view.selectedLocator != 0) {
         view.loopSelected = false; // a click in the lanes lets the brace and a locator go
         view.selectedLocator = 0;

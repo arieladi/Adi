@@ -23,9 +23,14 @@ target_sources(adi_core PRIVATE src/adi/mix_functions.cpp src/adi/mix_function_e
 # The EQ's normalized-to-physical law must land defaults on their exact values
 # (Gain Scale 100 %, which the neutral-EQ sleep proof compares): low+(high-low)*n
 # contracted into a fused multiply-add gives 100.0000076 on Apple clang arm64.
-# MSVC's /fp:precise does not contract.
+# The Limiter host's Clip law (min+(max-min)*n, then min+step*floor(...), and
+# the inline ControlMapping.h snaps) and the Clean host's -60+60*v contract the
+# same way, off by one float on 225 of 481 steps of a 0.1 dB control (Input
+# step 162: -7.79999924 against -7.79999971) and on about a third of Clean
+# thresholds. MSVC's /fp:precise does not contract.
 if(NOT MSVC)
-    set_property(SOURCE src/juce/mix_eq_host.cpp APPEND PROPERTY COMPILE_OPTIONS -ffp-contract=off)
+    set_property(SOURCE src/juce/mix_eq_host.cpp src/juce/mix_function_host.cpp
+        src/juce/mix_compressor_host.cpp APPEND PROPERTY COMPILE_OPTIONS -ffp-contract=off)
 endif()
 target_link_libraries(adi_core PRIVATE adi_mix_compressor)
 foreach(_adi_mix_suite functions limiter document render_intent pdc_pin eq eq_host eq_pipeline parameter_feed compressor_host eq_native_serial)
@@ -80,8 +85,9 @@ add_test(NAME adi_mix_gate_tests COMMAND adi_mix_gate_tests)
 # compiler's default: Apple clang contracts by default (fused multiply-adds
 # on arm64), which no other leg does under -std=c++20. Keep the tests on the
 # cores' arithmetic contract. The Opto suite sets this in its own function.
+# The limiter and compressor_host suites share their hosts' contract above.
 if(NOT MSVC)
-    foreach(_adi_mix_core_suite compressor filters deesser key_eq clean_key gate)
+    foreach(_adi_mix_core_suite compressor filters deesser key_eq clean_key gate limiter compressor_host)
         target_compile_options(adi_mix_${_adi_mix_core_suite}_tests PRIVATE -ffp-contract=off)
     endforeach()
 endif()
