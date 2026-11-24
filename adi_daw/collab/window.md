@@ -101,6 +101,15 @@ Questions only the director can answer. Each says what the window lane recommend
 | N58 | The plug-in catalogue off the message thread: a scan service, Rescan, a default worker count, and each VST3's kind with its instrument flag (ADR-0248 d7: engine-win's third item, under DEV-25) | engine-win | the Browser's Plug-Ins with progress, and each VST3's icon | the window scans on its own worker with the one loader (DF-W34 a), the loader locked while it scans; no progress count; a VST3 shows the plug-in icon |
 | N59 | The project's key and scale, if the Control Bar's Key group (step 2) shows the project's and not the selected clip's: an op and a snapshot field (ADR-0248, `collab/RESERVATIONS.md`) | engine, when asked | the Control Bar's Key and Scale | step 2 waits on the Mix View's switch and theme rows; not asked yet |
 
+## 2026-11-24, window lane — queue item 9: DF-E35a (PR requested)
+
+**Item 9, DF-E35a. PR requested.** Branch `window/main-row-readers`, on main, head `b93f43c5`. Title: **adi_daw: window: a take lane's clips stay off the main row, a seams check (DF-E35a)**. Body: [`collab/window/pr-bodies/window-main-row-readers.md`](window/pr-bodies/window-main-row-readers.md).
+- **The item's block is gone:** #677 put the lane id in `ClipNode`, and `430ea825` keeps take clips apart (`TrackNode::takeClips`). Every Arrangement reader walks `TrackNode::clips`, so the window needs no change; the check pins it.
+- **Tests:** seams 587, shell 3157, document 337, window_state 177, 0 failures; the `ui.yml` six green; the sweeps flag only main's lines. The gate's first run failed the check's own far take (tick 200000 is inside the song's least 16 quarters; a quarter is 5765760 ticks): `b93f43c5` puts it at quarter 64.
+- **This machine's JUCE** was 9.0.2 under main's 9.0.5 pin, so the shell's machine-assertion list (2703, win's) did not match the X11 line here (2623). The gates from this one on build with main's pin.
+
+---
+
 ## 2026-11-24, window lane — #716's four findings (PR requested)
 
 **#716's four, win's ask. PR requested.** Branch `window/shaper-panel-fixes`, on #716's head `1baf1fd8`, head `c10003c4`. Title: **adi_daw: window: ADI-Shaper's panel window: an audio restart, values, refusals, tests, and the strict GCC leg (#716)**. Body: [`collab/window/pr-bodies/window-shaper-panel-fixes.md`](window/pr-bodies/window-shaper-panel-fixes.md). It lands with #716 (or into its branch).
