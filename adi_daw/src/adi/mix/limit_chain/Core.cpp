@@ -190,6 +190,17 @@ LatencyChange Core::claimPendingLatencyChange(const Settings& settings) noexcept
 bool Core::configurationBusy() const noexcept {
     return (impl_->pending.load(std::memory_order_acquire)&(claimingBit|claimedBit))!=0;
 }
+bool Core::needsBypassTransition(std::int32_t configuredTotal) const noexcept {
+    const auto& d = *impl_;
+    const auto pending = d.pending.load(std::memory_order_acquire);
+    if ((pending & claimedBit) && changeFrom(pending).samples == configuredTotal)
+        return true;
+    // A newer offer waits for its own PDC. Until then the admitted graph can
+    // still finish the limiter fade that belongs to its exact applied total.
+    return configuredTotal == d.appliedLatency.load(std::memory_order_relaxed) &&
+        d.limiterOn && d.limiterToken && d.limiterLatency == d.limiterTarget &&
+        d.limiter.latencySamples() != d.limiterTarget;
+}
 BlockContext Core::beginBlock(std::uint64_t physicalBlock,std::int32_t configuredTotal,const Settings& settings) noexcept {
     auto& d=*impl_;if(!d.prepared)return {};
     d.request(settings);
@@ -221,7 +232,8 @@ BlockContext Core::beginBlock(std::uint64_t physicalBlock,std::int32_t configure
     return block;
 }
 bool Core::process(float* const* main,const float* const* key,std::int32_t frames,
-                   const Settings& settings,const BlockContext& block) noexcept {
+                   const Settings& settings,const BlockContext& block,limiter::BlockReduction* reduction) noexcept {
+    if(reduction)*reduction={};
     auto& d=*impl_;
     if(!d.prepared || !main || frames<0 || !block.generation || !block.block ||
         block.generation!=d.current.generation || block.block!=d.current.block)return false;
@@ -246,16 +258,21 @@ bool Core::process(float* const* main,const float* const* key,std::int32_t frame
     if(!block.clipEnabled) {
         if(block.limiterEnabled) {
             // No Clip processing, key copy, hidden meter or extra audio pass.
-            d.limiter.process(main,key,frames,settings.limiter,block.limiter);
+            d.limiter.process(main,key,frames,settings.limiter,block.limiter,reduction);
             d.stats.limiterFrames+=static_cast<std::uint64_t>(frames);
+        } else if(reduction) {
+            *reduction={0.f,true};
         }
         return true;
     }
     if(!block.limiterEnabled) {
         (void)d.key(key,0,frames,false);
         if(!d.clip.process(main,frames,settings.clip,block.clip))return false;
-        d.stats.clipFrames+=static_cast<std::uint64_t>(frames);return true;
+        d.stats.clipFrames+=static_cast<std::uint64_t>(frames);
+        if(reduction)*reduction={0.f,true};
+        return true;
     }
+    limiter::BlockReduction observed{0.f,reduction!=nullptr};
     for(int offset=0;offset<frames;) {
         const auto n=std::min(d.clip.capacity(),frames-offset);
         std::array<float*,2> audio{main[0]+offset,d.spec.channels.size()==2?main[1]+offset:nullptr};
@@ -272,9 +289,16 @@ bool Core::process(float* const* main,const float* const* key,std::int32_t frame
         }
         const auto delayed=d.key(key,offset,n,true);
         if(!d.clip.process(audio.data(),n,settings.clip,block.clip))return false;
-        d.limiter.process(audio.data(),delayed?d.keyPointers.data():key?directKey.data():nullptr,n,settings.limiter,block.limiter);
+        limiter::BlockReduction chunk;
+        d.limiter.process(audio.data(),delayed?d.keyPointers.data():key?directKey.data():nullptr,n,
+                          settings.limiter,block.limiter,observed.available?&chunk:nullptr);
+        if(observed.available) {
+            observed.available=chunk.available;
+            observed.peakLoss=std::max(observed.peakLoss,chunk.peakLoss);
+        }
         offset+=n;
     }
+    if(reduction&&observed.available)*reduction=observed;
     d.stats.clipFrames+=static_cast<std::uint64_t>(frames);d.stats.limiterFrames+=static_cast<std::uint64_t>(frames);
     return true;
 }

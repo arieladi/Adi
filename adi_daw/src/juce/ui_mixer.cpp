@@ -4,6 +4,7 @@
 #include "ui_shell.hpp"
 #include "adi/engine/mixer.hpp"
 #include "adi/ui/automation_override.hpp"
+#include "adi/ui/cue_edits.hpp"
 #include "adi/ui/midi_tracks.hpp"
 #include "adi/ui/send_edits.hpp"
 #include "adi/ui/track_edits.hpp"
@@ -237,7 +238,7 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
     keepLatency.onClick = [this] { panel_.root.setKeepMonitoringLatency(track_, !keepLatency.getToggleState()); };
     addChildComponent(keepLatency);
     delay.setTitle("Track Delay");
-    delay.setTooltip("Delays the track's output by this many milliseconds; a negative value pre-delays it.");
+    setDelayTooltip("Delays the track's output by this many milliseconds; a negative value pre-delays it.");
     delay.setScrollWheelEnabled(false);
     delay.onDragStart = [this] { dragging_ = true; };
     delay.onDragEnd = [this] {
@@ -249,6 +250,27 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
             commitDelay();
     };
     addChildComponent(delay);
+    cueVolume.setSliderStyle(juce::Slider::RotaryHorizontalVerticalDrag);
+    cueVolume.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
+    cueVolume.setRange(kCueFloorDb, kCueTopDb, .01);
+    cueVolume.setSkewFactor(2.27); // as the volume's: the top of the travel finer than the foot
+    cueVolume.textFromValueFunction = [](double v) {
+        return v <= kCueFloorDb ? juce::String("-inf") : juce::String(v, 1) + " dB";
+    };
+    cueVolume.setValue(0, juce::dontSendNotification);
+    cueVolume.setTitle("Cue Volume");
+    cueVolume.setTooltip("How loud the cued tracks play to Cue Out.");
+    cueVolume.setScrollWheelEnabled(false);
+    cueVolume.onDragStart = [this] { cueDragging_ = true; };
+    cueVolume.onDragEnd = [this] {
+        cueDragging_ = false;
+        panel_.root.setCueVolume(cueVolume.getValue());
+    };
+    cueVolume.onValueChange = [this] {
+        if (!cueDragging_)
+            panel_.root.setCueVolume(cueVolume.getValue());
+    };
+    addChildComponent(cueVolume);
     active.setTitle("Track Activator");
     active.setTooltip("Turns the track's output on or off.");
     solo.setTitle("Solo");
@@ -269,11 +291,18 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
     arm.setColour(juce::TextButton::buttonOnColourId, look::record);
     arm.getProperties().set("adi.lit", "record");
     pan.addMouseListener(this, false);
+    volume.addMouseListener(this, false); // its right-click: the fader's menu (AU-04)
     active.setClickingTogglesState(false);
     // Live's Track Activator (manual 18.1): the selected tracks together when this one is among them.
     active.onClick = [this] { panel_.root.activateTrack(track_); };
     // Live's Solo (manual 18.1): exclusive unless Ctrl/Cmd is held; the selected tracks together.
-    solo.onClick = [this] { panel_.root.soloTrack(track_, juce::ModifierKeys::currentModifiers.isCommandDown()); };
+    // With Options > Cue Switches it is Live's Cue button (manual 18.6; MX-08): the track to Cue Out.
+    solo.onClick = [this] {
+        if (const auto current = panel_.root.current(); current && current->cue.cueMode)
+            panel_.root.cueTrack(track_);
+        else
+            panel_.root.soloTrack(track_, juce::ModifierKeys::currentModifiers.isCommandDown());
+    };
     // Its right-click menu: Solo in Place (manual 18.6).
     solo.onMenu = [this] { soloMenu().showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(&solo)); };
     // Live's Arm (manual 21.1): Exclusive Arm unless Ctrl/Cmd is held; the selected tracks together.
@@ -301,14 +330,29 @@ void ArmButton::paintButton(juce::Graphics &g, bool over, bool down) {
 }
 void MixerStrip::bind(std::int64_t id) {
     track_ = id;
-    position_ = 0;
+    position_ = number_ = 0;
     peak_ = rms_ = 0;
     lastFrame_ = -1;
     frame(true);
 }
 void MixerStrip::resolveMeter() { meter_ = panel_.meter && track_ != 0 ? panel_.meter(track_) : nullptr; }
+void MixerStrip::setDelayTooltip(const juce::String &tip) {
+    // The box's value label covers the slider and keeps the tooltip it had when it was made: both get it.
+    delay.setTooltip(tip);
+    for (auto *c : delay.getChildren())
+        if (auto *label = dynamic_cast<juce::Label *>(c))
+            label->setTooltip(tip);
+}
 void MixerStrip::frame(bool changed) noexcept {
     const auto *t = panel_.root.reader().findTrack(track_);
+    // Live makes Track Delay unavailable while Options > Delay Compensation is off (manual 18.7;
+    // MX-04); its value stays as stored, and comes back with the switch.
+    if (const bool compensated = panel_.root.commands().delayCompensation(); delay.isEnabled() != compensated) {
+        delay.setEnabled(compensated);
+        setDelayTooltip(compensated ? "Delays the track's output by this many milliseconds; a negative value pre-delays it."
+                                    : "Track Delay is unavailable while Options > Delay Compensation is off.");
+        repaint(); // its "ms" box and title follow
+    }
     // A device put on a MIDI track or taken off it may give it an audio mixer or take it away.
     const auto devices = panel_.root.devices.publication ? panel_.root.devices.publication() : nullptr;
     if (changed || devices.get() != devices_) {
@@ -321,15 +365,18 @@ void MixerStrip::frame(bool changed) noexcept {
         const auto rows = panel_.root.arrangement.geometry.rows(panel_.root.reader());
         if (const auto at = rows.find(track_); at < rows.size()) {
             position_ = at + 1;
+            number_ = rows[at].number();
             // A return's activator shows its letter, as Live's ("A", "B"); a track's its number. The
             // text changes only when the label does, so a steady frame allocates nothing.
-            const int label = kind_ == "return"
-                                  ? -1 - static_cast<int>(std::find(returns_.begin(), returns_.end(), track_) - returns_.begin())
-                                  : static_cast<int>(position_);
+            // A group's return is lettered with the group's initial first ("DA"; ADR-0247 d2), coded
+            // here as a negative number so a steady frame compares and allocates nothing.
+            std::array<char, 2> letter{};
+            const auto letters = kind_ == "return" ? returnLetter(panel_.root.reader().tracks(), track_, letter) : 0;
+            const int label = letters > 0 ? -1 - (letter[0] * 128 + (letters > 1 ? letter[1] : 0))
+                                          : static_cast<int>(number_);
             if (label != label_) {
                 label_ = label;
-                active.setButtonText(label < 0 ? juce::String::charToString(static_cast<juce::juce_wchar>('A' + (-1 - label) % 26))
-                                               : juce::String(label));
+                active.setButtonText(letters > 0 ? juce::String(letter.data(), letters) : juce::String(label));
             }
             const auto parent = rows[at].place.parent;
             const auto group = parent == 0 ? rows.size() : rows.find(parent);
@@ -359,10 +406,26 @@ void MixerStrip::frame(bool changed) noexcept {
         delay.setValue(trackDelayMs(t->delaySamples, panel_.root.reader().sampleRate()), juce::dontSendNotification);
         keepLatency.setToggleState(t->recording.keepMonitoringLatency, juce::dontSendNotification);
         active.setToggleState(!t->muted, juce::dontSendNotification);
-        solo.setToggleState(t->soloed, juce::dontSendNotification);
+        if (kind_ == "master" && !cueDragging_)
+            if (const auto *snap = panel_.root.reader().get())
+                cueVolume.setValue(std::max(kCueFloorDb, snap->cue.volumeDb), juce::dontSendNotification);
+        // Solo, or with Cue Switches the track's Cue (manual 18.6; MX-08): "C" until the window lane
+        // draws Live's headphones.
+        const bool cueMode = panel_.root.reader().get() && panel_.root.reader().get()->cue.cueMode;
+        if (cueMode_ != cueMode) {
+            cueMode_ = cueMode;
+            solo.setButtonText(cueMode ? "C" : "S");
+            solo.setTitle(cueMode ? "Cue" : "Solo");
+            solo.setTooltip(cueMode ? "Cues the track: it plays to Cue Out, for headphones, without soloing it."
+                                    : "Solos the track.");
+        }
+        solo.setToggleState(cueMode ? panel_.root.reader().get() && cued(*panel_.root.reader().get(), track_)
+                                    : t->soloed,
+                            juce::dontSendNotification);
         // A group holding a soloed track shows its Solo half coloured (Live 12 manual 18.3). The
         // property is set once at construction, so a frame only changes its value.
-        const bool half = kind_ == "group" && !t->soloed && holdsSoloed(panel_.root.reader().tracks(), track_);
+        // In Cue mode the button is the Cue button, and solos are not heard: no half colour from them.
+        const bool half = !cueMode && kind_ == "group" && !t->soloed && holdsSoloed(panel_.root.reader().tracks(), track_);
         if (static_cast<bool>(solo.getProperties()[kHalfLit]) != half) {
             solo.getProperties().set(kHalfLit, half);
             solo.repaint();
@@ -381,12 +444,19 @@ void MixerStrip::frame(bool changed) noexcept {
         // Pre/Post, lit while the return's sends tap after the fader: the return's own switch
         // (`TrackNode::returnSendTap`, #405), on its row and on Main's strip for each return in the
         // Mixer View.
+        // Mixed, a send's own tap differing (ADR-0247 d2): a dash in an accent edge, unlit.
         const auto &reader = panel_.root.reader();
-        auto showPost = [&reader](juce::TextButton &b, std::int64_t ret) {
-            const bool post = !returnPre(reader.findTrack(ret));
-            if (post != b.getToggleState() || post != (b.getButtonText() == "Post")) {
-                b.setButtonText(post ? "Post" : "Pre");
+        const auto current = panel_.root.current();
+        auto showPost = [&reader, &current](juce::TextButton &b, std::int64_t ret) {
+            const bool mixed = current && returnTapMixed(*current, ret);
+            const bool post = !mixed && !returnPre(reader.findTrack(ret));
+            const char *text = mixed ? "\xe2\x80\x93" : post ? "Post" : "Pre";
+            if (post != b.getToggleState() || b.getButtonText() != juce::CharPointer_UTF8(text) ||
+                mixed != static_cast<bool>(b.getProperties()["live.mixed"])) {
+                b.setButtonText(juce::CharPointer_UTF8(text));
                 b.setToggleState(post, juce::dontSendNotification);
+                b.getProperties().set("live.mixed", mixed);
+                b.repaint();
             }
         };
         if (kind_ == "return")
@@ -476,6 +546,8 @@ void MixerStrip::resized() {
         peakHold.setBounds(11, top + 5, 35, 12);
         pan.setBounds(15, bottom - 91, 27, 27);
         active.setBounds(18, bottom - 59, 21, 21);
+        cueVolume.setVisible(kind_ == "master");
+        cueVolume.setBounds(15, bottom - 62, 27, 27);
         solo.setBounds(17, bottom - 33, 23, 12);
         arm.setBounds(17, bottom - 16, 23, 12);
         const bool tall = getHeight() >= MixerPanel::kTallHeight;
@@ -585,8 +657,8 @@ void MixerStrip::paint(juce::Graphics &g) {
             for (std::size_t i = 0; i < std::min(shown_, sends_.size()); ++i) {
                 const auto b = sendBounds(i);
                 g.setColour(look::text.withAlpha(sendOn_[i] != 0 ? 1.f : .45f));
-                g.drawText(juce::String::charToString(static_cast<juce::juce_wchar>('A' + i % 26)), b.getX(),
-                           b.getBottom() - 9, b.getWidth(), 12, juce::Justification::centred);
+                g.drawText(i < letters_.size() ? letters_[i] : juce::String(), b.getX(), b.getBottom() - 9,
+                           b.getWidth(), 12, juce::Justification::centred);
             }
         }
         if (delay_ > 0) {
@@ -616,7 +688,7 @@ void MixerStrip::paint(juce::Graphics &g) {
             if (const auto *track = panel_.root.reader().findTrack(track_)) {
                 g.setColour(look::ink);
                 g.setFont(look::font(look::fontBody, true));
-                g.drawText(juce::String::fromUTF8(displayName(track->name, position_).c_str()), 4, 0, w - 8,
+                g.drawText(juce::String::fromUTF8(displayName(track->name, number_).c_str()), 4, 0, w - 8,
                            17, juce::Justification::centredLeft);
             }
         }
@@ -648,7 +720,7 @@ void MixerStrip::paintDelayUnit(juce::Graphics &g) const {
     // Live's "ms" box right of the Track Delay's value box, lit as its figure shows it (manual 18.7).
     const auto b = delay.getBounds();
     const juce::Rectangle<float> r(static_cast<float>(b.getRight() + 2), static_cast<float>(b.getY()), 22.f, 13.f);
-    controls::button(g, r, controls::ButtonState::On, "ms");
+    controls::button(g, r, delay.isEnabled() ? controls::ButtonState::On : controls::ButtonState::DisabledOn, "ms");
 }
 void MixerStrip::commitDelay() {
     // From the CURRENT cell, as every action is (ADR-0201): ms into samples at the project's rate,
@@ -711,6 +783,23 @@ std::optional<Monitor> MixerStrip::monitorAt(juce::Point<int> at) const noexcept
         return std::nullopt;
     return monitorCellAt(5.f, 37.f, 6, at);
 }
+bool MixerStrip::onCueOut(juce::Point<int> at) const noexcept {
+    return kind_ == "master" && panel_.vertical() && io_ > 0 &&
+           juce::Rectangle<int>(4, kMixerTop + 73, getWidth() - 10, 13).contains(at);
+}
+void MixerStrip::cueOutMenu() {
+    // The device's outputs in stereo pairs, 1/2 first (Main's); the one in use ticked (MX-08).
+    const int outputs = panel_.root.outputChannels ? panel_.root.outputChannels() : 0;
+    const int first = panel_.root.reader().get() ? panel_.root.reader().get()->cue.firstOutputChannel : 0;
+    juce::PopupMenu m;
+    for (int pair = 0; pair == 0 || (pair + 1 < outputs && pair <= 62); pair += 2) // the op's pairs end at 63/64
+        m.addItem(juce::String(pair + 1) + "/" + juce::String(pair + 2), true, pair == first,
+                  [safe = SafePointer<MixerStrip>(this), pair] {
+                      if (safe)
+                          safe->panel_.root.setCueOutput(pair);
+                  });
+    m.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(this).withMousePosition());
+}
 bool MixerStrip::onMonitorInOrAuto(juce::Point<int> at) const noexcept {
     // Where they are drawn, in a track that records: the Mixer View's In/Out section (paintMixerInOut,
     // at x 4, y kMixerTop + 59, its boxes 3 apart) and the track controls' column (paintInOut, at x 5,
@@ -759,9 +848,10 @@ void MixerStrip::paintMixerInOut(juce::Graphics &g) const {
         drawChooser(g, {4.f, static_cast<float>(top + y), static_cast<float>(w - 8), 13.f}, text, enabled);
     };
     if (kind_ == "master") {
-        // Live's Cue Out waits on the cue path (N23, N43), so it shows dimmed.
+        // Live's Cue Out (manual 18.6; MX-08): the stereo pair the cued tracks play to, chosen here.
         label(60, "Cue Out");
-        chooser(73, "1/2", false);
+        const int first = panel_.root.reader().get() ? panel_.root.reader().get()->cue.firstOutputChannel : 0;
+        chooser(73, (std::to_string(first + 1) + "/" + std::to_string(first + 2)).c_str(), true);
         label(90, "Main Out");
         chooser(103, "1/2", true);
         return;
@@ -872,6 +962,11 @@ void MixerStrip::mouseDown(const juce::MouseEvent &e) {
             panel_.root.say("This send is off. Right-click it for Enable Send.");
         return;
     }
+    // Main's Cue Out chooser opens on any click, as Live's choosers do (MX-08).
+    if (e.eventComponent == this && onCueOut(e.getPosition())) {
+        cueOutMenu();
+        return;
+    }
     if (!e.mods.isPopupMenu()) {
         // A click on In, Auto or Off sets the track's monitoring (manual 21.4), the selected tracks
         // together when it is among them.
@@ -886,13 +981,20 @@ void MixerStrip::mouseDown(const juce::MouseEvent &e) {
     }
     if (e.eventComponent == &pan)
         panMenu();
+    else if (e.eventComponent == &volume)
+        volumeMenu();
     else
         panel_.contextMenu(e.getScreenPosition());
 }
 void MixerStrip::syncSends(const std::vector<DevicePanelData> *devices) {
     const auto &reader = panel_.root.reader();
     const auto *t = reader.findTrack(track_);
-    returnsInOrder(reader.tracks(), order_);
+    // A track's knobs go to the top-level returns and its own groups' (DF-W33); Main's switches to
+    // every return.
+    if (t != nullptr && t->kind == "master")
+        returnsInOrder(reader.tracks(), order_);
+    else
+        returnsFor(reader.tracks(), track_, order_);
     static const std::string none;
     const std::string &kind = t != nullptr ? t->kind : none;
     const bool midi = t != nullptr && isMidiTrack(*t);
@@ -902,7 +1004,20 @@ void MixerStrip::syncSends(const std::vector<DevicePanelData> *devices) {
     // strip, each return's Pre/Post switch instead (Live's Mixer).
     const auto knobs = t != nullptr && hasSends(*t) && audio ? order_.size() : 0;
     const auto switches = kind == "master" && panel_.vertical() ? order_.size() : 0;
-    if (order_ == returns_ && kind == kind_ && knobs == sends_.size() && switches == returnSwitches_.size() &&
+    // Every strip keeps a row per return in the project, so the mixers line up; a strip whose track
+    // has no knob for a group's return leaves its row empty (DF-W33).
+    std::size_t returnCount = 0;
+    for (const auto &r : reader.tracks())
+        if (r && r->kind == "return")
+            ++returnCount;
+    // A letter follows its group's name and the group it sits in, which the ids alone don't show.
+    bool sameLetters = letterCodes_.size() == order_.size();
+    for (std::size_t i = 0; sameLetters && i < order_.size(); ++i) {
+        std::array<char, 2> letter{};
+        const auto n = returnLetter(reader.tracks(), order_[i], letter);
+        sameLetters = letterCodes_[i] == std::array<char, 2>{letter[0], n > 1 ? letter[1] : '\0'};
+    }
+    if (sameLetters && returnCount == returnCount_ && order_ == returns_ && kind == kind_ && knobs == sends_.size() && switches == returnSwitches_.size() &&
         midi == midi_ && audio == audio_ && grouped == inGroup_)
         return;
     kind_ = kind;
@@ -910,15 +1025,27 @@ void MixerStrip::syncSends(const std::vector<DevicePanelData> *devices) {
     audio_ = audio;
     inGroup_ = grouped;
     returns_ = order_;
-    returnCount_ = returns_.size();
+    returnCount_ = returnCount;
     sends_.resize(std::min(sends_.size(), knobs));
     while (sends_.size() < knobs)
         sends_.push_back(makeSend(sends_.size()));
+    // Each knob named for its return's letter, which a grouped return or a moved one changes.
+    letters_.clear();
+    letterCodes_.clear();
+    for (std::size_t i = 0; i < returns_.size(); ++i) {
+        std::array<char, 2> letter{};
+        const auto n = returnLetter(reader.tracks(), returns_[i], letter);
+        letters_.push_back(juce::String(letter.data(), n));
+        letterCodes_.push_back({letter[0], n > 1 ? letter[1] : '\0'});
+        if (i < sends_.size()) {
+            sends_[i]->setTitle("Send " + letters_.back());
+            sends_[i]->setTooltip("Sets how much of the track goes to return track " + letters_.back() + ".");
+        }
+    }
     returnSwitches_.resize(std::min(returnSwitches_.size(), switches));
     while (returnSwitches_.size() < switches) {
         auto button = std::make_unique<juce::TextButton>("Post");
         const auto index = returnSwitches_.size();
-        button->setTitle("Pre/Post " + juce::String::charToString(static_cast<juce::juce_wchar>('A' + index % 26)));
         button->setTooltip("Whether this return's sends tap before or after their tracks' faders.");
         button->setClickingTogglesState(false);
         button->setColour(juce::TextButton::buttonColourId, look::button);
@@ -932,13 +1059,17 @@ void MixerStrip::syncSends(const std::vector<DevicePanelData> *devices) {
         addAndMakeVisible(*button);
         returnSwitches_.push_back(std::move(button));
     }
+    // Each switch titled for its return's letter, which a rename or a move changes.
+    for (std::size_t i = 0; i < returnSwitches_.size(); ++i)
+        returnSwitches_[i]->setTitle("Pre/Post " + (i < letters_.size() ? letters_[i] : juce::String()));
     sendOn_.assign(knobs, 1);
     resized();
     repaint();
 }
 void MixerStrip::throwPrePost(std::int64_t ret) {
     // From the CURRENT cell (ADR-0201): the return's own switch thrown, one op and one undo step,
-    // which the engine spreads over every send into the return. Mixed taps choose Post first.
+    // which the engine spreads over every send into the return; it holds with no send (#405). A
+    // mixed switch goes to Post first, every send's own tap cleared (the engine's click, ADR-0247 d2).
     const auto current = panel_.root.current();
     if (!current)
         return;
@@ -1090,11 +1221,39 @@ void MixerStrip::sendMenu(std::size_t index) {
     // A return's sends start off; Live's menu also switches them all on at once (§18.4).
     if (kind_ == "return")
         m.addItem("Enable All Sends", [this] { enableAllSends(); });
+    // Where this send taps its track (ADR-0245 d10; DF-W33): Live's three, the one it uses ticked.
+    if (const auto current = panel_.root.current(); current && index < returns_.size()) {
+        m.addSeparator();
+        const auto tap = adi::ui::sendTap(*current, track_, returns_[index]);
+        // A plain local for the lambda: Clang 14 rejects a lambda capturing a structured binding.
+        for (const auto &place : {std::pair{"Pre FX", IndividualSendTap::PreFx},
+                                  std::pair{"Post FX", IndividualSendTap::PostFx},
+                                  std::pair{"Post Mixer", IndividualSendTap::PostMixer}}) {
+            const IndividualSendTap which = place.second;
+            m.addItem(place.first, true, tap == which, [safe = SafePointer<MixerStrip>(this), index, which] {
+                if (safe)
+                    safe->chooseSendTap(index, which);
+            });
+        }
+    }
     // Live's Re-Enable Automation for this send's level, owned by its routing row (AU-04).
     if (const auto current = panel_.root.current())
         if (const auto *send = findSend(current->sends, track_, returns_[index]))
             panel_.root.addReenableAutomation(m, laneOf(*current, "routing", send->id, "gain_db"));
     m.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(sends_[index].get()));
+}
+void MixerStrip::chooseSendTap(std::size_t index, IndividualSendTap tap) {
+    // From the CURRENT cell (ADR-0201), as every send edit.
+    const auto current = panel_.root.current();
+    if (!current || index >= returns_.size())
+        return;
+    auto edit = adi::ui::setSendTap(*current, track_, returns_[index], tap);
+    if (!edit.refusal.empty()) {
+        panel_.root.say(edit.refusal);
+        return;
+    }
+    if (!edit.ops.empty())
+        panel_.root.submitEdits(std::move(edit.ops));
 }
 juce::PopupMenu MixerStrip::soloMenu() {
     // Live's Solo button menu (manual 18.6): Solo in Place, ticked from the project's one field, on
@@ -1131,6 +1290,19 @@ void MixerStrip::panMenu() {
     if (const auto current = panel_.root.current())
         panel_.root.addReenableAutomation(m, laneOf(*current, "track", track_, "pan"));
     m.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(&pan));
+}
+// The volume fader's menu: Live's Re-Enable Automation for the track's Volume lane (manual 25.4, AU-04). A
+// track with no Volume lane has nothing to offer, and the fader shows no menu.
+juce::PopupMenu MixerStrip::volumeMenuItems() {
+    juce::PopupMenu m;
+    if (const auto current = panel_.root.current())
+        panel_.root.addReenableAutomation(m, laneOf(*current, "track", track_, "volume"));
+    return m;
+}
+void MixerStrip::volumeMenu() {
+    auto m = volumeMenuItems();
+    if (m.getNumItems() > 0)
+        m.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(&volume));
 }
 MixerPanel::MixerPanel(AdiRootComponent &r, bool vertical) : root(r), vertical_(vertical) {}
 bool MixerPanel::submit(const std::string &op, Payload payload, const char *label) {

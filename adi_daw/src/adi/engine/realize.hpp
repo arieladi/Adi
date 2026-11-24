@@ -141,6 +141,9 @@ struct RealizeOptions {
     /// that feeds a track, from inside or upstream, meets at one node.
     SourceFn sourcesFor;
     EventSourceFn eventSourceFor;
+    /// Owner-only immutable graph latency for stages whose authored controls
+    /// belong to the candidate. Other nodes still report their live latency.
+    std::function<std::optional<std::int32_t>(const Node&)> fixedLatencyFor;
 
     /// Unset means every tap is the chain's tail.
     TapFn tapFor;

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include "adi/cue_settings.hpp"
+#include "adi/engine/main_audition.hpp"
 #include "adi/engine/host.hpp"
 #include "adi/engine/mixer.hpp"
 #include <memory>
@@ -9,8 +10,9 @@ class CueControlBatch {
 public:
     void apply() const noexcept;
     void captureLanes(StripLaneBindings&) const;
+    void captureLatencies(std::map<const Node*, std::int32_t>&, double renderRate) const;
 private:
-    struct Entry { void* target; void (*apply)(void*,const StripControlImage&) noexcept; StripControlImage image; const StripNode* node; };
+    struct Entry { Node* target; void (*apply)(Node*,const StripControlImage&) noexcept; StripControlImage image; const StripNode* node; };
     std::vector<Entry> entries_;
     friend class CueMonitor;
 };
@@ -32,6 +34,9 @@ public:
     [[nodiscard]] std::shared_ptr<const CueControlBatch> prepareControls(const rows::Model&,const CueSettings&,
         const std::shared_ptr<StripAutomation>&,bool enabled) const;
     void collect();
+    /// Device stopped. Retire the format's monitor history before restart.
+    void release() noexcept;
+    void setMainAudition(MainAudition mode) noexcept;
     struct Click {
         void* context=nullptr;
         void (*render)(void*,const AudioIo&) noexcept=nullptr;

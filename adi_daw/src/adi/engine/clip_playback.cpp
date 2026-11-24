@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/engine/clip_playback.hpp"
+#include "adi/engine/clip_details.hpp"
 #include "adi/engine/timeline_clips.hpp"
 #include "adi/engine/snapshot.hpp"
 #include "adi/engine/clip_fade.hpp"
@@ -31,6 +32,7 @@ struct ClipProject {
     rows::Model rows;
     fs::path folder;
     std::unordered_map<std::int64_t, fs::path> hints;
+    NoteExpressionsRead noteExpressions;
 };
 std::shared_ptr<const ClipProject> readClipProject(const Store& store, const rows::Model& rows) {
     auto p = std::make_shared<ClipProject>(); p->rows = rows;
@@ -41,7 +43,11 @@ std::shared_ptr<const ClipProject> readClipProject(const Store& store, const row
         p->folder=utf8Path(location.getColumn(2).getString()).parent_path();
     SQLite::Statement q(store.db(), "SELECT id,abs_path_hint FROM media_files WHERE abs_path_hint IS NOT NULL");
     while (q.executeStep()) p->hints.emplace(q.getColumn(0).getInt64(), utf8Path(q.getColumn(1).getString()));
+    p->noteExpressions=readNoteExpressions(store);
     return p;
+}
+const NoteExpressionsRead& clipNoteExpressions(const ClipProject& project) noexcept {
+    return project.noteExpressions;
 }
 namespace {
 constexpr std::size_t slots = 8;
@@ -406,7 +412,17 @@ public:
     void play(const NodeIo& io, T* const* out) noexcept {
         for(std::int32_t c=0;c<io.channels;++c) std::fill_n(out[c]+io.blockOffset,io.frames,T{0});
         if(!transport.playing() || (!clips.empty() && clips.front()->monitorInputOnly)){
-            for(std::size_t clipIndex=0;clipIndex<clips.size();++clipIndex)clips[clipIndex]->releaseAdmission();
+            if(io.blockOffset==0) {
+                // Only the live source callback looks ahead while stopped.
+                // Candidate preparation keeps the captured transport intact.
+                auto nextPlay=transport;
+                if(!nextPlay.playing())nextPlay.play();
+                for(std::size_t clipIndex=0;clipIndex<clips.size();++clipIndex) {
+                    auto* clip=clips[clipIndex];
+                    clip->releaseAdmission();
+                    clip->request(clip->wanted(nextPlay,maxFrames));
+                }
+            }
             return;
         }
         // One clip is not a sum: its samples go straight out, bit for bit.
@@ -627,12 +643,13 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             }
             clip->fadeIn = duration(row.fadeInTicks);
             if (row.fadeOutTicks < 0) throw std::runtime_error("invalid fade-out duration");
-            // Resize can leave a legacy fade wider than the placement. Its
-            // fallback shape stays inside the rendered span. Retained split
-            // domains are evaluated independently in shaped().
+            // A fade-out covering the whole placement spans exactly the
+            // rendered frames. A legacy resize can leave one wider, and
+            // clip.resize clamps it to the span: both render the same.
+            // Retained split domains are evaluated independently in shaped().
             const auto tickSpan = endTicks - origin;
             const auto frameSpan = clip->end - clip->start;
-            clip->fadeOut = row.fadeOutTicks > tickSpan ? frameSpan : std::min(frameSpan,
+            clip->fadeOut = row.fadeOutTicks > 0 && row.fadeOutTicks >= tickSpan ? frameSpan : std::min(frameSpan,
                 samples(tempo.ticksToSeconds(endTicks) - tempo.ticksToSeconds(endTicks - row.fadeOutTicks), rate));
             clip->inCurve=row.fadeInCurve;clip->outCurve=row.fadeOutCurve;
             if((row.fadeInTension && (!std::isfinite(*row.fadeInTension) || std::abs(*row.fadeInTension)>1)) ||
@@ -712,7 +729,7 @@ bool ClipPlayback::prime(std::chrono::milliseconds timeout) {
 }
 ClipPlayback::Readiness ClipPlayback::readiness() const {
     if(audio::onAudioThread)return {};
-    return [held=impl_](const Transport& snapshot,std::int32_t frames) noexcept {
+    return {[held=impl_](const Transport& snapshot,std::int32_t frames,bool allowFailedSources) noexcept {
         if(frames<1 || frames>held->maxFrames)return false;
         // One producer, the audio driver. This fixed target is shared by the
         // admission check and the source immediately rendered after it.
@@ -727,14 +744,18 @@ ClipPlayback::Readiness ClipPlayback::readiness() const {
         for(std::size_t i=0;i<held->clips.size();++i) {
             auto& clip=held->clips[i];
             if(clip->monitorInputOnly)continue;
-            if(clip->errors.load(std::memory_order_relaxed)){releaseAll();return false;}
+            if(clip->errors.load(std::memory_order_relaxed)) {
+                if(allowFailedSources)continue;
+                releaseAll();
+                return false;
+            }
             for(const auto number:clip->wanted(target,frames,false)) {
                 if(number<0)continue;
                 if(!clip->reserve(number)){releaseAll();return false;}
             }
         }
         return true;
-    };
+    }};
 }
 bool ClipPlayback::primeAt(const Transport& snapshot,std::chrono::milliseconds timeout) {
     return primeTargets(snapshot,nullptr,timeout);

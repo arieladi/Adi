@@ -1,0 +1,113 @@
+# Fixed Classic gate component
+
+`adi_mix_gate` is a framework-free, stereo, base-rate Classic downward gate. It
+has zero latency and no native device registration. Clean, Vocal, Guitar, Upward
+and Ducking return `UnsupportedConfiguration`; their names do not select an
+approximation using the Classic engine.
+
+Settings use physical units:
+
+| Control | Accepted range |
+|---|---|
+| Threshold | −60 to 0 dB |
+| Ratio | 1 to 100 |
+| Range | 0 to 100 dB |
+| Attack | 0 to 1 second |
+| Release | 0 to 5 seconds, with a 5 ms effective floor |
+| Hold | 0 to 250 ms |
+| Knee | 0 to 30 dB |
+| Left/right key mix | −1 selects left, 0 takes maximum, +1 selects right |
+
+Each key channel has independent envelope and inclusive peak-hold histories.
+Each output combines those two envelopes with its own mix, then applies the
+hysteretic expansion detector and two gain-envelope stages to its original
+programme channel. Hold affects both peak retention and release smoothing;
+Knee also changes the effective expansion ratio. These controls are not generic
+substitutes for another dynamics component's controls.
+
+All settings are fixed for a prepared stream. Any change supplied to `process`
+or `restore` is refused before output, history or segment position changes.
+There is no moving-control or normalized controller admission API. The physical
+Attack/Release conversion helpers are stateless; Settings defaults are useful
+component defaults, not a device factory preset.
+
+`prepare` creates a fresh stream and offers a strong failure guarantee.
+`reprepare` models a stopped processing restart at the same float-rounded rate
+and layout, retaining settings and the prepared graph. It updates capacity and
+requests the same reset. The default Incremental contract does not allocate;
+CompleteRequests stages scratch growth before changing the old stream, retaining
+capacity when it already fits. Contract changes require a fresh `prepare`.
+It is not a processing-setup call
+alone. `reset` clears hold and detector histories and requests the Classic
+silence baseline for each envelope's next processed sample. Adaptive release
+lookup and coefficient caches survive reset/reprepare; fresh `prepare` starts
+them from their initial values. Reset therefore need not equal fresh preparation
+for every signal. An identical settings restore retains all history.
+Preparation, reprepare, reset and destruction require stopped audio; processing
+has one serialized owner.
+
+Two distinct main planes are required. An explicit external key has two complete
+planes, or zero planes for temporary silence on that same route. It never falls
+back to the programme. Mono, partial/null planes and partial overlaps are
+refused. Exact key/main aliases, including crossed channels, are supported.
+Non-finite or float-unrepresentable input samples become zero before they
+reach recursive histories; external key memory is never modified. Double I/O rounds to
+float on entry and widens on output; envelope history uses double precision.
+
+Physical callbacks use `beginBlock` followed by contiguous segments whose
+pointers address the physical block start. Segments retain the physical block's
+16-sample adaptive-control cadence. Changing physical block partitions can
+change that cadence; arbitrary block-size bit identity is not promised.
+Contexts are invalidated by reset and successful preparation. IO precision is
+fixed until reset/preparation. Invalid calls preserve the current segment cursor.
+
+`PrepareSpec::contract` defaults to `ProcessingContract::Incremental`, preserving
+that segment API. It processes only the supplied segment and does not apply a
+whole-request near-baseline alias predicate.
+
+The explicit `CompleteRequests` contract instead accepts `processRequest` over
+one complete, currently available graph span. A request need not be an entire
+hardware callback. Its caller supplies the real request boundaries: each starts
+the 16-sample cadence at zero, and changing those boundaries can change sound.
+Grouping the same requests into different enclosing callbacks does not change
+them. Mixing the two processing APIs is refused without changing the stream.
+
+CompleteRequests captures both key planes before any main write and prepares
+four float scratch planes. Both key histories advance independently, including
+channels with zero mixer weight. Before each envelope runs, its float-rounded
+state and every input sample must lie within 1e-9 of that envelope's baseline to
+alias the complete input. An alias retains input provenance and constant flags,
+all adaptive state and pending initialization. Otherwise the envelope consumes
+pending initialization and processes the entire request. Equal sample values
+alone never imply a Constant source. Ordinary unity ratio skips detector controls
+while preserving upstream key demand. No future input, extra latency or
+per-sample silence shortcut substitutes for this full-request decision.
+
+A caller that supports live routing can keep a single External CompleteRequests
+stream. With no route, use the two programme planes as exact key aliases.
+An active route supplies its two key planes. A routed source without samples
+supplies zero planes and feeds silence. Switching these inputs at a request
+boundary keeps the existing detector history. The caller determines route
+availability independently of sample pointers.
+
+Neither contract implements outer graph completion or whole-device sleep.
+These are demanded-span processing contracts, not a whole-plugin equivalence
+or quiet-CPU claim. Controls remain fixed in both contracts.
+
+The accepted rate range is 44.1–768 kHz, with float-rounded internal rate.
+The 44.1, 48 and 96 kHz end-to-end cases are supplemented by generated
+admission and processing tests at 176.4, 192, 384 and 768 kHz. Tests cover hold expiry,
+hysteresis, stereo key choices, physical-block segmentation, state reset and
+continuation, failed preparation, alias refusal, both IO precisions and zero
+callback allocation/deallocation. No CPU or live-host performance claim is made.
+Round-to-nearest must remain fixed through preparation and processing.
+Preparation refuses other rounding modes before initializing the shared
+immutable lookup table. The caller owns FTZ/DAZ policy; the core does not change
+the environment. Its detector floor does not clear the double envelope
+histories. There is no fitted silence cutoff, and CPU behavior during very long
+silent tails remains unmeasured in the eventual adapter environment.
+
+The component has fixed unity levels, center pan, normal wet output and neutral
+key filters. It does not expose oversampling, lookahead, audition, M/S, key EQ,
+dry mixing, bypass, mono or dynamic configuration. A future adapter must reject
+those unsupported capabilities instead of silently ignoring them.

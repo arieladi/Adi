@@ -1,0 +1,378 @@
+[
+  {
+    "file": "ADI_TEST_chord.mid",
+    "sha256": "90c0a1b0471ff7c456ba5365d17bc2875b149fd96e82691939b40304831e786c",
+    "format": 0,
+    "ppq": 480,
+    "tempo_bpm": 120,
+    "end_tick": 3840,
+    "events": [
+      {
+        "tick": 0,
+        "hex": "903c28"
+      },
+      {
+        "tick": 0,
+        "hex": "904041"
+      },
+      {
+        "tick": 0,
+        "hex": "90435a"
+      },
+      {
+        "tick": 960,
+        "hex": "803c14"
+      },
+      {
+        "tick": 960,
+        "hex": "804028"
+      },
+      {
+        "tick": 960,
+        "hex": "80433c"
+      }
+    ]
+  },
+  {
+    "file": "ADI_TEST_overlap_same_key.mid",
+    "sha256": "bc353aedd012f83654e396942df6d96a15106a11018b1e478525b530f5c4c4c5",
+    "format": 0,
+    "ppq": 480,
+    "tempo_bpm": 120,
+    "end_tick": 3840,
+    "events": [
+      {
+        "tick": 0,
+        "hex": "903c50"
+      },
+      {
+        "tick": 480,
+        "hex": "903c64"
+      },
+      {
+        "tick": 960,
+        "hex": "803c40"
+      },
+      {
+        "tick": 1440,
+        "hex": "803c40"
+      }
+    ]
+  },
+  {
+    "file": "ADI_TEST_irregular_timing.mid",
+    "sha256": "53f9afb21ea091ae201fe261bc8cabae064ef1499b3db9224f8cff1a90e7656d",
+    "format": 0,
+    "ppq": 480,
+    "tempo_bpm": 120,
+    "end_tick": 3840,
+    "events": [
+      {
+        "tick": 0,
+        "hex": "903c2d"
+      },
+      {
+        "tick": 119,
+        "hex": "903d36"
+      },
+      {
+        "tick": 170,
+        "hex": "803c40"
+      },
+      {
+        "tick": 320,
+        "hex": "803d40"
+      },
+      {
+        "tick": 481,
+        "hex": "903e3f"
+      },
+      {
+        "tick": 713,
+        "hex": "803e40"
+      },
+      {
+        "tick": 727,
+        "hex": "903f48"
+      },
+      {
+        "tick": 990,
+        "hex": "803f40"
+      },
+      {
+        "tick": 1111,
+        "hex": "904051"
+      },
+      {
+        "tick": 1405,
+        "hex": "804040"
+      },
+      {
+        "tick": 1679,
+        "hex": "90415a"
+      },
+      {
+        "tick": 2004,
+        "hex": "804140"
+      }
+    ]
+  },
+  {
+    "file": "ADI_TEST_boundary_notes.mid",
+    "sha256": "c0d6c7065b37d97114a3bd1fe424bd4b5127e92d6ce5db8e9b6f1ec4987dcf08",
+    "format": 0,
+    "ppq": 480,
+    "tempo_bpm": 120,
+    "end_tick": 3840,
+    "events": [
+      {
+        "tick": 0,
+        "hex": "903750"
+      },
+      {
+        "tick": 420,
+        "hex": "903c50"
+      },
+      {
+        "tick": 600,
+        "hex": "803740"
+      },
+      {
+        "tick": 660,
+        "hex": "803c40"
+      },
+      {
+        "tick": 900,
+        "hex": "904050"
+      },
+      {
+        "tick": 1500,
+        "hex": "804040"
+      },
+      {
+        "tick": 1920,
+        "hex": "904350"
+      },
+      {
+        "tick": 2400,
+        "hex": "804340"
+      }
+    ]
+  },
+  {
+    "file": "ADI_TEST_scale_outliers.mid",
+    "sha256": "37499b2e938f0106adc7d869e67bc43f3d368816a4b6e7cf4afeef8f2819defd",
+    "format": 0,
+    "ppq": 480,
+    "tempo_bpm": 120,
+    "end_tick": 3840,
+    "events": [
+      {
+        "tick": 0,
+        "hex": "903c50"
+      },
+      {
+        "tick": 180,
+        "hex": "803c40"
+      },
+      {
+        "tick": 240,
+        "hex": "903d50"
+      },
+      {
+        "tick": 420,
+        "hex": "803d40"
+      },
+      {
+        "tick": 480,
+        "hex": "903e50"
+      },
+      {
+        "tick": 660,
+        "hex": "803e40"
+      },
+      {
+        "tick": 720,
+        "hex": "903f50"
+      },
+      {
+        "tick": 900,
+        "hex": "803f40"
+      },
+      {
+        "tick": 960,
+        "hex": "904050"
+      },
+      {
+        "tick": 1140,
+        "hex": "804040"
+      },
+      {
+        "tick": 1200,
+        "hex": "904250"
+      },
+      {
+        "tick": 1380,
+        "hex": "804240"
+      },
+      {
+        "tick": 1440,
+        "hex": "904350"
+      },
+      {
+        "tick": 1620,
+        "hex": "804340"
+      },
+      {
+        "tick": 1680,
+        "hex": "904650"
+      },
+      {
+        "tick": 1860,
+        "hex": "804640"
+      }
+    ]
+  },
+  {
+    "file": "ADI_TEST_release_velocities.mid",
+    "sha256": "a17c268e6ff1739cf6dacceb910cdd3e2711dbfecac5acc00cabe6eecaf97088",
+    "format": 0,
+    "ppq": 480,
+    "tempo_bpm": 120,
+    "end_tick": 3840,
+    "events": [
+      {
+        "tick": 0,
+        "hex": "903c50"
+      },
+      {
+        "tick": 360,
+        "hex": "803c00"
+      },
+      {
+        "tick": 480,
+        "hex": "903c50"
+      },
+      {
+        "tick": 840,
+        "hex": "803c20"
+      },
+      {
+        "tick": 960,
+        "hex": "903c50"
+      },
+      {
+        "tick": 1320,
+        "hex": "803c40"
+      },
+      {
+        "tick": 1440,
+        "hex": "903c50"
+      },
+      {
+        "tick": 1800,
+        "hex": "803c7f"
+      }
+    ]
+  },
+  {
+    "file": "ADI_TEST_velocity_extremes.mid",
+    "sha256": "a73b1e90b74aacb1d4a9ec273fa4769f00812c47fef36bff4e30794f42de8d82",
+    "format": 0,
+    "ppq": 480,
+    "tempo_bpm": 120,
+    "end_tick": 3840,
+    "events": [
+      {
+        "tick": 0,
+        "hex": "903c01"
+      },
+      {
+        "tick": 360,
+        "hex": "803c40"
+      },
+      {
+        "tick": 480,
+        "hex": "903c20"
+      },
+      {
+        "tick": 840,
+        "hex": "803c40"
+      },
+      {
+        "tick": 960,
+        "hex": "903c60"
+      },
+      {
+        "tick": 1320,
+        "hex": "803c40"
+      },
+      {
+        "tick": 1440,
+        "hex": "903c7f"
+      },
+      {
+        "tick": 1800,
+        "hex": "803c40"
+      }
+    ]
+  },
+  {
+    "file": "ADI_TEST_per_channel_expression.mid",
+    "sha256": "8919ce00ca9bd95ff85243e85864bc4bb2902342af70a71e8347c17a6664dc5e",
+    "format": 0,
+    "ppq": 480,
+    "tempo_bpm": 120,
+    "end_tick": 3840,
+    "events": [
+      {
+        "tick": 0,
+        "hex": "913c50"
+      },
+      {
+        "tick": 240,
+        "hex": "92435a"
+      },
+      {
+        "tick": 300,
+        "hex": "e10048"
+      },
+      {
+        "tick": 420,
+        "hex": "e20038"
+      },
+      {
+        "tick": 600,
+        "hex": "d15a"
+      },
+      {
+        "tick": 720,
+        "hex": "d21e"
+      },
+      {
+        "tick": 840,
+        "hex": "b14a64"
+      },
+      {
+        "tick": 960,
+        "hex": "b24a14"
+      },
+      {
+        "tick": 1440,
+        "hex": "813c40"
+      },
+      {
+        "tick": 1680,
+        "hex": "824340"
+      },
+      {
+        "tick": 1800,
+        "hex": "e10040"
+      },
+      {
+        "tick": 1800,
+        "hex": "e20040"
+      }
+    ]
+  }
+]

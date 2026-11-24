@@ -9,13 +9,20 @@
 #include <cstring>
 #include <limits>
 #include <map>
+#include <optional>
 #include <set>
 #include <stdexcept>
 
 namespace adi::automation {
 namespace {
 using Bytes = std::vector<std::byte>;
-struct Data { bool present = false; Bytes bytes; Payload ranges=Payload::array(); };
+struct Data {
+    bool present = false;
+    Bytes bytes;
+    Payload ranges = Payload::array();
+    int timeBase = 0;
+    std::optional<double> minimum, maximum;
+};
 
 std::int64_t integer(const Payload& p) {
     if (!p.is_number_integer() || (p.is_number_unsigned() &&
@@ -36,9 +43,13 @@ Payload address(const Payload& p) {
 Data read(OpContext& c, const Payload& p) {
     const auto id = integer(p.at("id")), lane = integer(p.at("lane"));
     if (id <= 0 || lane <= 0) throw std::runtime_error("automation: positive row IDs required");
-    SQLite::Statement owner(c.db, "SELECT 1 FROM automation_lanes WHERE id=?");
+    SQLite::Statement owner(c.db, "SELECT time_base,min_value,max_value FROM automation_lanes WHERE id=?");
     owner.bind(1, lane);
     if (!owner.executeStep()) throw std::runtime_error("automation: missing lane");
+    Data result;
+    result.timeBase = owner.getColumn(0).getInt();
+    if (!owner.getColumn(1).isNull()) result.minimum = owner.getColumn(1).getDouble();
+    if (!owner.getColumn(2).isNull()) result.maximum = owner.getColumn(2).getDouble();
     if (!p.at("clip").is_null()) {
         const auto clip = integer(p.at("clip"));
         SQLite::Statement q(c.db, "SELECT 1 FROM clips WHERE id=?");
@@ -52,13 +63,13 @@ Data read(OpContext& c, const Payload& p) {
         slot.bind(1, lane);
         if (p.at("clip").is_null()) slot.bind(2); else slot.bind(2, integer(p.at("clip")));
         if (slot.executeStep()) throw std::runtime_error("automation: slot has another data ID");
-        return {};
+        return result;
     }
     if (q.getColumn(0).getInt64() != lane ||
         (q.getColumn(1).isNull() != p.at("clip").is_null()) ||
         (!p.at("clip").is_null() && q.getColumn(1).getInt64() != integer(p.at("clip"))))
         throw std::runtime_error("automation: data address mismatch");
-    Data result; result.present = true;
+    result.present = true;
     const auto col = q.getColumn(2);
     const auto* b = static_cast<const std::byte*>(col.getBlob());
     if (col.getBytes() > 0) result.bytes.assign(b, b + col.getBytes());
@@ -117,10 +128,8 @@ template<Edit edit> bool apply(OpContext& c, const Payload& p, std::string& err)
         auto d = read(c, p);
         if (!d.present) {
             if constexpr (edit != Edit::Write) throw std::runtime_error("automation: missing data row");
-            SQLite::Statement lane(c.db, "SELECT time_base FROM automation_lanes WHERE id=?");
-            lane.bind(1, integer(p.at("lane"))); (void)lane.executeStep();
             d.bytes = writeStream<AutomationPoint>(FourCC::Automation, {}, 1,
-                StreamFlags::SortedByTime | (lane.getColumn(0).getInt() == 1 ? StreamFlags::TimeIsNanos : 0u));
+                StreamFlags::SortedByTime | (d.timeBase == 1 ? StreamFlags::TimeIsNanos : 0u));
         }
         const StreamReader<AutomationPoint> reader(d.bytes, FourCC::Automation);
         if (!reader.ok()) throw std::runtime_error("automation: unreadable AAUT stream");
@@ -169,6 +178,10 @@ template<Edit edit> bool apply(OpContext& c, const Payload& p, std::string& err)
                 r.point.time = integer(item.at("time")); r.point.value = item.at("value").get<double>();
                 if (r.point.time < 0 || !std::isfinite(r.point.value))
                     throw std::runtime_error("automation: invalid time/value");
+                // Existing logs can contain values admitted before lane bounds were enforced.
+                if (!c.replay && ((d.minimum && r.point.value < *d.minimum) ||
+                                  (d.maximum && r.point.value > *d.maximum)))
+                    throw std::runtime_error("automation: point value is outside the lane range");
             }
             if constexpr (edit == Edit::Write || edit == Edit::Curve) {
                 const auto& shape = edit == Edit::Write ? item : p;

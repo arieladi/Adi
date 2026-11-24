@@ -1,0 +1,32 @@
+{
+  "schema": "adi-research-input-grid9-1",
+  "id": "voice-reclamation",
+  "kind": "graph_spec",
+  "input": {
+    "voice_limits": [
+      1,
+      4,
+      16
+    ],
+    "actions": [
+      "hold N notes",
+      "release one with long envelope",
+      "add note beyond limit",
+      "sustain pedal down",
+      "release all keys",
+      "sustain pedal up",
+      "stop"
+    ],
+    "capture": [
+      "note IDs",
+      "voices active/releasing",
+      "steal order",
+      "tail audio"
+    ]
+  },
+  "question": "Separate trigger allocation from release lifetime, free-running effects and suspension.",
+  "bitwig_result": "NOT RUN",
+  "adi_result": "NOT RUN",
+  "limits": "Authored diagnostic specification, not a Bitwig patch, Pd implementation or observed result.",
+  "provenance": "The director's research."
+}
