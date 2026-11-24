@@ -84,3 +84,11 @@ class LiveLook final : public juce::LookAndFeel_V4 {
 // and clears it when it goes, so nothing outlives a look still in use.
 LiveLook &liveLook();
 } // namespace adi::ui::look
+namespace adi::ui {
+// The keys to `c`, where it is on the screen: JUCE gives an unshown component nothing and asserts
+// (juce_Component.cpp), so a view not yet shown, or a test's window off the desktop, asks for nothing.
+inline void focusIfShowing(juce::Component &c) {
+    if (c.isShowing())
+        c.grabKeyboardFocus();
+}
+} // namespace adi::ui

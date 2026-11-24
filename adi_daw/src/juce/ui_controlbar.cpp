@@ -407,7 +407,7 @@ void TransportBar::paint(juce::Graphics &g) {
     g.setColour(look::field);
     g.fillRoundedRectangle(group.expanded(look::hairline), look::radiusGroup);
 }
-void TransportBar::focus() { lastFocused_->grabKeyboardFocus(); }
+void TransportBar::focus() { focusIfShowing(*lastFocused_); }
 void TransportBar::beginFieldEdit(BarItem &item, const juce::String &text,
                                   std::function<bool(const std::string &)> commit) {
     editing_ = &item;
@@ -418,7 +418,7 @@ void TransportBar::beginFieldEdit(BarItem &item, const juce::String &text,
     fieldEditor.setVisible(true);
     fieldEditor.selectAll();
     if (fieldEditor.isShowing())
-        fieldEditor.grabKeyboardFocus();
+        focusIfShowing(fieldEditor);
 }
 void TransportBar::beginTempoEdit() {
     beginFieldEdit(tempo, juce::String(root_.bpm(), 2), [this](const std::string &t) { return root_.setTempoAtPlay(t); });

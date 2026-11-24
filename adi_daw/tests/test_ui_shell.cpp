@@ -26,6 +26,7 @@
 #include "adi/ui/automation_override.hpp"
 #include "knobs_device.hpp"
 #include "mix_seek_fixture.hpp"
+#include "ui_test_hygiene.hpp"
 #include "temp_directory.hpp"
 #include "ui_fake_peer.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -13907,6 +13908,57 @@ void midiInputFeedCases() {
           "the quiet port's note gets through in the same block as 900 messages from a busy port");
 }
 } // namespace
+// WTS-02's paint checks: the window painted whole and painted in 37-pixel strips agree within 4 per
+// channel (repaint invariance: a component that paints outside its clip, or reads state a partial
+// repaint lacks, shows here), and a paint at each zoom limit finishes and trips no assertion.
+void paintHygiene(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "paint-hygiene.adi", true, {}, error);
+    check(document != nullptr, "a new project for the paint checks");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "paint-hygiene");
+    root.setSize(1440, 900);
+    root.frame();
+    root.frame();
+    const auto paint = [&root](int stripHeight) {
+        juce::Image image(juce::Image::ARGB, root.getWidth(), root.getHeight(), true, juce::SoftwareImageType{});
+        for (int y = 0; y < root.getHeight(); y += stripHeight) {
+            juce::Graphics g(image);
+            g.reduceClipRegion(0, y, root.getWidth(), stripHeight);
+            root.paintEntireComponent(g, true);
+        }
+        return image;
+    };
+    const auto whole = paint(root.getHeight());
+    const auto strips = paint(37);
+    int worst = 0;
+    std::int64_t beyond = 0;
+    for (int y = 0; y < whole.getHeight(); ++y)
+        for (int x = 0; x < whole.getWidth(); ++x) {
+            const auto a = whole.getPixelAt(x, y), b = strips.getPixelAt(x, y);
+            const int d = std::max({std::abs(a.getRed() - b.getRed()), std::abs(a.getGreen() - b.getGreen()),
+                                    std::abs(a.getBlue() - b.getBlue()), std::abs(a.getAlpha() - b.getAlpha())});
+            worst = std::max(worst, d);
+            beyond += d > 4 ? 1 : 0;
+        }
+    check(beyond == 0, ("painted whole and in 37-pixel strips the window agrees within 4 (worst " + std::to_string(worst) +
+                        ", " + std::to_string(beyond) + " pixels beyond)").c_str());
+    // The zoom's limits (1 and 4096 pixels a quarter), at the start and far into the song.
+    auto &geo = root.arrangement.geometry;
+    for (const double scale : {1., 4096.})
+        for (const double left : {0., 1e6}) {
+            geo.scale = scale;
+            geo.left = left;
+            root.frame();
+            const auto image = paint(root.getHeight());
+            check(image.isValid(), ("a paint at " + std::to_string(static_cast<int>(scale)) + " pixels a quarter, from quarter " +
+                                    std::to_string(static_cast<long long>(left)) + ", finishes").c_str());
+        }
+    document->release();
+}
+
 // WIN-01: the default key map of every shortcut preset, as text the same on every platform family,
 // against its golden (ADI_UI_REFERENCES/keymap-<preset>-<family>.txt; --write-references writes it,
 // and each run leaves keymap-<preset>-<family>-actual.txt in the working directory),
@@ -14130,15 +14182,17 @@ void keymapGolden(AppCommands &commands, settings::AppSettings &settings, const 
 }
 
 int main(int argc, char **argv) {
-#if defined(_MSC_VER) && defined(_DEBUG)
-    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
-    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
-    _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
-#endif
+    // WTS-02: no dialog box on Windows; JUCE's assertions counted, the run failing on one.
+    adi::uitest::noDialogs();
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     juce::ScopedJuceInitialiser_GUI init;
+    adi::uitest::AssertionWatch assertions;
+    {
+        // The watch sees an assertion: one tripped on purpose under a watch of its own.
+        adi::uitest::AssertionWatch probe;
+        jassertfalse;
+        check(probe.count() == 1, "an assertion is logged and counted (JUCE_LOG_ASSERTIONS on this target)");
+    }
     const bool write = argc == 2 && std::string(argv[1]) == "--write-references";
     test::TempDirectory temp("ui_shell", "root");
     StoreError err{};
@@ -17425,6 +17479,11 @@ int main(int argc, char **argv) {
     trace("locators", [&] { locators(commands, temp.path()); });
     trace("keymapGolden", [&] { keymapGolden(commands, settings, temp.path(), write); });
     trace("userShortcuts", [&] { userShortcuts(commands, settings); });
+    trace("paintHygiene", [&] { paintHygiene(commands, temp.path()); });
+    check(assertions.count() == 0, ("no JUCE assertion in the run; the last: " + assertions.last().toStdString()).c_str());
+    if (assertions.queueFull() > 0)
+        std::fprintf(stderr, "[shell] %d JUCE assertions came from the machine (no message loop, display or MIDI), counted apart\n",
+                     assertions.queueFull());
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
