@@ -9,6 +9,7 @@
 #include "adi/blob.hpp"
 #include <cstring>
 #include "temp_directory.hpp"
+#include "replace_operator_new.hpp"
 #include "adi/builtin_catalog.hpp"
 #include "juce/builtin_host.hpp"
 #include "adi/audio/io_audit.hpp"
@@ -31,12 +32,7 @@
 namespace {
 std::atomic<int> allocations{0};thread_local bool counting=false;
 }
-void* operator new(std::size_t bytes){if(counting)allocations.fetch_add(1,std::memory_order_relaxed);if(void* value=std::malloc(bytes?bytes:1))return value;throw std::bad_alloc();}
-void* operator new[](std::size_t bytes){return operator new(bytes);}
-void operator delete(void* value)noexcept{std::free(value);}
-void operator delete[](void* value)noexcept{std::free(value);}
-void operator delete(void* value,std::size_t)noexcept{std::free(value);}
-void operator delete[](void* value,std::size_t)noexcept{std::free(value);}
+void adi::test::countReplacedNew() noexcept{if(counting)allocations.fetch_add(1,std::memory_order_relaxed);}
 namespace {
 using namespace adi;using namespace adi::device;using namespace adi::engine;
 int checks=0,failures=0;
