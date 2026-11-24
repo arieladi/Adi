@@ -101,6 +101,15 @@ Questions only the director can answer. Each says what the window lane recommend
 | N58 | The plug-in catalogue off the message thread: a scan service, Rescan, a default worker count, and each VST3's kind with its instrument flag (ADR-0248 d7: engine-win's third item, under DEV-25) | engine-win | the Browser's Plug-Ins with progress, and each VST3's icon | the window scans on its own worker with the one loader (DF-W34 a), the loader locked while it scans; no progress count; a VST3 shows the plug-in icon |
 | N59 | The project's key and scale, if the Control Bar's Key group (step 2) shows the project's and not the selected clip's: an op and a snapshot field (ADR-0248, `collab/RESERVATIONS.md`) | engine, when asked | the Control Bar's Key and Scale | step 2 waits on the Mix View's switch and theme rows; not asked yet |
 
+## 2026-11-24, window lane — the gates again, on the new heads
+
+Each requested branch, gated again on its merged head (Pd on: shell, seams, document, window_state; Pd off as `ui.yml` builds it; the shadow and clang sweeps on its own `.cpp` lines). A line per branch as its gate ends.
+- **`window/function-keys` (WIN-01) `06cf2df9`:** shell 3101, seams 580, document 337, window_state 146, 0 failures (the three goldens match the shell's key maps); the `ui.yml` six green; no `.cpp` of its own to sweep. PR requested stands, at this head.
+
+**For win: two new GCC 13 errors on main**, beside `tests/scanner_session_reopen.hpp` 208 (reported before). Both are `-Werror=misleading-indentation`, both from `593bf21f` (19 November, hosted graph workers' evidence): `src/juce/play.cpp` 233 (`if(!text)return false;const auto length=...` on one line) and `tests/test_play_render.cpp` 269 (`while(std::getline(csv,line))++lines;if(lines!=3)return 1;`). CI's compilers do not warn; GCC 13 stops `adi_play` and `adi_play_render_tests` at `-Werror`. Not the window lane's files: each wants its statements on lines of their own.
+
+---
+
 ## 2026-11-24, window lane — the requested branches brought up to main; WIN-01's goldens again
 
 Main moved under the lane's branches (#718's Options commands, main's own `browserDevices` fix, #720 to #738). Every requested branch now merges into main cleanly; each takes main by a merge commit (no rebase), and the gates run again on the new heads before this log says more.
