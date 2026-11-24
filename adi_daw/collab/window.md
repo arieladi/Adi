@@ -101,6 +101,16 @@ Questions only the director can answer. Each says what the window lane recommend
 | N58 | The plug-in catalogue off the message thread: a scan service, Rescan, a default worker count, and each VST3's kind with its instrument flag (ADR-0248 d7: engine-win's third item, under DEV-25) | engine-win | the Browser's Plug-Ins with progress, and each VST3's icon | the window scans on its own worker with the one loader (DF-W34 a), the loader locked while it scans; no progress count; a VST3 shows the plug-in icon |
 | N59 | The project's key and scale, if the Control Bar's Key group (step 2) shows the project's and not the selected clip's: an op and a snapshot field (ADR-0248, `collab/RESERVATIONS.md`) | engine, when asked | the Control Bar's Key and Scale | step 2 waits on the Mix View's switch and theme rows; not asked yet |
 
+## 2026-11-24, window lane — queue item 10: WIN-09 (PR requested)
+
+**Item 10, WIN-09. PR requested.** Branch `window/help-menu`, on main, head `4af48b01`. Title: **adi_daw: window: Live's Help menu: the manual and a keyboard reference (WIN-09)**. Body: [`collab/window/pr-bodies/window-help-menu.md`](window/pr-bodies/window-help-menu.md).
+- **Tests:** shell 2928, seams 553, document 313, window_state 109, 0 failures; the `ui.yml` six green; the sweeps clean on its lines.
+- **Its older checks:** the menu bar's list, AppCommands' tail and the Alt letters know Help (`4af48b01`).
+- **For win, at landing:** with `window/shortcut-ids` (and `window/command-palette`, whose commands' tail and goldens it changes too), whichever lands second gives the two commands their stable ids (`help.manual`, `help.keyboard-shortcuts`) and adds them to the key-map goldens. This lane does it on the second branch once the first is in.
+- **The director's question stands:** which manual Help opens (Live 12's until ADI has its own; one constant).
+
+---
+
 ## 2026-11-23, window lane — WTS-03, first half (PR requested)
 
 **WTS-03, first half. PR requested.** Branch `window/text-goldens`, on main, head `2b9f5c2b`. Title: **adi_daw: window: goldens that check text by its place: recorder, masked compare (WTS-03, first half)**. Body: [`collab/window/pr-bodies/window-text-goldens.md`](window/pr-bodies/window-text-goldens.md).
