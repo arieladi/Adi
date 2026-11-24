@@ -13956,6 +13956,9 @@ void paintHygiene(AppCommands &commands, const std::filesystem::path &dir) {
             check(image.isValid(), ("a paint at " + std::to_string(static_cast<int>(scale)) + " pixels a quarter, from quarter " +
                                     std::to_string(static_cast<long long>(left)) + ", finishes").c_str());
         }
+    document->release();
+}
+
 // WIN-01: the default key map of every shortcut preset, as text the same on every platform family,
 // against its golden (ADI_UI_REFERENCES/keymap-<preset>-<family>.txt; --write-references writes it,
 // and each run leaves keymap-<preset>-<family>-actual.txt in the working directory),
@@ -17357,12 +17360,12 @@ int main(int argc, char **argv) {
     trace("returnInGroup", [&] { returnInGroup(commands, temp.path()); });
     trace("loopMetronome", [&] { loopMetronome(commands, settings, temp.path()); });
     trace("locators", [&] { locators(commands, temp.path()); });
+    trace("keymapGolden", [&] { keymapGolden(commands, settings, temp.path(), write); });
     trace("paintHygiene", [&] { paintHygiene(commands, temp.path()); });
     check(assertions.count() == 0, ("no JUCE assertion in the run; the last: " + assertions.last().toStdString()).c_str());
     if (assertions.queueFull() > 0)
         std::fprintf(stderr, "[shell] %d JUCE assertions came from the machine (no message loop, display or MIDI), counted apart\n",
                      assertions.queueFull());
-    trace("keymapGolden", [&] { keymapGolden(commands, settings, temp.path(), write); });
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
