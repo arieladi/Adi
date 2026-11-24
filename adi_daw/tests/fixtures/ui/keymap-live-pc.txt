@@ -123,3 +123,5 @@
 29050 Delay Compensation: 
 29051 Solo Switches: 
 29052 Cue Switches: 
+29053 Live 12 Manual: 
+29054 Keyboard Shortcuts: 
