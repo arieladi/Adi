@@ -116,10 +116,10 @@ struct FloatingHost::Entry {
         using juce::DocumentWindow::keyPressed;
         using juce::DocumentWindow::keyStateChanged;
         int getDesktopWindowStyleFlags() const override {
-            auto flags = DocumentWindow::getDesktopWindowStyleFlags();
+            auto style = DocumentWindow::getDesktopWindowStyleFlags();
             if (e.ownedKind)
-                flags &= ~juce::ComponentPeer::windowAppearsOnTaskbar;
-            return flags;
+                style &= ~juce::ComponentPeer::windowAppearsOnTaskbar;
+            return style;
         }
         bool keyPressed(const juce::KeyPress &k, juce::Component *) override {
             // Esc closes an owned window, when it reaches the window: a plug-in that takes the key

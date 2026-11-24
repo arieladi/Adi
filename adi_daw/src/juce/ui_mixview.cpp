@@ -282,7 +282,7 @@ bool MixViewPanel::focusChannelSearch() {
     frame(root_.reader());
     if (!alive) return false;
     auto &search = channels.isVisible() ? channels.search : stack.search;
-    search.grabKeyboardFocus();
+    focusIfShowing(search);
     if (alive) search.selectAll();
     return true;
 }

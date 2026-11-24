@@ -26,13 +26,13 @@ class AssertionWatch final : public juce::Logger {
     // vendored JUCE, counted apart and said once, never failing the run. Every other assertion, in these
     // files too, fails it; and if a JUCE update moves a line, that assertion fails the run again.
     //  - juce_Messaging_linux.cpp:87, the message queue full: the suite posts messages and runs no loop;
-    //  - juce_XWindowSystem_linux.cpp:2623, a cursor shown on no window: there is no X display;
+    //  - juce_XWindowSystem_linux.cpp:2703, a cursor shown on no window: there is no X display;
     //  - juce_Midi_linux.cpp:539, the ALSA sequencer refused: there is no MIDI system.
     int queueFull() const noexcept { return queueFull_.load(); }
     static const char *environment(const juce::String &message) {
         if (message.endsWith("juce_Messaging_linux.cpp:87"))
             return "the headless message queue";
-        if (message.endsWith("juce_XWindowSystem_linux.cpp:2623"))
+        if (message.endsWith("juce_XWindowSystem_linux.cpp:2703"))
             return "no X display";
         if (message.endsWith("juce_Midi_linux.cpp:539"))
             return "no ALSA MIDI";

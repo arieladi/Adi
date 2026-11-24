@@ -6,6 +6,125 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-24 — win covers the seats out of usage (window, window-fn, engine, engine-win, devices, Mix View, clones)
+
+The director's order: every seat but gemini is out of usage until tomorrow, and win covers them. Win writes here,
+never in another seat's log.
+
+**Landing (#739, `land/window-1124`), the window lane's and window-fn's requests that land before 3 December:**
+WIN-01's tail and WIN-04 (`window/shortcut-ids` with `window/function-keys`), WIN-09 (`window/help-menu`), WTS-02's
+first half (`window/test-hygiene`), WIN-02 and WIN-03 (`window/window-kinds` with `window/window-places`), WTS-09
+(`window/parity-bookkeeping`), the GCC 13 `adi_play` fix with DF-E71 (`window-fn/play-indent`), DF-W39
+(`window-fn/seams-gcc12`). In the merges, Help's two commands take stable ids `help.manual` and
+`help.keyboard-shortcuts` (table 127) and lines 29053 and 29054 in the PC key-map goldens, as the window log asked of the
+second to land. Win's commits on the stack:
+- `tools/validate_parity.py`, lent by win, moved from `collab/window/`, so ci.yml's every-validator step runs it. Its
+  self-test copies the sheets rather than linking them, because Windows refuses a symlink without Developer Mode. WIN-03's
+  rows 13 to 15 are tagged, which keeps the untagged count at 145.
+- Three fixes the stack's first CI runs asked for:
+  - WIN-03's local `flags` shadowed a JUCE member, which MSVC C4458 refuses.
+  - Two search boxes took the keyboard focus while unshown: the Stack picker's and the Mix View's channel search. Both
+    now go through `focusIfShowing`.
+  - WTS-02's list of machine-caused assertions named the X11 cursor line of the JUCE before 9.0.5: it is 2703 now, not
+    2623.
+- **Not in it:**
+  - `window/launch-isolation` (WTS-01's window half): it was not requested, and it conflicts with WIN-02 and WIN-03 in
+    five files. The window lane rebuilds it on main.
+  - WIN-05, WIN-06 and WTS-03: they land after 3 December, as the queue says.
+  - `window/held-peak`: it lands with the Mixer sheet.
+
+**Landing (#740, `land/cover-1124`), fixes win built for the seats** (each built and run on MSVC, each read by a
+skeptical reviewer):
+- DF-M67 and DF-M36's rest: the Limiter's unchanged prepare returns at once, with tests on it and on the Delay
+  built-in.
+- DF-M66: the Focus mailbox check without the race.
+- DF-M63 and DF-M64: the two mix tests without undefined behaviour.
+- DF-M65: `-ffp-contract=off` for the function and compressor hosts.
+- DF-E67 (a): the four device suites on the shared operator-new header, in the ASan job.
+- DF-W40: the Clang 14 lambda.
+
+The rows close when gemini's runs say so: ASan and `_GLIBCXX_DEBUG` for DF-M63 and M64, Clang 14 for DF-W40,
+200 runs for DF-M66, and the macOS leg for DF-M65's build.
+
+**Held, the director's question:** `engine/df-e17a-move-overlap` (98ee01f8, DF-E17 (a)). Following ADR-0217 d1, it
+refuses a raw `clip.move` onto another clip: only the planner may clear what a move covers. The reviewer found two
+things for the director:
+- **What Delete Overlaps off should do:** keep the overlap (as before) or refuse. Live has no such switch, so this is
+  ADI's addition.
+- **A regression with default settings:** on a track with an automation lane, the planner refuses until AU-05. A drag
+  onto a clip there would then do nothing, where today it moves and keeps the overlap.
+
+Win recommends keeping the overlap while Delete Overlaps is off or the planner refuses, and refusing only when Delete
+Overlaps is on and the planner could place it. The branch waits for his answer.
+
+**The engine's reviews of gemini's four branches** (the engine seat's job; its verdicts here). All four need changes
+before their PRs are requested, and all four land after 3 December:
+- `gemini/srf09-osc-core` (5e42fa61):
+  - A nudge suppresses an address that carries no feed, so the echo comes back.
+  - A refused or unchanged write is never confirmed to its sender, because the flush sends only changed values.
+  - SRF-09 reads `{n}` in `/adi/track/{n}` as a 1-based position; SRF-10 publishes stable ids there. One meaning has
+    to be chosen for both.
+  - Medium: no gesture brackets on strip writes (ADR-0181 d2); no bind-interface policy for the next slice; no threading
+    contract between dispatch and flush.
+- `gemini/srf10-oscquery-core` (195892d7):
+  - Blocker: `test_oscquery.cpp` runs MSVC out of compiler heap (C1060); it needs splitting.
+  - Blocker: the same address split with SRF-09.
+  - Major: `build()` throws on invalid UTF-8 in a name; use a replacing error handler.
+  - Major: the HTTP responder never checks Host, which is open to DNS rebinding.
+- `gemini/co01-collab-core` (909961ae):
+  - Hostile bucket input crashes the replica: CBOR nesting is unbounded.
+  - A decodable op with a malformed payload throws out of `syncStep`.
+  - Rewind undoes blindly, without checking the transaction ids.
+  - Order keys live only in memory, so a restarted replica disagrees with its peers.
+  - Batch ids repeat after a restart.
+  - Medium: numbers narrowed silently; one bad batch stops sync for good; no id-space check on remote ops; the row's
+    remote-commit and single-allocator items not met.
+- `gemini/pd15-project-paste` (ba43cddc):
+  - Media is copied where ADR-0068 d5 and Live reference it in place.
+  - Take-lane clips become main-lane clips.
+  - Media is deduplicated on an empty hash.
+  - Medium: a group pastes without its children; alias links cut; several track tables dropped silently (pan law,
+    split pan, recording options, sends); tests miss MIDI, take lanes and the refusals.
+
+**Logs landed** (in this PR): engine, devices, clones (the seat's side of `clones.md`; nothing main had scrubbed comes
+back), and gemini (a2b41755).
+
+**DEFERRED:**
+- DF-E65 and DF-E69 close on gemini's TSan and Clang 14 runs on main 01c70983.
+- Every row a seat called met was read against main first. DF-M61, M51, M52, E46, E50, E28, E31, E33 and E58 move to
+  Done. DF-E25 (c), E32 (a)(b), E34 (a)(c), E36's tests and E37 (c) stay, each saying what is left.
+- New DF-E76 (engine-win): `adi_play_render_tests`' symlinked-bundle check fails on Linux under GCC 13. The window-fn
+  seat found it once DF-E71 let the test compile.
+
+**Reserved:** N69 to N75 for the window-fn seat's open needs, in its table's order:
+- N69: DF-W37, a parameter back to its stored value when its lane goes.
+- N70: the scanner helper's own failure state.
+- N71: recording after a Save As.
+- N72: a dropped file clears what it lands on.
+- N73: a loop recording keeps its passes.
+- N74: Live's undo for a loop recording, after a reading.
+- N75: MX-07's registry half.
+
+Next free N76.
+
+**For the window-fn seat:**
+- Its parked recording and export parity checklists are drafted from the Live 12 manual's text by win, each row
+  checked by a second reader, on `window-fn/parity-recording-export`:
+  - `parity-recording.md`: 48 rows.
+  - `parity-export.md`: 39 rows.
+  - The floors gain recording 9 and export 3.
+  - It lands after #739.
+- RE-01 stays with the window-fn seat (its branch `window-fn/remarks` is built). The window lane reviews its shell
+  lines when it is requested.
+- Superseded branches stay on origin and are not landed: `window-fn/function-keys`, `shortcut-overrides`,
+  `lane-ref-canonical`, `play-first-block-main`, and the window lane's `plugins-browser` and `browser-devices-test`.
+
+**The gemini seat's PR-BUILDS rounds 6 and 7** (23 November) registered: DF-M68 (Clang 14, `shared_analysis.cpp`, the Mix View's after-date stack), DF-E77 (GCC 12, `test_vinyl_distortion.cpp`, devices), DF-E78 (two unused test functions, engine-win's export stack), DF-E79 (`adi_midi_capture_tests` on DEV-17, engine). Each lands with its after-date branch.
+
+**Next free:** schema 1.26, ADR-0254, DF-E80, DF-W41, DF-M69, N76.
+
+---
+
 ## 2026-11-23, night (second entry) — ADR-0253 for DEV-01; the engine seat's reservations
 
 **ADR-0253** (on this PR): the amendment of ADR-0060 d1 the engine's queue (item 9) waited on. A rack is spliced into
