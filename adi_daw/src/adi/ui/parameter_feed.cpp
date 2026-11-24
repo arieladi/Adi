@@ -10,7 +10,7 @@ bool samePanel(const DevicePanelData &a, const DevicePanelData &b) {
     const auto card = [](const DevicePanelData &d) {
         // The instance stamp includes the preparation shape and token epoch.
         return std::tie(d.id, d.track, d.chain, d.instance, d.available, d.latency,
-                        d.name, d.enabled, d.instrument, d.plugin, d.uid,
+                        d.name, d.enabled, d.instrument, d.plugin, d.uid, d.sidechainChannels, d.processingIssue,
                         d.metadata, d.cachedRecords, d.defaults, d.parameterGroups,
                         d.resolved.configured, d.resolved.showsConfigureHint, d.resolved.modifiableCount);
     };
@@ -85,6 +85,8 @@ void ParameterFeed::publish(engine::Session &session, std::uint64_t modelRevisio
                              entry->resolvedPluginRef == row.pluginRefId && entry->resolvedUid == data.uid;
             data.latency = data.available ? instance->latencySamples() : 0;
             data.sidechainChannels = data.available ? instance->sidechainInputChannels() : 0;
+            if (data.available)
+                data.processingIssue = instance->processingIssue();
             auto &identity = identities_[row.id];
             const bool runtimeSame = instance != nullptr && session.resolveDevice(identity.runtime) == instance;
             const bool unpublished = !entry && identity.runtime.claimIdentity().expired();

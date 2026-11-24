@@ -32,18 +32,19 @@ struct MidiPortHost::Input final : ump::Consumer {
     }
     MidiPortHost &host;
     std::uint32_t slot;
+    std::uint64_t serial = 0; // this opening, for the feed (never 0)
     std::string id;
     ump::Input connection;
     MidiEventRing<1024> ring;
 };
-MidiPortHost::MidiPortHost(std::function<settings::Value()> ports)
-    : read_(std::move(ports)), session_(ump::Endpoints::getInstance()->makeSession("ADI")) {
+MidiPortHost::MidiPortHost(std::function<settings::Value()> ports, Writer write)
+    : read_(std::move(ports)), write_(std::move(write)), session_(ump::Endpoints::getInstance()->makeSession("ADI")) {
     // The ports are listed and opened through one session, the application's.
     ump::Endpoints::getInstance()->addListener(*this);
     refresh();
 }
-MidiPortHost::MidiPortHost(std::function<settings::Value()> ports, std::vector<Port> fixed)
-    : read_(std::move(ports)), fixed_(true), fixedPorts_(std::move(fixed)) {
+MidiPortHost::MidiPortHost(std::function<settings::Value()> ports, std::vector<Port> fixed, Writer write)
+    : read_(std::move(ports)), write_(std::move(write)), fixed_(true), fixedPorts_(std::move(fixed)) {
     refresh();
 }
 MidiPortHost::~MidiPortHost() {
@@ -52,6 +53,8 @@ MidiPortHost::~MidiPortHost() {
     for (auto &input : inputs_)
         if (input && input->connection.isAlive())
             input->connection.removeConsumer(*input);
+    if (feed_)
+        feed_->publish({}); // the audio thread lets go of every ring before they go
     inputs_.clear();
 }
 std::string MidiPortHost::backend() const {
@@ -68,23 +71,43 @@ std::string MidiPortHost::backend() const {
     }
     return {};
 }
-std::size_t MidiPortHost::drain(const std::function<void(const MidiPortEvent &)> &take) {
-    std::size_t n = 0;
-    MidiPortEvent e;
-    for (auto &input : inputs_)
-        if (input)
-            while (input->ring.pop(e)) {
-                if (take)
-                    take(e);
-                ++n;
-            }
-    return n;
+void MidiPortHost::publish() {
+    // The open inputs, each with the switches its record holds now (N60).
+    std::vector<MidiInputFeed::Source> sources;
+    for (const auto &input : inputs_) {
+        if (!input)
+            continue;
+        const auto port = std::find_if(ports_.begin(), ports_.end(), [&](const Port &p) { return p.input && p.id == input->id; });
+        if (port == ports_.end())
+            continue;
+        sources.push_back({&input->ring, input->slot, port->switches.track, port->switches.remote, port->switches.mpe,
+                           input->serial});
+    }
+    if (feed_)
+        feed_->publish(sources);
+}
+void MidiPortHost::setFeed(MidiInputFeed *feed) {
+    if (feed_ && feed_ != feed)
+        feed_->publish({});
+    feed_ = feed;
+    publish();
 }
 void MidiPortHost::endpointsChanged() { refresh(); }
+// The record, brought up to date with the ports listed now (N61) when a writer takes it.
+settings::Value MidiPortHost::reconciled(const std::vector<Port> &listed) {
+    auto record = read_ ? read_() : settings::Value::object();
+    std::vector<MidiPortListing> names;
+    names.reserve(listed.size());
+    for (const auto &p : listed)
+        names.push_back({p.id, p.name});
+    if (auto healed = reconcileMidiPorts(record, names); healed && write_ && write_(*healed))
+        record = std::move(*healed);
+    return record;
+}
 void MidiPortHost::refresh() {
-    const auto record = read_ ? read_() : settings::Value::object();
     if (fixed_) {
         auto listed = fixedPorts_;
+        const auto record = reconciled(listed);
         for (auto &p : listed)
             p.switches = midiPortSwitches(record, p.id);
         sortPorts(listed);
@@ -114,7 +137,6 @@ void MidiPortHost::refresh() {
             p.id = "in:" + id.src.toStdString();
             p.name = name;
             p.input = true;
-            p.switches = midiPortSwitches(record, p.id);
             listed.push_back(std::move(p));
             sources.push_back(id);
         }
@@ -123,13 +145,17 @@ void MidiPortHost::refresh() {
             p.id = "out:" + id.dst.toStdString();
             p.name = name;
             p.output = true;
-            p.switches = midiPortSwitches(record, p.id);
             listed.push_back(std::move(p));
         }
     }
+    const auto record = reconciled(listed);
+    for (auto &p : listed)
+        p.switches = midiPortSwitches(record, p.id);
     sortPorts(listed);
     bool changed = listed.size() != ports_.size();
-    // Close every input that is gone or switched off; open those switched on that are not open.
+    // Close every input that is gone or switched off; open those switched on that are not open. A
+    // closed input's ring stays until the feed has been told, so the audio thread never reads it freed.
+    std::vector<std::unique_ptr<Input>> retired;
     for (auto &input : inputs_) {
         if (!input)
             continue;
@@ -138,7 +164,7 @@ void MidiPortHost::refresh() {
         if (!wanted || !input->connection.isAlive()) {
             if (input->connection.isAlive())
                 input->connection.removeConsumer(*input);
-            input.reset();
+            retired.push_back(std::move(input));
             changed = true;
         }
     }
@@ -165,6 +191,7 @@ void MidiPortHost::refresh() {
             slot = inputs_.end() - 1;
         }
         auto input = std::make_unique<Input>(*this, static_cast<std::uint32_t>(slot - inputs_.begin()), p.id);
+        input->serial = ++serials_;
         input->connection = std::move(connection);
         input->connection.addConsumer(*input);
         *slot = std::move(input);
@@ -179,6 +206,10 @@ void MidiPortHost::refresh() {
                 break;
             }
     ports_ = std::move(listed);
+    publish();
+    retired.clear();
+    if (changed && onInputsChanged)
+        onInputsChanged();
     if (changed && onChange)
         onChange();
 }
@@ -188,7 +219,10 @@ MidiPortsTable::MidiPortsTable(MidiPortHost &host, settings::AppSettings &settin
 MidiPortsTable::~MidiPortsTable() = default;
 void MidiPortsTable::set(const std::string &id, const char *field, bool on) {
     std::string why;
-    const auto record = withMidiPortSwitch(settings_.get("midi.ports"), id, field, on);
+    const auto &ports = host_.ports();
+    const auto port = std::find_if(ports.begin(), ports.end(), [&](const MidiPortHost::Port &p) { return p.id == id; });
+    const auto record =
+        withMidiPortSwitch(settings_.get("midi.ports"), id, field, on, port != ports.end() ? port->name : std::string());
     if (!settings_.set("midi.ports", record, {settings::Actor::User, {}, juce::Time::currentTimeMillis() * 1000}, why)) {
         error_ = why;
         rebuild(); // refused: the switches show what is kept

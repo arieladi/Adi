@@ -1,0 +1,54 @@
+{
+  "schema": "adi.research.diagnostic-spec/1",
+  "id": "M11-pd-segment-contract",
+  "title": "Outer callback versus Pd process segment",
+  "status": "SPECIFICATION ONLY",
+  "reference_result": "NOT RUN",
+  "adi_result": "NOT RUN",
+  "scope": "Original diagnostic design. No executable patch, product prototype or DAW automation.",
+  "fixtures": {
+    "sample_rates": [
+      44100,
+      48000,
+      96000
+    ],
+    "host_buffers": [
+      64,
+      128,
+      256,
+      511
+    ],
+    "event_offsets": [
+      1,
+      63,
+      64,
+      65,
+      127
+    ],
+    "processing_modes": [
+      "canonical native where supported",
+      "generic Pd Buffered",
+      "generic Pd WholeBlocks only under its precondition"
+    ],
+    "input": "original impulse at sample 0 and deterministic event/control sequence; use effect/utility fixtures only"
+  },
+  "procedure": [
+    "Log every actual graph segment length and transport/event ordering, then measure declared and observed latency.",
+    "Compare fresh run, unrelated graph rebuild, patch replacement, rate change and release/reprepare independently.",
+    "Attempt invalid WholeBlocks segmentation only in an approved diagnostic harness and inspect rejection/silence counters."
+  ],
+  "acceptance_questions": [
+    "Outer buffer divisibility does not prove segment divisibility.",
+    "Adapter latency, internal feedback delay and effect-reported latency are separately recorded.",
+    "No native/Pd equality or CPU superiority is assumed."
+  ],
+  "evidence": [
+    "build/commit and dependency identities",
+    "initial settings and exact actions",
+    "raw captures/logs and hashes",
+    "one-step undo and save/reopen result where applicable",
+    "restored settings and stopped transport"
+  ],
+  "authority": "Current ADI decisions govern; this is test data, not an implementation.",
+  "provenance": "The director's research."
+}

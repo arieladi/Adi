@@ -2,6 +2,7 @@
 #include "adi/automation_lanes.hpp"
 #include "adi/blob.hpp"
 #include "adi/automation_range_rows.hpp"
+#include "adi/device_param_ref.hpp"
 #include "adi/row_capture.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <array>
@@ -37,9 +38,14 @@ void validateRow(OpContext& c, const Payload& row) {
     if (number(row.at("id"))<=0 || number(row.at("owner_id"))<=0 ||
         (number(row.at("time_base"))!=0 && number(row.at("time_base"))!=1) ||
         number(row.at("height"))<0) throw std::runtime_error("automation: invalid lane IDs, unit or height");
-    for (const auto* col:{"param_ref","param_name","unit","value_domain"})
+    for (const auto* col:{"owner_kind","param_ref","param_name","unit","value_domain"})
         if (!row.at(col).is_string()) throw std::runtime_error("automation: lane text required");
-    if (row.at("param_ref").get_ref<const std::string&>().empty()) throw std::runtime_error("automation: empty parameter");
+    const auto& paramRef=row.at("param_ref").get_ref<const std::string&>();
+    if (paramRef.empty()) throw std::runtime_error("automation: empty parameter");
+    // Replay can contain non-canonical device param_refs logged by earlier versions (ops.hpp).
+    if (!c.replay && row.at("owner_kind").get_ref<const std::string&>()=="device" &&
+        !isCanonicalDeviceParamRef(paramRef))
+        throw std::runtime_error("automation: device param_ref must be a canonical decimal parameter id");
     const auto& domain=row.at("value_domain").get_ref<const std::string&>();
     if (domain!="normalized" && domain!="real" && domain!="enum") throw std::runtime_error("automation: unknown value domain");
     for (const auto* col:{"enabled","visible"})

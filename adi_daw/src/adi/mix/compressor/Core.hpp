@@ -32,7 +32,8 @@ struct BlockContext {
     [[nodiscard]] bool valid() const noexcept { return epoch != 0 && sequence != 0 && frames > 0; }
 };
 
-// One serialized audio owner; prepare/reset/destruction require stopped audio.
+// One serialized audio owner. Prepare/destruction require stopped processing.
+// Reset also works between calls on the audio owner after a drained graph tail.
 // Float processing uses double envelope state. Double I/O is converted to float
 // for this same engine, then widened; it is not a double-precision DSP engine.
 // All allocation and curve generation occur in prepare. No callback allocation,
@@ -49,10 +50,20 @@ class Core final {
     // A successful prepare starts a fresh stream. Failure preserves the prior
     // prepared stream. Mono supports fully linked processing only; a stereo key
     // still contributes both planes to that linked detector. Key source, link
-    // amount and link mode are fixed until prepare; changes return
+    // amount, link mode and Hold are fixed until prepare; changes return
     // UnsupportedConfiguration. Auto Gain with link above 1 is unsupported.
+    // Hold above float epsilon requires internal-key fully linked stereo and Auto controls
+    // off. Its prepared maximum and post-envelope retain running history.
     [[nodiscard]] Status prepare(const PrepareSpec &, const Settings & = {}) noexcept;
+    // Longest Clean release is two cascaded detector stages at at most 2.2 s
+    // per decade. Two 24 s intervals bound the remaining reduction below
+    // 1e-9 dB, including parameter changes while silence drains.
+    static constexpr double quietTailSeconds = 48.;
     void reset() noexcept;
+    // Reset at newly authored controls on the same prepared route. The first
+    // processed sample starts at their settled make-up gain. Failure leaves
+    // the stream unchanged. This overload is safe on the audio owner.
+    [[nodiscard]] Status reset(const Settings &) noexcept;
     [[nodiscard]] bool isPrepared() const noexcept;
     [[nodiscard]] std::int32_t latencySamples() const noexcept { return 0; }
 
@@ -63,8 +74,8 @@ class Core final {
 
     // Pointers address the physical block's start; offset is block-relative.
     // Settings apply at this segment's first sample. Settings-only restore is
-    // therefore another settings update, retaining the two envelope histories.
-    // No unverified generic smoothing ramp is imposed on these controls.
+    // therefore another settings update, retaining the envelope/maximum histories.
+    // Ordinary edits to make-up gain keep their continuous transition.
     // Main planes are mandatory and distinct. Key has 0, 1 or 2 complete planes:
     // an absent external key is zero; a mono key feeds both stereo detectors.
     // Exact main/key aliases (including crossed planes) work; partial overlapping

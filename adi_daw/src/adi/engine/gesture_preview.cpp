@@ -97,7 +97,7 @@ std::shared_ptr<Image> readImage(const Store& store,const Base& base,const std::
     out->clips=readClipProject(store,playback);
     return out;
 }
-Tables topology(Tables value) {
+Tables topology(Tables value, const std::set<std::int64_t>& trackDelayTargets = {}) {
     const std::map<std::string,std::set<std::string>> retained{
         {"project",{"sample_rate","ppq"}},
         {"tracks",{"id","parent_id","index_in_parent","kind","time_base","frozen","solo_defeat","freeze_media_id","role","input_ref","monitor_mode","record_armed"}},
@@ -112,6 +112,12 @@ Tables topology(Tables value) {
         if(fields==retained.end()) {if(whole.contains(it->first)){++it;continue;}it=value.erase(it);continue;}
         for(auto& row:it->second)for(auto cell=row.begin();cell!=row.end();) {
             if(fields->second.contains(cell.key()))++cell;else cell=row.erase(cell);
+        }
+        if (it->first == "mixer_strip" && !trackDelayTargets.empty()) {
+            for (auto& row : it->second) {
+                if (trackDelayTargets.contains(adi::detail::signedInteger(row.at("track_id"))))
+                    row.erase("delay_samples");
+            }
         }
         // Native absent optional mixer rows mean these same default static
         // values. First scalar insertion must not invent a topology change.
@@ -135,7 +141,9 @@ std::vector<Patch> patches(std::span<const OpRequest> requests,gesture::Strategy
     std::vector<Patch> result;
     for(const auto& request:requests) {
         const auto* descriptor=OpRegistry::instance().find(request.opType);
-        if(!descriptor || (descriptor->engineImpact!=EngineImpact::None && descriptor->engineImpact!=EngineImpact::Snapshot))
+        const bool trackDelay = request.opType == "mixer.setDelay" && strategy == gesture::Strategy::Structural;
+        if(!descriptor || (descriptor->engineImpact!=EngineImpact::None &&
+                           descriptor->engineImpact!=EngineImpact::Snapshot && !trackDelay))
             throw std::runtime_error("preview requires a supported None or Snapshot operation");
         if(strategy==gesture::Strategy::LiveValues) {
             if(!scalarOps.contains(request.opType))throw std::runtime_error("unsupported native live-value preview: "+request.opType);
@@ -300,11 +308,13 @@ struct Captured final:gesture::CapturedPresentation {
     std::shared_ptr<const Image> image;
     std::shared_ptr<const Image> committed;
     gesture::Strategy strategy;
+    bool trackDelay = false;
     std::vector<Patch> changes;
     std::uint64_t epoch;
     Captured(OwnerToken token,std::shared_ptr<const Image> projected,std::shared_ptr<const Image> base,
-             gesture::Strategy kind,std::vector<Patch> patch,std::uint64_t format)
-        :owner(std::move(token)),image(std::move(projected)),committed(std::move(base)),strategy(kind),changes(std::move(patch)),epoch(format){}
+             gesture::Strategy kind,std::vector<Patch> patch,std::uint64_t format,bool delayOnly)
+        :owner(std::move(token)),image(std::move(projected)),committed(std::move(base)),strategy(kind),
+         trackDelay(delayOnly),changes(std::move(patch)),epoch(format){}
 };
 struct Generation {
     std::shared_ptr<ClipPlayback> clips;
@@ -329,6 +339,7 @@ struct Active {
     OwnerToken owner;
     std::shared_ptr<const Image> image;
     gesture::Strategy strategy;
+    bool trackDelay;
     std::vector<Patch> changes;
     std::shared_ptr<Restore> restore=std::make_shared<Restore>();
     std::unique_ptr<PublishedControls> restoreControls;
@@ -336,8 +347,10 @@ struct Active {
     std::shared_ptr<Generation> restoreGeneration;
     std::shared_ptr<Generation> previewGeneration;
     bool current=true;
-    Active(const Captured& value):owner(value.owner),image(value.image),strategy(value.strategy),changes(value.changes){}
-    Active(const Active& value):owner(value.owner),image(value.image),strategy(value.strategy),changes(value.changes),
+    Active(const Captured& value):owner(value.owner),image(value.image),strategy(value.strategy),
+        trackDelay(value.trackDelay),changes(value.changes){}
+    Active(const Active& value):owner(value.owner),image(value.image),strategy(value.strategy),
+        trackDelay(value.trackDelay),changes(value.changes),
         restore(value.restore),restoreSnapshot(value.restoreSnapshot),restoreGeneration(value.restoreGeneration),
         previewGeneration(value.previewGeneration),current(value.current){}
 };
@@ -432,16 +445,27 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
         return {std::move(out),annotateSnapshot(*scalarSnapshot(*committed->snapshot,model),suspended(owners))};
     }
     std::shared_ptr<Generation> generation(const std::shared_ptr<const Image>& image,
-        const std::set<std::int64_t>* committedOverrides=nullptr) {
+        const std::set<std::int64_t>* committedOverrides=nullptr,bool preserveReaders=false) {
         auto* owner=engine();if(!owner)throw std::runtime_error("preview Session ended");
-        if(!owner->frozenSources_.empty() || !owner->frozenGroupChildren_.empty())
-            throw std::runtime_error("structural preview of frozen playback is unsupported");
         auto out=std::make_shared<Generation>();out->image=image;
         auto playback=image->model;
         playback.tempo=owner->playbackTempo(image->model);
-        out->clips=std::make_shared<ClipPlayback>(image->clips,owner->transport_,owner->spec_.sampleRate,
-            owner->spec_.channels,owner->spec_.maxFrames,owner->spec_.progressiveDecoder);
-        out->midi=std::make_shared<MidiClips>(playback,owner->transport_,owner->spec_.sampleRate,owner->midiState_,owner->eventPathFor(image->model));
+        const auto& previousGraph = owner->devices_.rebuildSpec();
+        const auto* previousTiming = dynamic_cast<const Session::TimingView*>(previousGraph.transportState.get());
+        if (preserveReaders && previousTiming && previousTiming->spec.sampleRate == owner->spec_.sampleRate &&
+            previousTiming->spec.channels == owner->spec_.channels && previousTiming->spec.maxFrames == owner->spec_.maxFrames) {
+            out->clips = renderedGeneration ? renderedGeneration->clips : owner->clips_;
+            out->midi = renderedGeneration ? renderedGeneration->midi : owner->midi_;
+        }
+        const bool reusedReaders = out->clips && out->midi;
+        if (!reusedReaders) {
+            if (!owner->frozenSources_.empty() || !owner->frozenGroupChildren_.empty())
+                throw std::runtime_error("structural preview of frozen playback requires retained readers");
+            out->clips=std::make_shared<ClipPlayback>(image->clips,owner->transport_,owner->spec_.sampleRate,
+                owner->spec_.channels,owner->spec_.maxFrames,owner->spec_.progressiveDecoder);
+            out->midi=std::make_shared<MidiClips>(playback,owner->transport_,owner->spec_.sampleRate,owner->midiState_,
+                                                 owner->eventPathFor(image->model),clipNoteExpressions(*image->clips));
+        }
         const auto program=compileAutomation(playback,owner->spec_.sampleRate);
         auto excluded=committedOverrides?*committedOverrides:owner->overridden_;excluded.insert(owner->writingAutomation_.begin(),owner->writingAutomation_.end());
         out->strips=bindStripAutomation(program,excluded);
@@ -453,7 +477,8 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
         timing->sampleRate=owner->spec_.sampleRate;timing->settings=owner->spec_.performanceState?image->transport:TransportSettings{};
         timing->spec=owner->spec_;timing->stripLanes=out->controls->lanes;
         owner->prepareMidiInput(*timing, image->model);
-        owner->prepareInputMonitors(*timing,image->model,*out->clips);
+        if (reusedReaders) timing->inputMonitors = previousTiming->inputMonitors;
+        else owner->prepareInputMonitors(*timing,image->model,*out->clips);
         timing->sourceReadiness=out->clips->readiness();
         timing->inputSlice.resize(64);
         timing->outputSlice.resize(static_cast<std::size_t>(std::max(64,owner->spec_.channels)));
@@ -490,11 +515,15 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
         options.sendTailFor=[owner](std::int64_t id){return owner->summing_.sendTailFor(id);};
         options.feedbackFor=[owner](std::int64_t id){auto* loop=owner->strips_.loopFor(id);return loop?FeedbackNodes{&loop->writer(),&loop->reader()}:FeedbackNodes{};};
         options.sourcesFor=[owner,clips=out->clips,midi=out->midi,timing](std::int64_t id) {
-            auto nodes=owner->sources_?owner->sources_(id):std::vector<Node*>{};
+            const auto frozen = owner->frozenSources_.find(id);
+            const bool isFrozen = frozen != owner->frozenSources_.end();
+            auto nodes = owner->sources_ && !isFrozen ? owner->sources_(id) : std::vector<Node*>{};
             if(auto* monitor=timing->inputMonitorSource(id))nodes.push_back(monitor);
-            const auto audio=clips->sourcesFor(id);nodes.insert(nodes.end(),audio.begin(),audio.end());
+            const auto audio=clips->sourcesFor(isFrozen ? frozen->second.first : id);
+            nodes.insert(nodes.end(),audio.begin(),audio.end());
             const auto notes=midi->sourcesFor(id);nodes.insert(nodes.end(),notes.begin(),notes.end());return nodes;
         };
+        if (reusedReaders) out->rebuild.transformPlan = previousGraph.transformPlan;
         options.eventSourceFor=[owner,binding=out->devices](const Node& node)->std::optional<EventSourceBinding> {
             for(const auto& entry:owner->entries_)if(&owner->devices_.nodeAt(entry.hostIndex)==&node) {
                 const auto found=binding->byDevice.find(entry.deviceId);
@@ -504,15 +533,24 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
             return std::nullopt;
         };
         options.monitors=owner->cueMonitor_.points([owner](std::int64_t id,Tap tap){return owner->tapFor(id,tap);});
+        auto fixedLatencies = std::make_shared<std::map<const Node*, std::int32_t>>();
+        out->controls->mixer->captureLatencies(*fixedLatencies, owner->spec_.sampleRate);
+        out->controls->cue->captureLatencies(*fixedLatencies, owner->spec_.sampleRate);
+        options.fixedLatencyFor = [fixedLatencies](const Node& node) -> std::optional<std::int32_t> {
+            const auto found = fixedLatencies->find(&node);
+            return found == fixedLatencies->end() ? std::nullopt : std::optional{found->second};
+        };
         out->rebuild.model=[image]{return &image->model;};
         out->rebuild.channels=owner->spec_.channels;out->rebuild.sampleRate=owner->spec_.sampleRate;out->rebuild.maxFrames=owner->spec_.maxFrames;
         out->rebuild.devicesFor=options.devicesFor;out->rebuild.sourcesFor=options.sourcesFor;
         out->rebuild.keyTapFor=options.keyTapFor;out->rebuild.keyDeviceFor=options.keyDeviceFor;
         out->rebuild.tapFor=options.tapFor;out->rebuild.sendFor=options.sendFor;out->rebuild.sendTailFor=options.sendTailFor;
         out->rebuild.feedbackFor=options.feedbackFor;out->rebuild.eventSourceFor=options.eventSourceFor;
+        out->rebuild.fixedLatencyFor=options.fixedLatencyFor;
         out->rebuild.monitors=options.monitors;out->rebuild.transportState=timing;
         out->rebuild.nodePreparation=NodePreparePolicy::PreservePrepared;
-        auto ready=owner->graph_.prepare(image->model,options,owner->spec_.sampleRate,owner->spec_.maxFrames,{},timing,NodePreparePolicy::PreservePrepared);
+        auto ready=owner->graph_.prepare(image->model,options,owner->spec_.sampleRate,owner->spec_.maxFrames,
+                                        out->rebuild.transformPlan,timing,NodePreparePolicy::PreservePrepared);
         if(!ready.ok())throw std::runtime_error(ready.error);
         out->ready=std::move(ready.graph);return out;
     }
@@ -611,6 +649,16 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
         if(!committed || !sameBase(committed->base,base))return {failed(Error::StaleBase,"preview committed base is stale"),{}, {}};
         try {
             auto changes=patches(requests,strategy);
+            std::set<std::int64_t> trackDelayTargets;
+            for (const auto& request : requests) {
+                if (request.opType == "mixer.setDelay")
+                    trackDelayTargets.insert(adi::detail::signedInteger(request.payload.at("id")));
+            }
+            if (!trackDelayTargets.empty() && !owner->spec_.delayCompensation)
+                return {failed(Error::UnsupportedPreview,"Track Delay preview requires Delay Compensation"),{}, {}};
+            if (!trackDelayTargets.empty() &&
+                std::any_of(requests.begin(), requests.end(), [](const auto& op) { return op.opType != "mixer.setDelay"; }))
+                return {failed(Error::UnsupportedPreview,"Track Delay preview needs a batch of mixer.setDelay operations"),{}, {}};
             for(const auto& change:changes) {
                 if(change.operation=="mixer.setInputGain" && !owner->inputGains_.contains(change.id))
                     return {failed(Error::UnsupportedPreview,"input-gain preview requires an existing input-gain node"),{}, {}};
@@ -618,10 +666,14 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
                     return {failed(Error::UnsupportedPreview,"drive preview requires an existing native summing buss"),{}, {}};
             }
             auto image=readImage(store,base,owner->overridden_,tempoRule(owner));
-            if(encodeTables(topology(image->tables))!=encodeTables(topology(committed->tables)))
+            if(encodeTables(topology(image->tables, trackDelayTargets))!=
+               encodeTables(topology(committed->tables, trackDelayTargets)))
                 return {failed(Error::UnsupportedPreview,"preview changes native topology, device material, width or latency"),{}, {}};
             if(image->cue!=committed->cue)return {failed(Error::UnsupportedPreview,"preview changes cue routing"),{}, {}};
-            auto value=std::make_unique<Captured>(token,image,committed,strategy,std::move(changes),owner->runtimeEpoch_);
+            const bool unchangedReaders = requests.empty() && std::none_of(active.begin(), active.end(),
+                [&](const auto& entry) { return !entry->trackDelay && entry->owner.sameOwner(token); });
+            const bool delayOnly = !trackDelayTargets.empty() || unchangedReaders;
+            auto value=std::make_unique<Captured>(token,image,committed,strategy,std::move(changes),owner->runtimeEpoch_,delayOnly);
             if(strategy==gesture::Strategy::LiveValues)image->snapshot=annotateSnapshot(*image->snapshot,suspended({std::make_shared<Active>(*value)}));
             return {{},image->snapshot,std::move(value),OpPresentationImageGuard{committed->bytes}};
         } catch(const std::exception& error){return {failed(Error::UnsupportedPreview,error.what()),{}, {}};}
@@ -637,8 +689,8 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
             auto added=std::make_shared<Active>(*value);out->next.push_back(added);
             if(value->strategy==gesture::Strategy::Structural) {
                 if(out->next.size()!=1)throw std::runtime_error("structural preview conflicts with existing live controls");
-                out->generation=generation(value->image);added->previewGeneration=out->generation;
-                added->restoreGeneration=generation(committed);
+                out->generation=generation(value->image,nullptr,value->trackDelay);added->previewGeneration=out->generation;
+                added->restoreGeneration=generation(committed,nullptr,value->trackDelay);
                 out->controls=std::make_unique<PublishedControls>();out->snapshot=value->image->snapshot;
                 added->restoreControls=std::make_unique<PublishedControls>();added->restoreSnapshot=committed->snapshot;
             } else {

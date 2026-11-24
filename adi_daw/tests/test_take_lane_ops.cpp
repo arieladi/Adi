@@ -9,10 +9,15 @@
 #include "adi/textproj_store.hpp"
 #include "adi/take_lane_ops.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <algorithm>
 #include <array>
 #include <cstdio>
+#include <optional>
+#include <ranges>
 #include <stdexcept>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace {
 using namespace adi;
@@ -91,6 +96,24 @@ void attachment() {
     check(OpJournal(*p.store).commit(goodBatch).ok,"explicit detach then move then attach is allowed as one transaction");
     check(History(*p.store).undo().ok&&p.material()==valid,"composed legal move undo restores original track and lane");
 }
+rows::Clip clipRow(std::int64_t id,std::optional<std::int64_t> lane){rows::Clip clip;clip.id=id;clip.trackId=21;clip.laneId=lane;return clip;}
+void selection() {
+    static_assert(std::ranges::forward_range<decltype(engine::timelineClips(std::declval<const rows::Model&>()))>);
+    rows::Model model;
+    model.clips={clipRow(1,10),clipRow(2,10),clipRow(3,std::nullopt),clipRow(4,11),clipRow(5,std::nullopt),clipRow(6,std::nullopt),clipRow(7,10),clipRow(8,11)};
+    const auto range=engine::timelineClips(model); // a const range iterates like an lvalue one
+    std::vector<std::int64_t> ids;for(const auto& clip:range)ids.push_back(clip.id);
+    check(ids==std::vector<std::int64_t>({3,5,6}),"selection skips lane clips at the front, middle (consecutive) and back");
+    std::vector<std::int64_t> again;for(auto it=range.begin();it!=range.end();it++)again.push_back(it->id);
+    check(again==ids,"selection is multi-pass and post-increment walks the same clips");
+    check(std::ranges::find_if(range,[](const rows::Clip& clip){return clip.id==4;})==range.end(),"a lane clip is not found");
+    check(std::ranges::find_if(range,[](const rows::Clip& clip){return clip.id==5;})->id==5,"a main clip is found");
+    check(std::ranges::any_of(engine::timelineClips(model),[](const rows::Clip& clip){return clip.id==6;}),"any_of over a prvalue selection");
+    check(!std::ranges::any_of(engine::timelineClips(model),[](const rows::Clip& clip){return clip.laneId.has_value();}),"no lane clip reaches the selection");
+    rows::Model lanesOnly;lanesOnly.clips={clipRow(1,10),clipRow(2,11)};
+    check(std::ranges::empty(engine::timelineClips(lanesOnly)),"every clip in a lane leaves the selection empty");
+    check(std::ranges::empty(engine::timelineClips(rows::Model{})),"no clips leave the selection empty");
+}
 void capturedDeletion() {
     Project p;auto& db=p.store->db();
     db.exec("ALTER TABLE clips ADD COLUMN future_blob BLOB NOT NULL DEFAULT X'';"
@@ -164,5 +187,5 @@ void refusal() {
     check(!p.op("clip.move",{{"id",30},{"track",21},{"to",0}}).ok&&p.material()==malformed&&p.count()==count,"move refuses an implicit repair with an invalid inverse");
 }
 }
-int main(){try{structure();attachment();capturedDeletion();refusal();}catch(const std::exception& error){++failures;std::printf("EXCEPTION %s\n",error.what());}
+int main(){try{structure();attachment();selection();capturedDeletion();refusal();}catch(const std::exception& error){++failures;std::printf("EXCEPTION %s\n",error.what());}
     std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

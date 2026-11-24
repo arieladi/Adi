@@ -4,6 +4,7 @@
 #include "adi/audio/io_audit.hpp"
 #include "adi/history.hpp"
 #include "adi/store.hpp"
+#include "replace_operator_new.hpp"
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <array>
@@ -14,12 +15,7 @@
 #include <new>
 #include <stdexcept>
 namespace { std::atomic<unsigned> allocations{0}; }
-void* operator new(std::size_t n) { if(adi::audio::onAudioThread)++allocations; if(void* p=std::malloc(n?n:1))return p; throw std::bad_alloc(); }
-void* operator new[](std::size_t n) { return operator new(n); }
-void operator delete(void* p) noexcept { std::free(p); }
-void operator delete[](void* p) noexcept { std::free(p); }
-void operator delete(void* p,std::size_t) noexcept { std::free(p); }
-void operator delete[](void* p,std::size_t) noexcept { std::free(p); }
+void adi::test::countReplacedNew() noexcept { if(adi::audio::onAudioThread)++allocations; }
 namespace {
 using namespace adi; using namespace adi::engine;
 int checks=0,failures=0;
