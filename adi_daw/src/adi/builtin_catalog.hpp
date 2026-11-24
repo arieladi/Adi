@@ -45,4 +45,9 @@ struct PluginInsertOptions {
     std::int64_t retainedDeviceId=0);
 [[nodiscard]] CommitResult commitBuiltinInsert(Store&,const PreparedBuiltinInsert&,Actor=Actor::User);
 std::span<const OpDescriptor> builtinReferenceOps();
+
+namespace detail {
+std::int64_t deviceChainOwner(const SQLite::Database&, std::int64_t chain);
+void requireDeviceInsertTrack(const SQLite::Database&, std::int64_t track);
+}
 }

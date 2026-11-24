@@ -100,6 +100,80 @@ void cachedPdTransport(const std::string& directory, bool native) {
     }
 }
 
+void panDelayBlend(const std::string& directory, bool crossed) {
+    using Engine = adi::device::LibPdEngine;
+    adi::device::PdLatencyReceiver latency;
+    Engine path(directory, "ADI-Shaper.pd", 2, 2, Engine::Execution::Automatic, Engine::BlockMode::WholeBlocks);
+    path.addSearchPath(ADI_PD_PATCH_DIR);
+    std::string error;
+    check(path.open(latency, error), "open Pan blend canvas");
+    check(path.isNative() == !crossed, "the edited Pan canvas runs through the external");
+    path.prepare(48000, 64);
+    path.bindParameters(adi::device::parsePdDeclarations(adi::builtinCanvas(uid)));
+    for (int id = 107; id <= 114; ++id) check(path.sendParameter(id, -50.f), "set the static mid-band balance");
+
+    // Independently measured impulse gains with a 2 ms range. The two
+    // input markers differ in frame, sign and amplitude to expose crossfeed.
+    struct Reading { float blend, bandMix, masterMix, leftNow, leftAt21, rightNow; };
+    constexpr std::array readings{
+        Reading{0,   100, 100, .550475776f, 0,           1.303077579f},
+        Reading{25,  100, 100, .068809472f, .481666297f, 1.303077579f},
+        Reading{50,  100, 100, 0,           .550475776f, 1.303077579f},
+        Reading{75,  100, 100, 0,           .775237918f, 1.151538730f},
+        Reading{100, 100, 100, 0,          1,            1},
+        Reading{100,   0, 100, 1,          0,            1},
+        Reading{100, 100,   0, 1,          0,            1}};
+    std::array<float, 64> left{}, right{}, outL{}, outR{};
+    const float* in[]{left.data(), right.data()};
+    float* out[]{outL.data(), outR.data()};
+    adi::engine::NodeIo io;
+    io.in = in;
+    io.out = out;
+    io.channels = 2;
+    io.frames = 64;
+    for (const auto& row : readings) {
+        check(path.sendParameter(857, row.blend) && path.sendParameter(102, row.bandMix)
+              && path.sendParameter(1, row.masterMix), "deliver blend and dry/wet controls");
+        left.fill(0);
+        right.fill(0);
+        for (int block = 0; block < 32; ++block) path.process(io);
+        left[0] = .5f;
+        right[7] = -.25f;
+        path.process(io);
+        const auto& actualLeft = crossed ? outR : outL;
+        const auto& actualRight = crossed ? outL : outR;
+        for (std::size_t n = 0; n < left.size(); ++n) {
+            const float expectedLeft = n == 0 ? .5f * row.leftNow : n == 21 ? .5f * row.leftAt21 : 0.f;
+            const float expectedRight = n == 7 ? -.25f * row.rightNow : 0.f;
+            check(std::abs(actualLeft[n] - expectedLeft) < 2e-6f && std::abs(actualRight[n] - expectedRight) < 2e-6f,
+                  "settled Pan blend reproduces both measured channel gains and the 21-frame tap");
+        }
+    }
+}
+
+void panBlendState(DeviceInstance& device) {
+    constexpr std::array ids{856, 857, 858};
+    for (std::size_t i = 0; i < ids.size(); ++i) {
+        const auto id = std::to_string(ids[i]);
+        const auto* desc = device.paramAt(415 + static_cast<int>(i));
+        check(desc && desc->id == id && device.getParam(id).real == 50., "each Pan delay blend defaults to 50 percent");
+        set(device, ids[i], .25 + .25 * static_cast<double>(i));
+    }
+    const auto saved = device.saveState("state");
+    auto next = open();
+    check(next->loadState("state", saved), "restore three distinct Pan delay blends");
+    for (std::size_t i = 0; i < ids.size(); ++i) {
+        const auto id = std::to_string(ids[i]);
+        check(next->getParam(id).real == 25. + 25. * static_cast<double>(i), "Pan delay blend keeps its stable ID");
+        set(*next, ids[i], 0.);
+    }
+    auto sparse = adi::Payload::from_cbor(saved);
+    for (const auto* group : {"params", "real"})
+        for (int id : ids) sparse.at(group).erase(std::to_string(id));
+    check(next->loadState("state", adi::Payload::to_cbor(sparse)), "recall the prior Pan state on a running device");
+    for (int id : ids) check(next->getParam(std::to_string(id)).real == 50., "omitted Pan blend recalls its original setting");
+}
+
 void modulationPd(const std::string& editedDir, bool filterOn, bool sweepOn, bool driveOn = false,
                   bool crushOn = false) {
     using Engine = adi::device::LibPdEngine;
@@ -126,6 +200,15 @@ void modulationPd(const std::string& editedDir, bool filterOn, bool sweepOn, boo
         if (onlyVolume) {
             for (int j = 0; j < 8; ++j)
                 send(Shaper::bandParam(Stage::Volume, mid, static_cast<Shaper::BandControl>(Shaper::Point1 + j)), 50);
+        }
+        if (filterOn && sweepOn) {
+            // Feed both processors the first-order middle band on both signal paths.
+            send(Shaper::VolumeBands, 3);
+            send(static_cast<Shaper::Param>(Shaper::VolumeBands + 1), 82.40689f);
+            send(static_cast<Shaper::Param>(Shaper::VolumeBands + 2), 1147.8298f);
+            for (const auto band : {Shaper::Band::Low, Shaper::Band::High})
+                for (int j = 0; j < 8; ++j)
+                    send(Shaper::bandParam(Stage::Volume, band, static_cast<Shaper::BandControl>(Shaper::Point1 + j)), 0);
         }
         send(Shaper::FilterOn, filterOn ? 1.0f : 0.0f);
         send(Shaper::SweepOn, sweepOn ? 1.0f : 0.0f);
@@ -261,14 +344,48 @@ void automationKeepsTheClock() {
     check(plain == automated, "lane events split the block without rewinding a synced curve");
 }
 
+void savedSplitFrequency() {
+    using Shaper = adi::dsp::AdiShaper;
+    auto device = open();
+    set(*device, 2, 1); // three bands
+    const auto hz = [](double value) { return std::log(value / 20.0) / std::log(1000.0); };
+    set(*device, 4, hz(400.0));
+    set(*device, 3, hz(573.9149));
+    set(*device, Shaper::VolumeLowSlope + 1, .5);
+    set(*device, Shaper::VolumeHighSlope + 1, 1);
+    for (const auto band : {Shaper::Band::Low, Shaper::Band::Mid})
+        for (int j = 0; j < 8; ++j)
+            set(*device, Shaper::bandParam(Shaper::Stage::Volume, band,
+                static_cast<Shaper::BandControl>(Shaper::Point1 + j)) + 1, 0);
+    const auto state = device->saveState("state");
+    device = open();
+    check(device->loadState("state", state), "recall the requested split frequencies");
+    check(std::abs(device->getParam("3").real - 573.9149) < .001 &&
+          std::abs(device->getParam("4").real - 400.0) < .001, "derived cutoff spacing preserves both saved knobs");
+    std::array<float, 64> impulse{}, left{}, right{};
+    impulse[0] = 1;
+    const float* inputs[]{impulse.data(), impulse.data()};
+    float* outputs[]{left.data(), right.data()};
+    adi::engine::NodeIo io;
+    io.channels = 2;
+    io.frames = 64;
+    io.in = inputs;
+    io.out = outputs;
+    device->process(io);
+    check(left == right && std::abs(left[0] - .74138374f) < 1e-6f &&
+          std::abs(left[16] - .03517162f) < 1e-6f, "recalled upper band uses the measured effective spacing");
+}
+
 } // namespace
 
 int main() try {
     auto device = open();
     const auto* info = adi::findBuiltin(uid);
-    check(info && info->name == "ADI-Shaper" && device->paramCount() == 415, "device registration");
+    check(info && info->name == "ADI-Shaper" && device->paramCount() == 418, "device registration");
     for (int id = 1; id <= 415; ++id)
         check(device->paramAt(id - 1) && device->paramAt(id - 1)->id == std::to_string(id), "contiguous stable parameter IDs");
+    panBlendState(*device);
+    device = open();
     check(device->wantsDeviceTransport() && device->latencySamples() == 0, "position and latency");
     for (int id = 23; id <= 26; ++id) set(*device, id, 0);  // half-bar gate
     for (int id = 65; id <= 72; ++id) set(*device, id, 0);  // mono
@@ -376,9 +493,12 @@ int main() try {
     check(device->loadState("state", adi::Payload::to_cbor(realOnly))
           && std::abs(device->getParam("170").real - 37) < 1e-4, "a value saved only in its unit is kept");
     automationKeepsTheClock();
+    savedSplitFrequency();
     adi::test::TempDirectory edited{"shaper_pd", "crossed_outputs"};
     writeCrossedCanvas(edited.path() / "ADI-Shaper.pd");
     const auto editedDir = edited.path().string();
+    panDelayBlend(ADI_SHAPER_PATCH_DIR, false);
+    panDelayBlend(editedDir, true);
     cachedPdTransport(ADI_SHAPER_PATCH_DIR, true);
     cachedPdTransport(editedDir, false);
     modulationPd(editedDir, false, false);

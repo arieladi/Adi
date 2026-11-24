@@ -1,0 +1,29 @@
+{
+  "schema": "adi-research-input-grid9-1",
+  "id": "graph-edit-identity",
+  "kind": "transaction_spec",
+  "input": {
+    "actions": [
+      "rename parameter keeping ID",
+      "delete parameter with automation",
+      "undo",
+      "duplicate module",
+      "change range keeping real value",
+      "move module between groups",
+      "cancel edit",
+      "reload"
+    ],
+    "capture": [
+      "persistent IDs",
+      "mapping references",
+      "automation",
+      "missing markers",
+      "published graph generation"
+    ]
+  },
+  "question": "Do edits preserve identity atomically and reuse valid DSP state without unsafe audio-thread compilation?",
+  "bitwig_result": "NOT RUN",
+  "adi_result": "NOT RUN",
+  "limits": "Authored diagnostic specification, not a Bitwig patch, Pd implementation or observed result. Internal IDs, graph generations and thread-compilation assertions require ADI instrumentation; Bitwig GUI/audio observations establish only external mapping/history/continuity behavior.",
+  "provenance": "The director's research."
+}

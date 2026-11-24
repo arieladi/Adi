@@ -7,6 +7,7 @@
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <map>
 #include <set>
 #include <stdexcept>
@@ -70,6 +71,7 @@ ScalarDefinition definition(ScalarKind kind) {
         case ScalarKind::RoutingGain: return {"routing","id","gain_db","routing.setGain","db"};
         case ScalarKind::RoutingPan: return {"routing","id","pan","routing.setPan","pan"};
         case ScalarKind::GroupSummingDrive: return {"group_summing","track_id","drive_db","group.setSummingDrive","db"};
+        case ScalarKind::TrackDelay: return {"mixer_strip","track_id","delay_samples","mixer.setDelay","samples"};
     }
     throw std::runtime_error("unsupported scalar gesture");
 }
@@ -83,7 +85,8 @@ public:
             result->rows["root"] = required(store, routing ? "routing" : "tracks", "id", target_.id);
             result->rows["value"] = row(store, def.table, def.key, target_.id);
             const bool split = target_.kind == ScalarKind::TrackPanLeft || target_.kind == ScalarKind::TrackPanRight;
-            if (!result->rows.at("value") && !split) throw std::runtime_error("scalar gesture needs an existing control row");
+            if (!result->rows.at("value") && !split && target_.kind != ScalarKind::TrackDelay)
+                throw std::runtime_error("scalar gesture needs an existing control row");
             if (routing && result->rows.at("root")->at("kind") != "send") throw std::runtime_error("live routing gesture needs a send");
             result->claims.push_back(claim(routing ? TargetDomain::Routing : TargetDomain::Track, target_.id, def.operation));
             return {{}, std::move(result)};
@@ -105,7 +108,20 @@ public:
             if (current) existing = current->at(def.column).get<double>();
             else if (target_.kind == ScalarKind::TrackPanLeft) existing = -1;
             else if (target_.kind == ScalarKind::TrackPanRight) existing = 1;
-            else throw std::runtime_error("scalar control row was removed");
+            else if (target_.kind != ScalarKind::TrackDelay) throw std::runtime_error("scalar control row was removed");
+            if (target_.kind == ScalarKind::TrackDelay) {
+                if (existing == value->value) return {{}, std::move(result)};
+                const auto project = row(store, "project", "id", 1);
+                const auto rate = project ? signedInteger(project->at("sample_rate")) : 0;
+                const auto limit = std::min<std::int64_t>(rate > 0 ? rate : 48000,
+                                                          std::numeric_limits<std::int32_t>::max());
+                if (std::abs(value->value) > static_cast<double>(limit))
+                    return {{Error::InvalidInput, "Track Delay is limited to one second at the project rate"}, {}};
+                const auto samples = static_cast<std::int64_t>(std::llround(value->value));
+                if (existing != static_cast<double>(samples))
+                    result.requests.push_back(request(def.operation, {{"id", target_.id}, {def.field, samples}}));
+                return {{}, std::move(result)};
+            }
             if (existing != value->value)
                 result.requests.push_back(request(def.operation, {{"id", target_.id}, {def.field, value->value}}));
             return {{}, std::move(result)};
@@ -196,9 +212,10 @@ class RelativeScalarProducer final : public Producer {
                 if (!origin.status.ok())
                     return {std::move(origin.status), {}};
                 const auto &value = captured(*origin.value).rows.at("value");
-                const double native = value ? value->at(def.column).get<double>()
-                                      : selection_.kind == ScalarKind::TrackPanLeft ? -1
-                                                                                    : 1;
+                double native = 0;
+                if (value) native = value->at(def.column).get<double>();
+                else if (selection_.kind == ScalarKind::TrackPanLeft) native = -1;
+                else if (selection_.kind == ScalarKind::TrackPanRight) native = 1;
                 if (!std::isfinite(native))
                     throw std::runtime_error("relative scalar origin must be finite");
                 const auto claims = child.targetClaims(*origin.value);

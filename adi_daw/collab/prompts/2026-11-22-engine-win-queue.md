@@ -103,7 +103,7 @@ Items 1 to 6 are before 3 December (ADR-0248 d2). Items 7 to 16 land after 3 Dec
    Test: a project saved with the VST3 fixture at path A loads after the module moves to path B (catalogue hit, no
    NeedsDiscovery); an old uid still resolves; two classes in one module stay distinct; scanner, catalogue and
    `adi_play_render` suites pass.
-   If the project's device ref must store the class ID, ask win to reserve schema 1.24 first (free today).
+   If the project's device ref must store the class ID, ask win to reserve the next free schema minor in RESERVATIONS.md first.
 
 9. **DF-E35 (a): lane_id in ClipNode** (blocked: #677 must land and the engine's loan of `snapshot.cpp`'s clip
    projection start; skip to the next)
@@ -209,7 +209,7 @@ Do not redo these; they wait on win's landing.
   Export page once EX-06 lands; wire EX-11 to N62's owner servicing.
 - **devices:** land `devices/limiter-offline` (#706) before EX-05's brickwall stage.
 - **win:** a loan or a ruling for DF-E64's `session.cpp` part if the engine prefers to lend; re-run #642's
-  cancelled macOS GUI-shell job; any WTS-01 harness change in `tests/acceptance`; reserve schema 1.24 if
+  cancelled macOS GUI-shell job; any WTS-01 harness change in `tests/acceptance`; reserve the next free schema minor in RESERVATIONS.md if
   DF-E25 (c) stores the class ID in a project ref; confirm the recording half of MX-09 and
   `render/normalization.*` (EX-05) are yours; who owns `src/adi/audio/**` and a loan for TM-MD-03; the libFLAC
   workflow hunk (EX-04); the media ADR before TM-MD-01;
