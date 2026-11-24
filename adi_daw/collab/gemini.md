@@ -4,6 +4,43 @@ Trial seat (22 November 2026, `collab/win.md`): Linux environment (Debian 12, GC
 
 ---
 
+## 2026-11-24 — Queue item 1 (`PR #739` `land/window-1124`) and item 2a (`window/df-w40-clang14-lambda`)
+
+**For win.** Verified PR `#739` (`land/window-1124`, initial head `51614964` and updated head `357a64d0`) and DF-W40 (`window/df-w40-clang14-lambda` at `37e26e69`) on Linux with pinned JUCE 9.0.5 (`d60b7a780`, fetched via `adi_daw/tools/fetch_external.sh --with-juce`). Note: this Debian 12 VM has GCC 12.2.0 and Clang 14.0.6 with libstdc++ 12 (**no GCC 13** installed, so the GCC 13 leg for DF-E71 and `adi_play` could not be run here) and lacks `libasound2-dev`, so JUCE-ON builds pass `-DJUCE_ALSA=0` alongside `-g0 -DADI_WITH_JUCE=ON -DADI_WITH_PD=ON -DADI_WERROR=ON`.
+
+### 1. PR `#739` — `land/window-1124` (`51614964` -> `357a64d0`)
+
+- **Validator (`357a64d0`):** `python3 adi_daw/tools/validate_parity.py --self-test` -> **PASS** (`self-test: passes on the tree, fails on a planted bad tag`).
+- **GCC 12.2.0 (`-DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS_DEBUG="-g0" -DCMAKE_CXX_FLAGS_DEBUG="-g0 -DJUCE_ALSA=0" -DADI_WITH_JUCE=ON -DADI_WITH_PD=ON -DADI_WERROR=ON`):**
+  - Build: **PASS** (`558/558` on `51614964`, `557/557` incremental on `357a64d0`; 0 warnings across `adi_ui_shell_tests`, `adi_ui_seams_tests`, `adi_ui_document_tests`, `adi_ui_window_state_tests`, `adi_play_render_tests`, `adi_play_quantize_tests`, and `adi_app`).
+  - Test runs (`env -u DISPLAY`):
+    - `adi_ui_shell_tests` (`357a64d0`): **PASS — 3157 checks, 0 failures** (`juce_XWindowSystem_linux.cpp:2703` counted apart as expected; note earlier head `51614964` failed 1/3157 on that assertion before `357a64d0` updated `ui_test_hygiene.hpp`).
+    - `adi_ui_seams_tests` (`51614964`; unchanged in `357a64d0`): **PASS — 580 checks, 0 failures** (DF-W39 confirmed: CMake selected `-fsanitize-undefined-trap-on-error`).
+    - `adi_ui_document_tests` (`51614964`; unchanged in `357a64d0`): **PASS — 343 checks, 0 failures**.
+    - `adi_ui_window_state_tests` (`51614964`; unchanged in `357a64d0`): **PASS — 177 checks, 0 failures**.
+    - `adi_play_quantize_tests` (`51614964`; unchanged in `357a64d0`): **PASS — 40 checks, 0 failures**.
+    - `adi_play_render_tests` (`51614964`; unchanged in `357a64d0`): **1 expected FAIL (DF-E76)** — `PASS -- known VST3 identities and paths require no discovery during instance load`, then `JUCE Assertion failure in juce_VST3PluginFormatImpl.h:1117` / `FAIL -- same canonical module projects saved alias spelling without rewriting its exact VST3 UID`.
+- **Clang 14.0.6 + libstdc++ 12 (`-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS_DEBUG="-g0" -DCMAKE_CXX_FLAGS_DEBUG="-g0 -DJUCE_ALSA=0" -DADI_WITH_JUCE=ON -DADI_WITH_PD=ON -DADI_WERROR=ON`, `ninja -k 0` on `51614964`):**
+  - Build: **`700/703` PASS (0 warnings)**; the **sole** compile error is the known **DF-W40** structured-binding lambda capture at `src/juce/ui_devices.cpp:1016:41` (`reference to local binding 'metadata'`), which blocks linking `adi_ui_shell`, `adi_ui_shell_tests`, and `adi_app` until `window/df-w40-clang14-lambda` lands.
+  - Test runs (`env -u DISPLAY`) on all suites that linked:
+    - `adi_ui_seams_tests`: **PASS — 580 checks, 0 failures**.
+    - `adi_ui_document_tests`: **PASS — 343 checks, 0 failures**.
+    - `adi_ui_window_state_tests`: **PASS — 177 checks, 0 failures**.
+    - `adi_play_quantize_tests`: **PASS — 40 checks, 0 failures**.
+    - `adi_play_render_tests`: **1 expected FAIL (DF-E76)** (`alias.vst3`, identical to GCC 12.2).
+- **Verdict (`land/window-1124` at `357a64d0`):** **PASS** on GCC 12.2 (all 5 non-DF-E76 suites + `validate_parity.py --self-test` green; `adi_play_render_tests` hits only known DF-E76) and **PASS modulo DF-W40** on Clang 14.0.6 + libstdc++ 12. GCC 13 leg unavailable on this VM.
+
+### 2a. `window/df-w40-clang14-lambda` (`37e26e69`) — DF-W40 proof
+
+- **Build:** Clang 14.0.6 + libstdc++ 12 (`-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS_DEBUG="-g0" -DCMAKE_CXX_FLAGS_DEBUG="-g0 -DJUCE_ALSA=0" -DADI_WITH_JUCE=ON -DADI_WITH_PD=ON -DADI_WERROR=ON`).
+- **Result:** `src/juce/ui_devices.cpp`, `libadi_ui_shell.a`, `ADI` (`adi_app`), and `adi_ui_shell_tests` all compiled and linked with **0 errors, 0 warnings** (`118/118` incremental steps).
+- **Test run (`env -u DISPLAY`):** `adi_ui_shell_tests` **PASS — 3098 checks, 0 failures** (`RC=0`).
+- **Verdict:** **DF-W40 confirmed fixed** on Clang 14.0.6 + libstdc++ 12 JUCE-ON `-DADI_WERROR=ON`.
+
+(No PR requested; run-only verification.)
+
+---
+
 ## 2026-11-23 — DF-E65 (ThreadSanitizer) and DF-E69 (Clang 14 + libstdc++ 12) closeout verification on `main` (`01c70983`, post-`a0dbb568`)
 
 **For win (to close DF-E65 and DF-E69).** Both fixes landed in `#735` (`cb16116b`), verified on `origin/main` at `01c70983` (descendant of `a0dbb568`), with no local patches (DF-M62 is on `main` via `#733`).
