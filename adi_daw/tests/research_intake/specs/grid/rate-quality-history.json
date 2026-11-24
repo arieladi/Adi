@@ -1,0 +1,43 @@
+{
+  "schema": "adi-research-input-grid9-1",
+  "id": "rate-quality-history",
+  "kind": "matrix_spec",
+  "input": {
+    "sample_rates": [
+      44100,
+      48000,
+      96000
+    ],
+    "buffers": [
+      64,
+      128,
+      256,
+      512,
+      2048
+    ],
+    "quality": [
+      "native rate",
+      "explicit oversampled variant if provided"
+    ],
+    "paths": [
+      "fresh A",
+      "B then A",
+      "save reopen",
+      "reset",
+      "reprepare",
+      "live then offline"
+    ],
+    "capture": [
+      "latency",
+      "raw residual",
+      "alias spectrum",
+      "median and tail callback times",
+      "deadline misses"
+    ]
+  },
+  "question": "Expand combinations based on evidence; do not promise Bitwig 4x equivalence from a Pd object name or average CPU.",
+  "bitwig_result": "NOT RUN",
+  "adi_result": "NOT RUN",
+  "limits": "Authored diagnostic specification, not a Bitwig patch, Pd implementation or observed result.",
+  "provenance": "The director's research."
+}

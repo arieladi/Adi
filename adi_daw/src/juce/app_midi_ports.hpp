@@ -17,6 +17,7 @@
 #pragma once
 #include "adi/settings/registry.hpp"
 #include "adi/settings/store.hpp"
+#include "adi/ui/midi_input_feed.hpp"
 #include "adi/ui/midi_ports.hpp"
 #include <juce_audio_devices/juce_audio_devices.h>
 #include <juce_gui_basics/juce_gui_basics.h>
@@ -31,12 +32,15 @@
 namespace adi::ui {
 class MidiPortHost final : private juce::ump::EndpointsListener {
   public:
-    // `ports` reads the `midi.ports` record as the Settings hold it now.
-    explicit MidiPortHost(std::function<settings::Value()> ports);
+    // `ports` reads the `midi.ports` record as the Settings hold it now. `write`, when given, writes it back
+    // when a listing brought it up to date (N61): each listed port's name kept with its record, and a record
+    // moved to a port's new identifier; true when the Settings took it. Without it the record is only read.
+    using Writer = std::function<bool(const settings::Value &)>;
+    explicit MidiPortHost(std::function<settings::Value()> ports, Writer write = {});
     struct Port;
     // For tests: a host over a fixed list of ports, their switches read from the record as the system's
     // are; it opens nothing and follows no hot-plug.
-    MidiPortHost(std::function<settings::Value()> ports, std::vector<Port> fixed);
+    MidiPortHost(std::function<settings::Value()> ports, std::vector<Port> fixed, Writer write = {});
     ~MidiPortHost() override;
     MidiPortHost(const MidiPortHost &) = delete;
     MidiPortHost &operator=(const MidiPortHost &) = delete;
@@ -57,9 +61,14 @@ class MidiPortHost final : private juce::ump::EndpointsListener {
     void refresh();
     // Called on the message thread after `refresh` changed what is listed or open.
     std::function<void()> onChange;
-    // Takes every event the open inputs delivered since the last drain, in each port's order, to
-    // `take(event)`, on the message thread. Returns how many it took.
-    std::size_t drain(const std::function<void(const MidiPortEvent &)> &take);
+    // Called at once when the inputs the feed reads, or their switches, changed: the application
+    // releases the notes held from them (`Session::resetMidiInput`), so a key held on a port closed,
+    // unplugged or switched off does not sound on.
+    std::function<void()> onInputsChanged;
+    // The rings' one consumer (N60), owned by the application so it outlives the device callback that
+    // pumps it: `refresh` publishes the open inputs to it, and the host's end takes them all back
+    // before their rings go. None (tests): the rings fill and nothing drains them.
+    void setFeed(MidiInputFeed *feed);
     // A count that moves each time an open input delivers a message (the MIDI Indicators).
     std::uint64_t activity() const noexcept { return activity_.load(std::memory_order_relaxed); }
     // Events lost because a ring was full (the consumer fell behind), since the host began: the input
@@ -70,7 +79,9 @@ class MidiPortHost final : private juce::ump::EndpointsListener {
   private:
     struct Input;
     void endpointsChanged() override;
+    settings::Value reconciled(const std::vector<Port> &listed);
     std::function<settings::Value()> read_;
+    Writer write_;
     bool fixed_ = false;
     std::vector<Port> fixedPorts_;
     std::optional<juce::ump::Session> session_; // none for a fixed list
@@ -79,6 +90,9 @@ class MidiPortHost final : private juce::ump::EndpointsListener {
     std::vector<std::unique_ptr<Input>> inputs_;
     std::atomic<std::uint64_t> activity_{0};
     std::atomic<std::uint64_t> dropped_{0};
+    MidiInputFeed *feed_ = nullptr;
+    std::uint64_t serials_ = 0;
+    void publish();
 };
 // Live's MIDI Ports table on the Tempo & MIDI Settings page (Live 12 manual 41.6): one row per port and
 // direction, its Track, Sync, Remote and MPE switches. A switch is written to the `midi.ports` record at

@@ -420,6 +420,45 @@ void testStoreBasics() {
           "each application has its own file under its own config folder (ADR-0149)");
 }
 
+void testAppearanceSettings() {
+    section("appearance settings: choices, defaults and persistence");
+    adi::test::TempDirectory temp("settings", "appearance");
+    const auto file = temp.path() / "settings.json";
+    AppSettings settings(appdata::App::Daw, file);
+    const auto *theme = find("lookfeel.theme");
+    const auto *density = find("lookfeel.density");
+    check(theme && theme->page == "Theme & Colors" && theme->agentMayChange &&
+              settings.get("lookfeel.theme") == "dark" && density && density->page == "Theme & Colors" &&
+              !density->agentMayChange && settings.get("lookfeel.density") == "compact",
+          "appearance defaults are Dark and Compact, with only theme on the agent allowlist");
+    std::string why;
+    for (const char *name : {"dark", "midgrey", "light", "mixview"}) {
+        check(settings.set("lookfeel.theme", name, kUser, why) &&
+                  settings.set("lookfeel.density", "open", kUser, why) && settings.save(why),
+              std::string("save Open density with ") + name);
+        const AppSettings reopened(appdata::App::Daw, file);
+        check(reopened.status() == LoadStatus::Loaded && reopened.get("lookfeel.theme") == name &&
+                  reopened.get("lookfeel.density") == "open",
+              std::string("reload stable values after selecting ") + name);
+    }
+    check(!settings.set("lookfeel.theme", "unknown", kUser, why) &&
+              !settings.set("lookfeel.density", "wide", kUser, why) &&
+              settings.get("lookfeel.theme") == "mixview" && settings.get("lookfeel.density") == "open",
+          "invalid names preserve the selected appearance");
+    const auto preset = makePreset(settings, "Mix appearance", {"Theme & Colors"});
+    check(preset.values.value("lookfeel.theme", std::string{}) == "mixview" &&
+              preset.values.value("lookfeel.density", std::string{}) == "open",
+          "a Theme & Colors preset contains both appearance values");
+    settings.resetPage("Theme & Colors", kUser);
+    check(settings.get("lookfeel.theme") == "dark" && settings.get("lookfeel.density") == "compact",
+          "Theme & Colors defaults restore both appearance values");
+
+    writeText(file, R"({"schema":1,"app":"ADI","values":{"lookfeel.theme":"os"}})");
+    const AppSettings legacy(appdata::App::Daw, file);
+    check(legacy.get("lookfeel.theme") == "os" && legacy.get("lookfeel.density") == "compact",
+          "legacy profiles keep their accepted theme key and get Compact density");
+}
+
 void testGraphWorkerPreference() {
     section("DEV-23 graph worker admission");
     const auto* row = find(kGraphWorkersKey);
@@ -600,7 +639,7 @@ void testApplicationsNeverShare() {
     const auto before = readText(file);
     AppSettings dj(appdata::App::DJ, file);
     check(dj.status() == LoadStatus::ForeignApp, "ADiJ pointed at ADI's file refuses it");
-    check(dj.get("lookfeel.theme") == "os", "and reads none of its values");
+    check(dj.get("lookfeel.theme") == "dark", "and reads none of its values");
     std::string why;
     check(!dj.save(why) && readText(file) == before,
           "and never overwrites it: " + why);
@@ -621,7 +660,7 @@ void testChangeLog() {
     };
     auto l = lines();
     check(l.size() == 1 && l[0].at("actor") == "user" && l[0].at("key") == "lookfeel.theme" &&
-              l[0].at("before") == "os" && l[0].at("after") == "light" && l[0].at("time") == kT0,
+              l[0].at("before") == "dark" && l[0].at("after") == "light" && l[0].at("time") == kT0,
           "a person's change: time, key, before, after");
     s.setLogUserChanges(false);
     s.set("lookfeel.theme", "dark", kUser, why);
@@ -1327,6 +1366,7 @@ int runAll() {
     testM0Records();
     testCatalogue();
     testStoreBasics();
+    testAppearanceSettings();
     testGraphWorkerPreference();
     testUnknownKeysSurvive();
     testAtomicSave();

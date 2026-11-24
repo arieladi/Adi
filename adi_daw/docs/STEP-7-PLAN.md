@@ -607,9 +607,9 @@ Remaining chapters are filled in with the director before each piece is built �
 this plan does **not** invent chapter numbers.
 
 **The rows are requested, not written from scratch** (win, 2026-09-29). The
-A2000 is turning the Live 12 manual into checklist rows — behaviour, page, and a
+drone is turning the Live 12 manual into checklist rows — behaviour, page, and a
 verbatim quote — and win sends them checked. **Before each piece is built, ask
-win for that chapter's rows.** Writing a checklist here that the A2000 has
+win for that chapter's rows.** Writing a checklist here that the drone has
 already produced is the same duplication ADR-0108 forbids, arriving from a new
 direction: two checklists for one behaviour, and the second one unchecked.
 
