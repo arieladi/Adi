@@ -7,6 +7,7 @@
 // Every edit goes through the window's own builders and `ProjectDocument`'s calls; where the window
 // builds a request itself, the code here copies it and names the place it copies.
 #pragma once
+#include "adi/ui/midi_input_feed.hpp"
 #include "adi/ui/project_document.hpp"
 #include "juce/device_model.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -17,6 +18,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <functional>
+#include <stdexcept>
 #include <string>
 #include <vector>
 namespace adi::wts01 {
@@ -98,6 +100,29 @@ class Driver {
     void attach(ui::ProjectDocument &doc) { doc_ = &doc; }
     // What the inputs carry; none is silence.
     std::function<float(std::size_t, std::int64_t)> input;
+    // The app's MIDI consumer in front of the document (N60), as `ui_main.cpp`'s LiveMidiProcessor puts
+    // it in the device callback; the ports' clock here is the stream's, in ms. None: no keyboard.
+    ui::MidiInputFeed *feed = nullptr;
+    // A message played on a port at stream sample `at`.
+    struct Played {
+        std::int64_t at = 0;
+        std::array<std::uint8_t, 3> bytes{};
+    };
+    // `blocks` callbacks with `played` reaching `ring` as a port would deliver them: each pushed while the
+    // block that holds its sample runs, stamped with the port time the feed maps back to that sample.
+    void play(ui::MidiInputFeed::Ring &ring, const std::vector<Played> &played, int blocks, Stereo *heard = nullptr) {
+        for (int b = 0; b < blocks; ++b) {
+            for (const auto &p : played)
+                if (p.at >= stream && p.at < stream + kFrames) {
+                    ui::MidiPortEvent e;
+                    e.timeMs = (static_cast<double>(stream) + static_cast<double>(p.at - stream - kFrames)) * 1000.0 / kRate;
+                    e.bytes = p.bytes;
+                    e.size = ui::midiMessageSize(p.bytes[0]);
+                    (void)ring.push(e);
+                }
+            block(heard);
+        }
+    }
     std::int64_t stream = 0;
     // Clip underrun samples over every callback so far. Each clip generation counts its own, and the
     // timer's rebuilds replace the generation, so the count is taken per callback.
@@ -120,6 +145,11 @@ class Driver {
         io.numOut = 2;
         io.frames = kFrames;
         io.streamTimeSamples = stream;
+        if (feed)
+            feed->pump(stream, kFrames, kRate, static_cast<double>(stream) * 1000.0 / kRate,
+                       [this](std::int64_t sample, const engine::Event &event) {
+                           return doc_->session().enqueueMidiInput(sample, event);
+                       });
         doc_->process(io);
         if (clips && clips == doc_->session().clips())
             underruns_ += clips->underrunSamples() - missedBefore;
@@ -133,6 +163,37 @@ class Driver {
     void run(int blocks, Stereo *heard = nullptr) {
         for (int b = 0; b < blocks; ++b)
             block(heard);
+    }
+    // Capture from the callback that actually starts playback. A cold Locate
+    // followed by Play can keep the device clock running while the song waits.
+    // While Play is held the song stays at 0 and plays nothing; a track that
+    // monitors its input while stopped (In, or armed on Auto, N67) is heard
+    // during the hold as in any stopped callback, so silence is required only
+    // when no track does.
+    int firstPlayingBlock(Stereo &heard) {
+        bool inputHeardWhileStopped = false;
+        for (const auto &[track, state] : doc_->recordStates())
+            inputHeardWhileStopped = inputHeardWhileStopped || state.monitor == ui::Monitor::In ||
+                                     (state.armed && state.monitor == ui::Monitor::Auto);
+        for (int held = 0; held < 32; ++held) {
+            Stereo audio;
+            block(&audio);
+            if (doc_->mailbox().playing()) {
+                heard = std::move(audio);
+                return held;
+            }
+            if (doc_->mailbox().position() != 0)
+                throw std::runtime_error("pending Play advanced the playhead");
+            if (!inputHeardWhileStopped && std::any_of(audio.c.begin(), audio.c.end(), [](const auto &channel) {
+                    return std::any_of(channel.begin(), channel.end(), [](float value) { return value != 0; });
+                }))
+                throw std::runtime_error("pending Play leaked audio with no input monitored");
+        }
+        throw std::runtime_error("transport did not start after 32 primed callbacks");
+    }
+    void runFromPlay(int blocks, Stereo &heard) {
+        firstPlayingBlock(heard);
+        run(blocks - 1, &heard);
     }
     // The timer alone, as when the window's frame comes between callbacks.
     void frame() { doc_->tick(stream * 1000 / static_cast<std::int64_t>(kRate)); }
@@ -212,24 +273,6 @@ inline double peak(const Stereo &a, std::size_t from, std::size_t to) {
         for (std::size_t i = from; i < std::min(to, a.size()); ++i)
             worst = std::max(worst, std::abs(static_cast<double>(a.at(c, i))));
     return worst;
-}
-// The Export page's loader rule (ui_main.cpp, `startRender`): only ADI's own devices render; another
-// maker's plug-in waits for the engine's render worker (EX-11).
-inline constexpr const char *kExportRefusal =
-    "A project with VST3 or CLAP plug-ins renders once the engine's render worker is on main (EX-11).";
-inline engine::DeviceLoader exportLoader(engine::DeviceLoader made) {
-    return [made = std::move(made)](const engine::DeviceRequest &rq, std::string &error) {
-        if (rq.ref == nullptr || rq.ref->format != "internal") {
-            error = kExportRefusal;
-            return std::unique_ptr<device::DeviceInstance>{};
-        }
-        return made(rq, error);
-    };
-}
-// The Export page's check before it asks for a file (ui_main.cpp, `chooseExportFile`).
-inline bool exportPrecheckRefuses(ui::ProjectDocument &doc) {
-    return scalar(doc, "SELECT count(*) FROM devices d JOIN plugin_refs r ON r.id = d.plugin_ref_id "
-                       "WHERE r.format <> 'internal'") > 0;
 }
 // A query's rows as one text, for comparing a project before closing and after reopening.
 inline std::string rowsText(ui::ProjectDocument &doc, const std::string &sql, int *count = nullptr) {

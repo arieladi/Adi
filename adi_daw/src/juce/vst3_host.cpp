@@ -4,6 +4,7 @@
 
 #include "juce/vst3_host.hpp"
 #include "juce/vst3_scan_host.hpp"
+#include "adi/engine/graph.hpp"
 #include "adi/scan_batch.hpp"
 
 #include <pluginterfaces/vst/ivsteditcontroller.h>
@@ -660,25 +661,24 @@ void Vst3Device::prepare(double sampleRate, std::int32_t maxFrames) {
         }
     }
 
-    // Sized from the GRANTED block (ADR-0049) and allocated here, never in
-    // process (ADR-0010). Capacity is ADR-0056's arithmetic: a 500 Hz MPE+
-    // stream across this block, three dimensions, at polyphony 16.
-    const double updates = (sampleRate > 0.0)
-                             ? (static_cast<double>(maxFrames) / sampleRate) * 500.0 : 1.0;
-    const auto perNote = static_cast<std::int32_t>(updates * 3.0) + 2;
-    events_.reserve((perNote > 0 ? perNote : 8) * 16);
+    // Allocate for the graph's full note and expression block during prepare.
+    const auto eventCapacity = engine::Graph::deriveEventCapacity(sampleRate, maxFrames, 16);
+    events_.reserve(eventCapacity);
     // ADR-0097: every queue holds a block's worth of one dimension's stream,
     // which is what MpeMidi's IMidiMapping path puts into one parameter.
-    const std::int32_t points = (perNote > 0 ? perNote : 8) + 8;
+    const double updates = (sampleRate > 0.0)
+                             ? (static_cast<double>(maxFrames) / sampleRate) * 500.0 : 1.0;
+    const auto points = static_cast<std::int32_t>(updates * 3.0) + 10;
     paramChanges_.reserve(256, points);
     outParams_.reserve(256, points);
-    // The router can turn one note-on into four outputs (three channel resets
-    // and the note), plus the Configuration Message once.
-    const std::int32_t routedCap = (perNote > 0 ? perNote : 8) * 16 + 16 * 4 + 8;
+    // Room for channel resets on note-on and one configuration message.
+    constexpr std::int32_t routerHeadroom = 16 * 4 + 8;
+    const auto routedCap =
+        std::min(eventCapacity, std::numeric_limits<std::int32_t>::max() - routerHeadroom) + routerHeadroom;
     routedStore_.assign(static_cast<std::size_t>(routedCap), engine::MpeOut{});
     routed_ = engine::MpeOutList(routedStore_.data(), routedCap);
     router_.reset();
-    injected_.assign(static_cast<std::size_t>((perNote > 0 ? perNote : 8) * 16),
+    injected_.assign(static_cast<std::size_t>(eventCapacity),
                      engine::Event{});
     injectedUsed_ = 0;
     readInputBusRoles();
@@ -773,12 +773,16 @@ void Vst3Device::process(const engine::NodeIo& io) noexcept {
         // counted rather than silently refused. A channel message the plugin
         // mapped to a parameter rides IParameterChanges in this same call
         // (ADR-0073); everything else is an event.
+        // ADR-0097: a synth with a hidden controller can still take MPE over
+        // the legacy wire. Unmapped ordinary Controller events keep their
+        // unsupported diagnostic on every route.
+        const bool legacyMpe = router_.current() == engine::ExpressionRoute::MpeMidi;
         for (const engine::MpeOut& o : routed_) {
             if (o.kind == engine::MpeOut::Kind::Control && o.paramId != engine::kNoParam) {
                 const std::int32_t t = o.frame - off;
                 if (t < 0 || t >= n) { ++routedOutOfRange_; continue; }
                 paramChanges_.set(o.paramId, o.value, t);
-            } else if (o.kind == engine::MpeOut::Kind::Control) {
+            } else if (o.kind == engine::MpeOut::Kind::Control && (!legacyMpe || o.fromControllerEvent)) {
                 unsupportedControllers_.fetch_add(1, std::memory_order_relaxed);
             } else {
                 events_.addOut(o, off, n);
@@ -825,6 +829,15 @@ void Vst3Device::process(const engine::NodeIo& io) noexcept {
         pd.numSamples = n;
         for(auto& bus:inputBuses_)bus.silenceFlags=0;
         for(auto& bus:outputBuses_)bus.silenceFlags=0;
+        // Bus zero is the programme output and can alias the main input.
+        // Each auxiliary output has its own sink for this processing segment.
+        for (std::size_t i = 1; i < outputBuses_.size(); ++i) {
+            const auto& bus = outputBuses_[i];
+            for (std::int32_t c = 0; c < bus.numChannels; ++c) {
+                if (double_) std::fill_n(bus.channelBuffers64[c], n, 0.0);
+                else std::fill_n(bus.channelBuffers32[c], n, 0.0f);
+            }
+        }
         pd.numInputs = static_cast<Steinberg::int32>(inputBuses_.size());
         pd.numOutputs = static_cast<Steinberg::int32>(outputBuses_.size());
         pd.inputs = inputBuses_.empty()?nullptr:inputBuses_.data();

@@ -29,5 +29,5 @@ This supplies manual scalar quiet-window End through the existing gesture
 contract, not time-based op merging or Undo/recommit. ParamOps keeps its own
 owned plug-in capture and existing UI end detection; do not substitute a scalar
 producer for that path. The wrapper writes no automation: AU-03's armed write
-pass is still the sole place a touch becomes automation. Surface/window binding,
-Track Delay preview and that recording-pass integration remain separate work.
+pass is still the sole place a touch becomes automation. Surface/window binding
+and that recording-pass integration remain separate work.

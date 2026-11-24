@@ -1,0 +1,45 @@
+{
+  "schema": "adi-research-input-grid9-1",
+  "id": "same-frame-identity",
+  "kind": "notes",
+  "input": {
+    "events": [
+      {
+        "frame": 0,
+        "type": "note_on",
+        "note": 60,
+        "note_id": 11,
+        "channel": 2
+      },
+      {
+        "frame": 0,
+        "type": "note_on",
+        "note": 60,
+        "note_id": 12,
+        "channel": 3
+      },
+      {
+        "frame": 32,
+        "type": "pressure",
+        "note_id": 12,
+        "value": 0.9
+      },
+      {
+        "frame": 64,
+        "type": "note_off",
+        "note_id": 11
+      },
+      {
+        "frame": 96,
+        "type": "note_off",
+        "note_id": 12
+      }
+    ],
+    "reverse_same_frame_order": true
+  },
+  "question": "Does voice allocation preserve overlapping same-pitch notes and their expression?",
+  "bitwig_result": "NOT RUN",
+  "adi_result": "NOT RUN",
+  "limits": "Authored diagnostic specification, not a Bitwig patch, Pd implementation or observed result.",
+  "provenance": "The director's research."
+}

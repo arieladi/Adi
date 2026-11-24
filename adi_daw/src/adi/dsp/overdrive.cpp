@@ -5,6 +5,9 @@
 #include <cmath>
 #include <numbers>
 namespace adi::dsp {
+namespace {
+double clean(double x) noexcept { return std::abs(x) < 1e-30 ? 0 : x; }
+} // namespace
 // DEV-22: Live 12.4 reports 5 samples for its Overdrive (the research's
 // latency table), which points at an oversampled shaper; ADI's ran at the base
 // rate, aliasing, and reported 0. The shaper now runs at 4x. The resampling
@@ -98,8 +101,12 @@ void Overdrive::set(Param id, double value) noexcept {
 void Overdrive::process(const float *l, const float *r, float *ol, float *orr,
                         std::size_t n) noexcept {
     for (std::size_t i = 0; i < n; ++i) {
-        for (std::size_t p = 0; p < p_.size(); ++p)
+        for (std::size_t p = 0; p < p_.size(); ++p) {
             p_[p] = target_[p] + smooth_ * (p_[p] - target_[p]);
+            if (std::abs(p_[p] - target_[p]) < 1e-12) {
+                p_[p] = target_[p];
+            }
+        }
         const double omega = 2 * std::numbers::pi * std::min(p_[Frequency], rate_ * .45) / rate_;
         const double alpha = std::sin(omega) * std::sinh(std::log(2.) * .5 * p_[Bandwidth]);
         const double b0 = alpha / (1 + alpha), a1 = -2 * std::cos(omega) / (1 + alpha),
@@ -115,8 +122,8 @@ void Overdrive::process(const float *l, const float *r, float *ol, float *orr,
             auto &s = lane_[c];
             const double dry = std::isfinite(input[c]) ? input[c] : 0;
             const double band = b0 * dry + s.z1;
-            s.z1 = -a1 * band + s.z2;
-            s.z2 = -b0 * dry - a2 * band;
+            s.z1 = clean(-a1 * band + s.z2);
+            s.z2 = clean(-b0 * dry - a2 * band);
             // 4x around the shaper: polyphase interpolation of the band signal,
             // the shaper at the 4x rate, decimation at phase 0.
             const auto &h = resamplingFilter();
@@ -135,12 +142,12 @@ void Overdrive::process(const float *l, const float *r, float *ol, float *orr,
                     for (std::size_t j = 0; j < static_cast<std::size_t>(kTaps); ++j)
                         shaped += h[j] * s.shaped[s.shapedAt + j];
             }
-            s.tone = (1 - tonePole) * shaped + tonePole * s.tone;
+            s.tone = clean((1 - tonePole) * shaped + tonePole * s.tone);
             const double wet = s.tone - s.dcIn + dc_ * s.dcOut;
             s.dcIn = s.tone;
-            s.dcOut = wet;
-            s.inputPower = (1 - envelope_) * band * band + envelope_ * s.inputPower;
-            s.outputPower = (1 - envelope_) * wet * wet + envelope_ * s.outputPower;
+            s.dcOut = clean(wet);
+            s.inputPower = clean((1 - envelope_) * band * band + envelope_ * s.inputPower);
+            s.outputPower = clean((1 - envelope_) * wet * wet + envelope_ * s.outputPower);
             const double preserving =
                 std::clamp(std::sqrt((s.inputPower + 1e-12) / (s.outputPower + 1e-12)), 0., 4.);
             const double gain = 1 + dynamics * (preserving - 1);
