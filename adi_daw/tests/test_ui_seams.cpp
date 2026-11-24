@@ -2498,9 +2498,38 @@ void heldIdsAreSkipped() {
           "Redo deletes it again and puts the new track back as 5");
 }
 
+void takesStayOffTheMainRow() {
+    section("DF-E35 (a): the Arrangement's readers take the main row; a new clip's id passes the takes");
+    adi::test::TempDirectory temp("ui_seams", "takes");
+    StoreError err = StoreError::Ok;
+    auto store = Store::create(temp.path() / "p.adi", err);
+    check(store != nullptr, "store created");
+    if (!store) return;
+    // Clip 1 on the main row and clip 2 on take lane 7, both at 0-960; clip 3 on the take far past the end.
+    store->db().exec("INSERT INTO tracks(id,kind,name) VALUES(1,'audio','Vocal');"
+                     "INSERT INTO lanes(id,track_id,kind) VALUES(7,1,'take');"
+                     "INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks,lane_id) VALUES"
+                     "(1,1,'audio',0,960,NULL),(2,1,'audio',0,960,7),(3,1,'audio',3840000,960,7);");
+    engine::ProjectView view;
+    view.refresh(*store);
+    const ui::SnapshotReader reader(view.current());
+    const auto *track = reader.findTrack(1);
+    check(track && track->clips.size() == 1 && track->takeClips.size() == 2, "one clip on the main row, two on the take");
+    if (!track) return;
+    ui::ArrangementGeometry geometry;
+    const auto *hit = geometry.hit(*track, 480);
+    check(hit && hit->id == 1, "hit(track 1, 480) is clip 1, not the take over it");
+    const auto content = ui::rangeContent(view.current()->tracks, {1}, 0, 960);
+    check(content.inside.size() == 1 && content.inside.front()->id == 1 && content.crossing == 0,
+          "a time selection over 0-960 holds clip 1 only");
+    check(geometry.end(reader) == 16 * textproj::kPPQ, "a take past the last clip does not extend the end");
+    check(ui::audio_drop_detail::newClipId(*view.current()) == 4, "the next clip is 4: past the takes' ids, not 2");
+}
+
 int main() {
     theWrongThingDoesNotCompile();
     heldIdsAreSkipped();
+    takesStayOffTheMainRow();
     reenableFindsThePlayedLane();
     invalidReaderAnswersEmpty();
     readsTheModel();
