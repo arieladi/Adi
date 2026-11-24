@@ -26,6 +26,7 @@
 #include "adi/ui/automation_override.hpp"
 #include "knobs_device.hpp"
 #include "mix_seek_fixture.hpp"
+#include "ui_test_hygiene.hpp"
 #include "temp_directory.hpp"
 #include "ui_fake_peer.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -10310,7 +10311,7 @@ void deviceClipboard(AppCommands &commands, const std::filesystem::path &dir) {
 // at its own size, never scaled, and a second closes it; one window at a time unless Ctrl/Cmd or
 // Multiple Plug-In Windows; Ctrl/Cmd+Alt+P hides and shows them all; Auto-Hide shows only the
 // selected track's; the opener's error and the editor's reach the Status Bar.
-void pluginWindows(AppCommands &commands, const std::filesystem::path &dir) {
+void pluginWindows(AppCommands &commands, settings::AppSettings &settings, const std::filesystem::path &dir) {
     std::string error;
     auto document = ProjectDocument::open(dir / "plugin-windows.adi", true, test::knobsLoader(), error);
     check(document != nullptr, "a project for the plug-in windows");
@@ -10424,7 +10425,7 @@ void pluginWindows(AppCommands &commands, const std::filesystem::path &dir) {
     check(opened == 1 && host.contains(key3) && host.content(key3) != nullptr &&
               host.content(key3)->getWidth() == 320 && host.content(key3)->getHeight() == 200 &&
               !host.zoom(key3, true) && host.alwaysOnTop(key3) && panels[0]->wrench.getToggleState(),
-          "a click opens the editor at the plug-in's own size, never scaled, on top, the wrench lit");
+          "a click opens the editor at the plug-in's own size, never scaled, on top, the wrench lit [P:7.5-floating#1]");
     {
         auto *window = dynamic_cast<juce::DocumentWindow *>(host.window(key3));
         const auto *track = root.reader().findTrack(2);
@@ -10457,7 +10458,7 @@ void pluginWindows(AppCommands &commands, const std::filesystem::path &dir) {
           "View > Hide Plug-In Windows on Ctrl/Cmd+Alt+P while they show");
     check(root.keyPressed(hideAll) && !root.pluginWindowsShown() && !host.shown(key3) && !host.shown(key5) &&
               host.contains(key3),
-          "Ctrl/Cmd+Alt+P hides every plug-in window, open still");
+          "Ctrl/Cmd+Alt+P hides every plug-in window, open still [P:7.5-floating#2]");
     commands.getCommandInfo(AppCommands::TogglePluginWindows, info);
     root.frame();
     check(info.shortName == "Show Plug-In Windows" && !host.shown(key3), "then the menu offers to show them");
@@ -10488,6 +10489,43 @@ void pluginWindows(AppCommands &commands, const std::filesystem::path &dir) {
     check(!host.contains(key3) && host.contains(key5) && !panels[0]->wrench.getToggleState(),
           "and the next collect closes it, the wrench unlit");
     editorGone = false;
+    // WIN-03: a plug-in's window is an owned one: no task bar button, minimised and back with the main
+    // window, closed by Esc when the plug-in leaves the key; the Mix View's window is a normal one.
+    {
+        check(host.owned(key5) && !host.taskbarButton(key5), "a plug-in's window is owned, with no task bar button");
+        host.ownerMinimised(true);
+        check(host.withOwner(key5) && host.contains(key5) && host.shown(key5), "the main window minimised takes it down, open still");
+        host.ownerMinimised(false);
+        check(!host.withOwner(key5), "and brings it back");
+        host.ownerToFront();
+        auto *window = host.window(key5);
+        auto *keys = dynamic_cast<juce::KeyListener *>(window);
+        check(keys != nullptr && keys->keyPressed(juce::KeyPress(juce::KeyPress::escapeKey), window), "Esc reaching its window closes it [P:7.5-floating#13]");
+        host.collect();
+        root.frame();
+        check(!host.contains(key5), "gone at the next collect");
+        juce::Component dock, content;
+        dock.addAndMakeVisible(content);
+        content.setBounds(0, 0, 200, 100);
+        check(host.detach("Mix View test", 0, content, dock) && !host.owned("Mix View test") &&
+                  host.taskbarButton("Mix View test"),
+              "a moved-out view, as the Mix View's, is a normal window with its task bar button");
+        host.close("Mix View test");
+        // Auto-Open Plug-In Windows: a plug-in added opens its window once the feed shows it.
+        host.closeAll(false);
+        root.pluginAdded(3);
+        root.frame();
+        check(host.contains(key3), "Auto-Open Plug-In Windows: a plug-in added opens its window [P:7.5-floating#14]");
+        host.closeAll(false);
+        std::string offWhy;
+        check(settings.set("plugins.autoOpenWindows", false, {}, offWhy), "Auto-Open off");
+        commands.reload();
+        root.pluginAdded(3);
+        root.frame();
+        check(!host.contains(key3), "with Auto-Open off, adding a plug-in opens nothing");
+        settings.set("plugins.autoOpenWindows", true, {}, offWhy);
+        commands.reload();
+    }
     host.closeAll(false);
     refuse = "This VST3 has no editor";
     check(!root.togglePluginWindow(3, false) && root.error() == refuse && !host.contains(key3),
@@ -13907,54 +13945,245 @@ void midiInputFeedCases() {
           "the quiet port's note gets through in the same block as 900 messages from a busy port");
 }
 } // namespace
+// WTS-02's paint checks: the window painted whole and painted in 37-pixel strips agree within 4 per
+// channel (repaint invariance: a component that paints outside its clip, or reads state a partial
+// repaint lacks, shows here), and a paint at each zoom limit finishes and trips no assertion.
+void paintHygiene(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "paint-hygiene.adi", true, {}, error);
+    check(document != nullptr, "a new project for the paint checks");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "paint-hygiene");
+    root.setSize(1440, 900);
+    root.frame();
+    root.frame();
+    const auto paint = [&root](int stripHeight) {
+        juce::Image image(juce::Image::ARGB, root.getWidth(), root.getHeight(), true, juce::SoftwareImageType{});
+        for (int y = 0; y < root.getHeight(); y += stripHeight) {
+            juce::Graphics g(image);
+            g.reduceClipRegion(0, y, root.getWidth(), stripHeight);
+            root.paintEntireComponent(g, true);
+        }
+        return image;
+    };
+    const auto whole = paint(root.getHeight());
+    const auto strips = paint(37);
+    int worst = 0;
+    std::int64_t beyond = 0;
+    for (int y = 0; y < whole.getHeight(); ++y)
+        for (int x = 0; x < whole.getWidth(); ++x) {
+            const auto a = whole.getPixelAt(x, y), b = strips.getPixelAt(x, y);
+            const int d = std::max({std::abs(a.getRed() - b.getRed()), std::abs(a.getGreen() - b.getGreen()),
+                                    std::abs(a.getBlue() - b.getBlue()), std::abs(a.getAlpha() - b.getAlpha())});
+            worst = std::max(worst, d);
+            beyond += d > 4 ? 1 : 0;
+        }
+    check(beyond == 0, ("painted whole and in 37-pixel strips the window agrees within 4 (worst " + std::to_string(worst) +
+                        ", " + std::to_string(beyond) + " pixels beyond)").c_str());
+    // The zoom's limits (1 and 4096 pixels a quarter), at the start and far into the song.
+    auto &geo = root.arrangement.geometry;
+    for (const double scale : {1., 4096.})
+        for (const double left : {0., 1e6}) {
+            geo.scale = scale;
+            geo.left = left;
+            root.frame();
+            const auto image = paint(root.getHeight());
+            check(image.isValid(), ("a paint at " + std::to_string(static_cast<int>(scale)) + " pixels a quarter, from quarter " +
+                                    std::to_string(static_cast<long long>(left)) + ", finishes").c_str());
+        }
+    document->release();
+}
+
+// WIN-02: the main window's and Settings' places in the App record window.places, by the one rule, on a
+// 1366 x 768 laptop at 125 % (1093 x 614 units): at first run centred, no larger than the screen; kept on
+// move, written only when it moved; after a kill, back where it stood with its title bar on the screen.
+void windowPlaces(const std::filesystem::path &dir) {
+    const std::vector<window_place::Monitor> laptop{{"laptop", {0, 0, 1093, 614}, {0, 0, 1093, 582}, 120, true}};
+    const auto file = dir / "places.json";
+    {
+        settings::AppSettings first(appdata::App::Daw, file);
+        juce::DocumentWindow w("main", juce::Colours::black, juce::DocumentWindow::allButtons, false);
+        w.setResizeLimits(520, 180, 10000, 10000);
+        restorePlace(w, first, "main", 1200, 720, laptop);
+        check(w.getBounds() == juce::Rectangle<int>(0, 0, 1093, 582), "at first run the main window opens centred, no larger than the screen");
+        w.setBounds(100, -50, 700, 400);
+        std::string why;
+        check(keepPlace(w, first, "main", why, laptop), ("the place is kept: " + why).c_str());
+        const auto places = first.get("window.places");
+        check(places.contains("main") && places["main"]["display"] == "laptop" &&
+                  places["main"]["rect"] == nlohmann::json::array({100, -50, 700, 400}) && !places["main"]["fullScreen"].get<bool>(),
+              "window.places holds its display, area and rectangle");
+        check(keepPlace(w, first, "main", why, laptop) && first.get("window.places") == places,
+              "the same place again writes nothing new");
+    }
+    {
+        settings::AppSettings afterKill(appdata::App::Daw, file);
+        juce::DocumentWindow w("main", juce::Colours::black, juce::DocumentWindow::allButtons, false);
+        w.setResizeLimits(520, 180, 10000, 10000);
+        restorePlace(w, afterKill, "main", 1200, 720, laptop);
+        check(w.getBounds() == juce::Rectangle<int>(100, 0, 700, 400),
+              "after a kill the main window opens where it stood, its title bar never above the screen");
+        juce::DocumentWindow settingsWindow("settings", juce::Colours::black, juce::DocumentWindow::closeButton, false);
+        restorePlace(settingsWindow, afterKill, "settings", 560, 680, laptop);
+        check(settingsWindow.getBounds() == juce::Rectangle<int>(266, 0, 560, 582), "Settings, never placed, opens centred and fits the screen");
+        // The displays change: the laptop alone at another place; a title bar no screen holds is brought back.
+        w.setBounds(2000, 300, 700, 400);
+        check(keepReachable(w, laptop) && w.getBounds() == juce::Rectangle<int>(1093 - 40, 300, 700, 400),
+              "after a display change a window off every screen keeps a grab of its title bar on one");
+        check(!keepReachable(w, laptop), "and one already reachable is left where it is");
+    }
+    PlaceWatch watch;
+    int saves = 0;
+    watch.save = [&] { ++saves; };
+    watch.moved();
+    watch.moved();
+    check(watch.pending() && saves == 0, "moves are held until the window stands still");
+    watch.flush();
+    watch.flush();
+    check(!watch.pending() && saves == 1, "then saved once");
+}
 // WIN-01: the default key map of every shortcut preset, as text the same on every platform family,
 // against its golden (ADI_UI_REFERENCES/keymap-<preset>-<family>.txt; --write-references writes it,
 // and each run leaves keymap-<preset>-<family>-actual.txt in the working directory),
-// with no key bound to two commands. Then F4, headless: the Mix View opens once and no track's
+// with no key bound to two commands, its chords in WIN-04's canonical text. Then F4, headless: the Mix View opens once and no track's
 // activator changes (MX-14), as F4 was also Activate Track 4 before.
-namespace keymap_golden {
-std::string keyText(const juce::KeyPress &k) {
-    std::string out;
-    const auto mods = k.getModifiers();
-    if (mods.isCommandDown())
-        out += "Cmd+";
-#if JUCE_MAC
-    if ((mods.getRawFlags() & juce::ModifierKeys::ctrlModifier) != 0)
-        out += "Ctrl+";
-#endif
-    if (mods.isAltDown())
-        out += "Alt+";
-    if (mods.isShiftDown())
-        out += "Shift+";
-    const int code = k.getKeyCode();
-    struct Named {
-        int code;
-        const char *name;
+// WIN-04: every command has one stable text id and a Live menu category; a chord's canonical text
+// reads back as the same key; the user's keys (shortcuts.overrides) are on top after every reload,
+// so a Settings change keeps them and a preset switch keeps them over its own keys; and the record
+// is written only when the keys differ from what it holds.
+void userShortcuts(AppCommands &commands, settings::AppSettings &settings) {
+    std::set<std::string> seen;
+    bool ids = true, categories = true;
+    juce::Array<juce::CommandID> all;
+    commands.getAllCommands(all);
+    for (const auto id : all) {
+        const char *stable = AppCommands::stableId(id);
+        if (stable == nullptr || !seen.insert(stable).second || AppCommands::commandFor(stable) != id)
+            ids = false;
+        if (std::string(AppCommands::category(id)) == "ADI")
+            categories = false;
+    }
+    check(ids && seen.size() == static_cast<std::size_t>(all.size()), "every command has one stable id, and it names the command back");
+    check(categories, "every command has a Live menu category");
+    check(AppCommands::stableId(AppCommands::ToggleBrowser) == std::string("view.browser") &&
+              AppCommands::stableId(AppCommands::Redo) == std::string("edit.redo"),
+          "the stable ids read as the plan's: view.browser, edit.redo");
+    check(AppCommands::commandFor("view.nothing") == 0, "an unknown stable id names no command");
+    std::string why;
+    bool roundTrip = true;
+    for (const char *preset : {"live", "cubase", "bitwig"}) {
+        settings.set("shortcuts.preset", std::string(preset), {}, why);
+        commands.reload();
+        for (const auto id : all) {
+            juce::ApplicationCommandInfo info(id);
+            commands.getCommandInfo(id, info);
+            for (const auto &k : info.defaultKeypresses) {
+                const auto back = AppCommands::parseChord(AppCommands::chordText(k));
+                if (!back || !(*back == k) || back->getModifiers() != k.getModifiers())
+                    roundTrip = false;
+            }
+        }
+    }
+    check(roundTrip, "every default chord of every preset reads back from its text as the same key");
+    check(!AppCommands::parseChord("Cmd+") && !AppCommands::parseChord("Hyper+Q"), "a chord text with no key reads as none");
+    const auto keysOf = [&](int id) {
+        std::vector<std::string> out;
+        for (const auto &k : commands.manager.getKeyMappings()->getKeyPressesAssignedToCommand(id))
+            out.push_back(AppCommands::chordText(k));
+        return out;
     };
-    static const Named named[] = {
-        {juce::KeyPress::spaceKey, "Space"},       {juce::KeyPress::escapeKey, "Esc"},
-        {juce::KeyPress::returnKey, "Return"},     {juce::KeyPress::tabKey, "Tab"},
-        {juce::KeyPress::deleteKey, "Delete"},     {juce::KeyPress::backspaceKey, "Backspace"},
-        {juce::KeyPress::insertKey, "Insert"},     {juce::KeyPress::upKey, "Up"},
-        {juce::KeyPress::downKey, "Down"},         {juce::KeyPress::leftKey, "Left"},
-        {juce::KeyPress::rightKey, "Right"},       {juce::KeyPress::pageUpKey, "PageUp"},
-        {juce::KeyPress::pageDownKey, "PageDown"}, {juce::KeyPress::homeKey, "Home"},
-        {juce::KeyPress::endKey, "End"},           {juce::KeyPress::F1Key, "F1"},
-        {juce::KeyPress::F2Key, "F2"},             {juce::KeyPress::F3Key, "F3"},
-        {juce::KeyPress::F4Key, "F4"},             {juce::KeyPress::F5Key, "F5"},
-        {juce::KeyPress::F6Key, "F6"},             {juce::KeyPress::F7Key, "F7"},
-        {juce::KeyPress::F8Key, "F8"},             {juce::KeyPress::F9Key, "F9"},
-        {juce::KeyPress::F10Key, "F10"},           {juce::KeyPress::F11Key, "F11"},
-        {juce::KeyPress::F12Key, "F12"},           {juce::KeyPress::numberPadAdd, "Num+"},
-        {juce::KeyPress::numberPadSubtract, "Num-"}};
-    for (const auto &n : named)
-        if (n.code == code)
-            return out + n.name;
-    if (code > 32 && code < 127)
-        return out + static_cast<char>(code >= 'a' && code <= 'z' ? code - 'a' + 'A' : code);
-    return out + "#" + std::to_string(code);
+    settings.set("shortcuts.preset", std::string("live"), {}, why);
+    auto overrides = settings::Value::object();
+    overrides["view.browser"] = {"Cmd+Shift+F9"};
+    overrides["edit.undo"] = settings::Value::array();
+    overrides["view.nothing"] = {"F9"};
+    check(settings.set("shortcuts.overrides", overrides, {}, why), "the overrides set");
+    commands.reload();
+    check(keysOf(AppCommands::ToggleBrowser) == std::vector<std::string>{"Cmd+Shift+F9"}, "the user's key replaces Show Browser's");
+    check(keysOf(AppCommands::Undo).empty(), "an empty list leaves Undo with no key");
+    check(!keysOf(AppCommands::Redo).empty(), "a command without an override keeps the key map's keys");
+    settings.set("lookfeel.followMode", std::string("scroll"), {}, why);
+    commands.reload();
+    check(keysOf(AppCommands::ToggleBrowser) == std::vector<std::string>{"Cmd+Shift+F9"} && keysOf(AppCommands::Undo).empty(),
+          "the user's keys survive a Settings change");
+    juce::ApplicationCommandInfo redo(AppCommands::Redo);
+    settings.set("shortcuts.preset", std::string("cubase"), {}, why);
+    commands.reload();
+    commands.getCommandInfo(AppCommands::Redo, redo);
+    std::vector<std::string> cubaseRedo;
+    for (const auto &k : redo.defaultKeypresses)
+        cubaseRedo.push_back(AppCommands::chordText(k));
+    check(keysOf(AppCommands::ToggleBrowser) == std::vector<std::string>{"Cmd+Shift+F9"} && keysOf(AppCommands::Undo).empty(),
+          "a preset switch keeps the user's keys on top");
+    check(keysOf(AppCommands::Redo) == cubaseRedo, "and the other commands take the new preset's keys");
+    const auto held = settings.get("shortcuts.overrides");
+    auto known = held;
+    known.erase("view.nothing");
+    check(commands.userKeys() == known, "the keys that differ from the key map are the user's");
+    check(commands.storeUserKeys(why) && settings.get("shortcuts.overrides") == held,
+          "unchanged keys write nothing new, and a stable id this build does not know keeps its keys");
+    commands.manager.getKeyMappings()->addKeyPress(AppCommands::Redo, *AppCommands::parseChord("Cmd+Alt+F9"));
+    check(commands.storeUserKeys(why), ("a changed key is written: " + why).c_str());
+    const auto written = settings.get("shortcuts.overrides");
+    check(written.contains("edit.redo") && written.size() == 4 && written.contains("view.nothing"),
+          "the record now holds Redo's keys beside the other three");
+    commands.reload();
+    const auto redoKeys = keysOf(AppCommands::Redo);
+    check(std::find(redoKeys.begin(), redoKeys.end(), "Cmd+Alt+F9") != redoKeys.end(), "and they come back after a reload");
+    // The Shortcuts page: the editor in place of the record's row, under Live's menus; a key changed there
+    // is the record's at once.
+    {
+        SettingsPanel panel(settings);
+        panel.setSize(640, 720);
+        panel.shortcutKeys = [&]() -> std::unique_ptr<juce::Component> { return std::make_unique<ShortcutsPage>(commands); };
+        panel.showPage("Shortcuts");
+        auto *page = dynamic_cast<ShortcutsPage *>(panel.shortcutsEditor());
+        const bool recordRow = std::any_of(panel.rows().begin(), panel.rows().end(),
+                                           [](const auto &row) { return row->setting.key == "shortcuts.overrides"; });
+        check(page != nullptr && page->isVisible() && !recordRow && page->getHeight() == ShortcutsPage::kHeight,
+              "the Shortcuts page shows the key editor, not the record's text");
+        const auto groups = commands.manager.getCommandCategories();
+        check(groups.contains("Edit") && groups.contains("View") && !groups.contains("ADI"),
+              "the editor's groups are Live's menus");
+        if (page != nullptr) {
+            commands.manager.getKeyMappings()->clearAllKeyPresses(AppCommands::Redo);
+            page->store();
+            const auto now = settings.get("shortcuts.overrides");
+            check(page->error().empty() && now.contains("edit.redo") && now["edit.redo"].empty(),
+                  "a key cleared in the editor is written to the record at once");
+        }
+        panel.showPage("Audio");
+        check(page != nullptr && !page->isVisible(), "the editor shows on its own page only");
+        // A user's key that equals another preset's own: a switch to that preset, with the page open and
+        // its change messages coming in, keeps the key in the record, so switching back still has it.
+        if (page != nullptr) {
+            auto mine = settings::Value::object();
+            mine["edit.redo"] = cubaseRedo;
+            settings.set("shortcuts.overrides", mine, {}, why);
+            settings.set("shortcuts.preset", std::string("live"), {}, why);
+            commands.reload();
+            page->store();
+            settings.set("shortcuts.preset", std::string("cubase"), {}, why);
+            commands.reload();
+            page->store();
+            check(settings.get("shortcuts.overrides").contains("edit.redo"),
+                  "a preset switch with the page open keeps a user's key that equals the new preset's");
+            settings.set("shortcuts.preset", std::string("live"), {}, why);
+            commands.reload();
+            check(keysOf(AppCommands::Redo) == cubaseRedo, "and back on the first preset the key is still the user's");
+        }
+    }
+    settings.set("shortcuts.overrides", settings::Value::object(), {}, why);
+    settings.set("shortcuts.preset", std::string("live"), {}, why);
+    settings.set("lookfeel.followMode", std::string("page"), {}, why);
+    commands.reload();
+    juce::ApplicationCommandInfo undo(AppCommands::Undo);
+    commands.getCommandInfo(AppCommands::Undo, undo);
+    check(!undo.defaultKeypresses.isEmpty() && keysOf(AppCommands::Undo).size() == static_cast<std::size_t>(undo.defaultKeypresses.size()),
+          "with no overrides Undo has the key map's keys again");
 }
-} // namespace keymap_golden
 void keymapGolden(AppCommands &commands, settings::AppSettings &settings, const std::filesystem::path &dir, bool write) {
 #if JUCE_MAC
     const char *family = "mac";
@@ -13974,7 +14203,7 @@ void keymapGolden(AppCommands &commands, settings::AppSettings &settings, const 
             commands.getCommandInfo(id, info);
             std::string keys;
             for (const auto &k : info.defaultKeypresses) {
-                const auto t = keymap_golden::keyText(k);
+                const auto t = AppCommands::chordText(k);
                 keys += (keys.empty() ? "" : ", ") + t;
                 byKey[t].push_back(info.shortName.toStdString());
             }
@@ -14038,15 +14267,17 @@ void keymapGolden(AppCommands &commands, settings::AppSettings &settings, const 
 }
 
 int main(int argc, char **argv) {
-#if defined(_MSC_VER) && defined(_DEBUG)
-    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
-    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
-    _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
-#endif
+    // WTS-02: no dialog box on Windows; JUCE's assertions counted, the run failing on one.
+    adi::uitest::noDialogs();
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     juce::ScopedJuceInitialiser_GUI init;
+    adi::uitest::AssertionWatch assertions;
+    {
+        // The watch sees an assertion: one tripped on purpose under a watch of its own.
+        adi::uitest::AssertionWatch probe;
+        jassertfalse;
+        check(probe.count() == 1, "an assertion is logged and counted (JUCE_LOG_ASSERTIONS on this target)");
+    }
     const bool write = argc == 2 && std::string(argv[1]) == "--write-references";
     test::TempDirectory temp("ui_shell", "root");
     StoreError err{};
@@ -14086,7 +14317,7 @@ int main(int argc, char **argv) {
         mixChannelToolSearch(commands, temp.path());
         mixStackViewReopen(commands, temp.path());
         mixViewShell(commands, temp.path(), true);
-        pluginWindows(commands, temp.path());
+        pluginWindows(commands, settings, temp.path());
         std::printf("%d checks, %d failures (Mix View fake-peer components)\n", checks, failures);
         return failures ? 1 : 0;
     }
@@ -14895,8 +15126,8 @@ int main(int argc, char **argv) {
         };
         using C = AppCommands;
 #if JUCE_MAC
-        check(names == juce::StringArray{"File", "Edit", "Create", "View", "Options", "Navigate"},
-              "the Mac's menu bar: File, Edit, Create, View, Options, Navigate");
+        check(names == juce::StringArray{"File", "Edit", "Create", "View", "Options", "Navigate", "Help"},
+              "the Mac's menu bar: File, Edit, Create, View, Options, Navigate, Help");
         check(items("Options") == std::vector<int>{C::Follow, 0, C::DrawMode, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid,
                                                    C::SnapToGrid, C::FixedGrid, 0, C::DelayCompensation, 0, C::SoloSwitches,
                                                    C::CueSwitches, C::SoloInPlace},
@@ -14907,8 +15138,8 @@ int main(int argc, char **argv) {
               "the File menu: Save As, then Save a Copy and Collect All and Save (5.4.1, 5.7), ADI's "
               "Collect and Export after them, then Export Audio/Video (5.2.1); Quit is the application menu's on the Mac");
 #else
-        check(names == juce::StringArray{"File", "Edit", "Create", "View", "Options", "Navigate"},
-              "the menu bar: File, Edit, Create, View, Options, Navigate");
+        check(names == juce::StringArray{"File", "Edit", "Create", "View", "Options", "Navigate", "Help"},
+              "the menu bar: File, Edit, Create, View, Options, Navigate, Help");
         check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0, C::TakeSnapshot, C::SaveAs,
                                                 C::SaveCopy, C::CollectAllAndSave, C::CollectAndExport, 0, C::ExportAudio, 0,
                                                 C::Quit},
@@ -14960,7 +15191,8 @@ int main(int argc, char **argv) {
                       C::FocusClipView == C::ArrangePanelsVertically + 1 && C::FitToTimeRange == C::FocusClipView + 1 &&
                       C::ArrangementRecord == C::FitToTimeRange + 1 && C::ExportAudio == C::ArrangementRecord + 1 &&
                       C::DelayCompensation == C::ExportAudio + 1 && C::SoloSwitches == C::DelayCompensation + 1 &&
-                      C::CueSwitches == C::SoloSwitches + 1 && C::LastId == C::CueSwitches,
+                      C::CueSwitches == C::SoloSwitches + 1 && C::HelpManual == C::CueSwitches + 1 &&
+                      C::KeyboardReference == C::HelpManual + 1 && C::LastId == C::KeyboardReference,
                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
                   "Select Loop, Save a Copy, Collect All and Save, Collect and Export, Cut, Copy, Paste, Duplicate, "
                   "Show/Hide Plug-In Windows, Split, Clip View, Insert Empty MIDI Clip(s), the …Time commands and "
@@ -15070,7 +15302,30 @@ int main(int argc, char **argv) {
                                                     C::NextNeighbor, C::PreviousNeighbor, 0,
                                                     C::TabMovesFocus, C::WrapTabNavigation},
               "the Navigate menu: the views ADI has, the neighbours, then Tab's two switches (§41.1.1)");
-        check(!names.contains("Help"), "a menu with no command yet is left out");
+        // WIN-09: the Help menu, last, with the manual and the keyboard reference (the Mac's Cmd+?
+        // search then finds ADI's menus); each opens its target.
+        check(names[names.size() - 1] == "Help" && items("Help") == std::vector<int>{C::HelpManual, C::KeyboardReference},
+              "the Help menu, last: the manual and the keyboard reference");
+        {
+            auto &helpRoot = window.root();
+            std::vector<juce::URL> opened;
+            helpRoot.openHelp = [&opened](const juce::URL &u) {
+                opened.push_back(u);
+                return true;
+            };
+            check(helpRoot.command(C::HelpManual) && opened.size() == 1 &&
+                      opened[0].toString(false) == juce::String(AdiRootComponent::kManualAddress),
+                  "the manual entry opens the manual's address");
+            check(helpRoot.command(C::KeyboardReference) && opened.size() == 2 && opened[1].isLocalFile(),
+                  "the keyboard reference entry opens a page written from the keys in force");
+            const auto page = opened.size() == 2 ? opened[1].getLocalFile().loadFileAsString() : juce::String();
+            check(page.contains("ADI Keyboard Shortcuts") && page.contains("Mix View") && page.contains("Undo") &&
+                      !page.contains("<script"),
+                  "the page lists the commands by name, with their keys");
+            helpRoot.openHelp = nullptr;
+            if (opened.size() == 2)
+                opened[1].getLocalFile().deleteFile();
+        }
         // Live 12's View menu: the track controls' and the Mixer View's controls in two submenus.
         {
             const auto viewMenu = bar->getMenuForIndex(names.indexOf("View"), "View");
@@ -15108,11 +15363,12 @@ int main(int argc, char **argv) {
         // Live on Windows (§42.28): Alt and a menu's first letter opens that menu.
         check(menuForKey(*bar, juce::KeyPress('f', alt, 0)) == names.indexOf("File") &&
                   menuForKey(*bar, juce::KeyPress('E', alt, 0)) == names.indexOf("Edit") &&
-                  menuForKey(*bar, juce::KeyPress('n', alt, 0)) == names.indexOf("Navigate"),
-              "Alt and a menu's first letter names that menu");
+                  menuForKey(*bar, juce::KeyPress('n', alt, 0)) == names.indexOf("Navigate") &&
+                  menuForKey(*bar, juce::KeyPress('h', alt, 0)) == names.indexOf("Help"),
+              "Alt and a menu's first letter names that menu, Help's H among them (WIN-09)");
         check(menuForKey(*bar, juce::KeyPress('f', 0, 0)) < 0 &&
                   menuForKey(*bar, juce::KeyPress('f', cmd | alt, 0)) < 0 &&
-                  menuForKey(*bar, juce::KeyPress('h', alt, 0)) < 0 &&
+                  menuForKey(*bar, juce::KeyPress('q', alt, 0)) < 0 &&
                   menuForKey(*bar, juce::KeyPress('2', alt, 0)) < 0,
               "only Alt alone opens a menu, and only one that is there");
         const auto appMenu = applicationMenu(commands);
@@ -16243,7 +16499,7 @@ int main(int argc, char **argv) {
             check(restoreFloating(
                       saved, {{"primary", {0, 0, 1000, 700}}, {"left", {-1920, 0, 1920, 1080}}})
                           .getX() == -1600,
-                  "monitor identity preserves negative desktop coordinates");
+                  "monitor identity preserves negative desktop coordinates [P:7.5-floating#5]");
             check(settings.set("lookfeel.showTooltips", true, {}, why), "tooltips back on");
             commands.reload();
             bool alive = true;
@@ -16255,11 +16511,19 @@ int main(int argc, char **argv) {
                 [&](std::int64_t) { return alive; }, false);
             check(floating.detach("test", 11, content, dock), "detach existing component");
             check(floating.content("test") == &content && content.getParentComponent() != &dock,
-                  "detach reparents same identity");
-            check(floating.hasTooltips("test"), "a floating window has its own tooltips");
+                  "detach reparents same identity [P:7.5-floating#3]");
+            check(floating.hasTooltips("test"), "a floating window has its own tooltips [P:7.5-floating#9]");
             floating.frame("test");
             floating.frame("test");
             check(floating.drains("test") == 2, "window drains on its own clock");
+            // WIN-02: a move is saved once the window stands still, so it keeps its place after a kill.
+            if (auto *moved = floating.window("test")) {
+                moved->setBounds(140, 160, 640, 380);
+                floating.flushPlaces();
+                const auto kept = document->views().loadFloating("test");
+                check(kept.x == 140 && kept.y == 160 && kept.width == 640 && kept.height == 380 && kept.open,
+                      "a moved floating window's place is saved without its closing");
+            }
             floating.close("test");
             check(content.getParentComponent() == &dock &&
                       content.getBounds() == juce::Rectangle<int>(10, 20, 300, 180),
@@ -16270,7 +16534,7 @@ int main(int argc, char **argv) {
             floating.frame("deleted");
             floating.collect();
             check(floating.count() == 0 && !document->views().loadFloating("deleted").open,
-                  "deleting the device closes its window and remembers it closed");
+                  "deleting the device closes its window and remembers it closed [P:7.5-floating#8]");
             alive = true;
             floating.collect();
             check(floating.count() == 0, "undo restores the device, not the window");
@@ -17273,7 +17537,7 @@ int main(int argc, char **argv) {
     trace("newProject", [&] { newProject(commands, temp.path()); });
     trace("stripParamUndo", [&] { stripParamUndo(commands, temp.path()); });
     trace("deviceClipboard", [&] { deviceClipboard(commands, temp.path()); });
-    trace("pluginWindows", [&] { pluginWindows(commands, temp.path()); });
+    trace("pluginWindows", [&] { pluginWindows(commands, settings, temp.path()); });
     trace("automationArm", [&] { automationArm(commands, temp.path()); });
     trace("armAndRecord", [&] { armAndRecord(commands, temp.path()); });
     trace("exportPage", [&] { exportPage(commands, temp.path()); });
@@ -17306,7 +17570,14 @@ int main(int argc, char **argv) {
     trace("returnInGroup", [&] { returnInGroup(commands, temp.path()); });
     trace("loopMetronome", [&] { loopMetronome(commands, settings, temp.path()); });
     trace("locators", [&] { locators(commands, temp.path()); });
+    trace("windowPlaces", [&] { windowPlaces(temp.path()); });
     trace("keymapGolden", [&] { keymapGolden(commands, settings, temp.path(), write); });
+    trace("userShortcuts", [&] { userShortcuts(commands, settings); });
+    trace("paintHygiene", [&] { paintHygiene(commands, temp.path()); });
+    check(assertions.count() == 0, ("no JUCE assertion in the run; the last: " + assertions.last().toStdString()).c_str());
+    if (assertions.queueFull() > 0)
+        std::fprintf(stderr, "[shell] %d JUCE assertions came from the machine (no message loop, display or MIDI), counted apart\n",
+                     assertions.queueFull());
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

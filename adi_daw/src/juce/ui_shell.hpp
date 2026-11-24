@@ -22,6 +22,7 @@
 #include "ui_browser.hpp"
 #include "ui_controlbar.hpp"
 #include "ui_look.hpp"
+#include "ui_place.hpp"
 #include "adi/clip_commands.hpp"
 #include "ui_devices.hpp"
 #include "ui_clipview.hpp"
@@ -29,6 +30,7 @@
 #include "ui_mixer.hpp"
 #include "ui_mixview.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
+#include <juce_gui_extra/juce_gui_extra.h> // the Shortcuts page's key editor (WIN-04)
 #include <functional>
 #include <memory>
 #include <optional>
@@ -163,10 +165,26 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         DelayCompensation, // Live's Options > Delay Compensation (manual 18.7; MX-04)
         SoloSwitches,      // Live's Options menu (manual 18.6; MX-08): the Solo buttons solo
         CueSwitches,       // ... or cue, sending the track to Cue Out
-        LastId = CueSwitches
+        HelpManual,        // the Help menu's manual (WIN-09)
+        KeyboardReference, // the Help menu's keyboard reference, written from the keys in force (WIN-09)
+        LastId = KeyboardReference
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
+    // WIN-04: each command's stable text id ("view.browser", "edit.redo"), never renumbered, the list
+    // only growing; its category, the Live menu that holds it (Transport, Arrangement and Mixer for the
+    // commands no menu holds: keys and controls only); the command a stable id names (0: none).
+    static const char *stableId(int id) noexcept;
+    static const char *category(int id) noexcept;
+    static int commandFor(const std::string &stableId) noexcept;
+    // A chord as canonical text, the same on every platform ("Cmd+Alt+B", "F4", "Space"): Cmd is the
+    // command key (Ctrl off the Mac), Ctrl the Mac's own; then Alt, Shift, the key. And back.
+    static std::string chordText(const juce::KeyPress &);
+    static std::optional<juce::KeyPress> parseChord(const std::string &);
+    // The keys that differ from the key map's, as shortcuts.overrides holds them; written only when
+    // they differ from what it holds (false with why when the write fails).
+    settings::Value userKeys() const;
+    bool storeUserKeys(std::string &why);
     bool key(const juce::KeyPress &, AdiRootComponent &);
     void activate(AdiRootComponent &);
     void detach(AdiRootComponent &);
@@ -202,6 +220,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     // Auto-Hide Plug-In Windows and Plug-in windows always on top.
     bool multiplePluginWindows() const noexcept { return multiplePluginWindows_; }
     bool autoHidePluginWindows() const noexcept { return autoHidePluginWindows_; }
+    // Live's Auto-Open Plug-In Windows (manual 23.3.1.1; plugins.autoOpenWindows, on by default).
+    bool autoOpenPluginWindows() const noexcept { return autoOpenPluginWindows_; }
     bool pluginWindowsOnTop() const noexcept { return pluginWindowsOnTop_; }
     // Live's Exclusive Solo (Record, Warp & Launch Settings), on by default: soloing a track unsolos
     // the others unless Ctrl/Cmd is held.
@@ -261,6 +281,7 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     bool tabMovesFocus_ = false;
     bool delayCompensation_ = true;
     bool multiplePluginWindows_ = false, autoHidePluginWindows_ = true, pluginWindowsOnTop_ = true;
+    bool autoOpenPluginWindows_ = true;
     bool wrapTab_ = true, arrowKeysMoveClips_ = true;
     bool followByPage_ = true;
     bool exclusiveSolo_ = true;
@@ -269,6 +290,28 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     bool linkLoop_ = false;
     bool splitAll_ = true;
     ClipClipboard clipClipboard_;
+};
+// WIN-04: the Settings window's Shortcuts page, in place of the shortcuts.overrides row: JUCE's key
+// mapping editor on the application's commands, under Live's menus, in the theme's colours. Each change
+// is written to the record at once, and only when the user's keys differ from what it holds; when the
+// write fails, why shows under the editor.
+class ShortcutsPage final : public juce::Component, private juce::ChangeListener {
+  public:
+    explicit ShortcutsPage(AppCommands &);
+    ~ShortcutsPage() override;
+    void paint(juce::Graphics &) override;
+    void resized() override;
+    juce::KeyMappingEditorComponent &editor() noexcept { return editor_; }
+    const std::string &error() const noexcept { return error_; }
+    // Writes the user's keys now (the change message comes later, on the message loop).
+    void store();
+    static constexpr int kHeight = 440, kErrorHeight = 20;
+
+  private:
+    void changeListenerCallback(juce::ChangeBroadcaster *) override;
+    AppCommands &commands_;
+    juce::KeyMappingEditorComponent editor_;
+    std::string error_;
 };
 // Live's Status Bar (manual 3.2): messages along the window's foot, with the
 // Info View's show/hide toggle in its bottom-left corner (manual 2.2.2).
@@ -387,6 +430,14 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // Live's Export Audio/Video (EX-11): the application shows the Export page with these choices, the
     // render range the selection, else the loop, else the whole song. Unset outside the application.
     std::function<void(const ExportChoices &)> exportAudio;
+    // Opens a Help target (WIN-09): the manual's address, or the keyboard reference's file. Empty, the
+    // system's browser opens it; a test puts its own here.
+    std::function<bool(const juce::URL &)> openHelp;
+    // The manual the Help menu opens: Live 12's, which ADI's behaviour is written against (ADR-0203
+    // d1), until ADI has its own (the director's question in the window log).
+    static constexpr const char *kManualAddress = "https://www.ableton.com/en/live-manual/12/";
+    // The keyboard reference: every command with the keys it has now, as a page; its file.
+    juce::File writeKeyboardReference() const;
     // The Export page's starting choices, from the frame's snapshot and selection.
     ExportChoices exportDefaults() const;
     // A mixer drag heard while it moves (MX-23, SRF-02): the document's live gesture. The strip begins it
@@ -508,6 +559,10 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     static std::string pluginWindowKey(std::int64_t device);
     // Each frame: Auto-Hide and Show/Hide applied, Always on Top followed.
     void followPluginWindows();
+    // WIN-03, Live's Auto-Open Plug-In Windows: a plug-in just added opens its window once the device
+    // feed shows it (within a second of frames), when the setting is on. The app calls it after an
+    // insert lands.
+    void pluginAdded(std::int64_t device);
     // Live's Show/Hide Plug-In Windows (Ctrl/Cmd+Alt+P): every plug-in window at once.
     bool pluginWindowsShown() const noexcept { return pluginWindowsShown_; }
     // A built-in device loaded from the browser (D4): the app wires the load (`insertBuiltin`, one
@@ -816,6 +871,8 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     std::optional<SnapshotReader> reader_;
     std::uint64_t generation_ = 0;
     bool pluginWindowsShown_ = true;
+    std::int64_t autoOpen_ = 0; // a plug-in added, its window to open (WIN-03)
+    int autoOpenFrames_ = 0;
     unsigned lastDrain_ = 0;
     bool playing_ = false;
     bool midiOverdub_ = false; // Live's MIDI Arrangement Overdub, off in a new Set
@@ -914,7 +971,13 @@ class AdiWindow final : public juce::DocumentWindow, private juce::KeyListener {
     juce::MenuBarModel *menu() noexcept;
     // Placed, or moved onto another display: the root takes the zoom kept for it there (N4).
     void moved() override;
+    void resized() override;
+    // The displays changed (a monitor gone, another resolution or scale): the title bar kept on one.
+    void parentSizeChanged() override;
     void minimisationStateChanged(bool) override;
+    void broughtToFront() override;
+    // Where the window stands, saved after each move or size once it stands still (WIN-02).
+    PlaceWatch place;
     // What the window keeps of the App settings, brought up to date: each frame does it.
     void followSettings();
     AdiRootComponent &root() noexcept { return *root_; }
