@@ -105,7 +105,7 @@ back), and gemini (a2b41755).
 - N74: Live's undo for a loop recording, after a reading.
 - N75: MX-07's registry half.
 
-Next free N76. Next free DF-E77.
+Next free N76.
 
 **For the window-fn seat:**
 - Its parked recording and export parity checklists are drafted from the Live 12 manual's text by win, each row
@@ -119,7 +119,9 @@ Next free N76. Next free DF-E77.
 - Superseded branches stay on origin and are not landed: `window-fn/function-keys`, `shortcut-overrides`,
   `lane-ref-canonical`, `play-first-block-main`, and the window lane's `plugins-browser` and `browser-devices-test`.
 
-**Next free:** schema 1.26, ADR-0254, DF-E77, DF-W41, DF-M68, N76.
+**The gemini seat's PR-BUILDS rounds 6 and 7** (23 November) registered: DF-M68 (Clang 14, `shared_analysis.cpp`, the Mix View's after-date stack), DF-E77 (GCC 12, `test_vinyl_distortion.cpp`, devices), DF-E78 (two unused test functions, engine-win's export stack), DF-E79 (`adi_midi_capture_tests` on DEV-17, engine). Each lands with its after-date branch.
+
+**Next free:** schema 1.26, ADR-0254, DF-E80, DF-W41, DF-M69, N76.
 
 ---
 
