@@ -2,26 +2,31 @@
 #include "ui_floating.hpp"
 #include <chrono>
 namespace adi::ui {
-juce::Rectangle<int> restoreFloating(const FloatingState &s,
-                                     const std::vector<MonitorArea> &screens) {
+namespace {
+std::vector<window_place::Monitor> asPlaces(const std::vector<MonitorArea> &screens) {
+    std::vector<window_place::Monitor> out;
+    for (const auto &s : screens)
+        out.push_back({s.id, toPlace(s.area.isEmpty() ? s.usable : s.area), toPlace(s.usable), s.dpi, s.main});
+    return out;
+}
+} // namespace
+// WIN-02: the one placement rule (adi/ui/window_place.hpp). A record from before the monitor's area was
+// kept reads as on its monitor unchanged, or, with that monitor gone, at its own coordinates.
+juce::Rectangle<int> restoreFloating(const FloatingState &s, const std::vector<MonitorArea> &screens) {
     if (screens.empty())
         return {0, 0, 800, 420};
-    auto chosen = screens.begin();
-    for (auto it = screens.begin(); it != screens.end(); ++it)
-        if (it->id == s.monitor) {
-            chosen = it;
-            break;
-        }
-    const auto area = chosen->usable;
-    const int w = std::clamp(s.width, 1, area.getWidth()),
-              h = std::clamp(s.height, 1, area.getHeight());
-    return {std::clamp(s.x, area.getX(), area.getRight() - w),
-            std::clamp(s.y, area.getY(), area.getBottom() - h), w, h};
+    window_place::Place p;
+    p.display = s.monitor;
+    p.area = {s.areaX, s.areaY, s.areaWidth, s.areaHeight};
+    p.dpi = s.dpi;
+    p.rect = {s.x, s.y, s.width, s.height};
+    return fromPlace(window_place::restore(p, asPlaces(screens), 100, 100));
 }
 std::vector<MonitorArea> currentMonitors() {
     std::vector<MonitorArea> result;
     for (const auto &d : juce::Desktop::getInstance().getDisplays().displays)
-        result.push_back({displayId(d), d.userBounds.toNearestInt()});
+        result.push_back({displayId(d), d.userBounds.toNearestInt(), d.logicalBounds.toNearestInt(),
+                          static_cast<int>(d.dpi), d.isMain});
     return result;
 }
 AnalyserModel::AnalyserModel(std::shared_ptr<const engine::ScopeTap> tap) : tap_(std::move(tap)) {
@@ -79,6 +84,9 @@ struct FloatingHost::Entry {
     std::string key;
     std::int64_t device = 0;
     bool closing = false, scaled = true, hidden = false, onTop = false;
+    // WIN-03: an owned window (a plug-in's editor, a device's view) goes with the main window: no task
+    // bar button, minimised and back with it, above it. The Mix View's window is a normal one.
+    bool ownedKind = false, byOwner = false;
     std::string title; // the window's title, where it is not the key
     std::uint64_t drains = 0;
     juce::Component::SafePointer<juce::Component> component, dock;
@@ -89,12 +97,16 @@ struct FloatingHost::Entry {
     struct Window final : juce::DocumentWindow, juce::KeyListener {
         Window(FloatingHost &host, Entry &entry)
             : DocumentWindow(entry.title.empty() ? entry.key : entry.title, look::ink,
-                             entry.scaled ? allButtons : (closeButton | minimiseButton), host.native_),
+                             entry.scaled ? allButtons : (closeButton | minimiseButton), false),
               h(host),
               e(entry), clock(this, [this](double) {
                   followTooltips(*this, h.commands_, tips, tipDelayMs);
                   h.frame(e.key);
               }) {
+            // On the desktop here, not in the base's constructor, so the kind's style flags are this
+            // window's own.
+            if (host.native_)
+                addToDesktop(getDesktopWindowStyleFlags());
             setResizable(true, false);
             addKeyListener(this);
             // Tooltips are on in every native window (ADR-0203 d12), as the main one, and
@@ -103,7 +115,19 @@ struct FloatingHost::Entry {
         }
         using juce::DocumentWindow::keyPressed;
         using juce::DocumentWindow::keyStateChanged;
+        int getDesktopWindowStyleFlags() const override {
+            auto flags = DocumentWindow::getDesktopWindowStyleFlags();
+            if (e.ownedKind)
+                flags &= ~juce::ComponentPeer::windowAppearsOnTaskbar;
+            return flags;
+        }
         bool keyPressed(const juce::KeyPress &k, juce::Component *) override {
+            // Esc closes an owned window, when it reaches the window: a plug-in that takes the key
+            // keeps it (WIN-03).
+            if (e.ownedKind && k == juce::KeyPress(juce::KeyPress::escapeKey)) {
+                closeButtonPressed();
+                return true;
+            }
             // The zoom keys zoom this window; every other key is the main window's.
             const auto id = h.commands_.manager.getKeyMappings()->findCommandForKeyPress(k);
             if (e.zoomed && (id == AppCommands::ZoomIn || id == AppCommands::ZoomOut)) {
@@ -122,6 +146,21 @@ struct FloatingHost::Entry {
                 h.root_.mixViewPanel.stack.suspendParameters(true);
             setVisible(false);
         }
+        // WIN-02: saved once it stands still after a move, so it keeps its place after a kill; kept on a
+        // screen when the displays change.
+        void moved() override {
+            DocumentWindow::moved();
+            place.moved();
+        }
+        void resized() override {
+            DocumentWindow::resized();
+            place.moved();
+        }
+        void parentSizeChanged() override {
+            DocumentWindow::parentSizeChanged();
+            if (keepReachable(*this, isResizable()))
+                place.moved();
+        }
         void minimisationStateChanged(bool minimised) override {
             if (e.component.getComponent() == &h.root_.mixViewPanel) {
                 h.root_.mixViewPanel.suspendAnalysis(minimised);
@@ -134,6 +173,7 @@ struct FloatingHost::Entry {
         Entry &e;
         std::unique_ptr<juce::TooltipWindow> tips;
         int tipDelayMs = 0;
+        PlaceWatch place;
         juce::VBlankAttachment clock;
     };
     std::unique_ptr<Window> window;
@@ -142,7 +182,12 @@ FloatingHost::FloatingHost(AdiRootComponent &r, AppCommands &c, ViewStateStore &
                            engine::ProjectView &p, std::function<bool(std::int64_t)> alive,
                            bool native)
     : root_(r), commands_(c), states_(s), project_(p), alive_(std::move(alive)), native_(native) {}
-FloatingHost::~FloatingHost() { closeAll(true); }
+FloatingHost::~FloatingHost() {
+    // The main window's activation and minimise callbacks never reach a host that is gone (WIN-03).
+    if (root_.pluginHost == this)
+        root_.pluginHost = nullptr;
+    closeAll(true);
+}
 bool FloatingHost::install(std::unique_ptr<Entry> e) {
     if (entries_.contains(e->key) || !e->component || !alive_(e->device))
         return false;
@@ -159,9 +204,26 @@ bool FloatingHost::install(std::unique_ptr<Entry> e) {
         raw->window->setResizable(false, false);
         if (const auto kept = states_.loadFloating(key); !kept.monitor.empty())
             raw->window->setTopLeftPosition(restoreFloating(kept, currentMonitors()).getTopLeft());
+        else if (const auto screens = currentMonitors(); !screens.empty()) {
+            // Never placed: cascaded off the windows already open, from the main display's corner (WIN-03).
+            auto home = screens.front();
+            for (const auto &m : screens)
+                if (m.main) {
+                    home = m;
+                    break;
+                }
+            std::vector<window_place::Rect> others;
+            for (const auto &[k, other] : entries_)
+                if (other.get() != raw && other->window)
+                    others.push_back(toPlace(other->window->getBounds()));
+            const auto corner = home.usable.getPosition() + juce::Point<int>(2 * window_place::kCascade, 2 * window_place::kCascade);
+            const auto start = toPlace(raw->window->getBounds().withPosition(corner));
+            raw->window->setTopLeftPosition(fromPlace(window_place::cascade(start, others, toPlace(home.usable))).getTopLeft());
+        }
         if (native_)
             raw->window->setVisible(true);
         save(*raw, true);
+        raw->window->place.save = [this, raw] { save(*raw, true); };
         return true;
     }
     raw->window->setContentNonOwned(raw->zoomed ? static_cast<juce::Component *>(raw->zoomed.get())
@@ -170,6 +232,16 @@ bool FloatingHost::install(std::unique_ptr<Entry> e) {
     if (const auto kept = states_.loadFloating(key); kept.monitor.empty() && !raw->first.isEmpty()) {
         // Never placed: the content where `first` says, the title bar above it.
         raw->window->setBounds(raw->window->getContentComponentBorder().addedTo(raw->first));
+    } else if (kept.monitor.empty()) {
+        // Never placed and nowhere asked: cascaded off the windows already open (WIN-02).
+        const auto screens = currentMonitors();
+        const auto start = restoreFloating(kept, screens);
+        std::vector<window_place::Rect> others;
+        for (const auto &[k, other] : entries_)
+            if (other.get() != raw && other->window)
+                others.push_back(toPlace(other->window->getBounds()));
+        const auto usable = screens.empty() ? start : screens.front().usable;
+        raw->window->setBounds(fromPlace(window_place::cascade(toPlace(start), others, toPlace(usable))));
     } else
         raw->window->setBounds(restoreFloating(kept, currentMonitors()));
     // An ADI view's window opens at the zoom kept for it on its display (N4).
@@ -181,6 +253,7 @@ bool FloatingHost::install(std::unique_ptr<Entry> e) {
     if (native_)
         raw->window->setVisible(true);
     save(*raw, true);
+    raw->window->place.save = [this, raw] { save(*raw, true); };
     return true;
 }
 bool FloatingHost::detach(const std::string &key, std::int64_t id, juce::Component &component,
@@ -207,6 +280,7 @@ bool FloatingHost::openView(const std::string &key, std::int64_t id,
     e->owned = std::move(component);
     e->onFrame = std::move(fn);
     e->scaled = scaled;
+    e->ownedKind = true;
     return install(std::move(e));
 }
 void FloatingHost::show(const std::string &key, bool on) {
@@ -220,7 +294,41 @@ void FloatingHost::show(const std::string &key, bool on) {
     if (e.component.getComponent() == &root_.mixViewPanel)
         root_.mixViewPanel.stack.suspendParameters(!on || e.closing || (e.window && e.window->isMinimised()));
     if (native_ && e.window && !e.closing)
-        e.window->setVisible(on);
+        e.window->setVisible(on && !e.byOwner);
+}
+void FloatingHost::ownerMinimised(bool minimised) {
+    for (auto &[key, e] : entries_)
+        if (e->ownedKind && e->window) {
+            e->byOwner = minimised;
+            if (native_ && !e->closing)
+                e->window->setVisible(!minimised && !e->hidden);
+        }
+}
+void FloatingHost::ownerToFront() {
+#if JUCE_LINUX || JUCE_BSD
+    // JUCE's X11 toFront activates the window whatever it is asked (_NET_ACTIVE_WINDOW): it would take the
+    // keys from the main window and bring back one the user minimised. On X11 the owned windows wait for
+    // the transient-for hint, with the other platforms' owner windows.
+    return;
+#else
+    // A raise that takes no focus; a window the user minimised stays down (Windows' toFront restores one).
+    for (auto &[key, e] : entries_)
+        if (e->ownedKind && e->window && !e->closing && e->window->isVisible() && !e->window->isMinimised())
+            e->window->toFront(false);
+#endif
+}
+bool FloatingHost::owned(const std::string &key) const {
+    const auto it = entries_.find(key);
+    return it != entries_.end() && it->second->ownedKind;
+}
+bool FloatingHost::withOwner(const std::string &key) const {
+    const auto it = entries_.find(key);
+    return it != entries_.end() && it->second->byOwner;
+}
+bool FloatingHost::taskbarButton(const std::string &key) const {
+    const auto it = entries_.find(key);
+    return it != entries_.end() && it->second->window &&
+           (it->second->window->getDesktopWindowStyleFlags() & juce::ComponentPeer::windowAppearsOnTaskbar) != 0;
 }
 bool FloatingHost::shown(const std::string &key) const {
     const auto it = entries_.find(key);
@@ -290,20 +398,30 @@ void FloatingHost::save(Entry &e, bool open) {
     state.width = b.getWidth();
     state.height = b.getHeight();
     state.open = open;
-    const auto screens = currentMonitors();
-    for (const auto &screen : screens)
-        if (screen.usable.contains(b.getCentre())) {
-            state.monitor = screen.id;
-            break;
-        }
+    // The monitor showing most of it, with its area and DPI then (WIN-02).
+    const auto at = window_place::placeOf(toPlace(b), false, asPlaces(currentMonitors()));
+    if (!at.display.empty()) {
+        state.monitor = at.display;
+        state.areaX = at.area.x;
+        state.areaY = at.area.y;
+        state.areaWidth = at.area.w;
+        state.areaHeight = at.area.h;
+        state.dpi = at.dpi;
+    }
     std::string ignored;
     states_.saveFloating(e.key, state, ignored);
+}
+void FloatingHost::flushPlaces() {
+    for (auto &[key, e] : entries_)
+        if (e->window)
+            e->window->place.flush();
 }
 void FloatingHost::close(const std::string &key) {
     auto it = entries_.find(key);
     if (it == entries_.end())
         return;
     auto &e = *it->second;
+    e.window->place.save = nullptr; // closed: its last place is the one saved now
     save(e, false);
     if (e.component.getComponent() == &root_.mixViewPanel)
         root_.mixViewPanel.stack.suspendParameters(true);

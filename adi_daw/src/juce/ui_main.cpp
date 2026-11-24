@@ -568,6 +568,8 @@ class AdiApplication final : public juce::JUCEApplication,
         mainMeterSource_.reset();
         floating_.reset();
         historyWindow_.reset();
+        if (window_)
+            window_->place.flush(); // a move still settling is kept (WIN-02)
         window_.reset();
         document_.reset();
         commands_.reset();
@@ -642,6 +644,13 @@ class AdiApplication final : public juce::JUCEApplication,
         mainMeterSource_.reset();
         floating_.reset();
         historyWindow_.reset();
+        // A project opened keeps the main window where it stands, full screen or not (WIN-02).
+        std::optional<window_place::Rect> standingAt;
+        bool fullScreen = false;
+        if (window_) {
+            window_->place.flush();
+            standingAt = standing(*window_, fullScreen);
+        }
         window_.reset();
         document_ = std::move(next);
         auto root = std::make_unique<AdiRootComponent>(document_->view(), document_->ops(),
@@ -816,6 +825,9 @@ class AdiApplication final : public juce::JUCEApplication,
                 root_->say(ref.name + " did not load (" + entry->error + "); it stays in the chain, bypassed. Undo removes it.");
                 return true;
             }
+            // Auto-Open Plug-In Windows (WIN-03): its window, once the feed shows it.
+            if (made > before_)
+                root_->pluginAdded(made);
             const auto kind = ref.subtype == "instrument" ? "an instrument" : ref.subtype == "midi_effect" ? "a MIDI effect" : "an audio effect";
             if (kindGuessed)
                 root_->say(stored ? ref.name + " went in as " + kind + ", as this project holds it." :
@@ -973,7 +985,17 @@ class AdiApplication final : public juce::JUCEApplication,
         window_ = std::make_unique<AdiWindow>(std::move(root), *commands_);
         window_->onClose = [this] { systemRequestedQuit(); };
         window_->setName("ADI - " + file.getFileNameWithoutExtension());
-        window_->centreWithSize(1200, 720);
+        // Where it was when the application last stood (window.places, WIN-02), at first run centred; full
+        // screen again once it shows, so JUCE keeps the rectangle it goes back to.
+        if (standingAt)
+            window_->setBounds(fromPlace(*standingAt));
+        else
+            fullScreen = restorePlace(*window_, *settings_, "main", 1200, 720);
+        window_->place.save = [this] {
+            std::string why;
+            if (window_ && !keepPlace(*window_, *settings_, "main", why))
+                report("The window's place was not kept: " + why);
+        };
         // The floating-window host, built before anything needs two windows (STEP-7-PLAN
         // 7.5). Its users arrive with the hosts' plug-in editors (collab/window.md, N8)
         // and the analyser device's big view (ADR-0183 d4).
@@ -1017,6 +1039,8 @@ class AdiApplication final : public juce::JUCEApplication,
             return out;
         };
         window_->setVisible(true);
+        if (fullScreen)
+            window_->setFullScreen(true);
         // A Mix View kept open in its own window opens there again.
         syncMixView(*floating_, *root_, true);
         if (!noAudio_)
@@ -1308,6 +1332,8 @@ class AdiApplication final : public juce::JUCEApplication,
                 };
             }
             settingsWindow_->setVisible(true);
+            if (std::exchange(settingsWindow_->fullScreenOwed, false))
+                settingsWindow_->setFullScreen(true);
             settingsWindow_->toFront(true);
             return true;
         }
