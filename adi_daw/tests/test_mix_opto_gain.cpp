@@ -167,7 +167,8 @@ void refusalAndAlias() {
           "refusal streams establish matching evolved histories");
     const auto prior = actual;
     auto *unaligned = reinterpret_cast<float *>(reinterpret_cast<std::byte *>(actual.data()) + 1);
-    auto *overflow = reinterpret_cast<float *>(std::numeric_limits<std::uintptr_t>::max() - 3);
+    // The core also refuses a range whose end passes the top of the address space, but no
+    // test can reach that guard: forming such a range is itself undefined behaviour (DF-M64).
     for (bool checked : {true, false}) {
         const auto call = [&](std::span<const float> key, std::span<float> gain) {
             callback = true;
@@ -178,12 +179,10 @@ void refusalAndAlias() {
         };
         check(call(std::span(input).first(17), std::span(actual).first(16)) ==
                       o::Status::InvalidBuffers &&
-                  call(std::span<const float>(overflow, 1), std::span(actual).first(1)) ==
-                      o::Status::InvalidBuffers &&
                   call(std::span(input).first(1), std::span<float>(unaligned, 1)) ==
                       o::Status::InvalidBuffers &&
                   same(actual, prior),
-              "length alignment and pointer overflow guards run before any input or history read");
+              "length and alignment guards run before any input or history read");
         check(call(std::span(input).first(17), std::span(input).subspan(1, 17)) ==
                       o::Status::InvalidBuffers &&
                   call(std::span(input).subspan(1, 17), std::span(input).first(17)) ==

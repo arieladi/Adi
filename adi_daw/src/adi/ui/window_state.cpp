@@ -80,6 +80,9 @@ FloatingState ViewStateStore::loadFloating(const std::string& key) const {
     try {
         const auto j=nlohmann::json::parse(q.getColumn(0).getString());
         s.monitor=j.at("monitor").get<std::string>();s.x=j.at("x");s.y=j.at("y");s.width=j.at("width");s.height=j.at("height");s.open=j.at("open");
+        if(const auto a=j.find("area");a!=j.end()&&a->is_array()&&a->size()==4)
+            {s.areaX=a->at(0);s.areaY=a->at(1);s.areaWidth=a->at(2);s.areaHeight=a->at(3);}
+        s.dpi=j.value("dpi",0);
         if(s.width<100 || s.width>10000 || s.height<100 || s.height>10000)return {};
     }catch(const std::exception&){return {};}
     return s;
@@ -87,7 +90,8 @@ FloatingState ViewStateStore::loadFloating(const std::string& key) const {
 bool ViewStateStore::saveFloating(const std::string& key,const FloatingState& s,std::string& error){
     try {
         if(store_.readOnly()) {error="Project is read-only";return false;}
-        nlohmann::json j={{"monitor",s.monitor},{"x",s.x},{"y",s.y},{"width",s.width},{"height",s.height},{"open",s.open}};
+        nlohmann::json j={{"monitor",s.monitor},{"x",s.x},{"y",s.y},{"width",s.width},{"height",s.height},{"open",s.open},
+                          {"area",{s.areaX,s.areaY,s.areaWidth,s.areaHeight}},{"dpi",s.dpi}};
         SQLite::Statement q(store_.db(),"INSERT INTO ui_view(scope_kind,scope_id,key,value) VALUES('project',NULL,?,?) ON CONFLICT DO UPDATE SET value=excluded.value");
         q.bind(1,"floating."+key);q.bind(2,j.dump());q.exec();error.clear();return true;
     }catch(const std::exception& e){error=e.what();return false;}
