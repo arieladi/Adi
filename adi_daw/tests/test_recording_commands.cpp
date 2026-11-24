@@ -246,6 +246,60 @@ void crossVolumePublication(const std::filesystem::path& workFolder) {
     (void)workFolder;throw std::runtime_error("the opt-in cross-volume native identity regression is Windows-only");
 #endif
 }
+// Default-suite stand-in for a stage that cannot reach its destination's
+// volume: the native exclusive rename refuses with the cross-device error.
+struct CrossDeviceRename {
+    static inline int renames=0,waits=0;
+    static inline std::filesystem::path source,target;
+    static std::error_code rename(const std::filesystem::path& from,const std::filesystem::path& to) {
+        ++renames;source=from;target=to;
+#if defined(_WIN32)
+        return {17,std::system_category()}; // ERROR_NOT_SAME_DEVICE
+#else
+        return std::make_error_code(std::errc::cross_device_link);
+#endif
+    }
+    static void wait(unsigned){++waits;}
+};
+void forcedCrossDevicePublication() {
+    namespace fs=std::filesystem;
+    Fixture f;auto recorded=f.capture();const auto before=digestProject(*f.store).text;
+    const auto take=recorded.tracks[0].file;const auto takeHash=media::blake3File(take);
+    const auto audioFolder=media::projectFolder(*f.store)/"audio";
+    const std::array<recording::ClipIds,1> ids={{{7,8,"Other device"}}};
+    fs::path published,staged;
+    {
+        auto prepared=recording::prepareCommit(*f.store,recorded,ids);
+        check(prepared.ok,"prepare a take for a forced cross-device publication");
+        if(!prepared.ok)throw std::runtime_error(prepared.error);
+        for(const auto& request:prepared.requests)if(request.opType=="media.import")
+            published=media::projectFolder(*f.store)/media::pathFromUtf8(request.payload.at("row").at("rel_path").get<std::string>());
+        prepared.publicationHooks.rename=CrossDeviceRename::rename;prepared.publicationHooks.retryWait=CrossDeviceRename::wait;
+        const auto refused=recording::commit(*f.store,prepared);
+        staged=CrossDeviceRename::source;
+        check(!refused.ok && refused.error.find("Cannot publish recorded audio")!=std::string::npos &&
+            refused.error.find("atomic publication")!=std::string::npos,
+            "a cross-device refusal fails the take with a reason naming the recorded audio publication");
+        check(CrossDeviceRename::renames==1 && CrossDeviceRename::waits==0 && !published.empty() && CrossDeviceRename::target==published,
+            "the cross-device refusal is tried once at the owned destination and never retried");
+        check(!fs::exists(published) && digestProject(*f.store).text==before &&
+            f.store->db().execAndGet("SELECT count(*) FROM media_files").getInt()==0 &&
+            f.store->db().execAndGet("SELECT count(*) FROM clips").getInt()==0,
+            "refused publication leaves no destination file and no project rows");
+        check(staged.parent_path().parent_path()==audioFolder && staged.parent_path().filename().string().starts_with(".adi-media-") &&
+            fs::is_regular_file(staged) && media::blake3File(staged).hex==takeHash.hex,
+            "the refused stage stays in its preparation's project-side directory with the take's bytes");
+        check(fs::is_regular_file(take) && media::blake3File(take).hex==takeHash.hex,
+            "the private take is retained for retry after a cross-device refusal");
+        prepared.publicationHooks={};
+        const auto retried=recording::commit(*f.store,prepared);
+        if(!retried.ok)std::printf("cross-device retry: %s\n",retried.error.c_str());
+        check(retried.ok && retried.seqs.size()==3 && media::blake3File(published).hex==takeHash.hex && !fs::exists(recorded.directory()),
+            "the same preparation publishes its retained stage once the rename succeeds");
+    }
+    check(!staged.empty() && !fs::exists(staged.parent_path()) && fs::exists(published),
+        "releasing the preparation removes only its own stage directory");
+}
 void heardPlacementAndHistory() {
     for(const auto precision:{Precision::Float32,Precision::Float64}) {
         Fixture f;auto recorded=f.capture(false,precision);const auto before=digestProject(*f.store).text;
@@ -660,7 +714,7 @@ int main(int argc,char** argv){try{
     latencyCompensatedPlacement();
     midiLoopTakes();
     if(argc!=1 && (argc!=3 || std::string(argv[1])!="--cross-volume-work-folder"))throw std::runtime_error("usage: recording tests [--cross-volume-work-folder PATH]");
-    publicationStagingOwnership();heardPlacementAndHistory();rollbackNeverDeletesLaterWriter();lateSqlAndOwnedReuse();existingMediaAndHistoryPaths();groupDedupAndGuards();loopPublicationRefusesFlattening();
+    publicationStagingOwnership();forcedCrossDevicePublication();heardPlacementAndHistory();rollbackNeverDeletesLaterWriter();lateSqlAndOwnedReuse();existingMediaAndHistoryPaths();groupDedupAndGuards();loopPublicationRefusesFlattening();
     loopPassesAndHistory();loopPartialEdgesAndPriorComp();loopSinglePassBoundaries();loopAtomicRefusalAndDedup();
     loopReusesOrderedLanes();loopMixedReuseAndFallback();loopReuseRefusesUnprovedExtents();
     if(argc==3) {

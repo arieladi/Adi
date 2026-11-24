@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include "adi/engine/audio_recording.hpp"
+#include "adi/media/publish_file.hpp"
 #include "adi/note_diff.hpp"
 #include "adi/ops.hpp"
 namespace adi::recording {
@@ -27,6 +28,9 @@ struct RecordingEdit {
     std::string error,sourceProject;
     std::vector<OpRequest> requests;
     CommitOptions options;
+    // Test support, off-callback: hooks for each project-side AtomicOnly
+    // publication at commit. Null hooks use the real OS.
+    media::PublishHooks publicationHooks{};
 private:
     struct Files;
     struct PreparedSource;

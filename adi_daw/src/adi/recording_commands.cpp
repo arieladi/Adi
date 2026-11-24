@@ -510,8 +510,8 @@ CommitResult commit(Store& store,RecordingEdit& edit,Actor actor) {
     if(!files || files->committed){refused.error="recording edit is absent or already committed";return refused;}
     auto rollback=std::make_shared<media::detail::PublishedRollback>();
     rollback->files.reserve(files->assets.size());
-    auto options=edit.options;const auto previous=options.beforeCommit;
-    options.beforeCommit=[files,previous,rollback](SQLite::Database& db,std::int64_t transaction,std::string& error) {
+    auto options=edit.options;const auto previous=options.beforeCommit;const auto hooks=edit.publicationHooks;
+    options.beforeCommit=[files,previous,rollback,hooks](SQLite::Database& db,std::int64_t transaction,std::string& error) {
         if(previous && !previous(db,transaction,error))return false;
         for(const auto& asset:files->assets) {
             if(!fs::is_regular_file(fs::symlink_status(asset.source))){error="recorded take is no longer a regular file";return false;}
@@ -520,7 +520,7 @@ CommitResult commit(Store& store,RecordingEdit& edit,Actor actor) {
             const auto stagedHash=media::blake3File(asset.staged);
             if(!stagedHash || stagedHash.hex!=asset.hash){error="recording publication staging changed after capture";return false;}
             rollback->files.push_back({asset.target,{}});
-            const auto published = media::publishFile(asset.staged, asset.target, {},
+            const auto published = media::publishFile(asset.staged, asset.target, hooks,
                                                       media::PublishPolicy::AtomicOnly);
             if(published.status==media::PublishStatus::published) {
                 rollback->files.back().identity=published.identity;
