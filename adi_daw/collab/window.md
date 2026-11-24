@@ -101,6 +101,24 @@ Questions only the director can answer. Each says what the window lane recommend
 | N58 | The plug-in catalogue off the message thread: a scan service, Rescan, a default worker count, and each VST3's kind with its instrument flag (ADR-0248 d7: engine-win's third item, under DEV-25) | engine-win | the Browser's Plug-Ins with progress, and each VST3's icon | the window scans on its own worker with the one loader (DF-W34 a), the loader locked while it scans; no progress count; a VST3 shows the plug-in icon |
 | N59 | The project's key and scale, if the Control Bar's Key group (step 2) shows the project's and not the selected clip's: an op and a snapshot field (ADR-0248, `collab/RESERVATIONS.md`) | engine, when asked | the Control Bar's Key and Scale | step 2 waits on the Mix View's switch and theme rows; not asked yet |
 
+## 2026-11-24, window lane — after #739: what is left, on main again; DF-E35a's check; #716's four
+
+Win's landing #739 took WIN-01's tail, WIN-04, WIN-09, WTS-02's first half, WIN-02, WIN-03 and WTS-09, so the gates the entry below began on those branches stopped there (WIN-01 and WIN-04 passed first). The rest:
+- **`window/launch-isolation-main` `788908b2`** (WTS-01's window half, rebuilt on main as win asked): `f4065789` and `44fdaf45` again, each with exactly its old lines, around WIN-02's places and WIN-03's kinds. It replaces `window/launch-isolation`, which stays on origin, superseded. Its gate and AT-7 run next.
+- **`window/shortcut-sets` `c08afd7b`** (WIN-05), **`window/command-palette` `051ec6c0`** (WIN-06) and **`window/text-goldens` `b88bd09a`** (WTS-03) take main by a merge. The palette now follows Help: id 29055, stable table 128, the goldens' line `29055 Command Palette...: Cmd+P`, and the tail check names Help's two. Each branch's diff against main is its own, line for line (two scenes git had split at a shared closing brace were made whole). They land after 3 December, as the queue says.
+- **DF-E35a (queue item 9), `window/main-row-readers` `f4ed83aa`:** the engine already keeps take clips apart (`TrackNode::takeClips`, `430ea825`) and every Arrangement reader walks `TrackNode::clips`, so the window needs no change. A seams check pins it: clip 1 on the main row, clips 2 and 3 on take lane 7; the main row holds clip 1 only, a click at 480 hits clip 1, nothing is hit where only a take lies, and the song's end ignores the take.
+- **#716's four (win's ask of 23 November), `window/shaper-panel-fixes` `074bf41a`**, on #716's head `1baf1fd8`, in the clones seat's files (`src/juce/adi_shaper_panel*`, `tests/adi_shaper_*`, `cmake/devices/adi_shaper_panel.cmake`) and the window's (`ui_main.cpp`'s loaned factory, `ui_shell.cpp`, `test_ui_shell.cpp`):
+  - an audio restart no longer closes the window: the session and the view take up the device's new runtime while the id holds an ADI-Shaper (an edit in flight is dropped); a deleted device returns with Undo; only another device retires the editor;
+  - the values refresh without the scope source, on a committed project or on the device's feed row;
+  - a refusal reaches the Status Bar through the view's `error()`, and again when it returns after clearing;
+  - tests: `adi_shaper_panel_view_tests` (new, with Pd), the session's restart and refusal cases, the shell's `shaperWrench` and the Status Bar repeat;
+  - the strict GCC leg's four casts (`adi_shaper_wave_tests.cpp` 55, 81, 94; `adi_shaper_panel.cpp` 376, which CI did not reach).
+  - **For the clones seat:** one assertion of yours changed meaning: "restored generation cannot be touched by former editor" now reads that the device Undo restores takes the open editor's gestures again, as finding 4 asks. Confirm or say otherwise. And the panel shows the stored values, not what a lane plays: showing a lane's value needs the built-in to publish it, a feature of its own.
+  - Two review rounds (seven defects, none blocking, all fixed). Built and run next; PR requested follows the run.
+- **Gating, in order:** `shaper-panel-fixes` (with every ADI-Shaper suite), `main-row-readers`, `launch-isolation-main` (then AT-7), `shortcut-sets`, `command-palette`, `text-goldens`.
+
+---
+
 ## 2026-11-24, window lane — the gates again, on the new heads
 
 Each requested branch, gated again on its merged head (Pd on: shell, seams, document, window_state; Pd off as `ui.yml` builds it; the shadow and clang sweeps on its own `.cpp` lines). A line per branch as its gate ends.
