@@ -5,7 +5,9 @@
 #include "ui_floating.hpp"
 #include "adi/edit_plan.hpp"
 #include "adi/ui/audio_drop.hpp"
+#include "adi/row_ids.hpp"
 #include "adi/ui/clip_edits.hpp"
+#include "adi/ui/cue_edits.hpp"
 #include "adi/ui/fade_edits.hpp"
 #include "adi/ui/meter_edits.hpp"
 #include "adi/ui/meters.hpp"
@@ -25,13 +27,6 @@ namespace {
 bool deviceOrTrackEditCommand(int id) noexcept {
     return id == AppCommands::Cut || id == AppCommands::Copy || id == AppCommands::Paste ||
            id == AppCommands::Duplicate || id == AppCommands::RenameTrack || id == AppCommands::DeleteTrack;
-}
-// A letter's key is down whichever case its code names.
-bool keyIsDown(int code) {
-    return juce::KeyPress::isKeyCurrentlyDown(code) ||
-           (code > 0 && code < 128 && std::isalpha(code) &&
-            (juce::KeyPress::isKeyCurrentlyDown(std::toupper(code)) ||
-             juce::KeyPress::isKeyCurrentlyDown(std::tolower(code))));
 }
 // Live's measures, in points at 100 %: the AI tab, the Info View's width and the browser's preview strip.
 constexpr int kTabHeight = 20;
@@ -59,6 +54,7 @@ void AppCommands::reload() {
     autoHidePluginWindows_ = flag(settings_, "plugins.autoHideWindows", true);
     pluginWindowsOnTop_ = flag(settings_, "plugins.editorsAlwaysOnTop", true);
     tabMovesFocus_ = flag(settings_, "lookfeel.tabMovesFocus", false);
+    delayCompensation_ = flag(settings_, "audio.delayCompensation", true);
     wrapTab_ = flag(settings_, "lookfeel.wrapTabNavigation", true);
     arrowKeysMoveClips_ = flag(settings_, "editing.arrowKeysMoveClips", true);
     followByPage_ = settings_.get("lookfeel.followMode") != "scroll";
@@ -103,6 +99,12 @@ bool AppCommands::setTabMovesFocus(bool on, std::string &why) {
         return false;
     tabMovesFocus_ = on;
     return true;
+}
+bool AppCommands::setDelayCompensation(bool on, std::string &why) {
+    if (!settings_.set("audio.delayCompensation", on, {}, why))
+        return false;
+    delayCompensation_ = on; // in force from here, as every Settings change is
+    return settings_.save(why);
 }
 bool AppCommands::setWrapTabNavigation(bool on, std::string &why) {
     if (!settings_.set("lookfeel.wrapTabNavigation", on, {}, why) || !settings_.save(why))
@@ -211,7 +213,7 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Crop Clip", "Expand Clip View", "Fold to Notes", "Fold to Scale", "Highlight Scales",
                                   "Draw Mode", "Arrange Clip View Panels Automatically", "Arrange Clip View Panels Horizontally",
                                   "Arrange Clip View Panels Vertically", "Clip View", "Fit to Time Range",
-                                  "Arrangement Record", "Export Audio/Video..."};
+                                  "Arrangement Record", "Export Audio/Video...", "Delay Compensation", "Solo Switches", "Cue Switches"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -223,12 +225,10 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
     const auto cmd = juce::ModifierKeys::commandModifier;
     const auto alt = juce::ModifierKeys::altModifier;
     const auto shift = juce::ModifierKeys::shiftModifier;
-    // Live's Activate/Deactivate Track 1…8 (§42.19): F1 to F8.
+    // Live's Activate/Deactivate Track 1…8 (§42.19). The commands stay, for a user's own keys, but
+    // with no default (WIN-01): the function keys do functions (ADR-0209 d9). F4 is the Mix View's;
+    // F3 and F7 stay free, held for the Session View and offline processing.
     if (id >= ActivateTrack1 && id <= ActivateTrack8) {
-        static const std::array<int, 8> keys{juce::KeyPress::F1Key, juce::KeyPress::F2Key, juce::KeyPress::F3Key,
-                                             juce::KeyPress::F4Key, juce::KeyPress::F5Key, juce::KeyPress::F6Key,
-                                             juce::KeyPress::F7Key, juce::KeyPress::F8Key};
-        info.addDefaultKeypress(keys[static_cast<std::size_t>(id - ActivateTrack1)], 0);
         info.setActive(active_ != nullptr);
         return;
     }
@@ -658,6 +658,15 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         info.addDefaultKeypress(juce::KeyPress::F9Key, 0);
         info.setTicked(active_ != nullptr && active_->isRecording());
         break;
+    case DelayCompensation: // manual 18.7: the Options menu's switch, ticked from the setting (MX-04)
+        info.setTicked(delayCompensation_);
+        break;
+    case SoloSwitches: // manual 18.6: the Options menu's pair, one ticked, from the project's field
+    case CueSwitches:
+        info.setTicked(active_ != nullptr && active_->current() &&
+                       active_->current()->cue.cueMode == (id == CueSwitches));
+        info.setActive(active_ != nullptr && active_->current() != nullptr);
+        break;
     case ExportAudio: // manual 5.2.1 and §41.3: Ctrl/Cmd+Shift+R
         info.addDefaultKeypress('r', cmd | shift);
         break;
@@ -734,9 +743,9 @@ bool AppCommands::key(const juce::KeyPress &key, AdiRootComponent &root) {
     // A latching key runs its command once while it is held (Live 42.25): the root times it. One let
     // go where the window could not see it (the focus elsewhere) goes down anew, and nothing goes back.
     if (const auto id = manager.getKeyMappings()->findCommandForKeyPress(key); AdiRootComponent::latches(id)) {
-        if (root.latch().held() && !keyIsDown(root.latch().key()))
+        if (root.latch().held() && !root.input.down(root.latch().key()))
             root.letGoUnseen();
-        return root.latchKey(id, key.getKeyCode(), true, static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
+        return root.latchKey(id, key.getKeyCode(), true, root.input.ms());
     }
     return manager.getKeyMappings()->keyPressed(key, &root);
 }
@@ -907,7 +916,7 @@ void StatusBar::paint(juce::Graphics &g) {
     const auto rows = root_.arrangement.geometry.rows(root_.reader());
     if (const auto i = rows.find(root_.arrangement.geometry.selection.track); i < rows.size()) {
         g.setFont(look::font(look::fontBody));
-        g.drawText(juce::String::fromUTF8(displayName(rows[i].track->name, i + 1).c_str()),
+        g.drawText(juce::String::fromUTF8(displayName(rows[i].track->name, rows[i].number()).c_str()),
                    track.reduced(6, 0).withWidth(44), juce::Justification::centredLeft);
     }
 }
@@ -1107,6 +1116,8 @@ void AdiRootComponent::frame() noexcept {
     // Root owns exactly one reader for the presented frame; descendants borrow it.
     // JUCE may paint after this callback, so it remains alive until the next frame.
     reader_.emplace(view_.current());
+    if (automationMode_)
+        demandAutomationDevices(true); // a device added since is demanded too (DF-W37)
     const auto generation = view_.generation();
     if (generation_ != generation) {
         generation_ = generation;
@@ -1602,13 +1613,13 @@ bool AdiRootComponent::referenceKey(bool down, std::int64_t nowMs) {
     return true;
 }
 bool AdiRootComponent::keyStateChanged(bool isKeyDown) {
-    const auto now = static_cast<std::int64_t>(juce::Time::getMillisecondCounter());
+    const auto now = input.ms();
     // A latching key let go: after a hold, the window goes back (Live 42.25).
     bool handled = false;
-    if (latch_.held() && !keyIsDown(latch_.key()))
+    if (latch_.held() && !input.down(latch_.key()))
         handled = latchKey(0, latch_.key(), false, now);
     // Shift+R let go: a hold of the ★ Reference ends, a tap latches it (ADR-0209 d9).
-    if (reference_.held() && !keyIsDown('r'))
+    if (reference_.held() && !input.down('r'))
         return referenceKey(false, now) || handled;
     return handled || juce::Component::keyStateChanged(isKeyDown);
 }
@@ -1634,6 +1645,9 @@ bool AdiRootComponent::latchKey(int id, int keyCode, bool down, std::int64_t now
         return command(AppCommands::ZoomBack);
     // Only the step the press made, while it is still the latest: an edit since then stays, and so
     // does what the press made under it. Going back pauses no Follow, as an undo from the menu does.
+    // A knob edit still held commits first (DF-W29), so the check sees the step that is latest.
+    if (settleEdits && !settleEdits())
+        return false;
     const auto last = submitter_.nextUndo();
     if (back->step == 0 || !last || last->txnId != back->step)
         return false;
@@ -2395,6 +2409,9 @@ std::string AdiRootComponent::undoTitle(bool redo) const {
     const std::string verb = redo ? "Redo" : "Undo";
     if (!canUndo(redo))
         return "Nothing to " + verb;
+    // A held knob edit is the step Undo takes back: its own label once committed, the verb meanwhile.
+    if (!redo && editsHeld && editsHeld())
+        return verb;
     return verb + (step && !step->label.empty() ? " " + step->label : "");
 }
 bool AdiRootComponent::fail(std::string message) {
@@ -2421,8 +2438,10 @@ bool AdiRootComponent::insertTrack(bool midi) {
     const auto current = view_.current();
     if (!current)
         return fail("Inserting a track needs an open project.");
+    // The new id from one `RowIds` (DF-E16): past every track and every id a remark still holds.
+    RowIds ids(submitter_.store().db());
     auto edit = ::adi::ui::insertTrack(current->tracks, arrangement.geometry.selection.track, midi,
-                                       &commands_.recordingDefaults());
+                                       &commands_.recordingDefaults(), ids.next("tracks"));
     if (!edit.refusal.empty())
         return fail(std::move(edit.refusal));
     edit.ops.front().selBefore = session_.advisory();
@@ -2457,26 +2476,49 @@ bool AdiRootComponent::insertMidiClips(const std::vector<std::int64_t> &tracks, 
     publishSelection();
     return true;
 }
-bool AdiRootComponent::insertReturnTrack() {
+bool AdiRootComponent::insertReturnTrack(std::int64_t group) {
     // From the CURRENT cell (ADR-0201). The new return comes after the others, as every return
-    // stands after the tracks (TrackOrder), and takes the next letter, as Live names it.
+    // stands after the tracks (TrackOrder), and takes the next letter, as Live names it. Inside a
+    // group (Insert Return Track in Group, ADR-0247 d2), after what the group holds, and plays into
+    // it; its letter is the group's initial and its place among the group's returns ("DA").
     const auto current = view_.current();
     if (!current)
         return fail("Inserting a return needs an open project.");
     const auto &tracks = current->tracks;
-    std::int64_t id = 1, returns = 0;
+    const engine::TrackNode *into = nullptr;
+    for (const auto &t : tracks)
+        if (group != 0 && t->id == group && t->kind == "group")
+            into = t.get();
+    if (group != 0 && into == nullptr)
+        return fail("Choose a group to put the return in.");
+    std::int64_t returns = 0, held = 0;
     for (const auto &t : tracks) {
-        id = std::max(id, t->id + 1);
-        if (t->kind == "return")
+        if (t->kind == "return" && t->parent == group)
             ++returns;
+        if (t->parent == group)
+            ++held;
+    }
+    RowIds ids(submitter_.store().db()); // DF-E16: never an id a remark still holds
+    const auto id = ids.next("tracks");
+    std::string letter(1, static_cast<char>('A' + returns % 26));
+    if (into != nullptr) {
+        char initial = 'G';
+        for (const char c : into->name)
+            if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) {
+                initial = static_cast<char>(c >= 'a' ? c - 'a' + 'A' : c);
+                break;
+            }
+        letter.insert(letter.begin(), initial);
     }
     OpRequest request;
     request.opType = "track.create";
     request.payload = {{"id", id},
                        {"kind", "return"},
-                       {"name", std::string(1, static_cast<char>('A' + returns % 26)) + " Return"},
-                       {"index", static_cast<std::int64_t>(tracks.size())}};
-    request.label = "Insert Return Track";
+                       {"name", letter + " Return"},
+                       {"index", static_cast<std::int64_t>(into != nullptr ? held : static_cast<std::int64_t>(tracks.size()))}};
+    if (into != nullptr)
+        request.payload["parent"] = group;
+    request.label = into != nullptr ? "Insert Return Track in Group" : "Insert Return Track";
     request.selBefore = session_.advisory();
     const auto result = submitter_.submit(std::move(request));
     if (!result)
@@ -2744,7 +2786,8 @@ bool AdiRootComponent::groupTracks(bool ungroup) {
     // tracks); Ungroup the selected group.
     const auto id = arrangement.geometry.selection.track;
     auto edit = ungroup ? ungroupTrack(current->tracks, id)
-                        : ::adi::ui::groupTracks(current->tracks, arrangement.geometry.selectedTracks(reader()));
+                        : ::adi::ui::groupTracks(current->tracks, arrangement.geometry.selectedTracks(reader()),
+                                                 RowIds(submitter_.store().db()).next("tracks"));
     if (!edit.refusal.empty())
         return fail(std::move(edit.refusal));
     edit.ops.front().selBefore = session_.advisory();
@@ -2861,39 +2904,127 @@ ExportChoices AdiRootComponent::exportDefaults() const {
         c.sampleRate = static_cast<int>(current->sampleRate);
     return c;
 }
+void AdiRootComponent::demandAutomationDevices(bool on) {
+    if (!devices.parameterDemand)
+        return;
+    std::vector<std::int64_t> ids;
+    if (on)
+        if (const auto published = devices.publication ? devices.publication() : nullptr)
+            for (const auto &d : *published)
+                ids.push_back(d.id);
+    if (ids == automationDemand_)
+        return;
+    automationDemand_ = ids;
+    devices.parameterDemand(&automationTargets_, ids);
+}
 void AdiRootComponent::setAutomationMode(bool on) {
     automationMode_ = on;
+    demandAutomationDevices(on);
     namesBar.automation.setToggleState(on, juce::dontSendNotification);
-    say(on ? "Automation Mode: each track shows its Volume envelope; click a lane to add a breakpoint, drag one "
-             "to move it, double-click one to delete it."
+    say(on ? "Automation Mode: each track shows its chosen envelope, its Volume until Show Automation chooses "
+             "another; click a lane to add a breakpoint, drag one to move it, double-click one to delete it."
            : "");
     arrangement.repaint();
 }
+std::vector<AutomationTarget> AdiRootComponent::automationChoices(std::int64_t track) const {
+    const auto current = view_.current();
+    if (!current)
+        return {};
+    const auto published = devices.publication ? devices.publication() : nullptr;
+    return ::adi::ui::automationChoices(*current, track, published.get());
+}
+AutomationTarget AdiRootComponent::automationTarget(std::int64_t track) const {
+    const auto chosen = automationTargets_.find(track);
+    if (chosen == automationTargets_.end())
+        return volumeTarget(track);
+    // The choice holds while the track still offers it (its device or send can go).
+    for (const auto &t : automationChoices(track))
+        if (t == chosen->second)
+            return t;
+    return volumeTarget(track);
+}
+void AdiRootComponent::showAutomation(std::int64_t track, const AutomationTarget &target) {
+    automationTargets_[track] = target;
+    if (!automationMode_)
+        setAutomationMode(true);
+    say("Automation Mode shows " + (target.device == "Mixer" ? std::string() : target.device + ": ") + target.paramName + ".");
+    arrangement.repaint();
+}
+std::optional<std::pair<std::int64_t, AutomationTarget>> AdiRootComponent::deviceAutomationTarget(
+    std::int64_t device, const std::string &parameter) const {
+    const auto published = devices.publication ? devices.publication() : nullptr;
+    if (!published)
+        return std::nullopt;
+    for (const auto &d : *published)
+        if (d.id == device) {
+            const auto ref = engine::automationParamRef(d.format, parameter);
+            for (const auto &t : automationChoices(d.track))
+                if (t.ownerKind == "device" && t.ownerId == device && ref && t.paramRef == *ref)
+                    return std::pair{d.track, t};
+        }
+    return std::nullopt;
+}
+bool AdiRootComponent::showDeviceAutomation(std::int64_t device, const std::string &parameter) {
+    const auto found = deviceAutomationTarget(device, parameter);
+    if (!found)
+        return fail("That parameter cannot be automated.");
+    showAutomation(found->first, found->second);
+    return true;
+}
+double AdiRootComponent::automationCurrent(const AutomationTarget &target) const {
+    const auto current = view_.current();
+    if (!current)
+        return target.minimum;
+    if (target.ownerKind == "track") {
+        const auto *t = current->findTrack(target.ownerId);
+        return t == nullptr ? target.minimum : target.paramRef == "pan" ? t->pan : t->volumeDb;
+    }
+    if (target.ownerKind == "routing") {
+        for (const auto &s : current->sends)
+            if (s && s->id == target.ownerId)
+                return s->gainDb;
+        return target.minimum;
+    }
+    // A device parameter: where its control plays now, as the feed reads it; one the panel does not
+    // show has no record there, and reads as the plug-in's declared default.
+    if (const auto published = devices.publication ? devices.publication() : nullptr)
+        for (const auto &d : *published)
+            if (d.id == target.ownerId) {
+                for (const auto &r : d.parameters())
+                    if (const auto ref = engine::automationParamRef(d.format, r.id); ref && *ref == target.paramRef)
+                        return r.playing;
+                for (const auto &[id, value] : d.defaultValues())
+                    if (const auto ref = engine::automationParamRef(d.format, id); ref && *ref == target.paramRef)
+                        return value;
+            }
+    return target.minimum;
+}
 bool AdiRootComponent::addAutomationPoint(std::int64_t track, std::int64_t tick, double value) {
     const auto current = view_.current();
-    const auto *t = current ? current->findTrack(track) : nullptr;
-    if (t == nullptr)
+    if (current == nullptr || current->findTrack(track) == nullptr)
         return fail("That track is gone.");
-    auto &db = submitter_.store().db();
+    const auto target = automationTarget(track);
+    RowIds rows(submitter_.store().db()); // one allocation context for the edit (DF-E16)
     AutomationIds ids;
-    ids.lane = db.execAndGet("SELECT COALESCE(MAX(id), 0) + 1 FROM automation_lanes").getInt64();
-    ids.data = db.execAndGet("SELECT COALESCE(MAX(id), 0) + 1 FROM automation_data").getInt64();
+    ids.lane = rows.next("automation_lanes");
+    ids.data = rows.next("automation_data");
     ids.point = 1;
-    return submitEdits(::adi::ui::addAutomationPoint(trackEnvelope(*current, track), track, "volume", tick, value,
-                                                     t->volumeDb, ids));
+    return submitEdits(::adi::ui::addAutomationPoint(envelopeOf(*current, target), target, tick, value,
+                                                     automationCurrent(target), ids));
 }
 bool AdiRootComponent::moveAutomationPoint(std::int64_t track, std::uint64_t point, std::int64_t tick, double value) {
     const auto current = view_.current();
     if (!current)
         return false;
-    auto ops = ::adi::ui::moveAutomationPoint(trackEnvelope(*current, track), "volume", point, tick, value);
+    const auto target = automationTarget(track);
+    auto ops = ::adi::ui::moveAutomationPoint(envelopeOf(*current, target), target, point, tick, value);
     return !ops.empty() && submitEdits(std::move(ops));
 }
 bool AdiRootComponent::deleteAutomationPoint(std::int64_t track, std::uint64_t point) {
     const auto current = view_.current();
     if (!current)
         return false;
-    auto ops = ::adi::ui::deleteAutomationPoint(trackEnvelope(*current, track), point);
+    auto ops = ::adi::ui::deleteAutomationPoint(envelopeOf(*current, automationTarget(track)), point);
     return !ops.empty() && submitEdits(std::move(ops));
 }
 bool AdiRootComponent::setSoloInPlace(bool on) {
@@ -2916,7 +3047,45 @@ bool AdiRootComponent::setSoloInPlace(bool on) {
     dirty_.mark(DirtySet::All);
     return true;
 }
+// What every cue op shares (MX-08): a transport op outside undo, the session re-reading the project
+// after it, nothing said; Follow is not paused, nothing in the arrangement moved.
+bool AdiRootComponent::submitCue(TrackEdit edit, const char *needs) {
+    if (!view_.current())
+        return fail(needs);
+    if (!edit.refusal.empty())
+        return fail(edit.refusal);
+    if (edit.ops.empty())
+        return true;
+    if (const auto result = submitter_.submit(std::move(edit.ops)); !result)
+        return fail(result.error);
+    if (afterEdit)
+        afterEdit();
+    error_.clear();
+    dirty_.mark(DirtySet::All);
+    return true;
+}
+bool AdiRootComponent::setCueMode(bool cue) {
+    const auto current = view_.current();
+    return submitCue(current ? cueModeEdit(*current, cue) : TrackEdit{}, "Cue Switches need an open project.");
+}
+bool AdiRootComponent::cueTrack(std::int64_t track) {
+    // A Cue button toggles its own track only: Live's Exclusive Solo is solo's, and whether Live's Cue
+    // is exclusive is to be read on Live 12 (PROVISIONAL, MX-08).
+    const auto current = view_.current();
+    return submitCue(current ? cueTrackEdit(*current, track, !cued(*current, track)) : TrackEdit{},
+                     "Cueing needs an open project.");
+}
+bool AdiRootComponent::setCueVolume(double db) {
+    const auto current = view_.current();
+    return submitCue(current ? cueVolumeEdit(*current, db) : TrackEdit{}, "Cue Volume needs an open project.");
+}
+bool AdiRootComponent::setCueOutput(int firstChannel) {
+    const auto current = view_.current();
+    return submitCue(current ? cueOutputEdit(*current, firstChannel) : TrackEdit{}, "Cue Out needs an open project.");
+}
 bool AdiRootComponent::restoreStep(std::int64_t txnId) {
+    if (settleEdits && !settleEdits())
+        return false;
     const auto result = submitter_.restore(txnId);
     if (!result.ok)
         return fail(result.error.empty() ? "That step could not be restored." : result.error);
@@ -3241,7 +3410,10 @@ bool AdiRootComponent::tapTempo(std::int64_t nowMs) {
     const double value = std::round(std::clamp(*bpm, kMinTempo, kMaxTempo) * 100) / 100;
     if (std::abs(value - tapBpm_) < .005)
         return true;
-    // The run's step gives way to this tap's, while it is still the latest: one step for the run.
+    // The run's step gives way to this tap's, while it is still the latest: one step for the run. A
+    // knob edit still held commits first (DF-W29), so the check sees the step that is latest.
+    if (settleEdits)
+        settleEdits();
     if (const auto last = submitter_.nextUndo(); tapStep_ != 0 && last && last->txnId == tapStep_) {
         const bool paused = arrangement.followPaused;
         command(AppCommands::Undo);
@@ -3523,6 +3695,10 @@ bool AdiRootComponent::command(int id) {
         break;
     case AppCommands::Undo:
     case AppCommands::Redo: {
+        // A knob's last edit, still held for its quiet interval, is the step the user sees last: it
+        // commits first, so Undo takes it back and nothing commits on top of a Redo (DF-W29).
+        if (settleEdits && !settleEdits())
+            return false;
         const auto result = id == AppCommands::Undo ? submitter_.undo() : submitter_.redo();
         if (!result.ok)
             return fail(result.error);
@@ -3577,11 +3753,15 @@ bool AdiRootComponent::command(int id) {
         arrangement.firstShownIfHidden();
         break;
     case AppCommands::PlayReference:
-        // The key goes down; keyStateChanged lets it go. From a menu, a tap.
-        referenceKey(true, static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
-        if (!juce::KeyPress::isKeyCurrentlyDown('r') && !juce::KeyPress::isKeyCurrentlyDown('R'))
-            referenceKey(false, static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
+    {
+        // The key goes down; keyStateChanged lets it go. From a menu, a tap: up at the moment it went
+        // down, however long the machine took between the two (DF-W18).
+        const auto now = input.ms();
+        referenceKey(true, now);
+        if (!input.down('r'))
+            referenceKey(false, now);
         return true;
+    }
     case AppCommands::ToggleMixView:
         return setMixView(!state_.mixView, state_.mixViewDetached);
     case AppCommands::ToggleClipView:
@@ -3660,6 +3840,20 @@ bool AdiRootComponent::command(int id) {
             return fail(why);
         break;
     }
+    case AppCommands::DelayCompensation: {
+        // Live's switch (manual 18.7): the setting, then the session; no undo step. The strips grey
+        // their Track Delay at the next frame.
+        // The setting is in force once set, whether or not its file could be written, as the Settings'
+        // rows are, so the session follows it either way; a session that refuses keeps its message in
+        // the Status Bar (the tail below would clear it), and a file not written is said.
+        std::string why;
+        const bool saved = commands_.setDelayCompensation(!commands_.delayCompensation(), why);
+        if (applyDelayCompensation && !applyDelayCompensation(commands_.delayCompensation()))
+            return true;
+        if (!saved)
+            return fail(why.empty() ? "Delay Compensation could not be changed." : why);
+        break;
+    }
     case AppCommands::WrapTabNavigation: {
         std::string why;
         if (!commands_.setWrapTabNavigation(!commands_.wrapTabNavigation(), why))
@@ -3709,9 +3903,16 @@ bool AdiRootComponent::command(int id) {
             return false;
         break;
     case AppCommands::SoloSelected:
+        // With Cue Switches, S cues the track as its Cue button does (MX-08); complete on its own.
+        if (const auto current = view_.current(); current && current->cue.cueMode)
+            return cueTrack(arrangement.geometry.selection.track);
         if (!soloTrack(arrangement.geometry.selection.track, false))
             return false;
         break;
+    case AppCommands::SoloSwitches:
+    case AppCommands::CueSwitches:
+        // Complete on its own, as Solo in Place: setCueMode re-reads the session and says why it refuses.
+        return setCueMode(id == AppCommands::CueSwitches);
     case AppCommands::SoloInPlace:
         // Complete on its own, as the Solo button's menu is: the session's re-read, the Status Bar
         // and the marks are setSoloInPlace's, so the tail below is not run a second time.
@@ -3896,15 +4097,17 @@ const std::vector<MenuEntries> &menuBar() {
         // Follow (§6.2) and the grid's commands (§6.10) are the Options menu's; so is Solo in Place
         // (§18.6), in its own group after the grid's, as Live 12's menu places it (read on Live 12,
         // 5 November: Solo Switches, Cue Switches, Solo in Place, before Settings), and Settings on
-        // Windows (§2.3). Solo Switches and Cue Switches come with the cue path (B6).
+        // Windows (§2.3). Solo Switches and Cue Switches are the cue path's (B6, MX-08). Delay
+        // Compensation (manual 18.7) stands in its own group before them; its place among Live's
+        // other Options entries is to be read on Live 12 (PROVISIONAL).
 #if JUCE_MAC
         {"Options",
          {C::Follow, 0, C::DrawMode, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid, C::SnapToGrid, C::FixedGrid, 0,
-          C::SoloInPlace}},
+          C::DelayCompensation, 0, C::SoloSwitches, C::CueSwitches, C::SoloInPlace}},
 #else
         {"Options",
          {C::Follow, 0, C::DrawMode, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid, C::SnapToGrid, C::FixedGrid, 0,
-          C::SoloInPlace, 0, C::Settings}},
+          C::DelayCompensation, 0, C::SoloSwitches, C::CueSwitches, C::SoloInPlace, 0, C::Settings}},
 #endif
         // The views ADI has, in Live's order (§41.4.1): Session View, the Groove Pool and the
         // Learn View come with those views; the Mixer with its keyboard.

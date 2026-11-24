@@ -1,0 +1,2 @@
+# Preserve original fixture encodings and all manifest-bound source bytes on every OS.
+* -text

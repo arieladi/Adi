@@ -179,11 +179,17 @@ void LiveDelay::process(const float *inL, const float *inR, float *outL, float *
                     const double v3 = x - i2, v1 = a1 * i1 + a2 * v3, v2 = i2 + a2 * i1 + a3 * v3;
                     i1 = 2 * v1 - i1;
                     i2 = 2 * v2 - i2;
+                    if (std::abs(i1) < 1e-30) {
+                        i1 = 0;
+                    }
+                    if (std::abs(i2) < 1e-30) {
+                        i2 = 0;
+                    }
                     return highpass ? x - k * v1 - v2 : v2;
                 };
                 value = svf(svf(value, lo, lane.hp1, lane.hp2, true), hi, lane.lp1, lane.lp2, false);
             }
-            lane.ring[write_] = static_cast<float>(value);
+            lane.ring[write_] = static_cast<float>(std::abs(value) < 1e-30 ? 0 : value);
             const double mix = p[Mix] / 100;
             const float result = static_cast<float>(
                 p[EqualLoudness] >= 0.5 ? input[c] * std::cos(mix * std::numbers::pi / 2) +

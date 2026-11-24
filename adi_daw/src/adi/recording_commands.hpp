@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include "adi/engine/audio_recording.hpp"
+#include "adi/note_diff.hpp"
 #include "adi/ops.hpp"
 namespace adi::recording {
 struct ClipIds {std::int64_t clip=0,media=0;std::string name;};
@@ -9,6 +10,18 @@ struct ClipIds {std::int64_t clip=0,media=0;std::string name;};
 /// identities must be unoccupied even when a fallback is ultimately unused.
 struct LoopPassIds {std::int64_t lane=0,clip=0;std::string name;};
 struct LoopTrackIds {std::int64_t media=0;std::vector<LoopPassIds> passes;};
+struct MidiLoopPlacement {
+    std::int64_t track=0,start=0,length=0;
+    std::int64_t mainClip=0,mainStream=0;
+    std::string name;
+};
+struct MidiTakePass {
+    LoopPassIds take;
+    std::int64_t stream=0,length=0;
+    // Recorder-owned note identities. Coordinates are relative to loop start.
+    // The main image is the recorder's cumulative audible result for this pass.
+    std::span<const notes::NoteValues> takeNotes,mainNotes;
+};
 struct RecordingEdit {
     bool ok=false;
     std::string error,sourceProject;
@@ -23,8 +36,9 @@ private:
     std::shared_ptr<Files> files_;
     const Store* owner_=nullptr;
     std::string client_;
-    friend RecordingEdit prepareCommit(Store&,const engine::AudioRecordingResult&,std::span<const ClipIds>);
+    friend RecordingEdit prepareCommit(Store&,const engine::AudioRecordingResult&,std::span<const ClipIds>,std::int64_t);
     friend RecordingEdit prepareLoopCommit(Store&,const engine::AudioRecordingResult&,std::span<const LoopTrackIds>,std::span<const std::optional<Payload>>);
+    friend RecordingEdit prepareMidiLoopCommit(Store&,const MidiLoopPlacement&,std::span<const MidiTakePass>);
     friend CommitResult commit(Store&,RecordingEdit&,Actor);
 };
 // Owner-only bridge from a captured physical-input snapshot to a recoverable
@@ -40,7 +54,10 @@ private:
 /// current musical clock exactly. Does not change project rows or publish files.
 /// Opted-in loop captures are refused, including a single partial pass: their
 /// take-lane/main-copy publication and per-pass history are a separate contract.
-[[nodiscard]] RecordingEdit prepareCommit(Store&,const engine::AudioRecordingResult&,std::span<const ClipIds>);
+/// Subtract the caller's signed latency offset from the timeline start. A
+/// correction past song zero places the first captured frame at zero.
+[[nodiscard]] RecordingEdit prepareCommit(Store&,const engine::AudioRecordingResult&,std::span<const ClipIds>,
+    std::int64_t placementOffsetSamples=0);
 /// Complete pass log to eligible existing or new take lanes and main-lane copies.
 /// A pre-existing same-track take lane is eligible when every clip provably ends
 /// at/before this pass's start. First visible (ord,id) wins; each is used once.
@@ -57,6 +74,14 @@ private:
 /// exact reference-DAW selection among several eligible lanes remains unmeasured.
 [[nodiscard]] RecordingEdit prepareLoopCommit(Store&,const engine::AudioRecordingResult&,std::span<const LoopTrackIds>,
     std::span<const std::optional<Payload>> selectionsBefore={});
+/// Owner preparation for a new MIDI loop recording. Creates a real take lane
+/// and MIDI clip for every completed pass, including a final partial pass.
+/// The recorder supplies each pass's main image, including notes held across
+/// wraps. The take image closes any overhanging note at its pass boundary.
+[[nodiscard]] RecordingEdit prepareMidiLoopCommit(Store&,const MidiLoopPlacement&,std::span<const MidiTakePass>);
+/// Prepare the recorder's explicit quantize diff after the captured take has
+/// committed. The caller commits it with notes::commitDiff as its own Undo.
+[[nodiscard]] notes::PreparedDiff prepareRecordQuantize(Store&,std::int64_t clip,const notes::Diff&);
 /// Linear captures have one Undo. Loop captures have one per pass. Failure rolls
 /// back project rows, cleans only identity-verified publications where supported,
 /// and leaves private takes for retry.

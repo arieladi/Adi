@@ -7,32 +7,15 @@
 #include "adi/history.hpp"
 #include "adi/media/blake3.hpp"
 #include "freeze_fixture.hpp"
+#include "replace_operator_new.hpp"
 #include <cstdlib>
 #include <new>
 namespace {
 std::atomic<std::uint32_t> callbackAllocations{0};
 }
-void *operator new(std::size_t n) {
+void adi::test::countReplacedNew() noexcept {
     if (adi::audio::onAudioThread)
         callbackAllocations.fetch_add(1, std::memory_order_relaxed);
-    if (void *p = std::malloc(n ? n : 1))
-        return p;
-    throw std::bad_alloc();
-}
-void *operator new[](std::size_t n) {
-    return operator new(n);
-}
-void operator delete(void *p) noexcept {
-    std::free(p);
-}
-void operator delete[](void *p) noexcept {
-    std::free(p);
-}
-void operator delete(void *p, std::size_t) noexcept {
-    std::free(p);
-}
-void operator delete[](void *p, std::size_t) noexcept {
-    std::free(p);
 }
 namespace {
 OpRequest op(const char *type, Payload payload) {

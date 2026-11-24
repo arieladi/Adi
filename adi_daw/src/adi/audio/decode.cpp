@@ -27,6 +27,7 @@
 #include <fstream>
 #include <memory>
 #include <limits>
+#include <mutex>
 #include <random>
 #include <system_error>
 #include <thread>
@@ -55,6 +56,19 @@ const char* toString(DecodeProblem p) {
 
 DecodeError::DecodeError(DecodeProblem problem, const std::string& detail)
     : std::runtime_error(std::string(toString(problem)) + ": " + detail), problem_(problem) {}
+
+// DF-E65: stb_vorbis keeps one process-wide CRC table. Every open rewrites it
+// (start_decoder calls crc32_init), and finding a page reads it, which only
+// stb_vorbis_stream_length_in_samples and the seek functions do here (the push
+// API is compiled out). Rewriting it with the same values is still a data race,
+// so every stb_vorbis call that can reach the table holds this one lock, and the
+// fetched copy stays unpatched. Header parsing and the bounded end-of-stream
+// length probe run one at a time; decoding packets never touches the table and
+// stays parallel.
+std::mutex& stbVorbisTableLock() {
+    static std::mutex lock;
+    return lock;
+}
 
 namespace {
 void cancelled(std::stop_token stop) {
@@ -220,13 +234,24 @@ public:
         file_.reset(native);
         if(!file_)throw DecodeError(DecodeProblem::Unreadable,display(p)+": cannot open Ogg");
         int error = 0;
-        vorbis_ = stb_vorbis_open_file_section(file_.get(),0,&error,nullptr,static_cast<unsigned int>(size));
+        stb_vorbis_info info{};
+        unsigned int length = 0;
+        {
+            const std::lock_guard<std::mutex> lock(stbVorbisTableLock());
+            vorbis_ = stb_vorbis_open_file_section(file_.get(),0,&error,nullptr,static_cast<unsigned int>(size));
+            if (vorbis_) {
+                info = stb_vorbis_get_info(vorbis_);
+                length = stb_vorbis_stream_length_in_samples(vorbis_);
+            }
+        }
         if (!vorbis_) throw DecodeError(DecodeProblem::Corrupt, display(p) + ": not a readable Ogg Vorbis stream (stb_vorbis error " + std::to_string(error) + ")");
-        const auto info = stb_vorbis_get_info(vorbis_);
         channels = static_cast<std::uint32_t>(info.channels); rate = info.sample_rate;
-        frames = stb_vorbis_stream_length_in_samples(vorbis_);
+        frames = length;
     }
     ~VorbisDecoder() override { stb_vorbis_close(vorbis_); }
+    // Decoding packets never reads the CRC table. A future stb_vorbis_seek or
+    // stb_vorbis_seek_frame call, or another stream-length call, must hold
+    // stbVorbisTableLock(), as must any further open.
     std::uint64_t read(float* out, std::uint64_t n) override {
         fileIoPoint();
         std::uint64_t done = 0;
