@@ -10500,7 +10500,7 @@ void pluginWindows(AppCommands &commands, settings::AppSettings &settings, const
         host.ownerToFront();
         auto *window = host.window(key5);
         auto *keys = dynamic_cast<juce::KeyListener *>(window);
-        check(keys != nullptr && keys->keyPressed(juce::KeyPress(juce::KeyPress::escapeKey), window), "Esc reaching its window closes it");
+        check(keys != nullptr && keys->keyPressed(juce::KeyPress(juce::KeyPress::escapeKey), window), "Esc reaching its window closes it [P:7.5-floating#13]");
         host.collect();
         root.frame();
         check(!host.contains(key5), "gone at the next collect");
@@ -10515,7 +10515,7 @@ void pluginWindows(AppCommands &commands, settings::AppSettings &settings, const
         host.closeAll(false);
         root.pluginAdded(3);
         root.frame();
-        check(host.contains(key3), "Auto-Open Plug-In Windows: a plug-in added opens its window");
+        check(host.contains(key3), "Auto-Open Plug-In Windows: a plug-in added opens its window [P:7.5-floating#14]");
         host.closeAll(false);
         std::string offWhy;
         check(settings.set("plugins.autoOpenWindows", false, {}, offWhy), "Auto-Open off");

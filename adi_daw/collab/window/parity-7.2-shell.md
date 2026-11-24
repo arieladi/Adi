@@ -12,7 +12,7 @@ sheet's status cell starts with one of these words; the rest of the cell is free
 its number, with a letter after it for a row added between two (16a), or a letter before it for a
 section of its own (L1); ids are unique in their sheet. A check that proves a built row cites it in
 its message as `[P:<sheet>#<id>]`, the sheet named without `parity-` and `.md` (`[P:7.6-mixer#9]`,
-`[P:mix-view#1]`); `collab/window/validate_parity.py` holds the sheets to this (WTS-09).
+`[P:mix-view#1]`); `tools/validate_parity.py` holds the sheets to this (WTS-09), in ci.yml's validator step.
 "Online §" cites Ableton's online Live 12 manual (ableton.com/en/live-manual/12/, the
 2026-10-01 edition); see `parity-7.2-application.md`.
 

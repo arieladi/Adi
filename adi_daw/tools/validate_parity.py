@@ -10,13 +10,14 @@ Reads every collab/window/parity-*.md table and the UI tests, and fails when:
   - a sheet holds fewer built rows than its floor (a floor changes with the sheet, never silently).
 
 Usage: validate_parity.py [--root adi_daw] [--write-floors] [--self-test]
-The floors live beside this script in parity-floors.json. The window lane drafted it; it moves into
-tools/ when win lends the path and wires it into ci.yml's validator step.
+The floors live with the sheets, in collab/window/parity-floors.json (the window lane's). The window
+lane drafted this script; win lent tools/ and ci.yml's "every validator" step runs it (24 November).
 """
 import argparse
 import json
 import pathlib
 import re
+import shutil
 import sys
 import tempfile
 
@@ -117,8 +118,8 @@ def self_test(root, floors_path):
         return False
     with tempfile.TemporaryDirectory() as temp:
         planted = pathlib.Path(temp)
-        (planted / "collab").mkdir()
-        (planted / "collab" / "window").symlink_to((root / "collab" / "window").resolve(), target_is_directory=True)
+        # A copy, not a symlink: Windows refuses a symlink without Developer Mode.
+        shutil.copytree(root / "collab" / "window", planted / "collab" / "window")
         (planted / "tests").mkdir()
         (planted / "tests" / "planted.cpp").write_text('check(true, "a planted tag [P:7.6-mixer#999]");\n')
         bad, _, _ = check(planted, floors_path)
@@ -137,8 +138,8 @@ def self_test(root, floors_path):
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     here = pathlib.Path(__file__).resolve().parent
-    parser.add_argument("--root", default=str(here.parent.parent), help="the adi_daw directory")
-    parser.add_argument("--floors", default=str(here / "parity-floors.json"))
+    parser.add_argument("--root", default=str(here.parent), help="the adi_daw directory")
+    parser.add_argument("--floors", default=str(here.parent / "collab" / "window" / "parity-floors.json"))
     parser.add_argument("--write-floors", action="store_true", help="write today's counts as the floors")
     parser.add_argument("--self-test", action="store_true")
     a = parser.parse_args()

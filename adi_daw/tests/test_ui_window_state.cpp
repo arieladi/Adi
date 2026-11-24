@@ -238,7 +238,7 @@ void placementRule() {
     // Cascade.
     const std::vector<Rect> open{{100, 100, 400, 300}, {122, 122, 400, 300}};
     check(cascade({100, 100, 400, 300}, open, laptop.usable) == Rect{144, 144, 400, 300},
-          "a new window at another's corner steps 22 down and right past every one there");
+          "a new window at another's corner steps 22 down and right past every one there [P:7.5-floating#15]");
     check(cascade({700, 300, 400, 300}, {{700, 300, 400, 300}}, laptop.usable) == Rect{0, 0, 400, 300},
           "a step past the screen's edge goes back to its corner");
     check(cascade({10, 10, 400, 300}, open, laptop.usable) == Rect{10, 10, 400, 300}, "a free corner is kept");
