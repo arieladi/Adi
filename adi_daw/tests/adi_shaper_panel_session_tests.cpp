@@ -103,15 +103,21 @@ void followsAudioRestart() {
     device = doc->session().instanceFor(id);
     require(device && std::abs(device->getParam("1").normalized - .5) < .00001 && steps() == start + 1,
             "and puts back what the dropped edit previewed, journaling nothing");
-    // The feed re-stamps the device only at its next tick. An edit begun in between keeps going.
+    // An edit begun after a restart, before the next tick: that tick puts the device back on its
+    // committed values, so the edit's next change finds its preview gone. It is refused and says
+    // why, nothing is journaled, and the next edit lands.
     doc->prepare(48000, 64);
     require(binding.parameters(Phase::Begin, {}) && binding.parameters(Phase::Change, quarter),
-            "an edit begun after a restart, before the feed's new stamp");
+            "an edit begun after a restart, before the next tick");
     doc->tick(3);
     const std::array<Panel::Change,1> threeQuarters{{{1, .75}}};
-    require(session.editing() && binding.parameters(Phase::Change, threeQuarters) &&
-            binding.parameters(Phase::End, threeQuarters) && steps() == start + 2,
-            "keeps going across the feed's new stamp and lands as one undo step");
+    require(!binding.parameters(Phase::Change, threeQuarters) && !session.editing() &&
+                session.error() == "The parameter changed outside this editor." && steps() == start + 1,
+            "the tick undoes its preview: the edit is refused, says why, and journals nothing");
+    device = doc->session().instanceFor(id);
+    require(device && std::abs(device->getParam("1").normalized - .5) < .00001, "the device keeps the committed value");
+    require(binding.parameters(Phase::Begin, {}) && binding.parameters(Phase::End, threeQuarters) && steps() == start + 2,
+            "the next edit lands as one undo step");
     device = doc->session().instanceFor(id);
     require(device && std::abs(device->getParam("1").normalized - .75) < .00001, "and reaches the running device");
 }
