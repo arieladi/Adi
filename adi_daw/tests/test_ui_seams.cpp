@@ -2498,6 +2498,38 @@ void heldIdsAreSkipped() {
           "Redo deletes it again and puts the new track back as 5");
 }
 
+// DF-E35a (the window's half): the Arrangement's readers take the main row only. A take lane's
+// clips (lanes, ADR-0247 d1) sit in the snapshot apart (TrackNode::takeClips, 430ea825), so they
+// are not hit, not painted on the main row (the painters walk TrackNode::clips) and not counted in
+// the song's end, until the take lanes' own view draws them (CT-04).
+void takeClipsStayOffTheMainRow() {
+    section("a take lane's clips stay off the main row (DF-E35a)");
+    adi::test::TempDirectory temp("ui_seams", "takes");
+    auto store = freshProject(temp.path() / "p.adi");
+    check(store != nullptr, "store created");
+    if (!store) return;
+    store->db().exec("INSERT INTO tracks(id,kind,name) VALUES(1,'audio','Vocal')");
+    store->db().exec("INSERT INTO lanes(id,track_id,ord,name) VALUES(7,1,0,'Take 1')");
+    store->db().exec("INSERT INTO clips(id,track_id,lane_id,kind,pos_ticks,length_ticks) VALUES"
+                     "(1,1,NULL,'audio',0,960),(2,1,7,'audio',0,960),(3,1,7,'audio',200000,960)");
+    engine::ProjectView view;
+    view.refresh(*store);
+    const ui::SnapshotReader reader(view.current());
+    const engine::TrackNode *track = nullptr;
+    for (const auto &t : reader.tracks())
+        if (t->id == 1) track = t.get();
+    check(track != nullptr, "the track is in the snapshot");
+    if (!track) return;
+    check(track->clips.size() == 1 && track->clips[0]->id == 1 && !track->clips[0]->laneId,
+          "the main row holds clip 1 only, the one with no lane");
+    check(track->takeClips.size() == 2 && track->takeClips[0]->laneId == 7 && track->takeClips[1]->laneId == 7,
+          "clips 2 and 3 are the take lane's, apart");
+    ui::ArrangementGeometry geo;
+    const auto *hit = geo.hit(*track, 480);
+    check(hit != nullptr && hit->id == 1, "a click at 480 on the track hits clip 1, not the take under it");
+    check(geo.hit(*track, 200000 + 480) == nullptr, "nothing is hit where only a take lies");
+    check(geo.end(reader) < 200000, "the song's end ignores a take further right");
+}
 int main() {
     theWrongThingDoesNotCompile();
     heldIdsAreSkipped();
@@ -2543,6 +2575,7 @@ int main() {
     soloRules();
     undoHistoryRestores();
     recordingDefaultsRideTheBatch();
+    takeClipsStayOffTheMainRow();
 
     std::printf("%s -- %d checks, %d failure(s)\n", g_failures ? "FAIL" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;
