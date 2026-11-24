@@ -4,6 +4,19 @@ Trial seat (22 November 2026, `collab/win.md`): Linux environment (Debian 12, GC
 
 ---
 
+## 2026-11-24 — Standing queue rerun (Item 13, GLIBCXX-DEBUG) on `main` (`48fb9953a`)
+
+Head: `main` (`48fb9953a`, post `#739`, `#740`, `#742`, `#744`). Compiler & flags: GCC 12.2.0 (`-DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS_DEBUG="-g0" -DCMAKE_CXX_FLAGS_DEBUG="-g0 -D_GLIBCXX_DEBUG" -DADI_WITH_JUCE=OFF -DADI_WITH_PD=ON -DADI_WERROR=OFF`).
+
+- **Counts:** **276 / 277 PASS**, **0 `_GLIBCXX_DEBUG` aborts** across the entire headless test suite (batch 1 `1..150`: 150/150 PASS in 222.85 s; batch 2 `151..280`: 126/127 PASS in 407.51 s).
+- **Verdict:** **PASS — zero `_GLIBCXX_DEBUG` aborts; nothing new broken.**
+- **What changed since our 23 November rerun (`7e3e627d`, 272/275):**
+  - `adi_mix_opto_gain_tests` (DF-M64, landed in `#740`): **now PASS** (previously aborted in `std::span` ctor).
+  - `adi_ui_seams_tests` (DF-W39, landed in `#739`): **now builds and PASSES** on GCC 12.2.
+  - Sole remaining non-pass suite is the known informational harness interaction in `adi_link_playback_tests` (0 `_GLIBCXX_DEBUG` aborts; 16/139 `RealtimeAudit` checks trip because `__wrap_pthread_mutex_lock` counts libstdc++ debug safe-iterator mutex locks inside audio callbacks).
+
+---
+
 ## 2026-11-24 — Standing queue rerun (Items 3 & 10): WTS-01, full-tree `-DADI_WERROR=ON` sweep, and full headless ctest on `main` (`48fb9953a`)
 
 Reran standing queue Items 3 (`WTS-01`) and 10 (`WERROR-SWEEP`, plus full headless `ctest`) on `main` at `48fb9953a` (post `#739`, `#740`, `#742`, `#744`) with **zero local patches/workarounds** (DF-M62, DF-E69, DF-W39, DF-M63–M67, DF-E67 (a), DF-E32 (b), and DF-E35 (a) are all on `main`).
