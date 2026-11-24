@@ -10425,7 +10425,7 @@ void pluginWindows(AppCommands &commands, settings::AppSettings &settings, const
     check(opened == 1 && host.contains(key3) && host.content(key3) != nullptr &&
               host.content(key3)->getWidth() == 320 && host.content(key3)->getHeight() == 200 &&
               !host.zoom(key3, true) && host.alwaysOnTop(key3) && panels[0]->wrench.getToggleState(),
-          "a click opens the editor at the plug-in's own size, never scaled, on top, the wrench lit");
+          "a click opens the editor at the plug-in's own size, never scaled, on top, the wrench lit [P:7.5-floating#1]");
     {
         auto *window = dynamic_cast<juce::DocumentWindow *>(host.window(key3));
         const auto *track = root.reader().findTrack(2);
@@ -10458,7 +10458,7 @@ void pluginWindows(AppCommands &commands, settings::AppSettings &settings, const
           "View > Hide Plug-In Windows on Ctrl/Cmd+Alt+P while they show");
     check(root.keyPressed(hideAll) && !root.pluginWindowsShown() && !host.shown(key3) && !host.shown(key5) &&
               host.contains(key3),
-          "Ctrl/Cmd+Alt+P hides every plug-in window, open still");
+          "Ctrl/Cmd+Alt+P hides every plug-in window, open still [P:7.5-floating#2]");
     commands.getCommandInfo(AppCommands::TogglePluginWindows, info);
     root.frame();
     check(info.shortName == "Show Plug-In Windows" && !host.shown(key3), "then the menu offers to show them");
@@ -16499,7 +16499,7 @@ int main(int argc, char **argv) {
             check(restoreFloating(
                       saved, {{"primary", {0, 0, 1000, 700}}, {"left", {-1920, 0, 1920, 1080}}})
                           .getX() == -1600,
-                  "monitor identity preserves negative desktop coordinates");
+                  "monitor identity preserves negative desktop coordinates [P:7.5-floating#5]");
             check(settings.set("lookfeel.showTooltips", true, {}, why), "tooltips back on");
             commands.reload();
             bool alive = true;
@@ -16511,8 +16511,8 @@ int main(int argc, char **argv) {
                 [&](std::int64_t) { return alive; }, false);
             check(floating.detach("test", 11, content, dock), "detach existing component");
             check(floating.content("test") == &content && content.getParentComponent() != &dock,
-                  "detach reparents same identity");
-            check(floating.hasTooltips("test"), "a floating window has its own tooltips");
+                  "detach reparents same identity [P:7.5-floating#3]");
+            check(floating.hasTooltips("test"), "a floating window has its own tooltips [P:7.5-floating#9]");
             floating.frame("test");
             floating.frame("test");
             check(floating.drains("test") == 2, "window drains on its own clock");
@@ -16534,7 +16534,7 @@ int main(int argc, char **argv) {
             floating.frame("deleted");
             floating.collect();
             check(floating.count() == 0 && !document->views().loadFloating("deleted").open,
-                  "deleting the device closes its window and remembers it closed");
+                  "deleting the device closes its window and remembers it closed [P:7.5-floating#8]");
             alive = true;
             floating.collect();
             check(floating.count() == 0, "undo restores the device, not the window");
