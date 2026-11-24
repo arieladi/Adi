@@ -16,6 +16,14 @@
 #include <stdexcept>
 #include <vector>
 
+// The Clip control law (min+(max-min)*n, then min+step*floor(...)) must give
+// every leg the same float, so no fused multiply-adds; cmake/mix_cores.cmake
+// also passes -ffp-contract=off, because GCC ignores this pragma and it does
+// not reach the inline ControlMapping.h snaps included above.
+#if defined(__clang__)
+#pragma STDC FP_CONTRACT OFF
+#endif
+
 namespace adi::device {
 namespace {
 namespace l = mix::limiter;
