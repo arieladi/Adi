@@ -4,6 +4,19 @@ Trial seat (22 November 2026, `collab/win.md`): Linux environment (Debian 12, GC
 
 ---
 
+## 2026-11-24 — Standing queue rerun (Items 3 & 10): WTS-01, full-tree `-DADI_WERROR=ON` sweep, and full headless ctest on `main` (`48fb9953a`)
+
+Reran standing queue Items 3 (`WTS-01`) and 10 (`WERROR-SWEEP`, plus full headless `ctest`) on `main` at `48fb9953a` (post `#739`, `#740`, `#742`, `#744`) with **zero local patches/workarounds** (DF-M62, DF-E69, DF-W39, DF-M63–M67, DF-E67 (a), DF-E32 (b), and DF-E35 (a) are all on `main`).
+
+| Compiler | Flags | Full-tree build (`1060/1060`) | `adi_acceptance_wts01` | Headless `ctest -LE acceptance` | Verdict |
+|---|---|---|---|---|---|
+| GCC 12.2.0 | Debug `-g0 -DADI_WITH_JUCE=OFF -DADI_WITH_PD=ON -DADI_WERROR=ON -DADI_ACCEPTANCE=ON` | **PASS** — 0 errors, 0 warnings | **PASS — `WTS01 session: 0 FAIL`** (all steps 1, 2a, 2b, 3a, 3b, 4, 5a, 5b, 6a, 6b, 7a, 7b, 7c PASS; 37.33 s) | **277/277 PASS** (0 failed; 444.46 s) | **PASS (nothing new broken)** |
+| Clang 14.0.6 + libstdc++ 12 | Debug `-g0 -DADI_WITH_JUCE=OFF -DADI_WITH_PD=ON -DADI_WERROR=ON -DADI_ACCEPTANCE=ON` | **PASS** — 0 errors, 0 warnings | **PASS — `WTS01 session: 0 FAIL`** (all steps 1, 2a, 2b, 3a, 3b, 4, 5a, 5b, 6a, 6b, 7a, 7b, 7c PASS; 19.41 s) | **277/277 PASS** (0 failed; 453.76 s) | **PASS (nothing new broken)** |
+
+- **What changed since our 23 November sweep (`7e3e627d`):** both GCC 12.2.0 and Clang 14.0.6 + libstdc++ 12 now build the entire headless tree (1060/1060 targets) with `-DADI_WERROR=ON` completely clean with zero workarounds, and all 277 headless suites plus `adi_acceptance_wts01` pass 100% on both compilers. No new warnings or regressions.
+
+---
+
 ## 2026-11-24 — Queue item 2 (PR-BUILDS, Round 8): `window/shaper-panel-fixes` (`c10003c49`, `#716`)
 
 Verified the window lane's newly requested branch `window/shaper-panel-fixes` (`c10003c49`, stacked on `#716` `1baf1fd8c`) on Debian 12 Linux x86_64 with JUCE 9.0.5 (`-DADI_WITH_JUCE=ON -DADI_WITH_PD=ON -DADI_WERROR=ON`, `-DJUCE_ALSA=0` since this VM lacks `libasound2-dev`).
