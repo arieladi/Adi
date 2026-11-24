@@ -40,7 +40,14 @@ const OscQueryTree& fixtureTree() {
 }
 
 const HostInfo& fixtureHostInfo() {
-    static const HostInfo kInfo{"ADI DAW", "127.0.0.1", 9000, "UDP"};
+    static const HostInfo kInfo = []() {
+        HostInfo info;
+        info.name = "ADI DAW";
+        info.oscIp = "127.0.0.1";
+        info.oscPort = 9000;
+        info.oscTransport = "UDP";
+        return info;
+    }();
     return kInfo;
 }
 
@@ -51,7 +58,8 @@ void exercise(std::span<const std::byte> input, const RequestLimits& limits) {
             __builtin_trap();
         }
         if (parsed.request->method.empty() || parsed.request->target.empty() ||
-            parsed.request->path.empty() || parsed.request->path[0] != '/') {
+            parsed.request->path.empty() || parsed.request->path[0] != '/' ||
+            parsed.request->host.empty()) {
             __builtin_trap();
         }
     } else {

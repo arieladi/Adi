@@ -2355,7 +2355,7 @@ add_executable(adi_osc_namespace_tests tests/test_osc_namespace.cpp)
 target_link_libraries(adi_osc_namespace_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_osc_namespace_tests COMMAND adi_osc_namespace_tests)
 
-add_executable(adi_oscquery_tests tests/test_oscquery.cpp)
+add_executable(adi_oscquery_tests tests/test_oscquery.cpp tests/test_oscquery_http.cpp)
 target_link_libraries(adi_oscquery_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_oscquery_tests COMMAND adi_oscquery_tests)
 # Test modules from the director's research are available on Windows hosting builds.

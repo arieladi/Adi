@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// SRF-10: unit tests for OSCQuery v1 tree generation, stable ids across track
-// insertion, ?HOST_INFO, GET-only HTTP request handling, and absence of LISTEN.
+// SRF-10: unit tests for OSCQuery v1 tree generation, stable 64-bit ids across
+// track insertion, invalid UTF-8 replacement safety, and 1-to-1 SRF-09 address
+// parity. HTTP/HOST_INFO/Host-header tests live in test_oscquery_http.cpp so
+// each TU stays small and well within MSVC compiler heap limits.
 
+#include "adi/osc_namespace.hpp"
 #include "adi/oscquery.hpp"
 
 #include <nlohmann/json.hpp>
@@ -11,6 +14,9 @@
 #include <cstdio>
 #include <string>
 #include <string_view>
+#include <vector>
+
+void runOscQueryHttpTests(int& checks, int& failures);
 
 namespace {
 
@@ -52,6 +58,20 @@ bool jsonHasKeyRecursive(const Json& j, std::string_view key) {
     return false;
 }
 
+void collectLeafFullPaths(const Json& node, std::vector<std::string>& out) {
+    if (!node.is_object()) {
+        return;
+    }
+    if (node.contains("TYPE") && node.contains("FULL_PATH") && node.at("FULL_PATH").is_string()) {
+        out.push_back(node.at("FULL_PATH").get<std::string>());
+    }
+    if (const auto it = node.find("CONTENTS"); it != node.end() && it->is_object()) {
+        for (auto child = it->begin(); child != it->end(); ++child) {
+            collectLeafFullPaths(child.value(), out);
+        }
+    }
+}
+
 NamespaceDescription makeTwoTrackFixture() {
     NamespaceDescription desc;
     desc.rootDescription = "ADI";
@@ -90,97 +110,102 @@ NamespaceDescription makeTwoTrackFixture() {
     return desc;
 }
 
-Json makeLeafGolden(const std::string& fullPath, double value, const std::string& description) {
-    return Json{
-        {"ACCESS", 3},
-        {"DESCRIPTION", description},
-        {"FULL_PATH", fullPath},
-        {"RANGE", Json::array({Json{{"MAX", 1.0}, {"MIN", 0.0}}})},
-        {"TYPE", "f"},
-        {"VALUE", Json::array({value})},
-    };
-}
-
 void testGoldenTreeTwoTracksAndMain() {
     section("golden JSON tree: two tracks and Main");
 
     const auto desc = makeTwoTrackFixture();
     const auto tree = OscQueryTree::build(desc);
 
-    const Json expected = Json{
-        {"CONTENTS",
-         Json{
-             {"adi",
-              Json{
-                  {"CONTENTS",
-                   Json{
-                       {"master",
-                        Json{
-                            {"CONTENTS",
-                             Json{
-                                 {"mute", makeLeafGolden("/adi/master/mute", 0.0, "Mute")},
-                                 {"pan", makeLeafGolden("/adi/master/pan", 0.5, "Pan: C")},
-                                 {"volume",
-                                  makeLeafGolden("/adi/master/volume", 1.0, "Volume: 0.0 dB")},
-                             }},
-                            {"DESCRIPTION", "Main"},
-                            {"FULL_PATH", "/adi/master"},
-                        }},
-                       {"track",
-                        Json{
-                            {"CONTENTS",
-                             Json{
-                                 {"101",
-                                  Json{
-                                      {"CONTENTS",
-                                       Json{
-                                           {"arm",
-                                            makeLeafGolden("/adi/track/101/arm", 1.0, "Arm")},
-                                           {"mute",
-                                            makeLeafGolden("/adi/track/101/mute", 0.0, "Mute")},
-                                           {"pan",
-                                            makeLeafGolden("/adi/track/101/pan", 0.5, "Pan: C")},
-                                           {"solo",
-                                            makeLeafGolden("/adi/track/101/solo", 0.0, "Solo")},
-                                           {"volume",
-                                            makeLeafGolden("/adi/track/101/volume", 0.75,
-                                                           "Volume: -2.5 dB")},
-                                       }},
-                                      {"DESCRIPTION", "Drums"},
-                                      {"FULL_PATH", "/adi/track/101"},
-                                  }},
-                                 {"102",
-                                  Json{
-                                      {"CONTENTS",
-                                       Json{
-                                           {"arm",
-                                            makeLeafGolden("/adi/track/102/arm", 0.0, "Arm")},
-                                           {"mute",
-                                            makeLeafGolden("/adi/track/102/mute", 1.0, "Mute")},
-                                           {"pan",
-                                            makeLeafGolden("/adi/track/102/pan", 0.25, "Pan: 25L")},
-                                           {"solo",
-                                            makeLeafGolden("/adi/track/102/solo", 0.0, "Solo")},
-                                           {"volume",
-                                            makeLeafGolden("/adi/track/102/volume", 0.5,
-                                                           "Volume: -6.0 dB")},
-                                       }},
-                                      {"DESCRIPTION", "Bass"},
-                                      {"FULL_PATH", "/adi/track/102"},
-                                  }},
-                             }},
-                            {"DESCRIPTION", "Tracks"},
-                            {"FULL_PATH", "/adi/track"},
-                        }},
-                   }},
-                  {"DESCRIPTION", "ADI"},
-                  {"FULL_PATH", "/adi"},
-              }},
-         }},
-        {"DESCRIPTION", "ADI"},
-        {"FULL_PATH", "/"},
-    };
+    static constexpr const char* kGoldenJson = R"json({
+  "CONTENTS": {
+    "adi": {
+      "CONTENTS": {
+        "master": {
+          "CONTENTS": {
+            "mute": {
+              "ACCESS": 3, "DESCRIPTION": "Mute", "FULL_PATH": "/adi/master/mute",
+              "RANGE": [{"MAX": 1.0, "MIN": 0.0}], "TYPE": "f", "VALUE": [0.0]
+            },
+            "pan": {
+              "ACCESS": 3, "DESCRIPTION": "Pan: C", "FULL_PATH": "/adi/master/pan",
+              "RANGE": [{"MAX": 1.0, "MIN": 0.0}], "TYPE": "f", "VALUE": [0.5]
+            },
+            "volume": {
+              "ACCESS": 3, "DESCRIPTION": "Volume: 0.0 dB", "FULL_PATH": "/adi/master/volume",
+              "RANGE": [{"MAX": 1.0, "MIN": 0.0}], "TYPE": "f", "VALUE": [1.0]
+            }
+          },
+          "DESCRIPTION": "Main",
+          "FULL_PATH": "/adi/master"
+        },
+        "track": {
+          "CONTENTS": {
+            "101": {
+              "CONTENTS": {
+                "arm": {
+                  "ACCESS": 3, "DESCRIPTION": "Arm", "FULL_PATH": "/adi/track/101/arm",
+                  "RANGE": [{"MAX": 1.0, "MIN": 0.0}], "TYPE": "f", "VALUE": [1.0]
+                },
+                "mute": {
+                  "ACCESS": 3, "DESCRIPTION": "Mute", "FULL_PATH": "/adi/track/101/mute",
+                  "RANGE": [{"MAX": 1.0, "MIN": 0.0}], "TYPE": "f", "VALUE": [0.0]
+                },
+                "pan": {
+                  "ACCESS": 3, "DESCRIPTION": "Pan: C", "FULL_PATH": "/adi/track/101/pan",
+                  "RANGE": [{"MAX": 1.0, "MIN": 0.0}], "TYPE": "f", "VALUE": [0.5]
+                },
+                "solo": {
+                  "ACCESS": 3, "DESCRIPTION": "Solo", "FULL_PATH": "/adi/track/101/solo",
+                  "RANGE": [{"MAX": 1.0, "MIN": 0.0}], "TYPE": "f", "VALUE": [0.0]
+                },
+                "volume": {
+                  "ACCESS": 3, "DESCRIPTION": "Volume: -2.5 dB", "FULL_PATH": "/adi/track/101/volume",
+                  "RANGE": [{"MAX": 1.0, "MIN": 0.0}], "TYPE": "f", "VALUE": [0.75]
+                }
+              },
+              "DESCRIPTION": "Drums",
+              "FULL_PATH": "/adi/track/101"
+            },
+            "102": {
+              "CONTENTS": {
+                "arm": {
+                  "ACCESS": 3, "DESCRIPTION": "Arm", "FULL_PATH": "/adi/track/102/arm",
+                  "RANGE": [{"MAX": 1.0, "MIN": 0.0}], "TYPE": "f", "VALUE": [0.0]
+                },
+                "mute": {
+                  "ACCESS": 3, "DESCRIPTION": "Mute", "FULL_PATH": "/adi/track/102/mute",
+                  "RANGE": [{"MAX": 1.0, "MIN": 0.0}], "TYPE": "f", "VALUE": [1.0]
+                },
+                "pan": {
+                  "ACCESS": 3, "DESCRIPTION": "Pan: 25L", "FULL_PATH": "/adi/track/102/pan",
+                  "RANGE": [{"MAX": 1.0, "MIN": 0.0}], "TYPE": "f", "VALUE": [0.25]
+                },
+                "solo": {
+                  "ACCESS": 3, "DESCRIPTION": "Solo", "FULL_PATH": "/adi/track/102/solo",
+                  "RANGE": [{"MAX": 1.0, "MIN": 0.0}], "TYPE": "f", "VALUE": [0.0]
+                },
+                "volume": {
+                  "ACCESS": 3, "DESCRIPTION": "Volume: -6.0 dB", "FULL_PATH": "/adi/track/102/volume",
+                  "RANGE": [{"MAX": 1.0, "MIN": 0.0}], "TYPE": "f", "VALUE": [0.5]
+                }
+              },
+              "DESCRIPTION": "Bass",
+              "FULL_PATH": "/adi/track/102"
+            }
+          },
+          "DESCRIPTION": "Tracks",
+          "FULL_PATH": "/adi/track"
+        }
+      },
+      "DESCRIPTION": "ADI",
+      "FULL_PATH": "/adi"
+    }
+  },
+  "DESCRIPTION": "ADI",
+  "FULL_PATH": "/"
+})json";
 
+    const Json expected = Json::parse(kGoldenJson);
     const std::string golden = expected.dump();
     check(tree.rootJson() == golden, "root JSON matches golden string exactly");
 
@@ -189,13 +214,12 @@ void testGoldenTreeTwoTracksAndMain() {
     check(!jsonHasKeyRecursive(parsed, "LISTEN"), "no LISTEN key anywhere in tree");
     check(tree.rootJson().find("LISTEN") == std::string::npos, "no LISTEN token in tree text");
 
-    // Direct subtree lookup matches the same node inside root.
     const auto volNode = tree.jsonForPath("/adi/track/101/volume");
     check(volNode.has_value(), "/adi/track/101/volume exists");
     if (volNode.has_value()) {
-        check(Json::parse(*volNode) == makeLeafGolden("/adi/track/101/volume", 0.75,
-                                                      "Volume: -2.5 dB"),
-              "subtree lookup matches leaf golden");
+        const Json expectedVol = Json::parse(
+            R"json({"ACCESS":3,"DESCRIPTION":"Volume: -2.5 dB","FULL_PATH":"/adi/track/101/volume","RANGE":[{"MAX":1.0,"MIN":0.0}],"TYPE":"f","VALUE":[0.75]})json");
+        check(Json::parse(*volNode) == expectedVol, "subtree lookup matches leaf golden");
     }
 }
 
@@ -203,7 +227,6 @@ void testStableIdsWhenTrackInsertedBefore() {
     section("stable ids when a track is inserted before existing tracks");
 
     auto beforeDesc = makeTwoTrackFixture();
-    // Add a send and device to track 101 to verify nested stable ids too.
     beforeDesc.tracks[0].sends.push_back(ParamDescriptor{501, "", "Send A", "-inf dB", 0.0f});
     DeviceDescriptor dev;
     dev.stableId = 701;
@@ -214,7 +237,6 @@ void testStableIdsWhenTrackInsertedBefore() {
 
     const auto treeBefore = OscQueryTree::build(beforeDesc);
 
-    // Insert a brand-new track (stableId 205) BEFORE track 101 and track 102.
     auto afterDesc = beforeDesc;
     TrackDescriptor inserted;
     inserted.stableId = 205;
@@ -227,7 +249,6 @@ void testStableIdsWhenTrackInsertedBefore() {
 
     const auto treeAfter = OscQueryTree::build(afterDesc);
 
-    // Every existing path under 101, 102, and master must stay byte-identical.
     const std::vector<std::string> stablePaths = {
         "/adi/track/101",
         "/adi/track/101/volume",
@@ -248,133 +269,123 @@ void testStableIdsWhenTrackInsertedBefore() {
               "stable path unchanged after insertion before it: " + path);
     }
 
-    // And the newly inserted track is reachable under its own stable id.
     check(treeAfter.contains("/adi/track/205/volume"), "new track 205 present");
 }
 
-void testHostInfoAndHttpHandling() {
-    section("?HOST_INFO and pure GET-only HTTP handler");
+void testInvalidUtf8ReplacedWithoutThrowing() {
+    section("invalid UTF-8 in names replaced with U+FFFD without throwing");
 
-    const auto tree = OscQueryTree::build(makeTwoTrackFixture());
-    HostInfo info;
-    info.name = "ADI DAW";
-    info.oscIp = "192.168.1.5";
-    info.oscPort = 9001;
-    info.oscTransport = "UDP";
+    NamespaceDescription desc;
+    desc.rootDescription = std::string("ADI-\xFF\xFE");
 
-    // GET /?HOST_INFO
-    {
-        const auto resp =
-            handleHttpRequest(tree, info, "GET /?HOST_INFO HTTP/1.1\r\nHost: localhost\r\n\r\n");
-        check(resp.status == 200, "?HOST_INFO returns 200");
-        const auto j = Json::parse(resp.body);
-        check(j.at("NAME") == "ADI DAW", "HOST_INFO NAME");
-        check(j.at("OSC_TRANSPORT") == "UDP", "HOST_INFO OSC_TRANSPORT == UDP");
-        check(j.at("OSC_PORT") == 9001, "HOST_INFO OSC_PORT == 9001");
-        check(j.at("OSC_IP") == "192.168.1.5", "HOST_INFO OSC_IP");
-        check(j.at("EXTENSIONS").at("ACCESS") == true, "EXTENSIONS.ACCESS");
-        check(j.at("EXTENSIONS").at("DESCRIPTION") == true, "EXTENSIONS.DESCRIPTION");
-        check(j.at("EXTENSIONS").at("RANGE") == true, "EXTENSIONS.RANGE");
-        check(j.at("EXTENSIONS").at("VALUE") == true, "EXTENSIONS.VALUE");
-        check(!jsonHasKeyRecursive(j, "LISTEN"), "no LISTEN key in HOST_INFO");
-        check(resp.body.find("LISTEN") == std::string::npos, "no LISTEN text in HOST_INFO");
+    TrackDescriptor t;
+    t.stableId = 10;
+    t.name = std::string("Vox\xE2\x82");        // truncated 3-byte UTF-8 sequence
+    t.volume = 0.5f;
+    t.volumeText = std::string("-6\xC0\xAF dB");  // overlong slash
+    t.pan = 0.5f;
+    t.panText = std::string("\xED\xA0\x80");      // lone UTF-16 surrogate in UTF-8
 
-        const std::string wire = resp.serialize();
-        check(wire.find("HTTP/1.1 200 OK\r\n") == 0U, "HTTP status line 200");
-        check(wire.find("Access-Control-Allow-Origin") == std::string::npos,
-              "no CORS * header emitted");
+    DeviceDescriptor d;
+    d.stableId = 20;
+    d.name = std::string("Bad\x80Plugin");
+    d.params.push_back(ParamDescriptor{30, "", std::string("Cut\xFE"), std::string("1\xFF kHz"),
+                                       0.25f});
+    t.devices.push_back(d);
+    desc.tracks.push_back(t);
+
+    desc.master.name = std::string("Main\xFF");
+
+    bool threw = false;
+    OscQueryTree tree;
+    try {
+        tree = OscQueryTree::build(desc);
+    } catch (...) {
+        threw = true;
+    }
+    check(!threw, "OscQueryTree::build() never throws on invalid UTF-8");
+    check(!tree.rootJson().empty(), "rootJson produced");
+
+    bool parseThrew = false;
+    Json parsed;
+    try {
+        parsed = Json::parse(tree.rootJson());
+    } catch (...) {
+        parseThrew = true;
+    }
+    check(!parseThrew, "serialized rootJson is valid UTF-8 JSON");
+    // UTF-8 encoding of U+FFFD is "\xEF\xBF\xBD".
+    check(tree.rootJson().find("\xEF\xBF\xBD") != std::string::npos,
+          "invalid UTF-8 bytes replaced with U+FFFD");
+
+    // HostInfo with invalid UTF-8 also replaces rather than throwing.
+    HostInfo hi;
+    hi.name = std::string("Studio\xFF\x80");
+    bool hiThrew = false;
+    std::string hiJson;
+    try {
+        hiJson = renderHostInfoJson(hi);
+    } catch (...) {
+        hiThrew = true;
+    }
+    check(!hiThrew && hiJson.find("\xEF\xBF\xBD") != std::string::npos,
+          "renderHostInfoJson replaces invalid UTF-8 without throwing");
+}
+
+void testSrf09AddressParity() {
+    section("1-to-1 stable-id address parity with SRF-09 resolveAddress()");
+
+    constexpr std::uint64_t kTrackId = (1ULL << 32) | 42ULL;
+    constexpr std::uint64_t kSendId = (2ULL << 32) | 9ULL;
+    constexpr std::uint64_t kDevId = (3ULL << 32) | 77ULL;
+    constexpr std::uint64_t kParamId = (4ULL << 32) | 501ULL;
+    constexpr std::uint64_t kMasterDevId = (5ULL << 32) | 12ULL;
+    constexpr std::uint64_t kMasterParamId = (6ULL << 32) | 88ULL;
+
+    NamespaceDescription desc;
+    TrackDescriptor t;
+    t.stableId = kTrackId;
+    t.name = "Lead";
+    t.sends.push_back(ParamDescriptor{kSendId, "", "Reverb", "-10 dB", 0.3f});
+    DeviceDescriptor dev;
+    dev.stableId = kDevId;
+    dev.name = "Filter";
+    dev.params.push_back(ParamDescriptor{kParamId, "", "Cutoff", "1 kHz", 0.5f});
+    t.devices.push_back(dev);
+    desc.tracks.push_back(t);
+
+    DeviceDescriptor mdev;
+    mdev.stableId = kMasterDevId;
+    mdev.name = "Limiter";
+    mdev.params.push_back(ParamDescriptor{kMasterParamId, "", "Ceiling", "-0.3 dB", 0.9f});
+    desc.master.devices.push_back(mdev);
+
+    const auto tree = OscQueryTree::build(desc);
+    const Json root = Json::parse(tree.rootJson());
+    std::vector<std::string> leaves;
+    collectLeafFullPaths(root, leaves);
+
+    check(leaves.size() == 13U, "collected all 13 leaf paths (track + send + devices + master)");
+    for (const auto& leaf : leaves) {
+        const auto resolved = adi::osc::resolveAddress(leaf);
+        check(resolved.has_value(), "SRF-09 resolveAddress accepts SRF-10 leaf: " + leaf);
     }
 
-    // GET / and GET /adi/master/volume
-    {
-        const auto rRoot =
-            handleHttpRequest(tree, info, "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n");
-        check(rRoot.status == 200 && rRoot.body == tree.rootJson(), "GET / returns full tree");
+    const auto pTrackParam = adi::osc::resolveAddress(
+        "/adi/track/" + std::to_string(kTrackId) + "/device/" + std::to_string(kDevId) +
+        "/param/" + std::to_string(kParamId));
+    check(pTrackParam.has_value() && pTrackParam->kind == adi::osc::TargetKind::TrackDeviceParam &&
+              pTrackParam->trackId == kTrackId && pTrackParam->deviceId == kDevId &&
+              pTrackParam->paramId == kParamId,
+          "SRF-09 decodes exact 64-bit stable track/device/param ids from SRF-10 path");
 
-        const auto rPath = handleHttpRequest(
-            tree, info, "GET /adi/master/volume HTTP/1.1\r\nHost: localhost\r\n\r\n");
-        check(rPath.status == 200 && rPath.body == *tree.jsonForPath("/adi/master/volume"),
-              "GET /adi/master/volume returns leaf JSON");
-    }
-
-    // Any method other than GET is refused with 405 Method Not Allowed.
-    for (const char* method : {"POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"}) {
-        const std::string req =
-            std::string(method) + " / HTTP/1.1\r\nHost: localhost\r\n\r\n";
-        const auto resp = handleHttpRequest(tree, info, req);
-        check(resp.status == 405, std::string(method) + " refused with 405");
-        check(resp.allowHeader == "GET", std::string(method) + " sets Allow: GET");
-        check(resp.serialize().find("Allow: GET\r\n") != std::string::npos,
-              std::string(method) + " wire response carries Allow: GET");
-    }
-
-    // Unknown path refused with 404 Not Found.
-    for (const char* badPath : {"/adi/track/999/volume", "/adi/master/unknown", "/etc/passwd",
-                                "/adi/track/101/volume/"}) {
-        const std::string req =
-            std::string("GET ") + badPath + " HTTP/1.1\r\nHost: localhost\r\n\r\n";
-        const auto resp = handleHttpRequest(tree, info, req);
-        check(resp.status == 404, std::string("unknown path ") + badPath + " returns 404");
-    }
-
-    // Unsupported v2 query (?LISTEN) or non-root ?HOST_INFO refused cleanly.
-    {
-        const auto rListen = handleHttpRequest(
-            tree, info, "GET /?LISTEN HTTP/1.1\r\nHost: localhost\r\n\r\n");
-        check(rListen.status == 400, "?LISTEN refused with 400");
-
-        const auto rPathHostInfo = handleHttpRequest(
-            tree, info, "GET /adi/master?HOST_INFO HTTP/1.1\r\nHost: localhost\r\n\r\n");
-        check(rPathHostInfo.status == 400, "non-root ?HOST_INFO refused with 400");
-    }
-
-    // Malformed requests refused with 400 or 505.
-    const std::vector<std::string> malformed = {
-        "",
-        "GET / HTTP/1.1\r\n",  // missing \r\n\r\n
-        "GET /\r\n\r\n",       // missing version
-        "GET / HTTP/1.1 EXTRA\r\n\r\n",
-        "GET relative HTTP/1.1\r\n\r\n",
-        "GET /adi/../master HTTP/1.1\r\n\r\n",
-        "GET //adi/master HTTP/1.1\r\n\r\n",
-        "GET / HTTP/1.1\r\nBadHeaderNoColon\r\n\r\n",
-        "GET / HTTP/1.1\r\n: empty-name\r\n\r\n",
-        std::string("GET / HTTP/1.1\r\nX-Null: a\0b\r\n\r\n", 31),
-    };
-    for (std::size_t i = 0U; i < malformed.size(); ++i) {
-        const auto resp = handleHttpRequest(tree, info, malformed[i]);
-        check(resp.status == 400, "malformed[" + std::to_string(i) + "] returns 400");
-    }
-
-    // Unsupported HTTP version -> 505.
-    {
-        const auto resp = handleHttpRequest(tree, info, "GET / HTTP/2.0\r\n\r\n");
-        check(resp.status == 505, "HTTP/2.0 returns 505");
-    }
-
-    // Oversized request -> 413; oversized target -> 414; too many headers -> 431.
-    {
-        RequestLimits lim;
-        lim.maxRequestBytes = 64;
-        const std::string big(128, 'A');
-        const auto resp = handleHttpRequest(tree, info, big, lim);
-        check(resp.status == 413, "oversized request returns 413");
-    }
-    {
-        RequestLimits lim;
-        lim.maxTargetBytes = 16;
-        const std::string req = "GET /adi/track/101/volume HTTP/1.1\r\n\r\n";
-        const auto resp = handleHttpRequest(tree, info, req, lim);
-        check(resp.status == 414, "oversized target returns 414");
-    }
-    {
-        RequestLimits lim;
-        lim.maxHeaders = 2;
-        const std::string req =
-            "GET / HTTP/1.1\r\nA: 1\r\nB: 2\r\nC: 3\r\n\r\n";
-        const auto resp = handleHttpRequest(tree, info, req, lim);
-        check(resp.status == 431, "excessive headers returns 431");
-    }
+    const auto pMasterParam = adi::osc::resolveAddress(
+        "/adi/master/device/" + std::to_string(kMasterDevId) + "/param/" +
+        std::to_string(kMasterParamId));
+    check(pMasterParam.has_value() &&
+              pMasterParam->kind == adi::osc::TargetKind::MasterDeviceParam &&
+              pMasterParam->deviceId == kMasterDevId && pMasterParam->paramId == kMasterParamId,
+          "SRF-09 decodes exact 64-bit stable master device/param ids from SRF-10 path");
 }
 
 }  // namespace
@@ -382,7 +393,9 @@ void testHostInfoAndHttpHandling() {
 int main() {
     testGoldenTreeTwoTracksAndMain();
     testStableIdsWhenTrackInsertedBefore();
-    testHostInfoAndHttpHandling();
+    testInvalidUtf8ReplacedWithoutThrowing();
+    testSrf09AddressParity();
+    runOscQueryHttpTests(g_checks, g_failures);
 
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

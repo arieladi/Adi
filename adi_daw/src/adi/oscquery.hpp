@@ -6,14 +6,22 @@
 // Design rules (PLAN SRF-10):
 //   * Self-contained: compiles without osc_codec or adi_core so its fuzz
 //     target (tests/fuzz_oscquery.cpp) builds from src/adi/oscquery.cpp alone.
-//   * Stable ids: tracks, sends, devices, and parameters are addressed by
-//     their stable positive ids, so inserting or reordering tracks never
-//     renumbers existing OSCQuery paths.
+//   * Stable ids (unified with SRF-09): tracks, sends, devices, and parameters
+//     are addressed by their canonical positive 64-bit stable ids, matching
+//     adi::osc::resolveAddress() 1-to-1 so inserting or reordering tracks never
+//     renumbers existing OSCQuery or OSC paths.
 //   * v1 only: FULL_PATH, TYPE ("f"), VALUE, RANGE ([{MIN:0, MAX:1}]),
 //     ACCESS (3 — read and write together, ADR-0188 d7), and DESCRIPTION
 //     (name + Record.text). No LISTEN key (v2 waits for a transport ruling).
+//   * Non-throwing UTF-8 safety: invalid UTF-8 bytes in any display name or
+//     value text are replaced (U+FFFD) during JSON serialization rather than
+//     throwing.
 //   * HTTP GET only: `/`, a tree path, and `/?HOST_INFO`. No CORS `*`, no
 //     file endpoints, no socket or DNS-SD code here.
+//   * DNS-rebinding defense: every request must carry a syntactically valid
+//     Host header whose host matches loopback, HostInfo::oscIp, or an entry in
+//     HostInfo::allowedHosts (and HostInfo::httpPort when set); any other Host
+//     is refused with 403 Forbidden.
 
 #pragma once
 
@@ -78,12 +86,20 @@ struct NamespaceDescription {
     MasterDescriptor master;
 };
 
-/// Metadata returned by `GET /?HOST_INFO`.
+/// Metadata returned by `GET /?HOST_INFO` and Host-header allow-list policy.
 struct HostInfo {
     std::string name = "ADI DAW";
-    std::string oscIp;            ///< Optional; omitted when empty
+    std::string oscIp;            ///< Optional; omitted from JSON when empty
     std::uint16_t oscPort = 9000;
     std::string oscTransport = "UDP";
+
+    /// Optional HTTP listener port; when non-zero, any explicit `:port` in the
+    /// request's Host header must match `httpPort`.
+    std::uint16_t httpPort = 0;
+
+    /// Additional allowed Host header hostnames/IPs (beyond loopback
+    /// localhost/127.0.0.1/[::1] and `oscIp`), e.g. a local `.local` mDNS name.
+    std::vector<std::string> allowedHosts;
 };
 
 /// Explicit caps protecting the pure HTTP request parser.
@@ -93,13 +109,14 @@ struct RequestLimits {
     std::size_t maxHeaders = 64;
 };
 
-/// Parsed HTTP/1.x request line (method, target split into path + query).
+/// Parsed HTTP/1.x request line + validated Host header.
 struct HttpRequest {
     std::string method;
     std::string target;
     std::string path;
     std::string query;
     std::string version;
+    std::string host;  ///< Trimmed Host header value (required)
 };
 
 struct ParseRequestResult {
@@ -131,6 +148,8 @@ public:
 
     /// Build a deterministic OSCQuery v1 tree from `desc`.
     /// Entries with invalid/duplicate stable ids are skipped deterministically.
+    /// Invalid UTF-8 bytes in names/descriptions are replaced with U+FFFD and
+    /// never throw.
     [[nodiscard]] static OscQueryTree build(const NamespaceDescription& desc);
 
     /// Return the serialized JSON for `path` (e.g. "/" or "/adi/master/volume"),
@@ -149,7 +168,12 @@ private:
 };
 
 /// Render the OSCQuery v1 `?HOST_INFO` JSON document (no LISTEN key).
+/// Invalid UTF-8 bytes in string fields are replaced with U+FFFD.
 [[nodiscard]] std::string renderHostInfoJson(const HostInfo& info);
+
+/// Check whether a syntactically valid Host header value is permitted for
+/// `hostInfo` (defends against DNS rebinding).
+[[nodiscard]] bool isHostAllowed(std::string_view hostHeader, const HostInfo& hostInfo) noexcept;
 
 /// Parse a raw HTTP/1.x request buffer under `limits`.
 [[nodiscard]] ParseRequestResult parseHttpRequest(std::span<const std::byte> raw,
