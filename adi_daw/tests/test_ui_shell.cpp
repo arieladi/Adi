@@ -941,7 +941,7 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
                    !strip->solo.getToggleState();
         };
         check(stripOf(10) != nullptr && stripOf(11) != nullptr && !stripOf(10)->arm.isVisible() && stripOf(11)->arm.isVisible(),
-              "Drums, a group, has no Arm; Clap/Snare inside it has");
+              "Drums, a group, has no Arm; Clap/Snare inside it has [P:recording#3]");
         check(root.submitEdit("track.setSolo", {{"id", 11}, {"soloed", true}}, "Solo Track"), "Clap/Snare soloed");
         refresh();
         check(halfLit(10) && !halfLit(13) && !halfLit(11), "Drums' Solo is half coloured; Body's and Clap/Snare's are not");
@@ -1915,10 +1915,10 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
     // a track has Arm; Main has no activator, Solo or Arm, its volume where the activator is.
     check(reverb->kind() == "return" && reverb->active.getButtonText() == "A" && reverb->prePost.isVisible() &&
               !reverb->arm.isVisible() && reverb->prePost.getButtonText() == "Post" && reverb->prePost.getToggleState(),
-          "A Reverb's row: \"A\", Solo, and Post lit where Arm is");
+          "A Reverb's row: \"A\", Solo, and Post lit where Arm is [P:recording#3]");
     check(main->kind() == "master" && !main->active.isVisible() && !main->solo.isVisible() && !main->arm.isVisible() &&
               !main->prePost.isVisible() && main->volume.getY() == 3,
-          "Main's row: no activator, Solo or Arm; its volume on the first row");
+          "Main's row: no activator, Solo or Arm; its volume on the first row [P:recording#3]");
     // Pre on A: one op the engine spreads over every send into A (3 Audio's), one undo step; the row
     // lights from the return's own switch.
     reverb->prePost.onClick();
@@ -10920,20 +10920,20 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     }
     const auto states = [&] { return document->recordStates(); };
     check(states().at(4).monitor == Monitor::Auto && states().at(3).monitor == Monitor::Auto,
-          "New's audio and MIDI tracks monitor on Auto, as Live's (N67)");
+          "New's audio and MIDI tracks monitor on Auto, as Live's (N67) [P:recording#11]");
     three->arm.onClick();
     frame();
     check(states().at(4).armed && three->arm.getToggleState() && root.error().empty(),
-          "a click on 3 Audio's Arm arms it (track.setArm), lit from the rows");
+          "a click on 3 Audio's Arm arms it (track.setArm), lit from the rows [P:recording#2]");
     midi->arm.onClick();
     frame();
     check(states().at(3).armed && !states().at(4).armed && midi->arm.getToggleState() && !three->arm.getToggleState(),
-          "Exclusive Arm: arming 2 MIDI disarms 3 Audio");
+          "Exclusive Arm: arming 2 MIDI disarms 3 Audio [P:recording#4]");
     check(root.armTrack(4, true) && root.armTrack(5, true), "Ctrl/Cmd adds 3 Audio and 4 Audio");
     frame();
     check(states().at(3).armed && states().at(4).armed && states().at(5).armed && three->arm.getToggleState(),
-          "with Ctrl/Cmd all three stay armed");
-    check(!root.armTrack(1, false) && root.error().find("no Arm") != std::string::npos, "Main has no Arm");
+          "with Ctrl/Cmd all three stay armed [P:recording#4]");
+    check(!root.armTrack(1, false) && root.error().find("no Arm") != std::string::npos, "Main has no Arm [P:recording#3]");
     // The monitoring switch: a click on In, Auto or Off in the Mixer View's In/Out section.
     root.command(AppCommands::ToggleMixerView);
     const bool inOutWasOn = root.state().mixerInOut;
@@ -10945,7 +10945,7 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
         wide->setSize(wide->getWidth(), 360);
         check(wide->monitorAt({10, 19 + 65}) == Monitor::In && wide->monitorAt({35, 19 + 65}) == Monitor::Auto &&
                   wide->monitorAt({58, 19 + 65}) == Monitor::Off && !wide->monitorAt({10, 19 + 20}),
-              "In, Auto and Off each where the switch draws them, Audio From not");
+              "In, Auto and Off each where the switch draws them, Audio From not [P:recording#9]");
         wide->setSize(wide->getWidth(), keptHeight);
     } else
         check(false, "3 Audio's strip in the Mixer View");
@@ -10956,26 +10956,26 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     frame();
     check(states().at(4).monitor == Monitor::In && states().at(5).monitor == Monitor::Auto &&
               root.recordState(4).monitor == Monitor::In,
-          "track.setMonitorMode In on 3 Audio alone");
+          "track.setMonitorMode In on 3 Audio alone [P:recording#9]");
     check(root.setMonitor(4, Monitor::In) && root.error().empty(), "the same choice again is accepted");
     frame();
     check(root.command(AppCommands::Undo), "undo");
     frame();
-    check(states().at(4).monitor == Monitor::Auto, "the same choice again changed nothing: one Undo puts 3 Audio back on Auto");
+    check(states().at(4).monitor == Monitor::Auto, "the same choice again changed nothing: one Undo puts 3 Audio back on Auto [P:recording#9]");
     check(root.command(AppCommands::Redo), "redo");
     frame();
-    check(!root.setMonitor(1, Monitor::In) && root.error().find("no input") != std::string::npos, "Main has no monitoring");
+    check(!root.setMonitor(1, Monitor::In) && root.error().find("no input") != std::string::npos, "Main has no monitoring [P:recording#9]");
     // Arrangement Record: F9 records both armed audio tracks; 2 MIDI, armed too, records nothing yet.
     juce::ApplicationCommandInfo recordInfo(AppCommands::ArrangementRecord);
     commands.getCommandInfo(AppCommands::ArrangementRecord, recordInfo);
     check(recordInfo.shortName == "Arrangement Record" &&
               recordInfo.defaultKeypresses.contains(juce::KeyPress(juce::KeyPress::F9Key)),
-          "Arrangement Record is named as Live's and on F9 (manual 21.1)");
+          "Arrangement Record is named as Live's and on F9 (manual 21.1) [P:recording#17]");
     auto &record = root.transport.record;
     check(record.getTitle() == "Arrangement Record" && !record.getToggleState(), "the Record switch, unlit");
     record.onClick();
     frame();
-    check(document->recording() && record.getToggleState() && root.error() == "", "Record records; lit");
+    check(document->recording() && record.getToggleState() && root.error() == "", "Record records; lit [P:recording#17]");
     std::array<float, 64> left{}, right{}, outL{}, outR{};
     const float *inputs[]{left.data(), right.data()};
     float *outputs[]{outL.data(), outR.data()};
@@ -11000,7 +11000,7 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     check(root.command(AppCommands::ArrangementRecord), "F9's command again");
     frame();
     check(!document->recording() && !record.getToggleState() && document->mailbox().desiredPlaying(),
-          "stops the recording; the transport plays on, as Live's");
+          "stops the recording; the transport plays on, as Live's [P:recording#21]");
     for (int i = 0; i < 5000 && document->landingTake(); ++i) {
         block();
         document->tick(++now);
@@ -11009,21 +11009,21 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     }
     auto landed = document->takeLanded();
     check(landed && landed->ok && landed->clips.size() == 2 && landed->message == "Recorded 2 takes.",
-          "both armed tracks' takes land together");
+          "both armed tracks' takes land together [P:recording#19]");
     frame();
     check(root.reader().findTrack(4)->clips.size() == 1 && root.reader().findTrack(5)->clips.size() == 1,
           "a clip on each armed track");
     check(root.command(AppCommands::Undo), "one Undo");
     frame();
     check(root.reader().findTrack(4)->clips.empty() && root.reader().findTrack(5)->clips.empty(),
-          "takes both takes back");
+          "takes both takes back [P:recording#23]");
     // Punch-in: Record while playing records from the playhead, and Stop ends the take with the transport.
     check(root.command(AppCommands::ArrangementRecord) && document->recording() && document->mailbox().desiredPlaying(),
-          "Record while playing records; the transport keeps rolling");
+          "Record while playing records; the transport keeps rolling [P:recording#22]");
     for (int b = 0; b < 8; ++b)
         block();
     check(root.command(AppCommands::Stop), "Stop mid-take");
-    check(!document->recording() && !document->mailbox().desiredPlaying(), "Stop ends the recording and the transport");
+    check(!document->recording() && !document->mailbox().desiredPlaying(), "Stop ends the recording and the transport [P:recording#21]");
     for (int i = 0; i < 5000 && document->landingTake(); ++i) {
         block();
         document->tick(++now);
@@ -11041,12 +11041,12 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
         check(document->ops().submit(countIn).ok && document->synchronise(), "Count-In of one bar");
         frame();
         block();
-        check(root.command(AppCommands::ArrangementRecord) && document->recording(), "Record from stopped, with a Count-In");
+        check(root.command(AppCommands::ArrangementRecord) && document->recording(), "Record from stopped, with a Count-In [P:recording#29]");
         block();
         check(document->mailbox().playing() && document->session().transport().countInRemaining() > 0,
               "during the Count-In the window reads the transport as playing");
         check(root.command(AppCommands::PlayStop) && !document->recording() && !document->mailbox().desiredPlaying(),
-              "Space during the Count-In stops it and the recording");
+              "Space during the Count-In stops it and the recording [P:recording#29]");
         block();
         check(!document->mailbox().playing() && document->session().transport().countInRemaining() == 0,
               "the Count-In is cancelled");
@@ -11101,7 +11101,7 @@ void exportPage(AppCommands &commands, const std::filesystem::path &dir) {
     commands.getCommandInfo(AppCommands::ExportAudio, info);
     check(info.shortName == "Export Audio/Video..." &&
               info.defaultKeypresses.contains(juce::KeyPress('r', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0)),
-          "Export Audio/Video, on Ctrl/Cmd+Shift+R");
+          "Export Audio/Video, on Ctrl/Cmd+Shift+R [P:export#1]");
     check(!root.command(AppCommands::ExportAudio) && root.error() == "Export runs in the application.",
           "outside the application it says where it runs");
     std::optional<ExportChoices> asked;
@@ -11118,7 +11118,7 @@ void exportPage(AppCommands &commands, const std::filesystem::path &dir) {
     sel.start = 3840;
     sel.end = 3840 * 5;
     check(root.command(AppCommands::ExportAudio) && asked->startTicks == 3840 && asked->lengthTicks == 3840 * 4,
-          "a time selection is the range, as Live's");
+          "a time selection is the range, as Live's [P:export#8]");
     sel.start = 3840 * 5;
     sel.end = 3840;
     check(root.command(AppCommands::ExportAudio) && asked->startTicks == 3840 && asked->lengthTicks == 3840 * 4,
@@ -11140,11 +11140,11 @@ void exportPage(AppCommands &commands, const std::filesystem::path &dir) {
                                               "Include Return and Main Effects", "Render as Loop", "Convert to Mono",
                                               "Normalize", "Create Analysis File", "Sample Rate", "Encode PCM",
                                               "File Type", "Bit Depth", "Dither Options", "Encode MP3", "Export Video"},
-          "Live's choices in Live's order");
+          "Live's choices in Live's order [P:export#2]");
     check(page.renderedTrack.getNumItems() == 3 && page.renderedTrack.getText() == "Main" &&
               page.start.getText() == "1.1.1" && page.length.getText() == "2.0.0" && page.refusals().empty() &&
               page.exportButton.isEnabled(),
-          "Main, from 1.1.1 for 2.0.0: Export is offered");
+          "Main, from 1.1.1 for 2.0.0: Export is offered [P:export#1] [P:export#3]");
     {
         // The range as filled is kept exact while its fields are unchanged; the project's rate is offered
         // when the list lacks it.
@@ -11154,7 +11154,7 @@ void exportPage(AppCommands &commands, const std::filesystem::path &dir) {
         ExportPage exact(odd, {}, root.reader().meters());
         check(exact.choices().lengthTicks == textproj::kWhole + 7 && exact.choices().sampleRate == 192000 &&
                   exact.sampleRate.getText() == "192000",
-              "an unedited range stays exact past the sixteenths it shows, and 192 kHz stays 192 kHz");
+              "an unedited range stays exact past the sixteenths it shows, and 192 kHz stays 192 kHz [P:export#7]");
     }
     page.encodeMp3.setToggleState(true, juce::dontSendNotification);
     page.encodeMp3.onClick();
@@ -11173,11 +11173,11 @@ void exportPage(AppCommands &commands, const std::filesystem::path &dir) {
     page.length.setText("one bar", false);
     page.length.onTextChange();
     check(!page.exportButton.isEnabled() && page.refusals()[0].find("Render Length is not a length") != std::string::npos,
-          "a length that is not one is refused");
+          "a length that is not one is refused [P:export#7]");
     page.length.setText("1.2.0", false);
     page.length.onTextChange();
     check(page.exportButton.isEnabled() && page.choices().lengthTicks == textproj::kWhole + textproj::kWhole / 2,
-          "1.2.0 is a bar and two beats");
+          "1.2.0 is a bar and two beats [P:export#7]");
     std::optional<ExportChoices> exported;
     page.onExport = [&](const ExportChoices &e) { exported = e; };
     page.exportButton.onClick();
@@ -11202,7 +11202,7 @@ void exportPage(AppCommands &commands, const std::filesystem::path &dir) {
               job.session.sampleRate == 44100 && job.encoding.format == audio::WavFormat::Pcm16 &&
               job.encoding.dither == audio::WavDither::None && job.normalization.mode == render::NormalizeMode::Peak &&
               job.source.trackId == 0,
-          "the job: the chosen folder and name, the range at the chosen rate, 16-bit, no dither, Normalize");
+          "the job: the chosen folder and name, the range at the chosen rate, 16-bit, no dither, Normalize [P:export#16] [P:export#3]");
     one.normalize = false; // a silent song has no peak to normalize
     // New's Set holds Reverb and Delay, which a build without Pd cannot load, and the renderer renders
     // only a project whose every device loads: an empty project here.
@@ -11219,7 +11219,7 @@ void exportPage(AppCommands &commands, const std::filesystem::path &dir) {
         std::printf("render: %s\n", result.error.c_str());
     check(result.state == render::JobState::Completed && result.output == dir / "Song {mix}.wav" &&
               std::filesystem::exists(result.output) && result.framesWritten == static_cast<std::uint64_t>(expected),
-          "the renderer writes the chosen file, the whole range");
+          "the renderer writes the chosen file, the whole range [P:export#3]");
     document->release();
 }
 // MX-23 and SRF-02 from the strip: the fader's own drag is the document's live gesture, one undo step at
@@ -15136,7 +15136,7 @@ int main(int argc, char **argv) {
         check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0, C::TakeSnapshot, C::SaveAs,
                                                 C::SaveCopy, C::CollectAllAndSave, C::CollectAndExport, 0, C::ExportAudio},
               "the File menu: Save As, then Save a Copy and Collect All and Save (5.4.1, 5.7), ADI's "
-              "Collect and Export after them, then Export Audio/Video (5.2.1); Quit is the application menu's on the Mac");
+              "Collect and Export after them, then Export Audio/Video (5.2.1); Quit is the application menu's on the Mac [P:export#1]");
 #else
         check(names == juce::StringArray{"File", "Edit", "Create", "View", "Options", "Navigate", "Help"},
               "the menu bar: File, Edit, Create, View, Options, Navigate, Help");
@@ -15144,7 +15144,7 @@ int main(int argc, char **argv) {
                                                 C::SaveCopy, C::CollectAllAndSave, C::CollectAndExport, 0, C::ExportAudio, 0,
                                                 C::Quit},
               "the File menu: Save As, then Save a Copy and Collect All and Save (5.4.1, 5.7), ADI's "
-              "Collect and Export after them, then Export Audio/Video (5.2.1); it ends with Quit and no longer holds Settings");
+              "Collect and Export after them, then Export Audio/Video (5.2.1); it ends with Quit and no longer holds Settings [P:export#1]");
         check(items("Options") == std::vector<int>{C::Follow, 0, C::DrawMode, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid,
                                                    C::SnapToGrid, C::FixedGrid, 0, C::DelayCompensation, 0, C::SoloSwitches,
                                                    C::CueSwitches, C::SoloInPlace, 0,
