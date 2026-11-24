@@ -78,6 +78,318 @@ void AppCommands::reload() {
     manager.clearCommands();
     manager.registerAllCommandsForTarget(this);
     manager.getKeyMappings()->resetToDefaultMappings();
+    // WIN-04: the user's own keys on top, after every reload, so a Settings change or a preset switch
+    // keeps them: a stable id mapped to chord texts, an empty list for none (shortcuts.overrides).
+    if (const auto overrides = settings_.get("shortcuts.overrides"); overrides.is_object())
+        for (const auto &[stable, chords] : overrides.items()) {
+            const int command = commandFor(stable);
+            if (command == 0 || !chords.is_array())
+                continue;
+            auto *mappings = manager.getKeyMappings();
+            mappings->clearAllKeyPresses(command);
+            for (const auto &chord : chords)
+                if (chord.is_string())
+                    if (const auto key = parseChord(chord.get<std::string>()))
+                        mappings->addKeyPress(command, *key);
+        }
+}
+settings::Value AppCommands::userKeys() const {
+    auto out = settings::Value::object();
+    const auto *mappings = manager.getKeyMappings();
+    for (int id = PlayStop; id <= LastId; ++id) {
+        juce::ApplicationCommandInfo info(id);
+        const_cast<AppCommands *>(this)->getCommandInfo(id, info);
+        std::vector<std::string> mine, theirs;
+        for (const auto &k : mappings->getKeyPressesAssignedToCommand(id))
+            mine.push_back(chordText(k));
+        for (const auto &k : info.defaultKeypresses)
+            theirs.push_back(chordText(k));
+        std::sort(mine.begin(), mine.end());
+        std::sort(theirs.begin(), theirs.end());
+        if (mine != theirs)
+            out[stableId(id)] = mine;
+    }
+    return out;
+}
+bool AppCommands::storeUserKeys(std::string &why) {
+    const auto held = settings_.get("shortcuts.overrides");
+    auto keys = userKeys();
+    if (held.is_object()) {
+        const auto *mappings = manager.getKeyMappings();
+        for (const auto &[stable, chords] : held.items()) {
+            const int command = commandFor(stable);
+            // A stable id this build does not know (a later build's command) keeps its keys.
+            if (command == 0) {
+                keys[stable] = chords;
+                continue;
+            }
+            // A held entry the command still has keeps its place even where it equals the preset's keys,
+            // so reload()'s own change messages, or a preset whose keys match, never drop it.
+            std::vector<std::string> now, kept;
+            for (const auto &k : mappings->getKeyPressesAssignedToCommand(command))
+                now.push_back(chordText(k));
+            if (chords.is_array())
+                for (const auto &chord : chords)
+                    if (chord.is_string())
+                        kept.push_back(chord.get<std::string>());
+            std::sort(now.begin(), now.end());
+            std::sort(kept.begin(), kept.end());
+            if (now == kept && !keys.contains(stable))
+                keys[stable] = chords;
+        }
+    }
+    if (keys == held)
+        return true;
+    return settings_.set("shortcuts.overrides", keys, {}, why) && settings_.save(why);
+}
+ShortcutsPage::ShortcutsPage(AppCommands &commands)
+    : commands_(commands), editor_(*commands.manager.getKeyMappings(), true) {
+    // setColours, not setColour: only it reaches the editor's tree, which fills most of it.
+    editor_.setColours(look::panel, look::text);
+    addAndMakeVisible(editor_);
+    commands_.manager.getKeyMappings()->addChangeListener(this);
+    setSize(560, kHeight);
+}
+ShortcutsPage::~ShortcutsPage() { commands_.manager.getKeyMappings()->removeChangeListener(this); }
+void ShortcutsPage::paint(juce::Graphics &g) {
+    if (error_.empty())
+        return;
+    g.setColour(look::textDim);
+    g.setFont(look::font(look::fontBody));
+    g.drawText(juce::String::fromUTF8(error_.c_str()), getLocalBounds().removeFromBottom(kErrorHeight).reduced(17, 0),
+               juce::Justification::centredLeft, true);
+}
+void ShortcutsPage::resized() { editor_.setBounds(getLocalBounds().withTrimmedBottom(kErrorHeight)); }
+void ShortcutsPage::store() {
+    std::string why;
+    const bool ok = commands_.storeUserKeys(why);
+    const std::string said = ok ? std::string() : "Your keys were not saved: " + why;
+    if (said != error_) {
+        error_ = said;
+        repaint();
+    }
+}
+void ShortcutsPage::changeListenerCallback(juce::ChangeBroadcaster *) { store(); }
+namespace {
+struct StableEntry {
+    const char *id;
+    const char *category;
+};
+const StableEntry *stableEntry(int id) noexcept {
+    static const std::array<StableEntry, 125> table{{
+        {"transport.play-stop", "Transport"}, // PlayStop
+        {"transport.stop", "Transport"}, // Stop
+        {"edit.undo", "Edit"}, // Undo
+        {"edit.redo", "Edit"}, // Redo
+        {"view.swap-panels", "View"}, // SwapPanels
+        {"view.browser", "View"}, // ToggleBrowser
+        {"arrangement.mixer", "View"}, // ToggleMixer
+        {"view.device-view", "View"}, // ToggleDeviceView
+        {"view.info-view", "View"}, // ToggleInfoView
+        {"view.zoom-in", "View"}, // ZoomIn
+        {"view.zoom-out", "View"}, // ZoomOut
+        {"file.new-project", "File"}, // NewProject
+        {"file.open-project", "File"}, // OpenProject
+        {"file.take-snapshot", "File"}, // TakeSnapshot
+        {"file.save-as", "File"}, // SaveAs
+        {"options.settings", "Options"}, // Settings
+        {"arrangement.time-zoom-in", "Arrangement"}, // TimeZoomIn
+        {"arrangement.time-zoom-out", "Arrangement"}, // TimeZoomOut
+        {"view.zoom-to-selection", "View"}, // ZoomToSelection
+        {"view.zoom-back", "View"}, // ZoomBack
+        {"view.optimize-width", "View"}, // OptimizeWidth
+        {"view.optimize-height", "View"}, // OptimizeHeight
+        {"transport.go-start", "Transport"}, // GoStart
+        {"transport.continue-play", "Transport"}, // ContinuePlay
+        {"create.insert-audio-track", "Create"}, // InsertAudioTrack
+        {"create.insert-midi-track", "Create"}, // InsertMidiTrack
+        {"edit.delete-track", "Edit"}, // DeleteTrack
+        {"edit.rename-track", "Edit"}, // RenameTrack
+        {"view.mixer-view", "View"}, // ToggleMixerView
+        {"view.show-channel-eq", "View"}, // ShowChannelEq
+        {"file.quit", "File"}, // Quit
+        {"navigate.focus-control-bar", "Navigate"}, // FocusControlBar
+        {"navigate.focus-arrangement", "Navigate"}, // FocusArrangement
+        {"navigate.focus-device-view", "Navigate"}, // FocusDeviceView
+        {"navigate.focus-browser", "Navigate"}, // FocusBrowser
+        {"arrangement.search-browser", "Arrangement"}, // SearchBrowser
+        {"navigate.tab-moves-focus", "Navigate"}, // TabMovesFocus
+        {"options.follow", "Options"}, // Follow
+        {"arrangement.insert-marker-to-playhead", "Arrangement"}, // InsertMarkerToPlayhead
+        {"arrangement.grow-tracks", "Arrangement"}, // GrowTracks
+        {"arrangement.shrink-tracks", "Arrangement"}, // ShrinkTracks
+        {"mixer.focus-mixer", "Mixer"}, // FocusMixer
+        {"navigate.next-neighbor", "Navigate"}, // NextNeighbor
+        {"navigate.previous-neighbor", "Navigate"}, // PreviousNeighbor
+        {"view.full-screen", "View"}, // FullScreen
+        {"view.overview", "View"}, // ToggleOverview
+        {"arrangement.in-out", "Arrangement"}, // ToggleInOut
+        {"options.narrow-grid", "Options"}, // NarrowGrid
+        {"options.widen-grid", "Options"}, // WidenGrid
+        {"options.triplet-grid", "Options"}, // TripletGrid
+        {"options.snap-to-grid", "Options"}, // SnapToGrid
+        {"options.fixed-grid", "Options"}, // FixedGrid
+        {"navigate.wrap-tab-navigation", "Navigate"}, // WrapTabNavigation
+        {"view.large-tracks", "View"}, // LargeTracks
+        {"edit.group-tracks", "Edit"}, // GroupTracks
+        {"edit.ungroup-tracks", "Edit"}, // UngroupTracks
+        {"view.mix-view", "View"}, // ToggleMixView
+        {"view.detach-mix-view", "View"}, // DetachMixView
+        {"view.reference-track", "View"}, // ToggleReferenceTrack
+        {"view.play-reference", "View"}, // PlayReference
+        {"edit.select-all", "Edit"}, // SelectAll
+        {"create.insert-return-track", "Create"}, // InsertReturnTrack
+        {"arrangement.return-tracks", "View"}, // ToggleReturnTracks
+        {"arrangement.sends", "View"}, // ToggleSends
+        {"arrangement.mixer-in-out", "View"}, // ToggleMixerInOut
+        {"mixer.solo-selected", "Mixer"}, // SoloSelected
+        {"mixer.deactivate-selected", "Mixer"}, // DeactivateSelected
+        {"mixer.activate-track-1", "Mixer"}, // ActivateTrack1
+        {"mixer.activate-track-2", "Mixer"}, // ActivateTrack2
+        {"mixer.activate-track-3", "Mixer"}, // ActivateTrack3
+        {"mixer.activate-track-4", "Mixer"}, // ActivateTrack4
+        {"mixer.activate-track-5", "Mixer"}, // ActivateTrack5
+        {"mixer.activate-track-6", "Mixer"}, // ActivateTrack6
+        {"mixer.activate-track-7", "Mixer"}, // ActivateTrack7
+        {"mixer.activate-track-8", "Mixer"}, // ActivateTrack8
+        {"arrangement.mixer-sends", "View"}, // ToggleMixerSends
+        {"create.insert-time-signature-change", "Create"}, // InsertTimeSignatureChange
+        {"options.solo-in-place", "Options"}, // SoloInPlace
+        {"arrangement.track-options", "Arrangement"}, // ToggleTrackOptions
+        {"arrangement.mixer-track-options", "View"}, // ToggleMixerTrackOptions
+        {"transport.metronome", "Transport"}, // Metronome
+        {"edit.loop-selection", "Edit"}, // LoopSelection
+        {"edit.select-loop", "Edit"}, // SelectLoop
+        {"create.add-locator", "Create"}, // AddLocator
+        {"create.delete-locator", "Create"}, // DeleteLocator
+        {"edit.edit-info-text", "Edit"}, // EditInfoText
+        {"view.undo-history", "View"}, // UndoHistory
+        {"file.save-copy", "File"}, // SaveCopy
+        {"file.collect-all-and-save", "File"}, // CollectAllAndSave
+        {"file.collect-and-export", "File"}, // CollectAndExport
+        {"edit.cut", "Edit"}, // Cut
+        {"edit.copy", "Edit"}, // Copy
+        {"edit.paste", "Edit"}, // Paste
+        {"edit.duplicate", "Edit"}, // Duplicate
+        {"view.plugin-windows", "View"}, // TogglePluginWindows
+        {"edit.split", "Edit"}, // Split
+        {"view.clip-view", "View"}, // ToggleClipView
+        {"create.insert-midi-clip", "Create"}, // InsertMidiClip
+        {"edit.cut-time", "Edit"}, // CutTime
+        {"edit.copy-time", "Edit"}, // CopyTime
+        {"edit.paste-time", "Edit"}, // PasteTime
+        {"edit.duplicate-time", "Edit"}, // DuplicateTime
+        {"edit.delete-time", "Edit"}, // DeleteTime
+        {"edit.insert-silence", "Edit"}, // InsertSilence
+        {"create.create-fade", "Create"}, // CreateFade
+        {"create.delete-fades", "Create"}, // DeleteFades
+        {"edit.invert-selection", "Edit"}, // InvertSelection
+        {"edit.quantize", "Edit"}, // Quantize
+        {"edit.quantize-settings", "Edit"}, // QuantizeSettings
+        {"edit.crop-clip", "Edit"}, // CropClip
+        {"view.expand-clip-view", "View"}, // ExpandClipView
+        {"view.fold-to-notes", "View"}, // FoldToNotes
+        {"view.fold-to-scale", "View"}, // FoldToScale
+        {"view.highlight-scales", "View"}, // HighlightScales
+        {"options.draw-mode", "Options"}, // DrawMode
+        {"view.arrange-panels-automatically", "View"}, // ArrangePanelsAutomatically
+        {"view.arrange-panels-horizontally", "View"}, // ArrangePanelsHorizontally
+        {"view.arrange-panels-vertically", "View"}, // ArrangePanelsVertically
+        {"navigate.focus-clip-view", "Navigate"}, // FocusClipView
+        {"edit.fit-to-time-range", "Edit"}, // FitToTimeRange
+        {"transport.arrangement-record", "Transport"}, // ArrangementRecord
+        {"file.export-audio", "File"}, // ExportAudio
+        {"options.delay-compensation", "Options"}, // DelayCompensation
+        {"options.solo-switches", "Options"}, // SoloSwitches
+        {"options.cue-switches", "Options"}, // CueSwitches
+    }};
+    const auto at = id - AppCommands::PlayStop;
+    return at >= 0 && at < static_cast<int>(table.size()) ? &table[static_cast<std::size_t>(at)] : nullptr;
+}
+struct NamedKey {
+    int code;
+    const char *name;
+};
+const NamedKey kNamedKeys[] = {
+    {juce::KeyPress::spaceKey, "Space"},       {juce::KeyPress::escapeKey, "Esc"},
+    {juce::KeyPress::returnKey, "Return"},     {juce::KeyPress::tabKey, "Tab"},
+    {juce::KeyPress::deleteKey, "Delete"},     {juce::KeyPress::backspaceKey, "Backspace"},
+    {juce::KeyPress::insertKey, "Insert"},     {juce::KeyPress::upKey, "Up"},
+    {juce::KeyPress::downKey, "Down"},         {juce::KeyPress::leftKey, "Left"},
+    {juce::KeyPress::rightKey, "Right"},       {juce::KeyPress::pageUpKey, "PageUp"},
+    {juce::KeyPress::pageDownKey, "PageDown"}, {juce::KeyPress::homeKey, "Home"},
+    {juce::KeyPress::endKey, "End"},           {juce::KeyPress::F1Key, "F1"},
+    {juce::KeyPress::F2Key, "F2"},             {juce::KeyPress::F3Key, "F3"},
+    {juce::KeyPress::F4Key, "F4"},             {juce::KeyPress::F5Key, "F5"},
+    {juce::KeyPress::F6Key, "F6"},             {juce::KeyPress::F7Key, "F7"},
+    {juce::KeyPress::F8Key, "F8"},             {juce::KeyPress::F9Key, "F9"},
+    {juce::KeyPress::F10Key, "F10"},           {juce::KeyPress::F11Key, "F11"},
+    {juce::KeyPress::F12Key, "F12"},           {juce::KeyPress::numberPadAdd, "Num+"},
+    {juce::KeyPress::numberPadSubtract, "Num-"}};
+} // namespace
+const char *AppCommands::stableId(int id) noexcept {
+    const auto *e = stableEntry(id);
+    return e != nullptr ? e->id : nullptr;
+}
+const char *AppCommands::category(int id) noexcept {
+    const auto *e = stableEntry(id);
+    return e != nullptr ? e->category : "ADI";
+}
+int AppCommands::commandFor(const std::string &stable) noexcept {
+    for (int id = PlayStop; id <= LastId; ++id)
+        if (const auto *e = stableEntry(id); e != nullptr && stable == e->id)
+            return id;
+    return 0;
+}
+std::string AppCommands::chordText(const juce::KeyPress &k) {
+    std::string out;
+    const auto mods = k.getModifiers();
+    if (mods.isCommandDown())
+        out += "Cmd+";
+#if JUCE_MAC
+    if ((mods.getRawFlags() & juce::ModifierKeys::ctrlModifier) != 0)
+        out += "Ctrl+";
+#endif
+    if (mods.isAltDown())
+        out += "Alt+";
+    if (mods.isShiftDown())
+        out += "Shift+";
+    const int code = k.getKeyCode();
+    for (const auto &n : kNamedKeys)
+        if (n.code == code)
+            return out + n.name;
+    if (code > 32 && code < 127)
+        return out + static_cast<char>(code >= 'a' && code <= 'z' ? code - 'a' + 'A' : code);
+    return out + "#" + std::to_string(code);
+}
+std::optional<juce::KeyPress> AppCommands::parseChord(const std::string &text) {
+    int mods = 0;
+    std::string rest = text;
+    const std::pair<const char *, int> prefixes[] = {{"Cmd+", juce::ModifierKeys::commandModifier},
+                                                     {"Ctrl+", juce::ModifierKeys::ctrlModifier},
+                                                     {"Alt+", juce::ModifierKeys::altModifier},
+                                                     {"Shift+", juce::ModifierKeys::shiftModifier}};
+    for (bool more = true; more;) {
+        more = false;
+        for (const auto &[prefix, flag] : prefixes) {
+            const std::string p(prefix);
+            if (rest.size() > p.size() && rest.compare(0, p.size(), p) == 0) {
+                mods |= flag;
+                rest = rest.substr(p.size());
+                more = true;
+            }
+        }
+    }
+    for (const auto &n : kNamedKeys)
+        if (rest == n.name)
+            return juce::KeyPress(n.code, juce::ModifierKeys(mods), 0);
+    if (rest.size() == 1 && rest[0] > 32 && rest[0] < 127) {
+        const char ch = rest[0] >= 'A' && rest[0] <= 'Z' ? static_cast<char>(rest[0] - 'A' + 'a') : rest[0];
+        return juce::KeyPress(ch, juce::ModifierKeys(mods), 0);
+    }
+    if (rest.size() > 1 && rest[0] == '#')
+        return juce::KeyPress(std::atoi(rest.c_str() + 1), juce::ModifierKeys(mods), 0);
+    return std::nullopt;
 }
 bool AppCommands::setInfoView(bool on, std::string &why) {
     if (!settings_.set("lookfeel.showInfoView", on, {}, why) || !settings_.save(why))
@@ -214,12 +526,12 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Draw Mode", "Arrange Clip View Panels Automatically", "Arrange Clip View Panels Horizontally",
                                   "Arrange Clip View Panels Vertically", "Clip View", "Fit to Time Range",
                                   "Arrangement Record", "Export Audio/Video...", "Delay Compensation", "Solo Switches", "Cue Switches"};
-    info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
+    info.setInfo(names[id - PlayStop], names[id - PlayStop], category(id), 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
         info.setInfo(active_ ? juce::String(active_->undoTitle(redo))
                              : juce::String(names[id - PlayStop]),
-                     names[id - PlayStop], "ADI", 0);
+                     names[id - PlayStop], category(id), 0);
         info.setActive(active_ != nullptr && active_->canUndo(redo));
     }
     const auto cmd = juce::ModifierKeys::commandModifier;

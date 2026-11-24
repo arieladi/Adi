@@ -1290,6 +1290,10 @@ class AdiApplication final : public juce::JUCEApplication,
                     settingsWindow_->panel().midiPorts = [this]() -> std::unique_ptr<juce::Component> {
                         return std::make_unique<MidiPortsTable>(*midiPorts_, *settings_);
                     };
+                // The Shortcuts page's key editor on the application's commands (WIN-04).
+                settingsWindow_->panel().shortcutKeys = [this]() -> std::unique_ptr<juce::Component> {
+                    return std::make_unique<ShortcutsPage>(*commands_);
+                };
                 settingsWindow_->panel().onChange = [this] {
                     commands_->reload();
                     // The Audio page's Delay Compensation row is the Options menu's switch.

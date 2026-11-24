@@ -11,3 +11,7 @@
 # matters for a format project where "byte-identical" is a claim we make.
 *.py  text eol=lf
 *.sql text eol=lf
+
+# The key-map goldens (WIN-01) are compared byte for byte with the shell's output, which writes "\n";
+# a Windows checkout with core.autocrlf would otherwise hand the comparison "\r\n" and fail.
+tests/fixtures/ui/*.txt text eol=lf

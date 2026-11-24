@@ -29,6 +29,7 @@
 #include "ui_mixer.hpp"
 #include "ui_mixview.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
+#include <juce_gui_extra/juce_gui_extra.h> // the Shortcuts page's key editor (WIN-04)
 #include <functional>
 #include <memory>
 #include <optional>
@@ -167,6 +168,20 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
+    // WIN-04: each command's stable text id ("view.browser", "edit.redo"), never renumbered, the list
+    // only growing; its category, the Live menu that holds it (Transport, Arrangement and Mixer for the
+    // commands no menu holds: keys and controls only); the command a stable id names (0: none).
+    static const char *stableId(int id) noexcept;
+    static const char *category(int id) noexcept;
+    static int commandFor(const std::string &stableId) noexcept;
+    // A chord as canonical text, the same on every platform ("Cmd+Alt+B", "F4", "Space"): Cmd is the
+    // command key (Ctrl off the Mac), Ctrl the Mac's own; then Alt, Shift, the key. And back.
+    static std::string chordText(const juce::KeyPress &);
+    static std::optional<juce::KeyPress> parseChord(const std::string &);
+    // The keys that differ from the key map's, as shortcuts.overrides holds them; written only when
+    // they differ from what it holds (false with why when the write fails).
+    settings::Value userKeys() const;
+    bool storeUserKeys(std::string &why);
     bool key(const juce::KeyPress &, AdiRootComponent &);
     void activate(AdiRootComponent &);
     void detach(AdiRootComponent &);
@@ -269,6 +284,28 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     bool linkLoop_ = false;
     bool splitAll_ = true;
     ClipClipboard clipClipboard_;
+};
+// WIN-04: the Settings window's Shortcuts page, in place of the shortcuts.overrides row: JUCE's key
+// mapping editor on the application's commands, under Live's menus, in the theme's colours. Each change
+// is written to the record at once, and only when the user's keys differ from what it holds; when the
+// write fails, why shows under the editor.
+class ShortcutsPage final : public juce::Component, private juce::ChangeListener {
+  public:
+    explicit ShortcutsPage(AppCommands &);
+    ~ShortcutsPage() override;
+    void paint(juce::Graphics &) override;
+    void resized() override;
+    juce::KeyMappingEditorComponent &editor() noexcept { return editor_; }
+    const std::string &error() const noexcept { return error_; }
+    // Writes the user's keys now (the change message comes later, on the message loop).
+    void store();
+    static constexpr int kHeight = 440, kErrorHeight = 20;
+
+  private:
+    void changeListenerCallback(juce::ChangeBroadcaster *) override;
+    AppCommands &commands_;
+    juce::KeyMappingEditorComponent editor_;
+    std::string error_;
 };
 // Live's Status Bar (manual 3.2): messages along the window's foot, with the
 // Info View's show/hide toggle in its bottom-left corner (manual 2.2.2).

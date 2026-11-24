@@ -88,7 +88,7 @@ if(ADI_WITH_JUCE)
     set_source_files_properties(src/juce/ui_scope_classic.cpp PROPERTIES
         COMPILE_OPTIONS "$<TARGET_PROPERTY:adi_warnings,INTERFACE_COMPILE_OPTIONS>")
     target_link_libraries(adi_ui_shell PRIVATE adi_scope_skin)
-    target_link_libraries(adi_ui_shell PUBLIC adi_settings juce::juce_gui_basics)
+    target_link_libraries(adi_ui_shell PUBLIC adi_settings juce::juce_gui_basics juce::juce_gui_extra)
     # SRF-05: the MIDI ports stay on the Win32 backend; Windows MIDI Services and WinRT MIDI are pinned off so
     # every target that compiles juce_audio_devices through the shell agrees on the backend.
     target_compile_definitions(adi_ui_shell PUBLIC JUCE_STANDALONE_APPLICATION=1 JUCE_USE_CURL=0 JUCE_WEB_BROWSER=0
