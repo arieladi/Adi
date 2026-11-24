@@ -16,6 +16,12 @@
 #if defined(_M_X64) || defined(__SSE2__)
 #include <emmintrin.h>
 #endif
+// The Clean controls (thresholdDb -60+60*v) must give every leg the same
+// float, so no fused multiply-adds; cmake/mix_cores.cmake also passes
+// -ffp-contract=off, because GCC ignores this pragma.
+#if defined(__clang__)
+#pragma STDC FP_CONTRACT OFF
+#endif
 namespace adi::device {
 namespace {
 namespace c = mix::compressor;

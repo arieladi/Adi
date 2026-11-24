@@ -2079,9 +2079,20 @@ add_executable(adi_ui_seams_tests tests/test_ui_seams.cpp)
 target_link_libraries(adi_ui_seams_tests PRIVATE adi_core adi_warnings)
 # A signed overflow in the window's pure edits (DF-W35 b: an id counted past INT64_MAX) traps here
 # instead of passing unseen; trap mode needs no sanitizer runtime.
+# GCC takes -fsanitize-trap=<group> from version 13; older GCC has -fsanitize-undefined-trap-on-error (DF-W39).
 if(NOT MSVC)
-    target_compile_options(adi_ui_seams_tests PRIVATE -fsanitize=signed-integer-overflow
-                                                      -fsanitize-trap=signed-integer-overflow)
+    include(CheckCXXCompilerFlag)
+    set(CMAKE_REQUIRED_FLAGS "-fsanitize=signed-integer-overflow")
+    check_cxx_compiler_flag("-fsanitize-trap=signed-integer-overflow" ADI_HAS_SANITIZE_TRAP_GROUP)
+    check_cxx_compiler_flag("-fsanitize-undefined-trap-on-error" ADI_HAS_SANITIZE_TRAP_ON_ERROR)
+    unset(CMAKE_REQUIRED_FLAGS)
+    if(ADI_HAS_SANITIZE_TRAP_GROUP)
+        target_compile_options(adi_ui_seams_tests PRIVATE -fsanitize=signed-integer-overflow
+                                                          -fsanitize-trap=signed-integer-overflow)
+    elseif(ADI_HAS_SANITIZE_TRAP_ON_ERROR)
+        target_compile_options(adi_ui_seams_tests PRIVATE -fsanitize=signed-integer-overflow
+                                                          -fsanitize-undefined-trap-on-error)
+    endif()
 endif()
 add_test(NAME adi_ui_seams_tests COMMAND adi_ui_seams_tests)
 # Step 7.2 (ADR-0080 via ADR-0180 2.3): MainSplit's panel->slot map. Pure

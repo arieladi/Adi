@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // The shared allocation-counting header: every operator new form is counted
-// exactly once and released by its matching delete (DF-E66).
+// exactly once and released by its matching delete (DF-E66), and with the
+// release hook on, every delete form reports its pointer once (DF-E67).
+#define ADI_TEST_COUNT_REPLACED_DELETE
 #include "replace_operator_new.hpp"
 #include <algorithm>
 #include <atomic>
@@ -13,9 +15,13 @@
 namespace {
 thread_local bool watch = false;
 std::atomic<unsigned> allocations{0};
+std::atomic<unsigned> releases{0};
 } // namespace
 void adi::test::countReplacedNew() noexcept {
     if (watch) ++allocations;
+}
+void adi::test::countReplacedDelete(void* p) noexcept {
+    if (watch && p) ++releases;
 }
 namespace {
 int checks = 0, failures = 0;
@@ -41,12 +47,16 @@ bool alignedTo(const void* p, std::size_t a) {
     return p != nullptr && reinterpret_cast<std::uintptr_t>(p) % a == 0;
 }
 // Runs one allocation under the watch and reports how many the hook counted.
+// Every case frees what it took, so the release hook must see as many.
 unsigned counted(const std::function<void()>& allocate) {
     const unsigned before = allocations.load();
+    const unsigned releasedBefore = releases.load();
     watch = true;
     allocate();
     watch = false;
-    return allocations.load() - before;
+    const unsigned taken = allocations.load() - before;
+    check(releases.load() - releasedBefore == taken, "every counted allocation's release is counted once");
+    return taken;
 }
 void everyForm() {
     check(counted([] { delete keep(new int(1)); }) == 1, "plain new counted once");
@@ -122,7 +132,7 @@ void libraryBuffer() {
     // a sanitizer the library's nothrow new forwards to the replaced plain
     // form, so the old harness passed this too. The mismatch shows only under
     // a sanitizer runtime that supplies its own nothrow new; the CI leg
-    // `asan-new-forms` runs this suite and the seven under ASan for that.
+    // `asan-new-forms` runs this suite and the eleven under ASan for that.
     std::vector<int> values(1 << 16);
     for (std::size_t i = 0; i < values.size(); ++i) values[i] = static_cast<int>((i * 7919u) % 1021u);
     check(counted([&values] { std::stable_sort(values.begin(), values.end()); }) >= 1,

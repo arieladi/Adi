@@ -858,9 +858,10 @@ jobs:
   # ---------------------------------------------------------------------------
   # asan-new-forms -- the allocation-counting suites under AddressSanitizer.
   #
-  # DF-E66. Eight suites count allocations by replacing the global operator
-  # new and delete (tests/replace_operator_new.hpp). Seven of them once
-  # replaced only the plain and sized forms. Under a sanitizer the runtime
+  # DF-E66, DF-E67 (a). Twelve suites count allocations by replacing the
+  # global operator new and delete (tests/replace_operator_new.hpp): the
+  # header's own suite, seven engine suites and four devices suites. The
+  # eleven once replaced only the plain and sized forms. Under a sanitizer the runtime
   # then supplied its own nothrow new, the standard library took a stable
   # sort's buffer from it, and the suite's replaced delete freed that with
   # free(): ASan's alloc-dealloc-mismatch. Without a sanitizer nothing shows
@@ -928,7 +929,7 @@ jobs:
       - name: Fetch build dependencies, at their pinned commits
         run: bash adi_daw/tools/fetch_external.sh --build-only
 
-      - name: Configure with ASan, and build the eight suites
+      - name: Configure with ASan, and build the twelve suites
         env:
           CC: gcc
           CXX: g++
@@ -946,18 +947,20 @@ jobs:
                          adi_automation_recording_tests adi_clip_envelopes_tests \
                          adi_freeze_commands_tests adi_midi_capture_tests \
                          adi_scala_import_tests adi_send_automation_tests \
-                         adi_warp_playback_tests
+                         adi_warp_playback_tests \
+                         adi_builtin_devices_tests adi_oneshot_tests \
+                         adi_pd_native_devices_tests adi_sampler_tests
 
-      # Counted: a renamed suite would leave the regex matching seven, and the
-      # leg would go on passing without it.
-      - name: The eight suites, under ASan
+      # Counted: a renamed suite would leave the regex matching eleven, and
+      # the leg would go on passing without it.
+      - name: The twelve suites, under ASan
         timeout-minutes: 45
         run: |
           set -euo pipefail
-          re='^adi_(replace_operator_new|automation_recording|clip_envelopes|freeze_commands|midi_capture|scala_import|send_automation|warp_playback)_tests$'
+          re='^adi_(replace_operator_new|automation_recording|clip_envelopes|freeze_commands|midi_capture|scala_import|send_automation|warp_playback|builtin_devices|oneshot|pd_native_devices|sampler)_tests$'
           n=$(ctest --test-dir adi_daw/build-asan -N -R "$re" | grep -c 'Test *#' || true)
-          if [ "$n" -ne 8 ]; then
-            echo "::error::expected 8 suites to match, found $n"
+          if [ "$n" -ne 12 ]; then
+            echo "::error::expected 12 suites to match, found $n"
             exit 1
           fi
           ASAN_OPTIONS=detect_leaks=0:alloc_dealloc_mismatch=1 \

@@ -52,6 +52,7 @@ void AppCommands::reload() {
     zoomOnSelection_ = flag(settings_, "lookfeel.zoomOnSelection", true);
     multiplePluginWindows_ = flag(settings_, "plugins.multipleWindows", false);
     autoHidePluginWindows_ = flag(settings_, "plugins.autoHideWindows", true);
+    autoOpenPluginWindows_ = flag(settings_, "plugins.autoOpenWindows", true);
     pluginWindowsOnTop_ = flag(settings_, "plugins.editorsAlwaysOnTop", true);
     tabMovesFocus_ = flag(settings_, "lookfeel.tabMovesFocus", false);
     delayCompensation_ = flag(settings_, "audio.delayCompensation", true);
@@ -78,6 +79,320 @@ void AppCommands::reload() {
     manager.clearCommands();
     manager.registerAllCommandsForTarget(this);
     manager.getKeyMappings()->resetToDefaultMappings();
+    // WIN-04: the user's own keys on top, after every reload, so a Settings change or a preset switch
+    // keeps them: a stable id mapped to chord texts, an empty list for none (shortcuts.overrides).
+    if (const auto overrides = settings_.get("shortcuts.overrides"); overrides.is_object())
+        for (const auto &[stable, chords] : overrides.items()) {
+            const int command = commandFor(stable);
+            if (command == 0 || !chords.is_array())
+                continue;
+            auto *mappings = manager.getKeyMappings();
+            mappings->clearAllKeyPresses(command);
+            for (const auto &chord : chords)
+                if (chord.is_string())
+                    if (const auto key = parseChord(chord.get<std::string>()))
+                        mappings->addKeyPress(command, *key);
+        }
+}
+settings::Value AppCommands::userKeys() const {
+    auto out = settings::Value::object();
+    const auto *mappings = manager.getKeyMappings();
+    for (int id = PlayStop; id <= LastId; ++id) {
+        juce::ApplicationCommandInfo info(id);
+        const_cast<AppCommands *>(this)->getCommandInfo(id, info);
+        std::vector<std::string> mine, theirs;
+        for (const auto &k : mappings->getKeyPressesAssignedToCommand(id))
+            mine.push_back(chordText(k));
+        for (const auto &k : info.defaultKeypresses)
+            theirs.push_back(chordText(k));
+        std::sort(mine.begin(), mine.end());
+        std::sort(theirs.begin(), theirs.end());
+        if (mine != theirs)
+            out[stableId(id)] = mine;
+    }
+    return out;
+}
+bool AppCommands::storeUserKeys(std::string &why) {
+    const auto held = settings_.get("shortcuts.overrides");
+    auto keys = userKeys();
+    if (held.is_object()) {
+        const auto *mappings = manager.getKeyMappings();
+        for (const auto &[stable, chords] : held.items()) {
+            const int command = commandFor(stable);
+            // A stable id this build does not know (a later build's command) keeps its keys.
+            if (command == 0) {
+                keys[stable] = chords;
+                continue;
+            }
+            // A held entry the command still has keeps its place even where it equals the preset's keys,
+            // so reload()'s own change messages, or a preset whose keys match, never drop it.
+            std::vector<std::string> now, kept;
+            for (const auto &k : mappings->getKeyPressesAssignedToCommand(command))
+                now.push_back(chordText(k));
+            if (chords.is_array())
+                for (const auto &chord : chords)
+                    if (chord.is_string())
+                        kept.push_back(chord.get<std::string>());
+            std::sort(now.begin(), now.end());
+            std::sort(kept.begin(), kept.end());
+            if (now == kept && !keys.contains(stable))
+                keys[stable] = chords;
+        }
+    }
+    if (keys == held)
+        return true;
+    return settings_.set("shortcuts.overrides", keys, {}, why) && settings_.save(why);
+}
+ShortcutsPage::ShortcutsPage(AppCommands &commands)
+    : commands_(commands), editor_(*commands.manager.getKeyMappings(), true) {
+    // setColours, not setColour: only it reaches the editor's tree, which fills most of it.
+    editor_.setColours(look::panel, look::text);
+    addAndMakeVisible(editor_);
+    commands_.manager.getKeyMappings()->addChangeListener(this);
+    setSize(560, kHeight);
+}
+ShortcutsPage::~ShortcutsPage() { commands_.manager.getKeyMappings()->removeChangeListener(this); }
+void ShortcutsPage::paint(juce::Graphics &g) {
+    if (error_.empty())
+        return;
+    g.setColour(look::textDim);
+    g.setFont(look::font(look::fontBody));
+    g.drawText(juce::String::fromUTF8(error_.c_str()), getLocalBounds().removeFromBottom(kErrorHeight).reduced(17, 0),
+               juce::Justification::centredLeft, true);
+}
+void ShortcutsPage::resized() { editor_.setBounds(getLocalBounds().withTrimmedBottom(kErrorHeight)); }
+void ShortcutsPage::store() {
+    std::string why;
+    const bool ok = commands_.storeUserKeys(why);
+    const std::string said = ok ? std::string() : "Your keys were not saved: " + why;
+    if (said != error_) {
+        error_ = said;
+        repaint();
+    }
+}
+void ShortcutsPage::changeListenerCallback(juce::ChangeBroadcaster *) { store(); }
+namespace {
+struct StableEntry {
+    const char *id;
+    const char *category;
+};
+const StableEntry *stableEntry(int id) noexcept {
+    static const std::array<StableEntry, 127> table{{
+        {"transport.play-stop", "Transport"}, // PlayStop
+        {"transport.stop", "Transport"}, // Stop
+        {"edit.undo", "Edit"}, // Undo
+        {"edit.redo", "Edit"}, // Redo
+        {"view.swap-panels", "View"}, // SwapPanels
+        {"view.browser", "View"}, // ToggleBrowser
+        {"arrangement.mixer", "View"}, // ToggleMixer
+        {"view.device-view", "View"}, // ToggleDeviceView
+        {"view.info-view", "View"}, // ToggleInfoView
+        {"view.zoom-in", "View"}, // ZoomIn
+        {"view.zoom-out", "View"}, // ZoomOut
+        {"file.new-project", "File"}, // NewProject
+        {"file.open-project", "File"}, // OpenProject
+        {"file.take-snapshot", "File"}, // TakeSnapshot
+        {"file.save-as", "File"}, // SaveAs
+        {"options.settings", "Options"}, // Settings
+        {"arrangement.time-zoom-in", "Arrangement"}, // TimeZoomIn
+        {"arrangement.time-zoom-out", "Arrangement"}, // TimeZoomOut
+        {"view.zoom-to-selection", "View"}, // ZoomToSelection
+        {"view.zoom-back", "View"}, // ZoomBack
+        {"view.optimize-width", "View"}, // OptimizeWidth
+        {"view.optimize-height", "View"}, // OptimizeHeight
+        {"transport.go-start", "Transport"}, // GoStart
+        {"transport.continue-play", "Transport"}, // ContinuePlay
+        {"create.insert-audio-track", "Create"}, // InsertAudioTrack
+        {"create.insert-midi-track", "Create"}, // InsertMidiTrack
+        {"edit.delete-track", "Edit"}, // DeleteTrack
+        {"edit.rename-track", "Edit"}, // RenameTrack
+        {"view.mixer-view", "View"}, // ToggleMixerView
+        {"view.show-channel-eq", "View"}, // ShowChannelEq
+        {"file.quit", "File"}, // Quit
+        {"navigate.focus-control-bar", "Navigate"}, // FocusControlBar
+        {"navigate.focus-arrangement", "Navigate"}, // FocusArrangement
+        {"navigate.focus-device-view", "Navigate"}, // FocusDeviceView
+        {"navigate.focus-browser", "Navigate"}, // FocusBrowser
+        {"arrangement.search-browser", "Arrangement"}, // SearchBrowser
+        {"navigate.tab-moves-focus", "Navigate"}, // TabMovesFocus
+        {"options.follow", "Options"}, // Follow
+        {"arrangement.insert-marker-to-playhead", "Arrangement"}, // InsertMarkerToPlayhead
+        {"arrangement.grow-tracks", "Arrangement"}, // GrowTracks
+        {"arrangement.shrink-tracks", "Arrangement"}, // ShrinkTracks
+        {"mixer.focus-mixer", "Mixer"}, // FocusMixer
+        {"navigate.next-neighbor", "Navigate"}, // NextNeighbor
+        {"navigate.previous-neighbor", "Navigate"}, // PreviousNeighbor
+        {"view.full-screen", "View"}, // FullScreen
+        {"view.overview", "View"}, // ToggleOverview
+        {"arrangement.in-out", "Arrangement"}, // ToggleInOut
+        {"options.narrow-grid", "Options"}, // NarrowGrid
+        {"options.widen-grid", "Options"}, // WidenGrid
+        {"options.triplet-grid", "Options"}, // TripletGrid
+        {"options.snap-to-grid", "Options"}, // SnapToGrid
+        {"options.fixed-grid", "Options"}, // FixedGrid
+        {"navigate.wrap-tab-navigation", "Navigate"}, // WrapTabNavigation
+        {"view.large-tracks", "View"}, // LargeTracks
+        {"edit.group-tracks", "Edit"}, // GroupTracks
+        {"edit.ungroup-tracks", "Edit"}, // UngroupTracks
+        {"view.mix-view", "View"}, // ToggleMixView
+        {"view.detach-mix-view", "View"}, // DetachMixView
+        {"view.reference-track", "View"}, // ToggleReferenceTrack
+        {"view.play-reference", "View"}, // PlayReference
+        {"edit.select-all", "Edit"}, // SelectAll
+        {"create.insert-return-track", "Create"}, // InsertReturnTrack
+        {"arrangement.return-tracks", "View"}, // ToggleReturnTracks
+        {"arrangement.sends", "View"}, // ToggleSends
+        {"arrangement.mixer-in-out", "View"}, // ToggleMixerInOut
+        {"mixer.solo-selected", "Mixer"}, // SoloSelected
+        {"mixer.deactivate-selected", "Mixer"}, // DeactivateSelected
+        {"mixer.activate-track-1", "Mixer"}, // ActivateTrack1
+        {"mixer.activate-track-2", "Mixer"}, // ActivateTrack2
+        {"mixer.activate-track-3", "Mixer"}, // ActivateTrack3
+        {"mixer.activate-track-4", "Mixer"}, // ActivateTrack4
+        {"mixer.activate-track-5", "Mixer"}, // ActivateTrack5
+        {"mixer.activate-track-6", "Mixer"}, // ActivateTrack6
+        {"mixer.activate-track-7", "Mixer"}, // ActivateTrack7
+        {"mixer.activate-track-8", "Mixer"}, // ActivateTrack8
+        {"arrangement.mixer-sends", "View"}, // ToggleMixerSends
+        {"create.insert-time-signature-change", "Create"}, // InsertTimeSignatureChange
+        {"options.solo-in-place", "Options"}, // SoloInPlace
+        {"arrangement.track-options", "Arrangement"}, // ToggleTrackOptions
+        {"arrangement.mixer-track-options", "View"}, // ToggleMixerTrackOptions
+        {"transport.metronome", "Transport"}, // Metronome
+        {"edit.loop-selection", "Edit"}, // LoopSelection
+        {"edit.select-loop", "Edit"}, // SelectLoop
+        {"create.add-locator", "Create"}, // AddLocator
+        {"create.delete-locator", "Create"}, // DeleteLocator
+        {"edit.edit-info-text", "Edit"}, // EditInfoText
+        {"view.undo-history", "View"}, // UndoHistory
+        {"file.save-copy", "File"}, // SaveCopy
+        {"file.collect-all-and-save", "File"}, // CollectAllAndSave
+        {"file.collect-and-export", "File"}, // CollectAndExport
+        {"edit.cut", "Edit"}, // Cut
+        {"edit.copy", "Edit"}, // Copy
+        {"edit.paste", "Edit"}, // Paste
+        {"edit.duplicate", "Edit"}, // Duplicate
+        {"view.plugin-windows", "View"}, // TogglePluginWindows
+        {"edit.split", "Edit"}, // Split
+        {"view.clip-view", "View"}, // ToggleClipView
+        {"create.insert-midi-clip", "Create"}, // InsertMidiClip
+        {"edit.cut-time", "Edit"}, // CutTime
+        {"edit.copy-time", "Edit"}, // CopyTime
+        {"edit.paste-time", "Edit"}, // PasteTime
+        {"edit.duplicate-time", "Edit"}, // DuplicateTime
+        {"edit.delete-time", "Edit"}, // DeleteTime
+        {"edit.insert-silence", "Edit"}, // InsertSilence
+        {"create.create-fade", "Create"}, // CreateFade
+        {"create.delete-fades", "Create"}, // DeleteFades
+        {"edit.invert-selection", "Edit"}, // InvertSelection
+        {"edit.quantize", "Edit"}, // Quantize
+        {"edit.quantize-settings", "Edit"}, // QuantizeSettings
+        {"edit.crop-clip", "Edit"}, // CropClip
+        {"view.expand-clip-view", "View"}, // ExpandClipView
+        {"view.fold-to-notes", "View"}, // FoldToNotes
+        {"view.fold-to-scale", "View"}, // FoldToScale
+        {"view.highlight-scales", "View"}, // HighlightScales
+        {"options.draw-mode", "Options"}, // DrawMode
+        {"view.arrange-panels-automatically", "View"}, // ArrangePanelsAutomatically
+        {"view.arrange-panels-horizontally", "View"}, // ArrangePanelsHorizontally
+        {"view.arrange-panels-vertically", "View"}, // ArrangePanelsVertically
+        {"navigate.focus-clip-view", "Navigate"}, // FocusClipView
+        {"edit.fit-to-time-range", "Edit"}, // FitToTimeRange
+        {"transport.arrangement-record", "Transport"}, // ArrangementRecord
+        {"file.export-audio", "File"}, // ExportAudio
+        {"options.delay-compensation", "Options"}, // DelayCompensation
+        {"options.solo-switches", "Options"}, // SoloSwitches
+        {"options.cue-switches", "Options"}, // CueSwitches
+        {"help.manual", "Help"}, // HelpManual
+        {"help.keyboard-shortcuts", "Help"}, // KeyboardReference
+    }};
+    const auto at = id - AppCommands::PlayStop;
+    return at >= 0 && at < static_cast<int>(table.size()) ? &table[static_cast<std::size_t>(at)] : nullptr;
+}
+struct NamedKey {
+    int code;
+    const char *name;
+};
+const NamedKey kNamedKeys[] = {
+    {juce::KeyPress::spaceKey, "Space"},       {juce::KeyPress::escapeKey, "Esc"},
+    {juce::KeyPress::returnKey, "Return"},     {juce::KeyPress::tabKey, "Tab"},
+    {juce::KeyPress::deleteKey, "Delete"},     {juce::KeyPress::backspaceKey, "Backspace"},
+    {juce::KeyPress::insertKey, "Insert"},     {juce::KeyPress::upKey, "Up"},
+    {juce::KeyPress::downKey, "Down"},         {juce::KeyPress::leftKey, "Left"},
+    {juce::KeyPress::rightKey, "Right"},       {juce::KeyPress::pageUpKey, "PageUp"},
+    {juce::KeyPress::pageDownKey, "PageDown"}, {juce::KeyPress::homeKey, "Home"},
+    {juce::KeyPress::endKey, "End"},           {juce::KeyPress::F1Key, "F1"},
+    {juce::KeyPress::F2Key, "F2"},             {juce::KeyPress::F3Key, "F3"},
+    {juce::KeyPress::F4Key, "F4"},             {juce::KeyPress::F5Key, "F5"},
+    {juce::KeyPress::F6Key, "F6"},             {juce::KeyPress::F7Key, "F7"},
+    {juce::KeyPress::F8Key, "F8"},             {juce::KeyPress::F9Key, "F9"},
+    {juce::KeyPress::F10Key, "F10"},           {juce::KeyPress::F11Key, "F11"},
+    {juce::KeyPress::F12Key, "F12"},           {juce::KeyPress::numberPadAdd, "Num+"},
+    {juce::KeyPress::numberPadSubtract, "Num-"}};
+} // namespace
+const char *AppCommands::stableId(int id) noexcept {
+    const auto *e = stableEntry(id);
+    return e != nullptr ? e->id : nullptr;
+}
+const char *AppCommands::category(int id) noexcept {
+    const auto *e = stableEntry(id);
+    return e != nullptr ? e->category : "ADI";
+}
+int AppCommands::commandFor(const std::string &stable) noexcept {
+    for (int id = PlayStop; id <= LastId; ++id)
+        if (const auto *e = stableEntry(id); e != nullptr && stable == e->id)
+            return id;
+    return 0;
+}
+std::string AppCommands::chordText(const juce::KeyPress &k) {
+    std::string out;
+    const auto mods = k.getModifiers();
+    if (mods.isCommandDown())
+        out += "Cmd+";
+#if JUCE_MAC
+    if ((mods.getRawFlags() & juce::ModifierKeys::ctrlModifier) != 0)
+        out += "Ctrl+";
+#endif
+    if (mods.isAltDown())
+        out += "Alt+";
+    if (mods.isShiftDown())
+        out += "Shift+";
+    const int code = k.getKeyCode();
+    for (const auto &n : kNamedKeys)
+        if (n.code == code)
+            return out + n.name;
+    if (code > 32 && code < 127)
+        return out + static_cast<char>(code >= 'a' && code <= 'z' ? code - 'a' + 'A' : code);
+    return out + "#" + std::to_string(code);
+}
+std::optional<juce::KeyPress> AppCommands::parseChord(const std::string &text) {
+    int mods = 0;
+    std::string rest = text;
+    const std::pair<const char *, int> prefixes[] = {{"Cmd+", juce::ModifierKeys::commandModifier},
+                                                     {"Ctrl+", juce::ModifierKeys::ctrlModifier},
+                                                     {"Alt+", juce::ModifierKeys::altModifier},
+                                                     {"Shift+", juce::ModifierKeys::shiftModifier}};
+    for (bool more = true; more;) {
+        more = false;
+        for (const auto &[prefix, flag] : prefixes) {
+            const std::string p(prefix);
+            if (rest.size() > p.size() && rest.compare(0, p.size(), p) == 0) {
+                mods |= flag;
+                rest = rest.substr(p.size());
+                more = true;
+            }
+        }
+    }
+    for (const auto &n : kNamedKeys)
+        if (rest == n.name)
+            return juce::KeyPress(n.code, juce::ModifierKeys(mods), 0);
+    if (rest.size() == 1 && rest[0] > 32 && rest[0] < 127) {
+        const char ch = rest[0] >= 'A' && rest[0] <= 'Z' ? static_cast<char>(rest[0] - 'A' + 'a') : rest[0];
+        return juce::KeyPress(ch, juce::ModifierKeys(mods), 0);
+    }
+    if (rest.size() > 1 && rest[0] == '#')
+        return juce::KeyPress(std::atoi(rest.c_str() + 1), juce::ModifierKeys(mods), 0);
+    return std::nullopt;
 }
 bool AppCommands::setInfoView(bool on, std::string &why) {
     if (!settings_.set("lookfeel.showInfoView", on, {}, why) || !settings_.save(why))
@@ -213,13 +528,14 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Crop Clip", "Expand Clip View", "Fold to Notes", "Fold to Scale", "Highlight Scales",
                                   "Draw Mode", "Arrange Clip View Panels Automatically", "Arrange Clip View Panels Horizontally",
                                   "Arrange Clip View Panels Vertically", "Clip View", "Fit to Time Range",
-                                  "Arrangement Record", "Export Audio/Video...", "Delay Compensation", "Solo Switches", "Cue Switches"};
-    info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
+                                  "Arrangement Record", "Export Audio/Video...", "Delay Compensation", "Solo Switches", "Cue Switches",
+                                  "Live 12 Manual", "Keyboard Shortcuts"};
+    info.setInfo(names[id - PlayStop], names[id - PlayStop], category(id), 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
         info.setInfo(active_ ? juce::String(active_->undoTitle(redo))
                              : juce::String(names[id - PlayStop]),
-                     names[id - PlayStop], "ADI", 0);
+                     names[id - PlayStop], category(id), 0);
         info.setActive(active_ != nullptr && active_->canUndo(redo));
     }
     const auto cmd = juce::ModifierKeys::commandModifier;
@@ -1088,7 +1404,28 @@ bool AdiRootComponent::togglePluginWindow(std::int64_t device, bool several) {
     devices.repaint();
     return true;
 }
+void AdiRootComponent::pluginAdded(std::int64_t device) {
+    if (!commands_.autoOpenPluginWindows() || pluginHost == nullptr || !pluginEditor)
+        return;
+    autoOpen_ = device;
+    autoOpenFrames_ = 60;
+}
 void AdiRootComponent::followPluginWindows() {
+    // Auto-Open (WIN-03): the added plug-in's window, once the feed knows its track and name for the
+    // title. One the feed never shows within the frames given is let go.
+    if (autoOpen_ != 0) {
+        const auto feed = devices.publication ? devices.publication() : nullptr;
+        bool known = false;
+        if (feed)
+            for (const auto &d : *feed)
+                if (d.id == autoOpen_)
+                    known = d.plugin;
+        if (known || --autoOpenFrames_ <= 0) {
+            const auto device = std::exchange(autoOpen_, 0);
+            if (known && pluginHost != nullptr && !pluginHost->contains(pluginWindowKey(device)))
+                togglePluginWindow(device, false); // one with no editor says so, as its wrench would
+        }
+    }
     // Auto-Hide Plug-In Windows (manual 23.3.1.1): only the selected track's show; Show/Hide
     // Plug-In Windows hides them all. Always on top follows the setting.
     if (pluginHost == nullptr)
@@ -3528,7 +3865,7 @@ bool AdiRootComponent::focusView(int id) {
         transport.focus();
         return true;
     case AppCommands::FocusArrangement:
-        arrangement.canvas.grabKeyboardFocus();
+        focusIfShowing(arrangement.canvas);
         return true;
     case AppCommands::FocusClipView:
         // The editor of the clip shown: the Note Editor or the Sample Editor. With no clip, the
@@ -3536,18 +3873,18 @@ bool AdiRootComponent::focusView(int id) {
         if (!showClipView())
             return false;
         if (clipView.details() == nullptr)
-            clipView.grabKeyboardFocus();
+            focusIfShowing(clipView);
         else if (clipView.midi())
-            clipView.notes.grabKeyboardFocus();
+            focusIfShowing(clipView.notes);
         else
-            clipView.sample.grabKeyboardFocus();
+            focusIfShowing(clipView.sample);
         return true;
     case AppCommands::FocusDeviceView:
         if (!state_.docked && !command(AppCommands::ToggleDeviceView))
             return false;
         if (devices.panels.empty())
             return fail("The selected track has no devices.");
-        devices.panels.front()->grabKeyboardFocus();
+        focusIfShowing(*devices.panels.front());
         return true;
     case AppCommands::FocusBrowser:
     case AppCommands::SearchBrowser:
@@ -3556,11 +3893,11 @@ bool AdiRootComponent::focusView(int id) {
         if (state_.panels.find(Panel::Browser)->collapsed && !command(AppCommands::ToggleBrowser))
             return false;
         if (id == AppCommands::FocusBrowser) {
-            browser.grabKeyboardFocus();
+            focusIfShowing(browser);
             return true;
         }
         // Ctrl/Cmd+F, from anywhere: the search field, its words selected to type over.
-        browser.search.grabKeyboardFocus();
+        focusIfShowing(browser.search);
         browser.search.selectAll();
         return true;
     case AppCommands::FocusMixer: {
@@ -3576,6 +3913,28 @@ bool AdiRootComponent::focusView(int id) {
     default:
         return false;
     }
+}
+juce::File AdiRootComponent::writeKeyboardReference() const {
+    // Every command, in the order the menus know them, with the keys it has now (a user's own included).
+    auto *mappings = commands_.manager.getKeyMappings();
+    const auto escape = [](const juce::String &text) {
+        return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;");
+    };
+    juce::String html = "<!doctype html><meta charset=\"utf-8\"><title>ADI Keyboard Shortcuts</title>"
+                        "<h1>ADI Keyboard Shortcuts</h1><table>";
+    for (int id = AppCommands::PlayStop; id <= AppCommands::LastId; ++id) {
+        juce::ApplicationCommandInfo info(id);
+        commands_.getCommandInfo(id, info);
+        juce::StringArray keys;
+        if (mappings != nullptr)
+            for (const auto &k : mappings->getKeyPressesAssignedToCommand(id))
+                keys.add(k.getTextDescriptionWithIcons());
+        html << "<tr><td>" << escape(info.shortName) << "</td><td>" << escape(keys.joinIntoString(", "))
+             << "</td></tr>";
+    }
+    html << "</table>";
+    const auto file = juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("ADI Keyboard Shortcuts.html");
+    return file.replaceWithText(html, false, false, "\n") ? file : juce::File();
 }
 bool AdiRootComponent::command(int id) {
     if ((mixViewPanel.stack.hasToolbarFocus() || mixViewPanel.hasAnalyzerControlFocus() ||
@@ -3688,6 +4047,16 @@ bool AdiRootComponent::command(int id) {
         if (!toggleRecord())
             return false;
         break;
+    case AppCommands::HelpManual:
+    case AppCommands::KeyboardReference: {
+        const auto target = id == AppCommands::HelpManual ? juce::URL(kManualAddress)
+                                                          : juce::URL(writeKeyboardReference());
+        if (target.isEmpty())
+            return fail("The keyboard reference could not be written.");
+        if (!(openHelp ? openHelp(target) : target.launchInDefaultBrowser()))
+            return fail("The system could not open it.");
+        break;
+    }
     case AppCommands::ExportAudio:
         if (!exportAudio)
             return fail("Export runs in the application.");
@@ -3961,7 +4330,7 @@ bool AdiRootComponent::command(int id) {
         if (applicationCommand)
             applicationCommand(AppCommands::UndoHistory);
         if (undoHistory.isShowing())
-            undoHistory.list.grabKeyboardFocus();
+            focusIfShowing(undoHistory.list);
         return true;
     // The metronome and the loop are complete on their own too (submitTransport).
     case AppCommands::Metronome:
@@ -4115,7 +4484,9 @@ const std::vector<MenuEntries> &menuBar() {
          {C::FocusControlBar, C::FocusArrangement, C::FocusClipView, C::FocusDeviceView, C::FocusBrowser, 0,
           C::NextNeighbor, C::PreviousNeighbor, 0, C::TabMovesFocus,
           C::WrapTabNavigation}},
-        {"Help", {}}};
+        // WIN-09: the manual and the keyboard reference, so the Mac's Cmd+? search finds ADI's menus;
+        // the Help View (Learn View) joins it later.
+        {"Help", {C::HelpManual, C::KeyboardReference}}};
     return bar;
 }
 } // namespace
@@ -4237,8 +4608,27 @@ AdiWindow::AdiWindow(std::unique_ptr<AdiRootComponent> root, AppCommands &comman
 void AdiWindow::moved() {
     DocumentWindow::moved();
     root_->followDisplay();
+    place.moved();
+}
+void AdiWindow::resized() {
+    DocumentWindow::resized();
+    place.moved();
+}
+void AdiWindow::parentSizeChanged() {
+    DocumentWindow::parentSizeChanged();
+    if (!isFullScreen() && keepReachable(*this))
+        place.moved();
+}
+void AdiWindow::broughtToFront() {
+    DocumentWindow::broughtToFront();
+    // The owned windows stay above the main window (WIN-03).
+    if (root_->pluginHost != nullptr)
+        root_->pluginHost->ownerToFront();
 }
 void AdiWindow::minimisationStateChanged(bool minimised) {
+    // The owned windows go down and come back with it (WIN-03).
+    if (root_->pluginHost != nullptr)
+        root_->pluginHost->ownerMinimised(minimised);
     root_->infoSpectrum.suspend(minimised);
     root_->devices.suspendParameters(minimised);
     if (root_->mixViewPanel.getParentComponent() == root_) {
@@ -4354,7 +4744,7 @@ bool AdiRootComponent::ImportPrompt::keyPressed(const juce::KeyPress &key) {
         for (std::size_t n = 1; n <= order.size(); ++n) {
             auto *next = order[(from + n * step) % order.size()];
             if (next->isEnabled()) {
-                next->grabKeyboardFocus();
+                focusIfShowing(*next);
                 break;
             }
         }

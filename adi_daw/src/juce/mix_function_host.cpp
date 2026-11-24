@@ -16,6 +16,14 @@
 #include <stdexcept>
 #include <vector>
 
+// The Clip control law (min+(max-min)*n, then min+step*floor(...)) must give
+// every leg the same float, so no fused multiply-adds; cmake/mix_cores.cmake
+// also passes -ffp-contract=off, because GCC ignores this pragma and it does
+// not reach the inline ControlMapping.h snaps included above.
+#if defined(__clang__)
+#pragma STDC FP_CONTRACT OFF
+#endif
+
 namespace adi::device {
 namespace {
 namespace l = mix::limiter;
@@ -241,7 +249,12 @@ public:
     const DeviceIdentity& identity() const noexcept override {return identity_;}
     bool loaded() const noexcept override {return !unavailable_.load(std::memory_order_acquire);}
     [[nodiscard]] const std::shared_ptr<l::ReductionMailbox>& reductionSource() const noexcept { return reduction_; }
+    ReactivationGate& gateForTesting() noexcept { return gate_; }
     void prepare(double rate,std::int32_t maximum) override {
+        // DF-M67: a prepare that changes nothing never takes the gate and keeps
+        // the look-ahead and envelope (device_model.hpp). The unavailable and
+        // recovery paths clear prepared_, so they still re-prepare.
+        if (prepared_ && loaded() && rate == rate_ && maximum == maximum_) return;
         const ReactivationGate::Hold hold(gate_);
         reduction_->setPrepared(false);
         refreshValues();
@@ -259,6 +272,8 @@ public:
             latency_.store(preparedLatency, std::memory_order_release);
         else
             publishLatency(preparedLatency);
+        rate_ = rate;
+        maximum_ = maximum;
         prepared_ = everPrepared_ = true;
     }
     void release() override {
@@ -477,6 +492,7 @@ private:
     std::array<std::atomic<float>,Count> values_{}; Values cached_{};
     std::atomic<std::uint64_t> stateVersion_{0},latencyEpoch_{0},restartEpoch_{0};
     std::atomic<std::int32_t> latency_{0}; bool prepared_=false,everPrepared_=false;
+    double rate_=0;std::int32_t maximum_=0;
     std::atomic<bool> unavailable_{false};std::vector<std::uint8_t> unavailableState_;
     std::array<std::vector<float>, 2> bypassScratch_;
     Payload extra_=Payload::object();
@@ -486,6 +502,10 @@ private:
 std::shared_ptr<mix::limiter::ReductionMailbox> limiterReductionSource(DeviceInstance& instance) noexcept {
     if (const auto* limiter = dynamic_cast<const LimiterDevice*>(&instance)) return limiter->reductionSource();
     return {};
+}
+ReactivationGate* detail::mixLimiterGateForTesting(DeviceInstance& instance) noexcept {
+    if (auto* limiter = dynamic_cast<LimiterDevice*>(&instance)) return &limiter->gateForTesting();
+    return nullptr;
 }
 mix::Availability mixFunctionAvailability(mix::Function kind) {
     if(kind==mix::Function::Limiter || kind==mix::Function::Eq || kind==mix::Function::Compressor)return {true,{}};
