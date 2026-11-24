@@ -2505,11 +2505,12 @@ void takesStayOffTheMainRow() {
     auto store = Store::create(temp.path() / "p.adi", err);
     check(store != nullptr, "store created");
     if (!store) return;
-    // Clip 1 on the main row and clip 2 on take lane 7, both at 0-960; clip 3 on the take far past the end.
+    // Clip 1 on the main row and clip 2 on take lane 7, both at 0-960; clip 3 on the take at quarter 100,
+    // past the end's floor of 16 quarters, so an end() that read the takes would move.
     store->db().exec("INSERT INTO tracks(id,kind,name) VALUES(1,'audio','Vocal');"
                      "INSERT INTO lanes(id,track_id,kind) VALUES(7,1,'take');"
                      "INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks,lane_id) VALUES"
-                     "(1,1,'audio',0,960,NULL),(2,1,'audio',0,960,7),(3,1,'audio',3840000,960,7);");
+                     "(1,1,'audio',0,960,NULL),(2,1,'audio',0,960,7),(3,1,'audio',576576000,960,7);");
     engine::ProjectView view;
     view.refresh(*store);
     const ui::SnapshotReader reader(view.current());
