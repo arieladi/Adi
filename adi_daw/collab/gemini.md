@@ -4,6 +4,19 @@ Trial seat (22 November 2026, `collab/win.md`): Linux environment (Debian 12, GC
 
 ---
 
+## 2026-11-24 — Standing queue rerun (Item 12, TSAN) on `main` (`48fb9953a`)
+
+Head: `main` (`48fb9953a`, post `#739`, `#740`, `#742`, `#744`). Compiler & flags: GCC 12.2.0 (`-DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS_DEBUG="-O1 -g1 -fsanitize=thread -fno-omit-frame-pointer" -DCMAKE_CXX_FLAGS_DEBUG="-O1 -g1 -fsanitize=thread -fno-omit-frame-pointer" -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread" -DADI_WITH_JUCE=OFF -DADI_WITH_PD=ON -DADI_WERROR=OFF`), executed under `setarch x86_64 -R` with `TSAN_OPTIONS=halt_on_error=0:second_deadlock_stack=1:exitcode=66` (Clang 14.0.6 still lacks `libclang_rt.tsan-x86_64.a` on this VM).
+
+- **Counts:** **43 / 43 PASS (100%)**, **0 data races, 0 deadlocks**.
+- **Verdict:** **PASS — all 43 threaded suites completely TSan-clean on `main`.**
+- **What changed since our 23 November rerun (`7e3e627d`, 41/42):**
+  - `adi_progressive_decode_tests` and `adi_pcm_stream_tests` (DF-E65 landed on `main`): **now PASS** (0 races).
+  - `adi_mix_focus_tests` (DF-M66 landed in `#740`) and `adi_recording_commands_tests` (DF-E32 (b) landed in `#744`): **PASS** (0 races).
+- **Suites verified (43):** `adi_graph_workers_tests`, `adi_host_tests`, `adi_device_host_tests`, `adi_clap_tests`, `adi_session_tests`, `adi_transport_generation_tests`, `adi_cue_monitor_tests`, `adi_gesture_tests`, `adi_gesture_graph_tests`, `adi_gesture_playback_tests`, `adi_quiet_gesture_tests`, `adi_audio_recording_tests`, `adi_recording_commands_tests`, `adi_track_recording_tests`, `adi_automation_recording_tests`, `adi_audio_memory_capture_tests`, `adi_midi_capture_input_tests`, `adi_midi_capture_tests`, `adi_offline_capture_tests`, `adi_freeze_capture_tests`, `adi_decode_tests`, `adi_decode_space_tests`, `adi_decode_cache_consistency_tests`, `adi_progressive_decode_tests`, `adi_pcm_stream_tests`, `adi_plugin_scanner_tests`, `adi_scan_self_test_tests`, `adi_scan_cache_tests`, `adi_scan_prune_tests`, `adi_scan_catalogue_tests`, `adi_scan_process_tests`, `adi_scan_quarantine_tests`, `adi_link_session_tests`, `adi_link_playback_tests`, `adi_render_queue_tests`, `adi_mix_limiter_owner_tests`, `adi_mix_focus_tests`, `adi_mix_eq_chain_tests`, `adi_mix_eq_chain_backend_tests`, `adi_control_mcp_tests`, `adi_ui_document_tests`, `adi_collect_export_tests`, `adi_mpe_output_tests`.
+
+---
+
 ## 2026-11-24 — Standing queue rerun (Item 13, GLIBCXX-DEBUG) on `main` (`48fb9953a`)
 
 Head: `main` (`48fb9953a`, post `#739`, `#740`, `#742`, `#744`). Compiler & flags: GCC 12.2.0 (`-DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS_DEBUG="-g0" -DCMAKE_CXX_FLAGS_DEBUG="-g0 -D_GLIBCXX_DEBUG" -DADI_WITH_JUCE=OFF -DADI_WITH_PD=ON -DADI_WERROR=OFF`).
