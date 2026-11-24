@@ -4,6 +4,7 @@
 #include <bit>
 #include <cmath>
 #include <complex>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -11,6 +12,9 @@
 #include <new>
 #include <numbers>
 #include <vector>
+#if (defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)) && !defined(_M_ARM64EC)
+#include <xmmintrin.h>
+#endif
 namespace {
 bool counting = false;
 std::size_t allocations = 0;
@@ -244,7 +248,68 @@ void partitions() {
     check(allocations == 0, "Echo process allocates nothing");
 }
 } // namespace
+// The room (the Reverb's 4-line tank) settles on exact 0 after silence: a
+// found gap, its float lines decayed through float's subnormals for some 6 s
+// from about 24 s into the silence at the default Decay. Read on x86's
+// denormal-operand flag, with flush-to-zero off.
+void roomSettles() {
+#if (defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)) && !defined(_M_ARM64EC)
+    C c;
+    c.set(C::Reverb, 100);
+    c.set(C::Feedback, 0);   // with feedback, Reverb 100 % holds the loop above unity: no tail to settle
+    c.prepare(48000);
+    const unsigned saved = _mm_getcsr();
+    _mm_setcsr(saved & ~0x8040u);
+    std::vector<float> in(256), l(256), r(256);
+    std::uint32_t seed = 2026u;
+    bool read = false;
+    for (int b = 0; b < 48000 * 40 / 256; ++b) {
+        const bool signal = b < 48000 * 8 / 256;
+        for (auto &v : in) {
+            seed = seed * 1664525u + 1013904223u;
+            v = signal ? static_cast<float>(static_cast<double>(seed >> 8) / 16777216.0 - .5) : 0.f;
+        }
+        const bool watched = b >= 48000 * 20 / 256;   // 12 to 32 s into the silence (the gap read 17 to 22)
+        if (watched) {
+            _mm_setcsr(_mm_getcsr() & ~0x3Fu);
+        }
+        c.process(in.data(), in.data(), l.data(), r.data(), in.size());
+        read = read || (watched && (_mm_getcsr() & 0x2u) != 0);
+    }
+    _mm_setcsr(saved);
+    check(!read, "the Reverb's room settles on exact 0 after silence (no subnormal read)");
+#endif
+}
+// A default Echo with its Reverb at 100 % (Post, the default location) stays
+// bounded and dies away after its input stops: Post colours the output and
+// is not fed back (a found defect: it ran away and held near 15).
+void postReverbDecays() {
+    C c;
+    c.set(C::Reverb, 100);
+    c.prepare(48000);
+    std::vector<float> in(256), l(256), r(256);
+    std::uint32_t seed = 2026u;
+    double loudest = 0, last = 0;
+    for (int b = 0; b < 48000 * 31 / 256; ++b) {
+        const bool signal = b < 48000 / 256;
+        for (auto &v : in) {
+            seed = seed * 1664525u + 1013904223u;
+            v = signal ? static_cast<float>(static_cast<double>(seed >> 8) / 16777216.0 - .5) : 0.f;
+        }
+        c.process(in.data(), in.data(), l.data(), r.data(), in.size());
+        const bool final = b >= 48000 * 30 / 256;
+        for (float v : l) {
+            loudest = std::max(loudest, static_cast<double>(std::abs(v)));
+            if (final) {
+                last = std::max(last, static_cast<double>(std::abs(v)));
+            }
+        }
+    }
+    check(loudest < 2 && last < 1e-3, "a default Echo with Reverb 100 % stays bounded and dies away");
+}
 int main() {
+    roomSettles();
+    postReverbDecays();
     measurements();
     transitions();
     partitions();

@@ -65,6 +65,56 @@ void quantizer(Crush& band) {
             near(mono(band, input, height, 1), 0, 1e-8, "measured first threshold");
     }
 }
+void movingResolution() {
+    // Stereo markers measured at 49152 Hz with an abrupt resolution change.
+    // Both channels share the contour and retain their own signed audio history.
+    struct Marker {
+        float bitsBefore, bitsAfter, leftBefore, rightBefore, left, right;
+        double expectedLeft, expectedRight;
+    };
+    constexpr Marker markers[] {
+        {.25f, .75f, .375f, -.625f, -.21875f, .15625f, .084458889, -.225830705},
+        {.25f, .75f, .20f, -.20f, .07f, -.07f, .067350056, -.067350059}, // Same integer codes.
+        {.75f, .25f, .375f, -.625f, -.21875f, .15625f, .063210541, -.192970153},
+        {.75f, .25f, -.4375f, .875f, .8125f, -.3125f, .169565353, .277776586},
+        {1.f, .125f, .375f, -.625f, -.21875f, .15625f, .004737242, -.260156898},
+        {.125f, 1.f, -.4375f, .875f, .8125f, -.3125f, .8125, -.3125}
+    };
+    Crush band;
+    check(band.prepare(49152), "prepare resolution markers");
+    for (const auto& m : markers) {
+        band.reset();
+        UndoHighPass leftMeter(49152), rightMeter(49152);
+        float l = m.leftBefore, r = m.rightBefore;
+        band.processStereo(l, r, m.bitsBefore, 1.f);
+        leftMeter.decode(l);
+        rightMeter.decode(r);
+        l = m.left;
+        r = m.right;
+        band.processStereo(l, r, m.bitsAfter, 1.f);
+        near(leftMeter.decode(l), m.expectedLeft, 2e-6, "moving resolution left");
+        near(rightMeter.decode(r), m.expectedRight, 2e-6, "moving resolution right");
+    }
+
+    // An offset of two integer codes in both samples leaves the random crossing
+    // weight identical between ears. Recover it from the left output and check
+    // the right output against its independently known physical levels.
+    band.reset();
+    band.setDither(true);
+    UndoHighPass leftMeter(49152), rightMeter(49152);
+    float l = -1.f, r = 1.f;
+    band.processStereo(l, r, 0.f, 1.f);
+    leftMeter.decode(l);
+    rightMeter.decode(r);
+    constexpr double newStep = 1.0 / 7.999794;
+    constexpr double levelGain = .96875;
+    l = static_cast<float>(newStep);
+    r = static_cast<float>(3 * newStep);
+    band.processStereo(l, r, .5f, 1.f);
+    const double weight = (leftMeter.decode(l) / levelGain + 1.0) / (newStep + 1.0);
+    near(rightMeter.decode(r), levelGain * (1.0 + weight * (3 * newStep - 1.0)),
+         2e-6, "stereo dither while resolution changes");
+}
 void clock(Crush& band) {
     for (auto [index, first, settled] : std::array<std::array<float, 3>, 2>{{
              {73, .126574f, .251569f}, {74, .124995f, .248431f}}}) {
@@ -76,14 +126,18 @@ void clock(Crush& band) {
             if (i == 75) near(value, settled, .0004, "interpolated source");
         }
     }
-    for (const double rate : {44100.0, 48000.0, 96000.0}) {
+    // The first crossing at the minimum height includes rate-specific
+    // accumulation rounding. These indices and transitions came from DC steps.
+    struct Minimum { int rate, firstFrame; double transition; };
+    for (const auto [rate, firstFrame, transition] : std::array<Minimum, 3>{{
+             {44100, 5000, .34711317}, {48000, 5441, .02380869}, {96000, 10885, .21713978}}}) {
         check(band.prepare(rate), "prepare");
         UndoHighPass inv(rate);
-        const int period = static_cast<int>(std::floor(rate / 8.82));
-        for(int i=0;i<=period+1;++i) {
+        for(int i=0;i<=firstFrame+1;++i) {
             const double value=inv.decode(mono(band,.5f,1,0));
-            if(i<period-1) near(value,0,1e-7,"silence before first hold event");
-            if(i==period+1) near(value,.5,.00005,"lowest hold clock");
+            if(i<firstFrame) near(value,0,1e-7,"silence before first hold event");
+            if(i==firstFrame) near(value,transition,.000005,"lowest hold clock transition");
+            if(i==firstFrame+1) near(value,.5,.000005,"lowest hold clock");
         }
         band.reset();
         for (int i=0;i<3;++i) {
@@ -117,6 +171,53 @@ void longClock(Crush& band) {
             if (i == mark.frame+1) near(value, mark.held, mark.tolerance, "long fractional capture");
         }
     }
+}
+
+void sustainedStereoClock() {
+    // After more than two seconds on a steady contour, two signed input
+    // frames reveal the transition and the held value in each channel.
+    // Subtract the pre-marker DC level recovered on the same render.
+    struct Marker {
+        int rate, frame;
+        float height;
+        std::array<double, 2> transition, held;
+    };
+    constexpr Marker cases[]{
+        {96000, 229771, .073000014f, {.01710536, .14570030}, {.03611648, .30763352}},
+        {44100, 102540, .281310022f, {.00197571, .14995156}, {.00447023, .33927978}},
+        {48000, 112731, .407000005f, {-.04772568, .11906427}, {-.22996955, .57371955}},
+        {96000, 225527, .992123961f, {.03317799, .13986813}, {.06590689, .27784311}},
+        // These five physical heights distinguish a separately rounded
+        // log-frequency product from a fused multiply-add.
+        {48000, 112691, .389999986f, {.00388830, .14949775}, {.00871396, .33503605}},
+        {48000, 112800, .527122974f, {-.04516685, .13817329}, {-.16693585, .51068588}},
+        {96000, 225467, .711719036f, {-.03190773, .15050797}, {-.09248112, .43623114}},
+        {44100, 103641, .889999986f, {-.02148362, .15249778}, {-.05636793, .40011794}},
+        {48000, 112887, .921000004f, {-.02725117, .15178435}, {-.07522165, .41897165}}
+    };
+    for (const auto& mark : cases) {
+        Crush band;
+        band.prepare(mark.rate);
+        UndoHighPass left(mark.rate), right(mark.rate);
+        std::array<double, 2> background{};
+        for (int i = 0; i <= mark.frame + 1; ++i) {
+            float l = .0625f, r = -.03125f;
+            if (i == mark.frame - 1) { l = .625f; r = -.25f; }
+            if (i == mark.frame) { l = -.375f; r = .75f; }
+            band.processStereo(l, r, 1, mark.height);
+            const std::array<double, 2> decoded{left.decode(l), right.decode(r)};
+            if (i == mark.frame - 2) background = decoded;
+            if (i < mark.frame) continue;
+            const auto& expected = i == mark.frame ? mark.transition : mark.held;
+            for (std::size_t ch = 0; ch < decoded.size(); ++ch)
+                near(decoded[ch] - background[ch], expected[ch], .000005, "sustained stereo hold clock");
+        }
+    }
+    Crush extreme;
+    check(extreme.prepare(std::numeric_limits<double>::max()), "finite high sample rate");
+    near(mono(extreme, .5f, 1, 0), 0., 0., "sub-resolution increment holds silence");
+    check(extreme.prepare(1), "finite low sample rate");
+    check(std::isfinite(mono(extreme, .5f, 1, .999f)), "low sample rate caps the increment");
 }
 void combined(Crush& band) {
     // Shared input and observed left samples from a 48 kHz held-out render.
@@ -153,11 +254,86 @@ void dither(Crush& band) {
     band.reset();const auto x=mono(band,.49f,0,1);
     band.reset();near(x,mono(band,.49f,0,1),0,"repeatable dither reset");
 }
+
+std::array<float, 2> endpointMarker(int offset) {
+    constexpr std::array<std::array<float, 2>, 3> markers{{
+        {.8f, -.1f}, {-.25f, .6f}, {.16f, -.42f}}};
+    if (offset < 0 || offset >= static_cast<int>(markers.size())) return {};
+    return markers[static_cast<std::size_t>(offset)];
+}
+
+void fullRatePlateau() {
+    // A signed pair at the end of the plateau distinguishes the passed sample
+    // from the fractional capture that the next, slower frames reveal.
+    struct Case { int preroll; double heldL, heldR; };
+    constexpr Case cases[]{{0, .11061388, .35959082}, {8192, .42338427, .15107722}};
+    for (const auto& test : cases) {
+        Crush band;
+        band.prepare(49152);
+        UndoHighPass left(49152), right(49152);
+        for (int frame = 0; frame <= test.preroll + 119; ++frame) {
+            const int position = frame % 8192;
+            const int stimulus = frame - test.preroll;
+            auto [l, r] = endpointMarker(stimulus - 116);
+            const float height = position >= 67 && position < 118 ? 1.f : .65f;
+            band.processStereo(l, r, 1, height, false);
+            const double a = left.decode(l), b = right.decode(r);
+            if (stimulus == 117) {
+                near(a, -.25, .00001, "full moving plateau passes left");
+                near(b, .6, .00001, "full moving plateau passes right");
+            } else if (stimulus == 118 || stimulus == 119) {
+                const double tolerance = test.preroll == 0 ? .00002 : .001;
+                near(a, test.heldL, tolerance, "crossing an endpoint retains the clock and left latch");
+                near(b, test.heldR, tolerance, "crossing an endpoint retains the clock and right latch");
+            }
+        }
+    }
+}
+
+void flatOrCappedHold() {
+    // At 32 kHz both flat settings pass full-rate audio. Only the literal
+    // full-height setting bypasses the latch. The sub-full setting still clocks.
+    struct Case { float height; double firstL, firstR, nextL, nextR; };
+    constexpr Case cases[]{{1.f, -.25, .6, -.09885536, .22944373},
+                           {.97f, .45492853, .13004768, .27775367, -.02162898}};
+    for (const auto& test : cases) {
+        Crush band;
+        band.prepare(32000);
+        UndoHighPass left(32000), right(32000);
+        for (int frame = 0; frame <= 1026; ++frame) {
+            auto [l, r] = endpointMarker(frame - 1022);
+            const float h = frame >= 512 && frame < 1024 ? test.height : .65f;
+            band.processStereo(l, r, 1, h);
+            const double a = left.decode(l), b = right.decode(r);
+            constexpr double tolerance = .0003; // Accumulated frequency error before frame 512.
+            if (frame == 1024 || frame == 1025) {
+                near(a, frame == 1024 ? test.firstL : test.nextL, tolerance, "flat/capped left re-entry");
+                near(b, frame == 1024 ? test.firstR : test.nextR, tolerance, "flat/capped right re-entry");
+            } else if (frame == 1026) {
+                near(a, .07451977, tolerance, "both paths resume the same left phase");
+                near(b, -.19561441, tolerance, "both paths resume the same right phase");
+            }
+        }
+    }
+}
 } // namespace
 int main() try {
     Crush band;
     check(band.prepare(48000),"prepare band");
-    quantizer(band);clock(band);longClock(band);combined(band);dither(band);
+    // Nonfinite controls select full height. Finite controls clamp to [0, 1].
+    Crush reference;
+    check(reference.prepare(48000), "prepare control comparison");
+    constexpr auto inf = std::numeric_limits<float>::infinity();
+    constexpr float heights[]{-inf, -1.f, .5f, 2.f, inf, std::numeric_limits<float>::quiet_NaN()};
+    constexpr float expected[]{1.f, 0.f, .5f, 1.f, 1.f, 1.f};
+    for (std::size_t i = 0; i < std::size(heights); ++i) {
+        const float s = (i % 2 == 0) ? .77f : -.43f;
+        near(mono(band, s, heights[i], heights[i]), mono(reference, s, expected[i], expected[i]),
+             0., "out-of-range control keeps the reference history");
+    }
+    band.reset();
+    quantizer(band);movingResolution();clock(band);longClock(band);sustainedStereoClock();combined(band);dither(band);
+    fullRatePlateau(); flatOrCappedHold();
     check(!band.prepare(std::numeric_limits<double>::infinity()),"invalid sample rate");
     near(mono(band,.321f,.1f,.1f),.321f,0,"invalid-rate dry signal");
     std::puts("ADI-Shaper Crush resolution, antialiasing, hold clock, dither, and DC response passed.");

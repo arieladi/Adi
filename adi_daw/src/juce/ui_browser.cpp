@@ -138,14 +138,14 @@ BrowserPanel::BrowserPanel(AdiRootComponent &root) : root_(root) {
     list.setRowHeight(kRowHeight);
     list.setColour(juce::ListBox::backgroundColourId, juce::Colours::transparentBlack);
     list.setMultipleSelectionEnabled(true);
-    list.onLeft = [this] { grabKeyboardFocus(); };
+    list.onLeft = [this] { focusIfShowing(*this); };
     addAndMakeVisible(list);
 }
 void BrowserPanel::enterList() {
     if (firstItem() >= 0) {
         if (list.getSelectedRows().isEmpty())
             list.selectRow(firstItem());
-        list.grabKeyboardFocus();
+        focusIfShowing(list);
     }
 }
 int BrowserPanel::firstItem() const {

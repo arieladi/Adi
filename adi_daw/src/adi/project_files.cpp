@@ -303,9 +303,9 @@ StoreFileResult Store::collectAllAndSave() {
                 }
                 if(source.empty())throw std::runtime_error(error);
                 const auto target=audio/media::pathFromUtf8(collectionName(hash,source));
-                auto verify=[&](const fs::path& file){
+                auto verify=[&wantHash=hash](const fs::path& file){
                     const auto actual=media::blake3File(file);
-                    if(!actual || actual.hex!=hash)throw std::runtime_error("hash mismatch or unreadable media: "+media::pathUtf8(file));
+                    if(!actual || actual.hex!=wantHash)throw std::runtime_error("hash mismatch or unreadable media: "+media::pathUtf8(file));
                 };
                 if(fs::is_symlink(fs::symlink_status(target)))throw std::runtime_error("collected target must not be a symlink");
                 if(fs::exists(target))verify(target);

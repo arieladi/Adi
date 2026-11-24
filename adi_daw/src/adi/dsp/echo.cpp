@@ -118,7 +118,10 @@ double Echo::room(Lane &l, double input) noexcept {
     for (std::size_t j = 0; j < 4; ++j) {
         const double gain =
             std::pow(.001, static_cast<double>(l.room[j].size()) / (rate_ * p_[Decay]));
-        l.room[j][l.roomPos[j]] = static_cast<float>((y[j] - .5 * sum + input * .5) * gain);
+        // Snapped before the float store, as the main ring: the room's 4-line
+        // tank decays through float's subnormals otherwise (a found gap).
+        const double stored = (y[j] - .5 * sum + input * .5) * gain;
+        l.room[j][l.roomPos[j]] = static_cast<float>(std::abs(stored) < 1e-30 ? 0 : stored);
         l.roomPos[j] = (l.roomPos[j] + 1) % l.room[j].size();
     }
     return sum * .25;
@@ -162,7 +165,13 @@ void Echo::process(const float *il, const float *ir, float *ol, float *orr,
                 v = std::tanh(v);
         const double level = std::max(std::abs(dry[0]), std::abs(dry[1]));
         env_ += (level - env_) * (1 - std::exp(-1 / (rate_ * (level > env_ ? .01 : .1))));
+        if (env_ < 1e-30) {
+            env_ = 0;
+        }
         gate_ = level >= gateThreshold ? 1 : gate_ * gateRelease;
+        if (gate_ < 1e-30) {
+            gate_ = 0;
+        }
         const double duckTarget =
             level > duckThreshold ? duckThreshold / std::max(level, 1e-12) : 1;
         duck_ = duckTarget < duck_ ? duckTarget : 1 - (1 - duck_) * duckRelease;
@@ -190,7 +199,11 @@ void Echo::process(const float *il, const float *ir, float *ol, float *orr,
         }
         const double commonNoise =
             lanes_[0].noiseFrom + (lanes_[0].noiseTo - lanes_[0].noiseFrom) * wobble_;
-        std::array<double, 2> wet{}, roomFeedback{};
+        // `looped` is what goes back into the line: the wet before a Post
+        // reverb, which colours only the output (a found defect: Post fed its
+        // room back, and a default Echo with Reverb raised ran away near
+        // +23 dB). Only the Feedback location puts the room in the loop.
+        std::array<double, 2> wet{}, roomFeedback{}, looped{};
         for (std::size_t c = 0; c < 2; ++c) {
             auto &l = lanes_[c];
             double ph = phase_ + (c == 1 ? p_[Phase] / 360 : 0);
@@ -239,9 +252,15 @@ void Echo::process(const float *il, const float *ir, float *ol, float *orr,
                     const double x = wet[c], y = b0 * x + z[0];
                     z[0] = b1 * x - a1 * y + z[1];
                     z[1] = b0 * x - a2 * y;
+                    for (auto &s : z) {
+                        if (std::abs(s) < 1e-30) {
+                            s = 0;
+                        }
+                    }
                     wet[c] = y;
                 }
             }
+            looped[c] = wet[c];
             if (reverb > 0) {
                 const double roomIn = location == 0 ? input[c] : wet[c], rev = room(l, roomIn);
                 if (location == 0)
@@ -261,8 +280,9 @@ void Echo::process(const float *il, const float *ir, float *ol, float *orr,
                                            (white + (l.brown * 10 - white) * p_[NoiseMorph] / 100)
                                      : 0;
             const auto source = mode == 1 ? 1 - c : c;
-            const double x = input[c] + fb * (wet[source] + roomFeedback[source]) + noise;
-            l.ring[write_] = static_cast<float>(std::clamp(x, -8., 8.));
+            const double x = input[c] + fb * (looped[source] + roomFeedback[source]) + noise;
+            const double y = std::clamp(x, -8., 8.);
+            l.ring[write_] = static_cast<float>(std::abs(y) < 1e-30 ? 0 : y);
         }
         if (mode == 2)
             wet = {wet[0] + wet[1], wet[0] - wet[1]};

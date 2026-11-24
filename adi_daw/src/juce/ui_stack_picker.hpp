@@ -26,7 +26,7 @@ class StackAddPicker final : public juce::Component, private juce::ListBoxModel,
         setSize(look::workspaceSegmentWidth * 3, look::fieldHeight * visibleRowCount);
     }
     ~StackAddPicker() override { search_.removeKeyListener(this); list_.setModel(nullptr); }
-    void focusSearch() { search_.grabKeyboardFocus(); }
+    void focusSearch() { focusIfShowing(search_); }
     using juce::Component::keyPressed;
     void resized() override {
         auto area = getLocalBounds().reduced(look::gap);

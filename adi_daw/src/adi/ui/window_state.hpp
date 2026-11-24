@@ -117,6 +117,9 @@ struct FloatingState {
     std::string monitor;
     int x=100,y=100,width=800,height=420;
     bool open=false;
+    // WIN-02: the monitor's area and DPI when it was saved (0 for a record from before them), so the
+    // rule can find the monitor again and restore in proportion.
+    int areaX=0,areaY=0,areaWidth=0,areaHeight=0,dpi=0;
 };
 class ViewStateStore {
   public:
@@ -173,21 +176,37 @@ class TransportMailbox {
     }
     // `record(insertTick)` starts a recording: the driver's `RenderBlock::startPlayback(tick, true)`.
     template <class Record> void drain(engine::Transport &transport, Record &&record) noexcept {
+        drain(transport, record, [](std::int64_t) noexcept { return true; });
+    }
+    template <class Record, class Ready>
+    void drain(engine::Transport &transport, Record &&record, Ready &&ready) noexcept {
         auto r = read_.load(std::memory_order_relaxed);
         const auto w = write_.load(std::memory_order_acquire);
+        bool pending = playPending_.load(std::memory_order_relaxed);
         while (r != w) {
             const auto item = queue_[r % queue_.size()];
             if (item.command == Command::Locate) {
                 transport.locate(item.sample);
                 locateRevision_.store(transport.revision(), std::memory_order_relaxed);
             } else if (item.command == Command::Record) {
+                pending = false;
                 record(item.sample);
-            } else {
-                transport.play(item.command == Command::Play);
+            } else if (item.command == Command::Stop) {
+                pending = false;
+                transport.play(false);
+            } else if (!transport.playing()) {
+                // A later Locate in this drain moves the pending Play target.
+                transport.play(false);
+                pending = true;
             }
             ++r;
         }
+        if (pending && ready(transport.position())) {
+            transport.play();
+            pending = false;
+        }
         publish(transport);
+        playPending_.store(pending, std::memory_order_release);
         read_.store(r, std::memory_order_release);
     }
     void publish(const engine::Transport &t) noexcept {
@@ -211,7 +230,7 @@ class TransportMailbox {
             if (c != Command::Locate)
                 return c == Command::Play || c == Command::Record;
         }
-        return playing();
+        return playPending_.load(std::memory_order_acquire) || playing();
     }
     void setSampleRate(double rate) noexcept { sampleRate_.store(rate, std::memory_order_relaxed); }
     double sampleRate() const noexcept { return sampleRate_.load(std::memory_order_relaxed); }
@@ -219,6 +238,7 @@ class TransportMailbox {
     std::int64_t position() const noexcept { return position_.load(std::memory_order_relaxed); }
 
   private:
+    std::atomic<bool> playPending_{false};
     struct Item {
         Command command = Command::Stop;
         std::int64_t sample = 0;

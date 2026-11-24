@@ -205,7 +205,7 @@ inline Json formatCase(const std::string& format) {
         }
         require(session.clips()!=nullptr,"persisted clip path absent");
         Json seeks=Json::array();std::int64_t stream=0;
-        for(const auto [position,count]:std::array<std::pair<std::int64_t,int>,3>{{{31,19},{1003,64},{4097,1}}}) {
+        for(const auto &[position,count]:std::array<std::pair<std::int64_t,int>,3>{{{31,19},{1003,64},{4097,1}}}) {
             session.transport().locate(position);session.transport().play();
             require(session.clips()->prime(std::chrono::seconds(10)),"owner clip priming failed");
             std::array<float,80> left,right;left.fill(-7);right.fill(-11);float* outputs[]{left.data()+4,right.data()+4};

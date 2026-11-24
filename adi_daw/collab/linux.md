@@ -153,7 +153,7 @@ base and the first-loop-entry correction. The second rebase interrupted one
 redundant build; interrupted runs are not counted as results.
 
 Evidence is retained locally at
-`/home/adi/Documents/Codex/2026-09-23/i-n/work/midi-clips`: `plants.json` and
+the seat's local work folder (`midi-clips`): `plants.json` and
 individual failing logs; `loop-entry-before.txt`; `merge-*-tests.txt` for the
 full Release runs and final MIDI sanitizer runs; `merge-*-affected-results.json`
 for the other five sanitizer suites; and `final-ctest-registration.json`.
@@ -282,7 +282,7 @@ Windows and win owns /WX. All 19 checks must be green at the final head SHA
 before merge. The linux claim is released in this final commit.
 
 Scratch evidence (plants, builds, sanitizer output and Gemini audit):
-`/home/adi/Documents/Codex/2026-09-23/i-n/work/clip-playback/`.
+the seat's local work folder (`clip-playback`).
 
 ---
 
@@ -422,7 +422,7 @@ this exercises real case probing and coarse timestamps, beyond mock providers.
 MSVC /WX is not available locally; CI compiles/tests Windows and win owns /WX.
 
 Scripts, complete CSVs, failed setup evidence, plant and audit logs are under
-`/home/adi/Documents/Codex/2026-09-23/i-n/work/library-index/`.
+the seat's local work folder (`library-index`).
 
 ---
 
@@ -477,7 +477,7 @@ Ran the **entire 63-check suite** with TMPDIR pointing at each mount: **vfat
 ZIP destination all lived on that filesystem. The same run exercises real
 native publication and the injected fallback. mkfs.fat 4.2; exfatprogs 1.3.2.
 Both unmounted successfully. Logs, image setup script and plant outputs:
-`/home/adi/Documents/Codex/2026-09-23/i-n/work/publish-files/`.
+the seat's local work folder (`publish-files`).
 
 Clang ASan+UBSan and GCC TSan each pass all 63 collection checks with
 `halt_on_error=1`, including the CLI subprocesses. GCC and Clang full tree: 3737 checks
@@ -558,7 +558,7 @@ Gemini's read-only audit independently identified this already-tested defect.
 Its assertion that the existing test retained only one row was wrong: that very
 test failed first, and explicitly checks two rows. No Gemini repository writes,
 commits or credentials. Reports and all plant logs are kept under
-`/home/adi/Documents/Codex/2026-09-23/i-n/work/collect-export/`.
+the seat's local work folder (`collect-export`).
 
 ### Validation and handoff
 
@@ -687,7 +687,7 @@ all three sample entries. These are local external checks, not CI dependencies.
 PR #88 requires all **19 CI checks green** before self-merge. The claims row is
 removed in the closing commit. No tuning or next feature work follows this PR.
 Local evidence (audit, before/after findings, plants, external archive, compiler
-and test logs): `/home/adi/Documents/Codex/2026-09-23/i-n/work/blake3-zip/`.
+and test logs): the seat's local work folder (`blake3-zip`).
 
 ---
 

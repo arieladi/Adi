@@ -49,6 +49,9 @@ public:
     [[nodiscard]] std::int64_t contiguousFrames(std::int64_t offset, std::int64_t count) const noexcept;
     void advance(std::int32_t frames) noexcept;
     [[nodiscard]] std::uint64_t revision() const noexcept { return revision_; }
+    /// Timeline frames advanced since this run started (play, locate, loop or
+    /// the end of a count-in); saturates rather than wrapping.
+    [[nodiscard]] std::int64_t streamedFrames() const noexcept { return streamed_; }
 private:
     [[nodiscard]] std::int64_t sampleBehind(std::int64_t behind) const noexcept;
     std::int64_t position_ = 0, begin_ = 0, end_ = 0;

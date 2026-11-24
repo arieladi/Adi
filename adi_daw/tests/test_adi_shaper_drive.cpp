@@ -191,6 +191,31 @@ void trimsAndReset() {
         check(l==0 && r==0,"reset removes oversampling memory and DC history");
     }
 }
+
+void movingStereo() {
+    constexpr std::array modes{Mode::Saturate, Mode::HardClip, Mode::Rectify};
+    for (const double rate : {44100., 48000., 96000.}) {
+        Drive stereo, leftOnly, rightOnly;
+        for (auto* drive : {&stereo, &leftOnly, &rightOnly}) drive->prepare(rate);
+        bool independent = true;
+        for (int n = 0; n < 6144; ++n) {
+            if (n % 2048 == 0) {
+                for (auto* drive : {&stereo, &leftOnly, &rightOnly})
+                    drive->setMode(modes[static_cast<std::size_t>(n / 2048)]);
+            }
+            // The channels have different periods and reach opposite rails.
+            float l = static_cast<float>(n % 37 - 18) / 21.f;
+            float r = static_cast<float>(14 - n % 31) / 29.f;
+            float expectedL = l, expectedR = r, quietL = 0.f, quietR = 0.f;
+            const auto amount = static_cast<float>(n % 513) / 512.f;
+            stereo.process(l, r, amount);
+            leftOnly.process(expectedL, quietR, amount);
+            rightOnly.process(quietL, expectedR, amount);
+            independent &= l == expectedL && r == expectedR && quietL == 0.f && quietR == 0.f;
+        }
+        check(independent, "moving Drive keeps both stereo FIR histories independent at each rate");
+    }
+}
 } // namespace
 
 int main() {
@@ -199,5 +224,6 @@ int main() {
     aliases();
     nearZeroContinuity();
     trimsAndReset();
+    movingStereo();
     return failures==0 ? 0 : 1;
 }

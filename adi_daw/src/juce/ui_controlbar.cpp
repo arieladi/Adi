@@ -223,7 +223,7 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
     tempo.onClick = [this] { beginTempoEdit(); };
     // On the press, so each tap is timed when it lands.
     tap.setTriggeredOnMouseDown(true);
-    tap.onClick = [this] { root_.tapTempo(static_cast<std::int64_t>(juce::Time::getMillisecondCounter())); };
+    tap.onClick = [this] { root_.tapTempo(root_.input.ms()); };
     signature.onClick = [this] { beginSignatureEdit(); };
     // The metronome and the Arrangement Loop (manual 19.4.1, 6.6; #383, N19): outside undo, saved
     // with the project, lit from the snapshot.
@@ -407,7 +407,7 @@ void TransportBar::paint(juce::Graphics &g) {
     g.setColour(look::field);
     g.fillRoundedRectangle(group.expanded(look::hairline), look::radiusGroup);
 }
-void TransportBar::focus() { lastFocused_->grabKeyboardFocus(); }
+void TransportBar::focus() { focusIfShowing(*lastFocused_); }
 void TransportBar::beginFieldEdit(BarItem &item, const juce::String &text,
                                   std::function<bool(const std::string &)> commit) {
     editing_ = &item;
@@ -418,7 +418,7 @@ void TransportBar::beginFieldEdit(BarItem &item, const juce::String &text,
     fieldEditor.setVisible(true);
     fieldEditor.selectAll();
     if (fieldEditor.isShowing())
-        fieldEditor.grabKeyboardFocus();
+        focusIfShowing(fieldEditor);
 }
 void TransportBar::beginTempoEdit() {
     beginFieldEdit(tempo, juce::String(root_.bpm(), 2), [this](const std::string &t) { return root_.setTempoAtPlay(t); });
