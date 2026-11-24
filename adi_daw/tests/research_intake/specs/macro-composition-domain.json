@@ -1,0 +1,81 @@
+{
+  "schema": "adi.research.diagnostic-spec/1",
+  "id": "M11-macro-composition-domain",
+  "title": "Mapping stages and discrete targets",
+  "status": "SPECIFICATION ONLY",
+  "reference_result": "NOT RUN",
+  "adi_result": "NOT RUN",
+  "scope": "Original diagnostic design. No executable patch, product prototype or DAW automation.",
+  "fixtures": {
+    "sources": [
+      {
+        "id": "M1",
+        "values": [
+          0,
+          0.24,
+          0.25,
+          0.49,
+          0.5,
+          0.74,
+          0.75,
+          1
+        ]
+      },
+      {
+        "id": "M2",
+        "values": [
+          0,
+          0.5,
+          1
+        ]
+      }
+    ],
+    "targets": [
+      {
+        "id": "continuous",
+        "domain": [
+          20,
+          20000
+        ],
+        "display_curve": "log"
+      },
+      {
+        "id": "discrete",
+        "states": [
+          0,
+          1,
+          2,
+          3,
+          4
+        ]
+      }
+    ],
+    "variants": [
+      "normal output range",
+      "inverted output range",
+      "restricted source interval",
+      "two sources same target",
+      "automation plus manual baseline",
+      "disable one mapping"
+    ]
+  },
+  "procedure": [
+    "Measure each source alone, both together and both directions around step boundaries.",
+    "Record displayed, stored and audible/diagnostic target values separately; never derive a composition equation from the knob graphic alone.",
+    "Rename/reorder source controls, replace a target declaration, Undo/Redo and reopen."
+  ],
+  "acceptance_questions": [
+    "Reason many-source equation and out-of-interval behavior remain hypotheses until observed.",
+    "ADI approved composition/range decisions remain normative even when the reference differs.",
+    "Stable IDs survive label/layout changes; target quantization occurs at a specified stage."
+  ],
+  "evidence": [
+    "build/commit and dependency identities",
+    "initial settings and exact actions",
+    "raw captures/logs and hashes",
+    "one-step undo and save/reopen result where applicable",
+    "restored settings and stopped transport"
+  ],
+  "authority": "Current ADI decisions govern; this is test data, not an implementation.",
+  "provenance": "The director's research."
+}

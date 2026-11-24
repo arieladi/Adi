@@ -45,6 +45,35 @@ std::vector<AutomationPoint> points(Store& s) {
 Payload point(std::uint64_t id, std::int64_t time, double value, int curve = 1, double tension = 0) {
     return {{"id",id},{"time",time},{"value",value},{"curve",curve},{"tension",tension}};
 }
+void laneBounds() {
+    test::TempDirectory temp("automation", "lane-bounds");
+    auto s = project(temp.path()/"bounds.adi");
+    auto& db = s->db();
+    OpJournal journal(*s);
+    History history(*s);
+    const auto legacy = automation::writePoints(4,2,nullptr,Payload::array({point(7,0,2.0)}));
+    check(journal.commit(legacy).ok, "an unbounded lane admits a finite real value");
+    db.exec("UPDATE automation_lanes SET min_value=0,max_value=1 WHERE id=2");
+    const auto before = digestProject(*s).text;
+    const auto count = journal.count();
+    const OpRequest invalid[] = {
+        automation::writePoints(4,2,nullptr,Payload::array({point(9,4,0.5),point(10,6,1.1)})),
+        automation::movePoints(4,2,nullptr,Payload::array({point(7,4,-0.1)}))
+    };
+    for (const auto& request : invalid) {
+        const auto result = journal.commit(request);
+        check(!result.ok && result.error.find("outside the lane range") != std::string::npos &&
+                  digestProject(*s).text == before && journal.count() == count,
+              "one out-of-range value refuses the entire automation edit");
+    }
+    check(history.undo().ok && bytes(*s).empty() && history.redo().ok &&
+              digestProject(*s).text == before, "old out-of-range automation still replays exactly");
+    check(journal.commit(automation::movePoints(4,2,nullptr,Payload::array({point(7,4,0.0)}))).ok &&
+              journal.commit(automation::writePoints(4,2,nullptr,Payload::array({point(10,6,1.0)}))).ok,
+          "both included boundary values are valid for new edits");
+    check(history.undo().ok && history.undo().ok && digestProject(*s).text == before,
+          "correcting legacy automation can Undo back to its original bytes");
+}
 void run() {
     test::TempDirectory temp("automation", "edits");
     auto s = project(temp.path()/"a.adi");
@@ -137,6 +166,6 @@ void run() {
 }
 } // namespace
 int main() {
-    try { run(); } catch(const std::exception& e) { ++failures; std::printf("EXCEPTION: %s\n",e.what()); }
+    try { run(); laneBounds(); } catch(const std::exception& e) { ++failures; std::printf("EXCEPTION: %s\n",e.what()); }
     std::printf("%d checks, %d failures\n",checks,failures); return failures ? 1 : 0;
 }

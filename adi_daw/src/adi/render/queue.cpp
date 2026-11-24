@@ -451,8 +451,19 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
         StoreError error = StoreError::Ok;
         auto store = Store::open(job.project, error, true);
         if (!store || error != StoreError::Ok) throw std::runtime_error(std::string("open export project: ") + toString(error));
-        engine::Session session;
-        session.graph().setFadeFrames(0);
+        const auto onHost = [&](std::function<void()> action) {
+            if (control.onHost) control.onHost(std::move(action));
+            else action();
+        };
+        const auto destroy = [&](engine::Session* value) {
+            onHost([value] { delete value; });
+        };
+        std::unique_ptr<engine::Session, decltype(destroy)> owned(nullptr, destroy);
+        onHost([&] {
+            owned.reset(new engine::Session);
+            owned->graph().setFadeFrames(0);
+        });
+        auto& session = *owned;
         NameContext names;
         names.counter = counter;
         {
@@ -471,7 +482,10 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
             auto renderSpec=job.session;
             renderSpec.performanceState=false;
             renderSpec.exporting=true;
-            if (!session.load(*store, std::move(loader), renderSpec)) throw std::runtime_error(session.error());
+            onHost([&] {
+                if (!session.load(*store, std::move(loader), renderSpec))
+                    throw std::runtime_error(session.error());
+            });
             if (session.stats().placeholders || session.stats().skipped || !session.problems().empty()) {
                 std::string why = "export requires a fully resolved project";
                 for (const auto& problem : session.problems()) why += "; " + problem;
@@ -564,10 +578,12 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
         const auto started = std::chrono::steady_clock::now();
         auto service = [&] {
             cancellation(control);
-            if (control.serviceHost) control.serviceHost();
-            cancellation(control);
             const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
-            session.tick(elapsed);
+            onHost([&] {
+                if (control.serviceHost) control.serviceHost();
+                cancellation(control);
+                session.tick(elapsed);
+            });
             // A shorter branch can change compensation without changing the
             // master's total latency. Any latency/shape report invalidates the run.
             if (coalescer.stats().reports != reports || session.graph().currentGraph() != graph ||
@@ -610,7 +626,9 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
         if (result.framesWritten != total) throw std::runtime_error("export produced an incomplete range");
         service(); // include reports raised by the final process call
         if(normalized)result.normalization=normalized->finish(staged,job.encoding.format,job.encoding.dither,job.encoding.ditherSeed^counter,[&] {
-            cancellation(control);if(control.serviceHost)control.serviceHost();cancellation(control);
+            cancellation(control);
+            if (control.serviceHost) onHost(control.serviceHost);
+            cancellation(control);
         });
         else writer->close();
         cancellation(control);
