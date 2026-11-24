@@ -18,4 +18,9 @@ namespace adi::device {
 [[nodiscard]] std::unique_ptr<DeviceInstance> makeMixFunction(
     const engine::DeviceRequest&, std::string& error,
     std::unique_ptr<mix::LProcessingBackend>);
+class ReactivationGate;
+namespace detail {
+// Lets host tests keep a simulated audio call admitted during a rebuild.
+ReactivationGate* mixLimiterGateForTesting(DeviceInstance&) noexcept;
+}
 } // namespace adi::device
