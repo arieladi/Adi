@@ -78,7 +78,10 @@ Undo retains the owned asset; Redo restores the playing clips without the
 private preparation directory. Repeat commit cannot remove a successful asset.
 
 The recording command tests check stage placement and cleanup independently of
-volume layout. Their optional Windows `--cross-volume-work-folder PATH` run
+volume layout. A default test forces the cross-device refusal through the
+edit's `publicationHooks`: the take fails with its reason, no destination file
+or project row appears, the stage and the private take stay for a retry, and the
+same preparation then publishes. Their optional Windows `--cross-volume-work-folder PATH` run
 requires that existing capture folder and the test's temporary project directory
 to have different native volume identities. It first demonstrates that a direct
 cross-volume `AtomicOnly` publication refuses, then checks the real capture,
