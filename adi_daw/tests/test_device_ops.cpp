@@ -23,9 +23,11 @@
 
 #include "temp_directory.hpp"
 
+#include "adi/digest.hpp"
 #include "adi/history.hpp"
 #include "adi/ops.hpp"
 #include "adi/store.hpp"
+#include "adi/track_image.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
 
@@ -373,6 +375,50 @@ void testRemoveRestoresEverything() {
           "and the preset name");
 }
 
+void testRemoveNestedRack() {
+    section("rack removal restores nested chains and both directions of macro mappings");
+    Scratch sc("rack-remove");
+    auto s = project(sc / "p.adi");
+    if (!s || !seedChainAndDevice(*s)) {
+        check(false, "seed rack project");
+        return;
+    }
+    auto& db = s->db();
+    db.exec("UPDATE devices SET is_rack=1,rack_kind='effect' WHERE id=9;"
+            "INSERT INTO device_chains(id,parent_device_id,ord,name,key_zone) "
+            "VALUES(6,9,0,'Outer chain',X'000107ff');"
+            "INSERT INTO devices(id,chain_id,ord,name,is_rack,rack_kind) "
+            "VALUES(10,6,0,'Nested rack',1,'effect');"
+            "INSERT INTO device_chains(id,parent_device_id,ord,name) VALUES(7,10,1,'Nested chain');"
+            "INSERT INTO devices(id,chain_id,ord,name) VALUES(11,7,0,'Leaf'),(20,5,3,'Sibling');"
+            "ALTER TABLE macros ADD COLUMN opaque BLOB NOT NULL DEFAULT X'00';"
+            "INSERT INTO macros(id,device_id,ord,name,value,opaque) "
+            "VALUES(50,9,0,'Outer',0.2,X'00ff'),(51,10,0,'Inner',0.7,X'0180'),"
+            "(52,20,0,'Sibling macro',0.1,X'90');"
+            "INSERT INTO macro_mappings(id,macro_id,target_device_id,target_param_ref,range_min) "
+            "VALUES(60,50,11,'cutoff',0.2),(61,51,20,'wet',0.1),(62,52,11,'gain',0.4);"
+            "INSERT INTO plugin_params(device_id,param_id,normalized_value) VALUES(11,'cutoff',0.8);"
+            "INSERT INTO device_panels(device_id) VALUES(11);"
+            "INSERT INTO device_panel_params(device_id,ord,param_id) VALUES(11,0,'cutoff');"
+            "INSERT INTO device_expression_routes(device_id,route) VALUES(11,'mpe_midi')");
+    check(run(*s, "device.loadState", {{"dev", 11}, {"role", "component"}, {"hash", kHash}}),
+          "seed nested opaque state");
+    const auto before = digestProject(*s).text;
+    check(run(*s, "device.remove", {{"id", 9}}) &&
+              db.execAndGet("SELECT count(*) FROM devices").getInt() == 1 &&
+              db.execAndGet("SELECT count(*) FROM device_chains").getInt() == 1 &&
+              db.execAndGet("SELECT count(*) FROM macros").getInt() == 1 &&
+              db.execAndGet("SELECT count(*) FROM macro_mappings").getInt() == 0,
+          "remove cascades nested material while the sibling remains");
+    const auto after = digestProject(*s).text;
+    History h(*s);
+    check(h.undo().ok && digestProject(*s).text == before,
+          "one Undo restores the full nested structure, macro mappings, typed bytes and state");
+    check(h.redo().ok && digestProject(*s).text == after &&
+              h.undo().ok && digestProject(*s).text == before,
+          "Redo and second Undo produce the same exact material");
+}
+
 void testMissingPluginSurvivesTheRoundTrip() {
     section("ADR-0011: a missing plugin is inserted, not skipped, and stays missing");
     Scratch sc("missing");
@@ -552,6 +598,50 @@ void testThePanel() {
     check(readPanel(*s, 11) == std::optional<std::vector<std::string>>({"x", "y"}), "arrives configured");
 }
 
+void testInsertRejectsVca() {
+    section("device.insert rejects a VCA but preserves legacy history");
+    Scratch temp("vca-device");
+    auto s = project(temp / "vca.adi");
+    if (!s) {
+        check(false, "create VCA fixture");
+        return;
+    }
+    auto& db = s->db();
+    db.exec("INSERT INTO tracks(id,kind) VALUES (1,'audio'),(2,'vca');"
+            "INSERT INTO device_chains(id,track_id) VALUES (5,1),(6,2);"
+            "INSERT INTO devices(id,chain_id,is_rack) VALUES (9,6,1);"
+            "INSERT INTO device_chains(id,parent_device_id) VALUES (7,9);"
+            "INSERT INTO devices(id,chain_id,name) VALUES (11,7,'Saved device');"
+            "INSERT INTO plugin_params(device_id,param_id,normalized_value) VALUES (11,'mix',0.42);");
+    const auto contents = detail::captureDevice(db, 11);
+    check(run(*s, "device.remove", {{"id",11}}), "remove a preexisting VCA device");
+    History history(*s);
+    check(history.undo().ok && detail::captureDevice(db, 11) == contents,
+          "Undo restores the complete older VCA device and its parameter");
+    check(history.redo().ok && countRows(*s, "SELECT count(*) FROM devices WHERE id=?", 11) == 0,
+          "Redo can remove the older device again");
+
+    const auto head = OpJournal(*s).headSeq();
+    std::string error;
+    check(!run(*s, "device.insert", {{"id",12},{"chain",6},{"ord",0}}, &error) &&
+              error.find("VCA") != std::string::npos,
+          "raw insertion on a top-level VCA chain refuses");
+    error.clear();
+    check(!run(*s, "device.insert", {{"id",13},{"chain",7},{"ord",0}}, &error) &&
+              error.find("VCA") != std::string::npos,
+          "raw insertion on a nested VCA rack chain refuses");
+    error.clear();
+    check(!run(*s, "device.insert", {{"id",11},{"chain",5},{"ord",0},{"contents",contents}}, &error) &&
+              error.find("VCA") != std::string::npos,
+          "a fresh captured insert cannot hide its actual VCA chain");
+    check(OpJournal(*s).headSeq() == head &&
+              db.execAndGet("SELECT count(*) FROM devices").getInt() == 1 &&
+              db.execAndGet("SELECT count(*) FROM plugin_params").getInt() == 0,
+          "refused inserts leave neither rows nor audit entries");
+    check(run(*s, "device.insert", {{"id",14},{"chain",5},{"ord",0}}),
+          "the same fresh op still inserts on an audio track");
+}
+
 // --- main ---------------------------------------------------------------------
 
 int main() {
@@ -569,11 +659,13 @@ int main() {
     testRealValueStaysNull();
     testOpaqueState();
     testRemoveRestoresEverything();
+    testRemoveNestedRack();
     testMissingPluginSurvivesTheRoundTrip();
     testMoveAndScalars();
     testChainPair();
     testTheExpressionRoute();
     testThePanel();
+    testInsertRejectsVca();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

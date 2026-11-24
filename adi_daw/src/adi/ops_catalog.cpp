@@ -19,6 +19,7 @@
 #include "adi/clip_image.hpp"
 #include "adi/row_capture.hpp"
 #include "adi/clip_edit_ops.hpp"
+#include "adi/edit_time.hpp"
 #include "adi/blob.hpp"
 #include "adi/automation_edits.hpp"
 #include "adi/automation_lanes.hpp"
@@ -419,6 +420,24 @@ bool trackRoleInverse(OpContext& c,const Payload& p,Payload& inverse,std::string
     }catch(const std::exception& exception){err=exception.what();return false;}
 }
 
+std::int64_t newTrackMonitorMode(const Payload& p) {
+    const auto& kind=p.at("kind").get_ref<const std::string&>();
+    return kind=="audio" || kind=="midi" || kind=="instrument"?2:0;
+}
+std::int64_t trackCreationMonitorMode(const OpContext& context,const Payload& p) {
+    if (!context.replay) return newTrackMonitorMode(p);
+    const auto& replay=*context.replay;
+    if (replay.opType!="track.create" || replay.asInverse || !replay.hasInverse) return 0;
+    std::string error;
+    const auto inverse=decodeFromLog(replay.inverse,error);
+    if (!inverse) throw std::runtime_error("cannot decode recorded track creation: "+error);
+    if (!inverse->contains("monitorMode")) return 0; // creation from before N67
+    if (detail::signedInteger(inverse->at("id"))!=detail::signedInteger(p.at("id")) ||
+        inverse->at("monitorMode")!=2 || newTrackMonitorMode(p)!=2)
+        throw std::runtime_error("invalid recorded monitor mode for new track");
+    return 2;
+}
+
 bool trackCreateApply(OpContext& c, const Payload& p, std::string& err) {
     try {
         if(p.contains("contents")) {
@@ -429,8 +448,8 @@ bool trackCreateApply(OpContext& c, const Payload& p, std::string& err) {
         // undo a create, redo it, and the object must return with the SAME id
         // or every later op referencing it points at nothing.
         SQLite::Statement st(c.db,
-            "INSERT INTO tracks(id, kind, name, parent_id, index_in_parent) "
-            "VALUES (?,?,?,?,?)");
+            "INSERT INTO tracks(id, kind, name, parent_id, index_in_parent, monitor_mode) "
+            "VALUES (?,?,?,?,?,?)");
         st.bind(1, p.at("id").get<std::int64_t>());
         st.bind(2, p.at("kind").get<std::string>());
         st.bind(3, p.value("name", std::string{}));
@@ -439,6 +458,7 @@ bool trackCreateApply(OpContext& c, const Payload& p, std::string& err) {
         else
             st.bind(4);
         st.bind(5, p.value("index", std::int64_t{0}));
+        st.bind(6, trackCreationMonitorMode(c,p));
         st.exec();
 
         // Every track needs a mixer strip; creating it here rather than in a
@@ -454,6 +474,10 @@ bool trackCreateInverse(OpContext&, const Payload& p, Payload& inv, std::string&
     if (!p.contains("id")) { err = "track.create payload has no id"; return false; }
     inv = Payload::object();
     inv["id"] = p.at("id");
+    if (!p.contains("contents")) {
+        const auto mode=newTrackMonitorMode(p);
+        if (mode!=0) inv["monitorMode"]=mode;
+    }
     return true;   // paired: track.delete
 }
 
@@ -592,53 +616,104 @@ bool audioDetachInverse(OpContext& c,const Payload& p,Payload& inv,std::string& 
     } catch(const std::exception& e){err=e.what();return false;}
 }
 
+Payload captureClipPlacement(SQLite::Database& db, std::int64_t id) {
+    SQLite::Statement st(db, "SELECT id,track_id,lane_id,time_base,pos_ticks,pos_ns,"
+                             "length_ticks,length_ns,fade_in_ticks,fade_out_ticks FROM clips WHERE id=?");
+    st.bind(1, id);
+    if (!st.executeStep()) throw std::runtime_error("no such clip");
+    return detail::captureQueryRow(st);
+}
+bool legacyClipPlacement(const OpContext& c) {
+    if (!c.replay) return false;
+    if (!c.replay->hasInverse || c.replay->asInverse) return true;
+    std::string error;
+    const auto inverse = decodeFromLog(c.replay->inverse, error);
+    if (!inverse) throw std::runtime_error("cannot decode clip placement inverse: " + error);
+    return !inverse->contains("_placement");
+}
+// A resize journalled before fades were clamped recorded a placement image
+// without fade columns, so its Undo could not restore them. Its Redo keeps the
+// row effects that build recorded, as the legacy placement guard above does.
+bool placementClampsFades(const OpContext& c) {
+    if (!c.replay) return true;
+    std::string error;
+    const auto inverse = decodeFromLog(c.replay->inverse, error);
+    if (!inverse) throw std::runtime_error("cannot decode clip placement inverse: " + error);
+    const auto placement = inverse->find("_placement");
+    return placement != inverse->end() && placement->is_object() && placement->contains("fade_in_ticks");
+}
+bool clipPlacementApply(OpContext& c, const Payload& p, std::string& err, bool move) {
+    try {
+        const auto id = detail::signedInteger(p.at("id"));
+        if (p.contains("_placement")) {
+            const auto& saved = p.at("_placement");
+            if (!c.replay || !c.replay->asInverse || saved.at("id") != id)
+                throw std::runtime_error("invalid captured clip placement");
+            detail::restoreRow(c.db, "clips", saved, "id");
+            return true;
+        }
+        const auto start = detail::signedInteger(p.at(move ? "to" : "pos"));
+        Payload values = {{"id", id}};
+        if (move) {
+            // Match the take-lane contract for both new and scalar replay operations.
+            SQLite::Statement laneOwner(c.db,
+                "SELECT 1 FROM clips c JOIN lanes l ON l.id=c.lane_id "
+                "WHERE c.id=? AND (l.track_id<>c.track_id OR l.track_id<>?)");
+            laneOwner.bind(1, id);
+            laneOwner.bind(2, detail::signedInteger(p.at("track")));
+            if (laneOwner.executeStep())
+                throw std::runtime_error("detach a take-lane clip before moving it to another track");
+        }
+        if (legacyClipPlacement(c)) {
+            // Old logs deliberately reproduce the row effects they recorded.
+            values["pos_ticks"] = start;
+            values[move ? "track_id" : "length_ticks"] = p.at(move ? "track" : "length");
+            detail::restoreRow(c.db, "clips", values, "id");
+            return true;
+        }
+        const auto before = captureClipPlacement(c.db, id);
+        const bool linear = before.at("time_base") == 1;
+        std::optional<edit::TimeMap> time;
+        if (linear) time.emplace(c.db);
+        const auto position = time ? time->nanos(start) : start;
+        const auto* lengthKey = linear ? "length_ns" : "length_ticks";
+        values[linear ? "pos_ns" : "pos_ticks"] = position;
+        if (move) {
+            const auto track = detail::signedInteger(p.at("track"));
+            values["track_id"] = track;
+            if (!before.at(lengthKey).is_null())
+                (void)edit::addTime(position, detail::signedInteger(before.at(lengthKey)));
+        } else {
+            const auto ticks = detail::signedInteger(p.at("length"));
+            if (ticks < 0) throw std::runtime_error("clip length must be nonnegative");
+            const auto end = edit::addTime(start, ticks);
+            values[lengthKey] = time ? time->nanos(end) - position : ticks;
+            if (placementClampsFades(c)) {
+                // Fades are stored in ticks. Fit both inside the new visible
+                // span, measured as the Warp freeze and end resize measure it.
+                const auto span = time ? time->ticks(time->nanos(end)) - time->ticks(position) : ticks;
+                if (span < 0) throw std::runtime_error("clip resize has an invalid musical span");
+                for (const char* fade : {"fade_in_ticks", "fade_out_ticks"}) {
+                    const auto value = detail::signedInteger(before.at(fade));
+                    if (value < 0) throw std::runtime_error("clip resize needs valid fades");
+                    values[fade] = std::min(value, span);
+                }
+            }
+        }
+        detail::restoreRow(c.db, "clips", values, "id");
+        return true;
+    } catch (const std::exception& e) { err = e.what(); return false; }
+}
 bool clipMoveApply(OpContext& c, const Payload& p, std::string& err) {
-    try {
-        SQLite::Statement laneOwner(c.db,"SELECT 1 FROM clips c JOIN lanes l ON l.id=c.lane_id WHERE c.id=? AND (l.track_id<>c.track_id OR l.track_id<>?)");
-        laneOwner.bind(1,detail::signedInteger(p.at("id")));laneOwner.bind(2,detail::signedInteger(p.at("track")));
-        if(laneOwner.executeStep())throw std::runtime_error("detach a take-lane clip before moving it to another track");
-        SQLite::Statement st(c.db,
-            "UPDATE clips SET pos_ticks = ?, track_id = ? WHERE id = ?");
-        st.bind(1, p.at("to").get<std::int64_t>());
-        st.bind(2, p.at("track").get<std::int64_t>());
-        st.bind(3, p.at("id").get<std::int64_t>());
-        if (st.exec() == 0) { err = "no such clip"; return false; }
-        return true;
-    } catch (const std::exception& e) { err = e.what(); return false; }
+    return clipPlacementApply(c, p, err, true);
 }
-bool clipMoveInverse(OpContext& c, const Payload& p, Payload& inv, std::string& err) {
-    try {
-        SQLite::Statement st(c.db, "SELECT pos_ticks, track_id FROM clips WHERE id = ?");
-        st.bind(1, p.at("id").get<std::int64_t>());
-        if (!st.executeStep()) { err = "no such clip"; return false; }
-        inv = Payload::object();
-        inv["id"] = p.at("id");
-        inv["to"] = st.getColumn(0).getInt64();
-        inv["track"] = st.getColumn(1).getInt64();
-        return true;
-    } catch (const std::exception& e) { err = e.what(); return false; }
-}
-
 bool clipResizeApply(OpContext& c, const Payload& p, std::string& err) {
-    try {
-        SQLite::Statement st(c.db,
-            "UPDATE clips SET pos_ticks = ?, length_ticks = ? WHERE id = ?");
-        st.bind(1, p.at("pos").get<std::int64_t>());
-        st.bind(2, p.at("length").get<std::int64_t>());
-        st.bind(3, p.at("id").get<std::int64_t>());
-        if (st.exec() == 0) { err = "no such clip"; return false; }
-        return true;
-    } catch (const std::exception& e) { err = e.what(); return false; }
+    return clipPlacementApply(c, p, err, false);
 }
-bool clipResizeInverse(OpContext& c, const Payload& p, Payload& inv, std::string& err) {
+bool clipPlacementInverse(OpContext& c, const Payload& p, Payload& inv, std::string& err) {
     try {
-        SQLite::Statement st(c.db, "SELECT pos_ticks, length_ticks FROM clips WHERE id = ?");
-        st.bind(1, p.at("id").get<std::int64_t>());
-        if (!st.executeStep()) { err = "no such clip"; return false; }
-        inv = Payload::object();
-        inv["id"] = p.at("id");
-        inv["pos"] = st.getColumn(0).getInt64();
-        inv["length"] = st.getColumn(1).getInt64();
+        const auto id = detail::signedInteger(p.at("id"));
+        inv = {{"id", id}, {"_placement", captureClipPlacement(c.db, id)}};
         return true;
     } catch (const std::exception& e) { err = e.what(); return false; }
 }
@@ -1765,13 +1840,26 @@ Payload capturePanel(OpContext& c, std::int64_t dev) {
 bool deviceInsertApply(OpContext& c, const Payload& p, std::string& err) {
     try {
         const auto id = deviceInteger(p,"id");
-        if(p.contains("contents")) {detail::restoreDevice(c.db,id,p.at("contents"));return true;}
+        if (p.contains("contents")) {
+            detail::restoreDevice(c.db, id, p.at("contents"));
+            if (!c.replay) {
+                // The captured device can carry a different chain from the outer request.
+                SQLite::Statement restored(c.db, "SELECT chain_id FROM devices WHERE id=?");
+                restored.bind(1, id);
+                if (!restored.executeStep()) throw std::runtime_error("restored device is missing");
+                detail::requireDeviceInsertTrack(c.db,
+                    detail::deviceChainOwner(c.db, restored.getColumn(0).getInt64()));
+            }
+            return true;
+        }
+        const auto chain = deviceInteger(p, "chain");
+        if (!c.replay) detail::requireDeviceInsertTrack(c.db, detail::deviceChainOwner(c.db, chain));
         SQLite::Statement st(c.db,
             "INSERT INTO devices(id, chain_id, ord, plugin_ref_id, name, enabled, "
             "is_rack, preset_name, latency_samples, always_process, missing, rack_kind, remote_host_id) "
             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)");
         st.bind(1, id);
-        st.bind(2, deviceInteger(p,"chain"));
+        st.bind(2, chain);
         st.bind(3, deviceInteger(p,"ord"));
         if (p.contains("ref") && !p.at("ref").is_null())
             st.bind(4, deviceInteger(p,"ref"));
@@ -2192,9 +2280,9 @@ const OpDescriptor kHandWritten[] = {
     {"clip.detachAudio", "Detach unedited audio", Scope::Edit, EngineImpact::GraphRebuild, kFId, false, false,
      audioDetachApply, audioDetachInverse, "clip.attachAudio"},
     {"clip.move", "Move a clip in time, and optionally to another track", Scope::Edit, EngineImpact::Snapshot,
-     kFClipMove, false, false, clipMoveApply, clipMoveInverse, ""},
+     kFClipMove, false, false, clipMoveApply, clipPlacementInverse, ""},
     {"clip.resize", "Change a clip's start and length", Scope::Edit, EngineImpact::Snapshot, kFClipResize,
-     false, false, clipResizeApply, clipResizeInverse, ""},
+     false, false, clipResizeApply, clipPlacementInverse, ""},
 
     {"note.insert", "Add a note to a clip", Scope::Edit, EngineImpact::Snapshot, kFNoteFull, false, false,
      notes::noteInsertApply, notes::noteInsertInverse, "note.delete"},
