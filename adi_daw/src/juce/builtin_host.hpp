@@ -9,4 +9,10 @@ namespace adi::device {
 /// Compose with any external-format loader. The returned value owns its
 /// fallback; headless sessions/renders can use this without JUCE.
 [[nodiscard]] engine::DeviceLoader withBuiltinDevices(engine::DeviceLoader fallback={});
+class ReactivationGate;
+namespace detail {
+// Lets host tests keep a simulated audio call admitted during a rebuild.
+// Null for anything but a canonical built-in (and in a build without them).
+ReactivationGate* builtinGateForTesting(DeviceInstance&) noexcept;
+}
 }

@@ -6,6 +6,8 @@
 #include "adi/pd_builtins/oneshot_sample.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/store.hpp"
+#define ADI_TEST_COUNT_REPLACED_DELETE
+#include "replace_operator_new.hpp"
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <atomic>
@@ -29,18 +31,14 @@ void check(bool ok, const char *name) {
     }
 }
 } // namespace
-void *operator new(std::size_t n) {
+void adi::test::countReplacedNew() noexcept {
     if (audit)
         ++allocations;
-    if (auto *p = std::malloc(n ? n : 1))
-        return p;
-    throw std::bad_alloc();
 }
-void *operator new[](std::size_t n) { return ::operator new(n); }
-void operator delete(void *p) noexcept { if (audit && p) ++deallocations; std::free(p); }
-void operator delete[](void *p) noexcept { ::operator delete(p); }
-void operator delete(void *p, std::size_t) noexcept { ::operator delete(p); }
-void operator delete[](void *p, std::size_t) noexcept { ::operator delete(p); }
+void adi::test::countReplacedDelete(void *p) noexcept {
+    if (audit && p)
+        ++deallocations;
+}
 using namespace adi;
 using device::OneShot;
 namespace {
