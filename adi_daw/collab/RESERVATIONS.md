@@ -42,7 +42,7 @@ Next free: **ADR-0254**.
 |---|---|---|---|---|
 | DF-C | Control | the control seat, through win | DF-C5 | DF-C6 |
 | DF-M | Mix View | the Mix View seat, through win | DF-M68 | DF-M69 |
-| DF-W | Window | the window lane and win | DF-W40 | DF-W41 |
+| DF-W | Window | the window lane and win | DF-W41 | DF-W42 |
 | DF-E | Engine | the engine seat, engine-win and the devices lane; the row's owner column says which | DF-E79 | DF-E80 |
 | DF-R | Repository | win | DF-R1 | DF-R2 |
 
