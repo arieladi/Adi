@@ -15,12 +15,12 @@ Tests
   - Redo with nothing to redo is dimmed with why;
   - Enter runs the row and the palette goes; reopened it is empty, and Esc dismisses;
   - V/utility inserts Utility on the selected track as one undo step (Pd on); with Pd off, V/ lists nothing.
-- Pd on, the gate's own build of `0606b477`: shell 2973 checks, seams 553, document 313, window_state 136, 0 failures.
+- Pd on, JUCE 9.0.5, the gate's own build of `051ec6c0` (main merged after #739; the palette after Help, id 29055): shell 3168 checks, seams 580, document 337, window_state 204, 0 failures; the full build is clean.
 - Pd off as `ui.yml` builds it (`-DADI_WITH_PD=OFF -DADI_WERROR=ON`): adi_app and the six UI suites, 6 of 6 passed.
-- The full build stops only at main's GCC 13 `tests/scanner_session_reopen.hpp` 208. The shadow and clang warning sweeps flag only main's lines (`tests/test_ui_shell.cpp` 6200 and 12104, `tests/test_ui_mix_functions.cpp` 675, blamed to main's commits); `src/juce/ui_palette.cpp` is clean.
+- The shadow and clang warning sweeps flag only main's lines (`tests/test_ui_shell.cpp` 6351, 13432, 17120); `src/juce/ui_palette.cpp` is clean.
 - **Review:** an adversarial review confirmed one defect, fixed in `e9af9bdb`: the shell's older check of AppCommands' tail still ended at Export Audio. It now ends with the Command Palette, the last id.
 - **Key-map goldens:** the branch carries `window/function-keys`' goldens with the palette's own line added (`29055 Command Palette...: Cmd+P`, after main's Options commands, 29050 to 29052, and Help's two, 29053 and 29054), and the gate checks them against the shell's output.
-- Stacked on `window/shortcut-ids` (WIN-04).
+- On main: WIN-04 (`window/shortcut-ids`) and WIN-09's Help landed in #739.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 
