@@ -101,6 +101,32 @@ Questions only the director can answer. Each says what the window lane recommend
 | N58 | The plug-in catalogue off the message thread: a scan service, Rescan, a default worker count, and each VST3's kind with its instrument flag (ADR-0248 d7: engine-win's third item, under DEV-25) | engine-win | the Browser's Plug-Ins with progress, and each VST3's icon | the window scans on its own worker with the one loader (DF-W34 a), the loader locked while it scans; no progress count; a VST3 shows the plug-in icon |
 | N59 | The project's key and scale, if the Control Bar's Key group (step 2) shows the project's and not the selected clip's: an op and a snapshot field (ADR-0248, `collab/RESERVATIONS.md`) | engine, when asked | the Control Bar's Key and Scale | step 2 waits on the Mix View's switch and theme rows; not asked yet |
 
+## 2026-11-24, window lane — the requested branches brought up to main; WIN-01's goldens again
+
+Main moved under the lane's branches (#718's Options commands, main's own `browserDevices` fix, #720 to #738). Every requested branch now merges into main cleanly; each takes main by a merge commit (no rebase), and the gates run again on the new heads before this log says more.
+
+| Branch | Item | New head | What the merge needed |
+|---|---|---|---|
+| `window/function-keys` | WIN-01 | `06cf2df9` | Win did not take `c4a62e25`: the goldens gain main's three Options commands (29050 Delay Compensation, 29051 Solo Switches, 29052 Cue Switches, no default keys), and `adi_daw/.gitattributes` makes `tests/fixtures/ui/*.txt` `eol=lf`, so a Windows checkout compares the same bytes |
+| `window/shortcut-ids` | WIN-04 | `81b7c79e` | three stable ids: `options.delay-compensation`, `options.solo-switches`, `options.cue-switches` (table 125); `adi_ui_shell` keeps `juce_gui_extra` beside main's scope skin; the goldens above |
+| `window/shortcut-sets` | WIN-05 | `df23a245` | `window/shortcut-ids`, no conflict |
+| `window/command-palette` | WIN-06 | `4205bad9` | the palette after Cue Switches: id 29053, stable table 126, the goldens' line `29053 Command Palette...: Cmd+P`, the commands' tail check; the body says so |
+| `window/help-menu` | WIN-09 | `b33f1fae` | Live 12 Manual and Keyboard Shortcuts after Cue Switches; the tail check |
+| `window/test-hygiene` | WTS-02 | `95afff5a` | main's new Control Bar `paint` kept, with the branch's `focusIfShowing`; see the note below |
+| `window/window-places` | WIN-02 | `24a2c2b3` | its scene beside main's `keymapGolden` |
+| `window/window-kinds` | WIN-03 | `552cf9a7` | main, then `window/window-places` |
+| `window/parity-bookkeeping` | WTS-09 | `024f1474` | none of its own; the validator is still clean on the merged tree (151 built rows, 145 untagged) |
+| `window/text-goldens` | WTS-03 | `9d6e3947` | its scene beside main's `keymapGolden` |
+| `window/launch-isolation` | WTS-01 | `6d9834e6` | its scene beside main's `keymapGolden` |
+
+- **The `browserDevices` port is gone from every branch:** main's own fix supersedes `88649293`. In each merge, `browserDevices` and `ui_browser.cpp` are main's; each branch's diff against main is its own diff against its base, without the port's 20 lines.
+- **A broken push, fixed:** test-hygiene's first merge (`c8a0b6f4`, pushed at about 00:45 UTC) did not compile. Git aligned the branch's `paintHygiene` and main's `keymapGolden` on their shared last lines. `95afff5a` replaces the file with the merge redone from `9e946f45`. The other four branches whose scenes met `keymapGolden` were checked the same way (diff against main equals their own) and are whole.
+- **Files of others touched:** `adi_daw/.gitattributes` (one rule, for the goldens); `src/juce/ui_shell.cmake` (merge only).
+- **Not merged:** `window/held-peak` (DF-W32) conflicts with main in `ui_mixer.*`; it waits for the Mixer sheet, as win's note says, and is merged when that comes.
+- **Gating again** (chain of eleven, in the table's order): each gets a line here with its counts.
+
+---
+
 ## 2026-11-24, window lane — queue item 10: WIN-09 (PR requested)
 
 **Item 10, WIN-09. PR requested.** Branch `window/help-menu`, on main, head `4af48b01`. Title: **adi_daw: window: Live's Help menu: the manual and a keyboard reference (WIN-09)**. Body: [`collab/window/pr-bodies/window-help-menu.md`](window/pr-bodies/window-help-menu.md).

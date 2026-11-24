@@ -19,7 +19,7 @@ Tests
 - Pd off as `ui.yml` builds it (`-DADI_WITH_PD=OFF -DADI_WERROR=ON`): adi_app and the six UI suites, 6 of 6 passed.
 - The full build stops only at main's GCC 13 `tests/scanner_session_reopen.hpp` 208. The shadow and clang warning sweeps flag only main's lines (`tests/test_ui_shell.cpp` 6200 and 12104, `tests/test_ui_mix_functions.cpp` 675, blamed to main's commits); `src/juce/ui_palette.cpp` is clean.
 - **Review:** an adversarial review confirmed one defect, fixed in `e9af9bdb`: the shell's older check of AppCommands' tail still ended at Export Audio. It now ends with the Command Palette, the last id.
-- **Key-map goldens:** the branch carries `window/function-keys`' goldens with the palette's own line added (`29050 Command Palette...: Cmd+P`, `0606b477`), and the gate checks them against the shell's output.
+- **Key-map goldens:** the branch carries `window/function-keys`' goldens with the palette's own line added (`29053 Command Palette...: Cmd+P`, after main's three Options commands, 29050 to 29052), and the gate checks them against the shell's output.
 - Stacked on `window/shortcut-ids` (WIN-04).
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
