@@ -1,0 +1,11 @@
+! Original ADI research diagnostic fixture; not measured in Live
+Original diagnostic intentionally reordered degrees
+5
+200.0
+500.0
+300.0
+800.0
+1200.0
+! @ABL REFERENCE_PITCH 3 0 220.0
+! @ABL NOTE_NAMES Zero UpA UpB Back UpC
+! @ABL NOTE_RANGE_BY_INDEX 3 0 3 4

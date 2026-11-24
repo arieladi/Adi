@@ -303,8 +303,10 @@ public:
         [[nodiscard]] double bpmAtTick(std::int64_t) const noexcept;
         /// Driver only, immediately before rendering this target. Posts bounded
         /// read-ahead and checks mandatory pages without waiting or doing I/O.
-        [[nodiscard]] bool sourcesReadyAt(std::int64_t sample, std::int32_t frames) const noexcept;
-        [[nodiscard]] bool sourcesReady(const Transport& requested, std::int32_t frames) const noexcept;
+        [[nodiscard]] bool sourcesReadyAt(std::int64_t sample, std::int32_t frames,
+                                          bool allowFailedSources = false) const noexcept;
+        [[nodiscard]] bool sourcesReady(const Transport& requested, std::int32_t frames,
+                                        bool allowFailedSources = false) const noexcept;
         /// Driver command between slices. Saved song start overrides the
         /// insert marker; only a record start uses the saved count-in. Prepare
         /// the recorder on its owner first. Explicit locate/play bypasses this
@@ -411,6 +413,8 @@ public:
     [[nodiscard]] const GroupSumming& summing() const noexcept { return summing_; }
     /// ADR-0163, ADR-0203 d3: the strips, sends and loops it plays. Message thread.
     [[nodiscard]] const MixerStrips& strips() const noexcept { return strips_; }
+    /// Ephemeral monitoring choice for the live stereo device pair.
+    void setMainAudition(MainAudition mode) noexcept { cueMonitor_.setMainAudition(mode); }
     /// Main's post-output live LUFS/true peak. Independent relaxed scalar reads;
     /// requestReset is an off-thread command consumed at the next callback.
     [[nodiscard]] const MainLoudness& mainLoudness() const noexcept { return mainLoudness_; }
@@ -582,13 +586,23 @@ private:
     double clickPhase_=0,clickEnvelope_=0,clickFrequency_=880;
     double countInBeatSamples_ = 24000;
     std::int64_t countInBeatsPerBar_ = 4;
+    // DF-E6 (a): a count-in delayed by the render latency still owes its last
+    // clicks (at most one beat) when the roll starts. They play on, on the
+    // count-in grid, until the compensated program is heard; the transport
+    // revision of that roll guards them against stop, locate and restart.
+    bool countInTail_ = false;
+    std::uint64_t countInTailRevision_ = 0;
+    std::int64_t countInTailTotal_ = 0, countInTailLag_ = 0;
+    [[nodiscard]] std::int64_t countInLag(std::int32_t latency) const noexcept;
+    [[nodiscard]] bool countInTailActive() const noexcept;
+    double countInClick(std::int64_t heard, double rate, double decay) noexcept;
     void renderCountIn(const TimingView &, const AudioIo &) noexcept;
     void renderMetronome(const TimingView&,const AudioIo&) noexcept;
     std::shared_ptr<const ClipProject> clipProject_;
     // Published graphs retain their own old source generations until reclamation.
-    std::unique_ptr<ClipPlayback> clips_;
+    std::shared_ptr<ClipPlayback> clips_;
     std::shared_ptr<MidiClipState> midiState_ = makeMidiClipState();
-    std::unique_ptr<MidiClips> midi_;
+    std::shared_ptr<MidiClips> midi_;
     // ADR-0163: one strip per track, for the whole session. Declared before
     // the graphs so it outlives every graph that names one of its strips.
     MixerStrips strips_;

@@ -84,8 +84,8 @@ these; it never contradicts them on purpose.
   short (JUCE). CI builds seven ABIs including macOS and Linux on every PR.
 - **The Mac and Linux versions are built immediately after the Windows version works, and alongside
   it wherever that is easier (ADR-0203 d23).** Not "after the suite ships".
-- Python 3 with `python-docx`, `pypdf`, `Pillow` for the document tools; a local LLM (qwen2.5-coder
-  on the drone) for mechanical edits only, never review.
+- Python 3 with `python-docx`, `pypdf`, `Pillow` for the document tools; a local LLM
+  for mechanical edits only, never review.
 
 ## 4. What is built (read off `main`, 2026-10-12)
 
@@ -293,7 +293,7 @@ registry default that says "once measured" changes on the reading, as an amendme
 
 ## 9. What the orchestrator must not do
 
-Commit to `main`; use the main checkout (`D:\Documents\GitHub\Adi`) for work; edit the README's
+Commit to `main`; use the main checkout for work; edit the README's
 count line, another agent's log or claim rows; take an ADR number outside the reservation table;
 change a licence or ask the director about one; publish anything under `AdiGuard/` or `adi-vst/`;
 undo a listed deviation because Live differs; hide an addition in Settings; call a step "done" that

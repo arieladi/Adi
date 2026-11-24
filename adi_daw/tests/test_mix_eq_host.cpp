@@ -1,16 +1,22 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+#include "juce/device_host.hpp"
 #include "juce/mix_eq_host.hpp"
+#include "juce/mix_function_host.hpp"
 #include "adi/mix/eq/Backend.hpp"
 #include "adi/mix/eq/Core.hpp"
+#include "adi/mix/eq/Preview.hpp"
 #include "adi/ops.hpp"
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <functional>
 #include <limits>
 #include <new>
+#include <thread>
 #include <type_traits>
 
 namespace {
@@ -52,7 +58,11 @@ struct Observe final:mix::EqProcessingBackend {
     void process(double* const* a,const double* const* k,int kc,int n,const q::Settings& s,
                  std::uint64_t b,int p) noexcept override {run(a,k,kc,n,s,b,p);}
     void pumpMainThread(const q::Settings& s) override {seen=s;}
-    int advertisedLatency() const noexcept override {return latency;}
+    std::function<void()> onLatencyRead;
+    int advertisedLatency() const noexcept override {
+        if (onLatencyRead) onLatencyRead();
+        return latency;
+    }
 };
 std::unique_ptr<device::DeviceInstance> make(std::unique_ptr<mix::EqProcessingBackend> backend,int channels=2,
                                             const char* format="internal",const char* uid="org.adidaw.mix.eq") {
@@ -60,8 +70,88 @@ std::unique_ptr<device::DeviceInstance> make(std::unique_ptr<mix::EqProcessingBa
     engine::DeviceRequest rq;rq.ref=&ref;rq.channels=channels;std::string error;
     return device::makeMixEqFunction(rq,error,std::move(backend));
 }
+void pairPublication() {
+    auto probe = std::make_unique<Observe>();
+    auto* observed = probe.get();
+    auto device = make(std::move(probe));
+    if (!device) { check(false, "paired publication fixture loads EQ"); return; }
+    using Pair = device::DeviceInstance::ParameterPair;
+    const Pair low{{{"13", .24}, {"14", .28}}};
+    const Pair high{{{"13", .76}, {"14", .72}}};
+    check(device->supportsParameterPair(low) && device->setParameterPair(low),
+          "native EQ accepts one frequency and gain in the same band");
+    const auto lowFrequency = static_cast<float>(device->getParam("13").real);
+    const auto lowGain = static_cast<float>(device->getParam("14").real);
+    auto invalid = high;
+    invalid[1].second = std::numeric_limits<double>::quiet_NaN();
+    const Pair differentBands{{{"13", .76}, {"39", .72}}};
+    check(!device->setParameterPair(invalid) && !device->supportsParameterPair(differentBands) &&
+          !device->setParameterPair(differentBands) && device->getParam("13").real == lowFrequency &&
+          device->getParam("14").real == lowGain,
+          "rejected pair writes neither coordinate");
+    if (!device->setParameterPair(high)) { check(false, "second native pair accepted"); return; }
+    const auto highFrequency = static_cast<float>(device->getParam("13").real);
+    const auto highGain = static_cast<float>(device->getParam("14").real);
+    device->prepare(48000, 64);
+    std::array<float, 64> left{}, right{};
+    std::array<float*, 2> output{left.data(), right.data()};
+    engine::NodeIo io;
+    io.channels = 2;
+    io.frames = 64;
+    io.out = output.data();
+    std::atomic<bool> refused{false};
+    std::jthread writer([&](std::stop_token stop) {
+        while (!stop.stop_requested()) {
+            if (!device->setParameterPair(low) || !device->setParameterPair(high))
+                refused.store(true, std::memory_order_relaxed);
+        }
+    });
+    bool completePairs = true;
+    for (std::uint64_t block = 1; block <= 4000; ++block) {
+        io.renderBlock = block;
+        inAudio = true;
+        device->process(io);
+        inAudio = false;
+        const auto& band = observed->seen.bands[0];
+        completePairs = completePairs && ((band.frequencyHz == lowFrequency && band.gainDb == lowGain) ||
+                                         (band.frequencyHz == highFrequency && band.gainDb == highGain));
+    }
+    writer.request_stop();
+    writer.join();
+    check(completePairs && !refused.load(std::memory_order_relaxed),
+          "callback refresh sees complete native EQ coordinate pairs during publication");
+}
 bool set(device::DeviceInstance& d,std::size_t id,double value) {
     return d.setParam(std::to_string(id),device::ParamValue::fromNormalized(value));
+}
+void publishedDesignPreview() {
+    auto device = make(std::make_unique<Observe>());
+    if (!device) { check(false, "preview fixture loads EQ"); return; }
+    set(*device, 9, 1);    // band 1 On
+    set(*device, 12, .25); // Left
+    set(*device, 14, .6);  // +6 dB
+    std::vector<panel::Record> records;
+    for (int i = 0; i < device->paramCount(); ++i) {
+        panel::Record r;
+        r.id = device->paramAt(i)->id;
+        r.playing = device->getParam(r.id).normalized;
+        records.push_back(r);
+    }
+    const auto settings = adi::device::publishedMixEqSettings(records);
+    check(settings && settings->bands[0].status == q::Status::On &&
+          settings->bands[0].route == q::Route::Left &&
+          std::abs(settings->bands[0].gainDb - 6.f) < .001f, "panel playing values become the same authored EQ settings");
+    if (settings) {
+        const auto graph = q::designPreview(*settings, 44100);
+        const auto peak = std::max_element(graph.decibels[1].begin(), graph.decibels[1].end());
+        const auto hz = 10.0 * std::pow(3000.0, static_cast<double>(peak - graph.decibels[1].begin()) / (graph.points - 1));
+        check(graph.visible[1] && graph.visible[2] && !graph.visible[0] && std::abs(*peak - 6.f) < .08f &&
+              hz > 970 && hz < 1030, "static preview draws the 1 kHz boost on its selected route");
+        check(std::all_of(graph.decibels[2].begin(), graph.decibels[2].end(), [](float db) { return db == 0; }),
+              "other route's designed response remains flat");
+    }
+    records.pop_back();
+    check(!adi::device::publishedMixEqSettings(records), "a withheld EQ publication never manufactures a curve");
 }
 void metadataAndMapping() {
     auto probe=std::make_unique<Observe>();auto* seen=probe.get();auto d=make(std::move(probe));
@@ -76,6 +166,10 @@ void metadataAndMapping() {
         if(p)check(d->getParam(p->id).real==p->defaultValue.real,"default getter matches descriptor bits");
     }
     check(identity&&metadata,"stable ordered IDs and explicit band/section identity");
+    // The neutral sleep proof compares these exactly; FMA contraction once made
+    // Gain Scale's default 100.000008 on arm64.
+    check(d->getParam("3").real==0&&d->getParam("4").real==100&&d->getParam("8").real==0,
+          "neutral global defaults survive the normalized round trip exactly");
     check(d->paramAt(10)->name=="Band 1 Shape"&&d->paramAt(724)->name=="Band 24 Fractional Slope"&&
           d->paramAt(729)->name=="Spectral Resolution","flat selectors retain unambiguous authored band names");
     check(!d->paramAt(-1)&&!d->paramAt(730)&&!d->getParam("730").hasReal,"analyzer control excluded");
@@ -223,6 +317,35 @@ void prepareLifecycle() {
     d->prepare(44100,128);check(seen->prepares==4,"maximum-frame change really reprepares provider");
     d->prepare(44100,128);check(seen->prepares==4,"new-format redundant prepare is idempotent too");
 }
+void duplicatePrepareKeepsProcessing() {
+    auto probe = std::make_unique<Observe>();
+    auto *seen = probe.get();
+    auto eq = make(std::move(probe), 1);
+    check(eq != nullptr, "native EQ no-op prepare fixture loads");
+    if (!eq) return;
+    eq->prepare(48000, 64);
+
+    const float input[]{.25f, .5f};
+    const float key[]{.125f, .25f};
+    float output[2]{};
+    const float *in[]{input}, *side[]{key};
+    float *out[]{output};
+    engine::NodeIo io;
+    io.channels = 1;
+    io.frames = 2;
+    io.in = in;
+    io.out = out;
+    io.sidechain = side;
+    // The backend's latency query occurs inside the redundant prepare. A
+    // process call here deterministically detects whether that scope gates it.
+    seen->onLatencyRead = [&] { eq->process(io); };
+    seen->latency = 17;
+    eq->prepare(48000, 64);
+    check(seen->prepares == 1 && seen->calls == 1 && output[0] == .375f &&
+              output[1] == .75f && eq->latencySamples() == 17,
+          "same-format EQ prepare leaves processing admitted and updates the read-only latency");
+}
+
 template<class Sample>void continuousPrepare() {
     auto uninterrupted=make(q::makeBackend()),duplicate=make(q::makeBackend());
     for(auto* d:{uninterrupted.get(),duplicate.get()}) {
@@ -257,6 +380,277 @@ template<class Sample>void continuousPrepare() {
     std::printf("Duplicate prepare %s: exact=%d peakDifference=%.17g\n",
                 std::is_same_v<Sample,float>?"f32":"f64",afterExact?1:0,peakDifference);
 }
+
+template <class Sample> void neutralSilenceCanBeOmitted() {
+    constexpr int frames = 64;
+    constexpr double rate = 48000.;
+    using Audio = std::array<std::array<Sample, frames>, 2>;
+    auto continuous = make(q::makeBackend());
+    auto parked = make(q::makeBackend());
+    check(continuous && parked, "neutral wake fixture constructs two real native EQs");
+    if (!continuous || !parked) return;
+    constexpr auto precision = std::is_same_v<Sample, float> ? engine::Precision::Float32 : engine::Precision::Float64;
+    for (auto *d : {continuous.get(), parked.get()}) {
+        d->willBeHanded(precision);
+        // The document can prepare before the audio device grants its format.
+        d->prepare(rate, 512);
+        d->prepare(rate, frames);
+    }
+
+    const auto signal = [](std::uint64_t block) {
+        Audio input{};
+        for (std::size_t channel = 0; channel < input.size(); ++channel) {
+            for (std::size_t i = 0; i < input[channel].size(); ++i) {
+                const auto steps = 1 + (i * 13 + channel * 7 + block) % 31;
+                const double sample = static_cast<double>(steps) / 64.;
+                input[channel][i] = std::nextafter(static_cast<Sample>(channel == 0 ? sample : -sample), Sample{});
+            }
+        }
+        return input;
+    };
+    const auto render = [](device::DeviceInstance &d, const Audio &input, std::uint64_t block, bool silent) {
+        Audio output{};
+        const std::array<const Sample *, 2> in{input[0].data(), input[1].data()};
+        std::array<Sample *, 2> out{output[0].data(), output[1].data()};
+        engine::NodeIo io;
+        io.channels = 2;
+        io.sampleRate = rate;
+        io.renderBlock = block;
+        io.inputSilent = silent;
+        io.frames = 17;
+        if constexpr (std::is_same_v<Sample, float>) {
+            io.in = in.data();
+            io.out = out.data();
+        } else {
+            io.in64 = in.data();
+            io.out64 = out.data();
+        }
+        inAudio = true;
+        d.process(io);
+        io.blockOffset = 17;
+        io.frames = frames - 17;
+        d.process(io);
+        inAudio = false;
+        return output;
+    };
+    const auto exact = [](const Audio &a, const Audio &b) {
+        using Bits = std::array<unsigned char, sizeof(Sample)>;
+        for (std::size_t channel = 0; channel < a.size(); ++channel)
+            for (std::size_t i = 0; i < a[channel].size(); ++i)
+                if (std::bit_cast<Bits>(a[channel][i]) != std::bit_cast<Bits>(b[channel][i])) return false;
+        return true;
+    };
+
+    bool cleanPrelude = true;
+    for (std::uint64_t block = 1; block <= 4; ++block) {
+        const auto input = signal(block);
+        cleanPrelude &= exact(render(*continuous, input, block, false), input);
+        cleanPrelude &= exact(render(*parked, input, block, false), input);
+    }
+    check(cleanPrelude, "neutral EQ preserves the nonzero split-block prelude exactly");
+    check(parked->tailSamples() == 0, "a proven neutral EQ can sleep after the current callback");
+    parked->setOffline(true);
+    check(parked->tailSamples() == engine::kInfiniteTail,
+          "offline intent keeps the native EQ running independently of export quality");
+    parked->setOffline(false);
+    const Audio silence{};
+    bool cleanSilence = true;
+    for (std::uint64_t block = 5; block <= 68; ++block)
+        cleanSilence &= exact(render(*continuous, silence, block, true), silence);
+    check(cleanSilence, "continuous neutral EQ emits exact silence during the omitted interval");
+
+    const auto resumed = signal(69);
+    const auto expectedFirst = render(*continuous, resumed, 69, false);
+    const auto actualFirst = render(*parked, resumed, 69, false);
+    check(exact(expectedFirst, resumed) && exact(actualFirst, expectedFirst) &&
+              continuous->latencySamples() == 0 && parked->latencySamples() == 0,
+          "omitting neutral silence preserves the entire first resumed block and zero latency");
+
+    parked->prepare(rate, 128);
+    continuous->prepare(rate, 128);
+    const auto formatChange = signal(70);
+    const auto changed = render(*parked, formatChange, 70, false);
+    check(exact(changed, render(*continuous, formatChange, 70, false)) && exact(changed, formatChange) &&
+              parked->tailSamples() == 0,
+          "neutral playback stays eligible after a stopped format change");
+    const bool edited = set(*continuous, 3, .7) && set(*parked, 3, .7); // Output Gain
+    check(edited, "both native EQs accept the same subsequent owner edit");
+    check(parked->tailSamples() == engine::kInfiniteTail,
+          "an owner edit wakes the parked EQ before its first processing callback");
+    if (!edited) return;
+    const auto next = signal(71);
+    const auto expectedEdited = render(*continuous, next, 71, false);
+    const auto actualEdited = render(*parked, next, 71, false);
+    check(!exact(expectedEdited, next) && exact(actualEdited, expectedEdited),
+          "the next owner gain edit changes audio and preserves the same initial transition after wake");
+    check(parked->tailSamples() == engine::kInfiniteTail,
+          "a processed gain transition is outside the proven zero-tail configuration");
+    check(set(*parked, 3, .5), "return the EQ's output control to unity");
+    parked->prepare(rate, 64);
+    static_cast<void>(render(*parked, silence, 72, true));
+    check(parked->tailSamples() == engine::kInfiniteTail,
+          "returning a used nonneutral EQ to default does not certify its old history");
+}
+
+void offlineInitialLatency(bool zeroPhase) {
+    rows::PluginRef reference;
+    reference.format = "internal";
+    reference.uid = "org.adidaw.mix.eq";
+    reference.name = "EQ";
+    engine::DeviceRequest request;
+    request.ref = &reference;
+    request.exporting = true;
+    std::string error;
+    auto instance = device::makeMixFunction(request, error);
+    check(instance != nullptr, "cold export graph loads the registered native EQ");
+    if (!instance) return;
+    instance->setOffline(true);
+    const bool configured = set(*instance, 8, .5) &&
+        (!zeroPhase || (set(*instance, 0, 1) && set(*instance, 9, 1) && set(*instance, 14, .6)));
+    check(configured, "offline native EQ starts with 5 ms Lookahead and the requested phase");
+    if (!configured) return;
+
+    auto* native = instance.get();
+    const auto initialEpoch = native->latencyEpoch();
+    device::DeviceHost host;
+    auto& node = host.add(std::move(instance), reference.name);
+    struct Tone final : engine::Node {
+        bool alwaysProcess() const noexcept override { return true; }
+        void process(const engine::NodeIo& io) noexcept override {
+            for (int ch = 0; ch < io.channels; ++ch)
+                std::fill_n(io.out[ch] + io.blockOffset, io.frames, .25f);
+        }
+    } tone;
+    engine::Graph graph;
+    const auto output = graph.addNode(node);
+    check(graph.connect(graph.addNode(tone), output), "export source connects to the native EQ");
+    graph.setOutput(output);
+    constexpr int frames = 256, lookaheadSamples = 240;
+    graph.prepare(48000, frames);
+    const auto declared = native->latencySamples();
+    check(graph.ok() && graph.latencySamples() == declared &&
+              (zeroPhase ? declared > lookaheadSamples : declared == lookaheadSamples),
+          "the first export graph already includes native EQ setup latency");
+    if (!graph.ok()) return;
+    host.attachGraph(graph);
+    host.coalescer().setQuietPeriodMs(0);
+    host.tick(0);
+    const auto preparedReports = host.coalescer().stats().reports;
+    const auto preparedEpoch = native->latencyEpoch();
+    check(preparedReports == 0 && preparedEpoch == initialEpoch,
+          "declaring the initial offline EQ delay does not invalidate the already prepared export graph");
+
+    std::array<float, frames> left{}, right{};
+    const std::array<float*, 2> planes{left.data(), right.data()};
+    engine::AudioIo io;
+    io.out = planes.data();
+    io.numOut = 2;
+    io.frames = frames;
+    io.exporting = true;
+    io.renderBlock = 1;
+    graph.process(io);
+    if (!zeroPhase)
+        check(left == right &&
+                  std::all_of(left.begin(), left.begin() + lookaheadSamples, [](float x) { return x == 0.f; }) &&
+                  std::all_of(left.begin() + lookaheadSamples, left.end(), [](float x) { return x == .25f; }),
+              "the first audio callback uses the already advertised 240-sample delay");
+
+    check(set(*native, 8, 0) && (!zeroPhase || set(*native, 0, 0)),
+          "a later owner edit requests removal of the prepared EQ delay");
+    ++io.renderBlock;
+    graph.process(io);
+    host.tick(1);
+    check(native->latencySamples() == 0 && native->latencyEpoch() == preparedEpoch + 1 &&
+              host.coalescer().stats().reports == preparedReports + 1,
+          "a real edit of the prepared EQ latency reports once to the export guard");
+    ++io.renderBlock;
+    graph.process(io);
+    host.tick(2);
+    check(graph.latencySamples() == 0 && host.coalescer().stats().reports == preparedReports + 1,
+          "the following callback adopts the changed graph PDC without another report");
+    graph.release();
+}
+
+void neutralEqGraphSuspension(bool recallContractedDefault) {
+    auto eq = make(q::makeBackend());
+    check(eq != nullptr, "graph suspension fixture creates the real native EQ");
+    if (!eq) return;
+
+    if (recallContractedDefault) {
+        // Reproduce the contracted ARM64 default even on a compiler that
+        // rounds the multiply and addition separately.
+        const float scale = std::fma(300.f, 2.f / 3.f, -100.f);
+        check(scale == std::nextafter(100.f, 200.f), "fused Gain Scale is one float step above 100%");
+        auto state = Payload::from_cbor(eq->saveState("state"));
+        state["params"]["4"] = scale;
+        const auto bytes = Payload::to_cbor(state);
+        const bool restored = eq->loadState("state", bytes);
+        check(restored && eq->getParam("4").real == scale && eq->saveState("state") == bytes,
+              "the contracted Gain Scale survives native state recall exactly");
+        if (!restored) return;
+    }
+
+    struct Programme final : engine::Node {
+        float level = .25f;
+        bool alwaysProcess() const noexcept override { return true; }
+        void process(const engine::NodeIo& io) noexcept override {
+            for (int ch = 0; ch < io.channels; ++ch)
+                std::fill_n(io.out[ch] + io.blockOffset, io.frames, level);
+        }
+    } programme;
+    constexpr int frames = 64;
+    device::DeviceNode node(*eq);
+    engine::Graph graph;
+    const auto source = graph.addNode(programme), effect = graph.addNode(node);
+    check(graph.connect(source, effect), "graph connects the source through the native EQ");
+    graph.setOutput(effect);
+    graph.prepare(48000., frames);
+    check(graph.ok(), "native EQ suspension graph prepares");
+    if (!graph.ok()) return;
+
+    using Block = std::array<std::array<float, frames>, 2>;
+    Block output{}, input{};
+    for (auto& channel : input) channel.fill(programme.level);
+    const std::array<float*, 2> planes{output[0].data(), output[1].data()};
+    engine::AudioIo io;
+    io.frames = frames;
+    io.numOut = 2;
+    io.out = planes.data();
+    const auto render = [&] {
+        inAudio = true;
+        graph.process(io);
+        inAudio = false;
+    };
+
+    render();
+    check(output == input, "the live graph preserves the neutral nonzero block exactly");
+    const auto beforeSleep = graph.stats().nodesSuspended;
+    programme.level = 0.f;
+    render();
+    const auto asleep = graph.stats().nodesSuspended;
+    check(asleep == beforeSleep + 1 && output == Block{}, "the neutral EQ suspends on silence and emits exact zeros");
+
+    eq->setOffline(true);
+    render();
+    check(eq->tailSamples() == engine::kInfiniteTail && graph.stats().nodesSuspended == asleep &&
+              output == Block{},
+          "offline intent disables suspension even with the same previously certified EQ and graph");
+    eq->setOffline(false);
+    render();
+    const auto resumedSleep = graph.stats().nodesSuspended;
+    check(resumedSleep == asleep + 1 && output == Block{},
+          "the unchanged neutral EQ can suspend again on returning to realtime");
+
+    check(set(*eq, 3, .7), "an owner Output Gain edit is accepted while the EQ is asleep");
+    render();
+    check(graph.stats().nodesSuspended == resumedSleep && output == Block{},
+          "the gain edit wakes the EQ during silence before any new programme");
+    programme.level = .25f;
+    render();
+    check(graph.stats().nodesSuspended == resumedSleep &&
+              output[0].front() > 0.f && output[0].front() != input[0].front(),
+          "gain is applied from the first sample of the next nonzero block");
+}
 }
 int main() {
     check(!make({}),"factory refuses absent DSP backend");
@@ -264,8 +658,13 @@ int main() {
     check(!make(std::make_unique<Observe>(),2,"vst3"),"ordinary plugin never relabelled native EQ");
     auto narrow=std::make_unique<Observe>();narrow->doubles=false;auto d=make(std::move(narrow));
     check(d&&!d->processesDouble(),"narrow-only provider does not claim native double");
-    metadataAndMapping();strictState();offsetsAndEvents<float>();offsetsAndEvents<double>();
-    prepareLifecycle();continuousPrepare<float>();continuousPrepare<double>();
+    publishedDesignPreview();metadataAndMapping();strictState();pairPublication();offsetsAndEvents<float>();offsetsAndEvents<double>();
+    prepareLifecycle();duplicatePrepareKeepsProcessing();continuousPrepare<float>();continuousPrepare<double>();
+    neutralSilenceCanBeOmitted<float>();neutralSilenceCanBeOmitted<double>();
+    neutralEqGraphSuspension(false);
+    neutralEqGraphSuspension(true);
+    offlineInitialLatency(false);
+    offlineInitialLatency(true);
     for(const auto rate:{44100.,48000.,96000.})for(const int channels:{1,2}){exactCore<float>(channels,rate);exactCore<double>(channels,rate);}
     check(allocations==0&&deallocations==0,"native controller and direct core allocate/free nothing during callbacks");
     std::printf("Mix EQ host: %d checks, %d failures\n",checks,failures);return failures?1:0;

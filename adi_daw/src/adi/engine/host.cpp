@@ -74,7 +74,7 @@ GraphHost::PrepareResult GraphHost::prepare(const rows::Model& model, const Real
     }
     problems_ = result.problems;
     error_ = result.error;
-    if (!result.graph) ++stats_.refused;
+    if (!result.graph) stats_.refused.fetch_add(1, std::memory_order_relaxed);
     return result;
 }
 
@@ -99,13 +99,13 @@ bool GraphHost::publish(PreparedGraph& ready) {
             publishedSampleRate_ = ready.sampleRate_;
             publishedMaxFrames_ = ready.maxFrames_;
             publishedChannels_ = ready.channels_;
-            ++stats_.published;
+            stats_.published.fetch_add(1, std::memory_order_relaxed);
             return true;
         } catch (const std::exception& exception) {
             error_ = exception.what();
         }
     }
-    ++stats_.refused;
+    stats_.refused.fetch_add(1, std::memory_order_relaxed);
     return false;
 }
 
@@ -118,8 +118,17 @@ bool GraphHost::rebuild(const rows::Model& model, const RealizeOptions& opts, do
 
 std::size_t GraphHost::collect() {
     const std::size_t n = pub_.collect();
-    stats_.reclaimed += static_cast<std::int64_t>(n);
+    stats_.reclaimed.fetch_add(static_cast<std::int64_t>(n), std::memory_order_relaxed);
     return n;
+}
+
+GraphHost::Stats GraphHost::stats() const noexcept {
+    return {stats_.published.load(std::memory_order_relaxed),
+            stats_.refused.load(std::memory_order_relaxed),
+            stats_.swaps.load(std::memory_order_relaxed),
+            stats_.reclaimed.load(std::memory_order_relaxed),
+            stats_.blocks.load(std::memory_order_relaxed),
+            stats_.historyCarried.load(std::memory_order_relaxed)};
 }
 
 Graph* GraphHost::currentGraph() const noexcept {
@@ -209,7 +218,7 @@ void clearOutput(const AudioIo& io) noexcept {
 }
 
 const PublishedGraph* GraphHost::acquireRender() noexcept {
-    ++stats_.blocks;
+    stats_.blocks.fetch_add(1, std::memory_order_relaxed);
     ++renderSerial_;
     renderActive_ = true;
     // Retain the previous publication until its history has been carried. The
@@ -224,8 +233,8 @@ const PublishedGraph* GraphHost::acquireRender() noexcept {
         // retire even when ring-history carry has deliberately been disabled.
         if (lastSnap_ != nullptr)
             (void)snap->graph().graph().adoptEventHistory(lastSnap_->graph().graph());
-        if (lastSnap_ != nullptr && keepHistory_)
-            stats_.historyCarried += handover(*lastSnap_, *snap);
+        if (lastSnap_ != nullptr && keepHistory())
+            stats_.historyCarried.fetch_add(handover(*lastSnap_, *snap), std::memory_order_relaxed);
 
         // ADR-0203 d3: a feedback loop in play again after time out of it
         // starts empty. Decided here, against the graph that really played
@@ -244,11 +253,12 @@ const PublishedGraph* GraphHost::acquireRender() noexcept {
         // and ramping the opening milliseconds of every session is an artefact
         // rather than the absence of one -- there is nothing to fade FROM.
         if (lastSeq_ != 0) {
-            fadeLength_ = fadeFrames_;
-            fadeRemaining_ = fadeFrames_;
+            const auto frames = fadeFrames();
+            fadeLength_ = frames;
+            fadeRemaining_ = frames;
         }
         lastSeq_ = snap->seq;
-        ++stats_.swaps;
+        stats_.swaps.fetch_add(1, std::memory_order_relaxed);
     }
 
     // NOW, and only now. From this store on the previous graph may be freed,

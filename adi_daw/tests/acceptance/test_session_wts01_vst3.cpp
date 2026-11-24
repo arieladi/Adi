@@ -7,7 +7,9 @@
 // opens. Step numbers follow `test_session_wts01.cpp`.
 #include "wts01_harness.hpp"
 #include "../temp_directory.hpp"
+#include "adi/audio/wav_file.hpp"
 #include "adi/media/media_ops.hpp"
+#include "adi/render/host_dispatch.hpp"
 #include "adi/scan_catalogue.hpp"
 #include "adi/ui/export_choices.hpp"
 #include "adi/ui/plugin_listing.hpp"
@@ -70,22 +72,20 @@ void session(Report &report) {
                         entry ? (entry->placeholder ? ("a placeholder: " + entry->error).c_str() : "loaded") : "absent",
                         label.c_str()),
                  "the fixture instrument loads on track 3, one step \"Insert ADI Test Plain\"");
-    // 3d. Live notes into it: the same gap as OneShot's.
-    report.step("3d", V::NotBuilt, "the app's MIDI port rings are drained into the indicators only; no document call",
-                "a key played on the armed VST3 instrument is heard at its time",
-                "the app consumer from MidiPortHost to Session::enqueueMidiInput (SRF-05 window half); owner window-fn");
+    // 3d. Live notes into it, through the app's MIDI consumer (N60), as OneShot's in 3b.
     auto snap = doc->view().current();
     auto arm = ui::armTracks(snap->tracks, doc->recordStates(), 3, {3}, true, false);
     const bool armed = arm.refusal.empty() && submitEdits(*doc, std::move(arm.ops));
+    ui::MidiInputFeed feed;
+    ui::MidiInputFeed::Ring keyboard;
+    const std::array<ui::MidiInputFeed::Source, 1> port{ui::MidiInputFeed::Source{&keyboard, 0, true, false, false, 1}};
+    feed.publish(port);
+    driver.feed = &feed;
     const auto blockStart = driver.stream;
     constexpr std::int64_t k = 37;
-    const bool queued =
-        armed &&
-        doc->session().enqueueMidiInput(blockStart + k, engine::Event{0, engine::EventType::NoteOn, 0, 69, 1, 0, 1.0}) &&
-        doc->session().enqueueMidiInput(blockStart + k + 12000,
-                                        engine::Event{0, engine::EventType::NoteOff, 0, 69, 1, 0, 0.0});
     Stereo heard;
-    driver.run(60, &heard);
+    driver.play(keyboard, {{blockStart + k, {0x90, 69, 127}}, {blockStart + k + 12000, {0x80, 69, 0}}}, 60, &heard);
+    driver.feed = nullptr;
     std::int64_t first = -1;
     for (std::size_t i = 0; i < heard.size() && first < 0; ++i)
         if (std::abs(heard.c[0][i]) > 1e-4f)
@@ -96,14 +96,16 @@ void session(Report &report) {
     for (std::size_t i = from + 1; i < from + 9600 && i < heard.size(); ++i)
         rising += heard.c[0][i - 1] < 0 && heard.c[0][i] >= 0 ? 1 : 0;
     const double loud = peak(heard, from, from + 9600);
-    report.engine("3d", format("armed %d, queued %d; first sound at +%lld frames from the block start (note at +%lld); "
-                               "%.1f Hz; peak %.4f",
-                               armed ? 1 : 0, queued ? 1 : 0, static_cast<long long>(first), static_cast<long long>(k),
-                               rising / .2, loud),
-                  "onset at +1 from the block start (the fixture plays events at offset 0, its sine starting at 0); "
-                  "440 Hz +-5; peak 0.0713 "
-                  "(0.3 x 0.25 x 0.95, pressure 0)");
-    // 7d. Export with the VST3 in the project: refused on the Export page before a file is asked for.
+    // The fixture plays a block's events at its first frame, its sine starting at 0: onset at +1 from the
+    // block start, whatever the note's offset within the block.
+    report.check("3d", armed && first == 1 && std::abs(rising / .2 - 440) <= 5 && std::abs(loud - .0713) < 2e-3,
+                 format("through the app's MIDI consumer: armed %d; first sound at +%lld frames from the block start "
+                        "(note at +%lld); %.1f Hz; peak %.4f; %llu refused",
+                        armed ? 1 : 0, static_cast<long long>(first), static_cast<long long>(k), rising / .2, loud,
+                        static_cast<unsigned long long>(feed.refused())),
+                 "a key played on the armed VST3 instrument is heard in its block: onset at +1 from the block start "
+                 "(the fixture plays events at offset 0), 440 Hz +-5, peak 0.0713 (0.3 x 0.25 x 0.95, pressure 0)");
+    // 7d. The real hosted VST3 plays a saved note through the export worker.
     snap = doc->view().current();
     arm = ui::armTracks(snap->tracks, doc->recordStates(), 3, {3}, true, false);
     submitEdits(*doc, std::move(arm.ops));
@@ -112,21 +114,42 @@ void session(Report &report) {
     choices.sampleRate = 48000;
     choices.bitDepth = 32;
     choices.dither = "No Dither";
-    const bool prechecked = exportPrecheckRefuses(*doc);
-    // And the render's own loader rule, had the page let it through.
-    const auto through = render::renderWav(ui::exportJob(choices, doc->store().path(), temp.path() / "With VST3.wav",
-                                                         *doc->view().current()->tempo),
-                                           exportLoader(loader.fn()));
-    report.step("7d", V::NotBuilt,
-                format("the Export page refuses: %s; the render with its loader: %s", prechecked ? kExportRefusal : "no",
-                       through.state == render::JobState::Completed ? "completed" : through.error.c_str()),
-                "a project holding a VST3 exports", "the engine's render worker for VST3/CLAP (EX-11 engine half); owner engine");
+    const auto notes = scalar(*doc,"SELECT COALESCE(MAX(id),0)+1 FROM clips");
+    OpRequest clip;
+    clip.opType = "clip.create";
+    clip.payload = {{"id",notes},{"track",3},{"kind","midi"},{"pos",0},{"length",kBarTicks}};
+    OpRequest note;
+    note.opType = "note.insert";
+    note.payload = {{"clip",notes},{"note",1},{"start",0},{"dur",kBarTicks/2},{"key",69},{"vel",127}};
+    const bool saved = doc->ops().submit(std::move(clip)).ok && doc->ops().submit(std::move(note)).ok;
+    auto job = ui::exportJob(choices,doc->store().path(),temp.path()/"With VST3.wav",
+                             *doc->view().current()->tempo);
+    render::HostDispatch host;
+    render::Control control;
+    control.onHost = [&host](std::function<void()> action) { host.invoke(std::move(action)); };
+    std::packaged_task<render::Result()> run([&] { return render::renderWav(job,loader.fn(),control); });
+    auto outcome = run.get_future();
+    std::jthread worker(std::move(run));
+    host.wait(outcome);
+    const auto through = outcome.get();
+    bool sounds = false;
+    if(through.state == render::JobState::Completed) {
+        audio::WavReader wave(through.output);
+        std::array<float,8192> pcm{};
+        sounds = wave.channels()==2 && wave.read(pcm.data(),4096)==4096 &&
+            std::any_of(pcm.begin(),pcm.end(),[](float value) { return std::abs(value)>0.01f; });
+    }
+    report.check("7d", saved && sounds && through.framesWritten==2*kBarSamples,
+                 format("worker export %s, %llu frames, audible saved note %d",
+                        through.state==render::JobState::Completed?"completed":through.error.c_str(),
+                        static_cast<unsigned long long>(through.framesWritten),sounds?1:0),
+                 "a project holding a VST3 exports 192000 frames including its saved note");
     // 7e. Without it, the same project exports.
     const bool removed = doc->deviceAction("device.remove", Payload{{"id", dev}});
     const auto after = render::renderWav(ui::exportJob(choices, doc->store().path(), temp.path() / "Without.wav",
                                                        *doc->view().current()->tempo),
-                                         exportLoader(loader.fn()));
-    report.check("7e", removed && !exportPrecheckRefuses(*doc) && after.state == render::JobState::Completed &&
+                                         loader.fn());
+    report.check("7e", removed && after.state == render::JobState::Completed &&
                            after.framesWritten == 2 * kBarSamples,
                  format("device removed %d; export %s, %llu frames", removed ? 1 : 0,
                         after.state == render::JobState::Completed ? "completed" : after.error.c_str(),

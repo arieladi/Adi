@@ -2,7 +2,7 @@
 
 Drafted by the window lane (ADR-0208) from the Live 12 manual, for win to run against Live 12
 (ADR-0108). The manual's text was read from `live12-manual-en.pdf`; the pages are the PDF's.
-`reference/DOCS/_text/Ableton_live12/` is not on the Mac this lane runs on, so where the A2000's
+`reference/DOCS/_text/Ableton_live12/` is not on the Mac this lane runs on, so where the drone's
 rows exist they replace these. Rows describe the behaviour in our words, never the manual's.
 
 Status: **built** (in this PR, with a check in `tests/test_ui_shell.cpp`), **partial**, **open**

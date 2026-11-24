@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+#include "adi/audio/decode.hpp"
 #include "adi/audio/pcm_stream.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/audio/io_audit.hpp"
@@ -7,14 +8,18 @@
 #include <array>
 #include <atomic>
 #include <bit>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
+#include <mutex>
 #include <new>
 #include <numbers>
+#include <span>
 #include <thread>
+#include <vector>
 namespace {std::atomic<unsigned> allocations{0},frees{0};std::atomic<bool> trackPeak{false};std::atomic<std::size_t> peak{0};}
 namespace {
 // MSVC's Debug CRT (_ITERATOR_DEBUG_LEVEL 2) allocates an iterator proxy whenever a
@@ -135,5 +140,66 @@ void streaming(){
     }
     check(musical,"streamed no-Xing MP3 retains independently authored channel frequencies and amplitudes without guessed trimming");
 }
+// DF-E65: stb_vorbis rewrites one process-wide CRC table on every open and reads it
+// while measuring a stream's length, so Ogg opens on several workers at once must
+// not overlap there. The table's values never change, so only a ThreadSanitizer
+// build sees the race; this stress gives it many simultaneous opens to watch, and
+// checks that every concurrent open still reports and decodes the same stream.
+struct VorbisOpen {bool ready=false;PcmStreamInfo info;std::vector<float> prefix;};
+VorbisOpen openVorbisPrefix(const fs::path& source,std::uint32_t frames){
+    VorbisOpen out;auto opened=openPcmStream(source);if(!opened.ready())return out;
+    out.ready=true;out.info=opened.stream->info();out.prefix.assign(static_cast<std::size_t>(frames)*out.info.channels,0.0f);
+    std::size_t filled=0;
+    while(filled<out.prefix.size()){
+        const auto read=opened.stream->read(std::span(out.prefix.data()+filled,out.prefix.size()-filled));
+        if(read.status!=PcmReadStatus::Frames || read.frames==0){out.ready=false;break;}
+        filled+=static_cast<std::size_t>(read.frames)*out.info.channels;
+    }
+    return out;
 }
-int main(){try{formats();controls();sourcesAndErrors();streaming();}catch(const std::exception& error){++failures;std::printf("EXCEPTION: %s\n",error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+void concurrentVorbisOpens(){
+    const std::array<fs::path,2> sources{extra("long.ogg"),fixture("tone.ogg")};
+    constexpr std::uint32_t prefixFrames=1024;constexpr unsigned workers=8,rounds=6;
+    const std::array<VorbisOpen,2> reference{openVorbisPrefix(sources[0],prefixFrames),openVorbisPrefix(sources[1],prefixFrames)};
+    check(reference[0].ready && reference[1].ready && reference[0].info.frames==960000 && reference[1].info.frames.has_value(),"one Vorbis open at a time gives the reference lengths and prefixes");
+    std::atomic<unsigned> waiting{0},thrown{0};std::atomic<bool> go{false};
+    std::vector<std::vector<VorbisOpen>> results(workers);std::vector<std::thread> threads;threads.reserve(workers);
+    for(unsigned worker=0;worker<workers;++worker)threads.emplace_back([&,worker]{
+        ++waiting;while(!go.load())std::this_thread::yield();
+        try {for(unsigned round=0;round<rounds;++round)results[worker].push_back(openVorbisPrefix(sources[(worker+round)%sources.size()],prefixFrames));}
+        catch(...){++thrown;}
+    });
+    while(waiting.load()<workers)std::this_thread::yield();
+    go=true;
+    for(auto& thread:threads)thread.join();
+    unsigned opened=0;bool same=true;
+    for(unsigned worker=0;worker<workers;++worker)for(std::size_t round=0;round<results[worker].size();++round){
+        const auto& got=results[worker][round];const auto& want=reference[(worker+round)%sources.size()];
+        opened+=got.ready?1U:0U;
+        same=same && got.ready && got.info.frames==want.info.frames && got.info.sampleRate==want.info.sampleRate && got.info.channels==want.info.channels && got.prefix==want.prefix;
+    }
+    check(thrown.load()==0 && opened==workers*rounds && same,"eight workers opening Ogg Vorbis at once each get the exact length, format and prefix of a lone open");
+}
+// DF-E65, on every build: the stress above only shows the race under ThreadSanitizer,
+// so this pins the lock itself. While the test holds stbVorbisTableLock(), an Ogg open
+// on another thread must not finish; once it is released, the open completes with the
+// lone open's result. Removing the lock, or moving the open outside it, fails here.
+// A slow machine can only make the open look blocked longer, never fail the check.
+void vorbisOpenWaitsForTableLock(){
+    const auto source=fixture("tone.ogg");constexpr std::uint32_t prefixFrames=64;
+    const auto reference=openVorbisPrefix(source,prefixFrames);
+    std::atomic<bool> finished{false};VorbisOpen got;
+    std::unique_lock<std::mutex> held(stbVorbisTableLock());
+    std::thread opener([&]{
+        try {got=openVorbisPrefix(source,prefixFrames);} catch(...){got=VorbisOpen{};}
+        finished=true;
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    const bool waited=!finished.load();
+    held.unlock();
+    opener.join();
+    check(waited,"an Ogg Vorbis open waits while the stb_vorbis table lock is held");
+    check(finished.load() && reference.ready && got.ready && got.info.frames==reference.info.frames && got.prefix==reference.prefix,"the waiting Ogg Vorbis open completes with the lone open's result once the lock is released");
+}
+}
+int main(){try{formats();controls();sourcesAndErrors();streaming();concurrentVorbisOpens();vorbisOpenWaitsForTableLock();}catch(const std::exception& error){++failures;std::printf("EXCEPTION: %s\n",error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

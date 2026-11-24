@@ -344,6 +344,112 @@ void shortenedFade() {
     warped.session.transport().locate(0);
     check(warped.render(1024) == before, "the split Warp fade keeps the exact audible envelope");
 }
+// clip.resize stores fades that fit the new span; Undo restores the authored
+// ones and entries journalled before the clamp replay as they were recorded.
+void resizeClampsFades() {
+    const auto fades = [](Store& store) {
+        SQLite::Statement row(store.db(), "SELECT fade_in_ticks,fade_out_ticks,length_ticks FROM clips WHERE id=1");
+        if (!row.executeStep()) throw std::runtime_error("resized clip is missing");
+        return std::array<std::int64_t, 3>{row.getColumn(0).getInt64(), row.getColumn(1).getInt64(),
+                                           row.getColumn(2).getInt64()};
+    };
+    const auto commit = [](Store& store, const char* type, const Payload& payload) {
+        OpRequest request;
+        request.opType = type;
+        request.payload = payload;
+        return OpJournal(store).commit(request);
+    };
+    Fixture warped(48000, 2, 4000, -1);
+    warped.add(1, 0, 800, 0, 1000);
+    auto& db = warped.store->db();
+    db.exec("UPDATE clips SET time_base=0,pos_ticks=0,length_ticks=192192,pos_ns=NULL,length_ns=NULL;"
+            "UPDATE audio_clips SET warp_enabled=1,warp_mode='re-pitch'");
+    const std::array<WarpMarker, 2> markers{{{0, 0}, {1000, 240240}}};
+    const auto map = audio::writeWarpMap(markers, 1000);
+    if (!map) throw std::runtime_error("prepare resized fade Warp map");
+    SQLite::Statement setMap(db, "UPDATE audio_clips SET warp_markers=? WHERE clip_id=1");
+    setMap.bind(1, map.bytes.data(), static_cast<int>(map.bytes.size()));
+    setMap.exec();
+    History history(*warped.store);
+    check(commit(*warped.store, "clip.setFades", {{"id",1},{"in",{{"ticks",96096}}},{"out",{{"ticks",144144}}}}).ok,
+          "author a Warp fade-in over half the clip and a fade-out over three quarters");
+    const auto resized = commit(*warped.store, "clip.resize", {{"id",1},{"pos",0},{"length",48048}});
+    check(resized.ok && fades(*warped.store) == std::array<std::int64_t, 3>{48048, 48048, 48048},
+          "a raw resize to a quarter clamps both stored fades to the new span");
+    const auto copy = clip_edit::copyClip(*warped.store, 1, 48000);
+    check(copy.ok, "a Warp clip resized under its fade-in copies");
+    if (!copy.ok) std::printf("copy: %s\n", copy.error.c_str());
+    check(history.undo().ok && fades(*warped.store) == std::array<std::int64_t, 3>{96096, 144144, 192192},
+          "Undo of the resize restores the authored fades and length exactly");
+    check(history.redo().ok && fades(*warped.store) == std::array<std::int64_t, 3>{48048, 48048, 48048},
+          "Redo of the resize clamps the fades again");
+    const auto split = clip_edit::prepareSplit(*warped.store, 1, 2, {0, 24024}, 48000);
+    if (!split.ok) std::printf("split: %s\n", split.error.c_str());
+    check(split.ok && clip_edit::commitPrepared(*warped.store, split).ok,
+          "a Warp clip resized under its fade-in splits");
+    check(history.undo().ok && history.undo().ok &&
+              fades(*warped.store) == std::array<std::int64_t, 3>{96096, 144144, 192192},
+          "Undo of Split and resize returns to the authored fades");
+
+    // An entry journalled before the clamp has a placement image without fade
+    // columns. Its Undo and Redo keep the row effects the old build recorded.
+    const auto legacy = commit(*warped.store, "clip.resize", {{"id",1},{"pos",0},{"length",48048}});
+    if (!legacy.ok) throw std::runtime_error(legacy.error);
+    const auto inverse = encodePayload(Payload{{"id",1},{"_placement",{{"id",1},{"track_id",1},{"lane_id",nullptr},
+        {"time_base",0},{"pos_ticks",0},{"pos_ns",nullptr},{"length_ticks",192192},{"length_ns",nullptr}}}});
+    SQLite::Statement replace(db, "UPDATE ops SET inverse=? WHERE seq=?");
+    replace.bind(1, inverse.data(), static_cast<int>(inverse.size()));
+    replace.bind(2, legacy.seqs.back());
+    replace.exec();
+    db.exec("UPDATE clips SET fade_in_ticks=96096,fade_out_ticks=144144 WHERE id=1");
+    check(history.undo().ok && fades(*warped.store) == std::array<std::int64_t, 3>{96096, 144144, 192192} &&
+              history.redo().ok && fades(*warped.store) == std::array<std::int64_t, 3>{96096, 144144, 48048},
+          "a resize journalled before the clamp replays its recorded row effects");
+
+    // An unwarped resize under a long fade-in now ramps fully inside the span.
+    Fixture plain(48000, 2, 4000, -1);
+    plain.add(1, 0, 800, 0, 1000);
+    plain.store->db().exec("UPDATE clips SET time_base=0,pos_ticks=0,length_ticks=192192,pos_ns=NULL,length_ns=NULL");
+    check(commit(*plain.store, "clip.setFades", {{"id",1},{"in",{{"ticks",192192}}}}).ok,
+          "author a fade-in over the entire unwarped clip");
+    plain.load(1024);
+    const auto render = [&] {
+        plain.session.transport().locate(0);
+        return plain.render(1024);
+    };
+    const auto before = render();
+    check(commit(*plain.store, "clip.resize", {{"id",1},{"pos",0},{"length",96096}}).ok &&
+              plain.session.refresh(*plain.store), "resize the unwarped clip to half under its fade-in");
+    const auto shorter = render();
+    check(std::abs(shorter[399] - 0.5f * 399.0f / 400.0f) < 1e-6f && shorter[400] == 0.0f &&
+              fades(*plain.store) == std::array<std::int64_t, 3>{96096, 0, 96096},
+          "the clamped fade-in ramps over the whole remaining span");
+    check(History(*plain.store).undo().ok && plain.session.refresh(*plain.store) && render() == before,
+          "Undo of the unwarped resize restores the entire authored fade-in exactly");
+
+    // A fade-out clamped to the span renders exactly as the wider one it
+    // replaced, also when the clip edges fall between samples (here at 0.4
+    // and 400.6 frames, so the rounded span and the rounded edges differ).
+    Fixture tail(48000, 2, 4000, -1);
+    tail.add(1, 0, 800, 0, 1000);
+    tail.store->db().exec("UPDATE clips SET time_base=0,pos_ticks=96,length_ticks=192192,pos_ns=NULL,length_ns=NULL");
+    check(commit(*tail.store, "clip.setFades", {{"id",1},{"out",{{"ticks",192192}}}}).ok,
+          "author a fade-out over the entire unaligned clip");
+    tail.load(1024);
+    check(commit(*tail.store, "clip.resize", {{"id",1},{"pos",96},{"length",96144}}).ok &&
+              tail.session.refresh(*tail.store) && fades(*tail.store) == std::array<std::int64_t, 3>{0, 96144, 96144},
+          "resize the unaligned clip under its fade-out clamps the fade-out to the span");
+    const auto renderTail = [&] {
+        tail.session.transport().locate(0);
+        return tail.render(1024);
+    };
+    const auto clamped = renderTail();
+    tail.store->db().exec("UPDATE clips SET fade_out_ticks=192192 WHERE id=1");
+    check(tail.session.refresh(*tail.store), "reload the unclamped fade-out");
+    const auto wider = renderTail();
+    check(clamped == wider && clamped[0] > 0.0f && clamped[0] < 0.5f && clamped[399] > 0.0f && clamped[401] == 0.0f,
+          "the clamped fade-out renders bit-exact as the wider one over the whole span");
+}
 void splitSourceClocks() {
     for(const auto sourceRate:{44100u,48000u})for(const bool loop:{false,true}) {
         Fixture f(sourceRate,2,4000);f.add(1,0,800,0,1000);
@@ -1286,7 +1392,7 @@ int main(int argc,char** argv) {
         if(only=="all" || only=="monitor-input")liveInputMonitoring();
         if(only=="all" || only=="take-lanes")takeLanePlayback();
         if(only=="all" || only=="properties")properties();
-        if(only=="all" || only=="fades"){editedFades();shortenedFade();}
+        if(only=="all" || only=="fades"){editedFades();shortenedFade();resizeClampsFades();}
         if(only=="all" || only=="split"){splitSourceClocks();splitInsideFades();twoPointSplitSourceClocks();twoPointSplitWarpFades();rangeSurvivorSourceClocks();silenceSourceClocks();deleteTimeSourceClocks();timeClipboardSourceClocks();}
         if(only=="all" || only=="seeks")seeksAndStalls();
         if(only=="all" || only=="conversion")conversion();

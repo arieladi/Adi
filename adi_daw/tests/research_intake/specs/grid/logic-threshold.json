@@ -1,0 +1,38 @@
+{
+  "schema": "adi-research-input-grid9-1",
+  "id": "logic-threshold",
+  "kind": "signal",
+  "input": {
+    "sample_values": [
+      0,
+      0.49,
+      0.5,
+      0.5,
+      0.51,
+      1,
+      2,
+      0.499,
+      -1
+    ],
+    "channels": [
+      "left",
+      "right"
+    ],
+    "right_values": [
+      1,
+      1,
+      0,
+      0,
+      0,
+      1,
+      1,
+      0,
+      0
+    ]
+  },
+  "question": "Document logic transitions separately by channel and rate; static repeated high values are not additional triggers.",
+  "bitwig_result": "NOT RUN",
+  "adi_result": "NOT RUN",
+  "limits": "Authored diagnostic specification, not a Bitwig patch, Pd implementation or observed result.",
+  "provenance": "The director's research."
+}
