@@ -1781,20 +1781,53 @@ bool AdiRootComponent::placeClips(const std::vector<ClipPlace> &places, const ch
     auto prepared = edit_plan::prepareMove(submitter_.store(), scope, moves, options);
     if (!prepared.ok) {
         // The planner will not place here yet (automation that follows its clips, AU-05; a frozen track;
-        // an editing setting off Live's rule; clips that already overlap): the clips move as before,
-        // keeping what they land on, and the Status Bar says why, as a range edit does.
+        // an editing setting off Live's rule; clips that already overlap). Live replaces what a moved
+        // clip lands on and only the planner clears it, so the engine refuses a plain move onto another
+        // clip (DF-E17 a): the clips move plainly only where each lands on nothing, one after another so
+        // none lands where a clip still to move is; otherwise nothing moves. The Status Bar says why.
+        struct Placed {
+            std::int64_t clip = 0, track = 0, begin = 0, end = 0;
+        };
+        std::vector<Placed> now;
+        for (const auto &t : current->tracks)
+            if (t)
+                for (const auto &c : t->clips)
+                    if (c)
+                        now.push_back({c->id, t->id, c->posTicks, c->posTicks + c->lengthTicks});
+        const auto at = [&](std::int64_t clip) {
+            return std::find_if(now.begin(), now.end(), [&](const Placed &p) { return p.clip == clip; });
+        };
+        const auto landing = [&](const ClipPlace &place) {
+            const auto from = at(place.clip);
+            return Placed{place.clip, place.track, place.position, place.position + (from->end - from->begin)};
+        };
+        const auto covers = [&](const Placed &moved) {
+            return moved.begin < moved.end && std::any_of(now.begin(), now.end(), [&](const Placed &other) {
+                       return other.clip != moved.clip && other.track == moved.track && other.begin < other.end &&
+                              other.begin < moved.end && moved.begin < other.end;
+                   });
+        };
+        const auto why = prepared.error;
         std::vector<OpRequest> ops;
-        for (const auto &place : places) {
+        auto pending = places;
+        while (!pending.empty()) {
+            const auto next = std::find_if(pending.begin(), pending.end(), [&](const ClipPlace &place) {
+                return at(place.clip) != now.end() && !covers(landing(place));
+            });
+            if (next == pending.end())
+                return fail("Not moved: the clips would land on other clips, and the engine does not clear them "
+                            "here yet (" + why + ").");
+            *at(next->clip) = landing(*next);
             OpRequest op;
             op.opType = "clip.move";
-            op.payload = {{"id", place.clip}, {"to", place.position}, {"track", place.track}};
+            op.payload = {{"id", next->clip}, {"to", next->position}, {"track", next->track}};
             op.label = label;
             ops.push_back(std::move(op));
+            pending.erase(next);
         }
-        const auto why = prepared.error;
         if (!submitEdits(std::move(ops)))
             return false;
-        say("Moved, keeping what the clips land on: the engine does not place them here yet (" + why + ").");
+        say("Moved as a plain move: the engine does not place the clips here yet (" + why + ").");
         return true;
     }
     if (!prepared.requests.empty())

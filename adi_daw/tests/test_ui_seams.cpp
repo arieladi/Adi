@@ -1700,10 +1700,16 @@ void rangeEditsAsBatches() {
               ui::clipsAcross(view.current()->tracks, lanes, {1}, 0)->empty(),
           "past the last lane, or from a track not in the lanes: none moves across; no rows: none changes track");
     auto lower = ui::moveClips(view.current()->tracks, {1, 2}, 0, *down);
+    // Track 2's clip would land over track 3's. Live replaces what it covers and only the planner clears
+    // it, so the engine refuses a plain move onto another clip (DF-E17 a).
     check(lower.ops.size() == 2 && lower.ops[0].payload["track"] == 2 && lower.ops[1].payload["track"] == 3 &&
-              sub.submit(std::move(lower.ops)).ok && view.current()->findTrack(1)->clips.empty() &&
-              view.current()->findTrack(3)->clips.size() == 2,
-          "moved a row down with no change of time: each on the next track, one step");
+              !sub.submit(std::move(lower.ops)).ok && view.current()->findTrack(1)->clips.size() == 1 &&
+              view.current()->findTrack(3)->clips.size() == 1,
+          "moved a row down onto another clip: a plain batch is refused, whole");
+    auto touching = ui::moveClips(view.current()->tracks, {1}, 0, {{1, 2}});
+    check(touching.ops.size() == 1 && sub.submit(std::move(touching.ops)).ok &&
+              view.current()->findTrack(1)->clips.empty() && view.current()->findTrack(2)->clips.size() == 2,
+          "moved a row down with no change of time, touching the next clip: placed, one step");
     check(sub.undo().ok && view.current()->findTrack(1)->clips.size() == 1, "undo");
     {
         ui::SessionState session(*store);

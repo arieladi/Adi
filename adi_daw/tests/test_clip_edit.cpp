@@ -112,8 +112,8 @@ void nativePlacement() {
               native("SELECT length_ns FROM clips WHERE id=7") == 0 &&
               history.undo().ok && native("SELECT length_ns FROM clips WHERE id=7") == 750000000,
           "raw resize keeps zero-length clips valid and restores native duration on Undo");
-    db.exec("INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks) VALUES(499,21,'midi',0,100)");
-    check(commit("clip.move", {{"id", 499}, {"to", -20}, {"track", 21}}).ok &&
+    db.exec("INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks) VALUES(499,22,'midi',0,100)");
+    check(commit("clip.move", {{"id", 499}, {"to", -20}, {"track", 22}}).ok &&
               native("SELECT pos_ticks FROM clips WHERE id=499") == -20 &&
               history.undo().ok && native("SELECT pos_ticks FROM clips WHERE id=499") == 0,
           "musical moves retain the signed tick domain and round-trip through Undo");
@@ -137,6 +137,75 @@ void nativePlacement() {
     const auto copy = clip_edit::copyClip(*p.store, 7, 48000);
     check(!copy.ok && copy.error.find("overflows signed 64-bit") != std::string::npos,
           "capturing fades from a damaged linear extent refuses before addition can overflow");
+}
+// DF-E17 (a): a raw clip.move never lands on another clip of its lane. Live replaces what a moved
+// clip covers, and only the placement planner clears it (ADR-0217 d1), so the raw op refuses.
+void moveOntoAnotherClip() {
+    Project p;
+    auto& db = p.store->db();
+    constexpr std::int64_t q = 5765760; // a quarter note: half a second at 120 BPM
+    db.exec("DELETE FROM tempo_map;"
+            "INSERT INTO tempo_map(pos_ticks,bpm,curve) VALUES(0,120,0);"
+            "INSERT INTO tracks(id,kind,name) VALUES(31,'audio','Covered'),(32,'audio','Batch');"
+            "INSERT INTO lanes(id,track_id,ord,name,kind) VALUES(311,31,0,'Take','take');"
+            "INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks) VALUES"
+            "(100,31,'audio',0,5765760),(101,31,'audio',11531520,5765760),(110,32,'audio',0,5765760),"
+            "(111,32,'audio',5765760,5765760),(120,32,'audio',23062080,5765760);"
+            "INSERT INTO clips(id,track_id,lane_id,kind,pos_ticks,length_ticks) VALUES"
+            "(103,31,311,'audio',5765760,5765760);"
+            "INSERT INTO clips(id,track_id,kind,time_base,pos_ns,length_ns) VALUES"
+            "(102,31,'audio',1,2000000000,500000000)");
+    const auto native = [&](const std::string& sql) { return db.execAndGet(sql).getInt64(); };
+    const auto ops = [&] { return native("SELECT count(*) FROM ops"); };
+    const auto request = [](std::int64_t id, std::int64_t to, std::int64_t track) {
+        OpRequest r;
+        r.opType = "clip.move";
+        r.payload = {{"id", id}, {"to", to}, {"track", track}};
+        return r;
+    };
+    OpJournal journal(*p.store);
+    History history(*p.store);
+    const auto moveTo = [&](std::int64_t id, std::int64_t to, std::int64_t track) {
+        return journal.commit(request(id, to, track));
+    };
+    auto count = ops();
+    auto refused = moveTo(100, q + q / 2, 31);
+    check(!refused.ok && refused.error.find("would cover clip 101") != std::string::npos && ops() == count &&
+              native("SELECT pos_ticks FROM clips WHERE id=100") == 0,
+          "a move over part of another clip refuses, names it, and writes nothing");
+    check(moveTo(100, q, 31).ok && native("SELECT pos_ticks FROM clips WHERE id=100") == q,
+          "a move that touches a clip's start and covers only a take lane's clip is placed");
+    check(history.undo().ok && native("SELECT pos_ticks FROM clips WHERE id=100") == 0, "its Undo restores it");
+    count = ops();
+    refused = moveTo(100, 3 * q + q / 2, 31);
+    check(!refused.ok && refused.error.find("would cover clip 102") != std::string::npos && ops() == count,
+          "a musical clip moved onto a linear clip refuses in physical time");
+    refused = moveTo(102, 2 * q + q / 2, 31);
+    check(!refused.ok && refused.error.find("would cover clip 101") != std::string::npos && ops() == count &&
+              native("SELECT pos_ns FROM clips WHERE id=102") == 2000000000,
+          "a linear clip moved onto a musical clip refuses in physical time");
+    check(moveTo(102, 6 * q, 31).ok && native("SELECT pos_ns FROM clips WHERE id=102") == 3000000000,
+          "a linear clip moved to a free place is placed");
+    count = ops();
+    refused = moveTo(120, 2 * q + q / 2, 31);
+    check(!refused.ok && refused.error.find("would cover clip 101") != std::string::npos && ops() == count &&
+              native("SELECT track_id FROM clips WHERE id=120") == 32,
+          "a move onto another track's clip refuses and the clip stays on its track");
+    const std::array wrongOrder{request(110, q / 2, 32), request(111, q + q / 2, 32)};
+    check(!journal.commit(wrongOrder).ok && ops() == count && native("SELECT pos_ticks FROM clips WHERE id=110") == 0 &&
+              native("SELECT pos_ticks FROM clips WHERE id=111") == q,
+          "a batch whose first move lands where the next clip still is refuses atomically");
+    const std::array rightOrder{request(111, q + q / 2, 32), request(110, q / 2, 32)};
+    check(journal.commit(rightOrder).ok && native("SELECT pos_ticks FROM clips WHERE id=110") == q / 2 &&
+              native("SELECT pos_ticks FROM clips WHERE id=111") == q + q / 2,
+          "the same batch with the leading clip first is placed");
+    check(history.undo().ok && native("SELECT pos_ticks FROM clips WHERE id=110") == 0 &&
+              native("SELECT pos_ticks FROM clips WHERE id=111") == q,
+          "one Undo restores both");
+    check(moveTo(120, 6 * q, 32).ok && history.undo().ok, "a move to a free place and its Undo");
+    db.exec("INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks) VALUES(121,32,'audio',34594560,5765760)");
+    check(history.redo().ok && native("SELECT pos_ticks FROM clips WHERE id=120") == 6 * q,
+          "a recorded move replays its recorded effect");
 }
 void stateAndSharing() {
     Project p;auto& db=p.store->db();auto old=SnapshotBuilder::fromStore(*p.store);
@@ -1156,4 +1225,4 @@ void groupedSplits() {
 }
 } // namespace
 
-int main(){try{nativePlacement();stateAndSharing();refusalAndCurves();independentFadeHandles();clipboardAndSplits();silenceAndCurves();rangeCommands();clockSharing();pureLoopAndCut();reusedMediaIds();twoPointGeometryAndMute();twoPointOpaqueChildren();twoPointAtomicRefusals();twoPointSplitPayloadBounds();groupedSplits();rangeSurvivorRelations();rangeTailChildrenAndClocks();ordinaryRangeLaneScope();rangeSurvivorExhaustedIds();rangeTimeLaneScope();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{nativePlacement();moveOntoAnotherClip();stateAndSharing();refusalAndCurves();independentFadeHandles();clipboardAndSplits();silenceAndCurves();rangeCommands();clockSharing();pureLoopAndCut();reusedMediaIds();twoPointGeometryAndMute();twoPointOpaqueChildren();twoPointAtomicRefusals();twoPointSplitPayloadBounds();groupedSplits();rangeSurvivorRelations();rangeTailChildrenAndClocks();ordinaryRangeLaneScope();rangeSurvivorExhaustedIds();rangeTimeLaneScope();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

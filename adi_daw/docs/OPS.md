@@ -554,7 +554,11 @@ redo restore it. This optional SQL seam adds no dependency on N17's schema.
 ticks. Linear clips store the converted position in nanoseconds. A linear
 resize converts both endpoints through the tempo map. A same-track move keeps
 its lane. Undo restores the exact native placement. Historical scalar inverses
-retain their recorded effects.
+retain their recorded effects. A new `clip.move` refuses a place where it would
+cover another clip of its lane, and names that clip: Live replaces what a moved
+clip covers, and only `edit_plan::prepareMove` clears it (ADR-0217 d1). Touching
+is not covering; take lanes are separate; a batch applies its moves in order, so
+it moves the leading clip first. A recorded move replays its recorded effect.
 
 N33 Main Clip Properties: `clip.setStartMarker {id,ticks}` and
 `clip.setEndMarker {id,ticks}` use source-relative musical ticks (0..2^50).

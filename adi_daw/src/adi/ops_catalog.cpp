@@ -642,6 +642,46 @@ bool placementClampsFades(const OpContext& c) {
     const auto placement = inverse->find("_placement");
     return placement != inverse->end() && placement->is_object() && placement->contains("fade_in_ticks");
 }
+// The first clip, by id, that a move to `position` on `track` would cover in the clip's own lane.
+// Live replaces what a moved clip covers (ADR-0217 d1), and only the placement planner clears it,
+// so a raw move onto another clip refuses rather than storing both (DF-E17 a). Touching covers
+// nothing, nor does a clip without length; clips in other lanes are not covered. Compared in the
+// clips' shared clock, in nanoseconds where only one of them keeps linear time.
+std::optional<std::int64_t> clipMoveCovers(SQLite::Database& db, const Payload& before, std::int64_t track,
+                                           std::int64_t position, std::optional<edit::TimeMap>& time) {
+    const bool linear = before.at("time_base") == 1;
+    const auto& length = before.at(linear ? "length_ns" : "length_ticks");
+    if (length.is_null()) return std::nullopt;
+    const auto end = edit::addTime(position, detail::signedInteger(length));
+    if (end <= position) return std::nullopt;
+    const auto& lane = before.at("lane_id");
+    SQLite::Statement others(db, "SELECT id,time_base,pos_ticks,length_ticks,pos_ns,length_ns FROM clips "
+                                 "WHERE track_id=? AND lane_id IS ? AND id<>? ORDER BY id");
+    others.bind(1, track);
+    if (lane.is_null()) others.bind(2);
+    else others.bind(2, detail::signedInteger(lane));
+    others.bind(3, detail::signedInteger(before.at("id")));
+    while (others.executeStep()) {
+        const bool otherLinear = others.getColumn(1).getInt() == 1;
+        const int column = otherLinear ? 4 : 2;
+        if (others.getColumn(column).isNull() || others.getColumn(column + 1).isNull()) continue;
+        auto first = others.getColumn(column).getInt64();
+        auto last = edit::addTime(first, others.getColumn(column + 1).getInt64());
+        auto from = position, to = end;
+        if (otherLinear != linear) {
+            if (!time) time.emplace(db);
+            if (linear) {
+                first = time->nanos(first);
+                last = time->nanos(last);
+            } else {
+                from = time->nanos(from);
+                to = time->nanos(to);
+            }
+        }
+        if (first < last && first < to && from < last) return others.getColumn(0).getInt64();
+    }
+    return std::nullopt;
+}
 bool clipPlacementApply(OpContext& c, const Payload& p, std::string& err, bool move) {
     try {
         const auto id = detail::signedInteger(p.at("id"));
@@ -683,6 +723,13 @@ bool clipPlacementApply(OpContext& c, const Payload& p, std::string& err, bool m
             values["track_id"] = track;
             if (!before.at(lengthKey).is_null())
                 (void)edit::addTime(position, detail::signedInteger(before.at(lengthKey)));
+            // A recorded move replays the effect it recorded; a new one never lands on a clip.
+            if (!c.replay)
+                if (const auto covered = clipMoveCovers(c.db, before, track, position, time))
+                    throw std::runtime_error("clip " + std::to_string(id) + " would cover clip " +
+                                             std::to_string(*covered) +
+                                             ": a move onto another clip goes through the placement planner, "
+                                             "which clears what it covers");
         } else {
             const auto ticks = detail::signedInteger(p.at("length"));
             if (ticks < 0) throw std::runtime_error("clip length must be nonnegative");
