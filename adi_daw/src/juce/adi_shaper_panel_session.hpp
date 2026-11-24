@@ -20,8 +20,12 @@ public:
     AdiShaperPanel::Binding binding();
     bool applyPreset(std::span<const std::uint8_t>, const std::string& title = {});
     const std::string& presetTitle() const noexcept { return title_; }
-    void refresh();
-    bool valid() const { return instance() != nullptr; }
+    // Reads the device's values again; true when a value or the preset title changed.
+    bool refresh();
+    // Follows the device across an audio restart; false while it is deleted or replaced.
+    bool valid() { return instance() != nullptr; }
+    // The normalized value of a one-based parameter, as the panel reads it.
+    double value(int id) const { const auto i = values_.find(id); return i == values_.end() ? 0.0 : i->second; }
     bool editing() const noexcept { return editing_; }
     const std::string& error() const noexcept { return error_; }
 private:
@@ -30,7 +34,8 @@ private:
     using Point = AdiShaperPanel::Point;
     using Key = AdiShaperPanel::Key;
     struct Touched { double before, after; };
-    device::DeviceInstance* instance() const;
+    device::DeviceInstance* instance();
+    void restore(device::DeviceInstance&);
     bool parameters(Phase, std::span<const Change>);
     bool editWave(Key, Phase, std::span<const Point>);
     std::vector<Point> wave(Key) const;
@@ -42,8 +47,7 @@ private:
     std::map<int, double> defaults_, values_, storedAtBegin_;
     std::map<int, Touched> touched_;
     std::string error_, title_;
-    std::uint64_t stamp_ = 0;
-    mutable bool retired_ = false;
+    bool retired_ = false;
     bool editing_ = false;
 };
 } // namespace adi::ui

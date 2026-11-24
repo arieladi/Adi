@@ -1050,14 +1050,17 @@ bool AdiRootComponent::togglePluginWindow(std::int64_t device, bool several) {
     auto frameEditor = std::move(editor.frame);
     auto gone = std::move(editor.gone);
     const auto safe = juce::Component::SafePointer<AdiRootComponent>(this);
-    // The window's own clock runs the editor's; an error it reports goes to the Status Bar once;
-    // an editor the plug-in has dropped takes its window with it, at the next collect.
+    // The window's own clock runs the editor's; an error it reports goes to the Status Bar once,
+    // and again if it comes back after the editor cleared it; an editor the plug-in has dropped
+    // takes its window with it, at the next collect.
     auto onFrame = [safe, key, frameEditor, gone, said = std::make_shared<std::string>()](const SnapshotReader &) {
         if (!safe)
             return;
         if (frameEditor) {
             const auto error = frameEditor();
-            if (!error.empty() && error != *said) {
+            if (error.empty())
+                said->clear();
+            else if (error != *said) {
                 *said = error;
                 safe->say(error);
             }

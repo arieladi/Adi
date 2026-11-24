@@ -373,7 +373,7 @@ std::vector<AdiShaperPanel::Control> AdiShaperPanel::controls() const {
             continue;
         const int id = key_.stage < 3 ? Core::VolumeLowSlope + 1 + key_.stage + 3 * edge : m.on + 4 + edge;
         const int db = 6 << juce::roundToInt(read(id) * 2);
-        v.push_back({{15.f + edge * 142.f, 173, 127, 17}, id, "", juce::String(db) + " dB/oct", 13});
+        v.push_back({{15.f + static_cast<float>(edge) * 142.f, 173, 127, 17}, id, "", juce::String(db) + " dB/oct", 13});
     }
     return v;
 }

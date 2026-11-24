@@ -52,7 +52,7 @@ void sourceCorners() {
         Bank bank;
         int slot = 0;
         for (auto p : points) {
-            const Bank::Point point{p.x / 8192.f, static_cast<float>(p.y),
+            const Bank::Point point{static_cast<float>(p.x) / 8192.f, static_cast<float>(p.y),
                                     static_cast<float>(2-p.copies), Bank::Shape::SourceCorner};
             const int a = Bank::address(0,point), b = Bank::value(point);
             const auto restored = Bank::unpack(a,b);
@@ -78,7 +78,7 @@ void sourceCorners() {
     constexpr std::array xValues{0,1811,1811,4869,6911}, copies{1,3,2,1,2};
     constexpr std::array levels{.1f,.7f,.25f,.51f,.98f};
     for (int i=0; i<5; ++i) {
-        const Bank::Point pt{xValues[static_cast<std::size_t>(i)]/8192.f,levels[static_cast<std::size_t>(i)],static_cast<float>(2-copies[static_cast<std::size_t>(i)]),Bank::Shape::SourceCorner};
+        const Bank::Point pt{static_cast<float>(xValues[static_cast<std::size_t>(i)])/8192.f,levels[static_cast<std::size_t>(i)],static_cast<float>(2-copies[static_cast<std::size_t>(i)]),Bank::Shape::SourceCorner};
         edge.set(Bank::firstId+2*i, static_cast<float>(Bank::address(0,pt)));
         edge.set(Bank::firstId+2*i+1, static_cast<float>(Bank::value(pt)));
     }
@@ -91,7 +91,7 @@ void sourceCorners() {
                 "grid interpolation preserves the measured overshoot at a coincident hard and medium point");
     }
     for (int i=0; i<5; ++i) {
-        const Bank::Point pt{xValues[static_cast<std::size_t>(i)]/8192.f,levels[static_cast<std::size_t>(i)],-1.f,Bank::Shape::SourceCorner};
+        const Bank::Point pt{static_cast<float>(xValues[static_cast<std::size_t>(i)])/8192.f,levels[static_cast<std::size_t>(i)],-1.f,Bank::Shape::SourceCorner};
         edge.set(Bank::firstId+2*i+1, static_cast<float>(Bank::value(pt)));
     }
     edge.prepareBlock();

@@ -67,6 +67,75 @@ void bandTrimInProject() {
     require(std::abs(binding.read(trim) - .75) < .00001 && std::abs(sample(*device) - 1) < .0001,
             "redo restores gain and fader");
 }
+// An audio restart (a new block size, a device stop and start) gives the device a new runtime
+// token and the feed a new stamp. The open editor follows the device and its writes still land.
+void followsAudioRestart() {
+    test::TempDirectory temp("adi_shaper_restart", "epoch");
+    std::string error;
+    auto doc = ui::ProjectDocument::open(temp.path() / "restart.adi", true, device::withBuiltinDevices(), error);
+    require(doc && doc->insertBuiltin(uid, 2, {}), "insert shaper for restart");
+    doc->prepare(48000, 64);
+    doc->tick(0);
+    const auto id = doc->store().db().execAndGet("SELECT MAX(id) FROM devices").getInt64();
+    ui::AdiShaperPanelSession session(*doc, id);
+    auto binding = session.binding();
+    const auto steps = [&] { return History(doc->store()).readTimeline().steps.size(); };
+    const auto start = steps();
+    require(session.valid(), "the editor resolves its device");
+    doc->prepare(48000, 128);
+    require(session.valid(), "a new block size keeps the editor before the feed publishes");
+    doc->tick(1);
+    require(session.valid(), "and after the feed's new stamp");
+    doc->release();
+    doc->prepare(48000, 128);
+    doc->tick(2);
+    require(session.valid(), "a device stop and start keeps the editor");
+    const std::array<Panel::Change,1> half{{{1, .5}}};
+    require(binding.parameters(Phase::Begin, {}) && binding.parameters(Phase::End, half) && steps() == start + 1,
+            "an edit after the restarts lands as one undo step");
+    auto* device = doc->session().instanceFor(id);
+    require(device && std::abs(device->getParam("1").normalized - .5) < .00001, "the edit reaches the running device");
+    const std::array<Panel::Change,1> quarter{{{1, .25}}};
+    require(binding.parameters(Phase::Begin, {}) && binding.parameters(Phase::Change, quarter), "an edit in flight");
+    doc->prepare(44100, 128);
+    require(session.valid() && !session.editing() && !binding.parameters(Phase::Change, quarter),
+            "a restart drops the edit in flight and keeps the editor");
+    device = doc->session().instanceFor(id);
+    require(device && std::abs(device->getParam("1").normalized - .5) < .00001 && steps() == start + 1,
+            "and puts back what the dropped edit previewed, journaling nothing");
+    // The feed re-stamps the device only at its next tick. An edit begun in between keeps going.
+    doc->prepare(48000, 64);
+    require(binding.parameters(Phase::Begin, {}) && binding.parameters(Phase::Change, quarter),
+            "an edit begun after a restart, before the feed's new stamp");
+    doc->tick(3);
+    const std::array<Panel::Change,1> threeQuarters{{{1, .75}}};
+    require(session.editing() && binding.parameters(Phase::Change, threeQuarters) &&
+            binding.parameters(Phase::End, threeQuarters) && steps() == start + 2,
+            "keeps going across the feed's new stamp and lands as one undo step");
+    device = doc->session().instanceFor(id);
+    require(device && std::abs(device->getParam("1").normalized - .75) < .00001, "and reaches the running device");
+}
+// A refused edit says why, for the Status Bar.
+void refusalMessage() {
+    test::TempDirectory temp("adi_shaper_refusal", "message");
+    std::string error;
+    auto doc = ui::ProjectDocument::open(temp.path() / "refusal.adi", true, device::withBuiltinDevices(), error);
+    require(doc && doc->insertBuiltin(uid, 2, {}), "insert shaper for refusal");
+    doc->prepare(48000, 64);
+    doc->tick(0);
+    const auto id = doc->store().db().execAndGet("SELECT MAX(id) FROM devices").getInt64();
+    ui::AdiShaperPanelSession session(*doc, id);
+    auto binding = session.binding();
+    auto* device = doc->session().instanceFor(id);
+    const std::array<Panel::Change,1> half{{{1, .5}}}, more{{{1, .6}}};
+    require(device && session.error().empty() && binding.parameters(Phase::Begin, {}) &&
+            binding.parameters(Phase::Change, half), "an edit in flight");
+    require(device->setParam("1", device::ParamValue::fromNormalized(.25)), "another writer moves the parameter");
+    require(!binding.parameters(Phase::Change, more) && session.error() == "The parameter changed outside this editor.",
+            "the refused edit says why");
+    require(binding.parameters(Phase::Begin, {}) && session.error().empty() && binding.parameters(Phase::Cancel, {}),
+            "the next edit clears the message");
+}
 void run() {
     test::TempDirectory temp("adi_shaper_session", "journal");
     const auto file=temp.path()/"song.adi";
@@ -118,7 +187,8 @@ void run() {
         require(doc->deviceAction("device.remove",{{"id",id}}),"remove target");
         require(!b.parameters(Phase::Begin,{}),"stale binding refuses gesture");
         require(doc->ops().undo().ok,"restore target"); sync(60);
-        require(!b.parameters(Phase::Begin,{}),"restored generation cannot be touched by former editor");
+        require(session.valid() && b.parameters(Phase::Begin,{}) && b.parameters(Phase::Cancel,{}),
+                "the device Undo restores takes the open editor's gestures again");
     }
     doc.reset();
     doc=ui::ProjectDocument::open(file,false,device::withBuiltinDevices(),error);
@@ -129,6 +199,6 @@ void run() {
 }
 }
 int main() {
-    try { run(); bandTrimInProject(); std::puts("ADI-Shaper project gesture, audio and recall tests passed"); return 0; }
+    try { run(); bandTrimInProject(); followsAudioRestart(); refusalMessage(); std::puts("ADI-Shaper project gesture, audio and recall tests passed"); return 0; }
     catch(const std::exception& e) { std::fprintf(stderr,"%s\n",e.what()); return 1; }
 }

@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "juce/adi_shaper_panel_view.hpp"
+#include "adi/ui/parameter_feed.hpp"
 #include "adi/ui/project_document.hpp"
 #include "adi/appdata.hpp"
 #include "juce/device_model.hpp"
 namespace adi::ui {
 AdiShaperPanelView::AdiShaperPanelView(ProjectDocument &doc, std::int64_t id)
-    : doc_(doc), token_(doc.session().deviceRuntimeToken(id)), model_(doc, id) {
+    : doc_(doc), id_(id), token_(doc.session().deviceRuntimeToken(id)), model_(doc, id) {
     auto binding = model_.binding();
     binding.choosePreset = [this] { choosePreset(); };
     panel_.bind(std::move(binding));
@@ -20,32 +21,61 @@ AdiShaperPanelView::~AdiShaperPanelView() { suspend(); }
 void AdiShaperPanelView::visibilityChanged() {
     if (!isShowing()) suspend();
 }
+// The device's current runtime: an audio restart gives it a new token, which is taken up here
+// while the id still holds an ADI-Shaper.
+device::DeviceInstance *AdiShaperPanelView::liveDevice() {
+    auto &session = doc_.session();
+    if (auto *current = session.resolveDevice(token_))
+        return current;
+    auto fresh = session.deviceRuntimeToken(id_);
+    auto *live = session.resolveDevice(fresh);
+    if (live == nullptr || live->identity().uid != "org.adidaw.builtin.adi-shaper")
+        return nullptr;
+    token_ = std::move(fresh);
+    return live;
+}
 void AdiShaperPanelView::suspend() {
-    if (auto *source = dynamic_cast<dsp::AdiShaperScopeSource *>(doc_.session().resolveDevice(token_)))
+    if (auto *source = dynamic_cast<dsp::AdiShaperScopeSource *>(liveDevice()))
         if (auto *scope = source->shaperScope())
             scope->suspend();
 }
-bool AdiShaperPanelView::valid() const { return model_.valid(); }
+bool AdiShaperPanelView::valid() { return model_.valid(); }
 void AdiShaperPanelView::frame() {
     if (auto* peer=getPeer(); peer && (!isShowing() || peer->isMinimised())) {
         suspend();
         return;
     }
-    auto *live = doc_.session().resolveDevice(token_);
-    if (!live)
-        return;
-    auto *source = dynamic_cast<dsp::AdiShaperScopeSource *>(live);
-    // Undo and redo publish a new committed project even on hosts without a scope feed.
-    const auto version = source ? source->shaperParameterRevision() : doc_.view().committedGeneration();
-    if (version != revision_ && !model_.editing()) {
+    // The values first, whatever the scope: Undo and Redo publish a new committed project, and
+    // the other editors and an audio restart change this device's row in the parameter feed, on
+    // hosts without a scope feed too. The model reads the stored values (what a knob set), not
+    // what a lane plays: a lane's value stays in the device's audio-side state, so it is not
+    // polled here.
+    auto *source = dynamic_cast<dsp::AdiShaperScopeSource *>(liveDevice());
+    const auto revision = source ? source->shaperParameterRevision() : 0;
+    const auto committed = doc_.view().committedGeneration();
+    std::uint64_t stamp = 0;
+    std::vector<double> playing;
+    for (const auto &device : *doc_.parameterFeed().current())
+        if (device.id == id_) {
+            stamp = device.instance;
+            for (const auto &record : device.parameters())
+                playing.push_back(record.playing);
+            break;
+        }
+    const bool changed = revision != revision_ || committed != committed_ || stamp != stamp_ || playing != playing_;
+    if (changed && !model_.editing()) {
         const auto previousTitle = model_.presetTitle();
         model_.refresh();
         if (model_.presetTitle() != previousTitle)
             panel_.setPresetName(model_.presetTitle().empty() ? juce::String("Initial state") :
                 juce::String::fromUTF8(model_.presetTitle().c_str()));
         panel_.refresh();
-        revision_ = version;
+        revision_ = revision;
+        committed_ = committed;
+        stamp_ = stamp;
+        playing_ = std::move(playing);
     }
+    // Only the scope's trace needs the scope feed.
     if (!source)
         return;
     if (auto *scope = source->shaperScope()) {
