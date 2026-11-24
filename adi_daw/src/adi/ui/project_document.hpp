@@ -9,6 +9,7 @@
 #include "adi/engine/session.hpp"
 #include "adi/history.hpp"
 #include "adi/mix_functions.hpp"
+#include "adi/mix/limiter/ReductionMailbox.h"
 #include "adi/media/media_ops.hpp"
 #include "adi/store.hpp"
 #include "adi/material_commands.hpp"
@@ -81,6 +82,10 @@ class ProjectDocument final : public engine::BlockProcessor {
     static StoreFileResult runCollectAndExport(const ExportJob &);
     bool synchronise();
     void tick(std::int64_t milliseconds);
+    // Commits every parameter edit still held in the capture, each as the undo step it was going to
+    // be, without waiting for its quiet interval: what Undo, Redo and the Undo History do first, so the
+    // step they undo is the one the user sees last (DF-W29). A held drag (Begin with no End) stays.
+    bool settleParameters();
     // Installed by the audio device owner before attaching its callback. Evaluated on the
     // message thread when the driver supplies the granted size to prepare.
     void configureGraphWorkers(std::function<std::uint32_t(std::int32_t)> count,
@@ -100,6 +105,10 @@ class ProjectDocument final : public engine::BlockProcessor {
     ParameterFeed &parameterFeed() noexcept { return feed_; }
     void setParameterDemand(const void *consumer, const std::vector<std::int64_t> &devices);
     const std::shared_ptr<SharedAnalysis> &analysis() const noexcept { return analysis_; }
+    // Visible surfaces hold one owner-thread lease per presented runtime.
+    // Reads are nonconsuming and expose the same current frame to every reader.
+    [[nodiscard]] mix::limiter::ReductionMailbox::Lease observeLimiterReduction(
+        std::int64_t id, const engine::DeviceRuntimeToken& expected);
     // A control in the device strip: Begin, Values and End on one parameter, in the plug-in's
     // normalised unit (N7; ADR-0124 d4, ADR-0181 d5; MR 9.1). Every value reaches the plug-in at
     // once; End commits the gesture as ONE undo step, its first-touch opener in front, through
@@ -117,6 +126,9 @@ class ProjectDocument final : public engine::BlockProcessor {
     // must never redirect a gesture to a replacement instance.
     bool parameterGestureExpected(std::int64_t id, const std::string &param, engine::ParamEventKind,
                                   double normalized, const engine::DeviceRuntimeToken &, std::uint64_t instance);
+    bool parameterPairGestureExpected(std::int64_t id, const engine::ParameterPair &,
+                                      engine::ParameterPairEvent, const engine::DeviceRuntimeToken &,
+                                      std::uint64_t instance, std::shared_ptr<const gesture::OwnerToken> &owner);
     bool deviceTargetCurrent(std::int64_t id, const engine::DeviceRuntimeToken &, std::uint64_t instance);
     // Live's Re-Enable Automation (manual 25.4; MR 6.1; N26): every lane a manual change overrode
     // this run follows its envelope again, from the playhead at once, and the snapshot's
@@ -124,6 +136,11 @@ class ProjectDocument final : public engine::BlockProcessor {
     // not an undo step: the override is session state (ADR-0162), and so is its end. True with
     // nothing overridden too; false with `error()` when the session's rebuild failed.
     bool reenableAutomation();
+    // Live's Options > Delay Compensation (manual 18.7; MX-04): the session lines every track up with
+    // the slowest chain, or compensates nothing and suspends Track Delay, keeping its stored values.
+    // The application's setting, not the project's: not an op and not an undo step. False with
+    // `error()` when the session refused it.
+    bool setDelayCompensation(bool on);
     // The parameter's context menu in Live (manual 25.4): one overridden lane follows its envelope
     // again; the others stay overridden. Session state as above, no undo step. False with `error()`
     // when the lane was not overridden or the rebuild failed.
@@ -144,11 +161,21 @@ class ProjectDocument final : public engine::BlockProcessor {
     // (the engine's live MIDI input is not on main yet), a device with no inputs, the engine's refusal.
     // `inputs` is the device's input channel count, `insertTick` where a stopped transport starts.
     bool startRecording(std::int64_t insertTick, std::int32_t inputs, bool playing);
+    // How many inputs the audio device has open (N65's window half): every audio track is fed by inputs
+    // 1/2 (input 1 alone on a one-input device) until a track's input has its grammar (MX-25), as
+    // recording takes them, and the session hears them as each track's Arm and monitoring say (In
+    // always; Auto while armed and no clip plays; Off never). Set by the application when the device
+    // opens or changes; 0 disconnects monitoring.
+    void setInputChannels(std::int32_t inputs);
     // Stops the recorder (the transport is the caller's); the takes land on a later `tick()`.
     void stopRecording();
     // Lands a running or stopping take now, with the driver detached (a project replaced, Quit): call it
-    // after the audio callback is gone and before the document goes.
-    void settleRecording();
+    // after the audio callback is gone and before the document goes. False: the take was still being
+    // written after ten seconds and goes with the document.
+    bool settleRecording();
+    // A take recording or landing lands in this file now, Record stopped first: what Save As does before
+    // the file switches. False when the recorder's worker did not finish in ten seconds.
+    bool landTakeHere();
     bool recording() const noexcept { return recording_; }
     bool landingTake() const noexcept { return landing_; }
     // What the last take did, once: the clips it added (one undo step for all of them), or nothing and
@@ -242,6 +269,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     WaveformCache &waveforms() noexcept { return waveforms_; }
 
   private:
+    std::int64_t retainedDeviceId() const noexcept;
     bool finishInsert(PreparedBuiltinInsert);
     ProjectDocument(std::unique_ptr<Store>, std::string name);
     // The clock the capture's timers run on: steady milliseconds, the same for the timer's drain
@@ -260,6 +288,13 @@ class ProjectDocument final : public engine::BlockProcessor {
     // so a frame that changes nothing builds nothing; the rows did not move, so the session has
     // nothing to re-read after it.
     void followOverrides();
+    [[nodiscard]] device::DeviceInstance* limiterReductionTarget(
+        std::int64_t id, const engine::DeviceRuntimeToken& expected);
+    void refreshLimiterReductionSources();
+    // The session's monitoring inputs for the tracks as they stand, given when they changed.
+    void syncMonitorInputs();
+    std::int32_t inputChannels_ = 0;
+    std::vector<std::pair<std::int64_t, std::vector<std::uint32_t>>> monitorInputs_;
     void persistReportedLatencies();
     void refreshReportedLatenciesForSave();
     std::unique_ptr<Store> store_;
@@ -281,6 +316,8 @@ class ProjectDocument final : public engine::BlockProcessor {
     std::int32_t engineFrames_ = 512; // the block `prepare` last set, for the recorder
     // Arrangement Record (MX-09): recording, then landing the take on the timer, then its outcome.
     void landTake(engine::AudioRecordingResult &);
+    // Discards a take that is not kept; what the Status Bar adds when its files stay (DF-E44), else empty.
+    std::string discardTake(engine::AudioRecordingResult &);
     bool recording_ = false, landing_ = false;
     std::atomic<bool> deviceStopped_{true}; // `release` without a `prepare` since
     std::optional<TakeLanded> landed_;
@@ -303,5 +340,11 @@ class ProjectDocument final : public engine::BlockProcessor {
     // Where the document's file is now, for the waveform worker: Save As moves it.
     std::shared_ptr<WaveformSource> waveformSource_;
     WaveformCache waveforms_;
+    struct ReductionSource {
+        engine::DeviceRuntimeToken expected;
+        std::weak_ptr<mix::limiter::ReductionMailbox> mailbox;
+    };
+    std::map<std::int64_t, ReductionSource> limiterReductionSources_;
+    std::int64_t limiterReductionPublication_ = 0;
 };
 } // namespace adi::ui

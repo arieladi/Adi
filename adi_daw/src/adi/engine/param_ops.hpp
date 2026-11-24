@@ -94,6 +94,9 @@ namespace adi::engine {
 
 class Session;
 
+using ParameterPair = device::DeviceInstance::ParameterPair;
+enum class ParameterPairEvent { Begin, Value, End, Cancel };
+
 /// ADR-0142: owned bytes named by a device.loadState request. Session-bound
 /// copies are diagnostic/staging values; the sealed journal packet owns the
 /// resources inserted in its transaction. Standalone callers install them.
@@ -120,6 +123,7 @@ struct PendingParameterGesture {
     std::shared_ptr<const gesture::OwnerToken> owner;
     std::int64_t deviceId = 0;
     std::string parameterId; // empty for a whole-device state gesture
+    std::string pairedParameterId;
     gesture::State state = gesture::State::Open;
     CapturedSubmissionPhase submission = CapturedSubmissionPhase::Offered;
     gesture::Status status;
@@ -158,6 +162,11 @@ public:
     /// or arms an automation lane. Refuses ordinary and read-only parameters.
     bool uiConfigurationEvent(std::int64_t deviceId, const std::string& paramId, ParamEventKind,
                               double value, std::int64_t nowMs, std::vector<OpRequest>& out);
+    /// A native two-endpoint capture. The owner is returned on Begin and is
+    /// required on later events; the complete pair emits one sealed group.
+    bool uiParameterPairEvent(std::int64_t deviceId, const ParameterPair&, ParameterPairEvent,
+                              std::int64_t nowMs, std::shared_ptr<const gesture::OwnerToken>& owner,
+                              std::vector<OpRequest>& out);
 
     /// Standalone compatibility: seed one borrowed sink/ring. Device must
     /// outlive this frontend or be detached with caller-proven quiescence.
@@ -199,6 +208,21 @@ public:
     /// plugin already is). That is what saving means.
     std::size_t snapshot(std::int64_t deviceId, std::int64_t nowMs,
                          std::vector<OpRequest>& out);
+
+    struct SnapshotAllResult {
+        gesture::Status status;
+        std::optional<std::int64_t> failedDevice;
+        std::size_t journalOps = 0;
+        std::size_t stateOps = 0;
+        [[nodiscard]] bool ok() const noexcept { return status.ok(); }
+    };
+
+    /// Owner thread, after attachSession. Resolve completed captured gestures,
+    /// then durably save live device state without relying on stateEpoch.
+    /// Successful zero journalOps means unchanged. Failure reports the
+    /// refused device when available and counts any prior durable writes.
+    /// Call before publishing a named snapshot, copying or closing the Store.
+    [[nodiscard]] SnapshotAllResult snapshotAll(std::int64_t nowMs);
 
     /// Session-bound: copy the first offered group's retained resources.
     /// Taking/dropping this copy cannot release common ownership. Standalone:

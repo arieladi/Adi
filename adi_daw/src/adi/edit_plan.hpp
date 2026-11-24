@@ -42,8 +42,8 @@ struct Move {
 };
 struct ResizeEnd {std::int64_t id=0;clip_edit::TimePoint end;};
 struct Trim {std::int64_t id=0;clip_edit::TimePoint begin;};
-/// Ordinary material editing currently admits main lanes. Scope bounds admit
-/// source/destination extents; only actual incoming spans clear destinations.
+/// Scope bounds admit source/destination extents. A take keeps its lane;
+/// only actual incoming spans clear material in that destination lane.
 [[nodiscard]] clip_edit::PreparedEdit prepareMove(Store&,const EditScope&,
     std::span<const Move>,const Options&);
 /// Keeps the native start fixed; left trim and Crop are separate intents.
@@ -52,6 +52,11 @@ struct Trim {std::int64_t id=0;clip_edit::TimePoint begin;};
 
 /// Keeps the native end and material anchored; audio clamps at source zero.
 [[nodiscard]] clip_edit::PreparedEdit prepareTrim(Store&,const EditScope&,Trim,const Options&);
+
+/// Delete the listed clips within the literal scope, leaving other overlapping
+/// clips and other lanes untouched.
+[[nodiscard]] clip_edit::PreparedEdit prepareDelete(Store&,const EditScope&,
+    std::span<const std::int64_t> clips,const Options&);
 
 enum class EffectKind { Removed, Trimmed, Split, Created, Moved, Resized };
 struct MaterialState {

@@ -8,6 +8,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <system_error>
 #include <vector>
 namespace adi::engine {
 class Transport;
@@ -59,7 +60,10 @@ public:
     [[nodiscard]] const std::string& sourceProject()const noexcept{return sourceProject_;}
     [[nodiscard]] const std::optional<AudioRecordingLoop>& loopSpec()const noexcept{return loop_;}
     [[nodiscard]] std::span<const RecordedPass> passes()const noexcept{return passes_;}
-    void discard(); // owner thread, after recording has finished
+    [[nodiscard]] bool hasAttachableAudio()const noexcept;
+    // Owner thread, after recording has finished. A cleanup error retains the
+    // directory reference so the owner can report and retry it.
+    std::error_code discard();
     // Owner/worker only. Creates a private Float32 WAV, preserving snapshot
     // bits, for the existing prepareCommit/commit publication and undo path.
     // No project rows change; failure cleans only this attempt's private work.
@@ -72,6 +76,7 @@ private:
     std::string sourceProject_;
     std::optional<AudioRecordingLoop> loop_;
     std::vector<RecordedPass> passes_;
+    bool finalizedPrefix_=false;
     friend class AudioInputRecorder;
 };
 /// Optional off-callback writer adapter. The default is an actual WavWriter.
