@@ -101,6 +101,13 @@ Questions only the director can answer. Each says what the window lane recommend
 | N58 | The plug-in catalogue off the message thread: a scan service, Rescan, a default worker count, and each VST3's kind with its instrument flag (ADR-0248 d7: engine-win's third item, under DEV-25) | engine-win | the Browser's Plug-Ins with progress, and each VST3's icon | the window scans on its own worker with the one loader (DF-W34 a), the loader locked while it scans; no progress count; a VST3 shows the plug-in icon |
 | N59 | The project's key and scale, if the Control Bar's Key group (step 2) shows the project's and not the selected clip's: an op and a snapshot field (ADR-0248, `collab/RESERVATIONS.md`) | engine, when asked | the Control Bar's Key and Scale | step 2 waits on the Mix View's switch and theme rows; not asked yet |
 
+## 2026-11-24, window lane — WIN-05 on main again (PR requested stands)
+
+**WIN-05.** Branch `window/shortcut-sets`, head `c08afd7b` (main merged after #739). PR requested stands, at this head; it lands after 3 December. Body updated: [`collab/window/pr-bodies/window-shortcut-sets.md`](window/pr-bodies/window-shortcut-sets.md).
+- **Tests:** shell 3171, seams 580, document 337, window_state 177, 0 failures; the `ui.yml` six green; the sweeps flag only main's lines.
+
+---
+
 ## 2026-11-24, window lane — WTS-01's window half, rebuilt on main (PR requested)
 
 **WTS-01, the window's half. PR requested.** Branch `window/launch-isolation-main`, on main, head `788908b2` (replaces `window/launch-isolation`, as win asked). Title: **adi_daw: window: a test launch runs on its own, quietly (WTS-01, the window's half)**. Body: [`collab/window/pr-bodies/window-launch-isolation-main.md`](window/pr-bodies/window-launch-isolation-main.md).
