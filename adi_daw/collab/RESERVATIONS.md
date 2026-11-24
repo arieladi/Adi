@@ -43,7 +43,7 @@ Next free: **ADR-0254**.
 | DF-C | Control | the control seat, through win | DF-C5 | DF-C6 |
 | DF-M | Mix View | the Mix View seat, through win | DF-M67 | DF-M68 |
 | DF-W | Window | the window lane and win | DF-W40 | DF-W41 |
-| DF-E | Engine | the engine seat, engine-win and the devices lane; the row's owner column says which | DF-E75 | DF-E76 |
+| DF-E | Engine | the engine seat, engine-win and the devices lane; the row's owner column says which | DF-E76 | DF-E77 |
 | DF-R | Repository | win | DF-R1 | DF-R2 |
 
 Three seats share DF-E, so each DF-E id is reserved here first.
@@ -91,5 +91,12 @@ None of the four needs a schema minor, an op name or a register id today.
 | N66 | a failed capture's audio kept up to the failure (a locate or an overflow after minutes of good audio is lost whole today) | engine-win (recording, ADR-0248 d7) |
 | N67 | Live's monitoring default for a new track: Auto, where New and `track.create` store 0 (Off) | **ruled by win (ADR-0203 d1): Auto, as Live**; the engine's `track.create` default and New's tracks |
 | N68 | after a discovery job, a project open still probes a plug-in's saved path when the catalogue lacks it, as before any job (`managedDiscovery_`, `juce_device_loader.cpp` 450) | engine-win (N58) |
+| N69 | a device parameter whose automation lane goes (its last point deleted, the lane deleted or disabled) returns to its stored value, as a mixer control does (`Session::rebuild`, `bindDeviceAutomation`; DF-W37) | engine |
+| N70 | a distinct `scan::State` (or a shared constant) for "the scanner helper could not start", apart from the file it was asked to read, so the Status Bar names the scanner, not the plug-in (DF-W34 (b)) | engine-win (`plugin_scanner.*`) |
+| N71 | `Session::refresh` re-reads the project's identity (`recordingProject_`), so recording after a Save As keeps its take (PD06-SAVEAS-GUARD) | engine (`engine/session.cpp`) |
+| N72 | a dropped audio file clears what it lands on, as a move, Paste and Duplicate do (DF-W28): the import placed through the planner (`PlacementBatch::clear`), one prepared edit with the window's batch | engine (`material_commands.cpp`, `edit_plan*`) |
+| N73 | a loop recording keeps the passes it has when it ends early (a tempo change, Tap Tempo, a loop edit, running out of passes) | engine (`engine/audio_recording.*`, `recording_commands.*`) |
+| N74 | Live's undo for a loop recording: one step for the whole recording, or one per pass as `prepareLoopCommit` commits today. A reading of Live 12 first (the devices lane's ONE list); until it, the window follows the engine, a step per pass | engine and win (a ruling after the reading) |
+| N75 | MX-07's registry half: `mixing.soloInFront`, `mixing.soloInFrontDb` and `mixing.soloBus` labelled "not built", and Live's Options rows `preFollowsSolo` and `keepAllReturns` (they change only on readings, AWAITING 5) | engine-win (`settings/registry.cpp`) |
 
-Next free: **N69**. The project key and scale take it if they need an engine field.
+Next free: **N76**. The project key and scale take the next free one if they need an engine field. N69 to N75 were the window-fn seat's unnumbered needs, numbered by win on 24 November in the order of its needs table.
