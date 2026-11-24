@@ -4,6 +4,109 @@ Trial seat (22 November 2026, `collab/win.md`): Linux environment (Debian 12, GC
 
 ---
 
+## 2026-11-24 — Engine review fixes on all four after-3-December PLAN branches (`SRF-09`, `SRF-10`, `PD-15`, `CO-01`)
+
+Addressed every finding from win's 24 November engine review in `collab/win.md` (`aef709ad6`) across all four after-3-December PLAN branches, rebased/merged on `main` (`a44834a98`), and re-verified on GCC 12.2, Clang 14.0.6, ASan+LSan+UBSan, and TSan. All four branches stay strictly within their loaned paths (`collab/prompts/2026-11-22-gemini-queue.md`) and land after 3 December (`ADR-0252 d4`).
+
+### 1. `gemini/srf09-osc-core` (`94ba8bce4`, merged `main` `a44834a98`)
+
+- **Files touched (loaned paths only):** `src/adi/osc_codec.hpp`/`.cpp`, `src/adi/osc_namespace.hpp`/`.cpp`, `tests/test_osc_codec.cpp`, `tests/test_osc_namespace.cpp`, `tests/fuzz_osc_codec.cpp`, `CMakeLists.txt`.
+- **Review fixes:**
+  1. **Address unification with SRF-10:** `/adi/track/{n}`, `/adi/track/{n}/send/{s}`, `/adi/track/{n}/device/{d}/param/{p}`, `/adi/master/device/{d}/param/{p}`, and `/adi/focused/device/param/{p}` all parse canonical positive 64-bit stable ids (`std::uint64_t`) matching SRF-10 OSCQuery `FULL_PATH`s (non-canonical forms such as leading zeros or `0` are refused).
+  2. **Nudge echo suppression:** `canonicalFeedAddress()` strips `"/nudge"` so nudges suppress the actual feed-bearing parameter/dial address instead of a non-feed address; gesture addresses return empty so they never poison feed suppression.
+  3. **Refused / clamped / nudged / unchanged confirmation:** added `confirmNextFlush_` tracking so refused (`InvalidArgument` or sink-refused), clamped, nudged, and unchanged writes suppress same-flush echo and confirm the true settled feed value back to the sender on the next flush.
+  4. **Medium findings:** added explicit `/gesture` addresses plus automatic begin/end gesture bracketing on continuous strip/param/macro/dial writes (`ADR-0181 d2`) with `endClientGestures()` / `endAllGestures()`; added `BindPolicy` / `validateBindPolicy()` refusing wildcard binds (`0.0.0.0`, `::`, `*`), privileged ports (`< 1024`), and non-loopback addresses without `trustedNetworkAcknowledged` (`ADR-0185 d4`, `ADR-0188 d7`); added message-thread ownership contract (`ownerThread_`, `adoptCurrentThread()`, failing closed with `DispatchStatus::WrongThread`).
+- **Verification (`94ba8bce4`):**
+
+| Compiler / tool | Flags | Suites & counts | Verdict |
+|---|---|---|---|
+| GCC 12.2.0 | `-DADI_WERROR=ON` (Debug, full CMake + standalone) | `adi_osc_codec_tests` **208/0**, `adi_osc_namespace_tests` **379/0** (0 warnings) | PASS |
+| Clang 14.0.6 + libstdc++ 12 | `-DADI_WERROR=ON` (Debug, full CMake + standalone) | `adi_osc_codec_tests` **208/0**, `adi_osc_namespace_tests` **379/0** (0 warnings) | PASS |
+| GCC 12.2.0 ASan+LSan+UBSan | `-O1 -g1 -fsanitize=address,undefined` (`detect_leaks=1:alloc_dealloc_mismatch=1`) | `adi_osc_codec_tests` **208/0**, `adi_osc_namespace_tests` **379/0** (0 reports) | PASS |
+| GCC 12.2.0 TSan | `-O1 -g1 -fsanitize=thread` (`setarch x86_64 -R`) | `adi_osc_namespace_tests` **379/0** (0 races) | PASS |
+
+**Review requested: `gemini/srf09-osc-core` at `94ba8bce4`** (lands after 3 December; PR requested only after engine passes this head).
+
+---
+
+### 2. `gemini/srf10-oscquery-core` (`13717f7cd`, stacked on `gemini/srf09-osc-core` `94ba8bce4`)
+
+- **Files touched (loaned paths only):** `src/adi/oscquery.hpp`/`.cpp`, `tests/test_oscquery.cpp`, `tests/test_oscquery_http.cpp`, `tests/fuzz_oscquery.cpp`, `CMakeLists.txt` (plus stacked SRF-09 files).
+- **Review fixes:**
+  1. **Blocker (MSVC C1060):** replaced the deeply nested `Json{...}` initializer list in `tests/test_oscquery.cpp` with a flat raw-string `Json::parse(R"json(...)json")` golden and split the HTTP / `?HOST_INFO` / `Host` checks into `tests/test_oscquery_http.cpp`.
+  2. **Blocker (address split with SRF-09):** unified 1-to-1 with SRF-09 stable 64-bit ids and added `testSrf09AddressParity()` verifying every leaf `FULL_PATH` emitted by `build()` resolves through `adi::osc::resolveAddress()`.
+  3. **Major (UTF-8 throw):** replaced every `.dump()` call in `src/adi/oscquery.cpp` with `j.dump(-1, ' ', false, Json::error_handler_t::replace)` so invalid UTF-8 bytes emit U+FFFD and never throw.
+  4. **Major (DNS rebinding):** `parseHttpRequest()` now requires a single syntactically valid `Host` header (400 on missing, duplicate, or malformed `Host`), and `handleHttpRequest()` enforces `isHostAllowed()` against loopback, `oscIp`, and `allowedHosts` (plus `httpPort` when configured), returning `403 Forbidden` on disallowed hosts.
+- **Verification (`13717f7cd`):**
+
+| Compiler / tool | Flags | Suites & counts | Verdict |
+|---|---|---|---|
+| GCC 12.2.0 | `-DADI_WERROR=ON` (Debug, full CMake + standalone) | `adi_oscquery_tests` **123/0** (0 warnings) | PASS |
+| Clang 14.0.6 + libstdc++ 12 | `-DADI_WERROR=ON` (Debug, full CMake + standalone) | `adi_oscquery_tests` **123/0** (0 warnings) | PASS |
+| GCC 12.2.0 ASan+LSan+UBSan | `-O1 -g1 -fsanitize=address,undefined` (`detect_leaks=1:alloc_dealloc_mismatch=1`) | `adi_oscquery_tests` **123/0** (0 reports) | PASS |
+| Clang 14.0.6 / GCC 12.2.0 fuzz harness | standalone `tests/fuzz_oscquery.cpp` + `src/adi/oscquery.cpp` alone (`-Werror` on Clang 14; ASan+LSan+UBSan seed replay on GCC 12) | 0 warnings, 0 ASan/LSan/UBSan reports | PASS |
+
+**Review requested: `gemini/srf10-oscquery-core` at `13717f7cd`** (stacked on `gemini/srf09-osc-core` `94ba8bce4`; lands after 3 December; PR requested only after engine passes this head).
+
+---
+
+### 3. `gemini/pd15-project-paste` (`81e487a25`, merged `main` `a44834a98`)
+
+- **Files touched (loaned paths only):** `src/adi/project_paste.hpp`/`.cpp`, `tests/test_project_paste.cpp`, `CMakeLists.txt`.
+- **Review fixes:**
+  1. **ADR-0068 d5 in-place media reference:** zero files are copied into `dest/audio/`; pasted `media_files` rows record the resolved `abs_path_hint` and `rel_path = NULL` (preserving `missing = 1` with the resolved `abs_path_hint` when absent on disk so `dest` relinks by hash).
+  2. **Strict BLAKE3 hash validation:** refuses empty or malformed `hash_blake3` (requires 64 hex chars) explicitly — never deduplicates on `""`.
+  3. **Take lanes:** copies `lanes WHERE kind = 'take'` via `createTakeLane()` (in reverse `ord` order to preserve exact ordering) + `lane.setMute`, and remaps `clips.lane_id` so take-lane clips stay on their take lanes.
+  4. **Group tracks:** pasting a group track recursively pastes its full descendant subtree (`parent_id` and `index_in_parent` remapped) along with `group_summing` and `return_send_taps`.
+  5. **Alias links:** preserves internal `alias_of` links across the pasted track/group (topological order: master before alias); clears external alias links and reports them in `result.warnings`.
+  6. **Track tables & sends:** copies `mixer_pan_settings` (split pan), `track_recording_options`, and `routing` sends + `routing_send_taps` (mapping to pasted or unique name-matched destination returns); reports unmappable sends and non-default `mixer_strip.pan_law` (no `mixer.setPanLaw` op exists in `ops_catalog.cpp` yet) in `result.warnings` instead of dropping silently.
+  7. **Tests:** expanded `tests/test_project_paste.cpp` to cover MIDI (`event_streams` + `note_expression`), take lanes, group subtree + summing, internal/external aliases, split pan, recording options, sends, empty-hash refusal, and all refusals (read-only dest, missing track, master track, nested rack, hash mismatch, audio thread).
+- **Verification (`81e487a25`):**
+
+| Compiler / tool | Flags | Suites & counts | Verdict |
+|---|---|---|---|
+| GCC 12.2.0 | `-DADI_WERROR=ON` (Debug) | `adi_project_paste_tests` **112/0** (0 warnings) | PASS |
+| Clang 14.0.6 + libstdc++ 12 | `-DADI_WERROR=ON` (Debug) | `adi_project_paste_tests` **112/0** (0 warnings) | PASS |
+| GCC 12.2.0 ASan+LSan+UBSan | `-O1 -g1 -fsanitize=address,undefined -DADI_WERROR=OFF` (`detect_leaks=1:alloc_dealloc_mismatch=1`) | `adi_project_paste_tests` **112/0** (0 reports) | PASS |
+| GCC 12.2.0 TSan | `-O1 -g1 -fsanitize=thread -DADI_WERROR=OFF` (`setarch x86_64 -R`) | `adi_project_paste_tests` **112/0** (0 races) | PASS |
+
+**Review requested: `gemini/pd15-project-paste` at `81e487a25`** (lands after 3 December; PR requested only after engine passes this head).
+
+---
+
+### 4. `gemini/co01-collab-core` (`4de5cc8ec`, merged `main` `a44834a98`)
+
+- **Files touched (loaned paths only):** `src/adi/collab/batch.hpp`/`.cpp`, `src/adi/collab/fractional_key.hpp`/`.cpp`, `src/adi/collab/fake_object_store.hpp`/`.cpp`, `src/adi/collab/replica.hpp`/`.cpp`, `tests/test_collab_fractional.cpp`, `tests/test_collab_sync.cpp`, `CMakeLists.txt`.
+- **Review fixes:**
+  1. **Bounded hostile CBOR validation:** added iterative, zero-recursion `validateCborLimits()` before `decodeFromLog()` capping packet size, nesting depth (32 across arrays/maps/tags), and item count (65536); 10,000-deep hostile CBOR is rejected without stack overflow.
+  2. **Strict non-narrowing integer decoding:** `readStrictUint64`, `readStrictInt64`, and `readStrictUint32` refuse floats, booleans, negatives in unsigned fields, and `> 32`-bit overflow in `idSpace`.
+  3. **Non-throwing op apply:** `updateOrderKeysForOp()` and `applyBatchToStore()` / `syncStep()` are `noexcept` against malformed op payloads, rejecting bad payloads deterministically instead of throwing out of `syncStep()`.
+  4. **Verified rewind:** `rewindPending()` verifies every pending `localTxnId` against `history.nextUndo()->txnId` before calling `history.undo()`, failing with `SyncStatus::Error` rather than undoing unrelated user edits.
+  5. **Restart persistence:** persists `appliedSeq`, `localLamport`, `localBatchCounter`, `vector`, `baseOrderKeys`, `appliedBatchIds`, and `allocatorCounters` in Layer-3 `session_state` (excluded from `digestProject()`, no schema change) so restarted replicas preserve exact fractional order keys and monotonic batch/row ids.
+  6. **No wedge on corrupt sequenced slot:** one corrupt, malformed, or invalid-id-space sequenced slot is skipped/rejected deterministically (`skippedBadBatchCount` / `rejectedRemoteBatchCount`, `appliedSeq_` advances) so sync never wedges.
+  7. **Remote id-space validation:** `validateBatchIdSpace()` enforces `idSpaceOf(id) == batch.idSpace && idCounterOf(id) > 0` on all row-creating ops in batches.
+  8. **Remote-commit seam:** added injectable `RemoteCommitHook` on `CollabReplica` so the core delegates remote commits cleanly once the engine lands `CommitOptions::remote` outside our loan.
+- **Verification (`4de5cc8ec`):**
+
+| Compiler / tool | Flags | Suites & counts | Verdict |
+|---|---|---|---|
+| GCC 12.2.0 | `-DADI_WERROR=ON` (Debug) | `adi_collab_fractional_tests` **692/0**, `adi_collab_sync_tests` **65/0** (0 warnings) | PASS |
+| Clang 14.0.6 + libstdc++ 12 | `-DADI_WERROR=ON` (Debug) | `adi_collab_fractional_tests` **692/0**, `adi_collab_sync_tests` **65/0** (0 warnings) | PASS |
+| GCC 12.2.0 ASan+LSan+UBSan | `-O1 -g1 -fsanitize=address,undefined -DADI_WERROR=OFF` (`detect_leaks=1:alloc_dealloc_mismatch=1`) | `adi_collab_fractional_tests` **692/0**, `adi_collab_sync_tests` **65/0** (0 reports) | PASS |
+| GCC 12.2.0 TSan | `-O1 -g1 -fsanitize=thread -DADI_WERROR=OFF` (`setarch x86_64 -R`) | `adi_collab_sync_tests` **65/0** (0 races) | PASS |
+
+**Review requested: `gemini/co01-collab-core` at `4de5cc8ec`** (lands after 3 December; PR requested only after engine passes this head).
+
+### Needs from engine (outside our loaned paths)
+
+- **For `PD-15`:** a `mixer.setPanLaw` op in `ops_catalog.cpp` so non-default `mixer_strip.pan_law` values can be pasted through the command layer (today `project_paste.cpp` preserves the default and reports non-default `pan_law` in `result.warnings`).
+- **For `CO-01` (per queue `Not yours`):**
+  1. `CommitOptions::remote` in the store/history layer (writing remote author `op_clocks` and retiring superseded unsequenced rows on rebase; `CollabReplica` already exposes `RemoteCommitHook` to plug it in).
+  2. Id-space integration in `row_ids.*` (the upper-32-bit `idSpace` + lower-32-bit counter allocator currently lives in `src/adi/collab/batch.*`).
+  3. Machine-local column exclusion in `digest.cpp` and schema minor reservation for `order_keys` / `sync_vectors` if promoted from Layer-3 `session_state` to Layer-1 tables.
+
+---
+
 ## 2026-11-24 — 24 November Linux proofs: remaining six fix branches (Items 2b–2g)
 
 All six remaining branches from win's 24 November prompt verified on Debian 12 (Linux x86_64, GCC 12.2.0 and Clang 14.0.6 with libstdc++ 12; JUCE 9.0.5 `d60b7a780` with `-DJUCE_ALSA=0` for the JUCE-ON check). Item 1 (`land/window-1124`) and Item 2a (`window/df-w40-clang14-lambda` `37e26e69`) were logged at `d3e39fa2`.
