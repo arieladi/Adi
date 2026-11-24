@@ -6,13 +6,17 @@
 #include "adi/mix/limiter/ReductionMailbox.h"
 #include "adi/mix/limiter/Dsp/ChannelGroups.h"
 #include "juce/builtin_host.hpp"
+#include "juce/device_model.hpp"
 #include "juce/mix_function_host.hpp"
 #include "adi/ops.hpp"
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <limits>
 #include <thread>
 #include <chrono>
@@ -482,8 +486,90 @@ void disableAtLatencyOffer() {
           "completed reenable releases structural busy state");
     d->release();
 }
+std::array<std::vector<float>,2> limiterProgramme(std::uint64_t block) {
+    constexpr std::size_t frames=256;
+    std::array<std::vector<float>,2> audio{std::vector<float>(frames),std::vector<float>(frames)};
+    for(std::size_t c=0;c<audio.size();++c)for(std::size_t i=0;i<frames;++i) {
+        const double t=static_cast<double>(block)*static_cast<double>(frames)+static_cast<double>(i);
+        audio[c][i]=static_cast<float>(.7*std::sin(t*(c?.021:.047)));
+    }
+    return audio;
+}
+// DF-M67: session rebuilds prepare every node. A prepare that changes nothing
+// never takes the gate (a block in flight would pass dry and undelayed while
+// the graph still compensates the latency) and keeps the look-ahead and
+// envelope; a changed format still resets.
+void duplicatePrepareKeepsLimiterState() {
+    constexpr double rate=48000;constexpr int frames=256;
+    auto live=make(),reference=make(),cold=make();
+    if(!live||!reference||!cold){check(false,"the no-op prepare fixture loads three limiters");return;}
+    auto* gate=device::detail::mixLimiterGateForTesting(*live);
+    if(!gate){check(false,"the native limiter exposes its gate to the prepare probe");return;}
+    for(auto* d:{live.get(),reference.get(),cold.get()})d->setParam("0",device::ParamValue::fromNormalized(.4));
+    live->prepare(rate,frames);reference->prepare(rate,frames);
+    bool limiting=false,same=true;
+    for(std::uint64_t block=1;block<=32;++block) {
+        auto a=limiterProgramme(block),b=a;const auto dry=a;
+        process(*live,a,0,frames,block);process(*reference,b,0,frames,block);
+        same=same&&a==b;limiting=limiting||a!=dry;
+    }
+    check(same&&limiting,"two limiters start with the same wet audio");
+
+    std::atomic<bool> finished{false};
+    const auto done=[&]{return finished.load(std::memory_order_acquire);};
+    const auto waitFor=[](auto predicate) {
+        const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(10);
+        while(!predicate()) {
+            if(std::chrono::steady_clock::now()>=deadline)return false;
+            std::this_thread::yield();
+        }
+        return true;
+    };
+    auto during=limiterProgramme(33),expected=during;
+    process(*reference,expected,0,frames,33);
+    std::exception_ptr prepareFailure;std::jthread owner;bool admitted=false;
+    {
+        // With this Pass held, a Hold taken by the prepare stays closed until
+        // the Pass leaves: the block below then passes dry instead of limited.
+        const device::ReactivationGate::Pass inFlight(*gate);
+        owner=std::jthread([&] {
+            try{live->prepare(rate,frames);}
+            catch(...){prepareFailure=std::current_exception();}
+            finished.store(true,std::memory_order_release);
+        });
+        if(waitFor([&]{return done()||gate->closed();})) {
+            admitted=static_cast<bool>(inFlight)&&!gate->closed();
+            process(*live,during,0,frames,33);
+        }
+    }
+    if(!waitFor(done)) {
+        std::fputs("FAIL same-format limiter prepare did not unwind after the test released its gate pass\n",stderr);
+        std::abort();
+    }
+    owner.join();
+    check(!prepareFailure&&admitted&&during==expected,
+          "a same-format prepare with a block in flight never takes the gate; the block is limited");
+    same=true;
+    for(std::uint64_t block=34;block<=96;++block) {
+        auto a=limiterProgramme(block),b=a;
+        process(*live,a,0,frames,block);process(*reference,b,0,frames,block);
+        same=same&&a==b;
+    }
+    check(same,"a repeated identical prepare keeps the look-ahead and envelope: output equals an uninterrupted limiter");
+
+    live->prepare(rate,2*frames);cold->prepare(rate,2*frames);
+    bool reset=true,differs=false;
+    for(std::uint64_t block=97;block<=128;++block) {
+        auto a=limiterProgramme(block),b=a,r=a;
+        process(*live,a,0,frames,block);process(*cold,b,0,frames,block);process(*reference,r,0,frames,block);
+        reset=reset&&a==b;differs=differs||a!=r;
+    }
+    check(reset&&differs,"a changed block capacity still resets: output equals a fresh limiter, not the uninterrupted one");
+    live->release();reference->release();cold->release();
+}
 }
 int main() {
     exactAdapter();loudnessDemand();loudnessMaximaFollowPublishedReadings();parametersAndState();capabilitiesAndPolicy();layouts();exportConfigurationAutomation();latencyHandoff();disableAtLatencyOffer();
+    duplicatePrepareKeepsLimiterState();
     std::printf("mix limiter: %d checks, %d failures\n",checks,failures);return failures?1:0;
 }
