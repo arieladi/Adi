@@ -4,6 +4,17 @@ Trial seat (22 November 2026, `collab/win.md`): Linux environment (Debian 12, GC
 
 ---
 
+## 2026-11-24 — Queue item 2 (PR-BUILDS, Round 8): `window/shaper-panel-fixes` (`c10003c49`, `#716`)
+
+Verified the window lane's newly requested branch `window/shaper-panel-fixes` (`c10003c49`, stacked on `#716` `1baf1fd8c`) on Debian 12 Linux x86_64 with JUCE 9.0.5 (`-DADI_WITH_JUCE=ON -DADI_WITH_PD=ON -DADI_WERROR=ON`, `-DJUCE_ALSA=0` since this VM lacks `libasound2-dev`).
+
+| Branch | Head SHA | Compiler & Flags | Build / Warnings | Test Results | Owner / Verdict |
+|---|---|---|---|---|---|
+| `window/shaper-panel-fixes` | `c10003c49` | GCC 12.2.0, Debug `-DADI_WITH_JUCE=ON -DADI_WITH_PD=ON -DADI_WERROR=ON` (`-Wcast-align -Wconversion -Wsign-conversion -Werror`, `-DJUCE_ALSA=0`); DF-M62 (`FloatRealTransform.h:61`) patched locally in throwaway worktree because `#716`'s base `1baf1fd8c` predates DF-M62 | **0 warnings** across all 11 ADI-Shaper targets (`adi_shaper_wave_tests.cpp`, `adi_shaper_panel.cpp`, `adi_shaper_panel_session.cpp`, `adi_shaper_panel_view.cpp`, and all DSP/Pd/panel/session/view test TUs), `libadi_ui_shell.a`, `adi_ui_shell_tests`, `adi_ui_document_tests`, `adi_ui_window_state_tests`, and `ui_main.cpp.o`. (`adi_ui_seams_tests` skipped on GCC 12 because base `1baf1fd8c` predates DF-W39's `-fsanitize-trap` fix.) | **PASS (13/13 non-shell suites):** `adi_shaper_tests`, `adi_shaper_filter_tests`, `adi_shaper_sweep_tests`, `adi_shaper_drive_tests`, `adi_shaper_crush_tests`, `adi_shaper_time_tests`, `adi_shaper_pd_tests`, `adi_shaper_wave_tests`, `adi_shaper_panel_tests` (PASS; prints `juce_Component.cpp:3079` unshown-focus assertions already noted by window lane for clones), `adi_shaper_panel_session_tests`, `adi_shaper_panel_view_tests`, `adi_ui_document_tests` (**319/0**), `adi_ui_window_state_tests` (**129/0**). In `adi_ui_shell_tests`, `shaperWrench` **PASSED** (`[shell] begin shaperWrench` -> `end shaperWrench`); suite later fails/crashes in `browserDevices` due to base `#716`'s pre-fix fixture fault (already documented in `window.md`). | window + clones — **PASS (strict GCC `-Wconversion` casts and new panel/session/view/shaperWrench tests confirmed clean)** |
+| `window/shaper-panel-fixes` | `c10003c49` | Clang 14.0.6 + libstdc++ 12, Debug `-g0 -DJUCE_ALSA=0 -DADI_WITH_JUCE=ON -DADI_WITH_PD=ON -DADI_WERROR=ON` | **0 warnings, 0 errors** on all 9 touched `.cpp` TUs (`adi_shaper_wave_tests.cpp.o`, `adi_shaper_panel.cpp.o`, `adi_shaper_panel_tests.cpp.o`, `adi_shaper_panel_session.cpp.o`, `adi_shaper_panel_session_tests.cpp.o`, `adi_shaper_panel_view.cpp.o`, `adi_shaper_panel_view_tests.cpp.o`, `ui_shell.cpp.o`, `test_ui_shell.cpp.o`). Full `adi_core` link skipped on Clang 14 because base `1baf1fd8c` predates DF-E69 (`src/adi/project_files.cpp:308`). | Compile-only verification of all touched TUs clean on Clang 14 `-Werror` | window + clones — **PASS** |
+
+---
+
 ## 2026-11-24 — Engine review fixes on all four after-3-December PLAN branches (`SRF-09`, `SRF-10`, `PD-15`, `CO-01`)
 
 Addressed every finding from win's 24 November engine review in `collab/win.md` (`aef709ad6`) across all four after-3-December PLAN branches, rebased/merged on `main` (`a44834a98`), and re-verified on GCC 12.2, Clang 14.0.6, ASan+LSan+UBSan, and TSan. All four branches stay strictly within their loaned paths (`collab/prompts/2026-11-22-gemini-queue.md`) and land after 3 December (`ADR-0252 d4`).
