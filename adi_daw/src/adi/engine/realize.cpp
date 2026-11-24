@@ -139,7 +139,7 @@ std::unique_ptr<RealizedGraph> realize(const GraphPlan& plan,
     // lifetime/binding contract. No candidate mutates a shared Node binding.
     const auto add = [&](Node& node) {
         if (auto owner = node.sourceLifetime()) r->sourceOwners_.push_back(std::move(owner));
-        const NodeId id = r->graph_.addNode(node);
+        const NodeId id = r->graph_.addNode(node, opts.fixedLatencyFor ? opts.fixedLatencyFor(node) : std::nullopt);
         if (opts.eventSourceFor) {
             if (auto binding = opts.eventSourceFor(node))
                 (void)r->graph_.setEventSource(id, std::move(*binding));

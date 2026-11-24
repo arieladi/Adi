@@ -16,15 +16,17 @@ same "212 ops" headline.
 
 ## Schema minors (`src/adi/store.hpp`, `kSchemaMinor`)
 
-Main is at 1.21. PLAN PD-10's register of pending minors is this table.
+Main is at 1.23. PLAN PD-10's register of pending minors is this table. Minors land in numeric order with no gap: check 9 of `tools/validate_schema.py` needs a frozen `docs/format/history/schema-1.N.sql` for every lower minor, so a minor is never burned. If work lands before a lower reserved minor, it takes that number, and the rows it passes move up by one. Win records the move here and in `collab/win.md`.
 
 | Minor | Seat | What | Pull request | Status |
 |---|---|---|---|---|
-| 1.22 | mixview | the device key taps, `routing_key_taps` (DEV-05, MX-24, DF-M11) | #651 (#674 carries the same) | in flight; lands first, once DF-M60 (c) is fixed on its branch (ADR-0248 d10) |
-| 1.23 | engine | the send taps, `routing_send_taps` (DF-E22, ADR-0245 d10) | #677 (#665 carries the same) | in flight; renumbered from 1.22 once #651 lands, with its line in `store.hpp`'s comment |
-| 1.24 | — | the next minor, by reservation here | — | free |
+| 1.22 | mixview | the device key taps, `routing_key_taps` (DEV-05, MX-24, DF-M11) | #651 (#674 carried the same) | landed (#651) |
+| 1.23 | engine | the send taps, `routing_send_taps` (DF-E22, ADR-0245 d10) | #677 (#665 closed, superseded) | landed (#677) |
+| 1.24 | engine | the rack macro side tables: the saved chain selector and its settings, macro settings, enabled mappings, mapping breakpoint curves and authored target caps, keyed by (device, parameter id) (DEV-06, ADR-0060 d3-d5, ADR-0203 d15) | none yet: `engine/dev06-rack-macros` plays the macros without it | reserved; lands after DEV-03 and 3 December (ADR-0249 d3); the saved selector waits for DEV-02 |
+| 1.25 | engine | the modulation route side tables (source, target device and parameter, depth, curve points, mode, bipolar, enable), persisted and undoable; outputs never persist (DEV-07, ADR-0230 d4, XC-16) | none yet: engine queue item 12 | reserved; lands after DEV-06 (ADR-0249 d3) |
+| 1.26 | — | the next minor, by reservation here | — | free |
 
-Known to want a minor and not yet reserved: DF-W6, the `tracks.role` column (win).
+Known to want a minor and not yet reserved: DF-W6, the `tracks.role` column (win); chain volume and pan, a side table (DF-E73, ADR-0253 d8); AU-06's Arrangement clip-envelope modulation streams (ADR-0230 d4, M6); engine-win queue item 8, only if the device ref must store the VST3 class ID.
 
 ## ADR numbers
 
@@ -32,29 +34,31 @@ The reservation table stays in `collab/README.md` ("Reserved ADR numbers"), wher
 `tools/validate_schema.py` reads it. #210, win's earlier fix that makes check 8 catch stray and missing
 rows, is kept open and folded into this work.
 
-Next free: **ADR-0253**.
+Next free: **ADR-0254**.
 
 ## Register ids (`docs/DEFERRED.md`)
 
 | Prefix | Section | Who numbers in it | Last used | Next free |
 |---|---|---|---|---|
 | DF-C | Control | the control seat, through win | DF-C5 | DF-C6 |
-| DF-M | Mix View | the Mix View seat, through win | DF-M65 | DF-M66 |
-| DF-W | Window | the window lane and win | DF-W39 | DF-W40 |
-| DF-E | Engine | the engine seat, engine-win and the devices lane; the row's owner column says which | DF-E70 | DF-E71 |
+| DF-M | Mix View | the Mix View seat, through win | DF-M68 | DF-M69 |
+| DF-W | Window | the window lane and win | DF-W40 | DF-W41 |
+| DF-E | Engine | the engine seat, engine-win and the devices lane; the row's owner column says which | DF-E79 | DF-E80 |
 | DF-R | Repository | win | DF-R1 | DF-R2 |
 
 Three seats share DF-E, so each DF-E id is reserved here first.
 
 ## Op names (`docs/OPS.md`)
 
-Claimed by open pull requests. #674 carries #651's op and #665 carries #677's: one op each.
+Claimed by open pull requests, or reserved for a named PLAN row before its pull request opens. A landed op keeps its row, marked.
 
 | Op | Pull request(s) | Seat |
 |---|---|---|
-| `routing.setKeyTap` | #651, #674 | mixview |
-| `routing.setSendTap` | #677, #665 | engine |
-| `lane.restore` | #662 | engine-win |
+| `routing.setKeyTap` | #651 (landed), #674 (landed, carried the same) | mixview |
+| `routing.setSendTap` | #677 (landed); #665 closed | engine |
+| `lane.restore` | #662 (landed) | engine-win |
+| `noteExpression.write` | none yet: MI-08, engine queue item 19; inside `note.applyDiff`, exact Undo over the `note_expression` AEXP rows; DF-W12's gain (3) and pan (4) are existing dimensions | engine |
+| `noteExpression.clear` | none yet: MI-08, engine queue item 19; inside `note.applyDiff`, exact Undo over the same rows | engine |
 
 ## PLAN rows on loan (ADR-0252)
 
@@ -87,5 +91,12 @@ None of the four needs a schema minor, an op name or a register id today.
 | N66 | a failed capture's audio kept up to the failure (a locate or an overflow after minutes of good audio is lost whole today) | engine-win (recording, ADR-0248 d7) |
 | N67 | Live's monitoring default for a new track: Auto, where New and `track.create` store 0 (Off) | **ruled by win (ADR-0203 d1): Auto, as Live**; the engine's `track.create` default and New's tracks |
 | N68 | after a discovery job, a project open still probes a plug-in's saved path when the catalogue lacks it, as before any job (`managedDiscovery_`, `juce_device_loader.cpp` 450) | engine-win (N58) |
+| N69 | a device parameter whose automation lane goes (its last point deleted, the lane deleted or disabled) returns to its stored value, as a mixer control does (`Session::rebuild`, `bindDeviceAutomation`; DF-W37) | engine |
+| N70 | a distinct `scan::State` (or a shared constant) for "the scanner helper could not start", apart from the file it was asked to read, so the Status Bar names the scanner, not the plug-in (DF-W34 (b)) | engine-win (`plugin_scanner.*`) |
+| N71 | `Session::refresh` re-reads the project's identity (`recordingProject_`), so recording after a Save As keeps its take (PD06-SAVEAS-GUARD) | engine (`engine/session.cpp`) |
+| N72 | a dropped audio file clears what it lands on, as a move, Paste and Duplicate do (DF-W28): the import placed through the planner (`PlacementBatch::clear`), one prepared edit with the window's batch | engine (`material_commands.cpp`, `edit_plan*`) |
+| N73 | a loop recording keeps the passes it has when it ends early (a tempo change, Tap Tempo, a loop edit, running out of passes) | engine (`engine/audio_recording.*`, `recording_commands.*`) |
+| N74 | Live's undo for a loop recording: one step for the whole recording, or one per pass as `prepareLoopCommit` commits today. A reading of Live 12 first (the devices lane's ONE list); until it, the window follows the engine, a step per pass | engine and win (a ruling after the reading) |
+| N75 | MX-07's registry half: `mixing.soloInFront`, `mixing.soloInFrontDb` and `mixing.soloBus` labelled "not built", and Live's Options rows `preFollowsSolo` and `keepAllReturns` (they change only on readings, AWAITING 5) | engine-win (`settings/registry.cpp`) |
 
-Next free: **N69**. The project key and scale take it if they need an engine field.
+Next free: **N76**. The project key and scale take the next free one if they need an engine field. N69 to N75 were the window-fn seat's unnumbered needs, numbered by win on 24 November in the order of its needs table.

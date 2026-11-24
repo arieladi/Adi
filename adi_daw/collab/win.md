@@ -6,6 +6,239 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-24 — win covers the seats out of usage (window, window-fn, engine, engine-win, devices, Mix View, clones)
+
+The director's order: every seat but gemini is out of usage until tomorrow, and win covers them. Win writes here,
+never in another seat's log.
+
+**Landing (#739, `land/window-1124`), the window lane's and window-fn's requests that land before 3 December:**
+WIN-01's tail and WIN-04 (`window/shortcut-ids` with `window/function-keys`), WIN-09 (`window/help-menu`), WTS-02's
+first half (`window/test-hygiene`), WIN-02 and WIN-03 (`window/window-kinds` with `window/window-places`), WTS-09
+(`window/parity-bookkeeping`), the GCC 13 `adi_play` fix with DF-E71 (`window-fn/play-indent`), DF-W39
+(`window-fn/seams-gcc12`). In the merges, Help's two commands take stable ids `help.manual` and
+`help.keyboard-shortcuts` (table 127) and lines 29053 and 29054 in the PC key-map goldens, as the window log asked of the
+second to land. Win's commits on the stack:
+- `tools/validate_parity.py`, lent by win, moved from `collab/window/`, so ci.yml's every-validator step runs it. Its
+  self-test copies the sheets rather than linking them, because Windows refuses a symlink without Developer Mode. WIN-03's
+  rows 13 to 15 are tagged, which keeps the untagged count at 145.
+- Three fixes the stack's first CI runs asked for:
+  - WIN-03's local `flags` shadowed a JUCE member, which MSVC C4458 refuses.
+  - Two search boxes took the keyboard focus while unshown: the Stack picker's and the Mix View's channel search. Both
+    now go through `focusIfShowing`.
+  - WTS-02's list of machine-caused assertions named the X11 cursor line of the JUCE before 9.0.5: it is 2703 now, not
+    2623.
+- **Not in it:**
+  - `window/launch-isolation` (WTS-01's window half): it was not requested, and it conflicts with WIN-02 and WIN-03 in
+    five files. The window lane rebuilds it on main.
+  - WIN-05, WIN-06 and WTS-03: they land after 3 December, as the queue says.
+  - `window/held-peak`: it lands with the Mixer sheet.
+
+**Landing (#740, `land/cover-1124`), fixes win built for the seats** (each built and run on MSVC, each read by a
+skeptical reviewer):
+- DF-M67 and DF-M36's rest: the Limiter's unchanged prepare returns at once, with tests on it and on the Delay
+  built-in.
+- DF-M66: the Focus mailbox check without the race.
+- DF-M63 and DF-M64: the two mix tests without undefined behaviour.
+- DF-M65: `-ffp-contract=off` for the function and compressor hosts.
+- DF-E67 (a): the four device suites on the shared operator-new header, in the ASan job.
+- DF-W40: the Clang 14 lambda.
+
+The rows close when gemini's runs say so: ASan and `_GLIBCXX_DEBUG` for DF-M63 and M64, Clang 14 for DF-W40,
+200 runs for DF-M66, and the macOS leg for DF-M65's build.
+
+**Held, the director's question:** `engine/df-e17a-move-overlap` (98ee01f8, DF-E17 (a)). Following ADR-0217 d1, it
+refuses a raw `clip.move` onto another clip: only the planner may clear what a move covers. The reviewer found two
+things for the director:
+- **What Delete Overlaps off should do:** keep the overlap (as before) or refuse. Live has no such switch, so this is
+  ADI's addition.
+- **A regression with default settings:** on a track with an automation lane, the planner refuses until AU-05. A drag
+  onto a clip there would then do nothing, where today it moves and keeps the overlap.
+
+Win recommends keeping the overlap while Delete Overlaps is off or the planner refuses, and refusing only when Delete
+Overlaps is on and the planner could place it. The branch waits for his answer.
+
+**The engine's reviews of gemini's four branches** (the engine seat's job; its verdicts here). All four need changes
+before their PRs are requested, and all four land after 3 December:
+- `gemini/srf09-osc-core` (5e42fa61):
+  - A nudge suppresses an address that carries no feed, so the echo comes back.
+  - A refused or unchanged write is never confirmed to its sender, because the flush sends only changed values.
+  - SRF-09 reads `{n}` in `/adi/track/{n}` as a 1-based position; SRF-10 publishes stable ids there. One meaning has
+    to be chosen for both.
+  - Medium: no gesture brackets on strip writes (ADR-0181 d2); no bind-interface policy for the next slice; no threading
+    contract between dispatch and flush.
+- `gemini/srf10-oscquery-core` (195892d7):
+  - Blocker: `test_oscquery.cpp` runs MSVC out of compiler heap (C1060); it needs splitting.
+  - Blocker: the same address split with SRF-09.
+  - Major: `build()` throws on invalid UTF-8 in a name; use a replacing error handler.
+  - Major: the HTTP responder never checks Host, which is open to DNS rebinding.
+- `gemini/co01-collab-core` (909961ae):
+  - Hostile bucket input crashes the replica: CBOR nesting is unbounded.
+  - A decodable op with a malformed payload throws out of `syncStep`.
+  - Rewind undoes blindly, without checking the transaction ids.
+  - Order keys live only in memory, so a restarted replica disagrees with its peers.
+  - Batch ids repeat after a restart.
+  - Medium: numbers narrowed silently; one bad batch stops sync for good; no id-space check on remote ops; the row's
+    remote-commit and single-allocator items not met.
+- `gemini/pd15-project-paste` (ba43cddc):
+  - Media is copied where ADR-0068 d5 and Live reference it in place.
+  - Take-lane clips become main-lane clips.
+  - Media is deduplicated on an empty hash.
+  - Medium: a group pastes without its children; alias links cut; several track tables dropped silently (pan law,
+    split pan, recording options, sends); tests miss MIDI, take lanes and the refusals.
+
+**Logs landed** (in this PR): engine, devices, clones (the seat's side of `clones.md`; nothing main had scrubbed comes
+back), and gemini (a2b41755).
+
+**DEFERRED:**
+- DF-E65 and DF-E69 close on gemini's TSan and Clang 14 runs on main 01c70983.
+- Every row a seat called met was read against main first. DF-M61, M51, M52, E46, E50, E28, E31, E33 and E58 move to
+  Done. DF-E25 (c), E32 (a)(b), E34 (a)(c), E36's tests and E37 (c) stay, each saying what is left.
+- New DF-E76 (engine-win): `adi_play_render_tests`' symlinked-bundle check fails on Linux under GCC 13. The window-fn
+  seat found it once DF-E71 let the test compile.
+
+**Reserved:** N69 to N75 for the window-fn seat's open needs, in its table's order:
+- N69: DF-W37, a parameter back to its stored value when its lane goes.
+- N70: the scanner helper's own failure state.
+- N71: recording after a Save As.
+- N72: a dropped file clears what it lands on.
+- N73: a loop recording keeps its passes.
+- N74: Live's undo for a loop recording, after a reading.
+- N75: MX-07's registry half.
+
+Next free N76.
+
+**For the window-fn seat:**
+- Its parked recording and export parity checklists are drafted from the Live 12 manual's text by win, each row
+  checked by a second reader, on `window-fn/parity-recording-export`:
+  - `parity-recording.md`: 48 rows.
+  - `parity-export.md`: 39 rows.
+  - The floors gain recording 9 and export 3.
+  - It lands after #739.
+- RE-01 stays with the window-fn seat (its branch `window-fn/remarks` is built). The window lane reviews its shell
+  lines when it is requested.
+- Superseded branches stay on origin and are not landed: `window-fn/function-keys`, `shortcut-overrides`,
+  `lane-ref-canonical`, `play-first-block-main`, and the window lane's `plugins-browser` and `browser-devices-test`.
+
+**The gemini seat's PR-BUILDS rounds 6 and 7** (23 November) registered: DF-M68 (Clang 14, `shared_analysis.cpp`, the Mix View's after-date stack), DF-E77 (GCC 12, `test_vinyl_distortion.cpp`, devices), DF-E78 (two unused test functions, engine-win's export stack), DF-E79 (`adi_midi_capture_tests` on DEV-17, engine). Each lands with its after-date branch.
+
+**Next free:** schema 1.26, ADR-0254, DF-E80, DF-W41, DF-M69, N76.
+
+---
+
+## 2026-11-23, night (second entry) — ADR-0253 for DEV-01; the engine seat's reservations
+
+**ADR-0253** (on this PR): the amendment of ADR-0060 d1 the engine's queue (item 9) waited on. A rack is spliced into
+its track's graph: router, chain gates, chains in series, chain strips, a dry leg, a double-precision sum. Win read
+`engine/dev01-rack-playback` (cb8b4fb6) against Live's manual (ch. 24), and the ADR takes Live's way where the branch
+differs, so **the branch changes before it lands** (d10): an Instrument Rack consumes notes and carries no audio through
+its dry leg; a rack switched off stops calculating its children (ADR-0203 d4); Drum Racks, MIDI Effect Racks and unknown
+kinds stay skipped and named; stored zones are named until DEV-02. New rows: DF-E73 (chain volume and pan), DF-E74
+(MIDI Effect Racks merge their chains), DF-E75 (an empty Audio Effect Rack: the Live reading). The draft was read by a
+second, skeptical reader, whose corrections are in.
+
+**Reserved** (`collab/RESERVATIONS.md`): `noteExpression.write` and `noteExpression.clear` for MI-08 (engine queue item
+19, asked since 19 November; both already in OPS.md §9.5; DF-W12's gain and pan are existing dimensions). Schema **1.24**
+for DEV-06's rack macro side tables (asked 22 November) and **1.25** for DEV-07's route tables, in landing order (ADR-0249
+d3). Minors land in order with no gap (check 9): a minor that lands sooner takes the lower number and the reserved rows
+move up, recorded there. 1.22 (#651) and 1.23 (#677) and their ops are marked landed. The register-id table is current.
+
+**Still open for win from the engine's log:** RE-03's and TM-WT-02's op names, TM-WT-02's settings and transients minor,
+the TM-IC-01 drop-frame table (all after 3 December).
+
+**Next free:** schema 1.26, ADR-0254, DF-E76, DF-W41, DF-M68.
+
+---
+
+## 2026-11-23, night — win covers the engine lane until its limit resets; main green
+
+**The director's order:** win takes the engine lane until the engine seat's next limit reset. Win does not write
+`collab/engine.md`; this entry is the record, and the engine seat reads it first when it returns.
+
+**Main is green** at dbf98b0cd (#734). The landing merge c0a8f9bb4 (#733) failed once on macOS in
+`adi_mix_focus_tests` and passed on the rerun of that leg: DF-M66, a flaky check, the Mix View seat's.
+
+**Engine rows already done on main**, found by a triage of every open engine row against the code (moved to
+Done on this PR): DF-E19, E45, E51, E52, E54, and DF-E29 (a) to (d). DF-E29 (e) and DF-E6 (b) are the
+director's questions (the engine log's FOR THE DIRECTOR). DF-E17's overlap needs a window change in the same
+stack (`ui_shell.cpp`'s raw move fallback) and waits for the window lane.
+
+**Built, reviewed and requested** (#735, one landing branch `land/engine-cover-1123` over five branches cut from
+main; each built and tested under MSVC `/W4 /WX`, then read by two independent reviewers, every real finding fixed):
+- `engine/df-e70-resize-fades`: DF-E70. `clip.resize` clamps both fades; Undo restores the authored ones; old
+  journal entries replay as recorded; a whole-clip fade-out renders over the exact span either way.
+- `engine/df-e65-vorbis-table`: DF-E65. One lock around the stb_vorbis calls that reach its CRC table. The
+  ThreadSanitizer proof is the gemini seat's.
+- `engine/df-e66-test-new-forms`: DF-E66. One header replaces every `operator new` form for the seven suites, and a
+  new CI job runs them under ASan after a canary proves the old harness is still caught.
+- `engine/df-e69-clang14`: DF-E69. `timelineClips` without `std::views::filter`; init-captures at every engine
+  site. The window's one site is DF-W40. The Clang 14 proof is the gemini seat's.
+- `engine/df-e6-countin-latency`: DF-E6 (a). Count-in clicks on the compensated clock up to one beat of latency;
+  above one beat unchanged, for the director.
+
+**Repaired, held for after 3 December:** `engine/tm-tt01-tempo-ramps-current` (7c37df259): the engine's TM-TT-01 on
+current main, its two implicit conversions explicit, and the two suites it changes on purpose
+(`adi_transport_info_tests`, `adi_scale_context_tests`) updated to the ramp, each change following the branch's own
+log entry; 44 suites pass; a second reader approved it with three test-comment notes. The engine seat owns it:
+review it, then mark it "lands after 3 December".
+
+**The engine's review of DF-M36** (owed since #579): bf221a35 is correct in all three hosts. It found a worse case
+outside them, the Limiter, which re-prepares on every rebuild while playing: DF-M67, the Mix View seat's, now.
+
+**Next free:** DF-E73, DF-W41, DF-M68, ADR-0253.
+
+---
+
+## 2026-11-23, evening — the landing window of 23 November is on main (#733); nine rows closed
+
+**Landed** as one stack through its top, #733 (c0a8f9bb4): #722 engine-win, #729 engine, #730 window, #731 Mix
+View, #732 devices, #733 clones. #729 to #732 are closed as landed; #665 is closed (superseded by
+`engine-win/hosted-workers-current-main`). The first build of this stack (#723 to #728) carried rows that come
+after 3 December by the queues' own wording, so it was rebuilt without them (`-1123b`) and those PRs closed.
+- **engine-win:** play-first-block (DF-E64), take-lane-snapshot (DF-E35 (a)), take-lane-edit-scope (CT-01),
+  recording-placement-offset (MX-09), midi-loop-takes (CT-03), hosted-workers-current-main and
+  worker-rejection-evidence (DEV-23).
+- **engine:** empty-project-cost, mx23-track-delay-preview (MX-23, joined to the cost work), the DF-E17 edit
+  invariants.
+- **window:** return-in-group (DF-W33), input-clock (DF-W18), menu-parameters (DF-W19), undo-settles (DF-W29),
+  grid-ticks (DF-W30), function-keys (WIN-01, with the `browserDevices` fixture under Pd).
+- **Mix View:** the cumulative branch of 22 November (DF-M62, Focus FIR work for DF-M13, the neutral EQ for
+  DF-M34, DF-M36's compressor test).
+- **devices:** perf-sampler, perf-debug-timeout (DF-E68 (c)), denormal-tail, shifter-nan.
+- **clones:** nine ADI-Shaper repairs, with win's casts and one `else` (C4702).
+- **win's own fixes on the links:** WTS-01's harness (a pending Play keeps the song position at 0; silence is
+  required only when no track monitors while stopped), `test_ui_document`'s `primeAt`, a Clang 14 capture in
+  `ui_mixer.cpp`, `returnInGroup` holding a copy of the node, and WTS-01 step 5b's real step (grouping takes the
+  return, the group is heard at -12 dB, a send from outside is refused, Undo restores). **WTS-01: 13 of 13.**
+
+**Held, not in this window.**
+- **engine:** the 15 PLAN rows logged after #715 (SRF-08, TM-IC-02/04, TM-SV-03/04, DEV-02/04/19/24,
+  TM-WT-02/03, MI-05, MX-32) and MI-04/MI-06 (fit-to-scale, invert, step): not among the queue's items 1 to 8.
+  tm-tt01-tempo-ramps fails `adi_transport_info_tests` (6) and `adi_scale_context_tests` (1), whose expectations
+  it changes on purpose, and has two implicit `int64_t` to `long double` returns (C4244).
+- **window-fn:** every branch. Items 9 to 18 and send-pan come after 3 December; `window-fn/function-keys` is a
+  second WIN-01 (the window lane's landed).
+- **window:** held-peak (DF-W32) waits for the Mixer sheet. WIN-01's moved tip c4a62e25d (the PC key-map goldens)
+  is not taken: the goldens lack Options ids 29050 to 29052, and `*.txt` has no `eol=lf` rule for a Windows
+  checkout.
+- **clones:** shaper-split-slew contradicts shaper-split-spacing (its 32 kHz case needs an edge above spacing's
+  measured limit); shaper-audio-retrigger is after 3 December; #716 (the panel) waits on the window lane's four
+  findings, all in the seat's files.
+- **devices:** the .amxd chain, the DEV-22 effects stack, hybrid-reverb-nupc (after 3 December).
+- **engine-win:** the export chains, the 19 November set, export-format-name-tokens (needs a rebuild on main and
+  a ruling: it serves multi-format delivery), and three withdrawn branches.
+
+**DEFERRED, on this PR** (each row checked against the code at c0a8f9bb4 by a reader and a second, skeptical
+reader; nothing run here beyond the landing's own CI).
+- **Closed:** DF-E35, E47, E64; DF-W18, W19, W29, W30, W33; DF-M62.
+- **Partly, still open:** DF-E17 ((a)'s overlap only), DF-E68 ((c) done), DF-M13 (counted work cut; the timed
+  pass waits on the director), DF-M34 (Limiter and stateful EQ modes left), DF-M36 (built-in host test and the
+  engine's review left).
+- **New:** DF-E71 (engine-win: GCC 13 rejects a range loop in `tests/scanner_session_reopen.hpp`, from the window
+  log), DF-E72 (engine-win: a held Play has no time limit).
+- **Next free:** DF-E73, DF-W40, DF-M67, ADR-0253 (DF-M66 added after this entry: a flaky Focus mailbox check on main).
+
+---
+
 ## 2026-11-23, later — follow-ups: nine rows closed, two rows added, step 5b's text, a scrub
 
 **DEFERRED, on this PR** (main 7aa3ab58, #720; each closed row checked against its code and tests).

@@ -849,6 +849,9 @@ void completeRequestRefusal() {
     failAfter = -1;
     check(shrunk == g::Status::Ok && restored == g::Status::Ok && noAttempt,
           "request retained capacity restarts without allocation");
+    // x was replaced above, which freed the planes p named: take them again (DF-M63).
+    p[0] = x[0].data();
+    p[1] = x[1].data();
     auto doubles = signal<double>();
     double *d[]{doubles[0].data(), doubles[1].data()};
     check(a.processRequest(14, d, nullptr, 0, s) == g::Status::Ok &&

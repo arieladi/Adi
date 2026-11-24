@@ -82,6 +82,11 @@ class AutoFilter {
                                       100, 0, 0,     0,  4,   200,  .70710678, 0, 1},
         p_ = target_;
     double rate_ = 48000, bpm_ = 120, smooth_ = 0, beats_ = 0;
+    /// Samples since prepare: the vendored filter states are settled on
+    /// every 64th, a grid of absolute positions, so where the host cuts its
+    /// blocks never changes a sample.
+    std::uint64_t clock_ = 0;
+    void settle() noexcept;
     static double random(std::uint64_t) noexcept;
     double lfo(Lane &, std::size_t) noexcept;
     double filter(Lane &, double, double) noexcept;

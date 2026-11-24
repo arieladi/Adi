@@ -2,6 +2,7 @@
 #pragma once
 #include "adi/gesture_producers.hpp"
 #include "adi/ops.hpp"
+#include "adi/return_send_tap.hpp"
 #include "adi/ui/arm_edits.hpp"
 #include <array>
 #include <functional>
@@ -214,6 +215,8 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
 
   private:
     void sendMenu(std::size_t index);
+    // A send's tap chosen from its menu (DF-W33): one `routing.setSendTap`.
+    void chooseSendTap(std::size_t index, IndividualSendTap tap);
     void paintMeter(juce::Graphics &, juce::Rectangle<int>) const;
     // Live's MIDI meter on a track with no instrument, at the head of the meter's column.
     void paintMidiMeter(juce::Graphics &, juce::Rectangle<int>) const;
@@ -251,11 +254,15 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     // The return each send goes to; the snapshot's returns, refilled on each change; whether each
     // send is on.
     std::vector<std::int64_t> returns_, order_;
+    // Each of `returns_`'s letters, as its knob and its column show it ("A", "DA").
+    std::vector<juce::String> letters_;
+    std::vector<std::array<char, 2>> letterCodes_; // the letters, compared each sync without allocating
     std::vector<char> sendOn_;
     std::size_t shown_ = 0, returnCount_ = 0;
     int io_ = 0; // the In/Out section's height in the Mixer View, 0 while it is hidden
     int delay_ = 0; // the Track Delay section's height in the Mixer View, 0 while it is hidden
-    std::size_t position_ = 0; // the track's place, 1-based: what the activator shows
+    std::size_t position_ = 0; // the track's place, 1-based: its colour by place
+    std::size_t number_ = 0;   // Live's track number, which skips the returns: what the activator shows
     std::size_t group_ = 0;    // its group's place, 1-based; 0 at the top
     bool dragging_ = false, selected_ = false;
     TrackRecordState record_; // the arm and monitoring last shown (MX-09)
