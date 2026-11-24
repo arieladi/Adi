@@ -40,13 +40,15 @@ inline std::int64_t pastRemarks(const engine::Snapshot &snapshot, std::string_vi
             id = std::max(id, r->targetId + 1);
     return id;
 }
+// Every row's clips, the takes too (DF-E35): ids are the project's, so a take's is never given again.
 inline std::int64_t newClipId(const engine::Snapshot &snapshot) noexcept {
     std::int64_t id = 1;
     for (const auto &t : snapshot.tracks)
         if (t)
-            for (const auto &c : t->clips)
-                if (c)
-                    id = std::max(id, c->id + 1);
+            for (const auto *row : {&t->clips, &t->takeClips})
+                for (const auto &c : *row)
+                    if (c)
+                        id = std::max(id, c->id + 1);
     return pastRemarks(snapshot, "clip", id);
 }
 inline std::int64_t newTrackId(const engine::Snapshot &snapshot) noexcept {
