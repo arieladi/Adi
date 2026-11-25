@@ -11,6 +11,12 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+### 25 November — MX13 Focus musical windows
+
+**PR requested** `mixview/mx13-musical-window-lands-after-2026-12-03` at `5c88abf073d56cd9e5c99f3aeac3d4cb24a68532`, after captured true peak. Focus Scope offers One Beat and One Bar. The default is still One Bar. A view change clears the former interval and region and requests the new window on the same grouped sources. Tempo and signature edges share exact rounded sample positions. A Locate or selection at a rounded-down boundary starts the new interval. The existing Sum level summary remains readable with the added control.
+
+The missing control failed on the parent. Release passed 1,190 shared analysis, 552 Mix View and 594 spectrum checks. The gates cover denominator beats, a mid-beat signature change, a tempo step, adjacent 123 BPM edges, and switching beat to bar on the same taps without an edit or transform. Changed units and the portability proof passed warnings as errors. Review archive `499bb27b3782d8259437d899d83d09894dd28d561c3c227dd454d322aa85e52f`, application `b0af0ace6b5f524a590ce1cdcb638bbb1d5e2a3f4a512f5a41c57b0df9d9412d`.
+
 ### 25 November — MX13 Focus captured true peak
 
 **PR requested** `mixview/mx13-captured-true-peak-lands-after-2026-12-03` at `b272da1cd9084ef5999be8f56aa894db06ebf4cf`, after Difference RMS. Stereo Sum offers an optional capture true peak beside its sample peak. It runs on the existing grouped worker only when requested. Both lanes share a bounded 32,768-phase budget per worker pass. It measures the displayed interval with silence outside the capture, and a held picture keeps its measurement. The queued and acknowledged same-position Locate both clear an unheld reading. Continuous reconstruction across the capture boundaries and positioned phase markers remain separate work.
