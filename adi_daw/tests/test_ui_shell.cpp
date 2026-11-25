@@ -16955,6 +16955,44 @@ int main(int argc, char **argv) {
             integrated.frame();
             check(held.held == .5f && sounding->peak() == .5f && sounding->rms() == halfSineRms,
                   "reset and ten seconds on, the strip is back at the engine's value");
+            // A12: the Peak Level is the track's (manual 18.1), not its column's. The track after
+            // track 2 moved before it takes track 2's strip; track 2's hold goes with track 2, silent now.
+            fixed.peak.store(0);
+            integrated.frame();
+            const auto at = std::find(trackOrder.begin(), trackOrder.end(), std::int64_t{2});
+            check(at != trackOrder.end() && at + 1 != trackOrder.end(), "track 2 has a track after it");
+            if (at != trackOrder.end() && at + 1 != trackOrder.end()) {
+                const auto selectionBefore = integrated.arrangement.geometry.selection;
+                const auto next = *(at + 1);
+                integrated.arrangement.geometry.selection.track = 2;
+                integrated.arrangement.geometry.selection.toTrack = 0;
+                integrated.arrangement.geometry.selection.picked.clear();
+                integrated.publishSelection();
+                check(integrated.moveTracks(next, {integrated.reader().findTrack(2)->parent, 2}),
+                      "move the next track before track 2");
+                integrated.mark(DirtySet::All);
+                integrated.frame();
+                const MixerStrip *two = nullptr, *moved = nullptr;
+                for (const auto &s : mixerView.strips())
+                    if (s->isVisible()) {
+                        if (s->track() == 2)
+                            two = s.get();
+                        if (s->track() == next)
+                            moved = s.get();
+                    }
+                check(moved == sounding && two != nullptr && std::abs(two->peakHold.held - .5f) < .01f &&
+                          moved->peakHold.held == 0,
+                      "the Peak Level follows its track to another strip; the other track's stays at -Inf");
+                check(integrated.command(AppCommands::Undo), "undo the move");
+                integrated.arrangement.geometry.selection = selectionBefore;
+                integrated.publishSelection();
+                integrated.mark(DirtySet::All);
+                integrated.frame();
+                check(sounding->track() == 2 && std::abs(held.held - .5f) < .01f,
+                      "undone, track 2 is back on its strip with its hold");
+            }
+            fixed.peak.store(.5f);
+            integrated.frame();
         }
         check(std::abs(meterDepth(0) - .06) < 1e-9 && std::abs(meterLevel(meterDepth(-24)) + 24) < 1e-9 &&
                   !columns.empty() &&

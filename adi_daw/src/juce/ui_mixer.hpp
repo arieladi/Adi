@@ -10,6 +10,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 namespace adi::engine {
 struct StripMeter; // adi/engine/mixer.hpp: the engine's {peak, rms} per strip (#381)
@@ -330,6 +331,9 @@ class MixerPanel final : public juce::Component {
     std::function<const engine::StripMeter *(std::int64_t)> meter;
     // The ballistics' clock, in seconds; JUCE's while unset (the tests set their own).
     std::function<double()> clock;
+    // Each track's Peak Level (manual 18.1), linear, by track id: the strips are reused for other
+    // tracks as tracks are added, moved, folded or scrolled past, and the hold is the track's (A12).
+    std::unordered_map<std::int64_t, float> peakLevels;
     // Auto Gain Stage, the one offline command (ADR-0195 d4, ADR-0203 d14): LUFS or RMS.
     std::function<bool(bool lufs)> autoGain;
     const std::vector<std::unique_ptr<MixerStrip>> &strips() const noexcept { return strips_; }

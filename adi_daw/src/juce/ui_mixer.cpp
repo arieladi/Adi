@@ -126,6 +126,13 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
         pan.setSliderStyle(juce::Slider::RotaryHorizontalVerticalDrag);
         pan.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
         addAndMakeVisible(peakHold);
+        // A click resets the track's hold, not only this strip's.
+        peakHold.onClick = [this] {
+            peakHold.held = 0;
+            if (const auto at = panel_.peakLevels.find(track_); at != panel_.peakLevels.end())
+                at->second = 0;
+            peakHold.repaint();
+        };
         active.getProperties().set("live.font", static_cast<double>(look::fontTitle)); // Live's big number in its mixer
     } else {
         // Live's value boxes: the number in the box, the volume's filled in blue.
@@ -333,6 +340,10 @@ void MixerStrip::bind(std::int64_t id) {
     position_ = number_ = 0;
     peak_ = rms_ = 0;
     lastFrame_ = -1;
+    // The Peak Level is the track's: what it held on the strip that showed it before, else -Inf.
+    const auto held = panel_.peakLevels.find(id);
+    peakHold.held = held != panel_.peakLevels.end() ? held->second : 0.f;
+    peakHold.repaint();
     frame(true);
 }
 void MixerStrip::resolveMeter() { meter_ = panel_.meter && track_ != 0 ? panel_.meter(track_) : nullptr; }
@@ -479,6 +490,7 @@ void MixerStrip::frame(bool changed) noexcept {
     // between reads, so a callback no frame read is not in it (the held peak is N9's open half).
     if (panel_.vertical() && peakNow > peakHold.held) {
         peakHold.held = peakNow;
+        panel_.peakLevels[track_] = peakNow; // a track's entry is made at its first rise only
         peakHold.repaint();
     }
     // The window's ballistics: the level falls from where it was drawn; the peak line holds
@@ -1500,8 +1512,12 @@ void MixerPanel::place() {
             strips_[i]->setVisible(false);
 }
 void MixerPanel::frame(bool changed) noexcept {
-    if (changed)
+    if (changed) {
+        // A deleted track's Peak Level goes with it, so an id used again starts at -Inf.
+        for (auto at = peakLevels.begin(); at != peakLevels.end();)
+            at = root.reader().findTrack(at->first) != nullptr ? std::next(at) : peakLevels.erase(at);
         place();
+    }
     for (auto &s : strips_)
         if (s->isVisible())
             s->frame(changed);
