@@ -66,6 +66,13 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - The long-window path uses one grouped reader on the two source taps while filling and releases short preview subscriptions after alignment. The headless four-bar fixture retains the first and last pulses across 384,000 samples. Strict Release passed all ten suites, 5,361 assertions.
 - Review ZIP SHA-256 `34573d94bcb00571f2d2c615aece7022af2877c917d0ce65a98d6dea3390cdf2`. Executable `5fee0016883efcb0895f95a2acb8f6402d661d9642e46051605a9f74ba56f758`. Retest brief uses the same source hash.
 
+## 25 November 2026 · MX-13 Focus Scope time zoom and pan · lands after 3 December
+
+- **PR requested** `mixview/mx13-scope-time-viewport-lands-after-2026-12-03` at `d4bedd0fae0fdd4f34a08c5c874aa5bc7ea7ef6b`. Ctrl/Cmd-wheel zooms around the pointer. Shift-wheel or horizontal scroll pans inside the captured envelope. The waveform, beat grid and region projection share an exact visible sample interval. Existing captures and measurements are retained through viewport moves and Freeze.
+- Strict Release passed all ten suites, 5,366 assertions. The new gate verifies sample 36,000 at quarter width in a centered 2× viewport, the measured selection through a pan, return to the full capture and unchanged broker work counters.
+- The branch includes main `73e26e4aa`, including ADR-0254. The already-requested musical-length work (`c8168ec83`, `749f2dc85)) is evidence for DF-M74 after 3 December. The intake's new work remains parked under its prescribed order.
+- Review ZIP SHA-256 `11c610b044f09aa3357ba9dab7b2c92d1b4f44e83f440e37a39d97fa7624bbc3`. Executable `2286dff054cca55197a39e852d0877e54abcd3cd2339a0d893ae9caf5cd8d157`. Retest brief uses the same source hash.
+
 ### 25 November — MX13 Focus musical windows
 
 **PR requested** `mixview/mx13-musical-window-lands-after-2026-12-03` at `5c88abf073d56cd9e5c99f3aeac3d4cb24a68532`, after captured true peak. Focus Scope offers One Beat and One Bar. The default is still One Bar. A view change clears the former interval and region and requests the new window on the same grouped sources. Tempo and signature edges share exact rounded sample positions. A Locate or selection at a rounded-down boundary starts the new interval. The existing Sum level summary remains readable with the added control.
