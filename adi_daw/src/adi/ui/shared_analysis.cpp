@@ -2130,21 +2130,28 @@ struct SharedAnalysis::BarScopeDomain {
         const auto remaining = end - first;
         count = static_cast<std::size_t>(remaining);
         std::size_t padded = 0;
+        bool allSourcesReady = true;
         for (std::size_t i = 0; i < lanes.size(); ++i) {
             const auto &lane = lanes[i];
             const auto offset = static_cast<std::int64_t>(lane.adjustment.offsetSamples);
             const auto relative = first - range.first;
+            const bool padding = relative < offset || remaining <= -offset;
+            const auto source = padding ? range.first : first - offset;
+            // Observe the real source epoch before publishing padding. A lane
+            // waiting for a future bar must let its peers drain their rings
+            // too, or the later lanes overrun before that bar begins.
+            if ((!padding || !projection) && !prepareLane(i, source, reads, readLimit, samples)) {
+                if (status.load() != BarScopeStatus::Pending) return false;
+                allSourcesReady = false;
+                continue;
+            }
             std::span<const float> left, right;
-            if (relative < offset || remaining <= -offset) {
-                // Observe the real source epoch before publishing padding.
-                if (!projection && !prepareLane(i, range.first, reads, readLimit, samples)) return false;
+            if (padding) {
                 const auto available = relative < offset ? std::min(offset - relative, remaining) : remaining;
                 const auto zeros = std::min(chunkFrames, static_cast<std::size_t>(available));
                 left = right = std::span(silence).first(zeros);
                 ++padded;
             } else {
-                const auto source = first - offset;
-                if (!prepareLane(i, source, reads, readLimit, samples)) return false;
                 const auto start = static_cast<std::size_t>(source - lane.chunk.firstStamp);
                 const auto length = static_cast<std::size_t>(std::min(lane.chunkEnd, end) - source);
                 left = std::span(lane.left).subspan(start, length);
@@ -2153,6 +2160,7 @@ struct SharedAnalysis::BarScopeDomain {
             count = std::min(count, left.size());
             blocks[i] = {identities[i], first, 0, range.sampleRate, true, left, right, lane.adjustment.inverted};
         }
+        if (!allSourcesReady) return false;
         if (padded) {
             count = std::min(count, (kMaxSamplesPerFrame - samples) / padded);
             samples += count * padded;

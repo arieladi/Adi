@@ -83,6 +83,7 @@ struct MixFocusTestAccess {
         return scopePulseAt(focus.plot_, focus.scopeDifferencePaths_[0], position, value);
     }
     static bool hasDifference(const MixFocus &focus) { return focus.differenceRenderedRevision_.has_value(); }
+    static auto scopeWaveformRange(const MixFocus &focus) { return focus.scopeRange_; }
     static auto scopeReading(const MixFocus &focus) { return focus.sum_; }
     static auto scopePhase(const MixFocus &focus) { return focus.scopePhase_; }
     static juce::MouseEvent moveScopePointer(MixFocus &focus, float x, float y) {
@@ -3384,6 +3385,10 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
         check(resumed && *resumed >= seekAt && MixFocusTestAccess::scopeCursorText(focus).contains(
                   juce::String(static_cast<juce::int64>(*resumed)) + " samples"),
               "a newly captured interval after the same-position seek restores the cursor");
+        const auto complete = MixFocusTestAccess::scopeWaveformRange(focus);
+        check(complete && complete->first == seekAt + bar && complete->frames == static_cast<std::size_t>(bar) &&
+                  complete->sampleRate == rate && opens == std::array{1, 1} && broker->stats().taps == 2,
+              "a same-position seek resumes complete heard bars on the original two taps");
 
         check(doc->mailbox().post(TransportMailbox::Command::Locate, 0), "queue a Difference Locate");
         frame();
