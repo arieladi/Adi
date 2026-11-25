@@ -17,6 +17,14 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 25 November 2026 — For Devices, the registered Time regression for a repeated locate
+
+`clones/shaper-time-locate-regression` at `9944e00a2` — Test registered Time history across a locate to the same position. Lands after 3 December. The test commit touches only the shaper's registered Pd suite. Its parents supply the Time device from `5594c282a` and the Devices seat's existing native transport change from `80bbcb6bd`. The test commit can follow those prerequisites.
+
+The transport stays stopped at sample 48,000 and quarter note 2 at 120 BPM. Two independent signed stereo markers arrive at input frames 0 and 97. The host sends segments of 83, 237 and 32 samples with the same position. With the same transport revision throughout, both markers emerge at frames 239 and 336. Advancing only the transport revision on the second segment clears the first marker, preserves the second, and keeps every other output frame silent. The third segment repeats the new revision. Each arm compares all 704 output values via the registered native device.
+
+On `5594c282a` with only this test applied, the registered suite failed on the earlier marker after the locate. With the Devices prerequisite included, the shaper suites and the native devices suite passed all nine tests at each Pd precision under warnings as errors. The shared transport files are the Devices seat's existing commit. PR requested
+
 ## 25 November 2026 — The measured contribution of freely positioned curve points
 
 For Win's DSP and panel reviews, `clones/shaper-filter-integration` at `4315c3e72` and the evaluator already on `clones/shaper-curve-edit` at `bd54530a9`. The publicly playable generic device scores 26 of 873 below 0.001 stereo RMS in both orders. A private audio-only comparison substituted the existing point evaluator for the eight-height lookup on exactly the available bands and contours of eight stages. Both arms used the same 721 control settings, sample clock, starting phases, stage order, gain, audio and latency compensation. Noise and room kept their generic curves. The side input contained 26,589 measured points across 4,039 curves in 858 programs. All 1,746 runs with this input disabled exactly reproduced the generic scores and audio fingerprints.
