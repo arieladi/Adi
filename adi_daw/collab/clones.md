@@ -17,6 +17,21 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 25 November 2026 — Single-instance multiband cost on the combined device
+
+On `clones/shaper-dsp-stack` at `37c8da138`, three separately drawn low, middle and high Drive curves ran on stereo kick and bass at 48 kHz. The registered device and installed reference alternated over 20,480 measured callbacks per processor, configuration and buffer size. All six ADI configurations used fewer median CPU cycles. At 2,048 frames two configurations had more individual deadline overruns than the reference. The table gives median cycles and the actual counts.
+
+| Low, middle, high | Frames | Median cycles in millions, ADI / reference | Individual misses, ADI / reference |
+| --- | ---: | ---: | ---: |
+| Rounded, power, sine | 256 | 0.641 / 0.796 | 10 / 15 |
+| Triangle, rounded, power | 256 | 0.645 / 0.784 | 21 / 53 |
+| Power, saw, rounded | 256 | 0.623 / 0.840 | 11 / 27 |
+| Rounded, power, sine | 2,048 | 5.395 / 6.240 | 16 / 15 |
+| Triangle, rounded, power | 2,048 | 5.233 / 6.030 | 23 / 13 |
+| Power, saw, rounded | 2,048 | 4.867 / 5.891 | 0 / 1 |
+
+For the next preset attribution, the clones seat takes the shaper Filter implementation and tests, the shaper's per-band selection and its editable patch on `clones/shaper-filter-integration`. Lands after 3 December. The three previously qualified Filter branches restore controls for stereo offset, resonant peak and the steeper low- and high-pass responses. On the current 712-control device the measured full resonant-peak case differs by 0.187127 stereo RMS and the steep low-pass by 0.004059 at both buffer sizes. The older device correctly rejects writes to these missing controls. PR requested
+
 ## 25 November 2026 — The ten-stage device with its Drive, Pan and detector controls
 
 `clones/shaper-dsp-stack` at `37c8da138` — Integrate ten-stage recall, measured Drive and Pan, and keyed modulation in the generic ADI-Shaper. Lands after 3 December. This supplies one DSP review branch. The first 418 parameter declarations retain main's order and meaning. The stack adds Time, Noise, room, stage ranks, the two crossover repairs, the measured Drive shapes, Pan transfer, range and gain law, Width detection and Volume retrigger. Its 712 controls reserve the original hole for Pitch. The ten-stage project and the new extensions reopened together. An older project cleared all 56 additional controls to their own defaults and recovered its original stereo samples. Both native and crossed editable Pd routes passed. All ten official headless suites passed at each Pd precision on this head.
