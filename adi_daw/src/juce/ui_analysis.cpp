@@ -1490,7 +1490,9 @@ juce::Rectangle<float> analysisArea(juce::Rectangle<int> bounds) noexcept {
 juce::Rectangle<float> analysisPlot(juce::Rectangle<float> area, float meterHeight = 0.f) noexcept {
     return area.withTrimmedTop(16.f).withTrimmedBottom(29.f + meterHeight).withTrimmedRight(18.f);
 }
-juce::Rectangle<float> spectrumGridPlot(juce::Rectangle<float> area, SpectrumScale scale) {
+} // namespace
+
+juce::Rectangle<float> spectrumGridPlot(juce::Rectangle<float> area, SpectrumScale scale) noexcept {
     const auto &axis = spectrumAxis(scale);
     const auto scaleWidth = look::fontCaption * 3.f;
     const auto stepHeight = area.getHeight() / static_cast<float>((axis.topDb - axis.bottomDb) / axis.divisionDb);
@@ -1498,6 +1500,7 @@ juce::Rectangle<float> spectrumGridPlot(juce::Rectangle<float> area, SpectrumSca
     if (scale == SpectrumScale::Device) return area.withTrimmedLeft(scaleWidth).withTrimmedTop(look::fontCaption);
     return area.withTrimmedRight(scaleWidth).withTrimmedBottom(look::fontCaption);
 }
+namespace {
 juce::Rectangle<float> spectrumCursorPlot(juce::Rectangle<int> bounds, SpectrumScale scale) noexcept {
     const auto plot = analysisPlot(analysisArea(bounds));
     return scale == SpectrumScale::Wide ? plot : spectrumGridPlot(plot, scale);

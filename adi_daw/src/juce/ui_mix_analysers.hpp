@@ -35,6 +35,8 @@ class MixAnalysers final : public juce::Component {
     juce::TextButton holdB{"Hold B"}, clearCompare{"Clear"};
 
   private:
+    friend struct MixAnalysersTestAccess;
+    std::array<std::uint64_t, 2> comparisonProjectionBuildsForTest() const noexcept;
     class Table;
     class Compare;
     class SpectrumStatistics;

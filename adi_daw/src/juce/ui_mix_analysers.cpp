@@ -118,7 +118,7 @@ class MixAnalysers::Compare final : public juce::Component, private juce::Compon
         owner_.compareB.setTextWhenNothingSelected("Choose channel B");
         populateSpectrumScaleMenu(owner_.compareScale);
         owner_.compareScale.setTitle("Comparison display scale");
-        owner_.compareScale.onChange = [this] { if (eligible()) repaint(); };
+        owner_.compareScale.onChange = [this] { if (eligible()) refresh(); };
         owner_.holdB.onClick = [this] {
             const auto current = view();
             if (!current.visible || !comparison_) return;
@@ -140,12 +140,14 @@ class MixAnalysers::Compare final : public juce::Component, private juce::Compon
         if (broker_ == broker && a_ == a && b_ == b) return;
         if (broker_ != broker) {
             comparison_.reset();
+            traces_ = {};
             broker_ = std::move(broker);
         }
         a_ = a; b_ = b;
         syncDemand();
         repaint();
     }
+    std::array<std::uint64_t, 2> projectionBuilds() const noexcept { return projectionBuilds_; }
     AnalysisComparison::View view() const noexcept {
         auto current = comparison_ ? comparison_->view() : AnalysisComparison::View{};
         if (current.status == AnalysisComparison::Status::Independent &&
@@ -221,40 +223,15 @@ class MixAnalysers::Compare final : public juce::Component, private juce::Compon
         }
         juce::Graphics::ScopedSaveState state(g);
         if (!wide && !g.reduceClipRegion(plot.toNearestInt())) return;
-        const auto tracePath = [&](AnalysisComparison::Picture picture) {
-            juce::Path curve;
-            bool started = false;
-            const auto hzPerBin = picture.metadata->sampleRate / picture.metadata->endpoint.request.fftSize;
-            for (std::size_t i = 1; i < picture.binsDbfs.size(); ++i) {
-                const auto hz = hzPerBin * static_cast<double>(i);
-                if (hz < axis.lowHz) continue;
-                if (hz > topHz) break;
-                if (!started) {
-                    curve.startNewSubPath(xAt(hz), yAt(picture.binsDbfs[i]));
-                    started = true;
-                } else curve.lineTo(xAt(hz), yAt(picture.binsDbfs[i]));
-            }
-            return curve;
-        };
-        const auto reference = tracePath(current.b);
-        const auto primary = tracePath(current.a);
-        if (spectrumScaleHasFill(scale)) {
-            const auto fillTrace = [&](juce::Path area, juce::Colour colour) {
-                if (area.isEmpty()) return;
-                area.lineTo(area.getCurrentPosition().x, plot.getBottom());
-                area.lineTo(area.getBounds().getX(), plot.getBottom());
-                area.closeSubPath();
-                g.setColour(colour.withAlpha(spectrumFillOpacity));
-                g.fillPath(area);
-            };
-            fillTrace(reference, look::accent);
-            fillTrace(primary, look::value);
-        }
+        g.setColour(look::accent.withAlpha(spectrumFillOpacity));
+        g.fillPath(traces_[1].fill);
+        g.setColour(look::value.withAlpha(spectrumFillOpacity));
+        g.fillPath(traces_[0].fill);
         const juce::PathStrokeType stroke(look::line);
         g.setColour(look::accent);
-        g.strokePath(reference, stroke);
+        g.strokePath(traces_[1].curve, stroke);
         g.setColour(look::value);
-        g.strokePath(primary, stroke);
+        g.strokePath(traces_[0].curve, stroke);
     }
     void visibilityChanged() override { syncDemand(); }
     void parentHierarchyChanged() override {
@@ -271,6 +248,76 @@ class MixAnalysers::Compare final : public juce::Component, private juce::Compon
         std::uint64_t generation{}, epoch{}, revision{};
         bool operator==(const Stamp &) const = default;
     };
+    using Scale = SharedSpectrumView::SpectrumScale;
+    struct TraceKey {
+        AnalysisComparison::Endpoint endpoint;
+        Stamp stamp;
+        juce::Rectangle<float> plot;
+        double topHz{};
+        Scale scale = Scale::Wide;
+        bool operator==(const TraceKey &) const = default;
+    };
+    struct Trace {
+        std::optional<TraceKey> key;
+        juce::Path curve, fill;
+    };
+
+    bool updateTraces(AnalysisComparison::View current, const std::array<Stamp, 2> &observed) {
+        const auto clear = [&] {
+            if (!traces_[0].key && !traces_[1].key) return false;
+            traces_ = {};
+            return true;
+        };
+        if (current.status != AnalysisComparison::Status::Independent &&
+            current.status != AnalysisComparison::Status::Held) return clear();
+        const auto scale = selectedSpectrumScale(owner_.compareScale);
+        const auto &axis = spectrumAxis(scale);
+        const auto topHz = std::min(axis.highHz, current.a.metadata->sampleRate * .5);
+        const auto body = plot_.withTrimmedTop(look::fieldHeight).withTrimmedBottom(look::fieldHeight).toFloat();
+        const bool wide = scale == Scale::Wide;
+        const auto plot = wide ? body : spectrumGridPlot(body, scale);
+        if (topHz <= axis.lowHz || plot.isEmpty() || (!wide && (plot.getWidth() <= 1.f || plot.getHeight() <= 1.f)))
+            return clear();
+        const auto logWidth = wide ? std::log(topHz / axis.lowHz) : axis.logWidth;
+        const float inset = wide ? 0.f : 1.f;
+        const auto widthPerLogHz = (plot.getWidth() - inset) / logWidth;
+        const auto xAt = [&](double hz) {
+            return plot.getX() + static_cast<float>(widthPerLogHz * std::log(hz / axis.lowHz));
+        };
+        const auto yAt = [&](float db) { return plot.getY() + (plot.getHeight() - inset) * axis.y(db); };
+        const std::array pictures{current.a, current.b};
+        bool changed = false;
+        for (std::size_t i = 0; i < pictures.size(); ++i) {
+            const auto &picture = pictures[i];
+            auto &trace = traces_[i];
+            const TraceKey key{picture.metadata->endpoint, observed[i], plot, topHz, scale};
+            if (trace.key == key) continue;
+            ++projectionBuilds_[i];
+            trace.curve.clear();
+            trace.fill.clear();
+            const auto hzPerBin = picture.metadata->sampleRate / picture.metadata->endpoint.request.fftSize;
+            bool started = false;
+            for (std::size_t bin = 1; bin < picture.binsDbfs.size(); ++bin) {
+                const auto hz = hzPerBin * static_cast<double>(bin);
+                if (hz < axis.lowHz) continue;
+                if (hz > topHz) break;
+                if (!started) {
+                    trace.curve.startNewSubPath(xAt(hz), yAt(picture.binsDbfs[bin]));
+                    started = true;
+                } else trace.curve.lineTo(xAt(hz), yAt(picture.binsDbfs[bin]));
+            }
+            if (started && spectrumScaleHasFill(scale)) {
+                trace.fill = trace.curve;
+                trace.fill.lineTo(trace.fill.getCurrentPosition().x, plot.getBottom());
+                trace.fill.lineTo(trace.fill.getBounds().getX(), plot.getBottom());
+                trace.fill.closeSubPath();
+            }
+            trace.key = key;
+            changed = true;
+        }
+        return changed;
+    }
+
     std::array<juce::Component *, 5> controls() {
         return {&owner_.compareA, &owner_.compareB, &owner_.compareScale, &owner_.holdB, &owner_.clearCompare};
     }
@@ -315,10 +362,11 @@ class MixAnalysers::Compare final : public juce::Component, private juce::Compon
         const auto current = view();
         const auto stamp = [](const auto *m) { return m ? Stamp{m->generation, m->sourceEpoch, m->revision} : Stamp{}; };
         const std::array observed{stamp(current.a.metadata), stamp(current.b.metadata)};
+        const bool pathsChanged = updateTraces(current, observed);
         if (current.referenceHeld != held_) owner_.holdB.setButtonText(current.referenceHeld ? "Resume B" : "Hold B");
         owner_.holdB.setEnabled(current.visible && (current.referenceHeld || current.b.metadata != nullptr));
         owner_.clearCompare.setEnabled(current.visible);
-        if (observed != shown_ || current.status != status_ || current.referenceHeld != held_) {
+        if (pathsChanged || observed != shown_ || current.status != status_ || current.referenceHeld != held_) {
             shown_ = observed; status_ = current.status; held_ = current.referenceHeld;
             repaint();
         }
@@ -340,6 +388,8 @@ class MixAnalysers::Compare final : public juce::Component, private juce::Compon
     AnalysisComparison::Endpoint a_, b_;
     std::vector<juce::Component::SafePointer<juce::Component>> ancestors_;
     std::array<Stamp, 2> shown_{};
+    std::array<std::uint64_t, 2> projectionBuilds_{};
+    std::array<Trace, 2> traces_{};
     AnalysisComparison::Status status_ = AnalysisComparison::Status::Unavailable;
     juce::Rectangle<int> plot_;
     bool suspended_ = false, held_ = false;
@@ -1074,6 +1124,10 @@ void MixAnalysers::refreshSourceControl() {
 }
 
 AnalysisComparison::View MixAnalysers::comparisonView() const noexcept { return compare_->view(); }
+
+std::array<std::uint64_t, 2> MixAnalysers::comparisonProjectionBuildsForTest() const noexcept {
+    return compare_->projectionBuilds();
+}
 void MixAnalysers::updateComparison(const std::shared_ptr<SharedAnalysis> &broker) {
     const auto selected = [this](int id) {
         AnalysisComparison::Endpoint endpoint;

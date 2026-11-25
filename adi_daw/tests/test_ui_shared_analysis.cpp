@@ -21,6 +21,9 @@ using adi::engine::ScopeTap;
 using adi::ui::SharedAnalysis;
 using adi::ui::SharedSpectrumView;
 namespace adi::ui {
+struct MixAnalysersTestAccess {
+    static auto projectionBuilds(const MixAnalysers &pages) { return pages.comparisonProjectionBuildsForTest(); }
+};
 struct SharedSpectrumViewTestAccess {
     static auto capture(const SharedSpectrumView &view) { return view.captureShown_; }
     static std::size_t offsetCount(const SharedSpectrumView &view) { return view.spectrumProjection_.offsets().size(); }
@@ -3225,14 +3228,18 @@ void compareAndAveragePages() {
               pair.a.metadata->endpoint.request.track == main && pair.b.metadata->endpoint.request.track == guitar &&
               pair.a.binsDbfs[16] > pair.b.binsDbfs[16],
           "Compare presents the two calibrated broker windows on their explicit channels");
-    const auto displayShowsBothTraces = [&](int scaleId) {
-        auto *compare = pages.compareA.getParentComponent();
-        if (!compare || !pair.a.metadata || !pair.b.metadata) return false;
+    auto *compare = pages.compareA.getParentComponent();
+    const auto comparePicture = [&] {
+        if (!compare || compare->getLocalBounds().isEmpty()) return juce::Image{};
         juce::Image image(juce::Image::RGB, compare->getWidth(), compare->getHeight(), true, juce::SoftwareImageType{});
-        {
-            juce::Graphics graphics(image);
-            compare->paint(graphics);
-        }
+        juce::Graphics graphics(image);
+        compare->paint(graphics);
+        return image;
+    };
+    const auto projectionBuilds = [&] { return MixAnalysersTestAccess::projectionBuilds(pages); };
+    const auto displayShowsBothTraces = [&](int scaleId) {
+        if (!compare || !pair.a.metadata || !pair.b.metadata) return false;
+        const auto image = comparePicture();
         auto plot = compare->getLocalBounds().reduced(look::border).withTrimmedTop(look::fieldHeight)
             .reduced(look::gap).withTrimmedTop(look::fieldHeight).withTrimmedBottom(look::fieldHeight).toFloat();
         struct Axis { double lowHz, highHz; float upper, lower; };
@@ -3287,6 +3294,12 @@ void compareAndAveragePages() {
     };
     check(pages.compareScale.isShowing() && pages.compareScale.getSelectedId() == 1 && displayShowsBothTraces(1),
           "Wide is the initial Compare projection and both paths draw adjacent measured bins");
+    const auto stablePicture = comparePicture();
+    const auto stableBuilds = projectionBuilds();
+    check(!stablePicture.isNull() && stableBuilds[0] > 0 && stableBuilds[1] > 0 &&
+              samePixels(stablePicture, comparePicture()) && samePixels(stablePicture, comparePicture()) &&
+              projectionBuilds() == stableBuilds,
+          "two repeated Compare paints retain exact pixels and reuse both path projections");
     const auto unchanged = [](const auto &before, const auto &after) {
         return before.consumers == after.consumers && before.taps == after.taps && before.domains == after.domains &&
             before.spectralPlans == after.spectralPlans && before.transforms == after.transforms &&
@@ -3333,22 +3346,39 @@ void compareAndAveragePages() {
     pages.holdB.onClick();
     check(pages.comparisonView().status == Comparison::Held && broker->stats().taps == 1,
           "holding B retains its actual bins and releases its live tap");
+    const auto heldPicture = comparePicture();
+    const auto heldBuilds = projectionBuilds();
     write(*first, .1f, 4096, 3); broker->pump();
     pages.frame(broker, renamed, main, main);
     pair = pages.comparisonView();
     check(pair.status == Comparison::Held && pair.b.binsDbfs[16] == reference &&
               pair.a.metadata->transportRevision == 3,
           "a deliberately held reference survives a new live transport revision");
+    check(!samePixels(heldPicture, comparePicture()) &&
+              projectionBuilds() == std::array{heldBuilds[0] + 1, heldBuilds[1]},
+          "a new A publication rebuilds only A while held B keeps its path");
     const auto immutableA = pair.a.binsDbfs.data(), immutableB = pair.b.binsDbfs.data();
     const auto beforeScale = broker->stats();
     for (const int id : {2, 3, 4, 1}) {
+        const auto beforeProjection = projectionBuilds();
         pages.compareScale.setSelectedId(id, juce::sendNotificationSync);
         pair = pages.comparisonView();
         check(pair.status == Comparison::Held && pair.a.binsDbfs.data() == immutableA &&
                   pair.b.binsDbfs.data() == immutableB && unchanged(beforeScale, broker->stats()) &&
                   pages.detail.scaleBox.getSelectedId() == 1 && displayShowsBothTraces(id),
               "Compare scales redraw both calibrated traces without changing the held bins, tap or Spectrum preference");
+        const auto scaledPicture = comparePicture();
+        check(samePixels(scaledPicture, comparePicture()) &&
+                  projectionBuilds() == std::array{beforeProjection[0] + 1, beforeProjection[1] + 1},
+              "changing Compare scale rebuilds both projections once, including the fill where used");
     }
+    const auto beforeResize = projectionBuilds();
+    const auto originalBounds = pages.getBounds();
+    pages.setSize(originalBounds.getWidth() - 32, originalBounds.getHeight() - 24);
+    check(displayShowsBothTraces(1) &&
+              projectionBuilds() == std::array{beforeResize[0] + 1, beforeResize[1] + 1},
+          "Compare geometry changes rebuild both lanes at their new pixel positions");
+    pages.setBounds(originalBounds);
     root.setVisible(false);
     check(broker->stats().consumers == 0 && !pages.comparisonView().visible && pages.comparisonView().referenceHeld,
           "ancestor hide releases live Compare demand without a frame and retains the deliberate B reference");
