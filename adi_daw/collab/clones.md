@@ -17,6 +17,18 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 25 November 2026 — Far-channel delay range in each Pan band
+
+`clones/shaper-pan-range-1125` at `1d47fa1b2` — Set the far-channel delay range independently in each Pan band. Lands after 3 December. Three appended controls, IDs 922–924, cover 0–40 ms and default to 2 ms. History is allocated during preparation so a range change can use earlier audio immediately. The full 40 ms equals 7,680 samples at 192 kHz. Stationary contours read the lower whole sample, and moving contours interpolate.
+
+All four DSP, Drive, registered Pd and session suites passed under Release MSVC with warnings as errors at both precisions. Tests exercised all three band routes, independently timed stereo markers, a fractional 110.25-frame read, edits during a tail, sparse recall and a crossed editable Pd output. Registered 2 ms captures at 256 and 2,048 frames reproduced the prior registered build byte for byte.
+
+On moving kick and bass at six range settings, the largest stereo RMS error for the exact-clock DSP was 0.0000000667 across twelve 192,000-frame comparisons. The registered device retains the previously reported normalized beat-division drift. Its largest channel RMS error against the aligned reference was 0.00005084 at 2 ms and 0.00033951 at 40 ms. The reference and the registered device both reported zero latency for this fixture.
+
+Across five trials of 2,048 callbacks, the 40 ms registered device measured median/p99 of 17.3/25.9 microseconds at 256 frames and 132.1/234.4 at 2,048. Three individual deadlines were missed at 256 and zero at 2,048. At 2 ms the prior and new 256-frame medians/p99 were 17.7/28.7 and 17.3/28.6. At 2,048 these were 137.7/245.8 and 136.3/271.7. For integration with stereo transfer, keep each sparse ID range bounded and wire each appended message to its final canvas object index.
+
+PR requested
+
 ## 25 November 2026 — Three alternate balance laws for Pan
 
 Three source settings occur in 23, 16 and 17 of the 873 paired programs. At the center, both channels have unity gain. With signed excursion p clamped to −1 through +1, the 4.5 dB endpoint law uses the existing 3 dB gain times its square root for each speaker. The linear-lift law uses 1+p on the left and 1−p on the right. The cut-only law limits those gains to unity. None transfers the other channel into the stereo output. Above half of the delay blend each gain moves toward unity by twice the remaining travel. The far speaker reads its existing post-gain history.
