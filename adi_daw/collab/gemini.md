@@ -4,6 +4,17 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-25 — Item 1 (`walk/*` fixes, Round 11): `walk/b4-live-take`
+
+| Branch | Head SHA | Touched files | Compiler (`-DADI_WERROR=ON`, Pd on, JUCE off) | Warnings | Touched headless suites | `adi_acceptance_wts01` | Verdict |
+|---|---|---|---|---|---|---|---|
+| `walk/b4-live-take` | `e264e3c7` | `src/juce/{ui_arrangement.{hpp,cpp},ui_shell.cpp}` (JUCE), `tests/test_ui_shell.cpp` (JUCE) | GCC 12.4.0 | 0 | N/A (all files JUCE-gated) | **PASS** (44.10 s) | **PASS (headless)** |
+| `walk/b4-live-take` | `e264e3c7` | same | Clang 14.0.6 + libstdc++ 12 | 0 | N/A (all files JUCE-gated) | **PASS** (38.52 s) | **PASS (headless)** |
+
+(No PR requested; run-only verification.)
+
+---
+
 ## 2026-11-25 — Item 1 (`walk/*` fixes, Round 10): `walk/a13-automated-controls`
 
 | Branch | Head SHA | Touched files | Compiler (`-DADI_WERROR=ON`, Pd on, JUCE off) | Warnings | Touched headless suites | `adi_acceptance_wts01` | Verdict |
