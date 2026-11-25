@@ -22,6 +22,7 @@ static_assert(Shaper::CrushOn == 340 && Shaper::BaseCount == 415);
 static_assert(Shaper::PanLowDelayBlend == 855 && Shaper::PanHighDelayBlend == 857);
 static_assert(Shaper::driveParam(Band::High, Shaper::OutputTrim) + 1 == Shaper::CrushOn);
 static_assert(Shaper::modParam(Stage::Crush, Band::High, Shaper::Secondary8) + 1 == Shaper::BaseCount);
+static_assert(Shaper::orderParam(Stage::Volume) == 715 && Shaper::orderParam(Stage::Crush) == 721);
 int failures = 0;
 
 void check(bool condition, const char* description) {
@@ -1119,6 +1120,76 @@ void crushHoldClockBlocks() {
     check(std::abs(left[64] - left[65]) > .49f,
           "A transport locate moves the Crush hold contour into its full-rate segment");
 }
+
+void stagePermutations() {
+    Shaper::StageOrder expected{};
+    for (std::size_t i = 0; i < expected.size(); ++i) expected[i] = static_cast<Stage>(i);
+    Shaper::StageRanks ranks{};
+    for (std::uint8_t tie : {std::uint8_t{0}, std::uint8_t{127}}) {
+        ranks.fill(tie);
+        check(Shaper::orderFor(ranks) == expected, "tied ranks use persistent stage identity");
+    }
+    ranks[5] = ranks[6] = 0;
+    auto twoTies = expected;
+    std::rotate(twoTies.begin(), twoTies.end() - 2, twoTies.end());
+    check(Shaper::orderFor(ranks) == twoTies, "both tied groups keep identity order");
+    bool matches = true;
+    for (int trial = 0; trial < 4096; ++trial) {
+        for (std::size_t i = 0; i < expected.size(); ++i)
+            ranks[static_cast<std::size_t>(expected[i])] = static_cast<std::uint8_t>(8 + 10 * i);
+        matches &= Shaper::orderFor(ranks) == expected;
+        std::next_permutation(expected.begin(), expected.end());
+    }
+    check(matches, "4096 distinct rank permutations");
+}
+
+void nonlinearOrder() {
+    constexpr std::size_t frames = 1024;
+    std::array<float, frames> left{}, right{}, actualL{}, actualR{};
+    Shaper rack;
+    flat(rack, Stage::Volume, Band::Mid, 25);
+    rack.set(Shaper::DriveOn, 1);
+    rack.set(Shaper::driveParam(Band::Mid, Shaper::DriveStyle), 1);
+    for (int i = 0; i < 8; ++i)
+        rack.set(Shaper::driveParam(Band::Mid, static_cast<Shaper::DriveControl>(Shaper::Drive1 + i)), 50);
+    for (std::size_t i = 0; i < frames; ++i) {
+        left[i] = static_cast<float>(.42 * std::sin(static_cast<double>(i) * (2. * std::numbers::pi * 400. / 48000.)));
+        right[i] = static_cast<float>(.28 * std::sin(static_cast<double>(i) * (2. * std::numbers::pi * 733. / 48000.) + .23));
+    }
+    float peakDifference = 0;
+    std::array<float, frames> original{};
+    for (int pass = 0; pass < 3; ++pass) {
+        rack.prepare(48000);
+        if (pass == 1) {
+            rack.set(Shaper::orderParam(Stage::Volume), 1000);
+            rack.set(Shaper::orderParam(Stage::Drive), -1);
+        } else if (pass == 2) {
+            rack.set(Shaper::orderParam(Stage::Drive), 62.6f);
+            rack.set(Shaper::orderParam(Stage::Volume), 63);
+        }
+        adi::dsp::AdiShaperDrive independent;
+        independent.prepare(48000);
+        independent.setMode(adi::dsp::AdiShaperDrive::Mode::HardClip);
+        bool matches = true;
+        for (std::size_t at = 0; at < frames;) {
+            const auto n = std::min<std::size_t>(73, frames - at);
+            rack.process(left.data() + at, right.data() + at, actualL.data() + at, actualR.data() + at, n);
+            at += n;
+        }
+        for (std::size_t i = 0; i < frames; ++i) {
+            float l = left[i], r = right[i];
+            if (pass != 1) { l *= .25f; r *= .25f; }
+            independent.process(l, r, .5f);
+            if (pass == 1) { l *= .25f; r *= .25f; }
+            matches &= actualL[i] == l && actualR[i] == r;
+            if (pass == 0) original[i] = l;
+            if (pass == 1) peakDifference = std::max(peakDifference, std::abs(l - original[i]));
+        }
+        check(matches && rack.latency() == 16, "mixed orders match the separate nonlinear path and retain 16-frame Drive PDC");
+    }
+    check(peakDifference > .1f, "changing Volume and Drive order produces an audible difference");
+}
+
 } // namespace
 
 int main() {
@@ -1144,6 +1215,8 @@ int main() {
     driveDryAndLatency();
     driveAndCrush();
     crushHoldClockBlocks();
+    stagePermutations();
+    nonlinearOrder();
     if (failures == 0) std::puts("ADI-Shaper DSP fixtures passed");
     return failures == 0 ? 0 : 1;
 }

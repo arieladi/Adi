@@ -22,6 +22,8 @@ class AdiShaper {
     static constexpr int modBandParameterCount = 23;
     static constexpr int modStageParameterCount = modHeaderSize + 3 * modBandParameterCount;
     static constexpr int driveBandParameterCount = 16;
+    enum class Stage { Volume, Width, Pan, Filter, Sweep, Drive, Crush };
+    static constexpr std::size_t stageCount = static_cast<std::size_t>(Stage::Crush) + 1;
     enum Param : int { MasterMix, VolumeBands, WidthBands = VolumeBands + stageParameterCount,
                  PanBands = WidthBands + stageParameterCount,
                  VolumeLowSlope = PanBands + stageParameterCount, WidthLowSlope, PanLowSlope,
@@ -30,8 +32,14 @@ class AdiShaper {
                  SweepMidPolarity, SweepHighPolarity, DriveOn,
                  CrushOn = DriveOn + modHeaderSize + 3 * driveBandParameterCount,
                  BaseCount = CrushOn + modStageParameterCount,
+                 VolumeOrder = 715,
                  PanLowDelayBlend = 855, PanMidDelayBlend, PanHighDelayBlend, Count };
-    enum class Stage { Volume, Width, Pan, Filter, Sweep, Drive, Crush };
+    using StageRanks = std::array<std::uint8_t, stageCount>;
+    using StageOrder = std::array<Stage, stageCount>;
+    static constexpr Param orderParam(Stage stage) noexcept {
+        return static_cast<Param>(VolumeOrder + static_cast<int>(stage));
+    }
+    [[nodiscard]] static StageOrder orderFor(const StageRanks& ranks) noexcept;
     enum class Band { Low, Mid, High };
     enum BandControl { Mix, Clock, Cycle, Rate, Curve, Point1, Point2, Point3, Point4,
                        Point5, Point6, Point7, Point8 };
@@ -145,7 +153,10 @@ class AdiShaper {
     void resetKernels(Stage kind) noexcept;
     template <Stage kind> void render(StageData& stage, const float* inL, const float* inR,
                                      float* outL, float* outR, std::size_t frames) noexcept;
-    std::array<StageData, 7> stages_;
+    std::array<StageData, stageCount> stages_;
+    StageRanks ranks_{};
+    StageOrder order_{};
+    bool orderDirty_ = false, defaultOrder_ = true;
     std::array<AdiShaperFilter, 3> filters_;
     std::array<AdiShaperSweep, 3> sweeps_;
     std::array<AdiShaperDrive, 3> drives_;
