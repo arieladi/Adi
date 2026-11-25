@@ -17,6 +17,14 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 25 November 2026 — Three Pan laws across the private program bank
+
+Among 873 programs, 51 use 52 bands sensitive to the gain choice and another five use full delay blend, where the gain choice is neutral. Every comparison rendered the previous route, the corrected blend and range with the previous gain, and the identical route with the new gain. The direct gain transfer and all outputs survived the final held-position optimization.
+
+In saved order the complete route went from 70 to 71 to 73 programs below 0.001 stereo RMS. In fixed order it went from 61 to 62 to 64. The gain law itself added two passes per order, one each for 4.5 dB and linear lift, with zero threshold losses. A third pass in each order came from applying the stored blend and range. All five full-delay programs produced byte-identical results on switching gain laws.
+
+Of the 51 sensitive programs, the gain choice alone improved 29 and worsened 22 in saved order, and improved 28 and worsened 23 in fixed order. The five treated programs among the earlier 81 split two better and three worse in both orders. The earlier 81 retain four saved-order and one fixed-order passes. All 56 fixed-order historical hashes and all 37 genuine saved-order hashes matched. Fresh saved-order comparisons reproduced all prior threshold classifications for the remaining 19 older fallback records.
+
 ## 25 November 2026 — Alternate balance laws in the registered Pan bands
 
 `clones/shaper-pan-gain-laws` at `fb744c450` — Add three gain laws to the per-band Pan menu. Lands after 3 December. The 3 dB law remains the default. The extra endpoint choices are 4.5 dB lift, linear lift and cut only. Held positions reuse their computed tap until the position changes.
