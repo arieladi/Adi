@@ -494,6 +494,21 @@ std::unique_ptr<DeviceInstance> JuceDeviceLoader::makeVst3(const engine::DeviceR
         return nullptr;
     }
 
+    // Whatever found the description (the catalogue, a projection, or a path-hint scan, which keeps the saved
+    // alias's spelling), the plug-in loads from the real bundle its path names (DF-E76).
+    if (!module) {
+        const auto bytes = found->fileOrIdentifier.toStdString();
+        std::error_code ec;
+        const auto canonical = std::filesystem::canonical(std::filesystem::path(std::u8string(bytes.begin(), bytes.end())), ec);
+        if (!ec) {
+            const auto path = canonical.u8string();
+            const auto text = juce::String::fromUTF8(reinterpret_cast<const char*>(path.c_str()));
+            if (text != found->fileOrIdentifier) {
+                module = std::make_unique<juce::PluginDescription>(*found);
+                module->fileOrIdentifier = text;
+            }
+        }
+    }
     std::unique_ptr<DeviceInstance> dev =
         vst3_.makeDevice(*found, module ? *module : *found, rq.sampleRate, rq.maxFrames, err);
     if (dev == nullptr || !dev->loaded()) {
