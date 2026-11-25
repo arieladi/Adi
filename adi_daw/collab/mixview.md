@@ -187,6 +187,12 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 
 - The complete Focus core and allocation test compiled at `-O3` with warnings as errors, including the mismatched allocation diagnostic. The executable passed all 480 checks, 5,081,550 compared samples and zero counted callback allocations or deallocations. This covers the full affected translation unit on the optimized Windows target. The native Linux and macOS legs remain their usual review gates.
 
+## 25 November 2026 · MX-21 Pre/Post Spectrogram Sweep · lands after 3 December
+
+- **PR requested** `mixview/mx21-spectrogram-delta-sweep-lands-after-2026-12-03` at `baf5f43606f6969752b96563c6507bfd9a262993`. Optional Sweep writes the same heard columns in place. The cursor and PNG use the same rotation. Scroll remains the default.
+- The missing Sweep control failed first. The checked paths include the first frozen column, both signed values, empty cells and the previous pass after wrap. Toggling reuses the captured columns. Strict Release passed 11 suites, 5,626 checks.
+- Review ZIP SHA-256 `01a139c51bb6c1f778874247f09b2a79c8af172aa5fc2dcd315ed5b7a4c83f8d`. Executable `5ea1c3670276682dc852e9608e1b15929af3e8d6995cbe2ec39a087014fc3e08`. Retest brief uses the same source hash.
+
 ### 25 November — MX13 Focus musical windows
 
 **PR requested** `mixview/mx13-musical-window-lands-after-2026-12-03` at `5c88abf073d56cd9e5c99f3aeac3d4cb24a68532`, after captured true peak. Focus Scope offers One Beat and One Bar. The default is still One Bar. A view change clears the former interval and region and requests the new window on the same grouped sources. Tempo and signature edges share exact rounded sample positions. A Locate or selection at a rounded-down boundary starts the new interval. The existing Sum level summary remains readable with the added control.
