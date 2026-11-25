@@ -3817,6 +3817,30 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
                   after.transforms == before.transforms && History(doc->store()).head() == windowHistory,
               "returning to bar captures the full next bar with the original taps and no project edit or FFT");
     }
+    if (musicalWindow && display && channels) {
+        check(doc->mailbox().post(TransportMailbox::Command::Locate, 0), "queue Locate for the fractional Scope grid");
+        doc->mailbox().drain(driver);
+        frame();
+        check(root->setTempoAtPlay("123"), "set the Scope project's tempo to 123 BPM");
+        frame();
+        constexpr std::int64_t fractionalBar = 93659;
+        writeUntil(fractionalBar);
+        const auto heard = MixFocusTestAccess::scopeWaveformRange(focus);
+        check(heard && heard->first == 0 && heard->frames == fractionalBar,
+              "a bar at 123 BPM owns exactly 93659 heard samples");
+        if (heard && heard->first == 0 && heard->frames == fractionalBar) {
+            const auto readsBeat = [&](std::int64_t sample, const juce::String &beat) {
+                const auto x = static_cast<float>((static_cast<double>(sample) + .5) / fractionalBar);
+                MixFocusTestAccess::moveScopePointer(focus, x, .25f);
+                const auto reading = MixFocusTestAccess::scopeCursorText(focus).removeCharacters(",");
+                return reading.startsWith(beat + "   " + juce::String(static_cast<juce::int64>(sample)) + " samples");
+            };
+            check(readsBeat(46828, "1.2"), "the sample before a rounded beat edge stays in the preceding beat");
+            check(readsBeat(46829, "1.3"), "the rounded-down heard edge and its beat label agree");
+            check(readsBeat(46830, "1.3") && readsBeat(46828, "1.2"),
+                  "the cursor follows the same heard edge in both directions");
+        }
+    }
     const auto visibleBounds = focus.getBounds();
     focus.setTopLeftPosition(peer.getWidth(), 0);
     check(broker->stats().taps == 0 && broker->stats().consumers == 0,

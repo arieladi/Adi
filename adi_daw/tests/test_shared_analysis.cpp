@@ -1127,6 +1127,11 @@ void focusScopeBeatTiming() {
     check(previousSample && boundarySample && previousSample->range.first == 23415 &&
               boundarySample->range.first == 46829 && boundarySample->firstTick == 2 * quarter,
           "a fresh request on a rounded-down edge starts the new beat rather than a finished one");
+    const auto beforeTie = focusScopeWindowAtSample(24000, 48001., constant, equalMeter, beat);
+    const auto afterTie = focusScopeWindowAtSample(24001, 48001., constant, equalMeter, beat);
+    check(beforeTie && afterTie && beforeTie->firstTick == 0 && afterTie->firstTick == quarter &&
+              afterTie->range.first == 24001,
+          "an exact half-sample edge belongs to the higher sample with no early beat label");
 }
 
 void focusScopeBarProjection() {

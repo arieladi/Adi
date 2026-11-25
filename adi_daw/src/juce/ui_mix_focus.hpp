@@ -141,6 +141,12 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     std::vector<FocusScopeLayerAdjustment> scopeAdjustments_;
     bool scopeOffsetsInMilliseconds_ = false;
     std::optional<FocusScopeRange> scopeRange_;
+    struct ScopeCursorBeat {
+        FocusScopeRange range;
+        std::optional<std::uint64_t> liveSnapshot;
+        juce::String label;
+    };
+    std::optional<ScopeCursorBeat> scopeCursorBeat_;
     std::optional<std::uint64_t> scopeWaveformRevision_, frozenScopeRevision_;
     SharedAnalysis::BarScopeLease barScope_;
     std::shared_ptr<const engine::TempoMap> barTempo_;

@@ -882,6 +882,7 @@ void MixFocus::clearBarScopeData() {
     requestedBar_.reset();
     barTempo_.reset();
     barMeters_.clear();
+    scopeCursorBeat_.reset();
     scopeTruePeakReadout_.setVisible(false);
     differenceRmsReadout_.setVisible(false);
 }
@@ -1432,6 +1433,7 @@ void MixFocus::freezeScope() {
         const SnapshotReader reader(root_.current());
         barTempo_ = reader.get() ? reader.get()->tempo : nullptr;
         barMeters_ = reader.meters();
+        scopeCursorBeat_.reset();
     }
     std::vector<SharedAnalysis::Lease> retired;
     retired.reserve(members_.size());
@@ -1642,9 +1644,21 @@ void MixFocus::refreshScopeCursor(const SnapshotReader &reader) {
     juce::String reading;
     const bool heldTempo = shownBar_ || frozenScopeRevision_;
     if (const auto *tempo = heldTempo ? barTempo_.get() : reader.tempo(); tempo && sample >= 0) {
-        const auto at = barPosition(tempo->secondsToTicks(seconds), heldTempo ? barMeters_ : reader.meters());
-        reading = juce::String(static_cast<juce::int64>(at.bar)) + "." +
-                  juce::String(static_cast<juce::int64>(at.beat)) + "   ";
+        const auto &meters = heldTempo ? barMeters_ : reader.meters();
+        const auto liveSnapshot = heldTempo ? std::nullopt : std::optional{reader.seq()};
+        // The cursor and capture share the same rounded, half-open beat edges.
+        if (scopeCursorBeat_ && scopeCursorBeat_->liveSnapshot == liveSnapshot &&
+            scopeCursorBeat_->range.sampleRate == range.sampleRate &&
+            sample >= scopeCursorBeat_->range.first &&
+            sample - scopeCursorBeat_->range.first < static_cast<std::int64_t>(scopeCursorBeat_->range.frames)) {
+            reading = scopeCursorBeat_->label;
+        } else {
+            const auto beat = focusScopeWindowAtSample(sample, range.sampleRate, *tempo, meters, FocusScopeWindow::Beat);
+            const auto at = barPosition(beat ? beat->firstTick : tempo->secondsToTicks(seconds), meters);
+            reading = juce::String(static_cast<juce::int64>(at.bar)) + "." +
+                      juce::String(static_cast<juce::int64>(at.beat)) + "   ";
+            if (beat) scopeCursorBeat_ = ScopeCursorBeat{beat->range, liveSnapshot, reading};
+        }
     }
     reading << static_cast<juce::int64>(sample) << " samples   " << juce::String(seconds * 1000., 1)
             << " ms   " << decibels << " dBFS";
