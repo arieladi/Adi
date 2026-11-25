@@ -4,6 +4,19 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-25 — Item 1 (`walk/*` fixes, Round 3): `walk/a2-insert-track-order`, `walk/a5-oneshot-sample-tile`
+
+| Branch | Head SHA | Touched files | Compiler (`-DADI_WERROR=ON`, Pd on, JUCE off) | Warnings | Touched headless suites | `adi_acceptance_wts01` | Verdict |
+|---|---|---|---|---|---|---|---|
+| `walk/a2-insert-track-order` | `d7bb9ee3` | `src/adi/ui/{arrangement_geometry,track_edits}.hpp`, `tests/test_ui_seams.cpp`, `src/juce/{ui_arrangement.hpp,ui_shell.cpp}` (JUCE), `tests/{test_ui_shell.cpp,ui_test_hygiene.hpp}` (JUCE) | GCC 12.4.0 | 0 | `adi_ui_seams_tests` **609/0 PASS** | **PASS** (43.83 s) | **PASS** |
+| `walk/a2-insert-track-order` | `d7bb9ee3` | same | Clang 14.0.6 + libstdc++ 12 | 0 | `adi_ui_seams_tests` **609/0 PASS** | **PASS** (40.47 s) | **PASS** |
+| `walk/a5-oneshot-sample-tile` | `a7b05251` | `src/juce/ui_devices.{hpp,cpp}` (JUCE), `tests/{test_ui_shell.cpp,ui_test_hygiene.hpp}` (JUCE) | GCC 12.4.0 | 0 | N/A (all files JUCE-gated) | **PASS** (44.06 s) | **PASS (headless)** |
+| `walk/a5-oneshot-sample-tile` | `a7b05251` | same | Clang 14.0.6 + libstdc++ 12 | 0 | N/A (all files JUCE-gated) | **PASS** (40.46 s) | **PASS (headless)** |
+
+(No PR requested; run-only verification.)
+
+---
+
 ## 2026-11-25 — Item 1 (`walk/*` fixes, Round 2): `walk/b6-take-clears-range`
 
 | Branch | Head SHA | Touched files | Compiler (`-DADI_WERROR=ON`, Pd on, JUCE off) | Warnings | Touched headless suites | `adi_acceptance_wts01` | Verdict |
