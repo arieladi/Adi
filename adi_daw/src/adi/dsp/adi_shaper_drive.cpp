@@ -175,24 +175,24 @@ void AdiShaperDrive::tune(float amount) noexcept {
     driveFade_ = x * x * (3.0 - 2.0 * x);
 }
 
-double AdiShaperDrive::transfer(double z) const noexcept {
-    if (mode_ == Mode::HardClip) return std::clamp(z,-1.0,1.0);
-    if (mode_ == Mode::Rectify) return std::clamp(std::abs(z+1.0)-1.0,-1.0,1.0);
-    return z < 0 ? -softNegative(-z) : z/(1.0+(2.0/3.0)*z);
-}
-
+template<AdiShaperDrive::Mode Style>
 double AdiShaperDrive::shape(double z, Channel& channel) const noexcept {
     const double previous = channel.lastZ;
     channel.lastZ = z;
     if (previousDrive_ == 0.0f) return z;
-    if (mode_ != Mode::HardClip) return transfer(z);
-    // Integrate the hard clip along the segment traversed in this substep.
-    if (z >= 1 && previous >= 1) return 1;
-    if (z <= -1 && previous <= -1) return -1;
-    if (std::abs(z) <= 1 && std::abs(previous) <= 1) return .5*(z+previous);
-    const double delta = z-previous;
-    return std::abs(delta) > 1.0e-7 ? (clipArea(z)-clipArea(previous))/delta
-                                    : std::clamp(.5*(z+previous),-1.0,1.0);
+    if constexpr (Style == Mode::Rectify) {
+        return std::clamp(std::abs(z + 1.0) - 1.0, -1.0, 1.0);
+    } else if constexpr (Style == Mode::Saturate) {
+        return z < 0 ? -softNegative(-z) : z / (1.0 + (2.0 / 3.0) * z);
+    } else {
+        // Integrate the hard clip along the segment traversed in this substep.
+        if (z >= 1 && previous >= 1) return 1;
+        if (z <= -1 && previous <= -1) return -1;
+        if (std::abs(z) <= 1 && std::abs(previous) <= 1) return .5*(z+previous);
+        const double delta = z-previous;
+        return std::abs(delta) > 1.0e-7 ? (clipArea(z)-clipArea(previous))/delta
+                                        : std::clamp(.5*(z+previous),-1.0,1.0);
+    }
 }
 
 // The center and half-rate phases are symmetric. In fourfold interpolation
@@ -227,31 +227,41 @@ AdiShaperDrive::StereoSum AdiShaperDrive::oversample(const Stereo* inputHistory)
     constexpr std::size_t taps = 16 * Factor + 1;
     const auto upsampled = interpolate<Factor>(inputHistory);
     const bool fading = driveFade_ > 0.0 && driveFade_ < 1.0;
-    FilterPair base{};
-    for (std::size_t p=0; p<Factor; ++p) {
-        wetHead_ = wetHead_ == 0 ? static_cast<int>(taps) - 1 : wetHead_ - 1;
-        const auto wetHead = static_cast<std::size_t>(wetHead_);
-        Stereo wet{};
-        for (std::size_t c=0; c<2; ++c) {
-            const double input = upsampled[p][c];
-            double shaped = shape(input * pre_, channels_[c]) * post_;
-            if (fading) {
-                const double zeroDrive = (input * inputGain_) * outputGain_;
-                shaped = zeroDrive + driveFade_ * (shaped - zeroDrive);
+    // Advance one complete set of phases. The mirrored ring has a whole
+    // number of sets, so a set never crosses its end.
+    constexpr int ringSize = inputs * Factor;
+    wetHead_ = wetHead_ == 0 ? ringSize - Factor : wetHead_ - Factor;
+    const auto firstPhase = static_cast<std::size_t>(wetHead_) + Factor - 1;
+    // Select the transfer once for the whole set of oversampled phases.
+    const auto writePhases = [&]<Mode Style>() noexcept {
+        for (std::size_t p = 0; p < Factor; ++p) {
+            Stereo wet{};
+            for (std::size_t c=0; c<2; ++c) {
+                const double input = upsampled[p][c];
+                double shaped = shape<Style>(input * pre_, channels_[c]) * post_;
+                if (fading) {
+                    const double zeroDrive = (input * inputGain_) * outputGain_;
+                    shaped = zeroDrive + driveFade_ * (shaped - zeroDrive);
+                }
+                wet[c] = static_cast<float>(shaped);
             }
-            wet[c] = static_cast<float>(shaped);
+            wet_[firstPhase - p] = wet_[firstPhase - p + ringSize] = wet;
         }
-        wet_[wetHead] = wet_[wetHead+taps] = wet;
-        if (p == 0) {
-            const Stereo* history = wet_.data() + wetHead_;
-            constexpr std::size_t middle = taps / 2;
-            for (std::size_t j = 0; j < middle; ++j) {
-                const auto pair = FilterPair::read(history[j]) + FilterPair::read(history[taps - 1 - j]);
-                base = base + pair * decimate_[j];
-            }
-            base = base + FilterPair::read(history[middle]) * decimate_[middle];
-        }
+    };
+    switch (mode_) {
+    case Mode::HardClip: writePhases.template operator()<Mode::HardClip>(); break;
+    case Mode::Rectify: writePhases.template operator()<Mode::Rectify>(); break;
+    default: writePhases.template operator()<Mode::Saturate>(); break;
     }
+
+    const Stereo* history = wet_.data() + firstPhase;
+    constexpr std::size_t middle = taps / 2;
+    FilterPair base{};
+    for (std::size_t j = 0; j < middle; ++j) {
+        const auto pair = FilterPair::read(history[j]) + FilterPair::read(history[taps - 1 - j]);
+        base = base + pair * decimate_[j];
+    }
+    base = base + FilterPair::read(history[middle]) * decimate_[middle];
     return base.result();
 }
 

@@ -27,13 +27,13 @@ class AdiShaperDrive {
     template<int Factor> [[nodiscard]] StereoSum oversample(const Stereo* input) noexcept;
     std::array<double, inputs/2> oddSum_{}, oddDifference_{};
     std::array<Stereo, inputs * 2> input_{};
-    std::array<Stereo, maxTaps * 2> wet_{};
+    std::array<Stereo, inputs * maxFactor * 2> wet_{};
     struct Channel {
         double lastZ = 0.0, dc = 0.0;
     };
     std::array<Channel, 2> channels_{};
-    std::array<std::array<float, inputs>, maxFactor> interpolate_{};
-    std::array<float, maxTaps> decimate_{};
+    std::array<std::array<double, inputs>, maxFactor> interpolate_{};
+    std::array<double, maxTaps> decimate_{};
     int factor_ = 4, taps_ = maxTaps, inputHead_ = 0, wetHead_ = 0;
     Mode mode_ = Mode::Saturate;
     float previousDrive_ = -1.0f, inputTrim_ = 0.5f, outputTrim_ = 0.5f;
@@ -41,8 +41,7 @@ class AdiShaperDrive {
     double driveFade_ = 0.0;
     double dcRate_ = 0.0, sampleRate_ = 0.0;
     void tune(float amount) noexcept;
-    [[nodiscard]] double transfer(double z) const noexcept;
-    [[nodiscard]] double shape(double z, Channel& channel) const noexcept;
+    template<Mode Style> [[nodiscard]] double shape(double z, Channel& channel) const noexcept;
 };
 
 } // namespace adi::dsp

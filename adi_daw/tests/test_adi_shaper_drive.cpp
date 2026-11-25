@@ -192,6 +192,33 @@ void trimsAndReset() {
     }
 }
 
+void historyAcrossWrap() {
+    // Leading silence changes the write cursor without changing the filter state.
+    // The impulse and moving stereo input must then hit the same output frames.
+    for (const double rate : {48000., 96000.}) {
+        for (int offset = 1; offset <= 17; ++offset) {
+            Drive reference, shifted;
+            reference.prepare(rate);
+            shifted.prepare(rate);
+            for (int i = 0; i < offset; ++i) {
+                float l = 0, r = 0;
+                shifted.process(l, r, .5f);
+            }
+            bool equal = true;
+            for (int i = 0; i < 129; ++i) {
+                float l = i == 0 ? -.875f : static_cast<float>(i % 29 - 14) / 21.f;
+                float r = i == 13 ? .625f : static_cast<float>(17 - i % 37) / 27.f;
+                float a = l, b = r;
+                const float amount = static_cast<float>(i % 17) / 16.f;
+                reference.process(l, r, amount);
+                shifted.process(a, b, amount);
+                equal &= a == l && b == r;
+            }
+            check(equal, "oversampled history is independent of the position of its write cursor");
+        }
+    }
+}
+
 void movingStereo() {
     constexpr std::array modes{Mode::Saturate, Mode::HardClip, Mode::Rectify};
     for (const double rate : {44100., 48000., 96000.}) {
@@ -225,5 +252,6 @@ int main() {
     nearZeroContinuity();
     trimsAndReset();
     movingStereo();
+    historyAcrossWrap();
     return failures==0 ? 0 : 1;
 }
