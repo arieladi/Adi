@@ -501,6 +501,10 @@ class MixAnalysers::SpectrogramDelta final : public juce::Component {
   public:
     SpectrogramDelta() {
         setTitle("Spectrogram post minus pre");
+        cursor_.setTitle("Spectrogram comparison cursor");
+        cursor_.setJustificationType(juce::Justification::centred);
+        cursor_.setInterceptsMouseClicks(false, false);
+        addAndMakeVisible(cursor_);
         freeze_.setTitle("Freeze Spectrogram comparison");
         freeze_.setEnabled(false);
         freeze_.onClick = [this] {
@@ -517,6 +521,8 @@ class MixAnalysers::SpectrogramDelta final : public juce::Component {
     }
 
     void stop() {
+        cursorPoint_.reset();
+        cursor_.setText({}, juce::dontSendNotification);
         if (!comparison_) return;
         if (!comparison_->frozen()) clear();
         comparison_->hide();
@@ -568,10 +574,23 @@ class MixAnalysers::SpectrogramDelta final : public juce::Component {
 
     void visibilityChanged() override { if (!isShowing()) stop(); }
 
+    void mouseMove(const juce::MouseEvent &event) override {
+        cursorPoint_ = event.position;
+        refreshCursor();
+    }
+
+    void mouseExit(const juce::MouseEvent &) override {
+        cursorPoint_.reset();
+        cursor_.setText({}, juce::dontSendNotification);
+    }
+
     void resized() override {
         auto header = getLocalBounds().reduced(look::border).removeFromTop(look::fieldHeight);
         freeze_.setBounds(header.removeFromRight(std::min(look::mixPageWidth, header.getWidth() / 3)));
+        header.removeFromLeft(header.getWidth() / 3);
+        cursor_.setBounds(header.removeFromLeft(header.getWidth() / 2));
         if (getLocalBounds().isEmpty()) stop();
+        else refreshCursor();
     }
 
     void paint(juce::Graphics &graphics) override {
@@ -583,8 +602,11 @@ class MixAnalysers::SpectrogramDelta final : public juce::Component {
         graphics.setFont(look::font());
         graphics.setColour(look::record);
         graphics.drawFittedText("-24 dB", header.removeFromLeft(header.getWidth() / 3), juce::Justification::centredLeft, 1);
-        graphics.setColour(look::textDim);
-        graphics.drawFittedText("Post minus pre", header.removeFromLeft(header.getWidth() / 2), juce::Justification::centred, 1);
+        const auto centre = header.removeFromLeft(header.getWidth() / 2);
+        if (cursor_.getText().isEmpty()) {
+            graphics.setColour(look::textDim);
+            graphics.drawFittedText("Post minus pre", centre, juce::Justification::centred, 1);
+        }
         graphics.setColour(look::accent);
         graphics.drawFittedText("+24 dB", header, juce::Justification::centredRight, 1);
         bounds.removeFromTop(look::gap);
@@ -599,6 +621,14 @@ class MixAnalysers::SpectrogramDelta final : public juce::Component {
     static constexpr int width = 128, height = 128;
     static constexpr float rangeDb = 24.f;
     using ColumnKey = std::array<std::uint64_t, 2>;
+    struct BinChange {
+        std::size_t bin = 0;
+        float db = 0.f;
+    };
+
+    juce::Rectangle<int> plotBounds() const {
+        return getLocalBounds().reduced(look::border).withTrimmedTop(look::fieldHeight + look::gap);
+    }
 
     bool plotIsShowing() const {
         if (!isShowing()) return false;
@@ -621,6 +651,7 @@ class MixAnalysers::SpectrogramDelta final : public juce::Component {
             lastHop_.reset();
             repaint();
         }
+        cursor_.setText({}, juce::dontSendNotification);
         freeze_.setEnabled(comparison_ && comparison_->frozen());
     }
 
@@ -645,17 +676,50 @@ class MixAnalysers::SpectrogramDelta final : public juce::Component {
         }
     }
 
-    static std::optional<float> strongestChange(const SpectrogramColumnPair *pair, std::array<std::size_t, 2> bins) {
+    static std::optional<BinChange> strongestChange(const SpectrogramColumnPair *pair, std::array<std::size_t, 2> bins) {
         if (!pair) return {};
         float strongest = dsp::kDbFloor;
-        std::optional<float> result;
+        std::optional<BinChange> result;
         for (auto bin = bins[0]; bin < bins[1]; ++bin) {
             const auto db = pair->changeDb(bin);
             if (!db) continue;
             const auto peak = std::max((*pair->pre->binsDbfs)[bin], (*pair->post->binsDbfs)[bin]);
-            if (peak > strongest) { strongest = peak; result = db; }
+            if (peak > strongest) { strongest = peak; result = BinChange{bin, *db}; }
         }
         return result;
+    }
+
+    void refreshCursor() {
+        if (!cursorPoint_ || !plotBounds().toFloat().contains(*cursorPoint_) ||
+            !comparison_ || !lastHop_ || (!minimumRevision_ && !comparison_->frozen())) {
+            cursor_.setText({}, juce::dontSendNotification);
+            return;
+        }
+        std::array<SpectrogramColumnPair, width> storage;
+        updateCursor(comparison_->columns(heardEnd_, minimumRevision_.value_or(0), storage));
+    }
+
+    void updateCursor(std::span<const SpectrogramColumnPair> columns) {
+        juce::String text;
+        const auto plot = plotBounds().toFloat();
+        if (cursorPoint_ && lastHop_ && plot.contains(*cursorPoint_)) {
+            const auto x = static_cast<int>((cursorPoint_->x - plot.getX()) / plot.getWidth() * width);
+            const auto y = static_cast<int>((cursorPoint_->y - plot.getY()) / plot.getHeight() * height);
+            const auto age = static_cast<std::uint64_t>(width - 1 - std::clamp(x, 0, width - 1));
+            const auto rows = rowBins_[static_cast<std::size_t>(std::clamp(y, 0, height - 1))];
+            for (const auto &pair : columns) {
+                const auto hop = pair.pre->firstStamp / format_.hop;
+                if (static_cast<std::uint64_t>(*lastHop_) - static_cast<std::uint64_t>(hop) != age) continue;
+                if (const auto value = strongestChange(&pair, rows)) {
+                    const auto bins = pair.pre->binsDbfs->size();
+                    const auto hz = format_.sampleRate * (.5 * static_cast<double>(value->bin) / static_cast<double>(bins - 1));
+                    text = juce::String(hz, 1) + " Hz   " + (value->db >= 0.f ? "+" : "") + juce::String(value->db, 2) +
+                        " dB   Sample " + juce::String(static_cast<juce::int64>(pair.pre->firstStamp));
+                }
+                break;
+            }
+        }
+        cursor_.setText(text, juce::dontSendNotification);
     }
 
     void updateRaster(std::span<const SpectrogramColumnPair> columns, SpectrogramComparison::Format format) {
@@ -695,13 +759,16 @@ class MixAnalysers::SpectrogramDelta final : public juce::Component {
                 keys_[index] = next;
                 for (int y = 0; y < height; ++y) {
                     const auto db = strongestChange(pair, rowBins_[static_cast<std::size_t>(y)]);
-                    const juce::Colour colour = db ? look::frame.interpolatedWith(*db < 0.f ? look::record : look::accent,
-                        std::min(1.f, std::abs(*db) / rangeDb)) : look::display;
+                    const juce::Colour colour = db ? look::frame.interpolatedWith(db->db < 0.f ? look::record : look::accent,
+                        std::min(1.f, std::abs(db->db) / rangeDb)) : look::display;
                     pixels.setPixelColour(x, y, colour);
                 }
             }
         }
-        if (reset || shift > 0 || changed) repaint();
+        if (reset || shift > 0 || changed) {
+            if (cursorPoint_) updateCursor(columns);
+            repaint();
+        }
     }
 
     std::weak_ptr<SharedAnalysis> owner_;
@@ -711,11 +778,13 @@ class MixAnalysers::SpectrogramDelta final : public juce::Component {
     std::optional<std::uint64_t> minimumRevision_;
     SpectrogramComparison::Format format_;
     std::optional<std::int64_t> lastHop_;
+    std::optional<juce::Point<float>> cursorPoint_;
     juce::Image image_;
     std::array<ColumnKey, width> keys_{};
     std::array<std::array<std::size_t, 2>, height> rowBins_{};
     ThemeId theme_ = ThemeId::Dark;
     juce::TextButton freeze_{"Freeze"};
+    juce::Label cursor_;
 };
 
 MixAnalysers::MixAnalysers() {

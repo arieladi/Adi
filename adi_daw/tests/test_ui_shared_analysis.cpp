@@ -3612,16 +3612,19 @@ void spectrogramComparisonPage() {
 
     juce::ToggleButton *compared = nullptr;
     juce::TextButton *freeze = nullptr;
+    juce::Label *cursor = nullptr;
     juce::Component *plot = nullptr;
     for (auto *child : pages.getChildren()) {
         if (child->getTitle() == "Spectrogram comparison") compared = dynamic_cast<juce::ToggleButton *>(child);
         if (child->getTitle() == "Spectrogram post minus pre") plot = child;
     }
-    if (plot) for (auto *child : plot->getChildren())
+    if (plot) for (auto *child : plot->getChildren()) {
         if (child->getTitle() == "Freeze Spectrogram comparison") freeze = dynamic_cast<juce::TextButton *>(child);
-    check(compared && freeze && plot && !compared->isShowing() && !freeze->isShowing() && !plot->isShowing(),
+        if (child->getTitle() == "Spectrogram comparison cursor") cursor = dynamic_cast<juce::Label *>(child);
+    }
+    check(compared && freeze && cursor && plot && !compared->isShowing() && !freeze->isShowing() && !plot->isShowing(),
           "All keeps the dedicated Spectrogram comparison controls and plot hidden");
-    if (!compared || !freeze || !plot) {
+    if (!compared || !freeze || !cursor || !plot) {
         root.removeFromDesktop();
         return;
     }
@@ -3640,6 +3643,16 @@ void spectrogramComparisonPage() {
         juce::Graphics graphics(image);
         plot->paint(graphics);
         return image;
+    };
+    const auto moveCursor = [&](float column, float row) {
+        const auto bounds = plot->getLocalBounds().reduced(look::border).withTrimmedTop(look::fieldHeight + look::gap);
+        const juce::Point<float> at{bounds.getX() + bounds.getWidth() * column / 128.f,
+                                    bounds.getY() + bounds.getHeight() * row / 128.f};
+        const auto now = juce::Time::getCurrentTime();
+        const juce::MouseEvent event{juce::Desktop::getInstance().getMainMouseSource(), at,
+            juce::ModifierKeys{}, 0.f, 0.f, 0.f, 0.f, 0.f, plot, plot, now, at, now, 0, false};
+        plot->mouseMove(event);
+        return cursor->getText();
     };
     pages.setPage(Page::Spectrogram);
     frame(0, revision);
@@ -3685,6 +3698,12 @@ void spectrogramComparisonPage() {
               containsInk(look::frame.interpolatedWith(look::accent, transfer)) &&
               containsInk(look::frame.interpolatedWith(look::record, transfer)),
           "the heard comparison paints separate positive and negative changes for the two tones");
+    const auto cursorWork = broker->stats();
+    check(moveCursor(127.5f, 60.5f) == "750.0 Hz   +6.02 dB   Sample 0" &&
+              moveCursor(127.5f, 23.5f) == "5625.0 Hz   -6.02 dB   Sample 0" &&
+              moveCursor(64.5f, 60.5f).isEmpty() && broker->stats().frameRequests == cursorWork.frameRequests &&
+              broker->stats().transforms == cursorWork.transforms && broker->stats().workerPasses == cursorWork.workerPasses,
+          "the comparison cursor reports the bins that painted both signs, clears over a gap and requests no analysis");
 
     if (freeze->onClick) freeze->onClick();
     frame(window, revision);
@@ -3694,6 +3713,10 @@ void spectrogramComparisonPage() {
     check(freeze->getButtonText() == "Thaw" && samePixels(frozen, picture()) && held.taps == 0 && held.consumers == 0 &&
               broker->stats().transforms == held.transforms,
           "Freeze holds the signed plot across a later epoch and releases both taps");
+    check(moveCursor(127.5f, 60.5f) == "750.0 Hz   +6.02 dB   Sample 0" &&
+              moveCursor(64.5f, 60.5f).isEmpty() && broker->stats().frameRequests == held.frameRequests &&
+              broker->stats().transforms == held.transforms && broker->stats().workerPasses == held.workerPasses,
+          "the frozen comparison cursor uses the held epoch without restarting analysis");
     pages.setPage(Page::Spectrum);
     frame(0, revision + 1);
     check(!compared->isShowing() && !freeze->isShowing() && !plot->isShowing() &&
