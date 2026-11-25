@@ -167,6 +167,12 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - The missing control failed first. The checks verified the 1 kHz tick, remapping to an adjacent empty cell and recovery of the frozen reading with no additional broker work. The strict Release passed 11 suites, 5,614 checks.
 - Review ZIP SHA-256 `b522940070c518585b9c801d77076520c7846a6891eae6c6ff60ee90fed584b9`. Executable `c0765f0b32b27b6fd80ff1716fb647f4855e245ceaa71b6fe26ef90bf8479f31`. Retest brief uses the same source hash.
 
+## 25 November 2026 · MX-21 Pre/Post Spectrogram frequency scales · lands after 3 December
+
+- **PR requested** `mixview/mx21-spectrogram-delta-scales-lands-after-2026-12-03` at `acd4234bebd2776de593e7d472853af31de4e8bb`. The comparison offers Linear, Log, Mel, Bark and ERB. It defaults to Log and keeps the selected scale in the pane. The raster, ruler, signed cursor and PNG use the same projection.
+- The missing selector failed first. All five frozen projections resolved the same 750 Hz boost and 5,625 Hz cut, with constant frame requests, transforms and active tap count. Strict Release passed 11 suites, 5,621 checks.
+- Review ZIP SHA-256 `01cb37aef4615623d4d0b6cecaf39caf270edf78e57b79dd683c328995cdf01f`. Executable `500383f5834177c299a6c01c8afae5d96bbe2c3bf9e35554e6a71b6ac3b69793`. Retest brief uses the same source hash.
+
 ### 25 November — MX13 Focus musical windows
 
 **PR requested** `mixview/mx13-musical-window-lands-after-2026-12-03` at `5c88abf073d56cd9e5c99f3aeac3d4cb24a68532`, after captured true peak. Focus Scope offers One Beat and One Bar. The default is still One Bar. A view change clears the former interval and region and requests the new window on the same grouped sources. Tempo and signature edges share exact rounded sample positions. A Locate or selection at a rounded-down boundary starts the new interval. The existing Sum level summary remains readable with the added control.
