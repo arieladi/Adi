@@ -17,6 +17,14 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 25 November 2026 — Generated room stage on current main
+
+`clones/shaper-reverb-current-1125` at `95b31475` — Restore the generated stereo room on current main. Lands after 3 December. This replaces the previous room review head. IDs 626–715 append after the 418 existing descriptor positions, including the Pan blend controls. ADI generates the room response. The control-law, tail reset, ordered reflection, session recall and registered/edited Pd tests passed in five Release MSVC `/W4 /WX` suites at each signal precision.
+
+Five paired kick-and-bass trials at 48 kHz measured median callbacks of 45.8 and 448.5 microseconds at 256 and 2,048 frames. The room added 40.9 and 421.6 microseconds over bypass, or 0.767% and 0.988% of the respective deadlines. The worst trial p99 was 0.133 ms at 256 and 20.501 ms at 2,048. There were 4 and 13 individual overruns in 10,240 calls per size. Reported latency was zero.
+
+PR requested
+
 ## 25 November 2026 — Calibrated Noise on current main
 
 `clones/shaper-noise-current-1125` at `79c377a7` — Restore the calibrated Noise stage on current main. Lands after 3 December. This replaces the previous Noise review head. The first 418 generic-panel descriptors retain their positions, including all three Pan blends. Noise appends IDs 536–625. Old projects restore with Noise off. White uses the measured interpolation and Pink uses ADI's own procedural source.
