@@ -2816,6 +2816,8 @@ bool AdiRootComponent::insertTrack(bool midi) {
                                        &commands_.recordingDefaults(), ids.next("tracks"));
     if (!edit.refusal.empty())
         return fail(std::move(edit.refusal));
+    // Its own colour in the same step (ADR-0211 d2): the others keep theirs.
+    colourNewTrack(current->tracks, edit.ops, [this](std::int64_t t) { return arrangement.colourIndex(t); });
     edit.ops.front().selBefore = session_.advisory();
     const auto result = submitter_.submit(std::move(edit.ops));
     if (!result)
@@ -2861,6 +2863,7 @@ bool AdiRootComponent::insertReturnTrack(std::int64_t group) {
         return fail(std::move(edit.refusal));
     const auto id = edit.select;
     edit.ops.front().selBefore = session_.advisory();
+    colourNewTrack(current->tracks, edit.ops, [this](std::int64_t t) { return arrangement.colourIndex(t); }); // ADR-0211 d2
     const auto result = submitter_.submit(std::move(edit.ops));
     if (!result)
         return fail(result.error);
@@ -3131,6 +3134,8 @@ bool AdiRootComponent::groupTracks(bool ungroup) {
                                                  RowIds(submitter_.store().db()).next("tracks"));
     if (!edit.refusal.empty())
         return fail(std::move(edit.refusal));
+    // A new group's own colour in the same step (ADR-0211 d2); ungrouping creates none.
+    colourNewTrack(current->tracks, edit.ops, [this](std::int64_t t) { return arrangement.colourIndex(t); });
     edit.ops.front().selBefore = session_.advisory();
     const auto result = submitter_.submit(std::move(edit.ops));
     if (!result)

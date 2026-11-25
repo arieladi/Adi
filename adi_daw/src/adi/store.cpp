@@ -305,10 +305,12 @@ std::unique_ptr<Store> Store::createNewProject(const std::filesystem::path& path
         // CTZ are separate; New does not silently choose the CTZ hierarchy.
         // Returns use compiled built-in identities (N15), wet-only, with the
         // regular tracks' sends at the mixer's -infinity floor, Post by default.
-        store->db().exec("INSERT INTO tracks(id,kind,name,index_in_parent,monitor_mode) VALUES"
-            "(1,'master','Main',6,0),(2,'midi','1 MIDI',0,2),(3,'midi','2 MIDI',1,2),"
-            "(4,'audio','3 Audio',2,2),(5,'audio','4 Audio',3,2),"
-            "(6,'return','A Reverb',4,0),(7,'return','B Delay',5,0);"
+        // Each track stores its colour, the palette's first seven in order (ADR-0211 d2), so none
+        // moves when a track is inserted or grouped before it.
+        store->db().exec("INSERT INTO tracks(id,kind,name,index_in_parent,monitor_mode,color) VALUES"
+            "(1,'master','Main',6,0,6),(2,'midi','1 MIDI',0,2,0),(3,'midi','2 MIDI',1,2,1),"
+            "(4,'audio','3 Audio',2,2,2),(5,'audio','4 Audio',3,2,3),"
+            "(6,'return','A Reverb',4,0,4),(7,'return','B Delay',5,0,5);"
             "INSERT INTO mixer_strip(track_id) SELECT id FROM tracks;"
             "INSERT INTO plugin_refs(id,format,uid,vendor,name,version,subtype) VALUES"
             "(1,'internal','org.adidaw.builtin.reverb','ADI','Reverb','1','effect'),"

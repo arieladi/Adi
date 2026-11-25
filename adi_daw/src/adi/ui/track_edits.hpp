@@ -3,6 +3,7 @@
 #include "adi/engine/snapshot.hpp"
 #include "adi/ops.hpp"
 #include "adi/track_recording.hpp"
+#include "adi/ui/track_order.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -160,6 +161,33 @@ inline TrackEdit colourTracks(const SnapshotTracks &tracks, const std::vector<st
         if (const auto *t = track_edits_detail::find(tracks, id); t != nullptr && t->color != index)
             edit.ops.push_back(track_edits_detail::op("track.setColor", {{"id", id}, {"color", index}}, label));
     return edit;
+}
+// Live's auto-colour for a new track (ADR-0211 d2; manual 2.3.2): the previous track's palette index
+// plus one, stored by the batch whose first op creates it, so no track's colour moves as others are
+// inserted or grouped. The previous track is the one before its place in its parent (Main aside; a
+// track before the returns), else the group that holds it: its own colour in `tracks`, else
+// `colourOf`'s, the index the window shows for it by place.
+template <class ColourOf>
+inline void colourNewTrack(const SnapshotTracks &tracks, std::vector<OpRequest> &ops, ColourOf &&colourOf) {
+    using namespace track_edits_detail;
+    if (ops.empty() || ops.front().opType != "track.create")
+        return;
+    const auto &made = ops.front();
+    const auto &p = made.payload;
+    const auto parent = p.contains("parent") && p["parent"].is_number_integer() ? p["parent"].get<std::int64_t>() : 0;
+    const bool ret = p.value("kind", std::string()) == "return";
+    auto order = children(tracks, parent);
+    order.erase(std::remove_if(order.begin(), order.end(), [ret](const auto *k) { return rank(*k) > (ret ? 1 : 0); }),
+                order.end());
+    const auto index = std::clamp<std::int64_t>(p.value("index", std::int64_t{0}), 0, static_cast<std::int64_t>(order.size()));
+    const auto previous = index > 0 ? order[static_cast<std::size_t>(index - 1)]->id : parent;
+    const auto *before = find(tracks, previous);
+    const auto colour = before == nullptr ? -1
+                        : before->color && *before->color >= 0 && *before->color < kPaletteColours
+                            ? *before->color
+                            : std::max<std::int64_t>(colourOf(previous), -1);
+    auto set = op("track.setColor", {{"id", p.at("id")}, {"color", (colour + 1) % kPaletteColours}}, made.label.c_str());
+    ops.insert(ops.begin() + 1, std::move(set));
 }
 namespace track_edits_detail {
 // Whether group `id` holds `t` at any depth. A parent that loops back, which the project should never
