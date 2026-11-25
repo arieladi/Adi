@@ -128,9 +128,10 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
         addAndMakeVisible(peakHold);
         active.getProperties().set("live.font", static_cast<double>(look::fontTitle)); // Live's big number in its mixer
     } else {
-        // Live's value boxes: the number in the box, the volume's filled in blue.
+        // Live's value boxes: the number in the box, the volume's filled in blue. Dragged up or down, as
+        // Live's value fields are (manual 6.3, 7.1): JUCE's vertical bar, filled across all the same (LiveLook).
         for (auto *s : {&volume, &pan}) {
-            s->setSliderStyle(juce::Slider::LinearBar);
+            s->setSliderStyle(juce::Slider::LinearBarVertical);
             s->setTextBoxStyle(juce::Slider::TextBoxLeft, false, 0, 0);
             s->setSliderSnapsToMousePosition(false);
             s->setColour(juce::Slider::textBoxTextColourId, look::text);
@@ -1081,8 +1082,8 @@ std::unique_ptr<juce::Slider> MixerStrip::makeSend(std::size_t index) {
         knob->setSliderStyle(juce::Slider::RotaryHorizontalVerticalDrag);
         knob->setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
     } else {
-        // Live's send box: the number in it, filled in blue as the volume's.
-        knob->setSliderStyle(juce::Slider::LinearBar);
+        // Live's send box: the number in it, filled in blue and dragged up or down as the volume's.
+        knob->setSliderStyle(juce::Slider::LinearBarVertical);
         knob->setTextBoxStyle(juce::Slider::TextBoxLeft, false, 0, 0);
         knob->setSliderSnapsToMousePosition(false);
         knob->setColour(juce::Slider::textBoxTextColourId, look::text);

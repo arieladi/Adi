@@ -11353,6 +11353,51 @@ void mixerDragLive(AppCommands &commands, const std::filesystem::path &dir) {
     }
     sel.track = sel.toTrack = 0;
     root.frame();
+    // Walk A9: the row's value boxes are dragged up or down, as Live's value fields (manual 6.3, 7.1): the mouse's
+    // own drag, up raising and down lowering, heard live and one step at the release; a sideways drag moves nothing.
+    {
+        const juce::ModifierKeys left(juce::ModifierKeys::leftButtonModifier);
+        const auto drag = [&](juce::Slider &box, juce::Point<float> by) {
+            const auto centre = box.getLocalBounds().getCentre().toFloat();
+            press();
+            box.mouseDown(pressAt(box, centre, left));
+            box.mouseDrag(dragAt(box, centre, centre + by, left));
+            const bool live = document->mixerDragging();
+            letGo();
+            box.mouseUp(dragAt(box, centre, centre + by, left));
+            root.frame();
+            return live;
+        };
+        const auto ops = opCount();
+        check(drag(three->volume, {0, -30}) && volumeOf(4) > -8 && opCount() == ops + 1 &&
+                  root.undoTitle(false) == "Undo Change Track Volume",
+              "dragged up, the Track Volume box rises, live while it moves and one step at the release");
+        const auto raised = volumeOf(4);
+        check(drag(three->volume, {0, 30}) && volumeOf(4) < raised - 1 && opCount() == ops + 2,
+              "dragged down, it falls, one more step");
+        const auto lowered = volumeOf(4);
+        drag(three->volume, {40, 0});
+        check(volumeOf(4) == lowered && opCount() == ops + 2, "dragged sideways, it moves nothing and writes nothing");
+        const auto panOf = [&] {
+            return document->store().db().execAndGet("SELECT pan FROM mixer_strip WHERE track_id = 4").getDouble();
+        };
+        const auto centred = panOf();
+        check(drag(three->pan, {0, -20}) && panOf() > centred && root.undoTitle(false) == "Undo Change Track Panning",
+              "the Pan box dragged up goes right");
+        check(!three->sendKnobs().empty(), "3 Audio has a send");
+        if (!three->sendKnobs().empty()) {
+            auto &send = *three->sendKnobs()[0];
+            const auto floor = send.getValue();
+            drag(send, {0, -30});
+            check(send.getValue() > floor && root.undoTitle(false) == "Undo Change Send Level",
+                  "the Send A box dragged up rises, one step");
+            check(root.command(AppCommands::Undo), "undo the send");
+        }
+        check(root.command(AppCommands::Undo) && root.command(AppCommands::Undo) && root.command(AppCommands::Undo) &&
+                  std::abs(volumeOf(4) + 9) < 1e-6 && std::abs(panOf() - centred) < 1e-9,
+              "undone, 3 Audio is back at -9 dB, centred");
+        root.frame();
+    }
     // Esc while dragging puts the value back, and the release commits nothing.
     const auto stepBefore = document->ops().nextUndo() ? document->ops().nextUndo()->txnId : 0;
     press();
