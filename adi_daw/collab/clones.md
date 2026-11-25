@@ -17,6 +17,14 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 25 November 2026 — One Drive with the independent choices together
+
+The clones seat takes `clones/shaper-drive-integration` for one after-3-December review branch combining the four-track repair with rounded clipping, signed power saturation and the three folding shapes. The reservations remain the Drive core, its ADI-Shaper rack dispatch and canvas, the measured coefficient header and the existing shaper tests. The four-track repair remains independently available for the earlier landing.
+
+Preserve existing parameter positions and sparse-state defaults. Rounded clipping belongs to the hard-clipping mode, signed power to the saturation mode. Selecting an explicit fold overrides either underlying choice in that band. Switching Fold Off returns to the remembered choice. All three bands can therefore play different responses in the same device. Delay stays at 16 frames. The four-track repair supplies the baseline for original modes.
+
+The independent folding calibration also predicts the signed-power zero-strength broadband response. Keeping the transfer linear and changing only the interpolation and decimation filter reduced RMS differences from 0.000119 to 0.000000028 at 44.1 kHz, 0.000115 to 0.000000031 at 48 kHz and 0.002164 to 0.000000033 at 96 kHz. The linear transfer in this optional setting still passes through the measured filter and DC blocker. Normal Drive with the additional choices off must retain its original samples. Further timing changes require separately captured evidence for each response.
+
 ## 25 November 2026 — PR requested for the three Drive fold shapes
 
 PR requested — `clones/shaper-fold-shapes` at `e234b4dc0` — Add per-band sine, triangle and saw folding to Drive. Lands after 3 December. All four official device suites passed in each Pd precision under Release MSVC with warnings as errors. The native and edited canvases reproduced the signed left and right markers for all three menu choices. Separate band selection, default Off, sparse recall, reset, the two sides of a saw wrap and 16 frames of latency across all three rates passed. All 3,009,600 prior-mode samples matched their baseline. All 752,400 switched-shape samples agreed across callback partitions.
