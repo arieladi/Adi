@@ -17,6 +17,10 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 25 November 2026 — Generic-panel stage integration, lands after 3 December
+
+The clones seat takes the ADI-Shaper DSP, shaper transport helper, compiled external, device patch, device build file and existing shaper tests for `clones/shaper-time-current-1125` and `clones/shaper-stage-integration`. The first brings Time's measured sample history and recovery onto the current generic device. The second combines Time, the calibrated Noise and generated room, and their recallable order. Saved stage identities 7, 9 and 10 remain distinct. Identity 8, host parameters 464–535 and rank 724 remain allocated to Pitch for the shared-reader review. The planned gate reopens the three stages' curves and ranks, proves audible order and checks editable and native signal paths at both precisions. Win owns review and landing. Devices owns native host delivery of a repeated locate's transport revision.
+
 ## 25 November 2026 — External Width key and Volume note retrigger
 
 `clones/shaper-key-note-core-1125` at `527b7a677` — Feed external keys and note-on retriggers to the shaper core. Lands after 3 December. Queue item 19 is ready for review. The earlier entry parked it until the two prerequisite stages landed. The queue permits testing the shaper side independently. This head includes the calibrated Width follower `932753575` and Volume audio trigger `58cb2115b` on current main. Their original 418 parameters retain their order, followed by the eleven trigger and twenty-seven follower parameters. All 456 unique identifiers lead to the expected parameter through the editable patch.
