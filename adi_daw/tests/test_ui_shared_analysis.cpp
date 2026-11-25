@@ -3611,6 +3611,7 @@ void spectrogramComparisonPage() {
     pages.followSelection(true);
 
     juce::ToggleButton *compared = nullptr;
+    juce::ToggleButton *sweep = nullptr;
     juce::TextButton *freeze = nullptr;
     juce::Button *exportPng = nullptr;
     juce::ToggleButton *ruler = nullptr;
@@ -3619,6 +3620,7 @@ void spectrogramComparisonPage() {
     juce::Component *plot = nullptr;
     for (auto *child : pages.getChildren()) {
         if (child->getTitle() == "Spectrogram comparison") compared = dynamic_cast<juce::ToggleButton *>(child);
+        if (child->getTitle() == "Spectrogram comparison Sweep") sweep = dynamic_cast<juce::ToggleButton *>(child);
         if (child->getTitle() == "Spectrogram post minus pre") plot = child;
     }
     if (plot) for (auto *child : plot->getChildren()) {
@@ -3629,11 +3631,11 @@ void spectrogramComparisonPage() {
             frequencyScale = dynamic_cast<juce::ComboBox *>(child);
         if (child->getTitle() == "Spectrogram comparison cursor") cursor = dynamic_cast<juce::Label *>(child);
     }
-    check(compared && freeze && exportPng && ruler && frequencyScale && cursor && plot && !compared->isShowing() &&
-              !freeze->isShowing() && !exportPng->isShowing() && !ruler->isShowing() && !frequencyScale->isShowing() &&
-              !plot->isShowing(),
+    check(compared && sweep && freeze && exportPng && ruler && frequencyScale && cursor && plot &&
+              !compared->isShowing() && !sweep->isShowing() && !freeze->isShowing() && !exportPng->isShowing() &&
+              !ruler->isShowing() && !frequencyScale->isShowing() && !plot->isShowing(),
           "All keeps the dedicated Spectrogram comparison controls and plot hidden");
-    if (!compared || !freeze || !exportPng || !ruler || !frequencyScale || !cursor || !plot) {
+    if (!compared || !sweep || !freeze || !exportPng || !ruler || !frequencyScale || !cursor || !plot) {
         root.removeFromDesktop();
         return;
     }
@@ -3684,6 +3686,7 @@ void spectrogramComparisonPage() {
           "comparison replaces the ordinary lease with the selected track's pre and post taps");
     check(exportPng->isShowing() && !exportPng->isEnabled(), "comparison export waits for matched audio");
     check(ruler->isShowing() && !ruler->getToggleState(), "the signed frequency ruler defaults to off");
+    check(sweep->isShowing() && !sweep->getToggleState(), "the signed Spectrogram opens in Scroll mode");
     check(frequencyScale->isShowing() && frequencyScale->getSelectedId() == 2 && frequencyScale->getNumItems() == 5,
           "the signed frequency scale offers five options and defaults to Log");
     const auto waiting = picture();
@@ -3794,9 +3797,30 @@ void spectrogramComparisonPage() {
               broker->stats().frameRequests == held.frameRequests && broker->stats().workerPasses == held.workerPasses &&
               broker->stats().transforms == held.transforms,
           "turning the ruler off restores the original cursor mapping without restarting analysis");
+
+    moveCursor(64.5f, 60.5f);
+    const auto scrolled = picture();
+    click(*sweep, true);
+    frame(0, revision + 1);
+    check(!samePixels(scrolled, picture()) && freeze->getButtonText() == "Thaw" &&
+              moveCursor(.5f, 60.5f) == "750.0 Hz   +6.02 dB   Sample 0" &&
+              moveCursor(.5f, 23.5f) == "5625.0 Hz   -6.02 dB   Sample 0" &&
+              moveCursor(127.5f, 60.5f).isEmpty(),
+          "Sweep places the frozen stamp-zero column at the left and leaves the rightmost column empty");
+    click(*sweep, false);
+    frame(0, revision + 1);
+    moveCursor(64.5f, 60.5f);
+    check(samePixels(scrolled, picture()) && moveCursor(.5f, 60.5f).isEmpty() &&
+              moveCursor(127.5f, 60.5f) == "750.0 Hz   +6.02 dB   Sample 0" &&
+              moveCursor(127.5f, 23.5f) == "5625.0 Hz   -6.02 dB   Sample 0" &&
+              broker->stats().taps == held.taps && broker->stats().transforms == held.transforms &&
+              broker->stats().workerPasses == held.workerPasses && broker->stats().frameRequests == held.frameRequests,
+          "returning to Scroll restores the held plot and cursor without starting analysis");
+
     pages.setPage(Page::Spectrum);
     frame(0, revision + 1);
-    check(!compared->isShowing() && !freeze->isShowing() && !exportPng->isShowing() && !ruler->isShowing() &&
+    check(!compared->isShowing() && !sweep->isShowing() && !freeze->isShowing() && !exportPng->isShowing() &&
+              !ruler->isShowing() &&
               !frequencyScale->isShowing() && !plot->isShowing() &&
               pages.detail.view.subscribed() && broker->stats().taps == 1,
           "leaving the dedicated page hides the comparison and keeps only the new page's ordinary demand");
@@ -3809,6 +3833,26 @@ void spectrogramComparisonPage() {
     check(plot->isShowing() && broker->stats().taps == 2 && broker->stats().consumers == 2,
           "returning and resuming the comparison reacquires only its pair");
     check(!exportPng->isEnabled(), "thaw waits for a fresh heard pair before enabling export again");
+    click(*sweep, true);
+    constexpr int hop = window / 4;
+    constexpr int blocks = 34;
+    for (int block = 0; block < blocks; ++block) {
+        const auto stamp = static_cast<std::int64_t>(block) * window;
+        pre->write(input.data(), input.data(), window, stamp, true, revision + 1);
+        post->write(output.data(), output.data(), window, stamp, true, revision + 1);
+        broker->pump();
+        frame(stamp + window, revision + 1);
+    }
+    const auto newestHop = (blocks - 1) * window / hop;
+    const auto newestCell = static_cast<float>(newestHop % 128) + .5f;
+    const auto priorSweepCell = static_cast<float>((newestHop + 1) % 128) + .5f;
+    const auto sample = [](int hopIndex) { return "750.0 Hz   +6.02 dB   Sample " + juce::String(hopIndex * hop); };
+    check(moveCursor(newestCell, 60.5f) == sample(newestHop) &&
+              moveCursor(priorSweepCell, 60.5f) == sample(newestHop - 127),
+          "the sweep wraps and holds the prior pass immediately after its write head");
+    click(*sweep, false);
+    check(moveCursor(127.5f, 60.5f) == sample(newestHop),
+          "scroll shows the same wrapped history with its latest pair on the right");
     const auto visibleBounds = pages.getBounds();
     pages.setBounds(visibleBounds.withSize(0, 0));
     check(broker->stats().consumers == 0 && broker->stats().taps == 0,

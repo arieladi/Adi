@@ -66,7 +66,7 @@ class MixAnalysers final : public juce::Component {
     bool hasPinnedSpectrum_ = false;
     juce::ToggleButton pinnedTracks_{"Pinned tracks"};
     juce::ComboBox phaseBandsBox_;
-    juce::ToggleButton compareSpectrogram_{"Pre/Post"};
+    juce::ToggleButton compareSpectrogram_{"Pre/Post"}, comparisonSweep_{"Sweep"};
     std::unique_ptr<Table> table_;
     std::unique_ptr<Compare> compare_;
     std::unique_ptr<SpectrumStatistics> spectrumStatistics_;

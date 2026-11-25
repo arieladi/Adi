@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_analysis.hpp"
-#include "ui_spectrogram_ruler.hpp"
+#include "ui_spectrogram_presentation.hpp"
 #include "ui_look.hpp"
 #include "adi/engine/main_loudness.hpp"
 #include "adi/media/media_ops.hpp"
@@ -307,6 +307,33 @@ double spectrogram::frequencyAt(SpectrogramScale scale, double lowHz, double top
                                                  spectrogramPosition(scale, topHz), fraction));
 }
 
+void spectrogram::paintSweep(juce::Graphics &g, const juce::Image &image, juce::Rectangle<float> plot,
+                            int rotation, bool drawGuide) {
+    const auto clip = plot.toNearestInt();
+    if (clip.isEmpty()) return;
+    const auto columnWidth = plot.getWidth() / static_cast<float>(image.getWidth());
+    if (rotation == 0) {
+        g.drawImage(image, plot);
+    } else {
+        // Rotate the scrolling raster at paint time and keep its sampling phase on both sides.
+        const auto offset = static_cast<float>(rotation) * columnWidth;
+        const int split = std::clamp(juce::roundToInt(plot.getX() + offset), clip.getX(), clip.getRight());
+        auto right = clip;
+        const auto left = right.removeFromLeft(split - clip.getX());
+        const auto draw = [&](juce::Rectangle<int> region, float x) {
+            juce::Graphics::ScopedSaveState state(g);
+            if (g.reduceClipRegion(region)) g.drawImage(image, plot.translated(x, 0.f));
+        };
+        draw(left, offset - plot.getWidth());
+        draw(right, offset);
+    }
+    if (!drawGuide) return;
+    const auto boundary = rotation == 0 ? plot.getRight() : plot.getX() + static_cast<float>(rotation) * columnWidth;
+    const auto x = std::clamp(juce::roundToInt(boundary), clip.getX(), clip.getRight() - 1);
+    g.setColour(look::textOnBand.withAlpha(.55f));
+    g.drawVerticalLine(x, plot.getY(), plot.getBottom());
+}
+
 struct SharedSpectrumView::Raster {
     static constexpr int width = 128, height = 256;
     static constexpr std::uint16_t gap = 256;
@@ -391,30 +418,7 @@ struct SharedSpectrumView::Raster {
             g.drawImage(image, plot);
             return;
         }
-        const auto head = (column - sweepOrigin) % width;
-        const auto rotation = static_cast<float>(sweepRotation()) * (plot.getWidth() / width);
-        const auto clip = plot.toNearestInt();
-        if (clip.isEmpty()) return;
-        if (rotation == 0.f) {
-            g.drawImage(image, plot);
-        } else {
-            // Rotate the scrolling raster at draw time. Both fragments use the
-            // same scale and the same published pixels as Scroll.
-            const int split = std::clamp(juce::roundToInt(plot.getX() + rotation), clip.getX(), clip.getRight());
-            auto right = clip;
-            const auto left = right.removeFromLeft(split - clip.getX());
-            const auto draw = [&](juce::Rectangle<int> limit, float offset) {
-                juce::Graphics::ScopedSaveState state(g);
-                if (g.reduceClipRegion(limit)) g.drawImage(image, plot.translated(offset, 0.f));
-            };
-            draw(left, rotation - plot.getWidth());
-            draw(right, rotation);
-        }
-        if (!drawGuide) return;
-        const auto boundary = plot.getX() + static_cast<float>(head + 1) * (plot.getWidth() / width);
-        const auto x = std::clamp(juce::roundToInt(boundary), clip.getX(), clip.getRight() - 1);
-        g.setColour(look::textOnBand.withAlpha(.55f));
-        g.drawVerticalLine(x, plot.getY(), plot.getBottom());
+        spectrogram::paintSweep(g, image, plot, sweepRotation(), drawGuide);
     }
     void recolor() {
         if (image.isNull()) return;
