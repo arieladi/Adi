@@ -24,6 +24,11 @@ bool keepChannelConfig(settings::AppSettings &, const std::string &device, bool 
 // for the inputs, the output device's for the outputs, Live's default where none is kept. The
 // device manager's error, empty when it opened or nothing changed.
 juce::String useChannelConfig(juce::AudioDeviceManager &, const settings::AppSettings &);
+// Opens the devices `setup` names, then the channels their records keep in use (useChannelConfig).
+// An empty input is the system's default input, opened with the output as Live opens both on a
+// first run, inputs 1/2 recordable (manual 17.2); with no input to open, the output opens alone.
+juce::String openAudioDevice(juce::AudioDeviceManager &, const juce::AudioDeviceManager::AudioDeviceSetup &,
+                             const settings::AppSettings &);
 // The head of the Settings window's Audio page, as Live 11's (measured 2026-10-27): Audio
 // Device (driver type, input and output devices, Channel Configuration), Sample Rate, and
 // Latency (buffer size, the input, output and overall latencies). It drives the application's
