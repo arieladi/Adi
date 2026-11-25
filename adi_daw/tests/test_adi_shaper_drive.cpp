@@ -111,7 +111,7 @@ void nearZeroContinuity() {
     constexpr float firstKnot = 1.f / 32.f;
     constexpr int section = 512;
     constexpr std::array modes{Mode::Saturate, Mode::HardClip, Mode::Rectify};
-    constexpr std::array rates{44100, 48000, 96000};
+    constexpr std::array rates{44100, 48000, 96000, 176400, 192000};
     constexpr std::array trims{std::array{.5f, .5f}, std::array{1.f, .25f}};
     double worstNearZero = 0., worstAtKnot = 0.;
     for (auto mode : modes) {
@@ -765,31 +765,6 @@ void highRateTransfers() {
     }
 }
 
-void highRateFirstStrength() {
-    struct Case { Mode mode; double left, right; };
-    constexpr std::array cases{Case{Mode::Saturate, -.9808559, .7549640},
-                               Case{Mode::HardClip, -.7382300, .6710717},
-                               Case{Mode::Rectify, -.0899924, .9999962}};
-    for (const auto& row : cases) {
-        for (const auto amount : {0.f, .000001f}) {
-            Drive drive;
-            drive.prepare(192000.);
-            drive.setMode(row.mode);
-            for (int frame = 0; frame <= Drive::latencySamples; ++frame) {
-                float left = frame == 0 ? -1.91f : 0.f, right = frame == 0 ? 1.52f : 0.f;
-                drive.process(left, right, amount);
-                if (frame == Drive::latencySamples) {
-                    constexpr double dcGain = (1. + .99967280429026) * .5;
-                    const double l = amount == 0.f ? -1.91 : row.left;
-                    const double r = amount == 0.f ? 1.52 : row.right;
-                    check(std::abs(left / dcGain - l) < .00006 && std::abs(right / dcGain - r) < .00006,
-                          "at the direct rate the first positive strength selects the nonlinear transfer");
-                }
-            }
-        }
-    }
-}
-
 void powerImpulses() {
     constexpr std::array offsets{-3, -1, 0, 1, 3};
     constexpr std::array left{.09524528, .05098106, .49998841, .05026031, .09463098};
@@ -973,7 +948,6 @@ int main() {
     powerTransfers();
     rateSelection();
     highRateTransfers();
-    highRateFirstStrength();
     powerImpulses();
     powerScopeAndTrims();
     powerStrengthTiming();

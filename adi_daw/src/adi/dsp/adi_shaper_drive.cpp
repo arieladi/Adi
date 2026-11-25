@@ -555,7 +555,7 @@ void AdiShaperDrive::writePhases(const Phases& phases, std::size_t head) noexcep
             wet_[head-p-1] = wet_[head-p-1+ringSize] = b;
         }
     } else {
-        const bool fading = Factor > 1 && driveFade_ > 0.0 && driveFade_ < 1.0;
+        const bool fading = driveFade_ > 0.0 && driveFade_ < 1.0;
         for (std::size_t p = 0; p < Factor; ++p) {
             Stereo wet{};
             for (std::size_t c = 0; c < 2; ++c) {
