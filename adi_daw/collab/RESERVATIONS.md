@@ -41,7 +41,7 @@ Next free: **ADR-0254**.
 | Prefix | Section | Who numbers in it | Last used | Next free |
 |---|---|---|---|---|
 | DF-C | Control | the control seat, through win | DF-C5 | DF-C6 |
-| DF-M | Mix View | the Mix View seat, through win | DF-M68 | DF-M69 |
+| DF-M | Mix View | the Mix View seat, through win | DF-M69 | DF-M70 |
 | DF-W | Window | the window lane and win | DF-W41 | DF-W42 |
 | DF-E | Engine | the engine seat, engine-win and the devices lane; the row's owner column says which | DF-E79 | DF-E80 |
 | DF-R | Repository | win | DF-R1 | DF-R2 |
@@ -73,6 +73,7 @@ are in the seat's queue (`collab/prompts/2026-11-22-gemini-queue.md` for gemini)
 | PD-15, paste between projects: the engine half | engine | gemini | `src/adi/project_paste.*`, `tests/test_project_paste.cpp`, its lines in `CMakeLists.txt` | after 3 December | reserved |
 | CO-01, the collaboration core | engine | gemini | `src/adi/collab/**` (new), `tests/test_collab_*.cpp`, their lines in `CMakeLists.txt`; its schema minor, if a slice needs one, reserved in the table above first | after 3 December | reserved |
 
+| DF-M34, a device told each skipped segment's length (a fix, not a PLAN row) | engine | mixview | the device backend's interface in `src/juce/device_model.hpp` (one hook taking each skipped segment's exact frame count, beside `didSuspend`) and the graph's skip site that already calls `Node::silenceTaps` (`src/adi/engine/graph.*`), with a test in the engine's graph suite | before 3 December | lent by win 25 November, the engine seat being out; the engine reviews it when back |
 None of the four needs a schema minor, an op name or a register id today.
 
 ## The window's needs-table numbers (`collab/window.md`)
