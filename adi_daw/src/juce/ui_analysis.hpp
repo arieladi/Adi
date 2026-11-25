@@ -277,6 +277,7 @@ class AnalysisPane final : public juce::Component {
     void frame(std::shared_ptr<SharedAnalysis>, std::int64_t main, std::int64_t selected);
     void resized() override;
     void usePageControls();
+    void exportSpectrogramImage(juce::Image snapshot, juce::Component &anchor, const juce::String &fileName);
     void setMode(SharedSpectrumView::Mode);
     SharedSpectrumView::Mode mode() const noexcept { return view.mode(); }
     void setSource(Source);

@@ -2104,20 +2104,22 @@ juce::Result writeSpectrogramPng(const juce::Image &image, const juce::File &tar
 }
 
 void AnalysisPane::exportSpectrogramPng() {
-    if (spectrogramChooser_) return;
-    auto image = view.spectrogramImage();
-    if (!image.isValid()) return;
-    const auto initial = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory).getChildFile("Spectrogram.png");
-    spectrogramChooser_ = std::make_unique<juce::FileChooser>("Export Spectrogram PNG", initial, "*.png", true, false, this);
+    if (!spectrogramChooser_) exportSpectrogramImage(view.spectrogramImage(), *this, "Spectrogram.png");
+}
+
+void AnalysisPane::exportSpectrogramImage(juce::Image snapshot, juce::Component &anchor, const juce::String &fileName) {
+    if (spectrogramChooser_ || !snapshot.isValid()) return;
+    const auto initial = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory).getChildFile(fileName);
+    spectrogramChooser_ = std::make_unique<juce::FileChooser>("Export Spectrogram PNG", initial, "*.png", true, false, &anchor);
     const auto owner = juce::Component::SafePointer<AnalysisPane>(this);
-    const auto show = [owner](const juce::String &message) {
-        if (auto *pane = owner.getComponent())
+    const auto show = [parent = juce::Component::SafePointer<juce::Component>(&anchor)](const juce::String &message) {
+        if (auto *component = parent.getComponent())
             juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon, "Export Spectrogram PNG",
-                                                   message, {}, pane);
+                                                   message, {}, component);
     };
     const int chooserFlags = juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles |
                              juce::FileBrowserComponent::warnAboutOverwriting;
-    spectrogramChooser_->launchAsync(chooserFlags, [owner, image = std::move(image), show](const juce::FileChooser &chosen) {
+    spectrogramChooser_->launchAsync(chooserFlags, [owner, image = std::move(snapshot), show](const juce::FileChooser &chosen) {
         juce::MessageManager::callAsync([owner] {
             if (auto *pane = owner.getComponent()) pane->spectrogramChooser_.reset();
         });

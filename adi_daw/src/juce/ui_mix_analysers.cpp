@@ -499,7 +499,7 @@ class MixAnalysers::SpectrumStatistics final : public juce::Component {
 
 class MixAnalysers::SpectrogramDelta final : public juce::Component {
   public:
-    SpectrogramDelta() {
+    explicit SpectrogramDelta(AnalysisPane &exportPane) {
         setTitle("Spectrogram post minus pre");
         cursor_.setTitle("Spectrogram comparison cursor");
         cursor_.setJustificationType(juce::Justification::centred);
@@ -518,6 +518,12 @@ class MixAnalysers::SpectrogramDelta final : public juce::Component {
             if (alive) syncFreeze();
         };
         addAndMakeVisible(freeze_);
+        export_.setTitle("Export Spectrogram comparison PNG");
+        export_.setEnabled(false);
+        export_.onClick = [this, &exportPane] {
+            if (image_.isValid()) exportPane.exportSpectrogramImage(image_.createCopy(), *this, "Spectrogram comparison.png");
+        };
+        addAndMakeVisible(export_);
     }
 
     void stop() {
@@ -570,6 +576,7 @@ class MixAnalysers::SpectrogramDelta final : public juce::Component {
         if (columns.empty() || !format) { clear(); return; }
         freeze_.setEnabled(true);
         updateRaster(columns, *format);
+        export_.setEnabled(true);
     }
 
     void visibilityChanged() override { if (!isShowing()) stop(); }
@@ -586,7 +593,11 @@ class MixAnalysers::SpectrogramDelta final : public juce::Component {
 
     void resized() override {
         auto header = getLocalBounds().reduced(look::border).removeFromTop(look::fieldHeight);
-        freeze_.setBounds(header.removeFromRight(std::min(look::mixPageWidth, header.getWidth() / 3)));
+        auto actions = header.removeFromRight(std::min(2 * look::mixPageWidth + look::gap, header.getWidth() / 2));
+        const auto buttonWidth = std::max(0, (actions.getWidth() - look::gap) / 2);
+        freeze_.setBounds(actions.removeFromLeft(buttonWidth));
+        actions.removeFromLeft(look::gap);
+        export_.setBounds(actions);
         header.removeFromLeft(header.getWidth() / 3);
         cursor_.setBounds(header.removeFromLeft(header.getWidth() / 2));
         if (getLocalBounds().isEmpty()) stop();
@@ -653,6 +664,7 @@ class MixAnalysers::SpectrogramDelta final : public juce::Component {
         }
         cursor_.setText({}, juce::dontSendNotification);
         freeze_.setEnabled(comparison_ && comparison_->frozen());
+        export_.setEnabled(false);
     }
 
     void prepareImage(SpectrogramComparison::Format format, std::size_t bins) {
@@ -783,7 +795,7 @@ class MixAnalysers::SpectrogramDelta final : public juce::Component {
     std::array<ColumnKey, width> keys_{};
     std::array<std::array<std::size_t, 2>, height> rowBins_{};
     ThemeId theme_ = ThemeId::Dark;
-    juce::TextButton freeze_{"Freeze"};
+    juce::TextButton freeze_{"Freeze"}, export_{"Export PNG"};
     juce::Label cursor_;
 };
 
@@ -791,7 +803,7 @@ MixAnalysers::MixAnalysers() {
     table_ = std::make_unique<Table>(*this);
     compare_ = std::make_unique<Compare>(*this);
     spectrumStatistics_ = std::make_unique<SpectrumStatistics>();
-    spectrogramDelta_ = std::make_unique<SpectrogramDelta>();
+    spectrogramDelta_ = std::make_unique<SpectrogramDelta>(detail);
     spectrumStatistics_->onTruePeakChanged = [this] {
         spectrumStatistics_->updateTruePeakReadout(detail.view.snapshot());
         detail.view.setSpectrumTruePeakEnabled(spectrumStatistics_->truePeakRequested());

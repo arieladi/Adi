@@ -3612,6 +3612,7 @@ void spectrogramComparisonPage() {
 
     juce::ToggleButton *compared = nullptr;
     juce::TextButton *freeze = nullptr;
+    juce::Button *exportPng = nullptr;
     juce::Label *cursor = nullptr;
     juce::Component *plot = nullptr;
     for (auto *child : pages.getChildren()) {
@@ -3620,11 +3621,13 @@ void spectrogramComparisonPage() {
     }
     if (plot) for (auto *child : plot->getChildren()) {
         if (child->getTitle() == "Freeze Spectrogram comparison") freeze = dynamic_cast<juce::TextButton *>(child);
+        if (child->getTitle() == "Export Spectrogram comparison PNG") exportPng = dynamic_cast<juce::Button *>(child);
         if (child->getTitle() == "Spectrogram comparison cursor") cursor = dynamic_cast<juce::Label *>(child);
     }
-    check(compared && freeze && cursor && plot && !compared->isShowing() && !freeze->isShowing() && !plot->isShowing(),
+    check(compared && freeze && exportPng && cursor && plot && !compared->isShowing() && !freeze->isShowing() &&
+              !exportPng->isShowing() && !plot->isShowing(),
           "All keeps the dedicated Spectrogram comparison controls and plot hidden");
-    if (!compared || !freeze || !cursor || !plot) {
+    if (!compared || !freeze || !exportPng || !cursor || !plot) {
         root.removeFromDesktop();
         return;
     }
@@ -3656,7 +3659,8 @@ void spectrogramComparisonPage() {
     };
     pages.setPage(Page::Spectrogram);
     frame(0, revision);
-    check(compared->isShowing() && !compared->getToggleState() && !freeze->isShowing() && !plot->isShowing() &&
+    check(compared->isShowing() && !compared->getToggleState() && !freeze->isShowing() && !exportPng->isShowing() &&
+              !plot->isShowing() &&
               pages.detail.view.subscribed() && opens[2] != 0 && broker->stats().taps == 1,
           "dedicated Spectrogram begins with the selected track's ordinary source");
     click(*compared, true);
@@ -3665,6 +3669,7 @@ void spectrogramComparisonPage() {
               !pages.detail.view.subscribed() && opens[0] != 0 && opens[1] != 0 &&
               broker->stats().taps == 2 && broker->stats().consumers == 2,
           "comparison replaces the ordinary lease with the selected track's pre and post taps");
+    check(exportPng->isShowing() && !exportPng->isEnabled(), "comparison export waits for matched audio");
     const auto waiting = picture();
 
     std::array<float, window> input, output;
@@ -3679,9 +3684,10 @@ void spectrogramComparisonPage() {
     post->write(output.data(), output.data(), window, 0, true, revision);
     broker->pump();
     frame(window - 1, revision);
-    check(!waiting.isNull() && samePixels(waiting, picture()) && !freeze->isEnabled(),
-          "a complete analysis window stays hidden until its final sample has been heard");
+    check(!waiting.isNull() && samePixels(waiting, picture()) && !freeze->isEnabled() && !exportPng->isEnabled(),
+          "an unheard analysis window cannot be displayed, frozen or exported");
     frame(window, revision);
+    check(exportPng->isEnabled(), "comparison export becomes available with heard matched audio");
     const auto painted = picture();
     const auto containsInk = [&](juce::Colour target) {
         for (int y = 0; y < painted.getHeight(); ++y)
@@ -3713,13 +3719,14 @@ void spectrogramComparisonPage() {
     check(freeze->getButtonText() == "Thaw" && samePixels(frozen, picture()) && held.taps == 0 && held.consumers == 0 &&
               broker->stats().transforms == held.transforms,
           "Freeze holds the signed plot across a later epoch and releases both taps");
+    check(exportPng->isShowing() && exportPng->isEnabled(), "the frozen comparison stays available for export after a seek");
     check(moveCursor(127.5f, 60.5f) == "750.0 Hz   +6.02 dB   Sample 0" &&
               moveCursor(64.5f, 60.5f).isEmpty() && broker->stats().frameRequests == held.frameRequests &&
               broker->stats().transforms == held.transforms && broker->stats().workerPasses == held.workerPasses,
           "the frozen comparison cursor uses the held epoch without restarting analysis");
     pages.setPage(Page::Spectrum);
     frame(0, revision + 1);
-    check(!compared->isShowing() && !freeze->isShowing() && !plot->isShowing() &&
+    check(!compared->isShowing() && !freeze->isShowing() && !exportPng->isShowing() && !plot->isShowing() &&
               pages.detail.view.subscribed() && broker->stats().taps == 1,
           "leaving the dedicated page hides the comparison and keeps only the new page's ordinary demand");
 
@@ -3730,6 +3737,7 @@ void spectrogramComparisonPage() {
     frame(0, revision + 1);
     check(plot->isShowing() && broker->stats().taps == 2 && broker->stats().consumers == 2,
           "returning and resuming the comparison reacquires only its pair");
+    check(!exportPng->isEnabled(), "thaw waits for a fresh heard pair before enabling export again");
     const auto visibleBounds = pages.getBounds();
     pages.setBounds(visibleBounds.withSize(0, 0));
     check(broker->stats().consumers == 0 && broker->stats().taps == 0,
@@ -3740,7 +3748,7 @@ void spectrogramComparisonPage() {
           "restoring the comparison plot resumes only its two sources");
     click(*compared, false);
     frame(0, revision + 1);
-    check(!plot->isShowing() && !freeze->isShowing() && pages.detail.view.subscribed() &&
+    check(!plot->isShowing() && !freeze->isShowing() && !exportPng->isShowing() && pages.detail.view.subscribed() &&
               broker->stats().taps == 1 && broker->stats().consumers == 1,
           "disabling comparison releases both comparison taps and restores the ordinary view");
     pages.setVisible(false);
