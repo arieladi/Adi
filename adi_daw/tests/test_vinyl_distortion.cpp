@@ -175,7 +175,7 @@ void crackle() {
     std::size_t clicks = 0;
     float peak = 0;
     for (std::size_t i = 1; i < l.size(); ++i) {
-        clicks += std::abs(l[i]) > std::abs(l[i - 1]) + 0.1f ? 1 : 0;
+        clicks += std::abs(l[i]) > std::abs(l[i - 1]) + 0.1f ? std::size_t{1} : std::size_t{0};
         peak = std::max(peak, std::abs(l[i]));
     }
     check(clicks > 140 && clicks < 260, "Density 20: about 200 crackles in 10 s (" + std::to_string(clicks) + ")");
