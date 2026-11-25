@@ -122,6 +122,7 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
         volume.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
         volume.getProperties().set("live.meterFader", true);
         volume.getProperties().set("live.faderX", 15);
+        volume.getProperties().set("live.faderReach", kFaderReach);
         volume.setColour(juce::Slider::textBoxTextColourId, look::text);
         pan.setSliderStyle(juce::Slider::RotaryHorizontalVerticalDrag);
         pan.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
@@ -554,9 +555,11 @@ void MixerStrip::resized() {
         if (tall != (volume.getTextBoxPosition() == juce::Slider::TextBoxBelow))
             volume.setTextBoxStyle(tall ? juce::Slider::TextBoxBelow : juce::Slider::NoTextBox,
                                    false, tall ? 40 : 0, tall ? 15 : 0);
+        // The fader's travel is the meter's height, on its scale; the control reaches past both ends by
+        // kFaderReach so the ◁ is pressed wherever it is drawn, at +6 dB too (LiveLook::getSliderLayout).
         const auto meter = meterArea();
-        volume.setBounds(meter.getX() - 2, meter.getY(), tall ? 40 : 26,
-                         meter.getHeight() + (tall ? 15 : 0));
+        volume.setBounds(meter.getX() - 2, meter.getY() - kFaderReach, tall ? 40 : 26,
+                         meter.getHeight() + kFaderReach + (tall ? 15 : kFaderReach));
         return;
     }
     // Live's rows: 13 pt boxes on a 17 pt pitch, 3 pt from the track's top. A row

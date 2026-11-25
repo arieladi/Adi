@@ -182,6 +182,9 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     // Controls' Track Options shows it and the strip has room for it and the mixer.
     bool showsTrackDelay() const noexcept { return delay_ > 0; }
     static constexpr int kDelayHeight = 54;
+    // How far the Mixer View fader reaches past the meter's top (and its foot, without the numeric field):
+    // half its ◁ and the outline, so the ◁ at +6 dB or -inf is pressed where it is drawn (walk-A A22).
+    static constexpr int kFaderReach = 6;
     // Commits the track's delay at the box's value, in ms, as one undo step: what a drag's end and
     // a typed value do. The project's rate turns it into samples (`setTrackDelay`).
     void commitDelay();
