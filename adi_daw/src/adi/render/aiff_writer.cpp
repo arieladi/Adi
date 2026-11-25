@@ -37,7 +37,7 @@ void header(std::ostream& out, const audio::WavReader& input, unsigned sampleByt
     bigEndian(out, input.frames(), 4);
     bigEndian(out, sampleBytes * 8, 2);
     // An ext80 exponent and explicit integer bit represent any integer rate exactly.
-    const auto exponent = std::bit_width(input.sampleRate()) - 1U;
+    const auto exponent = static_cast<unsigned>(std::bit_width(input.sampleRate())) - 1U;
     bigEndian(out, 16383U + exponent, 2);
     bigEndian(out, static_cast<std::uint64_t>(input.sampleRate()) << (63U - exponent), 8);
     if (floating) {
