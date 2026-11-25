@@ -193,6 +193,12 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - The missing Sweep control failed first. The checked paths include the first frozen column, both signed values, empty cells and the previous pass after wrap. Toggling reuses the captured columns. Strict Release passed 11 suites, 5,626 checks.
 - Review ZIP SHA-256 `01a139c51bb6c1f778874247f09b2a79c8af172aa5fc2dcd315ed5b7a4c83f8d`. Executable `5ea1c3670276682dc852e9608e1b15929af3e8d6995cbe2ec39a087014fc3e08`. Retest brief uses the same source hash.
 
+## 25 November 2026 · MX-21 retained Compare spectrum paths · lands after 3 December
+
+- **PR requested** `mixview/mx21-compare-retained-paths-lands-after-2026-12-03` at `8cb89d83ed6956b14814fec7ea62e4301bb4fc7e`. Compare retains each calibrated trace and its fill. A keeps updating while Hold B reuses the held path. Scale and bounds changes reproject both paths.
+- Six checks exposed repeated paint work before the fix. The updated fixture verifies exact repeated pixels, a single A projection with held B, one projection per side for each scale and correct resize geometry. Strict Release passed 11 suites, 5,633 checks.
+- Review ZIP SHA-256 `84cc4360470e57fbaa59ebdbb6e3cfeba3aa70761ca43579bd42fd711b93af14`. Executable `45d03cd989fe53f45a33b132311182af703662147f30442bc48e10de54a41bc3`. Retest brief uses the same source hash.
+
 ### 25 November — MX13 Focus musical windows
 
 **PR requested** `mixview/mx13-musical-window-lands-after-2026-12-03` at `5c88abf073d56cd9e5c99f3aeac3d4cb24a68532`, after captured true peak. Focus Scope offers One Beat and One Bar. The default is still One Bar. A view change clears the former interval and region and requests the new window on the same grouped sources. Tempo and signature edges share exact rounded sample positions. A Locate or selection at a rounded-down boundary starts the new interval. The existing Sum level summary remains readable with the added control.
