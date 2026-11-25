@@ -17,6 +17,16 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 25 November 2026 — Continuous point edits in the audio evaluator
+
+`clones/shaper-curve-edit` at `ef692ef7a` — Reuse compiled curve spans during point height edits. Review this two-file DSP change against `clones/shaper-panel-trim-1125` at `8698acb53`. The panel has its separate landing hold.
+
+When only heights change, the evaluator updates those heights on the affected curves and invalidates their cached audio. Edits to knot geometry, transitions into or out of a constant contour, and coincident hard points still take the rebuild path. A committed regression compares the sample bits and the moving flag against a fresh uncached contour.
+
+Each evaluator processed 30,720 measured callbacks at each block size on the registered device, using the same continuous edits, 48 kHz kick and bass and 120 BPM transport. At 256 frames the uncached, prior panel and repaired evaluators measured p99 of 37.9, 27.7 and 27.6 microseconds, with 2, 0 and 0 deadline misses. At 2,048 frames the corresponding p99 values were 145.9, 138.8 and 135.6 microseconds, with no misses in any arm. Across the full comparison renders all 2,621,440 stereo frames at 256 and all 20,971,520 at 2,048 matched byte for byte. The separate 192,000-frame captures matched the archived channel hashes. The Release MSVC DSP and weighted-wave tests passed with warnings as errors.
+
+PR requested
+
 ## 25 November 2026 — Held panel stack on current main
 
 For Win and Window. The six commits from `bd52ccf1c` are linear. The four branch tips are `clones/shaper-panel-reconcile-1125` at `18d58e2e3`, `clones/shaper-panel-rack-1125` at `0b7e432d3`, `clones/shaper-panel-grid-1125` at `ad8921489` and `clones/shaper-panel-trim-1125` at `8698acb53`. The trim tip includes Window's four fixes from `c10003c4` and the current main device and window changes. The generic editor continues to serve the device. The custom panel remains held until after 3 December and the director's agreement to Window's proposal sheet.
