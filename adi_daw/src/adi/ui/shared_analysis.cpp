@@ -3224,7 +3224,7 @@ SharedAnalysis::CaptureLease SharedAnalysis::acquireCapture(const CaptureRequest
 SharedAnalysis::BarScopeLease SharedAnalysis::acquireBarScope(std::span<const engine::ScopeSource> sources,
                                                             std::size_t columns) {
     state_->ownerOnly();
-    if (sources.size() < 2 || sources.size() > kMaxDomains || !columns ||
+    if (sources.empty() || sources.size() > kMaxDomains || !columns ||
         columns > dsp::TriggeredScope::kMaximumColumns) return {};
     for (std::size_t i = 0; i < sources.size(); ++i) {
         const auto &source = sources[i];

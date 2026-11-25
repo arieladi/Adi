@@ -4096,6 +4096,32 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
     focus.frame(initial);
     check(broker->stats().taps == 2 && !MixFocusTestAccess::aligned(focus),
           "a restored plot waits for new source data instead of reusing the old bar");
+    if (musicalWindow && display) {
+        display->setSelectedId(5, juce::sendNotificationSync);
+        focus.setMembers({first});
+        frame();
+        check(musicalWindow->isEnabled() && display->getSelectedId() == 1 && !display->isItemEnabled(5),
+              "one remaining Focus channel can choose a window and falls back from Difference to Overlay");
+        display->setSelectedId(1, juce::sendNotificationSync);
+        writeUntil(driver.position() + 8 * chunk);
+        const auto soloStart = driver.position();
+        const auto transforms = broker->stats().transforms;
+        musicalWindow->setSelectedId(static_cast<int>(FocusScopeWindow::Milliseconds85), juce::sendNotificationSync);
+        frame();
+        writeUntil(soloStart + 4079);
+        check(!MixFocusTestAccess::hasScopeTrace(focus), "a solo 85 ms window waits for its last sample");
+        writeUntil(soloStart + 4080);
+        check(MixFocusTestAccess::scopeInterval(focus, soloStart, 4080, rate) &&
+                  MixFocusTestAccess::scopePhase(focus) == 1. && broker->stats().taps == 1 &&
+                  broker->stats().consumers == 1 && broker->stats().transforms == transforms,
+              "one channel shows the full fixed window and its L/R phase with just one tap and no transforms");
+        driver.play(false);
+        frame();
+        check(MixFocusTestAccess::scopeInterval(focus, soloStart, 4080, rate) && broker->stats().taps == 0,
+              "stopping holds the one-source capture and detaches its tap");
+        focus.setMembers({first, second});
+        check(display->isItemEnabled(5), "Difference is offered again when the second Focus channel returns");
+    }
     peer.setVisible(false);
     check(broker->stats().taps == 0 && broker->stats().consumers == 0,
           "hiding the one-bar Scope releases its sources immediately");

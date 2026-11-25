@@ -1513,6 +1513,46 @@ void focusBarScopeBroker() {
     companion.reset();
     check(released == 2 && broker.stats().taps == 0, "the last subscriber releases each tap exactly once");
 }
+void focusSingleSourceScope() {
+    using Source = adi::engine::ScopeSource;
+    using Status = SharedAnalysis::BarScopeStatus;
+    constexpr int frames = 4080;
+    constexpr double rate = 48000.;
+    constexpr std::uint64_t revision = 53;
+    const std::array sources{Source{1, ScopePoint::PostFader, 0}};
+    auto tap = std::make_shared<ScopeTap>(rate, .25);
+    int detached = 0;
+    SharedAnalysis broker([&](Source source, double) -> std::shared_ptr<const ScopeTap> {
+        return source == sources[0] ? tap : nullptr;
+    }, [&](Source) { ++detached; }, SharedAnalysis::Mode::Manual);
+    auto lease = broker.acquireBarScope(sources, 64);
+    check(lease && broker.stats().taps == 1, "an individual Focus Scope can own one heard source");
+    if (!lease) return;
+    lease.setPhaseRequested(true);
+    const SharedAnalysis::ScopeDifference pair{sources[0], Source{2, ScopePoint::PostFader, 0},
+                                               adi::ui::FocusScopeChannels::Stereo, 1, true};
+    lease.setDifferenceRequested(pair);
+    check(lease.request({0, frames, rate}, revision), "one source accepts a complete 85 ms display request");
+    std::array<float, frames> left{}, right{};
+    left.front() = .25f; right.front() = -.125f;
+    left.back() = .75f; right.back() = -.375f;
+    tap->write(left.data(), right.data(), frames - 1, 0, true, revision);
+    broker.pump();
+    check(lease.status() == Status::Pending && !lease.read(), "the single source waits for its last sample");
+    tap->write(&left.back(), &right.back(), 1, frames - 1, true, revision);
+    broker.pump();
+    const auto picture = lease.read();
+    check(picture && picture->frames == frames && picture->firstStamp == 0 && picture->transportRevision == revision &&
+              picture->projection && picture->projection->memberColumns(0).front().high[0] == .25 &&
+              picture->projection->memberColumns(0).back().high[0] == .75 &&
+              picture->projection->sumReading()->peak == std::array{.75, .375} &&
+              picture->projection->phase(false) == -1. && !picture->projection->phase(true) &&
+              !picture->differenceSpectrum(pair) && broker.stats().transforms == 0,
+          "one source keeps endpoint extrema and L/R phase with no pair phase or spectrum transform");
+    lease.reset();
+    check(detached == 1 && broker.stats().taps == 0 && picture && picture->projection->complete(),
+          "the released single tap leaves a complete held publication");
+}
 void focusBarScopeMidDemand() {
     using adi::ui::FocusScopeChannels;
     using Source = adi::engine::ScopeSource;
@@ -5772,7 +5812,7 @@ void operator delete[](void *p,std::size_t) noexcept {::operator delete(p);}
 int main() {
     try { stripCadenceAndEpochs(); stripReusesRawSpectrum(); stripWorkerBudget(); stripLeaseInSession(); phaseBandSpatialMeasurements();
           focusCapturedTruePeak(); focusBarCapturedTruePeak();
-          continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBeatTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeMidDemand(); focusScopeDifference(); focusScopeSideDemand(); focusBarScopeBrokerBoundaries(); focusBarScopeWaitsOnAllSources(); focusBarScopeResumesAtRequestedRevision(); focusScopeSumProjection(); focusScopeLayerPreview(); focusBarLayerPreview(); focusBarResidualSpectrum(); focusScopePhaseOperands(); focusScopeFlatPath(); focusLagPreviewRequests(); focusLagPreviewCases(); focusLagTapReads(); focusLagHighRateTaps(); focusMatchWindows(); parkedSilence(); parkedSpectrogramWake(); parkedWindowHopPhase();
+          continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBeatTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusSingleSourceScope(); focusBarScopeMidDemand(); focusScopeDifference(); focusScopeSideDemand(); focusBarScopeBrokerBoundaries(); focusBarScopeWaitsOnAllSources(); focusBarScopeResumesAtRequestedRevision(); focusScopeSumProjection(); focusScopeLayerPreview(); focusBarLayerPreview(); focusBarResidualSpectrum(); focusScopePhaseOperands(); focusScopeFlatPath(); focusLagPreviewRequests(); focusLagPreviewCases(); focusLagTapReads(); focusLagHighRateTaps(); focusMatchWindows(); parkedSilence(); parkedSpectrogramWake(); parkedWindowHopPhase();
           parkedRealtimeModeJoins<SharedAnalysis::RealtimeMaximum>(); parkedRealtimeModeJoins<SharedAnalysis::RealtimeSigma>(); parkedStereoBalance(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
           sharedModesAndCursors(); phaseBandCorrelation(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); spectrumLevels(); spectrumSamplePeaksAndClips(); restartSpectrumLevels(); restartParkedSpectrumLevels(); spectrumTruePeak(); parkedSpectrumLevels(false); parkedSpectrumLevels(true); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); realtimeSigmaSpectrum(); cumulativeMaximumSpectrum(); cumulativeAverageSpectrum(); cumulativeMaximumParkedRollover(); sharedAverage(); parkedRealtimeAverage(); parkedRealtimeAverageJoinsScope(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); deviceSpectrumLease(); parkedDeviceSpectrum(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }

@@ -354,10 +354,15 @@ void MixFocus::updateMatchControls() {
             clearMatchPreview();
     }
     const bool together = !scope.getToggleState();
+    const bool hasPair = members_.size() >= 2;
+    const auto difference = static_cast<int>(ScopeDisplay::Difference);
+    scopeDisplay_.setItemEnabled(difference, hasPair);
+    if (!hasPair && scopeDisplay_.getSelectedId() == difference)
+        scopeDisplay_.setSelectedId(static_cast<int>(ScopeDisplay::Overlay), juce::dontSendNotification);
     scopeDisplay_.setVisible(!together);
     scopeChannels_.setVisible(!together);
     scopeWindow_.setVisible(!together);
-    scopeWindow_.setEnabled(members_.size() >= 2);
+    scopeWindow_.setEnabled(!members_.empty());
     scopeLayer_.setVisible(!together);
     scopeFreeze_.setVisible(!together);
     updateScopeLayerControl();
@@ -932,7 +937,7 @@ void MixFocus::updateBarScope(const SnapshotReader &reader, const std::shared_pt
     const auto choice = scopeWindowChoice();
     const auto milliseconds = focusScopeWindowMilliseconds(choice);
     if (!scopePlaying_ || !scope.getToggleState() || alignment_ != Alignment::Ready || plot_.isEmpty() ||
-        members_.size() < 2 || (!tempo && !milliseconds) || !broker || !broker->active()) {
+        members_.empty() || (!tempo && !milliseconds) || !broker || !broker->active()) {
         clearBarScopeData();
         barScope_.reset();
         return;
@@ -1157,7 +1162,7 @@ FocusScopeWindow MixFocus::scopeWindowChoice() const noexcept {
     }
 }
 bool MixFocus::waitsForCompleteScopeWindow() const noexcept {
-    return scope.getToggleState() && alignment_ == Alignment::Ready && members_.size() >= 2 &&
+    return scope.getToggleState() && alignment_ == Alignment::Ready && !members_.empty() &&
            (scopeWindowAwaiting_ || scopeWindowChoice() != FocusScopeWindow::Bar);
 }
 bool MixFocus::showsScopeDifference() const noexcept {
@@ -1954,7 +1959,7 @@ void MixFocus::paint(juce::Graphics &g) {
         const auto locate = scopeDisplayFloor();
         differenceReady = locate && *differenceRenderedRevision_ >= *locate;
     }
-    const bool wantsSum = scopeShown && (display == ScopeDisplay::Overlay || sumOnly);
+    const bool wantsSum = scopeShown && (sumOnly || (display == ScopeDisplay::Overlay && members_.size() >= 2));
     const bool sumShown = scopeCurrent && wantsSum && (!scopeSumPaths_[0].isEmpty() || !scopeSumPaths_[1].isEmpty());
     const bool sumOverRange = scopeCurrent && wantsSum && sum_ && (sum_->peak[0] > 1. || sum_->peak[1] > 1.);
     const bool spectrumOnly = differenceOnly && differenceSpectrum_.getToggleState();

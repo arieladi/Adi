@@ -357,7 +357,7 @@ class FocusScopeBarProjection {
                  bool measureSumTruePeak = false) {
         const auto columns = std::min({requestedColumns, range.frames,
                                        static_cast<std::size_t>(SharedAnalysis::kMaxFftSize)});
-        if (sources.size() < 2 || columns == 0 || !transportRevision || range.first < 0 ||
+        if (sources.empty() || columns == 0 || !transportRevision || range.first < 0 ||
             !std::isfinite(range.sampleRate) || range.sampleRate <= 0. ||
             !std::in_range<std::int64_t>(range.frames) ||
             !focusWindowEnd(range.first, static_cast<std::int64_t>(range.frames)) ||
@@ -518,6 +518,7 @@ class FocusScopeBarProjection {
             const auto mid = (static_cast<double>(block.left[index]) + block.right[index]) * .5;
             return block.inverted ? -mid : mid;
         };
+        const bool measurePair = measuresPhase_ && blocks.size() > 1;
         for (std::size_t begin = 0; begin < count;) {
             const auto added = std::min(count - begin, endOfColumn_ - frames_);
             const auto end = begin + added;
@@ -538,7 +539,7 @@ class FocusScopeBarProjection {
                 if constexpr (TruePeak) sumPeakMeter_->append(value[0], value[1]);
                 if (measuresPhase_) {
                     sumPhase_.add(value[0], value[1]);
-                    midPairPhase_.add(midAt(blocks[0], at), midAt(blocks[1], at));
+                    if (measurePair) midPairPhase_.add(midAt(blocks[0], at), midAt(blocks[1], at));
                 }
                 if constexpr (focusScopeIsFolded(Fold))
                     monoBins_[blocks.size() * columns_ + column_].include(focusScopeFoldSample(Fold, value[0], value[1]));
