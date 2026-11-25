@@ -17,6 +17,12 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 25 November 2026 — Stage identities when integrating the separate DEV-31 branches
+
+For Win, preserve the saved identities when combining Time, Pitch, Noise and the generated room stage. Each independent port currently appends its own runtime stage after Crush. The original eleven-stage declaration assigns Time 7, Pitch 8, Noise 9 and room 10. The held curve editor uses `(stage * 3 + band) * 2 + lane`, so these stages own curve keys 42–47, 48–53, 54–59 and 60–65 respectively. The original four rank parameters are 723, 724, 725 and 726. A missing stage leaves its saved identifiers available for that stage. Reassigning them by landing order would recall someone else's curve or rank.
+
+Keep existing descriptor positions when appending the independent controls. The landed three Pan delay blends already follow the original 415 descriptors. The combined acceptance case should reopen independent curves and ranks for all four stages with Pitch present and with Pitch absent. The seven-stage order port and the independent after-date ports can each be reviewed on their current base. Lands after 3 December.
+
 ## 25 November 2026 — Four moving Drive instances meet the callback p99 target
 
 `clones/shaper-drive-margin-1125` at `dbc4c2cf` — Process each Drive oversampling phase group with one transfer selection. Select the nonlinear transfer once per base-rate sample, advance the mirrored delay ring once per phase group, and keep the rounded filter coefficients available in double precision. The measured impulse, transfer, alias and low-drive tests passed. Changing the starting ring position across 17 offsets at both oversampling factors preserved every output frame. Static and automated audio matched the prior kernel bit for bit in all three styles at 44.1, 48 and 96 kHz.
