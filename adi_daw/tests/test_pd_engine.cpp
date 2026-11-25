@@ -2076,6 +2076,47 @@ void testAPatchCannotOpenAHelpPatch() {
           "done-popup 2 is refused by name, and the planted help patch never runs\n          console: " + console);
 }
 
+// DF-E36 (c)'s other two forms (m_glob.c:52 and x_array.c:230): `pd
+// help-intro` and [array define]'s `done-popup 2`. Each is refused by name, the
+// planted help patch's marker never prints, and the instance holds exactly one
+// top-level canvas afterwards (the patch itself), with audio still running.
+void testHelpIntroAndArrayHelpAreRefused() {
+    section("DF-E36 (c) -- pd help-intro, [array define]'s and the canvas's done-popup 2 open no help patch");
+    TempDir tmp("helpforms");
+    const std::string marker = "#N canvas 0 0 200 100 12;\n#X obj 10 10 loadbang;\n#X obj 10 40 print leaked;\n#X connect 0 0 1 0;\n";
+    for (const char* planted : {"intro.pd", "intro-help.pd", "array-object-help.pd", "array-define-help.pd", "array-help.pd"})
+        tmp.write(planted, marker);
+    tmp.write("intro-form.pd", "#N canvas 0 0 200 100 12;\n#X obj 10 10 loadbang;\n"
+                               "#X msg 10 40 \\; pd help-intro;\n#X connect 0 0 1 0;\n");
+    tmp.write("array-form.pd", "#N canvas 0 0 200 100 12;\n#X obj 10 10 loadbang;\n"
+                               "#X msg 10 40 done-popup 2 0 0;\n#X obj 10 70 array define arr 16;\n"
+                               "#X connect 0 0 1 0;\n#X connect 1 0 2 0;\n");
+    tmp.write("canvas-form.pd", "#N canvas 0 0 200 100 12;\n#X obj 10 10 loadbang;\n"
+                                "#X msg 10 40 \\; pd-canvas-form.pd done-popup 2 -9999 -9999;\n#X connect 0 0 1 0;\n");
+    tmp.write("plain.pd", "#N canvas 0 0 200 100 12;\n#X obj 10 10 loadbang;\n");
+    {
+        LibPdEngine plain(tmp.str(), "plain.pd", 2, 2);
+        PdLatencyReceiver latency;
+        std::string error;
+        check(plain.topLevelCanvases() == 0 && plain.open(latency, error) && plain.topLevelCanvases() == 1,
+              "the count: none before open, one for a plain patch (Pd's own templates not counted)");
+    }
+    for (const char* file : {"intro-form.pd", "array-form.pd", "canvas-form.pd"}) {
+        LibPdEngine engine(tmp.str(), file, 2, 2);
+        PdLatencyReceiver latency;
+        std::string error;
+        const bool opened = engine.open(latency, error);
+        engine.prepare(48000.0, 64);
+        (void)runBlocks(engine, 4);
+        const std::size_t canvases = engine.topLevelCanvases();
+        const std::string console = joined(engine.consoleLines());
+        check(opened && console.find("leaked") == std::string::npos &&
+                  console.find("ADI refused a help patch") != std::string::npos && canvases == 1,
+              std::string(file) + ": refused by name, the help patch never runs, one top-level canvas (" +
+                  std::to_string(canvases) + ")\n          console: " + console);
+    }
+}
+
 void testRefusalsSurviveAFullConsole() {
     section("DF-E36 (d) -- a full console queue keeps its refusals and marks its gap");
     TempDir tmp("flood");
@@ -2611,6 +2652,7 @@ int main() {
     testAPatchCannotQuitOrReconfigurePd();
     testAPatchCannotCloseItselfOrQuit();
     testAPatchCannotOpenAHelpPatch();
+    testHelpIntroAndArrayHelpAreRefused();
     testRefusalsSurviveAFullConsole();
     testAPatchCannotChangeItsOwnSearchPath();
     testAPatchCannotWriteFiles();

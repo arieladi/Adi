@@ -17,6 +17,7 @@
 #include <limits>
 #include <mutex>
 #include <sstream>
+#include <string_view>
 
 extern "C" {
 #include "z_libpd.h"
@@ -202,6 +203,17 @@ LibPdEngine::InstanceLock::~InstanceLock() {
 }
 
 LibPdEngine::~LibPdEngine() { close(); }
+
+std::size_t LibPdEngine::topLevelCanvases() noexcept {
+    if (instance_ == nullptr) return 0;
+    const InstanceLock lock(*this);
+    std::size_t count = 0;
+    for (t_canvas* x = pd_getcanvaslist(); x != nullptr; x = x->gl_next) {
+        const std::string_view name = x->gl_name != nullptr ? x->gl_name->s_name : "";
+        if (name != "_float_template" && name != "_float_array_template" && name != "_text_template") ++count;
+    }
+    return count;
+}
 
 void LibPdEngine::selectInstance() const noexcept {
     if (instance_ != nullptr) libpd_set_instance(static_cast<t_pdinstance*>(instance_));
