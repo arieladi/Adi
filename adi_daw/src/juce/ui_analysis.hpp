@@ -92,6 +92,9 @@ class SharedSpectrumView final : public juce::Component,
     enum class SpectrogramScale { Linear, Log, Mel, Bark, Erb };
     void setSpectrogramScale(SpectrogramScale);
     SpectrogramScale spectrogramScale() const noexcept { return spectrogramScale_; }
+    bool hasSpectrogramImage() const noexcept;
+    // Owns the displayed data pixels independently of future history and view lifetime.
+    juce::Image spectrogramImage() const;
     // Weak owner token: closing/replacing the document revokes future reads.
     // Main-only eligibility is checked before invoking the callback.
     void setMainMeterSource(const std::shared_ptr<const MainMeterSource> &);
@@ -284,6 +287,9 @@ class AnalysisPane final : public juce::Component {
     juce::ToggleButton reverseButton{"Reverse"};
     juce::TextButton freezeButton{"Freeze"}, resetButton{"Reset"}, expandButton{"Window"};
   private:
+    void exportSpectrogramPng();
+    juce::TextButton spectrogramPngButton_{"Export PNG"};
+    std::unique_ptr<juce::FileChooser> spectrogramChooser_;
     Source source_ = Source::Main;
     ThemeId palettePreviewTheme_ = ThemeId::Dark;
 };

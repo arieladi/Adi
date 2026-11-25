@@ -2,6 +2,8 @@
 #include "ui_analysis.hpp"
 #include "ui_look.hpp"
 #include "adi/engine/main_loudness.hpp"
+#include "adi/media/media_ops.hpp"
+#include "adi/media/publish_file.hpp"
 #include "adi/ui/note_geometry.hpp"
 #include <algorithm>
 #include <cmath>
@@ -362,7 +364,7 @@ struct SharedSpectrumView::Raster {
             peak = std::max(peak, bins[i]);
         return peak;
     }
-    void paintSweep(juce::Graphics &g, juce::Rectangle<float> plot) const {
+    void paintSweep(juce::Graphics &g, juce::Rectangle<float> plot, bool drawGuide = true) const {
         if (!sweepOrigin || column < sweepOrigin) {
             g.drawImage(image, plot);
             return;
@@ -386,6 +388,7 @@ struct SharedSpectrumView::Raster {
             draw(left, rotation - plot.getWidth());
             draw(right, rotation);
         }
+        if (!drawGuide) return;
         const auto boundary = plot.getX() + static_cast<float>(head + 1) * (plot.getWidth() / width);
         const auto x = std::clamp(juce::roundToInt(boundary), clip.getX(), clip.getRight() - 1);
         g.setColour(look::textOnBand.withAlpha(.55f));
@@ -1246,6 +1249,19 @@ void SharedSpectrumView::setSpectrogramScale(SpectrogramScale scale) {
     repaint();
 }
 
+bool SharedSpectrumView::hasSpectrogramImage() const noexcept {
+    return mode_ == Mode::Spectrogram && raster_ && raster_->image.isValid();
+}
+
+juce::Image SharedSpectrumView::spectrogramImage() const {
+    if (!hasSpectrogramImage()) return {};
+    if (historyMotion_ == HistoryMotion::Scroll) return raster_->image.createCopy();
+    juce::Image image(juce::Image::RGB, Raster::width, Raster::height, true, juce::SoftwareImageType{});
+    juce::Graphics graphics(image);
+    raster_->paintSweep(graphics, image.getBounds().toFloat(), false);
+    return image;
+}
+
 void SharedSpectrumView::updateRaster() {
     if (mode_ != Mode::Spectrogram || !shown_) return;
     const auto rate = shown_->sampleRate;
@@ -1849,7 +1865,14 @@ AnalysisPane::AnalysisPane() {
     freezeButton.onClick = [this] { view.freeze(freezeButton.getToggleState()); };
     view.onClassicFreeze = [this](bool held) { freezeButton.setToggleState(held, juce::dontSendNotification); };
     freezeButton.setTooltip("Freeze this picture and release its live analysis demand. Resume waits for fresh audio.");
-    resetButton.onClick = [this] { view.clear(); };
+    resetButton.onClick = [this] {
+        view.clear();
+        spectrogramPngButton_.setEnabled(false);
+    };
+    spectrogramPngButton_.setTitle("Export Spectrogram PNG");
+    spectrogramPngButton_.setTooltip("Save the displayed spectrogram history as a PNG image.");
+    spectrogramPngButton_.onClick = [this] { exportSpectrogramPng(); };
+    addAndMakeVisible(spectrogramPngButton_);
     expandButton.onClick = [this] { if (onExpand) onExpand(view.track()); };
     addAndMakeVisible(freezeButton); addAndMakeVisible(resetButton); addAndMakeVisible(expandButton); addAndMakeVisible(view);
     view.enableSpectrumCursor();
@@ -1877,6 +1900,8 @@ void AnalysisPane::setMode(SharedSpectrumView::Mode mode) {
     paletteBox.setEnabled(spectrogram);
     reverseButton.setVisible(spectrogram);
     reverseButton.setEnabled(spectrogram);
+    spectrogramPngButton_.setVisible(spectrogram);
+    spectrogramPngButton_.setEnabled(view.hasSpectrogramImage());
     slopeBox.setVisible(spectral);
     slopeBox.setEnabled(spectral);
     scaleBox.setVisible(spectral);
@@ -1919,6 +1944,70 @@ void AnalysisPane::setHistoryMotion(SharedSpectrumView::HistoryMotion motion) {
     view.setHistoryMotion(motion);
     historyBox.setSelectedId(motion == SharedSpectrumView::HistoryMotion::Sweep ? 2 : 1, juce::dontSendNotification);
 }
+
+namespace {
+juce::Result writeSpectrogramPng(const juce::Image &image, const juce::File &target,
+                                 const std::filesystem::path &path, const media::ReplaceHooks &replace) {
+    const juce::TemporaryFile staging(target);
+    {
+        auto output = staging.getFile().createOutputStream();
+        if (!output || !juce::PNGImageFormat{}.writeImageToStream(image, *output))
+            return juce::Result::fail("Could not write the PNG image.");
+        output->flush();
+        if (output->getStatus().failed()) return output->getStatus();
+    }
+    const auto source = media::pathFromUtf8(staging.getFile().getFullPathName().toStdString());
+    const auto result = replace.expectedTarget ? media::replaceFile(source, path, replace)
+        : media::publishFile(source, path, {}, media::PublishPolicy::AtomicOnly);
+    if (result.status == media::PublishStatus::published)
+        return result.warning.empty() ? juce::Result::ok() : juce::Result::fail(juce::String(result.warning));
+    return juce::Result::fail(result.error.empty() ? "Could not save the PNG image." : juce::String(result.error));
+}
+}
+
+void AnalysisPane::exportSpectrogramPng() {
+    if (spectrogramChooser_) return;
+    auto image = view.spectrogramImage();
+    if (!image.isValid()) return;
+    const auto initial = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory).getChildFile("Spectrogram.png");
+    spectrogramChooser_ = std::make_unique<juce::FileChooser>("Export Spectrogram PNG", initial, "*.png", true, false, this);
+    const auto owner = juce::Component::SafePointer<AnalysisPane>(this);
+    const auto show = [owner](const juce::String &message) {
+        if (auto *pane = owner.getComponent())
+            juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon, "Export Spectrogram PNG",
+                                                   message, {}, pane);
+    };
+    const int chooserFlags = juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles |
+                             juce::FileBrowserComponent::warnAboutOverwriting;
+    spectrogramChooser_->launchAsync(chooserFlags, [owner, image = std::move(image), show](const juce::FileChooser &chosen) {
+        juce::MessageManager::callAsync([owner] {
+            if (auto *pane = owner.getComponent()) pane->spectrogramChooser_.reset();
+        });
+        const auto selected = chosen.getResult();
+        if (selected == juce::File{}) return;
+        const auto target = selected.hasFileExtension("png") ? selected
+            : selected.getParentDirectory().getChildFile(selected.getFileName() + ".png");
+        const auto path = media::pathFromUtf8(target.getFullPathName().toStdString());
+        media::ReplaceHooks replace;
+        if (target.exists()) {
+            if (target != selected) {
+                show(target.getFileName() + " already exists. Select that file to replace it.");
+                return;
+            }
+            std::error_code error;
+            replace.expectedTarget = media::readFileIdentity(path, error);
+            if (!replace.expectedTarget) {
+                show("Could not open the selected destination for replacement.");
+                return;
+            }
+        }
+        if (!juce::Thread::launch(juce::Thread::Priority::low, [image, target, path, replace = std::move(replace), show] {
+            const auto result = writeSpectrogramPng(image, target, path, replace);
+            if (result.failed()) juce::MessageManager::callAsync([show, result] { show(result.getErrorMessage()); });
+        })) show("Could not start the PNG export.");
+    });
+}
+
 void AnalysisPane::frame(std::shared_ptr<SharedAnalysis> broker, std::int64_t main, std::int64_t selected) {
     if (const auto theme = look::themeId(); theme != palettePreviewTheme_) {
         palettePreviewTheme_ = theme;
@@ -1930,6 +2019,7 @@ void AnalysisPane::frame(std::shared_ptr<SharedAnalysis> broker, std::int64_t ma
         }
     }
     view.present(std::move(broker), source_ == Source::Selected ? selected : main); view.frame();
+    if (spectrogramPngButton_.isVisible()) spectrogramPngButton_.setEnabled(view.hasSpectrogramImage());
 }
 void AnalysisPane::usePageControls() {
     modeBox.setVisible(false);
@@ -1937,8 +2027,9 @@ void AnalysisPane::usePageControls() {
     resized();
 }
 void AnalysisPane::resized() {
-    const std::array<juce::Component *, 13> controls{&modeBox, &sourceBox, &pointBox, &channelBox, &paletteBox, &slopeBox,
-        &scaleBox, &spectrogramScaleBox, &historyBox, &reverseButton, &freezeButton, &resetButton, &expandButton};
+    const std::array<juce::Component *, 14> controls{&modeBox, &sourceBox, &pointBox, &channelBox, &paletteBox, &slopeBox,
+        &scaleBox, &spectrogramScaleBox, &historyBox, &reverseButton, &freezeButton, &resetButton, &expandButton,
+        &spectrogramPngButton_};
     const bool pageControls = !modeBox.isVisible();
     const int columns = std::clamp(getWidth() / (pageControls ? look::mixPageWidth : 96), 1, 4);
     const int count = static_cast<int>(std::ranges::count_if(controls, [](const auto *control) { return control->isVisible(); }));

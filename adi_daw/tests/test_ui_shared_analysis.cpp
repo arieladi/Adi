@@ -2162,6 +2162,129 @@ void spectrogramCursor() {
     root.removeFromDesktop();
 }
 
+void spectrogramPngControl() {
+    using namespace adi::ui;
+    using Mode = SharedSpectrumView::Mode;
+    Fixture f;
+    Root root; root.setBounds(0, 0, 420, 420); root.setVisible(true); root.addToDesktop(0);
+    AnalysisPane pane;
+    root.addAndMakeVisible(pane); pane.setBounds(root.getLocalBounds());
+    const auto frame = [&] { pane.frame(f.broker, 1, 1); };
+    juce::Button *save = nullptr;
+    for (auto *child : pane.getChildren())
+        if (auto *button = dynamic_cast<juce::Button *>(child);
+            button && button->getTitle() == "Export Spectrogram PNG") save = button;
+    check(save && !save->isShowing(), "the accessible PNG export control stays out of other analysis modes");
+    if (!save) return;
+
+    // Exercise only presentation and state. Opening the native save chooser
+    // belongs to the live retest, never to this software-peer check.
+    pane.setMode(Mode::Spectrogram);
+    frame();
+    check(save->isShowing() && !save->isEnabled(),
+          "PNG export is visible while waiting for Spectrogram audio, but cannot save an empty raster");
+    f.write(); f.broker->pump(); frame();
+    check(pane.view.snapshot() && save->isEnabled(), "a real Spectrogram raster enables PNG export");
+    pane.view.freeze(true); frame();
+    check(!pane.view.subscribed() && save->isEnabled(), "Freeze keeps PNG export available without analysis demand");
+    pane.resetButton.onClick(); frame();
+    check(!pane.view.snapshot() && !save->isEnabled(), "Clear disables export of the retired picture");
+    pane.setMode(Mode::Spectrum);
+    check(!save->isShowing(), "leaving Spectrogram hides the PNG control immediately");
+}
+
+void spectrogramPngRoundtrip() {
+    using namespace adi::ui;
+    using Mode = SharedSpectrumView::Mode;
+    using Motion = SharedSpectrumView::HistoryMotion;
+    constexpr int width = 128, height = 256, left = 5, top = 21, window = 1024, hop = window / 4;
+    Fixture f;
+    Root root; root.setBounds(0, 0, 350, 350); root.setVisible(true); root.addToDesktop(0);
+    SharedSpectrumView view, sibling;
+    view.setBounds(0, 0, 156, 311); sibling.setBounds(178, 0, 156, 311);
+    for (auto *observer : {&view, &sibling}) {
+        observer->setMode(Mode::Spectrogram);
+        root.addAndMakeVisible(*observer);
+        observer->present(f.broker, 1);
+        observer->frame();
+    }
+    const auto update = [&](int frames) {
+        writeFrames(f, frames);
+        f.broker->pump();
+        view.frame(); sibling.frame();
+    };
+    const auto png = [](const juce::Image &image) {
+        juce::MemoryOutputStream bytes;
+        juce::PNGImageFormat format;
+        if (image.isNull() || !format.writeImageToStream(image, bytes)) return juce::Image{};
+        juce::MemoryInputStream input(bytes.getData(), bytes.getDataSize(), false);
+        return format.decodeImage(input);
+    };
+    const auto plotPixels = [](SharedSpectrumView &observer) {
+        return softwarePicture(observer).getClippedImage({left, top, width, height});
+    };
+    const auto sameWork = [](const auto &before, const auto &after) {
+        return before.transforms == after.transforms && before.analysisWindows == after.analysisWindows &&
+            before.publications == after.publications && before.cursorReads == after.cursorReads &&
+            before.workerPasses == after.workerPasses && before.frameRequests == after.frameRequests &&
+            before.consumers == after.consumers && before.domains == after.domains &&
+            before.taps == after.taps && before.historyBytes == after.historyBytes;
+    };
+
+    check(view.spectrogramImage().isNull(), "no empty Spectrogram raster is exportable");
+    update(window + 2 * hop);
+    const auto windowShown = view.snapshot();
+    const auto active = f.broker->stats();
+    const auto exported = view.spectrogramImage();
+    const auto decoded = png(exported);
+    check(windowShown && windowShown == sibling.snapshot() && windowShown->columns.size() == 3 &&
+              decoded.getWidth() == width && decoded.getHeight() == height &&
+              originalRasterPixels(view, *windowShown) && samePixels(decoded, plotPixels(view)) &&
+              sameWork(active, f.broker->stats()),
+          "default Scroll exports the exact native Log raster and PNG decodes without work or new demand");
+
+    view.setHistoryMotion(Motion::Sweep);
+    const auto sweep = png(view.spectrogramImage());
+    bool rotates = !decoded.isNull() && !sweep.isNull() && sweep.getBounds() == decoded.getBounds();
+    if (rotates) for (int y = 0; y < height; ++y) for (int x = 0; x < width; ++x)
+        rotates = rotates && sweep.getPixelAt(x, y) == decoded.getPixelAt((x + width - 3) % width, y);
+    check(rotates && !samePixels(decoded, sweep) && sameWork(active, f.broker->stats()),
+          "Sweep PNG rotates the same history and omits the transient write guide");
+
+    view.freeze(true);
+    const auto held = f.broker->stats();
+    view.setHistoryMotion(Motion::Scroll);
+    view.setPalette("viridis", true);
+    view.setSpectrogramScale(SharedSpectrumView::SpectrogramScale::Linear);
+    const auto frozen = png(view.spectrogramImage());
+    check(held.consumers == 1 && !view.subscribed() && view.snapshot() == windowShown &&
+              !frozen.isNull() && !samePixels(decoded, frozen) && samePixels(frozen, plotPixels(view)) &&
+              samePixels(exported, decoded) && sameWork(held, f.broker->stats()),
+          "frozen PNG uses its selected palette and scale and cannot change the earlier export image");
+
+    view.freeze(false);
+    update(hop);
+    view.clear();
+    check(view.spectrogramImage().isNull(), "local Clear makes the old image unavailable to a subsequent export");
+    update(hop);
+    view.setHistoryMotion(Motion::Sweep);
+    const auto afterClear = view.snapshot();
+    const auto cleared = png(view.spectrogramImage());
+    bool blank = cleared.getWidth() == width && cleared.getHeight() == height, hasFresh = false;
+    if (blank) for (int y = 0; y < height; ++y) {
+        hasFresh = hasFresh || cleared.getPixelAt(0, y) != look::display;
+        for (int x = 1; x < width; ++x) blank = blank && cleared.getPixelAt(x, y) == look::display;
+    }
+    check(afterClear && afterClear == sibling.snapshot() && afterClear->columns.size() > 1 && blank && hasFresh &&
+              samePixels(exported, decoded),
+          "a post-Clear Sweep PNG contains only its fresh column while the shared and earlier images remain intact");
+    root.setVisible(false);
+    check(view.spectrogramImage().isNull() && sibling.spectrogramImage().isNull() &&
+              f.broker->stats().consumers == 0 && samePixels(exported, decoded),
+          "hiding releases the raster and leaves the export copy intact");
+    root.removeFromDesktop();
+}
+
 void classicScopeSurface() {
     using namespace adi::ui;
     using Trigger = adi::dsp::TriggeredScope::Trigger;
@@ -3195,7 +3318,7 @@ int main() {
           compactAnalyzerDock(); cumulativeAverageTitlePaint(); paletteMenuTheme(); palettesAndFrozenRaster(); restartedRasterDomain();
           clearSpectrogramWhileWorkerAhead(); freshActionsWithSharedConsumer(); backlogAndLifecycleFreshness(); spectrumSlopeProjection(); spectrumWideCachedGeometry(); spectrumDetailScale(); spectrumExtendedGridGeometry(); spectrumExtendedScale();
           pinnedSpectrumWaitsForHeardPrimary();
-          spectrumDeviceScale(); spectrogramHistoryMotion(); spectrogramFrequencyScales(); spectrogramCursor(); classicScopeSurface();
+          spectrumDeviceScale(); spectrogramHistoryMotion(); spectrogramFrequencyScales(); spectrogramCursor(); spectrogramPngControl(); spectrogramPngRoundtrip(); classicScopeSurface();
           classicScopeUnchangedTrace(); detailedPhasePreservesHighFrequencyTrace(); mixPhaseRailViews(); mixAnalyserPages();
           compareAndAveragePages(); compareHoldSurvivesInvalidA(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
