@@ -2496,6 +2496,25 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
         strip->mouseDoubleClick(pressAt(*strip, {20.f, 200.f}));
         check(!root.state().docked, "below the title, a double-click leaves the Device View hidden");
         check(root.command(AppCommands::ToggleDeviceView) && root.state().docked, "and shown again");
+        // walk-B B10: a single click on a strip's title selects its track as a click on its header
+        // does, Shift reaching across and Ctrl/Cmd picking apart; so Ctrl+G groups the strips picked.
+        auto &selection = root.arrangement.geometry.selection;
+        if (auto *two = rowOf(root.mixerView, 2), *four = rowOf(root.mixerView, 4); two != nullptr && four != nullptr) {
+            two->mouseDown(pressAt(*two, {20.f, 8.f}));
+            check(selection.track == 2 && selection.toTrack == 0 && selection.picked.empty(),
+                  "a click on 2 MIDI's strip title selects it alone");
+            strip->mouseDown(pressAt(*strip, {20.f, 8.f}, juce::ModifierKeys::shiftModifier));
+            check(selection.track == 2 && selection.toTrack == 3 &&
+                      root.arrangement.geometry.selectedTracks(root.reader()).size() == 2,
+                  "Shift+click on 3 Audio's reaches across: 2 MIDI and 3 Audio selected");
+            strip->mouseDown(pressAt(*strip, {20.f, 8.f}));
+            four->mouseDown(pressAt(*four, {20.f, 8.f}, juce::ModifierKeys::commandModifier));
+            check(selection.track == 3 && selection.picked == std::vector<std::int64_t>{4},
+                  "a click on 3 Audio's, then Ctrl/Cmd+click on 4 Audio's: the two picked");
+            four->mouseDown(pressAt(*four, {20.f, 8.f}, juce::ModifierKeys::commandModifier));
+            check(selection.track == 3 && selection.picked.empty(), "Ctrl/Cmd+click again lets 4 Audio go");
+        } else
+            check(false, "2 MIDI's and 4 Audio's Mixer View strips");
     } else
         check(false, "3 Audio's Mixer View strip");
     check(root.command(AppCommands::ToggleMixerView), "the Mixer View closes");

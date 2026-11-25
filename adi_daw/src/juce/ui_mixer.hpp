@@ -92,6 +92,9 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     void mouseMove(const juce::MouseEvent &) override;
     void mouseDrag(const juce::MouseEvent &) override;
     void mouseUp(const juce::MouseEvent &) override;
+    // A Mixer View strip's title bar: a click selects its track (Shift, Ctrl/Cmd as a header's), and a
+    // double-click also brings up the Device View.
+    static constexpr int kTitleHeight = 17;
     // A double-click on a Mixer View strip's title selects its track and brings up the Device View.
     void mouseDoubleClick(const juce::MouseEvent &) override;
     // A row takes clicks only level with the lanes (MixerPanel::rowsBand).
