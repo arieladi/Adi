@@ -64,6 +64,7 @@ void parameter(Object* x, t_symbol*, int n, t_atom* atoms) {
     if (n != 2 || atoms[0].a_type != A_FLOAT || atoms[1].a_type != A_FLOAT) return;
     const auto id = atom_getfloat(atoms);
     if (!std::isfinite(id) || id < 0 || id >= static_cast<t_float>(Core::Count) || std::trunc(id) != id) return;
+    if (!Core::hasParameter(static_cast<int>(id))) return;
     auto& core = x->state->core;
     const int previousLatency = core.latency();
     core.set(static_cast<Core::Param>(static_cast<int>(id)), static_cast<float>(atom_getfloat(atoms + 1)));

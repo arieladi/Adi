@@ -22,6 +22,10 @@ static_assert(Shaper::CrushOn == 340 && Shaper::BaseCount == 415);
 static_assert(Shaper::PanLowDelayBlend == 855 && Shaper::PanHighDelayBlend == 857);
 static_assert(Shaper::driveParam(Band::High, Shaper::OutputTrim) + 1 == Shaper::CrushOn);
 static_assert(Shaper::modParam(Stage::Crush, Band::High, Shaper::Secondary8) + 1 == Shaper::BaseCount);
+static_assert(Shaper::ReverbOn == 625 && Shaper::ReverbEnd == 715);
+static_assert(Shaper::reverbParam(Band::High, Shaper::RoomClearTails) + 1 == Shaper::ReverbEnd);
+static_assert(!Shaper::hasParameter(415) && !Shaper::hasParameter(624) && !Shaper::hasParameter(715)
+              && !Shaper::hasParameter(854) && Shaper::hasParameter(855) && !Shaper::hasParameter(858));
 int failures = 0;
 
 void check(bool condition, const char* description) {
@@ -1119,6 +1123,103 @@ void crushHoldClockBlocks() {
     check(std::abs(left[64] - left[65]) > .49f,
           "A transport locate moves the Crush hold contour into its full-rate segment");
 }
+
+void reverbReturnCrossings() {
+    constexpr int frames = 145000;
+    std::vector<float> input(frames), left(frames), right(frames);
+    std::uint32_t rng = 13;
+    for (auto& sample : input) {
+        rng = rng * 1664525U + 1013904223U;
+        sample = static_cast<float>(rng >> 8) * 0x1p-24f - .5f;
+    }
+    auto render = [&](int block, double bpm, float minimum, bool clear) {
+        Shaper rack;
+        rack.prepare(48000);
+        rack.tempo(bpm);
+        rack.set(Shaper::ReverbOn, 1.f);
+        rack.set(Shaper::modParam(Stage::Reverb, Band::Mid, Shaper::ModMix), 50.f);
+        rack.set(Shaper::modParam(Stage::Reverb, Band::Mid, Shaper::SecondaryCurve), 1.f);
+        rack.set(Shaper::modParam(Stage::Reverb, Band::Mid, Shaper::Secondary1), minimum);
+        rack.set(Shaper::reverbParam(Band::Mid, Shaper::RoomClearTails), clear ? 1.f : 0.f);
+        for (int pos = 0; pos < frames; pos += block) {
+            const auto count = static_cast<std::size_t>(std::min(block, frames - pos));
+            rack.sync(pos * bpm / (60. * 48000.));
+            rack.process(input.data() + pos, input.data() + pos, left.data() + pos, right.data() + pos, count);
+        }
+        return left;
+    };
+    const auto rms = [](const auto& a, const auto& b) {
+        double sum = 0;
+        for (std::size_t i = 96000; i < a.size(); ++i) {
+            const double d = static_cast<double>(a[i]) - b[i];
+            sum += d * d;
+        }
+        return std::sqrt(sum / static_cast<double>(a.size() - 96000));
+    };
+    for (const double bpm : {120., 119.73}) {
+        const auto smaller = render(256, bpm, 0, true);
+        const auto larger = render(2048, bpm, 0, true);
+        const auto retained = render(256, bpm, 0, false);
+        const double blockDifference = rms(smaller, larger), cleared = rms(smaller, retained);
+        std::printf("Reverb zero crossing at %.2f BPM, block RMS %.9g, cleared RMS %.9g\n",
+                    bpm, blockDifference, cleared);
+        check(blockDifference < 2e-7, "clearing at a return node is independent of host block size");
+        check(cleared > .0001, "a zero return node between consecutive samples also clears the tail");
+    }
+    const auto quietMinimum = render(256, 120., .0001f, true);
+    check(quietMinimum == render(256, 120., .0001f, false), "a positive return minimum preserves the tail");
+}
+
+void reverbReturnMix() {
+    Shaper legacy;
+    for (int id = Shaper::BaseCount; id < Shaper::ReverbOn; ++id) {
+        check(!Shaper::hasParameter(id), "gap between saved stage ranges has no control");
+        legacy.set(static_cast<Shaper::Param>(id), 1);
+    }
+    check(one(legacy) == std::array{.375f, .25f} && legacy.latency() == 0,
+          "unmapped IDs leave the legacy stereo path unchanged");
+    constexpr std::size_t frames = 4096;
+    std::vector<float> left(frames), right(frames), wetL(frames), wetR(frames), actualL(frames), actualR(frames);
+    adi::dsp::AdiShaperReverb room;
+    check(room.prepare(48000), "room fixture preparation");
+    auto renderWet = [&] {
+        room.reset();
+        wetL = left;
+        wetR = right;
+        for (std::size_t i = 0; i < frames; ++i) room.processStereo(wetL[i], wetR[i], 1, 1);
+    };
+    left[0] = 1.f;
+    right[0] = -.5f;
+    renderWet();
+    const auto peak = static_cast<std::size_t>(std::max_element(wetL.begin(), wetL.end(),
+        [](float a, float b) { return std::abs(a) < std::abs(b); }) - wetL.begin());
+    check(peak > 0 && std::abs(wetL[peak]) > .001f, "room impulse has an audible delayed reflection");
+    left[peak] = std::copysign(1.f, wetL[peak]);
+    renderWet();
+
+    Shaper rack;
+    rack.prepare(48000);
+    for (int layout = 0; layout < 4; ++layout) {
+        rack.set(static_cast<Shaper::Param>(Shaper::ReverbOn + 1), static_cast<float>(layout));
+        for (const float mix : {0.f, .25f, .5f, .75f, 1.f}) {
+            rack.set(Shaper::ReverbOn, 0);
+            const float master = mix == .25f ? .5f : 1.f;
+            rack.set(Shaper::MasterMix, master * 100.f);
+            for (auto band : {Band::Low, Band::Mid, Band::High})
+                rack.set(Shaper::modParam(Stage::Reverb, band, Shaper::ModMix), mix * 100.f / master);
+            rack.set(Shaper::ReverbOn, 1);
+            rack.process(left.data(), right.data(), actualL.data(), actualR.data(), frames);
+            const float dry = std::min(1.f, 2.f - 2.f * mix), wet = std::min(1.f, 2.f * mix);
+            bool matches = true;
+            for (std::size_t i = 0; i < frames; ++i)
+                matches &= near(actualL[i], dry * left[i] + wet * wetL[i], 3e-6)
+                        && near(actualR[i], dry * right[i] + wet * wetR[i], 3e-6);
+            check(matches && rack.latency() == 0, "every layout follows the independently summed Reverb dry/return law");
+            if (mix == .5f) check(std::abs(actualL[peak]) > 1.f, "parallel unity dry and wet can add past full scale");
+        }
+    }
+}
+
 } // namespace
 
 int main() {
@@ -1144,6 +1245,8 @@ int main() {
     driveDryAndLatency();
     driveAndCrush();
     crushHoldClockBlocks();
+    reverbReturnMix();
+    reverbReturnCrossings();
     if (failures == 0) std::puts("ADI-Shaper DSP fixtures passed");
     return failures == 0 ? 0 : 1;
 }
