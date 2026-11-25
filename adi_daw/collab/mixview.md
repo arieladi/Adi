@@ -11,6 +11,14 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+### 2026-11-25 — MX-13 Focus Scope cursor
+
+**PR requested** `mixview/mx13-focus-scope-cursor-lands-after-2026-12-03` at `672b97bd9`, after expanded Phase. Lands after 3 December. The cursor reads bar and beat, absolute heard sample, milliseconds and the signed waveform axis in dBFS. It uses the displayed interval, including the correct lane in Stack, hides for unaligned traces and Difference spectrum, and rejects a stale waveform after a Locate. Pointer motion requests no additional tap, processing pass or edit.
+
+Release passed all 489 software-component checks and both changed translation units passed the optimized warning-as-error gate. The recovery test used the fresh short waveform after a same-position Locate. A separate diagnostic found that the full-bar capture could stay on the short preview after that seek. Follow-up is queued on the bar producer ahead of more display modes.
+
+Verified Release archive and private retest brief are in the handoff. SHA-256 archive `e71a3a29127f4a396f684c37ccd1639d79283b7c9d7db0f2072cf921b41f76e9`, application `1961d16dbb06aeb33716cf69a70910e30b8efda496bd1fe4ff2f3a07c407eb0c`, scanner `ccccce892dfbe8d421331f8e0e6bcf6c78482427ad2e300776ee1e2b949dce52`.
+
 ### 2026-11-25 — MX-21 Width and Pan in expanded Phase
 
 **PR requested** `mixview/mx21-phase-band-spatial-lands-after-2026-12-03` at `5a931f0bc`, on the corrected scheduled review tip `5d86afa90`. Lands after 3 December. The Phase rail offers Correlation, Width and Pan. Width and Pan reuse the same band energies and vector history. Compact Phase keeps Correlation and restores the user's choice when expanded.
