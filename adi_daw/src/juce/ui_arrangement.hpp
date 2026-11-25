@@ -449,6 +449,15 @@ class ArrangementView final : public juce::Component {
     // (ADR-0211), else the colour of its place, as Live's auto-assigned colours.
     juce::Colour colourFor(std::size_t position) const;
     void frame(bool changed) noexcept;
+    // The take being recorded (Live 12 manual 21.1): drawn on each recording track's lane from where it
+    // began to the playhead, in the record colour, until the take lands as a clip (walk-B B4). Begun by
+    // Arrangement Record; ended by the frame once recording has stopped.
+    struct LiveTake {
+        std::int64_t start = 0;
+        std::vector<std::int64_t> tracks;
+    };
+    void beginLiveTake(std::int64_t start, std::vector<std::int64_t> tracks);
+    const std::optional<LiveTake> &liveTake() const noexcept { return liveTake_; }
     void changed();
     bool command(int);
     void fit(bool selection);
@@ -582,6 +591,7 @@ class ArrangementView final : public juce::Component {
     void firstShownIfHidden();
 
   private:
+    std::optional<LiveTake> liveTake_;
     void refreshTree();
     TrackRows trackRows_;
     // What the chosen view and the folded groups leave out, from the tree as it is.
