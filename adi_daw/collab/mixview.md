@@ -11,6 +11,12 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+### 25 November — MX21 Spectrogram frequency ruler
+
+**PR requested** `mixview/mx21-spectrogram-ruler-lands-after-2026-12-03` at `578e321f2b8f037da3939c893f5a6f32904cb843`, after the display levels. The dedicated Spectrogram has an optional frequency ruler in a left gutter. The ticks use the same frequency map as the history and cursor, including the active Nyquist limit. Turning it off restores the original picture exactly. Compact tiles and exported data images keep their original geometry.
+
+The missing control failed on the parent. Release passed 594 spectrum, 521 Mix View and 920 shared analysis checks. The test pins alignment at 1 kHz in Log and Linear at 32 and 48 kHz, unchanged frozen history and work counts, and exact PNG and compact pixels. Changed units passed warnings as errors. Review archive `798abb238f3c36740321019fab7c220e9a45dc8d73604bc36792c47499f94146`, application `d6a21dad8bfe3e63d879005804095857536af57018bd752e623f82fbdf07fc4c`.
+
 ### 25 November — MX21 Spectrogram Floor and Ceiling
 
 **PR requested** `mixview/mx21-spectrogram-levels-lands-after-2026-12-03` at `85813f15dac059ccab549fd9540c2876d9709f3a`, after PNG export. The dedicated Spectrogram changes the color range of the current picture, including frozen and Sweep history. A gap of at least 1 dB keeps the transfer well defined. The defaults are −96/0 dB and reproduce every prior pixel. Raw cursor values and history positions remain exact. The All tile uses the dedicated view's settings, and a separate analyser retains its own range.
