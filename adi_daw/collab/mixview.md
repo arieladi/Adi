@@ -16,6 +16,14 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+## 25 November 2026 — MX-30 Realtime Average monitored burst · lands after 3 December
+
+- Branch `mixview/mx30-parked-realtime-burst-lands-after-2026-12-03` at `b87b53a82504`, after shared Scope `3167cecd45f2`. The one-second average now reuses the certified quiet prefix that already protects Cumulative Average. A monitored pulse and a following silent block can arrive before one pass without resetting the average or changing the hop grid.
+- Two checks failed first. Strict Release passed 5,720 checks in 12 suites. The resumed bins, count and clock match the uninterrupted run exactly. The below-floor nonzero history still ages.
+- Cumulative review ZIP SHA-256 `cc33bbb2f3cb0f87b3493947c897333e5352f1db3383884b599b5b0721dcc654`. The retest brief covers all three stopped-monitoring slices. The live checks and timed CPU remain pending.
+
+PR requested.
+
 ## 25 November 2026 — before-date cumulative software component gates
 
 - The cumulative `678bfbe1464a` product still uses the strict Release build. An isolated diagnostic build of the existing shell fixture used one unused-local warning exception on its own compilation unit to get past the previously reported Release fixture warning. The product and tracked sources were unchanged.
