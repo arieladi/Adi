@@ -101,6 +101,33 @@ Questions only the director can answer. Each says what the window lane recommend
 | N58 | The plug-in catalogue off the message thread: a scan service, Rescan, a default worker count, and each VST3's kind with its instrument flag (ADR-0248 d7: engine-win's third item, under DEV-25) | engine-win | the Browser's Plug-Ins with progress, and each VST3's icon | the window scans on its own worker with the one loader (DF-W34 a), the loader locked while it scans; no progress count; a VST3 shows the plug-in icon |
 | N59 | The project's key and scale, if the Control Bar's Key group (step 2) shows the project's and not the selected clip's: an op and a snapshot field (ADR-0248, `collab/RESERVATIONS.md`) | engine, when asked | the Control Bar's Key and Scale | step 2 waits on the Mix View's switch and theme rows; not asked yet |
 
+## 2026-11-25, window lane — where the lane stands: every open item waits
+
+**Requested and green, for win to open** (each at its gated head):
+
+| Branch | Item | Head | Lands |
+|---|---|---|---|
+| `window/shaper-panel-fixes` | #716's four findings, GCC casts | `c10003c4` | with #716 |
+| `window/launch-isolation-main` | WTS-01, the window's half | `788908b2` | now |
+| `window/shortcut-sets` | WIN-05, first half | `c08afd7b` | after 3 December |
+| `window/key-conflicts` | WIN-05, part (on shortcut-sets) | `cc7174a1` | after it |
+| `window/command-palette` | WIN-06 | `051ec6c0` | after 3 December |
+| `window/text-goldens` | WTS-03, first half | `b88bd09a` | after 3 December |
+
+**Superseded, on origin, not to land:** `window/launch-isolation` (by `-main`), `window/main-row-readers` (by #744).
+
+**Everything else waits, and on what:**
+- **On win:** the seven WIN-05 questions (entry below); WTS-05's control core has no seat, and WTS-06, WTS-07, WTS-08 and WTS-10 come after it; WTS-04 needs `.github` edits; DF-W24 step 2, DF-W31 and DF-W32 need the sheets; DF-W2 needs the Clip View handed over; queue items 19 to 23 as the queue says.
+- **On the director:** DF-W3's picture; DF-E17 (a)'s overlap rule, which DF-W28's open half follows; WIN-10 (Q-G); question 5 above (plug-in editor keys).
+- **On a measurement:** A5W-015 in Live 12.4; the Windows keys under Hebrew and Russian layouts (WIN-05's physical-key source); DF-W4's meter readings; DF-W28's parity rows.
+- **On another seat:** CT-04 and DF-W41 (engine-win's lanes); the clones seat's answer on #716's changed assertion.
+
+**What would unblock the most:** a seat (or win) for WTS-05's `src/adi/control` contract opens five WTS rows; answers to WIN-05's questions 1 and 2 open the Steal/Keep/Refuse slice. The lane takes either the moment it lands.
+
+**This machine:** `third_party/JUCE` is a clone outside the repository, at main's pin (9.0.5) since 24 November; it does not follow a branch's pin, so a gate on an older base builds against 9.0.5.
+
+---
+
 ## 2026-11-25, window lane — WIN-05, a user's key wins; clashes and reserved chords (PR requested)
 
 The queue's open items all wait (on win, another seat or a decision), so the lane took its next PLAN row: the rest of WIN-05. A design round (research, three designs, a skeptical judge) chose the slice that is decidable today and fixes a defect in what is built.
