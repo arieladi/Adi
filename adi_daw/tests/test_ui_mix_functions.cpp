@@ -85,6 +85,26 @@ struct MixFocusTestAccess {
     static bool hasDifference(const MixFocus &focus) { return focus.differenceRenderedRevision_.has_value(); }
     static auto scopeReading(const MixFocus &focus) { return focus.sum_; }
     static auto scopePhase(const MixFocus &focus) { return focus.scopePhase_; }
+    static juce::MouseEvent moveScopePointer(MixFocus &focus, float x, float y) {
+        const auto &plot = focus.plot_;
+        const juce::Point<float> at{plot.getX() + x * plot.getWidth(), plot.getY() + y * plot.getHeight()};
+        const auto now = juce::Time::getCurrentTime();
+        const juce::MouseEvent event{juce::Desktop::getInstance().getMainMouseSource(), at, juce::ModifierKeys{},
+            0.f, 0.f, 0.f, 0.f, 0.f, &focus, &focus, now, at, now, 0, false};
+        static_cast<juce::Component &>(focus).mouseMove(event);
+        return event;
+    }
+    static juce::String scopeCursorText(const MixFocus &focus) {
+        for (auto *child : focus.getChildren())
+            if (const auto *label = dynamic_cast<const juce::Label *>(child);
+                label && label->isVisible() && label->getTitle() == "Scope cursor")
+                return label->getText();
+        return {};
+    }
+    static std::optional<std::int64_t> scopeMidpoint(const MixFocus &focus) {
+        if (!focus.scopeRange_) return {};
+        return focus.scopeRange_->first + static_cast<std::int64_t>(focus.scopeRange_->frames / 2);
+    }
     static bool requestsResidualSpectrum(const MixFocus &focus) {
         return focus.differenceRequest_ && focus.differenceRequest_->spectrum;
     }
@@ -2698,6 +2718,9 @@ void focusWorkspace(AppCommands &commands, const std::filesystem::path &director
     broker->pump();
     root.frame();
     check(MixFocusTestAccess::independent(focus), "loop passes with repeated stamps retain individual traces without a combined sum");
+    MixFocusTestAccess::moveScopePointer(focus, .5f, .25f);
+    check(MixFocusTestAccess::scopeCursorText(focus).isEmpty(),
+          "unaligned individual layers do not invent a common time or level cursor");
     focus.scope.setToggleState(false, juce::dontSendNotification);
     root.frame();
     broker->pump();
@@ -3157,6 +3180,9 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
               (meters.empty() || (meters[0].numerator == 4 && meters[0].denominator == 4)) &&
               a->capacity() == 12000 && b->capacity() == 12000 && broker->stats().taps == 2,
           "one-bar Scope runs at 48 kHz, 120 BPM and 4/4 on two quarter-second rings");
+    MixFocusTestAccess::moveScopePointer(focus, .5f, .25f);
+    check(MixFocusTestAccess::scopeCursorText(focus).isEmpty(),
+          "Scope cannot supply a cursor before it has received source audio");
 
     const auto writeUntil = [&](std::int64_t target) {
         std::array<float, chunk> pcmA{}, pcmB{}, rightA{}, rightB{};
@@ -3197,6 +3223,25 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
           "one-bar Scope keeps the same two physical taps without a spectrum transform or plan");
     check(active.consumers == 1,
           "a complete bar replaces the two short previews with one grouped reader");
+    const auto head = History(doc->store()).head();
+    check(MixFocusTestAccess::scopeCursorText(focus).contains("48000"),
+          "the cursor acquires the completed bar when the pointer has stayed still");
+    const auto pointer = MixFocusTestAccess::moveScopePointer(focus, .5f, .25f);
+    const auto cursor = MixFocusTestAccess::scopeCursorText(focus).removeCharacters(",");
+    check(cursor.contains("1.3") && cursor.contains("48000") && cursor.contains("1000") &&
+              cursor.contains("ms") && cursor.contains("-6.0") && cursor.contains("dBFS"),
+          "the midpoint of the heard bar shows beat 3, absolute sample 48000, 1000 ms and the half-scale ordinate");
+    MixFocusTestAccess::moveScopePointer(focus, .5f, .75f);
+    check(MixFocusTestAccess::scopeCursorText(focus).contains("-6.0 dBFS"),
+          "the positive and negative half-scale ordinates show the same dBFS magnitude");
+    static_cast<juce::Component &>(focus).mouseExit(pointer);
+    check(MixFocusTestAccess::scopeCursorText(focus).isEmpty(), "leaving the Scope clears its pointer readout");
+    const auto hovered = broker->stats();
+    check(hovered.consumers == active.consumers && hovered.taps == active.taps &&
+              hovered.spectralPlans == active.spectralPlans && hovered.transforms == active.transforms &&
+              hovered.cursorReads == active.cursorReads && hovered.frameRequests == active.frameRequests &&
+              hovered.workerPasses == active.workerPasses && History(doc->store()).head() == head,
+          "Scope cursor movement performs no analysis and authors no project edit");
     juce::ComboBox *channels = nullptr;
     for (auto *component : focus.getChildren())
         if (component->getTitle() == "Focus Scope channels") channels = dynamic_cast<juce::ComboBox *>(component);
@@ -3215,6 +3260,10 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
                   !MixFocusTestAccess::sumPulseAt(focus, .125f, .75f) &&
                   MixFocusTestAccess::sumPulseAt(focus, .875f, -.3125f),
               "Mid cancels opposed stereo and halves a single-sided pulse in the displayed bar");
+        MixFocusTestAccess::moveScopePointer(focus, .5f, .25f);
+        const auto later = MixFocusTestAccess::scopeCursorText(focus).removeCharacters(",");
+        check(later.contains("2.3") && later.contains("144000") && later.contains("3000") && later.contains("ms"),
+              "the same screen coordinate on the next captured bar uses that bar's heard origin");
         check(opens == std::array{1, 1} && broker->stats().taps == 2 && broker->stats().consumers == 1 &&
                   broker->stats().transforms == 0,
               "changing Focus Scope projection keeps the existing grouped reader and taps");
@@ -3244,6 +3293,11 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
         if (component->getTitle() == "Focus Scope display") display = dynamic_cast<juce::ComboBox *>(component);
     check(display != nullptr, "Focus Scope makes its display selector available");
     if (display && channels) {
+        display->setSelectedId(3, juce::sendNotificationSync);
+        frame();
+        MixFocusTestAccess::moveScopePointer(focus, .5f, .625f);
+        check(MixFocusTestAccess::scopeCursorText(focus).contains("-6.0 dBFS"),
+              "the second Stack lane uses its own signed full-scale axis");
         focus.select(second);
         display->setSelectedId(5, juce::sendNotificationSync);
         frame();
@@ -3281,6 +3335,55 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
         check(opens == std::array{1, 1} && broker->stats().taps == 2 && broker->stats().consumers == 1 &&
                   broker->stats().transforms == 0,
               "Difference adds no tap, consumer or spectrum transform");
+
+        MixFocusTestAccess::moveScopePointer(focus, .5f, .25f);
+        const auto differenceCursor = MixFocusTestAccess::scopeCursorText(focus).removeCharacters(",");
+        check(differenceCursor.contains("528000") && differenceCursor.contains("11000") &&
+                  differenceCursor.contains("-6.0"),
+              "the aligned Difference waveform labels the exact heard interval and its own amplitude axis");
+        juce::ToggleButton *differenceSpectrum = nullptr;
+        for (auto *component : focus.getChildren())
+            if (component->getTitle() == "Difference spectrum")
+                differenceSpectrum = dynamic_cast<juce::ToggleButton *>(component);
+        check(differenceSpectrum != nullptr, "Difference exposes a separately selectable spectrum");
+        if (differenceSpectrum) {
+            differenceSpectrum->setToggleState(true, juce::dontSendNotification);
+            if (differenceSpectrum->onClick) differenceSpectrum->onClick();
+            check(MixFocusTestAccess::scopeCursorText(focus).isEmpty(),
+                  "choosing the Difference spectrum immediately hides the waveform cursor");
+            frame();
+            // The demand is picked up by a newly requested full bar.
+            writeUntil(8 * bar);
+            MixFocusTestAccess::moveScopePointer(focus, .5f, .25f);
+            check(MixFocusTestAccess::requestsResidualSpectrum(focus) && MixFocusTestAccess::hasDifference(focus) &&
+                      MixFocusTestAccess::scopeCursorText(focus).isEmpty(),
+                  "a completed Difference spectrum never exposes a waveform time or dBFS ordinate cursor");
+            differenceSpectrum->setToggleState(false, juce::dontSendNotification);
+            if (differenceSpectrum->onClick) differenceSpectrum->onClick();
+            frame();
+            writeUntil(10 * bar);
+        }
+
+        MixFocusTestAccess::moveScopePointer(focus, .5f, .25f);
+        check(!MixFocusTestAccess::scopeCursorText(focus).isEmpty(), "the Difference waveform cursor is visible before Locate");
+        const auto seekAt = driver.position();
+        check(doc->mailbox().post(TransportMailbox::Command::Locate, seekAt),
+              "queue a same-position Difference Locate with a live scope cursor");
+        MixFocusTestAccess::moveScopePointer(focus, .5f, .25f);
+        check(MixFocusTestAccess::scopeCursorText(focus).isEmpty(),
+              "a pending same-position Locate suppresses the older cursor even before a frame");
+        frame();
+        doc->mailbox().drain(driver);
+        frame();
+        MixFocusTestAccess::moveScopePointer(focus, .5f, .25f);
+        check(MixFocusTestAccess::scopeCursorText(focus).isEmpty(),
+              "acknowledging the same-position Locate cannot re-label an old waveform");
+        writeUntil(seekAt + 2 * bar);
+        MixFocusTestAccess::moveScopePointer(focus, .5f, .25f);
+        const auto resumed = MixFocusTestAccess::scopeMidpoint(focus);
+        check(resumed && *resumed >= seekAt && MixFocusTestAccess::scopeCursorText(focus).contains(
+                  juce::String(static_cast<juce::int64>(*resumed)) + " samples"),
+              "a newly captured interval after the same-position seek restores the cursor");
 
         check(doc->mailbox().post(TransportMailbox::Command::Locate, 0), "queue a Difference Locate");
         frame();
