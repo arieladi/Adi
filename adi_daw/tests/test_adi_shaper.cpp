@@ -167,6 +167,36 @@ void beatGate() {
           "tempo doubles the gate rate on resume");
 }
 
+void stereoPanTransfer() {
+    // Independent one-channel impulses identify both columns of the stereo matrix.
+    for (const float excursion : {-1.f, -.5f, 0.f, .5f, 1.f}) {
+        Shaper rack;
+        rack.set(Shaper::PanMidTransfer, 1);
+        rack.set(Shaper::PanMidDelayBlend, 0);
+        flat(rack, Stage::Pan, Band::Mid, 100.f * excursion);
+        const auto l = one(rack, 1, 0), r = one(rack, 0, 1);
+        const float toLeft = std::max(0.f, excursion), toRight = std::max(0.f, -excursion);
+        check(l[0] == 1.f - toRight && l[1] == toRight && r[0] == toLeft && r[1] == 1.f - toLeft,
+              "Pan transfers either input to the opposite speaker and preserves their signed sum");
+    }
+    for (const double rate : {44100., 48000., 96000.}) {
+        Shaper rack;
+        rack.prepare(rate);
+        rack.set(Shaper::PanMidDelayBlend, 50);
+        rack.set(Shaper::PanMidTransfer, 1);
+        flat(rack, Stage::Pan, Band::Mid, 50);
+        const auto marker = one(rack, 0, -.75f);
+        check(marker[0] == -.375f && marker[1] == 0.f, "Pan writes the mixed near speaker into its delay");
+        flat(rack, Stage::Pan, Band::Mid, -50);
+        const auto tap = static_cast<int>(rate * .0005 * (.710640 + .5 * (-.505011 + .5 * 1.794401)));
+        for (int i = 1; i <= tap + 1; ++i) {
+            const auto out = one(rack, 0, 0);
+            check(out[0] == (i == tap ? -.375f : 0.f) && out[1] == 0.f,
+                  "a change of Pan direction reads the previously mixed speaker on its measured frame");
+        }
+    }
+}
+
 void heldPanEdges() {
     constexpr int half = 48000;
     constexpr int count = 3 * half;
@@ -2299,6 +2329,7 @@ void midiVolumeRetrigger() {
 int main() {
     endpoints();
     balanceSweep();
+    stereoPanTransfer();
     heldPanEdges();
     panDelayBlend();
     beatGate();

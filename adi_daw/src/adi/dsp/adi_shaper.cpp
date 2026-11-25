@@ -892,6 +892,10 @@ void AdiShaper::set(Param id, float value) noexcept {
         drives_[static_cast<std::size_t>(id - DriveLowFold)].setFold(static_cast<AdiShaperDrive::Fold>(shape));
         return;
     }
+    if (id >= PanLowTransfer && id <= PanHighTransfer) {
+        panHistory_[static_cast<std::size_t>(id - PanLowTransfer)].transfer = value >= .5f;
+        return;
+    }
     if (id >= PanLowDelayBlend && id <= PanHighDelayBlend) {
         panHistory_[static_cast<std::size_t>(id - PanLowDelayBlend)].setBlend(value);
         return;
@@ -1035,10 +1039,15 @@ void AdiShaper::PanHistory::setBlend(float percent) noexcept {
 }
 
 AdiShaper::PanHistory::Tap AdiShaper::PanHistory::tap(double position, double rate, bool constant) const noexcept {
-    const double height = std::clamp(.5 + .5 * position, 0., 1.);
-    const float leftGain = panGain(height), rightGain = panGain(1. - height);
     Tap result;
-    result.gain = {leftGain + unity * (1.f - leftGain), rightGain + unity * (1.f - rightGain)};
+    result.channel = position > 0. ? 1u : 0u;
+    if (transfer) {
+        result.crossfeed = static_cast<float>(std::min(std::abs(position), 1.)) * (1.f - unity);
+    } else {
+        const double height = std::clamp(.5 + .5 * position, 0., 1.);
+        const float leftGain = panGain(height), rightGain = panGain(1. - height);
+        result.gain = {leftGain + unity * (1.f - leftGain), rightGain + unity * (1.f - rightGain)};
+    }
     if (current == 1.f || frames.empty()) return result;
     // At the two-millisecond range a stationary contour reads a whole frame.
     // A moving contour also interpolates between the two neighboring frames.
@@ -1047,13 +1056,19 @@ AdiShaper::PanHistory::Tap AdiShaper::PanHistory::tap(double position, double ra
     const double delay = ms * (.001 * rate);
     result.age = static_cast<std::size_t>(delay);
     result.fraction = constant ? 0. : delay - static_cast<double>(result.age);
-    result.channel = position > 0. ? 1u : 0u;
     return result;
 }
 
 void AdiShaper::PanHistory::process(const Tap& tap, float& left, float& right) noexcept {
-    left *= tap.gain.left;
-    right *= tap.gain.right;
+    if (transfer) {
+        float& far = tap.channel == 0 ? left : right;
+        float& near = tap.channel == 0 ? right : left;
+        near += tap.crossfeed * far;
+        far *= 1.f - tap.crossfeed;
+    } else {
+        left *= tap.gain.left;
+        right *= tap.gain.right;
+    }
     if (frames.empty()) return;
     frames[head] = {finiteOrZero(left), finiteOrZero(right)};
     valid = std::min(valid + 1, frames.size());

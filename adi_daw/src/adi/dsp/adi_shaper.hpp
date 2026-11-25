@@ -53,6 +53,7 @@ class AdiShaper {
                  TriggerLowMode = 753, TriggerMidMode, TriggerHighMode, TriggerLowEnd, TriggerMidEnd, TriggerHighEnd,
                  TriggerThreshold, TriggerDetail, TriggerProfile, TriggerShift, TriggerSmoothing,
                  PanLowDelayBlend = 855, PanMidDelayBlend, PanHighDelayBlend,
+                 PanLowTransfer = 918, PanMidTransfer, PanHighTransfer,
                  DriveLowRounded = 927, DriveMidRounded, DriveHighRounded,
                  DriveLowPower, DriveMidPower, DriveHighPower,
                  DriveLowFold, DriveMidFold, DriveHighFold, Count };
@@ -105,6 +106,7 @@ class AdiShaper {
             || (id >= orderParam(Stage::Noise) && id <= orderParam(Stage::Reverb))
             || (id >= WidthFollowerLow && id <= TriggerSmoothing)
             || (id >= PanLowDelayBlend && id <= PanHighDelayBlend)
+            || (id >= PanLowTransfer && id <= PanHighTransfer)
             || (id >= DriveLowRounded && id <= DriveHighFold);
     }
     enum DriveControl { DriveStyle, DriveMix, DriveClock, DriveCycle, DriveRate, DriveCurve,
@@ -219,12 +221,14 @@ class AdiShaper {
     struct PanHistory {
         struct Tap {
             Gain gain;
+            float crossfeed = 0.f;
             std::size_t age = 0, channel = 0;
             double fraction = 0.;
         };
         std::vector<std::array<float, 2>> frames;
         std::size_t head = 0, valid = 0;
         float current = 0.f, unity = 0.f;
+        bool transfer = false;
         Tap constantTap;
         void prepare(double rate) noexcept;
         void setBlend(float percent) noexcept;

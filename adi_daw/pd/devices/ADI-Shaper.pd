@@ -1414,6 +1414,12 @@
 #X msg 6885 1647 p 751 \$1;
 #X obj 6885 1684 adi.param \$0 753 0 100 20 % lin Width_High_Follower_Release;
 #X msg 6885 1711 p 752 \$1;
+#X obj 3860 212 adi.param \$0 919 0 1 0 - toggle Pan_Low_Stereo_Transfer;
+#X msg 3860 239 p 918 \$1;
+#X obj 3860 276 adi.param \$0 920 0 1 0 - toggle Pan_Mid_Stereo_Transfer;
+#X msg 3860 303 p 919 \$1;
+#X obj 3860 340 adi.param \$0 921 0 1 0 - toggle Pan_High_Stereo_Transfer;
+#X msg 3860 367 p 920 \$1;
 #X connect 0 0 1 0;
 #X connect 1 0 2 0;
 #X connect 0 1 1 1;
@@ -2830,3 +2836,9 @@
 #X connect 1412 0 1 0;
 #X connect 1413 0 1414 0;
 #X connect 1414 0 1 0;
+#X connect 1415 0 1416 0;
+#X connect 1416 0 1 0;
+#X connect 1417 0 1418 0;
+#X connect 1418 0 1 0;
+#X connect 1419 0 1420 0;
+#X connect 1420 0 1 0;

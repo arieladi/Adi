@@ -289,6 +289,61 @@ void driveShapeCanvas(const std::string& directory, bool crossed) {
     }
 }
 
+void panTransferState(DeviceInstance& device) {
+    for (int i = 0; i < 3; ++i) {
+        const auto id = std::to_string(919 + i);
+        const auto* desc = device.paramAt(703 + i);
+        check(desc && desc->id == id && device.getParam(id).real == 0, "each band appends a stereo transfer switch");
+        set(device, 919 + i, i == 1 ? 0. : 1.);
+    }
+    const auto saved = device.saveState("state");
+    auto restored = open();
+    check(restored->loadState("state", saved), "restore independent stereo transfer modes");
+    auto oldState = adi::Payload::from_cbor(saved);
+    for (int i = 0; i < 3; ++i) {
+        const auto id = std::to_string(919 + i);
+        check(restored->getParam(id).real == (i == 1 ? 0. : 1.), "Pan band keeps its own transfer mode");
+        oldState.at("params").erase(id);
+        oldState.at("real").erase(id);
+    }
+    check(restored->loadState("state", adi::Payload::to_cbor(oldState)), "restore earlier Pan state on a running device");
+    for (int id = 919; id <= 921; ++id)
+        check(restored->getParam(std::to_string(id)).real == 0, "old states select the original Pan balance law");
+}
+
+void panTransferPath(const std::string& patchDir, bool crossed) {
+    using Shaper = adi::dsp::AdiShaper;
+    adi::device::LibPdEngine path(patchDir, "ADI-Shaper.pd", 2, 2);
+    adi::device::PdLatencyReceiver latency;
+    std::string error;
+    path.addSearchPath(ADI_PD_PATCH_DIR);
+    check(path.open(latency, error), "open the Pan transfer canvas");
+    path.prepare(48000, 256);
+    path.bindParameters(adi::device::parsePdDeclarations(adi::builtinCanvas(uid)));
+    check(path.sendParameter(920, 1) && path.sendParameter(857, 0), "select middle-band stereo transfer");
+    for (int i = 0; i < 8; ++i) {
+        const auto id = Shaper::bandParam(Shaper::Stage::Pan, Shaper::Band::Mid,
+                                         static_cast<Shaper::BandControl>(Shaper::Point1 + i));
+        check(path.sendParameter(static_cast<int>(id) + 1, 50), "set the Pan transfer contour");
+    }
+    std::array<float, 256> left{}, right{}, outLeft{}, outRight{};
+    left[80] = .25f;
+    right[113] = -.75f;
+    const float* inputs[]{left.data(), right.data()};
+    float* outputs[]{outLeft.data(), outRight.data()};
+    adi::engine::NodeIo io;
+    io.in = inputs; io.out = outputs; io.channels = 2; io.frames = 256;
+    path.process(io);
+    const int offset = path.adapterLatencySamples();
+    check(offset == (crossed ? 64 : 0), "canonical and edited Pan paths use the expected adapter");
+    for (int i = 0; i < 256 - offset; ++i) {
+        const auto dst = static_cast<std::size_t>(offset + i);
+        const auto src = static_cast<std::size_t>(i);
+        check(outputs[crossed ? 1 : 0][dst] == left[src] + .5f * right[src] &&
+              outputs[crossed ? 0 : 1][dst] == .5f * right[src], "both Pan matrix columns emerge from the selected canvas");
+    }
+}
+
 void modulationPd(const std::string& editedDir, bool filterOn, bool sweepOn, bool driveOn = false,
                   bool crushOn = false, bool noiseOn = false, bool reverbOn = false, bool followerOn = false) {
     using Engine = adi::device::LibPdEngine;
@@ -677,6 +732,7 @@ void combinedDeclarations(DeviceInstance& device) {
     for (int id = 928; id <= 936; ++id) next(id);
     for (int id = 754; id <= 764; ++id) next(id);
     for (int id = 727; id <= 753; ++id) next(id);
+    for (int id = 919; id <= 921; ++id) next(id);
     check(ordinal == device.paramCount(), "all combined stage descriptors are accounted for");
     for (int id : {464, 500, 535, 724})
         check(!device.setParam(std::to_string(id), ParamValue::fromNormalized(1.)), "absent Pitch controls reject writes");
@@ -859,7 +915,7 @@ void audioTriggerPd() {
 int main() try {
     auto device = open();
     const auto* info = adi::findBuiltin(uid);
-    check(info && info->name == "ADI-Shaper" && device->paramCount() == 703, "device registration");
+    check(info && info->name == "ADI-Shaper" && device->paramCount() == 706, "device registration");
     for (int id = 727; id <= 753; ++id) {
         const auto* control = device->paramAt(676 + id - 727);
         check(control && control->id == std::to_string(id), "Width follower follows the existing trigger declarations");
@@ -888,6 +944,7 @@ int main() try {
         check(desc && desc->id == std::to_string(id), "Time appends its stable IDs after the previous descriptors");
     }
     panBlendState(*device);
+    panTransferState(*device);
     device = open();
     for (int id = 754; id <= 764; ++id)
         check(device->paramAt(665 + id - 754)->id == std::to_string(id), "new trigger controls have sparse stable IDs");
@@ -1132,6 +1189,8 @@ int main() try {
     modulationPd(editedDir, false, false, false, false, true);
     modulationPd(editedDir, false, false, false, false, false, true);
     modulationPd(editedDir, false, false, false, false, false, false, true);
+    panTransferPath(ADI_SHAPER_PATCH_DIR, false);
+    panTransferPath(editedDir, true);
     modulationPd(editedDir, true, false);
     modulationPd(editedDir, false, true);
     modulationPd(editedDir, true, true);
