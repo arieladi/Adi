@@ -17,6 +17,18 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 25 November 2026 — Three periodic Drive shapes
+
+Drive has three periodic responses. They occur separately in 22, 28 and 15 programs. Of these, 21, 27 and 10 use a nonzero contour. With neutral auxiliary controls there are eight sine cases, no triangle cases and two saw cases. Six of the sine programs also have representable timing. None of the programs mixes two of these shapes. Each band needs an independent selection.
+
+At normalized strength d and input magnitude |x|, put t = |x| times the input scale. For the sine shape the measured scale is (1 + 1.798788d) to the fourth power. The response is t up to 0.5, then 0.5 + 0.5 sin(2t − 1). The triangle scale is (1 + 1.5d) to the fourth power, with response 1 − |1 − (t modulo 2)|. The saw scale is 1 + (16√2 − 1)d², with response equal to the fractional part of t. Restore the sign of x and apply the shape's strength-dependent output compensation. A zero-strength contour is linear, including for inputs above unity. A positive strength of 0.0001 already engages folding.
+
+Alternating signed stereo plateaus at 134 settings per shape measured the input scale and output compensation independently of the DC blocker. Withheld input levels reproduced the settled sine response within 0.000001 and the saw response within 0.000002 away from wrap boundaries. At the saw discontinuities small reconstruction differences can change which side of the wrap a sample takes. At half strength and 48 kHz the fourfold direct model gave approximately 0.00013 RMS for sine and triangle and 0.00283 for saw on the broadband excerpt. The 96 kHz reconstruction remains under separate test.
+
+The source reports 16 frames at 44.1, 48 and 96 kHz. Moving, half-strength and full-strength stereo kick and bass were captured at all three rates and both block sizes. The largest 256 versus 2,048 difference was 0.00000012. Two sharp control transitions at 48 kHz favored an eight-frame strength delay on all three shapes. At 96 kHz the best integer delay was eight or nine frames depending on the shape and direction.
+
+The clones seat takes the Drive kernel, its rack dispatch, canvas and focused tests on `clones/shaper-fold-shapes`. Host IDs 934–936 select Off, Sine, Triangle or Saw separately for the three bands. Off recalls the previous Drive response. Lands after 3 December.
+
 ## 25 November 2026 — Signed power saturation in Drive
 
 The signed power response occurs in 36 of the 873 programs, with 38 selected bands and four of the previous 81 regressions. A nonzero Drive excursion remains in 32 programs. Seven programs have neutral tone, accent, grip and push. Three also have representable contour timing. They are the clean subset for an eventual complete-rack comparison.
