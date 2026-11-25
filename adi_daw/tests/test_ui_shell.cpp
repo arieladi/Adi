@@ -14266,6 +14266,33 @@ void keymapGolden(AppCommands &commands, settings::AppSettings &settings, const 
     document->release();
 }
 
+// WTS-01: a test launch is told by its flags, wherever they stand and however quoted: it runs as an
+// instance of its own and its window shows quietly. An ordinary launch, a project's name with the words
+// in it, is not one.
+void launchIsolation(AppCommands &commands) {
+    check(isTestLaunch("native.adi --no-audio --smoke-output native-actual.png") && isTestLaunch("--control-test") &&
+              isTestLaunch("\"my project.adi\" \"--control-test\""),
+          "--smoke-output and --control-test make a test launch, quoted or not");
+    check(!isTestLaunch("\"--smoke-output notes.adi\""), "a quoted file name holding the flag's words is a file, not the flag");
+    check(!isTestLaunch("") && !isTestLaunch("song.adi") && !isTestLaunch("--no-audio song.adi") &&
+              !isTestLaunch("smoke-output.adi") && !isTestLaunch("--smoke-outputs"),
+          "an ordinary launch, or a file named after the flag, is not");
+    std::string error;
+    test::TempDirectory temp("ui_shell", "launch");
+    auto document = ProjectDocument::open(temp.path() / "quiet.adi", true, {}, error);
+    check(document != nullptr, "a project for the quiet window");
+    if (!document)
+        return;
+    auto root = std::make_unique<AdiRootComponent>(document->view(), document->ops(), document->mailbox(), commands,
+                                                   document->views(), document->sessionState(), "quiet");
+    AdiWindow window(std::move(root), commands, false);
+    window.quiet = true;
+    window.setVisible(true);
+    check(window.isVisible() && !window.hasKeyboardFocus(true), "a quiet window shows and takes no focus");
+    commands.detach(window.root());
+    window.setVisible(false);
+    document->release();
+}
 int main(int argc, char **argv) {
     // WTS-02: no dialog box on Windows; JUCE's assertions counted, the run failing on one.
     adi::uitest::noDialogs();
@@ -17573,6 +17600,7 @@ int main(int argc, char **argv) {
     trace("windowPlaces", [&] { windowPlaces(temp.path()); });
     trace("keymapGolden", [&] { keymapGolden(commands, settings, temp.path(), write); });
     trace("userShortcuts", [&] { userShortcuts(commands, settings); });
+    trace("launchIsolation", [&] { launchIsolation(commands); });
     trace("paintHygiene", [&] { paintHygiene(commands, temp.path()); });
     check(assertions.count() == 0, ("no JUCE assertion in the run; the last: " + assertions.last().toStdString()).c_str());
     if (assertions.queueFull() > 0)

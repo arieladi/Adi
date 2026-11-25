@@ -161,6 +161,9 @@ class SettingsWindow final : public juce::DocumentWindow {
     void moved() override;
     void resized() override;
     void parentSizeChanged() override;
+    // WTS-01: a test launch's Settings window shows without taking the foreground; set before it shows.
+    bool quiet = false;
+    void visibilityChanged() override;
     SettingsPanel &panel() noexcept { return *panel_; }
     // Where it stands, kept in window.places after each move (WIN-02); full screen once it first shows,
     // when it was.
