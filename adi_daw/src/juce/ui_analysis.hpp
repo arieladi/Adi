@@ -92,6 +92,12 @@ class SharedSpectrumView final : public juce::Component,
     enum class SpectrogramScale { Linear, Log, Mel, Bark, Erb };
     void setSpectrogramScale(SpectrogramScale);
     SpectrogramScale spectrogramScale() const noexcept { return spectrogramScale_; }
+    struct SpectrogramLevels {
+        float floor = -96.f, ceiling = 0.f;
+        bool operator==(const SpectrogramLevels &) const = default;
+    };
+    void setSpectrogramLevels(SpectrogramLevels);
+    SpectrogramLevels spectrogramLevels() const noexcept { return spectrogramLevels_; }
     bool hasSpectrogramImage() const noexcept;
     // Owns the displayed data pixels independently of future history and view lifetime.
     juce::Image spectrogramImage() const;
@@ -217,6 +223,7 @@ class SharedSpectrumView final : public juce::Component,
     bool paletteReversed_ = false;
     HistoryMotion historyMotion_ = HistoryMotion::Scroll;
     SpectrogramScale spectrogramScale_ = SpectrogramScale::Log;
+    SpectrogramLevels spectrogramLevels_;
     std::uint64_t clearedRevision_ = 0, clearedEpoch_ = 0, clearedColumn_ = 0;
     // Owner-only source position, independent of parked stamps and worker backlog.
     // Initial compatible pictures may be reused; explicit fresh actions fence them.
@@ -288,6 +295,7 @@ class AnalysisPane final : public juce::Component {
     juce::TextButton freezeButton{"Freeze"}, resetButton{"Reset"}, expandButton{"Window"};
   private:
     void exportSpectrogramPng();
+    juce::Slider spectrogramFloor_, spectrogramCeiling_;
     juce::TextButton spectrogramPngButton_{"Export PNG"};
     std::unique_ptr<juce::FileChooser> spectrogramChooser_;
     Source source_ = Source::Main;

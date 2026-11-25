@@ -2068,6 +2068,137 @@ void spectrogramFrequencyScales() {
     }
 }
 
+void spectrogramRangeControls() {
+    using namespace adi::ui;
+    using Mode = SharedSpectrumView::Mode;
+    Fixture f;
+    Root root; root.setBounds(0, 0, 540, 480); root.setVisible(true); root.addToDesktop(0);
+    AnalysisPane pane;
+    root.addAndMakeVisible(pane); pane.setBounds(root.getLocalBounds());
+    juce::Slider *floor = nullptr, *ceiling = nullptr;
+    for (auto *child : pane.getChildren()) {
+        auto *slider = dynamic_cast<juce::Slider *>(child);
+        if (!slider) continue;
+        if (slider->getTitle() == "Spectrogram floor") floor = slider;
+        if (slider->getTitle() == "Spectrogram ceiling") ceiling = slider;
+    }
+    check(floor && ceiling && !floor->isShowing() && !ceiling->isShowing(),
+          "Spectrogram range controls are discoverable and stay hidden in other modes");
+    if (!floor || !ceiling) return;
+    const auto frame = [&] { pane.frame(f.broker, 1, 1); };
+
+    pane.setMode(Mode::Spectrogram); frame();
+    check(floor->isShowing() && ceiling->isShowing() && floor->isEnabled() && ceiling->isEnabled() &&
+              floor->getValue() == -96. && ceiling->getValue() == 0. && !pane.view.snapshot(),
+          "the waiting Spectrogram presents its original floor and ceiling and accepts edits");
+    check(floor->getValueFromText("Floor -65 dB") == -65. && ceiling->getValueFromText("+12 dB") == 12. &&
+              floor->getValueFromText("-40 dBx") == -96., "range text accepts complete values and rejects malformed text");
+    floor->setValue(-100., juce::sendNotificationSync);
+    ceiling->setValue(-36., juce::sendNotificationSync);
+    f.write(); f.broker->pump(); frame();
+    pane.view.freeze(true); frame();
+    check(pane.view.snapshot() && !pane.view.subscribed() && floor->isEnabled() && ceiling->isEnabled() &&
+              floor->getValue() == -100. && ceiling->getValue() == -36.,
+          "a frozen Spectrogram retains its valid range and allows edits without opening a tap again");
+    ceiling->setValue(-100., juce::sendNotificationSync);
+    check(ceiling->getValue() - floor->getValue() >= 1.,
+          "the endpoint controls never produce an empty or inverted dB range");
+    pane.setMode(Mode::Spectrum);
+    check(!floor->isShowing() && !ceiling->isShowing(), "leaving Spectrogram immediately hides both range controls");
+    root.removeFromDesktop();
+}
+
+void spectrogramRangePixels() {
+    using namespace adi::ui;
+    using Mode = SharedSpectrumView::Mode;
+    using Motion = SharedSpectrumView::HistoryMotion;
+    constexpr int fft = 1024, toneBin = 13, width = 128, height = 256, left = 5, top = 21;
+    Fixture f;
+    Root root; root.setBounds(0, 0, 540, 480); root.setVisible(true); root.addToDesktop(0);
+    AnalysisPane pane;
+    SharedSpectrumView sibling;
+    root.addAndMakeVisible(pane); pane.setBounds(0, 0, 350, 480);
+    root.addAndMakeVisible(sibling); sibling.setBounds(365, 0, 156, 311);
+    pane.setMode(Mode::Spectrogram); sibling.setMode(Mode::Spectrogram);
+    pane.view.setBounds(0, 0, 156, 311);
+    pane.frame(f.broker, 1, 1); sibling.present(f.broker, 1); sibling.frame();
+    juce::Slider *floor = nullptr, *ceiling = nullptr;
+    for (auto *child : pane.getChildren()) {
+        auto *slider = dynamic_cast<juce::Slider *>(child);
+        if (!slider) continue;
+        if (slider->getTitle() == "Spectrogram floor") floor = slider;
+        if (slider->getTitle() == "Spectrogram ceiling") ceiling = slider;
+    }
+    if (!floor || !ceiling) return;
+
+    std::array<float, fft> signal{};
+    for (std::size_t i = 0; i < signal.size(); ++i)
+        signal[i] = .1f * static_cast<float>(std::sin(2. * std::numbers::pi * toneBin * static_cast<double>(i) / fft));
+    f.tap->write(signal.data(), signal.data(), fft, 48000, true);
+    f.broker->pump(); pane.frame(f.broker, 1, 1); sibling.frame();
+    const auto shown = pane.view.snapshot();
+    const auto initial = pane.view.spectrogramImage(), siblingImage = sibling.spectrogramImage();
+    const bool original = shown && originalRasterPixels(pane.view, *shown);
+    const auto read = [&](int column) {
+        return SharedSpectrumViewTestAccess::moveCursor(pane.view, {left + column + .5f, top + height * .5f});
+    };
+    const auto level = read(width - 1);
+    check(shown && shown == sibling.snapshot() && level.contains("-20.0 dBFS") &&
+              initial.getWidth() == width && initial.getHeight() == height && samePixels(initial, siblingImage) &&
+              original,
+          "default range retains the old image exactly and a shared calibrated -20 dBFS cursor");
+    if (!shown || initial.isNull()) return;
+    const auto sameWork = [](const auto &before, const auto &after) {
+        return before.transforms == after.transforms && before.analysisWindows == after.analysisWindows &&
+            before.publications == after.publications && before.cursorReads == after.cursorReads &&
+            before.workerPasses == after.workerPasses && before.frameRequests == after.frameRequests &&
+            before.consumers == after.consumers && before.domains == after.domains && before.taps == after.taps &&
+            before.historyBytes == after.historyBytes;
+    };
+    const auto png = [](const juce::Image &image) {
+        juce::MemoryOutputStream bytes;
+        juce::PNGImageFormat format;
+        if (image.isNull() || !format.writeImageToStream(image, bytes)) return juce::Image{};
+        juce::MemoryInputStream input(bytes.getData(), bytes.getDataSize(), false);
+        return format.decodeImage(input);
+    };
+    const auto colour = [](std::uint8_t index) { return analysisPaletteColour(palettes::defaultIndex, index, false); };
+    const auto pixel = [](const juce::Image &image, int column) { return image.getPixelAt(column, height / 2); };
+
+    const auto active = f.broker->stats();
+    floor->setValue(-100., juce::sendNotificationSync);
+    ceiling->setValue(-36., juce::sendNotificationSync);
+    const auto bright = png(pane.view.spectrogramImage());
+    check(!bright.isNull() && pixel(bright, width - 1) == colour(255) && pixel(bright, 0) == look::display &&
+              read(width - 1) == level && pane.view.snapshot() == shown &&
+              samePixels(siblingImage, sibling.spectrogramImage()) && sameWork(active, f.broker->stats()),
+          "a live range clamps above the ceiling, keeps gaps and cursor values, and creates no analysis work");
+
+    pane.view.freeze(true);
+    const auto held = f.broker->stats();
+    ceiling->setValue(0., juce::sendNotificationSync);
+    floor->setValue(-36., juce::sendNotificationSync);
+    pane.setHistoryMotion(Motion::Sweep);
+    const auto middle = png(pane.view.spectrogramImage());
+    // This mid-cell value stays inside a single byte even if the float FFT
+    // bin differs from -20 dBFS by the last digit.
+    check(!middle.isNull() && pixel(middle, 0) == colour(113) && pixel(middle, 1) == look::display &&
+              read(0) == level && pane.view.snapshot() == shown && !pane.view.subscribed() &&
+              sameWork(held, f.broker->stats()),
+          "frozen Sweep exports its normalized history without changing time, raw level or demand");
+    floor->setValue(-12., juce::sendNotificationSync);
+    const auto dim = png(pane.view.spectrogramImage());
+    check(!dim.isNull() && pixel(dim, 0) == colour(0) && read(0) == level,
+          "a measured cell below the floor is clamped without being mistaken for unwritten history");
+
+    floor->setValue(-96., juce::sendNotificationSync);
+    pane.setHistoryMotion(Motion::Scroll);
+    check(samePixels(initial, pane.view.spectrogramImage()) && samePixels(siblingImage, sibling.spectrogramImage()) &&
+              read(width - 1) == level && sameWork(held, f.broker->stats()),
+          "restoring the default range reproduces the exact frozen and sibling pixels");
+    root.removeFromDesktop();
+}
+
 void spectrogramCursor() {
     using namespace adi::ui;
     using Mode = SharedSpectrumView::Mode;
@@ -3318,6 +3449,7 @@ int main() {
           compactAnalyzerDock(); cumulativeAverageTitlePaint(); paletteMenuTheme(); palettesAndFrozenRaster(); restartedRasterDomain();
           clearSpectrogramWhileWorkerAhead(); freshActionsWithSharedConsumer(); backlogAndLifecycleFreshness(); spectrumSlopeProjection(); spectrumWideCachedGeometry(); spectrumDetailScale(); spectrumExtendedGridGeometry(); spectrumExtendedScale();
           pinnedSpectrumWaitsForHeardPrimary();
+          spectrogramRangeControls(); spectrogramRangePixels();
           spectrumDeviceScale(); spectrogramHistoryMotion(); spectrogramFrequencyScales(); spectrogramCursor(); spectrogramPngControl(); spectrogramPngRoundtrip(); classicScopeSurface();
           classicScopeUnchangedTrace(); detailedPhasePreservesHighFrequencyTrace(); mixPhaseRailViews(); mixAnalyserPages();
           compareAndAveragePages(); compareHoldSurvivesInvalidA(); }
