@@ -1075,6 +1075,8 @@ bool Session::rebuild() {
             error_ = "external tempo source pages could not catch the current driver position";
             return false;
         }
+    } else {
+        primeWhilePlaying(*nextClips, *timing);
     }
     if (externalPublishGuard_ && *externalPublishGuard_ && !(*externalPublishGuard_)()) {
         error_ = "external tempo preparation became stale";
@@ -2263,6 +2265,26 @@ bool Session::readDriverClock(DriverClock& result) const noexcept {
         if (driverClockSequence_.load() == before) { result = candidate; return true; }
     }
     return false;
+}
+// Live: an edit committed during playback never interrupts it (walk-A A21). Every new
+// generation's readers start cold, so while the driver plays, read the pages at its
+// playhead (and the loop head) before the graph is published; priming waits for the
+// two pages of look-ahead too. A timeout publishes anyway: the readers catch up.
+void Session::primeWhilePlaying(ClipPlayback& clips, const TimingView& timing) {
+    DriverClock clock;
+    if (!readDriverClock(clock) || !clock.playing) return;
+    Transport requested;
+    requested.locate(clock.sample);
+    if (timing.settings.hasLoop) requested.loop(timing.loopBegin, timing.loopEnd, timing.settings.loopEnabled);
+    requested.play();
+    constexpr auto timeout = std::chrono::milliseconds(100);
+    if (!timing.settings.hasLoop || !timing.settings.loopEnabled) {
+        (void)clips.primeAt(requested, timeout);
+        return;
+    }
+    Transport loopHead = requested;
+    loopHead.locate(timing.loopBegin);
+    (void)clips.primeAt(requested, loopHead, timeout);
 }
 
 Session::RenderBlock::RenderBlock(Session& session) noexcept
