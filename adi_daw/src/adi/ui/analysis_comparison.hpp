@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include "adi/ui/shared_analysis.hpp"
+#include <array>
 #include <optional>
 #include <span>
 
@@ -132,5 +133,40 @@ struct SpectrogramColumnPair {
 // gaps in heard time, even when the surrounding column serials are consecutive.
 [[nodiscard]] std::span<const SpectrogramColumnPair> matchSpectrogramColumns(
     const SharedAnalysis::Result &pre, const SharedAnalysis::Result &post, std::int64_t heardEnd,
-    std::uint64_t minimumRevision, std::span<SpectrogramColumnPair> storage) noexcept;
+    std::uint64_t minimumRevision, std::span<SpectrogramColumnPair> storage,
+    std::array<std::int64_t, 2> after = {}) noexcept;
+
+// Owner-thread controller for a paired Spectrogram on the caller's frame clock.
+class SpectrogramComparison final {
+  public:
+    explicit SpectrogramComparison(std::shared_ptr<SharedAnalysis> broker) noexcept;
+    bool show(SharedAnalysis::Request profile) noexcept;
+    void hide() noexcept;
+    void frame() noexcept;
+    bool freeze(std::int64_t heardEnd, std::uint64_t minimumRevision) noexcept;
+    bool thaw() noexcept;
+    [[nodiscard]] bool frozen() const noexcept { return held_.has_value(); }
+    // Keep this view only until the next mutation of the controller.
+    [[nodiscard]] std::span<const SpectrogramColumnPair> columns(
+        std::int64_t heardEnd, std::uint64_t minimumRevision, std::span<SpectrogramColumnPair> storage) const noexcept;
+
+  private:
+    struct Source {
+        SharedAnalysis::Lease lease;
+        SharedAnalysis::Lease::SourcePosition start;
+        std::shared_ptr<const SharedAnalysis::Result> picture;
+    };
+    struct HeldPosition {
+        std::int64_t heardEnd;
+        std::uint64_t minimumRevision;
+    };
+    bool activate(SharedAnalysis::Request) noexcept;
+    void release() noexcept;
+    static void update(Source &) noexcept;
+    std::shared_ptr<SharedAnalysis> broker_;
+    SharedAnalysis::Request profile_;
+    Source pre_, post_;
+    std::optional<HeldPosition> held_;
+    bool visible_ = false;
+};
 } // namespace adi::ui
