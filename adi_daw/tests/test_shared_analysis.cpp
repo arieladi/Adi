@@ -1514,6 +1514,7 @@ void focusBarScopeBroker() {
     check(released == 2 && broker.stats().taps == 0, "the last subscriber releases each tap exactly once");
 }
 void focusSingleSourceScope() {
+    using Channels = adi::ui::FocusScopeChannels;
     using Source = adi::engine::ScopeSource;
     using Status = SharedAnalysis::BarScopeStatus;
     constexpr int frames = 4080;
@@ -1549,6 +1550,21 @@ void focusSingleSourceScope() {
               picture->projection->phase(false) == -1. && !picture->projection->phase(true) &&
               !picture->differenceSpectrum(pair) && broker.stats().transforms == 0,
           "one source keeps endpoint extrema and L/R phase with no pair phase or spectrum transform");
+
+    constexpr std::array<std::optional<Channels>, 1> sideView{Channels::Side};
+    lease.setLayerChannelViews(sideView);
+    check(lease.request({frames, 2, rate}, revision), "one source accepts its own layer channel view");
+    constexpr std::array nextLeft{.5f, -.5f}, nextRight{-.25f, .25f};
+    tap->write(nextLeft.data(), nextRight.data(), 2, frames, true, revision);
+    broker.pump();
+    const auto solo = lease.read();
+    const auto side = solo && solo->projection ? solo->projection->memberMonoColumns(0, Channels::Side)
+                                               : std::span<const adi::ui::FocusScopeBarProjection::MonoColumn>{};
+    check(side.size() == 2 && side.front().high == .375 && side.back().low == -.375 &&
+              solo->projection->sumReading()->peak == std::array{.5, .25} &&
+              solo->projection->phase(false) == -1. && !solo->projection->phase(true) &&
+              broker.stats().taps == 1 && broker.stats().transforms == 0,
+          "a single Side layer preserves the stereo measurement and uses the original tap");
     lease.reset();
     check(detached == 1 && broker.stats().taps == 0 && picture && picture->projection->complete(),
           "the released single tap leaves a complete held publication");
@@ -1922,6 +1938,92 @@ void focusScopeSideDemand() {
     check(range && difference.low == std::array{-.75, 0.} && difference.high == std::array{.875, 0.} &&
               opens == 2 && broker.stats().taps == 2 && broker.stats().transforms == 0,
           "short Side Difference subtracts A minus B before folding and needs no additional acquisition");
+}
+
+void focusScopeLayerChannels() {
+    using Channels = adi::ui::FocusScopeChannels;
+    using Projection = adi::ui::FocusScopeBarProjection;
+    using Source = adi::engine::ScopeSource;
+    using Status = SharedAnalysis::BarScopeStatus;
+    constexpr double rate = 48000.;
+    constexpr std::uint64_t revision = 67;
+    constexpr std::array sources{Source{1, ScopePoint::PostFader, 0}, Source{2, ScopePoint::PostFader, 0}};
+    const std::array taps{std::make_shared<ScopeTap>(rate, .25), std::make_shared<ScopeTap>(rate, .25)};
+    unsigned opens = 0;
+    SharedAnalysis broker([&](Source source, double) -> std::shared_ptr<const ScopeTap> {
+        ++opens;
+        return source == sources[0] ? taps[0] : taps[1];
+    }, [](Source) {}, SharedAnalysis::Mode::Manual);
+    auto lease = broker.acquireBarScope(sources, 1);
+    check(static_cast<bool>(lease), "independent channel views use the existing grouped Scope lease");
+    if (!lease) return;
+
+    const auto write = [&](std::int64_t stamp, std::int32_t count) {
+        constexpr std::array aLeft{.75f, -.75f}, aRight{.25f, -.25f};
+        constexpr std::array bLeft{.25f, -.25f}, bRight{-.75f, .75f};
+        taps[0]->write(aLeft.data(), aRight.data(), count, stamp, true, revision);
+        taps[1]->write(bLeft.data(), bRight.data(), count, stamp, true, revision);
+        broker.pump();
+    };
+    const auto layer = [](const auto &picture, std::size_t member, Channels view) {
+        return picture && picture->projection ? picture->projection->memberMonoColumns(member, view)
+                                               : std::span<const Projection::MonoColumn>{};
+    };
+    const auto symmetric = [](std::span<const Projection::MonoColumn> bins, double peak) {
+        return bins.size() == 1 && bins.front().low == -peak && bins.front().high == peak;
+    };
+    constexpr std::array<std::optional<Channels>, 2> mixed{Channels::Mid, Channels::Side};
+    lease.setLayerChannelViews(mixed);
+    lease.setPhaseRequested(true);
+    constexpr SharedAnalysis::ScopeDifference difference{sources[0], sources[1], Channels::Stereo, 1, false};
+    lease.setDifferenceRequested(difference);
+    check(lease.request({0, 2, rate}, revision), "two independently folded layers share one stamped capture");
+    write(0, 2);
+    const auto held = lease.read();
+    check(symmetric(layer(held, 0, Channels::Mid), .5) && symmetric(layer(held, 1, Channels::Side), .5) &&
+              layer(held, 0, Channels::Side).empty() && layer(held, 1, Channels::Mid).empty(),
+          "each layer stores only its requested fold of corresponding samples");
+    if (held && held->projection) {
+        const auto &projection = *held->projection;
+        const auto sum = projection.sumColumns();
+        const auto residual = projection.differenceColumns(difference);
+        check(sum.size() == 1 && sum.front().low == std::array{-1., -.5} &&
+                  sum.front().high == std::array{1., .5} && projection.sumMonoColumns(Channels::Mid).empty() &&
+                  projection.sumMonoColumns(Channels::Side).empty() && projection.phase(false) == -1. &&
+                  projection.phase(true) == -1. && residual.size() == 1 &&
+                  residual.front().low == std::array{-.5, -1.} && residual.front().high == std::array{.5, 1.},
+              "layer views leave stereo Sum, Difference and the original phase operands intact");
+    } else {
+        check(false, "the comparison capture is available with independent layer views");
+    }
+
+    check(lease.request({2, 2, rate}, revision), "the next mixed capture starts normally");
+    write(2, 1);
+    check(lease.status() == Status::Pending && !lease.read(), "a partial mixed capture stays unpublished");
+    constexpr std::array<std::optional<Channels>, 2> next{Channels::Side, std::nullopt};
+    lease.setLayerChannelViews(next);
+    check(lease.status() == Status::Missed && !lease.read(), "a changed layer view retires only the in-flight capture");
+    lease.setMonoRequested(Channels::Mid);
+    check(lease.request({3, 2, rate}, revision), "a new channel layout starts without reacquiring the sources");
+    write(3, 2);
+    const auto changed = lease.read();
+    check(changed && changed->firstStamp == 3 && symmetric(layer(changed, 0, Channels::Side), .25) &&
+              symmetric(layer(changed, 1, Channels::Mid), .25) && layer(changed, 0, Channels::Mid).empty() &&
+              symmetric(changed->projection->sumMonoColumns(Channels::Mid), .25) &&
+              symmetric(layer(held, 0, Channels::Mid), .5) && symmetric(layer(held, 1, Channels::Side), .5) &&
+              opens == 2 && broker.stats().taps == 2 && broker.stats().transforms == 0,
+          "a revised override and inherited channel use the same taps and leave the held picture intact");
+
+    check(lease.request({5, 2, rate}, revision), "the next capture starts with the explicit Side override");
+    write(5, 1);
+    lease.setMonoRequested(Channels::Stereo);
+    check(lease.status() == Status::Missed && !lease.read() && lease.request({6, 2, rate}, revision),
+          "changing the inherited fold fences an incomplete mixed capture");
+    write(6, 2);
+    const auto inheritedStereo = lease.read();
+    check(symmetric(layer(inheritedStereo, 0, Channels::Side), .25) &&
+              layer(inheritedStereo, 1, Channels::Mid).empty() && opens == 2 && broker.stats().transforms == 0,
+          "the new inherited view preserves the explicit Side layer without changing sources or FFT work");
 }
 
 void focusBarScopeBrokerBoundaries() {
@@ -5811,7 +5913,7 @@ void operator delete(void *p,std::size_t) noexcept {::operator delete(p);}
 void operator delete[](void *p,std::size_t) noexcept {::operator delete(p);}
 int main() {
     try { stripCadenceAndEpochs(); stripReusesRawSpectrum(); stripWorkerBudget(); stripLeaseInSession(); phaseBandSpatialMeasurements();
-          focusCapturedTruePeak(); focusBarCapturedTruePeak();
+          focusCapturedTruePeak(); focusBarCapturedTruePeak(); focusScopeLayerChannels();
           continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBeatTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusSingleSourceScope(); focusBarScopeMidDemand(); focusScopeDifference(); focusScopeSideDemand(); focusBarScopeBrokerBoundaries(); focusBarScopeWaitsOnAllSources(); focusBarScopeResumesAtRequestedRevision(); focusScopeSumProjection(); focusScopeLayerPreview(); focusBarLayerPreview(); focusBarResidualSpectrum(); focusScopePhaseOperands(); focusScopeFlatPath(); focusLagPreviewRequests(); focusLagPreviewCases(); focusLagTapReads(); focusLagHighRateTaps(); focusMatchWindows(); parkedSilence(); parkedSpectrogramWake(); parkedWindowHopPhase();
           parkedRealtimeModeJoins<SharedAnalysis::RealtimeMaximum>(); parkedRealtimeModeJoins<SharedAnalysis::RealtimeSigma>(); parkedStereoBalance(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
           sharedModesAndCursors(); phaseBandCorrelation(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); spectrumLevels(); spectrumSamplePeaksAndClips(); restartSpectrumLevels(); restartParkedSpectrumLevels(); spectrumTruePeak(); parkedSpectrumLevels(false); parkedSpectrumLevels(true); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); realtimeSigmaSpectrum(); cumulativeMaximumSpectrum(); cumulativeAverageSpectrum(); cumulativeMaximumParkedRollover(); sharedAverage(); parkedRealtimeAverage(); parkedRealtimeAverageJoinsScope(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); deviceSpectrumLease(); parkedDeviceSpectrum(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }

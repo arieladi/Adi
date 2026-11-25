@@ -38,7 +38,10 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     friend struct MixFocusTestAccess;
     look::DensityId density_ = look::densityId();
     enum class ScopeDisplay { Overlay = 1, Layers, Stack, Sum, Difference };
-    enum class ScopeLayerAction { Invert = 1, EarlierCoarse, EarlierFine, LaterFine, LaterCoarse, Samples, Milliseconds, Reset };
+    enum class ScopeLayerAction {
+        Invert = 1, EarlierCoarse, EarlierFine, LaterFine, LaterCoarse, Samples, Milliseconds, Reset,
+        FollowWindow, Stereo, Left, Right, Mid, Side
+    };
     struct Member {
         std::int64_t id{};
         juce::Colour colour;
@@ -49,6 +52,7 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
         juce::Path path;
         std::array<juce::Path, 2> scopePaths;
         FocusScopeLayerAdjustment scopeAdjustment;
+        std::optional<FocusScopeChannels> scopeChannel;
         std::vector<double> energy;
         std::optional<SharedAnalysis::Lease::SourcePosition> afterLoop;
         bool spectrumChanged{true};
@@ -108,6 +112,7 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     void showScopeLayerMenu();
     void applyScopeLayerAction(std::int64_t track, std::uint64_t membership, ScopeLayerAction);
     void updateScopeLayerAdjustments();
+    void updateScopeChannelDemand();
     void paintScopePhase(juce::Graphics &) const;
     void refreshControls();
     std::array<const Member *, 2> matchMembers() const noexcept;
@@ -152,6 +157,7 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     juce::Rectangle<int> titleRow_, sumLabel_, phaseBar_;
     std::vector<const SharedAnalysis::Result *> scopeSources_;
     std::vector<FocusScopeLayerAdjustment> scopeAdjustments_;
+    std::vector<std::optional<FocusScopeChannels>> scopeLayerViews_;
     bool scopeOffsetsInMilliseconds_ = false;
     std::optional<FocusScopeRange> scopeRange_;
     struct ScopeCursorBeat {

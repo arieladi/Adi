@@ -354,7 +354,8 @@ class FocusScopeBarProjection {
                  std::size_t requestedColumns, std::uint64_t transportRevision,
                  FocusScopeChannels mono = FocusScopeChannels::Stereo,
                  std::optional<SharedAnalysis::ScopeDifference> difference = {}, bool measurePhase = false,
-                 bool measureSumTruePeak = false) {
+                 bool measureSumTruePeak = false,
+                 std::span<const std::optional<FocusScopeChannels>> layerChannels = {}) {
         const auto columns = std::min({requestedColumns, range.frames,
                                        static_cast<std::size_t>(SharedAnalysis::kMaxFftSize)});
         if (sources.empty() || columns == 0 || !transportRevision || range.first < 0 ||
@@ -387,13 +388,31 @@ class FocusScopeBarProjection {
         }
         std::vector<FocusSumColumn> bins((sources.size() + 1) * columns, focusEmptyExtrema());
         std::vector<MonoColumn> monoBins;
-        if (focusScopeIsFolded(mono)) monoBins.resize((sources.size() + 1) * columns);
+        std::vector<FoldedLane> layerFolds;
+        const auto foldFor = [](FocusScopeChannels view) {
+            return focusScopeIsFolded(view) ? view : FocusScopeChannels::Stereo;
+        };
+        const auto sumFold = foldFor(mono);
+        const auto overrides = layerChannels.first(std::min(layerChannels.size(), sources.size()));
+        if (std::ranges::any_of(overrides, [&](auto view) { return view && foldFor(*view) != sumFold; })) {
+            layerFolds.resize(sources.size() + 1);
+            std::size_t folded = 0;
+            for (std::size_t i = 0; i < layerFolds.size(); ++i) {
+                const auto view = i == sources.size() || i >= overrides.size() ? sumFold :
+                    foldFor(overrides[i].value_or(sumFold));
+                if (focusScopeIsFolded(view)) layerFolds[i] = {view, folded++ * columns};
+            }
+            monoBins.resize(folded * columns);
+        } else if (focusScopeIsFolded(sumFold)) {
+            monoBins.resize((sources.size() + 1) * columns);
+        }
         std::vector<FocusScopeBarSource> identities(sources.begin(), sources.end());
         auto meter = measureSumTruePeak && FocusCapturedTruePeak::factorFor(range.sampleRate) > 1
             ? std::make_unique<FocusCapturedTruePeak>(range.sampleRate, range.frames) : nullptr;
         bins_ = std::move(bins);
         monoBins_ = std::move(monoBins);
-        mono_ = mono;
+        layerFolds_ = std::move(layerFolds);
+        mono_ = sumFold;
         differenceBins_ = std::move(differenceBins);
         difference_ = difference;
         differenceIndexes_ = differenceIndexes;
@@ -432,10 +451,14 @@ class FocusScopeBarProjection {
         }
 
         const auto project = [this, blocks, count]<bool TruePeak>() {
+            const auto fold = [this, blocks, count]<FocusScopeChannels Fold>() {
+                if (layerFolds_.empty()) appendValid<Fold, TruePeak, false>(blocks, count);
+                else appendValid<Fold, TruePeak, true>(blocks, count);
+            };
             switch (mono_) {
-            case FocusScopeChannels::Mid: appendValid<FocusScopeChannels::Mid, TruePeak>(blocks, count); break;
-            case FocusScopeChannels::Side: appendValid<FocusScopeChannels::Side, TruePeak>(blocks, count); break;
-            default: appendValid<FocusScopeChannels::Stereo, TruePeak>(blocks, count); break;
+            case FocusScopeChannels::Mid: fold.template operator()<FocusScopeChannels::Mid>(); break;
+            case FocusScopeChannels::Side: fold.template operator()<FocusScopeChannels::Side>(); break;
+            default: fold.template operator()<FocusScopeChannels::Stereo>(); break;
             }
         };
         if (sumPeakMeter_) {
@@ -466,9 +489,10 @@ class FocusScopeBarProjection {
     }
     // Used only for an unfinished projection. Published results are immutable.
     void retainMono(FocusScopeChannels requested) noexcept {
-        if (requested == mono_ || monoBins_.empty()) return;
+        if (requested == mono_ || (monoBins_.empty() && layerFolds_.empty())) return;
         mono_ = FocusScopeChannels::Stereo;
         std::vector<MonoColumn>{}.swap(monoBins_);
+        std::vector<FoldedLane>{}.swap(layerFolds_);
     }
     [[nodiscard]] std::span<const FocusSumColumn> differenceColumns(
         const SharedAnalysis::ScopeDifference &expected) const noexcept {
@@ -506,7 +530,12 @@ class FocusScopeBarProjection {
     }
 
   private:
-    template <FocusScopeChannels Fold, bool TruePeak>
+    struct FoldedLane {
+        FocusScopeChannels view = FocusScopeChannels::Stereo;
+        std::size_t offset = 0;
+    };
+
+    template <FocusScopeChannels Fold, bool TruePeak, bool Mixed>
     void appendValid(std::span<const FocusScopeBarBlock> blocks, std::size_t count) noexcept {
         const auto remember = [](FocusSumColumn &column, const std::array<double, 2> &sample) {
             for (std::size_t ch = 0; ch < sample.size(); ++ch) {
@@ -530,8 +559,13 @@ class FocusScopeBarProjection {
                     const auto index = member * columns_ + column_;
                     remember(bins_[index], sample);
                     // Combine corresponding samples before binning to preserve cancellation.
-                    if constexpr (focusScopeIsFolded(Fold))
+                    if constexpr (Mixed) {
+                        const auto lane = layerFolds_[member];
+                        if (focusScopeIsFolded(lane.view))
+                            monoBins_[lane.offset + column_].include(focusScopeFoldSample(lane.view, sample[0], sample[1]));
+                    } else if constexpr (focusScopeIsFolded(Fold)) {
                         monoBins_[index].include(focusScopeFoldSample(Fold, sample[0], sample[1]));
+                    }
                     value[0] += sample[0];
                     value[1] += sample[1];
                 }
@@ -541,8 +575,10 @@ class FocusScopeBarProjection {
                     sumPhase_.add(value[0], value[1]);
                     if (measurePair) midPairPhase_.add(midAt(blocks[0], at), midAt(blocks[1], at));
                 }
-                if constexpr (focusScopeIsFolded(Fold))
-                    monoBins_[blocks.size() * columns_ + column_].include(focusScopeFoldSample(Fold, value[0], value[1]));
+                if constexpr (focusScopeIsFolded(Fold)) {
+                    const auto offset = Mixed ? layerFolds_.back().offset : blocks.size() * columns_;
+                    monoBins_[offset + column_].include(focusScopeFoldSample(Fold, value[0], value[1]));
+                }
                 for (std::size_t ch = 0; ch < value.size(); ++ch) {
                     peak_[ch] = std::max(peak_[ch], std::abs(value[ch]));
                     energy_[ch] += value[ch] * value[ch];
@@ -579,13 +615,20 @@ class FocusScopeBarProjection {
 
     [[nodiscard]] std::span<const MonoColumn> monoLane(std::size_t index,
                                                        FocusScopeChannels expected) const noexcept {
-        if (expected != mono_ || monoBins_.empty() || !visibleColumns_) return {};
+        if (!focusScopeIsFolded(expected) || monoBins_.empty() || !visibleColumns_) return {};
+        if (!layerFolds_.empty()) {
+            const auto lane = layerFolds_[index];
+            if (lane.view != expected) return {};
+            return std::span(monoBins_).subspan(lane.offset, visibleColumns_);
+        }
+        if (expected != mono_) return {};
         return std::span(monoBins_).subspan(index * columns_, visibleColumns_);
     }
     FocusScopeRange range_;
     std::vector<FocusScopeBarSource> sources_;
     std::vector<FocusSumColumn> bins_;
     std::vector<MonoColumn> monoBins_;
+    std::vector<FoldedLane> layerFolds_;
     FocusScopeChannels mono_ = FocusScopeChannels::Stereo;
     std::vector<FocusSumColumn> differenceBins_;
     std::optional<SharedAnalysis::ScopeDifference> difference_;

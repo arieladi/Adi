@@ -82,6 +82,11 @@ struct MixFocusTestAccess {
     static bool differencePulseAt(const MixFocus &focus, float position, float value) {
         return scopePulseAt(focus.plot_, focus.scopeDifferencePaths_[0], position, value);
     }
+    static bool foldedLayerAt(const MixFocus &focus, std::int64_t track, float position, float value) {
+        const auto layer = std::ranges::find(focus.members_, track, &MixFocus::Member::id);
+        return layer != focus.members_.end() && layer->scopePaths[1].isEmpty() &&
+               scopePulseAt(focus.plot_, layer->scopePaths[0], position, value);
+    }
     static bool hasScopeTrace(const MixFocus &focus) { return focus.scopeHasTrace_; }
     static bool hasDifference(const MixFocus &focus) { return focus.differenceRenderedRevision_.has_value(); }
     static auto scopeWaveformRange(const MixFocus &focus) { return focus.scopeRange_; }
@@ -170,6 +175,9 @@ struct MixFocusTestAccess {
     }
     static void chooseLayerItem(MixFocus &focus, int id) {
         focus.applyScopeLayerAction(focus.active_, focus.membershipPose_, static_cast<MixFocus::ScopeLayerAction>(id));
+    }
+    static auto cachedLayerAdjustment(const MixFocus &focus, std::size_t index) {
+        return focus.scopeAdjustments_.at(index);
     }
     static bool scopePulseAt(juce::Rectangle<float> plot, const juce::Path &path, float position, float value) {
         if (plot.isEmpty()) return false;
@@ -4121,6 +4129,83 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
               "stopping holds the one-source capture and detaches its tap");
         focus.setMembers({first, second});
         check(display->isItemEnabled(5), "Difference is offered again when the second Focus channel returns");
+    }
+    if (musicalWindow && display && channels) {
+        const auto layerChannelItem = [&](const juce::String &label) {
+            const auto layer = MixFocusTestAccess::layerMenu(focus);
+            for (juce::PopupMenu::MenuItemIterator item(layer); item.next();) {
+                const auto &parent = item.getItem();
+                if (parent.text != "Channels" || !parent.subMenu) continue;
+                for (juce::PopupMenu::MenuItemIterator child(*parent.subMenu); child.next();) {
+                    const auto &option = child.getItem();
+                    if (option.text == label && option.isEnabled) return std::pair{option.itemID, option.isTicked};
+                }
+            }
+            return std::pair{0, false};
+        };
+        const auto chooseChannel = [&](const juce::String &label) {
+            const auto option = layerChannelItem(label);
+            if (option.first != 0) MixFocusTestAccess::chooseLayerItem(focus, option.first);
+            return option.first != 0 && layerChannelItem(label).second;
+        };
+        const auto priorHead = History(doc->store()).head();
+        focus.select(first);
+        check(layerChannelItem("Follow window").second && chooseChannel("Mid") && !layerChannelItem("Side").second,
+              "the first layer can choose Mid from its checked Channels submenu");
+        focus.select(second);
+        check(layerChannelItem("Follow window").second && chooseChannel("Side") && !layerChannelItem("Mid").second,
+              "the second layer still follows the window until it independently chooses Side");
+        focus.select(first);
+        check(layerChannelItem("Mid").second && !layerChannelItem("Follow window").second,
+              "returning to the first layer shows its previous checked choice");
+
+        driver.play(true);
+        frame();
+        writeUntil(driver.position() + 8 * chunk);
+        const auto before = broker->stats();
+        const auto openBefore = opens;
+        const auto start = driver.position();
+        musicalWindow->setSelectedId(static_cast<int>(FocusScopeWindow::Milliseconds170), juce::sendNotificationSync);
+        frame();
+        constexpr auto frames = 8160;
+        std::array<float, chunk> leftA, leftB, right;
+        leftA.fill(.75f); leftB.fill(-.75f); right.fill(.25f);
+        while (driver.position() < start + frames) {
+            const auto from = driver.position();
+            const auto count = static_cast<std::int32_t>(std::min<std::int64_t>(chunk, start + frames - from));
+            a->write(leftA.data(), right.data(), count, from, true, driver.revision());
+            b->write(leftB.data(), right.data(), count, from, true, driver.revision());
+            driver.advance(count);
+            broker->pump();
+            frame();
+        }
+        const auto reading = MixFocusTestAccess::scopeReading(focus);
+        check(channels->getText() == "Stereo" && MixFocusTestAccess::scopeInterval(focus, start, frames, rate) &&
+                  MixFocusTestAccess::foldedLayerAt(focus, first, .999f, .5f) &&
+                  MixFocusTestAccess::foldedLayerAt(focus, second, .999f, -.5f) &&
+                  reading && reading->peak == std::array{0., .5},
+              "the grouped waveform draws independent Mid and Side traces and reads the raw stereo sum");
+        const auto after = broker->stats();
+        check(opens == openBefore && after.taps == 2 && after.consumers == 1 &&
+                  after.transforms == before.transforms && History(doc->store()).head() == priorHead,
+              "layer channel choices keep one grouped reader without replacing sources, transforming or editing");
+        check(freeze && freeze->isEnabled(), "both projected layers can be held in the same Freeze");
+        if (freeze && freeze->isEnabled()) {
+            freeze->setToggleState(true, juce::dontSendNotification);
+            freeze->onClick();
+            focus.select(second);
+            const auto menu = MixFocusTestAccess::layerMenu(focus);
+            int later = 0;
+            for (juce::PopupMenu::MenuItemIterator item(menu); item.next();)
+                if (item.getItem().text == "Later by 1 sample" && item.getItem().isEnabled) later = item.getItem().itemID;
+            const bool wasFrozen = freeze->getToggleState();
+            if (later) MixFocusTestAccess::chooseLayerItem(focus, later);
+            constexpr FocusScopeLayerAdjustment expected{1, false};
+            check(wasFrozen && later && !freeze->getToggleState() &&
+                      MixFocusTestAccess::layerAdjustment(focus) == expected &&
+                      MixFocusTestAccess::cachedLayerAdjustment(focus, 1) == expected,
+                  "editing a frozen layer thaws once and carries the updated offset into the next capture");
+        }
     }
     peer.setVisible(false);
     check(broker->stats().taps == 0 && broker->stats().consumers == 0,

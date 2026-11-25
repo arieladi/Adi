@@ -1996,6 +1996,7 @@ struct SharedAnalysis::BarScopeDomain {
         std::int64_t chunkEnd = 0;
         std::array<float, chunkFrames> left, right;
         FocusScopeLayerAdjustment adjustment;
+        std::optional<FocusScopeChannels> channelView;
     };
 
     BarScopeDomain(std::span<const engine::ScopeSource> sources, std::size_t width)
@@ -2033,6 +2034,31 @@ struct SharedAnalysis::BarScopeDomain {
         if (changed) invalidateProjection();
     }
 
+    void setLayerChannelViews(std::span<const std::optional<FocusScopeChannels>> views) noexcept {
+        const std::lock_guard lock(mutex);
+        if (!active.load() || (views.empty() && !hasLayerChannelViews)) return;
+        bool changed = false;
+        hasLayerChannelViews = false;
+        const auto inherited = monoRequested.load(std::memory_order_relaxed);
+        for (std::size_t i = 0; i < lanes.size(); ++i) {
+            auto next = i < views.size() ? views[i] : std::nullopt;
+            if (next && !focusScopeIsFolded(*next)) next = FocusScopeChannels::Stereo;
+            changed = changed || lanes[i].channelView.value_or(inherited) != next.value_or(inherited);
+            hasLayerChannelViews = hasLayerChannelViews || next.has_value();
+            lanes[i].channelView = next;
+        }
+        if (changed) invalidateProjection();
+    }
+
+    bool prepareProjection(FocusScopeChannels fold, bool phase, bool sumTruePeak) {
+        if (!hasLayerChannelViews)
+            return projection->prepare(range, identities, columns, revision, fold, difference, phase, sumTruePeak);
+        std::array<std::optional<FocusScopeChannels>, kMaxDomains> views;
+        for (std::size_t i = 0; i < lanes.size(); ++i) views[i] = lanes[i].channelView;
+        return projection->prepare(range, identities, columns, revision, fold, difference, phase, sumTruePeak,
+                                   std::span(views).first(lanes.size()));
+    }
+
     bool request(const FocusScopeRange &next, std::uint64_t expected, std::uint64_t minimum) noexcept {
         if (next.first < 0 || !std::in_range<std::int64_t>(next.frames) || (expected && expected < minimum)) return false;
         const auto finish = focusWindowEnd(next.first, static_cast<std::int64_t>(next.frames));
@@ -2055,7 +2081,13 @@ struct SharedAnalysis::BarScopeDomain {
     }
 
     void setMonoRequested(FocusScopeChannels fold) noexcept {
-        monoRequested.store(focusScopeIsFolded(fold) ? fold : FocusScopeChannels::Stereo, std::memory_order_relaxed);
+        const auto next = focusScopeIsFolded(fold) ? fold : FocusScopeChannels::Stereo;
+        if (!hasLayerChannelViews) {
+            monoRequested.store(next, std::memory_order_relaxed);
+            return;
+        }
+        const std::lock_guard lock(mutex);
+        if (monoRequested.exchange(next, std::memory_order_relaxed) != next) invalidateProjection();
     }
 
     void setDifferenceRequested(std::optional<ScopeDifference> requested) noexcept {
@@ -2219,7 +2251,7 @@ struct SharedAnalysis::BarScopeDomain {
                     for (std::size_t i = 0; i < lanes.size(); ++i)
                         identities[i] = {lanes[i].source, lanes[i].tap->generation()};
                     projection = std::make_shared<FocusScopeBarProjection>();
-                    if (!projection->prepare(range, identities, columns, revision, fold, difference, phase, sumTruePeak)) {
+                    if (!prepareProjection(fold, phase, sumTruePeak)) {
                         invalidate();
                         return false;
                     }
@@ -2270,6 +2302,7 @@ struct SharedAnalysis::BarScopeDomain {
     std::uint64_t expectedRevision = 0, minimumRevision = 0, revision = 0;
     std::int64_t end = 0;
     std::atomic<FocusScopeChannels> monoRequested{FocusScopeChannels::Stereo};
+    bool hasLayerChannelViews = false;
     std::atomic<bool> phaseRequested{false};
     std::atomic<bool> sumTruePeakRequested{false};
     std::mutex differenceMutex; // held only to copy the request, never while processing samples
@@ -2963,6 +2996,12 @@ void SharedAnalysis::BarScopeLease::setLayerAdjustments(std::span<const FocusSco
     if (!state || !domain_) return;
     state->ownerOnly();
     domain_->setLayerAdjustments(adjustments);
+}
+void SharedAnalysis::BarScopeLease::setLayerChannelViews(std::span<const std::optional<FocusScopeChannels>> views) noexcept {
+    const auto state = state_.lock();
+    if (!state || !domain_) return;
+    state->ownerOnly();
+    domain_->setLayerChannelViews(views);
 }
 double SharedAnalysis::BarScopeLease::sampleRate() const noexcept { return *this ? domain_->rate.load() : 0.; }
 SharedAnalysis::BarScopeStatus SharedAnalysis::BarScopeLease::status() const noexcept {

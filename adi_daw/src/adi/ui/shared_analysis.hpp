@@ -321,6 +321,8 @@ class SharedAnalysis final {
         // Lane order. A changed preview invalidates the current bar without
         // detaching the source taps. Missing entries default to no adjustment.
         void setLayerAdjustments(std::span<const FocusScopeLayerAdjustment>) noexcept;
+        // Lane order. An absent choice follows the window's channel view.
+        void setLayerChannelViews(std::span<const std::optional<FocusScopeChannels>>) noexcept;
         double sampleRate() const noexcept;
         BarScopeStatus status() const noexcept;
         std::shared_ptr<const BarScopeResult> read() const noexcept;
