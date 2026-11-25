@@ -4,6 +4,24 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-25 — Item 3 (part 3): `gemini/pd15-project-paste` (`60fa699c`, re-review fixes)
+
+Addressed the routing & VCA re-review findings from win's 25 November engine re-review (`collab/win.md`), test-first, touching loaned paths only (`src/adi/project_paste.{hpp,cpp}`, `tests/test_project_paste.cpp`, `CMakeLists.txt`):
+1. **Medium — internal sidechains (+ `routing_key_taps`) and internal user Main routes:** added Step 5b (after Step 5 populates `result.deviceIds`) to copy `routing` rows where `kind = 'sidechain'` with both source track and destination device inside the pasted subtree, remapping both ends and carrying `routing_key_taps.tap` through `routing.connect`'s `keyTap` plus `gain_db`/`pan`/`enabled`, and to copy user Main routes (`kind = 'main'`, `origin = 'user'`) whose destination track is inside the pasted subtree.
+2. **Medium — external routing and VCA warnings:** every external user Main route, every external/non-device sidechain route (incoming or outgoing), and every VCA / other non-send route touching the pasted subtree is reported in `result.warnings`. `readTrackSnapshot` now also reads `mixer_strip.vca_group_id` and emits a warning when non-null. (`ops_catalog.cpp` has no `mixer.setPanLaw` op, so warning on non-default `pan_law` remains the documented contract.) Updated header contract in `project_paste.hpp`.
+3. **Tests:** added `testRoutingSidechainUserMainAndVca` covering internal sidechain + `pre_fx` `keyTap`, internal user Main route, external incoming & outgoing sidechains, external user Main route, `mixer_strip.vca_group_id` + `kind = 'vca'` warnings, full undo digest restoration, and solo-track paste turning an internal sidechain into a warned external sidechain.
+
+| Compiler / tool | Flags | Suites & counts | Verdict |
+|---|---|---|---|
+| GCC 12.4.0 | `-DADI_WERROR=ON` (Debug, Pd on, JUCE off) | `adi_project_paste_tests` **137/0** (0 warnings) | **PASS** |
+| Clang 14.0.6 + libstdc++ 12 | `-DADI_WERROR=ON` (Debug, Pd on, JUCE off) | `adi_project_paste_tests` **137/0** (0 warnings) | **PASS** |
+| GCC 12.4.0 ASan+LSan+UBSan | `-O1 -g1 -fsanitize=address,undefined` (`detect_leaks=1:alloc_dealloc_mismatch=1:halt_on_error=1`) | `adi_project_paste_tests` **137/0** (0 reports, 0 leaks) | **PASS** |
+| GCC 12.4.0 TSan | `-O1 -g1 -fsanitize=thread` (`halt_on_error=1`) | `adi_project_paste_tests` **137/0** (0 races) | **PASS** |
+
+**Review requested: `gemini/pd15-project-paste` at `60fa699c`** (lands after 3 December; PR requested only after engine passes this head).
+
+---
+
 ## 2026-11-25 — Item 3 (part 2): `gemini/srf09-osc-core` (`39a8c20a`, re-review fixes)
 
 Addressed all three findings from win's 25 November engine re-review (`collab/win.md`), test-first, touching loaned paths only (`src/adi/osc_namespace.{hpp,cpp}`, `tests/test_osc_namespace.cpp`):
