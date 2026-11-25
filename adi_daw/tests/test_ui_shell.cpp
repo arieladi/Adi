@@ -1944,7 +1944,7 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
         check(ka == juce::Rectangle<int>(10, 25, 32, 32) && kb == juce::Rectangle<int>(51, 47, 32, 32) &&
                   column->sendKnobs()[0]->getSliderStyle() == juce::Slider::RotaryHorizontalVerticalDrag,
               "knob A on the left, B to its right and 22 pt lower, as Live's");
-        check(column->volume.getY() == 19 + 72 + 6 && column->peakHold.getY() == 19 + 72 + 5,
+        check(column->volume.getY() + MixerStrip::kFaderReach == 19 + 72 + 6 && column->peakHold.getY() == 19 + 72 + 5,
               "the mixer begins under the sends");
         check(std::abs(column->sendKnobs()[0]->getValue() + 12.0) < 1.e-9,
               "and send A reads the same row as the track controls");
@@ -2036,7 +2036,7 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
     column = rowOf(root.mixerView, 3);
     mainStrip = rowOf(root.mixerView, 7);
     check(column != nullptr && column->sendsShown() == 0 && !column->sendKnobs()[0]->isVisible() &&
-              column->volume.getY() == 19 + 6 && mainStrip != nullptr && mainStrip->returnSwitches().size() == 2 &&
+              column->volume.getY() + MixerStrip::kFaderReach == 19 + 6 && mainStrip != nullptr && mainStrip->returnSwitches().size() == 2 &&
               !mainStrip->returnSwitches()[0]->isVisible(),
           "the Mixer View strips lose their Sends section, Main's Pre/Post switches with it");
     render("adi-sends-hidden.png");
@@ -2118,7 +2118,7 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
     column = rowOf(root.mixerView, 3);
     mainStrip = rowOf(root.mixerView, 7);
     check(column != nullptr && column->showsMixerInOut() && column->sendsShown() == 2 &&
-              column->volume.getY() == 19 + MixerStrip::kInOutHeight + 72 + 6 && mainStrip != nullptr &&
+              column->volume.getY() + MixerStrip::kFaderReach == 19 + MixerStrip::kInOutHeight + 72 + 6 && mainStrip != nullptr &&
               mainStrip->showsMixerInOut() && mainStrip->returnSwitches()[0]->isVisible(),
           "taller, both sends come back under it, Main's Pre/Post switches with them");
     render("adi-mixer-inout.png");
@@ -11870,6 +11870,88 @@ void mixerShowsAutomation(AppCommands &commands, const std::filesystem::path &di
           "re-enabled, they read the envelope again, the LED lit");
     document->release();
 }
+// Walk-A A22: a Mixer View fader is grabbed by its ◁ wherever it is drawn, at 0 dB (every new track's) and at
+// +6 dB (the top of its travel), as Live's: the press goes through the window's own dispatch to the fader.
+void mixerViewFaderHandle(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "fader-handle.adi", true, {}, error);
+    check(document != nullptr, "a project for the Mixer View's faders");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "handle");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.beginMixerDrag = [&](const gesture::RelativeScalarSelection &selection, std::optional<double> value,
+                              const std::string &label) {
+        return document->beginMixerDrag(selection, value, label);
+    };
+    root.mixerDrag = [&](double value) { return document->mixerDrag(value); };
+    root.endMixerDrag = [&] { return document->endMixerDrag(); };
+    root.cancelMixerDrag = [&] { document->cancelMixerDrag(); };
+    UiPeerRoot surfacePeer;
+    surfacePeer.setSize(1600, 1000);
+    surfacePeer.addAndMakeVisible(root);
+    surfacePeer.setVisible(true);
+    surfacePeer.addToDesktop(0);
+    root.setSize(1440, 900);
+    root.frame();
+    check(root.command(AppCommands::ToggleMixerView), "the Mixer View opens");
+    root.mark(DirtySet::All);
+    root.frame();
+    MixerStrip *three = nullptr;
+    for (const auto &strip : root.mixerView.strips())
+        if (strip->isVisible() && strip->track() == 4)
+            three = strip.get();
+    auto *peer = surfacePeer.getPeer();
+    check(three != nullptr && peer != nullptr, "3 Audio's strip in the Mixer View");
+    if (three == nullptr || peer == nullptr) {
+        document->release();
+        return;
+    }
+    const auto opCount = [&] { return document->store().db().execAndGet("SELECT count(*) FROM ops").getInt(); };
+    juce::int64 when = 400000;
+    const auto mouse = [&](juce::Point<float> at, juce::ModifierKeys mods) {
+        juce::ModifierKeys::currentModifiers = mods;
+        peer->handleMouseEvent(juce::MouseInputSource::InputSourceType::mouse, at, mods, 1.f, 0.f, when += 1000);
+    };
+    const auto &fader = three->volume;
+    check(std::abs(fader.getPositionOfValue(6) - MixerStrip::kFaderReach) < .5f &&
+              std::abs(fader.getPositionOfValue(-70) - static_cast<float>(fader.getHeight() - MixerStrip::kFaderReach)) < .5f,
+          "the fader's travel stops short of its edges: the ◁ lies inside it at +6 dB and at -inf");
+    for (const double db : {0.0, 6.0})
+        // The ◁ as LiveLook draws it: its tip at `live.faderX` on the level, its back 8 px right, 5 px over
+        // and under the level. Pressed in its middle, and near its back over and under the level.
+        for (const auto &[dx, dy] : std::initializer_list<std::pair<float, float>>{{4.f, 0.f}, {7.f, -4.f}, {7.f, 4.f}}) {
+            OpRequest set;
+            set.opType = "mixer.setVolume";
+            set.payload = {{"id", 4}, {"db", db}};
+            check(document->ops().submit(set).ok && document->synchronise(), "3 Audio's volume set");
+            root.frame();
+            const juce::Point<float> handle(static_cast<float>(fader.getX() + 15) + dx,
+                                            static_cast<float>(fader.getY()) + fader.getPositionOfValue(db) + dy);
+            const auto at = surfacePeer.getLocalPoint(three, handle);
+            const auto below = at.translated(0, 30);
+            const auto ops = opCount();
+            mouse(at, {});
+            mouse(at, juce::ModifierKeys(juce::ModifierKeys::leftButtonModifier));
+            const bool pressed = fader.isMouseButtonDown();
+            mouse(at.translated(0, 10), juce::ModifierKeys(juce::ModifierKeys::leftButtonModifier));
+            mouse(below, juce::ModifierKeys(juce::ModifierKeys::leftButtonModifier));
+            mouse(below, {});
+            root.frame();
+            const auto step = document->ops().nextUndo();
+            const bool moved = pressed && fader.getValue() < db - 1 && opCount() == ops + 1 && step.has_value() &&
+                               step->label == "Change Track Volume";
+            if (!moved)
+                std::fprintf(stderr, "  the press at %+g dB, %g px from the level, missed the fader\n", db, dy);
+            check(moved, db == 0 ? "at 0 dB, a press on the fader's drawn handle and a drag down lower it: one "
+                                   "Change Track Volume"
+                                 : "at +6 dB, the top of its travel, a press on the fader's drawn handle and a drag "
+                                   "down lower it: one Change Track Volume");
+        }
+    juce::ModifierKeys::currentModifiers = juce::ModifierKeys();
+    document->release();
+}
 // AU-01: Automation Mode in the Arrangement (Live 12 manual 25.2, 25.3): a track's Volume envelope on its
 // lane; a click adds a breakpoint (the lane made in the same step), a drag moves one, a double-click or
 // Delete removes one; each one undo step.
@@ -18257,6 +18339,7 @@ int main(int argc, char **argv) {
     trace("exportPage", [&] { exportPage(commands, temp.path()); });
     trace("mixerDragLive", [&] { mixerDragLive(commands, temp.path()); });
     trace("mixerShowsAutomation", [&] { mixerShowsAutomation(commands, temp.path()); });
+    trace("mixerViewFaderHandle", [&] { mixerViewFaderHandle(commands, temp.path()); });
     trace("automationMode", [&] { automationMode(commands, temp.path()); });
     trace("sendKnobs", [&] { sendKnobs(commands, temp.path()); });
     trace("audioDrop", [&] { audioDrop(commands, temp.path()); });

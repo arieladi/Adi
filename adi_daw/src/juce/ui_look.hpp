@@ -79,6 +79,9 @@ class LiveLook final : public juce::LookAndFeel_V4 {
     int getDefaultScrollbarWidth() override { return 8; }
     // Live's mixer fader runs the meter's whole height: no inset for a thumb.
     int getSliderThumbRadius(juce::Slider &) override;
+    // That travel starts `live.faderReach` px into the control, and ends as far from its foot (or on the
+    // numeric field), so the ◁ at either end lies whole inside what takes its press (walk-A A22).
+    juce::Slider::SliderLayout getSliderLayout(juce::Slider &) override;
 };
 // The one instance. Each window's root sets it on itself, and so on all it holds,
 // and clears it when it goes, so nothing outlives a look still in use.

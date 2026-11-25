@@ -241,6 +241,20 @@ void LiveLook::drawRotarySlider(juce::Graphics &g, int x, int y, int w, int h, f
 int LiveLook::getSliderThumbRadius(juce::Slider &s) {
     return s.getProperties()["live.meterFader"] ? 0 : juce::LookAndFeel_V4::getSliderThumbRadius(s);
 }
+juce::Slider::SliderLayout LiveLook::getSliderLayout(juce::Slider &s) {
+    if (!s.getProperties()["live.meterFader"])
+        return juce::LookAndFeel_V4::getSliderLayout(s);
+    const int reach = s.getProperties()["live.faderReach"];
+    auto bounds = s.getLocalBounds();
+    juce::Slider::SliderLayout layout;
+    bounds.removeFromTop(reach);
+    if (s.getTextBoxPosition() == juce::Slider::TextBoxBelow)
+        layout.textBoxBounds = bounds.removeFromBottom(s.getTextBoxHeight());
+    else
+        bounds.removeFromBottom(reach);
+    layout.sliderBounds = bounds;
+    return layout;
+}
 juce::Label *LiveLook::createSliderTextBox(juce::Slider &s) {
     auto *l = juce::LookAndFeel_V4::createSliderTextBox(s);
     l->setFont(font());
