@@ -6,6 +6,34 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-25 — status; the shaper panel's hold ruled; seats for the rest of the week
+
+**Since 24 November:** #739 to #744 landed, and main is green at 48fb9953a (both workflows). The gemini seat proved
+every fix of 24 November on Linux. DF-M63, M64, M66 and W40 move to Done; DF-E67 (a) is proved; DF-M65 stays open
+(no test fails without it yet). Its new finding is DF-M69: GCC Release refuses `test_mix_focus.cpp:1325`. It fixed its
+four after-3-December branches after win's engine review; the engine re-review is on win, today. The window lane's
+WTS-01 window half lands in #745, with ADI_HOME set in ui.yml's native smoke step as it asked. Its DF-E35a is
+withdrawn in favour of #744, and WIN-05, WIN-06 and WTS-03 stand for after 3 December.
+
+**#708's hold, ruled (the clones queue's items 3 and 6, ADR-0248 d11):** ADI-Shaper's panel (#716, with the window
+lane's fixes for its four findings on `window/shaper-panel-fixes` c10003c4, proved by gemini on GCC 12.2 and Clang
+14) lands after 3 December, and only once the director agrees a proposal sheet for it (ADR-0244 d3, d9). Until
+then the device plays from the generic device panel. DSP work goes on: CURVE-EDIT-P99's evaluator cost is DSP and is
+unblocked. The clones seat keeps the panel stack current on main and folds the window lane's fixes into it.
+
+**Lent:** DF-M34's device hook to the Mix View seat (RESERVATIONS.md, PLAN rows on loan). The graph already tells
+`Node::silenceTaps` each skipped segment's length; the device backend gets the same length, so the Limiter and the
+stateful EQ modes can sleep without losing their phase.
+
+**Seats, the director's word of 25 November:**
+- Codex Max takes the Mix View seat and the clones seat (ADI-Shaper is not finished: the panel waits for its sheet,
+  the split-slew hold is unanswered, DRIVE-4X is partly done, and 15 stage branches land after 3 December).
+- The window lane is at its limit until Sunday.
+- The Codex work seat leaves the engine lane for a simpler lane: the rows whose proof is Linux-only.
+- The engine lane's queue before 3 December is done. Win covers its reviews and small fixes until a new seat takes it.
+
+---
+
 ## 2026-11-24 — win covers the seats out of usage (window, window-fn, engine, engine-win, devices, Mix View, clones)
 
 The director's order: every seat but gemini is out of usage until tomorrow, and win covers them. Win writes here,
