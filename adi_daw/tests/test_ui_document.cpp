@@ -992,8 +992,8 @@ void saveAsKeepsTheTake(const std::filesystem::path &dir) {
               doc->warning().find("Recording stopped") != std::string::npos,
           "the take is one undo step in the file it was recorded in, and in the saved file; the Status Bar says so");
     // 2. While the take's placement is pending: stopped, the device gone, the take not yet landed. A
-    // project of its own: a take recorded after a Save As waits on the session re-reading the file's
-    // identity (the engine's need in window-fn's log).
+    // project of its own, so the clip counts start where the first one's did (a take recorded after
+    // a Save As is `recordAfterSaveAs`).
     doc.reset();
     doc = ui::ProjectDocument::open(dir / "pending.adi", true, {}, error);
     check(doc != nullptr, "a second project to record into");
@@ -1027,6 +1027,67 @@ void saveAsKeepsTheTake(const std::filesystem::path &dir) {
               doc->warning().find("its take kept") == std::string::npos && clipsIn(third) == clipsBefore + 1,
           "Save As after a Record with nothing recorded: the take is not kept, says so, and Save As does not claim it");
 }
+// walk-A A18: a take recorded after Save As lands in the saved file. The session stamped every
+// capture with the file it loaded, so each take after a Save As was refused as "a different project"
+// and its audio removed.
+void recordAfterSaveAs(const std::filesystem::path &dir) {
+    std::string error;
+    auto doc = ui::ProjectDocument::open(dir / "untitled.adi", true, {}, error);
+    check(doc != nullptr, "an untitled project");
+    if (!doc)
+        return;
+    doc->prepare(48000, 64);
+    std::filesystem::create_directories(dir / "elsewhere");
+    const auto saved = dir / "elsewhere" / "walk2.adi";
+    check(doc->saveAs(saved) && doc->store().path() == saved && doc->name() == "walk2",
+          "Save As to another folder: the document is walk2 there");
+    OpRequest arm;
+    arm.opType = "track.setArm";
+    arm.payload = {{"id", 4}, {"armed", true}};
+    check(doc->ops().submit(arm).ok && doc->synchronise(), "3 Audio armed in the saved file");
+    const auto clipsIn = [](const std::filesystem::path &file) {
+        SQLite::Database db(file.string(), SQLite::OPEN_READONLY);
+        return db.execAndGet("SELECT count(*) FROM clips WHERE track_id = 4").getInt();
+    };
+    const auto before = clipsIn(saved);
+    check(doc->startRecording(0, 1, false) && doc->recording(), "Record after Save As");
+    std::array<float, 64> in{}, l{}, r{};
+    const float *inputs[]{in.data()};
+    float *outputs[]{l.data(), r.data()};
+    engine::AudioIo io;
+    io.in = inputs;
+    io.numIn = 1;
+    io.out = outputs;
+    io.numOut = 2;
+    io.frames = 64;
+    std::int64_t stream = 0;
+    for (int b = 0; b < 32; ++b) {
+        for (int i = 0; i < 64; ++i)
+            in[static_cast<std::size_t>(i)] = static_cast<float>((stream + i) % 11) / 32.f - .15f;
+        io.streamTimeSamples = stream;
+        doc->process(io);
+        stream += 64;
+    }
+    doc->stopRecording();
+    std::optional<ui::ProjectDocument::TakeLanded> landed;
+    for (int i = 0; i < 5000 && !landed; ++i) {
+        io.streamTimeSamples = stream;
+        doc->process(io);
+        stream += 64;
+        doc->tick(i);
+        landed = doc->takeLanded();
+        if (!landed)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    if (landed && !landed->ok)
+        std::printf("take after Save As: %s\n", landed->message.c_str());
+    check(landed && landed->ok && landed->clips.size() == 1 && landed->message == "Recorded one take.",
+          "the take recorded after Save As lands");
+    check(clipsIn(saved) == before + 1 && clipsIn(dir / "untitled.adi") == before && doc->ops().nextUndo() &&
+              doc->ops().nextUndo()->label == "Record Audio",
+          "as one Record Audio step in the saved file, the file it was saved from untouched");
+    doc->release();
+}
 int main(int argc, char **argv) {
 #if defined(_MSC_VER) && defined(_DEBUG)
     _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
@@ -1051,6 +1112,8 @@ int main(int argc, char **argv) {
         arrangementRecord(recordDir.path());
         test::TempDirectory guardDir("ui_document", "guard");
         saveAsKeepsTheTake(guardDir.path());
+        test::TempDirectory afterDir("ui_document", "after-save-as");
+        recordAfterSaveAs(afterDir.path());
         test::TempDirectory refusedDir("ui_document", "refused");
         discardRefusalSaid(refusedDir.path());
         test::TempDirectory dragDir("ui_document", "drag");
