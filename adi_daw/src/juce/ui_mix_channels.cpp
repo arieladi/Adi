@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_mix_channels.hpp"
 #include "adi/engine/mixer.hpp"
+#include "adi/ui/arrangement_geometry.hpp"
 #include "ui_look.hpp"
 #include "ui_shell.hpp"
 #include <algorithm>
@@ -188,7 +189,9 @@ bool MixChannelBrowser::rebuildGroups(const SnapshotReader &reader, std::int64_t
         if (place.main) main_ = place.id;
         const auto &track = tree_[place.at];
         const auto colour = track.colour >= 0 ? look::paletteColour(track.colour) : look::trackColour(place.at);
-        entries_.push_back({place.id, juce::String::fromUTF8(track.name.c_str()), colour, place.depth, place.group});
+        // The name as the track's header shows it: a stored "# Audio" shows its number (walk-B B3).
+        const auto shown = place.number != 0 ? displayName(track.name, place.number) : track.name;
+        entries_.push_back({place.id, juce::String::fromUTF8(shown.c_str()), colour, place.depth, place.group});
         if (!place.group) continue;
         const auto old = std::find_if(groups_.begin(), groups_.end(), [&place](const Group &g) { return g.track == place.id; });
         const int item = old == groups_.end() ? nextGroupItem_++ : old->item;

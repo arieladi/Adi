@@ -3470,7 +3470,7 @@ void ClipViewPanel::frame(const SnapshotReader &reader) {
     if (details_) {
         const auto rows = root.arrangement.geometry.rows(reader);
         if (const auto at = rows.find(details_->trackId); at < rows.size()) {
-            trackName_ = rows[at].track->name;
+            trackName_ = displayName(rows[at].track->name, rows[at].number()); // "# Audio" shows its number (walk-B B3)
             colour_ = details_->color ? look::paletteColour(*details_->color)
                                       : root.arrangement.colourFor(rows[at].position);
             for (const auto &c : rows[at].track->clips)
