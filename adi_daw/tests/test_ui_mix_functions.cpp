@@ -92,6 +92,12 @@ struct MixFocusTestAccess {
         return lines;
     }
     static auto scopePlot(const MixFocus &focus) { return focus.plot_.toNearestInt(); }
+    static auto scopeVisibleRange(const MixFocus &focus) { return focus.scopeVisibleRange(); }
+    static float transformedScopeX(const MixFocus &focus, float captureFraction) {
+        const auto &plot = focus.plot_;
+        const auto source = juce::Point<float>{plot.getX() + captureFraction * plot.getWidth(), plot.getY()};
+        return (source.transformedBy(focus.scopeTimeTransform()).x - plot.getX()) / plot.getWidth();
+    }
     static auto scopeReading(const MixFocus &focus) { return focus.sum_; }
     static bool hasScopeSummarySpace(const MixFocus &focus) { return !focus.sumLabel_.isEmpty(); }
     static auto scopePhase(const MixFocus &focus) { return focus.scopePhase_; }
@@ -3359,6 +3365,37 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
               statsAfterPan.frameRequests == statsAfterZoom.frameRequests &&
               statsAfterPan.workerPasses == statsAfterZoom.workerPasses && History(doc->store()).head() == head,
           "reversing the pan restores the trace exactly without extra analysis or project edits");
+    const auto timeZoomModifier = juce::ModifierKeys::commandModifier;
+    const auto timePanModifier = juce::ModifierKeys::shiftModifier;
+    MixFocusTestAccess::wheelScope(focus, .5f, .25f, 1.f, timeZoomModifier);
+    MixFocusTestAccess::moveScopePointer(focus, .25f, .25f);
+    const auto visibleTime = MixFocusTestAccess::scopeVisibleRange(focus);
+    const auto timeGrid = MixFocusTestAccess::scopeGrid(focus);
+    const auto waveformPlot = MixFocusTestAccess::scopePlot(focus);
+    check(visibleTime == FocusScopeRange{24000, 48000, rate} && timeGrid.size() == 2 &&
+              timeGrid.front().first == waveformPlot.getX() &&
+              std::abs(MixFocusTestAccess::transformedScopeX(focus, .375f) - .25f) < .001f &&
+              MixFocusTestAccess::scopeCursorText(focus).removeCharacters(",").contains("36000 samples"),
+          "time zoom shows the centred half-open sample range on the grid, waveform and cursor");
+    MixFocusTestAccess::dragScopeRegion(focus, {.5f, .25f}, {.75f, .25f});
+    const auto zoomRegion = MixFocusTestAccess::scopeRegionText(focus).removeCharacters(",");
+    check(zoomRegion.contains("48000 to 60000 samples") && zoomRegion.contains("250.0 ms"),
+          "a region drawn in the smaller viewport still measures the heard samples and duration");
+    MixFocusTestAccess::wheelScope(focus, .5f, .25f, -1.f, timePanModifier);
+    check(MixFocusTestAccess::scopeVisibleRange(focus) == FocusScopeRange{36000, 48000, rate} &&
+              MixFocusTestAccess::scopeRegionText(focus).removeCharacters(",") == zoomRegion,
+          "panning moves the sample viewport but preserves the stored region and its measurements");
+    MixFocusTestAccess::wheelScope(focus, .5f, .25f, 1.f, timePanModifier);
+    MixFocusTestAccess::dragScopeRegion(focus, {.5f, .25f}, {.5f, .25f});
+    MixFocusTestAccess::wheelScope(focus, .5f, .25f, -1.f, timeZoomModifier);
+    const auto statsAfterTime = broker->stats();
+    check(windowBeforeZoom && MixFocusTestAccess::scopeVisibleRange(focus) == *windowBeforeZoom &&
+              MixFocusTestAccess::scopeWaveformRange(focus) == windowBeforeZoom &&
+              MixFocusTestAccess::scopeCursorText(focus).removeCharacters(",") == cursor &&
+              statsAfterTime.taps == statsAfterPan.taps && statsAfterTime.transforms == statsAfterPan.transforms &&
+              statsAfterTime.frameRequests == statsAfterPan.frameRequests &&
+              statsAfterTime.workerPasses == statsAfterPan.workerPasses && History(doc->store()).head() == head,
+          "reversing the time view restores the original range and cursor without requesting audio or editing the project");
     MixFocusTestAccess::moveScopePointer(focus, .5f, .75f);
     check(MixFocusTestAccess::scopeCursorText(focus).contains("-6.0 dBFS"),
           "the positive and negative half-scale ordinates show the same dBFS magnitude");
@@ -3689,6 +3726,11 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
             check(stillHeld() && MixFocusTestAccess::scopeGrid(focus) == heldGrid,
                   "panning a frozen waveform keeps the selected region, grid and measured signal");
             MixFocusTestAccess::wheelScope(focus, .75f, .25f, 1.f, panModifiers);
+            MixFocusTestAccess::wheelScope(focus, .5f, .25f, 1.f, timeZoomModifier);
+            MixFocusTestAccess::wheelScope(focus, .5f, .25f, -1.f, timePanModifier);
+            check(stillHeld() && MixFocusTestAccess::scopeVisibleRange(focus).frames == shown->frames / 2,
+                  "time zoom and pan work on the held interval while preserving the frozen region and measurements");
+            MixFocusTestAccess::wheelScope(focus, .5f, .25f, -1.f, timeZoomModifier);
             check(doc->mailbox().post(TransportMailbox::Command::Locate, bar / 2),
                   "queue a Locate while the Scope holds a different heard interval");
             frame();

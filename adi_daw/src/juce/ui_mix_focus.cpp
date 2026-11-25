@@ -53,7 +53,7 @@ MixFocus::MixFocus(AdiRootComponent &root) : root_(root) {
     };
     scope.setTitle("Synchronous Focus scope");
     scope.setTooltip("Show the Focus channels' post-fader waveforms and their sum when aligned. "
-                     "Use Alt+wheel to zoom vertically and Alt+Shift+wheel to pan vertically.");
+                     "Ctrl/Cmd+wheel zooms time. Shift+wheel pans time. Alt+wheel and Alt+Shift+wheel adjust the level axis.");
     scope.onClick = [this] {
         if (!scope.getToggleState()) thawScope();
         auto retired = scope.getToggleState() ? SharedAnalysis::BarScopeLease{} : std::move(barScope_);
@@ -1228,7 +1228,7 @@ void MixFocus::rebuildScopeGrid(const SnapshotReader &reader) {
         scopeGridStamp_.reset();
         return;
     }
-    const auto &range = *scopeRange_;
+    const auto range = scopeVisibleRange();
     const ScopeGridStamp stamp{range, plot, heldTempo ? std::nullopt : std::optional{reader.seq()}};
     if (scopeGridStamp_ == stamp) return;
     scopeGridStamp_ = stamp;
@@ -1555,9 +1555,54 @@ std::int64_t MixFocus::scopeBoundaryAt(float x) const noexcept {
     // Selection uses sample boundaries. A drag through the right edge may
     // therefore include the final sample of the displayed half-open interval.
     const auto horizontal = std::clamp((static_cast<double>(x) - plot_.getX()) / plot_.getWidth(), 0., 1.);
-    const auto frames = static_cast<std::int64_t>(scopeRange_->frames);
+    const auto view = scopeVisibleRange();
+    const auto frames = static_cast<std::int64_t>(view.frames);
     const auto scaled = std::round(static_cast<long double>(horizontal) * static_cast<long double>(frames));
-    return scaled >= static_cast<long double>(frames) ? frames : static_cast<std::int64_t>(scaled);
+    const auto withinView = scaled >= static_cast<long double>(frames) ? frames : static_cast<std::int64_t>(scaled);
+    return (view.first - scopeRange_->first) + withinView;
+}
+
+FocusScopeRange MixFocus::scopeVisibleRange() const noexcept {
+    if (!scopeRange_) return {};
+    const auto &capture = *scopeRange_;
+    if (scopeTimeZoomSteps_ == 0 || !std::in_range<std::int64_t>(capture.frames) ||
+        !focusWindowEnd(capture.first, static_cast<std::int64_t>(capture.frames))) return capture;
+    const auto frames = std::max(std::size_t{1}, capture.frames >> scopeTimeZoomSteps_);
+    const auto last = static_cast<std::int64_t>(capture.frames - frames);
+    const auto rounded = std::round(scopeTimeCentre_ * static_cast<long double>(capture.frames) -
+                                    .5L * static_cast<long double>(frames));
+    const auto offset = rounded >= static_cast<long double>(last)
+        ? last : static_cast<std::int64_t>(std::max(0.L, rounded));
+    return {capture.first + offset, frames, capture.sampleRate};
+}
+
+juce::AffineTransform MixFocus::scopeTimeTransform() const noexcept {
+    if (!scopeRange_ || scopeTimeZoomSteps_ == 0) return {};
+    const auto view = scopeVisibleRange();
+    if (view.frames == 0 || view == *scopeRange_) return {};
+    const auto scale = static_cast<float>(static_cast<double>(scopeRange_->frames) / static_cast<double>(view.frames));
+    const auto offset = static_cast<double>(scopeRange_->first - view.first) / static_cast<double>(view.frames);
+    return juce::AffineTransform::scale(scale, 1.f, plot_.getX(), 0.f)
+        .translated(static_cast<float>(offset * plot_.getWidth()), 0.f);
+}
+
+bool MixFocus::changeScopeTimeView(float x, float delta, bool zoom) noexcept {
+    const auto view = scopeVisibleRange();
+    if (view.frames == 0 || !scopeRange_) return false;
+    const auto &capture = *scopeRange_;
+    const int direction = delta > 0.f ? 1 : -1;
+    const int steps = zoom ? std::clamp(scopeTimeZoomSteps_ + direction, 0, scopeTimeZoomLimit_) : scopeTimeZoomSteps_;
+    const auto frames = std::max(std::size_t{1}, capture.frames >> steps);
+    if (zoom && frames == view.frames) return false;
+    const auto anchor = (static_cast<long double>(x) - plot_.getX()) / plot_.getWidth();
+    auto first = static_cast<long double>(view.first - capture.first);
+    const auto span = static_cast<long double>(view.frames);
+    const auto next = static_cast<long double>(frames);
+    first += zoom ? (span - next) * anchor : -.25L * span * direction;
+    first = std::clamp(first, 0.L, static_cast<long double>(capture.frames - frames));
+    scopeTimeZoomSteps_ = steps;
+    scopeTimeCentre_ = (first + .5L * next) / static_cast<long double>(capture.frames);
+    return scopeVisibleRange() != view;
 }
 
 bool MixFocus::scopeRegionCurrent() const noexcept {
@@ -1602,10 +1647,13 @@ void MixFocus::refreshScopeRegion() {
 void MixFocus::paintScopeRegion(juce::Graphics &g) const {
     if (!scopeRegionCurrent()) return;
     const auto &region = *scopeRegion_;
-    const auto [left, right] = std::minmax(region.anchor, region.edge);
-    if (left == right) return;
-    const auto frames = static_cast<double>(region.range.frames);
-    const auto x = plot_.getX() + static_cast<float>(static_cast<double>(left) / frames) * plot_.getWidth();
+    const auto view = scopeVisibleRange();
+    const auto offset = view.first - region.range.first;
+    const auto left = std::max(std::min(region.anchor, region.edge), offset);
+    const auto right = std::min(std::max(region.anchor, region.edge), offset + static_cast<std::int64_t>(view.frames));
+    if (left >= right) return;
+    const auto frames = static_cast<double>(view.frames);
+    const auto x = plot_.getX() + static_cast<float>(static_cast<double>(left - offset) / frames) * plot_.getWidth();
     const auto width = static_cast<float>(static_cast<double>(right - left) / frames) * plot_.getWidth();
     const bool stacked = scopeDisplay_.getSelectedId() == static_cast<int>(ScopeDisplay::Stack) && !members_.empty();
     const auto height = stacked ? plot_.getHeight() / static_cast<float>(members_.size()) : plot_.getHeight();
@@ -1630,14 +1678,27 @@ void MixFocus::mouseExit(const juce::MouseEvent &) {
 
 void MixFocus::mouseWheelMove(const juce::MouseEvent &event, const juce::MouseWheelDetails &wheel) {
     const bool spectrum = showsScopeDifference() && differenceSpectrum_.getToggleState();
-    if (!scope.getToggleState() || spectrum || !event.mods.isAltDown() || !plot_.contains(event.position)) {
+    const bool vertical = event.mods.isAltDown();
+    const bool timeZoom = !vertical && event.mods.isCommandDown();
+    const bool timePan = !vertical && !timeZoom && (event.mods.isShiftDown() || wheel.deltaX != 0.f);
+    if (!scope.getToggleState() || spectrum || (!vertical && !timeZoom && !timePan) || !plot_.contains(event.position)) {
         juce::Component::mouseWheelMove(event, wheel);
         return;
     }
-    if ((scopeRegion_ && scopeRegion_->dragging) || !std::isfinite(wheel.deltaY) || wheel.deltaY == 0.f) return;
+    const auto delta = timePan && !event.mods.isShiftDown() ? wheel.deltaX : wheel.deltaY;
+    if ((scopeRegion_ && scopeRegion_->dragging) || !std::isfinite(delta) || delta == 0.f) return;
+    if (timeZoom || timePan) {
+        if (!scopeTimingCurrent() || !scopeTraceRevision() || !changeScopeTimeView(event.position.x, delta, timeZoom)) return;
+        const SnapshotReader reader(root_.current());
+        rebuildScopeGrid(reader);
+        scopeCursorPoint_ = event.position;
+        refreshScopeCursor(reader);
+        repaint(plot_.toNearestInt().withTop(scroll_.getBottom()));
+        return;
+    }
     const bool pan = event.mods.isShiftDown();
     auto &steps = pan ? scopePanSteps_ : scopeZoomSteps_;
-    const auto next = std::clamp(steps + (wheel.deltaY > 0.f ? 1 : -1), -scopeVerticalStepLimit_, scopeVerticalStepLimit_);
+    const auto next = std::clamp(steps + (delta > 0.f ? 1 : -1), -scopeVerticalStepLimit_, scopeVerticalStepLimit_);
     if (steps == next) return;
     steps = next;
     if (!pan) scopeAxisPeak_ = std::pow(10., -.3 * static_cast<double>(steps));
@@ -1675,7 +1736,7 @@ void MixFocus::refreshScopeCursor(const SnapshotReader &reader) {
         scopeCursor_.setVisible(false);
         return;
     }
-    const auto &range = *scopeRange_;
+    const auto range = scopeVisibleRange();
     if (range.frames == 0 || !std::in_range<std::int64_t>(range.frames) ||
         !focusWindowEnd(range.first, static_cast<std::int64_t>(range.frames))) {
         scopeCursor_.setVisible(false);
@@ -1871,6 +1932,8 @@ void MixFocus::paint(juce::Graphics &g) {
         const int percent = 100 * scopePanSteps_ / scopeVerticalStepLimit_;
         title += "   Pan " + juce::String(percent > 0 ? "+" : "") + juce::String(percent) + "%";
     }
+    if (scopeShown && !spectrumOnly && scopeTimeZoomSteps_ != 0)
+        title += "   Time x" + juce::String(1 << scopeTimeZoomSteps_);
     if (!scopeShown && match_) title += matchCaption_;
     const auto summaryBounds = alignReadout_.isVisible() ? alignReadout_.getBounds()
         : !differenceOnly && !sumLabel_.isEmpty() ? sumLabel_
@@ -1906,6 +1969,7 @@ void MixFocus::paint(juce::Graphics &g) {
         return;
     }
     if (!scopeCurrent) return;
+    const auto timeTransform = scopeShown && !spectrumOnly ? scopeTimeTransform() : juce::AffineTransform{};
     g.setColour(look::outline);
     const auto drawScopeZero = [&](juce::Rectangle<int> lane) {
         const auto y = lane.getCentreY() + juce::roundToInt(scopePanCentre() * .5 * lane.getHeight());
@@ -1923,9 +1987,9 @@ void MixFocus::paint(juce::Graphics &g) {
                 else g.strokePath(differenceSpectrumPath_, juce::PathStrokeType(look::heavyLine));
             } else {
                 g.setColour(look::textDim);
-                g.strokePath(scopeDifferencePaths_[1], juce::PathStrokeType(look::line));
+                g.strokePath(scopeDifferencePaths_[1], juce::PathStrokeType(look::line), timeTransform);
                 g.setColour(look::text);
-                g.strokePath(scopeDifferencePaths_[0], juce::PathStrokeType(look::heavyLine));
+                g.strokePath(scopeDifferencePaths_[0], juce::PathStrokeType(look::heavyLine), timeTransform);
             }
         } else {
             g.setColour(look::textDim);
@@ -1937,15 +2001,15 @@ void MixFocus::paint(juce::Graphics &g) {
     }
     if (scopeShown) {
         paintScopePhase(g);
+        juce::Graphics::ScopedSaveState scopeClip(g);
+        g.reduceClipRegion(plot);
         const bool stacked = display == ScopeDisplay::Stack && !plot_.isEmpty() && !members_.empty();
         if (!stacked) drawScopeZero(plot);
         if (sumShown) {
-            juce::Graphics::ScopedSaveState saved(g);
-            g.reduceClipRegion(plot);
             g.setColour(look::text.withAlpha(.6f));
-            g.strokePath(scopeSumPaths_[1], juce::PathStrokeType(look::line));
+            g.strokePath(scopeSumPaths_[1], juce::PathStrokeType(look::line), timeTransform);
             g.setColour(look::text);
-            g.strokePath(scopeSumPaths_[0], juce::PathStrokeType(look::heavyLine));
+            g.strokePath(scopeSumPaths_[0], juce::PathStrokeType(look::heavyLine), timeTransform);
         }
         const auto drawMember = [&g](const Member &member, const juce::AffineTransform &transform) {
             g.setColour(member.colour.withMultipliedAlpha(.6f));
@@ -1963,11 +2027,12 @@ void MixFocus::paint(juce::Graphics &g) {
                 g.reduceClipRegion(lane);
                 g.setColour(look::outline);
                 drawScopeZero(lane);
-                const auto transform = juce::AffineTransform::scale(1.f, scale).translated(0.f, y - plot_.getY() * scale);
+                const auto transform = timeTransform.followedBy(
+                    juce::AffineTransform::scale(1.f, scale).translated(0.f, y - plot_.getY() * scale));
                 drawMember(members_[i], transform);
             }
         } else if (!sumOnly) {
-            for (const auto &member : members_) drawMember(member, {});
+            for (const auto &member : members_) drawMember(member, timeTransform);
         }
         if (sumOnly ? !sumShown : !scopeHasTrace_) {
             g.setColour(look::textDim);

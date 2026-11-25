@@ -84,6 +84,9 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     [[nodiscard]] bool scopeRegionCurrent() const noexcept;
     [[nodiscard]] std::size_t scopeLaneAt(float y) const noexcept;
     [[nodiscard]] std::int64_t scopeBoundaryAt(float x) const noexcept;
+    [[nodiscard]] FocusScopeRange scopeVisibleRange() const noexcept;
+    [[nodiscard]] juce::AffineTransform scopeTimeTransform() const noexcept;
+    bool changeScopeTimeView(float x, float delta, bool zoom) noexcept;
     void clearScopeRegion();
     void refreshScopeRegion();
     void paintScopeRegion(juce::Graphics &) const;
@@ -138,8 +141,11 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     };
     std::optional<ScopeRegion> scopeRegion_;
     static constexpr int scopeVerticalStepLimit_ = 4;
+    static constexpr int scopeTimeZoomLimit_ = 3;
     int scopeZoomSteps_ = 0;
     int scopePanSteps_ = 0;
+    int scopeTimeZoomSteps_ = 0;
+    long double scopeTimeCentre_ = .5L;
     double scopeAxisPeak_ = 1.;
     juce::Rectangle<float> plot_;
     juce::Rectangle<int> titleRow_, sumLabel_, phaseBar_;
