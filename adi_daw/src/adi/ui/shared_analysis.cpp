@@ -785,7 +785,7 @@ struct SharedAnalysis::Domain {
     std::deque<PendingColumn> pendingHistory;
     std::size_t retiredForPending = 0;
     std::atomic<std::int64_t> consumedSequence{0}, completedWindowEnd{-1};
-    // A settled cumulative reader can outlive the tap's latest quiet certificate.
+    // A settled reader can outlive the tap's latest quiet certificate.
     // State::mutex serializes the publisher and tap replacement.
     mutable std::atomic<std::int64_t> observedQuietBegin{0}, observedQuietEnd{0};
     std::atomic<bool> dirty{true}, historyBlocked{false};
@@ -1362,7 +1362,8 @@ struct SharedAnalysis::Domain {
             balanceHistory->rebaseSilentWindow(next - static_cast<std::int64_t>(sinceWindow));
     }
     void advanceObservedParkedAverage(std::int64_t written) noexcept {
-        if (!canParkCumulativeAverage(outputs.load(std::memory_order_relaxed))) return;
+        const auto bits = outputs.load(std::memory_order_relaxed);
+        if (!canParkAverage(bits) && !canParkCumulativeAverage(bits)) return;
         const auto begin = observedQuietBegin.load();
         const auto end = std::min(observedQuietEnd.load(), written);
         // Publication writes begin before end. A mixed old end and new begin
@@ -1410,7 +1411,8 @@ struct SharedAnalysis::Domain {
         const auto quiet = tap->lastParkedSilence();
         if (meter) return !(neutralMeter.load(std::memory_order_acquire) && quiet.begin < consumed && quiet.end >= end);
         const bool parked = quiet.end >= end && settledParkedSilence(quiet);
-        if (observeQuiet && parked && canParkCumulativeAverage(bits) && end > observedQuietEnd.load()) {
+        if (observeQuiet && parked && (canParkAverage(bits) || canParkCumulativeAverage(bits)) &&
+            end > observedQuietEnd.load()) {
             // Only preserve committed samples from the verified run. Do not
             // infer anything about the gap if the next run replaces it.
             observedQuietBegin.store(quiet.begin);
@@ -2596,7 +2598,8 @@ struct SharedAnalysis::State {
         for (const auto &[key, domain] : domains) {
             (void)key;
             // Sample a parked average even if an unrelated reader needs a pass.
-            if (!pending || domain->cumulativeAverageQuiet.load(std::memory_order_relaxed))
+            if (!pending || domain->averageParkedReady.load(std::memory_order_relaxed) ||
+                domain->cumulativeAverageQuiet.load(std::memory_order_relaxed))
                 pending = domain->needsWork(*historyBudget, true) || pending;
         }
         return pending || std::any_of(captures.begin(), captures.end(), [](const auto &capture) { return capture->needsWork(); }) ||

@@ -4984,7 +4984,7 @@ void sharedAverage() {
     check(resumed.readAverage() && resumed.readAverage()->processedWindows==1 && raw.read()->columns.size()==4,
           "renewed average and still-live Raw history have independent lifetimes");
 }
-void parkedRealtimeAverage() {
+void parkedRealtimeAverage(bool burstBetweenPumps) {
     constexpr int window = 480, hop = 240, block = 401, blocks = 33;
     constexpr int quietFrames = block * blocks, untilHop = hop - quietFrames % hop;
     constexpr std::int64_t stamp = 800;
@@ -5036,12 +5036,27 @@ void parkedRealtimeAverage() {
 
     std::array<float, window> signal;
     signal.fill(.5f);
-    write(parked, signal.data(), untilHop - 1, stamp, revision);
-    write(reference, signal.data(), untilHop - 1, stamp, revision);
-    check(average.readAverage() == first && uninterrupted.readAverage() == controlQuiet,
-          "same-stamp monitoring does not publish before the original partial hop completes");
-    write(parked, signal.data(), 1, stamp, revision);
-    write(reference, signal.data(), 1, stamp, revision);
+    if (burstBetweenPumps) {
+        constexpr int burstFrames = 71;
+        for (auto *fixture : {&parked, &reference}) {
+            const float *quietInput = fixture == &parked ? silence : zeros.data();
+            fixture->tap->write(signal.data(), signal.data(), burstFrames, stamp, false, revision);
+            fixture->tap->write(quietInput, quietInput, untilHop - burstFrames, stamp, false, revision);
+        }
+        const auto quiet = parked.tap->lastParkedSilence();
+        check(quiet.begin == window + quietFrames + burstFrames && quiet.end == window + quietFrames + untilHop &&
+                  average.readAverage() == first && parked.broker.stats().workerPasses == idle.workerPasses,
+              "an audible burst and new quiet span both arrive before the realtime average resumes");
+        parked.broker.pump();
+        reference.broker.pump();
+    } else {
+        write(parked, signal.data(), untilHop - 1, stamp, revision);
+        write(reference, signal.data(), untilHop - 1, stamp, revision);
+        check(average.readAverage() == first && uninterrupted.readAverage() == controlQuiet,
+              "same-stamp monitoring does not publish before the original partial hop completes");
+        write(parked, signal.data(), 1, stamp, revision);
+        write(reference, signal.data(), 1, stamp, revision);
+    }
     const auto resumed = average.readAverage();
     const auto control = uninterrupted.readAverage();
     check(first && first->window && resumed && control && resumed->window && control->window &&
@@ -5054,7 +5069,9 @@ void parkedRealtimeAverage() {
               resumed->window->overrunCount == first->window->overrunCount && resumed->binsDbfs && control->binsDbfs &&
               !resumed->binsDbfs->empty() && exactBins(*resumed->binsDbfs, *control->binsDbfs) && resumed->binsDbfs->front() > adi::dsp::kDbFloor &&
               parked.broker.stats().transforms == 1 && reference.broker.stats().transforms == 1,
-          "parked monitoring matches the uninterrupted hop count, clock and bins without a false overrun");
+          burstBetweenPumps
+              ? "a burst between pumps preserves the realtime average hop count, clock and bins without an overrun"
+              : "parked monitoring matches the uninterrupted hop count, clock and bins without a false overrun");
 
     // A new transport revision clears the old state. This small but genuinely
     // nonzero window produces a smoother state below the visible dB floor.
@@ -6213,7 +6230,7 @@ int main() {
           focusCapturedTruePeak(); focusBarCapturedTruePeak(); focusScopeLayerChannels(); spectrogramHeardGrid();
           continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBeatTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusSingleSourceScope(); focusBarScopeMidDemand(); focusScopeDifference(); focusScopeSideDemand(); focusBarScopeBrokerBoundaries(); focusBarScopeWaitsOnAllSources(); focusBarScopeResumesAtRequestedRevision(); focusScopeSumProjection(); focusScopeLayerPreview(); focusBarLayerPreview(); focusBarResidualSpectrum(); focusScopePhaseOperands(); focusScopeFlatPath(); focusLagPreviewRequests(); focusLagPreviewCases(); focusLagTapReads(); focusLagHighRateTaps(); focusMatchWindows(); parkedSilence(); parkedSpectrogramWake(); parkedWindowHopPhase();
           parkedRealtimeModeJoins<SharedAnalysis::RealtimeMaximum>(); parkedRealtimeModeJoins<SharedAnalysis::RealtimeSigma>(); parkedStereoBalance(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
-          sharedModesAndCursors(); phaseBandCorrelation(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); spectrumLevels(); spectrumSamplePeaksAndClips(); restartSpectrumLevels(); restartParkedSpectrumLevels(); spectrumTruePeak(); parkedSpectrumLevels(false); parkedSpectrumLevels(true); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); realtimeSigmaSpectrum(); cumulativeMaximumSpectrum(); cumulativeAverageSpectrum(); parkedCumulativeAverage(); cumulativeMaximumParkedRollover(); sharedAverage(); parkedRealtimeAverage(); parkedRealtimeAverageJoinsScope(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); deviceSpectrumLease(); parkedDeviceSpectrum(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
+          sharedModesAndCursors(); phaseBandCorrelation(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); spectrumLevels(); spectrumSamplePeaksAndClips(); restartSpectrumLevels(); restartParkedSpectrumLevels(); spectrumTruePeak(); parkedSpectrumLevels(false); parkedSpectrumLevels(true); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); realtimeSigmaSpectrum(); cumulativeMaximumSpectrum(); cumulativeAverageSpectrum(); parkedCumulativeAverage(); cumulativeMaximumParkedRollover(); sharedAverage(); parkedRealtimeAverage(false); parkedRealtimeAverage(true); parkedRealtimeAverageJoinsScope(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); deviceSpectrumLease(); parkedDeviceSpectrum(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
