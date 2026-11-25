@@ -17,6 +17,14 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 25 November 2026 — Four moving Drives against the installed reference
+
+For Win's four-track repair on `clones/shaper-drive-margin-1125` at `dbc4c2cf6`. Four independent stereo instances played the same kick and bass on one rendering thread at 48 kHz. Each implementation ran 8,192 callbacks per trial, alternating the order of the two processors. Each source instance and each registered ADI instance reported 16 samples of delay. All four track captures agreed within each implementation. The largest channel RMS difference across the two block sizes was 0.00004270, and peak error was 0.00020603.
+
+At 256 frames the median four-track callback was 0.1886 ms for ADI and 0.4541 ms for the reference. The median of the nine p99 readings was 0.4077 versus 0.9756 ms. The highest p99 was 2.4677 versus 5.3249 ms against a 5.3333 ms deadline. Individual callbacks over deadline totaled 174 versus 329 of 73,728.
+
+At 2,048 frames the medians were 1.4608 versus 3.1981 ms. Across three trials the median p99 was 15.8660 versus 19.9324 ms, and the highest was 17.6748 versus 20.5298 ms against a 42.6667 ms deadline. Individual callbacks over deadline totaled 16 versus 18 of 24,576. ADI used 58.4% fewer median thread cycles at 256 and 54.1% fewer at 2,048. These readings cover the four moving hard-clipping instances and use the same callback boundaries for both implementations.
+
 ## 25 November 2026 — Rounded Drive across the private program bank
 
 Fifteen programs contained 16 affected bands with neutral auxiliary controls. The comparison restored 56 original contour points and their weights in the private fixture. Every program ran through three registered playback arms using its previous route, restored hard clipping, and the same restored route with the measured rounding. Six programs regained a Drive stage at its saved position. Each score compensates the measured latency of its own route, including the additional 16 frames where Drive was reinserted.
