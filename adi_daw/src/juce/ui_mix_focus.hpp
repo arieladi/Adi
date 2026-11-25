@@ -76,6 +76,7 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     void mouseUp(const juce::MouseEvent &) override;
     void mouseMove(const juce::MouseEvent &) override;
     void mouseExit(const juce::MouseEvent &) override;
+    void mouseWheelMove(const juce::MouseEvent &, const juce::MouseWheelDetails &) override;
     [[nodiscard]] std::optional<std::uint64_t> scopeTraceRevision() const noexcept;
     [[nodiscard]] bool scopeCursorCurrent() const noexcept;
     void refreshScopeCursor(const SnapshotReader &);
@@ -132,6 +133,8 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
         bool dragging = true;
     };
     std::optional<ScopeRegion> scopeRegion_;
+    int scopeZoomSteps_ = 0;
+    double scopeAxisPeak_ = 1.;
     juce::Rectangle<float> plot_;
     juce::Rectangle<int> titleRow_, sumLabel_, phaseBar_;
     std::vector<const SharedAnalysis::Result *> scopeSources_;

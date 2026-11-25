@@ -52,7 +52,8 @@ MixFocus::MixFocus(AdiRootComponent &root) : root_(root) {
             onEdit(active_);
     };
     scope.setTitle("Synchronous Focus scope");
-    scope.setTooltip("Show the Focus channels' post-fader waveforms and their sum when aligned.");
+    scope.setTooltip("Show the Focus channels' post-fader waveforms and their sum when aligned. "
+                     "Use Alt+wheel over the waveform to change its vertical zoom.");
     scope.onClick = [this] {
         if (!scope.getToggleState()) thawScope();
         auto retired = scope.getToggleState() ? SharedAnalysis::BarScopeLease{} : std::move(barScope_);
@@ -1220,11 +1221,13 @@ void MixFocus::rebuildScopePaths() {
             else path.lineTo(point.x, point.y);
         };
     };
-    const auto appendColumn = [this](FocusScopePathReducer &trace, const auto &emit, std::size_t column,
-                                     std::size_t columns, double low, double high) {
+    const auto appendColumn = [this, axisScale = 1. / scopeAxisPeak_](FocusScopePathReducer &trace, const auto &emit,
+                                                                    std::size_t column, std::size_t columns,
+                                                                    double low, double high) {
         const auto x = plot_.getX() + static_cast<float>(column) * plot_.getWidth() / static_cast<float>(columns);
-        const auto y = [this](double value) {
-            return plot_.getCentreY() - static_cast<float>(std::clamp(value, -1., 1.)) * plot_.getHeight() * .5f;
+        const auto y = [this, axisScale](double value) {
+            return plot_.getCentreY() - static_cast<float>(std::clamp(value * axisScale, -1., 1.)) *
+                plot_.getHeight() * .5f;
         };
         trace.add({x, y(low)}, emit);
         if (high != low) trace.add({x, y(high)}, emit);
@@ -1572,6 +1575,24 @@ void MixFocus::mouseExit(const juce::MouseEvent &) {
     scopeCursor_.setVisible(false);
 }
 
+void MixFocus::mouseWheelMove(const juce::MouseEvent &event, const juce::MouseWheelDetails &wheel) {
+    const bool spectrum = showsScopeDifference() && differenceSpectrum_.getToggleState();
+    if (!scope.getToggleState() || spectrum || !event.mods.isAltDown() || !plot_.contains(event.position)) {
+        juce::Component::mouseWheelMove(event, wheel);
+        return;
+    }
+    if ((scopeRegion_ && scopeRegion_->dragging) || !std::isfinite(wheel.deltaY) || wheel.deltaY == 0.f) return;
+    constexpr int limit = 4;
+    const auto next = std::clamp(scopeZoomSteps_ + (wheel.deltaY > 0.f ? 1 : -1), -limit, limit);
+    if (scopeZoomSteps_ == next) return;
+    scopeZoomSteps_ = next;
+    scopeAxisPeak_ = std::pow(10., -.3 * static_cast<double>(scopeZoomSteps_));
+    scopeCursorPoint_ = event.position;
+    rebuildScope();
+    refreshScopeCursor(SnapshotReader(root_.current()));
+    repaint(plot_.toNearestInt().withTop(scroll_.getBottom()));
+}
+
 std::optional<std::uint64_t> MixFocus::scopeTraceRevision() const noexcept {
     if (!scopeRange_ || !scopePlaying_ || suspended_ || alignment_ != Alignment::Ready || !scope.getToggleState())
         return {};
@@ -1615,7 +1636,7 @@ void MixFocus::refreshScopeCursor(const SnapshotReader &reader) {
         ordinate *= static_cast<double>(members_.size());
         ordinate -= std::floor(ordinate);
     }
-    const auto magnitude = std::abs(1. - 2. * ordinate);
+    const auto magnitude = std::abs(1. - 2. * ordinate) * scopeAxisPeak_;
     const auto decibels = magnitude > 0. ? juce::String(20. * std::log10(magnitude), 1) : juce::String("-inf");
 
     juce::String reading;
@@ -1762,6 +1783,10 @@ void MixFocus::paint(juce::Graphics &g) {
         if (sumShown && !sumOverRange && !sumOnly) title += "   Sum overlay";
     }
     if (frozenScopeRevision_) title += "   Frozen";
+    if (scopeShown && !spectrumOnly && scopeZoomSteps_ != 0) {
+        const auto zoomDb = 6 * scopeZoomSteps_;
+        title += "   Zoom " + juce::String(zoomDb > 0 ? "+" : "") + juce::String(zoomDb) + " dB";
+    }
     if (!scopeShown && match_) title += matchCaption_;
     const auto summaryBounds = alignReadout_.isVisible() ? alignReadout_.getBounds()
         : !differenceOnly && !sumLabel_.isEmpty() ? sumLabel_

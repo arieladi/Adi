@@ -97,6 +97,16 @@ struct MixFocusTestAccess {
         static_cast<juce::Component &>(focus).mouseMove(event);
         return event;
     }
+    static void wheelScope(MixFocus &focus, float x, float y, float delta,
+                           int modifiers = juce::ModifierKeys::altModifier) {
+        const auto &plot = focus.plot_;
+        const juce::Point<float> at{plot.getX() + x * plot.getWidth(), plot.getY() + y * plot.getHeight()};
+        const auto now = juce::Time::getCurrentTime();
+        const juce::MouseEvent event{juce::Desktop::getInstance().getMainMouseSource(), at, juce::ModifierKeys{modifiers},
+            0.f, 0.f, 0.f, 0.f, 0.f, &focus, &focus, now, at, now, 0, false};
+        static_cast<juce::Component &>(focus).mouseWheelMove(event,
+            juce::MouseWheelDetails{0.f, delta, false, false, false});
+    }
     static juce::String scopeCursorText(const MixFocus &focus) {
         for (auto *child : focus.getChildren())
             if (const auto *label = dynamic_cast<const juce::Label *>(child);
@@ -3298,6 +3308,33 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
     check(cursor.contains("1.3") && cursor.contains("48000") && cursor.contains("1000") &&
               cursor.contains("ms") && cursor.contains("-6.0") && cursor.contains("dBFS"),
           "the midpoint of the heard bar shows beat 3, absolute sample 48000, 1000 ms and the half-scale ordinate");
+    const auto windowBeforeZoom = MixFocusTestAccess::scopeWaveformRange(focus);
+    const auto statsBeforeZoom = broker->stats();
+    const auto readingBeforeZoom = MixFocusTestAccess::scopeReading(focus);
+    MixFocusTestAccess::wheelScope(focus, .5f, .25f, 1.f, 0);
+    MixFocusTestAccess::wheelScope(focus, .5f, -.1f, 1.f);
+    check(MixFocusTestAccess::scopeCursorText(focus).removeCharacters(",") == cursor,
+          "plain wheel and Alt-wheel outside the waveform do not change its vertical scale");
+    MixFocusTestAccess::wheelScope(focus, .5f, .25f, 1.f);
+    const auto zoomed = MixFocusTestAccess::scopeCursorText(focus).removeCharacters(",");
+    const auto zoomedWindow = MixFocusTestAccess::scopeWaveformRange(focus);
+    const auto zoomedReading = MixFocusTestAccess::scopeReading(focus);
+    check(!cursor.isEmpty() && zoomed == cursor.replace("-6.0 dBFS", "-12.0 dBFS") &&
+              MixFocusTestAccess::sumPulseAt(focus, .125f, 1.f) &&
+              zoomedWindow && windowBeforeZoom && zoomedWindow->first == windowBeforeZoom->first &&
+              zoomedWindow->frames == windowBeforeZoom->frames && zoomedWindow->sampleRate == windowBeforeZoom->sampleRate &&
+              zoomedReading && readingBeforeZoom && zoomedReading->peak == readingBeforeZoom->peak &&
+              zoomedReading->rms == readingBeforeZoom->rms,
+          "Alt-wheel zooms in by 6 dB and refreshes a stationary cursor without changing samples, time or meters");
+    MixFocusTestAccess::wheelScope(focus, .5f, .25f, -1.f);
+    const auto statsAfterZoom = broker->stats();
+    check(MixFocusTestAccess::scopeCursorText(focus).removeCharacters(",") == cursor &&
+              MixFocusTestAccess::sumPulseAt(focus, .125f, .75f) &&
+              statsAfterZoom.taps == statsBeforeZoom.taps && statsAfterZoom.consumers == statsBeforeZoom.consumers &&
+              statsAfterZoom.transforms == statsBeforeZoom.transforms && statsAfterZoom.cursorReads == statsBeforeZoom.cursorReads &&
+              statsAfterZoom.frameRequests == statsBeforeZoom.frameRequests &&
+              statsAfterZoom.workerPasses == statsBeforeZoom.workerPasses && History(doc->store()).head() == head,
+          "reversing the wheel restores the original waveform and cursor with no analysis work or authored edit");
     MixFocusTestAccess::moveScopePointer(focus, .5f, .75f);
     check(MixFocusTestAccess::scopeCursorText(focus).contains("-6.0 dBFS"),
           "the positive and negative half-scale ordinates show the same dBFS magnitude");
@@ -3315,6 +3352,11 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
     MixFocusTestAccess::moveScopePointer(focus, .75f, .25f);
     check(!forward.isEmpty() && MixFocusTestAccess::scopeRegionText(focus) == forward,
           "releasing the pointer commits the heard region and ordinary hover leaves it in place");
+    MixFocusTestAccess::wheelScope(focus, .75f, .25f, 1.f);
+    check(!forward.isEmpty() && MixFocusTestAccess::scopeRegionText(focus) == forward &&
+              MixFocusTestAccess::scopeCursorText(focus).isEmpty(),
+          "vertical zoom retains the committed heard region and its priority over hover");
+    MixFocusTestAccess::wheelScope(focus, .75f, .25f, -1.f);
     MixFocusTestAccess::dragScopeRegion(focus, regionEnd, regionStart);
     check(!forward.isEmpty() && MixFocusTestAccess::scopeRegionText(focus) == forward,
           "reversing the drag gives the same sorted endpoints, period and pitch");
@@ -3416,8 +3458,13 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
         check(!truePeakSwitch || !truePeakSwitch->isVisible(), "Stack leaves the Sum true-peak switch hidden");
         frame();
         MixFocusTestAccess::moveScopePointer(focus, .5f, .625f);
-        check(MixFocusTestAccess::scopeCursorText(focus).contains("-6.0 dBFS"),
-              "the second Stack lane uses its own signed full-scale axis");
+        const auto stacked = MixFocusTestAccess::scopeCursorText(focus);
+        check(stacked.contains("-6.0 dBFS"), "the second Stack lane uses its own signed full-scale axis");
+        MixFocusTestAccess::wheelScope(focus, .5f, .625f, 1.f);
+        check(!stacked.isEmpty() && MixFocusTestAccess::scopeCursorText(focus) ==
+              stacked.replace("-6.0 dBFS", "-12.0 dBFS"),
+              "the second Stack lane uses the same vertical zoom without shifting its heard sample");
+        MixFocusTestAccess::wheelScope(focus, .5f, .625f, -1.f);
         const juce::Point<float> stackStart{.5f, .625f}, stackEnd{.625f, .625f};
         MixFocusTestAccess::dragScopeRegion(focus, stackStart, stackEnd);
         check(MixFocusTestAccess::scopeRegionText(focus).contains("240000") &&
@@ -3610,6 +3657,9 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
             frame();
             MixFocusTestAccess::moveScopePointer(focus, .75f, .25f);
             check(stillHeld(), "Stop and pointer motion keep the frozen heard interval and selected region");
+            MixFocusTestAccess::wheelScope(focus, .75f, .25f, 1.f);
+            check(stillHeld(), "zooming a frozen waveform keeps the held interval, meter values and selected region");
+            MixFocusTestAccess::wheelScope(focus, .75f, .25f, -1.f);
             check(doc->mailbox().post(TransportMailbox::Command::Locate, bar / 2),
                   "queue a Locate while the Scope holds a different heard interval");
             frame();
