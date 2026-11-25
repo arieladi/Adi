@@ -1934,6 +1934,63 @@ void timeRanges() {
     }
 }
 
+void finiteStereoHistory() {
+    // Raw words preserve signed zero, both subnormal endpoints, finite peaks
+    // and the payloads of quiet and signalling NaNs until device ingress.
+    constexpr std::array<std::uint32_t, 16> inputs{
+        0U, 0x80000000U, 1U, 0x807fffffU, 0x7f7fffffU, 0xff7fffffU, 0x3f200000U, 0xbe800000U,
+        0x7f800000U, 0xff800000U, 0x7f800001U, 0xff812345U, 0x7fc00001U, 0xffebcdefU, 0x00800000U, 0x80800000U};
+    constexpr std::array<std::uint32_t, 16> expected{
+        0U, 0x80000000U, 1U, 0x807fffffU, 0x7f7fffffU, 0xff7fffffU, 0x3f200000U, 0xbe800000U,
+        0U, 0U, 0U, 0U, 0U, 0U, 0x00800000U, 0x80800000U};
+    constexpr std::size_t block = 509, delay = 239;
+    const auto index = [](std::size_t n, std::size_t channel) { return (n * (channel ? 7 : 3) + channel) % 16; };
+    std::array<float, block> left{}, right{}, outL{}, outR{};
+    const auto fill = [&](std::size_t start) {
+        for (std::size_t i = 0; i < block; ++i) {
+            left[i] = std::bit_cast<float>(inputs[index(start + i, 0)]);
+            right[i] = std::bit_cast<float>(inputs[index(start + i, 1)]);
+        }
+    };
+    Shaper rack;
+    rack.prepare(48000);
+    fill(0);
+    rack.process(left.data(), right.data(), right.data(), left.data(), block);
+    bool exact = true;
+    for (std::size_t i = 0; i < block; ++i)
+        exact &= std::bit_cast<std::uint32_t>(right[i]) == expected[index(i, 0)]
+              && std::bit_cast<std::uint32_t>(left[i]) == expected[index(i, 1)];
+    check(exact, "crossed dry channels preserve finite words and replace each nonfinite input with positive zero");
+
+    adi::dsp::AdiShaperTime direct;
+    check(direct.prepare(), "allocate the independent Time history");
+    float seedL = 0.f, seedR = 0.f;
+    direct.processStereo(seedL, seedR, 0.);
+    fill(0);
+    check(direct.processFixedBlock(left.data(), right.data(), outL.data(), outR.data(), block, 1.),
+          "one-frame fixed tap accepts raw stereo input");
+    exact = true;
+    for (std::size_t i = 1; i < block; ++i)
+        exact &= std::bit_cast<std::uint32_t>(outL[i]) == expected[index(i - 1, 0)]
+              && std::bit_cast<std::uint32_t>(outR[i]) == expected[index(i - 1, 1)];
+    check(exact, "the Time kernel sanitizes both raw planes during its own history write");
+
+    rack.set(Shaper::TimeOn, 1);
+    rack.set(Shaper::timeParam(Band::Mid, Shaper::TimeRange), 5);
+    timeHeight(rack, Band::Mid, 0);
+    exact = true;
+    for (std::size_t start = 0; start < adi::dsp::AdiShaperTime::capacity + block; start += block) {
+        fill(start);
+        rack.process(left.data(), right.data(), outL.data(), outR.data(), block);
+        for (std::size_t i = 0; i < block; ++i) {
+            const auto t = start + i;
+            exact &= std::bit_cast<std::uint32_t>(outL[i]) == (t < delay ? 0U : expected[index(t - delay, 0)])
+                  && std::bit_cast<std::uint32_t>(outR[i]) == (t < delay ? 0U : expected[index(t - delay, 1)]);
+        }
+    }
+    check(exact, "stereo Time history preserves finite samples at startup, across a short tap and around the ring");
+}
+
 void timeBandHistory() {
     constexpr std::size_t frames = 1024;
     Shaper time;
@@ -2576,6 +2633,7 @@ int main() {
     reverbReturnMix();
     reverbReturnCrossings();
     timeRanges();
+    finiteStereoHistory();
     timeBandHistory();
     timeWetMixExtremes();
 

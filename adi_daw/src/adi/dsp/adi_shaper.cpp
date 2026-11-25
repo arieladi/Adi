@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/dsp/adi_shaper.hpp"
+#include "adi/dsp/adi_shaper_sample.hpp"
 #include <algorithm>
 #include <bit>
 #include <cmath>
@@ -120,21 +121,17 @@ double panDelayMs(double excursion) noexcept {
     return 40. * excursion * excursion * excursion + std::max(0., excursion * (2. - 4. * excursion));
 }
 
-float finiteOrZero(float sample) noexcept {
-    return std::isfinite(sample) ? sample : 0.0f;
-}
-
 void sanitizeStereo(const float* inL, const float* inR, float* outL, float* outR,
                     std::size_t frames) noexcept {
     if (outL == inR || outR == inL) {
         for (std::size_t i = 0; i < frames; ++i) {
             const float l = inL[i], r = inR[i];
-            outL[i] = finiteOrZero(l);
-            outR[i] = finiteOrZero(r);
+            outL[i] = shaper::finiteSample(l);
+            outR[i] = shaper::finiteSample(r);
         }
     } else {
-        std::transform(inL, inL + frames, outL, finiteOrZero);
-        std::transform(inR, inR + frames, outR, finiteOrZero);
+        std::transform(inL, inL + frames, outL, shaper::finiteSample);
+        std::transform(inR, inR + frames, outR, shaper::finiteSample);
     }
 }
 void applyWidth(float width, float& left, float& right) noexcept {
@@ -1139,7 +1136,7 @@ void AdiShaper::PanHistory::process(const Tap& tap, float& left, float& right) n
         right *= tap.gain.right;
     }
     if (frames.empty()) return;
-    frames[head] = {finiteOrZero(left), finiteOrZero(right)};
+    frames[head] = {shaper::finiteSample(left), shaper::finiteSample(right)};
     valid = std::min(valid + 1, frames.size());
     const auto mask = frames.size() - 1;
     if (tap.age != 0 || tap.fraction != 0.) {
@@ -1175,7 +1172,7 @@ void AdiShaper::DriveDryDelay::advance(float& l, float& r) noexcept {
     const auto previous = samples[index];
     // A preceding stage can overflow even with finite rack input. Do not put
     // that sample in the parallel dry delay where it could reach a later block.
-    samples[index] = {finiteOrZero(l), finiteOrZero(r)};
+    samples[index] = {shaper::finiteSample(l), shaper::finiteSample(r)};
     l = previous[0];
     r = previous[1];
     index = (index + 1) % samples.size();
@@ -1248,8 +1245,8 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
             }
             if (band.blend == 0.0f) { l = dryL; r = dryR; }
             else if constexpr (kind == Stage::Reverb) {
-                l = finiteOrZero(band.returnDry * dryL + band.returnWet * l);
-                r = finiteOrZero(band.returnDry * dryR + band.returnWet * r);
+                l = shaper::finiteSample(band.returnDry * dryL + band.returnWet * l);
+                r = shaper::finiteSample(band.returnDry * dryR + band.returnWet * r);
             } else if (band.blend != 1.0f) {
                 if constexpr (kind == Stage::Time) {
                     l = AdiShaperTime::blend(dryL, l, band.blend);
@@ -1262,8 +1259,8 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
         } else {
             if constexpr (kind == Stage::Width) {
                 if (band.followWidth) {
-                    const float sourceL = externalWidth_[index] ? (key.left ? finiteOrZero(key.left[i]) : 0.f) : l;
-                    const float sourceR = externalWidth_[index] ? (key.right ? finiteOrZero(key.right[i]) : 0.f) : r;
+                    const float sourceL = externalWidth_[index] ? (key.left ? shaper::finiteSample(key.left[i]) : 0.f) : l;
+                    const float sourceR = externalWidth_[index] ? (key.right ? shaper::finiteSample(key.right[i]) : 0.f) : r;
                     const float width = 2.f * widthFollowers_[index].apply(sourceL, sourceR, .5f * band.primary.at(p));
                     applyGain(gain(kind, width, band.blend), l, r);
                     return;

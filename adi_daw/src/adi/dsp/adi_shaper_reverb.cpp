@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/dsp/adi_shaper_reverb.hpp"
+#include "adi/dsp/adi_shaper_sample.hpp"
 #include <algorithm>
 #include <bit>
 #include <cmath>
 #include <cstdint>
-#include <limits>
 #include <numbers>
 #if defined(_M_X64) || (defined(__x86_64__) && defined(__SSE2__))
 #include <emmintrin.h>
@@ -14,10 +14,6 @@ namespace adi::dsp {
 namespace {
 float normalized(float u, float fallback) noexcept {
     return std::isfinite(u) ? std::clamp(u, 0.f, 1.f) : fallback;
-}
-float finiteSample(float x) noexcept {
-    static_assert(std::numeric_limits<float>::is_iec559 && sizeof(float) == sizeof(std::uint32_t));
-    return (std::bit_cast<std::uint32_t>(x) & 0x7f800000U) == 0x7f800000U ? 0.f : x;
 }
 // Reproducible positions and signed pressure coefficients for an original
 // stereo room. This sequence is evaluated only when rebuilding tap geometry.
@@ -51,7 +47,7 @@ AdiShaperReverb::Frame AdiShaperReverb::Diffuser::advance(Frame input) noexcept 
         sum[1] += t.gains[1] * past[1];
     }
     write = (write + 1) & mask;
-    return {finiteSample(sum[0]), finiteSample(sum[1])};
+    return {shaper::finiteSample(sum[0]), shaper::finiteSample(sum[1])};
 }
 
 bool AdiShaperReverb::prepare(double rate) noexcept {
@@ -152,7 +148,7 @@ void AdiShaperReverb::processStereo(float& l, float& r, float send, float ret, b
     ret = normalized(ret, 0.f);
     if (clearTails_ && previousReturn_ > 0 && ret == 0) reset();
     previousReturn_ = ret;
-    const Frame source{finiteSample(l * send), finiteSample(r * send)};
+    const Frame source{shaper::finiteSample(l * send), shaper::finiteSample(r * send)};
     const bool excitation = source[0] != 0 || source[1] != 0;
     if (excitation) remaining_ = tailLength_ + predelayFrames_ + 1;
     // Keep recording when the current return is silent. Increasing the room
@@ -196,8 +192,8 @@ void AdiShaperReverb::processStereo(float& l, float& r, float send, float ret, b
     write_ = (write_ + 1) & mask;
     const float mid = .5f * wet[0] + .5f * wet[1];
     const float side = (.5f * wet[0] - .5f * wet[1]) * side_;
-    l = finiteSample((mid + side) * ret);
-    r = finiteSample((mid - side) * ret);
+    l = shaper::finiteSample((mid + side) * ret);
+    r = shaper::finiteSample((mid - side) * ret);
 }
 
 } // namespace adi::dsp
