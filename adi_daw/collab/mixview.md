@@ -47,6 +47,13 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - Both the stale Overlay picture and the missing first complete beat failed before the fix. The broker test also rejected old overlapping samples and checked the exact new start. Release passed 1,203 shared-analysis, 578 Mix View and 594 spectrum assertions. The four changed units compiled with warnings treated as errors. The portable broker check passed.
 - Review ZIP SHA-256 `877028155a003120440adf0075f6aeb742fe3dc423e5c0deb1c0f3718b3d6abd`. Executable `ddd9986d9cc615db3f6b9ca3e14468dea90fb932094da386914b4aef6cf8e0b7`. Retest brief uses the same source hash.
 
+## 25 November 2026 · cumulative strict Release on current main · lands after 3 December
+
+- **PR requested** `mixview/review-nov25-main-lands-after-2026-12-03` at `a21269b42d167525cf78a2792de708b08f30d1bb`. This is the joined review head. It includes main `300efe611`, the scheduled analyser and Scope work through the seek fix, the graph/Limiter/EQ clock stack, DF-M69 and the optional DF-M65 pin. All four merges were clean.
+- The Windows x64 Release and requested test targets compiled with compiler warnings treated as errors. Ten headless suites passed 5,347 assertions across graph suspension, Limiter/EQ core and host, the native pipeline document, Focus, shared analysis, Spectrum and Mix View. The Focus suite compared 5,081,550 samples with zero counted callback allocations or deallocations.
+- Before-date review order: DF-M69 and the Clip pin stand independently. Land the exact graph hook before the Limiter clock and the Limiter clock before the EQ clock. The after-date preview carries those same commits with main's accepted fixes. The signed-zero exception remains recorded in the EQ clock review.
+- Review ZIP SHA-256 `7b427ca8cfef036d1c859fb16784e797dc787e3774dcc70c75ed6f250c510c8f`. Executable `9c8459c118d5a27443b5a067b99fd9e2315d7368e05a1c0019e4569ba151857b`. Scanner `0e6b075de4c902e9bd99a61146b896bbdf631da2114bb6e08624d6c4e4711268`. The cumulative retest brief uses the same source hash.
+
 ### 25 November — MX13 Focus musical windows
 
 **PR requested** `mixview/mx13-musical-window-lands-after-2026-12-03` at `5c88abf073d56cd9e5c99f3aeac3d4cb24a68532`, after captured true peak. Focus Scope offers One Beat and One Bar. The default is still One Bar. A view change clears the former interval and region and requests the new window on the same grouped sources. Tempo and signature edges share exact rounded sample positions. A Locate or selection at a rounded-down boundary starts the new interval. The existing Sum level summary remains readable with the added control.
