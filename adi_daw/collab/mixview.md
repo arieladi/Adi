@@ -177,6 +177,12 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 
 - On current main, the shared test helper `tests/ui_test_hygiene.hpp:76` declares `kind` in a loop whose calls disappear in Release. The warning-as-error blocks the shell fixture, including the Arrangement and Appearance gates. The Debug report loop needs a Debug guard inside the existing platform guard. The Mix View seat is continuing the strict app and independent suites on `mixview/review-cumulative-20261122`.
 
+## 25 November 2026 · before-December cumulative Release on current main
+
+- **PR requested** `mixview/review-cumulative-20261122` at `678bfbe1464a619d00e4fbd35455cdbd9b72aff3`. Current main `73e26e4aa` joined cleanly with DF-M69, the graph/Limiter/EQ clock stack and the optional Clip Input pin. Land the graph hook, Limiter and EQ in that order. The two test-only branches stand independently.
+- The app, scanner and 11 headless suites built with warnings as errors. All 4,473 checks passed. The shared Release shell fixture fails on the unrelated warning logged below, so its Arrangement and Appearance gates are with their owner. The neutral Minimum Phase signed-zero exception remains open.
+- Review ZIP SHA-256 `3899a89b175bb96a621b58b8c30b7bcf722c28a169746c0a0e144641571d6f16`. Executable `745d3f9f3ec1da10e5d958abada8cb79d7f76009aa8ee28e7448227f6f6addbf`. Retest brief uses the same source hash.
+
 ### 25 November — MX13 Focus musical windows
 
 **PR requested** `mixview/mx13-musical-window-lands-after-2026-12-03` at `5c88abf073d56cd9e5c99f3aeac3d4cb24a68532`, after captured true peak. Focus Scope offers One Beat and One Bar. The default is still One Bar. A view change clears the former interval and region and requests the new window on the same grouped sources. Tempo and signature edges share exact rounded sample positions. A Locate or selection at a rounded-down boundary starts the new interval. The existing Sum level summary remains readable with the added control.
