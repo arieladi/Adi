@@ -165,8 +165,15 @@ DeviceIdentity identityOf(const juce::PluginDescription& desc) {
 std::unique_ptr<DeviceInstance> Vst3Host::makeDevice(const juce::PluginDescription& desc,
                                                      double sampleRate, int blockSize,
                                                      std::string& error) {
+    return makeDevice(desc, desc, sampleRate, blockSize, error);
+}
+
+std::unique_ptr<DeviceInstance> Vst3Host::makeDevice(const juce::PluginDescription& desc,
+                                                     const juce::PluginDescription& module,
+                                                     double sampleRate, int blockSize,
+                                                     std::string& error) {
     const DeviceIdentity id = identityOf(desc);
-    auto inst = instantiate(desc, sampleRate, blockSize, error);
+    auto inst = instantiate(module, sampleRate, blockSize, error);
     if (inst == nullptr) {
         // ADR-0011 / SPEC 7.1. Not nullptr, not an exception, not a skip: the
         // device stays in the chain as a bypassed placeholder carrying the

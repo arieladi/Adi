@@ -1860,6 +1860,52 @@ void testManyEnginesOpenedAndClosedLeaveNothingBehind() {
 #endif
 }
 
+// DF-E67 (b): Pd's loader ends every abstraction with canvas_setargs(0, 0),
+// whose empty copy took a byte; the last stayed pending and the instance's
+// teardown never freed it (LSan: a byte per canvas load in 23 suites). The
+// patch here loads an abstraction twice, with arguments and without, so both
+// the copy and the empty case are taken. Under the MSVC debug heap forty
+// cycles must leave fewer live blocks than cycles; before the fix each cycle
+// left one.
+void testAbstractionArgumentsLeaveNothingBehind() {
+    section("forty engines loading abstractions leave no canvas arguments behind");
+    TempDir tmp("canvas-args");
+    tmp.write("args_abs.pd", "#N canvas 0 0 100 100 12;\n#X obj 0 0 inlet;\n#X obj 0 30 f \\$1;\n"
+                             "#X obj 0 60 outlet;\n#X connect 0 0 1 0;\n#X connect 1 0 2 0;\n");
+    tmp.write("args.pd", "#N canvas 0 0 200 100 12;\n#X obj 10 10 args_abs 7;\n#X obj 10 40 args_abs;\n");
+    auto cycle = [&](int i) {
+        LibPdEngine engine(tmp.str(), "args.pd", 2, 2);
+        PdLatencyReceiver latency;
+        std::string error;
+        const bool opened = engine.open(latency, error);
+        if (!opened) check(false, "cycle " + std::to_string(i) + " opens: " + error);
+        for (const auto& line : engine.consoleLines())
+            if (line.find("couldn't create") != std::string::npos) {
+                check(false, "cycle " + std::to_string(i) + ": " + line);
+                return false;
+            }
+        return opened;
+    };
+    for (int i = 0; i < 10; ++i)   // warm up, as above
+        if (!cycle(i)) return;
+#if defined(_MSC_VER) && defined(_DEBUG)
+    _CrtMemState before{}, after{}, difference{};
+    _CrtMemCheckpoint(&before);
+#endif
+    for (int i = 10; i < 50; ++i)
+        if (!cycle(i)) return;
+#if defined(_MSC_VER) && defined(_DEBUG)
+    _CrtMemCheckpoint(&after);
+    (void)_CrtMemDifference(&difference, &before, &after);
+    const auto blocks = difference.lCounts[_NORMAL_BLOCK];
+    std::printf("METRIC canvas-args: %lld live blocks after forty cycles\n", static_cast<long long>(blocks));
+    check(blocks < 40, "forty engines with abstractions leave fewer live heap blocks than cycles: " +
+                           std::to_string(blocks));
+#else
+    check(true, "forty engines with abstractions (the count is the MSVC debug heap's; LSan checks it elsewhere)");
+#endif
+}
+
 // DEV-09 AR7 helpers: open a patch through the engine and return its console.
 std::string consoleOf(const TempDir& dir, const char* file, bool* opened = nullptr) {
     LibPdEngine engine(dir.str(), file, 2, 2);
@@ -2074,6 +2120,47 @@ void testAPatchCannotOpenAHelpPatch() {
     check(opened && console.find("leaked") == std::string::npos &&
               console.find("ADI refused a help patch") != std::string::npos,
           "done-popup 2 is refused by name, and the planted help patch never runs\n          console: " + console);
+}
+
+// DF-E36 (c)'s other two forms (m_glob.c:52 and x_array.c:230): `pd
+// help-intro` and [array define]'s `done-popup 2`. Each is refused by name, the
+// planted help patch's marker never prints, and the instance holds exactly one
+// top-level canvas afterwards (the patch itself), with audio still running.
+void testHelpIntroAndArrayHelpAreRefused() {
+    section("DF-E36 (c) -- pd help-intro, [array define]'s and the canvas's done-popup 2 open no help patch");
+    TempDir tmp("helpforms");
+    const std::string marker = "#N canvas 0 0 200 100 12;\n#X obj 10 10 loadbang;\n#X obj 10 40 print leaked;\n#X connect 0 0 1 0;\n";
+    for (const char* planted : {"intro.pd", "intro-help.pd", "array-object-help.pd", "array-define-help.pd", "array-help.pd"})
+        tmp.write(planted, marker);
+    tmp.write("intro-form.pd", "#N canvas 0 0 200 100 12;\n#X obj 10 10 loadbang;\n"
+                               "#X msg 10 40 \\; pd help-intro;\n#X connect 0 0 1 0;\n");
+    tmp.write("array-form.pd", "#N canvas 0 0 200 100 12;\n#X obj 10 10 loadbang;\n"
+                               "#X msg 10 40 done-popup 2 0 0;\n#X obj 10 70 array define arr 16;\n"
+                               "#X connect 0 0 1 0;\n#X connect 1 0 2 0;\n");
+    tmp.write("canvas-form.pd", "#N canvas 0 0 200 100 12;\n#X obj 10 10 loadbang;\n"
+                                "#X msg 10 40 \\; pd-canvas-form.pd done-popup 2 -9999 -9999;\n#X connect 0 0 1 0;\n");
+    tmp.write("plain.pd", "#N canvas 0 0 200 100 12;\n#X obj 10 10 loadbang;\n");
+    {
+        LibPdEngine plain(tmp.str(), "plain.pd", 2, 2);
+        PdLatencyReceiver latency;
+        std::string error;
+        check(plain.topLevelCanvases() == 0 && plain.open(latency, error) && plain.topLevelCanvases() == 1,
+              "the count: none before open, one for a plain patch (Pd's own templates not counted)");
+    }
+    for (const char* file : {"intro-form.pd", "array-form.pd", "canvas-form.pd"}) {
+        LibPdEngine engine(tmp.str(), file, 2, 2);
+        PdLatencyReceiver latency;
+        std::string error;
+        const bool opened = engine.open(latency, error);
+        engine.prepare(48000.0, 64);
+        (void)runBlocks(engine, 4);
+        const std::size_t canvases = engine.topLevelCanvases();
+        const std::string console = joined(engine.consoleLines());
+        check(opened && console.find("leaked") == std::string::npos &&
+                  console.find("ADI refused a help patch") != std::string::npos && canvases == 1,
+              std::string(file) + ": refused by name, the help patch never runs, one top-level canvas (" +
+                  std::to_string(canvases) + ")\n          console: " + console);
+    }
 }
 
 void testRefusalsSurviveAFullConsole() {
@@ -2597,6 +2684,7 @@ int main() {
     std::printf("adi_pd_engine_tests -- libpd, actually running\n\n");
     testRepeatedAbstractionLifetimes();
     testManyEnginesOpenedAndClosedLeaveNothingBehind();
+    testAbstractionArgumentsLeaveNothingBehind();
     testPdOpensARealPatch();
     testTheAdapterCostsOneBlockAndSaysSo();
     testAudioGoesThroughPdAndComesBack();
@@ -2611,6 +2699,7 @@ int main() {
     testAPatchCannotQuitOrReconfigurePd();
     testAPatchCannotCloseItselfOrQuit();
     testAPatchCannotOpenAHelpPatch();
+    testHelpIntroAndArrayHelpAreRefused();
     testRefusalsSurviveAFullConsole();
     testAPatchCannotChangeItsOwnSearchPath();
     testAPatchCannotWriteFiles();

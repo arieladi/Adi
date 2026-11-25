@@ -180,6 +180,12 @@ public:
     /// opened whole. **Message thread only** -- Pd prints while opening and
     /// while sending, never from `process`.
     [[nodiscard]] std::vector<std::string> consoleLines() const;
+    /// DF-E36 (c): how many top-level patches this instance holds (the patch
+    /// itself is one; a help patch a patch opened would be another). Pd's own
+    /// template canvases (_float_template, _float_array_template,
+    /// _text_template), which every instance holds, are not counted. 0 before
+    /// open() and after close(). **Message thread only.**
+    [[nodiscard]] std::size_t topLevelCanvases() noexcept;
     /// Message thread, on a schedule (PdDevice::pumpMainThread): moves what Pd
     /// printed out of the audio-safe queue, so the queue does not fill (DF-E36 d).
     void pumpConsole() override;
