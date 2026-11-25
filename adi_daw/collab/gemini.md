@@ -4,6 +4,23 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-25 — Item 1 (`walk/*` fixes, Round 12): `walk/a21-commit-dropout`, `walk/a22-fader-handle-at-top`, `walk/a23-return-index`, `walk/a2b-track-colours-stay`
+
+| Branch | Head SHA | Touched files | Compiler (`-DADI_WERROR=ON`, Pd on, JUCE off) | Warnings | Touched headless suites | `adi_acceptance_wts01` | Verdict |
+|---|---|---|---|---|---|---|---|
+| `walk/a21-commit-dropout` | `9efbe4d4` | `src/adi/engine/{gesture_preview.cpp,session.{hpp,cpp}}`, `tests/test_ui_document.cpp`, `tests/ui_test_hygiene.hpp` (JUCE) | GCC 12.4.0 | 0 | `adi_session_tests` **214/0**, `adi_gesture_playback_tests` **623/0**, `adi_ui_document_tests` **359/0** | **PASS** (43.88 s) | **PASS** |
+| `walk/a21-commit-dropout` | `9efbe4d4` | same | Clang 14.0.6 + libstdc++ 12 | 0 | `adi_session_tests` **214/0**, `adi_gesture_playback_tests` **623/0**, `adi_ui_document_tests` **359/0** | **PASS** (38.17 s) | **PASS** |
+| `walk/a22-fader-handle-at-top` | `3c466091` | `src/juce/{ui_look,ui_mixer}.{hpp,cpp}` (JUCE), `tests/{test_ui_shell.cpp,ui_test_hygiene.hpp}` (JUCE) | GCC 12.4.0 | 0 | N/A (all files JUCE-gated) | **PASS** (42.26 s) | **PASS (headless)** |
+| `walk/a22-fader-handle-at-top` | `3c466091` | same | Clang 14.0.6 + libstdc++ 12 | 0 | N/A (all files JUCE-gated) | **PASS** (40.41 s) | **PASS (headless)** |
+| `walk/a23-return-index` | `aa030be7` | `src/adi/ui/track_edits.hpp`, `tests/test_ui_seams.cpp`, `src/juce/ui_shell.cpp` (JUCE), `tests/ui_test_hygiene.hpp` (JUCE) | GCC 12.4.0 | 0 | `adi_ui_seams_tests` **601/0** | **PASS** (43.66 s) | **PASS** |
+| `walk/a23-return-index` | `aa030be7` | same | Clang 14.0.6 + libstdc++ 12 | 0 | `adi_ui_seams_tests` **601/0** | **PASS** (38.93 s) | **PASS** |
+| `walk/a2b-track-colours-stay` | `0b3b3e25` | `src/adi/store.cpp`, `src/adi/ui/track_edits.hpp`, `src/juce/ui_shell.cpp` (JUCE), `tests/{test_ui_shell.cpp,ui_test_hygiene.hpp}` (JUCE) | GCC 12.4.0 | 0 | `adi_store_tests` **72/0**, `adi_ui_seams_tests` **586/0**, `adi_ui_document_tests` **343/0** | **PASS** (43.31 s) | **PASS** |
+| `walk/a2b-track-colours-stay` | `0b3b3e25` | same | Clang 14.0.6 + libstdc++ 12 | 0 | `adi_store_tests` **72/0**, `adi_ui_seams_tests` **586/0**, `adi_ui_document_tests` **343/0** | **PASS** (38.66 s) | **PASS** |
+
+(No PR requested; run-only verification.)
+
+---
+
 ## 2026-11-25 — Item 1 (`walk/*` fixes, Round 11): `walk/b4-live-take`
 
 | Branch | Head SHA | Touched files | Compiler (`-DADI_WERROR=ON`, Pd on, JUCE off) | Warnings | Touched headless suites | `adi_acceptance_wts01` | Verdict |
