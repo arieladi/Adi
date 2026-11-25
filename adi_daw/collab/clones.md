@@ -6,7 +6,7 @@
 
 **DF-E43.** Which additional third-party devices from your racks do you want, and what should ADI call each one? I recommend choosing one you actually use after the shaper and scope contracts. Until then the item stays parked.
 
-Win granted the two window sites on 22 November. The window lane reviews the ADI-Shaper opener and wrench checks on `clones/shaper-rack-editor`. For the devices lane, the built-in and native wrappers still need to expose the per-instance waveform feed in `builtin_host.cpp` and `native_devices.cpp`. The native Time wrapper also needs the exact sample and transport revision to reset on a locate at the same position. We have a regression for that case.
+Window reviews the two loaned sites on the current linear panel stack, topped by `clones/shaper-panel-trim-1125` at `a0aa1b64f`. The panel and its per-instance waveform feed wait for the director’s agreed proposal sheet and the after-3-December landing window. For Devices, `clones/shaper-time-locate-regression` at `9944e00a2` supplies the registered Time test on your transport change `80bbcb6bd`. The shared Pitch reader is ready for your review on `clones/two-head-reader` at `9b7cd7caa`.
 
 **For Win — test the three drawing pens in the installed reference when the director is idle.** Playback of matching saved points is already verified. We need to know which points an actual stroke inserts and where the next click places its repeat. The current implementation stays in place pending your readings.
 
@@ -16,6 +16,20 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 4. Reopen each of the four results and confirm the drawing survived. Return the four states privately to the clones seat, with the plugin version and a screenshot of each resulting curve. For the repeat, report where the second shape started and ended and whether it touched or replaced the first. If a pen stays inactive, report which tool remained selected.
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
+
+## 25 November 2026 — Reduce ADI-Shaper callback cost with the existing finite-sample check
+
+`clones/shaper-time-block-cost` at `31df6e895` — Use the finite audio word check throughout ADI-Shaper. Lands after 3 December.
+
+The rack and Time now use Room’s existing test for finite samples. The ten-stage built-in has 721 generic controls. Ten headless suites passed at both Pd precisions. All 1,746 scored windows from 873 programs retained their previous stereo fingerprints, latency and error measurements. Five complete captures at both callback sizes matched 3,921,920 channel samples.
+
+At 48 kHz, 61,440 callbacks per buffer size gave median/p99 times of 1.4/2.3 µs at 256 frames and 10.2/17.8 µs at 2,048 for a full-wet one-bar delay. The previous device measured 9.7/13.9 and 50.6/105.7 µs. The reference measured 15.9/29.7 and 51.1/114.8 µs. The current delay had zero deadline misses and retained its 48 MiB history allocation.
+
+Four Drive instances used 66.2% and 62.1% fewer median cycles than the matched reference. The worst trial p99 was 0.6196 and 3.4385 ms. Individual misses were 115/73,728 and 13/24,576, versus 329 and 18 for the reference. Across three single-instance multiband settings, cycle savings ranged from 18.4% to 36.1%. All 2,304,000 channel samples matched the preceding ADI build. The largest residual against the reference was 0.000620 stereo RMS.
+
+The separate panel stack now follows main `73e26e4aa`. Reconcile, rack, grid and trim are `a801fcf93`, `3e494ff41`, `0ec16c922` and `a0aa1b64f`. The evaluator is `b3d393b36`. Existing binaries reran eleven tests at each Pd precision, three panel suites and 46 headless rack checks. Both 1920×1080 captures matched. The panel remains held for the director’s agreed proposal sheet and the after-3-December landing window.
+
+PR requested
 
 ## 25 November 2026 — For Devices, the registered Time regression for a repeated locate
 
