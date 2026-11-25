@@ -86,6 +86,7 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     void clearScopeRegion();
     void refreshScopeRegion();
     void paintScopeRegion(juce::Graphics &) const;
+    [[nodiscard]] double scopePanCentre() const noexcept;
     void rebuildScope();
     void rebuildScopePaths();
     void rebuildScopeGrid(const SnapshotReader &);
@@ -134,7 +135,9 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
         bool dragging = true;
     };
     std::optional<ScopeRegion> scopeRegion_;
+    static constexpr int scopeVerticalStepLimit_ = 4;
     int scopeZoomSteps_ = 0;
+    int scopePanSteps_ = 0;
     double scopeAxisPeak_ = 1.;
     juce::Rectangle<float> plot_;
     juce::Rectangle<int> titleRow_, sumLabel_, phaseBar_;

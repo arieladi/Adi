@@ -53,7 +53,7 @@ MixFocus::MixFocus(AdiRootComponent &root) : root_(root) {
     };
     scope.setTitle("Synchronous Focus scope");
     scope.setTooltip("Show the Focus channels' post-fader waveforms and their sum when aligned. "
-                     "Use Alt+wheel over the waveform to change its vertical zoom.");
+                     "Use Alt+wheel to zoom vertically and Alt+Shift+wheel to pan vertically.");
     scope.onClick = [this] {
         if (!scope.getToggleState()) thawScope();
         auto retired = scope.getToggleState() ? SharedAnalysis::BarScopeLease{} : std::move(barScope_);
@@ -1248,12 +1248,12 @@ void MixFocus::rebuildScopePaths() {
             else path.lineTo(point.x, point.y);
         };
     };
-    const auto appendColumn = [this, axisScale = 1. / scopeAxisPeak_](FocusScopePathReducer &trace, const auto &emit,
-                                                                    std::size_t column, std::size_t columns,
-                                                                    double low, double high) {
+    const auto appendColumn = [this, axisScale = 1. / scopeAxisPeak_, centre = scopePanCentre()]
+        (FocusScopePathReducer &trace, const auto &emit, std::size_t column, std::size_t columns,
+         double low, double high) {
         const auto x = plot_.getX() + static_cast<float>(column) * plot_.getWidth() / static_cast<float>(columns);
-        const auto y = [this, axisScale](double value) {
-            return plot_.getCentreY() - static_cast<float>(std::clamp(value * axisScale, -1., 1.)) *
+        const auto y = [this, axisScale, centre](double value) {
+            return plot_.getCentreY() - static_cast<float>(std::clamp(value * axisScale - centre, -1., 1.)) *
                 plot_.getHeight() * .5f;
         };
         trace.add({x, y(low)}, emit);
@@ -1610,15 +1610,20 @@ void MixFocus::mouseWheelMove(const juce::MouseEvent &event, const juce::MouseWh
         return;
     }
     if ((scopeRegion_ && scopeRegion_->dragging) || !std::isfinite(wheel.deltaY) || wheel.deltaY == 0.f) return;
-    constexpr int limit = 4;
-    const auto next = std::clamp(scopeZoomSteps_ + (wheel.deltaY > 0.f ? 1 : -1), -limit, limit);
-    if (scopeZoomSteps_ == next) return;
-    scopeZoomSteps_ = next;
-    scopeAxisPeak_ = std::pow(10., -.3 * static_cast<double>(scopeZoomSteps_));
+    const bool pan = event.mods.isShiftDown();
+    auto &steps = pan ? scopePanSteps_ : scopeZoomSteps_;
+    const auto next = std::clamp(steps + (wheel.deltaY > 0.f ? 1 : -1), -scopeVerticalStepLimit_, scopeVerticalStepLimit_);
+    if (steps == next) return;
+    steps = next;
+    if (!pan) scopeAxisPeak_ = std::pow(10., -.3 * static_cast<double>(steps));
     scopeCursorPoint_ = event.position;
     rebuildScope();
     refreshScopeCursor(SnapshotReader(root_.current()));
     repaint(plot_.toNearestInt().withTop(scroll_.getBottom()));
+}
+
+double MixFocus::scopePanCentre() const noexcept {
+    return static_cast<double>(scopePanSteps_) / scopeVerticalStepLimit_;
 }
 
 std::optional<std::uint64_t> MixFocus::scopeTraceRevision() const noexcept {
@@ -1664,7 +1669,7 @@ void MixFocus::refreshScopeCursor(const SnapshotReader &reader) {
         ordinate *= static_cast<double>(members_.size());
         ordinate -= std::floor(ordinate);
     }
-    const auto magnitude = std::abs(1. - 2. * ordinate) * scopeAxisPeak_;
+    const auto magnitude = std::abs(1. - 2. * ordinate + scopePanCentre()) * scopeAxisPeak_;
     const auto decibels = magnitude > 0. ? juce::String(20. * std::log10(magnitude), 1) : juce::String("-inf");
 
     juce::String reading;
@@ -1827,6 +1832,10 @@ void MixFocus::paint(juce::Graphics &g) {
         const auto zoomDb = 6 * scopeZoomSteps_;
         title += "   Zoom " + juce::String(zoomDb > 0 ? "+" : "") + juce::String(zoomDb) + " dB";
     }
+    if (scopeShown && !spectrumOnly && scopePanSteps_ != 0) {
+        const int percent = 100 * scopePanSteps_ / scopeVerticalStepLimit_;
+        title += "   Pan " + juce::String(percent > 0 ? "+" : "") + juce::String(percent) + "%";
+    }
     if (!scopeShown && match_) title += matchCaption_;
     const auto summaryBounds = alignReadout_.isVisible() ? alignReadout_.getBounds()
         : !differenceOnly && !sumLabel_.isEmpty() ? sumLabel_
@@ -1861,8 +1870,12 @@ void MixFocus::paint(juce::Graphics &g) {
         return;
     }
     g.setColour(look::outline);
+    const auto drawScopeZero = [&](juce::Rectangle<int> lane) {
+        const auto y = lane.getCentreY() + juce::roundToInt(scopePanCentre() * .5 * lane.getHeight());
+        if (y >= lane.getY() && y < lane.getBottom()) g.drawHorizontalLine(y, plot_.getX(), plot_.getRight());
+    };
     if (differenceOnly) {
-        if (!spectrumOnly) g.drawHorizontalLine(plot.getCentreY(), plot_.getX(), plot_.getRight());
+        if (!spectrumOnly) drawScopeZero(plot);
         if (differenceReady) {
             juce::Graphics::ScopedSaveState saved(g);
             g.reduceClipRegion(plot);
@@ -1888,7 +1901,7 @@ void MixFocus::paint(juce::Graphics &g) {
     if (scopeShown) {
         paintScopePhase(g);
         const bool stacked = display == ScopeDisplay::Stack && !plot_.isEmpty() && !members_.empty();
-        if (!stacked) g.drawHorizontalLine(plot.getCentreY(), plot_.getX(), plot_.getRight());
+        if (!stacked) drawScopeZero(plot);
         if (sumShown) {
             juce::Graphics::ScopedSaveState saved(g);
             g.reduceClipRegion(plot);
@@ -1912,7 +1925,7 @@ void MixFocus::paint(juce::Graphics &g) {
                 juce::Graphics::ScopedSaveState saved(g);
                 g.reduceClipRegion(lane);
                 g.setColour(look::outline);
-                g.drawHorizontalLine(lane.getCentreY(), plot_.getX(), plot_.getRight());
+                drawScopeZero(lane);
                 const auto transform = juce::AffineTransform::scale(1.f, scale).translated(0.f, y - plot_.getY() * scale);
                 drawMember(members_[i], transform);
             }

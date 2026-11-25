@@ -3342,6 +3342,23 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
               statsAfterZoom.frameRequests == statsBeforeZoom.frameRequests &&
               statsAfterZoom.workerPasses == statsBeforeZoom.workerPasses && History(doc->store()).head() == head,
           "reversing the wheel restores the original waveform and cursor with no analysis work or authored edit");
+    constexpr auto panModifiers = juce::ModifierKeys::altModifier | juce::ModifierKeys::shiftModifier;
+    const auto gridBeforePan = MixFocusTestAccess::scopeGrid(focus);
+    MixFocusTestAccess::wheelScope(focus, .5f, .25f, 1.f, panModifiers);
+    const auto panned = MixFocusTestAccess::scopeCursorText(focus).removeCharacters(",");
+    check(panned == cursor.replace("-6.0 dBFS", "-2.5 dBFS") &&
+              MixFocusTestAccess::sumPulseAt(focus, .125f, .50f) &&
+              MixFocusTestAccess::scopeGrid(focus) == gridBeforePan &&
+              MixFocusTestAccess::scopeWaveformRange(focus) == windowBeforeZoom,
+          "Alt+Shift-wheel pans the waveform and cursor vertically around the same heard sample and grid");
+    MixFocusTestAccess::wheelScope(focus, .5f, .25f, -1.f, panModifiers);
+    const auto statsAfterPan = broker->stats();
+    check(MixFocusTestAccess::scopeCursorText(focus).removeCharacters(",") == cursor &&
+              MixFocusTestAccess::sumPulseAt(focus, .125f, .75f) &&
+              statsAfterPan.taps == statsAfterZoom.taps && statsAfterPan.transforms == statsAfterZoom.transforms &&
+              statsAfterPan.frameRequests == statsAfterZoom.frameRequests &&
+              statsAfterPan.workerPasses == statsAfterZoom.workerPasses && History(doc->store()).head() == head,
+          "reversing the pan restores the trace exactly without extra analysis or project edits");
     MixFocusTestAccess::moveScopePointer(focus, .5f, .75f);
     check(MixFocusTestAccess::scopeCursorText(focus).contains("-6.0 dBFS"),
           "the positive and negative half-scale ordinates show the same dBFS magnitude");
@@ -3667,6 +3684,11 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
             MixFocusTestAccess::wheelScope(focus, .75f, .25f, 1.f);
             check(stillHeld(), "zooming a frozen waveform keeps the held interval, meter values and selected region");
             MixFocusTestAccess::wheelScope(focus, .75f, .25f, -1.f);
+            const auto heldGrid = MixFocusTestAccess::scopeGrid(focus);
+            MixFocusTestAccess::wheelScope(focus, .75f, .25f, -1.f, panModifiers);
+            check(stillHeld() && MixFocusTestAccess::scopeGrid(focus) == heldGrid,
+                  "panning a frozen waveform keeps the selected region, grid and measured signal");
+            MixFocusTestAccess::wheelScope(focus, .75f, .25f, 1.f, panModifiers);
             check(doc->mailbox().post(TransportMailbox::Command::Locate, bar / 2),
                   "queue a Locate while the Scope holds a different heard interval");
             frame();
