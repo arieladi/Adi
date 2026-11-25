@@ -17,6 +17,16 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 25 November 2026 — Pan transfer attribution across 873 saved programs
+
+For the DEV-31 review of `clones/shaper-pan-transfer` at `16cbbf6c`. Lands after 3 December. At a threshold of 0.001 stereo RMS error, saved stage order improved from **60 to 63 of 873** and fixed order from **54 to 57 of 873**. In each order three programs newly crossed the threshold and none dropped out.
+
+The comparison changed 123 bands in 114 programs. It retained the previous scores of 759 unaffected programs and the existing response in 13 bands that use a nonzero delay blend at a different delay range. Each affected saved-order program was rendered with the selector off and on, using the same incoming signal at each affected Pan. Every selector-off Pan stage reproduced the historical Pan samples. The fixed-order runs checked complete registered processor states and their reported latency.
+
+Among the 114 affected programs, saved-order error fell in 62 and rose in 52. With fixed order it fell in 44 and rose in 70. Nine of the 81 earlier regressions contained an eligible Pan band. Of those nine, four improved and five worsened in saved order. Three improved and six worsened in fixed order. These are full-chain errors against the reference. The isolated Pan matrix and the preceding program-level errors have separate fixtures.
+
+PR requested
+
 ## 25 November 2026 — Stereo transfer in each Pan band
 
 `clones/shaper-pan-transfer` at `16cbbf6c` — Add per-band stereo transfer to Pan. Lands after 3 December. IDs 919–921 append three independent switches. Older projects recall the existing balance law. At zero delay blend and half excursion, half of the far input moves to the near speaker and half stays in the far speaker. The delay stores both mixed channels, so a change of direction can replay the previous near speaker in the far ear.
