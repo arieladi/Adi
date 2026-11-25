@@ -11,6 +11,14 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+### 2026-11-25 — Spectral delay signed-silence diagnostic (DF-M34)
+
+Needs Engine only if sign-bit identity is required across graph sleep. The prepared native EQ keeps the exact 1,024-sample delay and both nonzero markers. At wake, an uninterrupted low-resolution spectral dry ring returns the 793 negative zeros it received during the gap, while the suspended path returns positive zeros. The other 980 checks pass, including the positive-zero control. This is the same numerical silence the graph already treats as quiet. The private failing fixture is available for a shared policy review. A local normalization would change saved exact zeros, and the graph loan covers the skipped frame count.
+
+### 2026-11-25 — Archived spectrogram picture changes (DF-M55)
+
+For the saved Classic fast pulse recording, the 8.4 changed frames per second fall in twelve groups of two or three frames, with pairs recurring on the 500 ms pulse period. At slow speed the full image changes 59.8 times per second, while the area outside the steady tone changes about 2.3 times per second. Freeze changes zero pixels. This separates visible content changes from the unresolved native column and publication cadence. The worksheet and narrower live cell are in private evidence. Grouped history remains parked for the actual column rate.
+
 ### 2026-11-25 — Focus Scope region measurement (MX-13)
 
 Drag along the waveform to measure the displayed interval. The readout gives absolute heard samples, endpoint times, duration, reciprocal frequency and its note. The selection stays with the captured interval, clears on a different capture, and cancels a held gesture if the plot geometry or transport revision changes. Stack measurements stay within one lane. Difference Spectrum remains a frequency plot.
