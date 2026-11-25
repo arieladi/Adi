@@ -23,6 +23,12 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - The component check failed only at the rounded-down edge before the fix. Release passed 1,191 shared-analysis, 564 Mix View and 594 spectrum assertions. The three changed units compiled with warnings treated as errors. No additional audio demand or project edit.
 - Review ZIP SHA-256 `d138e171e173771cee3f1579e893aa90d5214e5182cf27cc6cb7282e53ed5237`. Executable `5b06234043321b045aa67ee77feb737cf5e84b4ae301670bdffd16eb71a49ff5`. Retest brief uses the same source hash.
 
+## 25 November 2026 · MX-13 Focus Scope beat and bar grid · lands after 3 December
+
+- **PR requested** `mixview/mx13-scope-musical-grid-lands-after-2026-12-03` at `66f69b6fdfc52bf029b594b2523148617c7dfea0`. Time-domain plots now mark beats and bar starts at their heard sample positions. Changes of tempo and meter shape the spacing. A frozen waveform holds its own grid across tempo edits. Frequency plots use their own axes.
+- The grid caches its pixel positions, bounds work in dense projects, and acquires no tap or transform. Release passed 1,193 shared-analysis, 569 Mix View and 594 spectrum assertions. The three changed units compiled with warnings treated as errors.
+- Review ZIP SHA-256 `b51aef49e0a40359c169a95ce0325b3448a63d6ce81a461bd01c37d271ce0cdd`. Executable `19f3c20f342a998d274fe58ad75f39b28392ecc2184a50715d05d4696797efd5`. Retest brief uses the same source hash.
+
 ### 25 November — MX13 Focus musical windows
 
 **PR requested** `mixview/mx13-musical-window-lands-after-2026-12-03` at `5c88abf073d56cd9e5c99f3aeac3d4cb24a68532`, after captured true peak. Focus Scope offers One Beat and One Bar. The default is still One Bar. A view change clears the former interval and region and requests the new window on the same grouped sources. Tempo and signature edges share exact rounded sample positions. A Locate or selection at a rounded-down boundary starts the new interval. The existing Sum level summary remains readable with the added control.
