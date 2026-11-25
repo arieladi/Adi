@@ -17,7 +17,8 @@ void expect(bool value, const char *what) {
         throw std::runtime_error(what);
 }
 struct Fixture {
-    std::array<double, 464> values{}, baseline{};
+    std::vector<double> values = std::vector<double>(Core::Count + 1);
+    std::vector<double> baseline;
     std::vector<Panel::Point> wave, before;
     Core dsp;
     int starts = 0, changes = 0, ends = 0, cancels = 0, presets = 0;
@@ -357,6 +358,38 @@ void cornerLevel() {
            "Volume shows the completed whole percentage through the next integer boundary");
     expect(readout({.22f, .80f, .05f, .65f}) == uniform(.43f),
            "mixed point heights preserve the forty-three percent readout");
+}
+void bandTrimFaders() {
+    Fixture fixture;
+    auto binding = fixture.binding();
+    for (int id = Core::VolumeLowTrim + 1; id <= Core::WidthHighTrim + 1; ++id)
+        fixture.values[static_cast<std::size_t>(id)] = .5;
+    Panel panel;
+    panel.setSize(1000, 600);
+    const auto drag = [&] {
+        panel.mouseDown(event(panel, 450, 148));
+        panel.mouseDrag(event(panel, 450, 120.5f));
+        panel.mouseUp(event(panel, 450, 120.5f));
+    };
+    panel.bind(binding);
+    drag();
+    expect(fixture.starts == 0, "an older binding has no active band trim");
+    binding.hasBandTrim = true;
+    panel.bind(binding);
+    for (int stage = 0; stage < 2; ++stage) {
+        for (int band = 0; band < 3; ++band) {
+            panel.select({stage, band, 0});
+            const auto id = Core::trimParam(static_cast<Core::Stage>(stage), static_cast<Core::Band>(band)) + 1;
+            auto expected = fixture.values;
+            expected[static_cast<std::size_t>(id)] = .75;
+            drag();
+            expect(fixture.values == expected && fixture.ends == 3 * stage + band + 1,
+                   "one drag changes only the trim of the selected band");
+        }
+    }
+    panel.select({2, 1, 0});
+    drag();
+    expect(fixture.starts == 6 && fixture.ends == 6, "Pan has no Volume or Width trim fader");
 }
 void geometricPens() {
     using Shape = Panel::Shape;
@@ -740,6 +773,7 @@ int main(int argc, char **argv) try {
     gestures();
     groupEdits();
     cornerLevel();
+    bandTrimFaders();
     geometricPens();
     syncDivisions();
     cachedDrawing();

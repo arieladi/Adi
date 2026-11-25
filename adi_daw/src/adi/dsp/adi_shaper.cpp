@@ -338,15 +338,15 @@ void AdiShaper::updateTimeRanges() noexcept {
     }
 }
 
-AdiShaper::Gain AdiShaper::gain(Stage kind, float amount, float mix) noexcept {
-    const float dry = 1.0f - mix;
+AdiShaper::Gain AdiShaper::gain(Stage kind, float amount, const CurveBand& band) noexcept {
+    const float dry = 1.0f - band.blend;
     if (kind != Stage::Pan) {
-        const float wet = dry + mix * amount;
+        const float wet = dry + band.wetGain * amount;
         return {wet, wet};
     }
     // With graph height on the vertical axis, the top pans left.
     const double height = std::clamp(0.5 + 0.5 * amount, 0.0, 1.0);
-    return {dry + mix * panGain(height), dry + mix * panGain(1.0 - height)};
+    return {dry + band.blend * panGain(height), dry + band.blend * panGain(1.0 - height)};
 }
 
 void AdiShaper::updateBand(Stage kind, CurveBand& band) const noexcept {
@@ -357,10 +357,15 @@ void AdiShaper::updateBand(Stage kind, CurveBand& band) const noexcept {
         band.active = kind != Stage::Sweep || band.type != static_cast<int>(AdiShaperSweep::Mode::Off);
         return;
     }
-    const auto neutral = kind == Stage::Pan ? 0.0f : 1.0f;
+    // Trim applies to the wet signal before adding the dry band. Width
+    // scales its side by the contour and both its mid and side by trim.
+    band.wetGain = band.blend * band.trim;
+    band.midGain = band.trim == 1.f ? 1.f : (1.f - band.blend) + band.wetGain;
     for (std::size_t i = 0; i < band.primary.points.size(); ++i)
-        band.heldGains[i] = gain(kind, band.primary.points[i], band.blend);
-    band.active = band.blend != 0.0f && (!band.primary.constant || band.primary.points[0] != neutral);
+        band.heldGains[i] = gain(kind, band.primary.points[i], band);
+    const auto held = band.heldGains.front();
+    band.active = band.blend != 0.0f &&
+        (!band.primary.constant || held.left != 1.f || held.right != 1.f || (kind == Stage::Width && band.midGain != 1.f));
 }
 
 void AdiShaper::updateActivity(StageData& stage) noexcept {
@@ -508,6 +513,18 @@ void AdiShaper::setMod(Param id, float value) noexcept {
 
 void AdiShaper::set(Param id, float value) noexcept {
     if (id < MasterMix || id >= Count || !std::isfinite(value)) return;
+    if (id >= VolumeLowTrim) {
+        // The displayed scale doubles the wet amplitude at each +6 dB.
+        const bool width = id >= WidthLowTrim;
+        const auto kind = width ? Stage::Width : Stage::Volume;
+        const float limit = static_cast<float>(trimLimitDb(kind));
+        auto& stage = stages_[static_cast<std::size_t>(kind)];
+        auto& band = stage.bands[static_cast<std::size_t>(id - (width ? WidthLowTrim : VolumeLowTrim))];
+        band.trim = std::exp2(std::clamp(value, -limit, limit) / 6.f);
+        updateBand(kind, band);
+        updateActivity(stage);
+        return;
+    }
     if (id >= AdiShaperWaveBank::firstId - 1) {
         freeWaves_.set(static_cast<int>(id) + 1, value);
         return;
@@ -670,9 +687,16 @@ void AdiShaper::DriveDryDelay::advance(float& l, float& r) noexcept {
 template <AdiShaper::Stage kind>
 void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
                        float* outL, float* outR, std::size_t frames) noexcept {
-    auto applyGain = [](Gain g, float& l, float& r) {
+    auto applyGain = [](Gain g, [[maybe_unused]] float midGain, float& l, float& r) {
         if constexpr (kind == Stage::Width) {
-            applyWidth(g.left, l, r);
+            if (g.left == midGain) {
+                if (midGain != 1.f) { l *= midGain; r *= midGain; }
+                return;
+            }
+            const float mid = (0.5f * l + 0.5f * r) * midGain;
+            const float side = (0.5f * l - 0.5f * r) * g.left;
+            l = mid + side;
+            r = mid - side;
         } else {
             l *= g.left;
             r *= g.right;
@@ -742,12 +766,12 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
                 if (!primaryWaves[index].empty()) {
                     float y = AdiShaperWaveBank::at(primaryWaves[index], p);
                     if constexpr (kind == Stage::Width) y *= 2.f;
-                    g = gain(kind, y, band.blend);
+                    g = gain(kind, y, band);
                 }
                 else if (band.primary.constant) g = band.heldGains[0];
                 else if (!band.primary.linear) g = band.heldGains[static_cast<std::size_t>(p >> 61)];
-                else g = gain(kind, band.primary.at(p), band.blend);
-                applyGain(g, l, r);
+                else g = gain(kind, band.primary.at(p), band);
+                applyGain(g, band.midGain, l, r);
             }
         }
     };
@@ -764,7 +788,7 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
             const auto& band = stage.bands[1];
             const auto& wave = primaryWaves[1];
             if (wave.empty() ? band.primary.constant : wave.constant) {
-                const Gain held = wave.empty() ? band.heldGains[0] : gain(kind, wave.nodes.front().y, band.blend);
+                const Gain held = wave.empty() ? band.heldGains[0] : gain(kind, wave.nodes.front().y, band);
                 for (std::size_t i = 0; i < frames; ++i) {
                     const float l = inL[i], r = inR[i];
                     outL[i] = l * held.left;
@@ -842,7 +866,7 @@ bool AdiShaper::renderFixedWidth(StageData& stage, float* left, float* right, st
     std::array<float, 3> widths;
     for (std::size_t i = 0; i < widths.size(); ++i) {
         const auto& band = stage.bands[i];
-        if (!band.primary.constant) return false;
+        if (!band.primary.constant || band.midGain != 1.f) return false;
         widths[i] = band.active ? band.heldGains[0].left : 1.0f;
     }
     for (std::size_t i = 0; i < frames; ++i) {
