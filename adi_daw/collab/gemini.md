@@ -4,6 +4,19 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-25 — Item 1 (`walk/*` fixes, Round 4): `walk/a16-default-input`, `walk/b3-take-name`
+
+| Branch | Head SHA | Touched files | Compiler (`-DADI_WERROR=ON`, Pd on, JUCE off) | Warnings | Touched headless suites | `adi_acceptance_wts01` | Verdict |
+|---|---|---|---|---|---|---|---|
+| `walk/a16-default-input` | `8924da46` | `src/juce/{app_audio_page.{hpp,cpp},ui_main.cpp}` (JUCE), `tests/{test_ui_shell.cpp,ui_test_hygiene.hpp}` (JUCE) | GCC 12.4.0 | 0 | N/A (all files JUCE-gated) | **PASS** (43.36 s) | **PASS (headless)** |
+| `walk/a16-default-input` | `8924da46` | same | Clang 14.0.6 + libstdc++ 12 | 0 | N/A (all files JUCE-gated) | **PASS** (39.84 s) | **PASS (headless)** |
+| `walk/b3-take-name` | `78a0284f` | `src/adi/ui/{arrangement_geometry.hpp,project_document.cpp}`, `tests/test_ui_document.cpp`, `src/juce/{ui_clipview.{hpp,cpp},ui_mix_channels.cpp}` (JUCE) | GCC 12.4.0 | 0 | `adi_ui_document_tests` **344/0**, `adi_ui_seams_tests` **586/0** | **PASS** (44.12 s) | **PASS** |
+| `walk/b3-take-name` | `78a0284f` | same | Clang 14.0.6 + libstdc++ 12 | 0 | `adi_ui_document_tests` **344/0**, `adi_ui_seams_tests` **586/0** | **PASS** (39.27 s) | **PASS** |
+
+(No PR requested; run-only verification.)
+
+---
+
 ## 2026-11-25 — Item 1 (`walk/*` fixes, Round 3): `walk/a2-insert-track-order`, `walk/a5-oneshot-sample-tile`
 
 | Branch | Head SHA | Touched files | Compiler (`-DADI_WERROR=ON`, Pd on, JUCE off) | Warnings | Touched headless suites | `adi_acceptance_wts01` | Verdict |
