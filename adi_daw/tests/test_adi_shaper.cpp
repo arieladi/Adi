@@ -22,6 +22,7 @@ static_assert(Shaper::CrushOn == 340 && Shaper::BaseCount == 415);
 static_assert(Shaper::PanLowDelayBlend == 855 && Shaper::PanHighDelayBlend == 857);
 static_assert(Shaper::driveParam(Band::High, Shaper::OutputTrim) + 1 == Shaper::CrushOn);
 static_assert(Shaper::modParam(Stage::Crush, Band::High, Shaper::Secondary8) + 1 == Shaper::BaseCount);
+static_assert(Shaper::TriggerLowMode == 753 && Shaper::TriggerSmoothing == 763);
 int failures = 0;
 
 void check(bool condition, const char* description) {
@@ -1119,6 +1120,96 @@ void crushHoldClockBlocks() {
     check(std::abs(left[64] - left[65]) > .49f,
           "A transport locate moves the Crush hold contour into its full-rate segment");
 }
+
+void audioTrigger() {
+    // These are stable public parameter IDs; sparse sessions only contain active controls.
+    const auto parameter = [](int publicId) {
+        return publicId <= Shaper::Count ? static_cast<Shaper::Param>(publicId - 1) : Shaper::Count;
+    };
+    constexpr std::array rates{44100, 48000, 96000};
+    constexpr int expected[][4] = {{617, 882, 1058, 1323}, {672, 961, 1152, 1441}, {1344, 1921, 2304, 2881}};
+    for (std::size_t rate = 0; rate < rates.size(); ++rate) {
+        for (int cell = 0; cell < 4; ++cell) {
+            Shaper rack;
+            rack.prepare(rates[rate]);
+            rack.set(parameter(755), 2); // Mid band, one shot
+            rack.set(parameter(762), static_cast<float>(cell < 2 ? 0 : 2));
+            rack.set(parameter(764), static_cast<float>(cell % 2));
+            const int latency = expected[rate][cell];
+            std::vector<float> l(4096), r(4096);
+            l[31] = .5f;
+            r[79] = -.25f;
+            rack.process(l.data(), r.data(), l.data(), r.data(), l.size());
+            check(rack.latency() == latency && l[31 + latency] == .5f && r[79 + latency] == -.25f &&
+                  std::count(l.begin(), l.end(), 0.f) == 4095 && std::count(r.begin(), r.end(), 0.f) == 4095,
+                  "reported detector latency equals both observed stereo impulse offsets");
+            rack.set(Shaper::DriveOn, 1);
+            check(rack.latency() == latency + 16, "Drive compensation is added to detector latency");
+            rack.set(parameter(755), 0);
+            check(rack.latency() == 16, "synchronized Volume releases only its own compensation");
+        }
+    }
+
+    for (const auto& setting : std::array<std::array<int, 3>, 4>{{
+             {0, 0, 479}, {0, 100, 863}, {1, 50, 671}, {2, 50, 1153}}}) {
+        Shaper rack;
+        rack.prepare(48000);
+        rack.set(parameter(755), 2);
+        rack.set(parameter(758), 75);
+        rack.set(parameter(762), static_cast<float>(setting[0]));
+        rack.set(parameter(763), static_cast<float>(setting[1]) * .01f);
+        point(rack, Stage::Volume, Band::Mid, 0, 0);
+        std::vector<float> l(6000), r(6000, .0125f);
+        l[3000] = .7f;
+        rack.process(l.data(), r.data(), l.data(), r.data(), l.size());
+        const auto first = static_cast<std::size_t>(3000 + setting[2]);
+        check(r[first - 1] == .0125f && r[first] == 0,
+              "onset shift and profile set the restart independently of dry delay");
+    }
+    for (int stop : {25, 50, 75}) {
+        Shaper rack;
+        rack.prepare(48000);
+        rack.set(parameter(755), 2);
+        rack.set(parameter(758), static_cast<float>(stop));
+        for (int i = 0; i < 8; ++i) point(rack, Stage::Volume, Band::Mid, i, 12.5f * static_cast<float>(i));
+        std::vector<float> l(2048), r(2048, .0125f);
+        rack.process(l.data(), r.data(), l.data(), r.data(), l.size());
+        check(near(r.back(), .0125 * stop * .01), "one-shot without hits holds the selected contour endpoint");
+    }
+
+    constexpr int length = 96000;
+    const std::array<int, 4> starts{14000, 31300, 53500, 81400};
+    const std::array<float, 4> amplitudes{.7f, .045f, .7f, .7f};
+    const std::array<int, 3> restarts{14671, 54171, 82071};
+    for (int mode : {1, 2}) {
+        Shaper rack;
+        rack.prepare(48000);
+        rack.set(parameter(755), static_cast<float>(mode));
+        rack.set(parameter(758), 75.f);
+        rack.set(Shaper::bandParam(Stage::Volume, Band::Mid, Shaper::Cycle), .5f);
+        point(rack, Stage::Volume, Band::Mid, 0, 0);
+        std::vector<float> l(length), r(length, .0125f);
+        for (std::size_t burst = 0; burst < starts.size(); ++burst)
+            for (int j = 0; j < 1800; ++j)
+                l[starts[burst] + j] = amplitudes[burst] * static_cast<float>(
+                    std::cos(2 * std::numbers::pi * 920 * j / 48000.0) * std::exp(-j / 420.0));
+        constexpr std::array blocks{31, 256, 7, 2048, 19};
+        for (int at = 0, block = 0; at < length; ++block) {
+            const int n = std::min(blocks[static_cast<std::size_t>(block) % blocks.size()], length - at);
+            rack.sync(at / 24000.0);
+            rack.process(l.data() + at, r.data() + at, l.data() + at, r.data() + at, n);
+            at += n;
+        }
+        for (int restart : restarts)
+            check(r[restart - 1] == .0125f && r[restart] == 0 && r[restart + 1499] == 0 &&
+                  r[restart + 1501] == .0125f, "strong stereo onset restarts at the measured frame");
+        check(r[31970] == .0125f && r[31971] == .0125f, "quiet burst leaves the phase undisturbed");
+        check(mode == 1 ? r[26672] == 0 : r[26672] == .0125f, "loop continues while one-shot holds");
+        check(mode == 1 ? r[12001] == 0 : r[12001] == .0125f, "pre-trigger loop and one-shot starting phase");
+    }
+}
+
+
 } // namespace
 
 int main() {
@@ -1128,6 +1219,7 @@ int main() {
     panDelayBlend();
     beatGate();
     clocksAndLinearCurve();
+    audioTrigger();
     splitBands();
     independentBandClocks();
     steepCrossovers();

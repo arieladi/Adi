@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
+#include "adi/dsp/adi_shaper_audio_trigger.hpp"
 #include "adi/dsp/adi_shaper_crush.hpp"
 #include "adi/dsp/adi_shaper_drive.hpp"
 #include "adi/dsp/adi_shaper_filter.hpp"
@@ -30,6 +31,8 @@ class AdiShaper {
                  SweepMidPolarity, SweepHighPolarity, DriveOn,
                  CrushOn = DriveOn + modHeaderSize + 3 * driveBandParameterCount,
                  BaseCount = CrushOn + modStageParameterCount,
+                 TriggerLowMode = 753, TriggerMidMode, TriggerHighMode, TriggerLowEnd, TriggerMidEnd, TriggerHighEnd,
+                 TriggerThreshold, TriggerDetail, TriggerProfile, TriggerShift, TriggerSmoothing,
                  PanLowDelayBlend = 855, PanMidDelayBlend, PanHighDelayBlend, Count };
     enum class Stage { Volume, Width, Pan, Filter, Sweep, Drive, Crush };
     enum class Band { Low, Mid, High };
@@ -62,7 +65,7 @@ class AdiShaper {
     void process(const float* inL, const float* inR, float* outL, float* outR,
                  std::size_t frames) noexcept;
     [[nodiscard]] int latency() const noexcept {
-        return stages_[static_cast<std::size_t>(Stage::Drive)].enabled ? AdiShaperDrive::latencySamples : 0;
+        return trigger_.latency() + (stages_[static_cast<std::size_t>(Stage::Drive)].enabled ? AdiShaperDrive::latencySamples : 0);
     }
 
   private:
@@ -143,7 +146,9 @@ class AdiShaper {
     void setMod(Param id, float value) noexcept;
     void restart(Stage kind) noexcept;
     void resetKernels(Stage kind) noexcept;
-    template <Stage kind> void render(StageData& stage, const float* inL, const float* inR,
+    void processStages(float* outL, float* outR, std::size_t frames) noexcept;
+    void setTrigger(Param id, float value) noexcept;
+    template <Stage kind, bool triggered = false> void render(StageData& stage, const float* inL, const float* inR,
                                      float* outL, float* outR, std::size_t frames) noexcept;
     std::array<StageData, 7> stages_;
     std::array<AdiShaperFilter, 3> filters_;
@@ -153,6 +158,8 @@ class AdiShaper {
     std::array<std::array<float, 2>, 3> driveTrims_{{{.5f, .5f}, {.5f, .5f}, {.5f, .5f}}};
     std::array<DriveDryDelay, 3> driveDry_;
     DriveDryDelay driveSource_;
+    AdiShaperAudioTrigger trigger_;
+    std::array<float, 3> previousVolume_{};
     double sampleRate_ = 48000.0, bpm_ = 120.0, quarterNotes_ = 0.0;
     float masterMix_ = 1.0f;
     bool playing_ = true;
