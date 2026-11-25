@@ -3480,7 +3480,7 @@ void splitAndRangeEdits(AppCommands &commands, settings::AppSettings &settings, 
     commands.detach(root);
     document->release();
 }
-// D5: Color Cab's Impulse tile (MR 9.8; N28, #414). The tile is drawn on Color Cab's panel only,
+// D5: Color Cab's Impulse tile (MR 9.8; N28, #414). The tile is drawn on Color Cab's panel
 // beside its controls, with no wrench (a built-in has no plug-in window). A file dropped assigns the
 // slot and Clear empties it, each one undo step, with Pd; with Pd off the drop says the device does
 // not run in this build.
@@ -3590,6 +3590,109 @@ void colorCabTile(AppCommands &commands, const std::filesystem::path &dir) {
         juce::PNGImageFormat().writeImageToStream(picture, out);
     }
     document->release();
+}
+// walk-A A5: OneShot's Sample tile. Every built-in that declares an [adi.sample] slot draws a tile for its
+// first one, named by the declaration (not Color Cab alone), so a sample dropped from the desktop or the
+// browser loads into OneShot as into Live's Simpler (Live 12 manual 30.11), on the tile or anywhere on the
+// panel; the Sampler's first is "Sample 1".
+void oneShotTile(AppCommands &commands, const std::filesystem::path &dir) {
+#if ADI_WITH_PD
+    std::string error;
+    auto document = ProjectDocument::open(dir / "oneshot-tile.adi", true, {}, error);
+    check(document != nullptr, "a project for OneShot's tile");
+    if (!document)
+        return;
+    check(document->insertBuiltin("org.adidaw.builtin.oneshot", 2, std::nullopt), "OneShot on 1 MIDI");
+    const auto dev = document->store().db().execAndGet("SELECT MAX(id) FROM devices").getInt64();
+    check(document->insertBuiltin("org.adidaw.builtin.sampler", 3, std::nullopt), "Sampler on 2 MIDI");
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "oneshot");
+    UiPeerRoot surfacePeer;
+    surfacePeer.setSize(1600, 1000);surfacePeer.addAndMakeVisible(root);
+    surfacePeer.setVisible(true);surfacePeer.addToDesktop(0);
+    root.afterEdit = [&] { document->synchronise(); };
+    root.devices.publication = [&] { return document->parameterFeed().current(); };
+    root.devices.parameterDemand = [&](const void *owner, const std::vector<std::int64_t> &ids) {
+        document->setParameterDemand(owner, ids);
+    };
+    root.devices.assignSample = [&](std::int64_t device, std::int32_t slot, const std::string &path) {
+        const bool ok = document->assignSample(device, slot, media::pathFromUtf8(path), 7);
+        if (!ok)
+            root.say(document->error());
+        return ok;
+    };
+    root.setSize(1440, 900);
+    const auto refresh = [&] {
+        document->tick(0);
+        root.frame();
+        root.frame();
+    };
+    root.arrangement.geometry.selection.track = 2;
+    refresh();
+    auto &panels = root.devices.panels;
+    const bool tiled = panels.size() == 1 && panels[0]->id == dev && panels[0]->sample != nullptr;
+    check(tiled, "OneShot's panel has a sample tile");
+    if (!tiled) {
+        document->release();
+        return;
+    }
+    auto &tile = *panels[0]->sample;
+    int controlsRight = 0;
+    for (const auto &control : panels[0]->controls)
+        if (control->isVisible())
+            controlsRight = std::max(controlsRight, control->getRight());
+    check(tile.isVisible() && tile.slot == 1 && tile.slotName == "Sample" && tile.state() == SampleTile::State::Empty &&
+              tile.getX() >= controlsRight && tile.getRight() <= panels[0]->getWidth() && tile.getHeight() >= 40,
+          "the tile is OneShot's declared slot 1, \"Sample\", empty, beside the controls and inside the panel");
+    const auto wav = dir / "oneshot-sample.wav";
+    {
+        std::vector<float> silence(256);
+        audio::WavWriter writer(wav, 48000, 1, audio::WavFormat::Float32);
+        writer.write(silence.data(), 256);
+    }
+    const auto path = juce::String::fromUTF8(media::pathUtf8(std::filesystem::path(wav).make_preferred()).c_str());
+    check(tile.isInterestedInFileDrag(juce::StringArray(path)), "the tile takes a file from the desktop");
+    tile.filesDropped(juce::StringArray(path), 10, 10);
+    refresh();
+    bool filled = false;
+    for (const auto &slot : document->view().current()->sampleSlots)
+        filled = filled || (slot && slot->deviceId == dev && slot->slot == 1 && !slot->empty && !slot->missing);
+    SQLite::Statement stored(document->store().db(),
+                             "SELECT COUNT(*) FROM plugin_state WHERE device_id=? AND stream_role='sample:1'");
+    stored.bind(1, dev);
+    check(stored.executeStep() && stored.getColumn(0).getInt() == 1 && filled &&
+              tile.state() == SampleTile::State::Loaded && document->ops().nextUndo() &&
+              document->ops().nextUndo()->label == "Assign device sample",
+          "a file dropped from the desktop loads OneShot's slot 1, one undo step; the tile shows it loaded");
+    const auto undone = [&] {
+        const bool ok = root.command(AppCommands::Undo);
+        refresh();
+        return ok && tile.state() == SampleTile::State::Empty;
+    };
+    check(undone(), "undo empties OneShot's slot");
+    // Off the tile: a file dropped on the controls loads the slot too, as Live's Simpler takes one.
+    auto &panel = *panels[0];
+    check(panel.isInterestedInFileDrag(juce::StringArray(path)), "OneShot's whole panel takes a file from the desktop");
+    panel.filesDropped(juce::StringArray(path), 20, 40);
+    refresh();
+    check(tile.state() == SampleTile::State::Loaded, "a file dropped on OneShot's controls loads its slot");
+    check(undone(), "undo empties OneShot's slot again");
+    const juce::DragAndDropTarget::SourceDetails fromBrowser("adi-sample:" + path, nullptr, {10, 10});
+    check(tile.isInterestedInDragSource(fromBrowser), "the tile takes a sample dragged from the browser");
+    tile.itemDropped(fromBrowser);
+    refresh();
+    check(tile.state() == SampleTile::State::Loaded, "a sample dragged from the browser loads OneShot's slot");
+    // The Sampler's slots are declared too: its panel draws the first, by its declared name.
+    root.arrangement.geometry.selection.track = 3;
+    refresh();
+    check(panels.size() == 1 && panels[0]->sample != nullptr && panels[0]->sample->slot == 1 &&
+              panels[0]->sample->slotName == "Sample 1",
+          "the Sampler's panel draws its first declared slot, \"Sample 1\"");
+    document->release();
+#else
+    (void)commands;
+    (void)dir;
+#endif
 }
 // E2: Cut, Copy, Paste and Duplicate in the Arrangement (Live 12 manual 6.9, 41.5; N17).
 void clipClipboard(AppCommands &commands, const std::filesystem::path &dir) {
@@ -17588,6 +17691,7 @@ int main(int argc, char **argv) {
     trace("clipClipboard", [&] { clipClipboard(commands, temp.path()); });
     trace("timeCommands", [&] { timeCommands(commands, temp.path()); });
     trace("colorCabTile", [&] { colorCabTile(commands, temp.path()); });
+    trace("oneShotTile", [&] { oneShotTile(commands, temp.path()); });
     trace("rangeSelection", [&] { rangeSelection(commands, temp.path()); });
     trace("clipToTrack", [&] { clipToTrack(commands, temp.path()); });
     trace("clipView", [&] { clipView(commands, temp.path(), write); });
