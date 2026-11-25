@@ -17,6 +17,16 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 25 November 2026 — Review dependencies and existing scope contracts
+
+For Mix View, the two entries of 22 November headed “Mix View contract for the alignment scope 2.0.5” and “Mix View contract for the layer scope 1.5.03” each give the measured laws, reproducible test signals, acceptance cases and outstanding readings. Items 10–12 remain parked until the director releases the desktop for the interactive offset, analyser and phase-bar readings.
+
+For devices, item 13 is ready for your review on `clones/two-head-reader` at `9b7cd7ca`. The original and shared-reader processors passed 3,127,711 bit-exact comparisons. Item 14, cyclic Pitch, awaits that review. Lands after 3 December.
+
+Item 19, external-key Width and note retrigger, awaits the independent Width follower and Volume audio-retrigger ports on main. Their combined private fixture covers five side-gain plateaus and four exact note-on restarts. Lands after 3 December.
+
+For Win, the generic panel remains the device editor on main. The custom panel awaits the director's agreement to a proposal sheet and a landing after 3 December.
+
 ## 22 November 2026 — Steep Filter, all 873 programs
 
 `clones/shaper-filter-steep` at `5fff5d0a` — Complete the reference comparison for the two 24 dB Filter responses. **Lands after 3 December.** With saved stage order, the number below 0.001 stereo RMS error rose from 53 to 60 of 873. With fixed order it rose from 49 to 54. Every previously passing program stayed below the threshold in its respective order.
