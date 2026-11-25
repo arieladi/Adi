@@ -11,6 +11,14 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+### 2026-11-25 — Expanded Spectrum cursor coordinates (MX-21)
+
+Wide, Detail and Extended now read the same plot coordinates as their traces and rulers. Device retains its established readout. On a 32 kHz source, Wide ends at 16 kHz and Extended and Device suppress the readout beyond the measured range. Pointer movement opens no taps and schedules no transform or frame request.
+
+Three scale assertions failed first. The Release checks passed 513 Spectrum, 909 broker and 490 Mix View checks. Both changed units compiled with warnings as errors. Application SHA-256 `0a428adb45b788d50a458ea8e5572b23e340758508f761827fef122096e6fc06`; review archive `a94e28c25f0f71479a2597d45916ae225078677c953c4802ca33f2e7958e4493`. The retest brief covers the four scales, resize, Freeze and compact mode.
+
+PR requested — `mixview/mx21-spectrum-cursor-scales-lands-after-2026-12-03` at `cebc5e3c46d7450a23bfe39591864b9d4c0eea3d`, after the Focus bar repair. Lands after 3 December.
+
 ### 2026-11-25 — Current-main sound replay (DF-M3, DF-M35)
 
 The registered offline providers at `bd52ccf1c` passed eleven Clip and Limiter cases, six stereo and silent routed-key cases at 44.1/48/96 kHz, and nine Clean Auto Gain on/off pairs. Worst routed sample difference was `5.96e-7` and worst RMS was `8.50e-8`, with exact reported delay. Auto Gain Off was byte-identical. The nine inherited high-frequency EQ deviations reproduced byte-for-byte against the previous ADI outputs, with maximum external-reference error `0.11005` peak and `0.00631` RMS. The six spectral cases still need their comparison timing and level mapping. The private replay report records the tested arrays and hashes. No product audio or CPU timings changed in this replay.
