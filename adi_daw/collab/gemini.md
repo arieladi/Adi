@@ -4,6 +4,38 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-25 — Item 3 (part 1): `gemini/srf10-oscquery-core` (`13717f7cd`)
+
+Per win's 25 November engine re-review (`collab/win.md`, "the engine's re-review of gemini's four fixed branches"), `gemini/srf10-oscquery-core` (`13717f7cd`, stacked on `gemini/srf09-osc-core` `94ba8bce4`) passes with notes (4 of 4 first-review findings fixed; GCC 12, Clang 14, ASan+LSan+UBSan, and standalone fuzz harness all green at `13717f7cd`). Lands after 3 December.
+
+**PR requested:** `gemini/srf10-oscquery-core` at `13717f7cd` (lands after 3 December; stacked on `gemini/srf09-osc-core`).
+
+---
+
+## 2026-11-25 — Item 2 (PR-BUILDS): today's eight requested branches (devices & window-fn)
+
+Verified all eight branches from Tonight's Order item 2 on Linux Ubuntu 24.04 x86_64 under GCC 12.4.0 and Clang 14.0.6 + libstdc++ 12 with `-DADI_WERROR=ON` (Pd on, JUCE off for headless branches; JUCE 9.0.5 on for `window-fn/df-e76`; plus ASan+LSan for DF-E67 (b) and Release `-O3` Vocoder timing for DF-E68 (a)).
+
+| Branch | Head SHA | Compiler (`-DADI_WERROR=ON`) | Warnings | Suites & Results | Owner / Verdict |
+|---|---|---|---|---|---|
+| `devices/time-locate-revision` | `80bbcb6b` | GCC 12.4.0 & Clang 14.0.6 | 0 / 0 | `adi_pd_native_devices_tests`: **291/0 PASS** on both | `devices` — **PASS** |
+| `devices/df-e36-tests` | `fae3ce72` | GCC 12.4.0 & Clang 14.0.6 | 0 / 0 | `adi_pd_engine_tests`: **705/0 PASS** on both | `devices` — **PASS** |
+| `devices/vocoder-p99` | `4697d2dc` | GCC 12.4.0 & Clang 14.0.6 | 0 / 0 | `adi_vocoder_tests` **48/0**, `adi_pd_native_devices_tests` **287/0** PASS on both; Release `-O3` Linux pitch-tracking spike cut from **+262.9 µs** (64f p99 **1223.9 µs**, 91.8% of 1333 µs) to **+6.7 µs** (64f p99 **447.6 µs**, 33.6%); 128f spike **+145.5 µs** (p99 **1487.0 µs**, 55.8%) → **+4.3 µs** (p99 **687.6 µs**, 25.8%) | `devices` — **PASS (DF-E68 (a) Linux proof confirmed)** |
+| `devices/df-e67b-canvas-args` | `aab2e60c` | GCC 12.4.0 & Clang 14.0.6 (`-DADI_WERROR=ON`) + GCC 12.4.0 ASan+LSan (`detect_leaks=1`) | 0 / 0 | Debug: `adi_pd_engine_tests` **702/0 PASS** on both. **LSan FAIL:** `735 byte(s) leaked in 51 allocation(s)` remain (`s_path.c`, `x_vexp.c`, `g_scalar.c` unpatched; only the 225 `g_canvas.c` 1-byte leaks were removed) | `devices` — **PARTIAL** (adds 40-cycle regression test, does not clear LSan; see verdict below) |
+| `window-fn/df-e67b` | `0271bf12` | GCC 12.4.0 & Clang 14.0.6 (`-DADI_WERROR=ON`) + GCC 12.4.0 ASan+LSan (`detect_leaks=1`) | 0 / 0 | Debug: `adi_pd_engine_tests` **701/0 PASS** on both. **LSan PASS (`exit=0`):** **0 bytes leaked in 0 allocations** across all 701 checks (patches `g_canvas.c`, `s_path.c`, `x_vexp.c`, `g_scalar.c`, and `g_template.c`) | `window-fn` — **PASS (DF-E67 (b) Linux LSan proof confirmed; better proof)** |
+| `window-fn/df-e76` | `d8b9a43d` | GCC 12.4.0 (`-DADI_WITH_JUCE=ON -DADI_WITH_PD=OFF -DADI_WERROR=ON`) & Clang 14.0.6 + libstdc++ 12 (`-DADI_WITH_JUCE=ON`) | 0 / 0 | GCC 12: `adi_play_render_tests` **PASS** (37.93 s, symlinked VST3 alias check green). Clang 14: all 3 touched/test JUCE TUs (`juce_device_loader.cpp.o`, `vst3_host.cpp.o`, `test_play_render.cpp.o`) compile clean with 0 warnings | `window-fn` (row owner `engine-win`) — **PASS (DF-E76 Linux proof confirmed)** |
+| `window-fn/df-e12` | `8f62b45b` | GCC 12.4.0 & Clang 14.0.6 | 0 / 0 | `adi_project_replace_tests` **53/0**, `adi_project_files_tests` **54/0**, `adi_settings_tests` **330/0** PASS on both; **25/25 parallel repeats** (`-j 4`) of all three suites together: **0 failures** (135.59 s) | `window-fn` (row owner `engine-win`) — **PASS (DF-E12 Linux proof confirmed)** |
+| `window-fn/df-e78` | `8f44a215` | GCC 12.4.0 & Clang 14.0.6 (transient local DF-M62 patch on `FloatRealTransform.h:61` only, because base `2b3b7e5c` predates DF-M62) | 0 / 0 (on all 15 changed TUs) | GCC 12: `adi_render_queue_tests` **666/0**, `adi_normalization_tests` **41/0**, `adi_wav_file_tests` **176/0** PASS. Clang 14: all 15 changed export/test TUs (`aiff_writer.cpp.o`, `test_render_queue.cpp.o`, etc.) compile clean with 0 warnings (full `adi_core` link stops at pre-DF-E69 `src/adi/project_files.cpp:308` inherited from base `2b3b7e5c`) | `window-fn` (row owner `engine-win`) — **PASS (DF-E78 confirmed; lands after 3 Dec with export stack)** |
+
+### DF-E67 (b) comparison: which of the two branches is the better proof?
+
+- **`window-fn/df-e67b` (`0271bf12`) is the better proof and complete fix.** Under GCC 12.4.0 ASan+LSan (`detect_leaks=1`), `devices/df-e67b-canvas-args` (`aab2e60c`) removes only the 225 `g_canvas.c` `canvas_setargs` 1-byte leaks (960 → 735 bytes, 276 → 51 allocations) and **still fails LSan with 735 bytes leaked in 51 allocations** across `s_path.c`, `x_vexp.c`, and `g_scalar.c`. `window-fn/df-e67b` (`0271bf12`) fixes all four Pd leaks plus the `g_template.c` `gtemplate_add` dangling-stub bug and passes `adi_pd_engine_tests` under LSan with **0 bytes leaked in 0 allocations (exit 0)**.
+- `devices/df-e67b-canvas-args` (`aab2e60c`) adds the useful 40-cycle regression test (`testAbstractionArgumentsLeaveNothingBehind`), which combines cleanly on top of `window-fn/df-e67b`'s overlay (as win already combined in `#752` `8b0be92f`).
+
+(No PR requested for Item 2; run-only verification.)
+
+---
+
 ## 2026-11-25 — Item 1 (`walk/*` fixes, Round 13): `walk/a10-first-send-live`
 
 | Branch | Head SHA | Touched files | Compiler (`-DADI_WERROR=ON`, Pd on, JUCE off) | Warnings | Touched headless suites | `adi_acceptance_wts01` | Verdict |
