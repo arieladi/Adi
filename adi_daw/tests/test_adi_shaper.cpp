@@ -305,6 +305,43 @@ void heldPanEdges() {
     check(quiet && sparse.latency() == 0, "resuming sparse Pan clears stale audio and adds no rack latency");
 }
 
+void drawnPanAndSplitWidth() {
+    using Bank = adi::dsp::AdiShaperWaveBank;
+    const auto setPoint = [](Shaper& rack, Stage stage, Band band, float height) {
+        const auto slot = static_cast<int>(band);
+        const auto key = Bank::key(static_cast<int>(stage), slot, 0);
+        const Bank::Point point{0.f, height, 0.f, Bank::Shape::Hold};
+        const int id = Bank::firstId - 1 + 2 * slot;
+        rack.set(static_cast<Shaper::Param>(id), static_cast<float>(Bank::address(key, point)));
+        rack.set(static_cast<Shaper::Param>(id + 1), static_cast<float>(Bank::value(point)));
+    };
+    Shaper pan;
+    setPoint(pan, Stage::Pan, Band::Mid, .25f);
+    pan.set(Shaper::PanMidDelayBlend, 100.f);
+    std::array<float, 64> left{}, right{};
+    left[2] = .5f;
+    right[7] = -.25f;
+    pan.process(left.data(), right.data(), left.data(), right.data(), left.size());
+    for (std::size_t i = 0; i < left.size(); ++i)
+        check(left[i] == (i == 23 ? .5f : 0.f) && right[i] == (i == 7 ? -.25f : 0.f),
+              "a drawn Pan contour uses the selected far-ear delay");
+
+    Shaper width;
+    width.set(Shaper::WidthBands, 3);
+    for (auto band : {Band::Low, Band::Mid, Band::High})
+        setPoint(width, Stage::Width, band, 0.f);
+    left.fill(0.f);
+    right.fill(0.f);
+    left[2] = .5f;
+    right[7] = -.25f;
+    width.process(left.data(), right.data(), left.data(), right.data(), left.size());
+    for (std::size_t i = 0; i < left.size(); ++i) {
+        const float mid = i == 2 ? .25f : i == 7 ? -.125f : 0.f;
+        check(near(left[i], mid) && near(right[i], mid),
+              "three drawn Width bands apply their mono curves over unchanged legacy controls");
+    }
+}
+
 void panDelayBlend() {
     // Opposite-signed markers distinguish an attenuated current sample, a
     // delayed copy and any leakage into the other input's channel.
@@ -1308,6 +1345,7 @@ int main() {
     balanceSweep();
     heldPanEdges();
     panDelayBlend();
+    drawnPanAndSplitWidth();
     beatGate();
     clocksAndLinearCurve();
     splitBands();
