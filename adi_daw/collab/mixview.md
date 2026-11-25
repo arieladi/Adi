@@ -218,6 +218,13 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - Additional window shapes need the shared FFT window and calibration owner. The existing Hann profile remains available. The private fixtures cover bin-centred gain, half-bin loss and window width.
 - Enhanced needs its worker publication, cadence and time-row policy agreed across seats. The private proofs check frequency and time signs, the two-transform frequency measurement and the three-transform time measurement. The director's Enhanced choice is parked above.
 
+### 2026-11-25 — reviewed ends of the current queue
+
+- Main rechecked at `73e26e4aa2c54`. The two after-date Spectrum requests follow overlap, then smoothing `4b642b9b26a9`, then stopped-silence Cumulative Average `52bb11779103`. The earlier cumulative daily review remains `678bfbe1464a`.
+- Portability warning pass covered the two changed analyser units and their owned analysis headers, plus the EQ and Limiter backend units. The Classic Scope naming audit covered Analysers, its mode selector, the accessibility title, the tooltip and the skin title.
+- Keep the exact-unity meter boundaries as tested. The latest-window clipped-sample count includes unity. The held Spectrum over counter is strict. A reference measurement at unity is still outstanding.
+- The next Spectrum window and positioned true-peak work need the shared DSP paths. Enhanced Spectrogram needs the worker contract and the decision recorded above. The remaining native comparisons and timed budgets are parked. The intake's next wave starts under ADR-0254.
+
 ### 2026-11-25 — MX-30 Cumulative Average at stopped silence (lands after 3 December)
 
 - Branch `mixview/mx30-park-cumulative-average-lands-after-2026-12-03` at `52bb11779103`, after Spectrum smoothing `4b642b9b26a9`. Keep a completed zero publication when every active interval is exactly zero and the tap certifies silence. Rebase omitted whole hops and the partial hop before wake, new admission or Reset. Histories that have seen any signal continue to count and update, including below the display floor.
