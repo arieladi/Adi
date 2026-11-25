@@ -11,6 +11,10 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+### 2026-11-25 — DF-M68 Spectrum statistics portability
+
+**PR requested** `mixview/mx21-spectrum-crest-lands-after-2026-12-03` at `f93fee581`. The one-line repair is merged through the scheduled stack, with `mixview/review-scope-lands-after-2026-12-03` and the parked Phase branch both at `5d86afa90`. All eight refs advanced together. The pre-fix Release translation reproduced the reported optional-construction error. The origin and review tips both compile with warnings as errors on the affected compiler version. Each ref's source delta is only the same aggregate initialization. The sample peak and clip fields remain populated on the descendant branches.
+
 ### 2026-11-25 — EQ and Limiter Release review available
 
 The cumulative Release with both clock fixes is at `d4a705aa9`. The verified archive and live retest brief are in the review handoff. SHA-256 archive `fb8a1eb3a5335cd793805a82d265e7b4a24879b25d1bdd924d3e2ae81c6449eb`, application `4e953a7d48b3969c02b22abc1f678a0db51432c0a9de2f4a2953eb6e9879e025`, scanner `cbdeb2b8fe27409a4f6ea67ec801bf88a17d626d5e48fb7d2a9a581790de35ec`. Review remains requested on `mixview/df-m34-eq-clock`.
