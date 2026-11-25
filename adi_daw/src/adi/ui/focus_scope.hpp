@@ -20,6 +20,7 @@ struct FocusScopeRange {
     std::int64_t first = 0;
     std::size_t frames = 0;
     double sampleRate = 0.;
+    bool operator==(const FocusScopeRange &) const = default;
 };
 struct FocusScopeBar {
     std::int64_t firstTick = 0, nextTick = 0;
@@ -208,6 +209,29 @@ class FocusScopePathReducer {
 inline std::optional<std::int64_t> focusWindowEnd(std::int64_t first, std::int64_t length) noexcept {
     if (length <= 0 || first > std::numeric_limits<std::int64_t>::max() - length) return {};
     return first + length;
+}
+
+template <typename Visit>
+void forEachFocusScopeGridLine(const FocusScopeRange &range, const engine::TempoMap &tempo,
+                               const std::vector<textproj::Meter> &meters, Visit &&visit) {
+    if (!std::in_range<std::int64_t>(range.frames)) return;
+    const auto end = focusWindowEnd(range.first, static_cast<std::int64_t>(range.frames));
+    if (!end || *end <= 0) return;
+    constexpr auto beatWindow = FocusScopeWindow::Beat;
+    auto beat = focusScopeWindowAtSample(std::max<std::int64_t>(0, range.first), range.sampleRate, tempo, meters,
+                                         beatWindow);
+    // A full authored bar has at most 99 beats. Bound short previews too, even
+    // if the project contains an unusually dense run of signature changes.
+    constexpr int maximumLines = 128;
+    for (int line = 0; beat && beat->range.first < *end && line < maximumLines; ++line) {
+        if (beat->range.first >= range.first) {
+            const auto &meter = meterAt(beat->firstTick, meters);
+            const bool bar = (beat->firstTick - meter.start_ticks) % meter.barTicks() == 0;
+            visit(beat->range.first, bar);
+        }
+        if (beat->range.first + static_cast<std::int64_t>(beat->range.frames) >= *end) break;
+        beat = focusScopeWindowAtTick(beat->nextTick, range.sampleRate, tempo, meters, beatWindow);
+    }
 }
 // A worker may prepare storage before reading the bar and append only its
 // contiguous slices. The source identities and revision describe heard audio;

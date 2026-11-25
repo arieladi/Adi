@@ -621,6 +621,7 @@ void MixFocus::drop() {
     }
     scopeSources_.clear();
     clearBarScopeData();
+    scopeGridStamp_.reset();
     clearScopeSum();
     clearScopeRegion();
     scopeCursorPoint_.reset();
@@ -880,6 +881,7 @@ void MixFocus::clearBarScopeData() {
     redraw_ |= static_cast<bool>(shownBar_);
     shownBar_.reset();
     requestedBar_.reset();
+    if (barTempo_) scopeGridStamp_.reset();
     barTempo_.reset();
     barMeters_.clear();
     scopeCursorBeat_.reset();
@@ -1171,6 +1173,7 @@ void MixFocus::rebuildDifferenceSpectrum(const SharedAnalysis::ScopeDifferenceSp
 
 void MixFocus::rebuildScope() {
     rebuildScopePaths();
+    if (scopeTraceRevision()) rebuildScopeGrid(SnapshotReader(root_.current()));
     const auto peak = scopeTruePeak_.isVisible() && scopeTruePeak_.getToggleState() && scopeTraceRevision() &&
                       sum_ && shownBar_ && shownBar_->projection ? shownBar_->projection->sumTruePeak() : std::nullopt;
     if (peak) {
@@ -1193,6 +1196,29 @@ void MixFocus::rebuildScope() {
         : "RMS " + db(rms[channels == FocusScopeChannels::Right ? 1 : 0]);
     differenceRmsReadout_.setText(reading, juce::dontSendNotification);
     differenceRmsReadout_.setVisible(true);
+}
+
+void MixFocus::rebuildScopeGrid(const SnapshotReader &reader) {
+    if (!scopeRange_) return;
+    const bool heldTempo = shownBar_ || frozenScopeRevision_;
+    const auto *tempo = heldTempo ? barTempo_.get() : reader.tempo();
+    const auto plot = plot_.toNearestInt();
+    if (!tempo || plot.isEmpty()) {
+        scopeGridStamp_.reset();
+        return;
+    }
+    const auto &range = *scopeRange_;
+    const ScopeGridStamp stamp{range, plot, heldTempo ? std::nullopt : std::optional{reader.seq()}};
+    if (scopeGridStamp_ == stamp) return;
+    scopeGridStamp_ = stamp;
+    scopeGrid_.clear();
+    const auto &meters = heldTempo ? barMeters_ : reader.meters();
+    forEachFocusScopeGridLine(range, *tempo, meters, [&](std::int64_t sample, bool bar) {
+        const auto offset = static_cast<double>(sample - range.first) / static_cast<double>(range.frames);
+        const auto x = std::min(plot.getRight() - 1, plot.getX() + juce::roundToInt(offset * plot.getWidth()));
+        if (scopeGrid_.empty() || scopeGrid_.back().x != x) scopeGrid_.push_back({x, bar});
+        else scopeGrid_.back().bar |= bar;
+    });
 }
 
 void MixFocus::rebuildScopePaths() {
@@ -1821,6 +1847,12 @@ void MixFocus::paint(juce::Graphics &g) {
     }
     g.setColour(look::frame);
     g.fillRect(plot_);
+    if (scopeGridStamp_ && scopeGridStamp_->plot == plot && scopeTraceRevision()) {
+        for (const auto &line : scopeGrid_) {
+            g.setColour(line.bar ? look::outline : look::gridLine);
+            g.drawVerticalLine(line.x, plot_.getY(), plot_.getBottom());
+        }
+    }
     paintScopeRegion(g);
     if (members_.empty()) {
         g.setColour(look::text);

@@ -88,6 +88,7 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     void paintScopeRegion(juce::Graphics &) const;
     void rebuildScope();
     void rebuildScopePaths();
+    void rebuildScopeGrid(const SnapshotReader &);
     FocusScopeChannels scopeChannelView() const noexcept;
     FocusScopeWindow scopeWindowChoice() const noexcept;
     bool showsScopeDifference() const noexcept;
@@ -147,6 +148,15 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
         juce::String label;
     };
     std::optional<ScopeCursorBeat> scopeCursorBeat_;
+    struct ScopeGridStamp {
+        FocusScopeRange range;
+        juce::Rectangle<int> plot;
+        std::optional<std::uint64_t> liveSnapshot;
+        bool operator==(const ScopeGridStamp &) const = default;
+    };
+    struct ScopeGridLine { int x; bool bar; };
+    std::optional<ScopeGridStamp> scopeGridStamp_;
+    std::vector<ScopeGridLine> scopeGrid_;
     std::optional<std::uint64_t> scopeWaveformRevision_, frozenScopeRevision_;
     SharedAnalysis::BarScopeLease barScope_;
     std::shared_ptr<const engine::TempoMap> barTempo_;

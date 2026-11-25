@@ -85,6 +85,13 @@ struct MixFocusTestAccess {
     static bool hasScopeTrace(const MixFocus &focus) { return focus.scopeHasTrace_; }
     static bool hasDifference(const MixFocus &focus) { return focus.differenceRenderedRevision_.has_value(); }
     static auto scopeWaveformRange(const MixFocus &focus) { return focus.scopeRange_; }
+    static auto scopeGrid(const MixFocus &focus) {
+        std::vector<std::pair<int, bool>> lines;
+        if (focus.scopeGridStamp_ && focus.scopeTraceRevision())
+            for (const auto &line : focus.scopeGrid_) lines.emplace_back(line.x, line.bar);
+        return lines;
+    }
+    static auto scopePlot(const MixFocus &focus) { return focus.plot_.toNearestInt(); }
     static auto scopeReading(const MixFocus &focus) { return focus.sum_; }
     static bool hasScopeSummarySpace(const MixFocus &focus) { return !focus.sumLabel_.isEmpty(); }
     static auto scopePhase(const MixFocus &focus) { return focus.scopePhase_; }
@@ -3839,6 +3846,33 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
             check(readsBeat(46829, "1.3"), "the rounded-down heard edge and its beat label agree");
             check(readsBeat(46830, "1.3") && readsBeat(46828, "1.2"),
                   "the cursor follows the same heard edge in both directions");
+            const auto plot = MixFocusTestAccess::scopePlot(focus);
+            const auto xAt = [&](std::int64_t sample) {
+                return plot.getX() + juce::roundToInt(static_cast<double>(sample) / fractionalBar * plot.getWidth());
+            };
+            const std::vector<std::pair<int, bool>> expected{{xAt(0), true}, {xAt(23415), false},
+                                                            {xAt(46829), false}, {xAt(70244), false}};
+            check(MixFocusTestAccess::scopeGrid(focus) == expected,
+                  "the visible grid projects the captured 123 BPM sample positions exactly");
+            if (freeze && freeze->isEnabled()) {
+                freeze->setToggleState(true, juce::dontSendNotification);
+                freeze->onClick();
+                const auto statsBefore = broker->stats();
+                check(doc->mailbox().post(TransportMailbox::Command::Locate, 0), "queue Locate while holding the grid");
+                doc->mailbox().drain(driver);
+                frame();
+                check(root->setTempoAtPlay("120"), "change project tempo while the 123 BPM grid is held");
+                frame();
+                const auto statsAfter = broker->stats();
+                check(MixFocusTestAccess::scopeGrid(focus) == expected && readsBeat(46829, "1.3") &&
+                          statsAfter.taps == 0 && statsAfter.transforms == statsBefore.transforms &&
+                          statsAfter.frameRequests == statsBefore.frameRequests,
+                      "the held grid keeps its captured timing across a project edit with no analyser work");
+                freeze->setToggleState(false, juce::dontSendNotification);
+                freeze->onClick();
+                frame();
+                check(MixFocusTestAccess::scopeGrid(focus).empty(), "thaw hides the grid until new audio arrives");
+            }
         }
     }
     const auto visibleBounds = focus.getBounds();

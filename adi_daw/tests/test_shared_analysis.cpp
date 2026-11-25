@@ -1132,6 +1132,23 @@ void focusScopeBeatTiming() {
     check(beforeTie && afterTie && beforeTie->firstTick == 0 && afterTie->firstTick == quarter &&
               afterTie->range.first == 24001,
           "an exact half-sample edge belongs to the higher sample with no early beat label");
+
+    const auto grid = [&](adi::ui::FocusScopeRange range, const auto &tempo, const auto &meters) {
+        std::vector<std::pair<std::int64_t, bool>> marks;
+        adi::ui::forEachFocusScopeGridLine(range, tempo, meters,
+            [&](std::int64_t sample, bool barLine) { marks.emplace_back(sample, barLine); });
+        return marks;
+    };
+    check(grid({0, 93659, rate}, fractional, equalMeter) ==
+              std::vector<std::pair<std::int64_t, bool>>{{0, true}, {23415, false}, {46829, false}, {70244, false}} &&
+              grid({46829, 23415, rate}, fractional, equalMeter) ==
+              std::vector<std::pair<std::int64_t, bool>>{{46829, false}},
+          "beat and bar marks use rounded heard samples and exclude the next window's first sample");
+    check(grid({30000, 37000, rate}, constant, split) ==
+              std::vector<std::pair<std::int64_t, bool>>{{48000, false}, {54000, true}, {66000, false}} &&
+              grid({30000, 55000, rate}, stepped, equalMeter) ==
+              std::vector<std::pair<std::int64_t, bool>>{{36000, false}, {84000, false}},
+          "the grid follows a truncated bar at a signature change and an interval crossing a tempo change");
 }
 
 void focusScopeBarProjection() {
