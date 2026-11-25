@@ -91,8 +91,14 @@ class AdiShaper {
         std::array<std::array<Integrator, 3>, 2> pairs{};
         std::array<Integrator, 2> compensation{};
         double coefficient = 0, a1 = 0, a2 = 0, a3 = 0;
+        std::array<double, 3> logFrequency{};
+        double targetHz = 0, logTarget = 0;
+        bool rendered = false, changing = false;
         int slope = 0;
         void prepare(double hz, double sampleRate) noexcept;
+        void setFrequency(double hz, double sampleRate, bool cold) noexcept;
+        bool startChunk(double sampleRate) noexcept;
+        void advanceFrequency(double step, double logNyquist) noexcept;
         void reset() noexcept;
         [[nodiscard]] double pole(double x, double& z) const noexcept;
         void butterworth(double x, Integrator&, double& low, double& high, double& all) const noexcept;
@@ -136,14 +142,14 @@ class AdiShaper {
     void updateActivity(StageData& stage) noexcept;
     void updateStage(Stage kind) noexcept;
     void updateStep(CurveBand& band) const noexcept;
-    void updateSplits(StageData& stage) const noexcept;
+    void updateSplits(StageData& stage, bool cold = false) const noexcept;
     void layout(StageData& stage, int value) noexcept;
     void slope(Split& split, float value) noexcept;
     void clock(CurveBand& band, BandControl control, float value) const noexcept;
     void setMod(Param id, float value) noexcept;
     void restart(Stage kind) noexcept;
     void resetKernels(Stage kind) noexcept;
-    template <Stage kind> void render(StageData& stage, const float* inL, const float* inR,
+    template <Stage kind, bool moving> void render(StageData& stage, const float* inL, const float* inR,
                                      float* outL, float* outR, std::size_t frames) noexcept;
     std::array<StageData, 7> stages_;
     std::array<AdiShaperFilter, 3> filters_;
@@ -154,6 +160,7 @@ class AdiShaper {
     std::array<DriveDryDelay, 3> driveDry_;
     DriveDryDelay driveSource_;
     double sampleRate_ = 48000.0, bpm_ = 120.0, quarterNotes_ = 0.0;
+    double splitStep_ = 0.0;
     float masterMix_ = 1.0f;
     bool playing_ = true;
 };

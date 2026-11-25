@@ -13,6 +13,70 @@
 namespace adi::dsp {
 namespace {
 
+// Crossover coefficient c = tan(pi*f)/(1+tan(pi*f)), with f in cycles per sample.
+// The shared table interpolates c on log2(Nyquist/Hz). A cell spans 1/16 octave.
+constexpr int cellsPerOctave = 16;
+constexpr int tableOctaves = 16;
+constexpr int cellCount = cellsPerOctave * tableOctaves;
+constexpr int polynomialDegree = 8;
+using Coefficients = std::array<double, polynomialDegree + 1>;
+using CrossoverTable = std::array<Coefficients, cellCount>;
+// Roots of the ninth Chebyshev polynomial, ordered left to right.
+constexpr Coefficients nodes{-.984807753012208, -.8660254037844386, -.6427876096865394,
+                              -.3420201433256687, 0, .3420201433256687, .6427876096865394,
+                              .8660254037844386, .984807753012208};
+
+CrossoverTable makeCutoffTable() noexcept {
+    CrossoverTable result{};
+    for (int cell = 0; cell < cellCount; ++cell) {
+        Coefficients divided{};
+        for (int i = 0; i <= polynomialDegree; ++i) {
+            const double octaves = (cell + .5 * (nodes[i] + 1)) / cellsPerOctave;
+            const double ratio = .5 * std::exp2(-octaves);
+            const double g = std::tan(std::numbers::pi * ratio);
+            divided[i] = g / (1.0 + g);
+        }
+        // Newton divided differences through nine Chebyshev nodes.
+        for (int order = 1; order <= polynomialDegree; ++order) {
+            for (int i = polynomialDegree; i >= order; --i)
+                divided[i] = (divided[i] - divided[i - 1]) / (nodes[i] - nodes[i - order]);
+        }
+        // Convert once to monomial coefficients for Horner evaluation.
+        auto& poly = result[cell];
+        poly[0] = divided.back();
+        for (int i = polynomialDegree - 1; i >= 0; --i) {
+            for (int j = polynomialDegree - i; j > 0; --j)
+                poly[j] = poly[j - 1] - nodes[i] * poly[j];
+            poly[0] = divided[i] - nodes[i] * poly[0];
+        }
+    }
+    return result;
+}
+
+const CrossoverTable cutoffTable = makeCutoffTable();
+// The existing 0.49 clamp is a separate constant segment in the transfer.
+// Keep its exact coefficient and avoid interpolation across the corner.
+const double clampOctaves = -std::log2(.98);
+const double clampCoefficient = [] {
+    const double g = std::tan(std::numbers::pi * .49);
+    return g / (1.0 + g);
+}();
+
+double movingCutoff(double octavesBelowNyquist) noexcept {
+    if (octavesBelowNyquist <= clampOctaves) return clampCoefficient;
+    if (octavesBelowNyquist >= tableOctaves) {
+        const double g = std::tan(std::numbers::pi * .5 * std::exp2(-octavesBelowNyquist));
+        return g / (1.0 + g);
+    }
+    const double position = cellsPerOctave * octavesBelowNyquist;
+    const int cell = static_cast<int>(position);
+    const double x = 2 * (position - cell) - 1;
+    const auto& poly = cutoffTable[cell];
+    double value = poly.back();
+    for (int i = polynomialDegree - 1; i >= 0; --i) value = poly[i] + x * value;
+    return value;
+}
+
 std::uint64_t cyclePhase(double cycles) noexcept {
     const double part = cycles - std::floor(cycles);
     return part < 1.0 ? static_cast<std::uint64_t>(part * 0x1p64) : 0;
@@ -72,6 +136,7 @@ AdiShaper::AdiShaper() noexcept {
 void AdiShaper::prepare(double sampleRate) noexcept {
     if (!std::isfinite(sampleRate) || sampleRate < 1.0) return;
     sampleRate_ = sampleRate;
+    splitStep_ = -std::expm1(-72.02133 / sampleRate_);
     quarterNotes_ = 0.0;
     playing_ = true;
     for (auto& filter : filters_) filter.prepare(sampleRate);
@@ -84,7 +149,7 @@ void AdiShaper::prepare(double sampleRate) noexcept {
     for (auto& stage : stages_) {
         stage.low.reset();
         stage.high.reset();
-        updateSplits(stage);
+        updateSplits(stage, true);
         for (auto& band : stage.bands) {
             band.phase = 0;
             updateStep(band);
@@ -98,6 +163,48 @@ void AdiShaper::Split::prepare(double hz, double sampleRate) noexcept {
     a1 = 1.0 / (1.0 + warped * (std::numbers::sqrt2 + warped));
     a2 = warped * a1;
     a3 = warped * a2;
+}
+
+void AdiShaper::Split::setFrequency(double hz, double sampleRate, bool cold) noexcept {
+    if (cold) rendered = false;
+    else if (hz == targetHz) return;
+    targetHz = hz;
+    logTarget = std::log2(hz);
+    changing = rendered;
+    if (!rendered) {
+        logFrequency.fill(logTarget);
+        prepare(targetHz, sampleRate);
+    }
+}
+
+bool AdiShaper::Split::startChunk(double sampleRate) noexcept {
+    rendered = true;
+    if (!changing) return false;
+    // The normalized cutoff spans ten octaves. Inside one 14-bit control
+    // step the filter uses the exact target and keeps all three memories.
+    if (std::abs(logTarget - logFrequency.back()) > 10.0 / 16384.0) return true;
+    prepare(targetHz, sampleRate);
+    changing = false;
+    return false;
+}
+
+void AdiShaper::Split::advanceFrequency(double step, double logNyquist) noexcept {
+    double input = logTarget;
+    for (double& memory : logFrequency) {
+        memory += step * (input - memory);
+        input = memory;
+    }
+    coefficient = movingCutoff(logNyquist - input);
+    if (slope == 2) {
+        const double complement = 1.0 - coefficient;
+        const double denominator = complement * complement
+                                 + std::numbers::sqrt2 * coefficient * complement
+                                 + coefficient * coefficient;
+        const double reciprocal = 1.0 / denominator;
+        a1 = complement * complement * reciprocal;
+        a2 = coefficient * complement * reciprocal;
+        a3 = coefficient * coefficient * reciprocal;
+    }
 }
 
 void AdiShaper::Split::reset() noexcept {
@@ -225,7 +332,7 @@ bool AdiShaper::Split::finishBlock() noexcept {
     return repaired;
 }
 
-void AdiShaper::updateSplits(StageData& stage) const noexcept {
+void AdiShaper::updateSplits(StageData& stage, bool cold) const noexcept {
     // The two cutoff controls span ten octaves, with half an octave
     // reserved above the lower edge. Keep the requested Hz for later edits.
     constexpr double bottomHz = 20.601722307054366;
@@ -233,8 +340,8 @@ void AdiShaper::updateSplits(StageData& stage) const noexcept {
     constexpr double highestLowerHz = 512.0 * lowestUpperHz;
     const double lower = std::clamp(stage.lowHz, bottomHz, highestLowerHz);
     const double upperFloor = stage.layout == 3 ? lower * std::numbers::sqrt2 : lowestUpperHz;
-    stage.low.prepare(lower, sampleRate_);
-    stage.high.prepare(std::max(stage.highHz, upperFloor), sampleRate_);
+    stage.low.setFrequency(lower, sampleRate_, cold);
+    stage.high.setFrequency(std::max(stage.highHz, upperFloor), sampleRate_, cold);
 }
 
 void AdiShaper::updateStep(CurveBand& band) const noexcept {
@@ -316,7 +423,7 @@ void AdiShaper::layout(StageData& stage, int value) noexcept {
     stage.low.reset();
     stage.high.reset();
     stage.layout = value;
-    updateSplits(stage);
+    updateSplits(stage, true);
     updateActivity(stage);
 }
 
@@ -340,6 +447,7 @@ void AdiShaper::restart(Stage kind) noexcept {
     auto& stage = stages_[static_cast<std::size_t>(kind)];
     stage.low.reset();
     stage.high.reset();
+    updateSplits(stage, true);
     for (auto& band : stage.bands) {
         band.phase = band.hertz ? 0 : cyclePhase(quarterNotes_ / band.beats);
         updateStep(band);
@@ -592,7 +700,7 @@ void AdiShaper::DriveDryDelay::advance(float& l, float& r) noexcept {
     index = (index + 1) % samples.size();
 }
 
-template <AdiShaper::Stage kind>
+template <AdiShaper::Stage kind, bool moving>
 void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
                        float* outL, float* outR, std::size_t frames) noexcept {
     if constexpr (kind == Stage::Pan) {
@@ -676,7 +784,22 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
     const bool hasLow = (stage.layout & 1) != 0;
     const bool hasHigh = (stage.layout & 2) != 0;
     const bool flatPhase = (!hasLow || stage.low.slope == 0) && (!hasHigh || stage.high.slope == 0);
+    if (hasLow) stage.low.rendered = true;
+    if (hasHigh) stage.high.rendered = true;
+    bool moveLow = false, moveHigh = false;
+    std::size_t nextCheck = 0;
+    double logNyquist = 0;
+    if constexpr (moving) logNyquist = std::log2(sampleRate_) - 1.0;
     for (std::size_t i = 0; i < frames; ++i) {
+        if constexpr (moving) {
+            if (i == nextCheck) {
+                moveLow = hasLow && stage.low.startChunk(sampleRate_);
+                moveHigh = hasHigh && stage.high.startChunk(sampleRate_);
+                nextCheck = moveLow || moveHigh ? i + std::min<std::size_t>(512, frames - i) : frames;
+            }
+            if (moveLow) stage.low.advanceFrequency(splitStep_, logNyquist);
+            if (moveHigh) stage.high.advanceFrequency(splitStep_, logNyquist);
+        }
         float dryL = inL[i], dryR = inR[i];
         float midL = dryL, midR = dryR;
         // First-order splits reconstruct the source exactly. Its aligned dry
@@ -735,6 +858,8 @@ bool AdiShaper::renderFixedWidth(StageData& stage, float* left, float* right, st
         if (!band.primary.constant) return false;
         widths[i] = band.active ? band.heldGains[0].left : 1.0f;
     }
+    stage.low.rendered = true;
+    stage.high.rendered = true;
     for (std::size_t i = 0; i < frames; ++i) {
         const float dryL = left[i], dryR = right[i];
         const auto bands = stage.firstOrderBands(dryL, dryR);
@@ -766,9 +891,15 @@ void AdiShaper::process(const float* inL, const float* inR, float* outL, float* 
             if (!stage.enabled) return;
         }
         if (!stage.active && stage.layout == 0) return;
-        bool rendered = false;
-        if constexpr (kind == Stage::Width) rendered = renderFixedWidth(stage, outL, outR, frames);
-        if (!rendered) render<kind>(stage, outL, outR, outL, outR, frames);
+        const bool moving = ((stage.layout & 1) && stage.low.changing) || ((stage.layout & 2) && stage.high.changing);
+        if (moving) {
+            render<kind, true>(stage, outL, outR, outL, outR, frames);
+        } else if constexpr (kind == Stage::Width) {
+            if (!renderFixedWidth(stage, outL, outR, frames))
+                render<kind, false>(stage, outL, outR, outL, outR, frames);
+        } else {
+            render<kind, false>(stage, outL, outR, outL, outR, frames);
+        }
         bool repaired = false;
         if (stage.layout != 0) {
             repaired |= stage.low.finishBlock();
