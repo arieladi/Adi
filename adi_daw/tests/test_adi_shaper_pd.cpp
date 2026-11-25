@@ -21,7 +21,7 @@ using adi::device::ParamValue;
 void check(bool condition, const char* description) {
     if (!condition) throw std::runtime_error(description);
 }
-auto open() {
+auto open(int maxFrames = 64) {
     adi::rows::PluginRef reference;
     reference.format = "internal";
     reference.uid = uid;
@@ -30,7 +30,7 @@ auto open() {
     std::string error;
     auto device = adi::device::makeBuiltinDevice(request, error);
     if (!device) throw std::runtime_error(error);
-    device->prepare(48000, 64);
+    device->prepare(48000, maxFrames);
     return device;
 }
 void set(DeviceInstance& device, int id, double value) {
@@ -377,6 +377,63 @@ void savedSplitFrequency() {
 }
 
 
+void samePositionTimeLocate() {
+    using Shaper = adi::dsp::AdiShaper;
+    constexpr auto mid = Shaper::Band::Mid;
+    constexpr int delay = 239; // Whole-frame tap at the bottom of the shortest fixed range at 48 kHz.
+    using Stereo = std::array<std::array<float, 352>, 2>;
+    Stereo input{};
+    input[0][0] = .5f;
+    input[1][0] = -.75f;
+    input[0][97] = -.25f;
+    input[1][97] = .125f;
+
+    for (bool locate : {false, true}) {
+        auto device = open(256);
+        set(*device, Shaper::TimeOn + 1, 1.);
+        set(*device, Shaper::timeParam(mid, Shaper::TimeRange) + 1, 5. / 7.);
+        for (int point = Shaper::Time1; point <= Shaper::Time8; ++point)
+            set(*device, Shaper::timeParam(mid, static_cast<Shaper::TimeControl>(point)) + 1, 0.);
+
+        adi::engine::DeviceTransport position;
+        position.playing = false;
+        position.bpm = 120.;
+        position.sample = 48000;
+        position.quarterNotes = 2.;
+        adi::engine::TransportInfo transport;
+        transport.playing = false;
+        transport.bpm = position.bpm;
+        transport.timelineSample = position.sample;
+        transport.transportRevision = 4;
+        Stereo actual{};
+        const auto render = [&](int start, int frames) {
+            const float* inputs[]{input[0].data() + start, input[1].data() + start};
+            float* outputs[]{actual[0].data() + start, actual[1].data() + start};
+            adi::engine::NodeIo io;
+            io.transport = &transport;
+            io.deviceTransport = &position;
+            io.sampleRate = 48000.;
+            io.frames = frames;
+            io.channels = 2;
+            io.in = inputs;
+            io.out = outputs;
+            device->process(io);
+        };
+        render(0, 83);
+        if (locate) ++transport.transportRevision;
+        render(83, 237);
+        render(320, 32);
+
+        Stereo expected{};
+        for (std::size_t channel = 0; channel < expected.size(); ++channel) {
+            if (!locate) expected[channel][delay] = input[channel][0];
+            expected[channel][97 + delay] = input[channel][97];
+        }
+        check(actual == expected, locate ? "stopped locate clears earlier Time audio once and plays new stereo input"
+                                        : "a repeated stopped position preserves both stereo Time markers");
+    }
+}
+
 void timePd() {
     using Engine = adi::device::LibPdEngine;
     using Shaper = adi::dsp::AdiShaper;
@@ -610,6 +667,7 @@ int main() try {
     modulationPd(editedDir, false, false, false, true);
     modulationPd(editedDir, false, false, true, true);
     timePd();
+    samePositionTimeLocate();
     std::puts("ADI-Shaper built-in state, transport and editable modulation parity passed.");
     return 0;
 } catch (const std::exception& error) {
