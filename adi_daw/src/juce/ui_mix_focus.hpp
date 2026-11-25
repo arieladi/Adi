@@ -68,6 +68,9 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     void clearBarScopeData();
     void updateBarScope(const SnapshotReader &, const std::shared_ptr<SharedAnalysis> &);
     void clearScopeSum();
+    void freezeScope();
+    void thawScope();
+    [[nodiscard]] std::optional<std::uint64_t> scopeDisplayFloor() const noexcept;
     void mouseDown(const juce::MouseEvent &) override;
     void mouseDrag(const juce::MouseEvent &) override;
     void mouseUp(const juce::MouseEvent &) override;
@@ -113,7 +116,7 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     juce::Component strip_;
     juce::ComboBox scopeDisplay_, scopeChannels_;
     juce::TextButton alignMeasure_{"Measure Align"}, scopeLayer_{"Layer"};
-    juce::ToggleButton differenceSpectrum_{"Spectrum"};
+    juce::ToggleButton differenceSpectrum_{"Spectrum"}, scopeFreeze_{"Freeze"};
     juce::Label alignReadout_, scopeCursor_, scopeRegionReadout_;
     std::optional<juce::Point<float>> scopeCursorPoint_;
     struct ScopeRegion {
@@ -130,7 +133,7 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     std::vector<FocusScopeLayerAdjustment> scopeAdjustments_;
     bool scopeOffsetsInMilliseconds_ = false;
     std::optional<FocusScopeRange> scopeRange_;
-    std::optional<std::uint64_t> scopeWaveformRevision_;
+    std::optional<std::uint64_t> scopeWaveformRevision_, frozenScopeRevision_;
     SharedAnalysis::BarScopeLease barScope_;
     std::shared_ptr<const engine::TempoMap> barTempo_;
     std::vector<textproj::Meter> barMeters_;

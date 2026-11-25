@@ -82,6 +82,7 @@ struct MixFocusTestAccess {
     static bool differencePulseAt(const MixFocus &focus, float position, float value) {
         return scopePulseAt(focus.plot_, focus.scopeDifferencePaths_[0], position, value);
     }
+    static bool hasScopeTrace(const MixFocus &focus) { return focus.scopeHasTrace_; }
     static bool hasDifference(const MixFocus &focus) { return focus.differenceRenderedRevision_.has_value(); }
     static auto scopeWaveformRange(const MixFocus &focus) { return focus.scopeRange_; }
     static auto scopeReading(const MixFocus &focus) { return focus.sum_; }
@@ -3202,6 +3203,12 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
     };
     frame();
     const SnapshotReader initial(root->current());
+    juce::ToggleButton *freeze = nullptr;
+    for (auto *component : focus.getChildren())
+        if (component->getTitle() == "Freeze Focus Scope")
+            freeze = dynamic_cast<juce::ToggleButton *>(component);
+    check(freeze && freeze->isVisible() && freeze->getButtonText() == "Freeze" && !freeze->isEnabled(),
+          "Focus Scope shows Freeze but cannot hold a picture before it has received aligned audio");
     const auto &meters = initial.meters();
     check(root->playing() && root->bpm() == 120. && doc->mailbox().sampleRate() == rate &&
               (meters.empty() || (meters[0].numerator == 4 && meters[0].denominator == 4)) &&
@@ -3506,6 +3513,104 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
         frame();
         check(!MixFocusTestAccess::hasDifference(focus),
               "selecting starred Main as the other channel leaves Difference without a pair");
+    }
+    if (freeze && display && channels) {
+        display->setSelectedId(1, juce::sendNotificationSync);
+        focus.select(second);
+        frame();
+        writeUntil(2 * bar);
+        const auto shown = MixFocusTestAccess::scopeWaveformRange(focus);
+        const auto peak = MixFocusTestAccess::scopeReading(focus);
+        const auto phase = MixFocusTestAccess::scopePhase(focus);
+        check(shown && shown->frames == static_cast<std::size_t>(bar) && peak && freeze->isEnabled(),
+              "a complete aligned Focus Scope bar enables Freeze");
+        if (shown && shown->frames == static_cast<std::size_t>(bar) && peak && freeze->isEnabled()) {
+            const auto setFrozen = [&](bool value) {
+                freeze->setToggleState(value, juce::dontSendNotification);
+                if (freeze->onClick) freeze->onClick();
+            };
+            MixFocusTestAccess::dragScopeRegion(focus, regionStart, regionEnd);
+            const auto selectedRegion = MixFocusTestAccess::scopeRegionText(focus);
+            const auto beforeFreeze = broker->stats();
+            setFrozen(true);
+            const auto held = broker->stats();
+            check(!selectedRegion.isEmpty() && freeze->getToggleState() && beforeFreeze.taps == 2 &&
+                      held.taps == 0 && held.domains == 0 && held.consumers == 0,
+                  "Freeze releases all of this Scope's tap and worker leases immediately");
+            const auto stillHeld = [&] {
+                const auto pictured = MixFocusTestAccess::scopeWaveformRange(focus);
+                const auto sum = MixFocusTestAccess::scopeReading(focus);
+                return freeze->getToggleState() && pictured && pictured->first == shown->first &&
+                       pictured->frames == shown->frames && pictured->sampleRate == shown->sampleRate &&
+                       sum && sum->peak == peak->peak && sum->rms == peak->rms &&
+                       MixFocusTestAccess::scopePhase(focus) == phase &&
+                       MixFocusTestAccess::scopeRegionText(focus) == selectedRegion;
+            };
+
+            driver.play(false);
+            frame();
+            MixFocusTestAccess::moveScopePointer(focus, .75f, .25f);
+            check(stillHeld(), "Stop and pointer motion keep the frozen heard interval and selected region");
+            check(doc->mailbox().post(TransportMailbox::Command::Locate, bar / 2),
+                  "queue a Locate while the Scope holds a different heard interval");
+            frame();
+            doc->mailbox().drain(driver);
+            frame();
+            check(stillHeld(), "a pending and acknowledged Locate leave the explicit frozen interval intact");
+            driver.play(true);
+            frame();
+            writeUntil(bar / 2 + 4 * chunk);
+            const auto frozenBounds = focus.getBounds();
+            focus.setBounds(frozenBounds.withWidth(frozenBounds.getWidth() - 8));
+            check(stillHeld() && MixFocusTestAccess::hasScopeTrace(focus),
+                  "resizing a frozen Scope projects the retained waveform without replacing its measurement");
+            focus.setBounds(frozenBounds);
+            const auto still = broker->stats();
+            check(stillHeld() && still.taps == 0 && still.domains == 0 && still.consumers == 0 &&
+                      still.frameRequests == held.frameRequests && still.workerPasses == held.workerPasses &&
+                      still.transforms == held.transforms && still.cursorReads == held.cursorReads &&
+                      still.publications == held.publications && History(doc->store()).head() == head,
+                  "frozen Scope reads no new samples, schedules no work and authors no edit");
+
+            SharedAnalysis::Request request{first};
+            request.channel = SharedAnalysis::Channel::StereoPower;
+            request.outputs = SharedAnalysis::Scope;
+            auto sibling = broker->acquire(request);
+            writeUntil(driver.position() + 4 * chunk);
+            const auto siblingPicture = sibling.read();
+            check(siblingPicture && stillHeld() && broker->stats().taps == 1 && broker->stats().consumers == 1,
+                  "only the sibling Scope reads the first source while Focus holds its picture");
+            const auto thawedAt = driver.position();
+            setFrozen(false);
+            frame();
+            broker->pump();
+            frame();
+            const auto stale = MixFocusTestAccess::scopeWaveformRange(focus);
+            check(!freeze->getToggleState() && !stale && !MixFocusTestAccess::hasScopeTrace(focus) &&
+                      MixFocusTestAccess::scopeRegionText(focus).isEmpty() &&
+                      sibling.read() == siblingPicture && broker->stats().taps == 2,
+                  "thaw releases the held picture and rejects the sibling's pre-thaw window");
+            writeUntil(3 * bar);
+            const auto fresh = MixFocusTestAccess::scopeWaveformRange(focus);
+            check(fresh && fresh->first >= thawedAt && freeze->isEnabled(),
+                  "a fresh post-thaw capture restores the Scope's own picture");
+
+            if (fresh && freeze->isEnabled()) {
+                MixFocusTestAccess::dragScopeRegion(focus, regionStart, regionEnd);
+                const bool hadRegion = !MixFocusTestAccess::scopeRegionText(focus).isEmpty();
+                const auto owner = std::move(root->sharedAnalysis);
+                setFrozen(true);
+                check(!freeze->getToggleState() && MixFocusTestAccess::hasScopeTrace(focus),
+                      "Freeze refuses the previous analysis owner before the next component frame");
+                root->sharedAnalysis = owner;
+                setFrozen(true);
+                channels->setSelectedId(static_cast<int>(FocusScopeChannels::Mid), juce::sendNotificationSync);
+                frame();
+                check(hadRegion && !freeze->getToggleState() && MixFocusTestAccess::scopeRegionText(focus).isEmpty(),
+                      "changing the channel projection invalidates the held Scope and its region");
+            }
+            sibling.reset();
+        }
     }
     const auto visibleBounds = focus.getBounds();
     focus.setTopLeftPosition(peer.getWidth(), 0);

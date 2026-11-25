@@ -54,6 +54,7 @@ MixFocus::MixFocus(AdiRootComponent &root) : root_(root) {
     scope.setTitle("Synchronous Focus scope");
     scope.setTooltip("Show the Focus channels' post-fader waveforms and their sum when aligned.");
     scope.onClick = [this] {
+        if (!scope.getToggleState()) thawScope();
         auto retired = scope.getToggleState() ? SharedAnalysis::BarScopeLease{} : std::move(barScope_);
         if (!scope.getToggleState()) clearBarScopeData();
         updateMatchControls();
@@ -71,6 +72,7 @@ MixFocus::MixFocus(AdiRootComponent &root) : root_(root) {
     scopeDisplay_.addItem("Difference", static_cast<int>(ScopeDisplay::Difference));
     scopeDisplay_.setSelectedId(static_cast<int>(ScopeDisplay::Overlay), juce::dontSendNotification);
     scopeDisplay_.onChange = [this] {
+        thawScope();
         clearScopeRegion();
         scopeCursor_.setVisible(false);
         updateScopeDifference();
@@ -89,6 +91,7 @@ MixFocus::MixFocus(AdiRootComponent &root) : root_(root) {
     scopeChannels_.addItem("Side", static_cast<int>(FocusScopeChannels::Side));
     scopeChannels_.setSelectedId(static_cast<int>(FocusScopeChannels::Stereo), juce::dontSendNotification);
     scopeChannels_.onChange = [this] {
+        thawScope();
         clearScopeRegion();
         scopeCursor_.setVisible(false);
         updateScopeDifference();
@@ -104,6 +107,14 @@ MixFocus::MixFocus(AdiRootComponent &root) : root_(root) {
     differenceSpectrum_.setTooltip("Show the spectrum of the two aligned scope channels after subtraction.");
     differenceSpectrum_.onClick = [this] { updateScopeDifference(); repaint(); };
     addChildComponent(differenceSpectrum_);
+    scopeFreeze_.setTitle("Freeze Focus Scope");
+    scopeFreeze_.setTooltip("Hold the displayed waveform and measurement.");
+    scopeFreeze_.setEnabled(false);
+    scopeFreeze_.onClick = [this] {
+        if (scopeFreeze_.getToggleState()) freezeScope();
+        else thawScope();
+    };
+    addChildComponent(scopeFreeze_);
     learnMatch.setTooltip("Capture the selected channel's spectrum difference toward the starred channel. Plays unchanged.");
     learnMatch.onClick = [this] { learnMatchPreview(); };
     clearMatch.onClick = [this] { clearMatchPreview(); updateMatchControls(); };
@@ -174,6 +185,7 @@ void MixFocus::setMembers(const std::vector<std::int64_t> &ids) {
     setMembers(ids, false);
 }
 void MixFocus::setMembers(const std::vector<std::int64_t> &ids, bool promoteSoloed) {
+    thawScope();
     const SnapshotReader snapshot(root_.current());
     std::vector<Member> next;
     for (auto id : ids) {
@@ -295,6 +307,7 @@ void MixFocus::updateMatchControls() {
     scopeDisplay_.setVisible(!together);
     scopeChannels_.setVisible(!together);
     scopeLayer_.setVisible(!together);
+    scopeFreeze_.setVisible(!together);
     updateScopeLayerControl();
     learnMatch.setVisible(together);
     clearMatch.setVisible(together && match_.has_value());
@@ -369,6 +382,7 @@ void MixFocus::applyScopeLayerAction(std::int64_t track, std::uint64_t membershi
     adjustment.offsetSamples = std::clamp(adjustment.offsetSamples, -limit, limit);
     if (adjustment == layer->scopeAdjustment) return;
     layer->scopeAdjustment = adjustment;
+    thawScope();
     updateScopeLayerControl();
     updateScopeLayerAdjustments();
     shownBar_.reset();
@@ -542,6 +556,10 @@ void MixFocus::hear(bool group) {
 }
 void MixFocus::drop() {
     ++membershipPose_;
+    if (frozenScopeRevision_) alignment_ = Alignment::WaitForFresh;
+    frozenScopeRevision_.reset();
+    scopeFreeze_.setToggleState(false, juce::dontSendNotification);
+    scopeFreeze_.setEnabled(false);
     clearAlign();
     auto retiredBar = std::move(barScope_);
     std::vector<SharedAnalysis::Lease> released;
@@ -568,7 +586,7 @@ void MixFocus::drop() {
     redraw_ = true;
 }
 void MixFocus::dropIfActive() {
-    if (barScope_ || shownBar_ || !broker_.expired() ||
+    if (frozenScopeRevision_ || barScope_ || shownBar_ || !broker_.expired() ||
         std::any_of(members_.begin(), members_.end(), [](const auto &member) { return member.outputs != 0; }))
         drop();
 }
@@ -659,6 +677,13 @@ void MixFocus::frame(const SnapshotReader &reader) {
         generation_ = root_.generation();
         snapshot_ = reader.get();
     }
+    if (frozenScopeRevision_) {
+        const auto heldBroker = broker_.lock();
+        if (scope.getToggleState() && plotShowing() &&
+            heldBroker && heldBroker == root_.sharedAnalysis && heldBroker->active()) return;
+        thawScope();
+        if (!alive || !plotShowing() || suspended_) return;
+    }
     const bool playing = root_.playing();
     const auto &transport = reader.transport();
     const bool looping = playing && transport.loopEnabled && transport.hasLoop;
@@ -746,6 +771,12 @@ void MixFocus::frame(const SnapshotReader &reader) {
                 else if (*end > root_.renderedSamplePosition())
                     next = member.data && member.data->sourceEpoch == next->sourceEpoch ? member.data : nullptr;
             }
+            if (next && playing && alignment_ == Alignment::WaitForFresh) {
+                const auto &boundary = member.afterLoop;
+                if (!boundary || !next->advancing || next->generation < boundary->generation ||
+                    (next->generation == boundary->generation && next->firstSequence < boundary->written))
+                    next.reset();
+            }
             if (next != member.data) {
                 if (!scopeShown || !shownBar_) redraw_ = true;
                 member.data = std::move(next);
@@ -755,10 +786,7 @@ void MixFocus::frame(const SnapshotReader &reader) {
     }
     if (playing && alignment_ == Alignment::WaitForFresh && !members_.empty() &&
         std::all_of(members_.begin(), members_.end(), [](const auto &member) {
-            if (!member.afterLoop || !member.data || !member.data->advancing) return false;
-            const auto &boundary = *member.afterLoop;
-            return member.data->generation > boundary.generation ||
-                   (member.data->generation == boundary.generation && member.data->firstSequence >= boundary.written);
+            return member.afterLoop && member.data;
         })) {
         alignment_ = Alignment::Ready;
         redraw_ = true;
@@ -799,6 +827,7 @@ void MixFocus::frame(const SnapshotReader &reader) {
         if (scopeRegion_ && !scopeRegionCurrent()) clearScopeRegion();
         if (scopeCursor_.isVisible() && !scopeCursorCurrent()) scopeCursor_.setVisible(false);
     }
+    scopeFreeze_.setEnabled(scopeTraceRevision().has_value());
 }
 void MixFocus::clearBarScopeData() {
     redraw_ |= static_cast<bool>(shownBar_);
@@ -1022,6 +1051,11 @@ void MixFocus::updateScopeDifference() {
                 fold, differenceRequest_ ? differenceRequest_->selection : 0, spectrum};
     }
     if (next == differenceRequest_) return;
+    if (frozenScopeRevision_) {
+        // Thaw clears the former picture and registers the new source pair.
+        thawScope();
+        return;
+    }
     clearScopeRegion();
     scopeCursor_.setVisible(false);
     if (next) next->selection = ++differenceSelection_;
@@ -1100,7 +1134,7 @@ void MixFocus::rebuildScope() {
     };
     const bool aligned = alignment_ == Alignment::Ready;
     if (showsScopeDifference()) {
-        const auto locate = root_.settledLocateRevision();
+        const auto locate = scopeDisplayFloor();
         if (!differenceRequest_ || !aligned || !locate || !plotColumns) return;
         if (differenceRequest_->spectrum) {
             if (!shownBar_ || shownBar_->transportRevision < *locate) return;
@@ -1282,6 +1316,43 @@ void MixFocus::rebuildScope() {
         }
     }
 }
+void MixFocus::freezeScope() {
+    const auto revision = scopeTraceRevision();
+    const auto broker = broker_.lock();
+    if (!revision || redraw_ || !plotShowing() || !broker || broker != root_.sharedAnalysis || !broker->active()) {
+        scopeFreeze_.setToggleState(false, juce::dontSendNotification);
+        return;
+    }
+    if (frozenScopeRevision_) return;
+    if (scopeRegion_ && scopeRegion_->dragging) clearScopeRegion();
+    if (!shownBar_) {
+        const SnapshotReader reader(root_.current());
+        barTempo_ = reader.get() ? reader.get()->tempo : nullptr;
+        barMeters_ = reader.meters();
+    }
+    std::vector<SharedAnalysis::Lease> retired;
+    retired.reserve(members_.size());
+    frozenScopeRevision_ = revision;
+    auto retiredBar = std::move(barScope_);
+    for (auto &member : members_) {
+        member.afterLoop.reset();
+        retired.push_back(std::move(member.lease));
+        member.outputs = 0;
+    }
+    repaint();
+}
+
+void MixFocus::thawScope() {
+    if (!frozenScopeRevision_) return;
+    const SafePointer<MixFocus> alive(this);
+    drop();
+    if (alive) repaint();
+}
+
+std::optional<std::uint64_t> MixFocus::scopeDisplayFloor() const noexcept {
+    return frozenScopeRevision_ ? frozenScopeRevision_ : root_.settledLocateRevision();
+}
+
 void MixFocus::mouseDown(const juce::MouseEvent &event) {
     if (!event.mods.isLeftButtonDown() || !plot_.contains(event.position)) return;
     clearScopeRegion();
@@ -1404,7 +1475,7 @@ void MixFocus::mouseExit(const juce::MouseEvent &) {
 std::optional<std::uint64_t> MixFocus::scopeTraceRevision() const noexcept {
     if (!scopeRange_ || !scopePlaying_ || suspended_ || alignment_ != Alignment::Ready || !scope.getToggleState())
         return {};
-    const auto locate = root_.settledLocateRevision();
+    const auto locate = scopeDisplayFloor();
     if (!locate) return {};
     if (showsScopeDifference()) {
         if (differenceSpectrum_.getToggleState() || !differenceRenderedRevision_ ||
@@ -1448,8 +1519,9 @@ void MixFocus::refreshScopeCursor(const SnapshotReader &reader) {
     const auto decibels = magnitude > 0. ? juce::String(20. * std::log10(magnitude), 1) : juce::String("-inf");
 
     juce::String reading;
-    if (const auto *tempo = shownBar_ ? barTempo_.get() : reader.tempo(); tempo && sample >= 0) {
-        const auto at = barPosition(tempo->secondsToTicks(seconds), shownBar_ ? barMeters_ : reader.meters());
+    const bool heldTempo = shownBar_ || frozenScopeRevision_;
+    if (const auto *tempo = heldTempo ? barTempo_.get() : reader.tempo(); tempo && sample >= 0) {
+        const auto at = barPosition(tempo->secondsToTicks(seconds), heldTempo ? barMeters_ : reader.meters());
         reading = juce::String(static_cast<juce::int64>(at.bar)) + "." +
                   juce::String(static_cast<juce::int64>(at.beat)) + "   ";
     }
@@ -1485,13 +1557,14 @@ void MixFocus::resized() {
     sumLabel_ = titleRow.getWidth() >= 4 * look::mixFocusSourceWidth
                     ? titleRow.removeFromRight(2 * look::mixFocusSourceWidth) : juce::Rectangle<int>{};
     auto actions = r.removeFromBottom(buttonRow);
-    const auto w = std::min(chipWidth, actions.getWidth() / 10);
+    const auto w = std::min(chipWidth, actions.getWidth() / (scope.getToggleState() ? 11 : 10));
     for (auto *button : {&star, &mute, &solo, &hearOne, &hearAll, &edit})
         button->setBounds(actions.removeFromLeft(w).reduced(hairline));
     scope.setBounds(actions.removeFromLeft(w).reduced(hairline));
     learnMatch.setBounds(actions.removeFromLeft(w).reduced(hairline));
     clearMatch.setBounds(actions.removeFromLeft(w).reduced(hairline));
     alignMeasure_.setBounds(actions.removeFromLeft(w).reduced(hairline));
+    scopeFreeze_.setBounds(actions.removeFromLeft(w).reduced(hairline));
     scopeDisplay_.setBounds(learnMatch.getBounds());
     scopeChannels_.setBounds(clearMatch.getBounds());
     scopeLayer_.setBounds(alignMeasure_.getBounds());
@@ -1500,8 +1573,10 @@ void MixFocus::resized() {
                     : juce::Rectangle<int>{};
     barScope_.setPhaseRequested(!phaseBar_.isEmpty());
     const auto nextPlot = r.reduced(plotInset).toFloat();
-    if (plot_ != nextPlot && scopeRegion_ && scopeRegion_->dragging) clearScopeRegion();
+    const bool changedPlot = plot_ != nextPlot;
+    if (changedPlot && scopeRegion_ && scopeRegion_->dragging) clearScopeRegion();
     plot_ = nextPlot;
+    if (changedPlot && frozenScopeRevision_) rebuildScope();
     auto cursorBounds = plot_.toNearestInt().reduced(look::gap);
     cursorBounds.setHeight(std::min(cursorBounds.getHeight(), look::fieldHeight));
     scopeCursor_.setFont(look::font(look::fontCaption));
@@ -1553,7 +1628,7 @@ void MixFocus::paint(juce::Graphics &g) {
     const bool differenceOnly = scopeShown && display == ScopeDisplay::Difference;
     bool differenceReady = false;
     if (differenceOnly && differenceRequest_ && differenceRenderedRevision_) {
-        const auto locate = root_.settledLocateRevision();
+        const auto locate = scopeDisplayFloor();
         differenceReady = locate && *differenceRenderedRevision_ >= *locate;
     }
     const bool wantsSum = scopeShown && (display == ScopeDisplay::Overlay || sumOnly);
@@ -1573,6 +1648,7 @@ void MixFocus::paint(juce::Graphics &g) {
             "   " + juce::String(1000. * static_cast<double>(scopeRange_->frames) / scopeRange_->sampleRate, 1) + " ms";
         if (sumShown && !sumOverRange && !sumOnly) title += "   Sum overlay";
     }
+    if (frozenScopeRevision_) title += "   Frozen";
     if (!scopeShown && match_) title += matchCaption_;
     const auto summaryBounds = differenceSpectrum_.isVisible() ? differenceSpectrum_.getBounds()
                                : alignReadout_.isVisible() ? alignReadout_.getBounds() : sumLabel_;
