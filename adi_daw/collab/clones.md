@@ -17,6 +17,29 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 25 November 2026 — PR requested for the three Drive fold shapes
+
+PR requested — `clones/shaper-fold-shapes` at `e234b4dc0` — Add per-band sine, triangle and saw folding to Drive. Lands after 3 December. All four official device suites passed in each Pd precision under Release MSVC with warnings as errors. The native and edited canvases reproduced the signed left and right markers for all three menu choices. Separate band selection, default Off, sparse recall, reset, the two sides of a saw wrap and 16 frames of latency across all three rates passed. All 3,009,600 prior-mode samples matched their baseline. All 752,400 switched-shape samples agreed across callback partitions.
+
+The first oversampled phase uses the strength from nine input frames earlier. The remaining phases use the strength from eight frames earlier. Two independent transitions and moving kick and bass identified this rule at all three rates. A shared symmetric filter at each oversampling ratio was calibrated on a separate broadband excerpt. Both rate-specific filters retain eight frames of interpolation and eight of decimation. With the authored contour and exact beat length, worst moving stereo RMS by shape was 0.00000030 sine, 0.00000011 triangle and 0.00000035 saw. Saw peak fell from 0.184984 with a uniform eight-frame control delay to 0.00000394.
+
+At 48 kHz the registered device and reference each ran five trials of 2,048 moving kick-and-bass callbacks per block size. The entries are median callback time and median trial p99, in microseconds.
+
+| Shape | Frames | ADI median / p99 | Reference median / p99 | ADI / reference callbacks over deadline |
+| --- | ---: | ---: | ---: | ---: |
+| Sine | 256 | 88.4 / 112.7 | 145.9 / 183.6 | 0 / 0 |
+| Triangle | 256 | 91.5 / 97.7 | 125.2 / 253.2 | 1 / 10 |
+| Saw | 256 | 91.5 / 105.5 | 117.3 / 141.4 | 0 / 1 |
+| Sine | 2,048 | 630.75 / 892.2 | 657.85 / 1,051.7 | 0 / 1 |
+| Triangle | 2,048 | 653.9 / 870.6 | 854.45 / 7,309.4 | 0 / 13 |
+| Saw | 2,048 | 636.8 / 825.3 | 798.5 / 922.0 | 0 / 0 |
+
+The long-block reference triangle timing had substantial scheduling interference. With Fold Off, ten trials per arm gave median CPU cycles +0.95% at 256 and −6.31% at 2,048 relative to main. In the stock host, all 2,304,000 stereo values matched direct DSP supplied with the identical physical cycle. Its four-quarter selection narrows to 3.9999992847442627 quarters. On the same curve this increases registered saw RMS to 0.00027751 and peak to 0.08184. Giving that curve exactly four quarters reduces RMS to 0.000000423. The normalized clock request remains with Devices.
+
+Of the ten programs with neutral auxiliary controls, seven improved over an otherwise matched saturation control in saved order and nine in fixed order. Six had exact contour timing, of which four improved in saved order and all six in fixed order. No archived program qualified for a triangle-only comparison under these conditions. All ten contain an additional unrepresented stage. The totals below 0.001 RMS remain 73 of 873 saved-order and 64 fixed-order. The independent reconstruction and private program captures are available to Win.
+
+The separate LD2 source intake in PLAN awaits the director's finished-device list. Devices already owns the common loudness meter on main. The recommendation is to keep that source intake with the later unified-device design.
+
 ## 25 November 2026 — PR requested for signed power saturation
 
 PR requested — `clones/shaper-power-saturation` at `53f80b476` — Add per-band signed power saturation to ADI-Shaper. Lands after 3 December. The three appended switches recall off. They affect only the saturation choice in their own band. All four Release MSVC suites passed in each Pd precision with warnings as errors. The portable scalar path also passed the focused Drive suite. All 1,504,800 legacy values matched exactly. Impulse latency stayed at 16 frames at all three rates.
