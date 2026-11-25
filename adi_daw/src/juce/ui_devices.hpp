@@ -75,7 +75,7 @@ class WrenchButton final : public juce::Button {
     WrenchButton() : juce::Button("Plug-In Window") {}
     void paintButton(juce::Graphics &, bool over, bool down) override;
 };
-// Color Cab's Impulse slot (MR 9.8; D5, N28, #414): a tile a sample file drops on, from the desktop
+// A built-in's sample slot (MR 9.8; D5, N28, #414): a tile a sample file drops on, from the desktop
 // or from the browser's Samples; Clear empties it. It names the slot and shows whether it is empty,
 // holds a sample, or holds one whose file is missing, from the snapshot's sample slots.
 class SampleTile final : public juce::Component,
@@ -109,10 +109,16 @@ class SampleTile final : public juce::Component,
 };
 // One device in the chain, as Live draws it: a title bar with the activator,
 // the name and Configure; the controls in columns that fit the strip's height.
-class DevicePanelView final : public juce::Component {
+class DevicePanelView final : public juce::Component, public juce::FileDragAndDropTarget {
   public:
     DevicePanelView(DeviceChainStrip &, const DevicePanelData &, bool mixCard = false);
     ~DevicePanelView() override;
+    // Samples are "dragged into Simpler" (Live 12 manual 30.11), not into one well: a file from the
+    // desktop dropped off the tile, on the controls or the title, goes to the tile's slot.
+    bool isInterestedInFileDrag(const juce::StringArray &files) override { return sample && !files.isEmpty(); }
+    void filesDropped(const juce::StringArray &files, int, int) override {
+        if (sample && !files.isEmpty()) sample->drop(files[0]);
+    }
     void present(const DevicePanelData &);
     bool frameEqSpectrum(const std::shared_ptr<SharedAnalysis> &);
     void releaseEqSpectrum();
@@ -179,8 +185,10 @@ class DevicePanelView final : public juce::Component {
     bool chooseFunctionBand(std::int32_t);
     bool chooseFunctionSection(const std::string &);
     std::string_view parameterPageUnavailableReason() const;
-    // Color Cab's Impulse tile, beside its controls (D5); none on any other device.
+    // A built-in's first declared [adi.sample] slot as a tile, beside its controls (D5; Color Cab's
+    // and Hybrid Reverb's Impulse, OneShot's Sample, the Sampler's Sample 1); none where none is declared.
     std::unique_ptr<SampleTile> sample;
+    bool sampleSlotsRead_ = false;
     static constexpr int kTileWidth = 96;
     bool configuring = false;
     // Optional owner hooks for retained views (Mix View); the ordinary device strip uses its
