@@ -17,6 +17,14 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 25 November 2026 — Rounded Drive across the private program bank
+
+Fifteen programs contained 16 affected bands with neutral auxiliary controls. The comparison restored 56 original contour points and their weights in the private fixture. Every program ran through three registered playback arms using its previous route, restored hard clipping, and the same restored route with the measured rounding. Six programs regained a Drive stage at its saved position. Each score compensates the measured latency of its own route, including the additional 16 frames where Drive was reinserted.
+
+Ten programs had representable Drive timing and contours. Against matched hard clipping, rounding improved seven of these in saved order and six in fixed order. Against the historical route it improved four and three respectively. Five additional programs use smoothing, followers or triggering that the comparison could only approximate. Across all 15, rounding improved nine saved-order and eleven fixed-order results against matched hard clipping. Thirteen of the 15 also lack at least one other source stage.
+
+The full previously measured bank retained 73 of 873 below 0.001 stereo RMS in saved order and 64 in fixed order, without threshold crossings. The sole treated program from the earlier 81 used unsupported smoothing. It improved over the historical route in both orders, improved over hard clipping in fixed order, and worsened over hard clipping in saved order. All 15 fixed and all 13 genuine saved-order historical hashes matched. Both saved-order fallbacks retained their historical threshold classification.
+
 ## 25 November 2026 — Rounded hard clipping in the three Drive bands
 
 `clones/shaper-rounded-clip` at `ce4fcfbf4` — Round the clipping knee independently in each Drive band. Lands after 3 December. The low, middle and high switches append as 928–930. They act only on the existing hard clipping style. A sparse state reopens with all switches off. The rounded curve reads strength aligned to the eight-frame interpolation history. Reset and mode entry prime from the incoming strength.
