@@ -274,31 +274,39 @@ void AdiShaperDrive::prepare(double sampleRate) noexcept {
     if (!(sampleRate > 0 && std::isfinite(sampleRate))) return;
     if (sampleRate_ != sampleRate) {
         sampleRate_ = sampleRate;
-        factor_ = sampleRate < 70000.0 ? 4 : 2;
-        taps_ = 16*factor_+1;
-        const double cutoff = factor_ == 4 ? .44 : .48;
-        constexpr double beta = 8.5;
-        const double windowScale = 1.0/besselI0(beta);
-        double sum = 0;
-        for (int i=0; i<taps_; ++i) {
-            const double offset = static_cast<double>(i-8*factor_)/factor_;
-            const double s = 2.0*std::numbers::pi*cutoff*offset;
-            const double t = offset/8;
-            const double h = (s == 0 ? 1.0 : std::sin(s)/s)
-                           * besselI0(beta*std::sqrt(std::max(0.0,1.0-t*t)))*windowScale;
-            legacyFilters_.down[static_cast<std::size_t>(i)] = static_cast<float>(h);
-            sum += h;
+        factor_ = sampleRate >= 176400.0 ? 1 : (sampleRate >= 88200.0 ? 2 : 4);
+        previousDrive_ = -1.0f;
+        if (factor_ > 1) {
+            taps_ = 16*factor_+1;
+            const double cutoff = factor_ == 4 ? .44 : .48;
+            constexpr double beta = 8.5;
+            const double windowScale = 1.0/besselI0(beta);
+            double sum = 0;
+            for (int i=0; i<taps_; ++i) {
+                const double offset = static_cast<double>(i-8*factor_)/factor_;
+                const double s = 2.0*std::numbers::pi*cutoff*offset;
+                const double t = offset/8;
+                const double h = (s == 0 ? 1.0 : std::sin(s)/s)
+                               * besselI0(beta*std::sqrt(std::max(0.0,1.0-t*t)))*windowScale;
+                legacyFilters_.down[static_cast<std::size_t>(i)] = static_cast<float>(h);
+                sum += h;
+            }
+            const auto taps = static_cast<std::size_t>(taps_);
+            for (std::size_t i=0; i<taps; ++i) {
+                legacyFilters_.down[i] = static_cast<float>(legacyFilters_.down[i]/sum);
+                const auto edge = std::min(i, taps - 1 - i);
+                shapingFilters_.down[i] = static_cast<float>(factor_ == 4 ? drive_detail::fourfoldTaps[edge]
+                                                                       : drive_detail::twofoldTaps[edge]);
+            }
+            legacyFilters_.preparePhases(factor_, taps_);
+            shapingFilters_.preparePhases(factor_, taps_);
         }
-        const auto taps = static_cast<std::size_t>(taps_);
-        for (std::size_t i=0; i<taps; ++i) {
-            legacyFilters_.down[i] = static_cast<float>(legacyFilters_.down[i]/sum);
-            const auto edge = std::min(i, taps - 1 - i);
-            shapingFilters_.down[i] = static_cast<float>(factor_ == 4 ? drive_detail::fourfoldTaps[edge]
-                                                                   : drive_detail::twofoldTaps[edge]);
+        if (factor_ == 1) {
+            const double warp = std::tan(std::numbers::pi * 10.0 / sampleRate);
+            dcRate_ = static_cast<float>(2.0 * warp / (1.0 + warp));
+        } else {
+            dcRate_ = 1.0-std::exp(-2.0*std::numbers::pi*10.0/sampleRate);
         }
-        legacyFilters_.preparePhases(factor_, taps_);
-        shapingFilters_.preparePhases(factor_, taps_);
-        dcRate_ = 1.0-std::exp(-2.0*std::numbers::pi*10.0/sampleRate);
     }
     reset();
 }
@@ -521,7 +529,16 @@ void AdiShaperDrive::writePhases(const Phases& phases, std::size_t head) noexcep
         }
     } else
 #endif
-    if constexpr (Style == Response::Power) {
+    if constexpr (Style == Response::Power && Factor == 1) {
+        Stereo wet{};
+        for (std::size_t ch = 0; ch < wet.size(); ++ch) {
+            const double z = phases[0][ch] * current_.pre;
+            channels_[ch].lastZ = z;
+            const double y = current_.active ? std::copysign(std::pow(std::abs(z), current_.exponent), z) : z;
+            wet[ch] = static_cast<float>(y * current_.post);
+        }
+        wet_[head] = wet_[head + ringSize] = wet;
+    } else if constexpr (Style == Response::Power) {
         for (std::size_t p = 0; p < Factor; p += 2) {
             const Transfer& first = p == 0 ? first_ : current_;
             const PowerPair z{{
@@ -538,7 +555,7 @@ void AdiShaperDrive::writePhases(const Phases& phases, std::size_t head) noexcep
             wet_[head-p-1] = wet_[head-p-1+ringSize] = b;
         }
     } else {
-        const bool fading = driveFade_ > 0.0 && driveFade_ < 1.0;
+        const bool fading = Factor > 1 && driveFade_ > 0.0 && driveFade_ < 1.0;
         for (std::size_t p = 0; p < Factor; ++p) {
             Stereo wet{};
             for (std::size_t c = 0; c < 2; ++c) {
@@ -591,7 +608,11 @@ AdiShaperDrive::StereoSum AdiShaperDrive::decimate(const Stereo* history, const 
 template<int Factor>
 AdiShaperDrive::StereoSum AdiShaperDrive::render(const Stereo* input) noexcept {
     const auto& filters = usesDelayedControl() ? shapingFilters_ : legacyFilters_;
-    const auto phases = interpolate<Factor>(input, filters);
+    Phases phases{};
+    if constexpr (Factor == 1)
+        phases[0] = {(*input)[0], (*input)[1]};
+    else
+        phases = interpolate<Factor>(input, filters);
     constexpr int ringSize = inputs * Factor;
     wetHead_ = wetHead_ == 0 ? ringSize - Factor : wetHead_ - Factor;
     const auto head = static_cast<std::size_t>(wetHead_) + Factor - 1;
@@ -605,11 +626,16 @@ AdiShaperDrive::StereoSum AdiShaperDrive::render(const Stereo* input) noexcept {
     case Response::Saw: writePhases<Factor, Response::Saw>(phases, head); break;
     default: writePhases<Factor, Response::Saturate>(phases, head); break;
     }
-    return decimate<Factor>(wet_.data() + head, filters);
+    if constexpr (Factor == 1) {
+        const auto& delayed = wet_[head + latencySamples];
+        return {delayed[0], delayed[1]};
+    } else {
+        return decimate<Factor>(wet_.data() + head, filters);
+    }
 }
 
 void AdiShaperDrive::process(float& left, float& right, float driveNormalized) noexcept {
-    if (usesDelayedControl()) {
+    if (factor_ > 1 && usesDelayedControl()) {
         if (!std::isfinite(driveNormalized))
             driveNormalized = strengthHead_ < controlDelay ? strengthHistory_[(strengthHead_ + controlDelay-1) % controlDelay] : 0.0f;
         driveNormalized = std::clamp(driveNormalized, 0.0f, 1.0f);
@@ -633,7 +659,13 @@ void AdiShaperDrive::process(float& left, float& right, float driveNormalized) n
     const auto inputHead = static_cast<std::size_t>(inputHead_);
     input_[inputHead] = input_[inputHead+inputs] = {left, right};
     const Stereo* in = input_.data()+inputHead_;
-    auto base = factor_ == 4 ? render<4>(in) : render<2>(in);
+    StereoSum base;
+    if (factor_ == 1) {
+        first_ = current_;
+        base = render<1>(in);
+    } else {
+        base = factor_ == 4 ? render<4>(in) : render<2>(in);
+    }
     for (std::size_t c=0; c<channels_.size(); ++c) {
         auto& dc = channels_[c].dc;
         const double high=base[c]-dc;
@@ -655,6 +687,10 @@ bool AdiShaperDrive::finishBlock() noexcept {
         // base-rate sample. Check those too before moving to the next block.
         for (int phase = 1; phase < factor_; ++phase)
             bad |= !std::isfinite(wet_[head + static_cast<std::size_t>(phase - 1)][ch]);
+        if (factor_ == 1) {
+            for (std::size_t frame = 0; frame < latencySamples; ++frame)
+                bad |= !std::isfinite(wet_[head + frame][ch]);
+        }
         if (bad) {
             state = {};
             for (auto& sample : input_) sample[ch] = 0.0f;

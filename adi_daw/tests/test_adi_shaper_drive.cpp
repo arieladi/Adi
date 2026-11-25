@@ -701,6 +701,95 @@ void powerTransfers() {
     }
 }
 
+void rateSelection() {
+    // Remove the DC blocker to compare the measured impulse before and after each rate change.
+    struct Edge { double rate, center; };
+    constexpr std::array cases{
+        Edge{80000., .59575696}, Edge{88199.99, .59575696}, Edge{88200., .65260207},
+        Edge{176399.99, .65260207}, Edge{176400., .73}, Edge{192000., .73}, Edge{48000., .59575696}};
+    Drive drive;
+    drive.setPowerSaturation(true);
+    for (const auto& edge : cases) {
+        drive.prepare(edge.rate);
+        const double loss = 1. - std::exp(-2. * std::numbers::pi * 10. / edge.rate);
+        double sum = 0.;
+        for (int i = 0; i < 84; ++i) {
+            float left = i == 32 ? .73f : 0.f, right = 0.f;
+            drive.process(left, right, 0.f);
+            const double raw = (left + loss * sum) / (1. - .5 * loss);
+            sum += left;
+            if (i == 32 + Drive::latencySamples)
+                check(std::abs(raw - edge.center) < 3.e-7, "sample rate selects the measured impulse center");
+            else if (edge.center == .73)
+                check(std::abs(raw) < 3.e-7, "direct-rate processing delays an impulse without ringing");
+            check(right == 0.f, "changing sample rate clears stereo history");
+        }
+    }
+}
+
+void highRateTransfers() {
+    struct Pulse { Mode mode; Fold fold; bool rounded, power; double left, right, tolerance; };
+    constexpr std::array cases{
+        Pulse{Mode::Saturate, Fold::Off, false, false, -.21409271, .30923210, .00015},
+        Pulse{Mode::HardClip, Fold::Off, true, false, -.22824051, .22822397, .000002},
+        Pulse{Mode::HardClip, Fold::Off, false, false, -.21190591, .21134484, .00015},
+        Pulse{Mode::Saturate, Fold::Off, false, true, -.58709104, .53583309, .000002},
+        Pulse{Mode::Rectify, Fold::Off, false, false, .29980390, .29980393, .00015},
+        Pulse{Mode::Saturate, Fold::Sine, false, false, -.00003525, .20808899, .000006},
+        Pulse{Mode::Saturate, Fold::Triangle, false, false, -.02169560, .06435066, .000002},
+        Pulse{Mode::Saturate, Fold::Saw, false, false, -.08075804, .25152036, .000002}};
+    for (const auto& row : cases) {
+        Drive drive;
+        drive.prepare(192000.);
+        drive.setMode(row.mode);
+        drive.setFold(row.fold);
+        drive.setRoundedClip(row.rounded);
+        drive.setPowerSaturation(row.power);
+        constexpr int onset = 37;
+        constexpr double loss = 1. - .99967280429026;
+        std::array<double, 2> sum{};
+        for (int frame = 0; frame < 86; ++frame) {
+            // A single input frame is driven. The strength must travel with the audio through the delay.
+            std::array out{frame == onset ? -1.91f : 0.f, frame == onset ? 1.52f : 0.f};
+            drive.process(out[0], out[1], frame == onset || frame == onset + 1 ? .5f : 0.f);
+            const int offset = frame - onset - Drive::latencySamples;
+            const bool active = offset == 0 || (offset == 1 && row.mode == Mode::HardClip && !row.rounded);
+            for (std::size_t ch = 0; ch < out.size(); ++ch) {
+                const double raw = (out[ch] + loss * sum[ch]) / (1. - .5 * loss);
+                const double expected = active ? (ch == 0 ? row.left : row.right) : 0.;
+                check(std::abs(raw - expected) < row.tolerance,
+                      "direct-rate rendering preserves the measured transfer, strength timing and clip history");
+                sum[ch] += out[ch];
+            }
+        }
+    }
+}
+
+void highRateFirstStrength() {
+    struct Case { Mode mode; double left, right; };
+    constexpr std::array cases{Case{Mode::Saturate, -.9808559, .7549640},
+                               Case{Mode::HardClip, -.7382300, .6710717},
+                               Case{Mode::Rectify, -.0899924, .9999962}};
+    for (const auto& row : cases) {
+        for (const auto amount : {0.f, .000001f}) {
+            Drive drive;
+            drive.prepare(192000.);
+            drive.setMode(row.mode);
+            for (int frame = 0; frame <= Drive::latencySamples; ++frame) {
+                float left = frame == 0 ? -1.91f : 0.f, right = frame == 0 ? 1.52f : 0.f;
+                drive.process(left, right, amount);
+                if (frame == Drive::latencySamples) {
+                    constexpr double dcGain = (1. + .99967280429026) * .5;
+                    const double l = amount == 0.f ? -1.91 : row.left;
+                    const double r = amount == 0.f ? 1.52 : row.right;
+                    check(std::abs(left / dcGain - l) < .00006 && std::abs(right / dcGain - r) < .00006,
+                          "at the direct rate the first positive strength selects the nonlinear transfer");
+                }
+            }
+        }
+    }
+}
+
 void powerImpulses() {
     constexpr std::array offsets{-3, -1, 0, 1, 3};
     constexpr std::array left{.09524528, .05098106, .49998841, .05026031, .09463098};
@@ -882,6 +971,9 @@ int main() {
     roundedStrengthTiming();
     roundedTrimsAndRecovery();
     powerTransfers();
+    rateSelection();
+    highRateTransfers();
+    highRateFirstStrength();
     powerImpulses();
     powerScopeAndTrims();
     powerStrengthTiming();
