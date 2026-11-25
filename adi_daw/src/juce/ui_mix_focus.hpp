@@ -88,6 +88,7 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     void rebuildScope();
     void rebuildScopePaths();
     FocusScopeChannels scopeChannelView() const noexcept;
+    FocusScopeWindow scopeWindowChoice() const noexcept;
     bool showsScopeDifference() const noexcept;
     void updateScopeDifference();
     void updateScopeTruePeakControls();
@@ -116,7 +117,7 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     AdiRootComponent &root_;
     juce::Viewport scroll_;
     juce::Component strip_;
-    juce::ComboBox scopeDisplay_, scopeChannels_;
+    juce::ComboBox scopeDisplay_, scopeChannels_, scopeWindow_;
     juce::TextButton alignMeasure_{"Measure Align"}, scopeLayer_{"Layer"};
     juce::ToggleButton differenceSpectrum_{"Spectrum"}, scopeFreeze_{"Freeze"};
     juce::Label alignReadout_, scopeCursor_, scopeRegionReadout_, differenceRmsReadout_;
@@ -142,6 +143,7 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     std::shared_ptr<const engine::TempoMap> barTempo_;
     std::vector<textproj::Meter> barMeters_;
     std::optional<FocusScopeBar> requestedBar_;
+    bool scopeWindowAwaiting_ = false;
     std::shared_ptr<const SharedAnalysis::BarScopeResult> shownBar_;
     std::optional<FocusSumReading> sum_;
     std::optional<double> scopePhase_;

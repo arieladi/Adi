@@ -101,6 +101,25 @@ MixFocus::MixFocus(AdiRootComponent &root) : root_(root) {
         redraw_ = true;
     };
     addChildComponent(scopeChannels_);
+    scopeWindow_.setTitle("Scope musical window");
+    scopeWindow_.setTooltip("Capture one beat or one bar on the project's grid for the aligned channels.");
+    scopeWindow_.addItem("One Beat", static_cast<int>(FocusScopeWindow::Beat));
+    scopeWindow_.addItem("One Bar", static_cast<int>(FocusScopeWindow::Bar));
+    scopeWindow_.setSelectedId(static_cast<int>(FocusScopeWindow::Bar), juce::dontSendNotification);
+    scopeWindow_.onChange = [this] {
+        const SafePointer<MixFocus> alive(this);
+        thawScope();
+        if (!alive) return;
+        shownBar_.reset();
+        requestedBar_.reset();
+        scopeWindowAwaiting_ = true;
+        clearScopeRegion();
+        scopeCursor_.setVisible(false);
+        rebuildScope();
+        redraw_ = true;
+        repaint();
+    };
+    addChildComponent(scopeWindow_);
     scopeLayer_.setTitle("Selected scope layer");
     scopeLayer_.setTooltip("Preview polarity and timing for the selected layer. Playback stays unchanged.");
     scopeLayer_.onClick = [this] { showScopeLayerMenu(); };
@@ -329,6 +348,8 @@ void MixFocus::updateMatchControls() {
     const bool together = !scope.getToggleState();
     scopeDisplay_.setVisible(!together);
     scopeChannels_.setVisible(!together);
+    scopeWindow_.setVisible(!together);
+    scopeWindow_.setEnabled(members_.size() >= 2);
     scopeLayer_.setVisible(!together);
     scopeFreeze_.setVisible(!together);
     updateScopeLayerControl();
@@ -935,6 +956,7 @@ void MixFocus::updateBarScope(const SnapshotReader &reader, const std::shared_pt
                 if (!end || *end > heard) return;
                 if (shownBar_ != current) {
                     shownBar_ = current;
+                    scopeWindowAwaiting_ = false;
                     redraw_ = true;
                 }
                 tick = requestedBar_->nextTick;
@@ -946,10 +968,11 @@ void MixFocus::updateBarScope(const SnapshotReader &reader, const std::shared_pt
             missed = true;
         }
     }
-    if (!tick) tick = tempo->secondsToTicks(static_cast<double>(heard) / rate);
-    auto next = focusScopeBarAtTick(*tick, rate, *tempo, reader.meters());
+    const auto choice = scopeWindowChoice();
+    auto next = tick ? focusScopeWindowAtTick(*tick, rate, *tempo, reader.meters(), choice)
+                     : focusScopeWindowAtSample(heard, rate, *tempo, reader.meters(), choice);
     if (missed && next && next->firstTick == requestedBar_->firstTick)
-        next = focusScopeBarAtTick(next->nextTick, rate, *tempo, reader.meters());
+        next = focusScopeWindowAtTick(next->nextTick, rate, *tempo, reader.meters(), choice);
     if (next && barScope_.request(next->range, heardRevision))
         requestedBar_ = next;
 }
@@ -1059,6 +1082,10 @@ void MixFocus::clearScopeSum() {
 FocusScopeChannels MixFocus::scopeChannelView() const noexcept {
     return scope.getToggleState() ? static_cast<FocusScopeChannels>(scopeChannels_.getSelectedId())
                                   : FocusScopeChannels::Stereo;
+}
+FocusScopeWindow MixFocus::scopeWindowChoice() const noexcept {
+    return scopeWindow_.getSelectedId() == static_cast<int>(FocusScopeWindow::Beat) ? FocusScopeWindow::Beat
+                                                                                  : FocusScopeWindow::Bar;
 }
 bool MixFocus::showsScopeDifference() const noexcept {
     return scope.getToggleState() &&
@@ -1175,6 +1202,8 @@ void MixFocus::rebuildScopePaths() {
         for (auto &member : members_)
             for (auto &path : member.scopePaths) path.clear();
     if (!scopePlaying_ || (!scopeShown && sumLabel_.isEmpty())) return;
+    if (scopeShown && alignment_ == Alignment::Ready && members_.size() >= 2 && !shownBar_ &&
+        (scopeWindowAwaiting_ || scopeWindowChoice() == FocusScopeWindow::Beat)) return;
 
     const auto view = scopeChannelView();
     const auto display = static_cast<ScopeDisplay>(scopeDisplay_.getSelectedId());
@@ -1627,7 +1656,11 @@ void MixFocus::resized() {
         std::max(0, titleRow.getWidth() - look::mixFocusSourceWidth)));
     if (scopeTruePeak_.isVisible())
         scopeTruePeak_.setBounds(titleRow.removeFromRight(std::min(titleRow.getWidth(), look::mixFocusSourceWidth)));
-    sumLabel_ = titleRow.getWidth() >= 4 * look::mixFocusSourceWidth
+    if (differenceSpectrum_.isVisible()) titleRow.removeFromRight(std::min(titleRow.getWidth(), look::mixFocusSourceWidth));
+    if (scopeWindow_.isVisible())
+        scopeWindow_.setBounds(titleRow.removeFromRight(std::min(titleRow.getWidth(), look::mixFocusSourceWidth)));
+    const auto summaryCells = scopeWindow_.isVisible() ? 3 : 4;
+    sumLabel_ = titleRow.getWidth() >= summaryCells * look::mixFocusSourceWidth
                     ? titleRow.removeFromRight(2 * look::mixFocusSourceWidth) : juce::Rectangle<int>{};
     auto actions = r.removeFromBottom(buttonRow);
     const auto w = std::min(chipWidth, actions.getWidth() / (scope.getToggleState() ? 11 : 10));
@@ -1724,15 +1757,15 @@ void MixFocus::paint(juce::Graphics &g) {
             title = scopeChannelView() == FocusScopeChannels::Stereo ? "Sum over 0 dBFS" : "Stereo sum over 0 dBFS";
             g.setColour(look::record);
         }
-        title += shownBar_ ? "   1 bar" :
+        title += shownBar_ ? (scopeWindowChoice() == FocusScopeWindow::Beat ? "   1 beat" : "   1 bar") :
             "   " + juce::String(1000. * static_cast<double>(scopeRange_->frames) / scopeRange_->sampleRate, 1) + " ms";
         if (sumShown && !sumOverRange && !sumOnly) title += "   Sum overlay";
     }
     if (frozenScopeRevision_) title += "   Frozen";
     if (!scopeShown && match_) title += matchCaption_;
-    const auto summaryBounds = differenceSpectrum_.isVisible() ? differenceSpectrum_.getBounds()
-        : alignReadout_.isVisible() ? alignReadout_.getBounds()
-        : sumLabel_.isEmpty() && scopeTruePeak_.isVisible() ? scopeTruePeak_.getBounds() : sumLabel_;
+    const auto summaryBounds = alignReadout_.isVisible() ? alignReadout_.getBounds()
+        : !differenceOnly && !sumLabel_.isEmpty() ? sumLabel_
+        : scopeWindow_.isVisible() ? scopeWindow_.getBounds() : juce::Rectangle<int>{};
     const int titleWidth = summaryBounds.isEmpty() ? plot.getWidth() : std::max(0, summaryBounds.getX() - plot.getX());
     g.drawText(title, plot.getX(), scroll_.getBottom(), titleWidth,
                std::max(0, plot.getY() - scroll_.getBottom()), juce::Justification::centredLeft);

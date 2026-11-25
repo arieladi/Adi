@@ -25,23 +25,27 @@ struct FocusScopeBar {
     std::int64_t firstTick = 0, nextTick = 0;
     FocusScopeRange range;
 };
+enum class FocusScopeWindow { Beat = 1, Bar };
 
 // Use the Arrangement's signature boundaries and the driver's nearest-sample
-// convention. Keep absolute edges so consecutive bars never gain a rounding gap.
-inline std::optional<FocusScopeBar> focusScopeBarAtTick(std::int64_t tick, double sampleRate,
-                                                        const engine::TempoMap &tempo,
-                                                        const std::vector<textproj::Meter> &meters) noexcept {
+// convention. Keep absolute edges so consecutive windows never gain a rounding gap.
+inline std::optional<FocusScopeBar> focusScopeWindowAtTick(std::int64_t tick, double sampleRate,
+                                                          const engine::TempoMap &tempo,
+                                                          const std::vector<textproj::Meter> &meters,
+                                                          FocusScopeWindow window) noexcept {
     if (tick < 0 || !std::isfinite(sampleRate) || sampleRate <= 0. || tempo.events.empty()) return {};
     const auto &meter = meterAt(tick, meters);
     const auto barTicks = meter.barTicks();
     if (meter.start_ticks < 0 || meter.start_ticks > tick || barTicks <= 0) return {};
-    const auto firstTick = tick - (tick - meter.start_ticks) % barTicks;
+    const auto windowTicks = window == FocusScopeWindow::Beat ? textproj::kWhole / meter.denominator : barTicks;
+    if (windowTicks <= 0) return {};
+    const auto firstTick = tick - (tick - meter.start_ticks) % windowTicks;
     const auto nextMeter = std::upper_bound(meters.begin(), meters.end(), tick,
         [](std::int64_t position, const textproj::Meter &signature) { return position < signature.start_ticks; });
     constexpr auto limit = std::numeric_limits<std::int64_t>::max();
-    if (nextMeter == meters.end() && barTicks > limit - firstTick) return {};
-    const auto untilNextMeter = nextMeter != meters.end() ? nextMeter->start_ticks - firstTick : barTicks;
-    const auto nextTick = firstTick + std::min(barTicks, untilNextMeter);
+    if (nextMeter == meters.end() && windowTicks > limit - firstTick) return {};
+    const auto untilNextMeter = nextMeter != meters.end() ? nextMeter->start_ticks - firstTick : windowTicks;
+    const auto nextTick = firstTick + std::min(windowTicks, untilNextMeter);
 
     const auto sampleAtTick = [&](std::int64_t edge) -> std::optional<std::int64_t> {
         const auto sample = std::round(static_cast<long double>(tempo.ticksToSeconds(edge)) * sampleRate);
@@ -53,6 +57,25 @@ inline std::optional<FocusScopeBar> focusScopeBarAtTick(std::int64_t tick, doubl
     const auto finish = sampleAtTick(nextTick);
     if (!start || !finish || *finish <= *start || !std::in_range<std::size_t>(*finish - *start)) return {};
     return FocusScopeBar{firstTick, nextTick, {*start, static_cast<std::size_t>(*finish - *start), sampleRate}};
+}
+inline std::optional<FocusScopeBar> focusScopeBarAtTick(std::int64_t tick, double sampleRate,
+                                                       const engine::TempoMap &tempo,
+                                                       const std::vector<textproj::Meter> &meters) noexcept {
+    return focusScopeWindowAtTick(tick, sampleRate, tempo, meters, FocusScopeWindow::Bar);
+}
+inline std::optional<FocusScopeBar> focusScopeWindowAtSample(std::int64_t heard, double sampleRate,
+                                                            const engine::TempoMap &tempo,
+                                                            const std::vector<textproj::Meter> &meters,
+                                                            FocusScopeWindow window) noexcept {
+    if (heard < 0 || !std::isfinite(sampleRate) || sampleRate <= 0.) return {};
+    const auto seconds = static_cast<double>(heard) / sampleRate;
+    if (!std::isfinite(seconds)) return {};
+    const auto next = focusScopeWindowAtTick(tempo.secondsToTicks(seconds), sampleRate, tempo, meters, window);
+    // A grid edge rounded down to a sample can precede its theoretical tick.
+    // A capture starting on that sample belongs to the next half-open window.
+    if (next && heard >= next->range.first + static_cast<std::int64_t>(next->range.frames))
+        return focusScopeWindowAtTick(next->nextTick, sampleRate, tempo, meters, window);
+    return next;
 }
 struct FocusSumReading {
     std::array<double, 2> peak{}, rms{};

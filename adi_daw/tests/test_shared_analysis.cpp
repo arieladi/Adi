@@ -1076,6 +1076,59 @@ void focusScopeBarTiming() {
               !focusScopeBarAtTick(std::numeric_limits<std::int64_t>::max(), 48000., constant, {}),
           "negative ticks, missing timing and overflowing bars produce no Focus interval");
 }
+void focusScopeBeatTiming() {
+    constexpr auto quarter = adi::textproj::kPPQ;
+    constexpr auto eighth = quarter / 2;
+    constexpr auto sixteenth = quarter / 4;
+    constexpr double rate = 48000.;
+    using adi::ui::FocusScopeWindow;
+    using adi::ui::focusScopeBarAtTick;
+    using adi::ui::focusScopeWindowAtTick;
+    const std::vector<adi::textproj::Meter> equalMeter;
+    const adi::engine::TempoMap constant{{{0, 120., 0}}};
+    constexpr auto beat = FocusScopeWindow::Beat;
+
+    const auto quarterWindow = focusScopeWindowAtTick(quarter + sixteenth, rate, constant, equalMeter, beat);
+    const auto bar = focusScopeBarAtTick(quarter + sixteenth, rate, constant, equalMeter);
+    check(quarterWindow && quarterWindow->firstTick == quarter && quarterWindow->nextTick == 2 * quarter &&
+              quarterWindow->range.first == 24000 && quarterWindow->range.frames == 24000 &&
+              quarterWindow->range.sampleRate == rate && bar && bar->range.first == 0 && bar->range.frames == 96000,
+          "a 4/4 beat follows its own sample edges without changing the ordinary bar wrapper");
+
+    constexpr auto cut = 2 * quarter + sixteenth;
+    const std::vector<adi::textproj::Meter> split{{0, 4, 4}, {cut, 6, 8}};
+    const auto lastQuarter = focusScopeWindowAtTick(cut - 1, rate, constant, split, beat);
+    const auto firstEighth = focusScopeWindowAtTick(cut, rate, constant, split, beat);
+    const auto secondEighth = focusScopeWindowAtTick(cut + eighth, rate, constant, split, beat);
+    check(lastQuarter && firstEighth && secondEighth && lastQuarter->firstTick == 2 * quarter &&
+              lastQuarter->nextTick == cut && lastQuarter->range.first == 48000 && lastQuarter->range.frames == 6000 &&
+              firstEighth->firstTick == cut && firstEighth->nextTick == cut + eighth &&
+              firstEighth->range.first == 54000 && firstEighth->range.frames == 12000 &&
+              secondEighth->firstTick == firstEighth->nextTick && secondEighth->range.first == 66000,
+          "a mid-beat signature cuts the 4/4 interval and anchors the next 6/8 denominator beat at its exact edge");
+
+    const adi::engine::TempoMap stepped{{{0, 120., 0}, {eighth, 60., 0}}};
+    const auto acrossTempo = focusScopeWindowAtTick(eighth + sixteenth, rate, stepped, equalMeter, beat);
+    const auto afterTempo = focusScopeWindowAtTick(quarter, rate, stepped, equalMeter, beat);
+    check(acrossTempo && afterTempo && acrossTempo->firstTick == 0 && acrossTempo->nextTick == quarter &&
+              acrossTempo->range.first == 0 && acrossTempo->range.frames == 36000 && afterTempo->range.first == 36000 &&
+              afterTempo->range.frames == 48000,
+          "the beat integrates both parts of a tempo step before rounding its absolute edge");
+
+    const adi::engine::TempoMap fractional{{{0, 123., 0}}};
+    const auto edge1 = focusScopeWindowAtTick(0, rate, fractional, equalMeter, beat);
+    const auto edge2 = focusScopeWindowAtTick(quarter, rate, fractional, equalMeter, beat);
+    const auto edge3 = focusScopeWindowAtTick(2 * quarter, rate, fractional, equalMeter, beat);
+    check(edge1 && edge2 && edge3 && edge1->range.frames == 23415 && edge2->range.first == 23415 &&
+              edge2->range.frames == 23414 && edge3->range.first == 46829 && edge3->range.frames == 23415,
+          "three fractional beats share rounded project sample edges without accumulating error");
+    const auto previousSample = focusScopeWindowAtSample(46828, rate, fractional, equalMeter, beat);
+    const auto boundarySample = focusScopeWindowAtSample(46829, rate, fractional, equalMeter, beat);
+    check(previousSample && boundarySample && previousSample->range.first == 23415 &&
+              boundarySample->range.first == 46829 && boundarySample->firstTick == 2 * quarter,
+          "a fresh request on a rounded-down edge starts the new beat rather than a finished one");
+}
+
 void focusScopeBarProjection() {
     using adi::ui::FocusScopeBarBlock;
     using adi::ui::FocusScopeBarProjection;
@@ -5581,7 +5634,7 @@ void operator delete[](void *p,std::size_t) noexcept {::operator delete(p);}
 int main() {
     try { stripCadenceAndEpochs(); stripReusesRawSpectrum(); stripWorkerBudget(); stripLeaseInSession(); phaseBandSpatialMeasurements();
           focusCapturedTruePeak(); focusBarCapturedTruePeak();
-          continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeMidDemand(); focusScopeDifference(); focusScopeSideDemand(); focusBarScopeBrokerBoundaries(); focusBarScopeWaitsOnAllSources(); focusScopeSumProjection(); focusScopeLayerPreview(); focusBarLayerPreview(); focusBarResidualSpectrum(); focusScopePhaseOperands(); focusScopeFlatPath(); focusLagPreviewRequests(); focusLagPreviewCases(); focusLagTapReads(); focusLagHighRateTaps(); focusMatchWindows(); parkedSilence(); parkedSpectrogramWake(); parkedWindowHopPhase();
+          continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBeatTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeMidDemand(); focusScopeDifference(); focusScopeSideDemand(); focusBarScopeBrokerBoundaries(); focusBarScopeWaitsOnAllSources(); focusScopeSumProjection(); focusScopeLayerPreview(); focusBarLayerPreview(); focusBarResidualSpectrum(); focusScopePhaseOperands(); focusScopeFlatPath(); focusLagPreviewRequests(); focusLagPreviewCases(); focusLagTapReads(); focusLagHighRateTaps(); focusMatchWindows(); parkedSilence(); parkedSpectrogramWake(); parkedWindowHopPhase();
           parkedRealtimeModeJoins<SharedAnalysis::RealtimeMaximum>(); parkedRealtimeModeJoins<SharedAnalysis::RealtimeSigma>(); parkedStereoBalance(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
           sharedModesAndCursors(); phaseBandCorrelation(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); spectrumLevels(); spectrumSamplePeaksAndClips(); restartSpectrumLevels(); restartParkedSpectrumLevels(); spectrumTruePeak(); parkedSpectrumLevels(false); parkedSpectrumLevels(true); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); realtimeSigmaSpectrum(); cumulativeMaximumSpectrum(); cumulativeAverageSpectrum(); cumulativeMaximumParkedRollover(); sharedAverage(); parkedRealtimeAverage(); parkedRealtimeAverageJoinsScope(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); deviceSpectrumLease(); parkedDeviceSpectrum(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }

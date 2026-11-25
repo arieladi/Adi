@@ -86,6 +86,7 @@ struct MixFocusTestAccess {
     static bool hasDifference(const MixFocus &focus) { return focus.differenceRenderedRevision_.has_value(); }
     static auto scopeWaveformRange(const MixFocus &focus) { return focus.scopeRange_; }
     static auto scopeReading(const MixFocus &focus) { return focus.sum_; }
+    static bool hasScopeSummarySpace(const MixFocus &focus) { return !focus.sumLabel_.isEmpty(); }
     static auto scopePhase(const MixFocus &focus) { return focus.scopePhase_; }
     static juce::MouseEvent moveScopePointer(MixFocus &focus, float x, float y) {
         const auto &plot = focus.plot_;
@@ -3203,6 +3204,14 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
     };
     frame();
     const SnapshotReader initial(root->current());
+    juce::ComboBox *musicalWindow = nullptr;
+    for (auto *component : focus.getChildren())
+        if (component->getTitle() == "Scope musical window")
+            musicalWindow = dynamic_cast<juce::ComboBox *>(component);
+    check(musicalWindow && musicalWindow->isVisible() && musicalWindow->getSelectedId() == 2 &&
+              musicalWindow->getText() == "One Bar" && musicalWindow->getItemId(0) == 1 &&
+              musicalWindow->getItemText(0) == "One Beat",
+          "Focus Scope exposes a musical window selector without changing the default bar");
     juce::ToggleButton *freeze = nullptr;
     for (auto *component : focus.getChildren())
         if (component->getTitle() == "Freeze Focus Scope")
@@ -3400,7 +3409,7 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
             display->setSelectedId(4, juce::sendNotificationSync);
             frame();
             check(truePeakSwitch->isVisible() && truePeakSwitch->isEnabled() && !truePeakSwitch->getToggleState() &&
-                      !capturedTruePeak->isVisible(),
+                      !capturedTruePeak->isVisible() && MixFocusTestAccess::hasScopeSummarySpace(focus),
                   "Stereo Sum makes captured true peak optional and leaves the unrequested readout hidden");
         }
         display->setSelectedId(3, juce::sendNotificationSync);
@@ -3718,6 +3727,45 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
         display->setSelectedId(1, juce::sendNotificationSync);
         check(!truePeakSwitch->isVisible() && !capturedTruePeak->isVisible(),
               "leaving Sum immediately hides the captured true peak and its control");
+    }
+    if (musicalWindow && display && channels) {
+        channels->setSelectedId(static_cast<int>(FocusScopeChannels::Stereo), juce::sendNotificationSync);
+        display->setSelectedId(1, juce::sendNotificationSync);
+        focus.select(second);
+        driver.play(true);
+        frame();
+        const auto atBar = (driver.position() / bar + 2) * bar;
+        writeUntil(atBar);
+        check(MixFocusTestAccess::scopeInterval(focus, atBar - bar, static_cast<std::size_t>(bar), rate),
+              "the default selector still shows the entire completed bar");
+        MixFocusTestAccess::dragScopeRegion(focus, regionStart, regionEnd);
+        const auto sourceOpens = opens;
+        const auto before = broker->stats();
+        const auto windowHistory = History(doc->store()).head();
+        constexpr auto beat = bar / 4;
+        musicalWindow->setSelectedId(1, juce::sendNotificationSync);
+        frame();
+        check(musicalWindow->getText() == "One Beat" && MixFocusTestAccess::scopeRegionText(focus).isEmpty() &&
+                  !MixFocusTestAccess::scopeInterval(focus, atBar - bar, static_cast<std::size_t>(bar), rate),
+              "changing to One Beat rejects the former bar and its selected region");
+        writeUntil(atBar + beat - 1);
+        check(!MixFocusTestAccess::scopeInterval(focus, atBar, static_cast<std::size_t>(beat), rate),
+              "the one-beat view cannot publish before its final heard sample");
+        writeUntil(atBar + beat);
+        check(MixFocusTestAccess::scopeInterval(focus, atBar, static_cast<std::size_t>(beat), rate),
+              "at 120 BPM and 48 kHz exactly 24000 samples form a completed 4/4 beat");
+        writeUntil(atBar + bar);
+        check(MixFocusTestAccess::scopeInterval(focus, atBar + 3 * beat, static_cast<std::size_t>(beat), rate),
+              "each successive beat keeps its own grid-aligned heard extent");
+        musicalWindow->setSelectedId(2, juce::sendNotificationSync);
+        frame();
+        writeUntil(atBar + 2 * bar);
+        const auto after = broker->stats();
+        check(musicalWindow->getText() == "One Bar" &&
+                  MixFocusTestAccess::scopeInterval(focus, atBar + bar, static_cast<std::size_t>(bar), rate) &&
+                  opens == sourceOpens && after.taps == before.taps && after.consumers == before.consumers &&
+                  after.transforms == before.transforms && History(doc->store()).head() == windowHistory,
+              "returning to bar captures the full next bar with the original taps and no project edit or FFT");
     }
     const auto visibleBounds = focus.getBounds();
     focus.setTopLeftPosition(peer.getWidth(), 0);
