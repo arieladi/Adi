@@ -87,6 +87,9 @@ class SharedAnalysis final {
         // A separate contiguous measurement incompatible with a windowed analysis domain.
         // Meter profiles on the same source still share the physical tap and worker.
         std::optional<StereoMeterProfile> stereoMeter = std::nullopt;
+        // Opt in when comparing spectrograms from different heard-time taps.
+        // Advances on the resolved hop grid from sample zero.
+        bool heardSpectrogramGrid = false;
         auto operator<=>(const Request &) const = default;
         engine::ScopeSource source() const noexcept { return {track, point, device}; }
     };

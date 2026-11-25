@@ -262,6 +262,8 @@ bool valid(const SharedAnalysis::Request &r) {
     if (r.track <= 0 || r.fftSize < 32 || r.fftSize > SharedAnalysis::kMaxFftSize || r.fftSize % 32 ||
         r.hopSize < 0 || r.hopSize > r.fftSize || !r.outputs || (r.outputs & ~allOutputs)) return false;
     if ((r.outputs & SharedAnalysis::PhaseBandDetail) && !(r.outputs & SharedAnalysis::PhaseBands)) return false;
+    if (r.heardSpectrogramGrid && (!(r.outputs & SharedAnalysis::Spectrogram) ||
+        (r.outputs & ~(SharedAnalysis::Spectrogram | SharedAnalysis::Spectrum)))) return false;
     using Weighting = dsp::StereoEnvelopeMeter::Weighting;
     if (r.stereoMeter && (r.outputs != SharedAnalysis::Meters || r.stereoMeter->weighting < Weighting::Standard ||
                           r.stereoMeter->weighting > Weighting::K)) return false;
@@ -2616,21 +2618,30 @@ struct SharedAnalysis::State {
                     if (bits & Strip) d.resetStripProjection();
                 }
                 if (!read.frames) break;
-                samples += static_cast<std::size_t>(read.frames);
+                const auto frames = static_cast<std::size_t>(read.frames);
+                samples += frames;
                 if (d.spectrumLevelHistory) {
-                    const auto frames = static_cast<std::size_t>(read.frames);
                     const auto left = std::span(readLeft).first(frames), right = std::span(readRight).first(frames);
                     d.spectrumLevelHistory->advance(read.firstSequence, left, right);
                     if (d.spectrumTruePeakHistory) d.spectrumTruePeakHistory->advance(read.firstSequence, left, right);
                 }
-                for (std::int32_t i = 0; i < read.frames; ++i) {
-                    d.ringLeft[d.position] = readLeft[static_cast<std::size_t>(i)];
-                    d.ringRight[d.position] = readRight[static_cast<std::size_t>(i)];
+                std::size_t first = 0;
+                if (d.filled == 0 && d.request.heardSpectrogramGrid) {
+                    if (!read.advancing) continue;
+                    const auto stride = static_cast<std::int64_t>(hop);
+                    const auto residue = read.firstStamp % stride;
+                    first = static_cast<std::size_t>(residue <= 0 ? -residue : stride - residue);
+                    if (first >= frames) continue;
+                }
+                for (auto i = first; i < frames; ++i) {
+                    d.ringLeft[d.position] = readLeft[i];
+                    d.ringRight[d.position] = readRight[i];
                     d.position = (d.position + 1) % n;
                 }
                 const bool wasFull = d.filled == n;
-                d.filled = std::min(n, d.filled + static_cast<std::size_t>(read.frames));
-                if (wasFull && !stripOnly) d.sinceWindow += static_cast<std::size_t>(read.frames);
+                const auto accepted = frames - first;
+                d.filled = std::min(n, d.filled + accepted);
+                if (wasFull && !stripOnly) d.sinceWindow += accepted;
                 if (d.filled != n) continue;
                 if (stripOnly) {
                     if (d.cursor.next < readEnd || d.cursor.next < d.stripNextEnd.load(std::memory_order_relaxed)) continue;

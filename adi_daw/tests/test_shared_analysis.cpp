@@ -3297,6 +3297,110 @@ void parkedSpectrogramWake() {
               "the sweep advances just one real column after the pause with no synthetic gap");
     }
 }
+void spectrogramHeardGrid() {
+    using Source = adi::engine::ScopeSource;
+    constexpr int window = 1024, hop = 256;
+    constexpr std::int64_t preStart = 17, postStart = 154, aligned = hop, end = aligned + window;
+    constexpr std::uint64_t revision = 37;
+    auto preTap = std::make_shared<ScopeTap>(48000., .25);
+    auto postTap = std::make_shared<ScopeTap>(48000., .25);
+    SharedAnalysis broker([&](Source source, double) -> std::shared_ptr<const ScopeTap> {
+        if (source == Source{1, ScopePoint::ChainInput, 0}) return preTap;
+        if (source == Source{1, ScopePoint::PreFader, 0}) return postTap;
+        return {};
+    }, [](Source) {}, SharedAnalysis::Mode::Manual);
+    SharedAnalysis::Request request{1, ScopePoint::ChainInput, window};
+    request.hopSize = hop;
+    request.window = adi::dsp::Window::Rectangular;
+    request.outputs = SharedAnalysis::Spectrogram;
+    auto ordinary = broker.acquire(request);
+    request.heardSpectrogramGrid = true;
+    request.outputs |= SharedAnalysis::Spectrum;
+    auto pre = broker.acquire(request);
+    request.point = ScopePoint::PreFader;
+    auto post = broker.acquire(request);
+    check(ordinary && pre && post && broker.stats().taps == 2 && broker.stats().domains == 3,
+          "aligned pre and post use two taps while ordinary history shares the existing pre tap");
+    if (!ordinary || !pre || !post) return;
+    request.outputs = SharedAnalysis::Spectrum;
+    check(!broker.acquire(request), "heard-grid requests require Spectrogram output");
+    request.outputs = SharedAnalysis::Spectrogram | SharedAnalysis::Scope;
+    check(!broker.acquire(request), "heard-grid requests cannot change an ordinary Scope window");
+
+    const auto write = [&](ScopeTap &tap, std::int64_t first, std::int64_t finish, float amplitude,
+                           std::uint64_t epoch, bool advancing = true) {
+        const auto frames = static_cast<std::int32_t>(finish - first);
+        std::array<float, window + hop> samples;
+        for (std::int32_t i = 0; i < frames; ++i) {
+            const auto phase = static_cast<double>((first + i) % window);
+            samples[static_cast<std::size_t>(i)] = amplitude * static_cast<float>(
+                std::sin(2. * std::numbers::pi * 16. * phase / window));
+        }
+        tap.write(samples.data(), samples.data(), frames, first, advancing, epoch);
+    };
+    const auto hasColumn = [](const auto &result, std::int64_t stamp, std::uint64_t epoch) {
+        return result && result->advancing && result->transportRevision == epoch && result->firstStamp == stamp &&
+               result->columns.size() == 1 && result->columns.front().firstStamp == stamp &&
+               result->columns.front().binsDbfs && result->columns.front().binsDbfs->size() > 16;
+    };
+    const auto difference = [](const auto &before, const auto &after) {
+        return static_cast<double>((*after->columns.front().binsDbfs)[16]) -
+               (*before->columns.front().binsDbfs)[16];
+    };
+    write(*preTap, 83, 83 + window, .875f, revision - 1, false);
+    write(*postTap, 83, 83 + window, .875f, revision - 1, false);
+    broker.pump();
+    check(!pre.read() && !post.read(), "comparison history discards parked samples even when they contain a signal");
+
+    write(*preTap, preStart, end - 1, .25f, revision);
+    write(*postTap, postStart, end - 1, .5f, revision);
+    broker.pump();
+    check(hasColumn(ordinary.read(), preStart, revision) && !pre.read() && !post.read(),
+          "ordinary history starts at sample 17 while the aligned windows wait for their last sample");
+    write(*preTap, end - 1, end, .25f, revision);
+    write(*postTap, end - 1, end, .5f, revision);
+    broker.pump();
+    const auto firstPre = pre.read(), firstPost = post.read();
+    const auto gain = 20. * std::log10(2.);
+    check(hasColumn(firstPre, aligned, revision) && hasColumn(firstPost, aligned, revision) &&
+              firstPre->firstSequence - firstPost->firstSequence == postStart - preStart &&
+              near(difference(firstPre, firstPost), gain),
+          "staggered taps share sample 256 and the expected +6.02 dB transfer");
+
+    write(*preTap, preStart, end, .5f, revision + 1);
+    broker.pump();
+    const auto soughtPre = pre.read();
+    check(hasColumn(soughtPre, aligned, revision + 1) && hasColumn(post.read(), aligned, revision) &&
+              post.read() == firstPost,
+          "overlapping heard stamps after a seek still expose distinct transport revisions until the other tap arrives");
+    write(*postTap, postStart, end, .25f, revision + 1);
+    broker.pump();
+    const auto soughtPost = post.read();
+    check(hasColumn(soughtPre, aligned, revision + 1) && hasColumn(soughtPost, aligned, revision + 1) &&
+              near(difference(soughtPre, soughtPost), -gain),
+          "both new tap epochs recover the same grid and the expected -6.02 dB transfer");
+
+    postTap = std::make_shared<ScopeTap>(48000., .25);
+    broker.refreshSources();
+    check(!post.read() && pre.read() == soughtPre, "replacing the post tap clears only its previous columns");
+    write(*postTap, postStart, end, .25f, revision + 1);
+    broker.pump();
+    const auto rebound = post.read();
+    check(soughtPost && hasColumn(rebound, aligned, revision + 1) && rebound->generation != soughtPost->generation,
+          "the replacement tap establishes its own phase at the same exact heard sample");
+
+    ordinary.reset(); pre.reset(); post.reset();
+    const auto hidden = broker.stats();
+    write(*preTap, end, end + window, .5f, revision + 1);
+    write(*postTap, end, end + window, .25f, revision + 1);
+    broker.pump();
+    const auto after = broker.stats();
+    check(hidden.taps == 0 && hidden.consumers == 0 && after.transforms == hidden.transforms &&
+              after.publications == hidden.publications && after.cursorReads == hidden.cursorReads &&
+              after.workerPasses == hidden.workerPasses,
+          "releasing the aligned and ordinary readers leaves no tap, FFT or worker work");
+}
+
 void parkedWindowHopPhase() {
     constexpr int window = 480, hop = 240, block = 401, blocks = 33;
     constexpr int quietFrames = block * blocks, untilHop = hop - quietFrames % hop;
@@ -5913,7 +6017,7 @@ void operator delete(void *p,std::size_t) noexcept {::operator delete(p);}
 void operator delete[](void *p,std::size_t) noexcept {::operator delete(p);}
 int main() {
     try { stripCadenceAndEpochs(); stripReusesRawSpectrum(); stripWorkerBudget(); stripLeaseInSession(); phaseBandSpatialMeasurements();
-          focusCapturedTruePeak(); focusBarCapturedTruePeak(); focusScopeLayerChannels();
+          focusCapturedTruePeak(); focusBarCapturedTruePeak(); focusScopeLayerChannels(); spectrogramHeardGrid();
           continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBeatTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusSingleSourceScope(); focusBarScopeMidDemand(); focusScopeDifference(); focusScopeSideDemand(); focusBarScopeBrokerBoundaries(); focusBarScopeWaitsOnAllSources(); focusBarScopeResumesAtRequestedRevision(); focusScopeSumProjection(); focusScopeLayerPreview(); focusBarLayerPreview(); focusBarResidualSpectrum(); focusScopePhaseOperands(); focusScopeFlatPath(); focusLagPreviewRequests(); focusLagPreviewCases(); focusLagTapReads(); focusLagHighRateTaps(); focusMatchWindows(); parkedSilence(); parkedSpectrogramWake(); parkedWindowHopPhase();
           parkedRealtimeModeJoins<SharedAnalysis::RealtimeMaximum>(); parkedRealtimeModeJoins<SharedAnalysis::RealtimeSigma>(); parkedStereoBalance(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
           sharedModesAndCursors(); phaseBandCorrelation(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); spectrumLevels(); spectrumSamplePeaksAndClips(); restartSpectrumLevels(); restartParkedSpectrumLevels(); spectrumTruePeak(); parkedSpectrumLevels(false); parkedSpectrumLevels(true); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); realtimeSigmaSpectrum(); cumulativeMaximumSpectrum(); cumulativeAverageSpectrum(); cumulativeMaximumParkedRollover(); sharedAverage(); parkedRealtimeAverage(); parkedRealtimeAverageJoinsScope(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); deviceSpectrumLease(); parkedDeviceSpectrum(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
