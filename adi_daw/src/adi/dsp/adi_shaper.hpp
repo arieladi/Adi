@@ -127,7 +127,7 @@ class AdiShaper {
         enum class Law { Lift3, Lift45, LinearLift, CutOnly };
         Law law = Law::Lift3;
         float current = 0.f, unity = 0.f;
-        Tap constantTap;
+        Tap blockTap;
         void prepare(double rate) noexcept;
         void setBlend(float percent) noexcept;
         [[nodiscard]] Gain gains(double position) const noexcept;

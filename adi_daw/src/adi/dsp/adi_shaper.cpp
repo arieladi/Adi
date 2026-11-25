@@ -611,11 +611,16 @@ void AdiShaper::DriveDryDelay::advance(float& l, float& r) noexcept {
 template <AdiShaper::Stage kind>
 void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
                        float* outL, float* outR, std::size_t frames) noexcept {
+    // A held Pan contour repeats the same tap between its short joins. The
+    // cache lasts one render segment, so edits and sample-rate changes apply
+    // to the first sample. Each channel's audio history still advances.
+    constexpr double unset = std::numeric_limits<double>::quiet_NaN();
+    std::array<double, 3> previousPan{unset, unset, unset};
     if constexpr (kind == Stage::Pan) {
         for (std::size_t i = 0; i < stage.bands.size(); ++i) {
             const auto& band = stage.bands[i];
             if (band.active && band.primary.constant)
-                panHistory_[i].constantTap = panHistory_[i].tap(band.primary.points[0], sampleRate_, true);
+                panHistory_[i].blockTap = panHistory_[i].tap(band.primary.points[0], sampleRate_, true);
         }
     }
     auto applyGain = [](Gain g, float& l, float& r) {
@@ -649,10 +654,15 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
         } else {
             if constexpr (kind == Stage::Pan) {
                 auto& history = panHistory_[index];
-                if (band.primary.constant) history.process(history.constantTap, l, r);
+                if (band.primary.constant) history.process(history.blockTap, l, r);
+                else if (band.primary.linear) history.process(history.tap(band.primary.at(p), sampleRate_, false), l, r);
                 else {
-                    const double position = band.primary.linear ? band.primary.at(p) : band.primary.heldPanAt(p);
-                    history.process(history.tap(position, sampleRate_, false), l, r);
+                    const double position = band.primary.heldPanAt(p);
+                    if (position != previousPan[index]) {
+                        history.blockTap = history.tap(position, sampleRate_, false);
+                        previousPan[index] = position;
+                    }
+                    history.process(history.blockTap, l, r);
                 }
                 if (band.blend != 1.f) {
                     l = dryL + band.blend * (l - dryL);
