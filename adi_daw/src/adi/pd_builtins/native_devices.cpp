@@ -231,8 +231,7 @@ template <class Transport> void syncPdPosition(dsp::AdiShaper& core, const Trans
 
 void syncShaper(dsp::AdiShaper& core, const engine::NodeIo& io, const PdTransport* fallback) noexcept {
     if (const auto* position = io.deviceTransport) {
-        core.tempo(position->bpm);
-        core.sync(position->quarterNotes, position->playing);
+        syncPosition(core, *position, io.transport);
     } else if (const auto* t = io.transport) {
         syncPdPosition(core, *t);
     } else if (fallback) {
