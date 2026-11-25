@@ -444,7 +444,7 @@ std::shared_ptr<ProjectFileLease> ProjectFileLease::open(const fs::path& path,bo
             // file we just created -- no lease was ever possible -- so take it
             // back while the name still names it; otherwise a retry at this
             // path would fail as AlreadyExists. A lock refused later is
-            // different: another process's replace has adopted the file.
+            // handled below (DF-E12).
             struct stat info{};
             if(create && ::stat(value->path.c_str(),&info)==0 &&
                FileIdentity{static_cast<std::uint64_t>(info.st_dev),static_cast<std::uint64_t>(info.st_ino)}==*identity)
@@ -452,7 +452,39 @@ std::shared_ptr<ProjectFileLease> ProjectFileLease::open(const fs::path& path,bo
             return {};
         }
 #endif
-        if((error=lockNative(value->file,exclusive)))return {};
+        error=lockNative(value->file,exclusive);
+#if !defined(_WIN32)
+        if(error && create) {
+            // DF-E12 (a): a lease is keyed on the inode's number, and a file just made with O_EXCL is a new inode, so
+            // no lease on it can be rightful yet. A lock refused there belongs to the file that number named before:
+            // ext4 hands a freed inode number to the next new file at once, and a replace keeps the lease of the
+            // inode its rename freed until its folder sync returns. Wait that out, for a bound.
+            using namespace std::chrono_literals;
+            auto pause=2ms;
+            const auto until=std::chrono::steady_clock::now()+2s;
+            while(error && (error==std::errc::resource_unavailable_try_again || error==std::errc::operation_would_block) &&
+                  std::chrono::steady_clock::now()<until) {
+                std::this_thread::sleep_for(pause);
+                pause=std::min(pause*2,std::chrono::milliseconds(50));
+                error=lockNative(value->file,exclusive);
+            }
+        }
+        if(error) {
+            // DF-E12 (b): no lease was taken on the empty file we created. Where the lock failed for any reason but a
+            // holder, take the file back while the name still names it, as when the lease folder is unusable; a retry
+            // at this path would otherwise fail as AlreadyExists. A lease still held after the wait above is no stale
+            // one (a replace now lets go of a freed inode's lease at its rename): it is another process's replace
+            // that has adopted our new file, and the file is left to it.
+            const bool held=error==std::errc::resource_unavailable_try_again || error==std::errc::operation_would_block;
+            struct stat info{};
+            if(create && !held && ::stat(value->path.c_str(),&info)==0 &&
+               FileIdentity{static_cast<std::uint64_t>(info.st_dev),static_cast<std::uint64_t>(info.st_ino)}==*identity)
+                (void)::unlink(value->path.c_str());
+            return {};
+        }
+#else
+        if(error)return {};
+#endif
         // A replacement that won the open-to-lock interval must not redirect
         // this Store onto a different inode after we acquired the old one.
         const auto current=identityAt(value->path,error);
@@ -598,6 +630,9 @@ PublishResult replaceFile(const fs::path& selectedSource,const fs::path& selecte
             if(error==std::errc::operation_not_supported)
                 return {PublishStatus::failed,false,"replace file: this volume cannot replace a file in place; choose a new name"};
             if(error)return {PublishStatus::failed,false,"replace file: "+error.message()};
+            // DF-E12: the rename freed the old target's inode, so its lease guards nothing now. Holding it through
+            // the folder sync below (of no fixed length) would refuse a new file given that inode number meanwhile.
+            lease.reset();
             return publishedResult(target,*sourceId,hooks.syncDirectory);
         }
         return {PublishStatus::failed,false,"destination kept changing during replacement"};
@@ -639,7 +674,7 @@ PublishResult publishFile(const fs::path& source, const fs::path& target, Publis
         const auto sourceStatus=fs::symlink_status(source,identityError);
         if(identityError || !fs::is_regular_file(sourceStatus))
             return {PublishStatus::failed,false,"staging file is not a regular closed file"};
-        const auto sourceLease=ProjectFileLease::openExclusive(source,identityError);
+        auto sourceLease=ProjectFileLease::openExclusive(source,identityError);
         if(!sourceLease)return {PublishStatus::failed,false,"staging file is open or inaccessible: "+identityError.message()};
         const auto identity=std::optional<FileIdentity>(sourceLease->identity());
         const auto sameStage=[&] {
@@ -706,6 +741,7 @@ PublishResult publishFile(const fs::path& source, const fs::path& target, Publis
         // Failure to remove a private staging name does not invalidate the
         // verified destination; its owning staging directory cleans it later.
         std::error_code ignored; fs::remove(source, ignored);
+        sourceLease.reset(); // DF-E12: the staging inode is gone; its lease must not outlive it through the sync
         auto result = publishedResult(target, *copyIdentity, hooks.syncDirectory);
         result.usedFallback = true;
         return result;

@@ -18,8 +18,13 @@
 #endif
 #include <windows.h>
 #else
+#include <fcntl.h>
+#include <sys/file.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <chrono>
+#include <thread>
 #endif
 namespace {
 using namespace adi;
@@ -291,6 +296,86 @@ void processes(){
     check(childStatus(child,23) && read(target)=="crash complete bytes" && !fs::exists(staged),"process exit immediately after rename leaves the complete new file");
 }
 #endif
+#if defined(__linux__)
+// DF-E12 (c)'s probe: replaceFile's syncDirectory hook is a plain function, so its state is here.
+fs::path createDuringSyncPath;
+bool createDuringSyncOpened=false;
+std::chrono::steady_clock::duration createDuringSyncTook{};
+std::error_code createDuringSync(const fs::path&){
+    const auto start=std::chrono::steady_clock::now();
+    StoreError error{};auto created=Store::create(createDuringSyncPath,error);
+    createDuringSyncTook=std::chrono::steady_clock::now()-start;createDuringSyncOpened=created!=nullptr;
+    return {};
+}
+// DF-E12: a lease is keyed on (st_dev, st_ino). ext4 hands a freed inode number to the next new file at once,
+// and replaceFile keeps the exclusive lease of the inode its rename freed until its folder sync returns. These
+// recycle an inode on purpose: a file is made and its number's lease taken exclusively, as a replace holds it;
+// the file goes, freeing the number; the next project file created takes that number.
+void recycledInodes(){
+    test::TempDirectory temp{"project_replace","recycled"};
+    const auto leases=fs::path("/tmp")/("adi-project-leases-"+std::to_string(static_cast<std::uint64_t>(::getuid())));
+    (void)::mkdir(leases.c_str(),0700);
+    // The lock file is opened before the file goes, so the lock file does not take the freed number itself.
+    const auto staleLease=[&](const fs::path& probe,ino_t& freed)->int{
+        write(probe,"freed");struct stat info{};if(::stat(probe.c_str(),&info)!=0)return -1;
+        const auto lock=leases/(std::to_string(static_cast<std::uint64_t>(info.st_dev))+"-"+
+                                std::to_string(static_cast<std::uint64_t>(info.st_ino))+".lock");
+        const int held=::open(lock.c_str(),O_RDWR|O_CREAT|O_CLOEXEC,0600);
+        if(held<0 || ::flock(held,LOCK_EX|LOCK_NB)!=0){if(held>=0)::close(held);return -1;}
+        freed=info.st_ino;fs::remove(probe);return held;
+    };
+    const auto inode=[](const fs::path& path)->ino_t{struct stat info{};return ::stat(path.c_str(),&info)==0?info.st_ino:0;};
+    // (a) The replace lets its lease go a moment later: the create waits it out and opens.
+    bool recycled=false;
+    for(int attempt=0;attempt<5 && !recycled;++attempt){
+        ino_t freed=0;const int held=staleLease(temp.path()/("probe-"+std::to_string(attempt)),freed);
+        if(held<0)break;
+        const auto path=temp.path()/("Fresh-"+std::to_string(attempt)+".adi");
+        std::thread replace([held]{std::this_thread::sleep_for(std::chrono::milliseconds(200));(void)::flock(held,LOCK_UN);});
+        StoreError error{};auto created=Store::create(path,error);
+        replace.join();::close(held);
+        // Another process took the number first: the create succeeded on another inode. A refused create is not
+        // skipped, so a wait that never succeeds fails the check below.
+        if(created && inode(path)!=freed)continue;
+        recycled=true;
+        check(created!=nullptr,"a project created on an inode number a replace has just freed waits out that lease and opens");
+    }
+    if(!recycled){std::printf("NOTE: this filesystem did not give the freed inode number to the next file; DF-E12 not exercised\n");return;}
+    // (b) The lease is never let go, as by another process's replace that adopted the new file: the create is
+    // refused, after the wait, and the file is left to that holder rather than unlinked under it.
+    bool refused=false;
+    for(int attempt=0;attempt<5 && !refused;++attempt){
+        ino_t freed=0;const int held=staleLease(temp.path()/("held-"+std::to_string(attempt)),freed);
+        if(held<0)break;
+        const auto orphan=temp.path()/("Orphan-"+std::to_string(attempt)+".adi");
+        std::error_code error;auto lease=media::ProjectFileLease::createShared(orphan,error);
+        ::close(held);
+        if(lease)continue; // another number: nothing stood in the way
+        refused=true;
+        check(error && inode(orphan)==freed,"a create refused by a lease held past the wait leaves the file to that holder");
+    }
+    if(!refused)std::printf("NOTE: no create landed on a held recycled inode number; DF-E12 (b) not exercised\n");
+    // (c) A replace lets go of the old target's lease at its rename: a project created during its folder sync, on
+    // the inode number the rename freed, opens at once rather than waiting the lease out.
+    bool reused=false;
+    for(int attempt=0;attempt<5 && !reused;++attempt){
+        const auto target=temp.path()/("Replaced-"+std::to_string(attempt)+".adi");
+        const auto stage=temp.path()/("Stage-"+std::to_string(attempt));
+        const auto during=temp.path()/("During-"+std::to_string(attempt)+".adi");
+        write(target,"old bytes");write(stage,"new bytes");
+        const auto old=inode(target);
+        createDuringSyncPath=during;createDuringSyncOpened=false;createDuringSyncTook={};
+        media::ReplaceHooks hooks;
+        hooks.syncDirectory=createDuringSync;
+        const auto result=media::replaceFile(stage,target,hooks);
+        if(result.status!=media::PublishStatus::published || inode(during)!=old)continue; // the number went elsewhere
+        reused=true;
+        check(createDuringSyncOpened && createDuringSyncTook<std::chrono::milliseconds(500),
+              "a project created on the inode number a replace's rename freed opens at once, during its folder sync");
+    }
+    if(!reused)std::printf("NOTE: no create landed on the inode a replace freed; DF-E12 (c) not exercised\n");
+}
+#endif
 }
 int main([[maybe_unused]] int argc,char** argv){
 #if !defined(_WIN32)
@@ -299,5 +384,8 @@ if(argc==3 && std::string(argv[1])=="--writer")return writerResult(media::pathFr
 executable=fs::absolute(argv[0]);try{stores();publication();publicationRetries();
 #if !defined(_WIN32)
 processes();
+#endif
+#if defined(__linux__)
+recycledInodes();
 #endif
 }catch(const std::exception& error){check(false,error.what());}std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;}
