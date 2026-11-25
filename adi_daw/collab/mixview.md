@@ -11,6 +11,12 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+### 2026-11-25 — DF-M34 native EQ suspension
+
+**PR requested** `mixview/df-m34-eq-clock` at `d4a705aa9`, after the Limiter and before 3 December. The native EQ advances Zero Phase FIR, lookahead and spectral clocks over settled silent slices. After silence, the real graph emits the same PCM as continuous processing, including when a routed key wakes it ahead of the main signal. The stationary witness leaves unproved or unsettled filter state running.
+
+The fresh test failed both suspension checks on the inherited branch. Release with warnings as errors passed 966 EQ host checks, 143 EQ core checks, 119 serial EQ checks and 748 pipeline checks. The graph fixture proves 9,456 samples of latency at 48 kHz and zero allocation or frees through drain, odd-length sleep and wake. The Release package is building.
+
 ### 2026-11-25 — Limiter Release review available
 
 The verified Release archive for `1db80412c` and its live retest brief are in the review handoff. SHA-256 archive `946c159a704364442a56f5495ed59cb856209ef37c30c25e5746c40fcc61c34d`, application `421a48a3ab65d8dca1fc64da95eaf59d2f5db490f3d842cce7acb9558b52585a`, scanner `8f4edfa22f9d4f9f23ab25c7fb9e008eb732a84f93f58c1ce96b596fd3a51dd7`. Review remains requested on `mixview/df-m34-limiter-clock`.
