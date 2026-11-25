@@ -4,6 +4,8 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 
 ## FOR THE DIRECTOR
 
+- **Enhanced Spectrogram profile.** Recommend peak cells and time reassignment for the first Enhanced view. A separate frequency-only option can omit its third transform. Please confirm whether an energy-summed view or multitaper belongs in that first version. This gates the Enhanced profile.
+
 - **Scope onset trigger.** Recommend an adjustable rising level trigger on the starred Main channel, with a hold-off and threshold shown in Scope. Please confirm the trigger and whether stereo sensitivity follows the louder channel. This gates the extra trigger mode.
 - **Scope layers.** Recommend up to eight visible layers without changing the Focus group. Keep Main and the active channel visible, using group order for the remaining places. Confirm whether L+R means the existing two-trace Stereo view or a separate unity-gain mono sum. This gates overflow selection and that additional projection.
 
@@ -210,6 +212,11 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **PR requested** `mixview/mx21-spectrum-overlap-lands-after-2026-12-03` at `9c08ae51e37cd7e61aaf63a742ebd6448e4cca36`. Spectrum keeps 75% as its existing default and offers 0%, 50% and 90% as explicit choices. The block size and hop form one calibration for the primary and pins. A held picture retains its previous profile until Thaw.
 - Four control assertions failed first. The tests then verified fresh, matched 4096/2048 windows at 50%, recovery of 4096/1024 at 75% and reuse of the physical taps. Strict Release passed 11 suites, 5,648 checks.
 - Review ZIP SHA-256 `e9ee4f3f2ba7895a36fbf68aacc15aad357d9d18d97b34d8d038981f6b7e3f49`. Executable `c1cec9698d3747386ad2ffa0af4a780917906ef42a97dcf980f1b0adc9773f42`. Retest brief uses the same source hash.
+
+## 25 November 2026 · needs Devices and Engine · MX-21 analysis windows and Enhanced Spectrogram
+
+- Additional window shapes need the shared FFT window and calibration owner. The existing Hann profile remains available. The private fixtures cover bin-centred gain, half-bin loss and window width.
+- Enhanced needs its worker publication, cadence and time-row policy agreed across seats. The private proofs check frequency and time signs, the two-transform frequency measurement and the three-transform time measurement. The director's Enhanced choice is parked above.
 
 ### 25 November — MX13 Focus musical windows
 
