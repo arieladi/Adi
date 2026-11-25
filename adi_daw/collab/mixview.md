@@ -11,6 +11,10 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+### 2026-11-25 — Current-main sound replay (DF-M3, DF-M35)
+
+The registered offline providers at `bd52ccf1c` passed eleven Clip and Limiter cases, six stereo and silent routed-key cases at 44.1/48/96 kHz, and nine Clean Auto Gain on/off pairs. Worst routed sample difference was `5.96e-7` and worst RMS was `8.50e-8`, with exact reported delay. Auto Gain Off was byte-identical. The nine inherited high-frequency EQ deviations reproduced byte-for-byte against the previous ADI outputs, with maximum external-reference error `0.11005` peak and `0.00631` RMS. The six spectral cases still need their comparison timing and level mapping. The private replay report records the tested arrays and hashes. No product audio or CPU timings changed in this replay.
+
 ### 2026-11-25 — MX-13 full Focus Scope bars after Locate
 
 **PR requested** `mixview/mx13-full-bar-after-locate-lands-after-2026-12-03` at `e00acfe6d`, after the cursor. Lands after 3 December. When one Scope source waited for a future bar, the worker stopped reading the later sources. Their short tap rings overran before that bar started. The worker now advances every eligible source within its existing read budget. It still publishes only a complete aligned interval.
