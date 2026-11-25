@@ -218,6 +218,14 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - Additional window shapes need the shared FFT window and calibration owner. The existing Hann profile remains available. The private fixtures cover bin-centred gain, half-bin loss and window width.
 - Enhanced needs its worker publication, cadence and time-row policy agreed across seats. The private proofs check frequency and time signs, the two-transform frequency measurement and the three-transform time measurement. The director's Enhanced choice is parked above.
 
+### 2026-11-25 — MX-30 stopped monitoring across a burst (lands after 3 December)
+
+- Branch `mixview/mx30-parked-burst-fence-lands-after-2026-12-03` at `7301a65a85fc`, after `52bb11779103`. A short monitor pulse and then new silence can arrive before a busy display gets its next pass. Retain the last observed, committed quiet prefix so an expired portion of the ring can be crossed without losing the first unknown sample. Re-read the writer clock there. No worker pass is added during settled silence.
+- Red first: the two writes between passes caused a false overrun. Strict Release: 5,708 checks in 12 suites. The burst now matches an uninterrupted run in bins, count, hop, stamp, epoch and overrun status. A real Locate before the burst still starts its own interval. Unproved overwritten samples retain the existing overrun path.
+- Sealed Release and retest brief accompany this head. Archive SHA-256 `1ddf098f1cd6987ca0f6eceeb01fb8b879803a430778c4be2231b911c8231850`.
+
+PR requested.
+
 ### 2026-11-25 — reviewed ends of the current queue
 
 - Main rechecked at `73e26e4aa2c54`. The two after-date Spectrum requests follow overlap, then smoothing `4b642b9b26a9`, then stopped-silence Cumulative Average `52bb11779103`. The earlier cumulative daily review remains `678bfbe1464a`.
