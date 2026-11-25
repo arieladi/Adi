@@ -17,6 +17,14 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 25 November 2026 — External Width key and Volume note retrigger
+
+`clones/shaper-key-note-core-1125` at `527b7a677` — Feed external keys and note-on retriggers to the shaper core. Lands after 3 December. Queue item 19 is ready for review. The earlier entry parked it until the two prerequisite stages landed. The queue permits testing the shaper side independently. This head includes the calibrated Width follower `932753575` and Volume audio trigger `58cb2115b` on current main. Their original 418 parameters retain their order, followed by the eleven trigger and twenty-seven follower parameters. All 456 unique identifiers lead to the expected parameter through the editable patch.
+
+Five stereo key plateaus from 0.5 to 1.3 side gain matched the measured values within 0.00005. Four note-ons restarted the looping and one-shot Volume curves at exactly frames 14,000, 31,300, 53,500 and 81,400 at both 256 and 2,048 frames. A second 12,017-frame fixture mixed stereo key input, a MIDI-driven mid band and a low-band audio detector. Callback sizes 37, 256 and 2,048 matched the one-frame render byte for byte. Removing either the key or the notes changed that output. The notes alone added zero detector latency. The mixed detector retained its 672-frame latency.
+
+All seven headless suites passed on this exact head at each Pd precision under strict compilation. Devices owns host key planes, sample-offset event delivery and catalog wiring. The typed per-band selectors are ready to receive those events. PR requested
+
 ## 25 November 2026 — Drive at the two oversampling boundaries
 
 `clones/shaper-drive-high-rates` at `bc31f1a66` — Match Drive rate changes and direct-rate latency. Lands after 3 December. Stacks on `220246df0`. At 88,199.99 Hz the reference still uses fourfold oversampling. At 88,200 Hz it switches to twofold, which persists at 176,399.99 Hz. At 176,400 Hz it switches to direct processing with 16 frames of padding. All 100 reference rate and buffer pairs reported 16 frames. ADI now follows both transitions. The 10 Hz direct-rate DC blocker matches the pole estimated from 7,346 independent impulse amplitudes per rate. At 192 kHz the fitted pole was 0.99967280429026.
