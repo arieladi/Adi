@@ -155,7 +155,7 @@ back), and gemini (a2b41755).
 
 **Reserved:** N69 to N75 for the window-fn seat's open needs, in its table's order:
 - N69: DF-W37, a parameter back to its stored value when its lane goes.
-- N70: the scanner helper's own failure state.
+- N70: the scanner helper's own failure state. (Withdrawn the next day: it duplicates N59, met on main in #694. Win's error; the window-fn seat reads `HelperCouldNotStart`.)
 - N71: recording after a Save As.
 - N72: a dropped file clears what it lands on.
 - N73: a loop recording keeps its passes.
