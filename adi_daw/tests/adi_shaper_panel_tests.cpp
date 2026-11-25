@@ -474,6 +474,7 @@ void syncDivisions() {
     Fixture f;
     Panel panel;
     panel.bind(f.binding());
+    panel.setSize(1000, 600);
     constexpr std::array<double, 23> quarters{1. / 32, 1. / 16, 1. / 8, 1. / 6, 1. / 4, 3. / 8, 1. / 3, 1. / 2,
                                               3. / 4,  2. / 3,  1,      3. / 2, 4. / 3, 2,      3,      4,
                                               6,       8,       12,     16,     32,     64,     128};
@@ -483,10 +484,49 @@ void syncDivisions() {
         expect(std::abs(std::exp2(f.values[20] * 12 - 5) - quarters[i]) < 1e-6 && f.ends == before + 1,
                "each clock setting, including triplet and dotted values, commits one parameter edit");
     }
-    const auto count = f.ends;
+    const auto cycle = [&] { return std::exp2(f.values[20] * 12 - 5); };
+    const auto step = [&](int direction) {
+        const float x = direction < 0 ? 170.f : 186.f;
+        panel.mouseDown(event(panel, x, 505));
+        panel.mouseUp(event(panel, x, 505));
+    };
+    const auto count = f.starts;
+    step(1);
+    panel.selectSyncDivision(22);
+    expect(f.starts == count && f.ends == count, "last division and current menu item create no edit");
+    step(-1);
+    expect(std::abs(cycle() - 64.) < 1.e-6 && f.ends == count + 1, "previous arrow steps down from 32 bars");
+    panel.selectSyncDivision(0);
+    const auto first = f.ends;
+    step(-1);
+    expect(f.starts == first && f.ends == first && std::abs(cycle() - 1. / 32) < 1.e-6,
+           "first division cannot step past the edge");
+    for (std::size_t i = 1; i < quarters.size(); ++i) {
+        step(1);
+        expect(std::abs(cycle() - quarters[i]) < 1.e-6 && f.ends == first + static_cast<int>(i),
+               "next arrow follows the complete menu in one edit per click");
+    }
+    f.values[20] = (std::log2(.9) + 5.) / 12.;
+    panel.refresh();
+    step(-1);
+    expect(std::abs(cycle() - .75) < 1.e-6, "previous from between divisions selects the closest shorter length");
+    f.values[20] = (std::log2(.9) + 5.) / 12.;
+    panel.refresh();
+    step(1);
+    expect(std::abs(cycle() - 1.) < 1.e-6, "next from between divisions selects the closest longer length");
+
+    const auto sync = f.values[20];
+    const auto edits = f.ends;
     f.values[19] = 1;
+    f.values[21] = .4;
     panel.selectSyncDivision(9);
-    expect(f.ends == count, "Hz mode keeps the continuous rate control");
+    expect(f.ends == edits, "sync menu is inactive in Hz mode");
+    panel.mouseDown(event(panel, 186, 505));
+    panel.mouseDrag(event(panel, 186, 482));
+    expect(f.values[21] > .4 && f.values[20] == sync && f.ends == edits,
+           "Hz readout drags continuously across the former arrow hit area");
+    panel.mouseUp(event(panel, 186, 482));
+    expect(f.ends == edits + 1, "Hz rate drag commits once on release");
 }
 void cachedDrawing() {
     Fixture fixture;
@@ -502,6 +542,15 @@ void cachedDrawing() {
         return image;
     };
     const auto before = render(1);
+    const auto plot = panel.curveBounds();
+    const auto grid = [&](int sixteenth, int rowOffset = 0) {
+        const int y = juce::roundToInt(plot.getY() + plot.getHeight() * sixteenth / 16.f);
+        return before.getPixelAt(323, y + rowOffset).getRed();
+    };
+    for (int i = 1; i < 16; ++i)
+        expect(grid(i) > grid(i, 3), "every sixteenth of the amplitude axis has a visible guide");
+    expect(grid(4) > grid(3) && grid(12) > grid(13) && grid(8) >= grid(4),
+           "quarter and midpoint lines stand out from minor amplitude guides");
     std::array<float, 32> low{}, high{};
     low.fill(-.5f);
     high.fill(.5f);
