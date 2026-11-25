@@ -46,6 +46,7 @@ class MixAnalysers final : public juce::Component {
     void refreshChannels(const SnapshotReader &, std::int64_t main, std::uint64_t viewGeneration);
     void refreshSourceControl();
     void updateComparison(const std::shared_ptr<SharedAnalysis> &);
+    void updatePhaseBandDisplay();
     void updatePinnedSpectrum(const SnapshotReader &, std::uint64_t generation, std::int64_t primary,
                               const ViewStateStore *);
     void clearPinnedSpectrum();
@@ -60,6 +61,7 @@ class MixAnalysers final : public juce::Component {
     std::optional<PinProjectionStamp> pinnedSpectrumStamp_;
     bool hasPinnedSpectrum_ = false;
     juce::ToggleButton pinnedTracks_{"Pinned tracks"};
+    juce::ComboBox phaseBandsBox_;
     std::unique_ptr<Table> table_;
     std::unique_ptr<Compare> compare_;
     std::unique_ptr<SpectrumStatistics> spectrumStatistics_;

@@ -4,6 +4,7 @@
 #include "../src/juce/ui_mix_meter.hpp"
 #include "../src/juce/ui_mix_analysers.hpp"
 #include "ui_fake_peer.hpp"
+#include "adi/dsp/masking.hpp"
 #include "adi/engine/main_loudness.hpp"
 #include "adi/ui/snapshot_reader.hpp"
 #include <algorithm>
@@ -2158,6 +2159,146 @@ void detailedPhasePreservesHighFrequencyTrace() {
     root.removeFromDesktop();
 }
 
+void mixPhaseRailViews() {
+    using namespace adi::ui;
+    using Page = MixAnalysers::Page;
+    using Mode = SharedSpectrumView::Mode;
+    auto project = std::make_shared<adi::engine::Snapshot>();
+    auto main = std::make_shared<adi::engine::TrackNode>();
+    main->id = 1; main->name = "Main"; main->kind = "master";
+    project->tracks = {main};
+    const SnapshotReader reader{project};
+    Fixture f;
+    Root root;
+    root.setBounds(0, 0, 760, 460);
+    MixAnalysers pages;
+    pages.setBounds(root.getLocalBounds());
+    root.addAndMakeVisible(pages);
+    root.setVisible(true);
+    root.addToDesktop(0);
+    const auto frame = [&] { pages.frame(f.broker, reader, 1, 1); };
+    const auto findRail = [&]() -> juce::ComboBox * {
+        for (auto *child : pages.getChildren())
+            if (auto *box = dynamic_cast<juce::ComboBox *>(child); box && box->getTitle() == "Phase band display")
+                return box;
+        return nullptr;
+    };
+    pages.setPage(Page::Phase);
+    frame();
+    auto *rail = findRail();
+    check(rail && rail->isShowing() && rail->getNumItems() == 3 && rail->getText() == "Correlation" &&
+              rail->getItemText(1) == "Width" && rail->getItemText(2) == "Pan",
+          "expanded Phase offers accessible Correlation, Width and Pan with Correlation first");
+    if (!rail) { root.removeFromDesktop(); return; }
+
+    constexpr auto window = 4096;
+    constexpr double sampleRate = 48000., toneBin = 86.;
+    const auto tone = toneBin * sampleRate / window;
+    const auto lower = adi::dsp::erbRate(20.);
+    const auto upper = adi::dsp::erbRate(20000.);
+    const auto band = static_cast<std::size_t>(static_cast<double>(SharedAnalysis::kPhaseBandCount) *
+                                               (adi::dsp::erbRate(tone) - lower) / (upper - lower));
+    const auto writeTone = [&](float rightRatio) {
+        std::array<float, window> left{}, right{};
+        for (std::size_t i = 0; i < left.size(); ++i) {
+            left[i] = static_cast<float>(.5 * std::sin(2. * std::numbers::pi * toneBin * static_cast<double>(i) / window));
+            right[i] = rightRatio * left[i];
+        }
+        f.tap->write(left.data(), right.data(), window, f.tap->written(), true);
+        for (int pass = 0; pass < 4; ++pass) f.broker->pump();
+        frame();
+    };
+    const auto matches = [band](const auto &values, float expected) {
+        return values[band] && std::abs(*values[band] - expected) < 2.e-4f;
+    };
+    const auto barColourAt = [&](float fractionFromBottom) {
+        auto &view = pages.detail.view;
+        juce::Image image(juce::Image::RGB, view.getWidth(), view.getHeight(), true, juce::SoftwareImageType{});
+        { juce::Graphics graphics(image); view.paint(graphics); }
+        const auto bandWidth = (static_cast<float>(view.getWidth()) - 28.f) /
+                               static_cast<float>(SharedAnalysis::kPhaseBandCount);
+        const auto x = juce::roundToInt(5.f + (static_cast<float>(band) + .5f) * bandWidth);
+        const auto y = juce::roundToInt(static_cast<float>(view.getHeight()) - 34.f -
+                                        fractionFromBottom * static_cast<float>(look::fieldHeight));
+        return image.getPixelAt(x, y);
+    };
+    const auto selectRail = [&](int index) {
+        rail->setSelectedId(rail->getItemId(index), juce::sendNotificationSync);
+        frame();
+    };
+
+    writeTone(.5f);
+    const auto correlation = pages.detail.view.snapshot();
+    check(correlation && correlation->phaseBands && matches(*correlation->phaseBands, 1.f) &&
+              !correlation->phaseBandSpatial,
+          "default Phase shows correlation without requesting spatial bands");
+    const auto baseDemand = f.broker->stats();
+    const auto attached = f.acquired;
+    selectRail(1);
+    const auto adding = f.broker->stats();
+    check(correlation && pages.detail.view.snapshot() == correlation && adding.taps == baseDemand.taps &&
+              adding.domains == baseDemand.domains && adding.consumers == baseDemand.consumers &&
+              adding.spectralPlans == baseDemand.spectralPlans && adding.transforms == baseDemand.transforms &&
+              f.acquired == attached && f.released == 0,
+          "requesting Width retains the compatible vector picture, physical tap and prepared plan");
+    writeTone(-1.f);
+    const auto width = pages.detail.view.snapshot();
+    check(width && width->phaseBandSpatial && matches(width->phaseBandSpatial->width, 1.f) &&
+              matches(width->phaseBandSpatial->pan, 0.f) && barColourAt(.75f) == static_cast<juce::Colour>(look::accent),
+          "equal antiphase audio fills the Width bar upward while Pan stays centred");
+    writeTone(.5f);
+    const auto stereo = pages.detail.view.snapshot();
+    const auto beforePan = f.broker->stats();
+    selectRail(2);
+    const auto afterPan = f.broker->stats();
+    check(stereo && stereo->phaseBandSpatial && matches(stereo->phaseBandSpatial->width, .1f) &&
+              matches(stereo->phaseBandSpatial->pan, -.6f),
+          "the Phase page receives the Width and Pan of a 2:1 stereo signal");
+    check(barColourAt(.35f) == static_cast<juce::Colour>(look::value),
+          "Pan paints a left-heavy signal below the centre");
+    check(pages.detail.view.snapshot() == stereo && afterPan.transforms == beforePan.transforms &&
+              afterPan.spectralPlans == baseDemand.spectralPlans && f.acquired == attached && f.released == 0,
+          "switching from Width to Pan reuses the spectrum result and prepared plan");
+
+    const auto expanded = pages.getBounds();
+    pages.setBounds(expanded.withWidth(look::mixChannelMinWidth));
+    frame();
+    writeTone(.5f);
+    const auto compact = pages.detail.view.snapshot();
+    check(!rail->isShowing() && rail->getText() == "Pan" && compact && compact->phaseBands &&
+              !compact->phaseBandSpatial && f.broker->stats().spectralPlans == baseDemand.spectralPlans,
+          "compact Phase restores correlation-only demand and remembers Pan");
+    pages.setBounds(expanded);
+    frame();
+    writeTone(.5f);
+    check(rail->isShowing() && rail->getText() == "Pan" && pages.detail.view.snapshot() &&
+              pages.detail.view.snapshot()->phaseBandSpatial,
+          "expanding Phase restores the remembered spatial rail");
+
+    pages.setPage(Page::All);
+    frame();
+    writeTone(.5f);
+    const SharedSpectrumView *allPhase = nullptr;
+    for (const auto *child : pages.getChildren()) {
+        if (const auto *tile = dynamic_cast<const SharedSpectrumView *>(child); tile && tile->mode() == Mode::Phase)
+            allPhase = tile;
+    }
+    const auto all = allPhase ? allPhase->snapshot() : nullptr;
+    check(!rail->isShowing() && all && all->phaseBands && !all->phaseBandSpatial,
+          "the All Phase tile stays correlation-only");
+    pages.setPage(Page::Phase);
+    frame();
+    check(rail->isShowing() && rail->getText() == "Pan", "Phase remembers its local rail after visiting another page");
+    pages.setVisible(false);
+    const auto hidden = f.broker->stats();
+    frame();
+    f.broker->pump();
+    check(!rail->isShowing() && hidden.taps == 0 && hidden.consumers == 0 && hidden.spectralPlans == 0 &&
+              f.broker->stats().workerPasses == hidden.workerPasses,
+          "hiding Phase drops the spatial demand and leaves no scheduled work");
+    root.removeFromDesktop();
+}
+
 void mixAnalyserPages() {
     using namespace adi::ui;
     using Page = MixAnalysers::Page;
@@ -2772,7 +2913,7 @@ int main() {
           clearSpectrogramWhileWorkerAhead(); freshActionsWithSharedConsumer(); backlogAndLifecycleFreshness(); spectrumSlopeProjection(); spectrumWideCachedGeometry(); spectrumDetailScale(); spectrumExtendedGridGeometry(); spectrumExtendedScale();
           pinnedSpectrumWaitsForHeardPrimary();
           spectrumDeviceScale(); spectrogramHistoryMotion(); classicScopeSurface();
-          classicScopeUnchangedTrace(); detailedPhasePreservesHighFrequencyTrace(); mixAnalyserPages();
+          classicScopeUnchangedTrace(); detailedPhasePreservesHighFrequencyTrace(); mixPhaseRailViews(); mixAnalyserPages();
           compareAndAveragePages(); compareHoldSurvivesInvalidA(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);

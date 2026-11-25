@@ -527,6 +527,11 @@ MixAnalysers::MixAnalysers() {
         detail.setMode(mode);
         pinnedTracks_.setEnabled(canPin);
     };
+    phaseBandsBox_.addItemList({"Correlation", "Width", "Pan"}, 1);
+    phaseBandsBox_.setSelectedId(1, juce::dontSendNotification);
+    phaseBandsBox_.setTitle("Phase band display");
+    phaseBandsBox_.setTooltip("Show signed correlation, side energy fraction, or stereo pan by frequency band.");
+    phaseBandsBox_.onChange = [this] { updatePhaseBandDisplay(); };
     pinnedTracks_.setTitle("Pinned tracks");
     pinnedTracks_.setTooltip("Overlay your Stack pins in Realtime, either average, or Realtime Sigma.");
     pinnedTracks_.onClick = [this] {
@@ -547,6 +552,7 @@ MixAnalysers::MixAnalysers() {
     addAndMakeVisible(pageBox);
     addAndMakeVisible(sourceBox);
     addChildComponent(spectrumTraceBox);
+    addChildComponent(phaseBandsBox_);
     addChildComponent(pinnedTracks_);
     addChildComponent(detail);
     detail.usePageControls();
@@ -680,6 +686,13 @@ void MixAnalysers::updateComparison(const std::shared_ptr<SharedAnalysis> &broke
     };
     compare_->present(broker, selected(compareA.getSelectedId()), selected(compareB.getSelectedId()));
 }
+void MixAnalysers::updatePhaseBandDisplay() {
+    using Display = SharedSpectrumView::PhaseBandDisplay;
+    const auto selected = phaseBandsBox_.getSelectedId();
+    const auto mode = page_ == Page::Phase && phaseBandsBox_.isVisible() && selected > 0
+        ? static_cast<Display>(selected - 1) : Display::Correlation;
+    detail.view.setPhaseBandDisplay(mode);
+}
 void MixAnalysers::updatePinnedSpectrum(const SnapshotReader &reader, std::uint64_t generation, std::int64_t primary,
                                        const ViewStateStore *viewState) {
     if (page_ != Page::Spectrum || !SharedSpectrumView::supportsSpectrumOverlays(detail.mode()) ||
@@ -794,6 +807,11 @@ void MixAnalysers::resized() {
     } else {
         sourceBox.setBounds(header.removeFromLeft(look::mixChannelMaxWidth));
     }
+    header.removeFromLeft(look::gap);
+    const bool showPhaseBands = page_ == Page::Phase && header.getWidth() >= look::mixChannelMinWidth;
+    phaseBandsBox_.setVisible(showPhaseBands);
+    if (showPhaseBands) phaseBandsBox_.setBounds(header.removeFromLeft(look::mixChannelMinWidth));
+    updatePhaseBandDisplay();
     area.removeFromTop(look::gap);
     const bool showStatistics = hasPinnedSpectrum_ && showsTrace &&
         area.getWidth() >= 2 * look::mixChannelMinWidth + look::gap && area.getHeight() >= 2 * look::mixChannelRowHeight;

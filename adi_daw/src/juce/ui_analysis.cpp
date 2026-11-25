@@ -451,6 +451,25 @@ void SharedSpectrumView::enablePhaseBands() {
     updateDemand();
     repaint();
 }
+void SharedSpectrumView::setPhaseBandDisplay(PhaseBandDisplay display) {
+    if (phaseBandDisplay_ == display) return;
+    const bool wasSpatial = phaseBandDisplay_ != PhaseBandDisplay::Correlation;
+    const bool wantsSpatial = display != PhaseBandDisplay::Correlation;
+    phaseBandDisplay_ = display;
+    if (mode_ != Mode::Phase || !phaseBandsEnabled_) return;
+    if (wasSpatial != wantsSpatial && lease_ && eligible()) {
+        try {
+            // Admit the new output on the same prepared domain before releasing
+            // the former output. Width and Pan themselves share one projection.
+            auto next = broker_->acquire(phaseRequest());
+            if (next) {
+                phaseProjectionPending_ = wantsSpatial && static_cast<bool>(shown_);
+                lease_ = std::move(next);
+            }
+        } catch (...) { /* Keep the usable vectorscope if spatial admission fails. */ }
+    }
+    repaint();
+}
 void SharedSpectrumView::setStereoBalanceEnabled(bool value) noexcept {
     if (stereoBalanceEnabled_ == value) return;
     stereoBalanceEnabled_ = value;
@@ -515,6 +534,18 @@ SharedAnalysis::Request SharedSpectrumView::spectrumRequest(std::int64_t track) 
     if (mode_ == Mode::SpectrumAverage) request.outputs = SharedAnalysis::Average1s;
     else if (mode_ == Mode::SpectrumCumulativeAverage) request.outputs = SharedAnalysis::CumulativeAverage;
     else if (mode_ == Mode::SpectrumRealtimeSigma) request.outputs = SharedAnalysis::RealtimeSigma;
+    return request;
+}
+SharedAnalysis::Request SharedSpectrumView::phaseRequest() const noexcept {
+    auto request = spectrumRequest(track_);
+    request.outputs = SharedAnalysis::Phase;
+    if (phaseBandsEnabled_) {
+        request.outputs |= SharedAnalysis::PhaseBands;
+        if (phaseBandDisplay_ != PhaseBandDisplay::Correlation) request.outputs |= SharedAnalysis::PhaseBandDetail;
+        request.fftSize = 4096;
+        request.hopSize = request.fftSize / 2;
+        request.channel = SharedAnalysis::Channel::StereoPower;
+    }
     return request;
 }
 void SharedSpectrumView::acquireSpectrumOverlays() noexcept {
@@ -748,6 +779,7 @@ std::span<const float> SharedSpectrumView::spectrumBins() const noexcept {
     return mode_ == Mode::Spectrum && shown_ ? std::span<const float>(shown_->binsDbfs) : std::span<const float>{};
 }
 void SharedSpectrumView::resetPicture() noexcept {
+    phaseProjectionPending_ = false;
     shown_.reset();
     projectedBins_.reset();
     maximumShown_.reset();
@@ -930,15 +962,7 @@ void SharedSpectrumView::updateDemand() noexcept {
             case Mode::Scope: request.outputs = SharedAnalysis::Scope; break;
             case Mode::Meters:
             case Mode::ChannelReadout: request.outputs = SharedAnalysis::Meters; break;
-            case Mode::Phase:
-                request.outputs = SharedAnalysis::Phase;
-                if (phaseBandsEnabled_) {
-                    request.outputs |= SharedAnalysis::PhaseBands;
-                    request.fftSize = 4096;
-                    request.hopSize = request.fftSize / 2;
-                    request.channel = SharedAnalysis::Channel::StereoPower;
-                }
-                break;
+            case Mode::Phase: request = phaseRequest(); break;
             case Mode::Spectrogram: request.outputs = SharedAnalysis::Spectrogram; break;
             case Mode::SpectrumMaximum: request.outputs = SharedAnalysis::RealtimeMaximum; break;
             case Mode::SpectrumCumulativeMaximum: request.outputs = SharedAnalysis::CumulativeMaximum; break;
@@ -1095,6 +1119,11 @@ void SharedSpectrumView::frame() noexcept {
     } else {
         next = lease_.read();
     }
+    // A new rail projection can be pending while the same source's vector is
+    // still usable. A replacement tap must take the normal freshness path.
+    if (!next && phaseProjectionPending_ && shown_ && lease_.sourcePosition().generation == shown_->generation)
+        return;
+    phaseProjectionPending_ = false;
     // Invalidation can replace a live source before its next publication. Fence
     // at that activation, rather than accepting buffered replacement-source data.
     if (!next && shown_) armFreshBoundary();
@@ -1417,6 +1446,53 @@ void SharedSpectrumView::mouseExit(const juce::MouseEvent &) {
     repaint();
 }
 
+void SharedSpectrumView::paintPhaseBands(juce::Graphics &g, juce::Rectangle<float> bands) const {
+    const juce::Graphics::ScopedSaveState bandStyle(g);
+    const auto rowHeight = static_cast<float>(look::fieldHeight);
+    const auto caption = bands.removeFromTop(std::min(rowHeight, bands.getHeight() * .5f));
+    const auto mode = phaseBandDisplay_;
+    const auto *spatial = shown_->phaseBandSpatial.get();
+    const SharedAnalysis::PhaseBandCorrelations *values = shown_->phaseBands.get();
+    const char *title = "By band";
+    if (mode == PhaseBandDisplay::Width) {
+        title = "Band width (side energy)";
+        values = spatial ? &spatial->width : nullptr;
+    } else if (mode == PhaseBandDisplay::Pan) {
+        title = "Band pan (L - / R +)";
+        values = spatial ? &spatial->pan : nullptr;
+    }
+    g.setFont(look::font(look::fontCaption));
+    g.setColour(look::textOnBand);
+    g.drawText(title, caption, juce::Justification::centredLeft);
+
+    const bool widthDisplay = mode == PhaseBandDisplay::Width;
+    const auto width = bands.getWidth() / static_cast<float>(SharedAnalysis::kPhaseBandCount);
+    const auto baseline = widthDisplay ? bands.getBottom() : bands.getCentreY();
+    const auto gap = std::min(width * .25f, look::line);
+    const auto height = bands.getHeight();
+    const auto neutralHeight = std::min(height, look::line);
+    const auto neutralY = baseline - neutralHeight * (widthDisplay ? 1.f : .5f);
+    for (std::size_t band = 0; band < SharedAnalysis::kPhaseBandCount; ++band) {
+        const auto bar = bands.removeFromLeft(width).withTrimmedRight(gap);
+        g.setColour(look::outline);
+        g.fillRect(bar);
+        g.setColour(look::display);
+        g.fillRect(bar.withY(neutralY).withHeight(neutralHeight));
+        if (!values || !(*values)[band]) continue;
+        const auto value = std::clamp(*(*values)[band], widthDisplay ? 0.f : -1.f, 1.f);
+        const auto length = std::abs(value) * height * (widthDisplay ? 1.f : .5f);
+        if (length < neutralHeight) {
+            g.setColour(look::textOnBand);
+            g.fillRect(bar.withY(neutralY).withHeight(neutralHeight));
+        } else {
+            if (widthDisplay) g.setColour(look::accent);
+            else if (value > 0.f) g.setColour(look::meterLevel);
+            else g.setColour(mode == PhaseBandDisplay::Pan ? look::value : look::record);
+            g.fillRect(bar.withY(value > 0.f ? baseline - length : baseline).withHeight(length));
+        }
+    }
+}
+
 void SharedSpectrumView::paint(juce::Graphics &g) {
     if (mode_ == Mode::ChannelReadout) { paintChannelReadout(g); return; }
     g.fillAll(look::display);
@@ -1488,35 +1564,8 @@ void SharedSpectrumView::paint(juce::Graphics &g) {
     } else if (mode_ == Mode::Phase) {
         auto vectorArea = plot;
         if (phaseBandsEnabled_) {
-            const juce::Graphics::ScopedSaveState bandStyle(g);
             const auto rowHeight = static_cast<float>(look::fieldHeight);
-            auto bands = vectorArea.removeFromBottom(std::min(2.f * rowHeight, plot.getHeight() * .4f));
-            const auto caption = bands.removeFromTop(std::min(rowHeight, bands.getHeight() * .5f));
-            g.setFont(look::font(look::fontCaption));
-            g.setColour(look::textOnBand);
-            g.drawText("By band", caption, juce::Justification::centredLeft);
-            const auto width = bands.getWidth() / static_cast<float>(SharedAnalysis::kPhaseBandCount);
-            const auto centreY = bands.getCentreY();
-            const auto gap = std::min(width * .25f, look::line);
-            const auto height = bands.getHeight();
-            const auto neutralHeight = std::min(height, look::line);
-            for (std::size_t i = 0; i < SharedAnalysis::kPhaseBandCount; ++i) {
-                const auto bar = bands.removeFromLeft(width).withTrimmedRight(gap);
-                g.setColour(look::outline);
-                g.fillRect(bar);
-                g.setColour(look::display);
-                g.fillRect(bar.withY(centreY - neutralHeight * .5f).withHeight(neutralHeight));
-                if (!shown_->phaseBands || !(*shown_->phaseBands)[i]) continue;
-                const float value = *(*shown_->phaseBands)[i];
-                const auto level = std::abs(value) * height * .5f;
-                if (level < neutralHeight) {
-                    g.setColour(look::textOnBand);
-                    g.fillRect(bar.withY(centreY - neutralHeight * .5f).withHeight(neutralHeight));
-                } else {
-                    g.setColour(value > 0.f ? look::meterLevel : look::record);
-                    g.fillRect(bar.withY(value > 0.f ? centreY - level : centreY).withHeight(level));
-                }
-            }
+            paintPhaseBands(g, vectorArea.removeFromBottom(std::min(2.f * rowHeight, plot.getHeight() * .4f)));
         }
         const auto radius = std::min(vectorArea.getWidth(), vectorArea.getHeight()) * .46f;
         const auto centre = vectorArea.getCentre();

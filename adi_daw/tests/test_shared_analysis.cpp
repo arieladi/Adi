@@ -3302,6 +3302,117 @@ void phaseBandCorrelation() {
               highBand.read()->firstStamp == samples,
           "the mixed high band counts the real-only Nyquist bin once and other bins twice");
 }
+void phaseBandSpatialMeasurements() {
+    constexpr int window = 4096;
+    constexpr std::size_t lowBand = 4, highBand = 16;
+    constexpr auto ordinary = SharedAnalysis::Phase | SharedAnalysis::PhaseBands;
+    constexpr auto detailed = ordinary | SharedAnalysis::PhaseBandDetail;
+    Fixture f;
+    SharedAnalysis::Request request{1, ScopePoint::PostFader, window, SharedAnalysis::Channel::StereoPower};
+    request.hopSize = window / 2;
+    request.window = adi::dsp::Window::Rectangular;
+    request.outputs = ordinary;
+    auto phase = f.broker.acquire(request);
+    std::array<float, window> left{}, right{}, tone{};
+    for (std::size_t i = 0; i < left.size(); ++i) {
+        const auto angle = 2. * std::numbers::pi * static_cast<double>(i) / window;
+        tone[i] = static_cast<float>(.25 * std::sin(32. * angle));
+        const auto high = static_cast<float>(.25 * std::sin(384. * angle));
+        left[i] = tone[i] + high;
+        right[i] = tone[i] - high;
+    }
+    const auto bandIs = [](const auto &values, std::size_t band, double expected) {
+        return values[band] && near(*values[band], expected, 1.e-5);
+    };
+    const auto spatialIs = [&](const auto &result, std::size_t band, double width, double pan) {
+        return result && result->phaseBandSpatial &&
+               bandIs(result->phaseBandSpatial->width, band, width) &&
+               bandIs(result->phaseBandSpatial->pan, band, pan);
+    };
+    const auto empty = [](const auto &values) {
+        return std::ranges::none_of(values, [](const auto &value) { return value.has_value(); });
+    };
+    f.tap->write(left.data(), right.data(), window, 0, true, 1);
+    check(f.broker.pump() == 2, "ordinary Phase first computes one stereo pair");
+    const auto original = phase.read();
+    const auto baseline = f.broker.stats();
+    // Rate discovery can call the owner twice while retaining one physical tap.
+    const auto acquireCalls = f.acquireCalls;
+    check(original && original->phaseBands && !original->phaseBandSpatial &&
+              bandIs(*original->phaseBands, lowBand, 1.) && bandIs(*original->phaseBands, highBand, -1.),
+          "the existing Phase picture measures correlation without publishing spatial detail");
+
+    request.outputs = detailed;
+    auto detail = f.broker.acquire(request);
+    check(f.broker.pump() == 0, "adding spatial detail to a retained stereo frame reuses its L/R transforms");
+    const auto stereo = detail.read();
+    const auto stereoStats = f.broker.stats();
+    check(original && stereo && stereo == phase.read() && stereo->windowSerial == original->windowSerial &&
+              stereo->firstSequence == original->firstSequence && stereo->sourceEpoch == original->sourceEpoch &&
+              original->phaseBands && stereo->phaseBands && *stereo->phaseBands == *original->phaseBands &&
+              spatialIs(stereo, lowBand, 0., 0.) && spatialIs(stereo, highBand, 1., 0.) &&
+              !stereo->phaseBandSpatial->width[10] && !stereo->phaseBandSpatial->pan[10],
+          "spatial detail distinguishes in-phase and antiphase width at the same centred pan and leaves empty ERBs blank");
+    check(stereoStats.taps == baseline.taps && stereoStats.domains == baseline.domains &&
+              stereoStats.spectralPlans == baseline.spectralPlans && stereoStats.spectralPlans == 1 &&
+              f.acquireCalls == acquireCalls,
+          "ordinary Phase and spatial detail share one tap, domain and lazy plan");
+
+    for (std::size_t i = 0; i < left.size(); ++i) {
+        left[i] = tone[i];
+        right[i] = .5f * tone[i];
+    }
+    f.tap->write(left.data(), right.data(), window, 10000, true, 2);
+    check(f.broker.pump() == 2, "new stereo width and pan still use one pair of transforms");
+    const auto unequal = detail.read();
+    check(spatialIs(unequal, lowBand, .1, -.6) && unequal->phaseBands &&
+              bandIs(*unequal->phaseBands, lowBand, 1.),
+          "a two-to-one amplitude ratio gives ten percent side energy and signed pan without changing correlation");
+
+    detail.reset();
+    left.fill(0.f);
+    f.tap->write(left.data(), tone.data(), window, 20000, true, 3);
+    check(f.broker.pump() == 0, "correlation alone still needs no FFT for a one-sided source");
+    const auto mono = phase.read();
+    check(mono && mono->phaseBands && empty(*mono->phaseBands) && !mono->phaseBandSpatial,
+          "the current one-sided Phase frame has neither valid correlation nor undemanded spatial fields");
+
+    detail = f.broker.acquire(request);
+    check(f.broker.pump() == 1, "same-window spatial upgrade transforms only the live lane");
+    const auto rightOnly = detail.read();
+    check(mono && spatialIs(rightOnly, lowBand, .5, 1.) && rightOnly == phase.read() &&
+              rightOnly->windowSerial == mono->windowSerial && rightOnly->firstSequence == mono->firstSequence &&
+              rightOnly->phaseBands && empty(*rightOnly->phaseBands),
+          "right-only energy has full right pan and equal Mid and Side energy, with correlation unavailable");
+    auto sibling = f.broker.acquire(request);
+    check(f.broker.pump() == 0 && sibling.read() == rightOnly && f.broker.stats().spectralPlans == 1 &&
+              f.acquireCalls == acquireCalls,
+          "a compatible second view shares the immutable one-sided measurements without transforming again");
+
+    const float *silence = nullptr;
+    f.tap->write(silence, silence, window, 30000, false, 4);
+    check(f.broker.pump() == 0, "full silence invokes no band transforms in spatial detail");
+    const auto silent = detail.read();
+    const auto parked = f.broker.stats();
+    check(silent && silent->phaseBands && empty(*silent->phaseBands) &&
+              (!silent->phaseBandSpatial ||
+               (empty(silent->phaseBandSpatial->width) && empty(silent->phaseBandSpatial->pan))),
+          "a fully silent Phase result contains no width, pan or correlation values");
+    f.tap->write(silence, silence, window, 30000, false, 4);
+    check(f.broker.pump() == 0 && detail.read() == silent && f.broker.stats().cursorReads == parked.cursorReads &&
+              f.broker.stats().workerPasses == parked.workerPasses,
+          "a visible, settled spatial detail stops work in certified parked silence");
+
+    detail.reset();
+    sibling.reset();
+    phase.reset();
+    const auto hidden = f.broker.stats();
+    f.tap->write(tone.data(), right.data(), window, 40000, true, 5);
+    check(f.broker.pump() == 0 && hidden.taps == 0 && hidden.spectralPlans == 0 && f.releaseCalls == 1 &&
+              f.broker.stats().cursorReads == hidden.cursorReads,
+          "removing the last Phase consumer retires the shared plan and tap before more samples arrive");
+}
+
 void clippedSampleWindows() {
     Fixture f;
     SharedAnalysis::Request request{1};
@@ -5191,7 +5302,7 @@ void operator delete[](void *p) noexcept {::operator delete(p);}
 void operator delete(void *p,std::size_t) noexcept {::operator delete(p);}
 void operator delete[](void *p,std::size_t) noexcept {::operator delete(p);}
 int main() {
-    try { stripCadenceAndEpochs(); stripReusesRawSpectrum(); stripWorkerBudget(); stripLeaseInSession();
+    try { stripCadenceAndEpochs(); stripReusesRawSpectrum(); stripWorkerBudget(); stripLeaseInSession(); phaseBandSpatialMeasurements();
           continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeMidDemand(); focusScopeDifference(); focusScopeSideDemand(); focusBarScopeBrokerBoundaries(); focusScopeSumProjection(); focusScopeLayerPreview(); focusBarLayerPreview(); focusBarResidualSpectrum(); focusScopePhaseOperands(); focusScopeFlatPath(); focusLagPreviewRequests(); focusLagPreviewCases(); focusLagTapReads(); focusLagHighRateTaps(); focusMatchWindows(); parkedSilence(); parkedWindowHopPhase();
           parkedRealtimeModeJoins<SharedAnalysis::RealtimeMaximum>(); parkedRealtimeModeJoins<SharedAnalysis::RealtimeSigma>(); parkedStereoBalance(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
           sharedModesAndCursors(); phaseBandCorrelation(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); spectrumLevels(); spectrumSamplePeaksAndClips(); restartSpectrumLevels(); restartParkedSpectrumLevels(); spectrumTruePeak(); parkedSpectrumLevels(false); parkedSpectrumLevels(true); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); realtimeSigmaSpectrum(); cumulativeMaximumSpectrum(); cumulativeAverageSpectrum(); cumulativeMaximumParkedRollover(); sharedAverage(); parkedRealtimeAverage(); parkedRealtimeAverageJoinsScope(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); deviceSpectrumLease(); parkedDeviceSpectrum(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }

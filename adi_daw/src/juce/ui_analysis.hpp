@@ -57,7 +57,9 @@ class SharedSpectrumView final : public juce::Component,
         return mode == Mode::Spectrum || mode == Mode::SpectrumAverage || mode == Mode::SpectrumCumulativeAverage ||
                mode == Mode::SpectrumRealtimeSigma;
     }
+    enum class PhaseBandDisplay { Correlation, Width, Pan };
     void enablePhaseBands();
+    void setPhaseBandDisplay(PhaseBandDisplay);
     void setStereoBalanceEnabled(bool) noexcept;
     void setSpectrumLevelsEnabled(bool) noexcept;
     void setSpectrumTruePeakEnabled(bool) noexcept;
@@ -139,6 +141,8 @@ class SharedSpectrumView final : public juce::Component,
     struct SpectrumOverlay;
     using SpectrumLeases = std::array<SharedAnalysis::Lease, kSpectrumOverlayTracks + 1>;
     SharedAnalysis::Request spectrumRequest(std::int64_t track) const noexcept;
+    SharedAnalysis::Request phaseRequest() const noexcept;
+    void paintPhaseBands(juce::Graphics &, juce::Rectangle<float>) const;
     void acquireSpectrumOverlays() noexcept;
     void takeSpectrumLeases(SpectrumLeases &) noexcept;
     void releaseSpectrumOverlays(bool keepPictures = false) noexcept;
@@ -180,7 +184,8 @@ class SharedSpectrumView final : public juce::Component,
     Status status_ = Status::Detached;
     bool suspended_ = false;
     bool frozen_ = false;
-    bool phaseBandsEnabled_ = false;
+    bool phaseBandsEnabled_ = false, phaseProjectionPending_ = false;
+    PhaseBandDisplay phaseBandDisplay_ = PhaseBandDisplay::Correlation;
     bool stereoBalanceEnabled_ = false;
     bool spectrumLevelsEnabled_ = false;
     bool spectrumTruePeakEnabled_ = false;

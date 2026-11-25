@@ -105,6 +105,7 @@ constexpr std::uint32_t allOutputs = SharedAnalysis::Spectrum | SharedAnalysis::
                                      SharedAnalysis::Phase | SharedAnalysis::Spectrogram | SharedAnalysis::Average1s |
                                      SharedAnalysis::RealtimeMaximum | SharedAnalysis::CumulativeMaximum |
                                      SharedAnalysis::Strip | SharedAnalysis::DeviceBlockAverage | SharedAnalysis::PhaseBands |
+                                     SharedAnalysis::PhaseBandDetail |
                                      SharedAnalysis::CumulativeAverage | SharedAnalysis::RealtimeSigma;
 constexpr int stripFftSize = 1024;
 constexpr double stripRefreshSeconds = .05, stripSmoothingSeconds = .3;
@@ -117,6 +118,9 @@ class PhaseBandPlan {
     static constexpr auto bandCount = SharedAnalysis::kPhaseBandCount;
     static constexpr auto unmapped = static_cast<std::uint8_t>(bandCount);
     using Bands = SharedAnalysis::PhaseBandCorrelations;
+    using Spatial = SharedAnalysis::PhaseBandSpatial;
+    struct Power { double left = 0., right = 0., cross = 0.; };
+    static constexpr double leakageFloor = 1.e-12;
 
   public:
     PhaseBandPlan(int size, dsp::Window type)
@@ -130,8 +134,7 @@ class PhaseBandPlan {
     void bindRate(double rate) noexcept {
         if (rate == rate_) return;
         rate_ = rate;
-        windowSerial_ = 0;
-        cached_.reset();
+        resetWindow(0);
         hasMappedBins_ = false;
         std::fill(binBands_.begin(), binBands_.end(), unmapped);
         constexpr double lowHz = 20.;
@@ -150,37 +153,60 @@ class PhaseBandPlan {
         }
     }
 
-    std::shared_ptr<const Bands> project(std::uint64_t serial, std::span<const float> left,
-                                         std::span<const float> right, bool stereo, std::size_t &transforms) noexcept {
-        if (serial == windowSerial_) return cached_;
-        windowSerial_ = serial;
-        cached_ = silent_;
-        if (!stereo || !hasMappedBins_) return cached_;
-        auto values = measure(left, right, transforms);
-        try { cached_ = std::make_shared<const Bands>(std::move(values)); }
-        catch (...) { cached_.reset(); } // Broadband Phase stays available.
-        return cached_;
+    void project(SharedAnalysis::Result &picture, std::span<const float> left,
+                 std::span<const float> right, std::size_t &transforms) noexcept {
+        if (picture.windowSerial != windowSerial_) resetWindow(picture.windowSerial);
+        picture.phaseBands = silent_;
+        const bool hasLeft = picture.rms[0] > 0.f, hasRight = picture.rms[1] > 0.f;
+        const bool stereo = hasLeft && hasRight;
+        const bool detail = (picture.outputs & SharedAnalysis::PhaseBandDetail) != 0;
+        if (!hasMappedBins_ || (!stereo && !(detail && (hasLeft || hasRight)))) return;
+        if (!powersReady_) powersReady_ = measure(left, right, hasLeft, hasRight, transforms);
+        if (!powersReady_) return;
+        try {
+            if (stereo) {
+                if (!cached_) cached_ = std::make_shared<const Bands>(correlations());
+                picture.phaseBands = cached_;
+            }
+            if (detail) {
+                if (!cachedSpatial_) cachedSpatial_ = std::make_shared<const Spatial>(spatial());
+                picture.phaseBandSpatial = cachedSpatial_;
+            }
+        } catch (...) { /* Broadband Phase stays available. */ }
     }
 
   private:
+    void resetWindow(std::uint64_t serial) noexcept {
+        windowSerial_ = serial;
+        powersReady_ = false;
+        cached_.reset();
+        cachedSpatial_.reset();
+    }
     bool forward(std::span<const float> input, std::span<std::complex<float>> output) noexcept {
         for (std::size_t i = 0; i < scratch_.size(); ++i) scratch_[i] = input[i] * window_[i];
         return fft_.forward(scratch_, output);
     }
 
-    Bands measure(std::span<const float> left, std::span<const float> right, std::size_t &transforms) noexcept {
-        Bands result{};
-        if (!forward(left, left_)) return result;
-        ++transforms;
-        if (!forward(right, right_)) return result;
-        ++transforms;
-        struct Power { double left = 0., right = 0., cross = 0.; };
-        std::array<Power, bandCount> powers{};
-        double totalLeft = 0., totalRight = 0.;
+    bool measure(std::span<const float> left, std::span<const float> right, bool hasLeft, bool hasRight,
+                 std::size_t &transforms) noexcept {
+        if (hasLeft) {
+            if (!forward(left, left_)) return false;
+            ++transforms;
+        } else {
+            std::ranges::fill(left_, std::complex<float>{});
+        }
+        if (hasRight) {
+            if (!forward(right, right_)) return false;
+            ++transforms;
+        } else {
+            std::ranges::fill(right_, std::complex<float>{});
+        }
+        powers_.fill({});
+        totalLeft_ = totalRight_ = 0.;
         for (std::size_t i = 1; i < binBands_.size(); ++i) {
             if (binBands_[i] == unmapped) continue;
             const std::complex<double> l{left_[i]}, r{right_[i]};
-            auto &band = powers[binBands_[i]];
+            auto &band = powers_[binBands_[i]];
             // Interior bins represent a conjugate pair. Nyquist is real
             // and alone, so use half its energy on the same scale.
             const double weight = i + 1 == binBands_.size() ? .5 : 1.;
@@ -188,16 +214,32 @@ class PhaseBandPlan {
             band.left += lPower;
             band.right += rPower;
             band.cross += (l * std::conj(r)).real() * weight;
-            totalLeft += lPower;
-            totalRight += rPower;
+            totalLeft_ += lPower;
+            totalRight_ += rPower;
         }
+        return true;
+    }
+    Bands correlations() const noexcept {
+        Bands result{};
         // Discard a band's numerical leakage relative to each channel. With
         // no energy on either side a correlation has no defined value.
-        constexpr double leakageFloor = 1.e-12;
-        for (std::size_t i = 0; i < powers.size(); ++i) {
-            const auto &band = powers[i];
-            if (band.left > totalLeft * leakageFloor && band.right > totalRight * leakageFloor)
+        for (std::size_t i = 0; i < powers_.size(); ++i) {
+            const auto &band = powers_[i];
+            if (band.left > totalLeft_ * leakageFloor && band.right > totalRight_ * leakageFloor)
                 result[i] = static_cast<float>(std::clamp(band.cross / std::sqrt(band.left * band.right), -1., 1.));
+        }
+        return result;
+    }
+    Spatial spatial() const noexcept {
+        Spatial result{};
+        const auto minimum = (totalLeft_ + totalRight_) * leakageFloor;
+        for (std::size_t i = 0; i < powers_.size(); ++i) {
+            const auto &band = powers_[i];
+            const auto power = band.left + band.right;
+            if (power <= minimum) continue;
+            // Orthonormal M/S preserves the combined energy of the two lanes.
+            result.width[i] = static_cast<float>(std::clamp(.5 - band.cross / power, 0., 1.));
+            result.pan[i] = static_cast<float>(std::clamp((band.right - band.left) / power, -1., 1.));
         }
         return result;
     }
@@ -206,16 +248,20 @@ class PhaseBandPlan {
     std::vector<float> window_, scratch_;
     std::vector<std::complex<float>> left_, right_;
     std::vector<std::uint8_t> binBands_;
-    bool hasMappedBins_ = false;
+    std::array<Power, bandCount> powers_{};
+    double totalLeft_ = 0., totalRight_ = 0.;
+    bool hasMappedBins_ = false, powersReady_ = false;
     double rate_ = 0.;
     std::uint64_t windowSerial_ = 0;
     std::shared_ptr<const Bands> cached_;
+    std::shared_ptr<const Spatial> cachedSpatial_;
     const std::shared_ptr<const Bands> silent_ = std::make_shared<const Bands>();
 };
 
 bool valid(const SharedAnalysis::Request &r) {
     if (r.track <= 0 || r.fftSize < 32 || r.fftSize > SharedAnalysis::kMaxFftSize || r.fftSize % 32 ||
         r.hopSize < 0 || r.hopSize > r.fftSize || !r.outputs || (r.outputs & ~allOutputs)) return false;
+    if ((r.outputs & SharedAnalysis::PhaseBandDetail) && !(r.outputs & SharedAnalysis::PhaseBands)) return false;
     using Weighting = dsp::StereoEnvelopeMeter::Weighting;
     if (r.stereoMeter && (r.outputs != SharedAnalysis::Meters || r.stereoMeter->weighting < Weighting::Standard ||
                           r.stereoMeter->weighting > Weighting::K)) return false;
@@ -1242,7 +1288,8 @@ struct SharedAnalysis::Domain {
                (!(bits & CumulativeMaximum) || cumulativeReady.load(std::memory_order_acquire));
     }
     bool keepsParkedHop(std::uint32_t bits) const noexcept {
-        constexpr std::uint32_t windowed = Spectrum | Scope | Phase | PhaseBands | RealtimeMaximum | RealtimeSigma;
+        constexpr std::uint32_t windowed = Spectrum | Scope | Phase | PhaseBands | PhaseBandDetail |
+                                           RealtimeMaximum | RealtimeSigma;
         return !(bits & ~windowed) || canParkAverage(bits) || spectrumLevelHistory;
     }
     void skipCertifiedSilenceTo(std::int64_t next) noexcept {
@@ -2538,8 +2585,7 @@ struct SharedAnalysis::State {
                 // Band phase serves the visible picture only. Intermediate
                 // overlap windows do not need another stereo transform.
                 if (d.phaseBandPlan && (latest->outputs & d.outputs.load(std::memory_order_acquire) & PhaseBands)) {
-                    const bool stereo = latest->rms[0] > 0.f && latest->rms[1] > 0.f;
-                    latest->phaseBands = d.phaseBandPlan->project(latest->windowSerial, d.left, d.right, stereo, done);
+                    d.phaseBandPlan->project(*latest, d.left, d.right, done);
                 }
                 // Intermediate hops advance the retained audio window without
                 // copying a stereo raw pair that this pass will never publish.
