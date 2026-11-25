@@ -11,6 +11,14 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+### 2026-11-25 — MX-21 Width and Pan in expanded Phase
+
+**PR requested** `mixview/mx21-phase-band-spatial-lands-after-2026-12-03` at `5a931f0bc`, on the corrected scheduled review tip `5d86afa90`. Lands after 3 December. The Phase rail offers Correlation, Width and Pan. Width and Pan reuse the same band energies and vector history. Compact Phase keeps Correlation and restores the user's choice when expanded.
+
+The broker passed 907 checks and the software component passed 508. The checks cover sign, empty or one-sided bands, and changed presentation under parked audio. Switching rails keeps the tap, transform and plan, and hiding the view releases its demand. All five changed translation units passed their optimized warning-as-error gate.
+
+Verified Release review and private retest brief are in the handoff. SHA-256 archive `37037cb66b5ab3a71ca053a7015d139cdc058870d97012155a747717752665a0`, application `b91754e044676d16d57388ba85e3182553d88dd4c5c6f35b2dcc9519d39fc3f1`, scanner `ccccce892dfbe8d421331f8e0e6bcf6c78482427ad2e300776ee1e2b949dce52`.
+
 ### 2026-11-25 — DF-M65 exact Clip Input control pin
 
 **PR requested** `mixview/df-m65-clip-input-step-pin` at `3ad269c4f`. The test passes Input step 162 through the actual normalized setter, prepared processing settings, and a host parameter event. All 288 optimized Limiter checks passed with warnings as errors. Separate float multiply and add give `0xc0f99998` (−7.799999237 dB). Fused arithmetic gives `0xc0f99999` (−7.799999714 dB). The test expects the separate-rounding result pinned by DF-M65. This is a test-only branch. The other CI architectures still need to run it.
