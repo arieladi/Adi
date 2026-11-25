@@ -8496,6 +8496,91 @@ void newProject(AppCommands &commands, const std::filesystem::path &dir) {
     }
     document->release();
 }
+// A track's colour is fixed when it is made (ADR-0211 d2; Live 12 manual 2.3.2): Insert Audio and MIDI
+// Track, Insert Return Track and Group Tracks recolour no other track, in the Arrangement or the Mixer
+// View, the returns and Main included; the new track stores its own (walk-A A2b).
+void trackColoursStay(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "colours.adi", true, {}, error);
+    check(document != nullptr, "New opens a project to colour");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "colours");
+    root.setSize(1600, 900);
+    root.frame();
+    check(root.command(AppCommands::ToggleMixerView), "the Mixer View opens");
+    root.resizeMixerView(220);
+    // Each track's colour as its title shows it, and as its strip's name bar in the Mixer View does.
+    using Shown = std::map<std::int64_t, std::pair<juce::Colour, juce::Colour>>;
+    auto shown = [&root] {
+        root.arrangement.changed();
+        root.mark(DirtySet::All);
+        root.frame();
+        Shown out;
+        for (const auto row : root.arrangement.geometry.rows(root.reader()))
+            out[row.track->id].first = root.arrangement.colourFor(row.position);
+        for (const auto &strip : root.mixerView.strips()) {
+            if (!strip->isVisible() || strip->getWidth() < 8)
+                continue;
+            juce::Image image(juce::Image::ARGB, strip->getWidth(), strip->getHeight(), true, juce::SoftwareImageType{});
+            {
+                juce::Graphics g(image);
+                strip->paintEntireComponent(g, true);
+            }
+            out[strip->track()].second = image.getPixelAt(strip->getWidth() - 6, 10);
+        }
+        return out;
+    };
+    const auto before = shown();
+    bool asToday = before.size() == 7;
+    for (const auto &[id, colours] : before)
+        asToday = asToday && colours.second == colours.first;
+    check(asToday && before.at(2).first == look::trackColour(0) && before.at(7).first == look::trackColour(5) &&
+              before.at(1).first == look::trackColour(6),
+          "New: 1 MIDI .. B Delay and Main in the palette's first seven, titles and strips alike");
+    auto unchanged = [&before](const Shown &now) {
+        for (const auto &[id, colours] : before)
+            if (now.count(id) == 0 || now.at(id) != colours)
+                return false;
+        return true;
+    };
+    auto own = [&root](std::int64_t id) {
+        root.frame(); // the window's reader catches up with the edit
+        const auto *t = root.reader().findTrack(id);
+        return t != nullptr && t->color ? *t->color : std::int64_t{-1};
+    };
+    auto select = [&root](std::int64_t from, std::int64_t to) {
+        root.arrangement.geometry.selection.track = from;
+        root.arrangement.geometry.selection.toTrack = to;
+        root.arrangement.geometry.selection.picked.clear();
+        root.publishSelection();
+    };
+    select(4, 0);
+    check(root.command(AppCommands::InsertAudioTrack), "Insert Audio Track after 3 Audio");
+    const auto audio = root.arrangement.geometry.selection.track;
+    auto now = shown();
+    check(unchanged(now), "every track keeps its colour, 4 Audio, A Reverb, B Delay and Main included");
+    check(own(audio) == 3 && now.count(audio) == 1 && now.at(audio).first == look::paletteColour(3) &&
+              now.at(audio).second == look::paletteColour(3),
+          "the new track stores its own: 3 Audio's plus one, on its title and its strip");
+    check(root.command(AppCommands::InsertMidiTrack) && own(root.arrangement.geometry.selection.track) == 4 &&
+              unchanged(shown()),
+          "Insert MIDI Track after it: the next colour; no other track recoloured");
+    check(root.command(AppCommands::InsertReturnTrack) && own(root.arrangement.geometry.selection.track) == 6 &&
+              unchanged(shown()),
+          "Insert Return Track: B Delay's colour plus one; no other track recoloured");
+    select(3, 4);
+    check(root.command(AppCommands::GroupTracks) && own(root.arrangement.geometry.selection.track) == 1 &&
+              unchanged(shown()),
+          "Group Tracks on 2 MIDI and 3 Audio: the group 1 MIDI's colour plus one; every track keeps its own");
+    check(root.command(AppCommands::Undo) && root.command(AppCommands::Undo) && root.command(AppCommands::Undo) &&
+              root.command(AppCommands::Undo) && unchanged(shown()) && shown().size() == 7,
+          "four undos: the default Set as it was, colours and all");
+    check(root.command(AppCommands::Redo) && own(audio) == 3 && unchanged(shown()),
+          "a redo brings the new track back in its own colour");
+    document->release();
+}
 // Live's Undo History (A5; Live 12 manual 5.4.2): Ctrl/Cmd+Alt+Z lists the history newest first, the
 // undone steps greyed; Enter on a selected step restores it; a step on another branch is shown with
 // its branch, and a Take Snapshot name beside its step.
@@ -17562,6 +17647,7 @@ int main(int argc, char **argv) {
     trace("groupTracks", [&] { groupTracks(commands, temp.path()); });
     trace("footRows", [&] { footRows(commands, temp.path()); });
     trace("newProject", [&] { newProject(commands, temp.path()); });
+    trace("trackColoursStay", [&] { trackColoursStay(commands, temp.path()); });
     trace("stripParamUndo", [&] { stripParamUndo(commands, temp.path()); });
     trace("deviceClipboard", [&] { deviceClipboard(commands, temp.path()); });
     trace("pluginWindows", [&] { pluginWindows(commands, settings, temp.path()); });
