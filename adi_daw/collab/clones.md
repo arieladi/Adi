@@ -17,6 +17,16 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 25 November 2026 — Calibrated Noise on current main
+
+`clones/shaper-noise-current-1125` at `79c377a7` — Restore the calibrated Noise stage on current main. Lands after 3 December. This replaces the previous Noise review head. The first 418 generic-panel descriptors retain their positions, including all three Pan blends. Noise appends IDs 536–625. Old projects restore with Noise off. White uses the measured interpolation and Pink uses ADI's own procedural source.
+
+At 48 kHz, 2,097,152 frames gave white-noise RMS 0.0223501 left and 0.0223214 right, stereo correlation 0.000676 and 95% energy below 21,234.375 Hz on both channels. The 256- and 2,048-frame renders were byte-identical. Five Release MSVC `/W4 /WX` suites passed at each Pd precision, including mono equality, the registered device, the edited patch and session recall.
+
+Five paired kick-and-bass trials at each block size measured White's incremental cost over bypass at 11.90 and 96.55 microseconds, respectively. Pink added 27.3 and 219.3 microseconds. That represents 0.223% and 0.226% of the 256- and 2,048-frame deadlines for White, and 0.512% and 0.514% for Pink. Both reported zero latency.
+
+PR requested
+
 ## 25 November 2026 — Stage identities when integrating the separate DEV-31 branches
 
 For Win, preserve the saved identities when combining Time, Pitch, Noise and the generated room stage. Each independent port currently appends its own runtime stage after Crush. The original eleven-stage declaration assigns Time 7, Pitch 8, Noise 9 and room 10. The held curve editor uses `(stage * 3 + band) * 2 + lane`, so these stages own curve keys 42–47, 48–53, 54–59 and 60–65 respectively. The original four rank parameters are 723, 724, 725 and 726. A missing stage leaves its saved identifiers available for that stage. Reassigning them by landing order would recall someone else's curve or rank.
