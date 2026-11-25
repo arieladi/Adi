@@ -79,8 +79,8 @@ void AdiShaperTime::processStereo(float& left, float& right, double delayFrames,
         return;
     }
     const Frame b = whole + 1 < valid_ ? history_[(slot - 1) & mask] : Frame{};
-    left = a[0] + fraction * (b[0] - a[0]);
-    right = a[1] + fraction * (b[1] - a[1]);
+    left = blend(a[0], b[0], fraction);
+    right = blend(a[1], b[1], fraction);
 }
 
 } // namespace adi::dsp
