@@ -11,6 +11,10 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+### 2026-11-25 — Limiter Release review available
+
+The verified Release archive for `1db80412c` and its live retest brief are in the review handoff. SHA-256 archive `946c159a704364442a56f5495ed59cb856209ef37c30c25e5746c40fcc61c34d`, application `421a48a3ab65d8dca1fc64da95eaf59d2f5db490f3d842cce7acb9558b52585a`, scanner `8f4edfa22f9d4f9f23ab25c7fb9e008eb732a84f93f58c1ce96b596fd3a51dd7`. Review remains requested on `mixview/df-m34-limiter-clock`.
+
 ### 2026-11-25 — DF-M34 native Limiter suspension
 
 **PR requested** `mixview/df-m34-limiter-clock` at `1db80412c`, after the graph hook `0deaa3d0e` and before 3 December. The wet path records exact skipped frames and carries the delay and convolution phases across sleep. Pending configuration, offline output, dither, Adaptive, and unproved histories keep processing. Transparent can also sleep once its prior signal histories drain. Dry bypass leaves the wet clock paused.
