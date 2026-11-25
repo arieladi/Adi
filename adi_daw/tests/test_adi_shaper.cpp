@@ -1529,6 +1529,135 @@ void followerSplitInputs() {
         matches &= near(l[i], sumL[i], 2e-6) && near(r[i], sumR[i], 2e-6);
     check(matches && rack.latency() == 0, "three follower bands independently track their split stereo inputs");
 }
+void externalWidthKey() {
+    constexpr std::size_t block = 256, plateau = 245760;
+    constexpr std::array keys{std::array{0.f, 0.f}, std::array{.2f, 0.f}, std::array{0.f, -.4f},
+                              std::array{.15f, -.15f}, std::array{0.f, 0.f}};
+    constexpr std::array reference{.49999999, .89999102, 1.29998205, .79999100, .50000690};
+    std::array<float, block> inL{}, inR{}, keyL{}, keyR{}, outL{}, outR{};
+    inL.fill(.01f);
+    inR.fill(-.01f);
+    for (bool external : {false, true}) {
+        Shaper s;
+        flat(s, Stage::Width, Band::Mid, 50.f);
+        for (auto setting : {std::pair{Shaper::FollowerOn, 1.f}, {Shaper::FollowerAmount, 75.f},
+                             {Shaper::FollowerAttack, 50.f}, {Shaper::FollowerHold, 0.f},
+                             {Shaper::FollowerRelease, 50.f}, {Shaper::FollowerThreshold, 0.f}})
+            setFollower(s, Band::Mid, setting.first, setting.second);
+        s.useExternalWidthKey(Band::Mid, external);
+        for (std::size_t j = 0; j < keys.size(); ++j) {
+            keyL.fill(keys[j][0]);
+            keyR.fill(keys[j][1]);
+            const Shaper::KeyInput key{keys[j][0] ? keyL.data() : nullptr, keys[j][1] ? keyR.data() : nullptr};
+            double gain = 0.;
+            bool opposite = true;
+            for (std::size_t frame = 0; frame < plateau; frame += block) {
+                s.process(inL.data(), inR.data(), outL.data(), outR.data(), block, key);
+                if (frame < plateau - 2048) continue;
+                for (std::size_t i = 0; i < block; ++i) {
+                    gain += outL[i] / .01;
+                    opposite &= outL[i] == -outR[i];
+                }
+            }
+            check(std::abs(gain / 2048. - (external ? reference[j] : .51999944)) < .00005 && opposite,
+                  "input or independent stereo key drives the measured Width plateau");
+        }
+        check(s.latency() == 0, "the external Width detector adds no delay");
+    }
+}
+
+void keyedWidthAcrossRetriggers() {
+    constexpr std::size_t length = 12017;
+    std::array<std::vector<float>, 2> program, key;
+    for (auto* buffer : {&program, &key})
+        for (auto& channel : *buffer) channel.resize(length);
+    for (std::size_t i = 0; i < length; ++i) {
+        const float x = i % 1957 < 11 ? .95f : .02f;
+        program[0][i] = x;
+        program[1][i] = -.8f * x;
+        key[0][i] = static_cast<float>((i / 43) % 31) * .025f;
+        key[1][i] = -static_cast<float>((i / 67) % 19) * .043f;
+    }
+    const auto render = [&](std::size_t block, bool external, bool sendNotes) {
+        auto out = program;
+        Shaper rack;
+        flat(rack, Stage::Width, Band::Mid, 50.f);
+        setFollower(rack, Band::Mid, Shaper::FollowerOn, 1.f);
+        setFollower(rack, Band::Mid, Shaper::FollowerAmount, 75.f);
+        setFollower(rack, Band::Mid, Shaper::FollowerAttack, 0.f);
+        setFollower(rack, Band::Mid, Shaper::FollowerHold, 0.f);
+        setFollower(rack, Band::Mid, Shaper::FollowerRelease, 0.f);
+        rack.useExternalWidthKey(Band::Mid, external);
+        rack.useVolumeNotes(Band::Mid, true);
+        rack.set(Shaper::TriggerLowMode, 1.f);
+        rack.set(Shaper::TriggerMidMode, 1.f);
+        rack.set(Shaper::bandParam(Stage::Volume, Band::Mid, Shaper::Curve), 1.f);
+        for (int j = 0; j < 8; ++j) point(rack, Stage::Volume, Band::Mid, j, 12.5f * static_cast<float>(j));
+        check(rack.latency() == 672, "an audio-triggered band retains its detector delay beside a note-triggered band");
+        constexpr std::array<std::size_t, 3> notes{1507, 5581, 9803};
+        for (std::size_t i = 0; i < length;) {
+            auto end = std::min(length, i + block);
+            for (auto at : notes) {
+                if (i == at && sendNotes) rack.noteOn(127, 1);
+                if (at > i) end = std::min(end, at);
+            }
+            rack.process(program[0].data() + i, program[1].data() + i,
+                         out[0].data() + i, out[1].data() + i, end - i,
+                         {key[0].data() + i, key[1].data() + i});
+            i = end;
+        }
+        return out;
+    };
+    const auto oracle = render(1, true, true);
+    check(oracle != render(256, false, true) && oracle != render(256, true, false),
+          "the key planes and delivered notes independently affect the mixed fixture");
+    for (std::size_t block : {37u, 256u, 2048u})
+        check(oracle == render(block, true, true), "audio retriggers keep key offsets and note phases frame-exact");
+}
+
+void midiVolumeRetrigger() {
+    constexpr int length = 96000, period = 12000;
+    constexpr std::array notes{14000, 31300, 53500, 81400};
+    for (int block : {256, 2048}) for (int mode : {1, 2}) {
+        Shaper s;
+        s.useVolumeNotes(Band::Mid, true);
+        s.set(Shaper::TriggerMidMode, static_cast<float>(mode));
+        s.set(Shaper::TriggerMidEnd, 75.f);
+        s.set(Shaper::bandParam(Stage::Volume, Band::Mid, Shaper::Cycle), .5f);
+        s.set(Shaper::bandParam(Stage::Volume, Band::Mid, Shaper::Curve), 1.f);
+        for (int i = 0; i < 8; ++i) point(s, Stage::Volume, Band::Mid, i, 12.5f * static_cast<float>(i));
+        std::vector<float> left(length, .25f), right(length, -.125f);
+        int frame = 0;
+        while (frame < length) {
+            int end = std::min(length, (frame / block + 1) * block);
+            for (int on : notes) {
+                if (frame == on) s.noteOn(60, 100);
+                if (frame == on + 1440) s.noteOn(60, 0);
+                for (int event : {on, on + 1440}) if (event > frame) end = std::min(end, event);
+            }
+            s.sync(static_cast<double>(frame) / 24000.);
+            s.process(left.data()+frame, right.data()+frame, left.data()+frame, right.data()+frame, end-frame);
+            frame = end;
+        }
+        bool exact = true;
+        int last = -1;
+        double worst = 0.;
+        for (int i = 0; i < length; ++i) {
+            if (std::find(notes.begin(), notes.end(), i) != notes.end()) {
+                last = i;
+                exact &= left[i] == 0.f && right[i] == 0.f && left[i-1] > .001f && left[i+1] > 0.f;
+            }
+            const int age = last < 0 ? i : i-last;
+            const double pos = mode == 2 ? (last < 0 ? .75 : std::min(.75, static_cast<double>(age)/period))
+                                         : static_cast<double>(age % period)/period;
+            const double gain = pos < .875 ? pos : 7. * (1. - pos);
+            worst = std::max({worst, std::abs(left[i] - .25*gain), std::abs(right[i] + .125*gain)});
+        }
+        check(exact && worst < 1.e-6 && s.latency() == 0,
+              "four sample-addressed notes restart loop and one-shot contours and ignore note-off velocity");
+    }
+}
+
 } // namespace
 
 int main() {
@@ -1539,6 +1668,9 @@ int main() {
     beatGate();
     clocksAndLinearCurve();
     audioTrigger();
+    externalWidthKey();
+    midiVolumeRetrigger();
+    keyedWidthAcrossRetriggers();
     splitBands();
     independentBandClocks();
     steepCrossovers();

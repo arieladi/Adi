@@ -71,8 +71,21 @@ class AdiShaper {
     void set(Param id, float value) noexcept;
     void tempo(double bpm) noexcept;
     void sync(double quarterNotes, bool playing = true) noexcept;
+    struct KeyInput {
+        const float* left = nullptr;
+        const float* right = nullptr;
+        [[nodiscard]] KeyInput advanced(std::size_t frames) const noexcept {
+            return {left ? left + frames : nullptr, right ? right + frames : nullptr};
+        }
+    };
+    void useExternalWidthKey(Band band, bool enabled) noexcept;
+    void useVolumeNotes(Band band, bool enabled) noexcept;
+    // Apply at the start of the next process span, including spans beginning within a host block.
+    void noteOn(int note, int velocity) noexcept;
     void process(const float* inL, const float* inR, float* outL, float* outR,
                  std::size_t frames) noexcept;
+    void process(const float* inL, const float* inR, float* outL, float* outR,
+                 std::size_t frames, KeyInput key) noexcept;
     [[nodiscard]] int latency() const noexcept {
         return trigger_.latency() + (stages_[static_cast<std::size_t>(Stage::Drive)].enabled ? AdiShaperDrive::latencySamples : 0);
     }
@@ -155,11 +168,12 @@ class AdiShaper {
     void setMod(Param id, float value) noexcept;
     void restart(Stage kind) noexcept;
     void resetKernels(Stage kind) noexcept;
-    void processStages(float* outL, float* outR, std::size_t frames) noexcept;
+    void processStages(float* outL, float* outR, std::size_t frames, KeyInput key) noexcept;
     void setTrigger(Param id, float value) noexcept;
     template <Stage kind, bool triggered = false> void render(StageData& stage, const float* inL, const float* inR,
-                                     float* outL, float* outR, std::size_t frames) noexcept;
+                                     float* outL, float* outR, std::size_t frames, KeyInput key) noexcept;
     std::array<StageData, 7> stages_;
+    std::array<bool, 3> externalWidth_{};
     std::array<AdiShaperFollower, 3> widthFollowers_;
     std::array<AdiShaperFilter, 3> filters_;
     std::array<AdiShaperSweep, 3> sweeps_;

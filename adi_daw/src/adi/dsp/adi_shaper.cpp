@@ -639,7 +639,7 @@ void AdiShaper::DriveDryDelay::advance(float& l, float& r) noexcept {
 
 template <AdiShaper::Stage kind, bool triggered>
 void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
-                       float* outL, float* outR, std::size_t frames) noexcept {
+                       float* outL, float* outR, std::size_t frames, KeyInput key) noexcept {
     if constexpr (kind == Stage::Pan) {
         for (std::size_t i = 0; i < stage.bands.size(); ++i) {
             const auto& band = stage.bands[i];
@@ -692,7 +692,9 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
         } else {
             if constexpr (kind == Stage::Width) {
                 if (band.followWidth) {
-                    const float width = 2.f * widthFollowers_[index].apply(l, r, .5f * band.primary.at(p));
+                    const float sourceL = externalWidth_[index] ? (key.left ? finiteOrZero(key.left[i]) : 0.f) : l;
+                    const float sourceR = externalWidth_[index] ? (key.right ? finiteOrZero(key.right[i]) : 0.f) : r;
+                    const float width = 2.f * widthFollowers_[index].apply(sourceL, sourceR, .5f * band.primary.at(p));
                     applyGain(gain(kind, width, band.blend), l, r);
                     return;
                 }
@@ -820,20 +822,41 @@ bool AdiShaper::renderFixedWidth(StageData& stage, float* left, float* right, st
     return true;
 }
 
+void AdiShaper::useExternalWidthKey(Band band, bool enabled) noexcept {
+    const auto index = static_cast<std::size_t>(band);
+    if (index >= externalWidth_.size() || externalWidth_[index] == enabled) return;
+    externalWidth_[index] = enabled;
+    widthFollowers_[index].reset();
+}
+
+void AdiShaper::useVolumeNotes(Band band, bool enabled) noexcept {
+    const auto index = static_cast<std::size_t>(band);
+    if (index < 3) trigger_.useNotes(index, enabled);
+}
+
+void AdiShaper::noteOn(int note, int velocity) noexcept {
+    if (note >= 0 && note <= 127 && velocity > 0 && velocity <= 127) trigger_.noteOn();
+}
+
 void AdiShaper::process(const float* inL, const float* inR, float* outL, float* outR,
                         std::size_t frames) noexcept {
+    process(inL, inR, outL, outR, frames, {});
+}
+
+void AdiShaper::process(const float* inL, const float* inR, float* outL, float* outR,
+                        std::size_t frames, KeyInput key) noexcept {
     if (!frames) return;
     // Replace a bad upstream sample before it reaches any recursive or delayed
     // stage. A finite sample, including signed zero, is passed through intact.
     sanitizeStereo(inL, inR, outL, outR, frames);
     if (!trigger_.latency()) {
-        processStages(outL, outR, frames);
+        processStages(outL, outR, frames, key);
         return;
     }
     std::size_t start = 0;
     for (std::size_t i = 0; i < frames; ++i) {
         if (!trigger_.tick(outL[i], outR[i])) continue;
-        if (i > start) processStages(outL + start, outR + start, i - start);
+        if (i > start) processStages(outL + start, outR + start, i - start, key.advanced(start));
         if (trigger_.smoothing()) {
             const auto& volume = stages_[static_cast<std::size_t>(Stage::Volume)];
             for (std::size_t band = 0; band < previousVolume_.size(); ++band) {
@@ -844,10 +867,10 @@ void AdiShaper::process(const float* inL, const float* inR, float* outL, float* 
         trigger_.restart();
         start = i;
     }
-    processStages(outL + start, outR + start, frames - start);
+    processStages(outL + start, outR + start, frames - start, key.advanced(start));
 }
 
-void AdiShaper::processStages(float* outL, float* outR, std::size_t frames) noexcept {
+void AdiShaper::processStages(float* outL, float* outR, std::size_t frames, KeyInput key) noexcept {
     auto run = [&]<Stage kind>() {
         auto& stage = stages_[static_cast<std::size_t>(kind)];
         if constexpr (kind >= Stage::Filter) {
@@ -855,13 +878,13 @@ void AdiShaper::processStages(float* outL, float* outR, std::size_t frames) noex
         }
         if (!stage.active && stage.layout == 0) return;
         if constexpr (kind == Stage::Volume) {
-            if (trigger_.latency()) render<kind, true>(stage, outL, outR, outL, outR, frames);
-            else render<kind>(stage, outL, outR, outL, outR, frames);
+            if (trigger_.active()) render<kind, true>(stage, outL, outR, outL, outR, frames, key);
+            else render<kind>(stage, outL, outR, outL, outR, frames, key);
         } else if constexpr (kind == Stage::Width) {
             if (!renderFixedWidth(stage, outL, outR, frames))
-                render<kind>(stage, outL, outR, outL, outR, frames);
+                render<kind>(stage, outL, outR, outL, outR, frames, key);
         } else {
-            render<kind>(stage, outL, outR, outL, outR, frames);
+            render<kind>(stage, outL, outR, outL, outR, frames, key);
         }
         bool repaired = false;
         if (stage.layout != 0) {
@@ -893,7 +916,7 @@ void AdiShaper::processStages(float* outL, float* outR, std::size_t frames) noex
         for (auto& band : stage.bands)
             band.phase += band.step * static_cast<std::uint64_t>(frames);
     }
-    if (trigger_.latency()) {
+    if (trigger_.active()) {
         const auto& volume = stages_[static_cast<std::size_t>(Stage::Volume)].bands;
         trigger_.advance(frames, {volume[0].step, volume[1].step, volume[2].step});
     }

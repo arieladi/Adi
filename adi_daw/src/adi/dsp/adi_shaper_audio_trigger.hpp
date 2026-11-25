@@ -19,6 +19,9 @@ class AdiShaperAudioTrigger {
     };
     void prepare(double rate) noexcept;
     void mode(std::size_t band, int value) noexcept;
+    void useNotes(std::size_t band, bool enabled) noexcept;
+    void noteOn() noexcept;
+    [[nodiscard]] bool active() const noexcept { return latency_ != 0 || notesActive_; }
     void endpoint(std::size_t band, double value) noexcept;
     void detector(int profile, bool smoothing) noexcept;
     void detail(float value) noexcept;
@@ -29,13 +32,15 @@ class AdiShaperAudioTrigger {
     [[nodiscard]] int latency() const noexcept { return latency_; }
     [[nodiscard]] bool tick(float& left, float& right) noexcept;
     [[nodiscard]] Clock clock(std::size_t band, std::uint64_t synced, std::uint64_t step) const noexcept;
-    void restart() noexcept { hit_ = true; age_ = 0; phases_.fill(0); }
+    void restart() noexcept;
     void advance(std::size_t frames, const std::array<std::uint64_t, 3>& steps) noexcept;
     [[nodiscard]] float fade(std::size_t band, std::size_t offset) const noexcept;
 
   private:
     struct Frame { float left = 0, right = 0; std::uint64_t event = 0; };
     void timing() noexcept;
+    std::array<bool, 3> useNotes_{}, noteHit_{};
+    bool notesActive_ = false;
     void level() noexcept;
     void clear() noexcept;
     std::array<int, 3> modes_{};

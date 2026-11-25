@@ -9,6 +9,8 @@
 namespace adi::dsp {
 
 void AdiShaperAudioTrigger::prepare(double rate) noexcept {
+    noteHit_.fill(false);
+    phases_.fill(0);
     if (!std::isfinite(rate) || rate < 1 || rate > 1536000) {
         history_.clear();
         latency_ = 0;
@@ -44,7 +46,34 @@ void AdiShaperAudioTrigger::clear() noexcept {
 void AdiShaperAudioTrigger::mode(std::size_t band, int value) noexcept {
     if (modes_[band] == value) return;
     modes_[band] = value;
+    if (useNotes_[band]) {
+        noteHit_[band] = false;
+        phases_[band] = 0;
+    }
     timing();
+}
+
+void AdiShaperAudioTrigger::useNotes(std::size_t band, bool enabled) noexcept {
+    if (useNotes_[band] == enabled) return;
+    useNotes_[band] = enabled;
+    noteHit_[band] = false;
+    phases_[band] = 0;
+    timing();
+}
+
+void AdiShaperAudioTrigger::restart() noexcept {
+    hit_ = true;
+    age_ = 0;
+    for (std::size_t i = 0; i < phases_.size(); ++i)
+        if (!useNotes_[i]) phases_[i] = 0;
+}
+
+void AdiShaperAudioTrigger::noteOn() noexcept {
+    for (std::size_t i = 0; i < phases_.size(); ++i) {
+        if (!useNotes_[i] || modes_[i] == Sync) continue;
+        noteHit_[i] = true;
+        phases_[i] = 0;
+    }
 }
 
 void AdiShaperAudioTrigger::endpoint(std::size_t band, double value) noexcept {
@@ -58,10 +87,16 @@ void AdiShaperAudioTrigger::detector(int profile, bool smoothing) noexcept {
 }
 
 void AdiShaperAudioTrigger::timing() noexcept {
-    const bool active = !history_.empty() && (modes_[0] != Sync || modes_[1] != Sync || modes_[2] != Sync);
+    bool audioActive = false;
+    notesActive_ = false;
+    for (std::size_t i = 0; i < modes_.size(); ++i) {
+        if (modes_[i] == Sync) continue;
+        if (useNotes_[i]) notesActive_ = true;
+        else audioActive = true;
+    }
     const int base = static_cast<int>(std::lround((profile_ == 2 ? .024 : .014) * rate_));
     smoothingFrames_ = smoothing_ ? static_cast<int>(rate_ * .006) + 1 : 0;
-    const int next = active ? base + smoothingFrames_ : 0;
+    const int next = audioActive && !history_.empty() ? base + smoothingFrames_ : 0;
     if (next != latency_) clear();
     latency_ = next;
     lead_ = std::max(0, next + (profile_ == 2 ? 1 : -1)
@@ -102,10 +137,11 @@ bool AdiShaperAudioTrigger::tick(float& left, float& right) noexcept {
 
 AdiShaperAudioTrigger::Clock AdiShaperAudioTrigger::clock(std::size_t band, std::uint64_t synced,
                                                           std::uint64_t step) const noexcept {
-    if (modes_[band] == Sync || (!hit_ && modes_[band] == Loop)) return {synced, 0, UINT64_MAX};
+    const bool hit = useNotes_[band] ? noteHit_[band] : hit_;
+    if (modes_[band] == Sync || (!hit && modes_[band] == Loop)) return {synced, 0, UINT64_MAX};
     if (modes_[band] == Loop) return {phases_[band], 0, UINT64_MAX};
     const auto end = ends_[band];
-    if (!hit_ || phases_[band] >= end) return {end, end, 0};
+    if (!hit || phases_[band] >= end) return {end, end, 0};
     if (!step) return {phases_[band], end, UINT64_MAX};
     const auto remaining = end - phases_[band];
     const auto endFrame = remaining / step + static_cast<std::uint64_t>(remaining % step != 0);
@@ -113,14 +149,15 @@ AdiShaperAudioTrigger::Clock AdiShaperAudioTrigger::clock(std::size_t band, std:
 }
 
 void AdiShaperAudioTrigger::advance(std::size_t frames, const std::array<std::uint64_t, 3>& steps) noexcept {
-    if (!hit_) return;
+    if (!hit_ && !notesActive_) return;
     for (std::size_t i = 0; i < phases_.size(); ++i)
-        if (modes_[i] != Sync) phases_[i] = clock(i, phases_[i], steps[i]).at(steps[i], frames);
-    age_ += frames;
+        if (modes_[i] != Sync && (useNotes_[i] ? noteHit_[i] : hit_))
+            phases_[i] = clock(i, phases_[i], steps[i]).at(steps[i], frames);
+    if (hit_) age_ += frames;
 }
 
 float AdiShaperAudioTrigger::fade(std::size_t band, std::size_t offset) const noexcept {
-    if (!hit_ || !smoothing_ || modes_[band] == Sync || age_ + offset >= static_cast<unsigned>(smoothingFrames_))
+    if (useNotes_[band] || !hit_ || !smoothing_ || modes_[band] == Sync || age_ + offset >= static_cast<unsigned>(smoothingFrames_))
         return 1;
     return static_cast<float>(age_ + offset) / static_cast<float>(smoothingFrames_);
 }
