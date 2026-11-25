@@ -442,7 +442,9 @@ bool AppCommands::exportShortcuts(const juce::File &file, std::string &why) cons
     // Only what import reads: a chord no one can read here is left out, and so is an entry left with
     // none of its chords (it kept the preset's keys, which an empty list would unbind).
     auto overrides = settings::Value::object();
-    for (const auto &[stable, chords] : recordNow().items()) {
+    // Held by name: a range-for over recordNow().items() would iterate a temporary that is gone.
+    const auto record = recordNow();
+    for (const auto &[stable, chords] : record.items()) {
         if (!chords.is_array())
             continue;
         auto readable = settings::Value::array();
