@@ -17,6 +17,22 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 25 November 2026 — Three moving Drive bands at both callback sizes
+
+`clones/shaper-drive-three-band-cost` at `220246df0` — Reduce the cost of moving three-band Drive. Lands after 3 December. Stacks on `519d1f17b`. Each column compares the median cycles for one registered ADI instance with the installed reference using the same kick, bass, curves, gains and three active bands. Each arm ran ten trials of 2,048 callbacks per condition.
+
+| Low / middle / high | 256 frames, ADI / reference (million cycles) | 2,048 frames, ADI / reference (million cycles) |
+| --- | ---: | ---: |
+| Rounded / power / sine | 0.688 / 0.909 | 5.099 / 5.646 |
+| Triangle / rounded / power | 0.621 / 0.797 | 5.313 / 6.239 |
+| Power / saw / rounded | 0.657 / 0.789 | 5.154 / 5.907 |
+
+All 60 ADI trials had p99 below their deadline. Median trial p99 at 2,048 frames remained higher for triangle / rounded / power (4.560 vs 3.190 ms) and power / saw / rounded (4.331 vs 3.385 ms). Individual ADI / reference late callback counts, in table order, were 21/162, 17/36 and 31/22 at 256 frames and 1/1, 5/8 and 5/1 at 2,048. Each comparison covers 20,480 callbacks per arm.
+
+Two independent sets of level measurements verified the fourfold power law. On the measured rising contour the maximum error fell from 0.0000130 to 0.00000016. The low-strength 48 kHz test now checks three measured ratios within 0.0000001. The previous analytic assumption missed the third reference reading by 0.0000021. At 48 kHz, musical RMS errors for the first and last table rows fell from 0.00000697 and 0.0000117 to 0.000000372 and 0.000000101. The middle row retains the previously measured crossover residual at 0.000734 RMS. All six 96 kHz stereo renders were byte-identical to the previous build. Four headless suites passed under strict compilation at both Pd precisions.
+
+The clones seat takes the Drive kernel and existing Drive tests on `clones/shaper-drive-high-rates` for the measured sample-rate transitions and direct 16-frame response. PR requested
+
 ## 25 November 2026 — PR requested for Drive together with the crossover repair
 
 PR requested — `clones/shaper-drive-integration` at `519d1f17b` — Integrate the repaired steep crossovers with multiband Drive. Lands after 3 December. This merge includes both the 32 kHz split-spacing and slew repair and the measured 24 dB response repair. Both remain on their own earlier review branches. All four official suites passed at each Pd precision on this exact merge. The Drive kernel and its 427-control canvas are byte-identical to the previous four-track qualification.
