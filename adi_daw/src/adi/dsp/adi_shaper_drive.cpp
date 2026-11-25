@@ -2,6 +2,7 @@
 #include "adi_shaper_drive.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <numbers>
 #if defined(__SSE2__) || defined(_M_X64)
@@ -97,6 +98,71 @@ double softNegative(double t) noexcept {
     if (t > 32.0) return 1.0;
     const double sum = 1.0+t*(1.0+t*(1.0+t*(1.0+t*(1.0+t))));
     return 1.0-1.0/sum;
+}
+
+using PowerFrame = std::array<double, 2>;
+using PowerPair = std::array<PowerFrame, 2>;
+
+// The four oversampled inputs share one exponent. Fit log2 on a mantissa
+// centered at one and exp2 within half a unit of an exact power of two.
+PowerPair signedPowers(const PowerPair& z, double exponent) noexcept {
+    PowerPair out{};
+#if defined(__SSE2__) || defined(_M_X64)
+    const auto a = _mm_loadu_pd(z[0].data());
+    const auto b = _mm_loadu_pd(z[1].data());
+    const auto input = _mm_movelh_ps(_mm_cvtpd_ps(a), _mm_cvtpd_ps(b));
+    const auto sign = _mm_set1_ps(-0.0f);
+    const auto magnitude = _mm_andnot_ps(sign, input);
+    const auto quiet = _mm_cmpeq_ps(magnitude, _mm_setzero_ps());
+    const auto one = _mm_set1_ps(1.0f);
+    const auto x = _mm_or_ps(magnitude, _mm_and_ps(quiet, one));
+    // Restrict the float logarithm to a 48-octave window. Outside it the
+    // scalar path retains double precision for the integer part of log2(x).
+    const auto range = _mm_and_ps(_mm_cmpge_ps(x, _mm_set1_ps(0x1p-24f)),
+                                  _mm_cmple_ps(x, _mm_set1_ps(0x1p+24f)));
+    // A nonzero double can round to zero on conversion to float. Preserve
+    // those inputs with scalar power, including when denormals are flushed.
+    const int quietMask = _mm_movemask_ps(quiet);
+    const bool representableZeros = quietMask == 0 || quietMask ==
+        (_mm_movemask_pd(_mm_cmpeq_pd(a, _mm_setzero_pd())) |
+        (_mm_movemask_pd(_mm_cmpeq_pd(b, _mm_setzero_pd())) << 2));
+    if (_mm_movemask_ps(range) == 15 && representableZeros) {
+        const auto bits = _mm_castps_si128(x);
+        constexpr auto sqrtHalfBits = std::bit_cast<int>(std::numbers::sqrt2_v<float> * .5f);
+        const auto relative = _mm_sub_epi32(bits, _mm_set1_epi32(sqrtHalfBits));
+        const auto e = _mm_cvtepi32_ps(_mm_srai_epi32(relative, 23));
+        const auto mantissa = _mm_sub_epi32(bits, _mm_and_si128(relative, _mm_set1_epi32(~0x7fffff)));
+        const auto r = _mm_sub_ps(_mm_castsi128_ps(mantissa), one);
+        auto log = _mm_set1_ps(0.1681865911f);
+        log = _mm_add_ps(_mm_set1_ps(-0.2679638705f), _mm_mul_ps(r, log));
+        log = _mm_add_ps(_mm_set1_ps(0.2961195572f), _mm_mul_ps(r, log));
+        log = _mm_add_ps(_mm_set1_ps(-0.3595244555f), _mm_mul_ps(r, log));
+        log = _mm_add_ps(_mm_set1_ps(0.4806131255f), _mm_mul_ps(r, log));
+        log = _mm_add_ps(_mm_set1_ps(-0.7213601786f), _mm_mul_ps(r, log));
+        log = _mm_add_ps(_mm_set1_ps(1.442696523f), _mm_mul_ps(r, log));
+        const auto log2x = _mm_add_ps(e, _mm_mul_ps(r, log));
+        const auto power = _mm_mul_ps(_mm_set1_ps(static_cast<float>(exponent)), log2x);
+        const auto half = _mm_or_ps(_mm_and_ps(power, sign), _mm_set1_ps(.5f));
+        const auto nearest = _mm_cvttps_epi32(_mm_add_ps(power, half));
+        const auto fraction = _mm_sub_ps(power, _mm_cvtepi32_ps(nearest));
+        auto exp = _mm_set1_ps(0.0001545316294f);
+        exp = _mm_add_ps(_mm_set1_ps(0.001339086336f), _mm_mul_ps(fraction, exp));
+        exp = _mm_add_ps(_mm_set1_ps(0.009618082557f), _mm_mul_ps(fraction, exp));
+        exp = _mm_add_ps(_mm_set1_ps(0.05550357114f), _mm_mul_ps(fraction, exp));
+        exp = _mm_add_ps(_mm_set1_ps(0.2402265076f), _mm_mul_ps(fraction, exp));
+        exp = _mm_add_ps(_mm_set1_ps(0.693147188f), _mm_mul_ps(fraction, exp));
+        exp = _mm_add_ps(_mm_set1_ps(1.f), _mm_mul_ps(fraction, exp));
+        const auto scale = _mm_castsi128_ps(_mm_slli_epi32(_mm_add_epi32(nearest, _mm_set1_epi32(127)), 23));
+        const auto result = _mm_or_ps(_mm_and_ps(input, sign), _mm_andnot_ps(quiet, _mm_mul_ps(exp, scale)));
+        _mm_storeu_pd(out[0].data(), _mm_cvtps_pd(result));
+        _mm_storeu_pd(out[1].data(), _mm_cvtps_pd(_mm_movehl_ps(result, result)));
+        return out;
+    }
+#endif
+    for (std::size_t i = 0; i < z.size(); ++i)
+        for (std::size_t c = 0; c < z[i].size(); ++c)
+            out[i][c] = std::copysign(std::pow(std::abs(z[i][c]), exponent), z[i][c]);
+    return out;
 }
 
 double clipArea(double z) noexcept {
@@ -257,28 +323,36 @@ AdiShaperDrive::StereoSum AdiShaperDrive::oversample(const Stereo* inputHistory)
     constexpr std::size_t taps = 16 * Factor + 1;
     const auto upsampled = interpolate<Factor>(inputHistory);
     const bool fading = driveFade_ > 0.0 && driveFade_ < 1.0;
+    Phases shapedPower{};
+    if constexpr (Power) {
+        for (std::size_t p = 0; p < Factor; p += 2) {
+            const PowerPair phaseInputs{{
+                {upsampled[p][0] * pre_, upsampled[p][1] * pre_},
+                {upsampled[p + 1][0] * pre_, upsampled[p + 1][1] * pre_}}};
+            const auto output = previousDrive_ == 0.f ? phaseInputs : signedPowers(phaseInputs, powerExponent_);
+            shapedPower[p] = output[0];
+            shapedPower[p + 1] = output[1];
+        }
+        channels_[0].lastZ = upsampled[Factor - 1][0] * pre_;
+        channels_[1].lastZ = upsampled[Factor - 1][1] * pre_;
+    }
     FilterPair base{};
     for (std::size_t p=0; p<Factor; ++p) {
         wetHead_ = wetHead_ == 0 ? static_cast<int>(taps) - 1 : wetHead_ - 1;
         const auto wetHead = static_cast<std::size_t>(wetHead_);
         Stereo wet{};
-        for (std::size_t c=0; c<2; ++c) {
-            const double input = upsampled[p][c];
-            const double z = input * pre_;
-            double shaped;
-            if constexpr (Power) {
-                channels_[c].lastZ = z;
-                const double value = previousDrive_ == 0.0f ? z
-                    : std::copysign(std::pow(std::abs(z), powerExponent_), z);
-                shaped = value * post_;
-            } else {
-                shaped = shape(z, channels_[c]) * post_;
+        if constexpr (Power) {
+            wet = {static_cast<float>(shapedPower[p][0] * post_), static_cast<float>(shapedPower[p][1] * post_)};
+        } else {
+            for (std::size_t c = 0; c < 2; ++c) {
+                const double input = upsampled[p][c];
+                double shaped = shape(input * pre_, channels_[c]) * post_;
+                if (fading) {
+                    const double zeroDrive = (input * inputGain_) * outputGain_;
+                    shaped = zeroDrive + driveFade_ * (shaped - zeroDrive);
+                }
+                wet[c] = static_cast<float>(shaped);
             }
-            if (fading) {
-                const double zeroDrive = (input * inputGain_) * outputGain_;
-                shaped = zeroDrive + driveFade_ * (shaped - zeroDrive);
-            }
-            wet[c] = static_cast<float>(shaped);
         }
         wet_[wetHead] = wet_[wetHead+taps] = wet;
         if (p == 0) {
