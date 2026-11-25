@@ -335,6 +335,7 @@ std::string_view toString(DispatchStatus status) noexcept {
         case DispatchStatus::Disabled: return "disabled";
         case DispatchStatus::InvalidBindPolicy: return "invalid_bind_policy";
         case DispatchStatus::WrongThread: return "wrong_thread";
+        case DispatchStatus::ClockRegression: return "clock_regression";
         case DispatchStatus::InvalidClient: return "invalid_client";
         case DispatchStatus::ClientNotAllowed: return "client_not_allowed";
         case DispatchStatus::UnknownAddress: return "unknown_address";
@@ -617,13 +618,44 @@ std::optional<ResolvedAddress> resolveAddress(std::string_view address) noexcept
     return std::nullopt;
 }
 
-OscNamespace::OscNamespace(ClientPolicy policy) : policy_(std::move(policy)) {}
+OscNamespace::OscNamespace(ClientPolicy policy, std::uint64_t quietWindowMs)
+    : policy_(std::move(policy)),
+      quietWindowMs_(quietWindowMs > 0U ? quietWindowMs : kDefaultQuietWindowMs) {}
+
+void OscNamespace::setQuietWindowMs(std::uint64_t quietWindowMs) noexcept {
+    if (!isOnOwnerThread() || quietWindowMs == 0U) {
+        return;
+    }
+    quietWindowMs_ = quietWindowMs;
+}
 
 void OscNamespace::setPolicy(ClientPolicy policy) {
     if (!isOnOwnerThread()) {
         return;
     }
     policy_ = std::move(policy);
+}
+
+std::size_t OscNamespace::setPolicy(ClientPolicy policy, WriteSink& sink) {
+    if (!isOnOwnerThread()) {
+        return 0U;
+    }
+    policy_ = std::move(policy);
+    if (!policy_.enabled || !policy_.bindValid()) {
+        return endAllGestures(sink);
+    }
+    std::vector<std::string> disallowedClients;
+    for (const auto& [client, gestures] : activeGestures_) {
+        (void)gestures;
+        if (!policy_.allows(client)) {
+            disallowedClients.push_back(client);
+        }
+    }
+    std::size_t closed = 0U;
+    for (const auto& client : disallowedClients) {
+        closed += endClientGestures(client, sink);
+    }
+    return closed;
 }
 
 void OscNamespace::addFeedbackPeer(std::string client) {
@@ -649,6 +681,14 @@ void OscNamespace::removeFeedbackPeer(std::string_view client) {
     if (const auto it = confirmNextFlush_.find(client); it != confirmNextFlush_.end()) {
         confirmNextFlush_.erase(it);
     }
+}
+
+std::size_t OscNamespace::removeFeedbackPeer(std::string_view client, WriteSink& sink) {
+    if (!isOnOwnerThread()) {
+        return 0U;
+    }
+    removeFeedbackPeer(client);
+    return endClientGestures(client, sink);
 }
 
 void OscNamespace::emitGesture(const ResolvedAddress& target,
@@ -717,9 +757,9 @@ std::size_t OscNamespace::endClientGestures(std::string_view client, WriteSink& 
     auto gestures = std::move(it->second);
     activeGestures_.erase(it);
 
-    for (const auto& [addr, target] : gestures) {
+    for (const auto& [addr, g] : gestures) {
         (void)addr;
-        emitGesture(target, false, origin, sink);
+        emitGesture(g.target, false, origin, sink);
     }
     return gestures.size();
 }
@@ -737,18 +777,63 @@ std::size_t OscNamespace::endAllGestures(WriteSink& sink) {
         origin.actor = Actor::User;
         origin.client = client;
         origin.actorDetail = makeActorDetail(client);
-        for (const auto& [addr, target] : gestures) {
+        for (const auto& [addr, g] : gestures) {
             (void)addr;
-            emitGesture(target, false, origin, sink);
+            emitGesture(g.target, false, origin, sink);
             ++closed;
         }
     }
     return closed;
 }
 
+std::size_t OscNamespace::pollGestures(std::uint64_t nowMs, WriteSink& sink) {
+    if (!isOnOwnerThread()) {
+        return 0U;
+    }
+    if (lastNowMs_.has_value() && nowMs < *lastNowMs_) {
+        return 0U;
+    }
+    lastNowMs_ = nowMs;
+
+    std::vector<std::pair<std::string, ResolvedAddress>> expired;
+    for (auto clientIt = activeGestures_.begin(); clientIt != activeGestures_.end();) {
+        auto& gmap = clientIt->second;
+        for (auto gIt = gmap.begin(); gIt != gmap.end();) {
+            if (!gIt->second.explicitTouch &&
+                static_cast<std::uint64_t>(nowMs - gIt->second.lastActivityMs) >= quietWindowMs_) {
+                expired.emplace_back(clientIt->first, gIt->second.target);
+                gIt = gmap.erase(gIt);
+            } else {
+                ++gIt;
+            }
+        }
+        if (gmap.empty()) {
+            clientIt = activeGestures_.erase(clientIt);
+        } else {
+            ++clientIt;
+        }
+    }
+
+    for (const auto& [client, target] : expired) {
+        WriteOrigin origin;
+        origin.actor = Actor::User;
+        origin.client = client;
+        origin.actorDetail = makeActorDetail(client);
+        emitGesture(target, false, origin, sink);
+    }
+    return expired.size();
+}
+
 DispatchStatus OscNamespace::dispatchMessage(const Message& message,
                                              std::string_view client,
                                              WriteSink& sink) {
+    return dispatchMessage(message, client, sink, lastNowMs_.value_or(0U));
+}
+
+DispatchStatus OscNamespace::dispatchMessage(const Message& message,
+                                             std::string_view client,
+                                             WriteSink& sink,
+                                             std::uint64_t nowMs) {
     if (!isOnOwnerThread()) {
         return DispatchStatus::WrongThread;
     }
@@ -764,6 +849,10 @@ DispatchStatus OscNamespace::dispatchMessage(const Message& message,
     if (!policy_.allows(client)) {
         return DispatchStatus::ClientNotAllowed;
     }
+    if (lastNowMs_.has_value() && nowMs < *lastNowMs_) {
+        return DispatchStatus::ClockRegression;
+    }
+    lastNowMs_ = nowMs;
 
     const auto resolved = resolveAddress(message.address);
     if (!resolved.has_value()) {
@@ -799,43 +888,72 @@ DispatchStatus OscNamespace::dispatchMessage(const Message& message,
         }
         if (*active) {
             auto& clientMap = activeGestures_[origin.client];
-            if (clientMap.find(controlAddr) == clientMap.end()) {
-                clientMap.emplace(std::string(controlAddr), *resolved);
+            const auto gIt = clientMap.find(controlAddr);
+            if (gIt == clientMap.end()) {
+                clientMap.emplace(std::string(controlAddr),
+                                  ActiveGesture{*resolved, true, nowMs});
                 emitGesture(*resolved, true, origin, sink);
+            } else {
+                // Upgrade an open implicit gesture to explicit without a duplicate begin.
+                gIt->second.explicitTouch = true;
+                gIt->second.lastActivityMs = nowMs;
             }
-        } else {
-            if (const auto clientIt = activeGestures_.find(origin.client);
-                clientIt != activeGestures_.end()) {
-                if (const auto gIt = clientIt->second.find(controlAddr);
-                    gIt != clientIt->second.end()) {
-                    clientIt->second.erase(gIt);
-                    if (clientIt->second.empty()) {
-                        activeGestures_.erase(clientIt);
-                    }
-                }
-            }
-            emitGesture(*resolved, false, origin, sink);
+            return DispatchStatus::Applied;
         }
+
+        // Release: emit end ONLY if THIS client holds an open gesture (explicit or implicit)
+        // on this control. Unmatched or cross-client releases are no-ops (IgnoredRelease).
+        const auto clientIt = activeGestures_.find(origin.client);
+        if (clientIt == activeGestures_.end()) {
+            return DispatchStatus::IgnoredRelease;
+        }
+        const auto gIt = clientIt->second.find(controlAddr);
+        if (gIt == clientIt->second.end()) {
+            return DispatchStatus::IgnoredRelease;
+        }
+        const ResolvedAddress target = gIt->second.target;
+        clientIt->second.erase(gIt);
+        if (clientIt->second.empty()) {
+            activeGestures_.erase(clientIt);
+        }
+        emitGesture(target, false, origin, sink);
         return DispatchStatus::Applied;
     };
 
-    // Helper for continuous strip/param/macro/dial writes: auto-bracket with
-    // gesture begin/end when no explicit touch gesture is open (ADR-0181 d2).
+    // Helper for continuous strip/param/macro/dial writes (ADR-0181 d1/d2, SRF-02):
+    //   - If this client already holds an explicit touch gesture, write inside it.
+    //   - If this client holds an implicit gesture that has already expired under
+    //     delayed polling (elapsed >= quietWindowMs_), close the old gesture first
+    //     and open a fresh implicit gesture so separated runs are never merged.
+    //   - Otherwise open (or renew) one implicit gesture, left open until quiet expiry,
+    //     explicit .../gesture 0, or lifecycle cleanup.
     auto withStripGesture = [&](auto&& applyWrite) {
         const auto gKind = gestureKindFor(resolved->kind);
-        const bool needsBracket =
-            gKind.has_value() && !hasActiveGesture(origin.client, controlAddr);
-        ResolvedAddress gestureTarget = *resolved;
-        if (gKind.has_value()) {
-            gestureTarget.kind = *gKind;
+        if (!gKind.has_value()) {
+            applyWrite();
+            return;
         }
-        if (needsBracket) {
+        ResolvedAddress gestureTarget = *resolved;
+        gestureTarget.kind = *gKind;
+
+        auto& clientMap = activeGestures_[origin.client];
+        const auto gIt = clientMap.find(controlAddr);
+        if (gIt == clientMap.end()) {
+            clientMap.emplace(std::string(controlAddr),
+                              ActiveGesture{gestureTarget, false, nowMs});
             emitGesture(gestureTarget, true, origin, sink);
+        } else if (!gIt->second.explicitTouch) {
+            if (static_cast<std::uint64_t>(nowMs - gIt->second.lastActivityMs) >= quietWindowMs_) {
+                const ResolvedAddress expiredTarget = gIt->second.target;
+                gIt->second.target = gestureTarget;
+                gIt->second.lastActivityMs = nowMs;
+                emitGesture(expiredTarget, false, origin, sink);
+                emitGesture(gestureTarget, true, origin, sink);
+            } else {
+                gIt->second.lastActivityMs = nowMs;
+            }
         }
         applyWrite();
-        if (needsBracket) {
-            emitGesture(gestureTarget, false, origin, sink);
-        }
     };
 
     switch (resolved->kind) {
@@ -1137,6 +1255,13 @@ DispatchStatus OscNamespace::dispatchMessage(const Message& message,
 PacketDispatchResult OscNamespace::dispatchPacket(const Packet& packet,
                                                   std::string_view client,
                                                   WriteSink& sink) {
+    return dispatchPacket(packet, client, sink, lastNowMs_.value_or(0U));
+}
+
+PacketDispatchResult OscNamespace::dispatchPacket(const Packet& packet,
+                                                  std::string_view client,
+                                                  WriteSink& sink,
+                                                  std::uint64_t nowMs) {
     PacketDispatchResult res;
     if (!isOnOwnerThread()) {
         res.gateStatus = DispatchStatus::WrongThread;
@@ -1158,11 +1283,15 @@ PacketDispatchResult OscNamespace::dispatchPacket(const Packet& packet,
         res.gateStatus = DispatchStatus::ClientNotAllowed;
         return res;
     }
+    if (lastNowMs_.has_value() && nowMs < *lastNowMs_) {
+        res.gateStatus = DispatchStatus::ClockRegression;
+        return res;
+    }
 
     const auto msgs = flattenMessages(packet);
     res.messageStatuses.reserve(msgs.size());
     for (const Message* m : msgs) {
-        const DispatchStatus st = dispatchMessage(*m, client, sink);
+        const DispatchStatus st = dispatchMessage(*m, client, sink, nowMs);
         res.messageStatuses.push_back(st);
         if (st == DispatchStatus::Applied) {
             ++res.appliedCount;
@@ -1181,6 +1310,11 @@ bool OscNamespace::updateFeedValue(std::string_view address, float value) {
     }
     feedValues_[std::string(address)] = normalizeZero(value);
     return true;
+}
+
+std::vector<FeedbackMessage> OscNamespace::flushFeedback(std::uint64_t nowMs, WriteSink& sink) {
+    (void)pollGestures(nowMs, sink);
+    return flushFeedback();
 }
 
 std::vector<FeedbackMessage> OscNamespace::flushFeedback() {

@@ -26,15 +26,28 @@
 //   Structural edits are not part of this namespace and are always refused
 //   (ADR-0181 d2).
 //
-// Attribution & gesture contract (ADR-0181 d2, ADR-0185 d4):
+// Attribution & gesture contract (ADR-0181 d1, d2; ADR-0185 d4; SRF-02):
 //   Every write dispatched to WriteSink is stamped actor = Actor::User and
 //   actorDetail = "osc:<client>". Releasing a momentary trigger (value <= 0 on
 //   play, stop, or re_enable_automation) is ignored and never stops transport.
-//   Relative nudges are never coalesced. Continuous strip/parameter writes
-//   (volume, pan, send, macro, device param, dial, and nudges) are always
-//   gesture-bracketed: if the client holds an explicit .../gesture touch,
-//   writes sit inside that open gesture; otherwise each single-shot write is
-//   wrapped in an immediate begin/end gesture pair.
+//   Relative nudges are never coalesced on the wire. Continuous strip/parameter
+//   writes (volume, pan, send, macro, device param, dial, and nudges) are
+//   always gesture-bracketed:
+//     - If the client holds an explicit .../gesture 1 touch, writes sit inside
+//       that open gesture until .../gesture 0 or explicit cleanup.
+//     - Otherwise the first write opens an implicit gesture and keeps it open
+//       across continued writes on the same control, closing it once after a
+//       monotonic quiet interval via pollGestures(nowMs, sink) or
+//       flushFeedback(nowMs, sink) (following SRF-02 QuietSession semantics:
+//       delayed polling closes an expired implicit gesture before opening a
+//       fresh one for a later write). An explicit .../gesture 0 also closes an
+//       open implicit gesture.
+//     - An explicit .../gesture 0 with no matching open gesture for that client
+//       is ignored (IgnoredRelease) and never reaches WriteSink.
+//     - Owners disabling the service, de-listing a client, or forgetting a peer
+//       should pass WriteSink to setPolicy(policy, sink) /
+//       removeFeedbackPeer(client, sink), or call endAllGestures(sink) /
+//       endClientGestures(client, sink) beforehand.
 //
 // Feedback contract (PLAN SRF-09):
 //   Feedback is sent on change. A write (including a nudge, a clamped write,
@@ -275,10 +288,11 @@ public:
 
 enum class DispatchStatus {
     Applied = 0,
-    IgnoredRelease,     ///< Momentary button release (<= 0); valid no-op
+    IgnoredRelease,     ///< Momentary button release (<= 0) or unmatched gesture end; valid no-op
     Disabled,
     InvalidBindPolicy,  ///< Enabled, but bind interface/port policy is invalid
     WrongThread,        ///< Called from a thread other than the message-thread owner
+    ClockRegression,    ///< Monotonic timestamp moved backwards; refused without mutation
     InvalidClient,
     ClientNotAllowed,
     UnknownAddress,
@@ -313,7 +327,10 @@ struct FeedbackMessage {
 /// namespace. See file header for threading and gesture contracts.
 class OscNamespace {
 public:
-    explicit OscNamespace(ClientPolicy policy = {});
+    static constexpr std::uint64_t kDefaultQuietWindowMs = 250U;
+
+    explicit OscNamespace(ClientPolicy policy = {},
+                          std::uint64_t quietWindowMs = kDefaultQuietWindowMs);
 
     /// Rebind ownership to the calling message thread (for hand-off after
     /// construction on a setup thread; caller guarantees no concurrent use).
@@ -324,27 +341,60 @@ public:
         return std::this_thread::get_id() == ownerThread_;
     }
 
+    /// Configure the nonzero quiet interval (in monotonic milliseconds) used to
+    /// close implicit gestures when a client sends no explicit .../gesture 0.
+    /// Zero or off-thread calls are ignored.
+    void setQuietWindowMs(std::uint64_t quietWindowMs) noexcept;
+    [[nodiscard]] std::uint64_t quietWindowMs() const noexcept { return quietWindowMs_; }
+
+    /// Update service/allow-list policy. The sink-taking overload immediately
+    /// closes open gestures for all clients if the service is disabled or its
+    /// bind policy is invalid, or for every client no longer allowed by the new
+    /// policy. Callers using the 1-arg overload MUST call endAllGestures(sink)
+    /// or endClientGestures(client, sink) before disabling or de-listing.
     void setPolicy(ClientPolicy policy);
+    std::size_t setPolicy(ClientPolicy policy, WriteSink& sink);
     [[nodiscard]] const ClientPolicy& policy() const noexcept { return policy_; }
 
     /// Register or remove a client peer that receives feedback flushes.
     /// Peers not allowed by policy() receive no feedback while disallowed.
+    /// The sink-taking removeFeedbackPeer() also ends any open gestures held by
+    /// `client`; callers using the 1-arg overload MUST call endClientGestures()
+    /// before forgetting an active client.
     void addFeedbackPeer(std::string client);
     void removeFeedbackPeer(std::string_view client);
+    std::size_t removeFeedbackPeer(std::string_view client, WriteSink& sink);
 
-    /// Close any open explicit gestures held by `client` (or all clients) and
-    /// emit matching gesture-end callbacks on `sink`. Returns count closed.
+    /// Close any open explicit or implicit gestures held by `client` (or all
+    /// clients) and emit matching gesture-end callbacks on `sink`.
     std::size_t endClientGestures(std::string_view client, WriteSink& sink);
     std::size_t endAllGestures(WriteSink& sink);
 
-    /// Dispatch one decoded OSC message from `client` into `sink`.
+    /// Advance the monotonic clock to `nowMs` and close every implicit gesture
+    /// whose elapsed quiet time is >= quietWindowMs_ (SRF-02 QuietSession
+    /// semantics). Refuses off-thread calls and clock regressions without
+    /// mutating state. Returns count of gestures closed.
+    std::size_t pollGestures(std::uint64_t nowMs, WriteSink& sink);
+
+    /// Dispatch one decoded OSC message from `client` into `sink` at monotonic
+    /// timestamp `nowMs` (milliseconds). The 3-arg overload reuses the last
+    /// observed monotonic timestamp (or 0 if none).
     /// Must be called on the owning message thread.
+    [[nodiscard]] DispatchStatus dispatchMessage(const Message& message,
+                                                 std::string_view client,
+                                                 WriteSink& sink,
+                                                 std::uint64_t nowMs);
     [[nodiscard]] DispatchStatus dispatchMessage(const Message& message,
                                                  std::string_view client,
                                                  WriteSink& sink);
 
-    /// Dispatch a decoded OSC message or bundle from `client` into `sink`.
+    /// Dispatch a decoded OSC message or bundle from `client` into `sink` at
+    /// monotonic timestamp `nowMs` (milliseconds).
     /// Must be called on the owning message thread.
+    [[nodiscard]] PacketDispatchResult dispatchPacket(const Packet& packet,
+                                                      std::string_view client,
+                                                      WriteSink& sink,
+                                                      std::uint64_t nowMs);
     [[nodiscard]] PacketDispatchResult dispatchPacket(const Packet& packet,
                                                       std::string_view client,
                                                       WriteSink& sink);
@@ -367,9 +417,17 @@ public:
     ///   - At the end of flushFeedback(), addresses suppressed in this flush
     ///     are scheduled for confirmation on the next flush and the current
     ///     suppression window clears.
+    /// The (nowMs, sink) overload also runs pollGestures(nowMs, sink) first.
     [[nodiscard]] std::vector<FeedbackMessage> flushFeedback();
+    [[nodiscard]] std::vector<FeedbackMessage> flushFeedback(std::uint64_t nowMs, WriteSink& sink);
 
 private:
+    struct ActiveGesture {
+        ResolvedAddress target;
+        bool explicitTouch = false;
+        std::uint64_t lastActivityMs = 0U;
+    };
+
     void emitGesture(const ResolvedAddress& target, bool active, const WriteOrigin& origin,
                      WriteSink& sink) const;
     [[nodiscard]] bool hasActiveGesture(std::string_view client,
@@ -377,12 +435,14 @@ private:
 
     std::thread::id ownerThread_ = std::this_thread::get_id();
     ClientPolicy policy_;
+    std::uint64_t quietWindowMs_ = kDefaultQuietWindowMs;
+    std::optional<std::uint64_t> lastNowMs_;
     std::set<std::string, std::less<>> peers_;
     std::map<std::string, float, std::less<>> feedValues_;
     std::map<std::string, std::map<std::string, float, std::less<>>, std::less<>> lastSent_;
     std::map<std::string, std::set<std::string, std::less<>>, std::less<>> suppressedThisFlush_;
     std::map<std::string, std::set<std::string, std::less<>>, std::less<>> confirmNextFlush_;
-    std::map<std::string, std::map<std::string, ResolvedAddress, std::less<>>, std::less<>>
+    std::map<std::string, std::map<std::string, ActiveGesture, std::less<>>, std::less<>>
         activeGestures_;
 };
 

@@ -400,42 +400,138 @@ void testMomentaryPlayAndUncoalescedDeltas() {
 }
 
 void testStripGestureBrackets() {
-    section("ADR-0181 d2 gesture brackets on strip writes");
+    section("ADR-0181 d2 gesture brackets, quiet-window implicit gestures, and lifecycle cleanup");
 
     ClientPolicy pol;
     pol.enabled = true;
-    OscNamespace ns(pol);
+    constexpr std::uint64_t kQuietMs = 250U;
+    OscNamespace ns(pol, kQuietMs);
     RecordingSink sink;
 
-    // 1. Single-shot strip writes auto-bracket with begin + write + end.
-    check(ns.dispatchMessage(msgF("/adi/track/42/volume", 0.7f), "touchosc", sink) ==
+    // 1. 3-message fader sweep without explicit touch opens ONE implicit gesture
+    //    and closes it once after the quiet interval on the monotonic clock
+    //    (5 callbacks: [begin, set1, set2, set3, end], NOT 9).
+    check(ns.dispatchMessage(msgF("/adi/track/42/volume", 0.3f), "touchosc", sink, 1000U) ==
               DispatchStatus::Applied,
-          "single-shot track volume applied");
-    check(sink.writes.size() == 3U, "single-shot track volume emits begin/write/end");
-    if (sink.writes.size() == 3U) {
+          "sweep msg 1 applied");
+    check(ns.dispatchMessage(msgF("/adi/track/42/volume", 0.5f), "touchosc", sink, 1050U) ==
+              DispatchStatus::Applied,
+          "sweep msg 2 applied");
+    check(ns.dispatchMessage(msgF("/adi/track/42/volume", 0.7f), "touchosc", sink, 1100U) ==
+              DispatchStatus::Applied,
+          "sweep msg 3 applied");
+    check(ns.pollGestures(1349U, sink) == 0U, "no quiet-window close 1 ms before expiry");
+    check(sink.writes.size() == 4U,
+          "3-message sweep before quiet expiry emits [begin, set1, set2, set3]");
+    check(ns.pollGestures(1350U, sink) == 1U, "exact quiet-window expiry closes 1 implicit gesture");
+    check(ns.pollGestures(1600U, sink) == 0U, "quiet-window end is emitted only once");
+    check(sink.writes.size() == 5U, "3-message sweep total callbacks == 5 (one begin, one end)");
+    if (sink.writes.size() == 5U) {
         check(sink.writes[0].kind == TargetKind::TrackVolumeGesture &&
                   sink.writes[0].track == 42U && sink.writes[0].bval,
-              "auto gesture begin for track 42 volume");
-        check(sink.writes[1].kind == TargetKind::TrackVolume && sink.writes[1].track == 42U &&
-                  sink.writes[1].fval == 0.7f,
-              "track 42 volume write");
-        check(sink.writes[2].kind == TargetKind::TrackVolumeGesture &&
-                  sink.writes[2].track == 42U && !sink.writes[2].bval,
-              "auto gesture end for track 42 volume");
+              "sweep callback 0: gesture begin");
+        check(sink.writes[1].kind == TargetKind::TrackVolume && sink.writes[1].fval == 0.3f,
+              "sweep callback 1: value 0.3");
+        check(sink.writes[2].kind == TargetKind::TrackVolume && sink.writes[2].fval == 0.5f,
+              "sweep callback 2: value 0.5");
+        check(sink.writes[3].kind == TargetKind::TrackVolume && sink.writes[3].fval == 0.7f,
+              "sweep callback 3: value 0.7");
+        check(sink.writes[4].kind == TargetKind::TrackVolumeGesture &&
+                  sink.writes[4].track == 42U && !sink.writes[4].bval,
+              "sweep callback 4: gesture end");
     }
 
-    // 2. Explicit strip touch gesture holds across multiple writes without double-bracketing.
+    // 2. 3-tick nudge turn without explicit touch emits [begin, nudge1, nudge2, nudge3, end]
+    //    (all 3 deltas preserved uncoalesced, closed via flushFeedback(nowMs, sink)).
     sink.writes.clear();
-    check(ns.dispatchMessage(msgI("/adi/track/42/pan/gesture", 1), "touchosc", sink) ==
+    check(ns.dispatchMessage(msgI("/adi/focused/dial/nudge", 1), "encoder", sink, 2000U) ==
+              DispatchStatus::Applied,
+          "nudge tick 1 applied");
+    check(ns.dispatchMessage(msgI("/adi/focused/dial/nudge", 1), "encoder", sink, 2040U) ==
+              DispatchStatus::Applied,
+          "nudge tick 2 applied");
+    check(ns.dispatchMessage(msgI("/adi/focused/dial/nudge", -1), "encoder", sink, 2080U) ==
+              DispatchStatus::Applied,
+          "nudge tick 3 applied");
+    (void)ns.flushFeedback(2329U, sink);
+    check(sink.writes.size() == 4U, "nudge turn stays open 1 ms before quiet expiry");
+    (void)ns.flushFeedback(2330U, sink);
+    check(sink.writes.size() == 5U, "3-tick nudge turn emits one begin, 3 nudges, one end");
+    if (sink.writes.size() == 5U) {
+        check(sink.writes[0].kind == TargetKind::FocusedDialGesture && sink.writes[0].bval,
+              "nudge begin");
+        check(sink.writes[1].kind == TargetKind::FocusedDialNudge && sink.writes[1].ival == 1 &&
+                  sink.writes[2].kind == TargetKind::FocusedDialNudge && sink.writes[2].ival == 1 &&
+                  sink.writes[3].kind == TargetKind::FocusedDialNudge && sink.writes[3].ival == -1,
+              "all 3 nudge ticks preserved uncoalesced");
+        check(sink.writes[4].kind == TargetKind::FocusedDialGesture && !sink.writes[4].bval,
+              "nudge end after quiet interval");
+    }
+
+    // 3. Delayed polling cannot merge two separated runs (QuietSession semantics):
+    //    a write at t + quietWindowMs closes the expired implicit gesture first,
+    //    then opens a fresh implicit gesture for the new run.
+    sink.writes.clear();
+    check(ns.dispatchMessage(msgF("/adi/master/volume", 0.4f), "touchosc", sink, 3000U) ==
+              DispatchStatus::Applied,
+          "run 1 write");
+    check(ns.dispatchMessage(msgF("/adi/master/volume", 0.8f), "touchosc", sink, 3250U) ==
+              DispatchStatus::Applied,
+          "run 2 write after quiet window with no intervening poll");
+    check(ns.pollGestures(3500U, sink) == 1U, "run 2 closed by poll");
+    check(sink.writes.size() == 6U,
+          "separated runs emit [begin1, set1, end1, begin2, set2, end2]");
+    if (sink.writes.size() == 6U) {
+        check(sink.writes[0].kind == TargetKind::MasterVolumeGesture && sink.writes[0].bval &&
+                  sink.writes[1].kind == TargetKind::MasterVolume && sink.writes[1].fval == 0.4f &&
+                  sink.writes[2].kind == TargetKind::MasterVolumeGesture && !sink.writes[2].bval &&
+                  sink.writes[3].kind == TargetKind::MasterVolumeGesture && sink.writes[3].bval &&
+                  sink.writes[4].kind == TargetKind::MasterVolume && sink.writes[4].fval == 0.8f &&
+                  sink.writes[5].kind == TargetKind::MasterVolumeGesture && !sink.writes[5].bval,
+              "two separated implicit gestures never merged across expired quiet window");
+    }
+
+    // 4. Explicit .../gesture 0 closes an open implicit gesture cleanly.
+    sink.writes.clear();
+    check(ns.dispatchMessage(msgF("/adi/track/42/send/9", 0.4f), "touchosc", sink, 4000U) ==
+              DispatchStatus::Applied,
+          "implicit send gesture opened");
+    check(ns.dispatchMessage(msgI("/adi/track/42/send/9/gesture", 0), "touchosc", sink, 4050U) ==
+              DispatchStatus::Applied,
+          "explicit gesture 0 closes implicit send gesture");
+    check(ns.pollGestures(4500U, sink) == 0U, "no duplicate end after explicit close");
+    check(sink.writes.size() == 3U && sink.writes[0].kind == TargetKind::TrackSendGesture &&
+              sink.writes[0].bval && sink.writes[1].kind == TargetKind::TrackSend &&
+              sink.writes[2].kind == TargetKind::TrackSendGesture && !sink.writes[2].bval,
+          "implicit send closed by explicit gesture 0 emits [begin, set, end]");
+
+    // 5. Clock regression is refused without mutating open implicit gestures.
+    sink.writes.clear();
+    check(ns.dispatchMessage(msgF("/adi/focused/macro/3", 0.5f), "touchosc", sink, 5000U) ==
+              DispatchStatus::Applied,
+          "macro implicit gesture opened at 5000 ms");
+    check(ns.dispatchMessage(msgF("/adi/focused/macro/3", 0.6f), "touchosc", sink, 4999U) ==
+              DispatchStatus::ClockRegression,
+          "clock regression refused on dispatchMessage");
+    check(ns.pollGestures(4999U, sink) == 0U, "clock regression refused on pollGestures");
+    check(sink.writes.size() == 2U, "rejected regressed clock invoked no sink writes or end");
+    check(ns.pollGestures(5250U, sink) == 1U, "macro implicit gesture closes at 5250 ms");
+
+    // 6. Explicit strip touch gesture holds across quiet intervals and multiple writes
+    //    without double-bracketing or premature timeout.
+    sink.writes.clear();
+    check(ns.dispatchMessage(msgI("/adi/track/42/pan/gesture", 1), "touchosc", sink, 6000U) ==
               DispatchStatus::Applied,
           "explicit pan gesture begin");
-    check(ns.dispatchMessage(msgF("/adi/track/42/pan", 0.3f), "touchosc", sink) ==
+    check(ns.dispatchMessage(msgF("/adi/track/42/pan", 0.3f), "touchosc", sink, 6050U) ==
               DispatchStatus::Applied,
-          "pan move 1 inside gesture");
-    check(ns.dispatchMessage(msgF("/adi/track/42/pan", 0.6f), "touchosc", sink) ==
+          "pan move 1 inside explicit gesture");
+    check(ns.pollGestures(7000U, sink) == 0U,
+          "explicit held gesture does not time out during quiet pause");
+    check(ns.dispatchMessage(msgF("/adi/track/42/pan", 0.6f), "touchosc", sink, 7050U) ==
               DispatchStatus::Applied,
-          "pan move 2 inside gesture");
-    check(ns.dispatchMessage(msgI("/adi/track/42/pan/gesture", 0), "touchosc", sink) ==
+          "pan move 2 inside explicit gesture");
+    check(ns.dispatchMessage(msgI("/adi/track/42/pan/gesture", 0), "touchosc", sink, 7100U) ==
               DispatchStatus::Applied,
           "explicit pan gesture end");
     check(sink.writes.size() == 4U,
@@ -447,40 +543,87 @@ void testStripGestureBrackets() {
         check(sink.writes[3].kind == TargetKind::TrackPanGesture && !sink.writes[3].bval, "end");
     }
 
-    // 3. Single-shot send, master volume, master pan, and focused macro also auto-bracket.
+    // 7. Finding 2: Unmatched gesture end and cross-client gesture end must NOT reach sink.
     sink.writes.clear();
-    check(ns.dispatchMessage(msgF("/adi/track/42/send/9", 0.4f), "touchosc", sink) ==
-              DispatchStatus::Applied,
-          "single-shot send applied");
-    check(sink.writes.size() == 3U && sink.writes[0].kind == TargetKind::TrackSendGesture &&
-              sink.writes[0].bval && sink.writes[1].kind == TargetKind::TrackSend &&
-              sink.writes[2].kind == TargetKind::TrackSendGesture && !sink.writes[2].bval,
-          "send auto-bracketed");
+    check(ns.dispatchMessage(msgI("/adi/track/42/volume/gesture", 0), "clientA", sink, 8000U) ==
+              DispatchStatus::IgnoredRelease,
+          "unmatched volume gesture 0 returns IgnoredRelease");
+    check(sink.writes.empty(), "unmatched gesture 0 invokes zero sink callbacks");
 
-    sink.writes.clear();
-    check(ns.dispatchMessage(msgF("/adi/master/volume", 0.8f), "touchosc", sink) ==
+    check(ns.dispatchMessage(msgI("/adi/track/42/pan/gesture", 1), "clientA", sink, 8010U) ==
               DispatchStatus::Applied,
-          "single-shot master volume applied");
-    check(sink.writes.size() == 3U && sink.writes[0].kind == TargetKind::MasterVolumeGesture &&
-              sink.writes[0].bval && sink.writes[1].kind == TargetKind::MasterVolume &&
-              sink.writes[2].kind == TargetKind::MasterVolumeGesture && !sink.writes[2].bval,
-          "master volume auto-bracketed");
-
+          "clientA opens pan gesture");
     sink.writes.clear();
-    check(ns.dispatchMessage(msgF("/adi/focused/macro/3", 0.5f), "touchosc", sink) ==
+    check(ns.dispatchMessage(msgI("/adi/track/42/pan/gesture", 0), "clientB", sink, 8020U) ==
+              DispatchStatus::IgnoredRelease,
+          "cross-client pan gesture 0 from clientB returns IgnoredRelease");
+    check(ns.dispatchMessage(msgI("/adi/track/42/pan/gesture", 0), "clientB", sink, 8030U) ==
+              DispatchStatus::IgnoredRelease,
+          "second cross-client pan gesture 0 from clientB also returns IgnoredRelease");
+    check(sink.writes.empty(), "cross-client gesture 0 invokes zero sink callbacks");
+    check(ns.dispatchMessage(msgI("/adi/track/42/pan/gesture", 0), "clientA", sink, 8040U) ==
               DispatchStatus::Applied,
-          "single-shot focused macro applied");
-    check(sink.writes.size() == 3U && sink.writes[0].kind == TargetKind::FocusedMacroGesture &&
-              sink.writes[0].bval && sink.writes[1].kind == TargetKind::FocusedMacro &&
-              sink.writes[2].kind == TargetKind::FocusedMacroGesture && !sink.writes[2].bval,
-          "focused macro auto-bracketed");
+          "clientA's own pan gesture stays open and closes cleanly");
+    check(sink.writes.size() == 1U && sink.writes[0].kind == TargetKind::TrackPanGesture &&
+              !sink.writes[0].bval && sink.writes[0].origin.actorDetail == "osc:clientA",
+          "only clientA's matching end reaches sink");
 
-    // 4. Client disconnect cleanup closes open gestures cleanly.
+    // 8. Finding 3: Disabling service, de-listing a client via setPolicy(pol, sink),
+    //    and removeFeedbackPeer(client, sink) close affected open gestures immediately.
+    {
+        ClientPolicy p;
+        p.enabled = true;
+        p.allowedClients = {"clientA", "clientB"};
+        OscNamespace pns(p, kQuietMs);
+        pns.addFeedbackPeer("clientA");
+        pns.addFeedbackPeer("clientB");
+        RecordingSink psink;
+
+        check(pns.dispatchMessage(msgI("/adi/master/pan/gesture", 1), "clientA", psink, 100U) ==
+                  DispatchStatus::Applied,
+              "clientA opens master pan gesture");
+        check(pns.dispatchMessage(msgF("/adi/track/1/volume", 0.5f), "clientB", psink, 110U) ==
+                  DispatchStatus::Applied,
+              "clientB opens implicit track 1 volume gesture");
+
+        // De-list clientB: clientB's gesture closes, clientA's stays open.
+        psink.writes.clear();
+        ClientPolicy pNoB = p;
+        pNoB.allowedClients = {"clientA"};
+        check(pns.setPolicy(pNoB, psink) == 1U, "de-listing clientB closes 1 gesture");
+        check(psink.writes.size() == 1U && psink.writes[0].kind == TargetKind::TrackVolumeGesture &&
+                  !psink.writes[0].bval && psink.writes[0].origin.actorDetail == "osc:clientB",
+              "de-listing emits gesture end for clientB only");
+
+        // removeFeedbackPeer(clientA, psink) closes clientA's open gesture.
+        psink.writes.clear();
+        check(pns.removeFeedbackPeer("clientA", psink) == 1U,
+              "removeFeedbackPeer(clientA, sink) closes clientA's gesture");
+        check(psink.writes.size() == 1U && psink.writes[0].kind == TargetKind::MasterPanGesture &&
+                  !psink.writes[0].bval && psink.writes[0].origin.actorDetail == "osc:clientA",
+              "removeFeedbackPeer emits gesture end for clientA");
+        check(pns.endAllGestures(psink) == 0U, "no lingering gestures after removeFeedbackPeer");
+
+        // Re-open and disable the service: setPolicy(disabled, psink) closes all open gestures.
+        check(pns.dispatchMessage(msgI("/adi/track/42/send/9/gesture", 1), "clientA", psink, 200U) ==
+                  DispatchStatus::Applied,
+              "clientA opens send gesture");
+        psink.writes.clear();
+        ClientPolicy pOff = pNoB;
+        pOff.enabled = false;
+        check(pns.setPolicy(pOff, psink) == 1U, "disabling service via setPolicy closes open gesture");
+        check(psink.writes.size() == 1U && psink.writes[0].kind == TargetKind::TrackSendGesture &&
+                  !psink.writes[0].bval,
+              "disabling service emits gesture end");
+        check(pns.endAllGestures(psink) == 0U, "no lingering gestures after disabling service");
+    }
+
+    // 9. Explicit endClientGestures / endAllGestures cleanup still closes all remaining gestures.
     sink.writes.clear();
-    check(ns.dispatchMessage(msgI("/adi/master/pan/gesture", 1), "touchosc", sink) ==
+    check(ns.dispatchMessage(msgI("/adi/master/pan/gesture", 1), "touchosc", sink, 9000U) ==
               DispatchStatus::Applied,
           "open master pan gesture");
-    check(ns.dispatchMessage(msgI("/adi/track/42/send/9/gesture", 1), "touchosc", sink) ==
+    check(ns.dispatchMessage(msgI("/adi/track/42/send/9/gesture", 1), "touchosc", sink, 9010U) ==
               DispatchStatus::Applied,
           "open send gesture");
     sink.writes.clear();
@@ -594,7 +737,7 @@ void testBindInterfacePolicyAndAllowList() {
         check(ns.dispatchMessage(msgF("/adi/master/volume", 0.5f), "192.168.1.10", sink) ==
                   DispatchStatus::Applied,
               "listed client accepted");
-        check(sink.writes.size() == 3U &&
+        check(sink.writes.size() == 2U &&
                   sink.writes[1].origin.actorDetail == "osc:192.168.1.10",
               "listed client stamped osc:<client>");
     }
