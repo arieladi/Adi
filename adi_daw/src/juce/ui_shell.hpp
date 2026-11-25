@@ -934,6 +934,10 @@ std::optional<float> nextZoom(float now, bool in) noexcept;
 // monitors (JUCE exposes no stable EDID identifier); the one nearest a point on the screen.
 std::string displayId(const juce::Displays::Display &);
 std::string displayAt(juce::Point<int> screen);
+// A launch's arguments, unquoted, in order. What a launcher puts around them is no argument: a
+// trailing space (PowerShell's Start-Process leaves one) gave an empty token, which opened the working
+// folder as the project (walk-B B11).
+juce::StringArray launchArguments(const juce::String &commandLine);
 // WTS-01: a test launch (--smoke-output, --control-test): an instance of its own, never the running
 // copy's, which keeps its window out of the foreground and reports to stderr.
 bool isTestLaunch(const juce::String &commandLine);

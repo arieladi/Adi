@@ -4591,9 +4591,16 @@ std::string displayId(const juce::Displays::Display &d) {
     return std::to_string(a.getX()) + ":" + std::to_string(a.getY()) + ":" + std::to_string(a.getWidth()) + ":" +
            std::to_string(a.getHeight()) + ":" + std::to_string(static_cast<int>(d.dpi));
 }
-bool isTestLaunch(const juce::String &commandLine) {
+juce::StringArray launchArguments(const juce::String &commandLine) {
+    juce::StringArray arguments;
     for (const auto &token : juce::StringArray::fromTokens(commandLine, true))
-        if (const auto t = token.unquoted(); t == "--smoke-output" || t == "--control-test")
+        if (const auto argument = token.unquoted().trim(); argument.isNotEmpty())
+            arguments.add(argument);
+    return arguments;
+}
+bool isTestLaunch(const juce::String &commandLine) {
+    for (const auto &t : launchArguments(commandLine))
+        if (t == "--smoke-output" || t == "--control-test")
             return true;
     return false;
 }

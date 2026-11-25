@@ -14611,6 +14611,19 @@ void launchIsolation(AppCommands &commands) {
     check(!isTestLaunch("") && !isTestLaunch("song.adi") && !isTestLaunch("--no-audio song.adi") &&
               !isTestLaunch("smoke-output.adi") && !isTestLaunch("--smoke-outputs"),
           "an ordinary launch, or a file named after the flag, is not");
+    // walk-B B11: PowerShell's Start-Process leaves a space after the last argument; its empty token was
+    // taken for the project, and the working folder was opened ("could not open the database").
+    {
+        const auto quoted = launchArguments("\"D:\\Songs\\walk2.adi\" ");
+        check(quoted.size() == 1 && quoted[0] == "D:\\Songs\\walk2.adi",
+              "a trailing space after a quoted project path is no argument; the path is unquoted");
+        const auto spaced = launchArguments("  --no-audio   \"C:\\My Songs\\a b.adi\"  ");
+        check(spaced.size() == 2 && spaced[0] == "--no-audio" && spaced[1] == "C:\\My Songs\\a b.adi",
+              "spaces around and between the arguments are none; a quoted path keeps its own spaces");
+        check(launchArguments("").isEmpty() && launchArguments("   ").isEmpty() && launchArguments("\"\"").isEmpty(),
+              "a blank command line, or an empty quoted one, has no arguments");
+        check(isTestLaunch("\"native.adi\" --smoke-output out.png "), "a test launch is still one with a trailing space");
+    }
     std::string error;
     test::TempDirectory temp("ui_shell", "launch");
     auto document = ProjectDocument::open(temp.path() / "quiet.adi", true, {}, error);
