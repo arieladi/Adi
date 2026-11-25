@@ -17,6 +17,12 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 25 November 2026 — Refreshed review heads after the reservation update
+
+The panel and DSP review stack now descends from `300efe611`. Reconcile, rack, grid and trim are `23a99fef1`, `c7638b5e8`, `db6108b86` and `73e2364d0`. The separate evaluator is `bd54530a9` on `clones/shaper-curve-edit`. The five updated trees differ from their prior tested heads only in Win's two upstream documentation edits. There are no merges in the seven-commit stack. Fresh tests passed 11 of 11 in each Pd precision and all three panel suites. The existing 46-check rack replay and paired full-resolution picture still describe identical code.
+
+The panel awaits the director's agreed sheet and the after-3-December landing window. PR requested for `clones/shaper-curve-edit` — Reuse compiled curve spans during point height edits.
+
 ## 25 November 2026 — One Drive with the independent choices together
 
 The clones seat takes `clones/shaper-drive-integration` for one after-3-December review branch combining the four-track repair with rounded clipping, signed power saturation and the three folding shapes. The reservations remain the Drive core, its ADI-Shaper rack dispatch and canvas, the measured coefficient header and the existing shaper tests. The four-track repair remains independently available for the earlier landing.
