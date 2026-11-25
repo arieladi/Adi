@@ -17,6 +17,16 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 25 November 2026 — Restore Width envelope detection on current main
+
+`clones/shaper-width-current-1125` at `932753575` — Apply the Width follower to constant and moving band contours. Lands after 3 December. The 418 existing descriptor positions stay in order. Removing the active-follower guard from the constant Width path fails the three-band regression.
+
+All 445 declarations and connections were checked. The DSP, Drive, registered and session suites passed in Release MSVC with warnings as errors at both Pd precisions. On the 192,000-frame stereo fixture, peak error was 0.00000005961 at 256 and 2,048 frames against the 0.00000057 limit. Registered Add and Multiply reproduced their earlier calibrated captures byte for byte.
+
+On kick and bass, Add measured median/p99 of 10.2/14.1 microseconds at 256 frames and 79.1/111.4 at 2,048. Multiply measured 10.1/14.5 and 79.9/104.8. With the follower off the same processor measured 5.8/8.1 and 45.2/60.1. Each enabled mode missed one deadline in 10,240 callbacks at 256 and zero at 2,048. Latency was zero.
+
+PR requested
+
 ## 25 November 2026 — Moving 24 dB crossover response
 
 Follow-up to `clones/shaper-split-repair-1125`. The lower control limit is settled. Independent source renders also isolated the two stereo outputs during a moving 24 dB/octave split. Two cascaded direct-form I sections reproduce the response when the smoothed normalized frequency is rounded to binary32 before conversion to Hz, the coefficients are calculated in double then rounded to float, and each product and each left-to-right sum are rounded separately. In the upper-edge compensation path, apply the upper low and high branches to the lower band's signal and sum their actual outputs.
