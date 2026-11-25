@@ -11422,6 +11422,149 @@ void mixerDragLive(AppCommands &commands, const std::filesystem::path &dir) {
     check(std::abs(volumeOf(4) + 12) < 1e-6, "without the live gesture the release commits the value");
     document->release();
 }
+// An automated mixer control shows its automation (Live 12 manual 25.4; walk-A A13): the envelope's value
+// at the playhead in the track controls and the Mixer View, shown without an op; once a manual change
+// overrides the lane, the manual value; Re-Enable Automation follows the lane again.
+void mixerShowsAutomation(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "mixer-automation.adi", true, {}, error);
+    check(document != nullptr, "a project with an automated fader");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "automated");
+    root.afterEdit = [&] { document->synchronise(); };
+    UiPeerRoot surfacePeer;
+    surfacePeer.setSize(1600, 1000);
+    surfacePeer.addAndMakeVisible(root);
+    surfacePeer.setVisible(true);
+    surfacePeer.addToDesktop(0);
+    root.setSize(1440, 900);
+    root.frame();
+    // 3 Audio's Volume: 0 dB at bar 1, -24 dB at bar 2, 0 dB at bar 3; its Pan from hard left to the centre.
+    root.showAutomation(4, volumeTarget(4));
+    check(root.addAutomationPoint(4, 0, 0) && root.addAutomationPoint(4, textproj::kWhole, -24) &&
+              root.addAutomationPoint(4, 2 * textproj::kWhole, 0) && document->synchronise(),
+          "a Volume envelope on 3 Audio, three breakpoints");
+    root.showAutomation(4, panTarget(4));
+    check(root.addAutomationPoint(4, 0, -1) && root.addAutomationPoint(4, textproj::kWhole, 0) && document->synchronise(),
+          "and a Pan envelope");
+    // Send A raised by hand, which gives it its routing row; then its envelope, -40 dB at bar 1 to -10 dB at bar 2.
+    std::int64_t returnA = 0;
+    for (const auto &s : root.mixer.strips())
+        if (s->track() == 4 && s->isVisible() && !s->sendKnobs().empty()) {
+            returnA = s->sendsTo(0);
+            s->sendKnobs()[0]->setValue(-20, juce::sendNotificationSync);
+        }
+    document->synchronise();
+    root.frame();
+    const auto *sendA = findSend(root.current()->sends, 4, returnA);
+    check(sendA != nullptr, "Send A has its row");
+    if (sendA != nullptr) {
+        root.showAutomation(4, sendTarget(sendA->id, "Send A"));
+        check(root.addAutomationPoint(4, 0, -40) && root.addAutomationPoint(4, textproj::kWhole, -10) &&
+                  document->synchronise(),
+              "and a Send A envelope");
+    }
+    root.setAutomationMode(false);
+    const auto strip = [&](MixerPanel &panel) -> const MixerStrip * {
+        for (const auto &s : panel.strips())
+            if (s->track() == 4 && s->isVisible())
+                return s.get();
+        return nullptr;
+    };
+    // What 3 Audio's controls show: its row in the track controls, then its strip in the Mixer View; and
+    // their automation LEDs.
+    using Led = MixerStrip::Automation;
+    struct Shown {
+        double rowVolume = 999, rowPan = 999, columnVolume = 999, columnPan = 999, send = 999;
+        Led rowVolumeLed = Led::None, rowPanLed = Led::None, columnVolumeLed = Led::None, sendLed = Led::None;
+    };
+    const auto shown = [&] {
+        Shown out;
+        root.mark(DirtySet::All);
+        root.frame();
+        if (const auto *row = strip(root.mixer)) {
+            out.rowVolume = row->volume.getValue();
+            out.rowPan = row->pan.getValue();
+            out.rowVolumeLed = row->automation(row->volume);
+            out.rowPanLed = row->automation(row->pan);
+            if (!row->sendKnobs().empty()) {
+                out.send = row->sendKnobs()[0]->getValue();
+                out.sendLed = row->automation(*row->sendKnobs()[0]);
+            }
+        }
+        root.command(AppCommands::ToggleMixerView);
+        root.mark(DirtySet::All);
+        root.frame();
+        if (const auto *column = strip(root.mixerView)) {
+            out.columnVolume = column->volume.getValue();
+            out.columnPan = column->pan.getValue();
+            out.columnVolumeLed = column->automation(column->volume);
+        }
+        root.command(AppCommands::ToggleMixerView);
+        root.mark(DirtySet::All);
+        root.frame();
+        return out;
+    };
+    const auto about = [](double a, double b, double within) { return std::abs(a - b) < within; };
+    const auto opCount = [&] { return document->store().db().execAndGet("SELECT count(*) FROM ops").getInt(); };
+    const auto stored = [&] {
+        return document->store().db().execAndGet("SELECT volume_db FROM mixer_strip WHERE track_id = 4").getDouble();
+    };
+    // The playhead where the driver puts it: parked, as the engine follows a lane parked too (ADR-0164).
+    document->prepare(48000, 64);
+    std::array<float, 64> outL{}, outR{};
+    float *outputs[]{outL.data(), outR.data()};
+    engine::AudioIo io;
+    io.out = outputs;
+    io.numOut = 2;
+    io.frames = 64;
+    const auto playheadAt = [&](std::int64_t tick) {
+        const auto tempo = document->view().current()->tempo;
+        document->session().transport().locate(static_cast<std::int64_t>(std::llround(tempo->ticksToSeconds(tick) * 48000)));
+        document->process(io);
+        root.frame();
+    };
+    const auto ops = opCount();
+    const auto step = document->ops().nextUndo() ? document->ops().nextUndo()->txnId : 0;
+    playheadAt(textproj::kWhole / 2);
+    check(root.timelineTick() == textproj::kWhole / 2, "the playhead half way to bar 2");
+    auto now = shown();
+    check(about(now.rowVolume, -12, .05) && about(now.columnVolume, -12, .05) && about(now.rowPan, -.5, .02) &&
+              about(now.columnPan, -.5, .02),
+          "there the box and the fader read -12 dB and the pan 25L: the envelopes' values");
+    check(about(now.send, -25, .05), "and Send A's box -25 dB");
+    check(now.rowVolumeLed == Led::Followed && now.columnVolumeLed == Led::Followed && now.rowPanLed == Led::Followed &&
+              now.sendLed == Led::Followed,
+          "Volume, Pan and Send A show their automation LEDs, lit");
+    playheadAt(textproj::kWhole + textproj::kWhole / 4);
+    now = shown();
+    check(about(now.rowVolume, -18, .05) && about(now.columnVolume, -18, .05) && about(now.rowPan, 0, .02),
+          "a quarter past bar 2, -18 dB: the controls move with the playhead; the pan at its last point");
+    check(about(now.send, -10, .05), "Send A at its last point, -10 dB");
+    check(opCount() == ops && std::abs(stored()) < 1e-9 && !document->mixerDragging() &&
+              (document->ops().nextUndo() ? document->ops().nextUndo()->txnId : 0) == step,
+          "shown only: no op, no undo step, no gesture, and the track keeps its own 0 dB");
+    // A manual change overrides the lane (ADR-0162): the control shows its own value again.
+    OpRequest manual;
+    manual.opType = "mixer.setVolume";
+    manual.payload = {{"id", 4}, {"db", -3.0}};
+    check(document->ops().submit(manual).ok && document->synchronise(), "3 Audio's volume set to -3 dB by hand");
+    now = shown();
+    const auto *lane = laneOf(*root.current(), "track", 4, "volume");
+    check(lane != nullptr && lane->overridden, "the Volume lane is overridden");
+    check(about(now.rowVolume, -3, 1e-6) && about(now.columnVolume, -3, 1e-6) && about(now.rowPan, 0, .02),
+          "overridden, the box and the fader show the manual -3 dB; the Pan still follows its lane");
+    check(now.rowVolumeLed == Led::Overridden && now.columnVolumeLed == Led::Overridden && now.rowPanLed == Led::Followed,
+          "the Volume's LED goes out (overridden); the Pan's stays lit");
+    // Re-Enable Automation (manual 25.4): the controls follow the lane again from the playhead.
+    check(document->reenableAutomation(), "Re-Enable Automation");
+    now = shown();
+    check(about(now.rowVolume, -18, .05) && about(now.columnVolume, -18, .05) && now.rowVolumeLed == Led::Followed,
+          "re-enabled, they read the envelope again, the LED lit");
+    document->release();
+}
 // AU-01: Automation Mode in the Arrangement (Live 12 manual 25.2, 25.3): a track's Volume envelope on its
 // lane; a click adds a breakpoint (the lane made in the same step), a drag moves one, a double-click or
 // Delete removes one; each one undo step.
@@ -17569,6 +17712,7 @@ int main(int argc, char **argv) {
     trace("armAndRecord", [&] { armAndRecord(commands, temp.path()); });
     trace("exportPage", [&] { exportPage(commands, temp.path()); });
     trace("mixerDragLive", [&] { mixerDragLive(commands, temp.path()); });
+    trace("mixerShowsAutomation", [&] { mixerShowsAutomation(commands, temp.path()); });
     trace("automationMode", [&] { automationMode(commands, temp.path()); });
     trace("sendKnobs", [&] { sendKnobs(commands, temp.path()); });
     trace("audioDrop", [&] { audioDrop(commands, temp.path()); });

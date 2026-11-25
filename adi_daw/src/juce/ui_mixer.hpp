@@ -106,6 +106,11 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     // Finds the engine's meter for the track again (MixerPanel::meter): on binding, on every
     // refresh, and when the panel is asked to (MixerPanel::resolveMeters).
     void resolveMeter();
+    // Live's automation LED on Volume, Pan and each send (manual 25.4), as a device knob's: lit while the
+    // control follows its lane, dim once a manual change overrides it, none without a lane.
+    enum class Automation : char { None, Followed, Overridden };
+    Automation automation(const juce::Component &control) const noexcept;
+    void paintOverChildren(juce::Graphics &) override;
     PrimaryButtonSlider volume, pan;
     // Live's Track Delay (manual 18.7): a value box in milliseconds, typed or dragged up or down, a
     // negative value pre-delaying; its "ms" unit box beside it. Shown by Live's Track Options: on
@@ -258,6 +263,16 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     std::vector<juce::String> letters_;
     std::vector<std::array<char, 2>> letterCodes_; // the letters, compared each sync without allocating
     std::vector<char> sendOn_;
+    // Each automated control's LED, and whether it shows its lane's value: Volume, Pan, then the sends.
+    struct AutomationShown {
+        Automation state = Automation::None;
+        bool showing = false;
+    };
+    std::vector<AutomationShown> automation_;
+    const juce::Component *automatedControl(std::size_t index) const noexcept;
+    // While a lane is followed its control shows the envelope at the playhead, moving as the engine
+    // plays it; shown only, no op and no gesture. `volumeDb` and `pan` are the track's own values.
+    void followAutomation(double volumeDb, double pan);
     std::size_t shown_ = 0, returnCount_ = 0;
     int io_ = 0; // the In/Out section's height in the Mixer View, 0 while it is hidden
     int delay_ = 0; // the Track Delay section's height in the Mixer View, 0 while it is hidden

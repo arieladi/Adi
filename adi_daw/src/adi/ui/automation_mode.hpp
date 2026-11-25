@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 namespace adi::ui {
 struct AutomationRange {
@@ -264,5 +265,27 @@ inline std::optional<double> envelopeValue(const engine::AutomationEnvelopeNode 
             return p[i - 1].value + (p[i].value - p[i - 1].value) * t;
         }
     return p.back().value;
+}
+// What a mixer control shows of its lane (Live 12 manual 25.4; ADR-0162): whether a lane the engine plays
+// automates it, whether a manual change has overridden that lane, and while it is followed the value its
+// arrangement envelope holds at `tick`, which the control shows in place of its own (none for a lane with
+// no arrangement data, or one kept in nanoseconds).
+struct FollowedLane {
+    bool automated = false, overridden = false;
+    std::optional<double> value;
+};
+inline FollowedLane followedLane(const engine::Snapshot &snapshot, std::string_view ownerKind, std::int64_t ownerId,
+                                 std::string_view paramRef, std::int64_t tick) {
+    FollowedLane out;
+    const auto *lane = laneOf(snapshot, ownerKind, ownerId, paramRef);
+    if (lane == nullptr)
+        return out;
+    out.automated = true;
+    out.overridden = lane->overridden;
+    if (!out.overridden && lane->timeBase == 0)
+        for (const auto &data : lane->envelopes)
+            if (data && !data->clipId)
+                out.value = envelopeValue(*data, tick);
+    return out;
 }
 } // namespace adi::ui

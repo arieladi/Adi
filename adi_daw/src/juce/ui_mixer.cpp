@@ -3,6 +3,7 @@
 #include "ui_controls.hpp"
 #include "ui_shell.hpp"
 #include "adi/engine/mixer.hpp"
+#include "adi/ui/automation_mode.hpp"
 #include "adi/ui/automation_override.hpp"
 #include "adi/ui/cue_edits.hpp"
 #include "adi/ui/midi_tracks.hpp"
@@ -333,6 +334,7 @@ void MixerStrip::bind(std::int64_t id) {
     position_ = number_ = 0;
     peak_ = rms_ = 0;
     lastFrame_ = -1;
+    automation_.clear(); // the LEDs are the new track's
     frame(true);
 }
 void MixerStrip::resolveMeter() { meter_ = panel_.meter && track_ != 0 ? panel_.meter(track_) : nullptr; }
@@ -465,6 +467,10 @@ void MixerStrip::frame(bool changed) noexcept {
             showPost(*returnSwitches_[i], returns_[i]);
         repaint();
     }
+    // An automated control follows its lane at the playhead (Live 12 manual 25.4; walk-A A13); a drag
+    // overrides the lane, so the control dragged shows the hand's value.
+    if (t && !dragging_)
+        followAutomation(t->volumeDb, t->pan);
     // The meter: the engine's {peak, rms} for the strip, written per callback by the audio thread
     // and read with relaxed loads (UI-ARCHITECTURE §9; #381), never a tap, no allocation. A strip
     // bound before the session had a strip for its track finds the meter on a refresh.
@@ -496,6 +502,66 @@ void MixerStrip::frame(bool changed) noexcept {
         repaint(panel_.vertical() ? meterArea().expanded(1)
                                   : juce::Rectangle<int>((showsInOut() ? MixerPanel::kInOutWidth : 0) + 105, 0,
                                                          10, getHeight()));
+    }
+}
+void MixerStrip::followAutomation(double volumeDb, double panValue) {
+    const auto *snapshot = panel_.root.reader().get();
+    if (snapshot == nullptr)
+        return;
+    if (automation_.size() != 2 + sends_.size())
+        automation_.assign(2 + sends_.size(), {});
+    // The playhead the engine evaluates its lanes at, playing or parked (ADR-0164).
+    const auto tick = panel_.root.timelineTick();
+    bool relit = false;
+    const auto follow = [&](juce::Slider &control, AutomationShown &shown, std::string_view kind, std::int64_t owner,
+                            std::string_view param, double low, double high, double own) {
+        const auto lane = followedLane(*snapshot, kind, owner, param, tick);
+        const auto state = !lane.automated ? Automation::None
+                           : lane.overridden ? Automation::Overridden
+                                             : Automation::Followed;
+        relit = relit || state != shown.state;
+        shown.state = state;
+        if (lane.value)
+            control.setValue(std::clamp(*lane.value, low, high), juce::dontSendNotification);
+        else if (shown.showing) // overridden or gone: the control's own value again
+            control.setValue(own, juce::dontSendNotification);
+        shown.showing = lane.value.has_value();
+    };
+    follow(volume, automation_[0], "track", track_, "volume", kFloorDb, kTopDb, std::max(kFloorDb, volumeDb));
+    follow(pan, automation_[1], "track", track_, "pan", -1, 1, panValue);
+    // A send's lane is its routing row's (`sendTarget`).
+    const auto &rows = panel_.root.reader().sends();
+    for (std::size_t i = 0; i < sends_.size(); ++i) {
+        const auto *route = findSend(rows, track_, returns_[i]);
+        follow(*sends_[i], automation_[2 + i], "routing", route != nullptr ? route->id : 0, "gain_db", kSendFloorDb,
+               kSendTopDb, std::clamp(sendLevel(route), kSendFloorDb, kSendTopDb));
+    }
+    if (relit)
+        repaint();
+}
+const juce::Component *MixerStrip::automatedControl(std::size_t index) const noexcept {
+    if (index == 0)
+        return &volume;
+    if (index == 1)
+        return &pan;
+    return index - 2 < sends_.size() ? sends_[index - 2].get() : nullptr;
+}
+MixerStrip::Automation MixerStrip::automation(const juce::Component &control) const noexcept {
+    for (std::size_t i = 0; i < automation_.size(); ++i)
+        if (automatedControl(i) == &control)
+            return automation_[i].state;
+    return Automation::None;
+}
+void MixerStrip::paintOverChildren(juce::Graphics &g) {
+    // The LED at the control's top right, as a device knob's (`ParameterControl::paint`): red while it
+    // follows its lane, dim once overridden (ADI's colours until measured, parity-7.4 row 11).
+    for (std::size_t i = 0; i < automation_.size(); ++i) {
+        const auto *control = automatedControl(i);
+        if (automation_[i].state == Automation::None || control == nullptr || !control->isVisible())
+            continue;
+        g.setColour(automation_[i].state == Automation::Overridden ? look::textDim : juce::Colours::red);
+        const auto b = control->getBounds();
+        g.fillEllipse(static_cast<float>(b.getRight() - 6), static_cast<float>(b.getY() + 1), 5.f, 5.f);
     }
 }
 void MixerStrip::resized() {
