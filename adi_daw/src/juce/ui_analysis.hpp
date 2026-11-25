@@ -98,6 +98,7 @@ class SharedSpectrumView final : public juce::Component,
     };
     void setSpectrogramLevels(SpectrogramLevels);
     SpectrogramLevels spectrogramLevels() const noexcept { return spectrogramLevels_; }
+    void setSpectrogramRuler(bool);
     bool hasSpectrogramImage() const noexcept;
     // Owns the displayed data pixels independently of future history and view lifetime.
     juce::Image spectrogramImage() const;
@@ -171,6 +172,8 @@ class SharedSpectrumView final : public juce::Component,
     void resetPicture() noexcept;
     [[nodiscard]] bool spectrumCursorActive() const noexcept;
     [[nodiscard]] juce::Rectangle<float> spectrumCursorBounds() const noexcept;
+    [[nodiscard]] juce::Rectangle<float> spectrogramPlot(juce::Rectangle<float> base) const noexcept;
+    void paintSpectrogramRuler(juce::Graphics &, juce::Rectangle<float> base, juce::Rectangle<float> plot) const;
     void updateSpectrumCursorInput();
     struct SpectrumCursorReading {
         struct Time {
@@ -224,6 +227,7 @@ class SharedSpectrumView final : public juce::Component,
     HistoryMotion historyMotion_ = HistoryMotion::Scroll;
     SpectrogramScale spectrogramScale_ = SpectrogramScale::Log;
     SpectrogramLevels spectrogramLevels_;
+    bool spectrogramRuler_ = false;
     std::uint64_t clearedRevision_ = 0, clearedEpoch_ = 0, clearedColumn_ = 0;
     // Owner-only source position, independent of parked stamps and worker backlog.
     // Initial compatible pictures may be reused; explicit fresh actions fence them.
@@ -296,6 +300,7 @@ class AnalysisPane final : public juce::Component {
   private:
     void exportSpectrogramPng();
     juce::Slider spectrogramFloor_, spectrogramCeiling_;
+    juce::ToggleButton spectrogramRulerButton_{"Hz ruler"};
     juce::TextButton spectrogramPngButton_{"Export PNG"};
     std::unique_ptr<juce::FileChooser> spectrogramChooser_;
     Source source_ = Source::Main;

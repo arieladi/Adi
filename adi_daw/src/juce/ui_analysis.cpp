@@ -1261,6 +1261,12 @@ void SharedSpectrumView::setSpectrogramLevels(SpectrogramLevels levels) {
     repaint();
 }
 
+void SharedSpectrumView::setSpectrogramRuler(bool visible) {
+    if (spectrogramRuler_ == visible) return;
+    spectrogramRuler_ = visible;
+    if (mode_ == Mode::Spectrogram) repaint();
+}
+
 bool SharedSpectrumView::hasSpectrogramImage() const noexcept {
     return mode_ == Mode::Spectrogram && raster_ && raster_->image.isValid();
 }
@@ -1513,8 +1519,12 @@ void SharedSpectrumView::enableSpectrumCursor() {
 bool SharedSpectrumView::spectrumCursorActive() const noexcept {
     return spectrumCursorEnabled_ && (spectrumMode() || mode_ == Mode::Spectrogram);
 }
+juce::Rectangle<float> SharedSpectrumView::spectrogramPlot(juce::Rectangle<float> base) const noexcept {
+    const auto gutter = 4.f * look::fontCaption + static_cast<float>(look::gap);
+    return spectrogramRuler_ && base.getWidth() >= 2.f * gutter ? base.withTrimmedLeft(gutter) : base;
+}
 juce::Rectangle<float> SharedSpectrumView::spectrumCursorBounds() const noexcept {
-    if (mode_ == Mode::Spectrogram) return analysisPlot(analysisArea(getLocalBounds()));
+    if (mode_ == Mode::Spectrogram) return spectrogramPlot(analysisPlot(analysisArea(getLocalBounds())));
     return spectrumCursorPlot(getLocalBounds(), spectrumScale_);
 }
 void SharedSpectrumView::updateSpectrumCursorInput() {
@@ -1645,6 +1655,38 @@ void SharedSpectrumView::paintPhaseBands(juce::Graphics &g, juce::Rectangle<floa
     }
 }
 
+void SharedSpectrumView::paintSpectrogramRuler(juce::Graphics &g, juce::Rectangle<float> base,
+                                              juce::Rectangle<float> plot) const {
+    const auto labelHeight = look::fontCaption;
+    const auto left = plot.getX();
+    if (left <= base.getX() || plot.getHeight() < labelHeight || !raster_) return;
+    const auto clip = plot.toNearestInt();
+    const auto tickWidth = labelHeight * .65f;
+    g.setColour(look::outline);
+    g.drawVerticalLine(juce::roundToInt(left), plot.getY(), plot.getBottom());
+    g.setFont(look::font(labelHeight));
+    float labelEnd = plot.getY();
+    double lastHz = std::numeric_limits<double>::infinity();
+    for (const double hz : {raster_->topHz, 10000., 1000., 100., Raster::lowestHz}) {
+        if (hz >= lastHz || hz < Raster::lowestHz) continue;
+        lastHz = hz;
+        const auto frequencyPosition = spectrogramPosition(raster_->scale, hz);
+        const auto fraction = (frequencyPosition - raster_->lowPosition) / (raster_->highPosition - raster_->lowPosition);
+        const auto y = plot.getBottom() - static_cast<float>(fraction) * plot.getHeight();
+        const auto pixel = std::clamp(juce::roundToInt(y), clip.getY(), clip.getBottom() - 1);
+        g.setColour(look::textOnBand);
+        g.drawHorizontalLine(pixel, left - tickWidth, left);
+        const auto labelTop = std::clamp(y - labelHeight * .5f, plot.getY(), plot.getBottom() - labelHeight);
+        if (labelTop < labelEnd) continue;
+        const auto label = hz >= 1000. ? juce::String(hz / 1000., std::fmod(hz, 1000.) == 0. ? 0 : 1) + "k"
+                                       : juce::String(juce::roundToInt(hz));
+        const auto labelWidth = left - base.getX() - tickWidth - static_cast<float>(look::border);
+        g.drawText(label, juce::Rectangle<float>(base.getX(), labelTop, labelWidth, labelHeight),
+                   juce::Justification::centredRight, true);
+        labelEnd = labelTop + labelHeight;
+    }
+}
+
 void SharedSpectrumView::paint(juce::Graphics &g) {
     if (mode_ == Mode::ChannelReadout) { paintChannelReadout(g); return; }
     g.fillAll(look::display);
@@ -1663,7 +1705,8 @@ void SharedSpectrumView::paint(juce::Graphics &g) {
                    (frozen_ ? " / Frozen" : ""), area.withHeight(14.f), juce::Justification::centredLeft, true);
     const bool mainMeter = mode_ == Mode::Meters && mainMeter_.has_value();
     const auto meterHeight = mainMeter ? 38.f : 0.f;
-    const auto plot = analysisPlot(area, meterHeight);
+    const auto basePlot = analysisPlot(area, meterHeight);
+    const auto plot = mode_ == Mode::Spectrogram ? spectrogramPlot(basePlot) : basePlot;
     if (plot.getHeight() <= 4 || plot.getWidth() <= 4) return;
     g.setFont(look::font(9.f));
     const bool scaled = spectrumMode() && spectrumScale_ != SpectrumScale::Wide;
@@ -1737,6 +1780,7 @@ void SharedSpectrumView::paint(juce::Graphics &g) {
         g.setImageResamplingQuality(juce::Graphics::lowResamplingQuality);
         if (historyMotion_ == HistoryMotion::Sweep) raster_->paintSweep(g, plot);
         else g.drawImage(raster_->image, plot);
+        paintSpectrogramRuler(g, basePlot, plot);
     }
     const double topHz = std::min(20000.0, shown_->sampleRate * .5);
     if (topHz <= 20) return;
@@ -1886,6 +1930,10 @@ AnalysisPane::AnalysisPane() {
         spectrogramCeiling_.setValue(next.ceiling, juce::dontSendNotification);
         view.setSpectrogramLevels(next);
     };
+    spectrogramRulerButton_.setTitle("Spectrogram frequency ruler");
+    spectrogramRulerButton_.setTooltip("Label the vertical frequency scale beside the history.");
+    spectrogramRulerButton_.onClick = [this] { view.setSpectrogramRuler(spectrogramRulerButton_.getToggleState()); };
+    addAndMakeVisible(spectrogramRulerButton_);
     slopeBox.addItemList({"Slope: Flat", "+4.5 dB/oct @ 1k"}, 1);
     slopeBox.setTitle("Spectrum display slope");
     slopeBox.setTooltip("Display tilt around 1 kHz only. Raw sine-calibrated dBFS, peak/RMS and comparison bins are unchanged.");
@@ -1954,6 +2002,7 @@ void AnalysisPane::setMode(SharedSpectrumView::Mode mode) {
     spectrogramScaleBox.setVisible(spectrogram);
     spectrogramFloor_.setVisible(spectrogram);
     spectrogramCeiling_.setVisible(spectrogram);
+    spectrogramRulerButton_.setVisible(spectrogram);
     paletteBox.setVisible(spectrogram);
     paletteBox.setEnabled(spectrogram);
     reverseButton.setVisible(spectrogram);
@@ -2085,9 +2134,9 @@ void AnalysisPane::usePageControls() {
     resized();
 }
 void AnalysisPane::resized() {
-    const std::array<juce::Component *, 16> controls{&modeBox, &sourceBox, &pointBox, &channelBox, &paletteBox, &slopeBox,
-        &scaleBox, &spectrogramScaleBox, &spectrogramFloor_, &spectrogramCeiling_, &historyBox, &reverseButton,
-        &freezeButton, &resetButton, &expandButton, &spectrogramPngButton_};
+    const std::array<juce::Component *, 17> controls{&modeBox, &sourceBox, &pointBox, &channelBox, &paletteBox, &slopeBox,
+        &scaleBox, &spectrogramScaleBox, &spectrogramFloor_, &spectrogramCeiling_, &spectrogramRulerButton_,
+        &historyBox, &reverseButton, &freezeButton, &resetButton, &expandButton, &spectrogramPngButton_};
     const bool pageControls = !modeBox.isVisible();
     const int columns = std::clamp(getWidth() / (pageControls ? look::mixPageWidth : 96), 1, 4);
     const int count = static_cast<int>(std::ranges::count_if(controls, [](const auto *control) { return control->isVisible(); }));

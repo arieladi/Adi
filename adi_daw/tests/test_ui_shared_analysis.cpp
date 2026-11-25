@@ -2199,6 +2199,122 @@ void spectrogramRangePixels() {
     root.removeFromDesktop();
 }
 
+void spectrogramRulerControl() {
+    using namespace adi::ui;
+    using Mode = SharedSpectrumView::Mode;
+    AnalysisPane pane;
+    pane.usePageControls(); pane.setBounds(0, 0, 540, 480);
+    juce::ToggleButton *ruler = nullptr;
+    for (auto *child : pane.getChildren()) {
+        auto *toggle = dynamic_cast<juce::ToggleButton *>(child);
+        if (toggle && toggle->getTitle() == "Spectrogram frequency ruler") ruler = toggle;
+    }
+    check(ruler && !ruler->isVisible(), "the Spectrogram frequency ruler does not occupy other analyzer pages");
+    if (!ruler) return;
+    pane.setMode(Mode::Spectrogram);
+    check(ruler->isVisible() && ruler->isEnabled() && !ruler->getToggleState(),
+          "the dedicated Spectrogram offers an optional ruler with its original layout as the default");
+    ruler->setToggleState(true, juce::dontSendNotification); ruler->onClick();
+    pane.setMode(Mode::Spectrum);
+    check(!ruler->isVisible(), "leaving Spectrogram hides its frequency ruler control");
+    pane.setMode(Mode::Spectrogram);
+    check(ruler->isVisible() && ruler->getToggleState(), "returning to Spectrogram keeps its local ruler choice");
+}
+
+void spectrogramFrequencyRuler() {
+    using namespace adi::ui;
+    using Mode = SharedSpectrumView::Mode;
+    using Motion = SharedSpectrumView::HistoryMotion;
+    constexpr int left = 5, top = 21, viewWidth = 276, viewHeight = 359;
+    constexpr double plotHeight = viewHeight - top - 34.;
+    for (const int rate : {32000, 48000}) {
+        Fixture f;
+        f.tap = std::make_shared<ScopeTap>(rate, SharedAnalysis::kTapSeconds);
+        Root root; root.setBounds(0, 0, 660, 530); root.setVisible(true); root.addToDesktop(0);
+        AnalysisPane pane;
+        SharedSpectrumView compact;
+        root.addAndMakeVisible(pane); pane.usePageControls(); pane.setBounds(0, 0, 440, 530);
+        pane.setMode(Mode::Spectrogram); pane.setHistoryMotion(Motion::Sweep);
+        pane.view.setBounds(0, 0, viewWidth, viewHeight);
+        compact.setMode(Mode::Spectrogram); compact.setBounds(455, 0, 156, 311);
+        root.addAndMakeVisible(compact); compact.present(f.broker, 1);
+        pane.frame(f.broker, 1, 1);
+        juce::ToggleButton *ruler = nullptr;
+        for (auto *child : pane.getChildren()) {
+            auto *toggle = dynamic_cast<juce::ToggleButton *>(child);
+            if (toggle && toggle->getTitle() == "Spectrogram frequency ruler") ruler = toggle;
+        }
+        if (!ruler) return;
+        f.write(); f.broker->pump(); pane.frame(f.broker, 1, 1); compact.frame();
+        const auto shown = pane.view.snapshot();
+        const auto compactPicture = softwarePicture(compact);
+        pane.view.freeze(true);
+        const auto held = f.broker->stats();
+        const auto sameWork = [](const auto &before, const auto &after) {
+            return before.transforms == after.transforms && before.analysisWindows == after.analysisWindows &&
+                before.publications == after.publications && before.cursorReads == after.cursorReads &&
+                before.workerPasses == after.workerPasses && before.frameRequests == after.frameRequests &&
+                before.consumers == after.consumers && before.domains == after.domains && before.taps == after.taps &&
+                before.historyBytes == after.historyBytes;
+        };
+        const auto read = [&](int x, float y) {
+            return SharedSpectrumViewTestAccess::moveCursor(pane.view, {static_cast<float>(x) + .5f, y});
+        };
+        const auto firstCell = [&](float y) {
+            for (int x = 0; x < viewWidth; ++x) {
+                auto reading = read(x, y);
+                if (!reading.isEmpty()) return std::pair{x, std::move(reading)};
+            }
+            return std::pair{-1, juce::String{}};
+        };
+        const auto setRuler = [&](bool enabled) {
+            ruler->setToggleState(enabled, juce::dontSendNotification);
+            ruler->onClick();
+        };
+        const auto tickNear = [](const juce::Image &plain, const juce::Image &ruled, int edge, float y) {
+            if (edge < 9) return false;
+            const auto row = juce::roundToInt(y);
+            for (int py = row - 1; py <= row + 1; ++py) {
+                for (int px = edge - 7; px <= edge - 2; ++px) {
+                    if (ruled.getPixelAt(px, py) != plain.getPixelAt(px, py)) return true;
+                }
+            }
+            return false;
+        };
+        const auto high = std::min(20000., .5 * rate);
+        const std::array yForOneKhz{
+            static_cast<float>(top + plotHeight * (1. - std::log(1000. / 20.) / std::log(high / 20.))),
+            static_cast<float>(top + plotHeight * (1. - (1000. - 20.) / (high - 20.)))
+        };
+        using Scale = SharedSpectrumView::SpectrogramScale;
+        for (const auto scale : {Scale::Log, Scale::Linear}) {
+            pane.view.setSpectrogramScale(scale);
+            const auto y = yForOneKhz[scale == Scale::Log ? 0u : 1u];
+            (void)read(-1, -1.f);
+            const auto plain = softwarePicture(pane.view);
+            const auto data = pane.view.spectrogramImage();
+            const auto [plainLeft, plainReading] = firstCell(y);
+            check(shown && plainLeft == left && plainReading.contains("1000.0 Hz") && !data.isNull(),
+                  "ruler-off preserves the original plot coordinates on each frequency scale");
+            (void)read(-1, -1.f);
+            setRuler(true);
+            const auto picture = softwarePicture(pane.view);
+            const auto [rulerLeft, rulerReading] = firstCell(y);
+            check(rulerLeft > plainLeft && rulerReading == plainReading && read(rulerLeft - 1, y).isEmpty() &&
+                      tickNear(plain, picture, rulerLeft, y),
+                  "the ruler marks 1 kHz in a separate gutter with the same cursor and frequency projection");
+            check(pane.view.snapshot() == shown && !pane.view.subscribed() &&
+                      samePixels(data, pane.view.spectrogramImage()) && samePixels(compactPicture, softwarePicture(compact)) &&
+                      sameWork(held, f.broker->stats()),
+                  "the ruler changes only its expanded presentation, preserving native PNG, compact pixels and worker demand");
+            (void)read(-1, -1.f);
+            setRuler(false);
+            check(samePixels(plain, softwarePicture(pane.view)), "disabling the ruler restores the exact old drawing");
+        }
+        root.removeFromDesktop();
+    }
+}
+
 void spectrogramCursor() {
     using namespace adi::ui;
     using Mode = SharedSpectrumView::Mode;
@@ -3450,6 +3566,7 @@ int main() {
           clearSpectrogramWhileWorkerAhead(); freshActionsWithSharedConsumer(); backlogAndLifecycleFreshness(); spectrumSlopeProjection(); spectrumWideCachedGeometry(); spectrumDetailScale(); spectrumExtendedGridGeometry(); spectrumExtendedScale();
           pinnedSpectrumWaitsForHeardPrimary();
           spectrogramRangeControls(); spectrogramRangePixels();
+          spectrogramRulerControl(); spectrogramFrequencyRuler();
           spectrumDeviceScale(); spectrogramHistoryMotion(); spectrogramFrequencyScales(); spectrogramCursor(); spectrogramPngControl(); spectrogramPngRoundtrip(); classicScopeSurface();
           classicScopeUnchangedTrace(); detailedPhasePreservesHighFrequencyTrace(); mixPhaseRailViews(); mixAnalyserPages();
           compareAndAveragePages(); compareHoldSurvivesInvalidA(); }
