@@ -17,6 +17,23 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 25 November 2026 — Drive at the two oversampling boundaries
+
+`clones/shaper-drive-high-rates` at `bc31f1a66` — Match Drive rate changes and direct-rate latency. Lands after 3 December. Stacks on `220246df0`. At 88,199.99 Hz the reference still uses fourfold oversampling. At 88,200 Hz it switches to twofold, which persists at 176,399.99 Hz. At 176,400 Hz it switches to direct processing with 16 frames of padding. All 100 reference rate and buffer pairs reported 16 frames. ADI now follows both transitions. The 10 Hz direct-rate DC blocker matches the pole estimated from 7,346 independent impulse amplitudes per rate. At 192 kHz the fitted pole was 0.99967280429026.
+
+Sixteen high-rate strength-step measurements on flat input placed the change at its input sample, followed by the 16-frame output delay. The unchanged true-zero behavior and the approved DF-E60 fade below the first Drive knot now have direct-rate regressions. The reference goes fully nonlinear at a tiny positive strength in the three legacy modes. ADI intentionally retains DF-E60 there. On an independently timed stereo impulse, the direct path covers the eight transfers, including both samples of the ordinary hard clip.
+
+At 176.4 and 192 kHz, the three-band kick-and-bass RMS errors fell from 0.01523 and 0.01515 to 0.000000711 and 0.00000121. Wet signed power at zero and half strength measured within 0.000000024 whole-render RMS. Both 256- and 2,048-frame renders retained the declared delay. Four strict headless suites passed at each Pd precision.
+
+| Rate and frames | ADI / reference median cycles, millions | ADI / reference median callback, ms | ADI / reference individual late callbacks |
+| --- | ---: | ---: | ---: |
+| 176.4 kHz, 256 | 0.386 / 0.429 | 0.115 / 0.121 | 0 / 2 |
+| 176.4 kHz, 2,048 | 3.039 / 2.967 | 0.936 / 0.867 | 5 / 3 |
+| 192 kHz, 256 | 0.413 / 0.482 | 0.121 / 0.146 | 4 / 5 |
+| 192 kHz, 2,048 | 3.019 / 3.061 | 0.937 / 0.880 | 11 / 4 |
+
+Each arm ran six trials of 512 callbacks per condition, with rounded, power and sine in separate bands. The largest ADI trial p99 was 0.218 ms at 256 frames and 1.504 ms at 2,048 frames. The previous ADI build took 0.534 and 4.354 million cycles at 176.4 kHz and 0.543 and 4.254 million at 192 kHz. PR requested
+
 ## 25 November 2026 — Three moving Drive bands at both callback sizes
 
 `clones/shaper-drive-three-band-cost` at `220246df0` — Reduce the cost of moving three-band Drive. Lands after 3 December. Stacks on `519d1f17b`. Each column compares the median cycles for one registered ADI instance with the installed reference using the same kick, bass, curves, gains and three active bands. Each arm ran ten trials of 2,048 callbacks per condition.
