@@ -12,6 +12,7 @@
 #include "adi/ui/meter_edits.hpp"
 #include "adi/ui/meters.hpp"
 #include "adi/ui/recording_edits.hpp"
+#include "adi/ui/send_edits.hpp"
 #include "adi/ui/tempo_edits.hpp"
 #include "adi/ui/track_edits.hpp"
 #include "adi/store.hpp"
@@ -2855,9 +2856,14 @@ bool AdiRootComponent::insertReturnTrack(std::int64_t group) {
                        {"index", static_cast<std::int64_t>(into != nullptr ? held : static_cast<std::int64_t>(tracks.size()))}};
     if (into != nullptr)
         request.payload["parent"] = group;
-    request.label = into != nullptr ? "Insert Return Track in Group" : "Insert Return Track";
+    const char *label = into != nullptr ? "Insert Return Track in Group" : "Insert Return Track";
+    request.label = label;
     request.selBefore = session_.advisory();
-    const auto result = submitter_.submit(std::move(request));
+    // The tracks' sends to it, fully down, in the same step, so a first drag is heard (walk-A A10).
+    std::vector<OpRequest> batch{std::move(request)};
+    for (auto &send : newReturnSends(*current, id, group, label))
+        batch.push_back(std::move(send));
+    const auto result = submitter_.submit(std::move(batch));
     if (!result)
         return fail(result.error);
     arrangement.followPaused = true;
