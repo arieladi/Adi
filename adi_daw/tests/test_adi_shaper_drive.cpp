@@ -900,8 +900,9 @@ void powerStrengthTiming() {
     }
 }
 
-void powerResetAndRecovery() {
+void powerResetAndRecovery(int rate) {
     Drive drive;
+    drive.prepare(rate);
     drive.setPowerSaturation(true);
     bool silent = true;
     for (int n = 0; n < 64; ++n) {
@@ -919,6 +920,14 @@ void powerResetAndRecovery() {
     float bad = std::numeric_limits<float>::quiet_NaN(), r = .3f, zero = 0.f, other = r;
     drive.process(bad, r, .5f);
     clean.process(zero, other, .5f);
+    if (rate >= 176400) {
+        // The corrupt sample is still in the output delay when the block ends.
+        for (int frame = 0; frame < 7; ++frame) {
+            float l = .1f, good = -.19f, refL = l, refR = good;
+            drive.process(l, good, .5f);
+            clean.process(refL, refR, .5f);
+        }
+    }
     check(drive.finishBlock(), "power saturation detects nonfinite channel history");
     bool recovered = true;
     for (int n = 0; n < 64; ++n) {
@@ -951,7 +960,7 @@ int main() {
     powerImpulses();
     powerScopeAndTrims();
     powerStrengthTiming();
-    powerResetAndRecovery();
+    for (const int rate : {48000, 96000, 192000}) powerResetAndRecovery(rate);
     foldMarkers();
     driveShapeContour();
     optionalShapeAtZero();

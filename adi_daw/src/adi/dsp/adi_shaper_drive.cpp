@@ -486,7 +486,7 @@ void AdiShaperDrive::writePhases(const Phases& phases, std::size_t head) noexcep
         const auto sign = _mm_set1_pd(-0.0);
         const auto one = _mm_set1_pd(1.0);
         for (std::size_t p = 0; p < Factor; ++p) {
-            const auto& t = p == 0 ? first_ : current_;
+            const auto& t = Factor != 1 && p == 0 ? first_ : current_;
             const auto z = _mm_mul_pd(_mm_loadu_pd(phases[p].data()), _mm_set1_pd(t.pre));
             auto value = z;
             if (p == Factor-1) {
@@ -530,12 +530,13 @@ void AdiShaperDrive::writePhases(const Phases& phases, std::size_t head) noexcep
     } else
 #endif
     if constexpr (Style == Response::Power && Factor == 1) {
+        const PowerFrame z{phases[0][0] * current_.pre, phases[0][1] * current_.pre};
+        // The direct and twofold rates share the natural power law.
+        const auto result = current_.active ? signedPowers<2>({z, {}}, current_.exponent, 1.)[0] : z;
         Stereo wet{};
         for (std::size_t ch = 0; ch < wet.size(); ++ch) {
-            const double z = phases[0][ch] * current_.pre;
-            channels_[ch].lastZ = z;
-            const double y = current_.active ? std::copysign(std::pow(std::abs(z), current_.exponent), z) : z;
-            wet[ch] = static_cast<float>(y * current_.post);
+            channels_[ch].lastZ = z[ch];
+            wet[ch] = static_cast<float>(result[ch] * current_.post);
         }
         wet_[head] = wet_[head + ringSize] = wet;
     } else if constexpr (Style == Response::Power) {
@@ -568,7 +569,7 @@ void AdiShaperDrive::writePhases(const Phases& phases, std::size_t head) noexcep
                         shaped = linear + driveFade_ * (shaped - linear);
                     }
                 } else {
-                    const Transfer& transfer = p == 0 ? first_ : current_;
+                    const Transfer& transfer = Factor != 1 && p == 0 ? first_ : current_;
                     const double z = input * transfer.pre;
                     channels_[c].lastZ = z;
                     double magnitude = std::abs(z);
@@ -655,15 +656,15 @@ void AdiShaperDrive::process(float& left, float& right, float driveNormalized) n
     }
     if (!std::isfinite(driveNormalized)) driveNormalized = std::max(0.0f,previousDrive_);
     if (driveNormalized != previousDrive_) tune(std::clamp(driveNormalized,0.0f,1.0f));
-    inputHead_ = inputHead_ == 0 ? inputs-1 : inputHead_-1;
-    const auto inputHead = static_cast<std::size_t>(inputHead_);
-    input_[inputHead] = input_[inputHead+inputs] = {left, right};
-    const Stereo* in = input_.data()+inputHead_;
     StereoSum base;
     if (factor_ == 1) {
-        first_ = current_;
-        base = render<1>(in);
+        const Stereo direct{left, right};
+        base = render<1>(&direct);
     } else {
+        inputHead_ = inputHead_ == 0 ? inputs - 1 : inputHead_ - 1;
+        const auto head = static_cast<std::size_t>(inputHead_);
+        input_[head] = input_[head + inputs] = {left, right};
+        const Stereo* in = input_.data() + head;
         base = factor_ == 4 ? render<4>(in) : render<2>(in);
     }
     for (std::size_t c=0; c<channels_.size(); ++c) {
