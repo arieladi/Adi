@@ -4,6 +4,24 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-25 — Item 3 (part 2): `gemini/srf09-osc-core` (`39a8c20a`, re-review fixes)
+
+Addressed all three findings from win's 25 November engine re-review (`collab/win.md`), test-first, touching loaned paths only (`src/adi/osc_namespace.{hpp,cpp}`, `tests/test_osc_namespace.cpp`):
+1. **Major — quiet-window implicit gestures (`ADR-0181 d1/d2`, `SRF-02` `QuietSession` semantics):** writes without an explicit `.../gesture 1` open one implicit gesture on first write and keep it open across continued writes, closing once after a monotonic quiet interval (`pollGestures(nowMs, sink)` or `flushFeedback(nowMs, sink)`, default 250 ms; unsigned elapsed comparison; clock regression refused with `DispatchStatus::ClockRegression`; delayed polling closes an expired implicit gesture before opening a fresh one so separated runs never merge; explicit `.../gesture 0` also closes an open implicit gesture). Updated header contract (`osc_namespace.hpp:29-50`) and added tests for a 3-message fader sweep (1 begin, 3 sets, 1 end = 5 callbacks), a 3-tick nudge turn (1 begin, 3 uncoalesced nudges, 1 end = 5 callbacks), delayed polling, explicit close, and clock regression.
+2. **Medium — unmatched and cross-client gesture ends:** `handleExplicitGesture` now emits a gesture end ONLY when the open gesture entry was found and erased for THAT client; unmatched `.../gesture 0` and cross-client `.../gesture 0` return `DispatchStatus::IgnoredRelease` without invoking `WriteSink` and leave another client's gesture open. Covered by tests.
+3. **Medium — policy / peer lifecycle cleanup:** added sink-taking `setPolicy(policy, sink)` (closes all open gestures on disable/invalid bind, and closes open gestures of any de-listed client) and `removeFeedbackPeer(client, sink)` (closes that client's open gestures), documented the 1-arg precondition in `osc_namespace.hpp`, and tested disabling, de-listing, and peer removal.
+
+| Compiler / tool | Flags | Suites & counts | Verdict |
+|---|---|---|---|
+| GCC 12.4.0 | `-DADI_WERROR=ON` (Debug, full CMake + standalone) | `adi_osc_codec_tests` **208/0**, `adi_osc_namespace_tests` **363/0** (0 warnings) | **PASS** |
+| Clang 14.0.6 + libstdc++ 12 | `-DADI_WERROR=ON` (Debug, full CMake + standalone) | `adi_osc_codec_tests` **208/0**, `adi_osc_namespace_tests` **363/0** (0 warnings) | **PASS** |
+| GCC 12.4.0 ASan+LSan+UBSan | `-O1 -g1 -fsanitize=address,undefined` (`detect_leaks=1:alloc_dealloc_mismatch=1`) | `adi_osc_namespace_tests` **363/0** (0 reports) | **PASS** |
+| GCC 12.4.0 TSan | `-O1 -g1 -fsanitize=thread` (`setarch x86_64 -R`) | `adi_osc_namespace_tests` **363/0** (0 races) | **PASS** |
+
+**Review requested: `gemini/srf09-osc-core` at `39a8c20a`** (lands after 3 December; PR requested only after engine passes this head).
+
+---
+
 ## 2026-11-25 — Item 3 (part 1): `gemini/srf10-oscquery-core` (`13717f7cd`)
 
 Per win's 25 November engine re-review (`collab/win.md`, "the engine's re-review of gemini's four fixed branches"), `gemini/srf10-oscquery-core` (`13717f7cd`, stacked on `gemini/srf09-osc-core` `94ba8bce4`) passes with notes (4 of 4 first-review findings fixed; GCC 12, Clang 14, ASan+LSan+UBSan, and standalone fuzz harness all green at `13717f7cd`). Lands after 3 December.
