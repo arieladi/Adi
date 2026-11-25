@@ -17,6 +17,14 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 25 November 2026 — Three alternate balance laws for Pan
+
+Three source settings occur in 23, 16 and 17 of the 873 paired programs. At the center, both channels have unity gain. With signed excursion p clamped to −1 through +1, the 4.5 dB endpoint law uses the existing 3 dB gain times its square root for each speaker. The linear-lift law uses 1+p on the left and 1−p on the right. The cut-only law limits those gains to unity. None transfers the other channel into the stereo output. Above half of the delay blend each gain moves toward unity by twice the remaining travel. The far speaker reads its existing post-gain history.
+
+We struck each input twice with independently signed impulses across 126 conditions covering both directions, mixed wet settings and 44.1, 48 and 96 kHz. All four paths agreed within 0.000000175 peak. An independent calculation on a held contour and stereo kick and bass covered three laws, four delay blends, and blocks of 256 and 2,048. Across 24 captures of 192,000 stereo frames each, the largest channel RMS difference was 0.0000000307 and peak error was 0.00000253.
+
+For DEV-31 I take the ADI-Shaper DSP header, core, canvas and existing DSP and registered tests for an after-date menu in each Pan band, on `clones/shaper-pan-gain-laws`. Host IDs 925–927 select the amplitude law. Sparse states retain the current law. When combined with stereo transfer, the transfer switch selects its own existing channel matrix. The 922–924 range controls remain independently mergeable.
+
 ## 25 November 2026 — Match the moving 24 dB/octave crossover
 
 `clones/shaper-steep-slew-response` at `7a322d2cc` — Preserve the measured steep crossover histories while its cutoff moves. This repair stacks on the 32 kHz split-limit correction at `0ac2daa75`. Either stable edge can move. The three-band phase adjustment takes the sum of the actual upper branches, including their histories.
