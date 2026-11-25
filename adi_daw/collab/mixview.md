@@ -11,6 +11,14 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+### 2026-11-25 — MX-13 full Focus Scope bars after Locate
+
+**PR requested** `mixview/mx13-full-bar-after-locate-lands-after-2026-12-03` at `e00acfe6d`, after the cursor. Lands after 3 December. When one Scope source waited for a future bar, the worker stopped reading the later sources. Their short tap rings overran before that bar started. The worker now advances every eligible source within its existing read budget. It still publishes only a complete aligned interval.
+
+The broker and Focus component each failed a new check before the repair. Release passed 909 broker, 508 spectrum component and 490 Mix View component checks. The real Focus path reuses the same two taps and recovers a complete two-second bar across a same-position Locate. The shared analysis source passed both optimized warning-as-error checks. The other changed units passed their optimized warning-as-error checks.
+
+Verified Release and retest brief are in the private handoff. SHA-256 archive `657f506ba37a5ceeec58ff0963628dfec61e0a519e88d037011ad3dc63b1af43`, application `cf1169ea10cba3007272698e305d2643ba3246bbab9bf88bf1e894a6bc6101ec`, scanner `93e0002c0f4a08a14d904a57f20eb79b0a3b67ec2163953efb436e9bf34607`.
+
 ### 2026-11-25 — MX-13 Focus Scope cursor
 
 **PR requested** `mixview/mx13-focus-scope-cursor-lands-after-2026-12-03` at `672b97bd9`, after expanded Phase. Lands after 3 December. The cursor reads bar and beat, absolute heard sample, milliseconds and the signed waveform axis in dBFS. It uses the displayed interval, including the correct lane in Stack, hides for unaligned traces and Difference spectrum, and rejects a stale waveform after a Locate. Pointer motion requests no additional tap, processing pass or edit.
