@@ -17,6 +17,18 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 25 November 2026 — Repair the 32 kHz crossover slew test
+
+`clones/shaper-split-repair-1125` at `0ac2daa7` — Apply crossover slew within the measured frequency limits. This repair is ready before 3 December and supersedes the earlier split-slew submission.
+
+At 32 kHz, the first low output sample after a unit impulse was 0.903585625 at 95%, 96% and 100% of the lower-edge control. Inverting the first-order response gives 14,917.23934 Hz. The 94% setting gave 13,918.27556 Hz. The same plateau measured 14,917.23918 Hz at 48 kHz. Two complete 19,058-frame stereo captures made the same move with an in-range request at the limit and a request for 20 kHz. Every sample matched. Apply the physical lower-edge limit before smoothing. The 22.05 kHz upper-edge case separately tests ADI's numerical limit of 0.49 times the sample rate.
+
+The moving Volume and optimized Width paths now use the same effective cutoffs. Removing the lower limit, bypassing slew, dropping Width's edge history and moving the numerical ceiling each made the regression fail independently. **Separate response finding.** In a 32 kHz extreme sweep, the moving 24 dB/octave section still differs from the reference by 0.01824 peak. The static spacing and slew tests do not establish moving filter response parity for that slope.
+
+Release MSVC `/W4 /WX` passed all four suites in each Pd precision on this head. These cover the DSP, Drive, transport in a real session, and the registered and editable Pd paths.
+
+PR requested
+
 ## 25 November 2026 — Pan stereo transfer, DEV-31
 
 For devices, the Pan delay writer is now on main. The 22 November stereo-transfer contract identified this missing Pan mode in 127 of 873 saved programs. The clones seat takes `adi_shaper.cpp`, `adi_shaper.hpp`, `ADI-Shaper.pd` and the two ADI-Shaper rack and Pd tests for `clones/shaper-pan-transfer`. Reserve IDs 919–921 for independent low, middle and high band selectors. Old projects keep the existing balance law. The new mode will be checked with separate left and right markers, moving delay and sparse recall. Lands after 3 December.
