@@ -746,6 +746,7 @@ struct SharedAnalysis::Domain {
     std::vector<std::shared_ptr<CumulativeHistory>> cumulativeHistories;
     std::atomic<bool> cumulativeReady{true};
     std::vector<std::shared_ptr<CumulativeAverageHistory>> cumulativeAverages;
+    std::atomic<bool> cumulativeAverageQuiet{false};
     std::unique_ptr<StereoBalanceHistory> balanceHistory;
     std::atomic<bool> balanceActive{false};
     std::size_t spectrumLevelUsers = 0;
@@ -1013,6 +1014,18 @@ struct SharedAnalysis::Domain {
             return item->lastWindow != 0;
         }), std::memory_order_release);
     }
+    void addCumulativeAverage(const std::shared_ptr<CumulativeAverageHistory> &history, std::int64_t sequence) {
+        if (!history) return;
+        cumulativeAverages.push_back(history);
+        history->afterSequence = sequence;
+        cumulativeAverageQuiet.store(false, std::memory_order_release);
+    }
+    void refreshCumulativeAverageQuiet(bool caughtUp = true) noexcept {
+        cumulativeAverageQuiet.store(caughtUp && !cumulativeAverages.empty() &&
+            std::ranges::all_of(cumulativeAverages, [](const auto &history) {
+                return !history->hasSignal && history->publication.load();
+            }), std::memory_order_release);
+    }
     void refreshBlockAveragesQuiet() noexcept {
         blockAveragesQuiet.store(std::ranges::all_of(blockAverages, [](const auto &entry) {
             return entry->settled;
@@ -1125,6 +1138,7 @@ struct SharedAnalysis::Domain {
             resetSigma();
             for (const auto &history : cumulativeHistories) history->clear();
             for (const auto &history : cumulativeAverages) history->clear();
+            cumulativeAverageQuiet.store(false, std::memory_order_release);
             for (const auto &entry : blockAverages) entry->reset(resultMutex);
             refreshBlockAveragesQuiet();
             cumulativeReady.store(cumulativeHistories.empty(), std::memory_order_release);
@@ -1184,6 +1198,7 @@ struct SharedAnalysis::Domain {
             history->afterSequence = sequence;
             history->clear();
         }
+        cumulativeAverageQuiet.store(false, std::memory_order_release);
         cumulativeReady.store(cumulativeHistories.empty(), std::memory_order_release);
     }
     bool ensureSpectrum(std::uint32_t bits) {
@@ -1272,6 +1287,11 @@ struct SharedAnalysis::Domain {
         constexpr std::uint32_t sharedOutputs = Average1s | Spectrum;
         return (bits & Average1s) && !(bits & ~sharedOutputs) && averageParkedReady.load(std::memory_order_acquire);
     }
+    bool canParkCumulativeAverage(std::uint32_t bits) const noexcept {
+        constexpr std::uint32_t sharedOutputs = CumulativeAverage | Spectrum;
+        return (bits & CumulativeAverage) && !(bits & ~sharedOutputs) &&
+               cumulativeAverageQuiet.load(std::memory_order_acquire);
+    }
     bool parkedWindowSettled(engine::ScopeTap::ParkedSilence quiet, std::uint32_t bits) const noexcept {
         const auto windowEnd = completedWindowEnd.load(std::memory_order_acquire);
         return windowEnd <= quiet.end && windowEnd - quiet.begin >= request.fftSize &&
@@ -1279,8 +1299,8 @@ struct SharedAnalysis::Domain {
                spectrumLevelsParkedSettled.load(std::memory_order_acquire) &&
                (!(bits & Strip) || neutralStrip.load(std::memory_order_acquire)) &&
                (!(bits & DeviceBlockAverage) || blockAveragesQuiet.load(std::memory_order_acquire)) &&
-               // Cumulative averaging counts silent hops even when its bins already sit at the floor.
-               !(bits & CumulativeAverage) && (!(bits & Average1s) || canParkAverage(bits)) &&
+               (!(bits & CumulativeAverage) || canParkCumulativeAverage(bits)) &&
+               (!(bits & Average1s) || canParkAverage(bits)) &&
                (!(bits & RealtimeMaximum) || neutralMaximum.load(std::memory_order_acquire)) &&
                (!(bits & RealtimeSigma) || neutralSigma.load(std::memory_order_acquire));
     }
@@ -1292,12 +1312,13 @@ struct SharedAnalysis::Domain {
     bool keepsParkedHop(std::uint32_t bits) const noexcept {
         constexpr std::uint32_t windowed = Spectrum | Scope | Phase | Spectrogram | PhaseBands |
                                            PhaseBandDetail | RealtimeMaximum | RealtimeSigma;
-        return !(bits & ~windowed) || canParkAverage(bits) || spectrumLevelHistory;
+        return !(bits & ~windowed) || canParkAverage(bits) || canParkCumulativeAverage(bits) || spectrumLevelHistory;
     }
     void skipCertifiedSilenceTo(std::int64_t next) noexcept {
         if (next <= cursor.next) return;
         const auto bits = outputs.load(std::memory_order_relaxed);
         const bool averageParked = canParkAverage(bits);
+        const bool cumulativeParked = canParkCumulativeAverage(bits);
         if (spectrumLevelHistory) spectrumLevelHistory->skipSilence(cursor.next, next);
         if (keepsParkedHop(bits)) {
             // The retained history is exactly zero. Omitted samples still
@@ -1312,6 +1333,11 @@ struct SharedAnalysis::Domain {
                     averageWindows += omitted;
                     averageWindow = windowSerial;
                     if (averageBins) averageBinsWindow = averageWindow;
+                }
+                if (cumulativeParked) {
+                    // Every active interval already has an eligible zero window.
+                    // Keep its immutable picture and count each omitted full hop.
+                    for (const auto &history : cumulativeAverages) history->windows += omitted;
                 }
                 if (maximum && maximum->lastWindow) maximum->lastWindow = windowSerial;
                 if (sigma && sigma->lastWindow) sigma->lastWindow = windowSerial;
@@ -1333,7 +1359,7 @@ struct SharedAnalysis::Domain {
         if (!tap) return;
         const auto quiet = tap->lastParkedSilence();
         if (quiet.end <= cursor.next || !settledParkedSilence(quiet)) return;
-        skipCertifiedSilenceTo(quiet.end);
+        skipCertifiedSilenceTo(std::min(quiet.end, tap->written()));
         consumedSequence.store(cursor.next, std::memory_order_release);
     }
     void skipParkedBeforeCumulative(engine::ScopeTap::ParkedSilence quiet) noexcept {
@@ -2468,7 +2494,10 @@ struct SharedAnalysis::State {
                 if (spectrumLevelsEnabled) domain->changeSpectrumLevelDemand(false);
                 domain->dropCumulative(cumulative);
                 domain->dropBlockAverage(blockAverage);
-                if (cumulativeAverage) std::erase(domain->cumulativeAverages, cumulativeAverage);
+                if (cumulativeAverage) {
+                    std::erase(domain->cumulativeAverages, cumulativeAverage);
+                    domain->refreshCumulativeAverageQuiet();
+                }
                 domain->releaseUnused(domain->outputs.load(std::memory_order_acquire));
                 return;
             }
@@ -2686,8 +2715,10 @@ struct SharedAnalysis::State {
                         averagePublication->status == AverageStatus::Ready;
                     auto maximumPublication = d.makeMaximumResult(latest);
                     d.publishCumulative(latest);
-                    if (latest->outputs & CumulativeAverage)
+                    if (latest->outputs & CumulativeAverage) {
                         for (const auto &history : d.cumulativeAverages) history->publish(latest);
+                        d.refreshCumulativeAverageQuiet(!latest->budgetLimited);
+                    }
                     for (const auto &blockAverage : d.blockAverages) blockAverage->publish(d.resultMutex);
                     auto sigmaPublication = d.makeSigmaResult(latest);
                     d.publishResult(std::move(latest), std::move(averagePublication), std::move(maximumPublication),
@@ -2842,8 +2873,10 @@ bool SharedAnalysis::Lease::restartCumulativeAverage() noexcept {
     state->ownerOnly();
     const std::lock_guard lock(domain_->mutex);
     if (!domain_->tap) return false;
+    domain_->catchUpParkedSilence();
     cumulativeAverage_->afterSequence = domain_->tap->written();
     cumulativeAverage_->clear();
+    domain_->cumulativeAverageQuiet.store(false, std::memory_order_release);
     return true;
 }
 std::shared_ptr<const SharedAnalysis::RealtimeSigmaResult> SharedAnalysis::Lease::readRealtimeSigma() const noexcept {
@@ -3153,15 +3186,12 @@ SharedAnalysis::Lease SharedAnalysis::acquire(const Request &request, std::uint3
         if (!found->second->ensureOutputPlans(request.outputs)) return {};
         const auto previousOutputs = found->second->outputs.load(std::memory_order_acquire);
         const auto newlyRequested = request.outputs & ~previousOutputs;
-        if (newlyRequested && found->second->keepsParkedHop(previousOutputs))
+        if ((newlyRequested || cumulativeAverage) && found->second->keepsParkedHop(previousOutputs))
             found->second->catchUpParkedSilence();
         const auto sequence = found->second->tap ? found->second->tap->written() : 0;
         auto blockAverage = found->second->admitBlockAverage(averageBlocks, sequence);
         found->second->addCumulative(cumulative, sequence);
-        if (cumulativeAverage) {
-            cumulativeAverage->afterSequence = sequence;
-            found->second->cumulativeAverages.push_back(cumulativeAverage);
-        }
+        found->second->addCumulativeAverage(cumulativeAverage, sequence);
         found->second->changeOutputs(request.outputs, true);
         if (newlyRequested & Average1s) found->second->activateAverage(sequence);
         if (newlyRequested & RealtimeMaximum) found->second->activateMaximum(sequence);
@@ -3176,7 +3206,7 @@ SharedAnalysis::Lease SharedAnalysis::acquire(const Request &request, std::uint3
     if (!domain->ensureOutputPlans(request.outputs)) return {};
     auto blockAverage = domain->admitBlockAverage(averageBlocks, 0);
     domain->addCumulative(cumulative, 0);
-    if (cumulativeAverage) domain->cumulativeAverages.push_back(cumulativeAverage);
+    domain->addCumulativeAverage(cumulativeAverage, 0);
     auto [tap, inserted] = state_->taps.try_emplace(key.source());
     auto &t = tap->second;
     const auto previousTap = t.value;

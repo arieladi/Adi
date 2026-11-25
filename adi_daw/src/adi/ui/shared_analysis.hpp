@@ -150,6 +150,8 @@ class SharedAnalysis final {
     struct CumulativeAverageResult {
         std::shared_ptr<const Result> window;
         std::vector<float> binsDbfs;
+        // Exact for this publication. A held zero picture retains its old
+        // count until another complete window is published.
         std::uint64_t processedWindows = 0;
     };
     struct RealtimeSigmaResult {

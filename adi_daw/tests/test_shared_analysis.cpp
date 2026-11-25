@@ -968,16 +968,144 @@ void cumulativeAverageSpectrum() {
               parkedQuiet == 0 && parked.broker.stats().transforms == 1,
           "certified parked zeros lower a nonzero cumulative mean without waking an FFT");
 
+    Fixture belowFloor;
+    auto veryQuiet = belowFloor.broker.acquire(request);
+    write(belowFloor, 1e-12f, parkedStamp, false, revision);
+    write(belowFloor, 0.f, parkedStamp, false, revision);
+    const auto lowReading = veryQuiet.readCumulativeAverage();
+    check(lowReading && lowReading->processedWindows == 2 && lowReading->binsDbfs.front() == adi::dsp::kDbFloor &&
+              belowFloor.broker.stats().transforms == 1,
+          "a nonzero history keeps diluting even when it reads at the display floor");
+
     Fixture initiallyQuiet;
     auto quietOnly = initiallyQuiet.broker.acquire(request);
     write(initiallyQuiet, 0.f, parkedStamp, false, revision);
-    write(initiallyQuiet, 0.f, parkedStamp, false, revision);
     const auto quietStart = quietOnly.readCumulativeAverage();
-    check(dcIs(quietStart, 2, 0.) && initiallyQuiet.broker.stats().transforms == 0,
-          "an entirely silent interval has a floor result and counts without an FFT");
+    write(initiallyQuiet, 0.f, parkedStamp, false, revision);
+    check(dcIs(quietStart, 1, 0.) && quietOnly.readCumulativeAverage() == quietStart &&
+              initiallyQuiet.broker.stats().transforms == 0,
+          "an entirely silent stopped interval retains its first floor publication");
     write(initiallyQuiet, .75f, parkedStamp, false, revision);
     check(dcIs(quietOnly.readCumulativeAverage(), 3, .25) && initiallyQuiet.broker.stats().transforms == 1,
           "the first nonzero parked hop retains earlier zeros from its same source epoch");
+}
+
+void parkedCumulativeAverage() {
+    enum class Boundary { None, Join, Reset };
+    constexpr int window = 480, hop = 240, block = 401, blocks = 33;
+    constexpr int quietFrames = block * blocks, untilHop = hop - quietFrames % hop;
+    constexpr std::int64_t stamp = 800;
+    constexpr std::uint64_t revision = 4;
+    const std::array<float, window> zeros{};
+    std::array<float, window> signal;
+    signal.fill(.5f);
+
+    SharedAnalysis::Request request{1};
+    request.outputs = SharedAnalysis::CumulativeAverage;
+    request.fftSize = window;
+    request.hopSize = hop;
+    request.window = adi::dsp::Window::Rectangular;
+    const auto floor = [](const auto &average) {
+        return average && !average->binsDbfs.empty() &&
+               std::ranges::all_of(average->binsDbfs, [](float db) { return db == adi::dsp::kDbFloor; });
+    };
+    const auto matches = [](const auto &measured, const auto &expected) {
+        return measured && expected && measured->window && expected->window &&
+               measured->processedWindows == expected->processedWindows &&
+               measured->window->windowSerial == expected->window->windowSerial &&
+               measured->window->firstSequence == expected->window->firstSequence &&
+               measured->window->firstStamp == expected->window->firstStamp &&
+               measured->window->sourceEpoch == expected->window->sourceEpoch &&
+               measured->window->overrunCount == expected->window->overrunCount &&
+               exactBins(measured->binsDbfs, expected->binsDbfs);
+    };
+
+    for (const auto boundary : {Boundary::None, Boundary::Join, Boundary::Reset}) {
+        Fixture parked, reference;
+        parked.tap = std::make_shared<ScopeTap>(48000., .25);
+        reference.tap = std::make_shared<ScopeTap>(48000., .25);
+        auto average = parked.broker.acquire(request);
+        auto uninterrupted = reference.broker.acquire(request);
+        SharedAnalysis::Lease staged, controlStaged;
+        if (boundary == Boundary::Reset) {
+            staged = parked.broker.acquire(request);
+            controlStaged = reference.broker.acquire(request);
+        }
+        const auto writePair = [&](const float *samples, int frames) {
+            parked.tap->write(samples, samples, frames, stamp, false, revision);
+            // Non-null zero buffers give the control the same samples without a silence certificate.
+            const auto *input = samples ? samples : zeros.data();
+            reference.tap->write(input, input, frames, stamp, false, revision);
+            parked.broker.pump();
+            reference.broker.pump();
+        };
+
+        writePair(nullptr, window);
+        const auto first = average.readCumulativeAverage();
+        const auto firstStaged = staged.readCumulativeAverage();
+        const auto settled = parked.broker.stats();
+        check(floor(first) && first->processedWindows == 1 && first->window && !first->window->advancing &&
+                  settled.transforms == 0,
+              "the first complete stopped Cumulative Average publishes an exact-zero result");
+
+        for (int i = 0; i < blocks; ++i) writePair(nullptr, block);
+        const auto idle = parked.broker.stats();
+        const auto quietControl = uninterrupted.readCumulativeAverage();
+        check(parked.tap->oldest() > window && floor(quietControl) &&
+                  quietControl->processedWindows == 1 + quietFrames / hop &&
+                  average.readCumulativeAverage() == first &&
+                  idle.workerPasses == settled.workerPasses && idle.cursorReads == settled.cursorReads &&
+                  idle.analysisWindows == settled.analysisWindows && idle.transforms == settled.transforms &&
+                  idle.publications == settled.publications,
+              "periodic pumps do no work for an already-published zero cumulative interval through a ring wrap");
+
+        constexpr std::int64_t admission = window + quietFrames;
+        if (boundary == Boundary::None) {
+            writePair(signal.data(), untilHop - 1);
+            check(average.readCumulativeAverage() == first && uninterrupted.readCumulativeAverage() == quietControl,
+                  "stopped monitoring waits for the original partial cumulative hop");
+        } else {
+            if (boundary == Boundary::Join) {
+                staged = parked.broker.acquire(request);
+                controlStaged = reference.broker.acquire(request);
+            } else {
+                check(staged.restartCumulativeAverage() && controlStaged.restartCumulativeAverage() &&
+                          floor(firstStaged) && firstStaged->processedWindows == 1,
+                      "resetting one zero interval preserves its previous immutable publication");
+            }
+            parked.broker.pump();
+            reference.broker.pump();
+            check(staged.available() && !staged.readCumulativeAverage() && !controlStaged.readCumulativeAverage() &&
+                      average.readCumulativeAverage() == first,
+                  "late admission or reset does not publish or replace a surviving cumulative interval");
+            writePair(nullptr, window);
+            writePair(nullptr, untilHop - 1);
+            check(!staged.readCumulativeAverage() && !controlStaged.readCumulativeAverage(),
+                  "a late or reset interval excludes every full window that starts before its writer fence");
+        }
+
+        writePair(signal.data(), 1);
+        const auto resumed = average.readCumulativeAverage();
+        const auto expected = uninterrupted.readCumulativeAverage();
+        const auto activeStats = parked.broker.stats();
+        constexpr auto resumedCount = std::uint64_t{2} + quietFrames / hop;
+        const auto additionalHops = boundary == Boundary::None ? std::uint64_t{0} : std::uint64_t{window / hop};
+        check(first && first->window && matches(resumed, expected) &&
+                  resumed->processedWindows == resumedCount + additionalHops &&
+                  resumed->window->firstStamp == stamp && resumed->window->transportRevision == revision &&
+                  resumed->window->sourceEpoch == first->window->sourceEpoch &&
+                  resumed->window->overrunCount == first->window->overrunCount &&
+                  !resumed->binsDbfs.empty() && resumed->binsDbfs.front() > adi::dsp::kDbFloor &&
+                  first->processedWindows == 1 && activeStats.taps == 1 && activeStats.spectralPlans == 1 &&
+                  activeStats.transforms == 1,
+              "the first resumed cumulative hop preserves the full denominator, immutable picture and source clock");
+        if (boundary != Boundary::None) {
+            const auto next = staged.readCumulativeAverage();
+            check(resumed && matches(next, controlStaged.readCumulativeAverage()) && next->processedWindows == 1 &&
+                      next->window == resumed->window && next->window->firstSequence == admission + untilHop,
+                  "the first post-fence window shares the source transform without inheriting another interval's count");
+        }
+    }
 }
 
 void cumulativeMaximumParkedRollover() {
@@ -6020,7 +6148,7 @@ int main() {
           focusCapturedTruePeak(); focusBarCapturedTruePeak(); focusScopeLayerChannels(); spectrogramHeardGrid();
           continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBeatTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusSingleSourceScope(); focusBarScopeMidDemand(); focusScopeDifference(); focusScopeSideDemand(); focusBarScopeBrokerBoundaries(); focusBarScopeWaitsOnAllSources(); focusBarScopeResumesAtRequestedRevision(); focusScopeSumProjection(); focusScopeLayerPreview(); focusBarLayerPreview(); focusBarResidualSpectrum(); focusScopePhaseOperands(); focusScopeFlatPath(); focusLagPreviewRequests(); focusLagPreviewCases(); focusLagTapReads(); focusLagHighRateTaps(); focusMatchWindows(); parkedSilence(); parkedSpectrogramWake(); parkedWindowHopPhase();
           parkedRealtimeModeJoins<SharedAnalysis::RealtimeMaximum>(); parkedRealtimeModeJoins<SharedAnalysis::RealtimeSigma>(); parkedStereoBalance(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
-          sharedModesAndCursors(); phaseBandCorrelation(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); spectrumLevels(); spectrumSamplePeaksAndClips(); restartSpectrumLevels(); restartParkedSpectrumLevels(); spectrumTruePeak(); parkedSpectrumLevels(false); parkedSpectrumLevels(true); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); realtimeSigmaSpectrum(); cumulativeMaximumSpectrum(); cumulativeAverageSpectrum(); cumulativeMaximumParkedRollover(); sharedAverage(); parkedRealtimeAverage(); parkedRealtimeAverageJoinsScope(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); deviceSpectrumLease(); parkedDeviceSpectrum(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
+          sharedModesAndCursors(); phaseBandCorrelation(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); spectrumLevels(); spectrumSamplePeaksAndClips(); restartSpectrumLevels(); restartParkedSpectrumLevels(); spectrumTruePeak(); parkedSpectrumLevels(false); parkedSpectrumLevels(true); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); realtimeSigmaSpectrum(); cumulativeMaximumSpectrum(); cumulativeAverageSpectrum(); parkedCumulativeAverage(); cumulativeMaximumParkedRollover(); sharedAverage(); parkedRealtimeAverage(); parkedRealtimeAverageJoinsScope(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); deviceSpectrumLease(); parkedDeviceSpectrum(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
