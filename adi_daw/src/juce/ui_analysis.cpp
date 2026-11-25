@@ -527,7 +527,10 @@ void SharedSpectrumView::setMode(Mode mode) {
         mode_ == Mode::SpectrumRealtimeSigma || mode == Mode::SpectrumRealtimeSigma)
         describeAnalysisView(*this, mode);
     mode_ = mode;
-    if (!spectrumMode()) activeSpectrumFftSize_ = 1024;
+    if (!spectrumMode()) {
+        activeSpectrumFftSize_ = 1024;
+        activeSpectrumOverlap_ = 75;
+    }
     if (classicPanel_) {
         resetClassic(false);
         classicPanel_->setVisible(mode_ == Mode::ClassicScope);
@@ -627,6 +630,8 @@ bool SharedSpectrumView::usesOverviewSpectrum() const noexcept {
 SharedAnalysis::Request SharedSpectrumView::spectrumRequest(std::int64_t track) const noexcept {
     const auto size = spectrumMode() ? activeSpectrumFftSize_ : 1024;
     SharedAnalysis::Request request{track, point_, size, channel_, dsp::Window::Hann};
+    if (spectrumMode() && activeSpectrumOverlap_ != 75)
+        request.hopSize = (size * (100 - activeSpectrumOverlap_) + 50) / 100;
     request.device = device_;
     if (mode_ == Mode::SpectrumAverage) request.outputs = SharedAnalysis::Average1s;
     else if (mode_ == Mode::SpectrumCumulativeAverage) request.outputs = SharedAnalysis::CumulativeAverage;
@@ -828,6 +833,12 @@ void SharedSpectrumView::setHistoryMotion(HistoryMotion motion) {
 void SharedSpectrumView::setSpectrumBlockSize(std::int32_t size) {
     if (requestedSpectrumFftSize_ == size || std::ranges::find(spectrumBlockSizes, size) == spectrumBlockSizes.end()) return;
     requestedSpectrumFftSize_ = size;
+    if (spectrumMode() && !frozen_) updateDemand();
+}
+
+void SharedSpectrumView::setSpectrumOverlap(int percent) {
+    if (requestedSpectrumOverlap_ == percent || std::ranges::find(spectrumOverlaps, percent) == spectrumOverlaps.end()) return;
+    requestedSpectrumOverlap_ = percent;
     if (spectrumMode() && !frozen_) updateDemand();
 }
 
@@ -1048,11 +1059,14 @@ void SharedSpectrumView::updateDemand() noexcept {
             overviewRate_ = rate;
         }
         auto size = overview ? (overviewRate_ > 0. ? overviewFftSize_ : activeSpectrumFftSize_) : 1024;
-        if (spectrumMode() && requestedSpectrumFftSize_ > 0) size = requestedSpectrumFftSize_;
+        const auto spectral = spectrumMode();
+        if (spectral && requestedSpectrumFftSize_ > 0) size = requestedSpectrumFftSize_;
+        const auto overlap = spectral ? requestedSpectrumOverlap_ : 75;
         std::optional<SpectrumLeases> retired;
-        if (activeSpectrumFftSize_ != size) {
+        if (activeSpectrumFftSize_ != size || activeSpectrumOverlap_ != overlap) {
             takeSpectrumLeases(retired.emplace());
             activeSpectrumFftSize_ = size;
+            activeSpectrumOverlap_ = overlap;
             resetPicture();
             freshRequired_ = true;
         }
@@ -1947,6 +1961,18 @@ AnalysisPane::AnalysisPane() {
             view.setSpectrumBlockSize(SharedSpectrumView::spectrumBlockSizes[static_cast<std::size_t>(index)]);
     };
     addChildComponent(spectrumBlockBox_);
+    spectrumOverlapBox_.setTitle("Spectrum overlap");
+    spectrumOverlapBox_.setTooltip("Set how much consecutive analysis blocks overlap.");
+    for (std::size_t i = 0; i < SharedSpectrumView::spectrumOverlaps.size(); ++i)
+        spectrumOverlapBox_.addItem("Overlap: " + juce::String(SharedSpectrumView::spectrumOverlaps[i]) + "%",
+                                    static_cast<int>(i) + 1);
+    spectrumOverlapBox_.setSelectedId(3, juce::dontSendNotification);
+    spectrumOverlapBox_.onChange = [this] {
+        const auto index = spectrumOverlapBox_.getSelectedItemIndex();
+        if (index >= 0 && index < static_cast<int>(SharedSpectrumView::spectrumOverlaps.size()))
+            view.setSpectrumOverlap(SharedSpectrumView::spectrumOverlaps[static_cast<std::size_t>(index)]);
+    };
+    addChildComponent(spectrumOverlapBox_);
     spectrogramScaleBox.setTitle("Spectrogram frequency scale");
     spectrogram::configureScaleBox(spectrogramScaleBox);
     spectrogramScaleBox.onChange = [this] {
@@ -2075,7 +2101,9 @@ void AnalysisPane::setMode(SharedSpectrumView::Mode mode) {
         ? "Clear this view and restart its cumulative average."
         : "Clear this view's display interval; other analyzer views and audio are unchanged.");
     channelBox.setEnabled(spectral || mode == SharedSpectrumView::Mode::Spectrogram);
-    spectrumBlockBox_.setVisible(spectral && !modeBox.isVisible());
+    const bool usesSpectrumSettings = spectral && !modeBox.isVisible();
+    spectrumBlockBox_.setVisible(usesSpectrumSettings);
+    spectrumOverlapBox_.setVisible(usesSpectrumSettings);
     const bool spectrogram = mode == SharedSpectrumView::Mode::Spectrogram;
     historyBox.setVisible(spectrogram);
     spectrogramScaleBox.setVisible(spectrogram);
@@ -2216,11 +2244,12 @@ void AnalysisPane::usePageControls() {
     setMode(view.mode());
 }
 void AnalysisPane::resized() {
-    const std::array<juce::Component *, 19> controls{&modeBox, &sourceBox, &pointBox, &channelBox, &paletteBox, &slopeBox,
-        &scaleBox, &spectrumBlockBox_, &spectrogramScaleBox, &spectrogramFloor_, &spectrogramCeiling_, &spectrogramGammaBox_, &spectrogramRulerButton_,
+    const std::array<juce::Component *, 20> controls{&modeBox, &sourceBox, &pointBox, &channelBox, &paletteBox, &slopeBox,
+        &scaleBox, &spectrumBlockBox_, &spectrumOverlapBox_, &spectrogramScaleBox, &spectrogramFloor_, &spectrogramCeiling_, &spectrogramGammaBox_, &spectrogramRulerButton_,
         &historyBox, &reverseButton, &freezeButton, &resetButton, &expandButton, &spectrogramPngButton_};
     const bool pageControls = !modeBox.isVisible();
-    const int columns = std::clamp(getWidth() / (pageControls ? look::mixPageWidth : 96), 1, 4);
+    const int maxColumns = spectrumOverlapBox_.isVisible() ? 5 : 4;
+    const int columns = std::clamp(getWidth() / (pageControls ? look::mixPageWidth : 96), 1, maxColumns);
     const int count = static_cast<int>(std::ranges::count_if(controls, [](const auto *control) { return control->isVisible(); }));
     const int rows = std::max(1, (count + columns - 1) / columns);
     const bool compactFields = pageControls || view.mode() == SharedSpectrumView::Mode::Spectrogram;

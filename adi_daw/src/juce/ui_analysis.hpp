@@ -81,7 +81,9 @@ class SharedSpectrumView final : public juce::Component,
     void setSpectrumOverlayTracks(std::span<const SpectrumOverlayTrack>,
                                   SpectrumOverlayProfile = SpectrumOverlayProfile::Standard);
     static constexpr std::array<std::int32_t, 6> spectrumBlockSizes{0, 1024, 2048, 4096, 8192, 16384};
+    static constexpr std::array<int, 4> spectrumOverlaps{0, 50, 75, 90};
     void setSpectrumBlockSize(std::int32_t);
+    void setSpectrumOverlap(int percent);
     void setSpectrumSlope(SpectrumSlope);
     SpectrumSlope spectrumSlope() const noexcept { return spectrumSlope_; }
     enum class SpectrumScale { Wide, Detail, Extended, Device };
@@ -221,6 +223,7 @@ class SharedSpectrumView final : public juce::Component,
     SpectrumOverlayProfile overlayProfile_ = SpectrumOverlayProfile::Standard;
     double overviewRate_ = 0.;
     std::int32_t overviewFftSize_ = 1024, activeSpectrumFftSize_ = 1024, requestedSpectrumFftSize_ = 0;
+    int activeSpectrumOverlap_ = 75, requestedSpectrumOverlap_ = 75;
     Mode mode_ = Mode::Spectrum;
     engine::ScopePoint point_ = engine::ScopePoint::PostFader;
     std::int64_t device_ = 0;
@@ -307,7 +310,7 @@ class AnalysisPane final : public juce::Component {
   private:
     void exportSpectrogramPng();
     juce::Slider spectrogramFloor_, spectrogramCeiling_;
-    juce::ComboBox spectrogramGammaBox_, spectrumBlockBox_;
+    juce::ComboBox spectrogramGammaBox_, spectrumBlockBox_, spectrumOverlapBox_;
     juce::ToggleButton spectrogramRulerButton_{"Hz ruler"};
     juce::TextButton spectrogramPngButton_{"Export PNG"};
     std::unique_ptr<juce::FileChooser> spectrogramChooser_;

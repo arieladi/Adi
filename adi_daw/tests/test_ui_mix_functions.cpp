@@ -1652,11 +1652,15 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
         return nullptr;
     };
     auto *control = findToggle(findToggle, pages);
-    juce::ComboBox *blockSize = nullptr;
-    for (auto *child : pages.detail.getChildren())
+    juce::ComboBox *blockSize = nullptr, *overlap = nullptr;
+    for (auto *child : pages.detail.getChildren()) {
         if (child->getTitle() == "Spectrum block size") blockSize = dynamic_cast<juce::ComboBox *>(child);
+        if (child->getTitle() == "Spectrum overlap") overlap = dynamic_cast<juce::ComboBox *>(child);
+    }
     check(blockSize && blockSize->isShowing() && blockSize->getNumItems() == 6 && blockSize->getSelectedId() == 1,
           "the dedicated Spectrum offers six block-size choices and defaults to Auto");
+    check(overlap && overlap->isShowing() && overlap->getNumItems() == 4 && overlap->getSelectedId() == 3,
+          "the dedicated Spectrum offers four overlap choices and defaults to 75 percent");
     check(control && control->isShowing() && !control->getToggleState() &&
               attached(main) && !attached(first) && !attached(wide) && !attached(missing),
           "Spectrum offers Pinned tracks default off with no extra demand");
@@ -1799,6 +1803,40 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
                       automatic->hopSize == 1024 && automatic->firstStamp >= thawStamp && blockSize->getSelectedId() == 1 &&
                       attachments == attachmentCount,
                   "thaw restores the 48 kHz Auto profile on the existing taps");
+
+            if (overlap) {
+                constexpr auto halfStamp = thawStamp + 4096, restoredStamp = halfStamp + 4096;
+                const auto selectOverlap = [&](int id) {
+                    overlap->setSelectedId(id, juce::sendNotificationSync);
+                    root.frame();
+                };
+                selectOverlap(2);
+                check(!view.snapshot(), "changing overlap waits for fresh audio at the new hop");
+                const auto halfDemand = broker->stats();
+                auto halfRequest = request;
+                halfRequest.hopSize = overviewFft / 2;
+                const auto observeHalf = [&](std::int64_t track) {
+                    halfRequest.track = track;
+                    return broker->acquire(halfRequest);
+                };
+                auto halfMain = observeHalf(main), halfLow = observeHalf(first), halfHigh = observeHalf(wide);
+                check(broker->stats().spectralPlans == halfDemand.spectralPlans && broker->stats().domains == halfDemand.domains,
+                      "primary and both pins already request the 50 percent overlap");
+                writeBlock(overviewFft, halfStamp);
+                const std::array windows{halfMain.read(), halfLow.read(), halfHigh.read()};
+                check(view.snapshot() == windows[0] && std::ranges::all_of(windows, [&](const auto &item) {
+                          return item && item->request.fftSize == overviewFft && item->hopSize == overviewFft / 2 &&
+                              item->firstStamp == halfStamp;
+                      }) && tapFor(main) == primaryTap && tapFor(first) == firstTap && tapFor(wide) == wideTap &&
+                          attachments == attachmentCount,
+                      "50 percent overlap gives the primary and both pins fresh matched 4096/2048 windows on the same taps");
+                selectOverlap(3);
+                writeBlock(overviewFft, restoredStamp);
+                const auto restored = view.snapshot();
+                check(restored && restored == primary.read() && restored->hopSize == overviewFft / 4 &&
+                          restored->firstStamp == restoredStamp && attachments == attachmentCount,
+                      "restoring 75 percent selects a fresh quarter-hop window without replacing taps");
+            }
         }
 
         if (rate == 48000) {
@@ -2020,7 +2058,8 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
     choose(true);
     pages.setPage(Page::Compare);
     check(!attached(first) && !attached(wide), "switching to Compare releases all pinned Spectrum demand immediately");
-    check(blockSize && !blockSize->isShowing(), "Compare hides the dedicated Spectrum block-size control");
+    check(blockSize && !blockSize->isShowing() && overlap && !overlap->isShowing(),
+          "Compare hides the dedicated Spectrum block-size and overlap controls");
 
     root.frame();
     const bool pairSelected = select(pages.compareA, "Pinned 11") && select(pages.compareB, "Renamed wide ID");
