@@ -101,6 +101,28 @@ Questions only the director can answer. Each says what the window lane recommend
 | N58 | The plug-in catalogue off the message thread: a scan service, Rescan, a default worker count, and each VST3's kind with its instrument flag (ADR-0248 d7: engine-win's third item, under DEV-25) | engine-win | the Browser's Plug-Ins with progress, and each VST3's icon | the window scans on its own worker with the one loader (DF-W34 a), the loader locked while it scans; no progress count; a VST3 shows the plug-in icon |
 | N59 | The project's key and scale, if the Control Bar's Key group (step 2) shows the project's and not the selected clip's: an op and a snapshot field (ADR-0248, `collab/RESERVATIONS.md`) | engine, when asked | the Control Bar's Key and Scale | step 2 waits on the Mix View's switch and theme rows; not asked yet |
 
+## 2026-11-25, window lane — WIN-05, a user's key wins; clashes and reserved chords (PR requested)
+
+The queue's open items all wait (on win, another seat or a decision), so the lane took its next PLAN row: the rest of WIN-05. A design round (research, three designs, a skeptical judge) chose the slice that is decidable today and fixes a defect in what is built.
+
+**WIN-05, part. PR requested.** Branch `window/key-conflicts`, on `window/shortcut-sets`, head `cc7174a1`. Title: **adi_daw: window: a user's key wins over the preset's; clashes and reserved chords told (WIN-05, part)**. Body: [`collab/window/pr-bodies/window-key-conflicts.md`](window/pr-bodies/window-key-conflicts.md). It lands after WIN-05's first half, after 3 December.
+- **The defect:** JUCE runs the first mapping holding a key, and a user's key was appended after the preset's, so Stop on Cmd+Y still ran Redo, silently.
+- **Tests:** shell 3221 (`keyConflicts` new; `userShortcuts`, `shortcutSets` and the goldens unchanged), seams 580, document 337, window_state 177, 0 failures; the `ui.yml` six green; `ui_shell.cpp` clean in the sweeps.
+- **Corrections to what this log said:** the Cubase and Bitwig presets are not built; today they differ from Live's only in Redo. And the format name is `adi-shortcuts` in the code, `adi-keymap` in PLAN.
+
+**Questions, for win unless marked** (the branch takes the first answer of each; one line changes it):
+1. **"Shadow":** a preset's key taken by a user's key (ADR-0203 d21's precedent, used here), or a key an earlier stage takes first (the Note Editor's F/G/K/B, Key Map)? And is a clash between two user keys bound to both, the first in command order running it (used here), or to neither?
+2. **Keep:** does it exist at all, given JUCE's first match? It decides the Steal/Keep/Refuse slice.
+3. **The reserved lists:** the short sourced list here, or the OS-documented rows too (Ctrl+Esc, Ctrl+Shift+Esc; Cmd+Tab, Cmd+Space, Cmd+Alt+Esc; Linux window managers)? Cmd+M stays free on the Mac for WIN-07?
+4. **The format's name:** `adi-shortcuts` (code) or `adi-keymap` (PLAN); must import read both?
+5. **For the director:** keys typed into a native plug-in editor never reaching ADI reverses today's "every other key is the main window's" (`ui_floating.cpp` 131-139): wait for the Live reading (WIN-03), or build it on the contract?
+6. **For the director:** who reads Cubase 15's and Bitwig's documentation for the presets' full tables (ADR-0203 d1: never recalled)?
+7. **UI-ARCHITECTURE §11** says the key map lives in a PropertiesFile; ADR-0180 d6 and the code use the settings record. Update §11?
+
+**Left for later, and why:** the Steal/Keep/Refuse prompt and search by pressed key (JUCE's editor offers only Re-assign or Cancel; Keep needs question 2); the dispatch stages (Key Map has no keyboard source yet, WIN-07; A5W-015 not measured); plug-in editor keys (question 5); the native physical-key source (unmeasured on Windows under Hebrew and Russian layouts); the Cubase and Bitwig tables (question 6); foreign key files (craft-libs' readers are not on this machine).
+
+---
+
 ## 2026-11-25, window lane — WTS-03's first half on main again (PR requested stands)
 
 **WTS-03, first half.** Branch `window/text-goldens`, head `b88bd09a` (main merged after #739). PR requested stands, at this head; it lands after 3 December. Body updated: [`collab/window/pr-bodies/window-text-goldens.md`](window/pr-bodies/window-text-goldens.md).
