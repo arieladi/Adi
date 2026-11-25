@@ -115,6 +115,11 @@ double besselI0(double x) noexcept {
     return sum;
 }
 
+double floorMagnitude(double x) noexcept {
+    // The ordinary audio range fits in a signed integer. Truncation is floor for magnitudes.
+    return x < 2147483647.0 ? static_cast<double>(static_cast<int>(x)) : std::floor(x);
+}
+
 double softNegative(double t) noexcept {
     if (t > 32.0) return 1.0;
     const double sum = 1.0+t*(1.0+t*(1.0+t*(1.0+t*(1.0+t))));
@@ -124,8 +129,21 @@ double softNegative(double t) noexcept {
 using PowerFrame = std::array<double, 2>;
 using PowerPair = std::array<PowerFrame, 2>;
 
-// Each stereo pair shares its exponent. Fit log2 on a mantissa
-// centered at one and exp2 within half a unit of an exact power of two.
+double fourfoldPower(double input, double exponent) noexcept {
+    if (input == 0.0 || !std::isfinite(input)) return input;
+    int octave = 0;
+    const double m = 2.0 * std::frexp(std::abs(input), &octave);
+    const double log = 2.8883353978185062 + m * (-2.5209116522284445 + m *
+        (1.481314907244546 + m * (-.4657850221838716 + m * .05966033255383041)));
+    const double power = exponent * (static_cast<double>(octave - 1) + (m - 1.0) * log);
+    const int floorPower = static_cast<int>(std::floor(power));
+    const double f = power - static_cast<double>(floorPower);
+    const double exp = .99992521 + f * (.69583320 + f * (.22606810 + f * .07802395));
+    return std::copysign(std::ldexp(exp, floorPower), input);
+}
+
+// Each stereo pair shares its exponent.
+template<int Factor>
 PowerPair signedPowers(const PowerPair& z, double firstExponent, double secondExponent) noexcept {
     PowerPair out{};
 #if defined(__SSE2__) || defined(_M_X64)
@@ -137,10 +155,13 @@ PowerPair signedPowers(const PowerPair& z, double firstExponent, double secondEx
     const auto quiet = _mm_cmpeq_ps(magnitude, _mm_setzero_ps());
     const auto one = _mm_set1_ps(1.0f);
     const auto x = _mm_or_ps(magnitude, _mm_and_ps(quiet, one));
-    // Restrict the float logarithm to a 48-octave window. Outside it the
-    // scalar path retains double precision for the integer part of log2(x).
-    const auto range = _mm_and_ps(_mm_cmpge_ps(x, _mm_set1_ps(0x1p-24f)),
-                                  _mm_cmple_ps(x, _mm_set1_ps(0x1p+24f)));
+    // The exponent is 1/(1+6*d*d), hence stays in [1/7, 1]. Keeping the fourfold
+    // input magnitude in [2^-120, 2^120] leaves a normal float scale at both ends.
+    // A three-band input reached 5.96044736e-8 at the upper edge of the old low-level fallback.
+    // Larger finite magnitudes (up to the double input limit), tiny nonzero values
+    // and nonfinite lanes go through the scalar path. Twofold keeps its original limits.
+    const auto range = _mm_and_ps(_mm_cmpge_ps(x, _mm_set1_ps(Factor == 4 ? 0x1p-120f : 0x1p-24f)),
+                                  _mm_cmple_ps(x, _mm_set1_ps(Factor == 4 ? 0x1p+120f : 0x1p+24f)));
     // A nonzero double can round to zero on conversion to float. Preserve
     // those inputs with scalar power, including when denormals are flushed.
     const int quietMask = _mm_movemask_ps(quiet);
@@ -154,33 +175,63 @@ PowerPair signedPowers(const PowerPair& z, double firstExponent, double secondEx
     // needs scalar recovery. Give the vector polynomial a safe argument there.
     const auto safe = _mm_or_ps(_mm_and_ps(range, x), _mm_andnot_ps(range, one));
     const auto bits = _mm_castps_si128(safe);
-    constexpr auto sqrtHalfBits = std::bit_cast<int>(std::numbers::sqrt2_v<float> * .5f);
-    const auto relative = _mm_sub_epi32(bits, _mm_set1_epi32(sqrtHalfBits));
-    const auto e = _mm_cvtepi32_ps(_mm_srai_epi32(relative, 23));
-    const auto mantissa = _mm_sub_epi32(bits, _mm_and_si128(relative, _mm_set1_epi32(~0x7fffff)));
-    const auto r = _mm_sub_ps(_mm_castsi128_ps(mantissa), one);
-    auto log = _mm_set1_ps(0.1681865911f);
-    log = _mm_add_ps(_mm_set1_ps(-0.2679638705f), _mm_mul_ps(r, log));
-    log = _mm_add_ps(_mm_set1_ps(0.2961195572f), _mm_mul_ps(r, log));
-    log = _mm_add_ps(_mm_set1_ps(-0.3595244555f), _mm_mul_ps(r, log));
-    log = _mm_add_ps(_mm_set1_ps(0.4806131255f), _mm_mul_ps(r, log));
-    log = _mm_add_ps(_mm_set1_ps(-0.7213601786f), _mm_mul_ps(r, log));
-    log = _mm_add_ps(_mm_set1_ps(1.442696523f), _mm_mul_ps(r, log));
-    const auto log2x = _mm_add_ps(e, _mm_mul_ps(r, log));
-    const auto power = _mm_mul_ps(_mm_set_ps(static_cast<float>(secondExponent), static_cast<float>(secondExponent),
-                                            static_cast<float>(firstExponent), static_cast<float>(firstExponent)), log2x);
-    const auto half = _mm_or_ps(_mm_and_ps(power, sign), _mm_set1_ps(.5f));
-    const auto nearest = _mm_cvttps_epi32(_mm_add_ps(power, half));
-    const auto fraction = _mm_sub_ps(power, _mm_cvtepi32_ps(nearest));
-    auto exp = _mm_set1_ps(0.0001545316294f);
-    exp = _mm_add_ps(_mm_set1_ps(0.001339086336f), _mm_mul_ps(fraction, exp));
-    exp = _mm_add_ps(_mm_set1_ps(0.009618082557f), _mm_mul_ps(fraction, exp));
-    exp = _mm_add_ps(_mm_set1_ps(0.05550357114f), _mm_mul_ps(fraction, exp));
-    exp = _mm_add_ps(_mm_set1_ps(0.2402265076f), _mm_mul_ps(fraction, exp));
-    exp = _mm_add_ps(_mm_set1_ps(0.693147188f), _mm_mul_ps(fraction, exp));
-    exp = _mm_add_ps(_mm_set1_ps(1.f), _mm_mul_ps(fraction, exp));
-    const auto scale = _mm_castsi128_ps(_mm_slli_epi32(_mm_add_epi32(nearest, _mm_set1_epi32(127)), 23));
-    const auto result = _mm_or_ps(_mm_and_ps(input, sign), _mm_andnot_ps(quiet, _mm_mul_ps(exp, scale)));
+    __m128 powered;
+    if constexpr (Factor == 4) {
+        // Signed power at fourfold oversampling uses a binary mantissa in [1,2).
+        // Input coefficients come from fitting independent alternating signed plateaus.
+        // The output cubic uses the fractional part above floor(power), even for negative powers.
+        const auto mantissaBits = _mm_or_si128(_mm_and_si128(bits, _mm_set1_epi32(0x7fffff)),
+                                              _mm_set1_epi32(0x3f800000));
+        const auto mantissa = _mm_castsi128_ps(mantissaBits);
+        const auto integerLog = _mm_cvtepi32_ps(_mm_sub_epi32(_mm_srli_epi32(bits, 23), _mm_set1_epi32(127)));
+        auto log = _mm_set1_ps(.05966033255383041f);
+        log = _mm_add_ps(_mm_set1_ps(-.4657850221838716f), _mm_mul_ps(mantissa, log));
+        log = _mm_add_ps(_mm_set1_ps(1.481314907244546f), _mm_mul_ps(mantissa, log));
+        log = _mm_add_ps(_mm_set1_ps(-2.5209116522284445f), _mm_mul_ps(mantissa, log));
+        log = _mm_add_ps(_mm_set1_ps(2.8883353978185062f), _mm_mul_ps(mantissa, log));
+        const auto log2x = _mm_add_ps(integerLog, _mm_mul_ps(_mm_sub_ps(mantissa, one), log));
+        const auto power = _mm_mul_ps(_mm_set_ps(static_cast<float>(secondExponent), static_cast<float>(secondExponent),
+                                                 static_cast<float>(firstExponent), static_cast<float>(firstExponent)), log2x);
+        const auto truncated = _mm_cvttps_epi32(power);
+        const auto below = _mm_castps_si128(_mm_cmplt_ps(power, _mm_cvtepi32_ps(truncated)));
+        const auto floorPower = _mm_add_epi32(truncated, below);
+        const auto fraction = _mm_sub_ps(power, _mm_cvtepi32_ps(floorPower));
+        auto exp = _mm_set1_ps(.07802395f);
+        exp = _mm_add_ps(_mm_set1_ps(.22606810f), _mm_mul_ps(fraction, exp));
+        exp = _mm_add_ps(_mm_set1_ps(.69583320f), _mm_mul_ps(fraction, exp));
+        exp = _mm_add_ps(_mm_set1_ps(.99992521f), _mm_mul_ps(fraction, exp));
+        const auto scale = _mm_castsi128_ps(_mm_slli_epi32(_mm_add_epi32(floorPower, _mm_set1_epi32(127)), 23));
+        powered = _mm_mul_ps(exp, scale);
+    } else {
+        constexpr auto sqrtHalfBits = std::bit_cast<int>(std::numbers::sqrt2_v<float> * .5f);
+        const auto relative = _mm_sub_epi32(bits, _mm_set1_epi32(sqrtHalfBits));
+        const auto e = _mm_cvtepi32_ps(_mm_srai_epi32(relative, 23));
+        const auto mantissa = _mm_sub_epi32(bits, _mm_and_si128(relative, _mm_set1_epi32(~0x7fffff)));
+        const auto r = _mm_sub_ps(_mm_castsi128_ps(mantissa), one);
+        auto log = _mm_set1_ps(0.1681865911f);
+        log = _mm_add_ps(_mm_set1_ps(-0.2679638705f), _mm_mul_ps(r, log));
+        log = _mm_add_ps(_mm_set1_ps(0.2961195572f), _mm_mul_ps(r, log));
+        log = _mm_add_ps(_mm_set1_ps(-0.3595244555f), _mm_mul_ps(r, log));
+        log = _mm_add_ps(_mm_set1_ps(0.4806131255f), _mm_mul_ps(r, log));
+        log = _mm_add_ps(_mm_set1_ps(-0.7213601786f), _mm_mul_ps(r, log));
+        log = _mm_add_ps(_mm_set1_ps(1.442696523f), _mm_mul_ps(r, log));
+        const auto log2x = _mm_add_ps(e, _mm_mul_ps(r, log));
+        const auto power = _mm_mul_ps(_mm_set_ps(static_cast<float>(secondExponent), static_cast<float>(secondExponent),
+                                                static_cast<float>(firstExponent), static_cast<float>(firstExponent)), log2x);
+        const auto half = _mm_or_ps(_mm_and_ps(power, sign), _mm_set1_ps(.5f));
+        const auto nearest = _mm_cvttps_epi32(_mm_add_ps(power, half));
+        const auto fraction = _mm_sub_ps(power, _mm_cvtepi32_ps(nearest));
+        auto exp = _mm_set1_ps(0.0001545316294f);
+        exp = _mm_add_ps(_mm_set1_ps(0.001339086336f), _mm_mul_ps(fraction, exp));
+        exp = _mm_add_ps(_mm_set1_ps(0.009618082557f), _mm_mul_ps(fraction, exp));
+        exp = _mm_add_ps(_mm_set1_ps(0.05550357114f), _mm_mul_ps(fraction, exp));
+        exp = _mm_add_ps(_mm_set1_ps(0.2402265076f), _mm_mul_ps(fraction, exp));
+        exp = _mm_add_ps(_mm_set1_ps(0.693147188f), _mm_mul_ps(fraction, exp));
+        exp = _mm_add_ps(_mm_set1_ps(1.f), _mm_mul_ps(fraction, exp));
+        const auto scale = _mm_castsi128_ps(_mm_slli_epi32(_mm_add_epi32(nearest, _mm_set1_epi32(127)), 23));
+        powered = _mm_mul_ps(exp, scale);
+    }
+    const auto result = _mm_or_ps(_mm_and_ps(input, sign), _mm_andnot_ps(quiet, powered));
     _mm_storeu_pd(out[0].data(), _mm_cvtps_pd(result));
     _mm_storeu_pd(out[1].data(), _mm_cvtps_pd(_mm_movehl_ps(result, result)));
     if (fastMask == 15) return out;
@@ -191,7 +242,8 @@ PowerPair signedPowers(const PowerPair& z, double firstExponent, double secondEx
         for (std::size_t c = 0; c < z[i].size(); ++c) {
             if ((fastMask & (1 << (2*i+c))) != 0) continue;
             const double exponent = i == 0 ? firstExponent : secondExponent;
-            out[i][c] = std::copysign(std::pow(std::abs(z[i][c]), exponent), z[i][c]);
+            if constexpr (Factor == 4) out[i][c] = fourfoldPower(z[i][c], exponent);
+            else out[i][c] = std::copysign(std::pow(std::abs(z[i][c]), exponent), z[i][c]);
         }
     }
     return out;
@@ -421,13 +473,61 @@ AdiShaperDrive::Phases AdiShaperDrive::interpolate(const Stereo* history, const 
 template<int Factor, AdiShaperDrive::Response Style>
 void AdiShaperDrive::writePhases(const Phases& phases, std::size_t head) noexcept {
     constexpr std::size_t ringSize = inputs * Factor;
+#if defined(__SSE2__) || defined(_M_X64)
+    if constexpr (Style == Response::Rounded || Style == Response::Triangle || Style == Response::Saw) {
+        const auto sign = _mm_set1_pd(-0.0);
+        const auto one = _mm_set1_pd(1.0);
+        for (std::size_t p = 0; p < Factor; ++p) {
+            const auto& t = p == 0 ? first_ : current_;
+            const auto z = _mm_mul_pd(_mm_loadu_pd(phases[p].data()), _mm_set1_pd(t.pre));
+            auto value = z;
+            if (p == Factor-1) {
+                _mm_store_sd(&channels_[0].lastZ, z);
+                _mm_storeh_pd(&channels_[1].lastZ, z);
+            }
+            if (t.active) {
+                const auto m = _mm_andnot_pd(sign, z);
+                __m128d mag;
+                if constexpr (Style == Response::Rounded) {
+                    const auto mask = _mm_cmpgt_pd(m, _mm_set1_pd(t.knee));
+                    mag = m;
+                    if (_mm_movemask_pd(mask) != 0) {
+                        const auto clipped = _mm_sub_pd(one, _mm_div_pd(_mm_set1_pd(t.kneeSquared),
+                            _mm_add_pd(_mm_max_pd(m, _mm_set1_pd(t.knee)), _mm_set1_pd(t.kneeOffset))));
+                        mag = _mm_or_pd(_mm_and_pd(mask, clipped), _mm_andnot_pd(mask, m));
+                    }
+                } else {
+                    const auto units = Style == Response::Triangle ? _mm_mul_pd(m, _mm_set1_pd(.5)) : m;
+                    // Conversion truncates nonnegative levels exactly. Keep the scalar reduction
+                    // for levels beyond the integer range and for nonfinite inputs.
+                    __m128d floor;
+                    if (_mm_movemask_pd(_mm_cmplt_pd(units, _mm_set1_pd(2147483647.0))) == 3)
+                        floor = _mm_cvtepi32_pd(_mm_cvttpd_epi32(units));
+                    else {
+                        std::array<double, 2> u;
+                        _mm_storeu_pd(u.data(), units);
+                        floor = _mm_set_pd(std::floor(u[1]), std::floor(u[0]));
+                    }
+                    if constexpr (Style == Response::Triangle) {
+                        auto phase = _mm_sub_pd(m, _mm_add_pd(floor,floor));
+                        mag = _mm_sub_pd(one, _mm_andnot_pd(sign, _mm_sub_pd(one,phase)));
+                    } else mag = _mm_sub_pd(m,floor);
+                }
+                value = _mm_or_pd(_mm_and_pd(sign,z),_mm_andnot_pd(sign,mag));
+            }
+            const auto y = _mm_cvtpd_ps(_mm_mul_pd(value, _mm_set1_pd(t.post)));
+            _mm_storel_epi64(reinterpret_cast<__m128i*>(wet_[head-p].data()), _mm_castps_si128(y));
+            _mm_storel_epi64(reinterpret_cast<__m128i*>(wet_[head-p+ringSize].data()), _mm_castps_si128(y));
+        }
+    } else
+#endif
     if constexpr (Style == Response::Power) {
         for (std::size_t p = 0; p < Factor; p += 2) {
             const Transfer& first = p == 0 ? first_ : current_;
             const PowerPair z{{
                 {phases[p][0] * first.pre, phases[p][1] * first.pre},
                 {phases[p+1][0] * current_.pre, phases[p+1][1] * current_.pre}}};
-            const auto wet = first.active || current_.active ? signedPowers(z, first.exponent, current_.exponent) : z;
+            const auto wet = first.active || current_.active ? signedPowers<Factor>(z, first.exponent, current_.exponent) : z;
             Stereo a{}, b{};
             for (std::size_t c = 0; c < 2; ++c) {
                 a[c] = static_cast<float>((first.active ? wet[0][c] : z[0][c]) * first.post);
@@ -462,10 +562,10 @@ void AdiShaperDrive::writePhases(const Phases& phases, std::size_t head) noexcep
                         } else if constexpr (Style == Response::Sine) {
                             if (magnitude > .5) magnitude = .5 + .5 * std::sin(2*magnitude - 1);
                         } else if constexpr (Style == Response::Triangle) {
-                            const double phase = magnitude - 2*std::floor(.5*magnitude);
+                            const double phase = magnitude - 2*floorMagnitude(.5*magnitude);
                             magnitude = 1 - std::abs(1-phase);
                         } else {
-                            magnitude -= std::floor(magnitude);
+                            magnitude -= floorMagnitude(magnitude);
                         }
                     }
                     shaped = std::copysign(magnitude, z) * transfer.post;
