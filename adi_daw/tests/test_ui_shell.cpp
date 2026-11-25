@@ -14293,6 +14293,106 @@ void launchIsolation(AppCommands &commands) {
     window.setVisible(false);
     document->release();
 }
+// A16: a driver type as Windows Audio lists its devices, the system's default input among them; no
+// hardware is opened. A type that refuses inputs stands for a default input that cannot open.
+struct ListedAudioType final : juce::AudioIODeviceType {
+    struct Device final : juce::AudioIODevice {
+        Device(const juce::String &out, const juce::String &in, bool refused)
+            : AudioIODevice(out.isNotEmpty() ? out : in, "Listed"), ins(in.isNotEmpty() ? 2 : 0),
+              outs(out.isNotEmpty() ? 2 : 0), error(refused && in.isNotEmpty() ? "The input will not open." : "") {}
+        int ins, outs;
+        juce::String error;
+        juce::BigInteger activeIns, activeOuts;
+        static juce::StringArray names(int count) {
+            juce::StringArray out;
+            for (int i = 1; i <= count; ++i)
+                out.add(juce::String(i));
+            return out;
+        }
+        static juce::BigInteger within(const juce::BigInteger &bits, int count) {
+            juce::BigInteger out;
+            for (int i = 0; i < count; ++i)
+                out.setBit(i, bits[i]);
+            return out;
+        }
+        juce::StringArray getOutputChannelNames() override { return names(outs); }
+        juce::StringArray getInputChannelNames() override { return names(ins); }
+        juce::Array<double> getAvailableSampleRates() override { return {44100., 48000.}; }
+        juce::Array<int> getAvailableBufferSizes() override { return {256, 512}; }
+        int getDefaultBufferSize() override { return 256; }
+        juce::String open(const juce::BigInteger &in, const juce::BigInteger &out, double, int) override {
+            activeIns = within(in, ins);
+            activeOuts = within(out, outs);
+            return {};
+        }
+        void close() override {}
+        bool isOpen() override { return true; }
+        void start(juce::AudioIODeviceCallback *) override {}
+        void stop() override {}
+        bool isPlaying() override { return true; }
+        juce::String getLastError() override { return error; }
+        int getCurrentBufferSizeSamples() override { return 256; }
+        double getCurrentSampleRate() override { return 48000.; }
+        int getCurrentBitDepth() override { return 32; }
+        juce::BigInteger getActiveOutputChannels() const override { return activeOuts; }
+        juce::BigInteger getActiveInputChannels() const override { return activeIns; }
+        int getOutputLatencyInSamples() override { return 0; }
+        int getInputLatencyInSamples() override { return 0; }
+    };
+    ListedAudioType(juce::StringArray inputs, int defaultInput, bool refuseInputs = false)
+        : AudioIODeviceType("Listed Audio"), ins(std::move(inputs)), defaultIn(defaultInput), refused(refuseInputs) {}
+    juce::StringArray ins, outs{"Speakers"};
+    int defaultIn;
+    bool refused;
+    void scanForDevices() override {}
+    juce::StringArray getDeviceNames(bool wantInputNames) const override { return wantInputNames ? ins : outs; }
+    int getDefaultDeviceIndex(bool forInput) const override { return forInput ? defaultIn : 0; }
+    int getIndexOfDevice(juce::AudioIODevice *device, bool asInput) const override {
+        return device != nullptr ? getDeviceNames(asInput).indexOf(device->getName()) : -1;
+    }
+    bool hasSeparateInputsAndOutputs() const override { return true; }
+    juce::AudioIODevice *createDevice(const juce::String &out, const juce::String &in) override {
+        return new Device(out, in, refused);
+    }
+};
+// A16 (walk-A): a first run (no device kept) on a machine with an input opened no input, so F9 had
+// nothing to record. Live opens the system's input with its output, inputs 1/2 on (manual 17.2).
+void firstRunAudioInput(const std::filesystem::path &dir) {
+    settings::AppSettings fresh(appdata::App::Daw, dir / "first-run-audio.json");
+    auto open = [&fresh](std::unique_ptr<ListedAudioType> type, const juce::String &input, juce::String &why) {
+        juce::AudioDeviceManager manager;
+        manager.addAudioDeviceType(std::move(type));
+        juce::AudioDeviceManager::AudioDeviceSetup setup;
+        setup.inputDeviceName = input;
+        setup.outputDeviceName = fresh.get("audio.outputDevice").get<std::string>();
+        why = openAudioDevice(manager, setup, fresh);
+        const auto *device = manager.getCurrentAudioDevice();
+        return std::make_tuple(manager.getAudioDeviceSetup().inputDeviceName,
+                               device != nullptr ? device->getActiveInputChannels().countNumberOfSetBits() : -1,
+                               manager.getAudioDeviceSetup().outputDeviceName);
+    };
+    const juce::String none(fresh.get("audio.inputDevice").get<std::string>());
+    juce::String why;
+    check(none.isEmpty(), "a first run keeps no input device: the system's");
+    const auto [input, ins, output] =
+        open(std::make_unique<ListedAudioType>(juce::StringArray{"Microphone", "Cable Output"}, 1), none, why);
+    check(why.isEmpty() && input == "Cable Output" && ins == 2 && output == "Speakers",
+          ("the system's default input opens with the output, inputs 1/2 on: " + input.toStdString() + ", " +
+           std::to_string(ins) + " in; " + why.toStdString())
+              .c_str());
+    const auto [chosen, chosenIns, chosenOut] =
+        open(std::make_unique<ListedAudioType>(juce::StringArray{"Microphone", "Cable Output"}, 1), "Microphone", why);
+    check(why.isEmpty() && chosen == "Microphone" && chosenIns == 2 && chosenOut == "Speakers",
+          ("an input kept by name opens, not the default: " + chosen.toStdString()).c_str());
+    const auto [nothing, noIns, alone] = open(std::make_unique<ListedAudioType>(juce::StringArray{}, 0), none, why);
+    check(why.isEmpty() && nothing.isEmpty() && noIns == 0 && alone == "Speakers",
+          ("a machine with no input opens its output alone, without an error: " + why.toStdString()).c_str());
+    const auto [stuck, stuckIns, out] =
+        open(std::make_unique<ListedAudioType>(juce::StringArray{"Cable Output"}, 0, true), none, why);
+    check(why.isEmpty() && stuck.isEmpty() && stuckIns == 0 && out == "Speakers",
+          ("a default input that will not open leaves the output open, without an error: " + why.toStdString())
+              .c_str());
+}
 int main(int argc, char **argv) {
     // WTS-02: no dialog box on Windows; JUCE's assertions counted, the run failing on one.
     adi::uitest::noDialogs();
@@ -17558,6 +17658,7 @@ int main(int argc, char **argv) {
                 juce::PNGImageFormat{}.writeImageToStream(linkImage, *stream);
         }
     }
+    trace("firstRunAudioInput", [&] { firstRunAudioInput(temp.path()); });
     trace("liveParity", [&] { liveParity(commands, temp.path(), write); });
     trace("groupTracks", [&] { groupTracks(commands, temp.path()); });
     trace("footRows", [&] { footRows(commands, temp.path()); });

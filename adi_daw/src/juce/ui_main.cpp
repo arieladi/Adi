@@ -1092,11 +1092,9 @@ class AdiApplication final : public juce::JUCEApplication,
             report("Requested audio driver is unavailable: " + requested);
             return;
         }
-        auto error = manager_.initialise(0, 2, nullptr, true, {}, &setup);
-        // Then the channels each device's record keeps in use: Live's 1, 2 and 1/2 in and out
-        // where none is kept (N20; Live 12 manual 17.2).
-        if (error.isEmpty())
-            error = useChannelConfig(manager_, *settings_);
+        // The devices named, an empty one the system's, then the channels each device's record keeps
+        // in use: Live's 1, 2 and 1/2 in and out where none is kept (N20; Live 12 manual 17.2).
+        const auto error = openAudioDevice(manager_, setup, *settings_);
         if (error.isNotEmpty()) {
             report(error.toStdString());
             return;
