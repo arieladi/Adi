@@ -4,6 +4,17 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-25 — Item 1 (`walk/*` fixes, Round 13): `walk/a10-first-send-live`
+
+| Branch | Head SHA | Touched files | Compiler (`-DADI_WERROR=ON`, Pd on, JUCE off) | Warnings | Touched headless suites | `adi_acceptance_wts01` | Verdict |
+|---|---|---|---|---|---|---|---|
+| `walk/a10-first-send-live` | `a9b5e728` | `src/adi/ui/send_edits.hpp`, `src/juce/ui_shell.cpp` (JUCE), `tests/{test_ui_shell.cpp,ui_test_hygiene.hpp}` (JUCE) | GCC 12.4.0 | 0 | `adi_ui_seams_tests` **586/0**, `adi_ui_document_tests` **343/0**, `adi_gesture_playback_tests` **623/0** | **PASS** (43.59 s) | **PASS** |
+| `walk/a10-first-send-live` | `a9b5e728` | same | Clang 14.0.6 + libstdc++ 12 | 0 | `adi_ui_seams_tests` **586/0**, `adi_ui_document_tests` **343/0**, `adi_gesture_playback_tests` **623/0** | **PASS** (40.13 s) | **PASS** |
+
+(No PR requested; run-only verification.)
+
+---
+
 ## 2026-11-25 — Item 1 (`walk/*` fixes, Round 12): `walk/a21-commit-dropout`, `walk/a22-fader-handle-at-top`, `walk/a23-return-index`, `walk/a2b-track-colours-stay`
 
 | Branch | Head SHA | Touched files | Compiler (`-DADI_WERROR=ON`, Pd on, JUCE off) | Warnings | Touched headless suites | `adi_acceptance_wts01` | Verdict |
