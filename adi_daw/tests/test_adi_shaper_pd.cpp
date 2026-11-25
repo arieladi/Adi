@@ -912,7 +912,8 @@ StageAudio restoredStageAudio(const adi::Payload& state, const std::string& edit
         }
         check(!path.sendParameter(724, 0) && !path.sendParameter(464, 1), "unbound Pitch receivers remain absent");
         const auto actual = combinedAudio(path, crossed);
-        check(latency.latencySamples() == 0 && path.adapterLatencySamples() == 0, "whole-block stage test has zero adapter and reported delay");
+        check(latency.latencySamples() == restored->latencySamples() && path.adapterLatencySamples() == 0,
+              "both whole-block routes report the recalled device latency without an adapter delay");
         check(combinedDifference(expected, actual) < 2.e-6, "restored project and both Pd routes reproduce the same stereo stream");
     }
     return expected;
@@ -976,6 +977,45 @@ void combinedStageState(const std::string& editedDir) {
     combinedDeclarations(*device);
     check(combinedDifference(combinedAudio(*device, false), silent) == 0., "old project again plays just the original zero Volume gate");
 }
+void combinedControlRecall(const std::string& editedDir) {
+    auto device = open();
+    const auto defaults = adi::Payload::from_cbor(device->saveState("state"));
+    // The earlier ten-stage project already contained an audible legacy Pan and Drive.
+    set(*device, 287, 1.);
+    set(*device, 857, .3);
+    for (int point = 0; point < 8; ++point) {
+        set(*device, 107 + point, .25);
+        set(*device, 315 + point, .5);
+    }
+    auto earlier = adi::Payload::from_cbor(device->saveState("state"));
+    const auto legacySound = restoredStageAudio(earlier, editedDir);
+    const auto appended = [](int id) { return (id >= 727 && id <= 764) || (id >= 919 && id <= 936); };
+    for (int id = 1; id <= 936; ++id) {
+        if (!appended(id)) continue;
+        for (const auto* group : {"params", "real", "units"}) earlier.at(group).erase(std::to_string(id));
+    }
+
+    set(*device, 736, 1.);       // Width follower, mid band
+    set(*device, 755, .5);       // Volume loop trigger
+    set(*device, 920, 1.);       // Transfer the opposite Pan channel
+    set(*device, 923, .5);       // Twenty milliseconds
+    set(*device, 926, 1.);       // Independent standard Pan gain law
+    set(*device, 932, 1.);       // Mid-band signed Drive
+    const auto populated = adi::Payload::from_cbor(device->saveState("state"));
+    const auto newSound = restoredStageAudio(populated, editedDir);
+    check(combinedDifference(newSound, legacySound) > .001, "simultaneous modulation, Pan and Drive choices change stereo audio");
+    check(device->loadState("state", adi::Payload::to_cbor(earlier)), "recall the earlier ten-stage project over active controls");
+    const auto recalled = adi::Payload::from_cbor(device->saveState("state"));
+    for (int id = 1; id <= 936; ++id) {
+        if (!appended(id)) continue;
+        const auto key = std::to_string(id);
+        for (const auto* group : {"params", "real", "units"})
+            check(recalled.at(group).at(key) == defaults.at(group).at(key), "all appended parameters regain their original defaults");
+    }
+    check(combinedDifference(restoredStageAudio(recalled, editedDir), legacySound) == 0.,
+          "sparse ten-stage project reproduces the original stereo samples after active controls are cleared");
+}
+
 void audioTriggerPd() {
     using Engine = adi::device::LibPdEngine;
     using Shaper = adi::dsp::AdiShaper;
@@ -1308,6 +1348,7 @@ int main() try {
     modulationPd(editedDir, false, false, true, true);
     timePd();
     combinedStageState(editedDir);
+    combinedControlRecall(editedDir);
     std::puts("ADI-Shaper built-in state, transport and editable modulation parity passed.");
     return 0;
 } catch (const std::exception& error) {
