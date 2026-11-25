@@ -88,6 +88,9 @@ jobs:
         run: |
           & "$env:ADI_UI_BUILD/adi_ui_document_tests.exe" --fixture "$env:ADI_UI_BUILD/native.adi"
           if ($LASTEXITCODE -ne 0) { throw 'Fixture failed' }
+          # WTS-01: the smoke run keeps its settings and logs in a home of its own, never the runner's.
+          $env:ADI_HOME = "$env:ADI_UI_BUILD/home"
+          New-Item -ItemType Directory -Force -Path $env:ADI_HOME | Out-Null
           $process = Start-Process -FilePath "$env:ADI_UI_BUILD/adi_app_artefacts/Debug/ADI.exe" -ArgumentList "$env:ADI_UI_BUILD/native.adi",'--no-audio','--smoke-output',"$env:ADI_UI_BUILD/native-actual.png" -WindowStyle Hidden -PassThru
           if (-not $process.WaitForExit(30000)) { Stop-Process -Id $process.Id; throw 'Native window timed out' }
           $process.Refresh()
