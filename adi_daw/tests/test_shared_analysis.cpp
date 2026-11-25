@@ -1133,6 +1133,29 @@ void focusScopeBeatTiming() {
               afterTie->range.first == 24001,
           "an exact half-sample edge belongs to the higher sample with no early beat label");
 
+    constexpr auto note = FocusScopeWindow::Sixteenth;
+    const auto note1 = focusScopeWindowAtSample(0, rate, fractional, equalMeter, note);
+    const auto note2 = focusScopeWindowAtSample(5854, rate, fractional, equalMeter, note);
+    const auto note3 = focusScopeWindowAtSample(11707, rate, fractional, equalMeter, note);
+    check(note1 && note2 && note3 && note1->range.first == 0 && note1->range.frames == 5854 &&
+              note2->range.first == 5854 && note2->range.frames == 5853 &&
+              note3->range.first == 11707 && note3->range.frames == 5854,
+          "three fractional sixteenths share absolute sample edges, including a rounded-down start");
+    const std::vector<adi::textproj::Meter> shortBar{{0, 3, 32}};
+    const auto lastHalf = focusScopeWindowAtSample(8779, rate, fractional, shortBar, note);
+    const auto nextBarNote = focusScopeWindowAtSample(8780, rate, fractional, shortBar, note);
+    check(lastHalf && nextBarNote && lastHalf->range.first == 5854 && lastHalf->range.frames == 2926 &&
+              nextBarNote->range.first == 8780 && nextBarNote->range.frames == 5854,
+          "a sixteenth clips to the end of a 3/32 bar and restarts at its rounded sample edge");
+    const auto splitTick = sixteenth + sixteenth / 2;
+    const std::vector<adi::textproj::Meter> splitNote{{0, 4, 4}, {splitTick, 6, 8}};
+    const auto beforeSplit = focusScopeWindowAtTick(splitTick - 1, rate, constant, splitNote, note);
+    const auto afterSplit = focusScopeWindowAtTick(splitTick, rate, constant, splitNote, note);
+    check(beforeSplit && afterSplit && beforeSplit->range.first == 6000 && beforeSplit->range.frames == 3000 &&
+              afterSplit->range.first == 9000 && afterSplit->range.frames == 6000 &&
+              !focusScopeWindowAtTick(std::numeric_limits<std::int64_t>::max(), rate, constant, equalMeter, note),
+          "a mid-note signature starts a fresh grid and a note cannot overflow the timeline");
+
     const auto grid = [&](adi::ui::FocusScopeRange range, const auto &tempo, const auto &meters) {
         std::vector<std::pair<std::int64_t, bool>> marks;
         adi::ui::forEachFocusScopeGridLine(range, tempo, meters,

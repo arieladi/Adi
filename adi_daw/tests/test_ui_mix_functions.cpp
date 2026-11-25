@@ -3226,8 +3226,8 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
         if (component->getTitle() == "Scope musical window")
             musicalWindow = dynamic_cast<juce::ComboBox *>(component);
     check(musicalWindow && musicalWindow->isVisible() && musicalWindow->getSelectedId() == 2 &&
-              musicalWindow->getText() == "One Bar" && musicalWindow->getItemId(0) == 1 &&
-              musicalWindow->getItemText(0) == "One Beat",
+              musicalWindow->getText() == "One Bar" && musicalWindow->getItemId(0) == 3 &&
+              musicalWindow->getItemText(0) == "1/16 Note" && musicalWindow->getItemId(1) == 1,
           "Focus Scope exposes a musical window selector without changing the default bar");
     juce::ToggleButton *freeze = nullptr;
     for (auto *component : focus.getChildren())
@@ -3867,6 +3867,17 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
         check(MixFocusTestAccess::scopeInterval(focus, samePosition, static_cast<std::size_t>(beat), rate) &&
                   opens == sourceOpens && broker->stats().transforms == after.transforms,
               "the selected beat arrives from the acknowledged revision on the original two taps");
+        const auto noteStart = driver.position();
+        musicalWindow->setSelectedId(3, juce::sendNotificationSync);
+        frame();
+        constexpr auto sixteenth = beat / 4;
+        writeUntil(noteStart + sixteenth - 1);
+        check(musicalWindow->getText() == "1/16 Note" && !MixFocusTestAccess::hasScopeTrace(focus),
+              "the sixteenth selector clears the old beat and waits for the complete note");
+        writeUntil(noteStart + sixteenth);
+        check(MixFocusTestAccess::scopeInterval(focus, noteStart, static_cast<std::size_t>(sixteenth), rate) &&
+                  opens == sourceOpens && broker->stats().transforms == after.transforms,
+              "the sixteenth captures exactly 6000 heard samples at 120 BPM on the same two taps");
         musicalWindow->setSelectedId(2, juce::sendNotificationSync);
     }
     if (musicalWindow && display && channels) {

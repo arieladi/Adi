@@ -103,7 +103,8 @@ MixFocus::MixFocus(AdiRootComponent &root) : root_(root) {
     };
     addChildComponent(scopeChannels_);
     scopeWindow_.setTitle("Scope musical window");
-    scopeWindow_.setTooltip("Capture one beat or one bar on the project's grid for the aligned channels.");
+    scopeWindow_.setTooltip("Choose the length of the aligned capture on the project's musical grid.");
+    scopeWindow_.addItem("1/16 Note", static_cast<int>(FocusScopeWindow::Sixteenth));
     scopeWindow_.addItem("One Beat", static_cast<int>(FocusScopeWindow::Beat));
     scopeWindow_.addItem("One Bar", static_cast<int>(FocusScopeWindow::Bar));
     scopeWindow_.setSelectedId(static_cast<int>(FocusScopeWindow::Bar), juce::dontSendNotification);
@@ -1095,8 +1096,11 @@ FocusScopeChannels MixFocus::scopeChannelView() const noexcept {
                                   : FocusScopeChannels::Stereo;
 }
 FocusScopeWindow MixFocus::scopeWindowChoice() const noexcept {
-    return scopeWindow_.getSelectedId() == static_cast<int>(FocusScopeWindow::Beat) ? FocusScopeWindow::Beat
-                                                                                  : FocusScopeWindow::Bar;
+    switch (static_cast<FocusScopeWindow>(scopeWindow_.getSelectedId())) {
+    case FocusScopeWindow::Sixteenth: return FocusScopeWindow::Sixteenth;
+    case FocusScopeWindow::Beat: return FocusScopeWindow::Beat;
+    default: return FocusScopeWindow::Bar;
+    }
 }
 bool MixFocus::showsScopeDifference() const noexcept {
     return scope.getToggleState() &&
@@ -1239,7 +1243,7 @@ void MixFocus::rebuildScopePaths() {
     if (!scopePlaying_ || (!scopeShown && sumLabel_.isEmpty())) return;
     if (scopeShown && !scopeTimingCurrent()) return;
     if (scopeShown && alignment_ == Alignment::Ready && members_.size() >= 2 && !shownBar_ &&
-        (scopeWindowAwaiting_ || scopeWindowChoice() == FocusScopeWindow::Beat)) return;
+        (scopeWindowAwaiting_ || scopeWindowChoice() != FocusScopeWindow::Bar)) return;
 
     const auto view = scopeChannelView();
     const auto display = static_cast<ScopeDisplay>(scopeDisplay_.getSelectedId());
@@ -1836,8 +1840,15 @@ void MixFocus::paint(juce::Graphics &g) {
             title = scopeChannelView() == FocusScopeChannels::Stereo ? "Sum over 0 dBFS" : "Stereo sum over 0 dBFS";
             g.setColour(look::record);
         }
-        title += shownBar_ ? (scopeWindowChoice() == FocusScopeWindow::Beat ? "   1 beat" : "   1 bar") :
-            "   " + juce::String(1000. * static_cast<double>(scopeRange_->frames) / scopeRange_->sampleRate, 1) + " ms";
+        if (shownBar_) {
+            switch (scopeWindowChoice()) {
+            case FocusScopeWindow::Sixteenth: title += "   1/16 note"; break;
+            case FocusScopeWindow::Beat: title += "   1 beat"; break;
+            case FocusScopeWindow::Bar: title += "   1 bar"; break;
+            }
+        } else {
+            title += "   " + juce::String(1000. * static_cast<double>(scopeRange_->frames) / scopeRange_->sampleRate, 1) + " ms";
+        }
         if (sumShown && !sumOverRange && !sumOnly) title += "   Sum overlay";
     }
     if (frozenScopeRevision_) title += "   Frozen";
