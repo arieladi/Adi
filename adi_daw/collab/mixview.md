@@ -11,6 +11,18 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+### 2026-11-25 — Spectrogram frequency scales (MX-21)
+
+The expanded Spectrogram offers Linear, Log, Mel, Bark and ERB. Row bin edges are calculated once per scale and source format. The default Log pixels match the previous calculation exactly. Reprojecting the held raster preserves its immutable history, Sweep position and local Clear fence, and the All tile follows the selected scale.
+
+The missing-control check failed first. Release passed 538 Spectrum, 521 Mix View and 920 broker checks. At 48 and 32 kHz, each scale moves the tone to its expected row without changing analysis work or a sibling picture. The three changed translation units passed warnings as errors.
+
+Application SHA-256 `552cf1b2cf4cbae8a4e1e57bed54b0ee06c22dbaafdc3562f551c346e9fc86e2`; archive `6f05e00f223b712de762d4bb33551e552f5017adea38f7d3421619e48899a37e`. The retest brief covers all scales, Sweep, Freeze and Clear.
+
+Needs Window — copy the selected frequency scale when opening a new floating analyser through its existing settings-copy path. The two open views keep independently editable settings.
+
+PR requested — `mixview/mx21-spectrogram-frequency-scales-lands-after-2026-12-03` at `a31c571e336572bb695aad862df8b149ea4f74fa`, after Focus Scope Freeze. Lands after 3 December.
+
 ### 2026-11-25 — Focus Scope Freeze and fresh resume (MX-13)
 
 Freeze holds the displayed waveform, phase and selected measurement through Stop, Locate and resize. It immediately releases its own short and grouped consumers. Thaw discards the held picture and rejects a sibling's pre-thaw window before it can draw. Changing the channel projection or source, or hiding Focus, clears the hold.
