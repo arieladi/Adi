@@ -543,8 +543,18 @@ int main() try {
     set(*device, 170, 0.37);
     set(*device, 253, 0.72);
     set(*device, 285, 1);
-    auto modState = adi::Payload::from_cbor(device->saveState("state"));
-    for (int id = 287; id <= count; ++id) modState.at("params").erase(std::to_string(id));
+    // Omit newer parameters in both stored representations. Descriptor positions
+    // account for the earlier Pan controls whose persistent IDs are sparse.
+    auto earlierState = [&](int oldCount) {
+        auto state = adi::Payload::from_cbor(device->saveState("state"));
+        for (int index = oldCount; index < device->paramCount(); ++index) {
+            const auto& id = device->paramAt(index)->id;
+            state.at("params").erase(id);
+            state.at("real").erase(id);
+        }
+        return state;
+    };
+    auto modState = earlierState(286);
     device = open();
     check(device->loadState("state", adi::Payload::to_cbor(modState)) && device->getParam("134").real == 1
           && device->getParam("209").real == 1 && std::abs(device->getParam("170").real - 37) < 1e-4
@@ -557,8 +567,7 @@ int main() try {
     set(*device, 341, 1);
     device->process(io);
     check(device->latencySamples() == 16 && device->latencyEpoch() != firstEpoch, "catalogued host republishes Drive latency");
-    auto sevenStageState = adi::Payload::from_cbor(device->saveState("state"));
-    for (int id = 416; id <= count; ++id) sevenStageState.at("params").erase(std::to_string(id));
+    auto sevenStageState = earlierState(418);
     device = open();
     check(device->loadState("state", adi::Payload::to_cbor(sevenStageState)), "restore seven-stage project state");
     device->process(io);
