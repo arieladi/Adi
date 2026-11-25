@@ -23,6 +23,8 @@ static_assert(Shaper::PanLowDelayBlend == 855 && Shaper::PanHighDelayBlend == 85
 static_assert(Shaper::driveParam(Band::High, Shaper::OutputTrim) + 1 == Shaper::CrushOn);
 static_assert(Shaper::modParam(Stage::Crush, Band::High, Shaper::Secondary8) + 1 == Shaper::BaseCount);
 static_assert(Shaper::orderParam(Stage::Volume) == 715 && Shaper::orderParam(Stage::Crush) == 721);
+static_assert(Shaper::NoiseOn == 535 && Shaper::NoiseEnd == 625);
+static_assert(Shaper::noiseParam(Band::High, Shaper::NoiseLowPass) + 1 == Shaper::NoiseEnd);
 int failures = 0;
 
 void check(bool condition, const char* description) {
@@ -600,6 +602,7 @@ void bypassAndInvalid() {
     shaper.set(Shaper::bandParam(Stage::Width, Band::Mid, Shaper::Point3),
                std::numeric_limits<float>::quiet_NaN());
     shaper.set(Shaper::Count, 20);
+    for (const int gap : {415, 534, 625, 854}) shaper.set(static_cast<Shaper::Param>(gap), 1);
     shaper.sync(std::numeric_limits<double>::infinity());
     shaper.tempo(0);
     shaper.prepare(-1);
@@ -1122,14 +1125,14 @@ void crushHoldClockBlocks() {
 }
 
 void stagePermutations() {
-    Shaper::StageOrder expected{};
-    for (std::size_t i = 0; i < expected.size(); ++i) expected[i] = static_cast<Stage>(i);
+    auto expected = Shaper::activeStages;
     Shaper::StageRanks ranks{};
     for (std::uint8_t tie : {std::uint8_t{0}, std::uint8_t{127}}) {
         ranks.fill(tie);
         check(Shaper::orderFor(ranks) == expected, "tied ranks use persistent stage identity");
     }
-    ranks[5] = ranks[6] = 0;
+    ranks[static_cast<std::size_t>(expected[expected.size() - 2])] = 0;
+    ranks[static_cast<std::size_t>(expected.back())] = 0;
     auto twoTies = expected;
     std::rotate(twoTies.begin(), twoTies.end() - 2, twoTies.end());
     check(Shaper::orderFor(ranks) == twoTies, "both tied groups keep identity order");

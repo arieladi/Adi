@@ -3,6 +3,7 @@
 #include "adi/dsp/adi_shaper_crush.hpp"
 #include "adi/dsp/adi_shaper_drive.hpp"
 #include "adi/dsp/adi_shaper_filter.hpp"
+#include "adi/dsp/adi_shaper_noise.hpp"
 #include "adi/dsp/adi_shaper_sweep.hpp"
 #include <array>
 #include <cstddef>
@@ -22,8 +23,13 @@ class AdiShaper {
     static constexpr int modBandParameterCount = 23;
     static constexpr int modStageParameterCount = modHeaderSize + 3 * modBandParameterCount;
     static constexpr int driveBandParameterCount = 16;
-    enum class Stage { Volume, Width, Pan, Filter, Sweep, Drive, Crush };
-    static constexpr std::size_t stageCount = static_cast<std::size_t>(Stage::Crush) + 1;
+    enum class Stage { Volume, Width, Pan, Filter, Sweep, Drive, Crush, Noise = 9 };
+    // Saved stage identities also address ranks and curves. Unavailable stages leave holes.
+    static constexpr std::array activeStages{Stage::Volume, Stage::Width, Stage::Pan, Stage::Filter,
+                                             Stage::Sweep, Stage::Drive, Stage::Crush, Stage::Noise};
+    static constexpr std::size_t stageCount = activeStages.size();
+    static constexpr std::size_t stageSlots = static_cast<std::size_t>(Stage::Noise) + 1;
+    static constexpr int noiseBandParameterCount = modBandParameterCount + 5;
     enum Param : int { MasterMix, VolumeBands, WidthBands = VolumeBands + stageParameterCount,
                  PanBands = WidthBands + stageParameterCount,
                  VolumeLowSlope = PanBands + stageParameterCount, WidthLowSlope, PanLowSlope,
@@ -32,9 +38,10 @@ class AdiShaper {
                  SweepMidPolarity, SweepHighPolarity, DriveOn,
                  CrushOn = DriveOn + modHeaderSize + 3 * driveBandParameterCount,
                  BaseCount = CrushOn + modStageParameterCount,
+                 NoiseOn = 535, NoiseEnd = NoiseOn + modHeaderSize + 3 * noiseBandParameterCount,
                  VolumeOrder = 715,
                  PanLowDelayBlend = 855, PanMidDelayBlend, PanHighDelayBlend, Count };
-    using StageRanks = std::array<std::uint8_t, stageCount>;
+    using StageRanks = std::array<std::uint8_t, stageSlots>;
     using StageOrder = std::array<Stage, stageCount>;
     static constexpr Param orderParam(Stage stage) noexcept {
         return static_cast<Param>(VolumeOrder + static_cast<int>(stage));
@@ -51,9 +58,16 @@ class AdiShaper {
                       Primary1, Primary2, Primary3, Primary4, Primary5, Primary6, Primary7, Primary8,
                       Secondary1, Secondary2, Secondary3, Secondary4, Secondary5, Secondary6, Secondary7, Secondary8 };
     static constexpr Param modParam(Stage stage, Band band, ModControl control) noexcept {
+        if (stage == Stage::Noise)
+            return static_cast<Param>(NoiseOn + modHeaderSize + noiseBandParameterCount * static_cast<int>(band)
+                                      + static_cast<int>(control));
         const int start = stage == Stage::Crush ? CrushOn : stage == Stage::Sweep ? SweepOn : FilterOn;
         return static_cast<Param>(start + modHeaderSize + modBandParameterCount * static_cast<int>(band)
                                   + static_cast<int>(control));
+    }
+    enum NoiseOption { NoiseMono, NoiseOnly, NoiseTrim, NoiseHighPass, NoiseLowPass };
+    static constexpr Param noiseParam(Band band, NoiseOption option) noexcept {
+        return static_cast<Param>(modParam(Stage::Noise, band, Secondary8) + 1 + static_cast<int>(option));
     }
     enum DriveControl { DriveStyle, DriveMix, DriveClock, DriveCycle, DriveRate, DriveCurve,
                         Drive1, Drive2, Drive3, Drive4, Drive5, Drive6, Drive7, Drive8, InputTrim, OutputTrim };
@@ -114,7 +128,7 @@ class AdiShaper {
         Split low, high;
         double lowHz = 200.0, highHz = 2000.0;
         int layout = 0;
-        bool active = false, enabled = true;
+        bool active = false, enabled = false;
         [[nodiscard]] Bands firstOrderBands(float left, float right) noexcept;
     };
     struct DriveDryDelay {
@@ -148,19 +162,22 @@ class AdiShaper {
     void layout(StageData& stage, int value) noexcept;
     void slope(Split& split, float value) noexcept;
     void clock(CurveBand& band, BandControl control, float value) const noexcept;
+    void setNoiseOption(std::size_t band, NoiseOption option, float value) noexcept;
     void setMod(Param id, float value) noexcept;
     void restart(Stage kind) noexcept;
     void resetKernels(Stage kind) noexcept;
     template <Stage kind> void render(StageData& stage, const float* inL, const float* inR,
                                      float* outL, float* outR, std::size_t frames) noexcept;
-    std::array<StageData, stageCount> stages_;
+    std::array<StageData, stageSlots> stages_;
     StageRanks ranks_{};
-    StageOrder order_{};
+    StageOrder order_ = activeStages;
     bool orderDirty_ = false, defaultOrder_ = true;
     std::array<AdiShaperFilter, 3> filters_;
     std::array<AdiShaperSweep, 3> sweeps_;
     std::array<AdiShaperDrive, 3> drives_;
     std::array<AdiShaperCrush, 3> crush_;
+    std::array<AdiShaperNoise, 3> noise_;
+    std::array<std::array<float, 2>, 3> noiseFilters_{{{.254f, 1}, {.254f, 1}, {.254f, 1}}};
     std::array<std::array<float, 2>, 3> driveTrims_{{{.5f, .5f}, {.5f, .5f}, {.5f, .5f}}};
     std::array<DriveDryDelay, 3> driveDry_;
     DriveDryDelay driveSource_;
