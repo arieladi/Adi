@@ -1156,6 +1156,29 @@ void focusScopeBeatTiming() {
               !focusScopeWindowAtTick(std::numeric_limits<std::int64_t>::max(), rate, constant, equalMeter, note),
           "a mid-note signature starts a fresh grid and a note cannot overflow the timeline");
 
+    constexpr auto twoBars = FocusScopeWindow::TwoBars;
+    constexpr auto fourBars = FocusScopeWindow::FourBars;
+    const auto steppedPair = focusScopeWindowAtTick(5 * quarter, rate, stepped, equalMeter, twoBars);
+    const auto nextFour = focusScopeWindowAtSample(384000, rate, constant, equalMeter, fourBars);
+    check(steppedPair && steppedPair->firstTick == 0 && steppedPair->nextTick == 8 * quarter &&
+              steppedPair->range.frames == 372000 && nextFour && nextFour->firstTick == 16 * quarter &&
+              nextFour->range.first == 384000 && nextFour->range.frames == 384000,
+          "multi-bar windows stay on the project grid and integrate tempo changes before rounding the sample ends");
+    const auto lastFourSample = focusScopeWindowAtSample(374633, rate, fractional, equalMeter, fourBars);
+    const auto roundedFourEdge = focusScopeWindowAtSample(374634, rate, fractional, equalMeter, fourBars);
+    check(lastFourSample && roundedFourEdge && lastFourSample->range.first == 0 &&
+              roundedFourEdge->range.first == 374634 && roundedFourEdge->firstTick == 16 * quarter,
+          "the rounded-down four-bar sample edge starts the new group exactly at the heard boundary");
+    const std::vector<adi::textproj::Meter> groupSplit{{0, 4, 4}, {5 * quarter, 6, 8}};
+    const auto truncated = focusScopeWindowAtTick(4 * quarter, rate, constant, groupSplit, twoBars);
+    const auto afterGroupSplit = focusScopeWindowAtSample(120000, rate, constant, groupSplit, fourBars);
+    check(truncated && truncated->firstTick == 0 && truncated->nextTick == 5 * quarter &&
+              truncated->range.frames == 120000 && afterGroupSplit && afterGroupSplit->firstTick == 5 * quarter &&
+              afterGroupSplit->nextTick == 17 * quarter && afterGroupSplit->range.first == 120000 &&
+              afterGroupSplit->range.frames == 288000 &&
+              !focusScopeWindowAtTick(std::numeric_limits<std::int64_t>::max(), rate, constant, equalMeter, fourBars),
+          "a signature change ends the old collection and anchors a fresh group, even within an unfinished bar");
+
     const auto grid = [&](adi::ui::FocusScopeRange range, const auto &tempo, const auto &meters) {
         std::vector<std::pair<std::int64_t, bool>> marks;
         adi::ui::forEachFocusScopeGridLine(range, tempo, meters,
@@ -1176,7 +1199,7 @@ void focusScopeBeatTiming() {
     constexpr std::size_t beatsPerBar = 255, visibleBars = 4;
     const std::vector<adi::textproj::Meter> dense{{0, beatsPerBar, 128}};
     const auto denseBar = grid({0, beatsPerBar * samplesPerBeat, rate}, constant, dense);
-    const auto fourBars = grid({0, beatsPerBar * visibleBars * samplesPerBeat, rate}, constant, dense);
+    const auto denseFourBars = grid({0, beatsPerBar * visibleBars * samplesPerBeat, rate}, constant, dense);
     const auto matchesDense = [&](const auto &marks, std::size_t beats) {
         if (marks.size() != beats) return false;
         for (std::size_t i = 0; i < marks.size(); ++i)
@@ -1185,7 +1208,7 @@ void focusScopeBeatTiming() {
         return true;
     };
     check(matchesDense(denseBar, beatsPerBar), "the grid includes every beat of the largest project signature");
-    check(matchesDense(fourBars, beatsPerBar * visibleBars),
+    check(matchesDense(denseFourBars, beatsPerBar * visibleBars),
           "a dense four-bar extent retains all of its bar and beat lines through its last sample");
 }
 

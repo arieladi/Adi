@@ -26,7 +26,7 @@ struct FocusScopeBar {
     std::int64_t firstTick = 0, nextTick = 0;
     FocusScopeRange range;
 };
-enum class FocusScopeWindow { Beat = 1, Bar, Sixteenth };
+enum class FocusScopeWindow { Beat = 1, Bar, Sixteenth, TwoBars, FourBars };
 
 // Use the Arrangement's signature boundaries and the driver's nearest-sample
 // convention. Keep absolute edges so consecutive windows never gain a rounding gap.
@@ -38,9 +38,20 @@ inline std::optional<FocusScopeBar> focusScopeWindowAtTick(std::int64_t tick, do
     const auto &meter = meterAt(tick, meters);
     const auto barTicks = meter.barTicks();
     if (meter.start_ticks < 0 || meter.start_ticks > tick || barTicks <= 0) return {};
+    constexpr auto limit = std::numeric_limits<std::int64_t>::max();
     auto windowTicks = barTicks;
-    if (window == FocusScopeWindow::Beat) windowTicks = textproj::kWhole / meter.denominator;
-    if (window == FocusScopeWindow::Sixteenth) windowTicks = textproj::kWhole / 16;
+    switch (window) {
+    case FocusScopeWindow::Beat: windowTicks = textproj::kWhole / meter.denominator; break;
+    case FocusScopeWindow::Sixteenth: windowTicks = textproj::kWhole / 16; break;
+    case FocusScopeWindow::TwoBars:
+    case FocusScopeWindow::FourBars: {
+        const int bars = window == FocusScopeWindow::TwoBars ? 2 : 4;
+        if (barTicks > limit / bars) return {};
+        windowTicks = bars * barTicks;
+        break;
+    }
+    case FocusScopeWindow::Bar: break;
+    }
     if (windowTicks <= 0) return {};
     const auto intoSignature = tick - meter.start_ticks;
     const auto fromGridStart = window == FocusScopeWindow::Sixteenth ? intoSignature % barTicks : intoSignature;
@@ -52,7 +63,6 @@ inline std::optional<FocusScopeBar> focusScopeWindowAtTick(std::int64_t tick, do
         windowTicks = std::min(windowTicks, barTicks - (fromGridStart - intoWindow));
     const auto nextMeter = std::upper_bound(meters.begin(), meters.end(), tick,
         [](std::int64_t position, const textproj::Meter &signature) { return position < signature.start_ticks; });
-    constexpr auto limit = std::numeric_limits<std::int64_t>::max();
     if (nextMeter != meters.end()) windowTicks = std::min(windowTicks, nextMeter->start_ticks - firstTick);
     if (windowTicks > limit - firstTick) return {};
     const auto nextTick = firstTick + windowTicks;

@@ -3931,6 +3931,42 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
             }
         }
     }
+    if (musicalWindow && display && channels) {
+        // Prime alignment after the preceding thaw before seeking to the start.
+        writeUntil(driver.position() + bar / 4);
+        const auto selectAtStart = [&](FocusScopeWindow window) {
+            check(doc->mailbox().post(TransportMailbox::Command::Locate, 0), "queue Locate to start a multi-bar window");
+            musicalWindow->setSelectedId(static_cast<int>(window), juce::sendNotificationSync);
+            frame();
+            doc->mailbox().drain(driver);
+            frame();
+        };
+        selectAtStart(FocusScopeWindow::TwoBars);
+        if (root->bpm() != 120.)
+            check(root->setTempoAtPlay("120"), "set 120 BPM for the multi-bar capture");
+        frame();
+        const auto sourcesBefore = opens;
+        const auto statsBefore = broker->stats();
+        writeUntil(2 * bar - 1);
+        check(!MixFocusTestAccess::hasScopeTrace(focus) && broker->stats().consumers == 1,
+              "Two Bars waits for every heard sample on the one grouped reader");
+        writeUntil(2 * bar);
+        check(musicalWindow->getText() == "Two Bars" &&
+                  MixFocusTestAccess::scopeInterval(focus, 0, static_cast<std::size_t>(2 * bar), rate),
+              "Two Bars projects the whole 192000-sample capture");
+        selectAtStart(FocusScopeWindow::FourBars);
+        writeUntil(4 * bar - 1);
+        check(!MixFocusTestAccess::hasScopeTrace(focus) && broker->stats().consumers == 1,
+              "Four Bars waits for the last sample in its revision without running unseen short previews");
+        writeUntil(4 * bar);
+        const auto statsAfter = broker->stats();
+        check(musicalWindow->getText() == "Four Bars" &&
+                  MixFocusTestAccess::scopeInterval(focus, 0, static_cast<std::size_t>(4 * bar), rate) &&
+                  MixFocusTestAccess::sumPulseAt(focus, .125f / 4.f, .75f) &&
+                  MixFocusTestAccess::sumPulseAt(focus, (3.f + .875f) / 4.f, -.625f) &&
+                  opens == sourcesBefore && statsAfter.taps == 2 && statsAfter.transforms == statsBefore.transforms,
+              "Four Bars keeps the first and last pulses through 384000 samples using the same two taps");
+    }
     const auto visibleBounds = focus.getBounds();
     focus.setTopLeftPosition(peer.getWidth(), 0);
     check(broker->stats().taps == 0 && broker->stats().consumers == 0,

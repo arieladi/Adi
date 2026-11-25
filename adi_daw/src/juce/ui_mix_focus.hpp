@@ -93,6 +93,7 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     void rebuildScopeGrid(const SnapshotReader &);
     FocusScopeChannels scopeChannelView() const noexcept;
     FocusScopeWindow scopeWindowChoice() const noexcept;
+    [[nodiscard]] bool waitsForCompleteScopeWindow() const noexcept;
     bool showsScopeDifference() const noexcept;
     void updateScopeDifference();
     void updateScopeTruePeakControls();

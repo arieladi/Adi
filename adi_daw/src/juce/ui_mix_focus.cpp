@@ -107,6 +107,8 @@ MixFocus::MixFocus(AdiRootComponent &root) : root_(root) {
     scopeWindow_.addItem("1/16 Note", static_cast<int>(FocusScopeWindow::Sixteenth));
     scopeWindow_.addItem("One Beat", static_cast<int>(FocusScopeWindow::Beat));
     scopeWindow_.addItem("One Bar", static_cast<int>(FocusScopeWindow::Bar));
+    scopeWindow_.addItem("Two Bars", static_cast<int>(FocusScopeWindow::TwoBars));
+    scopeWindow_.addItem("Four Bars", static_cast<int>(FocusScopeWindow::FourBars));
     scopeWindow_.setSelectedId(static_cast<int>(FocusScopeWindow::Bar), juce::dontSendNotification);
     scopeWindow_.onChange = [this] {
         const SafePointer<MixFocus> alive(this);
@@ -794,8 +796,8 @@ void MixFocus::frame(const SnapshotReader &reader) {
             redraw_ = true;
         }
     }
-    const bool hadCompleteBar = scopeShown && alignment_ == Alignment::Ready && shownBar_;
-    if (broker && broker->active() && !hadCompleteBar) {
+    const bool groupedOnly = waitsForCompleteScopeWindow() || (scopeShown && alignment_ == Alignment::Ready && shownBar_);
+    if (broker && broker->active() && !groupedOnly) {
         const auto pose = membershipPose_;
         auto outputs = static_cast<std::uint32_t>(scopeShown ? SharedAnalysis::Scope : SharedAnalysis::Spectrum);
         if (playing && alignment_ != Alignment::WaitForStop && !sumLabel_.isEmpty() && members_.size() >= 2)
@@ -852,9 +854,10 @@ void MixFocus::frame(const SnapshotReader &reader) {
     updateBarScope(reader, broker);
     if (!alive || !isShowing() || suspended_) return;
     std::vector<SharedAnalysis::Lease> shortPreview;
-    if (scopeShown && shownBar_ && !hadCompleteBar) {
-        // The short preview fills the initial wait. Once a complete bar is
-        // visible, only the grouped reader needs the source audio.
+    if (barScope_ && (groupedOnly || shownBar_) &&
+        std::ranges::any_of(members_, [](const auto &member) { return static_cast<bool>(member.lease); })) {
+        // Keep the shared taps alive when retiring the short previews. Only
+        // the grouped reader needs source audio while a full window is shown or required.
         shortPreview.reserve(members_.size());
         for (auto &member : members_) {
             shortPreview.push_back(std::move(member.lease));
@@ -1096,11 +1099,18 @@ FocusScopeChannels MixFocus::scopeChannelView() const noexcept {
                                   : FocusScopeChannels::Stereo;
 }
 FocusScopeWindow MixFocus::scopeWindowChoice() const noexcept {
-    switch (static_cast<FocusScopeWindow>(scopeWindow_.getSelectedId())) {
-    case FocusScopeWindow::Sixteenth: return FocusScopeWindow::Sixteenth;
-    case FocusScopeWindow::Beat: return FocusScopeWindow::Beat;
+    const auto window = static_cast<FocusScopeWindow>(scopeWindow_.getSelectedId());
+    switch (window) {
+    case FocusScopeWindow::Sixteenth:
+    case FocusScopeWindow::Beat:
+    case FocusScopeWindow::TwoBars:
+    case FocusScopeWindow::FourBars: return window;
     default: return FocusScopeWindow::Bar;
     }
+}
+bool MixFocus::waitsForCompleteScopeWindow() const noexcept {
+    return scope.getToggleState() && alignment_ == Alignment::Ready && members_.size() >= 2 &&
+           (scopeWindowAwaiting_ || scopeWindowChoice() != FocusScopeWindow::Bar);
 }
 bool MixFocus::showsScopeDifference() const noexcept {
     return scope.getToggleState() &&
@@ -1242,8 +1252,7 @@ void MixFocus::rebuildScopePaths() {
             for (auto &path : member.scopePaths) path.clear();
     if (!scopePlaying_ || (!scopeShown && sumLabel_.isEmpty())) return;
     if (scopeShown && !scopeTimingCurrent()) return;
-    if (scopeShown && alignment_ == Alignment::Ready && members_.size() >= 2 && !shownBar_ &&
-        (scopeWindowAwaiting_ || scopeWindowChoice() != FocusScopeWindow::Bar)) return;
+    if (!shownBar_ && waitsForCompleteScopeWindow()) return;
 
     const auto view = scopeChannelView();
     const auto display = static_cast<ScopeDisplay>(scopeDisplay_.getSelectedId());
@@ -1845,6 +1854,8 @@ void MixFocus::paint(juce::Graphics &g) {
             case FocusScopeWindow::Sixteenth: title += "   1/16 note"; break;
             case FocusScopeWindow::Beat: title += "   1 beat"; break;
             case FocusScopeWindow::Bar: title += "   1 bar"; break;
+            case FocusScopeWindow::TwoBars: title += "   2 bars"; break;
+            case FocusScopeWindow::FourBars: title += "   4 bars"; break;
             }
         } else {
             title += "   " + juce::String(1000. * static_cast<double>(scopeRange_->frames) / scopeRange_->sampleRate, 1) + " ms";
