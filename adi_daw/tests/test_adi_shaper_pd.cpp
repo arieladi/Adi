@@ -586,7 +586,7 @@ int main() try {
           && device->getParam("341").real == 0 && device->getParam("209").real == 1,
           "missing stages regain defaults and release PDC while saved stages stay enabled");
     // A value saved only in its unit (no position) is read, not reset to its default.
-    auto realOnly = adi::Payload::from_cbor(sevenStageState);
+    auto realOnly = sevenStageState;
     realOnly.at("params").erase("170");
     check(realOnly.at("real").contains("170") && std::abs(open()->getParam("170").real - 37) > 1,
           "fixture: Filter value saved in its unit differs from the default");
