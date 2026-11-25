@@ -502,6 +502,8 @@ class ArrangementView final : public juce::Component {
     // Paused by an edit, a sideways scroll or a click on the ruler; a click in the lanes or
     // the scrub area, or playback starting or stopping, starts it again.
     bool followPaused = false;
+    // A track to scroll into sight once the next frame's rows hold it (a newly inserted one), or 0.
+    std::int64_t revealTrack = 0;
     // The selected time signature marker's position (Live 12 manual 6.5), or -1. A click in the
     // lanes or on a track's title lets it go; Delete and Ctrl/Cmd+R act on it while it is selected.
     std::int64_t selectedMeter = -1;
