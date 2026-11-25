@@ -194,8 +194,8 @@ Session window is the last step, not a way around that.
 | Plugin delay compensation | both | P0 | ✅ | `devices.latency_samples`. Reported in samples and **excludes** the device buffer — ADR-0042. |
 | **Plug-in scanner out of process, always**; plug-ins run in-process at runtime | both | P1 | — | ADR-0203 d8 (D-03, A6-37): approved R-17, not built (the scan runs in process today); no switch |
 | **Multi-threaded graph processing** | both | P1 | — | ADR-0203 d8 (A7-06), ADR-0102 d4 |
-| **Stem separation built in**, offline, four stems as Live 12, a model in its own process; the 4-stem model ships in the installer (~100 MB), 6-stem and high-quality models as downloads; a named service (local or cloud) instead, for N stems or other models | Ableton 12 | P1 | — | ADR-0203 d8 (A7-12, A2-17); amends ADR-0064 d4 for stem separation only |
-| **Automatic gain-match for any plug-in**, as the Airwindows suites do per device | neither | P2 | 🔶 | ADR-0203 d8 (A4-14); needs a per-device flag |
+| **Stem separation built in**, offline, four stems as Live 12, a model in its own process; the 4-stem model ships in the installer (~100 MB), 6-stem and high-quality models as downloads; a named service (local or cloud) instead, for N stems or other models | Ableton 12 | P1 | — | ADR-0203 d8 (A7-12, A2-17); amends ADR-0064 d4 for stem separation only; PLAN AGT-10; on the CPU only, with a drum-kit model and voice isolation as further optional downloads (ADR-0254 d11) |
+| **Automatic gain-match for any plug-in**, as the Airwindows suites do per device | neither | P2 | 🔶 | ADR-0203 d8 (A4-14); needs a per-device flag; PLAN MX-39, with a Match Output Gain commit (ADR-0254 d23) |
 | 2048–4096-sample blocks, tested | — | **P0** | — | runtime. Dense chains, not low-latency tracking (ADR-0042). **4096 is the cap on every platform** and the granted size is the only one that exists (ADR-0049). |
 | Sub-block automation and MIDI accuracy | both | **P0** | ✅ | runtime. At 8192 a block is 171 ms; per-block updates would step audibly. The price of the row above (ADR-0042). |
 | Change block size without reloading | both | **P0** | — | runtime. At 8192 overdubbing is impossible, so moving between sizes mid-session is not optional (ADR-0042). **Built at the engine** (ADR-0122 d6): `Session::prepare` at a new size rebuilds the graph on the same instances, tested at every size from 32 to 4096; a same-format restart is a no-op. |
@@ -303,7 +303,7 @@ for the transport, the tempo map, the groove pool and the track's scale
 | **AI agent that can only act through ops** | P2 | ✅ | [AI-AGENT.md](AI-AGENT.md). The Propose engine half is built (#100); the review panel and the control API are open (AGT-01, AGT-05, the CTL rows) |
 | Agent changes previewable as a diff before commit | P2 | ✅ | |
 | **Agent runtime, `adi-agent`**: pi-mono's loop in a sidecar, three tools over the RPC boundary | P2 | — | ADR-0168. It takes OpenClaw's loop and ideas, not a fork of OpenClaw (**approved** by the director). It needs, in order: the registry's JSON Schema export, with field descriptions; the loopback RPC server (ADR-0039); the sidecar; the chat panel. Its tools are `project_read`, `ops_describe` and `changeset_propose`. |
-| **An AI companion that learns the user's habits**: repeated op sequences recognised on-device, the completion offered as a Propose changeset (one undo), off until asked for | neither | direction, no priority yet | — | ADR-0205 d7, the director's note of 2026-10-25; the op log (ADR-0003) is the record it learns from; learning never leaves the machine (ADR-0064) |
+| **An AI companion that learns the user's habits**: repeated op sequences recognised on-device, the completion offered as a Propose changeset (one undo), off until asked for | neither | P2 (Track S, wave 6) | — | ruled by ADR-0254 d7: plain statistics, one readable local file, off by default (PLAN AGT-11); ADR-0205 d7, the director's note of 2026-10-25; the op log (ADR-0003) is the record it learns from; learning never leaves the machine (ADR-0064) |
 | **A scope built in**: any two tracks compared (overlay, stacked, difference, sum), with correlation and offset, aligned by delay compensation, on the grid, true peak | P1 | — | ADR-0167. OScope and PsyScope need routing, and cannot see another track's latency. A measured offset is fixed with `mixer.setDelay` (registered and playing, ADR-0172). It adds a second audio-to-UI path, which amends ADR-0050 d4. **Engine side built** (ADR-0175): `Session::openScope` taps, stamped with when each frame is heard; BS.1770-4 true peak; `correlation` and `bestOffset`. The panel is mac's. |
 | **The AI Mix Radar** in the Mix View: fighting channels (ERB masking, destructive correlation between ★ Kick and ★ Bass), sub-bass build-up against the aligned reference, true-peak overs, crushed dynamics per CTZ group; a click isolates the channels and offers [Propose Fix], a single-undo Propose changeset | P2 | — | ADR-0209 d6, d11; the agent's `analyze.*` tools |
 | Undo that survives a reboot | P1 | ✅ | |
@@ -318,6 +318,32 @@ for the transport, the tempo map, the groove pool and the track's scale
 | **Sync, in detail**: batches named `batch_<lamport>_<client_id>.cbor`, the Lamport number zero-padded to 20 digits; a `sync_vectors` version-vector table; undoing a synced batch appends a compensating batch; remarks anchored to ranges and ops through `remark_anchors` | P2 | — | ADR-0188 d5. Both tables land with sync's schema minor |
 
 ---
+
+### The mix suite additions (ADR-0254)
+
+Taken on 25 November from the director's four proposals (`docs/MIX-SUITE-INTAKE.md`). None starts
+before 3 December; each is a row on the plan's Track S unless marked.
+
+| Feature | P | Plan row |
+|---|---|---|
+| The Throw: an effect opened over a time range, on a send or on a device's own mix | P2 | AU-10 |
+| A band dragged between channels' EQs on the Stack, as a copy or an inverted copy | P2 | MX-37 |
+| Hear Difference on any device | P2 | MX-38 |
+| A Duck control inside Reverb and Delay, as Echo's | P2 | DEV-33 |
+| Clip to instrument: one command, and a sample dropped on a MIDI track | P2 | DEV-34 |
+| Preview through the selected track's devices | P2 | MX-40 |
+| The capture range strip (Capture itself is P1: CT-06, at M3) | P2 | CT-07 |
+| Similarity Search and Similar Sample Swapping (Live 12's), by measured descriptors | P2 | TM-MD-07 |
+| Fits: samples that complement a loop | P2 | TM-MD-08 |
+| Clip prep: a rider, faded gaps and trimmed breaths, written into the clip volume curve | P2 | AU-11 |
+| Preverb: a reverse-reverb swell rendered into a clip | P2 | TM-FC-05 |
+| The Browser's preview in time and key; a drop that lands as heard while Sync is on | P2 | TM-MD-06 |
+| The soundstage: a Mix View page of pan across and level up | P2 | MX-41 |
+| EQ sketch; bands that follow MIDI notes | P2 | MX-42 |
+| A Mid/Side rack made by one command | P2 | DEV-35 |
+| The map of the samples | P2 | TM-MD-09 |
+| The agent's write scope, and its named undo step | P2 | AGT-12 |
+| A REAPER key preset | P2 | WIN-11 (the P2 tail) |
 
 ## 10.5 Native DSP nodes, and asynchronous AI
 
@@ -415,7 +441,8 @@ Listening tests against Live gate each mode (ADR-0108). No SoundTouch.
 
 ### Asynchronous AI (ADR-0064)
 
-**Remote APIs only. No bundled Python, no model weights.** Offline these grey
+**Remote APIs only. No bundled Python, no model weights.** One exception, by ADR-0203 d8: stem
+separation is built in, with its model in a process of its own (PLAN AGT-10). Offline these grey
 out and recording, VST3 hosting, graph processing and saving are untouched —
 guaranteed structurally, because nothing in `adi_core` may link an AI path.
 
@@ -425,7 +452,7 @@ Every one of these lands as **ops** in one `txn_id`, so each is one Ctrl-Z.
 
 | Workflow | Upstream | P | What it emits |
 |---|---|---|---|
-| Stem splitting | Demucs | P1 | a group folder and N tracks, phase-aligned |
+| Stem splitting | Demucs | P1 | a group folder and N tracks, phase-aligned. Built in, not a remote service (ADR-0203 d8; PLAN AGT-10); a service only for more stems or other models |
 | Audio → MIDI | Basic Pitch | P1 | notes onto a hybrid track |
 | Intelligent sample management | Essentia / CLAP | P1 | BPM, key and text-searchable tags in the browser |
 | Reference matching | Matchering | P2 | a native EQ curve, not a rendered file |
