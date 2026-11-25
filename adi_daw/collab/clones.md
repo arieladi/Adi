@@ -17,6 +17,12 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 25 November 2026 — One generic device for the DSP reviews
+
+For `clones/shaper-dsp-stack` the clones seat takes the ADI-Shaper DSP, external, device declaration, device build file and shaper tests. Lands after 3 December. The purpose is to exercise the ten-stage project restoration together with the qualified multiband Drive, crossover repairs, Width key and Volume note processing. The reviewed Pan controls join where their persistent identities agree. The independent review branches remain available. The panel remains held for the agreed sheet. Devices owns native key and note delivery and the same-position transport revision.
+
+The longer direct-rate follow-up on `188966bd0` ran nine trials of 8,192 callbacks at 176.4 kHz and 2,048 frames. Trial p99 ranged from 1.176 to 6.852 ms against 11.610 ms. Of 73,728 individual callbacks, 155 exceeded the deadline. The earlier short trial above the deadline remains part of the record.
+
 ## 25 November 2026 — Direct-rate Drive cost and preset attribution
 
 `clones/shaper-drive-high-rates` at `188966bd0` — Reduce direct-rate stereo Drive cost. Lands after 3 December. The kernel evaluates signed stereo power together and skips the interpolation history at direct rates. At 176.4 kHz the ADI / reference median cycles were 0.360 / 0.524 million at 256 frames and 2.664 / 3.100 million at 2,048. At 192 kHz they were 0.332 / 0.429 and 2.658 / 3.107 million. Median callbacks were faster in each case. Errors on the two high-rate musical renders stayed within 0.00000121 RMS. The eight headless suite runs passed. The channel-recovery regression covers a nonfinite sample still waiting in the output delay.
