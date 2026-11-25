@@ -6,6 +6,7 @@
 // its mixer strip, split-pan settings, recording options, group summing, return
 // send tap, take lanes, top-level device chains and devices, clips (audio and
 // MIDI, preserving take-lane assignments and internal alias links), sends,
+// internal sidechain routes (with routing_key_taps), internal user Main routes,
 // automation lanes/data, and referenced media from a second Store (typically
 // opened read-only) into the active writable Store as one undoable OpJournal
 // transaction.
@@ -21,9 +22,10 @@
 //   * State blobs travel by BLAKE3 hash through OpTransactionInputs; an
 //     existing hash in `dest` is reused.
 //   * Any source attribute that cannot be mapped across projects (e.g. a send
-//     targeting a return absent in `dest`, an external alias link, or a
-//     non-default mixer_strip.pan_law with no op in ops_catalog) is reported in
-//     `warnings` rather than dropped silently.
+//     targeting a return absent in `dest`, an external user Main or sidechain
+//     route, a VCA route or mixer_strip.vca_group_id, an external alias link,
+//     or a non-default mixer_strip.pan_law with no op in ops_catalog) is
+//     reported in `warnings` rather than dropped silently.
 //   * The source Store is never written; a read-only destination is refused.
 
 #pragma once

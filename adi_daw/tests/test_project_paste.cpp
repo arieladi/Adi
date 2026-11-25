@@ -886,6 +886,264 @@ void testTwoOpenStoresConcurrentlyForTsanAndAsan() {
     check(okA && okB, "concurrent pastes across separate open Stores succeeded cleanly");
 }
 
+void testRoutingSidechainUserMainAndVca() {
+    section("internal/external sidechains (with keyTap), user Main routes, and VCA warnings");
+
+    test::TempDirectory temp{"project_paste", "routing"};
+    const fs::path srcDir = temp.path() / "src_proj";
+    const fs::path destDir = temp.path() / "dest_proj";
+    fs::create_directories(srcDir);
+    fs::create_directories(destDir);
+
+    StoreError err{};
+    auto srcStore = Store::create(srcDir / "source.adi", err);
+    auto destStore = Store::create(destDir / "dest.adi", err);
+    check(srcStore && destStore, "routing test stores created");
+
+    // Source layout:
+    //   - Group 10 ("Drums+Bass") containing:
+    //       * Track 11 ("Kick")
+    //       * Track 12 ("Bass") with Chain 20 -> Device 30 ("Compressor")
+    //       * Track 13 ("SubBus")
+    //     Internal sidechain: Kick (11) -> Compressor (30), keyTap = "pre_fx", gain = -3.0 dB
+    //     Internal user Main: Kick (11) -> SubBus (13), origin = 'user'
+    //   - External Track 40 ("ExtVocal") with Chain 41 -> Device 42 ("ExtGate")
+    //   - External VCA Track 50 ("VcaMaster")
+    //     External sidechain 1 (into pasted subtree): ExtVocal (40) -> Compressor (30) [wait: one device key, so test on a separate solo paste of Bass or second device 31]
+    //     External sidechain 2 (out of pasted subtree): Kick (11) -> ExtGate (42)
+    //     External user Main: SubBus (13) -> ExtVocal (40)
+    //     VCA membership: Bass (12) mixer_strip.vca_group_id = 50, plus routing kind='vca' 50 -> 12
+    {
+        OpJournal j(*srcStore);
+        std::vector<OpRequest> ops;
+        auto add = [&](const char* type, Payload p, const char* targetKind, std::int64_t targetId) {
+            OpRequest r;
+            r.opType = type;
+            r.payload = std::move(p);
+            r.targetKind = targetKind;
+            r.targetId = targetId;
+            ops.push_back(std::move(r));
+        };
+        add("track.create", {{"id", 10}, {"kind", "group"}, {"name", "Drums+Bass"}, {"index", 0}},
+            "track", 10);
+        add("track.create",
+            {{"id", 11}, {"kind", "audio"}, {"name", "Kick"}, {"parent", 10}, {"index", 0}},
+            "track", 11);
+        add("track.create",
+            {{"id", 12}, {"kind", "audio"}, {"name", "Bass"}, {"parent", 10}, {"index", 1}},
+            "track", 12);
+        add("track.create",
+            {{"id", 13}, {"kind", "audio"}, {"name", "SubBus"}, {"parent", 10}, {"index", 2}},
+            "track", 13);
+        add("track.create",
+            {{"id", 40}, {"kind", "audio"}, {"name", "ExtVocal"}, {"index", 1}}, "track", 40);
+        add("track.create",
+            {{"id", 50}, {"kind", "vca"}, {"name", "VcaMaster"}, {"index", 2}}, "track", 50);
+
+        add("chain.create", {{"id", 20}, {"track", 12}}, "chain", 20);
+        add("device.insert",
+            {{"id", 30},
+             {"chain", 20},
+             {"ord", 0},
+             {"ref", nullptr},
+             {"name", "BassComp"},
+             {"enabled", true},
+             {"rack", false}},
+            "device", 30);
+        add("device.insert",
+            {{"id", 31},
+             {"chain", 20},
+             {"ord", 1},
+             {"ref", nullptr},
+             {"name", "BassDuck"},
+             {"enabled", true},
+             {"rack", false}},
+            "device", 31);
+
+        add("chain.create", {{"id", 41}, {"track", 40}}, "chain", 41);
+        add("device.insert",
+            {{"id", 42},
+             {"chain", 41},
+             {"ord", 0},
+             {"ref", nullptr},
+             {"name", "ExtGate"},
+             {"enabled", true},
+             {"rack", false}},
+            "device", 42);
+
+        // Internal sidechain: Kick -> BassComp with pre_fx keyTap and -3.0 dB gain.
+        add("routing.connect",
+            {{"id", 60},
+             {"srcKind", "track"},
+             {"src", 11},
+             {"dstKind", "device"},
+             {"dst", 30},
+             {"kind", "sidechain"},
+             {"keyTap", "pre_fx"}},
+            "routing", 60);
+        add("routing.setGain", {{"id", 60}, {"db", -3.0}}, "routing", 60);
+
+        // Internal user Main: Kick -> SubBus.
+        add("routing.connect",
+            {{"id", 61},
+             {"srcKind", "track"},
+             {"src", 11},
+             {"dstKind", "track"},
+             {"dst", 13},
+             {"kind", "main"}},
+            "routing", 61);
+
+        // External sidechain into pasted subtree: ExtVocal -> BassDuck.
+        add("routing.connect",
+            {{"id", 62},
+             {"srcKind", "track"},
+             {"src", 40},
+             {"dstKind", "device"},
+             {"dst", 31},
+             {"kind", "sidechain"},
+             {"keyTap", "post_fx"}},
+            "routing", 62);
+
+        // External sidechain out of pasted subtree: Kick -> ExtGate.
+        add("routing.connect",
+            {{"id", 63},
+             {"srcKind", "track"},
+             {"src", 11},
+             {"dstKind", "device"},
+             {"dst", 42},
+             {"kind", "sidechain"}},
+            "routing", 63);
+
+        // External user Main: SubBus -> ExtVocal.
+        add("routing.connect",
+            {{"id", 64},
+             {"srcKind", "track"},
+             {"src", 13},
+             {"dstKind", "track"},
+             {"dst", 40},
+             {"kind", "main"}},
+            "routing", 64);
+
+        // VCA routing row: VcaMaster -> Bass.
+        add("routing.connect",
+            {{"id", 65},
+             {"srcKind", "track"},
+             {"src", 50},
+             {"dstKind", "track"},
+             {"dst", 12},
+             {"kind", "vca"}},
+            "routing", 65);
+
+        const auto committed = j.commit(ops);
+        check(committed.ok, "routing fixture committed: " + committed.error);
+    }
+
+    // Set mixer_strip.vca_group_id on Bass (12) directly in source fixture.
+    {
+        SQLite::Statement up(srcStore->db(),
+                             "UPDATE mixer_strip SET vca_group_id = 50 WHERE track_id = 12");
+        up.exec();
+    }
+
+    srcStore.reset();
+    auto roSrc = Store::open(srcDir / "source.adi", err, true);
+    check(roSrc != nullptr, "reopened routing source read-only");
+
+    // Test 1: Paste Group 10 ("Drums+Bass") -> internal sidechain & internal user Main copied;
+    //         external sidechains, external user Main, VCA membership & VCA route warned.
+    const std::string startDigest = digestProject(*destStore).text;
+    const auto pasted = pasteTrackFromProject(*roSrc, 10, *destStore);
+    check(pasted.ok, "group with internal/external routing pasted: " + pasted.error);
+
+    check(pasted.routingIds.contains(60), "internal sidechain route 60 copied and remapped");
+    check(pasted.routingIds.contains(61), "internal user Main route 61 copied and remapped");
+    check(!pasted.routingIds.contains(62), "external incoming sidechain 62 not copied");
+    check(!pasted.routingIds.contains(63), "external outgoing sidechain 63 not copied");
+    check(!pasted.routingIds.contains(64), "external user Main 64 not copied");
+    check(!pasted.routingIds.contains(65), "VCA route 65 not copied");
+
+    if (pasted.routingIds.contains(60)) {
+        const std::int64_t newScId = pasted.routingIds.at(60);
+        SQLite::Statement scQ(
+            destStore->db(),
+            "SELECT src_kind, src_id, dst_kind, dst_id, kind, gain_db, enabled "
+            "FROM routing WHERE id = ?");
+        scQ.bind(1, newScId);
+        check(scQ.executeStep(), "pasted internal sidechain row exists in dest");
+        check(scQ.getColumn(0).getString() == "track" &&
+                  scQ.getColumn(1).getInt64() == pasted.trackIds.at(11) &&
+                  scQ.getColumn(2).getString() == "device" &&
+                  scQ.getColumn(3).getInt64() == pasted.deviceIds.at(30) &&
+                  scQ.getColumn(4).getString() == "sidechain" &&
+                  std::abs(scQ.getColumn(5).getDouble() - (-3.0)) < 1e-6 &&
+                  scQ.getColumn(6).getInt() == 1,
+              "internal sidechain endpoints remapped to Kick -> BassComp with gain=-3 dB");
+
+        SQLite::Statement tapQ(destStore->db(),
+                               "SELECT tap FROM routing_key_taps WHERE routing_id = ?");
+        tapQ.bind(1, newScId);
+        check(tapQ.executeStep() && tapQ.getColumn(0).getString() == "pre_fx",
+              "internal sidechain preserves routing_key_taps='pre_fx'");
+    }
+
+    if (pasted.routingIds.contains(61)) {
+        const std::int64_t newMainId = pasted.routingIds.at(61);
+        SQLite::Statement mQ(
+            destStore->db(),
+            "SELECT src_kind, src_id, dst_kind, dst_id, kind, origin FROM routing WHERE id = ?");
+        mQ.bind(1, newMainId);
+        check(mQ.executeStep(), "pasted internal user Main row exists in dest");
+        check(mQ.getColumn(0).getString() == "track" &&
+                  mQ.getColumn(1).getInt64() == pasted.trackIds.at(11) &&
+                  mQ.getColumn(2).getString() == "track" &&
+                  mQ.getColumn(3).getInt64() == pasted.trackIds.at(13) &&
+                  mQ.getColumn(4).getString() == "main" &&
+                  mQ.getColumn(5).getString() == "user",
+              "internal user Main remapped to Kick -> SubBus with origin='user'");
+    }
+
+    auto hasWarningContaining = [&](std::string_view needle) {
+        for (const auto& w : pasted.warnings) {
+            if (w.find(needle) != std::string::npos) {
+                return true;
+            }
+        }
+        return false;
+    };
+    check(hasWarningContaining("sidechain") && hasWarningContaining("id=62"),
+          "external incoming sidechain (id=62) reported in warnings");
+    check(hasWarningContaining("sidechain") && hasWarningContaining("id=63"),
+          "external outgoing sidechain (id=63) reported in warnings");
+    check(hasWarningContaining("main") && hasWarningContaining("SubBus"),
+          "external user Main route reported in warnings");
+    check(hasWarningContaining("vca_group_id"),
+          "non-null mixer_strip.vca_group_id reported in warnings");
+    check(hasWarningContaining("vca") && hasWarningContaining("id=65"),
+          "VCA routing row (id=65) reported in warnings");
+
+    check(History(*destStore).undo().ok, "undo of group paste with routing succeeded");
+    check(digestProject(*destStore).text == startDigest,
+          "undo returns start digest after internal sidechain & user Main paste");
+
+    // Test 2: Pasting Bass (12) alone turns the formerly internal Kick -> BassComp sidechain
+    //         into an external sidechain, which MUST be omitted and warned.
+    const auto soloBass = pasteTrackFromProject(*roSrc, 12, *destStore);
+    check(soloBass.ok, "solo Bass paste succeeded: " + soloBass.error);
+    check(soloBass.routingIds.empty(), "solo Bass paste copies no external sidechains");
+    bool warnedKickToBass = false;
+    bool warnedExtToBass = false;
+    for (const auto& w : soloBass.warnings) {
+        if (w.find("sidechain") != std::string::npos && w.find("id=60") != std::string::npos) {
+            warnedKickToBass = true;
+        }
+        if (w.find("sidechain") != std::string::npos && w.find("id=62") != std::string::npos) {
+            warnedExtToBass = true;
+        }
+    }
+    check(warnedKickToBass && warnedExtToBass,
+          "solo Bass paste warns on both external sidechains (id=60 and id=62)");
+}
+
 }  // namespace
 
 int main() {
@@ -894,6 +1152,7 @@ int main() {
     testMidiTakeLanesGroupSubtreeAndAliases();
     testRefusalsAndStateBlobs();
     testTwoOpenStoresConcurrentlyForTsanAndAsan();
+    testRoutingSidechainUserMainAndVca();
 
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

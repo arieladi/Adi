@@ -95,6 +95,7 @@ struct TrackSnapshot {
     double inputGainDb = 0.0;
     bool phaseInvert = false;
     std::int64_t delaySamples = 0;
+    std::optional<std::int64_t> vcaGroupId;
 
     bool hasSplitPan = false;
     std::string panMode = "stereo";
@@ -149,8 +150,8 @@ TrackSnapshot readTrackSnapshot(SQLite::Database& db, std::int64_t trackId) {
 
     SQLite::Statement m(
         db,
-        "SELECT volume_db, pan, pan_law, width, input_gain_db, phase_invert, delay_samples "
-        "FROM mixer_strip WHERE track_id=?");
+        "SELECT volume_db, pan, pan_law, width, input_gain_db, phase_invert, delay_samples, "
+        "vca_group_id FROM mixer_strip WHERE track_id=?");
     m.bind(1, trackId);
     if (m.executeStep()) {
         snap.hasMixer = true;
@@ -161,6 +162,9 @@ TrackSnapshot readTrackSnapshot(SQLite::Database& db, std::int64_t trackId) {
         snap.inputGainDb = m.getColumn(4).getDouble();
         snap.phaseInvert = m.getColumn(5).getInt() != 0;
         snap.delaySamples = m.getColumn(6).getInt64();
+        if (!m.getColumn(7).isNull()) {
+            snap.vcaGroupId = m.getColumn(7).getInt64();
+        }
     }
 
     if (tablePresent(db, "mixer_pan_settings")) {
@@ -516,6 +520,12 @@ ProjectPasteResult pasteTrackFromProject(Store& source,
                             std::to_string(track.panLaw) +
                             ") which cannot be preserved yet (no mixer.setPanLaw op in ops_catalog)");
                     }
+                    if (track.vcaGroupId.has_value()) {
+                        result.warnings.push_back(
+                            "track '" + track.name + "' has mixer_strip.vca_group_id (" +
+                            std::to_string(*track.vcaGroupId) +
+                            ") which was not pasted across projects");
+                    }
                 }
 
                 if (track.hasSplitPan) {
@@ -849,6 +859,177 @@ ProjectPasteResult pasteTrackFromProject(Store& source,
                                       {"hint", hint}},
                                      "device", newDevId);
                         }
+                    }
+                }
+            }
+
+            // 5b. Copy remaining routing touching the pasted subtree now that both
+            //     result.trackIds and result.deviceIds are populated:
+            //     - kind='main' (origin='user'): copy when destination track is inside
+            //       the pasted subtree; warn on external user main routes.
+            //     - kind='sidechain': copy when source track and destination device are
+            //       both inside the pasted subtree, carrying routing_key_taps via keyTap;
+            //       warn on every external or non-device sidechain touching the subtree.
+            //     - kind='vca' and any other non-send route touching the subtree: warn.
+            {
+                const bool hasKeyTapsTable = tablePresent(source.db(), "routing_key_taps");
+                std::set<std::int64_t> seenRouteIds;
+
+                // 5b.1 User Main outputs from pasted tracks.
+                for (const auto& track : tracks) {
+                    const std::int64_t newSrcTrackId = result.trackIds.at(track.id);
+                    SQLite::Statement mainQ(
+                        source.db(),
+                        "SELECT id, dst_kind, dst_id, gain_db, pan, enabled, origin "
+                        "FROM routing WHERE src_kind = 'track' AND src_id = ? AND kind = 'main' "
+                        "ORDER BY ord, id");
+                    mainQ.bind(1, track.id);
+                    while (mainQ.executeStep()) {
+                        const std::int64_t oldRouteId = mainQ.getColumn(0).getInt64();
+                        const std::string dstKind = mainQ.getColumn(1).getString();
+                        const std::int64_t oldDstId = mainQ.getColumn(2).getInt64();
+                        const double gainDb = mainQ.getColumn(3).getDouble();
+                        const double pan = mainQ.getColumn(4).getDouble();
+                        const bool enabled = mainQ.getColumn(5).getInt() != 0;
+                        const std::string origin =
+                            mainQ.getColumn(6).isNull() ? std::string("user")
+                                                        : mainQ.getColumn(6).getString();
+                        seenRouteIds.insert(oldRouteId);
+
+                        if (origin != "user") {
+                            continue;
+                        }
+                        if (dstKind == "track") {
+                            if (const auto dstIt = result.trackIds.find(oldDstId);
+                                dstIt != result.trackIds.end()) {
+                                const std::int64_t newRouteId = ids.next("routing");
+                                result.routingIds[oldRouteId] = newRouteId;
+                                appendOp("routing.connect",
+                                         {{"id", newRouteId},
+                                          {"srcKind", "track"},
+                                          {"src", newSrcTrackId},
+                                          {"dstKind", "track"},
+                                          {"dst", dstIt->second},
+                                          {"kind", "main"}},
+                                         "routing", newRouteId);
+                                if (gainDb != 0.0) {
+                                    appendOp("routing.setGain",
+                                             {{"id", newRouteId}, {"db", gainDb}}, "routing",
+                                             newRouteId);
+                                }
+                                if (pan != 0.0) {
+                                    appendOp("routing.setPan", {{"id", newRouteId}, {"pan", pan}},
+                                             "routing", newRouteId);
+                                }
+                                if (!enabled) {
+                                    appendOp("routing.setEnabled",
+                                             {{"id", newRouteId}, {"enabled", false}}, "routing",
+                                             newRouteId);
+                                }
+                                continue;
+                            }
+                        }
+                        result.warnings.push_back(
+                            "user main route (id=" + std::to_string(oldRouteId) +
+                            ") from track '" + track.name + "' to " + dstKind + ":" +
+                            std::to_string(oldDstId) +
+                            " targets outside pasted subtree and was not pasted");
+                    }
+                }
+
+                // 5b.2 All other non-send routing rows touching any pasted track or device
+                //      (sidechain, external incoming main, vca, etc.).
+                SQLite::Statement otherQ(
+                    source.db(),
+                    "SELECT id, src_kind, src_id, dst_kind, dst_id, kind, gain_db, pan, enabled, "
+                    "origin FROM routing WHERE kind != 'send' ORDER BY ord, id");
+                while (otherQ.executeStep()) {
+                    const std::int64_t oldRouteId = otherQ.getColumn(0).getInt64();
+                    if (seenRouteIds.contains(oldRouteId)) {
+                        continue;
+                    }
+                    const std::string srcKind = otherQ.getColumn(1).getString();
+                    const std::int64_t oldSrcId = otherQ.getColumn(2).getInt64();
+                    const std::string dstKind = otherQ.getColumn(3).getString();
+                    const std::int64_t oldDstId = otherQ.getColumn(4).getInt64();
+                    const std::string kind = otherQ.getColumn(5).getString();
+                    const double gainDb = otherQ.getColumn(6).getDouble();
+                    const double pan = otherQ.getColumn(7).getDouble();
+                    const bool enabled = otherQ.getColumn(8).getInt() != 0;
+                    const std::string origin =
+                        otherQ.getColumn(9).isNull() ? std::string("user")
+                                                     : otherQ.getColumn(9).getString();
+
+                    const bool srcInSubtree =
+                        (srcKind == "track" && result.trackIds.contains(oldSrcId)) ||
+                        (srcKind == "device" && result.deviceIds.contains(oldSrcId));
+                    const bool dstInSubtree =
+                        (dstKind == "track" && result.trackIds.contains(oldDstId)) ||
+                        (dstKind == "device" && result.deviceIds.contains(oldDstId));
+                    if (!srcInSubtree && !dstInSubtree) {
+                        continue;
+                    }
+                    seenRouteIds.insert(oldRouteId);
+
+                    if (kind == "sidechain") {
+                        if (srcKind == "track" && dstKind == "device" &&
+                            result.trackIds.contains(oldSrcId) &&
+                            result.deviceIds.contains(oldDstId)) {
+                            const std::int64_t newRouteId = ids.next("routing");
+                            result.routingIds[oldRouteId] = newRouteId;
+
+                            Payload connectPayload{
+                                {"id", newRouteId},
+                                {"srcKind", "track"},
+                                {"src", result.trackIds.at(oldSrcId)},
+                                {"dstKind", "device"},
+                                {"dst", result.deviceIds.at(oldDstId)},
+                                {"kind", "sidechain"},
+                            };
+                            if (hasKeyTapsTable) {
+                                SQLite::Statement tapQ(
+                                    source.db(),
+                                    "SELECT tap FROM routing_key_taps WHERE routing_id = ?");
+                                tapQ.bind(1, oldRouteId);
+                                if (tapQ.executeStep()) {
+                                    connectPayload["keyTap"] = tapQ.getColumn(0).getString();
+                                }
+                            }
+                            appendOp("routing.connect", std::move(connectPayload), "routing",
+                                     newRouteId);
+                            if (gainDb != 0.0) {
+                                appendOp("routing.setGain", {{"id", newRouteId}, {"db", gainDb}},
+                                         "routing", newRouteId);
+                            }
+                            if (pan != 0.0) {
+                                appendOp("routing.setPan", {{"id", newRouteId}, {"pan", pan}},
+                                         "routing", newRouteId);
+                            }
+                            if (!enabled) {
+                                appendOp("routing.setEnabled",
+                                         {{"id", newRouteId}, {"enabled", false}}, "routing",
+                                         newRouteId);
+                            }
+                        } else {
+                            result.warnings.push_back(
+                                "sidechain route (id=" + std::to_string(oldRouteId) + ", " +
+                                srcKind + ":" + std::to_string(oldSrcId) + " -> " + dstKind + ":" +
+                                std::to_string(oldDstId) +
+                                ") crosses outside pasted subtree and was not pasted");
+                        }
+                    } else if (kind == "main") {
+                        if (origin == "user") {
+                            result.warnings.push_back(
+                                "main route (id=" + std::to_string(oldRouteId) + ", " + srcKind +
+                                ":" + std::to_string(oldSrcId) + " -> " + dstKind + ":" +
+                                std::to_string(oldDstId) +
+                                ") crosses outside pasted subtree and was not pasted");
+                        }
+                    } else {
+                        result.warnings.push_back(
+                            "routing row (id=" + std::to_string(oldRouteId) + ", kind='" + kind +
+                            "', " + srcKind + ":" + std::to_string(oldSrcId) + " -> " + dstKind +
+                            ":" + std::to_string(oldDstId) + ") was not pasted across projects");
                     }
                 }
             }
