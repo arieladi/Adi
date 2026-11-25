@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cstdint>
 #include <cstdlib>
 #include <new>
 #include <cmath>
@@ -356,7 +357,65 @@ void recognition() {
           "recognition", "edited abstraction rejected");
 }
 } // namespace
+// The devices queue's item 6: the segment's timeline sample and the driver's
+// transport revision reach a synced core through the native adapter's position
+// path, so a locate to the same position is told from a continuation. A core
+// with syncAtSample gets all four fields; one with only sync, the two it takes.
+struct ClockedCore {
+    double bpm = 0, quarterNotes = -1;
+    bool playing = false;
+    std::int64_t sample = -1;
+    std::uint64_t revision = 99;
+    int calls = 0;
+    void tempo(double b) noexcept { bpm = b; }
+    void syncAtSample(double q, bool p, std::int64_t s, std::uint64_t r) noexcept {
+        quarterNotes = q;
+        playing = p;
+        sample = s;
+        revision = r;
+        ++calls;
+    }
+};
+struct PlainCore {
+    double bpm = 0, quarterNotes = -1;
+    bool playing = false;
+    int calls = 0;
+    void tempo(double b) noexcept { bpm = b; }
+    void sync(double q, bool p) noexcept {
+        quarterNotes = q;
+        playing = p;
+        ++calls;
+    }
+};
+
+void positionForwarding() {
+    adi::engine::DeviceTransport position;
+    position.sample = 96000;
+    position.quarterNotes = 3.5;
+    position.bpm = 132;
+    position.playing = true;
+    adi::engine::TransportInfo transport;
+    transport.transportRevision = 17;
+    ClockedCore clocked;
+    adi::device::syncPosition(clocked, position, &transport);
+    check(clocked.calls == 1 && clocked.sample == 96000 && clocked.revision == 17 && clocked.quarterNotes == 3.5 &&
+              clocked.playing && clocked.bpm == 132,
+          "syncPosition", "a core with syncAtSample gets the timeline sample and the transport revision");
+    // A locate back to the same position: the same quarter notes, a new revision.
+    transport.transportRevision = 18;
+    adi::device::syncPosition(clocked, position, &transport);
+    check(clocked.calls == 2 && clocked.revision == 18 && clocked.quarterNotes == 3.5, "syncPosition",
+          "a locate to the same position reaches the core as a new revision");
+    adi::device::syncPosition(clocked, position, nullptr);
+    check(clocked.revision == 0 && clocked.sample == 96000, "syncPosition", "with no transport the revision is 0");
+    PlainCore plain;
+    adi::device::syncPosition(plain, position, &transport);
+    check(plain.calls == 1 && plain.quarterNotes == 3.5 && plain.playing && plain.bpm == 132, "syncPosition",
+          "a core with only sync gets the quarter notes and playing, as before");
+}
+
 int main() {
+    positionForwarding();
     recognition();
     for (const auto& fixture : fixtures) parity(fixture);
     colorCabReplacements(48000);

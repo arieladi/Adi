@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "adi/engine/graph.hpp"
+
+#include <cstdint>
 #include <memory>
 #include <string_view>
 
 namespace adi::engine {
-struct NodeIo;
 struct MpeOut;
 }
 
@@ -37,6 +39,26 @@ class NativePdDevice {
     virtual void tempo(double) noexcept {}
     virtual void midi(const engine::MpeOut&) noexcept {}
 };
+
+// A synced core's position for one segment (the devices queue's item 6): its
+// quarter notes, playing and BPM, and the segment's timeline sample and the
+// driver's transport revision, which together tell a locate (even to the same
+// position, where the quarter notes cannot) from a continuation. A core that
+// has syncAtSample(quarterNotes, playing, sample, revision) is handed all four;
+// one with only sync(quarterNotes, playing) the first two, as before. So
+// ADI-Shaper takes the sample and revision as soon as its core has the call,
+// with no change here.
+template <class Core>
+void syncPosition(Core& core, const engine::DeviceTransport& position,
+                  const engine::TransportInfo* transport) noexcept {
+    core.tempo(position.bpm);
+    if constexpr (requires { core.syncAtSample(0.0, true, std::int64_t{}, std::uint64_t{}); }) {
+        core.syncAtSample(position.quarterNotes, position.playing, position.sample,
+                          transport != nullptr ? transport->transportRevision : 0);
+    } else {
+        core.sync(position.quarterNotes, position.playing);
+    }
+}
 
 // Compiled-in canvas bytes (only CRLF/LF may differ), not a filename or an
 // external's name. Any other edit or unsupported I/O stays on the Pd path.
