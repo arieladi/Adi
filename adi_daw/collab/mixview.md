@@ -54,6 +54,12 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - Before-date review order: DF-M69 and the Clip pin stand independently. Land the exact graph hook before the Limiter clock and the Limiter clock before the EQ clock. The after-date preview carries those same commits with main's accepted fixes. The signed-zero exception remains recorded in the EQ clock review.
 - Review ZIP SHA-256 `7b427ca8cfef036d1c859fb16784e797dc787e3774dcc70c75ed6f250c510c8f`. Executable `9c8459c118d5a27443b5a067b99fd9e2315d7368e05a1c0019e4569ba151857b`. Scanner `0e6b075de4c902e9bd99a61146b896bbdf631da2114bb6e08624d6c4e4711268`. The cumulative retest brief uses the same source hash.
 
+## 25 November 2026 · MX-13 Scope 1/16 Note · lands after 3 December
+
+- **PR requested** `mixview/mx13-scope-sixteenth-note-lands-after-2026-12-03` at `c8168ec83efd01cd7a6a1dfee98848d9a98aae15`. Focus has a 1/16 Note capture option. It starts at each real bar's grid, clips an irregular bar's final note, and observes a mid-note signature edge. The default is One Bar.
+- Strict Windows x64 Release passed 1,206 shared-analysis, 580 Mix View and 594 spectrum assertions. Tests pin exact fractional and short-bar edges, the maximum timeline bound, and the first 6,000 heard samples at 120 BPM on the original two taps.
+- Review ZIP SHA-256 `cb15290e386925de797fe3ed64ed46eb3f703a5d8fb8b26ce87461bc424b1a0d`. Executable `a8f2875d560d4d8368c634e69e09150df94e6c680e9b1313235a6966059e502d`. Retest brief uses the same source hash and builds on the cumulative current-main review.
+
 ### 25 November — MX13 Focus musical windows
 
 **PR requested** `mixview/mx13-musical-window-lands-after-2026-12-03` at `5c88abf073d56cd9e5c99f3aeac3d4cb24a68532`, after captured true peak. Focus Scope offers One Beat and One Bar. The default is still One Bar. A view change clears the former interval and region and requests the new window on the same grouped sources. Tempo and signature edges share exact rounded sample positions. A Locate or selection at a rounded-down boundary starts the new interval. The existing Sum level summary remains readable with the added control.
