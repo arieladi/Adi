@@ -87,6 +87,14 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - A queued Stop survives its pending frame. A different acknowledged Locate invalidates the picture. The software-peer regression reproduced both missing hold and cursor failure before the fix and verified zero new acquisition and analysis while held.
 - Strict Release passed all ten suites, 5,384 checks. Archive SHA-256 `0bff79e3980b94bc047ea4cec5d11a7b5aa0f09b4b15d89c19cf1ba785e46f30`.
 
+## 25 November 2026 — MX-21 Spectrogram contrast
+
+**PR requested — `mixview/mx21-spectrogram-gamma-lands-after-2026-12-03`, `5a2384d69`, after `1c6e4747e`. Lands after 3 December.**
+
+- Gamma is a local display choice from 0.50 to 2.00, with 1.00 restoring the original palette exactly. The raster recolours its retained intensity bytes once. Scroll and Sweep export the current palette mapping, and the All tile uses the same choice.
+- The component gate failed first on the missing control. The frozen Sweep check proves byte 113 maps to 50 at gamma 2, then returns to the exact neutral pixels. The gaps, raw dBFS cursor, sibling picture and broker counts stay identical.
+- Strict Release passed all ten suites, 5,388 checks. Archive SHA-256 `83cd8d5252e985052f0c1ae726962ed807c4ee0e7c49848498de6755d6aefe97`. The separate floating analyser's choice-at-open needs a Window loan.
+
 ### 25 November — MX13 Focus musical windows
 
 **PR requested** `mixview/mx13-musical-window-lands-after-2026-12-03` at `5c88abf073d56cd9e5c99f3aeac3d4cb24a68532`, after captured true peak. Focus Scope offers One Beat and One Bar. The default is still One Bar. A view change clears the former interval and region and requests the new window on the same grouped sources. Tempo and signature edges share exact rounded sample positions. A Locate or selection at a rounded-down boundary starts the new interval. The existing Sum level summary remains readable with the added control.
