@@ -139,6 +139,14 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - A failed source replacement preserves the previously accepted pair and releases temporary demand. The probe verifies both failures, ±6.02 dB, the frozen horizon, hidden no-work and a fresh matched hop after thaw.
 - Strict Release passed 11 suites, 5,591 checks. This is the headless lifetime slice. The Spectrogram control and signed history can now use it.
 
+## 25 November 2026 — MX-21 Pre/Post Spectrogram
+
+**PR requested — `mixview/mx21-spectrogram-delta-view-lands-after-2026-12-03`, `4c71e15a1`, after `767187cd1`. Lands after 3 December.**
+
+- The dedicated Spectrogram's Pre/Post switch follows its existing channel selector and shows signed Post FX minus Pre FX at heard time. The first display uses the existing theme's two roles on a fixed ±24 dB scale. Each row uses the strongest measurable bin and the raster rewrites changed columns.
+- The software-peer gate verifies both signs, the final-sample horizon fence, Freeze across a seek, zero-area release, and restoration of the ordinary Spectrogram. The signed comparison releases its two taps when frozen, disabled or hidden.
+- Strict Release passed 11 suites, 5,603 checks. Archive SHA-256 `3097ecd7ac25da5c054aab66dd98a03c8e7e5e44b068ad3ae6ec1e7c0ff312e9`. The review brief also covers current Scope tools and scheduled live comparisons.
+
 ### 25 November — MX13 Focus musical windows
 
 **PR requested** `mixview/mx13-musical-window-lands-after-2026-12-03` at `5c88abf073d56cd9e5c99f3aeac3d4cb24a68532`, after captured true peak. Focus Scope offers One Beat and One Bar. The default is still One Bar. A view change clears the former interval and region and requests the new window on the same grouped sources. Tempo and signature edges share exact rounded sample positions. A Locate or selection at a rounded-down boundary starts the new interval. The existing Sum level summary remains readable with the added control.
