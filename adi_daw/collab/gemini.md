@@ -4,6 +4,17 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-25 — Item 1 (`walk/*` fixes, Round 8): `walk/b10-mixer-title-select`
+
+| Branch | Head SHA | Touched files | Compiler (`-DADI_WERROR=ON`, Pd on, JUCE off) | Warnings | Touched headless suites | `adi_acceptance_wts01` | Verdict |
+|---|---|---|---|---|---|---|---|
+| `walk/b10-mixer-title-select` | `1746e3ce` | `src/juce/ui_mixer.{hpp,cpp}` (JUCE), `tests/test_ui_shell.cpp` (JUCE) | GCC 12.4.0 | 0 | N/A (all files JUCE-gated) | **PASS** (46.79 s) | **PASS (headless)** |
+| `walk/b10-mixer-title-select` | `1746e3ce` | same | Clang 14.0.6 + libstdc++ 12 | 0 | N/A (all files JUCE-gated) | **PASS** (40.12 s) | **PASS (headless)** |
+
+(No PR requested; run-only verification.)
+
+---
+
 ## 2026-11-25 — Item 1 (`walk/*` fixes, Round 7): `walk/a12-peak-hold-follows-track`, `walk/a14-automation-click`
 
 | Branch | Head SHA | Touched files | Compiler (`-DADI_WERROR=ON`, Pd on, JUCE off) | Warnings | Touched headless suites | `adi_acceptance_wts01` | Verdict |
