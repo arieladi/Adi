@@ -11,6 +11,16 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+### 2026-11-25 — Focus Scope region measurement (MX-13)
+
+Drag along the waveform to measure the displayed interval. The readout gives absolute heard samples, endpoint times, duration, reciprocal frequency and its note. The selection stays with the captured interval, clears on a different capture, and cancels a held gesture if the plot geometry or transport revision changes. Stack measurements stay within one lane. Difference Spectrum remains a frequency plot.
+
+Release passed 508 Mix View, 513 Spectrum and 909 broker checks, including real component pointer events, both drag directions, final release without a motion callback, a resize during drag and a same-position Locate. An initial run failed nine new checks before implementation. The changed units passed the optimized warning-as-error gate. No additional tap, analysis work or project edit is authored by the measurement.
+
+Application SHA-256 `409212404c26c02f8eac487d5e02ac249ffbcfdeb08744325fd56b85012da9fb`; review archive `c000061c14ad13b5b851658e45739b7d8f04f0a63274896bf21159e4e811fdd3`. The retest brief is in the review handoff.
+
+PR requested — `mixview/mx13-focus-scope-region-lands-after-2026-12-03` at `756ab68b8a4de2cddd62fc87101e4fe4c3a3bc48`, after expanded Spectrum cursor coordinates. Lands after 3 December.
+
 ### 2026-11-25 — Expanded Spectrum cursor coordinates (MX-21)
 
 Wide, Detail and Extended now read the same plot coordinates as their traces and rulers. Device retains its established readout. On a 32 kHz source, Wide ends at 16 kHz and Extended and Device suppress the readout beyond the measured range. Pointer movement opens no taps and schedules no transform or frame request.
