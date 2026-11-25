@@ -991,9 +991,10 @@ void cumulativeAverageSpectrum() {
 }
 
 void parkedCumulativeAverage() {
-    enum class Boundary { None, Burst, Locate, Join, Reset };
+    enum class Boundary { None, Burst, BurstWithScope, Locate, Join, Reset };
     constexpr int window = 480, hop = 240, block = 401, blocks = 33;
     constexpr int quietFrames = block * blocks, untilHop = hop - quietFrames % hop;
+    constexpr int burstFrames = 71;
     constexpr std::int64_t stamp = 800;
     constexpr std::uint64_t revision = 4;
     const std::array<float, window> zeros{};
@@ -1020,13 +1021,23 @@ void parkedCumulativeAverage() {
                exactBins(measured->binsDbfs, expected->binsDbfs);
     };
 
-    for (const auto boundary : {Boundary::None, Boundary::Burst, Boundary::Locate, Boundary::Join, Boundary::Reset}) {
+    for (const auto boundary : {Boundary::None, Boundary::Burst, Boundary::BurstWithScope, Boundary::Locate,
+                                Boundary::Join, Boundary::Reset}) {
         Fixture parked, reference;
         parked.tap = std::make_shared<ScopeTap>(48000., .25);
         reference.tap = std::make_shared<ScopeTap>(48000., .25);
         auto average = parked.broker.acquire(request);
         auto uninterrupted = reference.broker.acquire(request);
         SharedAnalysis::Lease staged, controlStaged;
+        SharedAnalysis::Lease scope, controlScope;
+        const bool withScope = boundary == Boundary::BurstWithScope;
+        const bool burstBetweenPumps = boundary == Boundary::Burst || withScope;
+        if (withScope) {
+            auto scopeRequest = request;
+            scopeRequest.outputs = SharedAnalysis::Scope;
+            scope = parked.broker.acquire(scopeRequest);
+            controlScope = reference.broker.acquire(scopeRequest);
+        }
         if (boundary == Boundary::Reset) {
             staged = parked.broker.acquire(request);
             controlStaged = reference.broker.acquire(request);
@@ -1049,6 +1060,13 @@ void parkedCumulativeAverage() {
         check(floor(first) && first->processedWindows == 1 && first->window && !first->window->advancing &&
                   settled.transforms == 0,
               "the first complete stopped Cumulative Average publishes an exact-zero result");
+        const auto firstScope = scope.read();
+        if (withScope) {
+            check(first && firstScope && firstScope == first->window && exactBins(firstScope->scopeLeft, zeros) &&
+                      exactBins(firstScope->scopeRight, zeros) && settled.taps == 1 && settled.domains == 1 &&
+                      settled.spectralPlans == 1 && settled.consumers == 2,
+                  "compatible Scope and Cumulative Average share one zero window, tap and domain");
+        }
 
         for (int i = 0; i < blocks; ++i) writePair(nullptr, block);
         const auto idle = parked.broker.stats();
@@ -1060,6 +1078,10 @@ void parkedCumulativeAverage() {
                   idle.analysisWindows == settled.analysisWindows && idle.transforms == settled.transforms &&
                   idle.publications == settled.publications,
               "periodic pumps do no work for an already-published zero cumulative interval through a ring wrap");
+        if (withScope) {
+            check(firstScope && scope.read() == firstScope,
+                  "a compatible Scope keeps its zero picture while the shared stopped interval wraps");
+        }
 
         constexpr std::int64_t admission = window + quietFrames;
         const bool stagedBoundary = boundary == Boundary::Join || boundary == Boundary::Reset;
@@ -1085,8 +1107,7 @@ void parkedCumulativeAverage() {
             writePair(signal.data(), untilHop - 1);
             check(average.readCumulativeAverage() == first && uninterrupted.readCumulativeAverage() == quietControl,
                   "stopped monitoring waits for the original partial cumulative hop");
-        } else if (boundary == Boundary::Burst) {
-            constexpr int burstFrames = 71;
+        } else if (burstBetweenPumps) {
             writePair(signal.data(), burstFrames, false);
             writePair(nullptr, untilHop - burstFrames - 1, false);
             const auto followingQuiet = parked.tap->lastParkedSilence();
@@ -1113,7 +1134,7 @@ void parkedCumulativeAverage() {
                   "a late or reset interval excludes every full window that starts before its writer fence");
         }
 
-        writePair(boundary == Boundary::Burst ? nullptr : signal.data(), 1);
+        writePair(burstBetweenPumps ? nullptr : signal.data(), 1);
         const auto resumed = average.readCumulativeAverage();
         const auto expected = uninterrupted.readCumulativeAverage();
         const auto activeStats = parked.broker.stats();
@@ -1127,9 +1148,22 @@ void parkedCumulativeAverage() {
                   !resumed->binsDbfs.empty() && resumed->binsDbfs.front() > adi::dsp::kDbFloor &&
                   first->processedWindows == 1 && activeStats.taps == 1 && activeStats.spectralPlans == 1 &&
                   activeStats.transforms == 1,
-              boundary == Boundary::Burst
+              burstBetweenPumps
                   ? "a burst between pumps preserves the cumulative denominator, bins and clock without an overrun"
                   : "the first resumed cumulative hop preserves the full denominator, immutable picture and source clock");
+        if (withScope) {
+            const auto visible = scope.read(), expectedScope = controlScope.read();
+            constexpr std::size_t firstBurst = window - untilHop;
+            check(resumed && visible && expectedScope && visible == resumed->window && visible != firstScope &&
+                      visible->firstSequence == expectedScope->firstSequence && visible->firstStamp == expectedScope->firstStamp &&
+                      visible->windowSerial == expectedScope->windowSerial && visible->transportRevision == revision &&
+                      !visible->advancing && exactBins(visible->scopeLeft, expectedScope->scopeLeft) &&
+                      exactBins(visible->scopeRight, expectedScope->scopeRight) && visible->scopeLeft.size() == window &&
+                      visible->scopeLeft[firstBurst - 1] == 0.f && visible->scopeLeft[firstBurst] == .5f &&
+                      visible->scopeLeft[firstBurst + burstFrames - 1] == .5f &&
+                      visible->scopeLeft[firstBurst + burstFrames] == 0.f && activeStats.domains == 1,
+                  "the shared Scope wakes on the original hop with the exact samples and source clock");
+        }
         if (stagedBoundary) {
             const auto next = staged.readCumulativeAverage();
             check(resumed && matches(next, controlStaged.readCumulativeAverage()) && next->processedWindows == 1 &&

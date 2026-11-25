@@ -1293,7 +1293,8 @@ struct SharedAnalysis::Domain {
         return (bits & Average1s) && !(bits & ~sharedOutputs) && averageParkedReady.load(std::memory_order_acquire);
     }
     bool canParkCumulativeAverage(std::uint32_t bits) const noexcept {
-        constexpr std::uint32_t sharedOutputs = CumulativeAverage | Spectrum;
+        // Raw Scope shares the same zero window and has no history to age.
+        constexpr std::uint32_t sharedOutputs = CumulativeAverage | Spectrum | Scope;
         return (bits & CumulativeAverage) && !(bits & ~sharedOutputs) &&
                cumulativeAverageQuiet.load(std::memory_order_acquire);
     }
