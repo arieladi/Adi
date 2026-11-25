@@ -123,6 +123,14 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - A generated pre/post pair starts 137 samples apart and first matches at heard sample 256. The gate verifies +6.02 and -6.02 dB, overlapping seek revisions, a replaced tap, and zero additional broker work after release. The ordinary reader still starts at sample 17.
 - Strict Release passed all ten suites, 5,430 checks. This is a headless producer slice. The signed comparison pane needs the matched columns and its display treatment.
 
+## 25 November 2026 — MX-21 matched Spectrogram columns
+
+**PR requested — `mixview/mx21-spectrogram-matched-columns-lands-after-2026-12-03`, `1854d60dc`, after `b04acc606`. Lands after 3 December.**
+
+- The producer joins only exact Pre FX and Post FX stamps from the same track and audible transport revision. It checks the FFT, hop and gain calibration, respects the heard horizon, and borrows immutable columns into bounded caller storage.
+- Signed post-minus-pre dB is available per valid bin. The probes cover missing stamps and buffers, independent tap sequences, delayed or mismatched revisions, partial future windows, both signs and censored values.
+- Strict Release passed 11 suites, 5,576 checks. This slice prepares the comparison data. The paired view's demand and presentation follow.
+
 ### 25 November — MX13 Focus musical windows
 
 **PR requested** `mixview/mx13-musical-window-lands-after-2026-12-03` at `5c88abf073d56cd9e5c99f3aeac3d4cb24a68532`, after captured true peak. Focus Scope offers One Beat and One Bar. The default is still One Bar. A view change clears the former interval and region and requests the new window on the same grouped sources. Tempo and signature edges share exact rounded sample positions. A Locate or selection at a rounded-down boundary starts the new interval. The existing Sum level summary remains readable with the added control.
