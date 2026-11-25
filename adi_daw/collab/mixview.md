@@ -17,6 +17,12 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - Two new component checks failed first. Release passed 1,190 shared-analysis, 558 Mix View and 594 spectrum assertions. The changed editor and its test compiled with warnings treated as errors. No new tap, transform or project edit.
 - Review ZIP SHA-256 `a72ae295222eb98ae907c01ba379e352bf65c1393c9ec92692dc55afd9c9241f`. Executable `5d5f1d8ee1ffd9118950edcba4ccac4bb880493f50dd880ed299fec721e7bc57`. Retest brief uses the same source hash.
 
+## 25 November 2026 · MX-13 Scope cursor beat edge · lands after 3 December
+
+- **PR requested** `mixview/mx13-scope-cursor-grid-edge-lands-after-2026-12-03` at `523f1bdba39e2f15a0451cdd3f3ba4891a620779`. At 123 BPM and 48 kHz the first sample of beat 1.3 is 46829. The cursor now uses the same half-open sample interval as capture, including when moving back to the previous beat, and reuses the current beat's label while the pointer remains inside it.
+- The component check failed only at the rounded-down edge before the fix. Release passed 1,191 shared-analysis, 564 Mix View and 594 spectrum assertions. The three changed units compiled with warnings treated as errors. No additional audio demand or project edit.
+- Review ZIP SHA-256 `d138e171e173771cee3f1579e893aa90d5214e5182cf27cc6cb7282e53ed5237`. Executable `5b06234043321b045aa67ee77feb737cf5e84b4ae301670bdffd16eb71a49ff5`. Retest brief uses the same source hash.
+
 ### 25 November — MX13 Focus musical windows
 
 **PR requested** `mixview/mx13-musical-window-lands-after-2026-12-03` at `5c88abf073d56cd9e5c99f3aeac3d4cb24a68532`, after captured true peak. Focus Scope offers One Beat and One Bar. The default is still One Bar. A view change clears the former interval and region and requests the new window on the same grouped sources. Tempo and signature edges share exact rounded sample positions. A Locate or selection at a rounded-down boundary starts the new interval. The existing Sum level summary remains readable with the added control.
