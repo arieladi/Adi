@@ -190,12 +190,12 @@ void gestures() {
     p.mouseDown(event(p, 675, 118));
     p.mouseDrag(event(p, 675, 85));
     p.mouseUp(event(p, 675, 85));
-    expect(f.values[trim] > .29 && f.values[trim] < .31, "Drive input trim targets its own band");
+    expect(f.values[static_cast<std::size_t>(trim)] > .29 && f.values[static_cast<std::size_t>(trim)] < .31, "Drive input trim targets its own band");
     p.select({0, 1, 0});
     for (int i = 0; i < 3; ++i) {
         const int step = f.ends;
-        p.mouseDown(event(p, 470.f + 70.f * i, 505));
-        expect(f.ends == step + 1 && f.wave[0].shape == Panel::Shape::SourceCorner && f.wave[0].bend == i - 1,
+        p.mouseDown(event(p, 470.f + 70.f * static_cast<float>(i), 505));
+        expect(f.ends == step + 1 && f.wave[0].shape == Panel::Shape::SourceCorner && f.wave[0].bend == static_cast<float>(i - 1),
                "one undo group sets a hard, medium or soft corner");
     }
     p.mouseDown(event(p, 22, 250));
@@ -409,7 +409,7 @@ void geometricPens() {
                          1, false, false, ctrl);
         };
         p.mouseDown(event(p, 22, 316)); // the pen grid is independent of pointer snapping
-        p.mouseDown(event(p, 22, 350.f + pen * 33));
+        p.mouseDown(event(p, 22, 350.f + static_cast<float>(pen * 33)));
         const auto start = at(.282f, .249f), end = at(.592f, .872f);
         const auto chartPixels = [&] {
             juce::Image image(juce::Image::RGB, 1000, 600, true);
@@ -567,8 +567,8 @@ void cachedDrawing() {
     panel.setSize(1000, 600);
     panel.bind(fixture.binding());
     const auto render = [&](float scale) {
-        juce::Image image(juce::Image::RGB, juce::roundToInt(panel.getWidth() * scale),
-                          juce::roundToInt(panel.getHeight() * scale), true);
+        juce::Image image(juce::Image::RGB, juce::roundToInt(static_cast<float>(panel.getWidth()) * scale),
+                          juce::roundToInt(static_cast<float>(panel.getHeight()) * scale), true);
         juce::Graphics graphics(image);
         graphics.addTransform(juce::AffineTransform::scale(scale));
         panel.paintEntireComponent(graphics, true);
@@ -577,7 +577,7 @@ void cachedDrawing() {
     const auto before = render(1);
     const auto plot = panel.curveBounds();
     const auto grid = [&](int sixteenth, int rowOffset = 0) {
-        const int y = juce::roundToInt(plot.getY() + plot.getHeight() * sixteenth / 16.f);
+        const int y = juce::roundToInt(plot.getY() + plot.getHeight() * static_cast<float>(sixteenth) / 16.f);
         return before.getPixelAt(323, y + rowOffset).getRed();
     };
     for (int i = 1; i < 16; ++i)
@@ -608,7 +608,7 @@ std::vector<float> samples(const char *path) {
     if (!input)
         throw std::runtime_error("cannot open audio fixture");
     const auto bytes = static_cast<std::streamsize>(input.tellg());
-    expect(bytes > 0 && bytes % sizeof(float) == 0, "invalid audio length");
+    expect(bytes > 0 && static_cast<std::size_t>(bytes) % sizeof(float) == 0, "invalid audio length");
     std::vector<float> values(static_cast<std::size_t>(bytes) / sizeof(float));
     input.seekg(0);
     expect(static_cast<bool>(input.read(reinterpret_cast<char *>(values.data()), bytes)), "incomplete audio");
@@ -633,8 +633,8 @@ void spectrumFrames() {
     for (double rate : {44100., 48000., 96000.}) {
         for (int i = 0; i < n; ++i) {
             const float tone = static_cast<float>(std::sin(2. * std::numbers::pi * bin * i / n));
-            left[i] = .25f * tone;
-            right[i] = .75f * tone;
+            left[static_cast<std::size_t>(i)] = .25f * tone;
+            right[static_cast<std::size_t>(i)] = .75f * tone;
         }
         feed(0, 17, rate);
         feed(17, 1000, rate);
@@ -642,7 +642,7 @@ void spectrumFrames() {
         feed(1017, n - 1017, rate);
         expect(scope.readSpectrum(packet) && packet.sampleRate == rate, "complete irregular-block FFT packet");
         for (int i = 0; i < n; ++i)
-            expect(packet.mono[i] == .5f * (left[i] + right[i]),
+            expect(packet.mono[static_cast<std::size_t>(i)] == .5f * (left[static_cast<std::size_t>(i)] + right[static_cast<std::size_t>(i)]),
                    "FFT packet preserves consecutive stereo input");
         const auto db = display.analyse(packet);
         const auto peak = std::max_element(db.begin(), db.end());
@@ -652,7 +652,7 @@ void spectrumFrames() {
         expect(std::abs(*peak + 6.0206f) < .005f && std::abs(std::log(expected / actual)) < .025,
                "FFT displays calibrated tone at its log frequency");
         for (int i = 0; i < n; ++i)
-            right[i] = -left[i];
+            right[static_cast<std::size_t>(i)] = -left[static_cast<std::size_t>(i)];
         feed(0, n, rate);
         expect(scope.readSpectrum(packet), "whole-block spectrum");
         const auto silent = display.analyse(packet);
@@ -722,16 +722,16 @@ void capture(const char *program, const char *destination, bool time, const char
     for (int i = 0; i < finalBar + bar; i += 256) {
         const int n = std::min(256, finalBar + bar - i);
         for (int j = 0; j < n; ++j) {
-            l[j] = input[2u * (i + j)];
-            r[j] = input[2u * (i + j) + 1];
+            l[static_cast<std::size_t>(j)] = input[2u * static_cast<unsigned>(i + j)];
+            r[static_cast<std::size_t>(j)] = input[2u * static_cast<unsigned>(i + j) + 1];
         }
         if (time) {
             scope.begin(key, l.data(), r.data(), static_cast<std::size_t>(n),
                         step * static_cast<std::uint64_t>(i), step, 48000.);
             for (int j = 0; j < n; ++j) {
                 const int offset = i + j - startFrame;
-                ol[j] = offset < 0 ? 0.f : nativeLeft[static_cast<std::size_t>(offset)];
-                orr[j] = offset < 0 ? 0.f : nativeRight[static_cast<std::size_t>(offset)];
+                ol[static_cast<std::size_t>(j)] = offset < 0 ? 0.f : nativeLeft[static_cast<std::size_t>(offset)];
+                orr[static_cast<std::size_t>(j)] = offset < 0 ? 0.f : nativeRight[static_cast<std::size_t>(offset)];
             }
             scope.end(ol.data(), orr.data(), static_cast<std::size_t>(n));
         } else {

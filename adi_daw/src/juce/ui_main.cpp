@@ -1054,7 +1054,7 @@ class AdiApplication final : public juce::JUCEApplication,
                 auto *view = editor.get();
                 out.frame = [view] {
                     view->frame();
-                    return std::string{};
+                    return view->error();
                 };
                 out.gone = [view] { return !view->valid(); };
                 out.view = std::move(editor);

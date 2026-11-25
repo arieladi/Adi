@@ -10480,6 +10480,14 @@ void pluginWindows(AppCommands &commands, settings::AppSettings &settings, const
     editorError = "Plug-in refused to show its editor";
     host.frame(key3);
     check(root.error() == editorError, "an editor's error reaches the Status Bar");
+    root.say({});
+    host.frame(key3);
+    check(root.error().empty(), "once: the same error is not said again while it stands");
+    editorError.clear();
+    host.frame(key3);
+    editorError = "Plug-in refused to show its editor";
+    host.frame(key3);
+    check(root.error() == editorError, "an error that comes back after the editor cleared it is said again");
     editorGone = true;
     host.frame(key3);
     check(root.error().find("closed its window") != std::string::npos && !host.shown(key3),
@@ -10530,6 +10538,73 @@ void pluginWindows(AppCommands &commands, settings::AppSettings &settings, const
     refuse = "This VST3 has no editor";
     check(!root.togglePluginWindow(3, false) && root.error() == refuse && !host.contains(key3),
           "an opener's refusal reaches the Status Bar, and no window opens");
+    commands.detach(root);
+    root.pluginHost = nullptr;
+    document->release();
+}
+// ADI-Shaper's own window (#716): of two built-ins only ADI-Shaper shows the wrench, as a plug-in
+// does, its name starting past it; a click reaches the editor factory with its device id.
+void shaperWrench(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "shaper-wrench.adi", true, {}, error);
+    check(document != nullptr, "a project for ADI-Shaper's wrench");
+    if (!document)
+        return;
+    document->store().db().exec("INSERT INTO plugin_refs(id,format,uid,name) VALUES"
+                                "(41,'internal','org.adidaw.builtin.adi-shaper','ADI-Shaper'),"
+                                "(42,'internal','org.adidaw.builtin.utility','Utility')");
+    std::vector<OpRequest> make(3);
+    make[0].opType = "chain.create";
+    make[0].payload = {{"id", 41}, {"track", 4}, {"ord", 0}, {"name", "Devices"}};
+    make[1].opType = "device.insert";
+    make[1].payload = {{"id", 41}, {"chain", 41}, {"ord", 0}, {"ref", 41}, {"name", "ADI-Shaper"}, {"latency", 0}};
+    make[2].opType = "device.insert";
+    make[2].payload = {{"id", 42}, {"chain", 41}, {"ord", 1}, {"ref", 42}, {"name", "Utility"}, {"latency", 0}};
+    check(document->ops().submit(std::move(make)).ok && document->synchronise(),
+          "ADI-Shaper and Utility on 3 Audio");
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "shaperwrench");
+    UiPeerRoot surfacePeer;
+    surfacePeer.setSize(1600, 1000);surfacePeer.addAndMakeVisible(root);
+    surfacePeer.setVisible(true);surfacePeer.addToDesktop(0);
+    root.afterEdit = [&] { document->synchronise(); };
+    root.devices.publication = [&] { return document->parameterFeed().current(); };
+    root.devices.parameterDemand = [&](const void *owner, const std::vector<std::int64_t> &ids) {
+        document->setParameterDemand(owner, ids);
+    };
+    root.setSize(1440, 900);
+    root.arrangement.geometry.selection.track = 4;
+    const auto refresh = [&] {
+        document->tick(0);
+        root.frame();
+        root.frame();
+    };
+    refresh();
+    FloatingHost host(root, commands, document->views(), document->view(), [](std::int64_t) { return true; }, false);
+    std::vector<std::int64_t> asked;
+    root.pluginHost = &host;
+    root.pluginEditor = [&](std::int64_t device, std::string &) {
+        asked.push_back(device);
+        AdiRootComponent::PluginEditorView view;
+        auto editor = std::make_unique<juce::Component>();
+        editor->setSize(320, 200);
+        view.view = std::move(editor);
+        return view;
+    };
+    auto &panels = root.devices.panels;
+    check(panels.size() == 2 && panels[0]->wrench.isVisible() && !panels[1]->wrench.isVisible(),
+          "of two built-ins, only ADI-Shaper shows the wrench");
+    check(panels.size() == 2 && panels[0]->wrench.getRight() <= panels[0]->title.getX() &&
+              panels[0]->title.getX() > panels[1]->title.getX(),
+          "ADI-Shaper's name starts past its wrench, Utility's where the wrench would stand");
+    if (panels.size() == 2) {
+        panels[0]->wrench.onClick();
+        root.frame();
+    }
+    check(asked == std::vector<std::int64_t>{41} && host.contains(AdiRootComponent::pluginWindowKey(41)) &&
+              panels[0]->wrench.getToggleState(),
+          "a click on ADI-Shaper's wrench reaches the editor factory with its device id");
+    host.closeAll(false);
     commands.detach(root);
     root.pluginHost = nullptr;
     document->release();
@@ -17565,6 +17640,7 @@ int main(int argc, char **argv) {
     trace("stripParamUndo", [&] { stripParamUndo(commands, temp.path()); });
     trace("deviceClipboard", [&] { deviceClipboard(commands, temp.path()); });
     trace("pluginWindows", [&] { pluginWindows(commands, settings, temp.path()); });
+    trace("shaperWrench", [&] { shaperWrench(commands, temp.path()); });
     trace("automationArm", [&] { automationArm(commands, temp.path()); });
     trace("armAndRecord", [&] { armAndRecord(commands, temp.path()); });
     trace("exportPage", [&] { exportPage(commands, temp.path()); });

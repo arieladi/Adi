@@ -23,9 +23,17 @@ if(ADI_WITH_JUCE)
         target_link_libraries(adi_shaper_panel_session_tests PRIVATE adi_core juce::juce_gui_basics)
         target_compile_definitions(adi_shaper_panel_session_tests PRIVATE JUCE_STANDALONE_APPLICATION=1)
         add_test(NAME adi_shaper_panel_session_tests COMMAND adi_shaper_panel_session_tests)
+
+        # The editor window's content as the app's factory builds it, on a real project.
+        juce_add_console_app(adi_shaper_panel_view_tests PRODUCT_NAME "adi_shaper_panel_view_tests")
+        target_sources(adi_shaper_panel_view_tests PRIVATE tests/adi_shaper_panel_view_tests.cpp
+            ${adi_shaper_editor_sources})
+        target_link_libraries(adi_shaper_panel_view_tests PRIVATE adi_core juce::juce_gui_basics)
+        target_compile_definitions(adi_shaper_panel_view_tests PRIVATE JUCE_STANDALONE_APPLICATION=1)
+        add_test(NAME adi_shaper_panel_view_tests COMMAND adi_shaper_panel_view_tests)
     endif()
 
     set_property(SOURCE ${adi_shaper_editor_sources} tests/adi_shaper_panel_tests.cpp
-        tests/adi_shaper_panel_session_tests.cpp APPEND PROPERTY COMPILE_OPTIONS
+        tests/adi_shaper_panel_session_tests.cpp tests/adi_shaper_panel_view_tests.cpp APPEND PROPERTY COMPILE_OPTIONS
         "$<TARGET_PROPERTY:adi_warnings,INTERFACE_COMPILE_OPTIONS>")
 endif()

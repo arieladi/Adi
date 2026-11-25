@@ -33,8 +33,6 @@ std::map<int, double> storedParameters(ProjectDocument& doc, std::int64_t device
 }
 AdiShaperPanelSession::AdiShaperPanelSession(ProjectDocument& doc, std::int64_t id)
     : document_(doc), id_(id), token_(doc.session().deviceRuntimeToken(id)) {
-    const auto publication = doc.parameterFeed().current();
-    for (const auto& device : *publication) if (device.id == id) { stamp_ = device.instance; break; }
     if (auto* live = instance()) {
         for (int i = 0; i < live->paramCount(); ++i) {
             const auto* d = live->paramAt(i);
@@ -44,36 +42,54 @@ AdiShaperPanelSession::AdiShaperPanelSession(ProjectDocument& doc, std::int64_t 
     }
 }
 AdiShaperPanelSession::~AdiShaperPanelSession() { cancel(); }
-device::DeviceInstance* AdiShaperPanelSession::instance() const {
+device::DeviceInstance* AdiShaperPanelSession::instance() {
     if (retired_) return nullptr;
-    auto* live = document_.session().resolveDevice(token_);
-    const auto publication = document_.parameterFeed().current();
-    const bool same = stamp_ == 0 || std::any_of(publication->begin(), publication->end(),
-        [&](const auto& device) { return device.id == id_ && device.instance == stamp_; });
-    if (!live || live->identity().uid != uid || !same) { retired_ = true; return nullptr; }
-    return live;
+    auto& session = document_.session();
+    // While the token resolves it is the same runtime, whatever stamp the feed shows: the feed
+    // re-stamps a restarted device only at its next tick, which can come after the editor has
+    // followed it.
+    auto* live = session.resolveDevice(token_);
+    if (live && live->identity().uid == uid) return live;
+    // An audio restart (Session::release, a new rate, block size or precision) gives the same
+    // device a new runtime. The editor follows it, dropping an edit in flight. A deleted device
+    // resolves to nothing until Undo restores it; only another device under this id retires the
+    // editor for good.
+    auto fresh = session.deviceRuntimeToken(id_);
+    auto* next = session.resolveDevice(fresh);
+    if (!next) return nullptr;
+    if (next->identity().uid != uid) { retired_ = true; return nullptr; }
+    token_ = std::move(fresh);
+    if (editing_) {
+        restore(*next);
+        editing_ = false; touched_.clear(); refresh();
+    }
+    return next;
 }
-void AdiShaperPanelSession::refresh() {
-    if (editing_) return;
+bool AdiShaperPanelSession::refresh() {
+    if (editing_) return false;
     auto* live = instance();
-    if (!live) { values_.clear(); return; }
+    if (!live) { const bool had = !values_.empty(); values_.clear(); return had; }
     // The native built-in's single snapshot walks its target array once.
     const auto state = Payload::from_cbor(live->saveState("state"), true, false);
-    if (!state.is_object() || !state.contains("params")) return;
+    if (!state.is_object() || !state.contains("params")) return false;
     const auto savedTitle = state.find("adiPresetTitle");
-    title_ = savedTitle != state.end() && savedTitle->is_string() ? savedTitle->get<std::string>() : std::string{};
-    values_ = defaults_;
+    auto title = savedTitle != state.end() && savedTitle->is_string() ? savedTitle->get<std::string>() : std::string{};
+    auto values = defaults_;
     for (const auto& [name, value] : state["params"].items()) {
         const int id = numericId(name);
-        if (defaults_.contains(id) && value.is_number()) values_[id] = value.get<double>();
+        if (defaults_.contains(id) && value.is_number()) values[id] = value.get<double>();
     }
+    const bool changed = values != values_ || title != title_;
+    values_ = std::move(values);
+    title_ = std::move(title);
+    return changed;
 }
 AdiShaperPanel::Binding AdiShaperPanelSession::binding() {
     AdiShaperPanel::Binding b;
     if (!title_.empty()) b.presetName = juce::String::fromUTF8(title_.c_str());
     b.parameterCount = defaults_.contains(416) ? 463 : 415;
     b.hasBandTrim = defaults_.contains(dsp::AdiShaper::WidthHighTrim + 1);
-    b.read = [this](int id) { const auto i = values_.find(id); return i == values_.end() ? 0.0 : i->second; };
+    b.read = [this](int id) { return value(id); };
     b.parameters = [this](Phase p, auto changes) { return parameters(p, changes); };
     if (defaults_.contains(Bank::firstId)) {
         b.wave = [this](Key k) { return wave(k); };
@@ -81,13 +97,17 @@ AdiShaperPanel::Binding AdiShaperPanelSession::binding() {
     }
     return b;
 }
+// Puts back what an unfinished edit previewed, where the device still plays it.
+void AdiShaperPanelSession::restore(device::DeviceInstance& live) {
+    for (const auto& [id, t] : touched_) {
+        const auto key = std::to_string(id);
+        if (live.getParam(key).normalized == t.after)
+            live.setParam(key, device::ParamValue::fromNormalized(t.before));
+    }
+}
 void AdiShaperPanelSession::cancel() {
     if (!editing_) return;
-    if (auto* live = instance()) for (const auto& [id, t] : touched_) {
-        const auto key = std::to_string(id);
-        if (live->getParam(key).normalized == t.after)
-            live->setParam(key, device::ParamValue::fromNormalized(t.before));
-    }
+    if (auto* live = instance()) restore(*live);
     editing_ = false; touched_.clear(); refresh();
 }
 bool AdiShaperPanelSession::parameters(Phase phase, std::span<const Change> changes) {
