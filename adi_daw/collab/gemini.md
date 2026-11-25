@@ -4,6 +4,17 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-25 — Item 1 (`walk/*` fixes, Round 2): `walk/b6-take-clears-range`
+
+| Branch | Head SHA | Touched files | Compiler (`-DADI_WERROR=ON`, Pd on, JUCE off) | Warnings | Touched headless suites | `adi_acceptance_wts01` | Verdict |
+|---|---|---|---|---|---|---|---|
+| `walk/b6-take-clears-range` | `18dbc1c0` | `src/adi/recording_commands.cpp`, `tests/test_audio_memory_capture.cpp`, `tests/test_recording_commands.cpp` | GCC 12.4.0 | 0 | `adi_recording_commands_tests` **192/0**, `adi_audio_memory_capture_tests` **32/0**, `adi_track_recording_tests` **33/0**, `adi_audio_recording_tests` **169/0** | **PASS** (46.90 s) | **PASS** |
+| `walk/b6-take-clears-range` | `18dbc1c0` | same | Clang 14.0.6 + libstdc++ 12 | 0 | `adi_recording_commands_tests` **192/0**, `adi_audio_memory_capture_tests` **32/0**, `adi_track_recording_tests` **33/0**, `adi_audio_recording_tests` **169/0** | **PASS** (39.66 s) | **PASS** |
+
+(No PR requested; run-only verification.)
+
+---
+
 ## 2026-11-25 — Item 1 (`walk/*` fixes, Round 1): `walk/a1-granted-buffer`, `walk/a6-vst3-editor`, `walk/a15-ui-tests-release-build`
 
 Verified the first three `walk/*` fix heads on origin (report branches `walk/windows10` `0668b7b7` and `walk/windows11` `ed351d30` carry markdown reports only). Built under GCC 12.4.0 and Clang 14.0.6 + libstdc++ 12 with `-DADI_WERROR=ON -DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF -DADI_ACCEPTANCE=ON -DCMAKE_BUILD_TYPE=Debug -g0`, running every touched headless suite and `adi_acceptance_wts01` (`ctest -R '^adi_acceptance_wts01$'`; note `ctest -L acceptance` also lists `adi_builtin_realtime_tests`, which is the separate DSP performance suite).
