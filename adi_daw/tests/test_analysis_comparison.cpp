@@ -629,6 +629,122 @@ void preparedWindowGain() {
         }
     }
 }
+void matchedSpectrogramColumns() {
+    using adi::ui::SpectrogramColumnPair;
+    using adi::ui::matchSpectrogramColumns;
+    constexpr int fftSize = 1024, hop = 256;
+    constexpr std::size_t binCount = fftSize / 2 + 1;
+    constexpr std::uint64_t revision = 53;
+    constexpr std::int64_t firstStamp = 256, lastStamp = 1792, heardEnd = lastStamp + fftSize;
+    constexpr std::array<std::int64_t, 6> preStamps{firstStamp, 512, 768, 1280, 1536, lastStamp};
+    constexpr std::array<std::int64_t, 6> postStamps{firstStamp, 768, 1024, 1280, 1536, lastStamp};
+    const auto preBins = std::make_shared<const std::vector<float>>(binCount, -24.f);
+    const auto postBins = std::make_shared<const std::vector<float>>(binCount, -18.f);
+    const auto build = [&](ScopePoint point, std::span<const std::int64_t> stamps,
+                           std::int64_t sequenceStart, const auto &bins) {
+        SharedAnalysis::Result result;
+        result.request = {7, point, fftSize};
+        result.request.window = adi::dsp::Window::Rectangular;
+        result.request.hopSize = hop;
+        result.request.outputs = SharedAnalysis::Spectrogram;
+        result.request.heardSpectrogramGrid = true;
+        result.outputs = result.request.outputs;
+        result.sampleRate = 48000.;
+        result.coherentGain = 1.;
+        result.hopSize = hop;
+        result.advancing = true;
+        result.transportRevision = revision;
+        result.firstStamp = stamps.back();
+        result.firstSequence = sequenceStart + stamps.back() - stamps.front();
+        for (auto stamp : stamps) {
+            const auto serial = static_cast<std::uint64_t>((stamp - stamps.front()) / hop + 1);
+            result.columns.push_back({serial, stamp, bins, sequenceStart + stamp - stamps.front()});
+        }
+        result.revision = result.windowSerial = result.historySerial = result.columns.back().serial;
+        return result;
+    };
+    auto pre = build(ScopePoint::ChainInput, preStamps, 1000, preBins);
+    auto post = build(ScopePoint::PreFader, postStamps, 3400, postBins);
+    pre.generation = 3; pre.sourceEpoch = 4;
+    post.generation = 8; post.sourceEpoch = 12;
+
+    std::array<SpectrogramColumnPair, 6> output{};
+    auto matches = matchSpectrogramColumns(pre, post, heardEnd, revision, output);
+    check(matches.size() == 5 && matches[0].pre == &pre.columns[0] && matches[0].post == &post.columns[0] &&
+              matches[1].pre == &pre.columns[2] && matches[1].post == &post.columns[1] &&
+              matches[2].pre == &pre.columns[3] && matches[2].post == &post.columns[3] &&
+              matches[3].pre == &pre.columns[4] && matches[3].post == &post.columns[4] &&
+              matches[4].pre == &pre.columns[5] && matches[4].post == &post.columns[5],
+          "Spectrogram comparison borrows only exact ordered stamps despite independent sequences and source epochs");
+    check(!matches.empty() && matches.front().changeDb(16) == 6.f && !matches.front().changeDb(binCount),
+          "a matched Spectrogram bin subtracts pre from post and rejects a bin outside the FFT grid");
+
+    const auto newest = matchSpectrogramColumns(pre, post, heardEnd - 1, revision, std::span(output).first(2));
+    check(newest.size() == 2 && newest[0].pre == &pre.columns[3] && newest[1].pre == &pre.columns[4],
+          "bounded output keeps the newest eligible pair of columns in ascending order");
+    check(matchSpectrogramColumns(pre, post, firstStamp + fftSize - 1, revision, output).empty() &&
+              matchSpectrogramColumns(pre, post, firstStamp + fftSize, revision, output).size() == 1 &&
+              matchSpectrogramColumns(pre, post, heardEnd, revision, {}).empty(),
+          "the matching horizon excludes a partial future window and an empty destination");
+
+    auto incompatible = post;
+    const auto refused = [&] { return matchSpectrogramColumns(pre, incompatible, heardEnd, revision, output).empty(); };
+    incompatible.transportRevision = revision + 1;
+    check(refused() && matchSpectrogramColumns(pre, post, heardEnd, revision + 1, output).empty(),
+          "overlapping old stamps cannot cross the transport revision or the requested seek floor");
+    auto unknownPre = pre, unknownPost = post;
+    unknownPre.transportRevision = unknownPost.transportRevision = 0;
+    check(matchSpectrogramColumns(unknownPre, unknownPost, heardEnd, 0, output).empty(),
+          "equal zero revisions do not establish a heard transport epoch");
+    incompatible = post;
+    incompatible.advancing = false;
+    check(refused(), "parked histories cannot be compared as heard audio");
+    incompatible = post;
+    incompatible.request.heardSpectrogramGrid = false;
+    check(refused(), "ordinary free-running histories cannot masquerade as heard-grid data");
+    incompatible = post;
+    incompatible.request.track = 8;
+    check(refused() && matchSpectrogramColumns(post, pre, heardEnd, revision, output).empty(),
+          "the producer accepts only the ordered pre and post taps of the same track");
+    incompatible = post;
+    incompatible.sampleRate = 44100.;
+    check(refused(), "different source rates cannot share the same Spectrogram bins");
+    incompatible = post;
+    incompatible.request.window = adi::dsp::Window::Hann;
+    check(refused(), "different window functions cannot share the same Spectrogram bins");
+    incompatible = post;
+    incompatible.request.channel = SharedAnalysis::Channel::Side;
+    check(refused(), "different channel projections cannot share the same Spectrogram bins");
+    incompatible = post;
+    incompatible.request.fftSize = 512;
+    check(refused(), "different FFT sizes cannot share the same Spectrogram bins");
+    incompatible = post;
+    incompatible.request.hopSize = incompatible.hopSize = 128;
+    check(refused(), "different hops cannot share the same Spectrogram grid");
+    incompatible = post;
+    incompatible.coherentGain = .5;
+    check(refused(), "different coherent gains cannot share the same Spectrogram calibration");
+
+    auto broken = post;
+    broken.columns[1].binsDbfs.reset();
+    broken.columns[3].binsDbfs = std::make_shared<const std::vector<float>>(binCount - 1, -18.f);
+    matches = matchSpectrogramColumns(pre, broken, heardEnd, revision, output);
+    check(matches.size() == 3 && matches[0].post == &broken.columns[0] && matches[1].post == &broken.columns[4] &&
+              matches[2].post == &broken.columns[5],
+          "missing and wrong-sized bin buffers are skipped without losing the valid neighbors");
+
+    constexpr auto floor = adi::dsp::kDbFloor;
+    const SharedAnalysis::Column lower{1, firstStamp, std::make_shared<const std::vector<float>>(
+        std::initializer_list<float>{-18.f, floor, -18.f, floor - 1.f, -18.f, -18.f}), 0};
+    const SharedAnalysis::Column higher{1, firstStamp, std::make_shared<const std::vector<float>>(
+        std::initializer_list<float>{-24.f, -18.f, floor, floor, std::numeric_limits<float>::quiet_NaN(),
+                                     std::numeric_limits<float>::infinity()}), 0};
+    const SpectrogramColumnPair numbers{&lower, &higher};
+    check(numbers.changeDb(0) == -6.f && !numbers.changeDb(1) && !numbers.changeDb(2) &&
+              !numbers.changeDb(3) && !numbers.changeDb(4) && !numbers.changeDb(5) && !numbers.changeDb(6) &&
+              !SpectrogramColumnPair{}.changeDb(0),
+          "signed dB change rejects censored, non-finite and missing measurements");
+}
 } // namespace
 int main() {
     calibrationAndSharing();
@@ -639,6 +755,7 @@ int main() {
     boundedCapture();
     directSpectrumAndIndependentIntervals();
     preparedWindowGain();
+    matchedSpectrogramColumns();
     std::printf("AnalysisComparison: %d checks, %d failures, %zu exact compared bins\n", checks, failures,
                 comparedBins);
     return failures ? 1 : 0;

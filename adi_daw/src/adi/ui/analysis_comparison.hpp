@@ -110,7 +110,6 @@ class AnalysisComparison final {
     bool configured_ = false, visible_ = false, frozen_ = false;
 
     static bool normalize(Endpoint &) noexcept;
-    static bool sameCalibration(const SharedAnalysis::Request &, const SharedAnalysis::Request &) noexcept;
     static bool validPicture(Picture) noexcept;
     static Metadata metadata(const SharedAnalysis::Result &, std::uint64_t) noexcept;
     static Snapshot snapshot(Picture);
@@ -120,4 +119,18 @@ class AnalysisComparison final {
     bool acquire(Input &) const;
     bool restart(bool retainReference) noexcept;
 };
+
+// Borrow immutable columns from two snapshots. Keep the snapshots alive while
+// the caller's output buffer is in use.
+struct SpectrogramColumnPair {
+    const SharedAnalysis::Column *pre = nullptr, *post = nullptr;
+    [[nodiscard]] std::optional<float> changeDb(std::size_t bin) const noexcept;
+};
+
+// The newest complete windows from a same-broker, same-track pre/post pair.
+// Returns an ascending view into the caller's storage. Missing windows remain
+// gaps in heard time, even when the surrounding column serials are consecutive.
+[[nodiscard]] std::span<const SpectrogramColumnPair> matchSpectrogramColumns(
+    const SharedAnalysis::Result &pre, const SharedAnalysis::Result &post, std::int64_t heardEnd,
+    std::uint64_t minimumRevision, std::span<SpectrogramColumnPair> storage) noexcept;
 } // namespace adi::ui
