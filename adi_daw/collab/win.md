@@ -31,6 +31,8 @@ Win, in the engine seat's place, read each branch at the head the gemini seat lo
 
 **Lent to the Codex work seat** (RESERVATIONS.md, PLAN rows on loan), each row's paths for that row only, on `codex-linux/<row>` branches: DF-E76, DF-E36's tests, DF-E67 (b), DF-E12, DF-E78 (on engine-win's export branch) and DF-E77 (on the devices lane's vinyl branch).
 
+**Changed the same day:** the Codex work seat is at its limit until Sunday 29 November. Its Linux rows go to the seats that can prove them now: DF-E76, DF-E67 (b), DF-E12 and DF-E78 to the window-fn seat (it builds on Linux; branches `window-fn/<row>`), and DF-E36's tests and DF-E77 back to the devices lane, whose rows they are. The devices lane also takes its queue's item 6 and DF-E68 (a); the `.amxd` chain stays held (ADR-0248 d8) and shaper-scope-feed stays blocked until ADI-Shaper's panel has its sheet.
+
 ---
 
 ## 2026-11-25 — status; the shaper panel's hold ruled; seats for the rest of the week
