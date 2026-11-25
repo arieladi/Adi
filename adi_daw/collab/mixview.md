@@ -16,6 +16,12 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+## 25 November 2026 — before-date cumulative software component gates
+
+- The cumulative `678bfbe1464a` product still uses the strict Release build. An isolated diagnostic build of the existing shell fixture used one unused-local warning exception on its own compilation unit to get past the previously reported Release fixture warning. The product and tracked sources were unchanged.
+- The three software-only fixture modes passed 921 Mix View, 350 Arrangement and 8 Appearance checks. The assertion shown at entry is the fixture's intentional watchdog probe.
+- The warning remains with the fixture's owner for the canonical strict target. The before-date cumulative review remains requested at its existing head.
+
 ## 25 November 2026 — MX-30 Scope with Cumulative Average · lands after 3 December
 
 - Branch `mixview/mx30-parked-scope-average-lands-after-2026-12-03` at `3167cecd45f2`, after the monitored burst fix `7301a65a85fc`. A raw Scope on the same source and profile can share the completed zero window and stay idle alongside Cumulative Average.
