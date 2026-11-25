@@ -17,6 +17,12 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 25 November 2026 — Panel stack and curve DSP on current main
+
+The six panel commits now descend directly from `f34daf534`. The four panel heads in order are `4dcd01aa4`, `bc8fe3b98`, `afe59ac33` and `0f431eddb`. Window's four fixes are included. The seventh commit is the DSP-only evaluator change on `clones/shaper-curve-edit` at `190e836e6`. There are no merge commits in the stack. All five updated heads differ from their previously tested versions only in the two upstream documentation files. A fresh headless run passed 11 of 11 device suites in each precision and all three panel suites.
+
+The panel remains held for after 3 December and for the director's agreement to its proposal sheet. The 46-check rack replay, comparison picture, and outstanding shared-shell warning are recorded under the earlier panel proof. PR requested for the separate DSP change on `clones/shaper-curve-edit` — Reuse compiled curve spans during point height edits.
+
 ## 25 November 2026 — Three periodic Drive shapes
 
 Drive has three periodic responses. They occur separately in 22, 28 and 15 programs. Of these, 21, 27 and 10 use a nonzero contour. With neutral auxiliary controls there are eight sine cases, no triangle cases and two saw cases. Six of the sine programs also have representable timing. None of the programs mixes two of these shapes. Each band needs an independent selection.
