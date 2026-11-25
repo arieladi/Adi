@@ -17,6 +17,14 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 25 November 2026 — PR requested for Drive together with the crossover repair
+
+PR requested — `clones/shaper-drive-integration` at `519d1f17b` — Integrate the repaired steep crossovers with multiband Drive. Lands after 3 December. This merge includes both the 32 kHz split-spacing and slew repair and the measured 24 dB response repair. Both remain on their own earlier review branches. All four official suites passed at each Pd precision on this exact merge. The Drive kernel and its 427-control canvas are byte-identical to the previous four-track qualification.
+
+One 96 kHz sine independently identified the cause of the largest three-band error. With only the low band active at 116.54094 Hz, 24 dB per octave, an 83 Hz tone gave 0.00043087 RMS error after settling on the previous build. The repaired crossover matched every sample in four steady-tone intervals. With power, saw and rounded clipping running in different bands, the 96 kHz steady musical error fell from 0.001704 to 0.00000015. All three complete three-band programs, all three sample rates and both block sizes now fit within 0.000734 per-channel RMS. The largest input differences in the remaining 48 kHz high-band power case are small enough to change the sign of a nearly silent substep. Supplying the same source-band input to ADI reduced its output residual to 0.00000034.
+
+A controlled alternating run on the merged device confirms one CPU shortfall with the 12/24 dB three-band configuration. At 256 frames the median callback used 0.958 million thread cycles for ADI and 0.804 million for the reference. At 2,048 it used 7.609 million and 5.950 million. The four-instance existing-mode result measures a different workload. A private register-level count traced the three-band cost to the power approximation leaving its vector range on quiet high-band input. A new after-3-December topic, `clones/shaper-drive-three-band-cost`, will check a larger finite vector range and the separately measured fourfold power approximation. Its files are the Drive kernel and its focused tests. The earlier integration is ready to review independently.
+
 ## 25 November 2026 — PR requested for the combined Drive
 
 PR requested — `clones/shaper-drive-integration` at `03a7210ab` — Combine the multiband Drive responses and calibrate their reconstruction. Lands after 3 December. This is a single reviewable device with the four-track repair and all five new nonlinear responses. Win can still take the four-track repair independently before 3 December.
