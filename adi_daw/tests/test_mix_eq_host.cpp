@@ -15,6 +15,7 @@
 #include <cstdlib>
 #include <functional>
 #include <limits>
+#include <numbers>
 #include <new>
 #include <thread>
 #include <type_traits>
@@ -651,6 +652,155 @@ void neutralEqGraphSuspension(bool recallContractedDefault) {
               output[0].front() > 0.f && output[0].front() != input[0].front(),
           "gain is applied from the first sample of the next nonzero block");
 }
+
+void statefulEqGraphSuspension(bool dynamicKey) {
+    auto live = make(q::makeBackend());
+    auto continuous = make(q::makeBackend());
+    check(live && continuous, "stateful suspension creates two real native EQs");
+    if (!live || !continuous) return;
+    const auto configure = [dynamicKey](device::DeviceInstance& eq) {
+        // Zero Phase, 5 ms Lookahead, a static FIR bell, and a separate
+        // spectral bell on the Low plan. Then test the bell with a routed key.
+        const bool regular = set(eq, 0, 1) && set(eq, 8, .5) &&
+               set(eq, 9, 1) && set(eq, 14, .65) &&
+               set(eq, 34, 1) && set(eq, 38, .65) && set(eq, 39, .43) &&
+               set(eq, 615, 1) && set(eq, 617, 0) && set(eq, 618, 0) && set(eq, 729, 0);
+        return regular && (!dynamicKey ||
+            (set(eq, 1, 1) && set(eq, 40, .2) && set(eq, 42, 1) &&
+             set(eq, 48, .25) && set(eq, 50, 0) && set(eq, 51, 0)));
+    };
+    const bool configured = configure(*live) && configure(*continuous);
+    check(configured, "Zero Phase, lookahead and the spectral plan are loaded before prepare");
+    if (!configured) return;
+
+    constexpr int maximum = 257;
+    constexpr int firLength = 8192, spectralLength = 1024, lookahead = 240;
+    constexpr int expectedLatency = firLength + spectralLength + lookahead;
+    using Block = std::array<std::array<float, maximum>, 2>;
+    struct Programme final : engine::Node {
+        explicit Programme(const Block& source) : source_(source) {}
+        bool alwaysProcess() const noexcept override { return true; }
+        void process(const engine::NodeIo& io) noexcept override {
+            for (int channel = 0; channel < io.channels; ++channel)
+                std::copy_n(source_[static_cast<std::size_t>(channel)].data() + io.blockOffset,
+                            io.frames, io.out[channel] + io.blockOffset);
+        }
+        const Block& source_;
+    };
+    Block input{}, key{}, liveOutput{}, referenceOutput{};
+    Programme liveSource(input), referenceSource(input), liveKey(key), referenceKey(key);
+    device::DeviceNode liveNode(*live), referenceNode(*continuous);
+    engine::Graph liveGraph, referenceGraph;
+    const auto prepare = [dynamicKey](engine::Graph& graph, Programme& source, Programme& keySource,
+                                      device::DeviceNode& effect) {
+        const auto sourceId = graph.addNode(source), effectId = graph.addNode(effect);
+        if (!graph.connect(sourceId, effectId)) return false;
+        if (dynamicKey && !graph.connect(graph.addNode(keySource), effectId, engine::Bus::Sidechain))
+            return false;
+        graph.setOutput(effectId);
+        graph.prepare(48000., maximum);
+        return graph.ok();
+    };
+    const bool ready = prepare(liveGraph, liveSource, liveKey, liveNode) &&
+                       prepare(referenceGraph, referenceSource, referenceKey, referenceNode);
+    check(ready, "both stateful EQ graphs prepare through DeviceNode");
+    if (!ready) return;
+    check(live->latencySamples() == expectedLatency && continuous->latencySamples() == expectedLatency &&
+              liveGraph.latencySamples() == expectedLatency && referenceGraph.latencySamples() == expectedLatency,
+          "prepared graph PDC includes Zero Phase FIR, spectral window and 240 lookahead samples");
+    // The controller flag forces a continuous reference without changing its
+    // graph quality or the DSP plan prepared on the original realtime path.
+    continuous->setOffline(true);
+
+    const std::array<float*, 2> livePlanes{liveOutput[0].data(), liveOutput[1].data()};
+    const std::array<float*, 2> referencePlanes{referenceOutput[0].data(), referenceOutput[1].data()};
+    const auto allocationsBefore = allocations, freesBefore = deallocations;
+    std::int64_t samplePosition = 0;
+    std::uint64_t renderBlock = 0;
+    bool identical = true;
+    const auto render = [&](int frames) {
+        engine::AudioIo io;
+        io.frames = frames;
+        io.numOut = 2;
+        io.streamTimeSamples = samplePosition;
+        io.renderBlock = ++renderBlock;
+        inAudio = true;
+        io.out = livePlanes.data();
+        liveGraph.process(io);
+        io.out = referencePlanes.data();
+        referenceGraph.process(io);
+        inAudio = false;
+        samplePosition += frames;
+        bool nonzero = false;
+        for (std::size_t channel = 0; channel < input.size(); ++channel)
+            for (std::size_t sample = 0; sample < static_cast<std::size_t>(frames); ++sample) {
+                const auto reference = referenceOutput[channel][sample];
+                identical = identical && std::bit_cast<std::uint32_t>(liveOutput[channel][sample]) ==
+                                             std::bit_cast<std::uint32_t>(reference);
+                nonzero = nonzero || std::abs(reference) > .001f;
+            }
+        return nonzero;
+    };
+    const auto renderProgramme = [&](int frames, bool marker) {
+        for (int sample = 0; sample < frames; ++sample) {
+            const auto t = samplePosition + sample;
+            const auto index = static_cast<std::size_t>(sample);
+            input[0][index] = static_cast<float>(t % 23 - 11) / 64.f;
+            input[1][index] = static_cast<float>(t % 17 - 8) / 32.f;
+            if (dynamicKey) {
+                const auto sine = static_cast<float>(std::sin(2. * std::numbers::pi *
+                    static_cast<double>(t % 48) / 48.));
+                key[0][index] = .75f * sine;
+                key[1][index] = .5f * sine;
+            }
+        }
+        if (marker) {
+            input[0][0] = .625f;
+            input[1][0] = -.4375f;
+        }
+        return render(frames);
+    };
+    const auto runSignal = [&] {
+        bool nonzero = renderProgramme(79, true);
+        for (int samples = 79; samples < 2 * expectedLatency; samples += maximum)
+            nonzero = renderProgramme(maximum, false) || nonzero;
+        return nonzero;
+    };
+    check(runSignal(), "the stateful reference outputs nonzero programme before the silence gap");
+    const auto before = liveGraph.stats().nodesSuspended;
+    input = {};
+    key = {};
+    bool drainedAudio = false;
+    for (int samples = 0; samples < 6 * expectedLatency; samples += maximum)
+        drainedAudio = render(maximum) || drainedAudio;
+    check(drainedAudio, "the continuous EQ has pending audio to drain after the source stops");
+
+    // These callbacks enter at different FIR and spectral phases and finish
+    // away from either hop boundary, even if earlier drain lengths align.
+    constexpr std::array skipFrames{17, 239, 61, 127, 3, 257, 89};
+    const auto beforeVariable = liveGraph.stats().nodesSuspended;
+    for (const auto frames : skipFrames) render(frames);
+    const auto asleep = liveGraph.stats().nodesSuspended;
+    check(asleep > before && asleep - beforeVariable == static_cast<std::int64_t>(skipFrames.size()) &&
+              referenceGraph.stats().nodesSuspended == 0,
+          "the reset-free stateful EQ skips every irregular silent callback while the reference stays awake");
+
+    if (dynamicKey) {
+        key[0][0] = .875f;
+        key[1][0] = .625f;
+        render(67);
+        check(liveGraph.stats().nodesSuspended == asleep,
+              "an external key wakes the sleeping spectral EQ while main is still silent");
+    }
+    check(runSignal(), "new programme emerges from the continuous EQ after the silence gap");
+    check(liveGraph.stats().nodesSuspended == asleep,
+          "the first nonzero programme wakes the stateful EQ immediately");
+    check(identical, "the EQ tail, skipped silence and entire wake are bitwise continuous");
+    check(liveGraph.latencySamples() == expectedLatency && referenceGraph.latencySamples() == expectedLatency,
+          "timing remains at the prepared PDC across drain, suspension and wake");
+    check(allocations == allocationsBefore && deallocations == freesBefore,
+          "stateful EQ callbacks allocate and free nothing through suspension and wake");
+}
 }
 int main() {
     check(!make({}),"factory refuses absent DSP backend");
@@ -663,6 +813,8 @@ int main() {
     neutralSilenceCanBeOmitted<float>();neutralSilenceCanBeOmitted<double>();
     neutralEqGraphSuspension(false);
     neutralEqGraphSuspension(true);
+    statefulEqGraphSuspension(false);
+    statefulEqGraphSuspension(true);
     offlineInitialLatency(false);
     offlineInitialLatency(true);
     for(const auto rate:{44100.,48000.,96000.})for(const int channels:{1,2}){exactCore<float>(channels,rate);exactCore<double>(channels,rate);}

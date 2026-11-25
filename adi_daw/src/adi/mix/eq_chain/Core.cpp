@@ -708,6 +708,13 @@ void Core::reprepareStopped(PrepareSpec spec, const Settings &s) {
     impl_.swap(next);
 }
 bool Core::isPrepared() const noexcept { return impl_->prepared.load(std::memory_order_acquire); }
+void Core::trackEqSilenceForSuspension(bool enabled) noexcept { impl_->equalizer->trackSilenceForSuspension(enabled); }
+bool Core::hasStationaryEqSilence() const noexcept {
+    const auto &i = *impl_;
+    return i.active.eqEnabled && !downstream(i.active) && i.candidateVersion == 0 &&
+        i.equalizer->hasStationarySilence();
+}
+void Core::skipSilentEqFrames(std::uint32_t frames) noexcept { impl_->equalizer->skipSilentFrames(frames); }
 bool Core::requestConfiguration(const Settings &s) noexcept { return impl_->request(s); }
 bool Core::serviceConfiguration() { return impl_->service(); }
 std::uint64_t Core::requestedWorkVersion() const noexcept {

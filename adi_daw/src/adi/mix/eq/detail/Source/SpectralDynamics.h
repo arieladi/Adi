@@ -44,6 +44,8 @@ public:
     void setResolution(Resolution resolution) noexcept;
     void process(double* const main[2], const double* const sidechain[2],
                  int channels, int samples, bool bypass = false) noexcept;
+    [[nodiscard]] bool hasStationarySilence() const noexcept;
+    void skipSilentFrames(std::size_t frames) noexcept;
     int latencySamples() const noexcept;
     int fftSize() const noexcept;
     int preparedFftSize(Resolution resolution) const noexcept;

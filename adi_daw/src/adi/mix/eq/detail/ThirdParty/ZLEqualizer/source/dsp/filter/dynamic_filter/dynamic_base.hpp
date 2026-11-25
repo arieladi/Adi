@@ -56,6 +56,10 @@ namespace adi_eq_dsp::filter {
             return filter_;
         }
 
+        const FilterType& getFilter() const noexcept {
+            return filter_;
+        }
+
     protected:
         FilterType filter_{};
         adi_eq_dsp::filter::DynamicSideHandler<FloatType>& handler_;

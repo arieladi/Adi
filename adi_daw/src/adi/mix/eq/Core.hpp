@@ -31,6 +31,10 @@ class Core {
     // spectral resolutions. Used by a serial owner to size key transport off
     // the callback; this is not the currently admitted/reported latency.
     std::int32_t maximumLatencySamples() const noexcept;
+    // Optional audio-owner certificate checked only for a settled native plan.
+    void trackSilenceForSuspension(bool enabled) noexcept;
+    [[nodiscard]] bool hasStationarySilence() const noexcept;
+    void skipSilentFrames(std::uint32_t frames) noexcept;
     // Passive child inspection for the serial owner.
     LatencyChange pendingLatencyChange() const noexcept;
     // Standalone owner must reserve an offer before relaying it to the graph.

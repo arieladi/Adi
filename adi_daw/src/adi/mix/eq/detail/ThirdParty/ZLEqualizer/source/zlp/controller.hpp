@@ -72,6 +72,9 @@ namespace adi_eq_zlp {
                      std::array<double*, 2> side_pointers,
                      size_t num_samples);
 
+        [[nodiscard]] bool hasStationarySilence() const noexcept;
+        void skipSilentFrames(size_t frames) noexcept;
+
         void setFilterStructure(const FilterStructure filter_structure) {
             filter_structure_.store(filter_structure, std::memory_order::relaxed);
             to_update_.signal();

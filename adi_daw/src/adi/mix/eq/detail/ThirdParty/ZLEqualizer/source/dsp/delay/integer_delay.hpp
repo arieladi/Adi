@@ -11,6 +11,7 @@
 
 #include <span>
 #include <algorithm>
+#include <cmath>
 
 #include "../vector/vector.hpp"
 
@@ -74,6 +75,23 @@ namespace adi_eq_dsp::delay {
                 }
             }
             head_ = next_head;
+        }
+
+        [[nodiscard]] bool hasStationarySilence() const noexcept {
+            return std::ranges::all_of(states_, [](const auto& channel) {
+                return std::ranges::all_of(channel, [](const auto sample) {
+                    return sample == FloatType{} && !std::signbit(sample);
+                });
+            });
+        }
+
+        void skipSilentFrames(const size_t frames) noexcept {
+            if (capacity_ == 0) {
+                return;
+            }
+            const auto advance = static_cast<int>(frames % static_cast<size_t>(capacity_));
+            head_ = (head_ + advance) % capacity_;
+            tail_ = (tail_ + advance) % capacity_;
         }
 
         void setDelay(const FloatType delay_seconds) {

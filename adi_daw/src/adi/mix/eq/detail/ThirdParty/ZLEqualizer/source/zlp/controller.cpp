@@ -788,6 +788,32 @@ namespace adi_eq_zlp {
 
     template void Controller::process<false>(std::array<double*, 2>, std::array<double*, 2>, size_t);
 
+    bool Controller::hasStationarySilence() const noexcept {
+        if ((c_filter_structure_ != kMinimum && c_filter_structure_ != kZero)
+            || c_editor_on_ || c_match_bypass_on_ || c_solo_on_ || c_loudness_matcher_on_
+            || c_phase_flip_on_ || c_sgc_on_ || c_agc_on_ || output_gain_.isSmoothing()) {
+            return false;
+        }
+        for (const auto band : not_off_total_) {
+            const auto channels = c_lrms_[band] == FilterStereo::kStereo ? size_t{2} : size_t{1};
+            if (c_dynamic_on_[band] || c_fractional_active_[band]
+                || !tdf_filters_[band].getFilter().hasStationarySilence(channels)) {
+                return false;
+            }
+        }
+        return (!c_delay_on_ || delay_.hasStationarySilence())
+            && (c_filter_structure_ != kZero || zero_stereo_fir_.hasStationarySilence());
+    }
+
+    void Controller::skipSilentFrames(const size_t frames) noexcept {
+        if (c_delay_on_) {
+            delay_.skipSilentFrames(frames);
+        }
+        if (c_filter_structure_ == kZero) {
+            zero_stereo_fir_.skipSilentFrames(frames);
+        }
+    }
+
     void Controller::publishLatency() noexcept {
         if (latency_observer_.changed != nullptr)
             latency_observer_.changed(latency_observer_.context,
