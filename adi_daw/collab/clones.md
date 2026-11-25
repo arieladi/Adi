@@ -17,6 +17,14 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 25 November 2026 — Pan delay range across 873 saved programs
+
+The 0–40 ms Pan range on `clones/shaper-pan-range-1125` at `1d47fa1b2` was measured with the independent transfer selector on `clones/shaper-pan-transfer` at `16cbbf6c8`. The registered device compared the previous route, the selected route still at 2 ms, and that same route with each program's saved range. The 58 programs contain 45 standard Pan bands and all 13 previously held stereo-transfer bands. The remaining 815 retain their prior measurements.
+
+At the 0.001 stereo RMS threshold, saved order went 63, 63, 70 of 873 across those arms. Fixed order went 57, 57, 61. All prior passes remained within tolerance. Seven saved-order gains came from four standard and three transfer bands. Four fixed-order gains came from one standard and three transfer bands. With the selected route held constant, the range edit improved 48 and worsened 10 in saved order. In fixed order it improved 42, worsened 15 and tied once.
+
+Nine of the original 81 regressions were treated. Comparing the complete prior and new settings, eight improved and one worsened in either order. The below-threshold count within those 81 rose from three to four in saved order and stayed at one in fixed order. All 58 fixed-order historical hashes and all 40 available genuine saved-order hashes matched. For the 18 older results recorded as fixed-route fallbacks, fresh saved-order replays reproduced all 18 prior threshold classifications. Paired differences use fresh renders of each actual route.
+
 ## 25 November 2026 — Far-channel delay range in each Pan band
 
 `clones/shaper-pan-range-1125` at `1d47fa1b2` — Set the far-channel delay range independently in each Pan band. Lands after 3 December. Three appended controls, IDs 922–924, cover 0–40 ms and default to 2 ms. History is allocated during preparation so a range change can use earlier audio immediately. The full 40 ms equals 7,680 samples at 192 kHz. Stationary contours read the lower whole sample, and moving contours interpolate.
