@@ -342,6 +342,20 @@ foreach(adi_pd_call IN ITEMS "canvas_path(x, e, item);" "canvas_stdpath(e, item)
     adi_pd_replace("            ${adi_pd_call}"
         "            pd_error(0, \"ADI refused [declare %s %s] (DEV-09): a patch cannot change where Pd looks for code\", flag, item);")
 endforeach()
+# DF-E67 (b): the loader ends every abstraction with canvas_setargs(0, 0),
+# whose copy of no atoms still took a byte; the last one stayed pending until
+# the instance went, and its teardown never freed it (LSan: a byte per
+# canvas load). No arguments store no copy (canvas_new already makes the
+# empty list it needs), and the teardown frees whatever is pending.
+adi_pd_replace("    THISGUI->i_newargv = copybytes(argv, argc * sizeof(t_atom));"
+    "    THISGUI->i_newargv = argc > 0 ? copybytes(argv, argc * sizeof(t_atom)) : 0;")
+adi_pd_replace([=[
+    g_template_freepdinstance();
+    freebytes(THISGUI, sizeof(*THISGUI));]=] [=[
+    g_template_freepdinstance();
+    if (THISGUI->i_newargv)
+        freebytes(THISGUI->i_newargv, THISGUI->i_newargc * sizeof(t_atom));
+    freebytes(THISGUI, sizeof(*THISGUI));]=])
 file(WRITE "${adi_pd_overlay}/g_canvas.c" "${adi_pd_text}")
 # DF-E36 (a)'s "menusave and menusaveas, which write files": a patch cannot
 # write files through its canvas. `savetofile` writes the patch's text to any
