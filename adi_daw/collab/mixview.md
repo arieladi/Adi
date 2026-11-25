@@ -173,6 +173,10 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - The missing selector failed first. All five frozen projections resolved the same 750 Hz boost and 5,625 Hz cut, with constant frame requests, transforms and active tap count. Strict Release passed 11 suites, 5,621 checks.
 - Review ZIP SHA-256 `01cb37aef4615623d4d0b6cecaf39caf270edf78e57b79dd683c328995cdf01f`. Executable `500383f5834177c299a6c01c8afae5d96bbe2c3bf9e35554e6a71b6ac3b69793`. Retest brief uses the same source hash.
 
+## 25 November 2026 · needs Window / Win · strict Release shell test
+
+- On current main, the shared test helper `tests/ui_test_hygiene.hpp:76` declares `kind` in a loop whose calls disappear in Release. The warning-as-error blocks the shell fixture, including the Arrangement and Appearance gates. The Debug report loop needs a Debug guard inside the existing platform guard. The Mix View seat is continuing the strict app and independent suites on `mixview/review-cumulative-20261122`.
+
 ### 25 November — MX13 Focus musical windows
 
 **PR requested** `mixview/mx13-musical-window-lands-after-2026-12-03` at `5c88abf073d56cd9e5c99f3aeac3d4cb24a68532`, after captured true peak. Focus Scope offers One Beat and One Bar. The default is still One Bar. A view change clears the former interval and region and requests the new window on the same grouped sources. Tempo and signature edges share exact rounded sample positions. A Locate or selection at a rounded-down boundary starts the new interval. The existing Sum level summary remains readable with the added control.
