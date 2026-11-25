@@ -151,6 +151,67 @@ void panDelayBlend(const std::string& directory, bool crossed) {
     }
 }
 
+void powerDriveCanvas(const std::string& directory, bool crossed) {
+    using Engine = adi::device::LibPdEngine;
+    using Shaper = adi::dsp::AdiShaper;
+    adi::device::PdLatencyReceiver latency;
+    Engine path(directory, "ADI-Shaper.pd", 2, 2, Engine::Execution::Automatic, Engine::BlockMode::WholeBlocks);
+    path.addSearchPath(ADI_PD_PATCH_DIR);
+    std::string error;
+    check(path.open(latency, error) && path.isNative() == !crossed, "open the selected Drive playback path");
+    path.prepare(48000, 64);
+    path.bindParameters(adi::device::parsePdDeclarations(adi::builtinCanvas(uid)));
+    const auto send = [&](Shaper::Param id, float value) {
+        check(path.sendParameter(static_cast<int>(id) + 1, value), "send Drive setup");
+    };
+    send(Shaper::DriveOn, 1);
+    send(Shaper::driveParam(Shaper::Band::Mid, Shaper::DriveStyle), 0);
+    send(Shaper::DriveMidPower, 1);
+    for (int i = 0; i < 8; ++i)
+        send(Shaper::driveParam(Shaper::Band::Mid, static_cast<Shaper::DriveControl>(Shaper::Drive1 + i)), 50);
+    std::array<float, 64> left{}, right{}, outL{}, outR{};
+    const float* in[]{left.data(), right.data()};
+    float* out[]{outL.data(), outR.data()};
+    adi::engine::NodeIo io;
+    io.in = in;
+    io.out = out;
+    io.channels = 2;
+    io.frames = 64;
+    for (int block = 0; block < 12; ++block) {
+        left.fill(0);
+        right.fill(0);
+        if (block == 6) left[36] = .97f;
+        if (block == 9) right[56] = -.83f;
+        path.process(io);
+        // The two original impulse peaks arrive 16 frames after each marker.
+        if (block == 6)
+            check(std::abs((crossed ? outR : outL)[52] - .499988f) < .001f, "positive signed-power peak");
+        if (block == 10)
+            check(std::abs((crossed ? outL : outR)[8] + .469761f) < .001f, "negative signed-power peak");
+    }
+}
+
+void powerDriveState(DeviceInstance& device) {
+    for (int i = 0; i < 3; ++i) {
+        const auto id = std::to_string(931 + i);
+        const auto* desc = device.paramAt(418 + i);
+        check(desc && desc->id == id && device.getParam(id).real == 0., "power switches append off");
+        set(device, 931 + i, i == 1 ? 0. : 1.);
+    }
+    auto next = open();
+    const auto state = device.saveState("state");
+    check(next->loadState("state", state), "recall independent saturation choices");
+    auto sparse = adi::Payload::from_cbor(state);
+    for (int i = 0; i < 3; ++i) {
+        const auto id = std::to_string(931 + i);
+        check(next->getParam(id).real == (i == 1 ? 0. : 1.), "restore each band's power switch");
+        for (const auto* group : {"params", "real"}) sparse.at(group).erase(id);
+    }
+    check(next->loadState("state", adi::Payload::to_cbor(sparse)), "restore a state preceding the power switches");
+    for (int i = 931; i <= 933; ++i)
+        check(next->getParam(std::to_string(i)).real == 0., "sparse recall restores the earlier saturation law");
+}
+
 void panBlendState(DeviceInstance& device) {
     constexpr std::array ids{856, 857, 858};
     for (std::size_t i = 0; i < ids.size(); ++i) {
@@ -381,10 +442,11 @@ void savedSplitFrequency() {
 int main() try {
     auto device = open();
     const auto* info = adi::findBuiltin(uid);
-    check(info && info->name == "ADI-Shaper" && device->paramCount() == 418, "device registration");
+    check(info && info->name == "ADI-Shaper" && device->paramCount() == 421, "device registration");
     for (int id = 1; id <= 415; ++id)
         check(device->paramAt(id - 1) && device->paramAt(id - 1)->id == std::to_string(id), "contiguous stable parameter IDs");
     panBlendState(*device);
+    powerDriveState(*device);
     device = open();
     check(device->wantsDeviceTransport() && device->latencySamples() == 0, "position and latency");
     for (int id = 23; id <= 26; ++id) set(*device, id, 0);  // half-bar gate
@@ -499,6 +561,8 @@ int main() try {
     const auto editedDir = edited.path().string();
     panDelayBlend(ADI_SHAPER_PATCH_DIR, false);
     panDelayBlend(editedDir, true);
+    powerDriveCanvas(ADI_SHAPER_PATCH_DIR, false);
+    powerDriveCanvas(editedDir, true);
     cachedPdTransport(ADI_SHAPER_PATCH_DIR, true);
     cachedPdTransport(editedDir, false);
     modulationPd(editedDir, false, false);

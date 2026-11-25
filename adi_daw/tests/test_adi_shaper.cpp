@@ -20,6 +20,7 @@ static_assert(Shaper::VolumeLowSlope == 127 && Shaper::VolumeHighSlope == 130 &&
 static_assert(Shaper::SweepOn == 208 && Shaper::SweepLowPolarity == 283 && Shaper::DriveOn == 286);
 static_assert(Shaper::CrushOn == 340 && Shaper::BaseCount == 415);
 static_assert(Shaper::PanLowDelayBlend == 855 && Shaper::PanHighDelayBlend == 857);
+static_assert(Shaper::DriveLowPower == 930 && Shaper::DriveHighPower == 932);
 static_assert(Shaper::driveParam(Band::High, Shaper::OutputTrim) + 1 == Shaper::CrushOn);
 static_assert(Shaper::modParam(Stage::Crush, Band::High, Shaper::Secondary8) + 1 == Shaper::BaseCount);
 int failures = 0;
@@ -1007,6 +1008,36 @@ void driveDryAndLatency() {
     check(aligned, "all three dry Drive bands preserve the 12/24 crossover phase and sixteen-sample delay");
 }
 
+void powerDriveBands() {
+    for (int selected = 0; selected < 3; ++selected) {
+        std::array<Shaper, 3> racks;
+        for (auto& rack : racks) {
+            rack.set(Shaper::DriveOn, 1);
+            rack.set(static_cast<Shaper::Param>(Shaper::DriveOn + 1), 3);
+            for (int b = 0; b < 3; ++b) {
+                const auto band = static_cast<Band>(b);
+                rack.set(Shaper::driveParam(band, Shaper::DriveMix), b == selected ? 100.f : 0.f);
+                rack.set(Shaper::driveParam(band, Shaper::DriveStyle), 0);
+                for (int i = 0; i < 8; ++i)
+                    rack.set(Shaper::driveParam(band, static_cast<Shaper::DriveControl>(Shaper::Drive1 + i)), 50);
+            }
+        }
+        racks[1].set(static_cast<Shaper::Param>(Shaper::DriveLowPower + (selected + 1) % 3), 1);
+        racks[2].set(static_cast<Shaper::Param>(Shaper::DriveLowPower + selected), 1);
+        float peakChange = 0;
+        bool neighborIsDry = true;
+        for (int i = 0; i < 1536; ++i) {
+            const float l = static_cast<float>(.5 * std::sin(.008 * i) + .4 * std::sin(.17 * i) + .3 * std::cos(1.3 * i));
+            const float r = static_cast<float>(.42 * std::cos(.012 * i) + .3 * std::sin(.22 * i) - .3 * std::sin(1.1 * i));
+            const auto original = one(racks[0], l, r);
+            neighborIsDry &= one(racks[1], l, r) == original;
+            const auto power = one(racks[2], l, r);
+            peakChange = std::max({peakChange, std::abs(power[0] - original[0]), std::abs(power[1] - original[1])});
+        }
+        check(neighborIsDry && peakChange > .002f, "only the selected wet band changes its saturation law");
+    }
+}
+
 void driveAndCrush() {
     Shaper rack;
     rack.set(Shaper::DriveOn, 1);
@@ -1143,6 +1174,7 @@ int main() {
     modulationBands();
     driveDryAndLatency();
     driveAndCrush();
+    powerDriveBands();
     crushHoldClockBlocks();
     if (failures == 0) std::puts("ADI-Shaper DSP fixtures passed");
     return failures == 0 ? 0 : 1;

@@ -844,6 +844,12 @@
 #X msg 3860 111 p 856 \$1;
 #X obj 3860 148 adi.param \$0 858 0 100 50 % lin Pan_High_Delay_Blend;
 #X msg 3860 175 p 857 \$1;
+#X obj 4490 20 adi.param \$0 931 0 1 0 - toggle Drive_Low_Power_Saturation;
+#X msg 4490 47 p 930 \$1;
+#X obj 4490 84 adi.param \$0 932 0 1 0 - toggle Drive_Mid_Power_Saturation;
+#X msg 4490 111 p 931 \$1;
+#X obj 4490 148 adi.param \$0 933 0 1 0 - toggle Drive_High_Power_Saturation;
+#X msg 4490 175 p 932 \$1;
 #X connect 0 0 1 0;
 #X connect 1 0 2 0;
 #X connect 0 1 1 1;
@@ -1690,3 +1696,9 @@
 #X connect 842 0 1 0;
 #X connect 843 0 844 0;
 #X connect 844 0 1 0;
+#X connect 845 0 846 0;
+#X connect 846 0 1 0;
+#X connect 847 0 848 0;
+#X connect 848 0 1 0;
+#X connect 849 0 850 0;
+#X connect 850 0 1 0;

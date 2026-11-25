@@ -437,7 +437,11 @@ void AdiShaper::setMod(Param id, float value) noexcept {
 
 void AdiShaper::set(Param id, float value) noexcept {
     if (id < MasterMix || id >= Count || !std::isfinite(value)) return;
-    if (id >= PanLowDelayBlend) {
+    if (id >= DriveLowPower) {
+        drives_[static_cast<std::size_t>(id - DriveLowPower)].setPowerSaturation(value >= .5f);
+        return;
+    }
+    if (id >= PanLowDelayBlend && id <= PanHighDelayBlend) {
         panHistory_[static_cast<std::size_t>(id - PanLowDelayBlend)].setBlend(value);
         return;
     }

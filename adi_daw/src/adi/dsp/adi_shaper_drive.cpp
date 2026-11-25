@@ -47,6 +47,12 @@ constexpr std::array<double,33> rectGain{
     .41626222,.39068521,.36903397,.35063857,.33494174,.32148527,.30987649,.29980891,
     .29100422,.28327260,.27642702,.27033272,.26487023,.25995288,.25549255,.25143078,
     .24771312,.24429436,.24113551,.23820631,.23548045,.23293363,.23054671,.22830192};
+constexpr std::array<double,33> powerGain{
+    1.000000000, .994110707, .977123053, .950077226, .914723820, .873256774, .827949747, .780772872,
+    .733473067, .687447899, .643805400, .603281143, .566191929, .532739893, .502892567, .476462156,
+    .453167693, .432745441, .414868582, .399215211, .385495538, .373425750, .362772923, .353347100,
+    .344987458, .337515698, .330815593, .324779425, .319319607, .314360289, .309836888, .305694557,
+    .301886563};
 
 // The gain knots are fixed. Only the position within a segment changes as
 // the contour moves, so build its Hermite coefficients once.
@@ -68,6 +74,7 @@ constexpr auto gainSegments(const std::array<double, 33>& values) noexcept {
 
 constexpr auto clipSegments = gainSegments(clipGain);
 constexpr auto rectSegments = gainSegments(rectGain);
+constexpr auto powerSegments = gainSegments(powerGain);
 
 double compensation(const std::array<GainSegment, 32>& segments, float amount) noexcept {
     const double pos = 32.0 * amount;
@@ -141,12 +148,25 @@ void AdiShaperDrive::reset() noexcept {
     input_ = {};
     wet_ = {};
     inputHead_ = wetHead_ = 0;
+    powerHead_ = driveDelay;
 }
 
 void AdiShaperDrive::setMode(Mode mode) noexcept {
     if (mode_ == mode) return;
     mode_ = mode;
+    powerHead_ = driveDelay;
     previousDrive_ = -1;
+}
+
+void AdiShaperDrive::setPowerSaturation(bool enabled) noexcept {
+    if (powerSaturation_ == enabled) return;
+    powerSaturation_ = enabled;
+    if (mode_ == Mode::Saturate && previousDrive_ >= 0.0f) {
+        const float latest = powerHead_ < driveDelay
+            ? powerAmounts_[(powerHead_ + driveDelay - 1) % driveDelay] : previousDrive_;
+        tune(latest);
+    }
+    powerHead_ = driveDelay;
 }
 
 void AdiShaperDrive::setTrims(float inputNormalized, float outputNormalized) noexcept {
@@ -164,6 +184,16 @@ void AdiShaperDrive::setTrims(float inputNormalized, float outputNormalized) noe
 
 void AdiShaperDrive::tune(float amount) noexcept {
     previousDrive_ = amount;
+    const bool power = powerSaturation_ && mode_ == Mode::Saturate;
+    if (power) {
+        const double d = amount;
+        powerExponent_ = 1.0 / (1.0 + 6.0 * d * d);
+        pre_ = inputGain_;
+        post_ = outputGain_ * compensation(powerSegments, amount);
+        // The power curve approaches the linear transfer continuously.
+        driveFade_ = 0.0;
+        return;
+    }
     const double a = 1.0+amount, square=a*a, fourth=square*square;
     const bool rect = mode_ == Mode::Rectify;
     pre_ = inputGain_ * (rect ? fourth : fourth*fourth);
@@ -222,7 +252,7 @@ AdiShaperDrive::Phases AdiShaperDrive::interpolate(const Stereo* history) const 
     return out;
 }
 
-template<int Factor>
+template<int Factor, bool Power>
 AdiShaperDrive::StereoSum AdiShaperDrive::oversample(const Stereo* inputHistory) noexcept {
     constexpr std::size_t taps = 16 * Factor + 1;
     const auto upsampled = interpolate<Factor>(inputHistory);
@@ -234,7 +264,16 @@ AdiShaperDrive::StereoSum AdiShaperDrive::oversample(const Stereo* inputHistory)
         Stereo wet{};
         for (std::size_t c=0; c<2; ++c) {
             const double input = upsampled[p][c];
-            double shaped = shape(input * pre_, channels_[c]) * post_;
+            const double z = input * pre_;
+            double shaped;
+            if constexpr (Power) {
+                channels_[c].lastZ = z;
+                const double value = previousDrive_ == 0.0f ? z
+                    : std::copysign(std::pow(std::abs(z), powerExponent_), z);
+                shaped = value * post_;
+            } else {
+                shaped = shape(z, channels_[c]) * post_;
+            }
             if (fading) {
                 const double zeroDrive = (input * inputGain_) * outputGain_;
                 shaped = zeroDrive + driveFade_ * (shaped - zeroDrive);
@@ -256,13 +295,30 @@ AdiShaperDrive::StereoSum AdiShaperDrive::oversample(const Stereo* inputHistory)
 }
 
 void AdiShaperDrive::process(float& left, float& right, float driveNormalized) noexcept {
-    if (!std::isfinite(driveNormalized)) driveNormalized = std::max(0.0f,previousDrive_);
-    if (driveNormalized != previousDrive_) tune(std::clamp(driveNormalized,0.0f,1.0f));
+    const bool power = powerSaturation_ && mode_ == Mode::Saturate;
+    if (!std::isfinite(driveNormalized))
+        driveNormalized = power && powerHead_ < driveDelay
+            ? powerAmounts_[(powerHead_ + driveDelay - 1) % driveDelay] : std::max(0.0f, previousDrive_);
+    if (power) {
+        const float requested = std::clamp(driveNormalized, 0.0f, 1.0f);
+        if (powerHead_ == driveDelay) {
+            powerAmounts_.fill(requested);
+            powerHead_ = 0;
+        }
+        driveNormalized = powerAmounts_[powerHead_];
+        powerAmounts_[powerHead_] = requested;
+        powerHead_ = (powerHead_ + 1) % driveDelay;
+    }
+    if (driveNormalized != previousDrive_) {
+        const auto amount = std::clamp(driveNormalized,0.0f,1.0f);
+        if (amount != previousDrive_) tune(amount);
+    }
     inputHead_ = inputHead_ == 0 ? inputs-1 : inputHead_-1;
     const auto inputHead = static_cast<std::size_t>(inputHead_);
     input_[inputHead] = input_[inputHead+inputs] = {left, right};
     const Stereo* in = input_.data()+inputHead_;
-    auto base = factor_ == 4 ? oversample<4>(in) : oversample<2>(in);
+    auto base = power ? (factor_ == 4 ? oversample<4, true>(in) : oversample<2, true>(in))
+                        : (factor_ == 4 ? oversample<4, false>(in) : oversample<2, false>(in));
     for (std::size_t c=0; c<channels_.size(); ++c) {
         auto& dc = channels_[c].dc;
         const double high=base[c]-dc;
