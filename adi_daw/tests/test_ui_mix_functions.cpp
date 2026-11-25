@@ -102,6 +102,32 @@ struct MixFocusTestAccess {
                 return label->getText();
         return {};
     }
+    static void scopeRegionPointer(MixFocus &focus, void (juce::Component::*handler)(const juce::MouseEvent &),
+                                   juce::Point<float> start, juce::Point<float> end) {
+        const auto &plot = focus.plot_;
+        const auto pointInPlot = [&](juce::Point<float> relative) {
+            return juce::Point<float>{plot.getX() + relative.x * plot.getWidth(),
+                                      plot.getY() + relative.y * plot.getHeight()};
+        };
+        const auto now = juce::Time::getCurrentTime();
+        const auto pressed = handler != &juce::Component::mouseUp;
+        const juce::MouseEvent event{juce::Desktop::getInstance().getMainMouseSource(), pointInPlot(end),
+            juce::ModifierKeys{pressed ? juce::ModifierKeys::leftButtonModifier : 0},
+            1.f, 0.f, 0.f, 0.f, 0.f, &focus, &focus, now, pointInPlot(start), now, 1, start != end};
+        (static_cast<juce::Component &>(focus).*handler)(event);
+    }
+    static void dragScopeRegion(MixFocus &focus, juce::Point<float> start, juce::Point<float> end) {
+        scopeRegionPointer(focus, &juce::Component::mouseDown, start, start);
+        scopeRegionPointer(focus, &juce::Component::mouseDrag, start, end);
+        scopeRegionPointer(focus, &juce::Component::mouseUp, start, end);
+    }
+    static juce::String scopeRegionText(const MixFocus &focus) {
+        for (auto *child : focus.getChildren())
+            if (const auto *label = dynamic_cast<const juce::Label *>(child);
+                label && label->isVisible() && label->getTitle() == "Scope region")
+                return label->getText().removeCharacters(",");
+        return {};
+    }
     static std::optional<std::int64_t> scopeMidpoint(const MixFocus &focus) {
         if (!focus.scopeRange_) return {};
         return focus.scopeRange_->first + static_cast<std::int64_t>(focus.scopeRange_->frames / 2);
@@ -3184,6 +3210,10 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
     MixFocusTestAccess::moveScopePointer(focus, .5f, .25f);
     check(MixFocusTestAccess::scopeCursorText(focus).isEmpty(),
           "Scope cannot supply a cursor before it has received source audio");
+    MixFocusTestAccess::dragScopeRegion(focus, {.5f, .25f}, {.625f, .25f});
+    check(MixFocusTestAccess::scopeRegionText(focus).isEmpty(),
+          "Scope cannot measure a region before it receives source audio");
+    MixFocusTestAccess::moveScopePointer(focus, .5f, .25f);
 
     const auto writeUntil = [&](std::int64_t target) {
         std::array<float, chunk> pcmA{}, pcmB{}, rightA{}, rightB{};
@@ -3237,12 +3267,53 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
           "the positive and negative half-scale ordinates show the same dBFS magnitude");
     static_cast<juce::Component &>(focus).mouseExit(pointer);
     check(MixFocusTestAccess::scopeCursorText(focus).isEmpty(), "leaving the Scope clears its pointer readout");
+
+    const juce::Point<float> regionStart{.5f, .25f}, regionEnd{.625f, .25f};
+    MixFocusTestAccess::scopeRegionPointer(focus, &juce::Component::mouseDown, regionStart, regionStart);
+    MixFocusTestAccess::scopeRegionPointer(focus, &juce::Component::mouseDrag, regionStart, regionEnd);
+    const auto forward = MixFocusTestAccess::scopeRegionText(focus);
+    check(forward.contains("48000") && forward.contains("60000") && forward.contains("1000.0") &&
+              forward.contains("1250.0") && forward.contains("250.0 ms") && forward.contains("4.0 Hz"),
+          "dragging from 50 to 62.5 percent measures exactly 12000 samples of the heard 48 kHz bar");
+    MixFocusTestAccess::scopeRegionPointer(focus, &juce::Component::mouseUp, regionStart, regionEnd);
+    MixFocusTestAccess::moveScopePointer(focus, .75f, .25f);
+    check(!forward.isEmpty() && MixFocusTestAccess::scopeRegionText(focus) == forward,
+          "releasing the pointer commits the heard region and ordinary hover leaves it in place");
+    MixFocusTestAccess::dragScopeRegion(focus, regionEnd, regionStart);
+    check(!forward.isEmpty() && MixFocusTestAccess::scopeRegionText(focus) == forward,
+          "reversing the drag gives the same sorted endpoints, period and pitch");
+
+    MixFocusTestAccess::scopeRegionPointer(focus, &juce::Component::mouseDown, regionStart, regionStart);
+    MixFocusTestAccess::scopeRegionPointer(focus, &juce::Component::mouseUp, regionStart, regionEnd);
+    check(!forward.isEmpty() && MixFocusTestAccess::scopeRegionText(focus) == forward,
+          "the last coordinate of a fast press and release is included without an intervening drag event");
+
+    // 1/128 of a 96000-sample bar is exactly 750 samples. A 64 Hz
+    // reciprocal is nearest C1 under the DAW's middle-C convention.
+    MixFocusTestAccess::dragScopeRegion(focus, regionStart, {.5078125f, .25f});
+    const auto pitch = MixFocusTestAccess::scopeRegionText(focus);
+    check(pitch.contains("48000") && pitch.contains("48750") && pitch.contains("64.0 Hz") &&
+              pitch.contains("C1"), "the reciprocal period uses the same note convention as Spectrum");
+    MixFocusTestAccess::dragScopeRegion(focus, regionStart, regionStart);
+    check(MixFocusTestAccess::scopeRegionText(focus).isEmpty(),
+          "a zero-length click clears the previous region without inventing a frequency");
     const auto hovered = broker->stats();
     check(hovered.consumers == active.consumers && hovered.taps == active.taps &&
               hovered.spectralPlans == active.spectralPlans && hovered.transforms == active.transforms &&
               hovered.cursorReads == active.cursorReads && hovered.frameRequests == active.frameRequests &&
               hovered.workerPasses == active.workerPasses && History(doc->store()).head() == head,
-          "Scope cursor movement performs no analysis and authors no project edit");
+          "Scope cursor and region movement perform no analysis and author no project edit");
+
+    MixFocusTestAccess::scopeRegionPointer(focus, &juce::Component::mouseDown, regionStart, regionStart);
+    MixFocusTestAccess::scopeRegionPointer(focus, &juce::Component::mouseDrag, regionStart, regionEnd);
+    const auto previousBounds = focus.getBounds();
+    focus.setBounds(previousBounds.withWidth(previousBounds.getWidth() - 8));
+    MixFocusTestAccess::scopeRegionPointer(focus, &juce::Component::mouseUp, regionStart, regionEnd);
+    check(MixFocusTestAccess::scopeRegionText(focus).isEmpty(),
+          "a resize during the held drag cannot combine the old and new plot coordinates");
+    focus.setBounds(previousBounds);
+    frame();
+
     juce::ComboBox *channels = nullptr;
     for (auto *component : focus.getChildren())
         if (component->getTitle() == "Focus Scope channels") channels = dynamic_cast<juce::ComboBox *>(component);
@@ -3253,7 +3324,11 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
             channels->setSelectedId(static_cast<int>(view), juce::sendNotificationSync);
             frame();
         };
+        MixFocusTestAccess::dragScopeRegion(focus, regionStart, regionEnd);
+        const bool wasMeasurable = !MixFocusTestAccess::scopeRegionText(focus).isEmpty();
         select(FocusScopeChannels::Mid);
+        check(wasMeasurable && MixFocusTestAccess::scopeRegionText(focus).isEmpty(),
+              "changing channel projection clears the region tied to the previous projection");
         check(!MixFocusTestAccess::sumPulseAt(focus, .125f, .75f),
               "selecting Mid never presents the old stereo bins as Mid");
         writeUntil(2 * bar);
@@ -3299,6 +3374,14 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
         MixFocusTestAccess::moveScopePointer(focus, .5f, .625f);
         check(MixFocusTestAccess::scopeCursorText(focus).contains("-6.0 dBFS"),
               "the second Stack lane uses its own signed full-scale axis");
+        const juce::Point<float> stackStart{.5f, .625f}, stackEnd{.625f, .625f};
+        MixFocusTestAccess::dragScopeRegion(focus, stackStart, stackEnd);
+        check(MixFocusTestAccess::scopeRegionText(focus).contains("240000") &&
+                  MixFocusTestAccess::scopeRegionText(focus).contains("252000"),
+              "a region in the second Stack lane uses that lane's heard interval");
+        MixFocusTestAccess::dragScopeRegion(focus, stackStart, regionEnd);
+        check(MixFocusTestAccess::scopeRegionText(focus).isEmpty(),
+              "a drag crossing Stack lanes cannot commit a region from mixed ordinates");
         focus.select(second);
         display->setSelectedId(5, juce::sendNotificationSync);
         frame();
@@ -3348,10 +3431,15 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
                 differenceSpectrum = dynamic_cast<juce::ToggleButton *>(component);
         check(differenceSpectrum != nullptr, "Difference exposes a separately selectable spectrum");
         if (differenceSpectrum) {
+            MixFocusTestAccess::dragScopeRegion(focus, regionStart, regionEnd);
+            check(!MixFocusTestAccess::scopeRegionText(focus).isEmpty(),
+                  "an aligned Difference waveform can be measured before switching to its spectrum");
             differenceSpectrum->setToggleState(true, juce::dontSendNotification);
             if (differenceSpectrum->onClick) differenceSpectrum->onClick();
             check(MixFocusTestAccess::scopeCursorText(focus).isEmpty(),
                   "choosing the Difference spectrum immediately hides the waveform cursor");
+            check(MixFocusTestAccess::scopeRegionText(focus).isEmpty(),
+                  "choosing the Difference spectrum clears the waveform region");
             frame();
             // The demand is picked up by a newly requested full bar.
             writeUntil(8 * bar);
@@ -3359,6 +3447,9 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
             check(MixFocusTestAccess::requestsResidualSpectrum(focus) && MixFocusTestAccess::hasDifference(focus) &&
                       MixFocusTestAccess::scopeCursorText(focus).isEmpty(),
                   "a completed Difference spectrum never exposes a waveform time or dBFS ordinate cursor");
+            MixFocusTestAccess::dragScopeRegion(focus, regionStart, regionEnd);
+            check(MixFocusTestAccess::scopeRegionText(focus).isEmpty(),
+                  "a completed Difference spectrum never starts a time-domain region");
             differenceSpectrum->setToggleState(false, juce::dontSendNotification);
             if (differenceSpectrum->onClick) differenceSpectrum->onClick();
             frame();
@@ -3367,9 +3458,16 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
 
         MixFocusTestAccess::moveScopePointer(focus, .5f, .25f);
         check(!MixFocusTestAccess::scopeCursorText(focus).isEmpty(), "the Difference waveform cursor is visible before Locate");
+        MixFocusTestAccess::scopeRegionPointer(focus, &juce::Component::mouseDown, regionStart, regionStart);
+        MixFocusTestAccess::scopeRegionPointer(focus, &juce::Component::mouseDrag, regionStart, regionEnd);
+        check(!MixFocusTestAccess::scopeRegionText(focus).isEmpty(),
+              "the Difference region is visible during its drag before Locate");
         const auto seekAt = driver.position();
         check(doc->mailbox().post(TransportMailbox::Command::Locate, seekAt),
               "queue a same-position Difference Locate with a live scope cursor");
+        MixFocusTestAccess::scopeRegionPointer(focus, &juce::Component::mouseDrag, regionStart, regionEnd);
+        check(MixFocusTestAccess::scopeRegionText(focus).isEmpty(),
+              "a pending same-position Locate invalidates the held region before the next frame");
         MixFocusTestAccess::moveScopePointer(focus, .5f, .25f);
         check(MixFocusTestAccess::scopeCursorText(focus).isEmpty(),
               "a pending same-position Locate suppresses the older cursor even before a frame");
@@ -3389,6 +3487,13 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
         check(complete && complete->first == seekAt + bar && complete->frames == static_cast<std::size_t>(bar) &&
                   complete->sampleRate == rate && opens == std::array{1, 1} && broker->stats().taps == 2,
               "a same-position seek resumes complete heard bars on the original two taps");
+        MixFocusTestAccess::scopeRegionPointer(focus, &juce::Component::mouseUp, regionStart, regionEnd);
+        check(MixFocusTestAccess::scopeRegionText(focus).isEmpty(),
+              "a release after the new bar cannot commit the pre-Locate region");
+        MixFocusTestAccess::dragScopeRegion(focus, regionStart, regionEnd);
+        check(complete && MixFocusTestAccess::scopeRegionText(focus).contains(
+                  juce::String(static_cast<juce::int64>(complete->first + bar / 2))),
+              "a fresh drag measures the newly captured interval after the same-position seek");
 
         check(doc->mailbox().post(TransportMailbox::Command::Locate, 0), "queue a Difference Locate");
         frame();

@@ -2,6 +2,7 @@
 #include "ui_mix_focus.hpp"
 #include "ui_look.hpp"
 #include "ui_shell.hpp"
+#include "adi/ui/note_geometry.hpp"
 #include "adi/ui/track_order.hpp"
 #include <algorithm>
 #include <array>
@@ -70,6 +71,7 @@ MixFocus::MixFocus(AdiRootComponent &root) : root_(root) {
     scopeDisplay_.addItem("Difference", static_cast<int>(ScopeDisplay::Difference));
     scopeDisplay_.setSelectedId(static_cast<int>(ScopeDisplay::Overlay), juce::dontSendNotification);
     scopeDisplay_.onChange = [this] {
+        clearScopeRegion();
         scopeCursor_.setVisible(false);
         updateScopeDifference();
         barScope_.setMonoRequested(showsScopeDifference() ? FocusScopeChannels::Stereo : scopeChannelView());
@@ -87,6 +89,7 @@ MixFocus::MixFocus(AdiRootComponent &root) : root_(root) {
     scopeChannels_.addItem("Side", static_cast<int>(FocusScopeChannels::Side));
     scopeChannels_.setSelectedId(static_cast<int>(FocusScopeChannels::Stereo), juce::dontSendNotification);
     scopeChannels_.onChange = [this] {
+        clearScopeRegion();
         scopeCursor_.setVisible(false);
         updateScopeDifference();
         barScope_.setMonoRequested(showsScopeDifference() ? FocusScopeChannels::Stereo : scopeChannelView());
@@ -118,6 +121,12 @@ MixFocus::MixFocus(AdiRootComponent &root) : root_(root) {
     scopeCursor_.setColour(juce::Label::backgroundColourId, look::panel);
     scopeCursor_.setInterceptsMouseClicks(false, false);
     addChildComponent(scopeCursor_);
+    scopeRegionReadout_.setTitle("Scope region");
+    scopeRegionReadout_.setJustificationType(juce::Justification::centredRight);
+    scopeRegionReadout_.setColour(juce::Label::textColourId, look::text);
+    scopeRegionReadout_.setColour(juce::Label::backgroundColourId, look::panel);
+    scopeRegionReadout_.setInterceptsMouseClicks(false, false);
+    addChildComponent(scopeRegionReadout_);
     scroll_.setViewedComponent(&strip_, false);
     scroll_.setScrollBarsShown(false, true);
     for (auto *c : std::array<juce::Component *, 13>{&available, &add, &star, &mute, &solo, &hearOne, &hearAll,
@@ -549,6 +558,7 @@ void MixFocus::drop() {
     scopeSources_.clear();
     clearBarScopeData();
     clearScopeSum();
+    clearScopeRegion();
     scopeCursorPoint_.reset();
     scopeCursor_.setVisible(false);
     scopeHasTrace_ = false;
@@ -781,11 +791,13 @@ void MixFocus::frame(const SnapshotReader &reader) {
     if (redraw_) {
         if (!scope.getToggleState()) rebuildPlot();
         rebuildScope();
+        if (scopeRegion_ && !scopeRegionCurrent()) clearScopeRegion();
         if (scopeCursorPoint_) refreshScopeCursor(reader);
         redraw_ = false;
         repaint(plot_.toNearestInt().withTop(scroll_.getBottom()).getUnion(sumLabel_).getUnion(phaseBar_));
-    } else if (scopeCursor_.isVisible() && !scopeCursorCurrent()) {
-        scopeCursor_.setVisible(false);
+    } else {
+        if (scopeRegion_ && !scopeRegionCurrent()) clearScopeRegion();
+        if (scopeCursor_.isVisible() && !scopeCursorCurrent()) scopeCursor_.setVisible(false);
     }
 }
 void MixFocus::clearBarScopeData() {
@@ -1010,6 +1022,7 @@ void MixFocus::updateScopeDifference() {
                 fold, differenceRequest_ ? differenceRequest_->selection : 0, spectrum};
     }
     if (next == differenceRequest_) return;
+    clearScopeRegion();
     scopeCursor_.setVisible(false);
     if (next) next->selection = ++differenceSelection_;
     differenceRequest_ = next;
@@ -1269,6 +1282,111 @@ void MixFocus::rebuildScope() {
         }
     }
 }
+void MixFocus::mouseDown(const juce::MouseEvent &event) {
+    if (!event.mods.isLeftButtonDown() || !plot_.contains(event.position)) return;
+    clearScopeRegion();
+    const auto revision = scopeTraceRevision();
+    if (!revision || !plotShowing()) return;
+    const auto &range = *scopeRange_;
+    if (range.frames == 0 || !std::in_range<std::int64_t>(range.frames) ||
+        !focusWindowEnd(range.first, static_cast<std::int64_t>(range.frames)) ||
+        !std::isfinite(range.sampleRate) || range.sampleRate <= 0.) return;
+    const auto boundary = scopeBoundaryAt(event.position.x);
+    scopeRegion_ = ScopeRegion{range, *revision, membershipPose_, scopeLaneAt(event.position.y),
+                               boundary, boundary};
+}
+
+void MixFocus::mouseDrag(const juce::MouseEvent &event) {
+    if (!scopeRegion_ || !scopeRegion_->dragging) return;
+    const auto p = event.position;
+    if (!scopeRegionCurrent() || p.y < plot_.getY() || p.y >= plot_.getBottom() ||
+        scopeRegion_->lane != scopeLaneAt(p.y)) {
+        clearScopeRegion();
+        return;
+    }
+    const auto edge = scopeBoundaryAt(p.x);
+    if (edge == scopeRegion_->edge) return;
+    scopeRegion_->edge = edge;
+    refreshScopeRegion();
+}
+
+void MixFocus::mouseUp(const juce::MouseEvent &event) {
+    if (!scopeRegion_ || !scopeRegion_->dragging) return;
+    mouseDrag(event);
+    if (!scopeRegion_) return;
+    if (scopeRegion_->anchor == scopeRegion_->edge) clearScopeRegion();
+    else scopeRegion_->dragging = false;
+}
+
+std::size_t MixFocus::scopeLaneAt(float y) const noexcept {
+    if (scopeDisplay_.getSelectedId() != static_cast<int>(ScopeDisplay::Stack) || members_.empty()) return 0;
+    const auto ordinate = (static_cast<double>(y) - plot_.getY()) / plot_.getHeight();
+    return std::min(static_cast<std::size_t>(ordinate * static_cast<double>(members_.size())), members_.size() - 1);
+}
+
+std::int64_t MixFocus::scopeBoundaryAt(float x) const noexcept {
+    // Selection uses sample boundaries. A drag through the right edge may
+    // therefore include the final sample of the displayed half-open interval.
+    const auto horizontal = std::clamp((static_cast<double>(x) - plot_.getX()) / plot_.getWidth(), 0., 1.);
+    const auto frames = static_cast<std::int64_t>(scopeRange_->frames);
+    const auto scaled = std::round(static_cast<long double>(horizontal) * static_cast<long double>(frames));
+    return scaled >= static_cast<long double>(frames) ? frames : static_cast<std::int64_t>(scaled);
+}
+
+bool MixFocus::scopeRegionCurrent() const noexcept {
+    if (!scopeRegion_ || scopeRegion_->membership != membershipPose_ || !scopeRange_) return false;
+    const auto &range = scopeRegion_->range;
+    return scopeRange_->first == range.first && scopeRange_->frames == range.frames &&
+           scopeRange_->sampleRate == range.sampleRate && scopeTraceRevision() == scopeRegion_->traceRevision;
+}
+
+void MixFocus::clearScopeRegion() {
+    if (!scopeRegion_) return;
+    scopeRegion_.reset();
+    const bool visible = scopeRegionReadout_.isVisible();
+    scopeRegionReadout_.setVisible(false);
+    if (visible) repaint(plot_.toNearestInt());
+}
+
+void MixFocus::refreshScopeRegion() {
+    const auto &region = *scopeRegion_;
+    const auto [left, right] = std::minmax(region.anchor, region.edge);
+    if (left != right) {
+        const auto first = region.range.first + left;
+        const auto last = region.range.first + right;
+        const auto hz = region.range.sampleRate / static_cast<double>(right - left);
+        const auto milliseconds = [rate = region.range.sampleRate](std::int64_t sample) {
+            return juce::String((static_cast<double>(sample) / rate) * 1000., 1);
+        };
+        const auto key = juce::roundToInt(69. + 12. * (std::log2(hz) - std::log2(440.)));
+        const auto octave = static_cast<int>(std::floor(static_cast<double>(key) / 12.)) - 2;
+        juce::String reading;
+        reading << static_cast<juce::int64>(first) << " to " << static_cast<juce::int64>(last)
+                << " samples   " << milliseconds(first) << " to " << milliseconds(last)
+                << " ms   " << milliseconds(right - left) << " ms   "
+                << juce::String(hz, 1) << " Hz   " << pitchClassName(key) << octave;
+        scopeCursor_.setVisible(false);
+        scopeRegionReadout_.setText(reading, juce::dontSendNotification);
+    }
+    scopeRegionReadout_.setVisible(left != right);
+    repaint(plot_.toNearestInt());
+}
+
+void MixFocus::paintScopeRegion(juce::Graphics &g) const {
+    if (!scopeRegionCurrent()) return;
+    const auto &region = *scopeRegion_;
+    const auto [left, right] = std::minmax(region.anchor, region.edge);
+    if (left == right) return;
+    const auto frames = static_cast<double>(region.range.frames);
+    const auto x = plot_.getX() + static_cast<float>(static_cast<double>(left) / frames) * plot_.getWidth();
+    const auto width = static_cast<float>(static_cast<double>(right - left) / frames) * plot_.getWidth();
+    const bool stacked = scopeDisplay_.getSelectedId() == static_cast<int>(ScopeDisplay::Stack) && !members_.empty();
+    const auto height = stacked ? plot_.getHeight() / static_cast<float>(members_.size()) : plot_.getHeight();
+    const auto y = plot_.getY() + static_cast<float>(region.lane) * height;
+    g.setColour(look::selection);
+    g.fillRect(x, y, width, height);
+}
+
 void MixFocus::mouseMove(const juce::MouseEvent &event) {
     if (!scope.getToggleState() || !plot_.contains(event.position)) {
         mouseExit(event);
@@ -1283,18 +1401,23 @@ void MixFocus::mouseExit(const juce::MouseEvent &) {
     scopeCursor_.setVisible(false);
 }
 
-bool MixFocus::scopeCursorCurrent() const noexcept {
-    if (!scopeCursorPoint_ || !scopeRange_ || !scopePlaying_ || suspended_ ||
-        alignment_ != Alignment::Ready || !scope.getToggleState() || !plot_.contains(*scopeCursorPoint_)) {
-        return false;
-    }
+std::optional<std::uint64_t> MixFocus::scopeTraceRevision() const noexcept {
+    if (!scopeRange_ || !scopePlaying_ || suspended_ || alignment_ != Alignment::Ready || !scope.getToggleState())
+        return {};
     const auto locate = root_.settledLocateRevision();
-    if (!locate) return false;
+    if (!locate) return {};
     if (showsScopeDifference()) {
-        return !differenceSpectrum_.getToggleState() && differenceRenderedRevision_ &&
-               *differenceRenderedRevision_ >= *locate;
+        if (differenceSpectrum_.getToggleState() || !differenceRenderedRevision_ ||
+            *differenceRenderedRevision_ < *locate) return {};
+        return differenceRenderedRevision_;
     }
-    return scopeHasTrace_ && scopeWaveformRevision_ && *scopeWaveformRevision_ >= *locate;
+    if (!scopeHasTrace_ || !scopeWaveformRevision_ || *scopeWaveformRevision_ < *locate) return {};
+    return scopeWaveformRevision_;
+}
+
+bool MixFocus::scopeCursorCurrent() const noexcept {
+    return !scopeRegionReadout_.isVisible() && scopeCursorPoint_ &&
+           plot_.contains(*scopeCursorPoint_) && scopeTraceRevision().has_value();
 }
 
 void MixFocus::refreshScopeCursor(const SnapshotReader &reader) {
@@ -1376,12 +1499,16 @@ void MixFocus::resized() {
                     ? r.removeFromBottom(std::min(look::fieldHeight, r.getHeight())).reduced(plotInset, 0)
                     : juce::Rectangle<int>{};
     barScope_.setPhaseRequested(!phaseBar_.isEmpty());
-    plot_ = r.reduced(plotInset).toFloat();
+    const auto nextPlot = r.reduced(plotInset).toFloat();
+    if (plot_ != nextPlot && scopeRegion_ && scopeRegion_->dragging) clearScopeRegion();
+    plot_ = nextPlot;
     auto cursorBounds = plot_.toNearestInt().reduced(look::gap);
     cursorBounds.setHeight(std::min(cursorBounds.getHeight(), look::fieldHeight));
     scopeCursor_.setFont(look::font(look::fontCaption));
     scopeCursor_.setBounds(cursorBounds.removeFromRight(std::min(cursorBounds.getWidth(), 3 * look::mixFocusSourceWidth)));
     scopeCursor_.setVisible(false);
+    scopeRegionReadout_.setFont(look::font(look::fontCaption));
+    scopeRegionReadout_.setBounds(plot_.toNearestInt().reduced(look::gap).withHeight(cursorBounds.getHeight()));
     rebuildMatchPath();
     for (auto &m : members_)
         m.spectrumChanged = true;
@@ -1465,6 +1592,7 @@ void MixFocus::paint(juce::Graphics &g) {
     }
     g.setColour(look::frame);
     g.fillRect(plot_);
+    paintScopeRegion(g);
     if (members_.empty()) {
         g.setColour(look::text);
         g.setFont(look::font());

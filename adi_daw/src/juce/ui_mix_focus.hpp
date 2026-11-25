@@ -68,10 +68,20 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     void clearBarScopeData();
     void updateBarScope(const SnapshotReader &, const std::shared_ptr<SharedAnalysis> &);
     void clearScopeSum();
+    void mouseDown(const juce::MouseEvent &) override;
+    void mouseDrag(const juce::MouseEvent &) override;
+    void mouseUp(const juce::MouseEvent &) override;
     void mouseMove(const juce::MouseEvent &) override;
     void mouseExit(const juce::MouseEvent &) override;
+    [[nodiscard]] std::optional<std::uint64_t> scopeTraceRevision() const noexcept;
     [[nodiscard]] bool scopeCursorCurrent() const noexcept;
     void refreshScopeCursor(const SnapshotReader &);
+    [[nodiscard]] bool scopeRegionCurrent() const noexcept;
+    [[nodiscard]] std::size_t scopeLaneAt(float y) const noexcept;
+    [[nodiscard]] std::int64_t scopeBoundaryAt(float x) const noexcept;
+    void clearScopeRegion();
+    void refreshScopeRegion();
+    void paintScopeRegion(juce::Graphics &) const;
     void rebuildScope();
     FocusScopeChannels scopeChannelView() const noexcept;
     bool showsScopeDifference() const noexcept;
@@ -104,8 +114,16 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     juce::ComboBox scopeDisplay_, scopeChannels_;
     juce::TextButton alignMeasure_{"Measure Align"}, scopeLayer_{"Layer"};
     juce::ToggleButton differenceSpectrum_{"Spectrum"};
-    juce::Label alignReadout_, scopeCursor_;
+    juce::Label alignReadout_, scopeCursor_, scopeRegionReadout_;
     std::optional<juce::Point<float>> scopeCursorPoint_;
+    struct ScopeRegion {
+        FocusScopeRange range;
+        std::uint64_t traceRevision, membership;
+        std::size_t lane;
+        std::int64_t anchor, edge;
+        bool dragging = true;
+    };
+    std::optional<ScopeRegion> scopeRegion_;
     juce::Rectangle<float> plot_;
     juce::Rectangle<int> titleRow_, sumLabel_, phaseBar_;
     std::vector<const SharedAnalysis::Result *> scopeSources_;
