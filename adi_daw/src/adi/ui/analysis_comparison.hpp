@@ -139,6 +139,12 @@ struct SpectrogramColumnPair {
 // Owner-thread controller for a paired Spectrogram on the caller's frame clock.
 class SpectrogramComparison final {
   public:
+    struct Format {
+        double sampleRate = 0.;
+        int hop = 0;
+        std::uint64_t preGeneration = 0, postGeneration = 0, preEpoch = 0, postEpoch = 0;
+        bool operator==(const Format &) const = default;
+    };
     explicit SpectrogramComparison(std::shared_ptr<SharedAnalysis> broker) noexcept;
     bool show(SharedAnalysis::Request profile) noexcept;
     void hide() noexcept;
@@ -146,6 +152,7 @@ class SpectrogramComparison final {
     bool freeze(std::int64_t heardEnd, std::uint64_t minimumRevision) noexcept;
     bool thaw() noexcept;
     [[nodiscard]] bool frozen() const noexcept { return held_.has_value(); }
+    [[nodiscard]] std::optional<Format> format() const noexcept;
     // Keep this view only until the next mutation of the controller.
     [[nodiscard]] std::span<const SpectrogramColumnPair> columns(
         std::int64_t heardEnd, std::uint64_t minimumRevision, std::span<SpectrogramColumnPair> storage) const noexcept;

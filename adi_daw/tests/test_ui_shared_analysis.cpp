@@ -3575,6 +3575,156 @@ void compareHoldSurvivesInvalidA() {
     root.removeFromDesktop();
 }
 
+void spectrogramComparisonPage() {
+    using namespace adi::ui;
+    using Page = MixAnalysers::Page;
+    using Source = adi::engine::ScopeSource;
+    constexpr std::int64_t mainId = 1, trackId = 2;
+    constexpr std::uint64_t revision = 71;
+    constexpr int window = 1024;
+    const auto main = std::make_shared<adi::engine::TrackNode>();
+    const auto selected = std::make_shared<adi::engine::TrackNode>();
+    main->id = mainId; main->name = "Main"; main->kind = "master";
+    selected->id = trackId; selected->name = "Comparison source"; selected->kind = "audio";
+    auto snapshot = std::make_shared<adi::engine::Snapshot>();
+    snapshot->tracks = {main, selected};
+    const SnapshotReader reader(snapshot);
+    const auto ordinaryTap = std::make_shared<ScopeTap>(48000., .25);
+    const auto pre = std::make_shared<ScopeTap>(48000., .25);
+    const auto post = std::make_shared<ScopeTap>(48000., .25);
+    std::array<unsigned, 3> opens{};
+    const auto broker = std::make_shared<SharedAnalysis>(
+        [&](Source source, double) -> std::shared_ptr<const ScopeTap> {
+            if (source.track != trackId || source.device != 0) return {};
+            if (source.point == ScopePoint::ChainInput) { ++opens[0]; return pre; }
+            if (source.point == ScopePoint::PreFader) { ++opens[1]; return post; }
+            if (source.point == ScopePoint::PostFader) { ++opens[2]; return ordinaryTap; }
+            return {};
+        }, [](Source) {}, SharedAnalysis::Mode::Manual);
+    Root root;
+    root.setBounds(0, 0, 1040, 620);
+    MixAnalysers pages;
+    pages.setBounds(root.getLocalBounds());
+    root.addAndMakeVisible(pages);
+    root.setVisible(true);
+    root.addToDesktop(0);
+    pages.followSelection(true);
+
+    juce::ToggleButton *compared = nullptr;
+    juce::TextButton *freeze = nullptr;
+    juce::Component *plot = nullptr;
+    for (auto *child : pages.getChildren()) {
+        if (child->getTitle() == "Spectrogram comparison") compared = dynamic_cast<juce::ToggleButton *>(child);
+        if (child->getTitle() == "Spectrogram post minus pre") plot = child;
+    }
+    if (plot) for (auto *child : plot->getChildren())
+        if (child->getTitle() == "Freeze Spectrogram comparison") freeze = dynamic_cast<juce::TextButton *>(child);
+    check(compared && freeze && plot && !compared->isShowing() && !freeze->isShowing() && !plot->isShowing(),
+          "All keeps the dedicated Spectrogram comparison controls and plot hidden");
+    if (!compared || !freeze || !plot) {
+        root.removeFromDesktop();
+        return;
+    }
+
+    const auto frame = [&](std::int64_t heardEnd, std::uint64_t minimum) {
+        pages.frame(broker, reader, mainId, trackId, 1, nullptr, heardEnd, minimum);
+    };
+    const auto click = [](juce::ToggleButton &button, bool value) {
+        button.setToggleState(value, juce::dontSendNotification);
+        if (button.onClick) button.onClick();
+    };
+    const auto picture = [&] {
+        const auto bounds = plot->getLocalBounds();
+        if (bounds.isEmpty()) return juce::Image{};
+        juce::Image image(juce::Image::RGB, bounds.getWidth(), bounds.getHeight(), true, juce::SoftwareImageType{});
+        juce::Graphics graphics(image);
+        plot->paint(graphics);
+        return image;
+    };
+    pages.setPage(Page::Spectrogram);
+    frame(0, revision);
+    check(compared->isShowing() && !compared->getToggleState() && !freeze->isShowing() && !plot->isShowing() &&
+              pages.detail.view.subscribed() && opens[2] != 0 && broker->stats().taps == 1,
+          "dedicated Spectrogram begins with the selected track's ordinary source");
+    click(*compared, true);
+    frame(0, revision);
+    check(plot->isShowing() && freeze->isShowing() && !freeze->isEnabled() &&
+              !pages.detail.view.subscribed() && opens[0] != 0 && opens[1] != 0 &&
+              broker->stats().taps == 2 && broker->stats().consumers == 2,
+          "comparison replaces the ordinary lease with the selected track's pre and post taps");
+    const auto waiting = picture();
+
+    std::array<float, window> input, output;
+    for (std::size_t i = 0; i < input.size(); ++i) {
+        const auto phase = 2. * std::numbers::pi * static_cast<double>(i) / window;
+        const auto low = static_cast<float>(std::sin(16. * phase));
+        const auto high = static_cast<float>(std::sin(120. * phase));
+        input[i] = .125f * low + .25f * high;
+        output[i] = .25f * low + .125f * high;
+    }
+    pre->write(input.data(), input.data(), window, 0, true, revision);
+    post->write(output.data(), output.data(), window, 0, true, revision);
+    broker->pump();
+    frame(window - 1, revision);
+    check(!waiting.isNull() && samePixels(waiting, picture()) && !freeze->isEnabled(),
+          "a complete analysis window stays hidden until its final sample has been heard");
+    frame(window, revision);
+    const auto painted = picture();
+    const auto containsInk = [&](juce::Colour target) {
+        for (int y = 0; y < painted.getHeight(); ++y)
+            for (int x = 0; x < painted.getWidth(); ++x) {
+                const auto pixel = painted.getPixelAt(x, y);
+                if (std::abs(pixel.getRed() - target.getRed()) <= 2 &&
+                    std::abs(pixel.getGreen() - target.getGreen()) <= 2 &&
+                    std::abs(pixel.getBlue() - target.getBlue()) <= 2) return true;
+            }
+        return false;
+    };
+    constexpr float transfer = 6.0206f / 24.f;
+    check(freeze->isEnabled() && !samePixels(waiting, painted) &&
+              containsInk(look::frame.interpolatedWith(look::accent, transfer)) &&
+              containsInk(look::frame.interpolatedWith(look::record, transfer)),
+          "the heard comparison paints separate positive and negative changes for the two tones");
+
+    if (freeze->onClick) freeze->onClick();
+    frame(window, revision);
+    const auto frozen = picture();
+    const auto held = broker->stats();
+    frame(0, revision + 1);
+    check(freeze->getButtonText() == "Thaw" && samePixels(frozen, picture()) && held.taps == 0 && held.consumers == 0 &&
+              broker->stats().transforms == held.transforms,
+          "Freeze holds the signed plot across a later epoch and releases both taps");
+    pages.setPage(Page::Spectrum);
+    frame(0, revision + 1);
+    check(!compared->isShowing() && !freeze->isShowing() && !plot->isShowing() &&
+              pages.detail.view.subscribed() && broker->stats().taps == 1,
+          "leaving the dedicated page hides the comparison and keeps only the new page's ordinary demand");
+
+    pages.setPage(Page::Spectrogram);
+    if (!compared->getToggleState()) click(*compared, true);
+    frame(0, revision + 1);
+    if (freeze->getButtonText() == "Thaw" && freeze->onClick) freeze->onClick();
+    frame(0, revision + 1);
+    check(plot->isShowing() && broker->stats().taps == 2 && broker->stats().consumers == 2,
+          "returning and resuming the comparison reacquires only its pair");
+    const auto visibleBounds = pages.getBounds();
+    pages.setBounds(visibleBounds.withSize(0, 0));
+    check(broker->stats().consumers == 0 && broker->stats().taps == 0,
+          "a zero-area resize releases the comparison before another frame");
+    pages.setBounds(visibleBounds);
+    frame(0, revision + 1);
+    check(broker->stats().consumers == 2 && broker->stats().taps == 2,
+          "restoring the comparison plot resumes only its two sources");
+    click(*compared, false);
+    frame(0, revision + 1);
+    check(!plot->isShowing() && !freeze->isShowing() && pages.detail.view.subscribed() &&
+              broker->stats().taps == 1 && broker->stats().consumers == 1,
+          "disabling comparison releases both comparison taps and restores the ordinary view");
+    pages.setVisible(false);
+    check(broker->stats().consumers == 0 && broker->stats().taps == 0,
+          "hiding the analyser releases its remaining source");
+    root.removeFromDesktop();
+}
 } // namespace
 int main() {
     juce::ScopedJuceInitialiser_GUI initialiser;
@@ -3587,7 +3737,7 @@ int main() {
           spectrogramRulerControl(); spectrogramFrequencyRuler();
           spectrumDeviceScale(); spectrogramHistoryMotion(); spectrogramFrequencyScales(); spectrogramCursor(); spectrogramPngControl(); spectrogramPngRoundtrip(); classicScopeSurface();
           classicScopeUnchangedTrace(); detailedPhasePreservesHighFrequencyTrace(); mixPhaseRailViews(); mixAnalyserPages();
-          compareAndAveragePages(); compareHoldSurvivesInvalidA(); }
+          compareAndAveragePages(); compareHoldSurvivesInvalidA(); spectrogramComparisonPage(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

@@ -22,7 +22,8 @@ class MixAnalysers final : public juce::Component {
     void followSelection(bool);
     std::int64_t target(const SnapshotReader &, std::int64_t main, std::int64_t selected) const noexcept;
     void frame(const std::shared_ptr<SharedAnalysis> &, const SnapshotReader &, std::int64_t main, std::int64_t selected,
-               std::uint64_t viewGeneration = 0, const ViewStateStore *viewState = nullptr);
+               std::uint64_t viewGeneration = 0, const ViewStateStore *viewState = nullptr,
+               std::int64_t heardEnd = 0, std::optional<std::uint64_t> minimumRevision = {});
     void setMainMeterSource(const std::shared_ptr<const MainMeterSource> &);
     AnalysisComparison::View comparisonView() const noexcept;
     void suspend(bool);
@@ -37,6 +38,7 @@ class MixAnalysers final : public juce::Component {
     class Table;
     class Compare;
     class SpectrumStatistics;
+    class SpectrogramDelta;
     struct Channel {
         std::int64_t id;
         std::string name;
@@ -47,6 +49,8 @@ class MixAnalysers final : public juce::Component {
     void refreshSourceControl();
     void updateComparison(const std::shared_ptr<SharedAnalysis> &);
     void updatePhaseBandDisplay();
+    void updateSpectrogramView();
+    void visibilityChanged() override;
     void updatePinnedSpectrum(const SnapshotReader &, std::uint64_t generation, std::int64_t primary,
                               const ViewStateStore *);
     void clearPinnedSpectrum();
@@ -62,9 +66,11 @@ class MixAnalysers final : public juce::Component {
     bool hasPinnedSpectrum_ = false;
     juce::ToggleButton pinnedTracks_{"Pinned tracks"};
     juce::ComboBox phaseBandsBox_;
+    juce::ToggleButton compareSpectrogram_{"Pre/Post"};
     std::unique_ptr<Table> table_;
     std::unique_ptr<Compare> compare_;
     std::unique_ptr<SpectrumStatistics> spectrumStatistics_;
+    std::unique_ptr<SpectrogramDelta> spectrogramDelta_;
     std::array<SharedSpectrumView, 5> tiles_;
     std::vector<Channel> channels_;
     std::weak_ptr<SharedAnalysis> owner_;

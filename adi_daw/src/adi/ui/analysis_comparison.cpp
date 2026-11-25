@@ -487,6 +487,12 @@ bool SpectrogramComparison::thaw() noexcept {
     return true;
 }
 
+std::optional<SpectrogramComparison::Format> SpectrogramComparison::format() const noexcept {
+    if (!visible_ || !pre_.picture || !post_.picture) return {};
+    const auto &pre = *pre_.picture, &post = *post_.picture;
+    return Format{pre.sampleRate, pre.hopSize, pre.generation, post.generation, pre.sourceEpoch, post.sourceEpoch};
+}
+
 std::span<const SpectrogramColumnPair> SpectrogramComparison::columns(
     std::int64_t heardEnd, std::uint64_t minimumRevision, std::span<SpectrogramColumnPair> storage) const noexcept {
     if (!visible_ || !broker_ || !broker_->active() || !pre_.picture || !post_.picture) return {};

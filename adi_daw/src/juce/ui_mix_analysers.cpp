@@ -497,10 +497,232 @@ class MixAnalysers::SpectrumStatistics final : public juce::Component {
     bool levelRowsVisible_ = false;
 };
 
+class MixAnalysers::SpectrogramDelta final : public juce::Component {
+  public:
+    SpectrogramDelta() {
+        setTitle("Spectrogram post minus pre");
+        freeze_.setTitle("Freeze Spectrogram comparison");
+        freeze_.setEnabled(false);
+        freeze_.onClick = [this] {
+            if (!comparison_) return;
+            const SafePointer<SpectrogramDelta> alive(this);
+            if (comparison_->frozen()) {
+                if (comparison_->thaw() && alive) clear();
+            } else if (minimumRevision_) {
+                comparison_->freeze(heardEnd_, *minimumRevision_);
+            }
+            if (alive) syncFreeze();
+        };
+        addAndMakeVisible(freeze_);
+    }
+
+    void stop() {
+        if (!comparison_) return;
+        if (!comparison_->frozen()) clear();
+        comparison_->hide();
+    }
+
+    void frame(const std::shared_ptr<SharedAnalysis> &broker, std::int64_t track, SharedAnalysis::Channel channel,
+               std::int64_t heardEnd, std::optional<std::uint64_t> minimumRevision) {
+        const SafePointer<SpectrogramDelta> alive(this);
+        if (!broker || !broker->active()) {
+            auto retired = std::move(comparison_);
+            owner_.reset();
+            clear();
+            return;
+        }
+        if (owner_.lock() != broker) {
+            auto retired = std::move(comparison_);
+            owner_ = broker;
+            if (broker) comparison_ = std::make_unique<SpectrogramComparison>(broker);
+            clear();
+            retired.reset();
+            if (!alive) return;
+        }
+        if (!plotIsShowing() || !comparison_ || track <= 0) {
+            stop();
+            return;
+        }
+        if (track != track_ || channel != channel_) clear();
+        track_ = track;
+        channel_ = channel;
+        SharedAnalysis::Request request{track};
+        request.channel = channel;
+        const bool showing = comparison_->show(request);
+        if (!alive) return;
+        if (!showing) { stop(); return; }
+        heardEnd_ = heardEnd;
+        minimumRevision_ = minimumRevision;
+        const bool held = comparison_->frozen();
+        syncFreeze();
+        if (held && image_.isValid() && theme_ == look::themeId()) return;
+        comparison_->frame();
+        if (!minimumRevision && !held) { clear(); return; }
+        std::array<SpectrogramColumnPair, width> storage;
+        const auto columns = comparison_->columns(heardEnd, minimumRevision.value_or(0), storage);
+        const auto format = comparison_->format();
+        if (columns.empty() || !format) { clear(); return; }
+        freeze_.setEnabled(true);
+        updateRaster(columns, *format);
+    }
+
+    void visibilityChanged() override { if (!isShowing()) stop(); }
+
+    void resized() override {
+        auto header = getLocalBounds().reduced(look::border).removeFromTop(look::fieldHeight);
+        freeze_.setBounds(header.removeFromRight(std::min(look::mixPageWidth, header.getWidth() / 3)));
+        if (getLocalBounds().isEmpty()) stop();
+    }
+
+    void paint(juce::Graphics &graphics) override {
+        auto bounds = getLocalBounds();
+        graphics.fillAll(look::display);
+        bounds.reduce(look::border, look::border);
+        auto header = bounds.removeFromTop(look::fieldHeight);
+        header = header.withRight(freeze_.getX());
+        graphics.setFont(look::font());
+        graphics.setColour(look::record);
+        graphics.drawFittedText("-24 dB", header.removeFromLeft(header.getWidth() / 3), juce::Justification::centredLeft, 1);
+        graphics.setColour(look::textDim);
+        graphics.drawFittedText("Post minus pre", header.removeFromLeft(header.getWidth() / 2), juce::Justification::centred, 1);
+        graphics.setColour(look::accent);
+        graphics.drawFittedText("+24 dB", header, juce::Justification::centredRight, 1);
+        bounds.removeFromTop(look::gap);
+        if (image_.isValid()) graphics.drawImage(image_, bounds.toFloat());
+        else {
+            graphics.setColour(look::textDim);
+            graphics.drawFittedText("Waiting for matched audio", bounds, juce::Justification::centred, 1);
+        }
+    }
+
+  private:
+    static constexpr int width = 128, height = 128;
+    static constexpr float rangeDb = 24.f;
+    using ColumnKey = std::array<std::uint64_t, 2>;
+
+    bool plotIsShowing() const {
+        if (!isShowing()) return false;
+        if (const auto *peer = getPeer(); peer && peer->isMinimised()) return false;
+        auto visible = getLocalBounds().reduced(look::border).withTrimmedTop(look::fieldHeight + look::gap);
+        for (auto *parent = getParentComponent(); parent && !visible.isEmpty(); parent = parent->getParentComponent())
+            visible = visible.getIntersection(getLocalArea(parent, parent->getLocalBounds()));
+        return !visible.isEmpty();
+    }
+
+    void syncFreeze() {
+        const bool held = comparison_->frozen();
+        freeze_.setToggleState(held, juce::dontSendNotification);
+        freeze_.setButtonText(held ? "Thaw" : "Freeze");
+    }
+
+    void clear() {
+        if (image_.isValid()) {
+            image_ = {};
+            lastHop_.reset();
+            repaint();
+        }
+        freeze_.setEnabled(comparison_ && comparison_->frozen());
+    }
+
+    void prepareImage(SpectrogramComparison::Format format, std::size_t bins) {
+        format_ = format;
+        theme_ = look::themeId();
+        image_ = juce::Image(juce::Image::RGB, width, height, true, juce::SoftwareImageType{});
+        image_.clear(image_.getBounds(), look::display);
+        keys_.fill({});
+        lastHop_.reset();
+        const double upper = std::min(1., 40000. / format.sampleRate);
+        const double lower = std::min(upper, 40. / format.sampleRate);
+        const auto edge = [&](int row) {
+            const double fraction = 1. - static_cast<double>(row) / height;
+            return static_cast<std::size_t>(lower * std::pow(upper / lower, fraction) * static_cast<double>(bins - 1));
+        };
+        auto high = edge(0);
+        for (int y = 0; y < height; ++y) {
+            const auto low = std::min(edge(y + 1), bins - 1);
+            rowBins_[static_cast<std::size_t>(y)] = {low, std::min(bins, std::max(low, high) + 1)};
+            high = low;
+        }
+    }
+
+    static std::optional<float> strongestChange(const SpectrogramColumnPair *pair, std::array<std::size_t, 2> bins) {
+        if (!pair) return {};
+        float strongest = dsp::kDbFloor;
+        std::optional<float> result;
+        for (auto bin = bins[0]; bin < bins[1]; ++bin) {
+            const auto db = pair->changeDb(bin);
+            if (!db) continue;
+            const auto peak = std::max((*pair->pre->binsDbfs)[bin], (*pair->post->binsDbfs)[bin]);
+            if (peak > strongest) { strongest = peak; result = db; }
+        }
+        return result;
+    }
+
+    void updateRaster(std::span<const SpectrogramColumnPair> columns, SpectrogramComparison::Format format) {
+        const auto nextHop = columns.back().pre->firstStamp / format.hop;
+        const bool reset = !image_.isValid() || format != format_ || theme_ != look::themeId() ||
+            (lastHop_ && nextHop < *lastHop_);
+        if (reset) prepareImage(format, columns.back().pre->binsDbfs->size());
+        const auto distance = lastHop_ ? static_cast<std::uint64_t>(nextHop) - static_cast<std::uint64_t>(*lastHop_) : 0;
+        const auto shift = static_cast<int>(std::min<std::uint64_t>(distance, width));
+        if (shift > 0) {
+            if (shift < width) {
+                image_.moveImageSection(0, 0, shift, 0, width - shift, height);
+                std::move(keys_.begin() + shift, keys_.end(), keys_.begin());
+            }
+            std::fill(keys_.end() - shift, keys_.end(), ColumnKey{});
+            image_.clear({width - shift, 0, shift, height}, look::display);
+        }
+        lastHop_ = nextHop;
+        std::array<const SpectrogramColumnPair *, width> visible{};
+        for (const auto &pair : columns) {
+            const auto hop = pair.pre->firstStamp / format.hop;
+            const auto age = static_cast<std::uint64_t>(nextHop) - static_cast<std::uint64_t>(hop);
+            if (age < visible.size()) visible[visible.size() - 1 - static_cast<std::size_t>(age)] = &pair;
+        }
+        const auto key = [](const SpectrogramColumnPair *pair) {
+            return pair ? ColumnKey{pair->pre->serial, pair->post->serial} : ColumnKey{};
+        };
+        const bool changed = !std::equal(visible.begin(), visible.end(), keys_.begin(),
+                                         [&](const auto *pair, const auto &prior) { return key(pair) == prior; });
+        if (changed) {
+            juce::Image::BitmapData pixels(image_, juce::Image::BitmapData::writeOnly);
+            for (int x = 0; x < width; ++x) {
+                const auto index = static_cast<std::size_t>(x);
+                const auto *pair = visible[index];
+                const auto next = key(pair);
+                if (next == keys_[index]) continue;
+                keys_[index] = next;
+                for (int y = 0; y < height; ++y) {
+                    const auto db = strongestChange(pair, rowBins_[static_cast<std::size_t>(y)]);
+                    const juce::Colour colour = db ? look::frame.interpolatedWith(*db < 0.f ? look::record : look::accent,
+                        std::min(1.f, std::abs(*db) / rangeDb)) : look::display;
+                    pixels.setPixelColour(x, y, colour);
+                }
+            }
+        }
+        if (reset || shift > 0 || changed) repaint();
+    }
+
+    std::weak_ptr<SharedAnalysis> owner_;
+    std::unique_ptr<SpectrogramComparison> comparison_;
+    std::int64_t track_ = 0, heardEnd_ = 0;
+    SharedAnalysis::Channel channel_ = SharedAnalysis::Channel::Mid;
+    std::optional<std::uint64_t> minimumRevision_;
+    SpectrogramComparison::Format format_;
+    std::optional<std::int64_t> lastHop_;
+    juce::Image image_;
+    std::array<ColumnKey, width> keys_{};
+    std::array<std::array<std::size_t, 2>, height> rowBins_{};
+    ThemeId theme_ = ThemeId::Dark;
+    juce::TextButton freeze_{"Freeze"};
+};
+
 MixAnalysers::MixAnalysers() {
     table_ = std::make_unique<Table>(*this);
     compare_ = std::make_unique<Compare>(*this);
     spectrumStatistics_ = std::make_unique<SpectrumStatistics>();
+    spectrogramDelta_ = std::make_unique<SpectrogramDelta>();
     spectrumStatistics_->onTruePeakChanged = [this] {
         spectrumStatistics_->updateTruePeakReadout(detail.view.snapshot());
         detail.view.setSpectrumTruePeakEnabled(spectrumStatistics_->truePeakRequested());
@@ -510,6 +732,13 @@ MixAnalysers::MixAnalysers() {
                          "1 s Average", "Compare"}, 1);
     pageBox.setTitle("Analyser page");
     sourceBox.setTitle("Analyser source");
+    compareSpectrogram_.setTitle("Spectrogram comparison");
+    compareSpectrogram_.setTooltip("Show the signed change between this channel's pre and post effects.");
+    compareSpectrogram_.onClick = [this] {
+        const SafePointer<MixAnalysers> alive(this);
+        updateSpectrogramView();
+        if (alive) resized();
+    };
     spectrumTraceBox.addItem("Realtime", static_cast<int>(Mode::Spectrum) + 1);
     spectrumTraceBox.addItem("Realtime Average", static_cast<int>(Mode::SpectrumAverage) + 1);
     spectrumTraceBox.addItem("Cumulative Average", static_cast<int>(Mode::SpectrumCumulativeAverage) + 1);
@@ -551,6 +780,7 @@ MixAnalysers::MixAnalysers() {
     };
     addAndMakeVisible(pageBox);
     addAndMakeVisible(sourceBox);
+    addChildComponent(compareSpectrogram_);
     addChildComponent(spectrumTraceBox);
     addChildComponent(phaseBandsBox_);
     addChildComponent(pinnedTracks_);
@@ -560,6 +790,7 @@ MixAnalysers::MixAnalysers() {
     addChildComponent(*table_);
     addChildComponent(*compare_);
     addChildComponent(*spectrumStatistics_);
+    addChildComponent(*spectrogramDelta_);
     const auto comparisonChanged = [this] { updateComparison(owner_.lock()); };
     compareA.onChange = comparisonChanged; compareB.onChange = comparisonChanged;
     for (std::size_t i = 0; i < tiles_.size(); ++i) {
@@ -592,12 +823,27 @@ void MixAnalysers::setPage(Page page) {
         else if (page == Page::Spectrum) detail.setMode(static_cast<Mode>(spectrumTraceBox.getSelectedId() - 1));
         else detail.setMode(modes[index - 1]);
     }
-    detail.setVisible(!showTable && !comparing);
+    const SafePointer<MixAnalysers> alive(this);
+    updateSpectrogramView();
+    if (!alive) return;
     const bool canPin = page == Page::Spectrum && SharedSpectrumView::supportsSpectrumOverlays(detail.mode());
     pinnedTracks_.setEnabled(canPin);
     if (!canPin) clearPinnedSpectrum();
     compare_->setVisible(comparing);
     resized();
+}
+
+void MixAnalysers::updateSpectrogramView() {
+    const bool spectrogram = page_ == Page::Spectrogram;
+    const bool delta = spectrogram && compareSpectrogram_.getToggleState();
+    const bool detailVisible = page_ != Page::All && page_ != Page::Analysis && page_ != Page::Compare && !delta;
+    compareSpectrogram_.setVisible(spectrogram);
+    detail.setVisible(detailVisible);
+    spectrogramDelta_->setVisible(delta);
+}
+
+void MixAnalysers::visibilityChanged() {
+    if (!isShowing() && spectrogramDelta_) spectrogramDelta_->stop();
 }
 
 void MixAnalysers::setMode(Mode mode) {
@@ -735,7 +981,7 @@ void MixAnalysers::clearPinnedSpectrum() {
 }
 void MixAnalysers::frame(const std::shared_ptr<SharedAnalysis> &broker, const SnapshotReader &reader,
                          std::int64_t main, std::int64_t selected, std::uint64_t viewGeneration,
-                         const ViewStateStore *viewState) {
+                         const ViewStateStore *viewState, std::int64_t heardEnd, std::optional<std::uint64_t> minimumRevision) {
     if (!isShowing() || suspended_ || getLocalBounds().isEmpty()) return;
     if (owner_.owner_before(broker) || broker.owner_before(owner_)) {
         clearPinnedSpectrum();
@@ -775,6 +1021,10 @@ void MixAnalysers::frame(const std::shared_ptr<SharedAnalysis> &broker, const Sn
         if (tableDirty_) { table_->refresh(); tableDirty_ = false; }
         table_->frame(broker);
     }
+    if (spectrogramDelta_->isVisible()) {
+        spectrogramDelta_->frame(broker, track, detail.view.channel(), heardEnd, minimumRevision);
+        return;
+    }
     if (detail.isVisible()) detail.frame(broker, track, track);
     if (spectrumStatistics_->isShowing()) {
         spectrumStatistics_->refreshAppearance();
@@ -795,13 +1045,16 @@ void MixAnalysers::suspend(bool value) {
     table_->suspend(value);
     for (auto &tile : tiles_) tile.suspend(value);
     if (value) spectrumStatistics_->present({});
+    if (value) spectrogramDelta_->stop();
 }
 
 void MixAnalysers::resized() {
     auto area = getLocalBounds().reduced(look::border);
     auto header = area.removeFromTop(look::fieldHeight);
     const bool showsTrace = page_ == Page::Spectrum;
-    pageBox.setBounds(header.removeFromLeft(std::min(look::mixPageWidth, header.getWidth() / (showsTrace ? 4 : 2))));
+    const bool showsComparison = page_ == Page::Spectrogram;
+    const auto controls = showsTrace ? 4 : showsComparison ? 3 : 2;
+    pageBox.setBounds(header.removeFromLeft(std::min(look::mixPageWidth, header.getWidth() / controls)));
     header.removeFromLeft(look::gap);
     if (showsTrace) {
         sourceBox.setBounds(header.removeFromLeft(std::min(look::mixChannelMaxWidth, header.getWidth() / 3)));
@@ -810,9 +1063,11 @@ void MixAnalysers::resized() {
         header.removeFromLeft(look::gap);
         pinnedTracks_.setBounds(header.removeFromLeft(look::mixPageWidth));
     } else {
-        sourceBox.setBounds(header.removeFromLeft(look::mixChannelMaxWidth));
+        const auto width = showsComparison ? std::min(look::mixChannelMaxWidth, header.getWidth() / 2) : look::mixChannelMaxWidth;
+        sourceBox.setBounds(header.removeFromLeft(width));
     }
     header.removeFromLeft(look::gap);
+    if (showsComparison) compareSpectrogram_.setBounds(header.removeFromLeft(std::min(look::mixPageWidth, header.getWidth())));
     const bool showPhaseBands = page_ == Page::Phase && header.getWidth() >= look::mixChannelMinWidth;
     phaseBandsBox_.setVisible(showPhaseBands);
     if (showPhaseBands) phaseBandsBox_.setBounds(header.removeFromLeft(look::mixChannelMinWidth));
@@ -832,6 +1087,7 @@ void MixAnalysers::resized() {
         spectrumStatistics_->setBounds(area.removeFromBottom((showLevels ? 3 : 1) * look::mixChannelRowHeight));
     if (page_ == Page::Analysis) { table_->setBounds(area); return; }
     if (page_ == Page::Compare) { compare_->setBounds(area); return; }
+    if (spectrogramDelta_->isVisible()) { spectrogramDelta_->setBounds(area); return; }
     if (page_ != Page::All) { detail.setBounds(area); return; }
     const int columns = area.getWidth() >= 3 * look::mixChannelMaxWidth ? 3 : 2;
     const int rows = 6 / columns;
