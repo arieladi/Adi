@@ -4557,6 +4557,20 @@ bool isTestLaunch(const juce::String &commandLine) {
             return true;
     return false;
 }
+juce::File projectsFolder(const settings::AppSettings &settings) {
+    const auto chosen = settings.get("files.projectsFolder");
+    auto directory =
+        chosen.is_string() && !chosen.get<std::string>().empty()
+            ? juce::File(juce::String::fromUTF8(chosen.get<std::string>().c_str()))
+            : juce::File(juce::String::fromUTF8(
+                             reinterpret_cast<const char *>(settings.file().parent_path().u8string().c_str())))
+                  .getChildFile("projects");
+    directory.createDirectory();
+    return directory;
+}
+juce::File nextUntitledProject(const settings::AppSettings &settings) {
+    return projectsFolder(settings).getNonexistentChildFile("Untitled", ".adi");
+}
 std::string displayAt(juce::Point<int> screen) {
     const auto *d = juce::Desktop::getInstance().getDisplays().getDisplayForPoint(screen.toFloat());
     return d != nullptr ? displayId(*d) : std::string();

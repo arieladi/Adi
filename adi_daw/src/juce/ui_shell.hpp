@@ -932,6 +932,12 @@ std::string displayAt(juce::Point<int> screen);
 // WTS-01: a test launch (--smoke-output, --control-test): an instance of its own, never the running
 // copy's, which keeps its window out of the foreground and reports to stderr.
 bool isTestLaunch(const juce::String &commandLine);
+// The default projects folder (File & Folder's files.projectsFolder; unset, <config>/projects), made
+// when missing.
+juce::File projectsFolder(const settings::AppSettings &settings);
+// Live's New Live Set (manual 5.4.1): a new project is untitled and asks nothing; Save As names and
+// places it. The next free Untitled.adi, Untitled(2).adi, ... in the projects folder, for launch and New.
+juce::File nextUntitledProject(const settings::AppSettings &settings);
 // Holds a root at its window's interface zoom: the root lays out in logical
 // units and the transform scales it, so nothing below knows the zoom exists.
 class ZoomHost final : public juce::Component {
