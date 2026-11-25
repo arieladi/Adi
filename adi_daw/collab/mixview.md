@@ -199,6 +199,12 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - Six checks exposed repeated paint work before the fix. The updated fixture verifies exact repeated pixels, a single A projection with held B, one projection per side for each scale and correct resize geometry. Strict Release passed 11 suites, 5,633 checks.
 - Review ZIP SHA-256 `84cc4360470e57fbaa59ebdbb6e3cfeba3aa70761ca43579bd42fd711b93af14`. Executable `45d03cd989fe53f45a33b132311182af703662147f30442bc48e10de54a41bc3`. Retest brief uses the same source hash.
 
+## 25 November 2026 · MX-21 Spectrum block size · lands after 3 December
+
+- **PR requested** `mixview/mx21-spectrum-block-size-lands-after-2026-12-03` at `a41a259b9a7f910074dcdb1e65ec5584cd045e4e`. Auto keeps the existing spectrum profile. The ADI selector adds 1024 through 16384 in powers of two and applies one size to the primary and pins. Freeze keeps the pictured calibration and Thaw admits the requested size on fresh audio.
+- Four visibility and default assertions failed first. The 48 kHz fixture verified matching 2048/512 primary and pin windows on their existing physical taps, then a fresh 4096/1024 Auto picture after Thaw. The strict Release passed 11 suites, 5,642 checks.
+- Review ZIP SHA-256 `ae2ebd1234bf92fee7b2187849b390b1220b46ec2789ec83a4f99d0b7594d94f`. Executable `47536b7548734af324266aed14676dc6368a14a3cfaf44f4812f142b2e9d63ce`. Retest brief uses the same source hash.
+
 ### 25 November — MX13 Focus musical windows
 
 **PR requested** `mixview/mx13-musical-window-lands-after-2026-12-03` at `5c88abf073d56cd9e5c99f3aeac3d4cb24a68532`, after captured true peak. Focus Scope offers One Beat and One Bar. The default is still One Bar. A view change clears the former interval and region and requests the new window on the same grouped sources. Tempo and signature edges share exact rounded sample positions. A Locate or selection at a rounded-down boundary starts the new interval. The existing Sum level summary remains readable with the added control.
