@@ -11,6 +11,14 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+### 25 November — DF-M34 graph suspension hook
+
+An active native processor receives the exact number of frames whenever the graph skips its processing on silence. The hook runs after any suspension entry and leaves the existing tap publication and tail drain order intact. Dry bypass keeps the wet DSP clock parked. The test crosses uneven segments under one physical callback, an unrelated event split, a real wake event and dry bypass.
+
+Four checks failed before dispatch was wired. All 218 graph checks passed in the optimized warning-as-error build on the updated main base. This is the shared prerequisite for the Limiter and EQ changes.
+
+PR requested — `mixview/df-m34-skipped-audio-slices` at `0deaa3d0e368a0b9c599981b6dce6f7eab934eb0`. Engine loan for review. Lands before 3 December.
+
 ### 25 November — DF-M69 Focus allocation audit
 
 The Focus suite uses the shared matching allocation and release forms. It counts ordinary, nothrow and aligned allocations in the existing audio and owner scopes. The replacement functions keep a call boundary in the affected optimized build, so the allocation diagnostic sees matched calls.
