@@ -11,6 +11,14 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+### 25 November — MX13 Focus captured true peak
+
+**PR requested** `mixview/mx13-captured-true-peak-lands-after-2026-12-03` at `b272da1cd9084ef5999be8f56aa894db06ebf4cf`, after Difference RMS. Stereo Sum offers an optional capture true peak beside its sample peak. It runs on the existing grouped worker only when requested. Both lanes share a bounded 32,768-phase budget per worker pass. It measures the displayed interval with silence outside the capture, and a held picture keeps its measurement. The queued and acknowledged same-position Locate both clear an unheld reading. Continuous reconstruction across the capture boundaries and positioned phase markers remain separate work.
+
+The absent control failed on the parent. The new Locate checks failed before the visibility fix. Release passed 1,185 shared analysis, 545 Mix View and 594 spectrum checks. Direct convolution covers all eight factors, short and long captures, both half-open edges and chunked input. The broker checks capped catch-up, cancellation, immutable output and no new tap or transform. Changed units and the portability proof passed warnings as errors. Review archive `5d94452a384db001eb4e87d1ade034b70ed80560352232b71a6479bf6d5d92eb`, application `66bf999506f2c8a88c74abcd0f8edb5df9d09b86e3da8d76c3c2ea4626521dfe`.
+
+**Needs Devices:** the common true-peak factor calculation can convert an out-of-range quotient to an integer for tiny positive synthetic rates. Scope guards its calls and pins saturation. The common helper can clamp the quotient before conversion so the other callers get the same guarantee.
+
 ### 25 November — MX13 Focus Difference RMS
 
 **PR requested** `mixview/mx13-difference-rms-lands-after-2026-12-03` at `a6b79cad5b99498fdb016139f5222a74cdea2a28`, after the frequency ruler. The waveform's RMS reads the same aligned A minus B samples as its graph before decimation and display clipping. Stereo shows both lanes, Left and Right reuse them, and Mid and Side fold before measuring. Freeze holds the number with its waveform. Pair changes, a pending Locate, and Difference Spectrum clear an obsolete readout.
