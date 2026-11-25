@@ -175,13 +175,13 @@ void panBlendState(DeviceInstance& device) {
 }
 
 void modulationPd(const std::string& editedDir, bool filterOn, bool sweepOn, bool driveOn = false,
-                  bool crushOn = false, bool noiseOn = false) {
+                  bool crushOn = false, bool noiseOn = false, bool reverbOn = false) {
     using Engine = adi::device::LibPdEngine;
     using Shaper = adi::dsp::AdiShaper;
     using Stage = Shaper::Stage;
     constexpr auto mid = Shaper::Band::Mid;
     constexpr int frames = 4096;
-    const bool onlyVolume = !filterOn && !sweepOn && !driveOn && !crushOn && !noiseOn;
+    const bool onlyVolume = !filterOn && !sweepOn && !driveOn && !crushOn && !noiseOn && !reverbOn;
     std::array<adi::device::PdLatencyReceiver, 2> latency;
     Engine native(ADI_SHAPER_PATCH_DIR, "ADI-Shaper.pd", 2, 2);
     Engine pd(editedDir, "ADI-Shaper.pd", 2, 2);
@@ -244,6 +244,30 @@ void modulationPd(const std::string& editedDir, bool filterOn, bool sweepOn, boo
         for (int j = 0; j < 8; ++j)
             send(Shaper::driveParam(mid, static_cast<Shaper::DriveControl>(Shaper::Drive1 + j)),
                  80.f - 7.f * static_cast<float>(j));
+        if (reverbOn) {
+            send(Shaper::ReverbOn, 1);
+            send(static_cast<Shaper::Param>(Shaper::ReverbOn + 1), 3);
+            for (auto band : {Shaper::Band::Low, mid, Shaper::Band::High}) {
+                send(Shaper::modParam(Stage::Reverb, band, Shaper::ModMix), 80);
+                send(Shaper::modParam(Stage::Reverb, band, Shaper::ModClock), 1);
+                send(Shaper::modParam(Stage::Reverb, band, Shaper::ModRate), 29);
+                send(Shaper::modParam(Stage::Reverb, band, Shaper::PrimaryCurve), 1);
+                send(Shaper::modParam(Stage::Reverb, band, Shaper::SecondaryCurve), 1);
+                for (int j = 0; j < 8; ++j) {
+                    const auto point = static_cast<float>(j);
+                    send(Shaper::modParam(Stage::Reverb, band, static_cast<Shaper::ModControl>(Shaper::Primary1 + j)),
+                         42.f + 6.f * point);
+                    send(Shaper::modParam(Stage::Reverb, band, static_cast<Shaper::ModControl>(Shaper::Secondary1 + j)),
+                         82.f - 6.f * point);
+                }
+                send(Shaper::reverbParam(band, Shaper::RoomSize), 38);
+                send(Shaper::reverbParam(band, Shaper::RoomDecay), 83);
+                send(Shaper::reverbParam(band, Shaper::RoomGate), 1);
+                send(Shaper::reverbParam(band, Shaper::RoomWidth), 73);
+                send(Shaper::reverbParam(band, Shaper::RoomPredelay), 4);
+                send(Shaper::reverbParam(band, Shaper::RoomClearTails), 1);
+            }
+        }
     }
     check(native.isNative() && !pd.isNative() && native.adapterLatencySamples() == 0
           && pd.adapterLatencySamples() == 64, "automatic dispatch selects native and buffered edited paths");
@@ -389,7 +413,7 @@ void savedSplitFrequency() {
 int main() try {
     auto device = open();
     const auto* info = adi::findBuiltin(uid);
-    check(info && info->name == "ADI-Shaper" && device->paramCount() == 515, "device registration");
+    check(info && info->name == "ADI-Shaper" && device->paramCount() == 605, "device registration");
     for (int id = 1; id <= 415; ++id)
         check(device->paramAt(id - 1) && device->paramAt(id - 1)->id == std::to_string(id), "contiguous stable parameter IDs");
     for (int i = 0; i < 90; ++i) {
@@ -403,6 +427,12 @@ int main() try {
     check(device->getParam("536").real == 1., "enable Noise on a running device");
     check(device->loadState("state", adi::Payload::to_cbor(prior)) && device->getParam("536").real == 0.,
           "a pre-Noise state restores the disabled stage on a running device");
+    for (int id = 626; id <= 715; ++id) {
+        const auto* descriptor = device->paramAt(515 + id - 626);
+        check(descriptor && descriptor->id == std::to_string(id), "room descriptor keeps its saved ID");
+    }
+    for (int id : {464, 535, 724, 855, 2049})
+        check(!device->setParam(std::to_string(id), ParamValue::fromNormalized(1)), "undeclared ID rejected");
     panBlendState(*device);
     device = open();
     check(device->wantsDeviceTransport() && device->latencySamples() == 0, "position and latency");
@@ -536,6 +566,41 @@ int main() try {
     set(*device, 536, 1);
     check(device->loadState("state", adi::Payload::to_cbor(beforeNoise)) && device->getParam("536").real == 0,
           "a pre-Noise state disables an already running Noise stage");
+    device = open();
+    set(*device, 67, .75);  // Middle band's Width point at the current beat.
+    auto earlier = adi::Payload::from_cbor(device->saveState("state"));
+    for (int id = 626; id <= 715; ++id) {
+        earlier.at("params").erase(std::to_string(id));
+        earlier.at("real").erase(std::to_string(id));
+    }
+    set(*device, 626, 1);
+    set(*device, 660, 1);
+    set(*device, 715, 1);
+    device->process(io);
+    check(outL[31] != l[31], "active full-wet room changes the signal before recall");
+    const auto roomState = device->saveState("state");
+    check(device->loadState("state", adi::Payload::to_cbor(earlier)), "recall pre-room state on a running room");
+    device->process(io);
+    check(device->getParam("626").real == 0 && device->getParam("660").real == 25
+          && device->getParam("715").real == 0, "earlier state restores room defaults");
+    constexpr float sentinel = -5;
+    outL.fill(sentinel);
+    outR.fill(sentinel);
+    io.blockOffset = 0;
+    io.frames = 64;
+    device->process(io);
+    const auto restoredLeft = outL, restoredRight = outR;
+    auto untouched = open();
+    set(*untouched, 67, .75);
+    outL.fill(sentinel);
+    outR.fill(sentinel);
+    untouched->process(io);
+    check(outL == restoredLeft && outR == restoredRight && outL.front() != sentinel && outL.front() != l.front(),
+          "loading the earlier state over a running room restores its stereo audio");
+    device = open();
+    check(device->loadState("state", roomState) && device->getParam("626").real == 1
+          && device->getParam("660").real == 100 && device->getParam("715").real == 1,
+          "room control endpoints recall");
     automationKeepsTheClock();
     savedSplitFrequency();
     adi::test::TempDirectory edited{"shaper_pd", "crossed_outputs"};
@@ -547,6 +612,7 @@ int main() try {
     cachedPdTransport(editedDir, false);
     modulationPd(editedDir, false, false);
     modulationPd(editedDir, false, false, false, false, true);
+    modulationPd(editedDir, false, false, false, false, false, true);
     modulationPd(editedDir, true, false);
     modulationPd(editedDir, false, true);
     modulationPd(editedDir, true, true);

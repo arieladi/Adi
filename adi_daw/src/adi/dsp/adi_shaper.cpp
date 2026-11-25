@@ -61,8 +61,9 @@ AdiShaper::AdiShaper() noexcept {
         for (auto& band : stages_[i].bands) {
             const bool startsAtZero = kind == Stage::Pan || kind == Stage::Drive;
             band.primary.points.fill(startsAtZero ? 0.0f : kind == Stage::Sweep ? 0.5f : 1.0f);
-            band.secondary.points.fill(kind == Stage::Crush ? 1.0f :
+            band.secondary.points.fill(kind == Stage::Crush || kind == Stage::Reverb ? 1.0f :
                                        (kind == Stage::Sweep || kind == Stage::Noise) ? 0.5f : 0.0f);
+            if (kind == Stage::Reverb) band.mix = .25f;
             if (kind == Stage::Sweep) band.type = static_cast<int>(AdiShaperSweep::Mode::Flange);
         }
         updateStage(kind);
@@ -98,6 +99,7 @@ void AdiShaper::prepare(double sampleRate) noexcept {
     for (auto& crusher : crush_) (void)crusher.prepare(sampleRate);
     constexpr std::array<std::uint32_t, 3> seeds{0xa28d45b3U, 0x41f9c67dU, 0x9db703e1U};
     for (std::size_t i = 0; i < noise_.size(); ++i) noise_[i].prepare(sampleRate, seeds[i]);
+    for (auto& room : reverb_) (void)room.prepare(sampleRate);
     driveDry_ = {};
     driveSource_ = {};
     for (auto& stage : stages_) {
@@ -264,6 +266,8 @@ void AdiShaper::updateStep(CurveBand& band) const noexcept {
 void AdiShaper::tempo(double bpm) noexcept {
     if (!std::isfinite(bpm) || bpm <= 0.0 || bpm > 10000.0 || bpm == bpm_) return;
     bpm_ = bpm;
+    for (std::size_t i = 0; i < reverb_.size(); ++i)
+        reverb_[i].setPredelay(reverbSettings_[i].predelay, bpm);
     for (auto& stage : stages_)
         for (auto& band : stage.bands)
             if (!band.hertz) updateStep(band);
@@ -307,6 +311,10 @@ AdiShaper::Gain AdiShaper::gain(Stage kind, float amount, float mix) noexcept {
 void AdiShaper::updateBand(Stage kind, CurveBand& band) const noexcept {
     band.primary.update();
     band.blend = masterMix_ * band.mix;
+    if (kind == Stage::Reverb) {
+        band.returnDry = std::min(1.f, 2.f * (1.f - band.blend));
+        band.returnWet = std::min(1.f, 2.f * band.blend);
+    }
     if (kind >= Stage::Filter) {
         band.secondary.update();
         band.active = kind != Stage::Sweep || band.type != static_cast<int>(AdiShaperSweep::Mode::Off);
@@ -370,6 +378,7 @@ void AdiShaper::resetKernels(Stage kind) noexcept {
     if (kind == Stage::Pan) for (auto& pan : panHistory_) pan.valid = 0;
     if (kind == Stage::Filter) for (auto& filter : filters_) filter.reset();
     if (kind == Stage::Sweep) for (auto& sweep : sweeps_) sweep.reset();
+    if (kind == Stage::Reverb) for (auto& room : reverb_) room.reset();
     if (kind == Stage::Crush) for (auto& crusher : crush_) crusher.reset();
     if (kind == Stage::Noise) for (auto& noise : noise_) noise.reset();
     if (kind == Stage::Drive) {
@@ -395,13 +404,28 @@ void AdiShaper::setNoiseOption(std::size_t band, NoiseOption option, float value
     }
 }
 
+void AdiShaper::setReverbOption(std::size_t band, ReverbOption option, float value) noexcept {
+    auto& reverb = reverb_[band];
+    auto& settings = reverbSettings_[band];
+    const float unit = std::clamp(value, 0.f, 100.f) * .01f;
+    switch (option) {
+    case RoomSize: settings.size = unit; break;
+    case RoomDecay: settings.decay = unit; break;
+    case RoomGate: settings.gate = value >= .5f; break;
+    case RoomWidth: reverb.setWidth(unit); return;
+    case RoomPredelay: settings.predelay = unit; reverb.setPredelay(unit, bpm_); return;
+    case RoomClearTails: reverb.setClearTails(value >= .5f); return;
+    }
+    reverb.setShape(settings.size, settings.decay, settings.gate);
+}
+
 void AdiShaper::setMod(Param id, float value) noexcept {
     if (id >= SweepLowPolarity && id < DriveOn) {
         sweeps_[static_cast<std::size_t>(id - SweepLowPolarity)].setPolarity(value >= 0.5f);
         return;
     }
-    const auto start = id >= NoiseOn ? NoiseOn : id >= CrushOn ? CrushOn : id >= DriveOn ? DriveOn : id >= SweepOn ? SweepOn : FilterOn;
-    const auto kind = start == NoiseOn ? Stage::Noise : start == CrushOn ? Stage::Crush : start == DriveOn ? Stage::Drive
+    const auto start = id >= ReverbOn ? ReverbOn : id >= NoiseOn ? NoiseOn : id >= CrushOn ? CrushOn : id >= DriveOn ? DriveOn : id >= SweepOn ? SweepOn : FilterOn;
+    const auto kind = start == ReverbOn ? Stage::Reverb : start == NoiseOn ? Stage::Noise : start == CrushOn ? Stage::Crush : start == DriveOn ? Stage::Drive
                     : start == SweepOn ? Stage::Sweep : Stage::Filter;
     const int local = id - start;
     auto& stage = stages_[static_cast<std::size_t>(kind)];
@@ -428,7 +452,7 @@ void AdiShaper::setMod(Param id, float value) noexcept {
         }
         return;
     }
-    const int stride = kind == Stage::Noise ? noiseBandParameterCount
+    const int stride = kind == Stage::Reverb ? reverbBandParameterCount : kind == Stage::Noise ? noiseBandParameterCount
                      : kind == Stage::Drive ? driveBandParameterCount : modBandParameterCount;
     const auto index = static_cast<std::size_t>((local - modHeaderSize) / stride);
     auto& band = stage.bands[index];
@@ -436,6 +460,13 @@ void AdiShaper::setMod(Param id, float value) noexcept {
     if (kind == Stage::Noise && control > Secondary8) {
         setNoiseOption(index, static_cast<NoiseOption>(control - Secondary8 - 1), value);
         return;
+    }
+    if (kind == Stage::Reverb) {
+        ++control; // The band's first control is Mix.
+        if (control > Secondary8) {
+            setReverbOption(index, static_cast<ReverbOption>(control - Secondary8 - 1), value);
+            return;
+        }
     }
     if (kind == Stage::Drive) {
         if (control == InputTrim || control == OutputTrim) {
@@ -482,7 +513,7 @@ void AdiShaper::setMod(Param id, float value) noexcept {
 }
 
 void AdiShaper::set(Param id, float value) noexcept {
-    if (id < MasterMix || id >= Count || !std::isfinite(value)) return;
+    if (!hasParameter(id) || !std::isfinite(value)) return;
     if (id >= PanLowDelayBlend) {
         panHistory_[static_cast<std::size_t>(id - PanLowDelayBlend)].setBlend(value);
         return;
@@ -496,7 +527,6 @@ void AdiShaper::set(Param id, float value) noexcept {
         }
         return;
     }
-    if ((id >= BaseCount && id < NoiseOn) || id >= NoiseEnd) return;
     if (id == MasterMix) {
         masterMix_ = std::clamp(value, 0.0f, 100.0f) * 0.01f;
         if (masterMix_ == 0.f) resetKernels(Stage::Pan);
@@ -637,6 +667,24 @@ void AdiShaper::PanHistory::process(const Tap& tap, float& left, float& right) n
     head = (head + 1) & mask;
 }
 
+float AdiShaper::Contour::returnAt(std::uint64_t position, std::uint64_t step) const noexcept {
+    if (linear && !constant && step != 0) {
+        // A linear return may touch zero between samples. Assign a crossed
+        // node to its nearest frame so transport resync and callback size
+        // cannot skip it. Inspect the authored height, including tiny
+        // positive minima that must preserve the tail.
+        constexpr auto segment = std::uint64_t{1} << 61;
+        const auto begin = position - step / 2;
+        const auto crossings = (step >> 61) + (((begin % segment) + (step % segment)) >> 61);
+        auto node = static_cast<std::size_t>(begin >> 61);
+        for (std::uint64_t i = 0; i < crossings; ++i) {
+            node = (node + 1) % points.size();
+            if (points[node] == 0.f) return 0.f;
+        }
+    }
+    return at(position);
+}
+
 void AdiShaper::DriveDryDelay::advance(float& l, float& r) noexcept {
     const auto previous = samples[index];
     // A preceding stage can overflow even with finite rack input. Do not put
@@ -679,11 +727,18 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
                 sweeps_[index].processStereo(l, r, primary, band.secondary.at(p));
             } else if constexpr (kind == Stage::Noise) {
                 noise_[index].processStereo(l, r, primary, band.secondary.at(p));
+            } else if constexpr (kind == Stage::Reverb) {
+                auto& room = reverb_[index];
+                const float ret = room.clearsTails() ? band.secondary.returnAt(p, band.step) : band.secondary.at(p);
+                room.processStereo(l, r, primary, ret, band.blend != 0.f);
             } else {
                 crush_[index].processStereo(l, r, primary, band.secondary.at(p), band.secondary.constant);
             }
             if (band.blend == 0.0f) { l = dryL; r = dryR; }
-            else if (band.blend != 1.0f) {
+            else if constexpr (kind == Stage::Reverb) {
+                l = finiteOrZero(band.returnDry * dryL + band.returnWet * l);
+                r = finiteOrZero(band.returnDry * dryR + band.returnWet * r);
+            } else if (band.blend != 1.0f) {
                 l = dryL + band.blend * (l - dryL);
                 r = dryR + band.blend * (r - dryR);
             }
@@ -863,6 +918,7 @@ void AdiShaper::process(const float* inL, const float* inR, float* outL, float* 
         run.template operator()<Stage::Drive>();
         run.template operator()<Stage::Crush>();
         run.template operator()<Stage::Noise>();
+        run.template operator()<Stage::Reverb>();
     } else {
         // Route one host segment at a time. Each stage retains its kernels,
         // histories and free-running phase when it moves to a different slot.
@@ -876,6 +932,7 @@ void AdiShaper::process(const float* inL, const float* inR, float* outL, float* 
             case Stage::Drive: run.template operator()<Stage::Drive>(); break;
             case Stage::Crush: run.template operator()<Stage::Crush>(); break;
             case Stage::Noise: run.template operator()<Stage::Noise>(); break;
+            case Stage::Reverb: run.template operator()<Stage::Reverb>(); break;
             }
         }
     }
