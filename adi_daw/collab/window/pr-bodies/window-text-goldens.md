@@ -14,10 +14,9 @@ Tests
   - the diff draws the divider in red;
   - the boxes read back from their text;
   - under a 2x zoom the box is in the image's pixels.
-- Pd on, the gate's own build of `2b9f5c2b`: shell 2974 checks, seams 553, document 317, window_state 129, 0 failures.
+- Pd on, JUCE 9.0.5, the gate's own build of `b88bd09a` (main merged after #739): shell 3163 checks, seams 580, document 337, window_state 177, 0 failures; the full build is clean.
 - Pd off as `ui.yml` builds it (`-DADI_WITH_PD=OFF -DADI_WERROR=ON`): adi_app and the six UI suites, 6 of 6 passed.
-- The full build stops only at main's GCC 13 `tests/scanner_session_reopen.hpp` 208. The shadow and clang warning sweeps flag only main's lines (`tests/test_ui_shell.cpp` 6203 and 12799, outside this branch's hunks); `ui_golden_text.hpp` is clean through the shell's test.
-- The branch carries `2b9f5c2b`, the window lane's fix that lets `browserDevices` pass with Pd on (Hybrid Reverb loads), so the gate runs green; it no-ops once main has it.
+- The shadow and clang warning sweeps flag only main's lines (`tests/test_ui_shell.cpp` 6352, 13433, 17096); `ui_golden_text.hpp` is clean through the shell's test.
 - **For win:** AT-1 and AT-24's definitions; this lane finds only ADR-0232 d9's line.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
