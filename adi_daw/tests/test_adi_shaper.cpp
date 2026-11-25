@@ -21,6 +21,8 @@ static_assert(Shaper::SweepOn == 208 && Shaper::SweepLowPolarity == 283 && Shape
 static_assert(Shaper::CrushOn == 340 && Shaper::BaseCount == 415);
 static_assert(Shaper::PanLowDelayBlend == 855 && Shaper::PanHighDelayBlend == 857);
 static_assert(Shaper::DriveLowFold == 933 && Shaper::DriveHighFold == 935);
+static_assert(Shaper::DriveLowRounded == 927 && Shaper::DriveHighRounded == 929);
+static_assert(Shaper::DriveLowPower == 930 && Shaper::DriveHighPower == 932);
 static_assert(Shaper::driveParam(Band::High, Shaper::OutputTrim) + 1 == Shaper::CrushOn);
 static_assert(Shaper::modParam(Stage::Crush, Band::High, Shaper::Secondary8) + 1 == Shaper::BaseCount);
 int failures = 0;
@@ -1023,7 +1025,7 @@ void foldBands() {
         }
         const float selection = static_cast<float>(bandIndex + 1);
         racks[1].set(static_cast<Shaper::Param>(Shaper::DriveLowFold + (bandIndex+1)%3), selection);
-        racks[1].set(static_cast<Shaper::Param>(Shaper::DriveLowFold-1), selection);
+        racks[1].set(static_cast<Shaper::Param>(Shaper::DriveLowRounded-1), selection);
         racks[2].set(static_cast<Shaper::Param>(Shaper::DriveLowFold + bandIndex), selection);
         racks[3].set(static_cast<Shaper::Param>(Shaper::DriveLowFold + bandIndex), selection);
         racks[3].set(Shaper::driveParam(static_cast<Band>(bandIndex), Shaper::DriveStyle), 1);
@@ -1041,6 +1043,52 @@ void foldBands() {
         }
         check(neighborsEqual && peakDifference > .002f, "fold selection belongs to its own wet band");
         check(overrideEqual, "a selected fold plays identically over either underlying Drive mode");
+    }
+}
+
+void combinedDriveBands() {
+    for (int rotation = 0; rotation < 3; ++rotation) {
+        std::array<Shaper, 3> racks;
+        for (auto& rack : racks) {
+            rack.set(Shaper::DriveOn, 1);
+            rack.set(static_cast<Shaper::Param>(Shaper::DriveOn + 1), 3);
+        }
+        for (int b = 0; b < 3; ++b) {
+            const auto band = static_cast<Band>(b);
+            const int role = (b+rotation)%3;
+            const auto rounded = static_cast<Shaper::Param>(Shaper::DriveLowRounded+b);
+            const auto power = static_cast<Shaper::Param>(Shaper::DriveLowPower+b);
+            const auto fold = static_cast<Shaper::Param>(Shaper::DriveLowFold+b);
+            for (auto& rack : racks) {
+                rack.set(Shaper::driveParam(band, Shaper::DriveStyle), role == 0 ? 1.f : 0.f);
+                rack.set(rounded, role == 0 ? 1.f : 0.f);
+                rack.set(power, role == 1 ? 1.f : 0.f);
+                rack.set(fold, role == 2 ? static_cast<float>(rotation+1) : 0.f);
+                for (int point = 0; point < 8; ++point)
+                    rack.set(Shaper::driveParam(band, static_cast<Shaper::DriveControl>(Shaper::Drive1+point)), 50);
+            }
+            // Unused choices remain saved behind the active response in each band.
+            racks[1].set(power, 1);
+            racks[1].set(rounded, 1);
+            if (role == 2) racks[1].set(Shaper::driveParam(band, Shaper::DriveStyle), 2);
+            if (b == rotation) {
+                racks[2].set(power, 0);
+                racks[2].set(rounded, 0);
+                racks[2].set(fold, 0);
+            }
+        }
+        bool hiddenChoicesEqual = true;
+        float audibleChange = 0.f;
+        for (int n = 0; n < 3072; ++n) {
+            const float left = static_cast<float>(.6*std::sin(.01*n) + .4*std::cos(.12*n) + .3*std::sin(1.7*n));
+            const float right = static_cast<float>(.5*std::cos(.02*n) + .4*std::sin(.17*n) - .3*std::cos(1.3*n));
+            const auto expected = one(racks[0], left, right);
+            hiddenChoicesEqual &= one(racks[1], left, right) == expected;
+            const auto changed = one(racks[2], left, right);
+            audibleChange = std::max({audibleChange, std::abs(changed[0]-expected[0]), std::abs(changed[1]-expected[1])});
+        }
+        check(hiddenChoicesEqual && audibleChange > .002f,
+              "three independent Drive responses coexist and each wet band contributes to the output");
     }
 }
 
@@ -1181,6 +1229,7 @@ int main() {
     driveDryAndLatency();
     driveAndCrush();
     foldBands();
+    combinedDriveBands();
     crushHoldClockBlocks();
     if (failures == 0) std::puts("ADI-Shaper DSP fixtures passed");
     return failures == 0 ? 0 : 1;

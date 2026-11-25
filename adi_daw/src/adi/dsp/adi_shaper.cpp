@@ -437,6 +437,14 @@ void AdiShaper::setMod(Param id, float value) noexcept {
 
 void AdiShaper::set(Param id, float value) noexcept {
     if (id < MasterMix || id >= Count || !std::isfinite(value)) return;
+    if (id >= DriveLowRounded && id <= DriveHighRounded) {
+        drives_[static_cast<std::size_t>(id - DriveLowRounded)].setRoundedClip(value >= .5f);
+        return;
+    }
+    if (id >= DriveLowPower && id <= DriveHighPower) {
+        drives_[static_cast<std::size_t>(id - DriveLowPower)].setPowerSaturation(value >= .5f);
+        return;
+    }
     if (id >= DriveLowFold) {
         const auto shape = static_cast<int>(std::round(std::clamp(value, 0.0f, 3.0f)));
         drives_[static_cast<std::size_t>(id - DriveLowFold)].setFold(static_cast<AdiShaperDrive::Fold>(shape));
