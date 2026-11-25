@@ -22,6 +22,8 @@ static_assert(Shaper::CrushOn == 340 && Shaper::BaseCount == 415);
 static_assert(Shaper::PanLowDelayBlend == 855 && Shaper::PanHighDelayBlend == 857);
 static_assert(Shaper::driveParam(Band::High, Shaper::OutputTrim) + 1 == Shaper::CrushOn);
 static_assert(Shaper::modParam(Stage::Crush, Band::High, Shaper::Secondary8) + 1 == Shaper::BaseCount);
+static_assert(Shaper::NoiseOn == 535 && Shaper::NoiseEnd == 625);
+static_assert(Shaper::noiseParam(Band::High, Shaper::NoiseLowPass) + 1 == Shaper::NoiseEnd);
 int failures = 0;
 
 void check(bool condition, const char* description) {
@@ -599,6 +601,7 @@ void bypassAndInvalid() {
     shaper.set(Shaper::bandParam(Stage::Width, Band::Mid, Shaper::Point3),
                std::numeric_limits<float>::quiet_NaN());
     shaper.set(Shaper::Count, 20);
+    for (const int gap : {415, 534, 625, 854}) shaper.set(static_cast<Shaper::Param>(gap), 1);
     shaper.sync(std::numeric_limits<double>::infinity());
     shaper.tempo(0);
     shaper.prepare(-1);

@@ -60,7 +60,8 @@ AdiShaper::AdiShaper() noexcept {
         for (auto& band : stages_[i].bands) {
             const bool startsAtZero = kind == Stage::Pan || kind == Stage::Drive;
             band.primary.points.fill(startsAtZero ? 0.0f : kind == Stage::Sweep ? 0.5f : 1.0f);
-            band.secondary.points.fill(kind == Stage::Crush ? 1.0f : kind == Stage::Sweep ? 0.5f : 0.0f);
+            band.secondary.points.fill(kind == Stage::Crush ? 1.0f :
+                                       (kind == Stage::Sweep || kind == Stage::Noise) ? 0.5f : 0.0f);
             if (kind == Stage::Sweep) band.type = static_cast<int>(AdiShaperSweep::Mode::Flange);
         }
         updateStage(kind);
@@ -79,6 +80,8 @@ void AdiShaper::prepare(double sampleRate) noexcept {
     for (auto& drive : drives_) drive.prepare(sampleRate);
     for (auto& pan : panHistory_) pan.prepare(sampleRate);
     for (auto& crusher : crush_) (void)crusher.prepare(sampleRate);
+    constexpr std::array<std::uint32_t, 3> seeds{0xa28d45b3U, 0x41f9c67dU, 0x9db703e1U};
+    for (std::size_t i = 0; i < noise_.size(); ++i) noise_[i].prepare(sampleRate, seeds[i]);
     driveDry_ = {};
     driveSource_ = {};
     for (auto& stage : stages_) {
@@ -352,10 +355,27 @@ void AdiShaper::resetKernels(Stage kind) noexcept {
     if (kind == Stage::Filter) for (auto& filter : filters_) filter.reset();
     if (kind == Stage::Sweep) for (auto& sweep : sweeps_) sweep.reset();
     if (kind == Stage::Crush) for (auto& crusher : crush_) crusher.reset();
+    if (kind == Stage::Noise) for (auto& noise : noise_) noise.reset();
     if (kind == Stage::Drive) {
         for (auto& drive : drives_) drive.reset();
         driveDry_ = {};
         driveSource_ = {};
+    }
+}
+
+void AdiShaper::setNoiseOption(std::size_t band, NoiseOption option, float value) noexcept {
+    auto& noise = noise_[band];
+    const float unit = std::clamp(value, 0.f, 100.f) * .01f;
+    switch (option) {
+    case NoiseMono: noise.setMono(value >= .5f); break;
+    case NoiseOnly: noise.setNoiseOnly(value >= .5f); break;
+    case NoiseTrim: noise.setTrim(unit); break;
+    case NoiseHighPass: case NoiseLowPass: {
+        auto& filters = noiseFilters_[band];
+        filters[option == NoiseHighPass ? 0 : 1] = unit;
+        noise.setFilters(filters[0], filters[1]);
+        break;
+    }
     }
 }
 
@@ -364,8 +384,8 @@ void AdiShaper::setMod(Param id, float value) noexcept {
         sweeps_[static_cast<std::size_t>(id - SweepLowPolarity)].setPolarity(value >= 0.5f);
         return;
     }
-    const auto start = id >= CrushOn ? CrushOn : id >= DriveOn ? DriveOn : id >= SweepOn ? SweepOn : FilterOn;
-    const auto kind = start == CrushOn ? Stage::Crush : start == DriveOn ? Stage::Drive
+    const auto start = id >= NoiseOn ? NoiseOn : id >= CrushOn ? CrushOn : id >= DriveOn ? DriveOn : id >= SweepOn ? SweepOn : FilterOn;
+    const auto kind = start == NoiseOn ? Stage::Noise : start == CrushOn ? Stage::Crush : start == DriveOn ? Stage::Drive
                     : start == SweepOn ? Stage::Sweep : Stage::Filter;
     const int local = id - start;
     auto& stage = stages_[static_cast<std::size_t>(kind)];
@@ -392,10 +412,15 @@ void AdiShaper::setMod(Param id, float value) noexcept {
         }
         return;
     }
-    const int stride = kind == Stage::Drive ? driveBandParameterCount : modBandParameterCount;
+    const int stride = kind == Stage::Noise ? noiseBandParameterCount
+                     : kind == Stage::Drive ? driveBandParameterCount : modBandParameterCount;
     const auto index = static_cast<std::size_t>((local - modHeaderSize) / stride);
     auto& band = stage.bands[index];
     int control = (local - modHeaderSize) % stride;
+    if (kind == Stage::Noise && control > Secondary8) {
+        setNoiseOption(index, static_cast<NoiseOption>(control - Secondary8 - 1), value);
+        return;
+    }
     if (kind == Stage::Drive) {
         if (control == InputTrim || control == OutputTrim) {
             auto& trims = driveTrims_[index];
@@ -417,6 +442,9 @@ void AdiShaper::setMod(Param id, float value) noexcept {
         } else if (kind == Stage::Drive) {
             band.type = static_cast<int>(std::round(std::clamp(value, 0.0f, 2.0f)));
             drives_[index].setMode(static_cast<AdiShaperDrive::Mode>(band.type));
+        } else if (kind == Stage::Noise) {
+            band.type = static_cast<int>(std::round(std::clamp(value, 0.0f, 2.0f)));
+            noise_[index].setSource(static_cast<AdiShaperNoise::Source>(band.type));
         } else crush_[index].setDither(value >= 0.5f);
         break;
     case ModMix: band.mix = std::clamp(value, 0.0f, 100.0f) * 0.01f; break;
@@ -429,7 +457,9 @@ void AdiShaper::setMod(Param id, float value) noexcept {
         if (control < Secondary1)
             band.primary.points[static_cast<std::size_t>(control - Primary1)] = std::clamp(value, 0.0f, 100.0f) * 0.01f;
         else
-            band.secondary.points[static_cast<std::size_t>(control - Secondary1)] = std::clamp(value, 0.0f, 100.0f) * 0.01f;
+            band.secondary.points[static_cast<std::size_t>(control - Secondary1)] = kind == Stage::Noise
+                ? (std::clamp(value, -24.0f, 24.0f) + 24.0f) / 48.0f
+                : std::clamp(value, 0.0f, 100.0f) * 0.01f;
     }
     updateBand(kind, band);
     updateActivity(stage);
@@ -441,7 +471,7 @@ void AdiShaper::set(Param id, float value) noexcept {
         panHistory_[static_cast<std::size_t>(id - PanLowDelayBlend)].setBlend(value);
         return;
     }
-    if (id >= BaseCount) return;
+    if ((id >= BaseCount && id < NoiseOn) || id >= NoiseEnd) return;
     if (id == MasterMix) {
         masterMix_ = std::clamp(value, 0.0f, 100.0f) * 0.01f;
         if (masterMix_ == 0.f) resetKernels(Stage::Pan);
@@ -622,6 +652,8 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
                 filters_[index].process(l, r, primary, band.secondary.at(p));
             } else if constexpr (kind == Stage::Sweep) {
                 sweeps_[index].processStereo(l, r, primary, band.secondary.at(p));
+            } else if constexpr (kind == Stage::Noise) {
+                noise_[index].processStereo(l, r, primary, band.secondary.at(p));
             } else {
                 crush_[index].processStereo(l, r, primary, band.secondary.at(p), band.secondary.constant);
             }
@@ -653,6 +685,11 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
         }
     };
     if (stage.layout == 0) {
+        if constexpr (kind == Stage::Noise) {
+            const auto& band = stage.bands[1];
+            if (band.primary.constant && band.blend == 1.f &&
+                noise_[1].processWhiteBlock(inL, inR, outL, outR, frames, band.primary.points[0])) return;
+        }
         if constexpr (kind == Stage::Volume) {
             const auto& band = stage.bands[1];
             if (band.primary.constant) {
@@ -774,7 +811,7 @@ void AdiShaper::process(const float* inL, const float* inR, float* outL, float* 
             repaired |= stage.low.finishBlock();
             repaired |= stage.high.finishBlock();
         }
-        if constexpr (kind >= Stage::Filter) {
+        if constexpr (kind >= Stage::Filter && kind <= Stage::Crush) {
             const auto finish = [&](std::size_t index) {
                 if constexpr (kind == Stage::Filter) return filters_[index].finishBlock();
                 if constexpr (kind == Stage::Sweep) return sweeps_[index].finishBlock();
@@ -794,6 +831,7 @@ void AdiShaper::process(const float* inL, const float* inR, float* outL, float* 
     run.template operator()<Stage::Sweep>();
     run.template operator()<Stage::Drive>();
     run.template operator()<Stage::Crush>();
+    run.template operator()<Stage::Noise>();
     for (auto& stage : stages_) {
         if (!stage.enabled) continue;
         for (auto& band : stage.bands)

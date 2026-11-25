@@ -175,13 +175,13 @@ void panBlendState(DeviceInstance& device) {
 }
 
 void modulationPd(const std::string& editedDir, bool filterOn, bool sweepOn, bool driveOn = false,
-                  bool crushOn = false) {
+                  bool crushOn = false, bool noiseOn = false) {
     using Engine = adi::device::LibPdEngine;
     using Shaper = adi::dsp::AdiShaper;
     using Stage = Shaper::Stage;
     constexpr auto mid = Shaper::Band::Mid;
     constexpr int frames = 4096;
-    const bool onlyVolume = !filterOn && !sweepOn && !driveOn && !crushOn;
+    const bool onlyVolume = !filterOn && !sweepOn && !driveOn && !crushOn && !noiseOn;
     std::array<adi::device::PdLatencyReceiver, 2> latency;
     Engine native(ADI_SHAPER_PATCH_DIR, "ADI-Shaper.pd", 2, 2);
     Engine pd(editedDir, "ADI-Shaper.pd", 2, 2);
@@ -209,6 +209,12 @@ void modulationPd(const std::string& editedDir, bool filterOn, bool sweepOn, boo
             for (const auto band : {Shaper::Band::Low, Shaper::Band::High})
                 for (int j = 0; j < 8; ++j)
                     send(Shaper::bandParam(Stage::Volume, band, static_cast<Shaper::BandControl>(Shaper::Point1 + j)), 0);
+        }
+        if (noiseOn) {
+            send(Shaper::NoiseOn, 1);
+            send(Shaper::modParam(Stage::Noise, mid, Shaper::Type), 1);
+            send(Shaper::noiseParam(mid, Shaper::NoiseMono), 0);
+            send(Shaper::noiseParam(mid, Shaper::NoiseOnly), 1);
         }
         send(Shaper::FilterOn, filterOn ? 1.0f : 0.0f);
         send(Shaper::SweepOn, sweepOn ? 1.0f : 0.0f);
@@ -381,9 +387,20 @@ void savedSplitFrequency() {
 int main() try {
     auto device = open();
     const auto* info = adi::findBuiltin(uid);
-    check(info && info->name == "ADI-Shaper" && device->paramCount() == 418, "device registration");
+    check(info && info->name == "ADI-Shaper" && device->paramCount() == 508, "device registration");
     for (int id = 1; id <= 415; ++id)
         check(device->paramAt(id - 1) && device->paramAt(id - 1)->id == std::to_string(id), "contiguous stable parameter IDs");
+    for (int i = 0; i < 90; ++i) {
+        const auto* option = device->paramAt(418 + i);
+        check(option && option->id == std::to_string(536 + i), "Noise preserves every earlier declaration index");
+    }
+    auto prior = adi::Payload::from_cbor(device->saveState("state"));
+    for (const auto* group : {"params", "real"})
+        for (int id = 536; id <= 625; ++id) prior.at(group).erase(std::to_string(id));
+    set(*device, 536, 1.);
+    check(device->getParam("536").real == 1., "enable Noise on a running device");
+    check(device->loadState("state", adi::Payload::to_cbor(prior)) && device->getParam("536").real == 0.,
+          "a pre-Noise state restores the disabled stage on a running device");
     panBlendState(*device);
     device = open();
     check(device->wantsDeviceTransport() && device->latencySamples() == 0, "position and latency");
@@ -492,6 +509,14 @@ int main() try {
     device = open();
     check(device->loadState("state", adi::Payload::to_cbor(realOnly))
           && std::abs(device->getParam("170").real - 37) < 1e-4, "a value saved only in its unit is kept");
+    auto beforeNoise = adi::Payload::from_cbor(sevenStageState);
+    for (int id = 536; id <= 625; ++id) {
+        beforeNoise.at("params").erase(std::to_string(id));
+        beforeNoise.at("real").erase(std::to_string(id));
+    }
+    set(*device, 536, 1);
+    check(device->loadState("state", adi::Payload::to_cbor(beforeNoise)) && device->getParam("536").real == 0,
+          "a pre-Noise state disables an already running Noise stage");
     automationKeepsTheClock();
     savedSplitFrequency();
     adi::test::TempDirectory edited{"shaper_pd", "crossed_outputs"};
@@ -502,6 +527,7 @@ int main() try {
     cachedPdTransport(ADI_SHAPER_PATCH_DIR, true);
     cachedPdTransport(editedDir, false);
     modulationPd(editedDir, false, false);
+    modulationPd(editedDir, false, false, false, false, true);
     modulationPd(editedDir, true, false);
     modulationPd(editedDir, false, true);
     modulationPd(editedDir, true, true);
