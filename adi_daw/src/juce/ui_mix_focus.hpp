@@ -70,6 +70,7 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     void clearScopeSum();
     void freezeScope();
     void thawScope();
+    void releaseScopeLeases();
     [[nodiscard]] std::optional<std::uint64_t> scopeDisplayFloor() const noexcept;
     [[nodiscard]] bool scopeTimingCurrent() const noexcept;
     void mouseDown(const juce::MouseEvent &) override;
@@ -169,6 +170,7 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     std::optional<ScopeGridStamp> scopeGridStamp_;
     std::vector<ScopeGridLine> scopeGrid_;
     std::optional<std::uint64_t> scopeWaveformRevision_, frozenScopeRevision_;
+    std::optional<std::uint64_t> stoppedScopeRevision_;
     SharedAnalysis::BarScopeLease barScope_;
     std::shared_ptr<const engine::TempoMap> barTempo_;
     std::vector<textproj::Meter> barMeters_;
@@ -187,6 +189,7 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     std::optional<SharedAnalysis::ScopeDifference> differenceRequest_;
     std::optional<std::array<double, 2>> differenceRms_;
     std::optional<std::uint64_t> scopeLocate_, differenceRenderedRevision_;
+    bool scopeCommandPending_ = false;
     std::uint64_t differenceSelection_ = 0;
     std::optional<FocusMatchReading> match_;
     std::optional<std::uint64_t> matchLocateRevision_;

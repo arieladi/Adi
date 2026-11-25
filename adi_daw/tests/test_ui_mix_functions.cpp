@@ -4045,6 +4045,35 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
         };
         selectTimed(FocusScopeWindow::Milliseconds170, "170 ms", 8160);
         const auto wideStart = selectTimed(FocusScopeWindow::Milliseconds340, "340 ms", 16320);
+        const auto stoppedReading = MixFocusTestAccess::scopeReading(focus);
+        check(doc->mailbox().post(TransportMailbox::Command::Stop), "queue the normal Stop command for the held picture");
+        frame();
+        doc->mailbox().drain(driver);
+        frame();
+        const auto stoppedStats = broker->stats();
+        const auto heldReading = MixFocusTestAccess::scopeReading(focus);
+        check(MixFocusTestAccess::scopeInterval(focus, wideStart, 16320, rate) && stoppedReading && heldReading &&
+                  stoppedReading->peak == heldReading->peak && stoppedReading->rms == heldReading->rms &&
+                  stoppedStats.taps == 0 && stoppedStats.consumers == 0,
+              "Stop holds the completed waveform and readings with no source taps or consumers");
+        MixFocusTestAccess::moveScopePointer(focus, .5f, .25f);
+        frame();
+        check(!MixFocusTestAccess::scopeCursorText(focus).isEmpty() &&
+                  broker->stats().frameRequests == stoppedStats.frameRequests &&
+                  broker->stats().transforms == stoppedStats.transforms,
+              "a stopped waveform can be inspected without waking the analysis worker");
+        check(doc->mailbox().post(TransportMailbox::Command::Locate, firstTimed), "queue Locate while Scope is stopped");
+        frame();
+        check(!MixFocusTestAccess::hasScopeTrace(focus) && !MixFocusTestAccess::scopeWaveformRange(focus),
+              "a queued Locate retracts the picture held by ordinary Stop");
+        doc->mailbox().drain(driver);
+        driver.play(true);
+        frame();
+        writeUntil(firstTimed + bar / 2);
+        const auto resumed = MixFocusTestAccess::scopeWaveformRange(focus);
+        check(resumed && resumed->frames == 16320 && resumed->first >= firstTimed &&
+                  broker->stats().taps == 2,
+              "Play reacquires both taps and publishes a fresh window after the seek");
         if (freeze && freeze->isEnabled()) {
             freeze->setToggleState(true, juce::dontSendNotification);
             freeze->onClick();
@@ -4052,7 +4081,7 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
             check(doc->mailbox().post(TransportMailbox::Command::Locate, 0), "queue a seek while Free Run is frozen");
             doc->mailbox().drain(driver);
             frame();
-            check(MixFocusTestAccess::scopeInterval(focus, wideStart, 16320, rate) &&
+            check(resumed && MixFocusTestAccess::scopeInterval(focus, resumed->first, 16320, rate) &&
                       held.taps == 0 && broker->stats().frameRequests == held.frameRequests,
                   "Freeze holds the completed time window across Locate without new broker work");
             freeze->setToggleState(false, juce::dontSendNotification);
