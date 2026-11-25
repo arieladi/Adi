@@ -98,6 +98,14 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - The component gate failed first on the missing control. The frozen Sweep check proves byte 113 maps to 50 at gamma 2, then returns to the exact neutral pixels. The gaps, raw dBFS cursor, sibling picture and broker counts stay identical.
 - Strict Release passed all ten suites, 5,388 checks. Archive SHA-256 `83cd8d5252e985052f0c1ae726962ed807c4ee0e7c49848498de6755d6aefe97`. The separate floating analyser's choice-at-open needs a Window loan.
 
+## 25 November 2026 — MX-13 windows for one remaining Focus channel
+
+**PR requested — `mixview/mx13-scope-one-layer-lands-after-2026-12-03`, `339cf8259`, after `5a2384d69`. Lands after 3 December.**
+
+- The Scope window chooser stays enabled after the Focus group goes down to one. Difference returns to Overlay, then becomes available again when a second member joins. A one-source capture uses the existing heard-time path and reads its own L/R phase.
+- The broker and component tests failed first. The completed 85 ms window owns exactly 4,080 samples at 48 kHz, including both pulse edges. One source takes one tap, one grouped reader and zero FFTs. Stop detaches the tap and retains the picture. The missing-pair probe produces no residual FFT.
+- Strict Release passed all ten suites, 5,398 checks. Archive SHA-256 `fa7f0b6a379a7224b4d138e77b95f63613837b133dfdd12974f1d89a085408d0`.
+
 ### 25 November — MX13 Focus musical windows
 
 **PR requested** `mixview/mx13-musical-window-lands-after-2026-12-03` at `5c88abf073d56cd9e5c99f3aeac3d4cb24a68532`, after captured true peak. Focus Scope offers One Beat and One Bar. The default is still One Bar. A view change clears the former interval and region and requests the new window on the same grouped sources. Tempo and signature edges share exact rounded sample positions. A Locate or selection at a rounded-down boundary starts the new interval. The existing Sum level summary remains readable with the added control.
