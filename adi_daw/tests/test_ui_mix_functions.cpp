@@ -3845,6 +3845,29 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
                   opens == sourceOpens && after.taps == before.taps && after.consumers == before.consumers &&
                   after.transforms == before.transforms && History(doc->store()).head() == windowHistory,
               "returning to bar captures the full next bar with the original taps and no project edit or FFT");
+        const auto samePosition = driver.position();
+        check(doc->mailbox().post(TransportMailbox::Command::Locate, samePosition),
+              "queue a same-position Locate with a complete Overlay bar visible");
+        frame();
+        check(!MixFocusTestAccess::hasScopeTrace(focus) && !MixFocusTestAccess::scopeWaveformRange(focus) &&
+                  MixFocusTestAccess::scopeGrid(focus).empty(),
+              "the pending Locate hides the old Overlay waveform and heard grid");
+        musicalWindow->setSelectedId(1, juce::sendNotificationSync);
+        broker->pump();
+        frame();
+        check(!MixFocusTestAccess::hasScopeTrace(focus) && !MixFocusTestAccess::scopeWaveformRange(focus),
+              "changing the window while Locate is pending cannot publish an old audio window");
+        doc->mailbox().drain(driver);
+        frame();
+        check(!MixFocusTestAccess::hasScopeTrace(focus) && !MixFocusTestAccess::scopeWaveformRange(focus),
+              "acknowledging Locate waits for audio in the new transport revision");
+        writeUntil(samePosition + beat - 1);
+        check(!MixFocusTestAccess::hasScopeTrace(focus), "the new beat cannot appear before its final heard sample");
+        writeUntil(samePosition + beat);
+        check(MixFocusTestAccess::scopeInterval(focus, samePosition, static_cast<std::size_t>(beat), rate) &&
+                  opens == sourceOpens && broker->stats().transforms == after.transforms,
+              "the selected beat arrives from the acknowledged revision on the original two taps");
+        musicalWindow->setSelectedId(2, juce::sendNotificationSync);
     }
     if (musicalWindow && display && channels) {
         check(doc->mailbox().post(TransportMailbox::Command::Locate, 0), "queue Locate for the fractional Scope grid");

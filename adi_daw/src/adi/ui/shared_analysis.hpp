@@ -308,7 +308,10 @@ class SharedAnalysis final {
         BarScopeLease(const BarScopeLease &) = delete;
         BarScopeLease &operator=(const BarScopeLease &) = delete;
         explicit operator bool() const noexcept;
-        bool request(const FocusScopeRange &, std::uint64_t expectedRevision = 0) noexcept;
+        // An exact revision pins the capture. A minimum lets the lanes agree on
+        // a newer revision after the transport acknowledges a seek.
+        bool request(const FocusScopeRange &, std::uint64_t expectedRevision = 0,
+                     std::uint64_t minimumRevision = 0) noexcept;
         // Use the same sources. Mid starts with a full unread window and can be dropped mid-capture.
         void setMonoRequested(FocusScopeChannels) noexcept;
         void setPhaseRequested(bool) noexcept;

@@ -71,6 +71,7 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     void freezeScope();
     void thawScope();
     [[nodiscard]] std::optional<std::uint64_t> scopeDisplayFloor() const noexcept;
+    [[nodiscard]] bool scopeTimingCurrent() const noexcept;
     void mouseDown(const juce::MouseEvent &) override;
     void mouseDrag(const juce::MouseEvent &) override;
     void mouseUp(const juce::MouseEvent &) override;
@@ -174,7 +175,7 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     juce::Path differenceSpectrumPath_;
     std::optional<SharedAnalysis::ScopeDifference> differenceRequest_;
     std::optional<std::array<double, 2>> differenceRms_;
-    std::optional<std::uint64_t> differenceLocate_, differenceRenderedRevision_;
+    std::optional<std::uint64_t> scopeLocate_, differenceRenderedRevision_;
     std::uint64_t differenceSelection_ = 0;
     std::optional<FocusMatchReading> match_;
     std::optional<std::uint64_t> matchLocateRevision_;

@@ -1914,6 +1914,48 @@ void focusBarScopeWaitsOnAllSources() {
               broker.stats().taps == 2 && broker.stats().transforms == 0,
           "waiting for a future Scope window keeps every source cursor live and publishes the exact interval");
 }
+void focusBarScopeResumesAtRequestedRevision() {
+    using Source = adi::engine::ScopeSource;
+    using Status = SharedAnalysis::BarScopeStatus;
+    constexpr double rate = 48000.;
+    constexpr std::int32_t block = 16;
+    const std::array sources{Source{1, ScopePoint::PostFader, 0}, Source{2, ScopePoint::PostFader, 0}};
+    const std::array taps{std::make_shared<ScopeTap>(rate, .25), std::make_shared<ScopeTap>(rate, .25)};
+    SharedAnalysis broker([&](Source source, double) -> std::shared_ptr<const ScopeTap> {
+        return source == sources.front() ? taps.front() : taps.back();
+    }, [](Source) {}, SharedAnalysis::Mode::Manual);
+    auto lease = broker.acquireBarScope(sources, 8);
+    std::array<float, block> samples;
+    const auto write = [&](std::int64_t first, std::uint64_t revision, float sample) {
+        samples.fill(sample);
+        for (const auto &tap : taps) tap->write(samples.data(), samples.data(), block, first, true, revision);
+    };
+    check(lease.request({0, block, rate}, 9), "request the grouped waveform before a seek");
+    write(0, 9, .75f);
+    broker.pump();
+    check(lease.status() == Status::Ready, "the preceding epoch has a complete waveform");
+    write(block, 9, .75f);
+    write(2 * block, 9, .75f);
+    check(lease.request({block, 2 * block, rate}, 10), "request the exact new revision at overlapping heard stamps");
+    broker.pump();
+    check(lease.status() == Status::Pending && !lease.read(), "older audio at the requested stamps is skipped without losing the request");
+    write(block, 10, -.25f);
+    broker.pump();
+    check(lease.status() == Status::Pending && !lease.read(), "a new revision may start at the request's first sample and still waits for its tail");
+    write(2 * block, 10, -.25f);
+    broker.pump();
+    const auto captured = lease.read();
+    const auto sum = captured && captured->projection ? captured->projection->sumReading() : std::nullopt;
+    check(captured && captured->transportRevision == 10 && captured->firstStamp == block &&
+              captured->frames == 2 * block && sum && sum->peak == std::array{.5, .5},
+          "the complete requested epoch includes its first sample without an old peak or additional tap");
+    check(lease.request({3 * block, block, rate}, 0, 11), "a seek floor leaves the newer aligned revision open");
+    write(3 * block, 12, .25f);
+    broker.pump();
+    const auto later = lease.read();
+    check(later && later->transportRevision == 12 && later->firstStamp == 3 * block && broker.stats().taps == 2,
+          "a transport action after the seek can advance the epoch without forcing new taps or missing the start");
+}
 void focusScopeSumProjection() {
     using namespace adi::ui;
     SharedAnalysis::Result a, b;
@@ -5671,7 +5713,7 @@ void operator delete[](void *p,std::size_t) noexcept {::operator delete(p);}
 int main() {
     try { stripCadenceAndEpochs(); stripReusesRawSpectrum(); stripWorkerBudget(); stripLeaseInSession(); phaseBandSpatialMeasurements();
           focusCapturedTruePeak(); focusBarCapturedTruePeak();
-          continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBeatTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeMidDemand(); focusScopeDifference(); focusScopeSideDemand(); focusBarScopeBrokerBoundaries(); focusBarScopeWaitsOnAllSources(); focusScopeSumProjection(); focusScopeLayerPreview(); focusBarLayerPreview(); focusBarResidualSpectrum(); focusScopePhaseOperands(); focusScopeFlatPath(); focusLagPreviewRequests(); focusLagPreviewCases(); focusLagTapReads(); focusLagHighRateTaps(); focusMatchWindows(); parkedSilence(); parkedSpectrogramWake(); parkedWindowHopPhase();
+          continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBeatTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeMidDemand(); focusScopeDifference(); focusScopeSideDemand(); focusBarScopeBrokerBoundaries(); focusBarScopeWaitsOnAllSources(); focusBarScopeResumesAtRequestedRevision(); focusScopeSumProjection(); focusScopeLayerPreview(); focusBarLayerPreview(); focusBarResidualSpectrum(); focusScopePhaseOperands(); focusScopeFlatPath(); focusLagPreviewRequests(); focusLagPreviewCases(); focusLagTapReads(); focusLagHighRateTaps(); focusMatchWindows(); parkedSilence(); parkedSpectrogramWake(); parkedWindowHopPhase();
           parkedRealtimeModeJoins<SharedAnalysis::RealtimeMaximum>(); parkedRealtimeModeJoins<SharedAnalysis::RealtimeSigma>(); parkedStereoBalance(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
           sharedModesAndCursors(); phaseBandCorrelation(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); spectrumLevels(); spectrumSamplePeaksAndClips(); restartSpectrumLevels(); restartParkedSpectrumLevels(); spectrumTruePeak(); parkedSpectrumLevels(false); parkedSpectrumLevels(true); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); realtimeSigmaSpectrum(); cumulativeMaximumSpectrum(); cumulativeAverageSpectrum(); cumulativeMaximumParkedRollover(); sharedAverage(); parkedRealtimeAverage(); parkedRealtimeAverageJoinsScope(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); deviceSpectrumLease(); parkedDeviceSpectrum(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }

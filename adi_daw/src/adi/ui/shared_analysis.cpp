@@ -2033,17 +2033,19 @@ struct SharedAnalysis::BarScopeDomain {
         if (changed) invalidateProjection();
     }
 
-    bool request(const FocusScopeRange &next, std::uint64_t expected) noexcept {
-        if (next.first < 0 || !std::in_range<std::int64_t>(next.frames)) return false;
+    bool request(const FocusScopeRange &next, std::uint64_t expected, std::uint64_t minimum) noexcept {
+        if (next.first < 0 || !std::in_range<std::int64_t>(next.frames) || (expected && expected < minimum)) return false;
         const auto finish = focusWindowEnd(next.first, static_cast<std::int64_t>(next.frames));
         if (!finish) return false;
         std::lock_guard lock(mutex);
         if (!active.load() || !(next.sampleRate > 0.) || rate.load() != next.sampleRate) return false;
+        const auto firstRevision = std::max(expected, minimum);
         if (status.load() == BarScopeStatus::Pending && range.first == next.first && range.frames == next.frames &&
-            expectedRevision == expected) return true;
+            expectedRevision == expected && minimumRevision == firstRevision) return true;
         range = next;
         end = *finish;
         expectedRevision = revision = expected;
+        minimumRevision = firstRevision;
         projection.reset();
         residualFrame.clear();
         result.store({});
@@ -2096,7 +2098,8 @@ struct SharedAnalysis::BarScopeDomain {
                      std::size_t &samples) noexcept {
         auto &lane = lanes[index];
         using Status = engine::ScopeTap::ReadStatus;
-        while ((!lane.chunk.frames || lane.chunkEnd <= first) && active.load()) {
+        const auto earlierEpoch = [&](std::uint64_t seen) { return !projection && seen < minimumRevision; };
+        while ((!lane.chunk.frames || lane.chunkEnd <= first || earlierEpoch(lane.chunk.transportRevision)) && active.load()) {
             if (reads >= readLimit || samples >= kMaxSamplesPerFrame) return false;
             const auto written = lane.tap->written();
             const auto wait = [&] { waitThrough.store(written); waiting.store(index + 1); };
@@ -2109,7 +2112,13 @@ struct SharedAnalysis::BarScopeDomain {
             // A late overrun can be reported after copying the attempted span.
             samples += read.frames ? static_cast<std::size_t>(read.frames) : length;
             const auto finish = focusWindowEnd(read.firstStamp, read.frames);
-            if (read.status != Status::Ready || !read.advancing || !read.transportRevision || !finish) {
+            const bool older = earlierEpoch(read.transportRevision);
+            // The tap reports a seek as a discontinuity even when the read
+            // begins at the new window's first sample. Keep that boundary.
+            const bool newEpoch = !projection && lane.cursor.hasExpected &&
+                                  lane.cursor.expectedRevision < minimumRevision && !older;
+            const bool usable = read.status == Status::Ready || (read.status == Status::Discontinuity && (older || newEpoch));
+            if (!usable || !finish || (!older && (!read.advancing || !read.transportRevision))) {
                 invalidate();
                 return false;
             }
@@ -2258,7 +2267,7 @@ struct SharedAnalysis::BarScopeDomain {
     std::atomic<std::size_t> waiting{0};
     std::atomic<std::int64_t> waitThrough{0};
     FocusScopeRange range;
-    std::uint64_t expectedRevision = 0, revision = 0;
+    std::uint64_t expectedRevision = 0, minimumRevision = 0, revision = 0;
     std::int64_t end = 0;
     std::atomic<FocusScopeChannels> monoRequested{FocusScopeChannels::Stereo};
     std::atomic<bool> phaseRequested{false};
@@ -2918,11 +2927,12 @@ SharedAnalysis::BarScopeLease &SharedAnalysis::BarScopeLease::operator=(BarScope
     return *this;
 }
 SharedAnalysis::BarScopeLease::operator bool() const noexcept { return domain_ && domain_->active.load(); }
-bool SharedAnalysis::BarScopeLease::request(const FocusScopeRange &range, std::uint64_t expected) noexcept {
+bool SharedAnalysis::BarScopeLease::request(const FocusScopeRange &range, std::uint64_t expected,
+                                          std::uint64_t minimum) noexcept {
     const auto state = state_.lock();
     if (!state || !domain_) return false;
     state->ownerOnly();
-    return domain_->request(range, expected);
+    return domain_->request(range, expected, minimum);
 }
 void SharedAnalysis::BarScopeLease::setMonoRequested(FocusScopeChannels fold) noexcept {
     const auto state = state_.lock();
