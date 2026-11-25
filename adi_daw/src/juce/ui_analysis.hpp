@@ -84,6 +84,7 @@ class SharedSpectrumView final : public juce::Component,
     static constexpr std::array<int, 4> spectrumOverlaps{0, 50, 75, 90};
     void setSpectrumBlockSize(std::int32_t);
     void setSpectrumOverlap(int percent);
+    void setSpectrumSmoothing(std::size_t choice);
     void setSpectrumSlope(SpectrumSlope);
     SpectrumSlope spectrumSlope() const noexcept { return spectrumSlope_; }
     enum class SpectrumScale { Wide, Detail, Extended, Device };
@@ -154,9 +155,12 @@ class SharedSpectrumView final : public juce::Component,
     void componentMovedOrResized(juce::Component &, bool, bool) override;
     void componentBeingDeleted(juce::Component &) override;
     struct Raster;
+    struct ScaledSpectrum;
     void updateRaster();
     void updateSpectrumProjection();
     void updateScaledSpectrum() noexcept;
+    void updateSpectrumPlot(ScaledSpectrum &, const SharedAnalysis::Result &, std::span<const float> bins,
+                            std::span<const float> offsets, bool fillTrace);
     struct SpectrumOverlay;
     using SpectrumLeases = std::array<SharedAnalysis::Lease, kSpectrumOverlayTracks + 1>;
     SharedAnalysis::Request spectrumRequest(std::int64_t track) const noexcept;
@@ -244,8 +248,9 @@ class SharedSpectrumView final : public juce::Component,
     bool freshRequired_ = false;
     SpectrumSlope spectrumSlope_ = SpectrumSlope::Flat;
     SpectrumSlopeCache spectrumProjection_;
-    struct ScaledSpectrum;
     std::unique_ptr<ScaledSpectrum> scaledSpectrum_;
+    std::unique_ptr<SpectrumSmoothing> spectrumSmoothing_;
+    std::size_t spectrumSmoothingChoice_ = 0;
     std::vector<SpectrumOverlay> spectrumOverlays_;
     SpectrumScale spectrumScale_ = SpectrumScale::Wide;
     bool spectrumCursorEnabled_ = false;
@@ -310,7 +315,7 @@ class AnalysisPane final : public juce::Component {
   private:
     void exportSpectrogramPng();
     juce::Slider spectrogramFloor_, spectrogramCeiling_;
-    juce::ComboBox spectrogramGammaBox_, spectrumBlockBox_, spectrumOverlapBox_;
+    juce::ComboBox spectrogramGammaBox_, spectrumBlockBox_, spectrumOverlapBox_, spectrumSmoothingBox_;
     juce::ToggleButton spectrogramRulerButton_{"Hz ruler"};
     juce::TextButton spectrogramPngButton_{"Export PNG"};
     std::unique_ptr<juce::FileChooser> spectrogramChooser_;

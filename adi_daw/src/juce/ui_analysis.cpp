@@ -192,13 +192,10 @@ struct SharedSpectrumView::ScaledSpectrum {
         scale = nextScale; rate = nextRate; size = nextSize; count = nextCount;
     }
 
-    void update(std::span<const float> bins, std::span<const float> offsets, bool fillTrace = true) {
+    void buildPaths(const SpectrumAxis &axis, bool fillTrace, float left, float right, auto &&enumerate) {
         line.clear();
         fill.clear();
-        if (x.size() < 2) return;
-        const auto &axis = spectrumAxis(scale);
         const bool filled = fillTrace && spectrumScaleHasFill(scale);
-        const auto valueAt = [&](std::size_t bin) { return bins[bin] + (offsets.empty() ? 0.f : offsets[bin]); };
         bool first = true;
         const auto append = [&](float position, float value) {
             const auto y = axis.y(value);
@@ -211,9 +208,27 @@ struct SharedSpectrumView::ScaledSpectrum {
                 if (filled) fill.lineTo(position, y);
             }
         };
-        if (cells.empty()) {
-            for (std::size_t i = 0; i < x.size(); ++i) append(x[i], valueAt(firstBin + i));
-        } else {
+        enumerate(append);
+        if (filled) {
+            fill.lineTo(right, 1.f);
+            fill.lineTo(left, 1.f);
+            fill.closeSubPath();
+        }
+    }
+
+    void update(std::span<const float> bins, std::span<const float> offsets, bool fillTrace) {
+        if (x.size() < 2) {
+            line.clear();
+            fill.clear();
+            return;
+        }
+        const auto &axis = spectrumAxis(scale);
+        const auto valueAt = [&](std::size_t bin) { return bins[bin] + (offsets.empty() ? 0.f : offsets[bin]); };
+        buildPaths(axis, fillTrace, x.front(), x.back(), [&](const auto &append) {
+            if (cells.empty()) {
+                for (std::size_t i = 0; i < x.size(); ++i) append(x[i], valueAt(firstBin + i));
+                return;
+            }
             const auto availableValue = [&](std::size_t bin) {
                 const auto value = valueAt(bin);
                 return std::isfinite(value) ? value : static_cast<float>(axis.bottomDb);
@@ -228,12 +243,18 @@ struct SharedSpectrumView::ScaledSpectrum {
                 }
                 append(cell.x, value);
             }
-        }
-        if (filled) {
-            fill.lineTo(x.back(), 1.f);
-            fill.lineTo(x.front(), 1.f);
-            fill.closeSubPath();
-        }
+        });
+    }
+
+    void updateSmoothed(SpectrumScale nextScale, const SpectrumAxis &axis,
+                        std::span<const SpectrumSmoothing::Point> points, SpectrumSlope slope, bool fillTrace) {
+        if (scale != nextScale) count = 0; // cached raw-bin geometry belongs to the previous scale
+        scale = nextScale;
+        buildPaths(axis, fillTrace, axis.x(points.front().frequencyHz), axis.x(points.back().frequencyHz),
+                   [&](const auto &append) {
+            for (const auto &point : points)
+                append(axis.x(point.frequencyHz), point.db + static_cast<float>(spectrumDisplayOffset(slope, point.frequencyHz)));
+        });
     }
 
     void paint(juce::Graphics &g, juce::Rectangle<float> plot, juce::Colour colour = look::value,
@@ -702,8 +723,7 @@ void SharedSpectrumView::updateSpectrumOverlayPlot(SpectrumOverlay &overlay) noe
     }
     try {
         if (!overlay.plot) overlay.plot = std::make_unique<ScaledSpectrum>();
-        overlay.plot->setFormat(spectrumScale_, picture.sampleRate, picture.request.fftSize, bins.size());
-        overlay.plot->update(bins, offsets, false);
+        updateSpectrumPlot(*overlay.plot, picture, bins, offsets, false);
     } catch (...) {
         overlay.plot.reset();
     }
@@ -842,6 +862,16 @@ void SharedSpectrumView::setSpectrumOverlap(int percent) {
     if (spectrumMode() && !frozen_) updateDemand();
 }
 
+void SharedSpectrumView::setSpectrumSmoothing(std::size_t choice) {
+    if (choice == spectrumSmoothingChoice_ || choice >= kSpectrumSmoothingChoices.size()) return;
+    spectrumSmoothingChoice_ = choice;
+    if (choice == 0) spectrumSmoothing_.reset();
+    if (!spectrumMode() || !eligible()) return;
+    updateScaledSpectrum();
+    for (auto &overlay : spectrumOverlays_) updateSpectrumOverlayPlot(overlay);
+    repaint();
+}
+
 void SharedSpectrumView::setSpectrumSlope(SpectrumSlope slope) {
     slope = spectrumSlopeFromId(spectrumSlopeId(slope));
     if (slope == SpectrumSlope::Flat) spectrumProjection_.reset();
@@ -861,6 +891,29 @@ void SharedSpectrumView::setSpectrumScale(SpectrumScale scale) {
     for (auto &overlay : spectrumOverlays_) updateSpectrumOverlayPlot(overlay);
     repaint();
 }
+void SharedSpectrumView::updateSpectrumPlot(ScaledSpectrum &plot, const SharedAnalysis::Result &picture,
+                                            std::span<const float> bins, std::span<const float> offsets,
+                                            bool fillTrace) {
+    if (spectrumSmoothingChoice_ != 0 && bins.size() >= 2 && picture.request.fftSize > 0) {
+        auto axis = spectrumAxis(spectrumScale_);
+        const auto nyquist = picture.sampleRate * .5;
+        const auto lastHz = std::min(axis.highHz, nyquist);
+        if (spectrumScale_ == SpectrumScale::Wide && lastHz > axis.lowHz)
+            axis.logWidth = std::log(lastHz / axis.lowHz);
+        if (!spectrumSmoothing_) spectrumSmoothing_ = std::make_unique<SpectrumSmoothing>();
+        if (spectrumSmoothing_->prepare(spectrumSmoothingChoice_, axis.lowHz, lastHz,
+                                        picture.sampleRate, picture.request.fftSize, bins.size())) {
+            const auto points = spectrumSmoothing_->project(bins);
+            if (points.size() >= 2) {
+                plot.updateSmoothed(spectrumScale_, axis, points, spectrumSlope_, fillTrace);
+                return;
+            }
+        }
+    }
+    plot.setFormat(spectrumScale_, picture.sampleRate, picture.request.fftSize, bins.size());
+    plot.update(bins, offsets, fillTrace);
+}
+
 void SharedSpectrumView::updateScaledSpectrum() noexcept {
     if (!spectrumMode() || !shown_) {
         scaledSpectrum_.reset();
@@ -875,8 +928,7 @@ void SharedSpectrumView::updateScaledSpectrum() noexcept {
     }
     try {
         if (!scaledSpectrum_) scaledSpectrum_ = std::make_unique<ScaledSpectrum>();
-        scaledSpectrum_->setFormat(spectrumScale_, shown_->sampleRate, shown_->request.fftSize, bins.size());
-        scaledSpectrum_->update(bins, offsets);
+        updateSpectrumPlot(*scaledSpectrum_, *shown_, bins, offsets, true);
     } catch (...) {
         scaledSpectrum_.reset();
     }
@@ -898,6 +950,7 @@ void SharedSpectrumView::resetPicture() noexcept {
     projectedBins_.reset();
     maximumShown_.reset();
     scaledSpectrum_.reset();
+    spectrumSmoothing_.reset();
     averageStatus_ = SharedAnalysis::AverageStatus::Waiting;
     spectrumCursorPosition_.reset();
 }
@@ -1973,6 +2026,17 @@ AnalysisPane::AnalysisPane() {
             view.setSpectrumOverlap(SharedSpectrumView::spectrumOverlaps[static_cast<std::size_t>(index)]);
     };
     addChildComponent(spectrumOverlapBox_);
+    spectrumSmoothingBox_.setTitle("Spectrum smoothing");
+    spectrumSmoothingBox_.setTooltip("Smooth the displayed traces over a fraction of an octave or more.");
+    for (std::size_t i = 0; i < kSpectrumSmoothingChoices.size(); ++i)
+        spectrumSmoothingBox_.addItem("Smooth: " + juce::String(kSpectrumSmoothingChoices[i].label.data()),
+                                      static_cast<int>(i) + 1);
+    spectrumSmoothingBox_.setSelectedId(1, juce::dontSendNotification);
+    spectrumSmoothingBox_.onChange = [this] {
+        const auto index = spectrumSmoothingBox_.getSelectedItemIndex();
+        if (index >= 0) view.setSpectrumSmoothing(static_cast<std::size_t>(index));
+    };
+    addChildComponent(spectrumSmoothingBox_);
     spectrogramScaleBox.setTitle("Spectrogram frequency scale");
     spectrogram::configureScaleBox(spectrogramScaleBox);
     spectrogramScaleBox.onChange = [this] {
@@ -2104,6 +2168,7 @@ void AnalysisPane::setMode(SharedSpectrumView::Mode mode) {
     const bool usesSpectrumSettings = spectral && !modeBox.isVisible();
     spectrumBlockBox_.setVisible(usesSpectrumSettings);
     spectrumOverlapBox_.setVisible(usesSpectrumSettings);
+    spectrumSmoothingBox_.setVisible(usesSpectrumSettings);
     const bool spectrogram = mode == SharedSpectrumView::Mode::Spectrogram;
     historyBox.setVisible(spectrogram);
     spectrogramScaleBox.setVisible(spectrogram);
@@ -2244,8 +2309,9 @@ void AnalysisPane::usePageControls() {
     setMode(view.mode());
 }
 void AnalysisPane::resized() {
-    const std::array<juce::Component *, 20> controls{&modeBox, &sourceBox, &pointBox, &channelBox, &paletteBox, &slopeBox,
-        &scaleBox, &spectrumBlockBox_, &spectrumOverlapBox_, &spectrogramScaleBox, &spectrogramFloor_, &spectrogramCeiling_, &spectrogramGammaBox_, &spectrogramRulerButton_,
+    const std::array<juce::Component *, 21> controls{&modeBox, &sourceBox, &pointBox, &channelBox, &paletteBox, &slopeBox,
+        &scaleBox, &spectrumBlockBox_, &spectrumOverlapBox_, &spectrumSmoothingBox_, &spectrogramScaleBox,
+        &spectrogramFloor_, &spectrogramCeiling_, &spectrogramGammaBox_, &spectrogramRulerButton_,
         &historyBox, &reverseButton, &freezeButton, &resetButton, &expandButton, &spectrogramPngButton_};
     const bool pageControls = !modeBox.isVisible();
     const int maxColumns = spectrumOverlapBox_.isVisible() ? 5 : 4;

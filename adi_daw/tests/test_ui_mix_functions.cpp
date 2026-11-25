@@ -1652,15 +1652,18 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
         return nullptr;
     };
     auto *control = findToggle(findToggle, pages);
-    juce::ComboBox *blockSize = nullptr, *overlap = nullptr;
+    juce::ComboBox *blockSize = nullptr, *overlap = nullptr, *smoothing = nullptr;
     for (auto *child : pages.detail.getChildren()) {
         if (child->getTitle() == "Spectrum block size") blockSize = dynamic_cast<juce::ComboBox *>(child);
         if (child->getTitle() == "Spectrum overlap") overlap = dynamic_cast<juce::ComboBox *>(child);
+        if (child->getTitle() == "Spectrum smoothing") smoothing = dynamic_cast<juce::ComboBox *>(child);
     }
     check(blockSize && blockSize->isShowing() && blockSize->getNumItems() == 6 && blockSize->getSelectedId() == 1,
           "the dedicated Spectrum offers six block-size choices and defaults to Auto");
     check(overlap && overlap->isShowing() && overlap->getNumItems() == 4 && overlap->getSelectedId() == 3,
           "the dedicated Spectrum offers four overlap choices and defaults to 75 percent");
+    check(smoothing && smoothing->isShowing() && smoothing->getNumItems() == 16 && smoothing->getSelectedId() == 1,
+          "the dedicated Spectrum offers the full smoothing range and defaults to Off");
     check(control && control->isShowing() && !control->getToggleState() &&
               attached(main) && !attached(first) && !attached(wide) && !attached(missing),
           "Spectrum offers Pinned tracks default off with no extra demand");
@@ -1674,6 +1677,40 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
               normal->request.fftSize == normalFft && normal->hopSize == normalFft / 4,
           "ordinary Spectrum starts at its original 1024-point profile on the matched format");
     auto ordinaryReader = broker->acquire({main, pages.detail.point(), normalFft, pages.detail.view.channel()});
+    const auto renderSpectrum = [&] {
+        auto &view = pages.detail.view;
+        juce::Image image(juce::Image::RGB, view.getWidth(), view.getHeight(), true, juce::SoftwareImageType{});
+        juce::Graphics graphics(image);
+        view.paint(graphics);
+        return image;
+    };
+    const auto samePixels = [](const juce::Image &a, const juce::Image &b, juce::Rectangle<int> area) {
+        area = area.getIntersection(a.getBounds()).getIntersection(b.getBounds());
+        for (int y = area.getY(); y < area.getBottom(); ++y)
+            for (int x = area.getX(); x < area.getRight(); ++x)
+                if (a.getPixelAt(x, y) != b.getPixelAt(x, y)) return false;
+        return true;
+    };
+    if (smoothing && normal) {
+        auto &view = pages.detail.view;
+        view.freeze(true);
+        const auto raw = renderSpectrum();
+        const auto before = broker->stats();
+        for (const auto item : {2, smoothing->getNumItems()}) {
+            smoothing->setSelectedId(item, juce::sendNotificationSync);
+            check(!samePixels(raw, renderSpectrum(), raw.getBounds()), "changing Spectrum smoothing reprojects a held plot");
+        }
+        smoothing->setSelectedId(1, juce::sendNotificationSync);
+        const auto after = broker->stats();
+        check(samePixels(raw, renderSpectrum(), raw.getBounds()) && view.snapshot() == normal &&
+                  before.transforms == after.transforms && before.taps == after.taps &&
+                  before.consumers == after.consumers && before.spectralPlans == after.spectralPlans,
+              "smoothing is reversible on the same held bins and requests no audio work");
+        view.freeze(false);
+        sendTone(*primaryTap, normalFft, 16, primaryTap->written());
+        broker->pump();
+        root.frame();
+    }
     const auto baseline = broker->stats();
     const auto attachmentsBeforeToggle = attachments;
     const auto choose = [&](bool enabled) {
@@ -1790,6 +1827,24 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
 
             view.freeze(true);
             const auto held = broker->stats();
+            if (smoothing && fixedA && fixedB) {
+                const auto raw = renderSpectrum();
+                smoothing->setSelectedId(smoothing->getNumItems(), juce::sendNotificationSync);
+                const auto smoothed = renderSpectrum();
+                // At each raw pin's peak the other traces are far below its level.
+                for (const auto &pin : {fixedA, fixedB}) {
+                    const auto bin = static_cast<std::size_t>(peakBin(pin->binsDbfs));
+                    const auto hz = static_cast<double>(bin) * pin->sampleRate / fixedFft;
+                    const auto x = juce::roundToInt(5. + (raw.getWidth() - 28.) * std::log(hz / 20.) / std::log(1000.));
+                    const auto y = juce::roundToInt(21. - (raw.getHeight() - 55.) * pin->binsDbfs[bin] / 96.);
+                    check(!samePixels(raw, smoothed, {x - 4, y - 4, 9, 9}),
+                          "the held pin's own peak reprojects with the shared smoothing choice");
+                }
+                smoothing->setSelectedId(1, juce::sendNotificationSync);
+                check(samePixels(raw, renderSpectrum(), raw.getBounds()) &&
+                          broker->stats().transforms == held.transforms,
+                      "turning smoothing off restores both held pin paths without a transform");
+            }
             selectBlockSize(1);
             check(view.frozen() && view.snapshot() == fixedPicture && broker->stats().consumers == held.consumers &&
                       broker->stats().spectralPlans == held.spectralPlans && broker->stats().transforms == held.transforms,
@@ -2058,8 +2113,9 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
     choose(true);
     pages.setPage(Page::Compare);
     check(!attached(first) && !attached(wide), "switching to Compare releases all pinned Spectrum demand immediately");
-    check(blockSize && !blockSize->isShowing() && overlap && !overlap->isShowing(),
-          "Compare hides the dedicated Spectrum block-size and overlap controls");
+    check(blockSize && !blockSize->isShowing() && overlap && !overlap->isShowing() &&
+              smoothing && !smoothing->isShowing(),
+          "Compare hides the dedicated Spectrum block-size, overlap and smoothing controls");
 
     root.frame();
     const bool pairSelected = select(pages.compareA, "Pinned 11") && select(pages.compareB, "Renamed wide ID");
