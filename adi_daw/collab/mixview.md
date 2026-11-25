@@ -85,7 +85,7 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 
 - Ordinary Stop dims the last complete two-source Scope picture, leaves its cursor and viewport usable, and releases both preview and grouped readers. Restart or Locate clears the ordinary hold. The dedicated Freeze command retains its existing hold across transport moves.
 - A queued Stop survives its pending frame. A different acknowledged Locate invalidates the picture. The software-peer regression reproduced both missing hold and cursor failure before the fix and verified zero new acquisition and analysis while held.
-- Strict Release passed all ten suites, 5,383 checks. Archive SHA-256 `0bff79e3980b94bc047ea4cec5d11a7b5aa0f09b4b15d89c19cf1ba785e46f30`.
+- Strict Release passed all ten suites, 5,384 checks. Archive SHA-256 `0bff79e3980b94bc047ea4cec5d11a7b5aa0f09b4b15d89c19cf1ba785e46f30`.
 
 ### 25 November — MX13 Focus musical windows
 
