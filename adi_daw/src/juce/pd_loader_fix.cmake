@@ -427,12 +427,20 @@ adi_pd_replace([=[    gpointer_setglist(&gp, owner, x);
     gpointer_unset(&gp); /* ADI (DF-E67 b) */
     return (x);]=])
 file(WRITE "${adi_pd_overlay}/g_scalar.c" "${adi_pd_text}")
+# DF-E67 (b), with the above: [struct]'s "add" made its scalar on the [struct]'s own canvas and put it on another,
+# so the scalar's arrays named a glist that does not hold them. Made on the canvas that holds it, the scalar goes
+# before that glist's stub does, as every other scalar does, and no array outlives the stub it names.
+file(READ "${adi_pd_source}/g_template.c" adi_pd_text)
+string(REPLACE "\r\n" "\n" adi_pd_text "${adi_pd_text}")
+adi_pd_replace("        t_scalar *sc = scalar_new(x->x_owner, x->x_sym);"
+    "        t_scalar *sc = scalar_new(glist, x->x_sym); /* ADI (DF-E67 b): the canvas that holds it */")
+file(WRITE "${adi_pd_overlay}/g_template.c" "${adi_pd_text}")
 get_target_property(adi_pd_sources libpd_static SOURCES)
-list(FILTER adi_pd_sources EXCLUDE REGEX "(^|/)(m_class|s_loader|g_io|m_glob|m_pd|g_editor|s_path|g_canvas|g_readwrite|x_vexp|g_scalar)\\.c$")
+list(FILTER adi_pd_sources EXCLUDE REGEX "(^|/)(m_class|s_loader|g_io|m_glob|m_pd|g_editor|s_path|g_canvas|g_readwrite|x_vexp|g_scalar|g_template)\\.c$")
 set_property(TARGET libpd_static PROPERTY SOURCES "${adi_pd_sources}")
 target_sources(libpd_static PRIVATE "${adi_pd_overlay}/s_loader.c" "${adi_pd_overlay}/m_class.c"
                                     "${adi_pd_overlay}/g_io.c" "${adi_pd_overlay}/m_glob.c"
                                     "${adi_pd_overlay}/m_pd.c" "${adi_pd_overlay}/g_editor.c"
                                     "${adi_pd_overlay}/s_path.c" "${adi_pd_overlay}/g_canvas.c"
                                     "${adi_pd_overlay}/g_readwrite.c" "${adi_pd_overlay}/x_vexp.c"
-                                    "${adi_pd_overlay}/g_scalar.c")
+                                    "${adi_pd_overlay}/g_scalar.c" "${adi_pd_overlay}/g_template.c")
