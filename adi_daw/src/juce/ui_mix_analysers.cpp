@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_mix_analysers.hpp"
 #include "ui_look.hpp"
+#include "ui_spectrogram_ruler.hpp"
 #include "adi/ui/snapshot_reader.hpp"
 #include "adi/ui/window_state.hpp"
 #include <algorithm>
@@ -524,6 +525,13 @@ class MixAnalysers::SpectrogramDelta final : public juce::Component {
             if (image_.isValid()) exportPane.exportSpectrogramImage(image_.createCopy(), *this, "Spectrogram comparison.png");
         };
         addAndMakeVisible(export_);
+        ruler_.setTitle("Spectrogram comparison frequency ruler");
+        ruler_.setTooltip("Label the comparison frequency scale beside the history.");
+        ruler_.onClick = [this] {
+            refreshCursor();
+            repaint();
+        };
+        addAndMakeVisible(ruler_);
     }
 
     void stop() {
@@ -593,8 +601,10 @@ class MixAnalysers::SpectrogramDelta final : public juce::Component {
 
     void resized() override {
         auto header = getLocalBounds().reduced(look::border).removeFromTop(look::fieldHeight);
-        auto actions = header.removeFromRight(std::min(2 * look::mixPageWidth + look::gap, header.getWidth() / 2));
-        const auto buttonWidth = std::max(0, (actions.getWidth() - look::gap) / 2);
+        auto actions = header.removeFromRight(std::min(3 * look::mixPageWidth + 2 * look::gap, header.getWidth() / 2));
+        const auto buttonWidth = std::max(0, (actions.getWidth() - 2 * look::gap) / 3);
+        ruler_.setBounds(actions.removeFromLeft(buttonWidth));
+        actions.removeFromLeft(look::gap);
         freeze_.setBounds(actions.removeFromLeft(buttonWidth));
         actions.removeFromLeft(look::gap);
         export_.setBounds(actions);
@@ -609,7 +619,7 @@ class MixAnalysers::SpectrogramDelta final : public juce::Component {
         graphics.fillAll(look::display);
         bounds.reduce(look::border, look::border);
         auto header = bounds.removeFromTop(look::fieldHeight);
-        header = header.withRight(freeze_.getX());
+        header = header.withRight(ruler_.getX());
         graphics.setFont(look::font());
         graphics.setColour(look::record);
         graphics.drawFittedText("-24 dB", header.removeFromLeft(header.getWidth() / 3), juce::Justification::centredLeft, 1);
@@ -620,31 +630,42 @@ class MixAnalysers::SpectrogramDelta final : public juce::Component {
         }
         graphics.setColour(look::accent);
         graphics.drawFittedText("+24 dB", header, juce::Justification::centredRight, 1);
-        bounds.removeFromTop(look::gap);
-        if (image_.isValid()) graphics.drawImage(image_, bounds.toFloat());
-        else {
+        const auto plot = plotBounds();
+        if (image_.isValid()) {
+            graphics.drawImage(image_, plot);
+            if (ruler_.getToggleState())
+                spectrogram::paintRuler(graphics, basePlotBounds(), plot, SharedSpectrumView::SpectrogramScale::Log,
+                                        lowestHz, upperFrequency(format_.sampleRate));
+        } else {
             graphics.setColour(look::textDim);
-            graphics.drawFittedText("Waiting for matched audio", bounds, juce::Justification::centred, 1);
+            graphics.drawFittedText("Waiting for matched audio", plot.toNearestInt(), juce::Justification::centred, 1);
         }
     }
 
   private:
     static constexpr int width = 128, height = 128;
     static constexpr float rangeDb = 24.f;
+    static constexpr double lowestHz = 20.;
     using ColumnKey = std::array<std::uint64_t, 2>;
     struct BinChange {
         std::size_t bin = 0;
         float db = 0.f;
     };
 
-    juce::Rectangle<int> plotBounds() const {
-        return getLocalBounds().reduced(look::border).withTrimmedTop(look::fieldHeight + look::gap);
+    static double upperFrequency(double sampleRate) noexcept { return std::min(20000., sampleRate * .5); }
+
+    juce::Rectangle<float> basePlotBounds() const {
+        return getLocalBounds().reduced(look::border).withTrimmedTop(look::fieldHeight + look::gap).toFloat();
+    }
+
+    juce::Rectangle<float> plotBounds() const {
+        return spectrogram::rulerPlot(basePlotBounds(), ruler_.getToggleState());
     }
 
     bool plotIsShowing() const {
         if (!isShowing()) return false;
         if (const auto *peer = getPeer(); peer && peer->isMinimised()) return false;
-        auto visible = getLocalBounds().reduced(look::border).withTrimmedTop(look::fieldHeight + look::gap);
+        auto visible = plotBounds().toNearestInt();
         for (auto *parent = getParentComponent(); parent && !visible.isEmpty(); parent = parent->getParentComponent())
             visible = visible.getIntersection(getLocalArea(parent, parent->getLocalBounds()));
         return !visible.isEmpty();
@@ -674,8 +695,8 @@ class MixAnalysers::SpectrogramDelta final : public juce::Component {
         image_.clear(image_.getBounds(), look::display);
         keys_.fill({});
         lastHop_.reset();
-        const double upper = std::min(1., 40000. / format.sampleRate);
-        const double lower = std::min(upper, 40. / format.sampleRate);
+        const double upper = (upperFrequency(format.sampleRate) / format.sampleRate) * 2.;
+        const double lower = std::min(upper, 2. * lowestHz / format.sampleRate);
         const auto edge = [&](int row) {
             const double fraction = 1. - static_cast<double>(row) / height;
             return static_cast<std::size_t>(lower * std::pow(upper / lower, fraction) * static_cast<double>(bins - 1));
@@ -702,7 +723,7 @@ class MixAnalysers::SpectrogramDelta final : public juce::Component {
     }
 
     void refreshCursor() {
-        if (!cursorPoint_ || !plotBounds().toFloat().contains(*cursorPoint_) ||
+        if (!cursorPoint_ || !plotBounds().contains(*cursorPoint_) ||
             !comparison_ || !lastHop_ || (!minimumRevision_ && !comparison_->frozen())) {
             cursor_.setText({}, juce::dontSendNotification);
             return;
@@ -713,7 +734,7 @@ class MixAnalysers::SpectrogramDelta final : public juce::Component {
 
     void updateCursor(std::span<const SpectrogramColumnPair> columns) {
         juce::String text;
-        const auto plot = plotBounds().toFloat();
+        const auto plot = plotBounds();
         if (cursorPoint_ && lastHop_ && plot.contains(*cursorPoint_)) {
             const auto x = static_cast<int>((cursorPoint_->x - plot.getX()) / plot.getWidth() * width);
             const auto y = static_cast<int>((cursorPoint_->y - plot.getY()) / plot.getHeight() * height);
@@ -796,6 +817,7 @@ class MixAnalysers::SpectrogramDelta final : public juce::Component {
     std::array<std::array<std::size_t, 2>, height> rowBins_{};
     ThemeId theme_ = ThemeId::Dark;
     juce::TextButton freeze_{"Freeze"}, export_{"Export PNG"};
+    juce::ToggleButton ruler_{"Hz ruler"};
     juce::Label cursor_;
 };
 

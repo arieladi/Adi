@@ -3613,6 +3613,7 @@ void spectrogramComparisonPage() {
     juce::ToggleButton *compared = nullptr;
     juce::TextButton *freeze = nullptr;
     juce::Button *exportPng = nullptr;
+    juce::ToggleButton *ruler = nullptr;
     juce::Label *cursor = nullptr;
     juce::Component *plot = nullptr;
     for (auto *child : pages.getChildren()) {
@@ -3622,12 +3623,13 @@ void spectrogramComparisonPage() {
     if (plot) for (auto *child : plot->getChildren()) {
         if (child->getTitle() == "Freeze Spectrogram comparison") freeze = dynamic_cast<juce::TextButton *>(child);
         if (child->getTitle() == "Export Spectrogram comparison PNG") exportPng = dynamic_cast<juce::Button *>(child);
+        if (child->getTitle() == "Spectrogram comparison frequency ruler") ruler = dynamic_cast<juce::ToggleButton *>(child);
         if (child->getTitle() == "Spectrogram comparison cursor") cursor = dynamic_cast<juce::Label *>(child);
     }
-    check(compared && freeze && exportPng && cursor && plot && !compared->isShowing() && !freeze->isShowing() &&
-              !exportPng->isShowing() && !plot->isShowing(),
+    check(compared && freeze && exportPng && ruler && cursor && plot && !compared->isShowing() &&
+              !freeze->isShowing() && !exportPng->isShowing() && !ruler->isShowing() && !plot->isShowing(),
           "All keeps the dedicated Spectrogram comparison controls and plot hidden");
-    if (!compared || !freeze || !exportPng || !cursor || !plot) {
+    if (!compared || !freeze || !exportPng || !ruler || !cursor || !plot) {
         root.removeFromDesktop();
         return;
     }
@@ -3647,15 +3649,22 @@ void spectrogramComparisonPage() {
         plot->paint(graphics);
         return image;
     };
-    const auto moveCursor = [&](float column, float row) {
-        const auto bounds = plot->getLocalBounds().reduced(look::border).withTrimmedTop(look::fieldHeight + look::gap);
-        const juce::Point<float> at{bounds.getX() + bounds.getWidth() * column / 128.f,
-                                    bounds.getY() + bounds.getHeight() * row / 128.f};
+    const auto dataBounds = [&] {
+        return plot->getLocalBounds().reduced(look::border).withTrimmedTop(look::fieldHeight + look::gap).toFloat();
+    };
+    const auto readCursor = [&](juce::Point<float> at) {
         const auto now = juce::Time::getCurrentTime();
         const juce::MouseEvent event{juce::Desktop::getInstance().getMainMouseSource(), at,
             juce::ModifierKeys{}, 0.f, 0.f, 0.f, 0.f, 0.f, plot, plot, now, at, now, 0, false};
         plot->mouseMove(event);
         return cursor->getText();
+    };
+    const auto readCell = [&](juce::Rectangle<float> bounds, float column, float row) {
+        return readCursor({bounds.getX() + bounds.getWidth() * column / 128.f,
+                           bounds.getY() + bounds.getHeight() * row / 128.f});
+    };
+    const auto moveCursor = [&](float column, float row) {
+        return readCell(dataBounds(), column, row);
     };
     pages.setPage(Page::Spectrogram);
     frame(0, revision);
@@ -3670,6 +3679,7 @@ void spectrogramComparisonPage() {
               broker->stats().taps == 2 && broker->stats().consumers == 2,
           "comparison replaces the ordinary lease with the selected track's pre and post taps");
     check(exportPng->isShowing() && !exportPng->isEnabled(), "comparison export waits for matched audio");
+    check(ruler->isShowing() && !ruler->getToggleState(), "the signed frequency ruler defaults to off");
     const auto waiting = picture();
 
     std::array<float, window> input, output;
@@ -3724,9 +3734,42 @@ void spectrogramComparisonPage() {
               moveCursor(64.5f, 60.5f).isEmpty() && broker->stats().frameRequests == held.frameRequests &&
               broker->stats().transforms == held.transforms && broker->stats().workerPasses == held.workerPasses,
           "the frozen comparison cursor uses the held epoch without restarting analysis");
+
+    const auto plainBounds = dataBounds();
+    const auto ruledBounds = plainBounds.withTrimmedLeft(4.f * look::fontCaption + static_cast<float>(look::gap));
+    const juce::Point<float> remapped{
+        plainBounds.getRight() - (plainBounds.getWidth() + ruledBounds.getWidth()) / 256.f,
+        plainBounds.getY() + plainBounds.getHeight() * 60.5f / 128.f,
+    };
+    const auto beforeRuler = picture();
+    check(readCursor(remapped) == "750.0 Hz   +6.02 dB   Sample 0",
+          "the point between the plain and ruled column edges initially reads the newest column");
+    click(*ruler, true);
+    frame(0, revision + 1);
+    const auto withRuler = picture();
+    const auto oneKhzY = juce::roundToInt(plainBounds.getY() +
+        plainBounds.getHeight() * static_cast<float>(1. - std::log(1000. / 20.) / std::log(20000. / 20.)));
+    const auto tickEdge = juce::roundToInt(ruledBounds.getX());
+    bool oneKhzTick = false;
+    for (int y = oneKhzY - 1; y <= oneKhzY + 1; ++y)
+        for (int x = tickEdge - 8; x < tickEdge; ++x)
+            oneKhzTick = oneKhzTick || beforeRuler.getPixelAt(x, y) != withRuler.getPixelAt(x, y);
+    check(oneKhzTick, "the signed ruler marks 1 kHz at its logarithmic plot position");
+    check(readCursor(remapped).isEmpty() &&
+              readCursor({(plainBounds.getX() + ruledBounds.getX()) / 2.f, remapped.y}).isEmpty() &&
+              readCell(ruledBounds, 127.5f, 60.5f) == "750.0 Hz   +6.02 dB   Sample 0",
+          "the frozen cursor follows the narrower raster and excludes its frequency gutter");
+    click(*ruler, false);
+    frame(0, revision + 1);
+    check(readCursor(remapped) == "750.0 Hz   +6.02 dB   Sample 0" &&
+              broker->stats().taps == held.taps && broker->stats().consumers == held.consumers &&
+              broker->stats().frameRequests == held.frameRequests && broker->stats().workerPasses == held.workerPasses &&
+              broker->stats().transforms == held.transforms,
+          "turning the ruler off restores the original cursor mapping without restarting analysis");
     pages.setPage(Page::Spectrum);
     frame(0, revision + 1);
-    check(!compared->isShowing() && !freeze->isShowing() && !exportPng->isShowing() && !plot->isShowing() &&
+    check(!compared->isShowing() && !freeze->isShowing() && !exportPng->isShowing() && !ruler->isShowing() &&
+              !plot->isShowing() &&
               pages.detail.view.subscribed() && broker->stats().taps == 1,
           "leaving the dedicated page hides the comparison and keeps only the new page's ordinary demand");
 

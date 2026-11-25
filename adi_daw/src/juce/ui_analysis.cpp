@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_analysis.hpp"
+#include "ui_spectrogram_ruler.hpp"
 #include "ui_look.hpp"
 #include "adi/engine/main_loudness.hpp"
 #include "adi/media/media_ops.hpp"
@@ -1536,9 +1537,12 @@ void SharedSpectrumView::enableSpectrumCursor() {
 bool SharedSpectrumView::spectrumCursorActive() const noexcept {
     return spectrumCursorEnabled_ && (spectrumMode() || mode_ == Mode::Spectrogram);
 }
-juce::Rectangle<float> SharedSpectrumView::spectrogramPlot(juce::Rectangle<float> base) const noexcept {
+juce::Rectangle<float> spectrogram::rulerPlot(juce::Rectangle<float> base, bool visible) noexcept {
     const auto gutter = 4.f * look::fontCaption + static_cast<float>(look::gap);
-    return spectrogramRuler_ && base.getWidth() >= 2.f * gutter ? base.withTrimmedLeft(gutter) : base;
+    return visible && base.getWidth() >= 2.f * gutter ? base.withTrimmedLeft(gutter) : base;
+}
+juce::Rectangle<float> SharedSpectrumView::spectrogramPlot(juce::Rectangle<float> base) const noexcept {
+    return spectrogram::rulerPlot(base, spectrogramRuler_);
 }
 juce::Rectangle<float> SharedSpectrumView::spectrumCursorBounds() const noexcept {
     if (mode_ == Mode::Spectrogram) return spectrogramPlot(analysisPlot(analysisArea(getLocalBounds())));
@@ -1672,11 +1676,14 @@ void SharedSpectrumView::paintPhaseBands(juce::Graphics &g, juce::Rectangle<floa
     }
 }
 
-void SharedSpectrumView::paintSpectrogramRuler(juce::Graphics &g, juce::Rectangle<float> base,
-                                              juce::Rectangle<float> plot) const {
+void spectrogram::paintRuler(juce::Graphics &g, juce::Rectangle<float> base, juce::Rectangle<float> plot,
+                            SpectrogramScale scale, double lowHz, double topHz) {
     const auto labelHeight = look::fontCaption;
     const auto left = plot.getX();
-    if (left <= base.getX() || plot.getHeight() < labelHeight || !raster_) return;
+    if (left <= base.getX() || plot.getHeight() < labelHeight || topHz <= lowHz) return;
+    const auto lowPosition = spectrogramPosition(scale, lowHz);
+    const auto span = spectrogramPosition(scale, topHz) - lowPosition;
+    if (!(span > 0.)) return;
     const auto clip = plot.toNearestInt();
     const auto tickWidth = labelHeight * .65f;
     g.setColour(look::outline);
@@ -1684,11 +1691,10 @@ void SharedSpectrumView::paintSpectrogramRuler(juce::Graphics &g, juce::Rectangl
     g.setFont(look::font(labelHeight));
     float labelEnd = plot.getY();
     double lastHz = std::numeric_limits<double>::infinity();
-    for (const double hz : {raster_->topHz, 10000., 1000., 100., Raster::lowestHz}) {
-        if (hz >= lastHz || hz < Raster::lowestHz) continue;
+    for (const double hz : {topHz, 10000., 1000., 100., lowHz}) {
+        if (hz >= lastHz || hz < lowHz) continue;
         lastHz = hz;
-        const auto frequencyPosition = spectrogramPosition(raster_->scale, hz);
-        const auto fraction = (frequencyPosition - raster_->lowPosition) / (raster_->highPosition - raster_->lowPosition);
+        const auto fraction = (spectrogramPosition(scale, hz) - lowPosition) / span;
         const auto y = plot.getBottom() - static_cast<float>(fraction) * plot.getHeight();
         const auto pixel = std::clamp(juce::roundToInt(y), clip.getY(), clip.getBottom() - 1);
         g.setColour(look::textOnBand);
@@ -1702,6 +1708,11 @@ void SharedSpectrumView::paintSpectrogramRuler(juce::Graphics &g, juce::Rectangl
                    juce::Justification::centredRight, true);
         labelEnd = labelTop + labelHeight;
     }
+}
+
+void SharedSpectrumView::paintSpectrogramRuler(juce::Graphics &g, juce::Rectangle<float> base,
+                                              juce::Rectangle<float> plot) const {
+    if (raster_) spectrogram::paintRuler(g, base, plot, raster_->scale, Raster::lowestHz, raster_->topHz);
 }
 
 void SharedSpectrumView::paint(juce::Graphics &g) {
