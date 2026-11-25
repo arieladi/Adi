@@ -4,6 +4,19 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-25 — Item 1 (`walk/*` fixes, Round 6): `walk/a8-ctrl-drag-copy`, `walk/a9-value-box-vertical`
+
+| Branch | Head SHA | Touched files | Compiler (`-DADI_WERROR=ON`, Pd on, JUCE off) | Warnings | Touched headless suites | `adi_acceptance_wts01` | Verdict |
+|---|---|---|---|---|---|---|---|
+| `walk/a8-ctrl-drag-copy` | `cff2c092` | `src/adi/clip_commands.{hpp,cpp}`, `tests/test_edit_plan.cpp`, `src/juce/{ui_arrangement,ui_shell}.{hpp,cpp}` (JUCE), `tests/{test_ui_shell.cpp,ui_test_hygiene.hpp}` (JUCE) | GCC 12.4.0 | 0 | `adi_edit_plan_tests` **682/0**, `adi_clip_edit_tests` **434/0** | **PASS** (43.24 s) | **PASS** |
+| `walk/a8-ctrl-drag-copy` | `cff2c092` | same | Clang 14.0.6 + libstdc++ 12 | 0 | `adi_edit_plan_tests` **682/0**, `adi_clip_edit_tests` **434/0** | **PASS** (38.59 s) | **PASS** |
+| `walk/a9-value-box-vertical` | `49dc7cc5` | `src/juce/{ui_look,ui_mixer}.cpp` (JUCE), `tests/{test_ui_shell.cpp,ui_test_hygiene.hpp}` (JUCE) | GCC 12.4.0 | 0 | N/A (all files JUCE-gated) | **PASS** (45.06 s) | **PASS (headless)** |
+| `walk/a9-value-box-vertical` | `49dc7cc5` | same | Clang 14.0.6 + libstdc++ 12 | 0 | N/A (all files JUCE-gated) | **PASS** (40.15 s) | **PASS (headless)** |
+
+(No PR requested; run-only verification.)
+
+---
+
 ## 2026-11-25 — Item 1 (`walk/*` fixes, Round 5): `walk/a3-new-untitled`
 
 | Branch | Head SHA | Touched files | Compiler (`-DADI_WERROR=ON`, Pd on, JUCE off) | Warnings | Touched headless suites | `adi_acceptance_wts01` | Verdict |
