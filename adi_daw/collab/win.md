@@ -6,6 +6,56 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-25, evening — the seats' questions answered (ADR-0255); the hold ends on the proof; a walk in the real window; a landing window
+
+Win gathered the questions the seats had parked for the director, 25 with two of its own, and put the five real choices to him in plain words. His words: "yes to A–E, scope: yes". The others stand as recommended. **Every seat: your answers are below and in ADR-0255. Strike the matching lines from your FOR THE DIRECTOR section.**
+
+- **The hold ends on the proof (d1).** "Function first" runs until one whole pass of the nine steps passes in the real ADI window, or until 3 December, whichever comes first. That day the open gaps of ADR-0254 d24 and Track S's first wave open, and the branches that wait for 3 December start landing. Read "after 3 December" as "after the hold ends". Fix before new stands.
+- **A walk in the real window (d2), his order.** Two helper sessions of win walk the nine steps and fix what fails, on a Windows 11 machine and on the lead Windows 10 machine. Reports: `collab/walk/` on `walk/windows11` and `walk/windows10`. Fixes: `walk/*` branches. Win lands them and registers the findings; the gemini seat runs each on Linux.
+- **Mix View seat (d3).**
+  - Enhanced Spectrogram, first version: peak cells and time reassignment only.
+  - Scope trigger: a rising-level trigger on the starred Main channel, with hold-off and the threshold shown; in stereo it follows the louder channel.
+  - Scope layers: up to eight, with Main and the active channel always visible. "L+R" is the two-trace Stereo view that exists; no mono sum now.
+  - A quiet CPU window: granted for 26 to 28 November; win runs the timing on the lead machine (DF-M3).
+  - Focus Match Apply: preview, then the recipient EQ's free slots, one undo step; it says how many bands it could not place.
+  - No note column in the analysis table.
+  - DF-M44 stands as shipped.
+  - DF-M28: Opto and Filtered Clean first. **The default order is Gate, EQ, Compressor, De-esser, Clip/Limiter**, not the EQ first.
+  - DF-M47 and DF-M48: the whole-window editor with its optional analyser dock; no other form until the Window's sheets are agreed.
+- **Devices lane (d4).** The eleven effects belong to DEV-22. The ten built land when the hold ends, each "built, not verified" until its reading. Looper waits for the engine.
+- **Clones seat (d5).** DF-E43: none now. The installed alignment scope does show several instances together (his answer): measure that view with two isolated sources.
+- **Windows engine seat (d6).**
+  - MX-09: keep every recorded sample, clamp the placed start to zero, the earlier part a left handle.
+  - CT-01 and CT-02: audition transient and exclusive, no undo entry; pre-roll outside the pass clips, until the reading.
+  - CT-04: as you recommended.
+  - EX-05: as you recommended.
+  - **PD-07: as Live, on by default** (PLAN Q-A2 (a)), not opt-in.
+  - EX-12: not now; bring the schema as one table first.
+- **Engine lane (d7), for the seat that takes it.**
+  - DEV-25: the status seam in the pinned JUCE is allowed, as an overlay patch.
+  - DF-E29 (e): MIDI keeps the plug-in's physical latency with Delay Compensation off.
+  - **N54: Paste refuses across kinds, as Live**; storage and replay stay hybrid.
+- **Window lane (d8).** Help opens Live 12's manual until ADI has its own (DF-W45, a release gate).
+- **DF-E17 (a) (d9).** The overlap is kept while Delete Overlaps is off or the planner refuses. Win finishes `engine/df-e17a-move-overlap` to this.
+
+**The session suite, measured today.** `adi_acceptance_wts01` at main `73e26e4aa`, MSVC, Pd on: 13 checks of 13, nothing reported as not built. Its four VST3 checks passed on the build of 22 November and were not rebuilt today. The gemini seat's Linux run of 24 November agrees (GCC 12.2 and Clang 14.0.6). The suite is not in CI: it goes in before the waiting branches land (ADR-0255 d1).
+
+**What the suite does not prove,** and the walk does: the real window, a real sound card and real plug-ins. It has no step for editing in the Clip View or for arranging.
+
+**Landing (#752, `land/seats-1125`), the requests of 25 November that land now:** `devices/time-locate-revision` (queue item 6), `devices/df-e36-tests`, `devices/vocoder-p99` (DF-E68 (a)), `window-fn/df-e67b`, `window-fn/df-e76`, `window-fn/df-e12`, `window-fn/parity-review`. The touched suites and the session suite pass on MSVC with Pd on, 6 of 6.
+- **DF-E67 (b) was fixed twice.** The stack takes the window-fn seat's overlay (four leaks, 0 under LSan) and, from `devices/df-e67b-canvas-args`, the forty-cycle test alone. The devices lane's second change, storing no copy for no arguments, is not taken: with the teardown's free it is not needed.
+- **Not in it:** `window-fn/df-e78` (with the export stack), the devices lane's DF-E77 merge up the DEV-22 stack, and `window-fn/remarks` (RE-01), which waits for the window lane's reading of its shell lines.
+
+**The branches that wait.** 82 branches on origin carry "lands-after-2026-12-03" in their name. None has a pull request, so none has seen CI. The gemini seat takes them joined heads first: the Mix View seat's joined review head, the clones seat's ADI-Shaper stacks, the devices lane's stack.
+
+**From the walk so far.** The lead machine has no audio input connected, so recording from a real input cannot be proved there.
+
+**Next free:** ADR-0256, DF-W46. The others are unchanged.
+
+**Owed by win:** `engine/df-e17a-move-overlap` finished to d9; the session suite in CI; the quiet CPU timing and the clones seat's three-pens reading while the lead machine is free; the stem separator's runtime ADR; the prompt for the Live readings.
+
+---
+
 ## 2026-11-25 — the mix suite intake ruled: ADR-0254, 22 plan rows, Track S
 
 The director ruled on `docs/MIX-SUITE-INTAKE.md` (four proposals drafted with an outside model, 58 requests): every recommendation approved as written, the eleven gaps registered, and six rulings of his own. ADR-0254 records it.

@@ -20089,3 +20089,126 @@ ADR-0203 d1 and ADR-0248 d3; the director may strike them.
 | `collab/README.md` | ADR 0254 used |
 | `collab/RESERVATIONS.md` | the next free ADR is 0255; DF-C8, DF-M76, DF-W45, DF-E84; N76 is the engine's preview path, the next free N77; the minors Track S will ask for |
 | `collab/win.md` | the entry of 25 November |
+
+## ADR-0255 — The seats' parked questions answered; the hold of ADR-0248 d2 ends on the proof in the real window; a walk in the real window; Live's Backup folder; Paste refuses across kinds; the Gate before the EQ — `DECIDED` (2026-11-25) — **DIRECTOR'S ANSWERS OF 25 NOVEMBER TO WIN'S LIST OF 25; AMENDS ADR-0248 d2 AND ADR-0254 d1; AN EXCEPTION TO ADR-0180 d8 FOR ONE WALK; ANSWERS PLAN Q-A2 AND REVERSES R-26 FOR THE PROJECT FILE; NARROWS ADR-0045 d1 FOR PASTE; WIN'S READINGS NAMED BELOW, THE DIRECTOR MAY STRIKE THEM**
+
+**What this records.** On the evening of 25 November win gathered the questions the seats had parked for
+the director in their logs, with two of its own: 25 in all, each with a recommendation. Nineteen keep
+what is built or wait. Five were real choices, and win put those to him in plain words, with one fact
+only he has. His words: "yes to A–E, scope: yes". He changed none of the others, so they stand as
+recommended. The same evening he ordered a walk of the one session in the real ADI window (d2). The
+headless session suite passes at main `73e26e4aa`, 13 checks of 13, and its four VST3 checks passed on
+the build of 22 November.
+
+### Decisions
+
+1. **The hold ends on the proof, not on the date (his A).** ADR-0248 d2's "function first" runs until
+   the one session is proved in the real window, or until 3 December, whichever comes first.
+   - **The proof (win's reading).** A whole pass of the nine steps in the real ADI window with no
+     failure, written in a walk report (d2) and read by win. What the machines lack does not hold it:
+     the recording step counts from whatever capture device the machine has, a loopback included, and
+     the director's own keyboard is his own check afterwards.
+   - **What opens that day.** The open gaps of ADR-0254 d24, Track S's first wave (S2), and the landing
+     of the branches that wait for 3 December. Wherever a document says "after 3 December" or "before
+     3 December" for this hold, it reads "after the hold ends" and "while the hold lasts".
+   - **What does not change.** Fix before new (ADR-0248 d1). Each Track S wave still waits for its
+     ground (ADR-0254 d25).
+   - **Win's steering for that day.** The session suite (`ADI_ACCEPTANCE`) goes into CI before the
+     waiting branches land, and runs after each landing window. The waiting branches land joined heads
+     first, each after the gemini seat's Linux run of it.
+2. **A walk in the real window (his order).** Two helper sessions of win walk the nine steps of
+   ADR-0248 d2 in the real ADI window and fix what fails: one on a Windows 11 machine, one on the lead
+   Windows 10 machine.
+   - It is an exception to ADR-0180 d8 and PLAN WTS-01 ("never on the director's desktop"), for this
+     walk only. Each launch has an `ADI_HOME` of its own. On the lead machine the window is driven only
+     while he says the desk is free.
+   - Reports are in `collab/walk/`, on branches `walk/windows11` and `walk/windows10`. Each fix is a
+     branch `walk/*` from main. Win lands them and registers the findings. The gemini seat runs each on
+     Linux as it appears.
+3. **The Mix View seat's nine.**
+   - (a) **Enhanced Spectrogram, first version (MX-21):** peak cells and time reassignment. No
+     energy-summed view and no multitaper yet.
+   - (b) **Scope trigger (MX-13):** an adjustable rising-level trigger on the starred Main channel, with
+     a hold-off and the threshold shown in Scope. In stereo it follows the louder channel.
+   - (c) **Scope layers (MX-13):** up to eight visible layers, the Focus group unchanged. Main and the
+     active channel are always visible; the group's order fills the other places. Several channels drawn
+     over each other to compare is the purpose, as the multi-channel scopes he names do it. "L+R" is the
+     two-trace Stereo view that exists. No mono-sum projection now; Mid and Side come with MX-41.
+   - (d) **A quiet CPU window (DF-M3):** granted for 26 to 28 November, when he says the lead machine is
+     quiet. Win runs the timing there: matched Release callbacks at the same routing, quality, rate and
+     block size, Focus FIR's 2.667 ms worst-callback check, and the MX-30 and MX-36 budgets.
+   - (e) **Focus Match Apply:** the new bands are previewed for the selected recipient, then written
+     into its native EQ's free slots as one undo step. Existing bands and automation stay. When the free
+     slots run out, it says how many bands it could not place.
+   - (f) **The analysis table:** no note column.
+   - (g) **No external key (DF-M44):** as shipped. External detection goes silent when the route
+     disappears, in the EQ and the Limiter alike, and the UI names the missing source.
+   - (h) **Native dynamics (DF-M28):** Opto and Filtered Clean first. The internal-key Gate and the
+     De-esser follow once the preset and device-key prerequisites pass review. The default order of a
+     channel's functions is Gate, EQ, Compressor, De-esser, Clip/Limiter (his E): an EQ move then does
+     not shift where the gate opens. The seat had proposed the EQ first. Existing chain edits are kept.
+   - (i) **Mix View forms (DF-M47, DF-M48):** the whole-window editor with its optional analyser dock.
+     No other detached or docked form until the Window's sheets are agreed.
+4. **The eleven Live effects belong to DEV-22 (his B).** Amp, Cabinet, Corpus, Drum Buss, Dynamic Tube,
+   Grain Delay, Looper, Pedal, Roar, Spectral Resonator and Spectral Time. The ten the devices lane has
+   built land when the hold ends, in the manual's order, each "built, not verified" until its reading
+   on the ONE list. Looper waits for the engine's recording and transport rows.
+5. **The clones seat's two.**
+   - (a) **More third-party devices from his racks (DF-E43):** none now. One is chosen after ADI-Shaper
+     is finished and the two scope contracts are met.
+   - (b) **The installed alignment scope shows several instances together** (his answer: yes). The seat
+     measures that view with two isolated sources.
+6. **The Windows engine seat's six.**
+   - (a) **Audio placed before song zero (MX-09):** every recorded sample is kept, the placed start is
+     clamped to zero, and the earlier part is a left handle.
+   - (b) **Take-lane audition (CT-01, CT-02):** audition is transient and exclusive and makes no undo
+     entry. Pre-roll stays outside the pass clips. Both hold until the Live reading.
+   - (c) **Comping edges (CT-04):** outside the available take Main keeps its audio. A dragged edge
+     clamps to the take. One undo step.
+   - (d) **Export loudness (EX-05, an addition):** the true-peak ceiling stays active when conditional
+     normalization skips the target, and the reduction is reported separately. Detection is BS.1770's
+     4x, with finer internal detection only if an independent oversampled check still finds a miss.
+     Stems normalized together take one gain from Main, and each file's peak is shown.
+   - (e) **Live's Backup folder (PD-07, PLAN Q-A2 (a); his C).** As Live, on by default: from the
+     second Take Snapshot a worker writes a timestamped copy to the project's Backup folder, ten are
+     kept, and the eleventh goes to the Recycle Bin. His R-26, "Backups: none", is reversed for the
+     project file only. The seat's opt-in is not taken. The copies' size still depends on Q-A1, which
+     is open.
+   - (f) **The video telemetry schema (EX-12):** not now. The row is P2, and the seat first brings the
+     schema as one table.
+7. **The engine's three.**
+   - (a) **A status seam in the pinned JUCE (DEV-25):** yes, as an overlay patch under ADR-0097 §3, not
+     a fork. It exposes the opaque-state restore's SDK outcomes and the fallback audio process result,
+     which the void calls drop today.
+   - (b) **MIDI with Delay Compensation off (DF-E29 (e)):** MIDI keeps the upstream plug-in's physical
+     latency, as N24's contract has it. It is an exception to ADR-0245 d8 for the off setting.
+   - (c) **Paste across kinds (N54; his D).** As Live: Paste refuses a MIDI clip on an audio track and
+     an audio clip on a MIDI track, and the engine enforces the check. Storage and replay stay able to
+     hold both kinds on one channel (ADR-0045 d1). A hybrid track is a later addition that needs his
+     yes. The engine had recommended accepting both.
+8. **Help opens Live 12's manual (WIN-09)** until ADI has a manual of its own. That manual is a release
+   gate (DF-W45).
+9. **Delete Overlaps off (DF-E17 (a)).** A clip moved onto another keeps the overlap while Delete
+   Overlaps is off, and while the planner refuses. A raw `clip.move` onto another clip is refused only
+   when Delete Overlaps is on and the planner could place it. `engine/df-e17a-move-overlap` is finished
+   to this.
+10. **Not decided here.** These need a reading in Live 12.4, not a ruling: Insert Shape's ramps
+    (AU-02, L-AUTO-8), Render as Loop's first pass (EX-03), Convert to Mono's coefficients (EX-04), a
+    count-in across more than one beat of latency (DF-E6), hidden material at a crossfade (N53), and
+    the devices lane's ONE list. The four proposal sheets of 19 November wait for his eye, one at a
+    time.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0248 d2 | the hold ends on the proof in the real window, or on 3 December, whichever comes first (d1) |
+| ADR-0254 d1 | "nothing before 3 December" reads "nothing while the hold lasts" (d1) |
+| ADR-0180 d8, PLAN WTS-01 | one walk on the director's machines, by his order, each launch in its own `ADI_HOME` (d2) |
+| ADR-0125 (R-26) | reversed for the project file: Live's ten Backup copies, on by default (d6 (e)) |
+| ADR-0045 d1 | narrowed for Paste: the command refuses across kinds, as Live; storage and replay stay hybrid (d7 (c)) |
+| ADR-0245 d8 | an exception for Delay Compensation off: MIDI keeps the physical latency (d7 (b)) |
+| `docs/PLAN.md` Q-A2, PD-07 | answered (a), as Live (d6 (e)) |
+| `docs/DEFERRED.md` | DF-E17 (a), DF-E29 (e), DF-E43, DF-M3, DF-M28, DF-M47 answered; DF-W45 added (d8) |
+| `collab/README.md` | ADR 0255 used |
+| `collab/RESERVATIONS.md` | the next free ADR is 0256; the next free Window row is DF-W46 |
