@@ -49,7 +49,9 @@ op — not to give the agent a side door.
 
 ## 2. Capability tiers
 
-The agent runs at one of three levels, set per project and visible in the UI.
+The agent runs at one of three levels, visible in the UI. The level is the application's setting
+(`agent.tier`); a project may carry an override that only lowers it, unless the user raises it
+(PLAN AGT-09; ADR-0254 d24).
 Default is **Propose**.
 
 | Tier | Can | Cannot |

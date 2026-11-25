@@ -19886,3 +19886,206 @@ ADR-0249 d8, ADR-0203 d1 and ADR-0109 §2 and §3.
 | `collab/README.md` | ADR 0253 used |
 | `collab/RESERVATIONS.md` | the next free ADR is 0254, the next free DF-E id DF-E76 |
 | `collab/win.md` | the entry of 23 November |
+
+## ADR-0254 — The mix suite intake: four outside proposals taken into the plan's rows; a Throw on a send or on a device's own mix; a Duck inside Reverb and Delay; two more optional stem models; a drop that lands as previewed; a REAPER key preset — `DECIDED` (2026-11-25) — **DIRECTOR'S RULING OF 25 NOVEMBER ON `docs/MIX-SUITE-INTAKE.md`; RULES ADR-0205 d7; NARROWS ADR-0214 d1 AND ADR-0203 d8; RE-HOMES ADR-0209 §3'S BAND DRAG; ADDS 22 PLAN ROWS AND TRACK S; WIN'S PLACEMENTS NAMED BELOW, THE DIRECTOR MAY STRIKE THEM**
+
+**What this records.** On 24 and 25 November the director brought four proposals drafted with an
+outside model: a mixing workflow suite with a personal mix assistant; more mixing, clip and stem
+tools; capture, scope, sample and controller tools; and a smarter Browser, complementary sample
+matching, guardrails for the agent, clip variations, clip to instrument and key presets. Win read
+their 58 requests against main, the ADR log and the plan, with eight audits, and wrote
+`docs/MIX-SUITE-INTAKE.md`: a recommendation on every request, an order in six waves, 21 decisions
+(D1 to D21) and eleven gaps found on the way. The count: 21 requests are already ADI's, 22 are new
+and worth having, 7 are deferred, 4 are not taken, and 4 were his alone. His ruling of 25
+November: "Approve all recommendations in MIX-SUITE-INTAKE.md as written and register all 11
+Section 6 gaps into the single ADR and docs/PLAN.md", with six rulings of his own, recorded in d3,
+d6, d11, d13, d17 and d21. Nothing here starts before 3 December (ADR-0248 d1, d2), and no queue
+changes before then. The rows' ids, lanes and places, and Track S, are win's placements under
+ADR-0203 d1 and ADR-0248 d3; the director may strike them.
+
+### Decisions
+
+1. **Timing and order (D1).** Nothing of the intake starts before 3 December. After it, the order
+   is the intake's six waves. Wave 1 is the decided rows it asks to finish first, each at its own
+   milestone. Waves 2 to 6 are the new rows, on a parallel Track S in the plan (d25): a wave opens
+   when the rows it stands on are on main, and no wave holds a milestone's gate.
+2. **No wrapper on every insert (D2).** ADI has no insert slots (ADR-0212), so nothing wraps every
+   device. The same results come from devices and racks:
+   - a band filter on the wet path only is a rack with a dry leg beside a chain of EQ then the
+     plug-in, and arrives with racks (DEV-01);
+   - Mid/Side around a device is a rack the user can open (d23, DEV-35);
+   - a linked input and output drive on every insert is not taken; the Clip stage's own Gain Link
+     is finished instead (DF-M73).
+3. **The Throw (D3; his ruling on the target).** A Throw command, over a time selection, writes in
+   one undo step the automation that opens an effect for that range and closes it after. His
+   ruling: the target is either a send to a return, or an inline device's or rack's own wet or mix
+   parameter on the track itself.
+   - On a send, the command closes what goes into the effect, so the tail rings on after the range.
+   - On a device's mix parameter, the command closes the effect's output, so the tail closes with
+     it. That is what a mix parameter does. The command says so where the target is chosen, and its
+     release time sets how long after the range the mix stays open.
+   - On a rack, the target is the wet chain: its volume, or a gain at the head of the chain where
+     one exists, which keeps the tail. The rack form waits for DEV-01.
+   - Which parameter is a device's mix comes from the role tags of d13: a native device declares
+     it, and for a hosted plug-in the user picks it once per plug-in identity.
+   - Effects owned by a clip stay offline work (ADR-0069, TM-FC-03). No duplicate track is made.
+   PLAN AU-10.
+4. **Preverb (D4).** Yes, as an offline render that lands as an ordinary clip: the selection
+   reversed, through a chosen reverb, reversed back. The swell lives on a new lane kind under the
+   track, one that plays along with the main lane; that is a format addition, and its minor is
+   reserved when the row starts. The source is never touched, and redo does not render again
+   (ADR-0069 d1, d2). PLAN TM-FC-05, after TM-FC-03.
+5. **The soundstage (D5).** Yes: a Mix View page where each channel is a node, pan across and level
+   up, writing the strip's own pan and volume. Width as a handle comes later, when a strip has a
+   width to control (ADR-0203 d9 keeps width in Utility). The page is built after its sheet is
+   agreed (ADR-0243), and ADR-0244 d10's page list gains it then. PLAN MX-41.
+6. **Ducked tails (D6; his ruling).** Reverb and Delay each get a Duck control of their own,
+   matching Echo's: on, threshold and release, lowering the wet signal while the device's input is
+   above the threshold. This is an addition to two of Live's devices, so it is off by default and
+   its parameter ids come after Live's: every Live-parity render, and every Live preset that names
+   Reverb or Delay, is unchanged. The helper the intake recommended first (a keyed compressor on
+   the return, made by one command) is not built; a user can still build it by hand. Hybrid Reverb
+   is not named in the ruling and does not change. PLAN DEV-33.
+7. **The learning companion (D7; rules ADR-0205 d7).** Yes, in this shape: learning is plain
+   statistics over the user's own projects (which devices on which kinds of track, usual EQ moves,
+   levels and pans, repeated sequences of edits), not a model. It is off by default. What it
+   learned is one readable local file in the data folder: not in the project, and not in the
+   settings file, so it travels with neither. The user can read it and erase it. Nothing of it
+   leaves the machine. A proposal that used it says so. PLAN AGT-11.
+8. **Mix health (D8).** Four measures join the Mix Radar's list (MX-21): DC and rumble, low-end
+   mono loss, which track caused a peak, and a latency flag. A fix is a proposal of one undo step
+   that uses Live's own tools (Utility, Freeze, Reduced Latency). Signs on the strips come only
+   after a sheet, and ADR-0243 d2 stands: no strip carries a button for a Mix View function.
+9. **EQ additions (D9).** The sketch (a drawn curve fitted with bands) is taken: it is ADR-0195
+   d2's target, now queued. A band that follows MIDI notes is taken: it is exact and cheap. A band
+   that follows the pitch of audio waits for a pitch detector (DF-M72). A band on transients only,
+   or on sustain only, is deferred (DF-M71). PLAN MX-42.
+10. **Clip prep (D10).** A rider, faded gaps and trimmed breaths are one offline analyser that
+    writes the clip volume curve (AU-07) in one undo step; the result is an ordinary curve the user
+    edits. Breath detection is plain signal analysis. ADR-0203 d14's "no real-time rider" stands.
+    Sibilance waits for the region in time and frequency, or for clip offline processing (DF-W42).
+    PLAN AU-11.
+11. **Stems (D11; his rulings on R32 and R33).** The built-in separator of ADR-0203 d8 gets the row
+    it lacked: the model, its process and its weights (PLAN AGT-10, at M5).
+    - **CPU only.** His words: "CPU only is fine". No GPU runtime is shipped (ADR-0086 stands) and
+      no GPU path is built now.
+    - **Two more optional models.** His ruling: yes to optional user downloads for a drum-kit model
+      (kick, snare, hat, toms, cymbals) and for voice isolation. This narrows ADR-0203 d8's "other
+      AI jobs stay service-only" for these two models, beside the 6-stem and high-quality models d8
+      already allows. Each runs in the separator's process, is verified by its hash, and gives its
+      result through the same gateway. ADR-0203 d25's terms hold for every weight.
+    - Level and EQ per stem inside one clip, and a transient unlimiter, are not taken (d22).
+12. **Samples (D12).** Similarity Search and Similar Sample Swapping are Live 12's, so they are
+    parity work, built on measured descriptors in the library index with no model (PLAN TM-MD-07);
+    an embedding may come later as an option. Fits, the samples that complement a loop, is one more
+    scorer on the same index (TM-MD-08). The map of the samples comes with the Browser's sheet
+    (TM-MD-09). The agent asking the index, for similar samples or for samples that fit, comes
+    after them (DF-C7).
+13. **The Stream Deck and role tags (D13; his ruling on the order).** His words: "Keep your current
+    priority order". Surfaces stay third in the P2 order, the Stream Deck first among them
+    (SRF-13); the plug-in stays ADI's own, and nothing of it is built yet. Role tags (gain, pan, an
+    EQ band, threshold, mix) become an attribute of the one page model (SRF-14); his 13 controller
+    tables are the first profiles; a profile is keyed on the plug-in's identity, never its name. A
+    local WebSocket and OSC bridge is what CTL-04 to CTL-09, SRF-09 and SRF-10 already are: there is
+    no second server (ADR-0181 d2).
+14. **Three priority tiers (D14).** Deferred until Focus with one main is in use (DF-M70).
+15. **Capture (D15).** Wired as decided (ADR-0132 d9, ADR-0203 d7): the audio memory is fed from
+    the armed and monitored inputs, the Capture command takes a range of it into a clip, and the
+    Capture MIDI button calls the MIDI memory that is already built. The ring follows its setting,
+    up to 600 seconds, inside its memory cap. PLAN CT-06, at M3. The range strip is CT-07, after a
+    sheet. A ring on Main's output stays EX-12's P2 item.
+16. **Preview through the selected track (D16).** A switch in the Browser's preview row, off by
+    default: the preview is heard through the selected track's devices. Off, the preview goes to
+    Cue Out, as Live's. PLAN MX-40, after the preview itself (MX-08).
+17. **The drop that lands as previewed (D17; his ruling; narrows ADR-0214 d1).** "Every drop
+    arrives clean" stays the rule. One exception, by his ruling: while the preview's Sync is on, a
+    dropped sample lands warped and transposed as it was heard. A setting switches this behaviour
+    off, and then every drop is clean again; the setting's name is reserved when the row starts.
+    With Sync off nothing changes. ADR-0203 d12's standing deviation, import with no warp, holds
+    for every other drop. PLAN TM-MD-06.
+18. **The agent's write scope and its step label (D18).** A request may be locked to chosen tracks,
+    a group or a time range. The scope is a list of ids and a range fixed when the request is made,
+    never "whatever is selected" (OPS §7.1). It is enforced where a changeset is validated, at
+    preview and again at apply. An edit with no single target, such as tempo or a route across the
+    scope's edge, is refused under a narrow scope. The lock joins the tier rules (AGT-09). The undo
+    step of an applied changeset is named from the request. PLAN AGT-12.
+19. **Clip variations (D19).** Deferred until reverse playback, slicing as an edit and transpose on
+    an unwarped clip exist. Whether ADI wants a generator at all is his to say then (DF-W44).
+20. **Clip to instrument (D20).** Yes: one command on an audio clip, and a sample dropped on a MIDI
+    track, make a OneShot from it in one undo step. It is Live's own gesture, read in Live 12
+    first. Root-pitch detection comes with the pitch detector, the stretched mode with OneShot's
+    Warp, macros with racks. PLAN DEV-34.
+21. **Key presets (D21; his ruling on REAPER).** WIN-05 is finished as planned: the Cubase and
+    Bitwig presets get their real tables, with the conflict handling, import, export and search
+    that sit on the window lane's branches. His ruling: a REAPER preset, yes, at low priority after
+    WIN-05 (PLAN WIN-11, P2). No preset named "ADI Default": the default is Live's, by the standing
+    rule. No first-run chooser now (DF-W43).
+22. **Not taken.** A wrapper on every insert, and Mid/Side as a wrapper (d2); a strip-level shaper
+    (ADI-Shaper is the device); level and EQ per stem inside one clip (a folded group of stem
+    tracks is the same thing); a transient unlimiter (restoration is out of scope); a model inside
+    the DAW (ADR-0233 d4, ADR-0064 d5: the agent proposes from outside); every drop conformed by
+    default (d17 is the narrow exception); a preset named "ADI Default". The proposals' "do not
+    build" lists do not change the plan: mix snapshots stay planned (MX-19).
+23. **Small additions on rows that exist.** Each is taken, and each rides the row named:
+    - picking the priority channel in the Mix View writes Carve's and Focus's key (MX-24, DF-M75);
+    - Align takes several channels in one action, one undo step (MX-13, DF-M75);
+    - a low-band switch on the Focus Scope (MX-13, DF-M75); the "optimise the low-end sum" action
+      stays with the Kick and Bass Lab (P2);
+    - the scope's division chooser, which is all ADR-0167 still lacks on the Focus Scope (DF-M74);
+    - a band dragged from one channel's EQ onto another on the Stack, as a copy or an inverted
+      copy: ADR-0209 §3's accepted gesture, re-homed after the slots went (PLAN MX-37);
+    - Hear Difference on any device, extending ADR-0247 d8's Hear What Is Removed (PLAN MX-38);
+    - auto gain-match for any plug-in (ADR-0203 d8) with a commit, Match Output Gain (PLAN MX-39);
+    - a Mid/Side rack made by one command, after racks play (PLAN DEV-35); Transient and Sustain
+      processing around a device is later (DF-E83);
+    - the Reference's pool is a list of analysed targets, and the audible Reference stays one
+      (MX-29);
+    - each change an agent proposes carries its reason: a measure, the user's profile or the
+      Reference (AGT-05).
+24. **The eleven gaps the intake found, registered.**
+
+    | Gap | Where it is registered |
+    |---|---|
+    | No row owned the stem separator's model, process or weights | PLAN AGT-10 (d11) |
+    | Audio Capture had no row for its wiring; its ring refuses more than 30 seconds while its setting allows 600 | PLAN CT-06 (d15) |
+    | The Capture MIDI button answers "not built" over built engine parts | PLAN CT-06 |
+    | The Browser's preview has no player, and nothing reserved the engine's preview path | PLAN MX-08's note; N76; DF-E82 |
+    | The Cubase and Bitwig key presets differ from Live's only in Redo | PLAN WIN-05's card |
+    | A clip's transpose is stored, nothing sets it, and it plays only with Warp on | DF-E81; PLAN TM-WT-02's note |
+    | `agent.maxOpsPerMinute` is a setting nothing reads | DF-C6; PLAN AGT-01's card |
+    | Stale "On main" lines for MX-13, MX-21, MX-24, MX-36, DEV-21, DEV-31, CT-01 and TM-MD-04 | corrected in PLAN's cards, re-read at `300efe611` |
+    | The feature catalogue listed stem splitting under remote services | corrected in `docs/FEATURES.md` |
+    | The agent's tier was per project in one document and per application in the registry | `docs/AI-AGENT.md` §2 follows PLAN AGT-09: the application's setting, with a project override that only lowers it |
+    | The EQ core's loudness-match switch has no parameter; the Clip stage's Gain Link is named and unavailable | DF-M73 |
+
+25. **Track S (win's placement).** The plan gains a parallel track for the 19 new rows that are
+    additions: AU-10, AU-11, CT-07, MX-37 to MX-42, DEV-33 to DEV-35, TM-MD-06 to TM-MD-09,
+    TM-FC-05, AGT-11 and AGT-12. Its waves are S2 to S6, the intake's order. The three other new
+    rows sit elsewhere: CT-06 at M3 and AGT-10 at M5, because both are decided P1 work that had no
+    row, and WIN-11 at P2. The plan's rows go from 235 to 257.
+26. **Research.** None was needed to decide. Before each of these is built, a reading in Live 12,
+    through the ONE list: Similarity Search and Similar Sample Swapping (TM-MD-07); stem
+    separation, for the command's place (AGT-10); the Browser's preview, its tempo sync, its raw
+    switch, key and loudness (MX-08, TM-MD-06); a sample or clip dropped on a MIDI track, and
+    Simpler's Warp (DEV-34). The outside products the drafts were inspired by are not needed.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0205 d7 | ruled: the learning companion in d7's shape (statistics, local, readable, off by default) |
+| ADR-0214 d1; ADR-0203 d12 | one exception: a drop while the preview's Sync is on lands as heard, unless the setting is off (d17) |
+| ADR-0203 d8 | two more optional local models, a drum-kit model and voice isolation; CPU only (d11) |
+| ADR-0209 §3 (Q9) | the band drag between channels lives on the Stack (d23) |
+| ADR-0247 d8 | Hear What Is Removed extends to any device as Hear Difference (d23) |
+| ADR-0244 d10 | the page list gains the soundstage when its sheet is agreed and it is built (d5) |
+| ADR-0195 d2 | the sketch gesture is queued (d9) |
+| `docs/PLAN.md` | 22 rows added (CT-06, CT-07, AU-10, AU-11, TM-MD-06 to TM-MD-09, TM-FC-05, DEV-33 to DEV-35, MX-37 to MX-42, AGT-10 to AGT-12, WIN-11), 257 in all; Track S; notes on MX-08, MX-13, MX-21, MX-24, MX-29, AGT-05, AGT-07, AGT-09, SRF-14, WIN-05, DEV-22, TM-FC-03, TM-IC-05, TM-MD-04, TM-WT-02 and AU-07; eight "On main" lines re-read; §1.2 and §1.6 |
+| `docs/FEATURES.md` | stem splitting is built in (d24); the gain-match, companion and stem rows name their plan rows; the additions listed |
+| `docs/AI-AGENT.md` §2 | the tier is the application's setting, with a project override that only lowers it (d24) |
+| `docs/LANES.md` §2 | Track S named |
+| `docs/DEFERRED.md` | DF-C6, DF-C7, DF-M70 to DF-M75, DF-W42 to DF-W44, DF-E81 to DF-E83 |
+| `docs/MIX-SUITE-INTAKE.md` | committed, with the ruling and where each request went |
+| `collab/README.md` | ADR 0254 used |
+| `collab/RESERVATIONS.md` | the next free ADR is 0255; DF-C8, DF-M76, DF-W45, DF-E84; N76 is the engine's preview path, the next free N77; the minors Track S will ask for |
+| `collab/win.md` | the entry of 25 November |

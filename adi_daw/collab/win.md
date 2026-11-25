@@ -6,6 +6,21 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-25 — the mix suite intake ruled: ADR-0254, 22 plan rows, Track S
+
+The director ruled on `docs/MIX-SUITE-INTAKE.md` (four proposals drafted with an outside model, 58 requests): every recommendation approved as written, the eleven gaps registered, and six rulings of his own. ADR-0254 records it.
+
+- **His six rulings.** The Throw targets a send, or an inline device's or rack's own mix (d3). A Duck control inside Reverb and Delay, as Echo's (d6). Stems on the CPU only, with a drum-kit model and voice isolation as further optional downloads (d11). The Stream Deck's place in the order stays (d13). A drop while the preview's Sync is on lands as heard, with a setting that switches it off (d17). A REAPER key preset, at low priority after WIN-05 (d21).
+- **PLAN.** 22 rows added, 257 in all: CT-06 (M3), AGT-10 (M5), WIN-11 (P2) and 19 on a new parallel Track S, in waves S2 to S6. Notes on 16 existing rows. Eight stale "On main" lines, and AGT-01's and WIN-05's, re-read at `300efe611`.
+- **DEFERRED.** DF-C6, DF-C7, DF-M70 to DF-M75, DF-W42 to DF-W44, DF-E81 to DF-E83.
+- **Reserved.** N76, the engine's preview path. Next free: ADR-0255, DF-C8, DF-M76, DF-W45, DF-E84, N77; the schema's next minor is still 1.26.
+- **Corrected on the way.** FEATURES listed stem splitting under remote services. AI-AGENT §2 said the tier is set per project; PLAN AGT-09 has it as the application's setting with a project override that only lowers it.
+- **One consequence, told to the director.** A Throw on a device's mix parameter closes the tail with the mix; on a send the tail rings on. The command says so and has a release time; the rack form can keep the tail.
+- **Nothing starts before 3 December** (ADR-0248 d2), and no queue changes now. When a wave opens, win writes its prompts, reserves its minors and setting names, and brings the sheets.
+- **Owed.** An ADR on the stem separator's inference runtime before AGT-10 starts. Four Live 12 readings on the ONE list (ADR-0254 d26).
+
+---
+
 ## 2026-11-25 — the engine's re-review of gemini's four fixed branches; the Codex work seat's Linux rows lent
 
 Win, in the engine seat's place, read each branch at the head the gemini seat logged on 24 November. SRF-10 may be requested; the other three need the changes below first. All four land after 3 December.

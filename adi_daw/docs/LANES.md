@@ -145,7 +145,8 @@ Standing prompt: `collab/prompts/2026-11-01-engine-lane.md` (the Codex seat's is
    on Pd's tick, one reported block otherwise; Q-K3 1: editing a built-in makes a copy "<Device>
    (edited)" on the Pd path; Q-GRID (a): the hybrid on Pd with host-owned timing, DEV-15), the
    scanner's registry v3 and scan service, AudioGridder. Then P2 by priority (`docs/PLAN.md` §2,
-   "After M7").
+   "After M7"). Beside the milestones, Track S holds the mix suite additions of ADR-0254 in five
+   waves, none before 3 December (`docs/PLAN.md` §2, "Track S").
 
 Merged before this version: precision (ADR-0207 d2, #227 to #237), the sends and returns (#242 to
 #249), the bypassed device's delay and the master summed (#297, #298), the export jobs (#300 to
