@@ -915,6 +915,19 @@ void placementAdapters() {
         check(History(store).undo().ok && typedRows(store)==before.rows,"duplicate-over-source undo returns the original identity and bytes");
     }
     {
+        Project p;auto& store=*p.store;addClip(store,7,21,0,0,q);addClip(store,8,22,0,q,q);addClip(store,9,22,0,4*q,2*q);
+        store.db().exec("INSERT INTO event_streams(id,clip_id,stream_kind,data) VALUES(61,7,'notes',X'010203')");
+        const ReadGuard before(store);
+        const std::array<clip_edit::ClipPlacement,2> places{{{7,70,22,{0,2*q}},{8,71,22,{0,5*q}}}};
+        const auto copies=clip_edit::prepareDuplicates(store,places,Options{});
+        check(copies.ok && before.unchanged(store) && describe(copies).ok && commit(store,copies) &&
+              spanIs(store,7,21,0,0,q) && spanIs(store,8,22,0,q,q) && spanIs(store,70,22,0,2*q,q) &&
+              spanIs(store,71,22,0,5*q,q) && spanIs(store,9,22,0,4*q,q) &&
+              store.db().execAndGet("SELECT count(*) FROM event_streams WHERE clip_id=70 AND hex(data)='010203'").getInt()==1,
+              "several clips duplicate as one captured batch: the originals stay, each copy clears what it lands on");
+        check(History(store).undo().ok && typedRows(store)==before.rows,"the batch duplicate is one exact Undo");
+    }
+    {
         Project p;auto& store=*p.store;addClip(store,7,21,0,0,q);addClip(store,8,21,0,3*q,q);addClip(store,9,22,0,10*q,6*q);
         const clip_edit::RangeSelection selection{{21},{0,0},{0,4*q}};
         const ReadGuard before(store);const auto clipboard=clip_edit::copyRange(store,selection,48000);

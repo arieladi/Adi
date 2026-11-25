@@ -703,6 +703,10 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
         std::int64_t clip = 0, track = 0, position = 0;
     };
     bool placeClips(const std::vector<ClipPlace> &, const char *label);
+    // Copies of clips, each to a track and a position (a Ctrl+drag; Option on the Mac): the originals
+    // stay, each copy clears what it lands on (`clip_edit::prepareDuplicates`), one undo step named
+    // `label`. The copies' ids, in the order given; none when refused, which is said.
+    std::vector<std::int64_t> copyClips(const std::vector<ClipPlace> &, const char *label);
     // Live's Automation Mode (AU-01; manual 25.2): each track's Volume envelope drawn on its lane, and its
     // breakpoints edited there, each edit one undo step. Off in a new window, as Live's.
     bool automationMode() const noexcept { return automationMode_; }

@@ -7844,6 +7844,117 @@ void clipToTrack(AppCommands &commands, const std::filesystem::path &dir) {
     root.frame();
     check(trackOf(11) == 2 && root.reader().findTrack(2)->clips.front()->posTicks == bar, "and undo puts it back");
 }
+// Live's copy by dragging (walk-A A8): a clip dragged by its bar with Ctrl held (Option on the Mac) lands
+// a copy where it is dropped, the original staying, one undo step; several selected clips are copied
+// together. A Ctrl/Cmd+click on a clip's bar without a drag only picks it, or lets it go.
+void clipCopyDrag(AppCommands &commands, const std::filesystem::path &dir) {
+    StoreError err{};
+    auto store = Store::createEmpty(dir / "clip-copy-drag.adi", err);
+    check(store != nullptr, "the clip copy's project opens");
+    if (!store)
+        return;
+    store->db().exec("INSERT INTO project(id,name) VALUES(1,'Clip Copy Drag')");
+    engine::ProjectView view;
+    view.refresh(*store);
+    OpSubmitter submitter(*store, view);
+    TransportMailbox mailbox;
+    ViewStateStore persistence(*store);
+    SessionState session(*store);
+    const auto bar = textproj::kWhole;
+    bool madeAll = true;
+    for (const std::int64_t id : {1, 2}) {
+        OpRequest r;
+        r.opType = "track.create";
+        r.payload = {{"id", id}, {"kind", "midi"}, {"name", "# MIDI"}, {"index", id - 1}};
+        r.label = "Create track";
+        madeAll = submitter.submit(std::move(r)).ok && madeAll;
+    }
+    for (const auto &[id, track] : {std::pair<std::int64_t, std::int64_t>{11, 1}, {12, 2}}) {
+        OpRequest clip;
+        clip.opType = "clip.create";
+        clip.payload = {{"id", id}, {"track", track}, {"kind", "midi"}, {"pos", bar}, {"length", bar}};
+        clip.label = "Create clip";
+        madeAll = submitter.submit(std::move(clip)).ok && madeAll;
+    }
+    check(madeAll, "two MIDI tracks, a clip in bar 2 of each");
+    AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "clip-copy-drag");
+    root.setSize(1200, 720);
+    for (std::int64_t id = 1; id <= 2; ++id)
+        root.arrangement.geometry.resizeTrack(id, 48);
+    root.mark(DirtySet::All);
+    root.frame();
+    auto &geo = root.arrangement.geometry;
+    auto &canvas = root.arrangement.canvas;
+    const auto x = [&geo](std::int64_t tick) { return static_cast<float>(geo.x(tick)); };
+    const auto barOf = [&root](std::int64_t id) { return static_cast<float>(laneTop(root, id) + 5); };
+    // Each track's clips as (id, start, length), in time order.
+    using Clip = std::tuple<std::int64_t, std::int64_t, std::int64_t>;
+    const auto clipsOn = [&root](std::int64_t track) {
+        std::vector<Clip> out;
+        for (const auto &c : root.reader().findTrack(track)->clips)
+            out.emplace_back(c->id, c->posTicks, c->lengthTicks);
+        std::sort(out.begin(), out.end(), [](const Clip &a, const Clip &b) { return std::get<1>(a) < std::get<1>(b); });
+        return out;
+    };
+#if JUCE_MAC
+    const juce::ModifierKeys copyKey = juce::ModifierKeys::altModifier;
+#else
+    const juce::ModifierKeys copyKey = juce::ModifierKeys::ctrlModifier;
+#endif
+    const auto pick = juce::ModifierKeys::commandModifier;
+    const auto drag = [&](juce::Point<float> from, juce::Point<float> to, juce::ModifierKeys mods) {
+        canvas.mouseDown(pressAt(canvas, from, mods));
+        canvas.mouseDrag(dragAt(canvas, from, to, mods));
+        canvas.mouseUp(dragAt(canvas, from, to, mods));
+        root.frame();
+    };
+    const auto click = [&](juce::Point<float> at, juce::ModifierKeys mods = {}) {
+        canvas.mouseDown(pressAt(canvas, at, mods));
+        canvas.mouseUp(pressAt(canvas, at, mods));
+        root.frame();
+    };
+    // 1 MIDI's clip chosen, then dragged by its bar with Ctrl a bar on and down onto 2 MIDI: a copy
+    // lands there, 1 MIDI's clip stays where it was, and the copy is what is selected.
+    const juce::Point<float> grab(x(bar) + 6, barOf(1));
+    click(grab);
+    drag(grab, {x(2 * bar) + 6, barOf(2)}, copyKey);
+    const auto two = clipsOn(2);
+    const bool copied = two.size() == 2 && std::get<0>(two[0]) == 12 && std::get<1>(two[1]) == 2 * bar &&
+                        std::get<2>(two[1]) == bar && std::get<0>(two[1]) != 11 && std::get<0>(two[1]) != 12;
+    check(clipsOn(1) == std::vector<Clip>{{11, bar, bar}} && copied && submitter.nextUndo()->label == "Copy Clip" &&
+              geo.selection.clip == std::get<0>(two.back()) && geo.selection.track == 2,
+          "Ctrl+drag by the bar copies the clip to bar 3 of 2 MIDI; the original stays; the copy is selected");
+    check(root.command(AppCommands::Undo), "undo the copy");
+    root.frame();
+    check(clipsOn(1) == std::vector<Clip>{{11, bar, bar}} && clipsOn(2) == std::vector<Clip>{{12, bar, bar}},
+          "one Undo takes the copy away");
+    // Ctrl/Cmd+click on 2 MIDI's bar picks its clip besides 1 MIDI's, and again lets it go; nothing is
+    // copied or moved.
+    const auto steps = submitter.nextUndo()->label;
+    click(grab);
+    click({x(bar) + 6, barOf(2)}, pick);
+    check(geo.selection.clip == 11 && geo.selection.pickedClips == std::vector<std::int64_t>{12},
+          "Ctrl/Cmd+click on the other clip's bar picks it");
+    click({x(bar) + 6, barOf(2)}, pick);
+    check(geo.selection.clip == 11 && geo.selection.pickedClips.empty() && clipsOn(1).size() == 1 && clipsOn(2).size() == 1,
+          "again, without a drag, lets it go; nothing is copied");
+    // Both selected, dragged by the picked one's bar with Ctrl a bar on: both copied, one undo step.
+    click({x(bar) + 6, barOf(2)}, pick);
+    drag({x(bar) + 6, barOf(2)}, {x(2 * bar) + 6, barOf(2)}, copyKey);
+    const auto one = clipsOn(1);
+    const auto both = clipsOn(2);
+    check(one.size() == 2 && both.size() == 2 && std::get<0>(one[0]) == 11 && std::get<1>(one[0]) == bar &&
+              std::get<1>(one[1]) == 2 * bar && std::get<0>(both[0]) == 12 && std::get<1>(both[0]) == bar &&
+              std::get<1>(both[1]) == 2 * bar && submitter.nextUndo()->label == "Copy Clips",
+          "Ctrl+drag of two selected clips copies both a bar on, the originals staying, one step");
+    check(geo.selection.clip == std::get<0>(both[1]) && geo.selection.pickedClips == std::vector<std::int64_t>{std::get<0>(one[1])},
+          "the copies are what is selected");
+    check(root.command(AppCommands::Undo), "undo the two copies");
+    root.frame();
+    check(clipsOn(1) == std::vector<Clip>{{11, bar, bar}} && clipsOn(2) == std::vector<Clip>{{12, bar, bar}} &&
+              submitter.nextUndo()->label == steps,
+          "one Undo takes both copies away");
+}
 void rangeSelection(AppCommands &commands, const std::filesystem::path &dir) {
     StoreError err{};
     auto store = Store::createEmpty(dir / "range.adi", err);
@@ -17580,6 +17691,7 @@ int main(int argc, char **argv) {
     trace("colorCabTile", [&] { colorCabTile(commands, temp.path()); });
     trace("rangeSelection", [&] { rangeSelection(commands, temp.path()); });
     trace("clipToTrack", [&] { clipToTrack(commands, temp.path()); });
+    trace("clipCopyDrag", [&] { clipCopyDrag(commands, temp.path()); });
     trace("clipView", [&] { clipView(commands, temp.path(), write); });
     trace("clipViewNotes", [&] { clipViewNotes(commands, temp.path()); });
     trace("clipViewFields", [&] { clipViewFields(commands, temp.path()); });

@@ -2138,6 +2138,27 @@ bool AdiRootComponent::placeClips(const std::vector<ClipPlace> &places, const ch
         prepared.requests.front().label = label;
     return commitEdit(std::move(prepared));
 }
+std::vector<std::int64_t> AdiRootComponent::copyClips(const std::vector<ClipPlace> &places, const char *label) {
+    const auto current = view_.current();
+    if (!current || places.empty()) {
+        fail("Select a clip to copy.");
+        return {};
+    }
+    std::vector<clip_edit::ClipPlacement> copies;
+    std::vector<std::int64_t> ids;
+    auto id = audio_drop_detail::newClipId(*current);
+    for (const auto &place : places) {
+        copies.push_back({place.clip, id, place.track, {0, place.position}});
+        ids.push_back(id++);
+    }
+    auto prepared = clip_edit::prepareDuplicates(submitter_.store(), copies,
+                                                 {editRate(), edit_plan::capturePolicy(commands_.settings())});
+    if (prepared.ok && !prepared.requests.empty())
+        prepared.requests.front().label = label;
+    if (!commitEdit(std::move(prepared)))
+        return {};
+    return ids;
+}
 bool AdiRootComponent::commitEdit(clip_edit::PreparedEdit prepared, std::optional<OpRequest> appended) {
     if (!prepared.ok)
         return fail(prepared.error.empty() ? "The edit could not be prepared." : prepared.error);
