@@ -1307,6 +1307,13 @@ void ArrangementView::frame(bool modelChanged) noexcept {
             canvas.repaint();
         }
     }
+    // A take being recorded grows with the playhead; once recording has stopped it goes, and the
+    // landed clip takes its place.
+    if (liveTake_) {
+        if (!root.isRecording())
+            liveTake_.reset();
+        canvas.repaint();
+    }
     if (modelChanged) {
         canvas.realiseAccessible();
         overview.repaint();
@@ -1314,6 +1321,13 @@ void ArrangementView::frame(bool modelChanged) noexcept {
         headers.repaint();
         ruler.repaint();
     }
+}
+void ArrangementView::beginLiveTake(std::int64_t start, std::vector<std::int64_t> tracks) {
+    if (tracks.empty())
+        liveTake_.reset();
+    else
+        liveTake_ = LiveTake{start, std::move(tracks)};
+    canvas.repaint();
 }
 bool ArrangementView::follow(std::int64_t tick, bool page) noexcept {
     const double width = canvas.getWidth();
@@ -2408,6 +2422,33 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
                     for (const auto &c : other->clips)
                         if (movingTargetOf(c->id) == t->id)
                             drawClip(*c);
+        // The take being recorded on this track (Live 12 manual 21.1; walk-B B4): a clip in the record
+        // colour from where it began to the playhead, named as the take will be, over what it covers.
+        if (const auto &live = view.liveTake();
+            live && std::find(live->tracks.begin(), live->tracks.end(), t->id) != live->tracks.end()) {
+            if (const auto now = view.root.timelineTick(); now > live->start) {
+                const double x0 = geo.x(live->start), x1 = geo.x(now);
+                if (x1 >= 0 && x0 <= getWidth()) {
+                    const float left = static_cast<float>(std::max(-1., x0)),
+                                right = static_cast<float>(std::min(x1, static_cast<double>(getWidth() + 1)));
+                    const float top = static_cast<float>(y + 1), width = std::max(1.f, right - left);
+                    g.setColour(look::record);
+                    g.fillRect(left, top, width, static_cast<float>(h - 4));
+                    g.setColour(look::record.darker(0.3f));
+                    g.fillRect(left, top, width, static_cast<float>(kClipBarHeight));
+                    if (right - left > 6.f) {
+                        g.setColour(look::ink);
+                        g.setFont(look::font(look::fontSmall));
+                        g.drawText(juce::String::fromUTF8(displayName(t->name, row.number()).c_str()),
+                                   juce::Rectangle<float>(left + 3.f, top, right - left - 5.f,
+                                                          static_cast<float>(kClipBarHeight)),
+                                   juce::Justification::centredLeft, false);
+                    }
+                    g.setColour(look::record.darker(0.5f));
+                    g.drawRect(left, top, width, static_cast<float>(h - 4), 1.f);
+                }
+            }
+        }
         y += h;
     }
     if (foot == rows.size())

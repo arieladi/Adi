@@ -3242,8 +3242,14 @@ bool AdiRootComponent::toggleRecord() {
     const bool rolling = mailbox_.desiredPlaying();
     if (!rolling && !mailbox_.hasRoom(1))
         return fail("Transport command queue is full");
+    // Where the take begins: the playhead when playing (punch-in), else the insert marker.
+    const auto takeStart = rolling ? timelineTick() : arrangement.geometry.selection.insert;
     if (!startRecording(arrangement.geometry.selection.insert, rolling))
         return false; // the application said why
+    // The armed audio tracks record (MX-09; MIDI does not record yet), and their lanes show the take as
+    // it grows (walk-B B4).
+    if (const auto *current = reader().get())
+        arrangement.beginLiveTake(takeStart, armedTracks(current->tracks, freshRecordStates()).audio);
     // A recording start plays the transport: the same op Play writes, so the history's transport state
     // agrees.
     if (!rolling) {

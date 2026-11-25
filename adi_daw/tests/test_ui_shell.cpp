@@ -11230,8 +11230,35 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     };
     for (int b = 0; b < 16; ++b)
         block();
+    // walk-B B4: while it records, the take is drawn on each recording track's lane, from where it began
+    // to the playhead, in the record colour; it goes once recording stops (the landed clip replaces it).
+    const auto recordPixels = [&] {
+        auto &canvas = root.arrangement.canvas;
+        const auto image = canvas.createComponentSnapshot(canvas.getLocalBounds(), true, 1.f);
+        int count = 0;
+        for (int y = 0; y < image.getHeight(); ++y)
+            for (int x = 0; x < image.getWidth(); ++x)
+                if (image.getPixelAt(x, y).withAlpha(1.f) == look::record.withAlpha(1.f))
+                    ++count;
+        return count;
+    };
+    frame();
+    {
+        const auto &live = root.arrangement.liveTake();
+        check(live && live->tracks == std::vector<std::int64_t>{4, 5} &&
+                  live->start == root.arrangement.geometry.selection.insert,
+              "Record from stopped: the take begins at the insert marker on both armed audio tracks");
+        if (live && root.timelineTick() > live->start && root.arrangement.geometry.inView(4)) {
+            // 21 ms recorded is 2 px at the default zoom, all outline: zoomed in, its body shows.
+            const double scale = root.arrangement.geometry.scale;
+            root.arrangement.geometry.scale = scale * 40;
+            check(recordPixels() > 0, "and is drawn, red, while the playhead moves on");
+            root.arrangement.geometry.scale = scale;
+        }
+    }
     check(root.command(AppCommands::ArrangementRecord), "F9's command again");
     frame();
+    check(!root.arrangement.liveTake(), "stopped, the growing take goes");
     check(!document->recording() && !record.getToggleState() && document->mailbox().desiredPlaying(),
           "stops the recording; the transport plays on, as Live's [P:recording#21]");
     for (int i = 0; i < 5000 && document->landingTake(); ++i) {
