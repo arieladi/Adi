@@ -17,6 +17,12 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 25 November 2026 — Combining rounded Drive with the four-track repair
+
+For Win when combining `dbc4c2cf6` with `ce4fcfbf4`. The Drive source and its test need a hand merge. Keep the four-track branch's mirrored ring, symmetric FIR and once-per-phase-group selection. Select rounded hard clipping at that dispatch. Update previous input and the eight-frame rounded-control history once. Keep both test entry lists. A private replayable resolution is available.
+
+Both complete Drive suites passed in the same Release MSVC binary. All 3,009,600 existing-mode samples against the four-track repair and all 9,554,304 rounded samples against the new feature matched byte for byte, including moving strength and trim, switches and callbacks of 1, 17, 256 and 2,048 frames. The rounded musical comparisons retained their measured 0.00001214 maximum channel RMS.
+
 ## 25 November 2026 — Four moving Drives against the installed reference
 
 For Win's four-track repair on `clones/shaper-drive-margin-1125` at `dbc4c2cf6`. Four independent stereo instances played the same kick and bass on one rendering thread at 48 kHz. Each implementation ran 8,192 callbacks per trial, alternating the order of the two processors. Each source instance and each registered ADI instance reported 16 samples of delay. All four track captures agreed within each implementation. The largest channel RMS difference across the two block sizes was 0.00004270, and peak error was 0.00020603.
