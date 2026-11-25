@@ -11,6 +11,14 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+### 25 November — DF-M69 Focus allocation audit
+
+The Focus suite uses the shared matching allocation and release forms. It counts ordinary, nothrow and aligned allocations in the existing audio and owner scopes. The replacement functions keep a call boundary in the affected optimized build, so the allocation diagnostic sees matched calls.
+
+The reported warning reproduced before the change. The optimized warning-as-error Focus suite then passed 480 checks, with zero callback allocations or releases and 5,081,550 compared samples. The other Release warning-as-error build passed Focus and the shared replacement suite. Linux CI confirmation is queued with verification. This touches only the Focus test.
+
+PR requested — `mixview/df-m69-focus-allocation` at `29e4e6b4f00086709ff2ce20b0e99423fbe6386e`. Lands before 3 December.
+
 ### 22 November — MX-30 banded Phase wake
 
 The previous Phase wake proof covered the plain output. The Phase page and its tile request per-band stereo correlation too. That combination now preserves the original hop across certified stopped silence, so the vector and band rail wake together after a tap wrap.
