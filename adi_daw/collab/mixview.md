@@ -11,6 +11,14 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+### 25 November — MX21 Spectrogram Floor and Ceiling
+
+**PR requested** `mixview/mx21-spectrogram-levels-lands-after-2026-12-03` at `85813f15dac059ccab549fd9540c2876d9709f3a`, after PNG export. The dedicated Spectrogram changes the color range of the current picture, including frozen and Sweep history. A gap of at least 1 dB keeps the transfer well defined. The defaults are −96/0 dB and reproduce every prior pixel. Raw cursor values and history positions remain exact. The All tile uses the dedicated view's settings, and a separate analyser retains its own range.
+
+The control check failed on the parent. Release passed 574 spectrum, 521 Mix View and 920 shared analysis checks. The new checks cover typed controls, clamps, a decoded PNG, restoring exact default pixels and zero extra work counts. Changed units passed warnings as errors. Review archive `a59ab23619a86d1bea15b52d27b81fb3485d1dfaa2a3b06a7b957919587d6903`, application `0511477a4b770e0b2e279ce9e155e8bc06a09ed06d7741575c90967cacb737aa`.
+
+**Needs Window:** seed the scale and level range when opening a detached Spectrogram from the current view. The newly opened pane can then retain independent values. Same constructor path as the prior scale-only note.
+
 ### 25 November — MX21 Spectrogram PNG
 
 **PR requested** `mixview/mx21-spectrogram-png-lands-after-2026-12-03` at `44236030eae0e2b8e2d2f6667a4cd8f3b403d056`, after the spectrogram cursor. The dedicated Spectrogram exports its current 128 × 256 data raster. Scroll and Sweep use their display order, including gaps. Palette, scale and Freeze stay local and an open chooser owns its own picture. The export adds no analysis work. Saving checks the selected destination when the dialog returns, then encodes and publishes the complete file off the message thread.
