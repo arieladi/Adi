@@ -54,6 +54,7 @@ SpectrumScale selectedSpectrumScale(const juce::ComboBox &box) noexcept {
 namespace {
 constexpr float floorDb = -96.f;
 constexpr float spectrogramTopDb = 24.f;
+constexpr std::array spectrogramGammaValues{.5f, .75f, 1.f, 1.5f, 2.f};
 float db(float value) {
     return std::isfinite(value) && value > 0 ? std::max(floorDb, 20.f * std::log10(value)) : floorDb;
 }
@@ -308,6 +309,7 @@ struct SharedSpectrumView::Raster {
     juce::Image image;
     std::uint64_t revision = 0, epoch = 0, column = 0, sweepOrigin = 0;
     ThemeId theme = ThemeId::Dark;
+    float gamma = 1.f;
     bool paletteDirty = true;
     Raster() { intensity.fill(gap); }
     bool matchesFrequencyMap(SpectrogramScale next, double rate, std::int32_t size) const noexcept {
@@ -337,10 +339,15 @@ struct SharedSpectrumView::Raster {
             low = high;
         }
     }
-    void setPalette(std::size_t index, bool reverse) noexcept {
+    void setPalette(std::size_t index, bool reverse, float exponent) noexcept {
         theme = look::themeId();
-        for (std::size_t i = 0; i < colors.size(); ++i)
-            colors[i] = analysisPaletteColour(index, static_cast<std::uint8_t>(i), reverse);
+        gamma = exponent;
+        for (std::size_t i = 0; i < colors.size(); ++i) {
+            const double strength = static_cast<double>(i) / 255.;
+            const auto value = exponent == 1.f ? static_cast<std::uint8_t>(i) :
+                static_cast<std::uint8_t>(255. * std::pow(strength, static_cast<double>(exponent)));
+            colors[i] = analysisPaletteColour(index, value, reverse);
+        }
         paletteDirty = true;
     }
     void clearColumns(int first, int count) {
@@ -791,7 +798,7 @@ void SharedSpectrumView::setPalette(std::string_view id, bool reverse) {
     const auto index = palettes::find(id);
     if (paletteIndex_ == index && paletteReversed_ == reverse) return;
     paletteIndex_ = index; paletteReversed_ = reverse;
-    if (raster_) raster_->setPalette(index, reverse);
+    if (raster_) raster_->setPalette(index, reverse, spectrogramGamma_);
     if (eligible()) {
         try { updateRaster(); } catch (...) { raster_.reset(); }
     }
@@ -1163,8 +1170,8 @@ void SharedSpectrumView::frame() noexcept {
         classicFrame();
         return;
     }
-    if (raster_ && raster_->theme != look::themeId()) {
-        raster_->setPalette(paletteIndex_, paletteReversed_);
+    if (raster_ && (raster_->theme != look::themeId() || (raster_->gamma != spectrogramGamma_ && eligible()))) {
+        raster_->setPalette(paletteIndex_, paletteReversed_, spectrogramGamma_);
         try { raster_->recolor(); } catch (...) { raster_.reset(); }
         repaint();
     }
@@ -1261,6 +1268,16 @@ void SharedSpectrumView::setSpectrogramLevels(SpectrogramLevels levels) {
     repaint();
 }
 
+void SharedSpectrumView::setSpectrogramGamma(float gamma) {
+    if (gamma == spectrogramGamma_ || !std::isfinite(gamma) ||
+        gamma < spectrogramGammaValues.front() || gamma > spectrogramGammaValues.back()) return;
+    spectrogramGamma_ = gamma;
+    if (!raster_ || !eligible()) return;
+    raster_->setPalette(paletteIndex_, paletteReversed_, spectrogramGamma_);
+    try { raster_->recolor(); } catch (...) { raster_.reset(); }
+    repaint();
+}
+
 void SharedSpectrumView::setSpectrogramRuler(bool visible) {
     if (spectrogramRuler_ == visible) return;
     spectrogramRuler_ = visible;
@@ -1312,7 +1329,7 @@ void SharedSpectrumView::updateRaster() {
         if ((!count && !shown_->historySerial) || !std::isfinite(rate) || topHz <= 20 || fftSize <= 0) return;
         if (!raster_) {
             raster_ = std::make_unique<Raster>();
-            raster_->setPalette(paletteIndex_, paletteReversed_);
+            raster_->setPalette(paletteIndex_, paletteReversed_, spectrogramGamma_);
         }
         auto &raster = *raster_;
         if (frequencyChanged) raster.prepareFrequencyMap(spectrogramScale_, rate, fftSize, topHz);
@@ -1930,6 +1947,19 @@ AnalysisPane::AnalysisPane() {
         spectrogramCeiling_.setValue(next.ceiling, juce::dontSendNotification);
         view.setSpectrogramLevels(next);
     };
+    spectrogramGammaBox_.setTitle("Spectrogram gamma");
+    spectrogramGammaBox_.setTooltip("Reveal quiet detail below 1.00 or darken the middle of the colour scale above 1.00.");
+    for (std::size_t i = 0; i < spectrogramGammaValues.size(); ++i) {
+        const int id = static_cast<int>(i) + 1;
+        const auto gamma = spectrogramGammaValues[i];
+        spectrogramGammaBox_.addItem("Gamma " + juce::String(gamma, 2), id);
+        if (gamma == view.spectrogramGamma()) spectrogramGammaBox_.setSelectedId(id, juce::dontSendNotification);
+    }
+    spectrogramGammaBox_.onChange = [this] {
+        const int id = spectrogramGammaBox_.getSelectedId();
+        if (id > 0) view.setSpectrogramGamma(spectrogramGammaValues[static_cast<std::size_t>(id - 1)]);
+    };
+    addAndMakeVisible(spectrogramGammaBox_);
     spectrogramRulerButton_.setTitle("Spectrogram frequency ruler");
     spectrogramRulerButton_.setTooltip("Label the vertical frequency scale beside the history.");
     spectrogramRulerButton_.onClick = [this] { view.setSpectrogramRuler(spectrogramRulerButton_.getToggleState()); };
@@ -2002,6 +2032,7 @@ void AnalysisPane::setMode(SharedSpectrumView::Mode mode) {
     spectrogramScaleBox.setVisible(spectrogram);
     spectrogramFloor_.setVisible(spectrogram);
     spectrogramCeiling_.setVisible(spectrogram);
+    spectrogramGammaBox_.setVisible(spectrogram);
     spectrogramRulerButton_.setVisible(spectrogram);
     paletteBox.setVisible(spectrogram);
     paletteBox.setEnabled(spectrogram);
@@ -2134,8 +2165,8 @@ void AnalysisPane::usePageControls() {
     resized();
 }
 void AnalysisPane::resized() {
-    const std::array<juce::Component *, 17> controls{&modeBox, &sourceBox, &pointBox, &channelBox, &paletteBox, &slopeBox,
-        &scaleBox, &spectrogramScaleBox, &spectrogramFloor_, &spectrogramCeiling_, &spectrogramRulerButton_,
+    const std::array<juce::Component *, 18> controls{&modeBox, &sourceBox, &pointBox, &channelBox, &paletteBox, &slopeBox,
+        &scaleBox, &spectrogramScaleBox, &spectrogramFloor_, &spectrogramCeiling_, &spectrogramGammaBox_, &spectrogramRulerButton_,
         &historyBox, &reverseButton, &freezeButton, &resetButton, &expandButton, &spectrogramPngButton_};
     const bool pageControls = !modeBox.isVisible();
     const int columns = std::clamp(getWidth() / (pageControls ? look::mixPageWidth : 96), 1, 4);

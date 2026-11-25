@@ -2123,12 +2123,16 @@ void spectrogramRangePixels() {
     pane.view.setBounds(0, 0, 156, 311);
     pane.frame(f.broker, 1, 1); sibling.present(f.broker, 1); sibling.frame();
     juce::Slider *floor = nullptr, *ceiling = nullptr;
+    juce::ComboBox *gamma = nullptr;
     for (auto *child : pane.getChildren()) {
+        if (auto *box = dynamic_cast<juce::ComboBox *>(child); box && box->getTitle() == "Spectrogram gamma") gamma = box;
         auto *slider = dynamic_cast<juce::Slider *>(child);
         if (!slider) continue;
         if (slider->getTitle() == "Spectrogram floor") floor = slider;
         if (slider->getTitle() == "Spectrogram ceiling") ceiling = slider;
     }
+    check(gamma && gamma->isShowing() && gamma->getText() == "Gamma 1.00",
+          "Spectrogram offers neutral gamma by default");
     if (!floor || !ceiling) return;
 
     std::array<float, fft> signal{};
@@ -2186,6 +2190,16 @@ void spectrogramRangePixels() {
               read(0) == level && pane.view.snapshot() == shown && !pane.view.subscribed() &&
               sameWork(held, f.broker->stats()),
           "frozen Sweep exports its normalized history without changing time, raw level or demand");
+    if (gamma) {
+        gamma->setText("Gamma 2.00", juce::sendNotificationSync);
+        const auto changed = png(pane.view.spectrogramImage());
+        check(!changed.isNull() && pixel(changed, 0) == colour(50) && pixel(changed, 1) == look::display &&
+                  read(0) == level && pane.view.snapshot() == shown && samePixels(siblingImage, sibling.spectrogramImage()) &&
+                  sameWork(held, f.broker->stats()),
+              "gamma remaps the held Sweep colors without changing its cursor, gaps, source or analysis demand");
+        gamma->setText("Gamma 1.00", juce::sendNotificationSync);
+        check(samePixels(middle, png(pane.view.spectrogramImage())), "neutral gamma restores the exact frozen PNG pixels");
+    }
     floor->setValue(-12., juce::sendNotificationSync);
     const auto dim = png(pane.view.spectrogramImage());
     check(!dim.isNull() && pixel(dim, 0) == colour(0) && read(0) == level,
@@ -2196,6 +2210,10 @@ void spectrogramRangePixels() {
     check(samePixels(initial, pane.view.spectrogramImage()) && samePixels(siblingImage, sibling.spectrogramImage()) &&
               read(width - 1) == level && sameWork(held, f.broker->stats()),
           "restoring the default range reproduces the exact frozen and sibling pixels");
+    if (gamma) {
+        pane.setMode(Mode::Spectrum);
+        check(!gamma->isShowing(), "leaving Spectrogram hides the gamma control");
+    }
     root.removeFromDesktop();
 }
 
