@@ -4,6 +4,17 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-25 — Item 1 (`walk/*` fixes, Round 10): `walk/a13-automated-controls`
+
+| Branch | Head SHA | Touched files | Compiler (`-DADI_WERROR=ON`, Pd on, JUCE off) | Warnings | Touched headless suites | `adi_acceptance_wts01` | Verdict |
+|---|---|---|---|---|---|---|---|
+| `walk/a13-automated-controls` | `a5b5875b` | `src/adi/ui/automation_mode.hpp`, `src/juce/ui_mixer.{hpp,cpp}` (JUCE), `tests/{test_ui_shell.cpp,ui_test_hygiene.hpp}` (JUCE) | GCC 12.4.0 | 0 | `adi_ui_document_tests` **343/0**, `adi_ui_seams_tests` **586/0** | **PASS** (43.74 s) | **PASS** |
+| `walk/a13-automated-controls` | `a5b5875b` | same | Clang 14.0.6 + libstdc++ 12 | 0 | `adi_ui_document_tests` **343/0**, `adi_ui_seams_tests` **586/0** | **PASS** (38.86 s) | **PASS** |
+
+(No PR requested; run-only verification.)
+
+---
+
 ## 2026-11-25 — Item 1 (`walk/*` fixes, Round 9): `walk/a18-record-after-save-as`, `walk/a20-gesture-drain-hang`, `walk/b11-launch-args`
 
 | Branch | Head SHA | Touched files | Compiler (`-DADI_WERROR=ON`, Pd on, JUCE off) | Warnings | Touched headless suites | `adi_acceptance_wts01` | Verdict |
