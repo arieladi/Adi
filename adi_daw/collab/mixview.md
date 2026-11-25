@@ -218,6 +218,14 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - Additional window shapes need the shared FFT window and calibration owner. The existing Hann profile remains available. The private fixtures cover bin-centred gain, half-bin loss and window width.
 - Enhanced needs its worker publication, cadence and time-row policy agreed across seats. The private proofs check frequency and time signs, the two-transform frequency measurement and the three-transform time measurement. The director's Enhanced choice is parked above.
 
+### 2026-11-25 — MX-30 Cumulative Average at stopped silence (lands after 3 December)
+
+- Branch `mixview/mx30-park-cumulative-average-lands-after-2026-12-03` at `52bb11779103`, after Spectrum smoothing `4b642b9b26a9`. Keep a completed zero publication when every active interval is exactly zero and the tap certifies silence. Rebase omitted whole hops and the partial hop before wake, new admission or Reset. Histories that have seen any signal continue to count and update, including below the display floor.
+- Red first: seven failures. Strict Release: 5,701 checks across 12 suites. Periodic pumps through a full ring wrap add no worker passes, reads, transforms or publications in the settled case. The first resumed bins, full denominator and cursor match an uninterrupted run. A new or reset reader counts only windows beyond its writer fence.
+- Sealed cumulative Release and retest brief accompany `52bb11779103`. Archive SHA-256 `9b3a2d8873abc201392930d54fa50c1e934c22e7d41566572e478d93e5d886e9`. Counted work and sample comparisons are complete for the tested matrix. Timed CPU remains pending.
+
+PR requested.
+
 ### 2026-11-25 — MX-21 Spectrum display smoothing (lands after 3 December)
 
 - Branch `mixview/mx21-spectrum-smoothing-lands-after-2026-12-03` at `4b642b9b26a9`, after Spectrum overlap `9c08ae51e37cd`. Dedicated Spectrum gains an Off default and fifteen octave widths. One cached display projection is reused by the primary and pins, including when Freeze keeps their published results. The panel releases its projection on hiding. The choice never adds analysis demand or writes audio settings.
