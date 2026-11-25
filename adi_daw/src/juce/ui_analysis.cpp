@@ -293,11 +293,12 @@ double spectrogramFrequency(SpectrogramScale scale, double position) noexcept {
 struct SharedSpectrumView::Raster {
     static constexpr int width = 128, height = 256;
     static constexpr std::uint16_t gap = 256;
+    static constexpr double lowestHz = 20.;
     std::array<std::uint16_t, static_cast<std::size_t>(width * height)> intensity{};
     std::array<juce::Colour, 256> colors{};
     std::array<std::size_t, height> firstBin{}, lastBin{};
     SpectrogramScale scale = SpectrogramScale::Log;
-    double sampleRate = 0.;
+    double sampleRate = 0., topHz = 0., lowPosition = 0., highPosition = 0.;
     std::int32_t fftSize = 0;
     juce::Image image;
     std::uint64_t revision = 0, epoch = 0, column = 0, sweepOrigin = 0;
@@ -307,19 +308,20 @@ struct SharedSpectrumView::Raster {
     bool matchesFrequencyMap(SpectrogramScale next, double rate, std::int32_t size) const noexcept {
         return scale == next && sampleRate == rate && fftSize == size;
     }
-    void prepareFrequencyMap(SpectrogramScale next, double rate, std::int32_t size, double topHz) noexcept {
+    double frequencyAt(double fraction) const noexcept {
+        // Keep the endpoint computation of the default grid.
+        return scale == SpectrogramScale::Log ? lowestHz * std::pow(topHz / lowestHz, fraction) :
+            spectrogramFrequency(scale, std::lerp(lowPosition, highPosition, fraction));
+    }
+    void prepareFrequencyMap(SpectrogramScale next, double rate, std::int32_t size, double upperHz) noexcept {
         scale = next;
         sampleRate = rate;
         fftSize = size;
-        constexpr auto lowestHz = 20.;
-        const auto lowPosition = spectrogramPosition(scale, lowestHz);
-        const auto highPosition = spectrogramPosition(scale, topHz);
+        topHz = upperHz;
+        lowPosition = spectrogramPosition(scale, lowestHz);
+        highPosition = spectrogramPosition(scale, topHz);
         const auto edgeBin = [&](int row) {
-            const auto fraction = static_cast<double>(row) / height;
-            // Preserve the precise endpoint computation of the default grid.
-            const auto hz = scale == SpectrogramScale::Log ? lowestHz * std::pow(topHz / lowestHz, fraction) :
-                spectrogramFrequency(scale, std::lerp(lowPosition, highPosition, fraction));
-            return static_cast<std::size_t>(hz * size / rate);
+            return static_cast<std::size_t>(frequencyAt(static_cast<double>(row) / height) * size / rate);
         };
         auto low = edgeBin(0);
         for (int row = 0; row < height; ++row) {
@@ -351,13 +353,22 @@ struct SharedSpectrumView::Raster {
         image.moveImageSection(0, 0, added, 0, width - added, height);
         clearColumns(width - added, added);
     }
+    int sweepRotation() const noexcept {
+        return sweepOrigin && column >= sweepOrigin ? static_cast<int>((column - sweepOrigin + 1) % width) : 0;
+    }
+    float rowPeak(std::span<const float> bins, std::size_t row) const noexcept {
+        float peak = dsp::kDbFloor;
+        for (auto i = firstBin[row]; i < std::min(bins.size(), lastBin[row]); ++i)
+            peak = std::max(peak, bins[i]);
+        return peak;
+    }
     void paintSweep(juce::Graphics &g, juce::Rectangle<float> plot) const {
         if (!sweepOrigin || column < sweepOrigin) {
             g.drawImage(image, plot);
             return;
         }
         const auto head = (column - sweepOrigin) % width;
-        const auto rotation = static_cast<float>((head + 1) % width) * (plot.getWidth() / width);
+        const auto rotation = static_cast<float>(sweepRotation()) * (plot.getWidth() / width);
         const auto clip = plot.toNearestInt();
         if (clip.isEmpty()) return;
         if (rotation == 0.f) {
@@ -1311,10 +1322,7 @@ void SharedSpectrumView::updateRaster() {
             const auto &bins = *entry.binsDbfs;
             const int x = Raster::width - 1 - static_cast<int>(shown_->historySerial - entry.serial);
             for (int row = 0; row < Raster::height; ++row) {
-                const auto rangeIndex = static_cast<std::size_t>(row);
-                float peak = floorDb;
-                for (auto i = raster.firstBin[rangeIndex]; i < std::min(bins.size(), raster.lastBin[rangeIndex]); ++i)
-                    peak = std::max(peak, bins[i]);
+                const auto peak = raster.rowPeak(bins, static_cast<std::size_t>(row));
                 const auto strength = std::clamp((peak - floorDb) / -floorDb, 0.f, 1.f);
                 const auto value = static_cast<std::uint16_t>(strength * 255.f);
                 const int y = Raster::height - row - 1;
@@ -1471,8 +1479,15 @@ void SharedSpectrumView::enableSpectrumCursor() {
     spectrumCursorEnabled_ = true;
     updateSpectrumCursorInput();
 }
+bool SharedSpectrumView::spectrumCursorActive() const noexcept {
+    return spectrumCursorEnabled_ && (spectrumMode() || mode_ == Mode::Spectrogram);
+}
+juce::Rectangle<float> SharedSpectrumView::spectrumCursorBounds() const noexcept {
+    if (mode_ == Mode::Spectrogram) return analysisPlot(analysisArea(getLocalBounds()));
+    return spectrumCursorPlot(getLocalBounds(), spectrumScale_);
+}
 void SharedSpectrumView::updateSpectrumCursorInput() {
-    const bool active = spectrumCursorEnabled_ && spectrumMode();
+    const bool active = spectrumCursorActive();
     if (!active) spectrumCursorPosition_.reset();
     setInterceptsMouseClicks(active, mode_ == Mode::ClassicScope);
     if (active) setTooltip({});
@@ -1481,15 +1496,22 @@ void SharedSpectrumView::updateSpectrumCursorInput() {
 juce::String SharedSpectrumView::SpectrumCursorReading::text() const {
     // Follow the DAW's middle-C spelling while also naming pitches above the MIDI keyboard.
     const auto note = juce::roundToInt(69. + 12. * std::log2(frequency / 440.));
-    return juce::String(frequency, 1) + " Hz   " + pitchClassName(note) + juce::String(note / 12 - 2) +
+    auto reading = juce::String(frequency, 1) + " Hz   " + pitchClassName(note) + juce::String(note / 12 - 2) +
         "   " + juce::String(level, 1) + " dBFS";
+    if (time) {
+        const auto milliseconds = 1000. * (static_cast<double>(time->sample) / time->sampleRate);
+        reading << (time->heard ? "   Heard " : "   Capture ") << static_cast<juce::int64>(time->sample)
+                << " samples   " << juce::String(milliseconds, 1) << " ms";
+    }
+    return reading;
 }
 std::optional<SharedSpectrumView::SpectrumCursorReading>
 SharedSpectrumView::spectrumCursorReading(juce::Point<float> point) const noexcept {
-    if (!spectrumCursorEnabled_ || !spectrumMode() || !shown_ || !scaledSpectrum_ ||
-        !std::isfinite(shown_->sampleRate)) return std::nullopt;
-    const auto plot = spectrumCursorPlot(getLocalBounds(), spectrumScale_);
+    if (!spectrumCursorActive() || !shown_ || !std::isfinite(shown_->sampleRate)) return std::nullopt;
+    const auto plot = spectrumCursorBounds();
     if (plot.getWidth() <= 1.f || plot.getHeight() <= 1.f || !plot.contains(point)) return std::nullopt;
+    if (mode_ == Mode::Spectrogram) return spectrogramCursorReading(point, plot);
+    if (!scaledSpectrum_) return std::nullopt;
     const auto &axis = spectrumAxis(spectrumScale_);
     const bool wide = spectrumScale_ == SpectrumScale::Wide;
     const auto nyquist = shown_->sampleRate * .5;
@@ -1503,13 +1525,37 @@ SharedSpectrumView::spectrumCursorReading(juce::Point<float> point) const noexce
     const auto frequency = std::min(highHz, axis.lowHz * std::exp(static_cast<double>(x) * logWidth));
     if (frequency > nyquist) return std::nullopt;
     const auto db = static_cast<float>(axis.topDb) - y * static_cast<float>(axis.topDb - axis.bottomDb);
-    return SpectrumCursorReading{frequency, db};
+    return SpectrumCursorReading{frequency, db, std::nullopt};
+}
+std::optional<SharedSpectrumView::SpectrumCursorReading>
+SharedSpectrumView::spectrogramCursorReading(juce::Point<float> point, juce::Rectangle<float> plot) const noexcept {
+    if (!raster_ || raster_->image.isNull() || raster_->epoch != shown_->sourceEpoch ||
+        raster_->revision != shown_->revision || raster_->sampleRate <= 0.) return std::nullopt;
+    const auto visibleX = std::min(static_cast<int>((point.x - plot.getX()) / plot.getWidth() * Raster::width),
+                                   Raster::width - 1);
+    const auto rotation = historyMotion_ == HistoryMotion::Sweep ? raster_->sweepRotation() : 0;
+    const auto x = (visibleX + Raster::width - rotation) % Raster::width;
+    const auto downward = (static_cast<double>(point.y) - plot.getY()) / plot.getHeight();
+    const auto y = std::min(static_cast<int>(downward * Raster::height), Raster::height - 1);
+    if (raster_->intensity[static_cast<std::size_t>(y * Raster::width + x)] == Raster::gap) return std::nullopt;
+    const auto behind = static_cast<std::uint64_t>(Raster::width - 1 - x);
+    if (behind >= raster_->column) return std::nullopt;
+    const auto serial = raster_->column - behind;
+    const auto &columns = shown_->columns;
+    const auto found = std::lower_bound(columns.begin(), columns.end(), serial,
+                                         [](const auto &column, auto at) { return column.serial < at; });
+    if (found == columns.end() || found->serial != serial || !found->binsDbfs) return std::nullopt;
+    const auto frequency = raster_->frequencyAt(1. - downward);
+    const auto peak = raster_->rowPeak(*found->binsDbfs, static_cast<std::size_t>(Raster::height - 1 - y));
+    // Monitoring can fill several columns at one stopped transport position.
+    // The capture sequence still records where those samples entered the tap.
+    const auto sample = shown_->advancing ? found->firstStamp : found->firstSequence;
+    return SpectrumCursorReading{frequency, peak, SpectrumCursorReading::Time{sample, raster_->sampleRate, shown_->advancing}};
 }
 void SharedSpectrumView::mouseEnter(const juce::MouseEvent &event) { mouseMove(event); }
 void SharedSpectrumView::mouseMove(const juce::MouseEvent &event) {
     if (spectrumCursorPosition_ && *spectrumCursorPosition_ == event.position) return;
-    const bool inside = spectrumCursorEnabled_ && spectrumMode() &&
-        spectrumCursorPlot(getLocalBounds(), spectrumScale_).contains(event.position);
+    const bool inside = spectrumCursorActive() && spectrumCursorBounds().contains(event.position);
     const auto next = inside ? std::optional{event.position} : std::nullopt;
     if (spectrumCursorPosition_ == next) return;
     spectrumCursorPosition_ = next;

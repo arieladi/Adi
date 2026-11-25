@@ -160,13 +160,23 @@ class SharedSpectrumView final : public juce::Component,
     }
     Status pictureStatus() const noexcept;
     void resetPicture() noexcept;
+    [[nodiscard]] bool spectrumCursorActive() const noexcept;
+    [[nodiscard]] juce::Rectangle<float> spectrumCursorBounds() const noexcept;
     void updateSpectrumCursorInput();
     struct SpectrumCursorReading {
+        struct Time {
+            std::int64_t sample;
+            double sampleRate;
+            bool heard;
+        };
         double frequency;
         float level;
+        std::optional<Time> time;
         juce::String text() const;
     };
     std::optional<SpectrumCursorReading> spectrumCursorReading(juce::Point<float>) const noexcept;
+    std::optional<SpectrumCursorReading> spectrogramCursorReading(juce::Point<float>,
+                                                                  juce::Rectangle<float>) const noexcept;
     void paintChannelReadout(juce::Graphics &) const;
     std::shared_ptr<SharedAnalysis> broker_;
     std::int64_t track_ = 0;

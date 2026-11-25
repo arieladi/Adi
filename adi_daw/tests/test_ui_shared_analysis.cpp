@@ -37,6 +37,13 @@ struct SharedSpectrumViewTestAccess {
         }
         return {};
     }
+    static juce::String moveCursor(SharedSpectrumView &view, juce::Point<float> at) {
+        const auto now = juce::Time::getCurrentTime();
+        const juce::MouseEvent event{juce::Desktop::getInstance().getMainMouseSource(), at,
+            juce::ModifierKeys{}, 0.f, 0.f, 0.f, 0.f, 0.f, &view, &view, now, at, now, 0, false};
+        view.mouseMove(event);
+        return cursorText(view).removeCharacters(",");
+    }
 };
 }
 namespace {
@@ -309,6 +316,10 @@ void cappedFrozenHistoryAndIdleReset() {
     check(missingBlank && currentVisible,
           "software spectrogram leaves the missing hop blank instead of compressing history time");
     check(originalRasterPixels(live, *live.snapshot()), "default capped/gapped raster pixels match the original display law");
+    live.enableSpectrumCursor();
+    check(adi::ui::SharedSpectrumViewTestAccess::moveCursor(live, {131.5f, 149.f}).isEmpty() &&
+              adi::ui::SharedSpectrumViewTestAccess::moveCursor(live, {132.5f, 149.f}).contains("Heard 512 samples"),
+          "a dropped Spectrogram hop has no cursor while its adjacent recovered column is readable");
     live.clear();
     SharedAnalysis::Request scope{1}; scope.outputs = SharedAnalysis::Scope;
     auto extra = broker->acquire(scope); broker->pump(); live.frame();
@@ -2057,6 +2068,100 @@ void spectrogramFrequencyScales() {
     }
 }
 
+void spectrogramCursor() {
+    using namespace adi::ui;
+    using Mode = SharedSpectrumView::Mode;
+    using Motion = SharedSpectrumView::HistoryMotion;
+    constexpr int fft = 1024, hop = fft / 4, left = 5, width = 128;
+    constexpr float centreY = 149.f;
+    constexpr std::int64_t heardStart = 48000, parkedPlayhead = 192000;
+    Fixture f;
+    Root root; root.setBounds(0, 0, 360, 420); root.setVisible(true); root.addToDesktop(0);
+    AnalysisPane pane;
+    root.addAndMakeVisible(pane); pane.setBounds(root.getLocalBounds());
+    pane.setMode(Mode::Spectrogram);
+    pane.view.setBounds(0, 0, 156, 311);
+    const auto frame = [&] { pane.frame(f.broker, 1, 1); };
+    const auto write = [&](int frames, float amplitude, bool advancing) {
+        const auto from = f.tap->written();
+        std::vector<float> samples(static_cast<std::size_t>(frames));
+        for (std::size_t i = 0; i < samples.size(); ++i)
+            samples[i] = amplitude * static_cast<float>(std::sin(2. * std::numbers::pi * 13. *
+                static_cast<double>((from + static_cast<std::int64_t>(i)) % fft) / fft));
+        f.tap->write(samples.data(), samples.data(), frames, advancing ? heardStart + from : parkedPlayhead,
+                     advancing, advancing ? 1 : 2);
+        f.broker->pump(); frame();
+    };
+    const auto read = [&](int column) {
+        return SharedSpectrumViewTestAccess::moveCursor(pane.view,
+            {static_cast<float>(left + column) + .5f, centreY});
+    };
+    const auto sameWork = [](const auto &before, const auto &after) {
+        return before.transforms == after.transforms && before.analysisWindows == after.analysisWindows &&
+            before.publications == after.publications && before.cursorReads == after.cursorReads &&
+            before.workerPasses == after.workerPasses && before.frameRequests == after.frameRequests &&
+            before.consumers == after.consumers && before.domains == after.domains &&
+            before.taps == after.taps && before.historyBytes == after.historyBytes;
+    };
+
+    frame();
+    check(read(width - 1).isEmpty(), "Spectrogram has no cursor reading before the first published window");
+    write(fft, .415f, true);
+    write(fft, .1f, true);
+    const auto shown = pane.view.snapshot();
+    check(shown && shown->advancing && shown->columns.size() == 5 &&
+              pane.view.getComponentAt(juce::Point<int>{left + width - 1, static_cast<int>(centreY)}) == &pane.view,
+          "the expanded Spectrogram observes five historical columns and accepts hover");
+    const auto stable = f.broker->stats();
+    const auto first = read(width - 5);
+    const auto newest = read(width - 1);
+    check(first.contains("632.5 Hz") && first.contains("-7.6 dBFS") &&
+              first.contains("Heard 48000 samples") && first.contains("1000.0 ms"),
+          "the centre reads the Log frequency and the older cell's raw peak and heard stamp");
+    check(newest.contains("-20.0 dBFS") && newest.contains("Heard 49024 samples") &&
+              newest.contains("1021.3 ms"),
+          "the newest column reads its own sample and level rather than the older column or colour");
+    check(read(width - 6).isEmpty(), "the unwritten Scroll raster has no invented sample or frequency");
+    pane.setHistoryMotion(Motion::Sweep);
+    check(!first.isEmpty() && read(0) == first && !newest.isEmpty() && read(4) == newest &&
+              read(10).isEmpty() && pane.view.snapshot() == shown && sameWork(stable, f.broker->stats()),
+          "Sweep maps back to the same retained columns and does no analysis work");
+
+    pane.setHistoryMotion(Motion::Scroll);
+    pane.view.clear();
+    check(read(width - 1).isEmpty(), "Clear immediately fences the old Spectrogram cursor reading");
+    write(hop, .1f, true);
+    const auto fresh = pane.view.snapshot();
+    check(fresh && fresh->columns.size() == 6 && read(width - 2).isEmpty() &&
+              read(width - 1).contains("Heard 49280 samples"),
+          "the cursor rejects Clear-masked retained columns and reads the first fresh hop");
+
+    const auto capturedAt = f.tap->written();
+    write(fft, .415f, false);
+    write(hop, .415f, false);
+    const auto monitoring = pane.view.snapshot();
+    const auto monitored = f.broker->stats();
+    const auto captured = [&](std::int64_t sequence) {
+        return "Capture " + juce::String(static_cast<juce::int64>(sequence)) + " samples";
+    };
+    const auto previousMonitor = read(width - 2), currentMonitor = read(width - 1);
+    check(monitoring && !monitoring->advancing && monitoring->columns.size() == 2 &&
+              monitoring->columns[0].firstStamp == parkedPlayhead &&
+              monitoring->columns[1].firstStamp == parkedPlayhead &&
+              previousMonitor.contains(captured(capturedAt)) && currentMonitor.contains(captured(capturedAt + hop)) &&
+              previousMonitor.contains("48.0 ms") && currentMonitor.contains("53.3 ms") &&
+              !previousMonitor.contains("Heard") && !currentMonitor.contains("Heard") &&
+              sameWork(monitored, f.broker->stats()),
+          "stopped monitoring reports advancing capture samples, independently of the repeated playhead stamp");
+    write(fft, .00000316227766f, false);
+    check(read(width - 1).contains("-110.0 dBFS"),
+          "the cursor retains level precision below the palette floor");
+    pane.setVisible(false);
+    check(!pane.view.subscribed() && SharedSpectrumViewTestAccess::cursorText(pane.view).isEmpty(),
+          "hiding Spectrogram releases its demand and clears the pointer reading");
+    root.removeFromDesktop();
+}
+
 void classicScopeSurface() {
     using namespace adi::ui;
     using Trigger = adi::dsp::TriggeredScope::Trigger;
@@ -3090,7 +3195,7 @@ int main() {
           compactAnalyzerDock(); cumulativeAverageTitlePaint(); paletteMenuTheme(); palettesAndFrozenRaster(); restartedRasterDomain();
           clearSpectrogramWhileWorkerAhead(); freshActionsWithSharedConsumer(); backlogAndLifecycleFreshness(); spectrumSlopeProjection(); spectrumWideCachedGeometry(); spectrumDetailScale(); spectrumExtendedGridGeometry(); spectrumExtendedScale();
           pinnedSpectrumWaitsForHeardPrimary();
-          spectrumDeviceScale(); spectrogramHistoryMotion(); spectrogramFrequencyScales(); classicScopeSurface();
+          spectrumDeviceScale(); spectrogramHistoryMotion(); spectrogramFrequencyScales(); spectrogramCursor(); classicScopeSurface();
           classicScopeUnchangedTrace(); detailedPhasePreservesHighFrequencyTrace(); mixPhaseRailViews(); mixAnalyserPages();
           compareAndAveragePages(); compareHoldSurvivesInvalidA(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
