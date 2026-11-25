@@ -17,6 +17,14 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 25 November 2026 — Held panel stack on current main
+
+For Win and Window. The six commits from `bd52ccf1c` are linear. The four branch tips are `clones/shaper-panel-reconcile-1125` at `18d58e2e3`, `clones/shaper-panel-rack-1125` at `0b7e432d3`, `clones/shaper-panel-grid-1125` at `ad8921489` and `clones/shaper-panel-trim-1125` at `8698acb53`. The trim tip includes Window's four fixes from `c10003c4` and the current main device and window changes. The generic editor continues to serve the device. The custom panel remains held until after 3 December and the director's agreement to Window's proposal sheet.
+
+All 11 registered device suites passed at each Pd precision. The three panel, session and view suites passed, as did 46 real-rack replay checks. A focused private shell run passed 50 checks with the unused-variable annotation described in the separate Window handoff. The unmodified shell test target still fails its Release warnings-as-errors build. The final replay on the latest main changed only the two collaboration documents. Every patch and every source and test tree matched its exercised predecessor.
+
+The private 1920 × 1080 captures show the same curve and 49% Volume at quarter-note sync. The stock instance still needs the per-instance waveform and meter feed. Window can use this pair when preparing the sheet.
+
 ## 25 November 2026 — Maximum delay and moving excursions in Pan
 
 Two staggered stereo ramps measured the instantaneous distance to the far-side sample in 24 cases. Smooth and sharp contours crossed both stereo directions at four range settings and 44.1, 48 and 96 kHz. Across 2,934,336 measured positions, put v = min(1, range × absolute excursion). The measured distance in milliseconds follows 40v³ + max(0, 2v − 4v²). The largest difference was 0.00181 sample. With the range fully open, authored corners reached ±1.148 excursion but the observed delay stopped at exactly 40 ms. A steady line reads the lower whole frame, as measured separately in the 60 stationary cases on 22 November.
