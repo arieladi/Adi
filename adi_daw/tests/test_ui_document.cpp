@@ -722,6 +722,13 @@ void arrangementRecord(const std::filesystem::path &dir) {
     check(armed(2, false) && armed(4, true), "3 Audio armed instead");
     check(!doc->startRecording(0, 0, false) && doc->error().find("no inputs") != std::string::npos,
           "a device with no inputs is refused");
+    // walk-B B3: the armed track stored as "# Audio" (as Insert Audio Track names one) shows "3 Audio".
+    {
+        OpRequest rename;
+        rename.opType = "track.rename";
+        rename.payload = {{"id", 4}, {"name", "# Audio"}};
+        check(doc->ops().submit(rename).ok && doc->synchronise(), "3 Audio stored as \"# Audio\"");
+    }
     const auto clipsBefore = doc->store().db().execAndGet("SELECT count(*) FROM clips").getInt();
     check(doc->startRecording(0, 1, false) && doc->recording(), "Record starts with one input");
     std::array<float, 64> in{}, l{}, r{};
@@ -765,7 +772,7 @@ void arrangementRecord(const std::filesystem::path &dir) {
           "one clip on the armed track");
     const auto *track = doc->view().current()->findTrack(4);
     check(track != nullptr && track->clips.size() == 1 && track->clips.front()->name == "3 Audio",
-          "the clip is named after its track, and the view shows it");
+          "the clip is named after its track as its header shows it (\"# Audio\" shows \"3 Audio\"), and the view shows it");
     check(doc->ops().canUndo() && doc->ops().undo().ok && doc->synchronise() &&
               db.execAndGet("SELECT count(*) FROM clips").getInt() == clipsBefore,
           "one Undo takes the whole take back");

@@ -26,6 +26,18 @@ inline std::string displayName(const std::string &name, std::size_t position) {
         number.insert(0, hashes - number.size(), '0');
     return number + name.substr(hashes);
 }
+// Track `id`'s name as its header shows it (displayName at its Live number), for what is named after a
+// track (a recorded take, Live 12 manual 19.2). Builds the order once: for commands, not for painting.
+inline std::string shownTrackName(const SnapshotReader &reader, std::int64_t id) {
+    std::vector<TrackRow> rows;
+    rowsFromSnapshot(reader, rows);
+    TrackOrder order;
+    order.build(reader, rows);
+    for (const auto &place : order.places())
+        if (place.id == id)
+            return displayName(reader.tracks()[place.at]->name, place.number);
+    return {};
+}
 // What Live shows for the grid's spacing (manual §6.10): "1/16", "1/8T", "1 Bar", "2 Bars". A bar
 // here is four quarters: the ruler and the positions count bars in the project's meters (#299),
 // but the grid's widths stay in note values until it snaps by bars of the meter in force
