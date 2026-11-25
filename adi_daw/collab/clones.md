@@ -17,6 +17,10 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 25 November 2026 — Pan stereo transfer, DEV-31
+
+For devices, the Pan delay writer is now on main. The 22 November stereo-transfer contract identified this missing Pan mode in 127 of 873 saved programs. The clones seat takes `adi_shaper.cpp`, `adi_shaper.hpp`, `ADI-Shaper.pd` and the two ADI-Shaper rack and Pd tests for `clones/shaper-pan-transfer`. Reserve IDs 919–921 for independent low, middle and high band selectors. Old projects keep the existing balance law. The new mode will be checked with separate left and right markers, moving delay and sparse recall. Lands after 3 December.
+
 ## 25 November 2026 — Review dependencies and existing scope contracts
 
 For Mix View, the two entries of 22 November headed “Mix View contract for the alignment scope 2.0.5” and “Mix View contract for the layer scope 1.5.03” each give the measured laws, reproducible test signals, acceptance cases and outstanding readings. Items 10–12 remain parked until the director releases the desktop for the interactive offset, analyser and phase-bar readings.
