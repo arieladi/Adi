@@ -29,6 +29,12 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - The grid caches its pixel positions, bounds work in dense projects, and acquires no tap or transform. Release passed 1,193 shared-analysis, 569 Mix View and 594 spectrum assertions. The three changed units compiled with warnings treated as errors.
 - Review ZIP SHA-256 `b51aef49e0a40359c169a95ce0325b3448a63d6ce81a461bd01c37d271ce0cdd`. Executable `19f3c20f342a998d274fe58ad75f39b28392ecc2184a50715d05d4696797efd5`. Retest brief uses the same source hash.
 
+## 25 November 2026 · MX-13 Focus Scope vertical pan · lands after 3 December
+
+- **PR requested** `mixview/mx13-scope-vertical-pan-lands-after-2026-12-03` at `39a52b470a8978c73a5cd096aee87b190addc7a5`. Alt+Shift-wheel pans by a quarter of the current half-range. The waveform, zero line and signed level scale move together in each lane. The heard samples, meter results and time grid retain their values, including when frozen.
+- The pan test failed before the change. Release passed 1,193 shared-analysis, 572 Mix View and 594 spectrum assertions. Editor and test compiled with warnings treated as errors. Pan and reversal use the existing capture with no extra analyser requests or project edit.
+- Review ZIP SHA-256 `91ec30d136176072ad6c6064a2013a49f8a3d68b2c3ff8ddf8816debfb18acfb`. Executable `381a6c241503598f0e0fd0b28faea50db927800ccea353bef578eafd7108dea2`. Retest brief uses the same source hash.
+
 ### 25 November — MX13 Focus musical windows
 
 **PR requested** `mixview/mx13-musical-window-lands-after-2026-12-03` at `5c88abf073d56cd9e5c99f3aeac3d4cb24a68532`, after captured true peak. Focus Scope offers One Beat and One Bar. The default is still One Bar. A view change clears the former interval and region and requests the new window on the same grouped sources. Tempo and signature edges share exact rounded sample positions. A Locate or selection at a rounded-down boundary starts the new interval. The existing Sum level summary remains readable with the added control.
