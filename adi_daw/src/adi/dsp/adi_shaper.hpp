@@ -6,6 +6,7 @@
 #include "adi/dsp/adi_shaper_noise.hpp"
 #include "adi/dsp/adi_shaper_reverb.hpp"
 #include "adi/dsp/adi_shaper_sweep.hpp"
+#include "adi/dsp/adi_shaper_time.hpp"
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -24,14 +25,15 @@ class AdiShaper {
     static constexpr int modBandParameterCount = 23;
     static constexpr int modStageParameterCount = modHeaderSize + 3 * modBandParameterCount;
     static constexpr int driveBandParameterCount = 16;
-    enum class Stage { Volume, Width, Pan, Filter, Sweep, Drive, Crush, Noise = 9, Reverb };
+    enum class Stage { Volume, Width, Pan, Filter, Sweep, Drive, Crush, Time, Noise = 9, Reverb };
     // Saved stage identities also address ranks and curves. Unavailable stages leave holes.
     static constexpr std::array activeStages{Stage::Volume, Stage::Width, Stage::Pan, Stage::Filter,
-                                             Stage::Sweep, Stage::Drive, Stage::Crush, Stage::Noise, Stage::Reverb};
+                                             Stage::Sweep, Stage::Drive, Stage::Crush, Stage::Time, Stage::Noise, Stage::Reverb};
     static constexpr std::size_t stageCount = activeStages.size();
     static constexpr std::size_t stageSlots = static_cast<std::size_t>(Stage::Reverb) + 1;
     static constexpr int noiseBandParameterCount = modBandParameterCount + 5;
     static constexpr int reverbBandParameterCount = modBandParameterCount - 1 + 6;
+    static constexpr int timeBandParameterCount = 14;
     enum Param : int { MasterMix, VolumeBands, WidthBands = VolumeBands + stageParameterCount,
                  PanBands = WidthBands + stageParameterCount,
                  VolumeLowSlope = PanBands + stageParameterCount, WidthLowSlope, PanLowSlope,
@@ -40,6 +42,7 @@ class AdiShaper {
                  SweepMidPolarity, SweepHighPolarity, DriveOn,
                  CrushOn = DriveOn + modHeaderSize + 3 * driveBandParameterCount,
                  BaseCount = CrushOn + modStageParameterCount,
+                 TimeOn = BaseCount, TimeEnd = TimeOn + modHeaderSize + 3 * timeBandParameterCount,
                  NoiseOn = 535, NoiseEnd = NoiseOn + modHeaderSize + 3 * noiseBandParameterCount,
                  ReverbOn = 625, ReverbEnd = ReverbOn + modHeaderSize + 3 * reverbBandParameterCount,
                  VolumeOrder = 715,
@@ -82,7 +85,7 @@ class AdiShaper {
         return static_cast<Param>(modParam(Stage::Reverb, band, Secondary8) + 1 + static_cast<int>(option));
     }
     static constexpr bool hasParameter(int id) noexcept {
-        return (id >= MasterMix && id < BaseCount) || (id >= NoiseOn && id < ReverbEnd)
+        return (id >= MasterMix && id < TimeEnd) || (id >= NoiseOn && id < ReverbEnd)
             || (id >= VolumeOrder && id <= orderParam(Stage::Crush))
             || (id >= PanLowDelayBlend && id < Count);
     }
@@ -92,12 +95,22 @@ class AdiShaper {
         return static_cast<Param>(DriveOn + modHeaderSize + driveBandParameterCount * static_cast<int>(band)
                                   + static_cast<int>(control));
     }
+    enum TimeControl { TimeRange, TimeMix, TimeClock, TimeCycle, TimeRate, TimeCurve,
+                       Time1, Time2, Time3, Time4, Time5, Time6, Time7, Time8 };
+    enum class DelayRange { Follow, OneBar, TwoBars, FourBars, EightBars, Short2_5ms, Short10ms, Short20ms };
+    static constexpr Param timeParam(Band band, TimeControl control) noexcept {
+        return static_cast<Param>(TimeOn + modHeaderSize + timeBandParameterCount * static_cast<int>(band)
+                                  + static_cast<int>(control));
+    }
 
     AdiShaper() noexcept;
+    // Off the audio thread. Three stereo Time histories require 48 MiB per
+    // prepared rack, including bypassed racks ready for immediate automation.
     void prepare(double sampleRate) noexcept;
     void set(Param id, float value) noexcept;
     void tempo(double bpm) noexcept;
-    void sync(double quarterNotes, bool playing = true) noexcept;
+    void sync(double quarterNotes, bool playing = true, unsigned historyToleranceFrames = 0) noexcept;
+    void syncAtSample(double quarterNotes, bool playing, std::int64_t sample, std::uint64_t revision) noexcept;
     void process(const float* inL, const float* inR, float* outL, float* outR,
                  std::size_t frames) noexcept;
     [[nodiscard]] int latency() const noexcept {
@@ -184,6 +197,9 @@ class AdiShaper {
     void setNoiseOption(std::size_t band, NoiseOption option, float value) noexcept;
     void setReverbOption(std::size_t band, ReverbOption option, float value) noexcept;
     void setMod(Param id, float value) noexcept;
+    void prepareStages(double sampleRate) noexcept;
+    void syncClock(double quarterNotes, bool playing) noexcept;
+    void updateTimeRanges() noexcept;
     void restart(Stage kind) noexcept;
     void resetKernels(Stage kind) noexcept;
     template <Stage kind> void render(StageData& stage, const float* inL, const float* inR,
@@ -200,12 +216,16 @@ class AdiShaper {
     std::array<std::array<float, 2>, 3> noiseFilters_{{{.254f, 1}, {.254f, 1}, {.254f, 1}}};
     std::array<AdiShaperReverb, 3> reverb_;
     std::array<ReverbSettings, 3> reverbSettings_{};
+    std::array<AdiShaperTime, 3> times_;
+    std::array<double, 3> timeSpans_{};
     std::array<std::array<float, 2>, 3> driveTrims_{{{.5f, .5f}, {.5f, .5f}, {.5f, .5f}}};
     std::array<DriveDryDelay, 3> driveDry_;
     DriveDryDelay driveSource_;
     double sampleRate_ = 48000.0, bpm_ = 120.0, quarterNotes_ = 0.0;
+    double historyQuarterNotes_ = 0.0, lastHistoryStamp_ = 0.0;
+    std::uint64_t expectedSample_ = 0, transportRevision_ = 0;
     float masterMix_ = 1.0f;
-    bool playing_ = true;
+    bool playing_ = true, historyStampSet_ = false, sampleStampSet_ = false;
 };
 
 } // namespace adi::dsp

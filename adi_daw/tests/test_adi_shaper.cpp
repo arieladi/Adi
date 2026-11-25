@@ -27,8 +27,10 @@ static_assert(Shaper::NoiseOn == 535 && Shaper::NoiseEnd == 625);
 static_assert(Shaper::noiseParam(Band::High, Shaper::NoiseLowPass) + 1 == Shaper::NoiseEnd);
 static_assert(Shaper::ReverbOn == 625 && Shaper::ReverbEnd == 715);
 static_assert(Shaper::reverbParam(Band::High, Shaper::RoomClearTails) + 1 == Shaper::ReverbEnd);
-static_assert(!Shaper::hasParameter(415) && Shaper::hasParameter(624) && Shaper::hasParameter(715)
+static_assert(Shaper::hasParameter(415) && Shaper::hasParameter(624) && Shaper::hasParameter(715)
               && !Shaper::hasParameter(854) && Shaper::hasParameter(855) && !Shaper::hasParameter(858));
+static_assert(static_cast<int>(Stage::Time) == 7 && Shaper::TimeOn == 415 && Shaper::TimeEnd == 463);
+static_assert(Shaper::timeParam(Band::High, Shaper::Time8) + 1 == Shaper::TimeEnd);
 int failures = 0;
 
 void check(bool condition, const char* description) {
@@ -606,7 +608,7 @@ void bypassAndInvalid() {
     shaper.set(Shaper::bandParam(Stage::Width, Band::Mid, Shaper::Point3),
                std::numeric_limits<float>::quiet_NaN());
     shaper.set(Shaper::Count, 20);
-    for (const int gap : {415, 534, 625, 854}) shaper.set(static_cast<Shaper::Param>(gap), 1);
+    for (const int gap : {463, 534, 723, 854}) shaper.set(static_cast<Shaper::Param>(gap), 1);
     shaper.sync(std::numeric_limits<double>::infinity());
     shaper.tempo(0);
     shaper.prepare(-1);
@@ -814,13 +816,14 @@ void clockLimitsAndAliases() {
         }
         check(accurate, "free-clock limits follow absolute sample phase over uneven block partitions");
     }
-    Shaper normal;
-    normal.set(Shaper::WidthBands, 3);
-    normal.set(Shaper::WidthLowSlope, 1);
-    normal.set(Shaper::WidthHighSlope, 2);
-    flat(normal, Stage::Width, Band::Mid, 180);
-    flat(normal, Stage::Pan, Band::Mid, 70);
-    Shaper swapped = normal;
+    Shaper normal, swapped;
+    for (auto* rack : {&normal, &swapped}) {
+        rack->set(Shaper::WidthBands, 3);
+        rack->set(Shaper::WidthLowSlope, 1);
+        rack->set(Shaper::WidthHighSlope, 2);
+        flat(*rack, Stage::Width, Band::Mid, 180);
+        flat(*rack, Stage::Pan, Band::Mid, 70);
+    }
     for (std::size_t i = 0; i < count; ++i) {
         inL[i] = static_cast<float>(std::sin(0.1 * static_cast<double>(i)));
         inR[i] = static_cast<float>(std::sin(0.013 * static_cast<double>(i)));
@@ -1245,7 +1248,7 @@ void reverbReturnCrossings() {
 
 void reverbReturnMix() {
     Shaper legacy;
-    for (int id = Shaper::BaseCount; id < Shaper::NoiseOn; ++id) {
+    for (int id = Shaper::TimeEnd; id < Shaper::NoiseOn; ++id) {
         check(!Shaper::hasParameter(id), "gap between saved stage ranges has no control");
         legacy.set(static_cast<Shaper::Param>(id), 1);
     }
@@ -1293,6 +1296,126 @@ void reverbReturnMix() {
     }
 }
 
+void timeHeight(Shaper& rack, Band band, float height) {
+    for (int i = 0; i < 8; ++i)
+        rack.set(Shaper::timeParam(band, static_cast<Shaper::TimeControl>(Shaper::Time1 + i)), height);
+}
+
+void timeRanges() {
+    Shaper rack;
+    rack.prepare(12000);
+    rack.tempo(300);
+    rack.set(Shaper::TimeOn, 1);
+    timeHeight(rack, Band::Mid, 0);
+    auto recover = [&](int range, std::size_t delay, const char* description) {
+        rack.set(Shaper::TimeOn, 0);
+        rack.set(Shaper::TimeOn, 1);
+        rack.set(Shaper::timeParam(Band::Mid, Shaper::TimeRange), static_cast<float>(range));
+        std::vector<float> left(delay + 67), right(left.size());
+        left[31] = -.75f;
+        right[31] = .375f;
+        rack.process(left.data(), right.data(), left.data(), right.data(), left.size());
+        bool ok = true;
+        for (std::size_t i = 0; i < left.size(); ++i) {
+            ok &= left[i] == (i == delay + 31 ? -.75f : 0.0f);
+            ok &= right[i] == (i == delay + 31 ? .375f : 0.0f);
+        }
+        check(ok && rack.latency() == 0, description);
+    };
+    constexpr std::array<std::size_t, 8> delays{9600, 9600, 19200, 38400, 76800, 59, 239, 479};
+    for (std::size_t i = 0; i < delays.size(); ++i)
+        recover(static_cast<int>(i), delays[i], "fixed and follow ranges reproduce the measured whole-frame impulses");
+    rack.set(Shaper::timeParam(Band::Mid, Shaper::TimeCycle), 128);
+    recover(0, 307200, "longest supported beat period plays the full 32 bars when it fits in history");
+    rack.set(Shaper::timeParam(Band::Mid, Shaper::TimeClock), 1);
+    rack.set(Shaper::timeParam(Band::Mid, Shaper::TimeRate), 40);
+    recover(0, 300, "free-clock Follow uses the band's hertz period");
+
+    rack.prepare(48000);
+    rack.tempo(120);
+    rack.set(Shaper::timeParam(Band::Mid, Shaper::TimeRange), 1);
+    rack.sync(0);
+    std::vector<float> left(200224), right(left.size());
+    left[8192] = .5f;
+    right[8192] = -.25f;
+    rack.process(left.data(), right.data(), left.data(), right.data(), 48000);
+    rack.tempo(60);
+    rack.sync(2);
+    rack.process(left.data() + 48000, right.data() + 48000, left.data() + 48000,
+                 right.data() + 48000, left.size() - 48000);
+    check(left[200192] == .5f && right[200192] == -.25f &&
+          std::count_if(left.begin(), left.end(), [](float v) { return v != 0; }) == 1,
+          "tempo change retains older audio and measures the entire bar at the new tempo");
+
+    rack.set(Shaper::timeParam(Band::Mid, Shaper::TimeRange), 5);
+    rack.set(Shaper::TimeOn, 0);
+    rack.set(Shaper::TimeOn, 1);
+    constexpr std::size_t span = 320;
+    for (std::uint64_t revision : {1U, 2U}) {
+        std::array<float, span> marker{}, markerR{};
+        marker[0] = .75f;
+        rack.syncAtSample(0, true, 0, 1);
+        rack.process(marker.data(), markerR.data(), marker.data(), markerR.data(), 100);
+        // The exact sample cursor stays contiguous regardless of beat-map edits.
+        rack.syncAtSample(.5, true, 100, revision);
+        rack.process(marker.data() + 100, markerR.data() + 100, marker.data() + 100,
+                     markerR.data() + 100, span - 100);
+        check(marker[239] == (revision == 1 ? .75f : 0.f),
+              "native history follows the exact timeline sample and transport revision across tempo-map edits");
+    }
+    for (std::uint64_t revision : {4U, 5U}) {
+        rack.set(Shaper::TimeOn, 0);
+        rack.set(Shaper::TimeOn, 1);
+        std::array<float, span> leftMarker{}, rightMarker{};
+        leftMarker[0] = .5f;
+        rightMarker[0] = -.75f;
+        leftMarker[97] = -.25f;
+        rightMarker[97] = .125f;
+        rack.syncAtSample(2., false, 48000, 4);
+        rack.process(leftMarker.data(), rightMarker.data(), leftMarker.data(), rightMarker.data(), 83);
+        rack.syncAtSample(2., false, 48000, revision);
+        rack.process(leftMarker.data() + 83, rightMarker.data() + 83, leftMarker.data() + 83,
+                     rightMarker.data() + 83, span - 83);
+        check(leftMarker[239] == (revision == 4 ? .5f : 0.f) &&
+              rightMarker[239] == (revision == 4 ? -.75f : 0.f),
+              "a stopped clock retains history until a new locate at the same position");
+        std::array<float, 32> tailLeft{}, tailRight{};
+        rack.syncAtSample(2., false, 48000, revision);
+        rack.process(tailLeft.data(), tailRight.data(), tailLeft.data(), tailRight.data(), tailLeft.size());
+        check(tailLeft[16] == -.25f && tailRight[16] == .125f,
+              "fresh stereo history plays after a stopped locate");
+    }
+}
+
+void timeBandHistory() {
+    constexpr std::size_t frames = 1024;
+    Shaper time;
+    time.prepare(48000);
+    time.set(Shaper::TimeOn, 1);
+    time.set(static_cast<Shaper::Param>(Shaper::TimeOn + 1), 3);
+    std::array<float, frames> source{}, actual{}, actualRight{}, sum{};
+    source[11] = -.5f;
+    source[26] = .25f;
+    constexpr std::array<float, 3> heights{0, 100, 50};
+    constexpr std::array<std::size_t, 3> lookback{239, 0, 119};
+    for (std::size_t b = 0; b < heights.size(); ++b) {
+        const auto band = static_cast<Band>(b);
+        time.set(Shaper::timeParam(band, Shaper::TimeRange), 5);
+        timeHeight(time, band, heights[b]);
+        Shaper isolate;
+        isolate.set(Shaper::VolumeBands, 3);
+        for (std::size_t k = 0; k < 3; ++k)
+            flat(isolate, Stage::Volume, static_cast<Band>(k), b == k ? 100.f : 0.f);
+        std::array<float, frames> split{}, right{};
+        isolate.process(source.data(), source.data(), split.data(), right.data(), frames);
+        for (std::size_t i = lookback[b]; i < frames; ++i) sum[i] += split[i - lookback[b]];
+    }
+    time.process(source.data(), source.data(), actual.data(), actualRight.data(), frames);
+    bool matches = true;
+    for (std::size_t i = 0; i < frames; ++i)
+        matches &= near(actual[i], sum[i], 1e-6) && near(actualRight[i], sum[i], 1e-6);
+    check(matches, "three independent Time histories sum the separately delayed split-band impulses");
+}
 } // namespace
 
 int main() {
@@ -1322,6 +1445,8 @@ int main() {
     nonlinearOrder();
     reverbReturnMix();
     reverbReturnCrossings();
+    timeRanges();
+    timeBandHistory();
     if (failures == 0) std::puts("ADI-Shaper DSP fixtures passed");
     return failures == 0 ? 0 : 1;
 }

@@ -18,6 +18,10 @@ std::uint64_t cyclePhase(double cycles) noexcept {
     return part < 1.0 ? static_cast<std::uint64_t>(part * 0x1p64) : 0;
 }
 
+bool validPosition(double qn) noexcept {
+    return std::isfinite(qn) && std::abs(qn) <= 0x1p52;
+}
+
 // The measured balance curve is cubic: zero at the bottom, unity at the
 // centre, and square root two with a horizontal tangent at the top.
 float panGain(double position) noexcept {
@@ -69,7 +73,7 @@ AdiShaper::AdiShaper() noexcept {
         updateStage(kind);
     }
     for (auto& sweep : sweeps_) sweep.setMode(AdiShaperSweep::Mode::Flange);
-    prepare(sampleRate_);
+    prepareStages(sampleRate_);
 }
 
 AdiShaper::StageOrder AdiShaper::orderFor(const StageRanks& ranks) noexcept {
@@ -89,8 +93,16 @@ AdiShaper::StageOrder AdiShaper::orderFor(const StageRanks& ranks) noexcept {
 
 void AdiShaper::prepare(double sampleRate) noexcept {
     if (!std::isfinite(sampleRate) || sampleRate < 1.0) return;
+    for (auto& time : times_) (void)time.prepare();
+    prepareStages(sampleRate);
+}
+
+void AdiShaper::prepareStages(double sampleRate) noexcept {
     sampleRate_ = sampleRate;
     quarterNotes_ = 0.0;
+    historyStampSet_ = false;
+    sampleStampSet_ = false;
+    historyQuarterNotes_ = 0.0;
     playing_ = true;
     for (auto& filter : filters_) filter.prepare(sampleRate);
     for (auto& sweep : sweeps_) (void)sweep.prepare(sampleRate);
@@ -100,6 +112,8 @@ void AdiShaper::prepare(double sampleRate) noexcept {
     constexpr std::array<std::uint32_t, 3> seeds{0xa28d45b3U, 0x41f9c67dU, 0x9db703e1U};
     for (std::size_t i = 0; i < noise_.size(); ++i) noise_[i].prepare(sampleRate, seeds[i]);
     for (auto& room : reverb_) (void)room.prepare(sampleRate);
+    for (auto& time : times_) time.reset();
+    updateTimeRanges();
     driveDry_ = {};
     driveSource_ = {};
     for (auto& stage : stages_) {
@@ -268,13 +282,44 @@ void AdiShaper::tempo(double bpm) noexcept {
     bpm_ = bpm;
     for (std::size_t i = 0; i < reverb_.size(); ++i)
         reverb_[i].setPredelay(reverbSettings_[i].predelay, bpm);
+    updateTimeRanges();
     for (auto& stage : stages_)
         for (auto& band : stage.bands)
             if (!band.hertz) updateStep(band);
 }
 
-void AdiShaper::sync(double quarterNotes, bool playing) noexcept {
-    if (!std::isfinite(quarterNotes) || std::abs(quarterNotes) > 0x1p52) return;
+void AdiShaper::sync(double quarterNotes, bool playing, unsigned historyToleranceFrames) noexcept {
+    if (!validPosition(quarterNotes)) return;
+    const bool changed = playing != playing_;
+    // Legacy Pd may receive the same block-start stamp for several segments.
+    // Keep an independent prediction across duplicate packets. Its audio clock
+    // also quantizes to a 64-frame tick, unlike the exact native segment clock.
+    if (stages_[static_cast<std::size_t>(Stage::Time)].enabled && (!historyStampSet_ || changed || quarterNotes != lastHistoryStamp_ || historyToleranceFrames == 0)) {
+        const double tolerance = (historyToleranceFrames + 0.5) * bpm_ / (60.0 * sampleRate_) + 1.0e-7;
+        if (changed || (historyStampSet_ && std::abs(quarterNotes - historyQuarterNotes_) > tolerance))
+            resetKernels(Stage::Time);
+        historyStampSet_ = true;
+        sampleStampSet_ = false;
+        lastHistoryStamp_ = historyQuarterNotes_ = quarterNotes;
+    }
+    syncClock(quarterNotes, playing);
+}
+
+void AdiShaper::syncAtSample(double quarterNotes, bool playing, std::int64_t sample, std::uint64_t revision) noexcept {
+    if (!validPosition(quarterNotes)) return;
+    if (stages_[static_cast<std::size_t>(Stage::Time)].enabled) {
+        const auto position = static_cast<std::uint64_t>(sample);
+        if (playing != playing_ || (sampleStampSet_ && (position != expectedSample_ || revision != transportRevision_)))
+            resetKernels(Stage::Time);
+        expectedSample_ = position;
+        transportRevision_ = revision;
+        sampleStampSet_ = true;
+        historyStampSet_ = false;
+    }
+    syncClock(quarterNotes, playing);
+}
+
+void AdiShaper::syncClock(double quarterNotes, bool playing) noexcept {
     const bool changed = playing != playing_;
     // The host and the running clock can round the same next beat differently.
     // Reanchoring a continuous Crush clock can move the transition into or out
@@ -293,6 +338,24 @@ void AdiShaper::sync(double quarterNotes, bool playing) noexcept {
             if (band.hertz || (retainHoldClock && !band.secondary.constant)) continue;
             band.phase = cyclePhase(quarterNotes / band.beats);
             if (changed) updateStep(band);
+        }
+    }
+}
+
+void AdiShaper::updateTimeRanges() noexcept {
+    const auto& stage = stages_[static_cast<std::size_t>(Stage::Time)];
+    const double quarterFrames = sampleRate_ * 60.0 / bpm_;
+    // Fixed bars use the measured 4/4 scale in all meters. Follow uses the
+    // actual contour period, in either quarter notes or seconds.
+    constexpr std::array<double, 7> lengths{4, 8, 16, 32, 0.005, 0.020, 0.040};
+    for (std::size_t i = 0; i < timeSpans_.size(); ++i) {
+        const auto& band = stage.bands[i];
+        const auto range = static_cast<DelayRange>(band.type);
+        if (range == DelayRange::Follow) {
+            timeSpans_[i] = band.hertz ? sampleRate_ / band.hz : quarterFrames * band.beats;
+        } else {
+            const double length = lengths[static_cast<std::size_t>(band.type - 1)];
+            timeSpans_[i] = length * (range < DelayRange::Short2_5ms ? quarterFrames : sampleRate_);
         }
     }
 }
@@ -372,6 +435,7 @@ void AdiShaper::restart(Stage kind) noexcept {
         updateStep(band);
     }
     resetKernels(kind);
+    if (kind == Stage::Time) sampleStampSet_ = historyStampSet_ = false;
 }
 
 void AdiShaper::resetKernels(Stage kind) noexcept {
@@ -381,6 +445,7 @@ void AdiShaper::resetKernels(Stage kind) noexcept {
     if (kind == Stage::Reverb) for (auto& room : reverb_) room.reset();
     if (kind == Stage::Crush) for (auto& crusher : crush_) crusher.reset();
     if (kind == Stage::Noise) for (auto& noise : noise_) noise.reset();
+    if (kind == Stage::Time) for (auto& time : times_) time.reset();
     if (kind == Stage::Drive) {
         for (auto& drive : drives_) drive.reset();
         driveDry_ = {};
@@ -424,10 +489,21 @@ void AdiShaper::setMod(Param id, float value) noexcept {
         sweeps_[static_cast<std::size_t>(id - SweepLowPolarity)].setPolarity(value >= 0.5f);
         return;
     }
-    const auto start = id >= ReverbOn ? ReverbOn : id >= NoiseOn ? NoiseOn : id >= CrushOn ? CrushOn : id >= DriveOn ? DriveOn : id >= SweepOn ? SweepOn : FilterOn;
-    const auto kind = start == ReverbOn ? Stage::Reverb : start == NoiseOn ? Stage::Noise : start == CrushOn ? Stage::Crush : start == DriveOn ? Stage::Drive
-                    : start == SweepOn ? Stage::Sweep : Stage::Filter;
-    const int local = id - start;
+    struct Parameters { Param first; Stage kind; int bandSize; };
+    // Descending by saved parameter ID. The caller has already rejected every hole.
+    static constexpr std::array blocks{
+        Parameters{ReverbOn, Stage::Reverb, reverbBandParameterCount},
+        Parameters{NoiseOn, Stage::Noise, noiseBandParameterCount},
+        Parameters{TimeOn, Stage::Time, timeBandParameterCount},
+        Parameters{CrushOn, Stage::Crush, modBandParameterCount},
+        Parameters{DriveOn, Stage::Drive, driveBandParameterCount},
+        Parameters{SweepOn, Stage::Sweep, modBandParameterCount},
+        Parameters{FilterOn, Stage::Filter, modBandParameterCount}
+    };
+    const auto block = std::find_if(blocks.begin(), blocks.end(),
+                                    [id](const Parameters& row) { return id >= row.first; });
+    const auto kind = block->kind;
+    const int local = id - block->first;
     auto& stage = stages_[static_cast<std::size_t>(kind)];
     if (local < modHeaderSize) {
         switch (local) {
@@ -452,8 +528,7 @@ void AdiShaper::setMod(Param id, float value) noexcept {
         }
         return;
     }
-    const int stride = kind == Stage::Reverb ? reverbBandParameterCount : kind == Stage::Noise ? noiseBandParameterCount
-                     : kind == Stage::Drive ? driveBandParameterCount : modBandParameterCount;
+    const int stride = block->bandSize;
     const auto index = static_cast<std::size_t>((local - modHeaderSize) / stride);
     auto& band = stage.bands[index];
     int control = (local - modHeaderSize) % stride;
@@ -468,14 +543,14 @@ void AdiShaper::setMod(Param id, float value) noexcept {
             return;
         }
     }
-    if (kind == Stage::Drive) {
-        if (control == InputTrim || control == OutputTrim) {
+    if (kind == Stage::Drive || kind == Stage::Time) {
+        if (kind == Stage::Drive && (control == InputTrim || control == OutputTrim)) {
             auto& trims = driveTrims_[index];
             trims[control == InputTrim ? 0 : 1] = std::clamp(value, 0.0f, 100.0f) * 0.01f;
             drives_[index].setTrims(trims[0], trims[1]);
             return;
         }
-        // Drive has one contour. Its point 1 follows the primary curve selector.
+        // Single-contour stages omit the second curve selector.
         if (control >= Drive1) control += Primary1 - static_cast<int>(Drive1);
     }
     switch (control) {
@@ -492,12 +567,16 @@ void AdiShaper::setMod(Param id, float value) noexcept {
         } else if (kind == Stage::Noise) {
             band.type = static_cast<int>(std::round(std::clamp(value, 0.0f, 2.0f)));
             noise_[index].setSource(static_cast<AdiShaperNoise::Source>(band.type));
+        } else if (kind == Stage::Time) {
+            band.type = static_cast<int>(std::round(std::clamp(value, 0.0f, 7.0f)));
+            updateTimeRanges();
         } else crush_[index].setDither(value >= 0.5f);
         break;
     case ModMix: band.mix = std::clamp(value, 0.0f, 100.0f) * 0.01f; break;
-    case ModClock: clock(band, Clock, value); return;
-    case ModCycle: clock(band, Cycle, value); return;
-    case ModRate: clock(band, Rate, value); return;
+    case ModClock: case ModCycle: case ModRate:
+        clock(band, static_cast<BandControl>(Clock + control - static_cast<int>(ModClock)), value);
+        if (kind == Stage::Time) updateTimeRanges();
+        return;
     case PrimaryCurve: band.primary.linear = value >= 0.5f; return;
     case SecondaryCurve: band.secondary.linear = value >= 0.5f; return;
     default:
@@ -713,6 +792,11 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
             r *= g.right;
         }
     };
+    [[maybe_unused]] auto timeDistance = [&](std::size_t bandIndex, float height) {
+        const double framesBack = (1.0 - static_cast<double>(height)) * timeSpans_[bandIndex];
+        return stage.bands[bandIndex].type >= static_cast<int>(DelayRange::Short2_5ms)
+                ? std::max(0.0, framesBack - 1.0) : framesBack;
+    };
     auto applyBand = [&](std::size_t index, std::size_t i, float& l, float& r, [[maybe_unused]] float& dryL, [[maybe_unused]] float& dryR) {
         const auto& band = stage.bands[index];
         const auto p = band.phase + band.step * static_cast<std::uint64_t>(i);
@@ -731,6 +815,8 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
                 auto& room = reverb_[index];
                 const float ret = room.clearsTails() ? band.secondary.returnAt(p, band.step) : band.secondary.at(p);
                 room.processStereo(l, r, primary, ret, band.blend != 0.f);
+            } else if constexpr (kind == Stage::Time) {
+                times_[index].processStereo(l, r, timeDistance(index, primary), band.primary.linear && !band.primary.constant);
             } else {
                 crush_[index].processStereo(l, r, primary, band.secondary.at(p), band.secondary.constant);
             }
@@ -769,6 +855,10 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
             const auto& band = stage.bands[1];
             if (band.primary.constant && band.blend == 1.f &&
                 noise_[1].processWhiteBlock(inL, inR, outL, outR, frames, band.primary.points[0])) return;
+        } else if constexpr (kind == Stage::Time) {
+            const auto& band = stage.bands[1];
+            if (band.primary.constant && band.blend == 1.0f
+                && times_[1].processFixedBlock(inL, inR, outL, outR, frames, timeDistance(1, band.primary.points[0]))) return;
         }
         if constexpr (kind == Stage::Volume) {
             const auto& band = stage.bands[1];
@@ -917,6 +1007,7 @@ void AdiShaper::process(const float* inL, const float* inR, float* outL, float* 
         run.template operator()<Stage::Sweep>();
         run.template operator()<Stage::Drive>();
         run.template operator()<Stage::Crush>();
+        run.template operator()<Stage::Time>();
         run.template operator()<Stage::Noise>();
         run.template operator()<Stage::Reverb>();
     } else {
@@ -931,6 +1022,7 @@ void AdiShaper::process(const float* inL, const float* inR, float* outL, float* 
             case Stage::Sweep: run.template operator()<Stage::Sweep>(); break;
             case Stage::Drive: run.template operator()<Stage::Drive>(); break;
             case Stage::Crush: run.template operator()<Stage::Crush>(); break;
+            case Stage::Time: run.template operator()<Stage::Time>(); break;
             case Stage::Noise: run.template operator()<Stage::Noise>(); break;
             case Stage::Reverb: run.template operator()<Stage::Reverb>(); break;
             }
@@ -941,7 +1033,12 @@ void AdiShaper::process(const float* inL, const float* inR, float* outL, float* 
         for (auto& band : stage.bands)
             band.phase += band.step * static_cast<std::uint64_t>(frames);
     }
-    if (playing_) quarterNotes_ += (bpm_ / (60.0 * sampleRate_)) * static_cast<double>(frames);
+    if (playing_) {
+        const double advance = (bpm_ / (60.0 * sampleRate_)) * static_cast<double>(frames);
+        quarterNotes_ += advance;
+        if (sampleStampSet_) expectedSample_ += static_cast<std::uint64_t>(frames);
+        if (historyStampSet_) historyQuarterNotes_ += advance;
+    }
 }
 
 } // namespace adi::dsp
