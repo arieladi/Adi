@@ -991,7 +991,7 @@ void cumulativeAverageSpectrum() {
 }
 
 void parkedCumulativeAverage() {
-    enum class Boundary { None, Join, Reset };
+    enum class Boundary { None, Burst, Locate, Join, Reset };
     constexpr int window = 480, hop = 240, block = 401, blocks = 33;
     constexpr int quietFrames = block * blocks, untilHop = hop - quietFrames % hop;
     constexpr std::int64_t stamp = 800;
@@ -1020,7 +1020,7 @@ void parkedCumulativeAverage() {
                exactBins(measured->binsDbfs, expected->binsDbfs);
     };
 
-    for (const auto boundary : {Boundary::None, Boundary::Join, Boundary::Reset}) {
+    for (const auto boundary : {Boundary::None, Boundary::Burst, Boundary::Locate, Boundary::Join, Boundary::Reset}) {
         Fixture parked, reference;
         parked.tap = std::make_shared<ScopeTap>(48000., .25);
         reference.tap = std::make_shared<ScopeTap>(48000., .25);
@@ -1031,13 +1031,15 @@ void parkedCumulativeAverage() {
             staged = parked.broker.acquire(request);
             controlStaged = reference.broker.acquire(request);
         }
-        const auto writePair = [&](const float *samples, int frames) {
+        const auto writePair = [&](const float *samples, int frames, bool pump = true) {
             parked.tap->write(samples, samples, frames, stamp, false, revision);
             // Non-null zero buffers give the control the same samples without a silence certificate.
             const auto *input = samples ? samples : zeros.data();
             reference.tap->write(input, input, frames, stamp, false, revision);
-            parked.broker.pump();
-            reference.broker.pump();
+            if (pump) {
+                parked.broker.pump();
+                reference.broker.pump();
+            }
         };
 
         writePair(nullptr, window);
@@ -1060,10 +1062,37 @@ void parkedCumulativeAverage() {
               "periodic pumps do no work for an already-published zero cumulative interval through a ring wrap");
 
         constexpr std::int64_t admission = window + quietFrames;
+        const bool stagedBoundary = boundary == Boundary::Join || boundary == Boundary::Reset;
+        if (boundary == Boundary::Locate) {
+            constexpr std::int64_t newStamp = stamp + 2400;
+            for (auto *tap : {parked.tap.get(), reference.tap.get()}) {
+                tap->write(signal.data(), signal.data(), hop, newStamp, false, revision + 1);
+                const auto *silence = tap == parked.tap.get() ? nullptr : zeros.data();
+                tap->write(silence, silence, window - hop, newStamp, false, revision + 1);
+            }
+            parked.broker.pump();
+            reference.broker.pump();
+            const auto resumed = average.readCumulativeAverage();
+            check(first && first->window && matches(resumed, uninterrupted.readCumulativeAverage()) &&
+                      resumed->processedWindows == 1 && resumed->window->firstSequence == admission &&
+                      resumed->window->firstStamp == newStamp && resumed->window->transportRevision == revision + 1 &&
+                      resumed->window->sourceEpoch == first->window->sourceEpoch + 1 &&
+                      resumed->window->overrunCount == first->window->overrunCount,
+                  "a stopped Locate between pumps starts a fresh interval at the real source fence");
+            continue;
+        }
         if (boundary == Boundary::None) {
             writePair(signal.data(), untilHop - 1);
             check(average.readCumulativeAverage() == first && uninterrupted.readCumulativeAverage() == quietControl,
                   "stopped monitoring waits for the original partial cumulative hop");
+        } else if (boundary == Boundary::Burst) {
+            constexpr int burstFrames = 71;
+            writePair(signal.data(), burstFrames, false);
+            writePair(nullptr, untilHop - burstFrames - 1, false);
+            const auto followingQuiet = parked.tap->lastParkedSilence();
+            check(followingQuiet.begin == admission + burstFrames && followingQuiet.end == admission + untilHop - 1 &&
+                      average.readCumulativeAverage() == first && parked.broker.stats().workerPasses == idle.workerPasses,
+                  "a short audible burst and a fresh silence certificate can both arrive between worker passes");
         } else {
             if (boundary == Boundary::Join) {
                 staged = parked.broker.acquire(request);
@@ -1084,12 +1113,12 @@ void parkedCumulativeAverage() {
                   "a late or reset interval excludes every full window that starts before its writer fence");
         }
 
-        writePair(signal.data(), 1);
+        writePair(boundary == Boundary::Burst ? nullptr : signal.data(), 1);
         const auto resumed = average.readCumulativeAverage();
         const auto expected = uninterrupted.readCumulativeAverage();
         const auto activeStats = parked.broker.stats();
         constexpr auto resumedCount = std::uint64_t{2} + quietFrames / hop;
-        const auto additionalHops = boundary == Boundary::None ? std::uint64_t{0} : std::uint64_t{window / hop};
+        const auto additionalHops = stagedBoundary ? std::uint64_t{window / hop} : std::uint64_t{0};
         check(first && first->window && matches(resumed, expected) &&
                   resumed->processedWindows == resumedCount + additionalHops &&
                   resumed->window->firstStamp == stamp && resumed->window->transportRevision == revision &&
@@ -1098,8 +1127,10 @@ void parkedCumulativeAverage() {
                   !resumed->binsDbfs.empty() && resumed->binsDbfs.front() > adi::dsp::kDbFloor &&
                   first->processedWindows == 1 && activeStats.taps == 1 && activeStats.spectralPlans == 1 &&
                   activeStats.transforms == 1,
-              "the first resumed cumulative hop preserves the full denominator, immutable picture and source clock");
-        if (boundary != Boundary::None) {
+              boundary == Boundary::Burst
+                  ? "a burst between pumps preserves the cumulative denominator, bins and clock without an overrun"
+                  : "the first resumed cumulative hop preserves the full denominator, immutable picture and source clock");
+        if (stagedBoundary) {
             const auto next = staged.readCumulativeAverage();
             check(resumed && matches(next, controlStaged.readCumulativeAverage()) && next->processedWindows == 1 &&
                       next->window == resumed->window && next->window->firstSequence == admission + untilHop,

@@ -785,6 +785,9 @@ struct SharedAnalysis::Domain {
     std::deque<PendingColumn> pendingHistory;
     std::size_t retiredForPending = 0;
     std::atomic<std::int64_t> consumedSequence{0}, completedWindowEnd{-1};
+    // A settled cumulative reader can outlive the tap's latest quiet certificate.
+    // State::mutex serializes the publisher and tap replacement.
+    mutable std::atomic<std::int64_t> observedQuietBegin{0}, observedQuietEnd{0};
     std::atomic<bool> dirty{true}, historyBlocked{false};
     engine::ScopeTap::Cursor cursor;
     std::mutex mutex;
@@ -1146,6 +1149,8 @@ struct SharedAnalysis::Domain {
         publishResult({});
     }
     void bind(std::shared_ptr<const engine::ScopeTap> next, bool fresh) {
+        observedQuietBegin.store(0);
+        observedQuietEnd.store(0);
         tap = std::move(next);
         cursor = tap ? tap->cursorAtEnd() : engine::ScopeTap::Cursor{};
         if (tap && !fresh) cursor.next = std::max(tap->oldest(), tap->written() - request.fftSize);
@@ -1355,11 +1360,23 @@ struct SharedAnalysis::Domain {
         if (balanceHistory)
             balanceHistory->rebaseSilentWindow(next - static_cast<std::int64_t>(sinceWindow));
     }
+    void advanceObservedParkedAverage(std::int64_t written) noexcept {
+        if (!canParkCumulativeAverage(outputs.load(std::memory_order_relaxed))) return;
+        const auto begin = observedQuietBegin.load();
+        const auto end = std::min(observedQuietEnd.load(), written);
+        // Publication writes begin before end. A mixed old end and new begin
+        // either fail the range test or the second begin read.
+        if (begin <= cursor.next && cursor.next < end && begin == observedQuietBegin.load() &&
+            settledParkedSilence({begin, end}))
+            skipCertifiedSilenceTo(end);
+    }
     void catchUpParkedSilence() noexcept {
         if (!tap) return;
+        const auto written = tap->written();
+        advanceObservedParkedAverage(written);
         const auto quiet = tap->lastParkedSilence();
-        if (quiet.end <= cursor.next || !settledParkedSilence(quiet)) return;
-        skipCertifiedSilenceTo(std::min(quiet.end, tap->written()));
+        if (quiet.end > cursor.next && settledParkedSilence(quiet))
+            skipCertifiedSilenceTo(std::min(quiet.end, written));
         consumedSequence.store(cursor.next, std::memory_order_release);
     }
     void skipParkedBeforeCumulative(engine::ScopeTap::ParkedSilence quiet) noexcept {
@@ -1379,10 +1396,11 @@ struct SharedAnalysis::Domain {
     std::size_t historyColumnBytes() const noexcept {
         return (static_cast<std::size_t>(request.fftSize) / 2 + 1) * sizeof(float);
     }
-    bool needsWork(const HistoryBudget &budget) const noexcept {
+    bool needsWork(const HistoryBudget &budget, bool observeQuiet = false) const noexcept {
         if (!active.load(std::memory_order_acquire) || !available.load(std::memory_order_acquire) || !tap) return false;
         const auto end = tap->written();
-        if (outputs.load(std::memory_order_acquire) == Strip && end < stripNextEnd.load(std::memory_order_acquire))
+        const auto bits = outputs.load(std::memory_order_acquire);
+        if (bits == Strip && end < stripNextEnd.load(std::memory_order_acquire))
             return false;
         if (dirty.load(std::memory_order_acquire) ||
             (historyBlocked.load(std::memory_order_acquire) && budget.canClaim(historyColumnBytes()))) return true;
@@ -1390,7 +1408,14 @@ struct SharedAnalysis::Domain {
         if (end == consumed) return false;
         const auto quiet = tap->lastParkedSilence();
         if (meter) return !(neutralMeter.load(std::memory_order_acquire) && quiet.begin < consumed && quiet.end >= end);
-        return !(quiet.end >= end && settledParkedSilence(quiet));
+        const bool parked = quiet.end >= end && settledParkedSilence(quiet);
+        if (observeQuiet && parked && canParkCumulativeAverage(bits) && end > observedQuietEnd.load()) {
+            // Only preserve committed samples from the verified run. Do not
+            // infer anything about the gap if the next run replaces it.
+            observedQuietBegin.store(quiet.begin);
+            observedQuietEnd.store(end);
+        }
+        return !parked;
     }
     std::atomic<bool> active{true}, available{false};
     std::atomic<std::uint32_t> outputs{0};
@@ -2566,8 +2591,14 @@ struct SharedAnalysis::State {
         }
     }
     bool workPending() const {
-        return std::any_of(domains.begin(), domains.end(), [this](const auto &entry) { return entry.second->needsWork(*historyBudget); }) ||
-               std::any_of(captures.begin(), captures.end(), [](const auto &capture) { return capture->needsWork(); }) ||
+        bool pending = false;
+        for (const auto &[key, domain] : domains) {
+            (void)key;
+            // Sample a parked average even if an unrelated reader needs a pass.
+            if (!pending || domain->cumulativeAverageQuiet.load(std::memory_order_relaxed))
+                pending = domain->needsWork(*historyBudget, true) || pending;
+        }
+        return pending || std::any_of(captures.begin(), captures.end(), [](const auto &capture) { return capture->needsWork(); }) ||
                std::ranges::any_of(bars, [](const auto &bar) { return bar->needsWork(); });
     }
     std::size_t pump() {
@@ -2575,7 +2606,7 @@ struct SharedAnalysis::State {
         std::lock_guard run(runMutex);
         std::unique_lock stateLock(mutex);
         const auto lag = focusLag;
-        if (closed || (!lag && !workPending())) return 0;
+        if (closed || (!workPending() && !lag)) return 0;
         using Job = std::variant<std::shared_ptr<Domain>, std::shared_ptr<CaptureDomain>, std::shared_ptr<BarScopeDomain>>;
         std::array<Job, kMaxDomains> jobs;
         std::size_t count = 0, done = 0, windows = 0, samples = 0, reads = 0;
@@ -2618,6 +2649,7 @@ struct SharedAnalysis::State {
             const auto quiet = d.tap->lastParkedSilence();
             const auto bits = d.outputs.load(std::memory_order_acquire);
             const bool stripOnly = bits == Strip;
+            d.advanceObservedParkedAverage(end);
             d.skipParkedBeforeCumulative(quiet);
             // Resume at the end of a previously parked range. Its omitted samples
             // are identical to those in the retained window. The regular cursor
@@ -3373,7 +3405,7 @@ void SharedAnalysis::requestFrame() noexcept {
         refreshSources();
         {
             std::lock_guard lock(state_->mutex);
-            if (state_->closed || (!state_->focusLag && !state_->workPending())) return;
+            if (state_->closed || (!state_->workPending() && !state_->focusLag)) return;
         }
         Scheduler::instance().request(state_);
     } catch (...) { state_->queued.store(false, std::memory_order_release); }
