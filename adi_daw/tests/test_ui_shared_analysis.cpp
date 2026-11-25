@@ -1744,7 +1744,32 @@ void spectrumDeviceScale() {
     move({static_cast<float>(x(20000.)), at.y});
     check(SharedSpectrumViewTestAccess::cursorText(pane.view).isEmpty(),
           "the wide device graph does not suggest bins above the source's measured Nyquist");
-    move(at);
+    const auto stable = lowRate.broker->stats();
+    const auto fullWidth = static_cast<float>(pane.view.getWidth()) - 10.f - 18.f;
+    const auto fullHeight = static_cast<float>(pane.view.getHeight()) - 10.f - 16.f - 29.f;
+    const auto read = [&](Scale scale, double low, double high, double hz) {
+        pane.setSpectrumScale(scale);
+        const auto isWide = scale == Scale::Wide;
+        const auto inset = isWide ? 0.f : 1.f;
+        const auto w = fullWidth - (isWide ? 0.f : look::fontCaption * 3.f);
+        const auto h = fullHeight - (isWide ? 0.f : look::fontCaption);
+        move({5.f + (w - inset) * static_cast<float>(std::log(hz / low) / std::log(high / low)),
+              21.f + (h - inset) * .25f});
+        return SharedSpectrumViewTestAccess::cursorText(pane.view);
+    };
+    check(read(Scale::Wide, 20., 16000., 440.) == "440.0 Hz   A3   -24.0 dBFS",
+          "Wide describes its own cursor ordinate and rate-limited frequency axis");
+    check(read(Scale::Detail, 20., 20000., 440.) == "440.0 Hz   A3   -33.0 dBFS",
+          "Detail describes its narrower displayed dB range");
+    check(read(Scale::Extended, 10., 30000., 440.) == "440.0 Hz   A3   -25.0 dBFS",
+          "Extended describes its own frequency and dB window");
+    check(read(Scale::Extended, 10., 30000., 20000.).isEmpty(),
+          "Extended does not claim frequencies outside the source's measured Nyquist");
+    const auto moved = lowRate.broker->stats();
+    check(moved.taps == stable.taps && moved.consumers == stable.consumers &&
+              moved.transforms == stable.transforms && moved.frameRequests == stable.frameRequests,
+          "the expanded cursor across scales keeps one tap and does no analysis work");
+    read(Scale::Wide, 20., 16000., 440.);
     pane.setVisible(false);
     check(SharedSpectrumViewTestAccess::cursorText(pane.view).isEmpty() && !pane.view.subscribed(),
           "hiding the analyser clears its cursor and releases its lease");
