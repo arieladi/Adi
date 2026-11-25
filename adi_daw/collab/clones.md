@@ -17,6 +17,12 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 25 November 2026 — Time on the current generic device
+
+`clones/shaper-time-current-1125` at `5594c282a` — Restore sample-history Time with finite stereo interpolation. Lands after 3 December. The 48 Time controls retain their saved IDs 416–463 and follow all 418 existing descriptors. This is the separate Time review parent of the ten-stage generic device. The kernel, rack and native and edited Pd paths retain ordinary music output. Opposed, finite stereo extremes at one-quarter, half and three-quarter fractional reads and wet blends formerly overflowed. The six regressions now pass, alongside 3,456,000 byte-identical music samples. Eight official suites passed at each Pd precision on this exact head.
+
+On full-wet one-bar Time at 48 kHz and 120 BPM, both block sizes reproduced 192,000 stereo kick-and-bass frames exactly against the reference. The musical delay was 96,000 frames. Host latency was zero. At 256 frames ADI / reference median and p99 callbacks were 4.9 / 15.7 and 16.9 / 29.2 microseconds. At 2,048 they were 49.5 / 51.4 and 101.8 / 80.8 microseconds. There were zero individual misses in 30,720 callbacks per arm and size. The corresponding median cycles per callback including input and clock handling were 26,328 / 57,256 and 202,775 / 193,281. A native repeated-locate transport revision is the existing Devices handoff. PR requested
+
 ## 25 November 2026 — Ten stages reopen in one device
 
 `clones/shaper-stage-integration` at `5abd35d64` — Recall Time, Noise and room together in the generic device. Lands after 3 December. Ten installed stages share one recallable processing order. The first 418 parameter declarations match main byte for byte. All 656 declarations connect to their intended parameter. Time keeps stage 7 and rank 723, Noise keeps stage 9 and rank 725, and the generated room keeps stage 10 and rank 726. Pitch's stage 8, host controls 464–535 and rank 724 remain available for that stage.
