@@ -312,6 +312,8 @@ class SharedAnalysis final {
         // Use the same sources. Mid starts with a full unread window and can be dropped mid-capture.
         void setMonoRequested(FocusScopeChannels) noexcept;
         void setPhaseRequested(bool) noexcept;
+        // Measured on a complete capture that starts with this demand.
+        void setSumTruePeakRequested(bool) noexcept;
         void setDifferenceRequested(std::optional<ScopeDifference>) noexcept;
         // Lane order. A changed preview invalidates the current bar without
         // detaching the source taps. Missing entries default to no adjustment.

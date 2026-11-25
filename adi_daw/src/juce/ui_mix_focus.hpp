@@ -90,6 +90,7 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     FocusScopeChannels scopeChannelView() const noexcept;
     bool showsScopeDifference() const noexcept;
     void updateScopeDifference();
+    void updateScopeTruePeakControls();
     void rebuildDifferenceSpectrum(const SharedAnalysis::ScopeDifferenceSpectrum &, double sampleRate);
     [[nodiscard]] Member *selectedScopeLayer() noexcept;
     [[nodiscard]] juce::PopupMenu scopeLayerMenu(const Member &) const;
@@ -119,6 +120,8 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     juce::TextButton alignMeasure_{"Measure Align"}, scopeLayer_{"Layer"};
     juce::ToggleButton differenceSpectrum_{"Spectrum"}, scopeFreeze_{"Freeze"};
     juce::Label alignReadout_, scopeCursor_, scopeRegionReadout_, differenceRmsReadout_;
+    juce::ToggleButton scopeTruePeak_{"True peak"};
+    juce::Label scopeTruePeakReadout_;
     std::optional<juce::Point<float>> scopeCursorPoint_;
     struct ScopeRegion {
         FocusScopeRange range;

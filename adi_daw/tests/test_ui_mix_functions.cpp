@@ -3219,6 +3219,16 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
         return differenceRms && differenceRms->isVisible() ? differenceRms->getText() : juce::String{};
     };
     const auto hasRms = [&](const char *level) { return rmsText().contains(level) && rmsText().contains("dBFS"); };
+    juce::ToggleButton *truePeakSwitch = nullptr;
+    juce::Label *capturedTruePeak = nullptr;
+    for (auto *component : focus.getChildren()) {
+        if (component->getTitle() == "Focus Scope true peak")
+            truePeakSwitch = dynamic_cast<juce::ToggleButton *>(component);
+        if (component->getTitle() == "Scope captured true peak")
+            capturedTruePeak = dynamic_cast<juce::Label *>(component);
+    }
+    check(truePeakSwitch && capturedTruePeak && !truePeakSwitch->isVisible() && !capturedTruePeak->isVisible(),
+          "the Focus captured true-peak controls are accessible and hidden in the initial Overlay");
     const auto &meters = initial.meters();
     check(root->playing() && root->bpm() == 120. && doc->mailbox().sampleRate() == rate &&
               (meters.empty() || (meters[0].numerator == 4 && meters[0].denominator == 4)) &&
@@ -3386,7 +3396,15 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
         if (component->getTitle() == "Focus Scope display") display = dynamic_cast<juce::ComboBox *>(component);
     check(display != nullptr, "Focus Scope makes its display selector available");
     if (display && channels) {
+        if (truePeakSwitch && capturedTruePeak) {
+            display->setSelectedId(4, juce::sendNotificationSync);
+            frame();
+            check(truePeakSwitch->isVisible() && truePeakSwitch->isEnabled() && !truePeakSwitch->getToggleState() &&
+                      !capturedTruePeak->isVisible(),
+                  "Stereo Sum makes captured true peak optional and leaves the unrequested readout hidden");
+        }
         display->setSelectedId(3, juce::sendNotificationSync);
+        check(!truePeakSwitch || !truePeakSwitch->isVisible(), "Stack leaves the Sum true-peak switch hidden");
         frame();
         MixFocusTestAccess::moveScopePointer(focus, .5f, .625f);
         check(MixFocusTestAccess::scopeCursorText(focus).contains("-6.0 dBFS"),
@@ -3676,6 +3694,30 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
             frame();
             check(rmsText().isEmpty(), "thaw clears frozen RMS until fresh paired audio arrives");
         }
+    }
+    if (truePeakSwitch && capturedTruePeak && display && channels) {
+        channels->setSelectedId(static_cast<int>(FocusScopeChannels::Stereo), juce::sendNotificationSync);
+        display->setSelectedId(4, juce::sendNotificationSync);
+        frame();
+        truePeakSwitch->setToggleState(true, juce::dontSendNotification);
+        truePeakSwitch->onClick();
+        check(!capturedTruePeak->isVisible(), "an unmeasured Sum picture publishes no true peak");
+        const auto before = broker->stats();
+        writeUntil(driver.position() + 3 * bar);
+        check(capturedTruePeak->isVisible() && capturedTruePeak->getText().contains("dBFS") &&
+                  capturedTruePeak->getText().contains("dBTP") && broker->stats().taps == 2 &&
+                  broker->stats().transforms == before.transforms,
+              "Stereo Sum reports the sample and captured true peak without a new tap or spectrum transform");
+        check(doc->mailbox().post(TransportMailbox::Command::Locate, driver.position()),
+              "queue a same-position Locate for the measured Sum");
+        frame();
+        check(!capturedTruePeak->isVisible(), "queued Locate hides the unheld true peak before audio acknowledgement");
+        doc->mailbox().drain(driver);
+        frame();
+        check(!capturedTruePeak->isVisible(), "settled Locate waits for a newly captured true peak");
+        display->setSelectedId(1, juce::sendNotificationSync);
+        check(!truePeakSwitch->isVisible() && !capturedTruePeak->isVisible(),
+              "leaving Sum immediately hides the captured true peak and its control");
     }
     const auto visibleBounds = focus.getBounds();
     focus.setTopLeftPosition(peer.getWidth(), 0);

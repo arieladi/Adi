@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include "shared_analysis.hpp"
+#include "adi/dsp/true_peak.hpp"
 #include "adi/engine/snapshot.hpp"
 #include "adi/ui/meters.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <span>
 #include <type_traits>
@@ -187,6 +189,67 @@ inline std::optional<std::int64_t> focusWindowEnd(std::int64_t first, std::int64
 // A worker may prepare storage before reading the bar and append only its
 // contiguous slices. The source identities and revision describe heard audio;
 // this collector neither acquires taps nor advances the transport.
+// Measure only the half-open captured interval, with zero extension at its
+// edges. The sample maximum is supplied by the same signed sum as the plot.
+class FocusCapturedTruePeak {
+  public:
+    FocusCapturedTruePeak(double rate, std::size_t frames)
+        : frames_(std::isfinite(rate) && rate > 0. ? frames : 0), factor_(factorFor(rate)) {
+        if (frames_ && factor_ > 1) meter_.prepare(std::max(rate, 1.), 2);
+    }
+    [[nodiscard]] static int factorFor(double rate) noexcept {
+        // Such small synthetic rates already saturate at the maximum factor.
+        return dsp::TruePeakMeter::factorFor(std::max(rate, 1.));
+    }
+    void append(double left, double right) noexcept {
+        if (received_ == frames_) return;
+        ++received_;
+        if (factor_ == 1) return;
+        left_[static_cast<std::size_t>(buffered_)] = left;
+        right_[static_cast<std::size_t>(buffered_)] = right;
+        if (++buffered_ == batch) flushSamples();
+    }
+    void flushSamples() noexcept {
+        process(left_.data(), right_.data(), buffered_);
+        buffered_ = 0;
+    }
+    [[nodiscard]] std::optional<double> finish(double samplePeak) noexcept {
+        if (!frames_ || received_ != frames_) return {};
+        if (!result_) {
+            if (factor_ > 1) {
+                flushSamples();
+                // Exactly N phase groups after the eight-group delay. On captures
+                // shorter than eight, part of this pad completes the warmup.
+                constexpr std::array<double, dsp::TruePeakMeter::kDelay> zero{};
+                process(zero.data(), zero.data(), dsp::TruePeakMeter::kDelay);
+            }
+            result_ = std::max(samplePeak, meter_.peak());
+        }
+        return result_;
+    }
+
+  private:
+    static constexpr int batch = 64;
+    void process(const double *left, const double *right, int frames) noexcept {
+        const auto prime = std::min(warmup_, frames);
+        if (prime > 0) {
+            const double *channels[]{left, right};
+            meter_.process(channels, 2, prime);
+            warmup_ -= prime;
+            if (!warmup_) meter_.resetPeak();
+        }
+        if (prime < frames) {
+            const double *channels[]{left + prime, right + prime};
+            meter_.process(channels, 2, frames - prime);
+        }
+    }
+    std::size_t frames_ = 0, received_ = 0;
+    int factor_ = 1, buffered_ = 0, warmup_ = dsp::TruePeakMeter::kDelay;
+    dsp::TruePeakMeter meter_;
+    std::array<double, batch> left_{}, right_{};
+    std::optional<double> result_;
+};
+
 class FocusScopeBarProjection {
   public:
     struct MonoColumn {
@@ -202,7 +265,8 @@ class FocusScopeBarProjection {
     bool prepare(FocusScopeRange range, std::span<const FocusScopeBarSource> sources,
                  std::size_t requestedColumns, std::uint64_t transportRevision,
                  FocusScopeChannels mono = FocusScopeChannels::Stereo,
-                 std::optional<SharedAnalysis::ScopeDifference> difference = {}, bool measurePhase = false) {
+                 std::optional<SharedAnalysis::ScopeDifference> difference = {}, bool measurePhase = false,
+                 bool measureSumTruePeak = false) {
         const auto columns = std::min({requestedColumns, range.frames,
                                        static_cast<std::size_t>(SharedAnalysis::kMaxFftSize)});
         if (sources.size() < 2 || columns == 0 || !transportRevision || range.first < 0 ||
@@ -237,6 +301,8 @@ class FocusScopeBarProjection {
         std::vector<MonoColumn> monoBins;
         if (focusScopeIsFolded(mono)) monoBins.resize((sources.size() + 1) * columns);
         std::vector<FocusScopeBarSource> identities(sources.begin(), sources.end());
+        auto meter = measureSumTruePeak && FocusCapturedTruePeak::factorFor(range.sampleRate) > 1
+            ? std::make_unique<FocusCapturedTruePeak>(range.sampleRate, range.frames) : nullptr;
         bins_ = std::move(bins);
         monoBins_ = std::move(monoBins);
         mono_ = mono;
@@ -253,6 +319,9 @@ class FocusScopeBarProjection {
         peak_ = energy_ = differenceEnergy_ = {};
         sumPhase_ = midPairPhase_ = {};
         measuresPhase_ = measurePhase;
+        measuresSumTruePeak_ = measureSumTruePeak;
+        sumPeakMeter_ = std::move(meter);
+        sumTruePeak_.reset();
         extendColumn();
         return true;
     }
@@ -274,10 +343,23 @@ class FocusScopeBarProjection {
                 return false;
         }
 
-        switch (mono_) {
-        case FocusScopeChannels::Mid: appendValid<FocusScopeChannels::Mid>(blocks, count); break;
-        case FocusScopeChannels::Side: appendValid<FocusScopeChannels::Side>(blocks, count); break;
-        default: appendValid<FocusScopeChannels::Stereo>(blocks, count); break;
+        const auto project = [this, blocks, count]<bool TruePeak>() {
+            switch (mono_) {
+            case FocusScopeChannels::Mid: appendValid<FocusScopeChannels::Mid, TruePeak>(blocks, count); break;
+            case FocusScopeChannels::Side: appendValid<FocusScopeChannels::Side, TruePeak>(blocks, count); break;
+            default: appendValid<FocusScopeChannels::Stereo, TruePeak>(blocks, count); break;
+            }
+        };
+        if (sumPeakMeter_) {
+            project.operator()<true>();
+            sumPeakMeter_->flushSamples();
+        } else {
+            project.operator()<false>();
+        }
+        if (measuresSumTruePeak_ && complete()) {
+            const auto samplePeak = std::max(peak_[0], peak_[1]);
+            sumTruePeak_ = sumPeakMeter_ ? sumPeakMeter_->finish(samplePeak) : std::optional{samplePeak};
+            sumPeakMeter_.reset();
         }
         return true;
     }
@@ -317,6 +399,14 @@ class FocusScopeBarProjection {
     }
     [[nodiscard]] std::span<const FocusSumColumn> sumColumns() const noexcept { return lane(sources_.size()); }
     void retainPhase(bool requested) noexcept { measuresPhase_ = measuresPhase_ && requested; }
+    void retainSumTruePeak(bool requested) noexcept {
+        if (requested || !measuresSumTruePeak_) return;
+        measuresSumTruePeak_ = false;
+        sumTruePeak_.reset();
+        sumPeakMeter_.reset();
+    }
+    [[nodiscard]] bool filtersSumPeak() const noexcept { return sumPeakMeter_ != nullptr; }
+    [[nodiscard]] std::optional<double> sumTruePeak() const noexcept { return sumTruePeak_; }
     [[nodiscard]] std::optional<double> phase(bool betweenMembers) const noexcept {
         if (!measuresPhase_) return {};
         return betweenMembers ? midPairPhase_.reading() : sumPhase_.reading();
@@ -328,7 +418,7 @@ class FocusScopeBarProjection {
     }
 
   private:
-    template <FocusScopeChannels Fold>
+    template <FocusScopeChannels Fold, bool TruePeak>
     void appendValid(std::span<const FocusScopeBarBlock> blocks, std::size_t count) noexcept {
         const auto remember = [](FocusSumColumn &column, const std::array<double, 2> &sample) {
             for (std::size_t ch = 0; ch < sample.size(); ++ch) {
@@ -357,6 +447,7 @@ class FocusScopeBarProjection {
                     value[1] += sample[1];
                 }
                 remember(sum, value);
+                if constexpr (TruePeak) sumPeakMeter_->append(value[0], value[1]);
                 if (measuresPhase_) {
                     sumPhase_.add(value[0], value[1]);
                     midPairPhase_.add(midAt(blocks[0], at), midAt(blocks[1], at));
@@ -415,6 +506,9 @@ class FocusScopeBarProjection {
     std::size_t columns_ = 0, framesPerColumn_ = 0, remainder_ = 0;
     std::size_t frames_ = 0, column_ = 0, endOfColumn_ = 0, carry_ = 0, visibleColumns_ = 0;
     std::array<double, 2> peak_{}, energy_{};
+    std::unique_ptr<FocusCapturedTruePeak> sumPeakMeter_;
+    std::optional<double> sumTruePeak_;
+    bool measuresSumTruePeak_ = false;
     FocusScopePhase sumPhase_, midPairPhase_;
     bool measuresPhase_ = false;
 };

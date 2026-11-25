@@ -1420,6 +1420,149 @@ void focusBarScopeMidDemand() {
     check(releases == 2 && broker.stats().taps == 0, "hiding the last grouped reader releases both taps");
 }
 
+void focusCapturedTruePeak() {
+    using adi::dsp::TruePeakMeter;
+    using adi::ui::FocusCapturedTruePeak;
+    struct RateCase { double rate; int factor; };
+    constexpr std::array rates{RateCase{192000., 1}, RateCase{96000., 2}, RateCase{64000., 3},
+        RateCase{48000., 4}, RateCase{40000., 5}, RateCase{32000., 6}, RateCase{27000., 7}, RateCase{24000., 8}};
+    constexpr auto phaseDelay = TruePeakMeter::kDelay;
+    constexpr auto tapsPerPhase = TruePeakMeter::kTapsPerPhase;
+    const auto samplePeak = [](std::span<const double> left, std::span<const double> right) {
+        double peak = 0.;
+        for (const auto channel : {left, right})
+            for (const auto value : channel) peak = std::max(peak, std::abs(value));
+        return peak;
+    };
+    const auto phaseOracle = [&](std::span<const double> left, std::span<const double> right,
+                                 int factor, std::span<const double> coefficients) {
+        double peak = samplePeak(left, right);
+        if (factor == 1) return peak;
+        for (const auto channel : {left, right}) {
+            const auto frames = static_cast<std::ptrdiff_t>(channel.size());
+            for (std::ptrdiff_t sample = 0; sample < frames; ++sample) {
+                for (int phase = 0; phase < factor; ++phase) {
+                    double value = 0.;
+                    for (int tap = 0; tap < tapsPerPhase; ++tap) {
+                        const auto at = sample + phaseDelay - tap;
+                        if (at >= 0 && at < frames)
+                            value += coefficients[static_cast<std::size_t>(phase + factor * tap)] *
+                                     channel[static_cast<std::size_t>(at)];
+                    }
+                    peak = std::max(peak, std::abs(value));
+                }
+            }
+        }
+        return peak;
+    };
+    const auto measure = [&](double rate, std::span<const double> left, std::span<const double> right) {
+        FocusCapturedTruePeak capture(rate, left.size());
+        const auto original = samplePeak(left, right);
+        check(!capture.finish(original), "an incomplete captured interval cannot report a true peak");
+        constexpr std::array<std::size_t, 6> chunks{7, 2, 17, 256, 1, 96};
+        allocationSizeCount = 0;
+        observeAllocationSizes = true;
+        for (std::size_t cursor = 0, chunk = 0; cursor < left.size(); ++chunk) {
+            const auto next = std::min(left.size(), cursor + chunks[chunk % chunks.size()]);
+            for (; cursor < next; ++cursor) capture.append(left[cursor], right[cursor]);
+            capture.flushSamples();
+        }
+        const auto result = capture.finish(original);
+        const auto repeated = capture.finish(original);
+        observeAllocationSizes = false;
+        check(result && result == repeated && allocationSizeCount == 0,
+              "appending and finishing the interval allocate nothing, and the result remains idempotent");
+        return result;
+    };
+
+    std::array<double, 542> left{}, right{};
+    constexpr std::array tone{.8, .8, -.8, -.8};
+    for (std::size_t i = 0; i < left.size(); ++i) {
+        left[i] = tone[i % tone.size()];
+        right[i] = tone[(i + 1) % tone.size()] * (i < 24 ? .375 : 1.125);
+    }
+    constexpr std::array<std::size_t, 14> lengths{1, 2, 3, 4, 5, 6, 7, 8, 9, 15, 16, 17, 257, 542};
+    for (const auto [rate, factor] : rates) {
+        check(TruePeakMeter::factorFor(rate) == factor, "the capture fixture covers its intended oversampling factor");
+        std::vector<double> coefficients;
+        TruePeakMeter::design(factor, coefficients);
+        bool aligned = true;
+        for (const auto length : lengths) {
+            const auto l = std::span(left).first(length), r = std::span(right).first(length);
+            const auto expected = phaseOracle(l, r, factor, coefficients);
+            const auto measured = measure(rate, l, r);
+            aligned &= measured && (factor == 1 ? *measured == expected : near(*measured, expected, 2.e-12));
+        }
+        check(aligned, "captured stereo true peak matches the half-open phase oracle for short and long inputs");
+    }
+
+    constexpr std::array tail{.8, .8, -.8}, tailSilence{0., 0., 0.};
+    constexpr std::array leading{1., -1., .25, -.25, 1., -.25}, leadingSilence{0., 0., 0., 0., 0., 0.};
+    const auto silence = measure(48000., tailSilence, tailSilence);
+    const auto tailPeak = measure(48000., tailSilence, tail);
+    const auto leadingPeak = measure(48000., leading, leadingSilence);
+    check(silence == 0. && tailPeak && near(*tailPeak, 1.14323772182338, 2.e-12),
+          "a valid silent result is zero and a three-frame right-lane over requires the FIR tail");
+    check(leadingPeak && near(*leadingPeak, 1.0081671313273954, 2.e-12),
+          "the warmup's larger negative-time phase cannot leak into the reported interval peak");
+    check(measure(1.e-300, tail, tailSilence) == measure(24000., tail, tailSilence),
+          "a tiny positive synthetic rate saturates without an out-of-range integer conversion");
+}
+
+void focusBarCapturedTruePeak() {
+    using namespace adi::ui;
+    using Source = adi::engine::ScopeSource;
+    constexpr double rate = 48000.;
+    constexpr std::int32_t frames = 8192;
+    constexpr std::uint64_t revision = 79;
+    constexpr std::array sources{Source{1, ScopePoint::PostFader, 0}, Source{2, ScopePoint::PostFader, 0}};
+    std::array taps{std::make_shared<ScopeTap>(rate, .5), std::make_shared<ScopeTap>(rate, .5)};
+    unsigned opened = 0, closed = 0;
+    SharedAnalysis broker([&](Source source, double) -> std::shared_ptr<const ScopeTap> {
+        ++opened;
+        return taps[static_cast<std::size_t>(source.track - 1)];
+    }, [&](Source) { ++closed; }, SharedAnalysis::Mode::Manual);
+    auto lease = broker.acquireBarScope(sources, 64);
+    if (!lease) { check(false, "captured true peak uses the existing bar scope lease"); return; }
+    std::array<float, frames> tone{}, zeros{};
+    constexpr std::array waveform{.8f, .8f, -.8f, -.8f};
+    for (std::size_t i = 0; i < tone.size(); ++i) tone[i] = waveform[i % waveform.size()];
+    const auto feed = [&](std::int64_t start) {
+        taps[0]->write(tone.data(), zeros.data(), frames, start, true, revision);
+        taps[1]->write(zeros.data(), zeros.data(), frames, start, true, revision);
+    };
+    check(lease.request({0, frames, rate}, revision), "request a complete bar with true peak disabled");
+    feed(0);
+    broker.pump();
+    const auto dry = lease.read();
+    check(dry && dry->projection && !dry->projection->sumTruePeak(), "normal bars carry no captured true-peak work");
+
+    lease.setSumTruePeakRequested(true);
+    check(lease.request({frames, frames, rate}, revision), "request true peak on the same stamped sources");
+    feed(frames);
+    broker.pump();
+    check(!lease.read() && lease.status() == SharedAnalysis::BarScopeStatus::Pending,
+          "a full backed-up bar cannot exceed one worker pass's phase budget");
+    for (int i = 0; i < 5 && !lease.read(); ++i) broker.pump();
+    const auto measured = lease.read();
+    const auto peak = measured && measured->projection ? measured->projection->sumTruePeak() : std::nullopt;
+    check(peak && *peak > 1. && measured->projection->sumReading()->peak[0] == static_cast<double>(.8f) &&
+              opened == 2 && broker.stats().transforms == 0 && broker.stats().taps == 2,
+          "the captured stereo sum detects intersample overs using the original sources and no transform");
+
+    check(lease.request({2 * frames, frames, rate}, revision), "start another measured bar");
+    feed(2 * frames);
+    broker.pump();
+    lease.setSumTruePeakRequested(false);
+    broker.pump();
+    const auto cancelled = lease.read();
+    check(cancelled && cancelled->projection && !cancelled->projection->sumTruePeak() &&
+              peak && measured->projection->sumTruePeak() == peak,
+          "disabling true peak cancels unfinished work without mutating the held measurement");
+    lease.reset();
+    check(closed == 2 && broker.stats().taps == 0, "the measured view leaves no demand when released");
+}
+
 void focusScopeDifference() {
     using namespace adi::ui;
     using Source = adi::engine::ScopeSource;
@@ -5437,6 +5580,7 @@ void operator delete(void *p,std::size_t) noexcept {::operator delete(p);}
 void operator delete[](void *p,std::size_t) noexcept {::operator delete(p);}
 int main() {
     try { stripCadenceAndEpochs(); stripReusesRawSpectrum(); stripWorkerBudget(); stripLeaseInSession(); phaseBandSpatialMeasurements();
+          focusCapturedTruePeak(); focusBarCapturedTruePeak();
           continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeMidDemand(); focusScopeDifference(); focusScopeSideDemand(); focusBarScopeBrokerBoundaries(); focusBarScopeWaitsOnAllSources(); focusScopeSumProjection(); focusScopeLayerPreview(); focusBarLayerPreview(); focusBarResidualSpectrum(); focusScopePhaseOperands(); focusScopeFlatPath(); focusLagPreviewRequests(); focusLagPreviewCases(); focusLagTapReads(); focusLagHighRateTaps(); focusMatchWindows(); parkedSilence(); parkedSpectrogramWake(); parkedWindowHopPhase();
           parkedRealtimeModeJoins<SharedAnalysis::RealtimeMaximum>(); parkedRealtimeModeJoins<SharedAnalysis::RealtimeSigma>(); parkedStereoBalance(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
           sharedModesAndCursors(); phaseBandCorrelation(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); spectrumLevels(); spectrumSamplePeaksAndClips(); restartSpectrumLevels(); restartParkedSpectrumLevels(); spectrumTruePeak(); parkedSpectrumLevels(false); parkedSpectrumLevels(true); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); realtimeSigmaSpectrum(); cumulativeMaximumSpectrum(); cumulativeAverageSpectrum(); cumulativeMaximumParkedRollover(); sharedAverage(); parkedRealtimeAverage(); parkedRealtimeAverageJoinsScope(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); deviceSpectrumLease(); parkedDeviceSpectrum(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }

@@ -2182,6 +2182,7 @@ struct SharedAnalysis::BarScopeDomain {
         pollDifferenceRequest();
         if (seenDifferenceVersion != version) residual.reset();
         if (!active.load()) return false;
+        projection->retainSumTruePeak(sumTruePeakRequested.load(std::memory_order_relaxed));
         result.store(std::make_shared<BarScopeResult>(BarScopeResult{range.first, range.frames,
             range.sampleRate, revision, std::move(projection), std::move(residual)}));
         status.store(BarScopeStatus::Ready);
@@ -2189,7 +2190,7 @@ struct SharedAnalysis::BarScopeDomain {
     }
 
     bool process(std::size_t &reads, std::size_t &samples, DifferenceResidualPlans &cache,
-                 std::size_t &windows, std::size_t &transforms) noexcept {
+                 std::size_t &windows, std::size_t &transforms, std::size_t &peakPhaseBudget) noexcept {
         std::lock_guard lock(mutex);
         if (!needsWork()) return false;
         waiting.store(0);
@@ -2204,11 +2205,12 @@ struct SharedAnalysis::BarScopeDomain {
                 if (!prepareDisplayBlocks(first, reads, readLimit, samples, count)) return false;
                 const auto fold = monoRequested.load(std::memory_order_relaxed);
                 const auto phase = phaseRequested.load(std::memory_order_relaxed);
+                const auto sumTruePeak = sumTruePeakRequested.load(std::memory_order_relaxed);
                 if (!projection) {
                     for (std::size_t i = 0; i < lanes.size(); ++i)
                         identities[i] = {lanes[i].source, lanes[i].tap->generation()};
                     projection = std::make_shared<FocusScopeBarProjection>();
-                    if (!projection->prepare(range, identities, columns, revision, fold, difference, phase)) {
+                    if (!projection->prepare(range, identities, columns, revision, fold, difference, phase, sumTruePeak)) {
                         invalidate();
                         return false;
                     }
@@ -2216,6 +2218,17 @@ struct SharedAnalysis::BarScopeDomain {
                 } else {
                     projection->retainMono(fold);
                     projection->retainPhase(phase);
+                    projection->retainSumTruePeak(sumTruePeak);
+                }
+                if (projection->filtersSumPeak()) {
+                    // Charge both lanes for every FIR phase, including the
+                    // fixed tail. The budget belongs to the whole worker pass.
+                    const auto phaseGroups = static_cast<std::size_t>(2 * FocusCapturedTruePeak::factorFor(range.sampleRate));
+                    const auto tail = static_cast<std::size_t>(dsp::TruePeakMeter::kDelay);
+                    const auto groupsLeft = peakPhaseBudget / phaseGroups;
+                    if (groupsLeft <= tail) return false;
+                    count = std::min(count, groupsLeft - tail);
+                    peakPhaseBudget -= (count + (captured + count == range.frames ? tail : 0)) * phaseGroups;
                 }
                 for (std::size_t i = 0; i < lanes.size(); ++i) {
                     auto &block = blocks[i];
@@ -2249,6 +2262,7 @@ struct SharedAnalysis::BarScopeDomain {
     std::int64_t end = 0;
     std::atomic<FocusScopeChannels> monoRequested{FocusScopeChannels::Stereo};
     std::atomic<bool> phaseRequested{false};
+    std::atomic<bool> sumTruePeakRequested{false};
     std::mutex differenceMutex; // held only to copy the request, never while processing samples
     std::optional<ScopeDifference> requestedDifference, difference;
     std::atomic<std::uint64_t> differenceVersion{0};
@@ -2492,6 +2506,7 @@ struct SharedAnalysis::State {
         using Job = std::variant<std::shared_ptr<Domain>, std::shared_ptr<CaptureDomain>, std::shared_ptr<BarScopeDomain>>;
         std::array<Job, kMaxDomains> jobs;
         std::size_t count = 0, done = 0, windows = 0, samples = 0, reads = 0;
+        std::size_t scopePeakPhaseBudget = 32 * 1024;
         for (const auto &[key, domain] : domains) { (void)key; jobs[count++] = domain; }
         for (const auto &capture : captures) jobs[count++] = capture;
         for (const auto &bar : bars) jobs[count++] = bar;
@@ -2503,7 +2518,8 @@ struct SharedAnalysis::State {
         for (std::size_t j = 0; j < count && windows < kMaxWindowsPerFrame && samples < kMaxSamplesPerFrame && reads < kMaxReadsPerFrame; ++j) {
             const auto &job = jobs[(start + j) % count];
             if (const auto *bar = std::get_if<std::shared_ptr<BarScopeDomain>>(&job)) {
-                if ((*bar)->process(reads, samples, residualPlans, windows, done)) publications.fetch_add(1, std::memory_order_relaxed);
+                if ((*bar)->process(reads, samples, residualPlans, windows, done, scopePeakPhaseBudget))
+                    publications.fetch_add(1, std::memory_order_relaxed);
                 continue;
             }
             if (const auto *scopeJob = std::get_if<std::shared_ptr<CaptureDomain>>(&job)) {
@@ -2919,6 +2935,12 @@ void SharedAnalysis::BarScopeLease::setPhaseRequested(bool value) noexcept {
     if (!state || !domain_) return;
     state->ownerOnly();
     domain_->phaseRequested.store(value, std::memory_order_relaxed);
+}
+void SharedAnalysis::BarScopeLease::setSumTruePeakRequested(bool value) noexcept {
+    const auto state = state_.lock();
+    if (!state || !domain_) return;
+    state->ownerOnly();
+    domain_->sumTruePeakRequested.store(value, std::memory_order_relaxed);
 }
 void SharedAnalysis::BarScopeLease::setDifferenceRequested(std::optional<ScopeDifference> requested) noexcept {
     const auto state = state_.lock();

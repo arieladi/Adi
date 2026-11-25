@@ -76,6 +76,7 @@ MixFocus::MixFocus(AdiRootComponent &root) : root_(root) {
         clearScopeRegion();
         scopeCursor_.setVisible(false);
         updateScopeDifference();
+        updateScopeTruePeakControls();
         barScope_.setMonoRequested(showsScopeDifference() ? FocusScopeChannels::Stereo : scopeChannelView());
         if (phaseBar_.isEmpty() != showsScopeDifference()) resized();
         redraw_ = true;
@@ -95,6 +96,7 @@ MixFocus::MixFocus(AdiRootComponent &root) : root_(root) {
         clearScopeRegion();
         scopeCursor_.setVisible(false);
         updateScopeDifference();
+        updateScopeTruePeakControls();
         barScope_.setMonoRequested(showsScopeDifference() ? FocusScopeChannels::Stereo : scopeChannelView());
         redraw_ = true;
     };
@@ -144,6 +146,21 @@ MixFocus::MixFocus(AdiRootComponent &root) : root_(root) {
     differenceRmsReadout_.setColour(juce::Label::backgroundColourId, look::panel);
     differenceRmsReadout_.setInterceptsMouseClicks(false, false);
     addChildComponent(differenceRmsReadout_);
+    scopeTruePeak_.setTitle("Focus Scope true peak");
+    scopeTruePeak_.setTooltip("Measure the captured stereo sum with silence outside the displayed interval.");
+    scopeTruePeak_.onClick = [this] {
+        updateScopeTruePeakControls();
+        rebuildScope();
+        redraw_ = true;
+        repaint();
+    };
+    addChildComponent(scopeTruePeak_);
+    scopeTruePeakReadout_.setTitle("Scope captured true peak");
+    scopeTruePeakReadout_.setJustificationType(juce::Justification::centredRight);
+    scopeTruePeakReadout_.setColour(juce::Label::textColourId, look::text);
+    scopeTruePeakReadout_.setColour(juce::Label::backgroundColourId, look::panel);
+    scopeTruePeakReadout_.setInterceptsMouseClicks(false, false);
+    addChildComponent(scopeTruePeakReadout_);
     scroll_.setViewedComponent(&strip_, false);
     scroll_.setScrollBarsShown(false, true);
     for (auto *c : std::array<juce::Component *, 13>{&available, &add, &star, &mute, &solo, &hearOne, &hearAll,
@@ -320,6 +337,7 @@ void MixFocus::updateMatchControls() {
     learnMatch.setEnabled(canLearnMatch(pair));
     refreshAlign(pair);
     updateScopeDifference();
+    updateScopeTruePeakControls();
 }
 MixFocus::Member *MixFocus::selectedScopeLayer() noexcept {
     const auto found = std::ranges::find(members_, active_, &Member::id);
@@ -582,7 +600,6 @@ void MixFocus::drop() {
     scopeSources_.clear();
     clearBarScopeData();
     clearScopeSum();
-    differenceRmsReadout_.setVisible(false);
     clearScopeRegion();
     scopeCursorPoint_.reset();
     scopeCursor_.setVisible(false);
@@ -833,6 +850,7 @@ void MixFocus::frame(const SnapshotReader &reader) {
     } else {
         if (scopeRegion_ && !scopeRegionCurrent()) clearScopeRegion();
         if (scopeCursor_.isVisible() && !scopeCursorCurrent()) scopeCursor_.setVisible(false);
+        if (scopeTruePeakReadout_.isVisible() && !scopeTraceRevision()) scopeTruePeakReadout_.setVisible(false);
     }
     scopeFreeze_.setEnabled(scopeTraceRevision().has_value());
 }
@@ -842,6 +860,8 @@ void MixFocus::clearBarScopeData() {
     requestedBar_.reset();
     barTempo_.reset();
     barMeters_.clear();
+    scopeTruePeakReadout_.setVisible(false);
+    differenceRmsReadout_.setVisible(false);
 }
 void MixFocus::updateBarScope(const SnapshotReader &reader, const std::shared_ptr<SharedAnalysis> &broker) {
     const auto *tempo = reader.tempo();
@@ -880,6 +900,7 @@ void MixFocus::updateBarScope(const SnapshotReader &reader, const std::shared_pt
         barScope_.setPhaseRequested(!phaseBar_.isEmpty());
         barScope_.setMonoRequested(showsScopeDifference() ? FocusScopeChannels::Stereo : scopeChannelView());
         barScope_.setDifferenceRequested(differenceRequest_);
+        barScope_.setSumTruePeakRequested(scopeTruePeak_.isVisible() && scopeTruePeak_.getToggleState());
     }
     const auto rate = barScope_.sampleRate();
     if (!(rate > 0.) || (requestedBar_ && requestedBar_->range.sampleRate != rate)) {
@@ -1079,6 +1100,17 @@ void MixFocus::updateScopeDifference() {
     redraw_ = true;
 }
 
+void MixFocus::updateScopeTruePeakControls() {
+    const bool eligible = scope.getToggleState() && scopeChannelView() == FocusScopeChannels::Stereo &&
+                          scopeDisplay_.getSelectedId() == static_cast<int>(ScopeDisplay::Sum);
+    const bool changed = scopeTruePeak_.isVisible() != eligible;
+    scopeTruePeak_.setVisible(eligible);
+    const bool requested = eligible && scopeTruePeak_.getToggleState();
+    barScope_.setSumTruePeakRequested(requested);
+    if (!requested) scopeTruePeakReadout_.setVisible(false);
+    if (changed) resized();
+}
+
 void MixFocus::rebuildDifferenceSpectrum(const SharedAnalysis::ScopeDifferenceSpectrum &spectrum, double sampleRate) {
     if (spectrum.binsDbfs.empty() || spectrum.fftSize <= 0 || plot_.isEmpty()) return;
     const double binHz = sampleRate / static_cast<double>(spectrum.fftSize);
@@ -1110,6 +1142,15 @@ void MixFocus::rebuildDifferenceSpectrum(const SharedAnalysis::ScopeDifferenceSp
 
 void MixFocus::rebuildScope() {
     rebuildScopePaths();
+    const auto peak = scopeTruePeak_.isVisible() && scopeTruePeak_.getToggleState() && scopeTraceRevision() &&
+                      sum_ && shownBar_ && shownBar_->projection ? shownBar_->projection->sumTruePeak() : std::nullopt;
+    if (peak) {
+        const auto dbText = [](double value) { return value > 0. ? juce::String(20. * std::log10(value), 2) : juce::String("-inf"); };
+        const auto samplePeak = std::max(sum_->peak[0], sum_->peak[1]);
+        scopeTruePeakReadout_.setText("Peak " + dbText(samplePeak) + " dBFS   Capture " + dbText(*peak) + " dBTP",
+                                     juce::dontSendNotification);
+    }
+    scopeTruePeakReadout_.setVisible(peak.has_value());
     if (!differenceRms_) {
         differenceRmsReadout_.setVisible(false);
         return;
@@ -1584,6 +1625,8 @@ void MixFocus::resized() {
         std::max(0, titleRow.getWidth() - 3 * look::mixFocusSourceWidth)));
     differenceSpectrum_.setBounds(titleRow.withTrimmedLeft(
         std::max(0, titleRow.getWidth() - look::mixFocusSourceWidth)));
+    if (scopeTruePeak_.isVisible())
+        scopeTruePeak_.setBounds(titleRow.removeFromRight(std::min(titleRow.getWidth(), look::mixFocusSourceWidth)));
     sumLabel_ = titleRow.getWidth() >= 4 * look::mixFocusSourceWidth
                     ? titleRow.removeFromRight(2 * look::mixFocusSourceWidth) : juce::Rectangle<int>{};
     auto actions = r.removeFromBottom(buttonRow);
@@ -1617,7 +1660,10 @@ void MixFocus::resized() {
     auto rmsArea = plot_.toNearestInt().reduced(look::gap);
     auto rmsRow = rmsArea.removeFromBottom(std::min(look::fieldHeight, rmsArea.getHeight()));
     differenceRmsReadout_.setFont(look::font(look::fontCaption));
-    differenceRmsReadout_.setBounds(rmsRow.removeFromRight(std::min(2 * look::mixFocusSourceWidth, rmsRow.getWidth())));
+    const auto readingBounds = rmsRow.removeFromRight(std::min(2 * look::mixFocusSourceWidth, rmsRow.getWidth()));
+    differenceRmsReadout_.setBounds(readingBounds);
+    scopeTruePeakReadout_.setFont(look::font(look::fontCaption));
+    scopeTruePeakReadout_.setBounds(readingBounds);
     rebuildMatchPath();
     for (auto &m : members_)
         m.spectrumChanged = true;
@@ -1685,7 +1731,8 @@ void MixFocus::paint(juce::Graphics &g) {
     if (frozenScopeRevision_) title += "   Frozen";
     if (!scopeShown && match_) title += matchCaption_;
     const auto summaryBounds = differenceSpectrum_.isVisible() ? differenceSpectrum_.getBounds()
-                               : alignReadout_.isVisible() ? alignReadout_.getBounds() : sumLabel_;
+        : alignReadout_.isVisible() ? alignReadout_.getBounds()
+        : sumLabel_.isEmpty() && scopeTruePeak_.isVisible() ? scopeTruePeak_.getBounds() : sumLabel_;
     const int titleWidth = summaryBounds.isEmpty() ? plot.getWidth() : std::max(0, summaryBounds.getX() - plot.getX());
     g.drawText(title, plot.getX(), scroll_.getBottom(), titleWidth,
                std::max(0, plot.getY() - scroll_.getBottom()), juce::Justification::centredLeft);
