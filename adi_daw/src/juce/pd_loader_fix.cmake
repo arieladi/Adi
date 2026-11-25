@@ -322,6 +322,12 @@ file(WRITE "${adi_pd_overlay}/g_editor.c" "${adi_pd_text}")
 # from nowhere; libpd_openfile and abstraction loading do not pass here.
 file(READ "${adi_pd_source}/s_path.c" adi_pd_text)
 string(REPLACE "\r\n" "\n" adi_pd_text "${adi_pd_text}")
+# DF-E67 (b): a path already in the list is dropped, and the node made for it with it, not only its string
+# (each engine adds its patch's folder, and a caller may add it again).
+adi_pd_replace([=[                freebytes(nl2->nl_string, strlen(nl2->nl_string) + 1);
+                return (listwas);]=] [=[                freebytes(nl2->nl_string, strlen(nl2->nl_string) + 1);
+                freebytes(nl2, sizeof(*nl2)); /* ADI (DF-E67 b) */
+                return (listwas);]=])
 adi_pd_replace([=[void open_via_helppath(const char *name, const char *dir)
 {]=] [=[void open_via_helppath(const char *name, const char *dir)
 {
@@ -342,6 +348,20 @@ foreach(adi_pd_call IN ITEMS "canvas_path(x, e, item);" "canvas_stdpath(e, item)
     adi_pd_replace("            ${adi_pd_call}"
         "            pd_error(0, \"ADI refused [declare %s %s] (DEV-09): a patch cannot change where Pd looks for code\", flag, item);")
 endforeach()
+# DF-E67 (b): an instance's last pending canvas arguments go with it. Pd keeps the arguments for the next canvas
+# it makes (`canvas_setargs` copies them, a one-byte block even for none), and the abstraction loader leaves
+# such a copy after every load (`canvas_setargs(0, 0)`); a canvas made later adopts it, but when the instance is
+# freed first nothing does, so each instance leaked it.
+adi_pd_replace([=[void g_canvas_freepdinstance(void)
+{
+]=] [=[void g_canvas_freepdinstance(void)
+{
+        /* ADI (DF-E67 b): the pending arguments no canvas adopted. */
+    if (THISGUI->i_newargv)
+        freebytes(THISGUI->i_newargv, THISGUI->i_newargc * sizeof(t_atom));
+    THISGUI->i_newargv = 0;
+    THISGUI->i_newargc = 0;
+]=])
 file(WRITE "${adi_pd_overlay}/g_canvas.c" "${adi_pd_text}")
 # DF-E36 (a)'s "menusave and menusaveas, which write files": a patch cannot
 # write files through its canvas. `savetofile` writes the patch's text to any
@@ -380,11 +400,39 @@ adi_pd_replace([=[static void glist_write(t_glist *x, t_symbol *filename, t_symb
         return;
     }]=])
 file(WRITE "${adi_pd_overlay}/g_readwrite.c" "${adi_pd_text}")
+# DF-E67 (b): [expr] copies each name it reads; one that turns out to be a function or a variable kept the copy
+# for good. It is freed once the name has been looked up, as a table's already is.
+file(READ "${adi_pd_source}/x_vexp.c" adi_pd_text)
+string(REPLACE "\r\n" "\n" adi_pd_text "${adi_pd_text}")
+adi_pd_replace([=[                                eptr->ex_type = ET_FUNC;
+                                eptr->ex_ptr = (char *) fun;]=] [=[                                eptr->ex_type = ET_FUNC;
+                                fts_free((void *)eptr->ex_ptr); /* ADI (DF-E67 b) */
+                                eptr->ex_ptr = (char *) fun;]=])
+adi_pd_replace([=[                                        post("expr: variable '%s' not found",tmp);
+                                        return (exNULL);
+                                }]=] [=[                                        post("expr: variable '%s' not found",tmp);
+                                        return (exNULL);
+                                }
+                                fts_free((void *)tmp); /* ADI (DF-E67 b) */]=])
+file(WRITE "${adi_pd_overlay}/x_vexp.c" "${adi_pd_text}")
+# DF-E67 (b): a new scalar's gpointer to its glist counted a reference it never gave back, so the glist's stub
+# outlived it (every [table]'s graph leaked one). The words take an uncounted copy (array_new says so), and the
+# pointer is let go once they have it, as template_conformglist and scalar_select already do.
+file(READ "${adi_pd_source}/g_scalar.c" adi_pd_text)
+string(REPLACE "\r\n" "\n" adi_pd_text "${adi_pd_text}")
+adi_pd_replace([=[    gpointer_setglist(&gp, owner, x);
+    word_init(x->sc_vec, template, &gp);
+    return (x);]=] [=[    gpointer_setglist(&gp, owner, x);
+    word_init(x->sc_vec, template, &gp);
+    gpointer_unset(&gp); /* ADI (DF-E67 b) */
+    return (x);]=])
+file(WRITE "${adi_pd_overlay}/g_scalar.c" "${adi_pd_text}")
 get_target_property(adi_pd_sources libpd_static SOURCES)
-list(FILTER adi_pd_sources EXCLUDE REGEX "(^|/)(m_class|s_loader|g_io|m_glob|m_pd|g_editor|s_path|g_canvas|g_readwrite)\\.c$")
+list(FILTER adi_pd_sources EXCLUDE REGEX "(^|/)(m_class|s_loader|g_io|m_glob|m_pd|g_editor|s_path|g_canvas|g_readwrite|x_vexp|g_scalar)\\.c$")
 set_property(TARGET libpd_static PROPERTY SOURCES "${adi_pd_sources}")
 target_sources(libpd_static PRIVATE "${adi_pd_overlay}/s_loader.c" "${adi_pd_overlay}/m_class.c"
                                     "${adi_pd_overlay}/g_io.c" "${adi_pd_overlay}/m_glob.c"
                                     "${adi_pd_overlay}/m_pd.c" "${adi_pd_overlay}/g_editor.c"
                                     "${adi_pd_overlay}/s_path.c" "${adi_pd_overlay}/g_canvas.c"
-                                    "${adi_pd_overlay}/g_readwrite.c")
+                                    "${adi_pd_overlay}/g_readwrite.c" "${adi_pd_overlay}/x_vexp.c"
+                                    "${adi_pd_overlay}/g_scalar.c")
