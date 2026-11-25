@@ -17,6 +17,19 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 25 November 2026 — The ten-stage device with its Drive, Pan and detector controls
+
+`clones/shaper-dsp-stack` at `37c8da138` — Integrate ten-stage recall, measured Drive and Pan, and keyed modulation in the generic ADI-Shaper. Lands after 3 December. This supplies one DSP review branch. The first 418 parameter declarations retain main's order and meaning. The stack adds Time, Noise, room, stage ranks, the two crossover repairs, the measured Drive shapes, Pan transfer, range and gain law, Width detection and Volume retrigger. Its 712 controls reserve the original hole for Pitch. The ten-stage project and the new extensions reopened together. An older project cleared all 56 additional controls to their own defaults and recovered its original stereo samples. Both native and crossed editable Pd routes passed. All ten official headless suites passed at each Pd precision on this head.
+
+Across 18 three-band Drive comparisons and four Time, Noise and room comparisons, 5,577,312 scalar output samples matched the qualified component branches byte for byte. All Drive cases reported a 16-frame delay. The 48 kHz four-instance stereo kick-and-bass test then ran nine 256-frame trials and three 2,048-frame trials of 8,192 callbacks. Every trial's p99 stayed within its own audio deadline.
+
+| Block | Deadline | ADI range of trial p99 | Individual late callbacks, ADI / reference | Median cycles saved |
+| ---: | ---: | ---: | ---: | ---: |
+| 256 | 5.333 ms | 0.312–1.314 ms | 114 / 329 of 73,728 | 58.1% |
+| 2,048 | 42.667 ms | 2.394–5.744 ms | 10 / 18 of 24,576 | 52.7% |
+
+The reference timings came from the earlier matched installed-processor run. The four-instance ADI streams matched their earlier ADI captures byte for byte. The largest per-trial ADI to reference RMS errors were 0.0000470 and 0.0000530 at the two sizes. Devices owns host key and note delivery and the same-position transport revision. The panel stays on its separate held stack. PR requested
+
 ## 25 November 2026 — What the three stage ports change across 873 programs
 
 For `clones/shaper-stage-integration` at `5abd35d64`, lands after 3 December. Each of 873 private program states played the same stereo kick and bass in the registered 656-control device. The reference capture had its reported delay removed. The comparison also removed ADI's own delay and scored both channels over frames 96,000 through 191,999 at 48 kHz. With all other mappings held constant, adding Time, Noise and the generated room took 18 passing programs to 20 in both saved and fixed order. The limit was 0.001 stereo RMS. One entrant came from Time and one from the room. Neither order lost a pass. In saved order the error fell by more than 0.000001 for 284 programs and rose for 268, with 321 within that tolerance. Earlier private composite counts included additional controls and used a different baseline.
