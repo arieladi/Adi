@@ -26,7 +26,7 @@ Main is at 1.23. PLAN PD-10's register of pending minors is this table. Minors l
 | 1.25 | engine | the modulation route side tables (source, target device and parameter, depth, curve points, mode, bipolar, enable), persisted and undoable; outputs never persist (DEV-07, ADR-0230 d4, XC-16) | none yet: engine queue item 12 | reserved; lands after DEV-06 (ADR-0249 d3) |
 | 1.26 | — | the next minor, by reservation here | — | free |
 
-Known to want a minor and not yet reserved: DF-W6, the `tracks.role` column (win); chain volume and pan, a side table (DF-E73, ADR-0253 d8); AU-06's Arrangement clip-envelope modulation streams (ADR-0230 d4, M6); engine-win queue item 8, only if the device ref must store the VST3 class ID.
+Known to want a minor and not yet reserved: DF-W6, the `tracks.role` column (win); chain volume and pan, a side table (DF-E73, ADR-0253 d8); AU-06's Arrangement clip-envelope modulation streams (ADR-0230 d4, M6); engine-win queue item 8, only if the device ref must store the VST3 class ID. From ADR-0254, each reserved when its row starts: MX-39's per-device gain-match flag and fixed gain; TM-FC-05's lane kind that plays along with the main lane; AGT-12, only if a request's scope needs a new object beside `agent_requests`.
 
 ## ADR numbers
 
@@ -34,16 +34,16 @@ The reservation table stays in `collab/README.md` ("Reserved ADR numbers"), wher
 `tools/validate_schema.py` reads it. #210, win's earlier fix that makes check 8 catch stray and missing
 rows, is kept open and folded into this work.
 
-Next free: **ADR-0254**.
+Next free: **ADR-0255**.
 
 ## Register ids (`docs/DEFERRED.md`)
 
 | Prefix | Section | Who numbers in it | Last used | Next free |
 |---|---|---|---|---|
-| DF-C | Control | the control seat, through win | DF-C5 | DF-C6 |
-| DF-M | Mix View | the Mix View seat, through win | DF-M69 | DF-M70 |
-| DF-W | Window | the window lane and win | DF-W41 | DF-W42 |
-| DF-E | Engine | the engine seat, engine-win and the devices lane; the row's owner column says which | DF-E80 | DF-E81 |
+| DF-C | Control | the control seat, through win | DF-C7 | DF-C8 |
+| DF-M | Mix View | the Mix View seat, through win | DF-M75 | DF-M76 |
+| DF-W | Window | the window lane and win | DF-W44 | DF-W45 |
+| DF-E | Engine | the engine seat, engine-win and the devices lane; the row's owner column says which | DF-E83 | DF-E84 |
 | DF-R | Repository | win | DF-R1 | DF-R2 |
 
 Three seats share DF-E, so each DF-E id is reserved here first.
@@ -105,5 +105,6 @@ None of the four needs a schema minor, an op name or a register id today.
 | N73 | a loop recording keeps the passes it has when it ends early (a tempo change, Tap Tempo, a loop edit, running out of passes) | engine (`engine/audio_recording.*`, `recording_commands.*`) |
 | N74 | Live's undo for a loop recording: one step for the whole recording, or one per pass as `prepareLoopCommit` commits today. A reading of Live 12 first (the devices lane's ONE list); until it, the window follows the engine, a step per pass | engine and win (a ruling after the reading) |
 | N75 | MX-07's registry half: `mixing.soloInFront`, `mixing.soloInFrontDb` and `mixing.soloBus` labelled "not built", and Live's Options rows `preFollowsSolo` and `keepAllReturns` (they change only on readings, AWAITING 5) | engine-win (`settings/registry.cpp`) |
+| N76 | the engine's preview path: a source that exists with no project open (ADR-0104 d2), heard on Cue Out; the Browser's preview row calls it (MX-08, DF-E82, ADR-0254 d24) | engine |
 
-Next free: **N76**. The project key and scale take the next free one if they need an engine field. N69 to N75 were the window-fn seat's unnumbered needs, numbered by win on 24 November in the order of its needs table.
+Next free: **N77**. The project key and scale take the next free one if they need an engine field. N69 to N75 were the window-fn seat's unnumbered needs, numbered by win on 24 November in the order of its needs table.
