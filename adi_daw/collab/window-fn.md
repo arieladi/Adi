@@ -60,6 +60,136 @@ until then a need is named by its item.
 
 ---
 
+## 2026-11-25, window-fn — win's list of 25 November: DF-E76, DF-E67 (b), DF-E12, DF-E78, the parity sheets (PR requested)
+
+Read first: win's entries of 24 and 25 November. Items 1 to 4 are rows lent from the Codex work seat (out until
+29 November), each on its own branch, each touching only that row's paths. Every proof below is with
+`-DADI_WERROR=ON`; each names its compiler.
+
+**1. DF-E76 → `window-fn/df-e76` d8b9a43d** (two commits) (`src/juce/juce_device_loader.cpp`, `src/juce/vst3_host.*`).
+- The loader already matched a symlinked bundle's saved path to the catalogue's module by its canonical path,
+  and kept the project's exact uid. It then instantiated the plug-in through the alias. On Linux, JUCE opens
+  `<bundle>/Contents/<arch>-linux/<bundle name>.so`, and the alias's own name names no binary there, so the
+  factory was null (JUCE's assertion) and the device became a placeholder.
+- It now keeps two descriptions: the projection onto the saved spelling for the device's identity (its uid
+  unchanged), and the catalogue's own description to load from (`Vst3Host::makeDevice`'s new overload).
+- The review found one more branch: a bundle outside the catalogue, found by the path-hint scan, keeps the saved
+  alias's spelling, and so do later loads in that session. The loader now derives the module to load from the
+  canonical path of whatever it found, whenever that differs from the spelling. No test reaches the path-hint
+  branch through an alias (the render suite has no scanner helper); it is covered by reading.
+- The check at `tests/test_play_render.cpp:138` is kept as it was; its `load` also requires the instance's uid to
+  equal the saved one.
+- **Run, GCC 13.3, JUCE on:**
+  - Pd off, at d8b9a43d: the whole tree builds; the play, VST3, scan, device, plug-in, CLAP and catalogue suites
+    pass, and so do the 27 window and mix suites and the shell suite (3147 checks, 0 failures).
+  - Pd and acceptance on, at b8ab5ce0: WTS-01's VST3 steps 7d (a project holding a VST3 exports its 192000
+    frames with the saved note) and 7e pass, `vst3: 0 FAIL`. d8b9a43d changes only paths whose canonical form
+    differs from their spelling, which that fixture's does not. 7d and 7e need Pd's built-ins, so a Pd-off build
+    reports them failed whatever the loader does.
+- PR requested: `window-fn/df-e76` → main, "DF-E76: a VST3 reached through a symlinked bundle loads from the real
+  module". Depends on nothing beyond main.
+
+**2. DF-E67 (b) → `window-fn/df-e67b` 0271bf12** (two commits) (`src/juce/pd_loader_fix.cmake` only: overlay patches, the
+fetched tree untouched).
+- LSan on `adi_pd_engine_tests` (GCC 13.3, ASan, Pd on, JUCE off), against main's overlay: 960 bytes in 276
+  allocations (the row's figure). With these patches: **0 leaks**, exit 0, 701 checks pass. Four leaks, each
+  fixed where it is made:
+  - `g_canvas.c`: an instance's pending canvas arguments (`canvas_setargs`'s copy, one byte even for none, left
+    by every abstraction load) are freed in `g_canvas_freepdinstance` (the row's leak, 225 of the 276
+    allocations);
+  - `s_path.c`: `namelist_append` dropped a duplicate path's string but not its node (an engine adds its patch's
+    folder, and a caller may add it again);
+  - `x_vexp.c`: `[expr]` kept the copy of each name that turned out to be a function or a variable; it is freed
+    once looked up, as a table's already was;
+  - `g_scalar.c`: `scalar_new` took a counted gpointer on its glist and never let it go, though Pd's own comment
+    there says the copy is thrown away. Every `[table]`'s graph stub leaked. It is let go after `word_init`, as
+    `template_conformglist` and `scalar_select` already do;
+  - `g_template.c` (the review's finding): one caller relied on that leaked reference. `[struct]`'s `add` made
+    its scalar on the `[struct]`'s own canvas and put it on another, so the scalar's arrays named a glist that
+    does not hold them. Once that canvas closed, a `[pointer]` walk could reach its freed stub.
+    `gtemplate_add` now makes the scalar on the canvas that holds it.
+- Run, GCC 13.3, Pd on, at 0271bf12: LSan on `adi_pd_engine_tests`, 0 leaks; the 29 Pd suites pass (`ctest -R pd`), warnings as errors.
+- PR requested: `window-fn/df-e67b` → main, "DF-E67 (b): the Pd tier leaks nothing a test can see". Depends on
+  nothing beyond main.
+
+**3. DF-E12 (a)(b)(c) → `window-fn/df-e12` 8f62b45b** (two commits) (`src/adi/media/publish_file.cpp`,
+`tests/test_project_replace.cpp`, `tests/test_project_files.cpp`).
+- (a) A file just made with `O_EXCL` is a new inode, so no lease on it can be rightful yet. A lock refused there
+  belongs to the freed file whose number it took, so the create waits for it, for up to two seconds, then
+  re-checks the identity as before. The row's other remedy, a descriptor held on the target, is not taken:
+  closing one releases SQLite's POSIX record locks (the comment above `identityAt` says so).
+- A replace now lets go of the old target's lease right after its rename has freed that inode. So does the copy
+  fallback, for its staging source once removed. Neither guards anything once its inode is gone, and the folder
+  sync after them has no fixed length (the review's finding: the two-second wait did not bound it).
+- (b) A create whose lock failed for any reason but a holder removes the empty file it made, while the name still
+  names it. A lock still held after the wait is no stale lease now: it is another process's replace that has
+  adopted the new file, and the file is left to it. Unlinking there could remove what that replace had just
+  published (the review's finding). So the row's (b) is done for every failure but contention, and contention no
+  longer comes from a stale lease.
+- (c) `test_project_files` checks `Store::create`'s result before using it.
+- Tests (Linux) recycle an inode on purpose. A file's number is freed while its lease is held exclusively, as a
+  replace holds it, and the next project file takes that number. Three checks:
+  - it opens once the lease is let go;
+  - while the lease is held past the wait, it is refused and the file is left to the holder;
+  - a project created during a replace's folder sync, on the number its rename freed, opens at once.
+
+  An attempt whose number went elsewhere is tried again. A part that never landed on the number says so in a
+  note, and a refused create is never skipped.
+- **Run, GCC 13.3, ext4:**
+  - `adi_project_replace_tests` 53 checks and `adi_project_files_tests` 54 pass.
+  - With main's `publish_file.cpp`, the first and third checks fail.
+  - The row's test: in 40 runs of `adi_project_files_tests` beside `adi_project_replace_tests` and
+    `adi_settings_tests` in parallel, 0 failures of either.
+  - One run of `adi_settings_tests` failed "portable replacement preserves bytes changed after the destination
+    lease was released". It did so in 0 of 60 further parallel runs with the fix and 0 of 60 with main's code: not
+    reproduced, and not tied to this change.
+- PR requested: `window-fn/df-e12` → main, "DF-E12 (a)(b)(c): a project created on a recycled inode number waits
+  out the stale lease". Depends on nothing beyond main.
+
+**4. DF-E78 → `window-fn/df-e78`**, two commits on `engine-win/export-profile-validation` 2b3b7e5c, that stack
+only.
+- b34a2722 calls `explicitDirectTaps` and `directStemBatch` from the suite's `main`. They are tests of the
+  stack's direct stems, so they run rather than go.
+- 8f44a215, separate so it can be dropped: under libstdc++ 13, `std::bit_width` returns `int`, and
+  `aiff_writer.cpp:40` (`bit_width(rate) - 1U`) failed `-Wsign-conversion` under GCC 13.3 and Clang 18.1. The
+  stack built with neither, and GCC 12.4 stops at the limiter line main has since fixed. The width is cast first,
+  as main's limiter now does.
+- **Run:** `adi_render_queue_tests` 600 checks, 0 failures, under GCC 13.3 and under Clang 18.1.
+- PR requested: `window-fn/df-e78` → `engine-win/export-profile-validation` (or folded into it), "DF-E78: run the
+  two direct-stem tests; the AIFF exponent's width as unsigned". Lands with the export stack, after 3 December.
+
+**5. The parity sheets of #742 → `window-fn/parity-review` d38cc1c9.**
+- Each row's ADI column was checked against main's code, and its N, DF and ADR citations against DEFERRED,
+  RESERVATIONS and DECISIONS. Each claimed error was read again by a skeptical second reader. Three are
+  corrected:
+  - recording row 32: the 1/16 Rec-Q default is ADR-0203 d12 and ADR-0132 d8, not d7;
+  - export row 2: the page draws only the first four reasons Export is held back;
+  - export row 7: the exact range is kept only while both fields are unedited.
+- Three claims were refuted and stand (rows 28, 39 and 47 of the recording sheet). The Live column was not judged
+  here (no manual on this side). `tools/validate_parity.py`: 11 sheets, clean.
+- PR requested: `window-fn/parity-review` → main, "parity-recording and parity-export: three corrections".
+  Depends on nothing beyond main.
+
+**RE-01 (`window-fn/remarks`), as ruled:** RE-01 is an M1 row. The branch merges cleanly into main 61676617, and
+the merge, built and run locally (GCC 13.3, JUCE on, Pd off), passes the 27 window and mix suites and the shell
+suite (3149 checks, 0 failures). PR requested: `window-fn/remarks` → main, "RE-01: remarks from the window (add,
+edit, resolve, delete)". The window lane reviews its shell lines.
+
+**5 (P2 window rows):** as logged on 23 November, none in the lane's prefixes has a window half that needs
+nothing unbuilt:
+- AU-09 comes after AU-03 (the engine's pass coordinator), and its MIDI Learn needs SRF-05's Remote route, whose
+  bindings do nothing until SRF-04;
+- MI-05 needs the Groove Pool's table;
+- MI-07 comes after MI-03;
+- MI-09 needs its side table;
+- MX-15 and MX-19 wait on Session View and on the engine;
+- MX-16 comes after MX-25;
+- MX-20 waits on the director's list;
+- MX-21 and MX-31 wait on MX-30;
+- the SRF P2 rows wait on SRF-04 or SRF-07.
+
+Nothing was started under "lands after 3 December".
+
 ## 2026-11-23, window-fn — DF-E71 too, at the director's request; main now builds under GCC 13 (PR requested)
 
 On the same branch as the `adi_play` fix: `tests/scanner_session_reopen.hpp:208` binds the seek pairs by reference
