@@ -87,6 +87,13 @@ class Vocoder {
                  std::size_t frames, const float *carrierLeft = nullptr,
                  const float *carrierRight = nullptr) noexcept;
     double trackedHz() const noexcept { return pitchHz_; }
+    /// For tests (DF-E68 a): the pitch tracker's multiply-adds in the last
+    /// process() call. A scan is spread over the decimated samples between
+    /// two scans, so no call carries a whole one.
+    std::size_t trackerWork() const noexcept { return trackerWork_; }
+    /// A scan's lags are spread evenly over this many decimated samples, fewer
+    /// than the 128 before the next scan is due.
+    static constexpr double kScanSteps = 120;
     double envelope(std::size_t band, std::size_t channel = 0) const noexcept {
         return envelopes_[channel][band];
     }
@@ -94,12 +101,19 @@ class Vocoder {
   private:
     void update() noexcept;
     void track(double input) noexcept;
+    void scan(std::size_t lags) noexcept;
+    double correlation(std::size_t lag) noexcept;
     double random() noexcept;
     std::array<double, Count> p_{};
     std::array<std::array<VocoderBand, 20>, 2> mod_{}, carrier_{};
     std::array<std::array<double, 20>, 2> envelopes_{}, carrierPower_{};
     std::array<double, 20> gains_{};
     std::array<double, 1024> pitchBuffer_{};
+    // The window a scan reads, oldest first, taken when the scan starts.
+    std::array<double, 1024> window_{};
+    std::size_t scanLag_ = 0, scanLast_ = 0, trackerWork_ = 0;
+    double scanA_ = 0, scanB_ = 0, scanRate_ = 0, scanLow_ = 0, scanHigh_ = 0, scanPace_ = 0, scanCredit_ = 0;
+    bool scanning_ = false;
     std::size_t pitchWrite_ = 0, pitchCount_ = 0;
     unsigned decimation_ = 4, decimationPhase_ = 0, trackerClock_ = 0;
     std::uint32_t seed_ = 0x12345678u;
