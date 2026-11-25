@@ -229,7 +229,7 @@ void crossVolumePublication(const std::filesystem::path& workFolder) {
     check(prepared.ok,"prepare a real recording captured on another native volume");
     const auto committed=recording::commit(*f.store,prepared);
     if(!committed.ok)std::printf("cross-volume commit: %s\n",committed.error.c_str());
-    check(committed.ok && committed.seqs.size()==3,"cross-volume capture commits through project-side AtomicOnly publication as one group");
+    check(committed.ok && committed.seqs.size()==2,"cross-volume capture commits through project-side AtomicOnly publication as one group (media, placement)");
     if(committed.ok) {
         const auto owned=media::projectFolder(*f.store)/media::pathFromUtf8(f.store->db().execAndGet("SELECT rel_path FROM media_files").getString());
         check(owned.parent_path()==media::projectFolder(*f.store)/"audio" && media::blake3File(owned).hex==hash.hex && !fs::exists(recorded.directory()),
@@ -294,7 +294,7 @@ void forcedCrossDevicePublication() {
         prepared.publicationHooks={};
         const auto retried=recording::commit(*f.store,prepared);
         if(!retried.ok)std::printf("cross-device retry: %s\n",retried.error.c_str());
-        check(retried.ok && retried.seqs.size()==3 && media::blake3File(published).hex==takeHash.hex && !fs::exists(recorded.directory()),
+        check(retried.ok && retried.seqs.size()==2 && media::blake3File(published).hex==takeHash.hex && !fs::exists(recorded.directory()),
             "the same preparation publishes its retained stage once the rename succeeds");
     }
     check(!staged.empty() && !fs::exists(staged.parent_path()) && fs::exists(published),
@@ -307,7 +307,7 @@ void heardPlacementAndHistory() {
         if(!prepared.ok)std::printf("prepare: %s\n",prepared.error.c_str());
         check(prepared.ok && digestProject(*f.store).text==before,"recording attachment captures without project writes");
         const auto committed=recording::commit(*f.store,prepared);if(!committed.ok)std::printf("commit: %s\n",committed.error.c_str());
-        check(committed.ok && committed.seqs.size()==3,"recorded media, clip and source attach as one native undo group");
+        check(committed.ok && committed.seqs.size()==2,"recorded media and the take's placement commit as one native undo group");
         auto& db=f.store->db();const auto owned=media::projectFolder(*f.store)/media::pathFromUtf8(db.execAndGet("SELECT rel_path FROM media_files").getString());
         check(std::filesystem::exists(owned) && !std::filesystem::exists(recorded.directory()),"successful recording publication retains owned audio and removes only private take staging");
         const auto heard=f.play(precision);bool exact=true;
@@ -320,6 +320,43 @@ void heardPlacementAndHistory() {
         f.store.reset();StoreError opened{};f.store=Store::open(f.temporary.path()/"song.adi",opened);
         check(f.store && digestProject(*f.store).text==after && f.play(precision)==heard,"reopened recording history and owned media restore the same project and heard PCM");
     }
+}
+// walk-B B6: a take recorded over a clip replaces what it covers in the main lane, as Live does, in the
+// take's one Undo step; nothing is left under it to play.
+void linearTakeReplacesWhatItCovers() {
+    Fixture f;
+    auto first=f.capture(false,Precision::Float32,false,300,{},512); // [512,812)
+    const std::array<recording::ClipIds,1> firstIds={{{7,8,"First"}}};
+    auto prepared=recording::prepareCommit(*f.store,first,firstIds);
+    check(prepared.ok && recording::commit(*f.store,prepared).ok,"the first take lands");
+    const auto before=digestProject(*f.store).text;
+    auto second=f.capture(false,Precision::Float32,false,100,{},600); // [600,700), inside the first
+    const std::array<recording::ClipIds,1> secondIds={{{17,18,"Second"}}};
+    prepared=recording::prepareCommit(*f.store,second,secondIds);
+    if(!prepared.ok)std::printf("prepare: %s\n",prepared.error.c_str());
+    const auto committed=prepared.ok?recording::commit(*f.store,prepared):CommitResult{};
+    check(committed.ok,"a take over a clip commits");
+    auto& db=f.store->db();
+    const auto count=[&](const char* sql){return db.execAndGet(sql).getInt();};
+    check(count("SELECT count(*) FROM clips WHERE track_id=21 AND lane_id IS NULL")==3,
+          "the covered clip is split around the new take: left part, take, right part");
+    check(count("SELECT count(*) FROM clips a JOIN clips b ON a.id<b.id AND a.track_id=b.track_id "
+                "AND a.lane_id IS NULL AND b.lane_id IS NULL "
+                "WHERE a.pos_ticks<b.pos_ticks+b.length_ticks AND b.pos_ticks<a.pos_ticks+a.length_ticks")==0,
+          "no two clips of the main lane overlap after the take");
+    check(count("SELECT count(*) FROM clips WHERE id=17 AND name='Second'")==1 &&
+          count("SELECT count(*) FROM clips WHERE id=7")==1,
+          "the take keeps its id and name; the left part keeps the covered clip's id");
+    const auto heard=f.play(Precision::Float32);
+    bool exact=true;
+    for(std::size_t frame=0;frame<heard.size();++frame) {
+        const auto expected=frame>=600 && frame<700 ? Fixture::sample(frame-600)
+                          : frame>=512 && frame<812 ? Fixture::sample(frame-512) : 0.0f;
+        exact=exact && heard[frame]==expected;
+    }
+    check(exact,"the take is heard where it was recorded and the first take around it, never both at once");
+    check(History(*f.store).undo().ok && digestProject(*f.store).text==before,
+          "one Undo restores the covered clip whole");
 }
 void existingMediaAndHistoryPaths() {
     for(const bool sourceAlreadyInPool:{false,true}) {
@@ -442,7 +479,7 @@ void lateSqlAndOwnedReuse() {
 void groupDedupAndGuards() {
     Fixture f;auto recorded=f.capture(true);const std::array<recording::ClipIds,2> ids={{{7,8,"One"},{9,10,"Two"}}};auto prepared=recording::prepareCommit(*f.store,recorded,ids);
     check(prepared.ok,"prepare a two-track recording before media rows exist");
-    const auto committed=recording::commit(*f.store,prepared);check(committed.ok && committed.seqs.size()==5,"identical simultaneous takes deduplicate inside the captured batch");
+    const auto committed=recording::commit(*f.store,prepared);check(committed.ok && committed.seqs.size()==2,"identical simultaneous takes deduplicate inside the captured batch: one media row, one placement");
     auto& db=f.store->db();check(db.execAndGet("SELECT count(*) FROM media_files").getInt()==1 && db.execAndGet("SELECT count(*) FROM audio_clips WHERE media_id=8").getInt()==2,"both recorded clips reference the one captured content identity");
     check(History(*f.store).undo().ok && db.execAndGet("SELECT count(*) FROM clips").getInt()==0,"one undo removes every track in the recording pass");
     auto another=f.capture();const std::array<recording::ClipIds,1> one={{{17,18,"Another"}}};auto stale=recording::prepareCommit(*f.store,another,one);
@@ -714,7 +751,7 @@ int main(int argc,char** argv){try{
     latencyCompensatedPlacement();
     midiLoopTakes();
     if(argc!=1 && (argc!=3 || std::string(argv[1])!="--cross-volume-work-folder"))throw std::runtime_error("usage: recording tests [--cross-volume-work-folder PATH]");
-    publicationStagingOwnership();forcedCrossDevicePublication();heardPlacementAndHistory();rollbackNeverDeletesLaterWriter();lateSqlAndOwnedReuse();existingMediaAndHistoryPaths();groupDedupAndGuards();loopPublicationRefusesFlattening();
+    publicationStagingOwnership();forcedCrossDevicePublication();heardPlacementAndHistory();linearTakeReplacesWhatItCovers();rollbackNeverDeletesLaterWriter();lateSqlAndOwnedReuse();existingMediaAndHistoryPaths();groupDedupAndGuards();loopPublicationRefusesFlattening();
     loopPassesAndHistory();loopPartialEdgesAndPriorComp();loopSinglePassBoundaries();loopAtomicRefusalAndDedup();
     loopReusesOrderedLanes();loopMixedReuseAndFallback();loopReuseRefusesUnprovedExtents();
     if(argc==3) {

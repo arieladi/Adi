@@ -58,7 +58,7 @@ void materialization() {
         check(read==memory.frames() && samples==memory.samples && digestProject(*f.store).text==before,"materialization writes literal source float samples without changing history");}
         const std::array<recording::ClipIds,1> ids={{{7,8,"Captured audio"}}};auto edit=recording::prepareCommit(*f.store,take,ids);
         check(edit.ok && digestProject(*f.store).text==before,"Capture reuses native take preparation without project writes");
-        const auto committed=recording::commit(*f.store,edit);check(committed.ok && committed.seqs.size()==3,"Capture media, clip and audio attachment form one native transaction");
+        const auto committed=recording::commit(*f.store,edit);check(committed.ok && committed.seqs.size()==2,"Capture media and its placement form one native transaction");
         if(!committed.ok)throw std::runtime_error(committed.error);
         std::string error;const auto owned=media::resolveMedia(media::projectFolder(*f.store),media::mediaRow(f.store->db(),8),error);
         check(!owned.empty() && std::filesystem::exists(owned) && !std::filesystem::exists(take.directory()),"successful Capture retains owned media and cleans its private take");
