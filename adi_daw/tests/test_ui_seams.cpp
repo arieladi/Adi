@@ -877,11 +877,13 @@ void groupAndUngroupAsBatches() {
     check(order() == flat, "Kick, Snare, Bass, then Main");
 
     auto edit = ui::groupTrack(view.current()->tracks, 3);
-    check(edit.refusal.empty() && edit.select == 5 && edit.ops.size() == 3 && edit.ops[0].opType == "track.create" &&
+    check(edit.refusal.empty() && edit.select == 5 && edit.ops.size() == 4 && edit.ops[0].opType == "track.create" &&
               edit.ops[0].payload["index"] == 1 && edit.ops[0].payload["parent"].is_null() &&
               edit.ops[1].opType == "track.setParent" && edit.ops[2].opType == "track.reorder" &&
-              edit.ops[2].payload["id"] == 4 && edit.ops[2].payload["index"] == 2,
-          "Snare grouped: the group at Snare's place, Snare into it, Bass's index put after it; Main untouched");
+              edit.ops[2].payload["id"] == 4 && edit.ops[2].payload["index"] == 2 &&
+              edit.ops[3].opType == "track.reorder" && edit.ops[3].payload["id"] == 1 && edit.ops[3].payload["index"] == 3,
+          "Snare grouped: the group at Snare's place, Snare into it, Bass's index put after it; Main's 0, Kick's too, "
+          "put last (walk-A A23)");
     const auto groupOps = static_cast<int>(edit.ops.size());
     check(sub.submit(std::move(edit.ops)).ok && sub.nextUndo() && sub.nextUndo()->opCount == groupOps &&
               sub.nextUndo()->label == "Group Tracks",
@@ -1911,6 +1913,101 @@ void returnsStandBeforeMain() {
           "the rows carry the index; none, or a value outside the palette, is -1");
 }
 
+void insertReturnTrackStandsBeforeMain() {
+    section("Insert Return Track: after the returns, before Main; every index its own (manual 18.2)");
+    adi::test::TempDirectory temp("ui_seams", "insert-return");
+    StoreError err = StoreError::Ok;
+    auto store = Store::createNewProject(temp.path() / "p.adi", err);
+    check(store != nullptr, "the default project");
+    if (!store) return;
+    engine::ProjectView view;
+    ui::OpSubmitter sub(*store, view);
+    view.refresh(*store);
+    using Ix = std::vector<std::pair<std::int64_t, std::int64_t>>;
+    // The top level by index alone, as the control projection and the engine's snapshot order it.
+    auto file = [&store] {
+        Ix out;
+        SQLite::Statement st(store->db(),
+                             "SELECT id,index_in_parent FROM tracks WHERE parent_id IS NULL ORDER BY index_in_parent,id");
+        while (st.executeStep()) out.emplace_back(st.getColumn(0).getInt64(), st.getColumn(1).getInt64());
+        return out;
+    };
+    auto shared = [&store] {
+        return store->db().execAndGet("SELECT COUNT(*) FROM (SELECT 1 FROM tracks GROUP BY parent_id,index_in_parent "
+                                      "HAVING COUNT(*)>1)").getInt();
+    };
+    // TrackOrder's top level: the tracks, the returns, Main.
+    auto order = [&view] {
+        const ui::SnapshotReader reader(view.current());
+        std::vector<ui::TrackRow> rows;
+        ui::rowsFromSnapshot(reader, rows);
+        ui::TrackOrder built;
+        built.build(reader, rows);
+        std::vector<std::int64_t> out;
+        for (const auto& p : built.places())
+            if (p.parent == 0) out.push_back(p.id);
+        return out;
+    };
+    auto ids = [](const Ix& ix) {
+        std::vector<std::int64_t> out;
+        for (const auto& [id, index] : ix) out.push_back(id);
+        return out;
+    };
+    auto consistent = [&] { return shared() == 0 && ids(file()) == order(); };
+    auto submit = [&sub](ui::TrackEdit edit) { return edit.refusal.empty() && sub.submit(std::move(edit.ops)).ok; };
+    auto name = [&view](std::int64_t id) {
+        for (const auto& t : view.current()->tracks)
+            if (t->id == id) return t->name;
+        return std::string();
+    };
+    // 1 MIDI 2, 2 MIDI 3, 3 Audio 4, 4 Audio 5, A Reverb 6, B Delay 7, Main 1.
+    const Ix before{{2, 0}, {3, 1}, {4, 2}, {5, 3}, {6, 4}, {7, 5}, {1, 6}};
+    check(file() == before && consistent(), "1 MIDI .. 4 Audio, A Reverb, B Delay, Main: indexes 0..6");
+
+    // The walk's steps: two returns, then 3 Audio and 4 Audio grouped, then ungrouped.
+    check(submit(ui::insertReturnTrack(view.current()->tracks, 0, 8)) && name(8) == "C Return" &&
+              file() == Ix{{2, 0}, {3, 1}, {4, 2}, {5, 3}, {6, 4}, {7, 5}, {8, 6}, {1, 7}} && consistent(),
+          "C Return at 6, after B Delay; Main down one to 7");
+    check(submit(ui::insertReturnTrack(view.current()->tracks, 0, 9)) && name(9) == "D Return" &&
+              file() == Ix{{2, 0}, {3, 1}, {4, 2}, {5, 3}, {6, 4}, {7, 5}, {8, 6}, {9, 7}, {1, 8}} && consistent(),
+          "D Return at 7, after C Return; Main at 8");
+    check(sub.nextUndo() && sub.nextUndo()->label == "Insert Return Track", "one undo step, Insert Return Track");
+    check(submit(ui::groupTracks(view.current()->tracks, {4, 5}, 10)) &&
+              file() == Ix{{2, 0}, {3, 1}, {10, 2}, {6, 3}, {7, 4}, {8, 5}, {9, 6}, {1, 7}} && consistent(),
+          "3 Audio and 4 Audio grouped: the returns and Main up one with the rest; Main alone at 7");
+    check(submit(ui::ungroupTrack(view.current()->tracks, 10)) &&
+              file() == Ix{{2, 0}, {3, 1}, {4, 2}, {5, 3}, {6, 4}, {7, 5}, {8, 6}, {9, 7}, {1, 8}} && consistent(),
+          "ungrouped: every track at its place, Main last");
+    check(sub.undo().ok && sub.undo().ok && sub.undo().ok && sub.undo().ok && file() == before,
+          "undo, four times, puts every index back");
+
+    // In a group: after what the group holds; the top level keeps its indexes.
+    check(submit(ui::groupTracks(view.current()->tracks, {4, 5}, 10)), "3 Audio and 4 Audio grouped");
+    const auto top = file();
+    check(submit(ui::insertReturnTrack(view.current()->tracks, 10, 11)) && name(11) == "GA Return" && file() == top &&
+              shared() == 0,
+          "Insert Return Track in Group: GA Return in the group, after its tracks; the top level untouched");
+    check(sub.undo().ok && sub.undo().ok && file() == before, "undo, twice");
+
+    // A file an earlier build left with a return after Main, and one sharing Main's index: the next
+    // structural edit puts them in order rather than keeping, or adding, a shared index.
+    auto raw = [&sub](std::int64_t id, const char* name, std::int64_t index) {
+        OpRequest r;
+        r.opType = "track.create";
+        r.payload = {{"id", id}, {"kind", "return"}, {"name", name}, {"index", index}};
+        r.label = "Insert Return Track";
+        return sub.submit(std::move(r)).ok;
+    };
+    check(raw(8, "C Return", 7) && raw(9, "D Return", 6) && shared() == 1, "C Return at 7, after Main; D Return at 6, Main's");
+    check(submit(ui::insertReturnTrack(view.current()->tracks, 0, 12)) &&
+              file() == Ix{{2, 0}, {3, 1}, {4, 2}, {5, 3}, {6, 4}, {7, 5}, {9, 6}, {8, 7}, {12, 8}, {1, 9}} &&
+              consistent(),
+          "the next return renumbers the top level: the returns in their order, Main last");
+    check(sub.undo().ok && shared() == 1, "undo");
+    check(submit(ui::groupTracks(view.current()->tracks, {4, 5}, 10)) && consistent(),
+          "Group Tracks on that file: no index shared, Main last");
+}
+
 void referenceTapAndHold() {
     section("the Reference's [REF] and Shift+R: a tap latches, a hold auditions (ADR-0209 d9)");
     ui::ReferenceAudition ref;
@@ -2685,6 +2782,7 @@ int main() {
     soloRules();
     undoHistoryRestores();
     recordingDefaultsRideTheBatch();
+    insertReturnTrackStandsBeforeMain();
 
     std::printf("%s -- %d checks, %d failure(s)\n", g_failures ? "FAIL" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

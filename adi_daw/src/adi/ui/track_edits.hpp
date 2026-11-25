@@ -263,10 +263,11 @@ inline TrackEdit groupTracks(const SnapshotTracks &tracks, const std::vector<std
         if (inside[i]->indexInParent != place)
             edit.ops.push_back(op("track.reorder", {{"id", inside[i]->id}, {"index", place}}, label));
     }
-    // The group stands at `at`; the tracks after it move up one place.
+    // The group stands at `at`; the tracks after it move up one place, the returns and Main too: a
+    // Main left behind shared the index the last return moved up to (walk-A A23).
     for (std::size_t i = 0; i < rest.size(); ++i) {
         const auto place = static_cast<std::int64_t>(i < at ? i : i + 1);
-        if (rest[i]->kind != "master" && rest[i]->indexInParent != place)
+        if (rest[i]->indexInParent != place)
             edit.ops.push_back(op("track.reorder", {{"id", rest[i]->id}, {"index", place}}, label));
     }
     edit.select = group;
@@ -518,6 +519,54 @@ inline TrackEdit ungroupTrack(const SnapshotTracks &tracks, std::int64_t id) {
     renumber(edit.ops, order, label);
     edit.ops.push_back(op("track.delete", {{"id", id}}, label));
     edit.select = inner.empty() ? 0 : inner.front()->id;
+    return edit;
+}
+// Live's Insert Return Track (Ctrl/Cmd+Alt+T; manual 18.2): a new return after the others, lettered
+// as Live letters them, selected. Inside a group (Insert Return Track in Group, ADR-0247 d2), after
+// what the group holds, playing into it; its letter is the group's initial and its place among the
+// group's returns ("DA"). At the top it takes Main's place and Main moves down one, in the same
+// batch: they share index_in_parent, and a return given the index past every track stood after
+// Main by index, or shared one with it after Group Tracks (walk-A A23). The rest of the parent is
+// renumbered to its order too, so a file that already shares an index is put right. `id` is the new
+// track's, from the caller's `RowIds` (DF-E16).
+inline TrackEdit insertReturnTrack(const SnapshotTracks &tracks, std::int64_t group, std::int64_t id) {
+    using namespace track_edits_detail;
+    TrackEdit edit;
+    const auto *into = group != 0 ? find(tracks, group) : nullptr;
+    if (group != 0 && (into == nullptr || into->kind != "group")) {
+        edit.refusal = "Choose a group to put the return in.";
+        return edit;
+    }
+    const char *label = into != nullptr ? "Insert Return Track in Group" : "Insert Return Track";
+    std::int64_t returns = 0;
+    for (const auto &t : tracks)
+        if (t && t->kind == "return" && t->parent == group)
+            ++returns;
+    // What the parent holds in TrackOrder's order: its tracks, its returns, then Main; the new
+    // return comes before Main.
+    const auto order = children(tracks, group);
+    const auto at = static_cast<std::size_t>(
+        std::count_if(order.begin(), order.end(), [](const auto *k) { return rank(*k) < 2; }));
+    std::string letter(1, static_cast<char>('A' + returns % 26));
+    if (into != nullptr) {
+        char initial = 'G';
+        for (const char c : into->name)
+            if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) {
+                initial = static_cast<char>(c >= 'a' ? c - 'a' + 'A' : c);
+                break;
+            }
+        letter.insert(letter.begin(), initial);
+    }
+    Payload create = {{"id", id}, {"kind", "return"}, {"name", letter + " Return"}, {"index", static_cast<std::int64_t>(at)}};
+    if (into != nullptr)
+        create["parent"] = group;
+    edit.ops.push_back(op("track.create", std::move(create), label));
+    for (std::size_t i = 0; i < order.size(); ++i) {
+        const auto place = static_cast<std::int64_t>(i < at ? i : i + 1);
+        if (order[i]->indexInParent != place)
+            edit.ops.push_back(op("track.reorder", {{"id", order[i]->id}, {"index", place}}, label));
+    }
+    edit.select = id;
     return edit;
 }
 } // namespace adi::ui
