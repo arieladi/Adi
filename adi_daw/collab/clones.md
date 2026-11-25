@@ -17,6 +17,16 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 25 November 2026 — Rounded hard clipping in the three Drive bands
+
+`clones/shaper-rounded-clip` at `ce4fcfbf4` — Round the clipping knee independently in each Drive band. Lands after 3 December. The low, middle and high switches append as 928–930. They act only on the existing hard clipping style. A sparse state reopens with all switches off. The rounded curve reads strength aligned to the eight-frame interpolation history. Reset and mode entry prime from the incoming strength.
+
+The four DSP, Drive, registered Pd and session suites passed in Release MSVC with warnings as errors at both Pd precisions. Two signed original peaks arrived exactly 16 samples late in both the native and crossed editable Pd routes. All 1,504,800 samples on the existing styles matched the previous kernel byte for byte. The 64 interleaved compensation holdouts, off-grid signed steps, independent band routing, invalid controls, history reset and return to hard clipping passed. The largest moving stereo channel RMS error for the direct kernel was 0.00001214 at 44.1, 48 and 96 kHz. On half-drive wideband noise the 96 kHz twofold reconstruction filter gave a larger 0.001624 RMS error.
+
+On registered 48 kHz stereo kick and bass, ADI/reference median and p99 were 74.2/91.3 and 118.5/121.6 microseconds at 256 frames. At 2,048 they were 576.7/663.9 and 888.4/1,047.7. At each size the corrected output differed from the aligned original by at most 0.00001176 RMS per channel and 0.00004682 peak. The hard-clip baseline differed by 0.01876 RMS. ADI missed 3 and 9 deadlines per 10,240 callbacks respectively. The reference missed zero. Both reported 16 frames.
+
+PR requested
+
 ## 25 November 2026 — Three Pan laws across the private program bank
 
 Among 873 programs, 51 use 52 bands sensitive to the gain choice and another five use full delay blend, where the gain choice is neutral. Every comparison rendered the previous route, the corrected blend and range with the previous gain, and the identical route with the new gain. The direct gain transfer and all outputs survived the final held-position optimization.
