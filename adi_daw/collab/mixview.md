@@ -11,6 +11,12 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+## 25 November 2026 · MX-13 Scope vertical zoom · lands after 3 December
+
+- **PR requested** `mixview/mx13-scope-vertical-zoom-lands-after-2026-12-03` at `087992d94353d1382a76633e25b134e5297930fa`. Alt-wheel changes the time-waveform scale in 6 dB steps, up to 24 dB in either direction. Both traces and the stationary cursor use the same scale. The capture interval, Freeze, selected region, and metering stay tied to the original samples.
+- Two new component checks failed first. Release passed 1,190 shared-analysis, 558 Mix View and 594 spectrum assertions. The changed editor and its test compiled with warnings treated as errors. No new tap, transform or project edit.
+- Review ZIP SHA-256 `a72ae295222eb98ae907c01ba379e352bf65c1393c9ec92692dc55afd9c9241f`. Executable `5d5f1d8ee1ffd9118950edcba4ccac4bb880493f50dd880ed299fec721e7bc57`. Retest brief uses the same source hash.
+
 ### 25 November — MX13 Focus musical windows
 
 **PR requested** `mixview/mx13-musical-window-lands-after-2026-12-03` at `5c88abf073d56cd9e5c99f3aeac3d4cb24a68532`, after captured true peak. Focus Scope offers One Beat and One Bar. The default is still One Bar. A view change clears the former interval and region and requests the new window on the same grouped sources. Tempo and signature edges share exact rounded sample positions. A Locate or selection at a rounded-down boundary starts the new interval. The existing Sum level summary remains readable with the added control.
