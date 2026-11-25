@@ -161,6 +161,12 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - The missing Export PNG control failed first. The strict Release passed all 11 suites, 5,609 checks. The chooser and pixel identity across two saved files are in the live brief.
 - Review ZIP SHA-256 `4639beb5bdb27f1e87dd6be8f5c1af9c176a21de679ee69da3af45bb73c1aeea`. Executable `926d020439621c761c7526dd830bc75ca053bbed644f51d46c4f73968dfe4425`. Retest brief uses the same source hash.
 
+## 25 November 2026 · MX-21 Pre/Post Spectrogram frequency ruler · lands after 3 December
+
+- **PR requested** `mixview/mx21-spectrogram-delta-ruler-lands-after-2026-12-03` at `170c3f543584a12b147f656d806dea2f919b643a`. The optional Hz ruler uses the same logarithmic viewport as the signed raster. Pointer readings use that viewport and clear in the gutter. The export still writes the original raster.
+- The missing control failed first. The checks verified the 1 kHz tick, remapping to an adjacent empty cell and recovery of the frozen reading with no additional broker work. The strict Release passed 11 suites, 5,614 checks.
+- Review ZIP SHA-256 `b522940070c518585b9c801d77076520c7846a6891eae6c6ff60ee90fed584b9`. Executable `c0765f0b32b27b6fd80ff1716fb647f4855e245ceaa71b6fe26ef90bf8479f31`. Retest brief uses the same source hash.
+
 ### 25 November — MX13 Focus musical windows
 
 **PR requested** `mixview/mx13-musical-window-lands-after-2026-12-03` at `5c88abf073d56cd9e5c99f3aeac3d4cb24a68532`, after captured true peak. Focus Scope offers One Beat and One Bar. The default is still One Bar. A view change clears the former interval and region and requests the new window on the same grouped sources. Tempo and signature edges share exact rounded sample positions. A Locate or selection at a rounded-down boundary starts the new interval. The existing Sum level summary remains readable with the added control.
