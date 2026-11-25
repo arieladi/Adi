@@ -218,6 +218,14 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - Additional window shapes need the shared FFT window and calibration owner. The existing Hann profile remains available. The private fixtures cover bin-centred gain, half-bin loss and window width.
 - Enhanced needs its worker publication, cadence and time-row policy agreed across seats. The private proofs check frequency and time signs, the two-transform frequency measurement and the three-transform time measurement. The director's Enhanced choice is parked above.
 
+### 2026-11-25 — MX-21 Spectrum display smoothing (lands after 3 December)
+
+- Branch `mixview/mx21-spectrum-smoothing-lands-after-2026-12-03` at `4b642b9b26a9`, after Spectrum overlap `9c08ae51e37cd`. Dedicated Spectrum gains an Off default and fifteen octave widths. One cached display projection is reused by the primary and pins, including when Freeze keeps their published results. The panel releases its projection on hiding. The choice never adds analysis demand or writes audio settings.
+- Red first: four menu/visibility failures. Strict Release: 5,683 checks across 12 suites. The numerical tests compare narrow, blended, broad and upper-edge cases to a direct calculation, and check allocation-free reuse after preparation. Software peers verify both held pin peaks, restoration of the same pixels and the existing transform count.
+- Sealed Release review and retest brief accompany `4b642b9b26a9`. Archive SHA-256 `b2440d64c4dd2ad4307c78fc806cc572588a4e242eb2184b5851a66671d50782`. Visible reference calibration, menu mapping and timed CPU remain pending.
+
+PR requested.
+
 ### 25 November — MX13 Focus musical windows
 
 **PR requested** `mixview/mx13-musical-window-lands-after-2026-12-03` at `5c88abf073d56cd9e5c99f3aeac3d4cb24a68532`, after captured true peak. Focus Scope offers One Beat and One Bar. The default is still One Bar. A view change clears the former interval and region and requests the new window on the same grouped sources. Tempo and signature edges share exact rounded sample positions. A Locate or selection at a rounded-down boundary starts the new interval. The existing Sum level summary remains readable with the added control.
