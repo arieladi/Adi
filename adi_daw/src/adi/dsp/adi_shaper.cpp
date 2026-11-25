@@ -75,6 +75,7 @@ void AdiShaper::prepare(double sampleRate) noexcept {
     quarterNotes_ = 0.0;
     playing_ = true;
     for (auto& filter : filters_) filter.prepare(sampleRate);
+    for (auto& follower : widthFollowers_) follower.prepare(sampleRate);
     for (auto& sweep : sweeps_) (void)sweep.prepare(sampleRate);
     for (auto& drive : drives_) drive.prepare(sampleRate);
     for (auto& pan : panHistory_) pan.prepare(sampleRate);
@@ -296,7 +297,8 @@ void AdiShaper::updateBand(Stage kind, CurveBand& band) const noexcept {
     const auto neutral = kind == Stage::Pan ? 0.0f : 1.0f;
     for (std::size_t i = 0; i < band.primary.points.size(); ++i)
         band.heldGains[i] = gain(kind, band.primary.points[i], band.blend);
-    band.active = band.blend != 0.0f && (!band.primary.constant || band.primary.points[0] != neutral);
+    band.active = band.followWidth ||
+                  (band.blend != 0.0f && (!band.primary.constant || band.primary.points[0] != neutral));
 }
 
 void AdiShaper::updateActivity(StageData& stage) noexcept {
@@ -441,6 +443,24 @@ void AdiShaper::set(Param id, float value) noexcept {
         panHistory_[static_cast<std::size_t>(id - PanLowDelayBlend)].setBlend(value);
         return;
     }
+    if (id >= WidthFollowerLow && id < WidthFollowerEnd) {
+        const auto local = id - WidthFollowerLow;
+        const auto index = static_cast<std::size_t>(local / followerParameterCount);
+        const auto control = static_cast<FollowerControl>(local % followerParameterCount);
+        auto& follower = widthFollowers_[index];
+        follower.set(static_cast<AdiShaperFollower::Control>(control), value);
+        if (control == FollowerOn) {
+            auto& stage = stages_[static_cast<std::size_t>(Stage::Width)];
+            auto& band = stage.bands[index];
+            const bool enabled = follower.enabled();
+            if (band.followWidth != enabled) {
+                band.followWidth = enabled;
+                updateBand(Stage::Width, band);
+                updateActivity(stage);
+            }
+        }
+        return;
+    }
     if (id >= BaseCount) return;
     if (id == MasterMix) {
         masterMix_ = std::clamp(value, 0.0f, 100.0f) * 0.01f;
@@ -466,6 +486,8 @@ void AdiShaper::set(Param id, float value) noexcept {
         if (local == 0) {
             const auto selected = static_cast<int>(std::round(std::clamp(value, 0.0f, 3.0f)));
             if (kind == Stage::Pan && stage.layout != selected) resetKernels(kind);
+            if (kind == Stage::Width && selected != stage.layout)
+                for (auto& follower : widthFollowers_) follower.reset();
             layout(stage, selected);
             return;
         }
@@ -644,6 +666,13 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
                 }
             } else {
                 // An else, not a return: MSVC /WX rejects the gain path as unreachable code (C4702) for Pan.
+                if constexpr (kind == Stage::Width) {
+                    if (band.followWidth) {
+                        const float width = 2.f * widthFollowers_[index].apply(l, r, .5f * band.primary.at(p));
+                        applyGain(gain(kind, width, band.blend), l, r);
+                        return;
+                    }
+                }
                 Gain g;
                 if (band.primary.constant) g = band.heldGains[0];
                 else if (!band.primary.linear) g = band.heldGains[static_cast<std::size_t>(p >> 61)];
@@ -732,7 +761,7 @@ bool AdiShaper::renderFixedWidth(StageData& stage, float* left, float* right, st
     std::array<float, 3> widths;
     for (std::size_t i = 0; i < widths.size(); ++i) {
         const auto& band = stage.bands[i];
-        if (!band.primary.constant) return false;
+        if (!band.primary.constant || band.followWidth) return false;
         widths[i] = band.active ? band.heldGains[0].left : 1.0f;
     }
     for (std::size_t i = 0; i < frames; ++i) {

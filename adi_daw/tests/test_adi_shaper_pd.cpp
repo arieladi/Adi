@@ -175,13 +175,13 @@ void panBlendState(DeviceInstance& device) {
 }
 
 void modulationPd(const std::string& editedDir, bool filterOn, bool sweepOn, bool driveOn = false,
-                  bool crushOn = false) {
+                  bool crushOn = false, bool followerOn = false) {
     using Engine = adi::device::LibPdEngine;
     using Shaper = adi::dsp::AdiShaper;
     using Stage = Shaper::Stage;
     constexpr auto mid = Shaper::Band::Mid;
     constexpr int frames = 4096;
-    const bool onlyVolume = !filterOn && !sweepOn && !driveOn && !crushOn;
+    const bool onlyVolume = !filterOn && !sweepOn && !driveOn && !crushOn && !followerOn;
     std::array<adi::device::PdLatencyReceiver, 2> latency;
     Engine native(ADI_SHAPER_PATCH_DIR, "ADI-Shaper.pd", 2, 2);
     Engine pd(editedDir, "ADI-Shaper.pd", 2, 2);
@@ -197,6 +197,20 @@ void modulationPd(const std::string& editedDir, bool filterOn, bool sweepOn, boo
         auto send = [&](Shaper::Param id, float natural) {
             check(path.sendParameter(static_cast<int>(id) + 1, natural), "modulation message accepted");
         };
+        if (followerOn) {
+            send(Shaper::WidthBands, 3);
+            for (const auto band : {Shaper::Band::Low, mid, Shaper::Band::High}) {
+                send(Shaper::followerParam(band, Shaper::FollowerOn), 1);
+                send(Shaper::followerParam(band, Shaper::FollowerMode), band == mid ? 1.f : 0.f);
+                send(Shaper::followerParam(band, Shaper::FollowerAmount), 70);
+                send(Shaper::followerParam(band, Shaper::FollowerDepth), band == mid ? 2.f : 1.f);
+                send(Shaper::followerParam(band, Shaper::FollowerOffset), 54);
+                send(Shaper::followerParam(band, Shaper::FollowerThreshold), 2);
+                send(Shaper::followerParam(band, Shaper::FollowerAttack), 25);
+                send(Shaper::followerParam(band, Shaper::FollowerHold), 7);
+                send(Shaper::followerParam(band, Shaper::FollowerRelease), 43);
+            }
+        }
         if (onlyVolume) {
             for (int j = 0; j < 8; ++j)
                 send(Shaper::bandParam(Stage::Volume, mid, static_cast<Shaper::BandControl>(Shaper::Point1 + j)), 50);
@@ -381,9 +395,13 @@ void savedSplitFrequency() {
 int main() try {
     auto device = open();
     const auto* info = adi::findBuiltin(uid);
-    check(info && info->name == "ADI-Shaper" && device->paramCount() == 418, "device registration");
+    check(info && info->name == "ADI-Shaper" && device->paramCount() == 445, "device registration");
     for (int id = 1; id <= 415; ++id)
         check(device->paramAt(id - 1) && device->paramAt(id - 1)->id == std::to_string(id), "contiguous stable parameter IDs");
+    for (int id = 727; id <= 753; ++id) {
+        const auto* control = device->paramAt(418 + id - 727);
+        check(control && control->id == std::to_string(id), "Width follower preserves every earlier declaration index");
+    }
     panBlendState(*device);
     device = open();
     check(device->wantsDeviceTransport() && device->latencySamples() == 0, "position and latency");
@@ -492,6 +510,20 @@ int main() try {
     device = open();
     check(device->loadState("state", adi::Payload::to_cbor(realOnly))
           && std::abs(device->getParam("170").real - 37) < 1e-4, "a value saved only in its unit is kept");
+    auto beforeFollower = adi::Payload::from_cbor(sevenStageState);
+    for (int id = 727; id <= 753; ++id) {
+        beforeFollower.at("params").erase(std::to_string(id));
+        beforeFollower.at("real").erase(std::to_string(id));
+    }
+    set(*device, 736, 1);
+    set(*device, 753, .83);
+    const auto followerState = device->saveState("state");
+    device = open();
+    check(device->loadState("state", followerState) && device->getParam("736").real == 1 &&
+          std::abs(device->getParam("753").real - 83) < 1e-4, "Width follower settings persist");
+    check(device->loadState("state", adi::Payload::to_cbor(beforeFollower)) &&
+          device->getParam("736").real == 0 && std::abs(device->getParam("753").real - 20) < 1e-4,
+          "an old state restores the disabled follower and original release");
     automationKeepsTheClock();
     savedSplitFrequency();
     adi::test::TempDirectory edited{"shaper_pd", "crossed_outputs"};
@@ -502,6 +534,7 @@ int main() try {
     cachedPdTransport(ADI_SHAPER_PATCH_DIR, true);
     cachedPdTransport(editedDir, false);
     modulationPd(editedDir, false, false);
+    modulationPd(editedDir, false, false, false, false, true);
     modulationPd(editedDir, true, false);
     modulationPd(editedDir, false, true);
     modulationPd(editedDir, true, true);

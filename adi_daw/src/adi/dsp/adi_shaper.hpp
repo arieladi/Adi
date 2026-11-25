@@ -3,6 +3,7 @@
 #include "adi/dsp/adi_shaper_crush.hpp"
 #include "adi/dsp/adi_shaper_drive.hpp"
 #include "adi/dsp/adi_shaper_filter.hpp"
+#include "adi/dsp/adi_shaper_follower.hpp"
 #include "adi/dsp/adi_shaper_sweep.hpp"
 #include <array>
 #include <cstddef>
@@ -22,6 +23,7 @@ class AdiShaper {
     static constexpr int modBandParameterCount = 23;
     static constexpr int modStageParameterCount = modHeaderSize + 3 * modBandParameterCount;
     static constexpr int driveBandParameterCount = 16;
+    static constexpr int followerParameterCount = 9;
     enum Param : int { MasterMix, VolumeBands, WidthBands = VolumeBands + stageParameterCount,
                  PanBands = WidthBands + stageParameterCount,
                  VolumeLowSlope = PanBands + stageParameterCount, WidthLowSlope, PanLowSlope,
@@ -30,9 +32,16 @@ class AdiShaper {
                  SweepMidPolarity, SweepHighPolarity, DriveOn,
                  CrushOn = DriveOn + modHeaderSize + 3 * driveBandParameterCount,
                  BaseCount = CrushOn + modStageParameterCount,
+                 WidthFollowerLow = 726, WidthFollowerEnd = WidthFollowerLow + 3 * followerParameterCount,
                  PanLowDelayBlend = 855, PanMidDelayBlend, PanHighDelayBlend, Count };
     enum class Stage { Volume, Width, Pan, Filter, Sweep, Drive, Crush };
     enum class Band { Low, Mid, High };
+    enum FollowerControl { FollowerOn, FollowerMode, FollowerAmount, FollowerDepth, FollowerOffset,
+                           FollowerThreshold, FollowerAttack, FollowerHold, FollowerRelease };
+    static constexpr Param followerParam(Band band, FollowerControl control) noexcept {
+        return static_cast<Param>(WidthFollowerLow + followerParameterCount * static_cast<int>(band)
+                                  + static_cast<int>(control));
+    }
     enum BandControl { Mix, Clock, Cycle, Rate, Curve, Point1, Point2, Point3, Point4,
                        Point5, Point6, Point7, Point8 };
     static constexpr Param bandParam(Stage stage, Band band, BandControl control) noexcept {
@@ -80,7 +89,7 @@ class AdiShaper {
         double beats = 4.0, hz = 1.0;
         float mix = 1.0f, blend = 1.0f;
         int type = 0;
-        bool hertz = false, active = false;
+        bool hertz = false, active = false, followWidth = false;
         std::array<Gain, 8> heldGains{};
     };
     struct Split {
@@ -146,6 +155,7 @@ class AdiShaper {
     template <Stage kind> void render(StageData& stage, const float* inL, const float* inR,
                                      float* outL, float* outR, std::size_t frames) noexcept;
     std::array<StageData, 7> stages_;
+    std::array<AdiShaperFollower, 3> widthFollowers_;
     std::array<AdiShaperFilter, 3> filters_;
     std::array<AdiShaperSweep, 3> sweeps_;
     std::array<AdiShaperDrive, 3> drives_;
