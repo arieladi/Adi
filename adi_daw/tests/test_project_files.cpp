@@ -197,7 +197,12 @@ void unknownMajorAndReaders() {
         reader.exec("ROLLBACK");
     }
     const auto future=f.target("future-source");
-    {StoreError error{};auto s=Store::create(future,error);s->db().exec("PRAGMA user_version=2000");}
+    {
+        StoreError error{};auto s=Store::create(future,error);
+        // DF-E12 (c): a refused create is a failed check, not a null dereference.
+        check(s!=nullptr,"the future-major fixture is created");
+        if(s)s->db().exec("PRAGMA user_version=2000");
+    }
     StoreError error{};auto newer=Store::open(future,error);
     check(newer && error==StoreError::SchemaTooNew && newer->readOnly(),"unknown major fixture opens read-only");
     const auto target=f.target("future-copy");

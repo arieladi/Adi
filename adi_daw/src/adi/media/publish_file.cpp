@@ -444,7 +444,7 @@ std::shared_ptr<ProjectFileLease> ProjectFileLease::open(const fs::path& path,bo
             // file we just created -- no lease was ever possible -- so take it
             // back while the name still names it; otherwise a retry at this
             // path would fail as AlreadyExists. A lock refused later is
-            // different: another process's replace has adopted the file.
+            // handled below (DF-E12).
             struct stat info{};
             if(create && ::stat(value->path.c_str(),&info)==0 &&
                FileIdentity{static_cast<std::uint64_t>(info.st_dev),static_cast<std::uint64_t>(info.st_ino)}==*identity)
@@ -452,7 +452,36 @@ std::shared_ptr<ProjectFileLease> ProjectFileLease::open(const fs::path& path,bo
             return {};
         }
 #endif
-        if((error=lockNative(value->file,exclusive)))return {};
+        error=lockNative(value->file,exclusive);
+#if !defined(_WIN32)
+        if(error && create) {
+            // DF-E12 (a): a lease is keyed on the inode's number, and a file just made with O_EXCL is a new inode, so
+            // no lease on it can be rightful yet. A lock refused there belongs to the file that number named before:
+            // ext4 hands a freed inode number to the next new file at once, and a replace keeps the lease of the
+            // inode its rename freed until its folder sync returns. Wait that out, for a bound.
+            using namespace std::chrono_literals;
+            auto pause=2ms;
+            const auto until=std::chrono::steady_clock::now()+2s;
+            while(error && (error==std::errc::resource_unavailable_try_again || error==std::errc::operation_would_block) &&
+                  std::chrono::steady_clock::now()<until) {
+                std::this_thread::sleep_for(pause);
+                pause=std::min(pause*2,std::chrono::milliseconds(50));
+                error=lockNative(value->file,exclusive);
+            }
+        }
+        if(error) {
+            // DF-E12 (b): no lease was taken on the empty file we created, so take it back while the name still
+            // names it, as when the lease folder is unusable; a retry at this path would fail as AlreadyExists.
+            // Where a replace has meanwhile put another file there, the name no longer names ours and stays.
+            struct stat info{};
+            if(create && ::stat(value->path.c_str(),&info)==0 &&
+               FileIdentity{static_cast<std::uint64_t>(info.st_dev),static_cast<std::uint64_t>(info.st_ino)}==*identity)
+                (void)::unlink(value->path.c_str());
+            return {};
+        }
+#else
+        if(error)return {};
+#endif
         // A replacement that won the open-to-lock interval must not redirect
         // this Store onto a different inode after we acquired the old one.
         const auto current=identityAt(value->path,error);
