@@ -17,6 +17,16 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 25 November 2026 — Ten stages reopen in one device
+
+`clones/shaper-stage-integration` at `5abd35d64` — Recall Time, Noise and room together in the generic device. Lands after 3 December. Ten installed stages share one recallable processing order. The first 418 parameter declarations match main byte for byte. All 656 declarations connect to their intended parameter. Time keeps stage 7 and rank 723, Noise keeps stage 9 and rank 725, and the generated room keeps stage 10 and rank 726. Pitch's stage 8, host controls 464–535 and rank 724 remain available for that stage.
+
+A real Session captured separate Time height, Noise level and pitch, room send and return, and the three ranks into a project. Closing the store, reopening it and loading the registered device reproduced its stereo output byte for byte at 256 frames. The 2,048-frame render also passed. Swapping Time and Noise changed the output. The negative control on the older device failed at the first Time control. Both Pd precisions passed all ten headless suites, including native and edited-patch routing, sparse states, the partial-wet overflow regression and the Session beat gate.
+
+On stereo kick and bass at 48 kHz with Time, Noise and room active, median callbacks were 75.4 microseconds at 256 frames and 588.4 microseconds at 2,048. Median trial p99 was 135.2 and 872.8 microseconds. Reordering the stages gave 72.7 and 605.2 microseconds median. Each condition covered 6,144 callbacks. These three stages reported zero host latency on this fixture. The material includes an intentional musical delay. Time preallocates its three history buffers off the audio thread, using 48 MiB per instance.
+
+For Devices, the shared-host dependency `devices/time-locate-revision` at `80bbcb6bd` remains necessary. On the public host, changing the transport revision while stopped at the same position leaked the old stereo marker at frame 239. With the existing Devices patch applied privately, only that stale marker became zero. An unchanged revision preserved it, and new audio at frame 97 appeared at frame 336 in both cases. PR requested
+
 ## 25 November 2026 — One generic device for the DSP reviews
 
 For `clones/shaper-dsp-stack` the clones seat takes the ADI-Shaper DSP, external, device declaration, device build file and shaper tests. Lands after 3 December. The purpose is to exercise the ten-stage project restoration together with the qualified multiband Drive, crossover repairs, Width key and Volume note processing. The reviewed Pan controls join where their persistent identities agree. The independent review branches remain available. The panel remains held for the agreed sheet. Devices owns native key and note delivery and the same-position transport revision.
