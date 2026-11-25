@@ -1,6 +1,23 @@
 # gemini — log
 
-Trial seat (22 November 2026, `collab/win.md`): Linux environment (Debian 12, GCC 12.2.0, Clang 14.0.6, CMake 3.25.1, Ninja; no MSVC, macOS, or JUCE GUI build here). One branch per item (`gemini/<topic>`) cut from `main`, logged here on `gemini/log` for `win` to review and land. Only the `gemini` seat writes to this file. Newest entry at the top.
+Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: fresh Ubuntu 24.04 VM, GCC 12.4.0, Clang 14.0.6 + libstdc++ 12 via `--gcc-toolchain`, CMake 3.28.3, Ninja, 8 GB RAM / 2 vCPUs; 22–24 November entries were Debian 12, GCC 12.2.0, Clang 14.0.6, CMake 3.25.1). One branch per item (`gemini/<topic>`) cut from `main`, logged here on `gemini/log` for `win` to review and land. Only the `gemini` seat writes to this file. Newest entry at the top.
+
+---
+
+## 2026-11-25 — Item 1 (`walk/*` fixes, Round 1): `walk/a1-granted-buffer`, `walk/a6-vst3-editor`, `walk/a15-ui-tests-release-build`
+
+Verified the first three `walk/*` fix heads on origin (report branches `walk/windows10` `0668b7b7` and `walk/windows11` `ed351d30` carry markdown reports only). Built under GCC 12.4.0 and Clang 14.0.6 + libstdc++ 12 with `-DADI_WERROR=ON -DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF -DADI_ACCEPTANCE=ON -DCMAKE_BUILD_TYPE=Debug -g0`, running every touched headless suite and `adi_acceptance_wts01` (`ctest -R '^adi_acceptance_wts01$'`; note `ctest -L acceptance` also lists `adi_builtin_realtime_tests`, which is the separate DSP performance suite).
+
+| Branch | Head SHA | Touched files | Compiler (`-DADI_WERROR=ON`, Pd on, JUCE off) | Warnings | Touched headless suites | `adi_acceptance_wts01` | Verdict |
+|---|---|---|---|---|---|---|---|
+| `walk/a1-granted-buffer` | `d5d449ea` | `CMakeLists.txt`, `src/adi/settings/device_grant.{hpp,cpp}`, `src/juce/ui_main.cpp` (JUCE), `tests/test_settings.cpp` | GCC 12.4.0 | 0 | `adi_settings_tests`: **339/0 PASS** | **PASS** (43.02 s) | **PASS** |
+| `walk/a1-granted-buffer` | `d5d449ea` | same | Clang 14.0.6 + libstdc++ 12 | 0 | `adi_settings_tests`: **339/0 PASS** | **PASS** (38.08 s) | **PASS** |
+| `walk/a6-vst3-editor` | `a1b81e0b` | `src/juce/editor_host_component.cpp` (JUCE), `tests/test_plugin_editor_juce.cpp` (JUCE) | GCC 12.4.0 | 0 | N/A (both files JUCE-gated) | **PASS** (42.72 s) | **PASS (headless)** |
+| `walk/a6-vst3-editor` | `a1b81e0b` | same | Clang 14.0.6 + libstdc++ 12 | 0 | N/A (both files JUCE-gated) | **PASS** (39.01 s) | **PASS (headless)** |
+| `walk/a15-ui-tests-release-build` | `68c30e05` | `tests/ui_test_hygiene.hpp` (included by `tests/test_ui_shell.cpp`, JUCE-gated) | GCC 12.4.0 | 0 | N/A (JUCE-gated) | **PASS** (43.83 s) | **PASS (headless)** |
+| `walk/a15-ui-tests-release-build` | `68c30e05` | same | Clang 14.0.6 + libstdc++ 12 | 0 | N/A (JUCE-gated) | **PASS** (39.52 s) | **PASS (headless)** |
+
+(No PR requested; run-only verification.)
 
 ---
 
