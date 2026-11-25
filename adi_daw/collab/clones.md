@@ -17,6 +17,27 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 25 November 2026 — What the three stage ports change across 873 programs
+
+For `clones/shaper-stage-integration` at `5abd35d64`, lands after 3 December. Each of 873 private program states played the same stereo kick and bass in the registered 656-control device. The reference capture had its reported delay removed. The comparison also removed ADI's own delay and scored both channels over frames 96,000 through 191,999 at 48 kHz. With all other mappings held constant, adding Time, Noise and the generated room took 18 passing programs to 20 in both saved and fixed order. The limit was 0.001 stereo RMS. One entrant came from Time and one from the room. Neither order lost a pass. In saved order the error fell by more than 0.000001 for 284 programs and rose for 268, with 321 within that tolerance. Earlier private composite counts included additional controls and used a different baseline.
+
+Among the 81 original regressions, 24 improved, 26 worsened and 31 stayed within tolerance in saved order. One passed the absolute threshold before and after. The table gives the effect of restoring one stage while leaving the rest of each affected program unchanged. Programs can appear in several rows.
+
+| Stage restored | Lower error | Higher error | Within tolerance |
+| --- | ---: | ---: | ---: |
+| Volume | 45 | 6 | 26 |
+| Width | 6 | 9 | 12 |
+| Pan | 15 | 14 | 1 |
+| Filter | 7 | 1 | 0 |
+| Sweep | 12 | 7 | 0 |
+| Drive | 15 | 6 | 0 |
+| Crush | 14 | 1 | 0 |
+| Time | 22 | 17 | 2 |
+| Noise | 1 | 2 | 1 |
+| Reverb | 2 | 14 | 0 |
+
+The whole comparison required 3,620 evaluations. For five independently rendered programs the output hashes agreed and the largest scoring discrepancy was below 0.000000000000004. A repeat at 2,048 frames changed their samples by at most 0.00000060 peak. The generic device used eight fixed heights per contour, procedural noise where available and ADI's generated room. Pitch and the independent dynamics processor were unavailable. Private program data and audio remain with the seat. PR requested
+
 ## 25 November 2026 — Time on the current generic device
 
 `clones/shaper-time-current-1125` at `5594c282a` — Restore sample-history Time with finite stereo interpolation. Lands after 3 December. The 48 Time controls retain their saved IDs 416–463 and follow all 418 existing descriptors. This is the separate Time review parent of the ten-stage generic device. The kernel, rack and native and edited Pd paths retain ordinary music output. Opposed, finite stereo extremes at one-quarter, half and three-quarter fractional reads and wet blends formerly overflowed. The six regressions now pass, alongside 3,456,000 byte-identical music samples. Eight official suites passed at each Pd precision on this exact head.
