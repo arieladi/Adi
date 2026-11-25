@@ -549,7 +549,7 @@ class SpectrumLevelHistory {
 
     void completeWindow() noexcept {
         if (frames_ == 0) return;
-        completed.emplace();
+        completed = SharedAnalysis::SpectrumLevels{};
         for (std::size_t c = 0; c < integrated_.size(); ++c) {
             completed->integratedRms[c] = std::sqrt(integrated_[c] / static_cast<double>(frames_));
             completed->maxCrestDb[c] = 20. * std::log10(crest_[c]);
