@@ -439,6 +439,10 @@ int main() try {
     auto device = open();
     const auto* info = adi::findBuiltin(uid);
     check(info && info->name == "ADI-Shaper" && device->paramCount() == 456, "device registration");
+    for (int id = 727; id <= 753; ++id) {
+        const auto* control = device->paramAt(429 + id - 727);
+        check(control && control->id == std::to_string(id), "Width follower follows the existing trigger declarations");
+    }
     for (int id = 1; id <= 415; ++id)
         check(device->paramAt(id - 1) && device->paramAt(id - 1)->id == std::to_string(id), "contiguous stable parameter IDs");
     panBlendState(*device);

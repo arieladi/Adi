@@ -466,7 +466,7 @@ void AdiShaper::set(Param id, float value) noexcept {
         setTrigger(id, value);
         return;
     }
-    if (id >= WidthFollowerLow && id < WidthFollowerLow + 3 * followerParameterCount) {
+    if (id >= WidthFollowerLow && id < WidthFollowerEnd) {
         const auto local = id - WidthFollowerLow;
         const auto index = static_cast<std::size_t>(local / followerParameterCount);
         const auto control = static_cast<FollowerControl>(local % followerParameterCount);

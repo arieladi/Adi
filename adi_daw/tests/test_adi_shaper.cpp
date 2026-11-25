@@ -23,7 +23,8 @@ static_assert(Shaper::PanLowDelayBlend == 855 && Shaper::PanHighDelayBlend == 85
 static_assert(Shaper::driveParam(Band::High, Shaper::OutputTrim) + 1 == Shaper::CrushOn);
 static_assert(Shaper::modParam(Stage::Crush, Band::High, Shaper::Secondary8) + 1 == Shaper::BaseCount);
 static_assert(Shaper::TriggerLowMode == 753 && Shaper::TriggerSmoothing == 763);
-static_assert(Shaper::followerParam(Band::High, Shaper::FollowerRelease) + 1 == Shaper::TriggerLowMode);
+static_assert(Shaper::followerParam(Band::High, Shaper::FollowerRelease) + 1 == Shaper::WidthFollowerEnd);
+static_assert(Shaper::WidthFollowerEnd == Shaper::TriggerLowMode);
 int failures = 0;
 
 void check(bool condition, const char* description) {

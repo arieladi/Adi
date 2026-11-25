@@ -33,7 +33,7 @@ class AdiShaper {
                  SweepMidPolarity, SweepHighPolarity, DriveOn,
                  CrushOn = DriveOn + modHeaderSize + 3 * driveBandParameterCount,
                  BaseCount = CrushOn + modStageParameterCount,
-                 WidthFollowerLow = 726,
+                 WidthFollowerLow = 726, WidthFollowerEnd = WidthFollowerLow + 3 * followerParameterCount,
                  TriggerLowMode = 753, TriggerMidMode, TriggerHighMode, TriggerLowEnd, TriggerMidEnd, TriggerHighEnd,
                  TriggerThreshold, TriggerDetail, TriggerProfile, TriggerShift, TriggerSmoothing,
                  PanLowDelayBlend = 855, PanMidDelayBlend, PanHighDelayBlend, Count };
