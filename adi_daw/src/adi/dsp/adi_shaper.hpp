@@ -54,6 +54,7 @@ class AdiShaper {
                  TriggerThreshold, TriggerDetail, TriggerProfile, TriggerShift, TriggerSmoothing,
                  PanLowDelayBlend = 855, PanMidDelayBlend, PanHighDelayBlend,
                  PanLowTransfer = 918, PanMidTransfer, PanHighTransfer,
+                 PanLowDelayRange = 921, PanMidDelayRange, PanHighDelayRange,
                  DriveLowRounded = 927, DriveMidRounded, DriveHighRounded,
                  DriveLowPower, DriveMidPower, DriveHighPower,
                  DriveLowFold, DriveMidFold, DriveHighFold, Count };
@@ -106,7 +107,7 @@ class AdiShaper {
             || (id >= orderParam(Stage::Noise) && id <= orderParam(Stage::Reverb))
             || (id >= WidthFollowerLow && id <= TriggerSmoothing)
             || (id >= PanLowDelayBlend && id <= PanHighDelayBlend)
-            || (id >= PanLowTransfer && id <= PanHighTransfer)
+            || (id >= PanLowTransfer && id <= PanHighDelayRange)
             || (id >= DriveLowRounded && id <= DriveHighFold);
     }
     enum DriveControl { DriveStyle, DriveMix, DriveClock, DriveCycle, DriveRate, DriveCurve,
@@ -229,9 +230,12 @@ class AdiShaper {
         std::size_t head = 0, valid = 0;
         float current = 0.f, unity = 0.f;
         bool transfer = false;
+        float rangeMs = 2.f;
+        double rangeScale = 0.;
         Tap constantTap;
         void prepare(double rate) noexcept;
         void setBlend(float percent) noexcept;
+        void setRange(float milliseconds) noexcept;
         [[nodiscard]] Tap tap(double position, double rate, bool constant) const noexcept;
         void process(const Tap& tap, float& left, float& right) noexcept;
     };

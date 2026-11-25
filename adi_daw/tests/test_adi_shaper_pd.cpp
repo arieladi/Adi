@@ -151,6 +151,58 @@ void panDelayBlend(const std::string& directory, bool crossed) {
                   "settled Pan blend reproduces both measured channel gains and the 21-frame tap");
         }
     }
+    check(path.sendParameter(857, 100.f) && path.sendParameter(102, 100.f) && path.sendParameter(1, 100.f),
+          "set a fully wet mid-band delay");
+    struct Range { float milliseconds; int frames; };
+    for (const auto range : {Range{16.875f, 110}, Range{0.f, 0}, Range{40.f, 240}, Range{2.f, 21}}) {
+        check(path.sendParameter(923, range.milliseconds) && path.sendParameter(922, 1.f) && path.sendParameter(924, 3.f),
+              "apply the physical range independently to each Pan band");
+        left.fill(0.f);
+        right.fill(0.f);
+        for (int i = 0; i < 33; ++i) path.process(io);
+        for (int block = 0; block < 5; ++block) {
+            left[0] = block == 0 ? .5f : 0.f;
+            right[3] = block == 0 ? -.25f : 0.f;
+            path.process(io);
+            const auto& far = crossed ? outR : outL;
+            const auto& nearChannel = crossed ? outL : outR;
+            for (int i = 0; i < 64; ++i) {
+                const int frame = 64 * block + i;
+                check(std::abs(far[i] - (frame == range.frames ? .5f : 0.f)) < 1e-6f
+                      && std::abs(nearChannel[i] - (frame == 3 ? -.25f : 0.f)) < 1e-6f,
+                      "the range message reaches the audible delay through the selected canvas");
+            }
+        }
+    }
+}
+
+void panRangeState(DeviceInstance& device) {
+    constexpr std::array ids{922, 923, 924};
+    constexpr std::array positions{.25, .5, 1.};
+    std::array<double, 3> values{};
+    for (std::size_t i = 0; i < ids.size(); ++i) {
+        const auto id = std::to_string(ids[i]);
+        const auto* desc = device.paramAt(706 + static_cast<int>(i));
+        check(desc && desc->id == id && std::abs(device.getParam(id).real - 2.) < 1e-5,
+              "the three appended range controls default to two milliseconds");
+        set(device, ids[i], positions[i]);
+        values[i] = device.getParam(id).real;
+    }
+    check(values[0] < values[1] && values[1] < values[2] && std::abs(values[2] - 40.) < 1e-5,
+          "the range controls store distinct physical values up to forty milliseconds");
+    const auto saved = device.saveState("state");
+    auto next = open();
+    check(next->loadState("state", saved), "restore per-band delay ranges");
+    for (std::size_t i = 0; i < ids.size(); ++i)
+        check(std::abs(next->getParam(std::to_string(ids[i])).real - values[i]) < 1e-5,
+              "each range retains its stored value");
+    auto sparse = adi::Payload::from_cbor(saved);
+    for (const auto* group : {"params", "real"})
+        for (int id : ids) sparse.at(group).erase(std::to_string(id));
+    check(next->loadState("state", adi::Payload::to_cbor(sparse)), "apply an earlier state over edited ranges");
+    for (int id : ids)
+        check(std::abs(next->getParam(std::to_string(id)).real - 2.) < 1e-5,
+              "missing range controls restore the calibrated two milliseconds");
 }
 
 void panBlendState(DeviceInstance& device) {
@@ -732,7 +784,7 @@ void combinedDeclarations(DeviceInstance& device) {
     for (int id = 928; id <= 936; ++id) next(id);
     for (int id = 754; id <= 764; ++id) next(id);
     for (int id = 727; id <= 753; ++id) next(id);
-    for (int id = 919; id <= 921; ++id) next(id);
+    for (int id = 919; id <= 924; ++id) next(id);
     check(ordinal == device.paramCount(), "all combined stage descriptors are accounted for");
     for (int id : {464, 500, 535, 724})
         check(!device.setParam(std::to_string(id), ParamValue::fromNormalized(1.)), "absent Pitch controls reject writes");
@@ -915,7 +967,7 @@ void audioTriggerPd() {
 int main() try {
     auto device = open();
     const auto* info = adi::findBuiltin(uid);
-    check(info && info->name == "ADI-Shaper" && device->paramCount() == 706, "device registration");
+    check(info && info->name == "ADI-Shaper" && device->paramCount() == 709, "device registration");
     for (int id = 727; id <= 753; ++id) {
         const auto* control = device->paramAt(676 + id - 727);
         check(control && control->id == std::to_string(id), "Width follower follows the existing trigger declarations");
@@ -945,6 +997,7 @@ int main() try {
     }
     panBlendState(*device);
     panTransferState(*device);
+    panRangeState(*device);
     device = open();
     for (int id = 754; id <= 764; ++id)
         check(device->paramAt(665 + id - 754)->id == std::to_string(id), "new trigger controls have sparse stable IDs");

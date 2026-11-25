@@ -273,6 +273,107 @@ void heldPanEdges() {
     check(quiet && sparse.latency() == 0, "resuming sparse Pan clears stale audio and adds no rack latency");
 }
 
+void panDelayRange() {
+    static_assert(Shaper::PanLowDelayRange == 921 && Shaper::PanHighDelayRange == 923);
+    // Independently evaluated whole-frame ages at different excursions and range settings.
+    struct Reading { double rate; float ms, pan; std::size_t age; };
+    constexpr std::array readings{
+        Reading{44100., .875f, -.5f, 11}, Reading{48000., 16.875f, .5f, 110},
+        Reading{44100., 40.f, -.25f, 38}, Reading{192000., 40.f, 1.f, 7680},
+        Reading{192000., 0.f, -1.f, 0}
+    };
+    for (const auto& row : readings) {
+        Shaper rack;
+        rack.prepare(row.rate);
+        flat(rack, Stage::Pan, Band::Mid, 100.f * row.pan);
+        rack.set(Shaper::PanMidDelayBlend, 100.f);
+        rack.set(Shaper::PanMidDelayRange, row.ms);
+        rack.set(Shaper::PanLowDelayRange, 1.f);
+        rack.set(Shaper::PanHighDelayRange, 3.f);
+        constexpr std::size_t marker = 16381;
+        std::vector<float> left(marker + 16384), right(left.size());
+        auto& far = row.pan > 0.f ? right : left;
+        auto& nearChannel = row.pan > 0.f ? left : right;
+        far[marker] = -.625f;
+        nearChannel[marker + 19] = .375f;
+        for (std::size_t first = 0; first < left.size(); first += 733) {
+            const auto count = std::min<std::size_t>(733, left.size() - first);
+            rack.process(left.data() + first, right.data() + first, left.data() + first, right.data() + first, count);
+        }
+        bool aligned = true;
+        for (std::size_t i = 0; i < left.size(); ++i) {
+            aligned &= near(far[i], i == marker + row.age ? -.625f : 0.f)
+                    && near(nearChannel[i], i == marker + 19 ? .375f : 0.f);
+        }
+        check(aligned, "per-band Pan range scales the far delay and drains cleanly beyond a history wrap");
+    }
+
+    // Isolate each band with an independent gain stage. Only that component of
+    // the far signal may move, with a distinct delay selected for each band.
+    constexpr std::array ages{12u, 110u, 240u};
+    for (std::size_t selected = 0; selected < ages.size(); ++selected) {
+        Shaper rack, isolate;
+        rack.set(Shaper::PanBands, 3.f);
+        isolate.set(Shaper::VolumeBands, 3.f);
+        rack.set(Shaper::PanLowDelayRange, .875f);
+        rack.set(Shaper::PanMidDelayRange, 16.875f);
+        rack.set(Shaper::PanHighDelayRange, 40.f);
+        const auto band = static_cast<Band>(selected);
+        rack.set(static_cast<Shaper::Param>(Shaper::PanLowDelayBlend + static_cast<int>(selected)), 100.f);
+        flat(rack, Stage::Pan, band, -50.f);
+        for (std::size_t i = 0; i < ages.size(); ++i)
+            flat(isolate, Stage::Volume, static_cast<Band>(i), i == selected ? 100.f : 0.f);
+        std::array<float, 1024> input{}, silence{}, component{}, right{}, left{};
+        for (std::size_t i = 0; i < input.size(); ++i) {
+            const double frame = static_cast<double>(i);
+            input[i] = static_cast<float>(.4 * std::sin(.037 * frame) + .3 * std::cos(.44 * frame));
+        }
+        isolate.process(input.data(), silence.data(), component.data(), right.data(), input.size());
+        rack.process(input.data(), silence.data(), left.data(), right.data(), input.size());
+        bool aligned = true;
+        for (std::size_t i = 0; i < input.size(); ++i) {
+            const float delayed = i >= ages[selected] ? component[i - ages[selected]] : 0.f;
+            aligned &= near(left[i], input[i] - component[i] + delayed, 5e-7) && right[i] == 0.f;
+        }
+        check(aligned, "each Pan band delays only its own component by its independently selected range");
+    }
+
+    // An edit after the impulse still reads the populated history at its new age.
+    Shaper edit;
+    flat(edit, Stage::Pan, Band::Mid, -50.f);
+    edit.set(Shaper::PanMidDelayBlend, 100.f);
+    edit.set(Shaper::PanMidDelayRange, 0.f);
+    std::array<float, 256> left{}, right{};
+    left[3] = .5f;
+    edit.process(left.data(), right.data(), left.data(), right.data(), 31);
+    edit.set(Shaper::PanMidDelayRange, 16.875f);
+    edit.process(left.data()+31, right.data()+31, left.data()+31, right.data()+31, left.size()-31);
+    check(left[3] == .5f && left[113] == .5f, "a live range edit retains prior far-channel samples");
+
+    // A moving curve on its flat opening reads frame 110.25 instead of truncating.
+    Shaper moving;
+    moving.set(Shaper::PanMidDelayBlend, 100.f);
+    moving.set(Shaper::PanMidDelayRange, 16.875f);
+    moving.set(Shaper::bandParam(Stage::Pan, Band::Mid, Shaper::Curve), 1);
+    for (int i = 0; i < 8; ++i) point(moving, Stage::Pan, Band::Mid, i, i < 2 ? -50.f : 50.f);
+    left.fill(0.f);
+    right.fill(0.f);
+    left[9] = .5f;
+    moving.process(left.data(), right.data(), left.data(), right.data(), left.size());
+    check(near(left[119], .375f) && near(left[120], .125f),
+          "a moving contour interpolates adjacent frames with its selected range");
+
+    Shaper step;
+    step.set(Shaper::PanMidDelayBlend, 100.f);
+    step.set(Shaper::PanMidDelayRange, 40.f);
+    for (int i = 0; i < 8; ++i) point(step, Stage::Pan, Band::Mid, i, i < 4 ? -100.f : 100.f);
+    std::vector<float> l(52000), rr(l.size());
+    rr[47080] = -.375f;
+    step.process(l.data(), rr.data(), l.data(), rr.data(), l.size());
+    check(near(rr[47080], -.375f) && near(rr[49000], -.375f) && near(rr[49001], 0.f),
+          "a held direction change recalls the earlier near channel at its full 40 ms delay");
+}
+
 void panDelayBlend() {
     // Opposite-signed markers distinguish an attenuated current sample, a
     // delayed copy and any leakage into the other input's channel.
@@ -2332,6 +2433,7 @@ int main() {
     stereoPanTransfer();
     heldPanEdges();
     panDelayBlend();
+    panDelayRange();
     beatGate();
     clocksAndLinearCurve();
     audioTrigger();
