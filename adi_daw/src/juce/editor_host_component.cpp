@@ -77,7 +77,10 @@ void PluginEditorComponent::resized() {
 void PluginEditorComponent::parentHierarchyChanged(){attachNative();}
 void PluginEditorComponent::visibilityChanged() {
     if(!editor_ || !editor_->valid())return;
-    if(content_){if(isShowing())(void)editor_->show();else (void)editor_->hide();}
+    // A hosted component shows and hides with this wrapper, so it is never hidden here: setContent makes
+    // the wrapper visible before it has a parent (not showing), and a hidden VST3PluginWindow never sees
+    // isShowing() turn true, so it never attaches the plug-in's view (walk-A A6: a blank window).
+    if(content_)(void)editor_->show();
     else attachNative();
 }
 void PluginEditorComponent::componentMovedOrResized(juce::Component& component,bool,bool resized) {
