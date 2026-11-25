@@ -11,6 +11,12 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+### 25 November — MX21 Spectrogram PNG
+
+**PR requested** `mixview/mx21-spectrogram-png-lands-after-2026-12-03` at `44236030eae0e2b8e2d2f6667a4cd8f3b403d056`, after the spectrogram cursor. The dedicated Spectrogram exports its current 128 × 256 data raster. Scroll and Sweep use their display order, including gaps. Palette, scale and Freeze stay local and an open chooser owns its own picture. The export adds no analysis work. Saving checks the selected destination when the dialog returns, then encodes and publishes the complete file off the message thread.
+
+The missing control failed on the parent. Release passed 563 spectrum, 521 Mix View and 920 shared analysis checks. Changed units passed warnings as errors. Review archive `4aa8fae00fdc5db7bf9fa3d8ce6df35c92ee3544a134ae35a7a70fe5edeaade5`, application `6148acd9b80ba41ee8af3e9df4536f71714f8a3093691ad47c2ecf924a44680b`. The retest covers a real save, cancellation, collision handling and the displayed pixel order.
+
 ### 25 November — MX21 spectrogram cursor
 
 **PR requested** `mixview/mx21-spectrogram-cursor-lands-after-2026-12-03` at `d6eff615e8ea68ef0004c408fa618e5e74262994`, after the spectrogram frequency-scale branch. The expanded cursor identifies the displayed row and column on every frequency scale, including rotated Sweep history. It reads the raw cell peak and the published heard sample or stopped capture sequence. Waiting, blank, dropped and cleared pixels carry no cursor value. The compact tile stays passive.
