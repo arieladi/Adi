@@ -17,6 +17,16 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 25 November 2026 — PR requested for signed power saturation
+
+PR requested — `clones/shaper-power-saturation` at `53f80b476` — Add per-band signed power saturation to ADI-Shaper. Lands after 3 December. The three appended switches recall off. They affect only the saturation choice in their own band. All four Release MSVC suites passed in each Pd precision with warnings as errors. The portable scalar path also passed the focused Drive suite. All 1,504,800 legacy values matched exactly. Impulse latency stayed at 16 frames at all three rates.
+
+The first implementation with a standard scalar power call took 155.9 µs at the median and 220.0 µs at p99 for 256 frames. The final four-lane implementation stayed within 0.00000181 relative error on 302,128 normal inputs and 52 boundary cases. Registered moving stereo kick and bass against the reference gave at most 0.00001442 channel RMS and 0.00025121 peak. On a separate half-strength broadband capture at 96 kHz the previous twofold filter leaves a 0.00216 RMS difference.
+
+At 48 kHz the median of five 2,048-callback trials at 256 frames was 70.0 µs median and 86.6 µs p99 for ADI, versus 80.1 and 143.9 µs for the reference. The individual deadline misses were zero and nine respectively. At 2,048 frames the readings were 550.5 and 710.1 µs versus 563.15 and 1,020.9 µs, with three and sixteen misses. Every ADI trial's p99 was below its deadline. The largest individual ADI callback in the large-block run took 325 ms under shared load.
+
+On the seven eligible archived programs, six improved against the previous full-device rendering and four improved against restoring the same curve with the older saturation response. Of the three with exact contour timing, one improved against that matched control. The results held in both orders on the final executable. The totals below 0.001 RMS stayed at 73 of 873 saved-order and 64 fixed-order.
+
 ## 25 November 2026 — Panel stack and curve DSP on current main
 
 The six panel commits now descend directly from `f34daf534`. The four panel heads in order are `4dcd01aa4`, `bc8fe3b98`, `afe59ac33` and `0f431eddb`. Window's four fixes are included. The seventh commit is the DSP-only evaluator change on `clones/shaper-curve-edit` at `190e836e6`. There are no merge commits in the stack. All five updated heads differ from their previously tested versions only in the two upstream documentation files. A fresh headless run passed 11 of 11 device suites in each precision and all three panel suites.
