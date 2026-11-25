@@ -16,6 +16,14 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+## 25 November 2026 — MX-30 Scope with Cumulative Average · lands after 3 December
+
+- Branch `mixview/mx30-parked-scope-average-lands-after-2026-12-03` at `3167cecd45f2`, after the monitored burst fix `7301a65a85fc`. A raw Scope on the same source and profile can share the completed zero window and stay idle alongside Cumulative Average.
+- Three checks failed first. Strict Release passed 5,715 checks across 12 suites. One tap, one analysis domain and one plan serve both readers. During a certified ring wrap there are no further worker passes, reads, transforms or publications. A monitored burst resumes both views with the same samples and source position as an uninterrupted run.
+- Cumulative review ZIP SHA-256 `6c9c08d76b23ee058222158e965aa7b2e1f94326de485255dd6a5b1c792fc72e`. The retest brief includes the shared-reader case and the preceding independent burst fix. Live and timed CPU remain pending.
+
+PR requested.
+
 ## 25 November 2026 · MX-13 Scope vertical zoom · lands after 3 December
 
 - **PR requested** `mixview/mx13-scope-vertical-zoom-lands-after-2026-12-03` at `087992d94353d1382a76633e25b134e5297930fa`. Alt-wheel changes the time-waveform scale in 6 dB steps, up to 24 dB in either direction. Both traces and the stationary cursor use the same scale. The capture interval, Freeze, selected region, and metering stay tied to the original samples.
