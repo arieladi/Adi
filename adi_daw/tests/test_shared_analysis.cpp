@@ -1149,6 +1149,21 @@ void focusScopeBeatTiming() {
               grid({30000, 55000, rate}, stepped, equalMeter) ==
               std::vector<std::pair<std::int64_t, bool>>{{36000, false}, {84000, false}},
           "the grid follows a truncated bar at a signature change and an interval crossing a tempo change");
+    constexpr std::int64_t samplesPerBeat = 750;
+    constexpr std::size_t beatsPerBar = 255, visibleBars = 4;
+    const std::vector<adi::textproj::Meter> dense{{0, beatsPerBar, 128}};
+    const auto denseBar = grid({0, beatsPerBar * samplesPerBeat, rate}, constant, dense);
+    const auto fourBars = grid({0, beatsPerBar * visibleBars * samplesPerBeat, rate}, constant, dense);
+    const auto matchesDense = [&](const auto &marks, std::size_t beats) {
+        if (marks.size() != beats) return false;
+        for (std::size_t i = 0; i < marks.size(); ++i)
+            if (marks[i].first != static_cast<std::int64_t>(i) * samplesPerBeat ||
+                marks[i].second != (i % beatsPerBar == 0)) return false;
+        return true;
+    };
+    check(matchesDense(denseBar, beatsPerBar), "the grid includes every beat of the largest project signature");
+    check(matchesDense(fourBars, beatsPerBar * visibleBars),
+          "a dense four-bar extent retains all of its bar and beat lines through its last sample");
 }
 
 void focusScopeBarProjection() {

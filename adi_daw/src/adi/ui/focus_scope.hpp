@@ -220,9 +220,9 @@ void forEachFocusScopeGridLine(const FocusScopeRange &range, const engine::Tempo
     constexpr auto beatWindow = FocusScopeWindow::Beat;
     auto beat = focusScopeWindowAtSample(std::max<std::int64_t>(0, range.first), range.sampleRate, tempo, meters,
                                          beatWindow);
-    // A full authored bar has at most 99 beats. Bound short previews too, even
-    // if the project contains an unusually dense run of signature changes.
-    constexpr int maximumLines = 128;
+    // Project signatures allow up to 255 beats per bar. Cover the Scope's
+    // four-bar range, with one extra interval for a preview starting mid-beat.
+    constexpr int maximumLines = 4 * 255 + 1;
     for (int line = 0; beat && beat->range.first < *end && line < maximumLines; ++line) {
         if (beat->range.first >= range.first) {
             const auto &meter = meterAt(beat->firstTick, meters);
