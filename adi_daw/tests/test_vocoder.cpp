@@ -285,7 +285,37 @@ void upstream() {
     check(worst < 1e-12, "Surge SVF recurrence impulse matches scalar reference");
 }
 } // namespace
+// DF-E68 (a): the pitch tracker's scan (up to 510 lags of 512 products) once
+// ran whole inside one block in every four at 128 frames: the Vocoder's
+// periodic block (its p99 about 6x its p50 on Linux). A scan is now spread over the decimated samples before
+// the next is due, so no call carries more than a share of one. At 90 Hz a
+// scan runs nearly its whole lag range (about 133 of 141 lags).
+void spreadTracker() {
+    for (const std::size_t block : {std::size_t{64}, std::size_t{128}}) {
+        V v;
+        v.set(V::Carrier, 3);
+        v.prepare(48000);
+        const std::size_t n = 48000 * 2;
+        std::vector<float> in(n), outL(block), outR(block);
+        for (std::size_t i = 0; i < n; ++i)
+            in[i] = static_cast<float>(.5 * std::sin(2 * 3.141592653589793 * 90 * static_cast<double>(i) / 48000));
+        std::size_t worst = 0, total = 0;
+        for (std::size_t at = 0; at + block <= n; at += block) {
+            v.process(in.data() + at, in.data() + at, outL.data(), outR.data(), block);
+            worst = std::max(worst, v.trackerWork());
+            total += v.trackerWork();
+        }
+        const double scans = static_cast<double>(n - 1024 * 4) / (128 * 4), perScan = static_cast<double>(total) / scans;
+        char what[200];
+        std::snprintf(what, sizeof what, "at %zu frames no call carries more than %s of a scan (worst %zu of %.0f products)", block,
+                      block == 64 ? "a fifth" : "two fifths", worst, perScan);
+        check(perScan > 0 && static_cast<double>(worst) <= (block == 64 ? .2 : .4) * perScan, what);
+        std::printf("METRIC %s\n", what);
+        check(std::abs(v.trackedHz() - 90) < 1, "and the spread tracker still finds 90 Hz");
+    }
+}
 int main() {
+    spreadTracker();
     measurements();
     routing();
     partitions();

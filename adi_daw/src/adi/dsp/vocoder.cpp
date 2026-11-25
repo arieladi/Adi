@@ -65,7 +65,10 @@ void Vocoder::prepare(double sampleRate) noexcept {
     envelopes_ = {};
     carrierPower_ = {};
     pitchBuffer_ = {};
+    window_ = {};
     pitchWrite_ = pitchCount_ = 0;
+    scanning_ = false;
+    scanLag_ = scanLast_ = trackerWork_ = 0;
     decimation_ = static_cast<unsigned>(std::max(1., std::floor(sr_ / 12000.)));
     decimationPhase_ = trackerClock_ = 0;
     seed_ = 0x12345678u;
@@ -136,44 +139,77 @@ void Vocoder::track(double input) noexcept {
     pitchBuffer_[pitchWrite_] = pitchLP_;
     pitchWrite_ = (pitchWrite_ + 1) % pitchBuffer_.size();
     pitchCount_ = std::min(pitchCount_ + 1, pitchBuffer_.size());
+    // DF-E68 (a): a scan under way takes its share of lags here, so no block
+    // carries a whole one (up to 510 lags of 512 products, once whole in one
+    // block in every four at 128 frames while the carrier tracks: the
+    // Vocoder's periodic block).
+    if (scanning_) {
+        scanCredit_ += scanPace_;
+        const auto lags = static_cast<std::size_t>(scanCredit_);
+        scanCredit_ -= static_cast<double>(lags);
+        scan(lags);
+    }
     if (++trackerClock_ < 128 || pitchCount_ < 1024)
         return;
     trackerClock_ = 0;
-    const double rate = sr_ / decimation_;
-    const double low = std::min(p_[PitchLow], p_[PitchHigh]),
-                 high = std::max(p_[PitchLow], p_[PitchHigh]);
-    const auto first = static_cast<std::size_t>(std::max(2., std::floor(rate / high)));
-    const auto last = static_cast<std::size_t>(std::clamp(std::ceil(rate / low), 3., 510.));
-    auto corr = [&](std::size_t lag) {
-        double xy = 0, xx = 0, yy = 0;
-        for (std::size_t i = 0; i < 512; ++i) {
-            const double x = pitchBuffer_[(pitchWrite_ + 1023 - i) % 1024],
-                         y = pitchBuffer_[(pitchWrite_ + 1023 - i - lag) % 1024];
-            xy += x * y;
-            xx += x * x;
-            yy += y * y;
-        }
-        return xx > 1e-8 && yy > 1e-8 ? xy / std::sqrt(xx * yy) : 0.;
-    };
-    double a = corr(first - 1), b = corr(first);
-    for (std::size_t lag = first; lag <= last; ++lag) {
-        const double c = corr(lag + 1);
-        if (b > .85 && b > a && b >= c) {
-            const double denominator = a - 2 * b + c;
-            const double delta = std::abs(denominator) > 1e-12 ? .5 * (a - c) / denominator : 0.;
-            const double f = rate / (static_cast<double>(lag) + std::clamp(delta, -.5, .5));
-            if (f >= low && f <= high)
-                pitchHz_ = f;
+    // The window as it stands now, oldest first and unwrapped, so each lag is
+    // a plain dot product; the scan it starts reads only this copy.
+    for (std::size_t i = 0; i < window_.size(); ++i)
+        window_[i] = pitchBuffer_[(pitchWrite_ + i) % pitchBuffer_.size()];
+    scanRate_ = sr_ / decimation_;
+    scanLow_ = std::min(p_[PitchLow], p_[PitchHigh]);
+    scanHigh_ = std::max(p_[PitchLow], p_[PitchHigh]);
+    const auto first = static_cast<std::size_t>(std::max(2., std::floor(scanRate_ / scanHigh_)));
+    scanLast_ = static_cast<std::size_t>(std::clamp(std::ceil(scanRate_ / scanLow_), 3., 510.));
+    scanA_ = correlation(first - 1);
+    scanB_ = correlation(first);
+    scanLag_ = first;
+    scanning_ = true;
+    // Its lags, evenly over the next kScanSteps decimated samples.
+    scanPace_ = static_cast<double>(scanLast_ - first + 1) / kScanSteps;
+    scanCredit_ = 0;
+}
+double Vocoder::correlation(std::size_t lag) noexcept {
+    // The newest 512 samples against the 512 `lag` before them, newest first,
+    // the order the whole scan summed in, so the pitch it finds is the same.
+    // Indexed, not two pointers: MSVC unrolls the pointer form and spills an
+    // accumulator to the stack each step, about 3.5x slower.
+    double xy = 0, xx = 0, yy = 0;
+    for (std::size_t i = 0; i < 512; ++i) {
+        const double x = window_[1023 - i], y = window_[1023 - i - lag];
+        xy += x * y;
+        xx += x * x;
+        yy += y * y;
+    }
+    trackerWork_ += 512;
+    return xx > 1e-8 && yy > 1e-8 ? xy / std::sqrt(xx * yy) : 0.;
+}
+void Vocoder::scan(std::size_t lags) noexcept {
+    for (std::size_t k = 0; k < lags && scanning_; ++k) {
+        if (scanLag_ > scanLast_) {
+            scanning_ = false;
             break;
         }
-        a = b;
-        b = c;
+        const double c = correlation(scanLag_ + 1);
+        if (scanB_ > .85 && scanB_ > scanA_ && scanB_ >= c) {
+            const double denominator = scanA_ - 2 * scanB_ + c;
+            const double delta = std::abs(denominator) > 1e-12 ? .5 * (scanA_ - c) / denominator : 0.;
+            const double f = scanRate_ / (static_cast<double>(scanLag_) + std::clamp(delta, -.5, .5));
+            if (f >= scanLow_ && f <= scanHigh_)
+                pitchHz_ = f;
+            scanning_ = false;
+            break;
+        }
+        scanA_ = scanB_;
+        scanB_ = c;
+        ++scanLag_;
     }
 }
 void Vocoder::process(const float *left, const float *right, float *outLeft, float *outRight,
                       std::size_t frames, const float *carrierLeft,
                       const float *carrierRight) noexcept {
     update();
+    trackerWork_ = 0;
     for (std::size_t n = 0; n < frames; ++n) {
         const double dry[2] = {left ? left[n] : 0, right ? right[n] : 0};
         const double mid = .5 * (dry[0] + dry[1]);
