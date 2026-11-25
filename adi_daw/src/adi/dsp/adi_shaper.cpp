@@ -186,12 +186,14 @@ void AdiShaper::prepareStages(double sampleRate) noexcept {
     sampleRate_ = sampleRate;
     splitStep_ = -std::expm1(-72.02133 / sampleRate_);
     steepStep_ = -std::expm1(-72.021329136175 / sampleRate_);
+    trigger_.prepare(sampleRate);
     quarterNotes_ = 0.0;
     historyStampSet_ = false;
     sampleStampSet_ = false;
     historyQuarterNotes_ = 0.0;
     playing_ = true;
     for (auto& filter : filters_) filter.prepare(sampleRate);
+    for (auto& follower : widthFollowers_) follower.prepare(sampleRate);
     for (auto& sweep : sweeps_) (void)sweep.prepare(sampleRate);
     for (auto& drive : drives_) drive.prepare(sampleRate);
     for (auto& pan : panHistory_) pan.prepare(sampleRate);
@@ -644,7 +646,8 @@ void AdiShaper::updateBand(Stage kind, CurveBand& band) const noexcept {
     const auto neutral = kind == Stage::Pan ? 0.0f : 1.0f;
     for (std::size_t i = 0; i < band.primary.points.size(); ++i)
         band.heldGains[i] = gain(kind, band.primary.points[i], band.blend);
-    band.active = band.blend != 0.0f && (!band.primary.constant || band.primary.points[0] != neutral);
+    band.active = band.followWidth ||
+                  (band.blend != 0.0f && (!band.primary.constant || band.primary.points[0] != neutral));
 }
 
 void AdiShaper::updateActivity(StageData& stage) noexcept {
@@ -856,6 +859,24 @@ void AdiShaper::setMod(Param id, float value) noexcept {
     updateActivity(stage);
 }
 
+void AdiShaper::setTrigger(Param id, float value) noexcept {
+    if (id <= TriggerHighMode) {
+        trigger_.mode(static_cast<std::size_t>(id - TriggerLowMode), static_cast<int>(std::lround(std::clamp(value, 0.f, 2.f))));
+    } else if (id <= TriggerHighEnd) {
+        trigger_.endpoint(static_cast<std::size_t>(id - TriggerLowEnd), std::clamp(static_cast<double>(value), 0.0, 100.0) * .01);
+    } else {
+        switch (id) {
+        case TriggerThreshold: trigger_.threshold(std::clamp(value, 0.f, 1.f)); break;
+        case TriggerDetail: trigger_.detail(std::clamp(value, 0.f, 1.f)); break;
+        case TriggerProfile:
+            trigger_.detector(static_cast<int>(std::lround(std::clamp(value, 0.f, 2.f))), trigger_.smoothing()); break;
+        case TriggerShift: trigger_.shift(std::clamp(value, 0.f, 1.f)); break;
+        case TriggerSmoothing: trigger_.detector(trigger_.profile(), value >= .5f); break;
+        default: break;
+        }
+    }
+}
+
 void AdiShaper::set(Param id, float value) noexcept {
     if (!hasParameter(id) || !std::isfinite(value)) return;
     if (id >= DriveLowRounded && id <= DriveHighRounded) {
@@ -875,7 +896,29 @@ void AdiShaper::set(Param id, float value) noexcept {
         panHistory_[static_cast<std::size_t>(id - PanLowDelayBlend)].setBlend(value);
         return;
     }
-    if (id >= VolumeOrder) {
+    if (id >= TriggerLowMode && id <= TriggerSmoothing) {
+        setTrigger(id, value);
+        return;
+    }
+    if (id >= WidthFollowerLow && id < WidthFollowerEnd) {
+        const auto local = id - WidthFollowerLow;
+        const auto index = static_cast<std::size_t>(local / followerParameterCount);
+        const auto control = static_cast<FollowerControl>(local % followerParameterCount);
+        auto& follower = widthFollowers_[index];
+        follower.set(static_cast<AdiShaperFollower::Control>(control), value);
+        if (control == FollowerOn) {
+            auto& stage = stages_[static_cast<std::size_t>(Stage::Width)];
+            auto& band = stage.bands[index];
+            const bool enabled = follower.enabled();
+            if (band.followWidth != enabled) {
+                band.followWidth = enabled;
+                updateBand(Stage::Width, band);
+                updateActivity(stage);
+            }
+        }
+        return;
+    }
+    if (id >= VolumeOrder && id <= orderParam(Stage::Reverb)) {
         const auto rank = static_cast<std::uint8_t>(std::round(std::clamp(value, 0.f, 127.f)));
         auto& current = ranks_[static_cast<std::size_t>(id - VolumeOrder)];
         if (rank != current) {
@@ -908,6 +951,8 @@ void AdiShaper::set(Param id, float value) noexcept {
         if (local == 0) {
             const auto selected = static_cast<int>(std::round(std::clamp(value, 0.0f, 3.0f)));
             if (kind == Stage::Pan && stage.layout != selected) resetKernels(kind);
+            if (kind == Stage::Width && selected != stage.layout)
+                for (auto& follower : widthFollowers_) follower.reset();
             layout(stage, selected);
             return;
         }
@@ -1052,15 +1097,20 @@ void AdiShaper::DriveDryDelay::advance(float& l, float& r) noexcept {
     index = (index + 1) % samples.size();
 }
 
-template <AdiShaper::Stage kind, bool moving>
+template <AdiShaper::Stage kind, bool moving, bool triggered>
 void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
-                       float* outL, float* outR, std::size_t frames) noexcept {
+                       float* outL, float* outR, std::size_t frames, KeyInput key) noexcept {
     if constexpr (kind == Stage::Pan) {
         for (std::size_t i = 0; i < stage.bands.size(); ++i) {
             const auto& band = stage.bands[i];
             if (band.active && band.primary.constant)
                 panHistory_[i].constantTap = panHistory_[i].tap(band.primary.points[0], sampleRate_, true);
         }
+    }
+    [[maybe_unused]] std::array<AdiShaperAudioTrigger::Clock, 3> clocks;
+    if constexpr (triggered) {
+        for (std::size_t i = 0; i < clocks.size(); ++i)
+            clocks[i] = trigger_.clock(i, stage.bands[i].phase, stage.bands[i].step);
     }
     auto applyGain = [](Gain g, float& l, float& r) {
         if constexpr (kind == Stage::Width) {
@@ -1077,7 +1127,16 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
     };
     auto applyBand = [&](std::size_t index, std::size_t i, float& l, float& r, [[maybe_unused]] float& dryL, [[maybe_unused]] float& dryR) {
         const auto& band = stage.bands[index];
-        const auto p = band.phase + band.step * static_cast<std::uint64_t>(i);
+        auto p = band.phase + band.step * static_cast<std::uint64_t>(i);
+        if constexpr (triggered) {
+            p = clocks[index].at(band.step, i);
+            const float fade = trigger_.fade(index, i);
+            if (fade < 1.f) {
+                const float level = std::lerp(previousVolume_[index], band.primary.at(p), fade);
+                applyGain(gain(kind, level, band.blend), l, r);
+                return;
+            }
+        }
         if constexpr (kind >= Stage::Filter) {
             const float primary = band.primary.at(p);
             if constexpr (kind == Stage::Drive) {
@@ -1112,6 +1171,15 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
                 }
             }
         } else {
+            if constexpr (kind == Stage::Width) {
+                if (band.followWidth) {
+                    const float sourceL = externalWidth_[index] ? (key.left ? finiteOrZero(key.left[i]) : 0.f) : l;
+                    const float sourceR = externalWidth_[index] ? (key.right ? finiteOrZero(key.right[i]) : 0.f) : r;
+                    const float width = 2.f * widthFollowers_[index].apply(sourceL, sourceR, .5f * band.primary.at(p));
+                    applyGain(gain(kind, width, band.blend), l, r);
+                    return;
+                }
+            }
             if constexpr (kind == Stage::Pan) {
                 auto& history = panHistory_[index];
                 if (band.primary.constant) history.process(history.constantTap, l, r);
@@ -1234,7 +1302,7 @@ bool AdiShaper::renderFixedWidth(StageData& stage, float* left, float* right, st
     std::array<float, 3> widths;
     for (std::size_t i = 0; i < widths.size(); ++i) {
         const auto& band = stage.bands[i];
-        if (!band.primary.constant) return false;
+        if (band.followWidth || !band.primary.constant) return false;
         widths[i] = band.active ? band.heldGains[0].left : 1.0f;
     }
     stage.low.rendered = true;
@@ -1258,26 +1326,77 @@ bool AdiShaper::renderFixedWidth(StageData& stage, float* left, float* right, st
     return true;
 }
 
+void AdiShaper::useExternalWidthKey(Band band, bool enabled) noexcept {
+    const auto index = static_cast<std::size_t>(band);
+    if (index >= externalWidth_.size() || externalWidth_[index] == enabled) return;
+    externalWidth_[index] = enabled;
+    widthFollowers_[index].reset();
+}
+
+void AdiShaper::useVolumeNotes(Band band, bool enabled) noexcept {
+    const auto index = static_cast<std::size_t>(band);
+    if (index < 3) trigger_.useNotes(index, enabled);
+}
+
+void AdiShaper::noteOn(int note, int velocity) noexcept {
+    if (note >= 0 && note <= 127 && velocity > 0 && velocity <= 127) trigger_.noteOn();
+}
+
 void AdiShaper::process(const float* inL, const float* inR, float* outL, float* outR,
                         std::size_t frames) noexcept {
+    process(inL, inR, outL, outR, frames, {});
+}
+
+void AdiShaper::process(const float* inL, const float* inR, float* outL, float* outR,
+                        std::size_t frames, KeyInput key) noexcept {
     if (!frames) return;
     // Replace a bad upstream sample before it reaches any recursive or delayed
     // stage. A finite sample, including signed zero, is passed through intact.
     sanitizeStereo(inL, inR, outL, outR, frames);
+    if (!trigger_.latency()) {
+        processStages(outL, outR, frames, key);
+        return;
+    }
+    std::size_t start = 0;
+    for (std::size_t i = 0; i < frames; ++i) {
+        if (!trigger_.tick(outL[i], outR[i])) continue;
+        if (i > start) processStages(outL + start, outR + start, i - start, key.advanced(start));
+        if (trigger_.smoothing()) {
+            const auto& volume = stages_[static_cast<std::size_t>(Stage::Volume)];
+            for (std::size_t band = 0; band < previousVolume_.size(); ++band) {
+                const auto& b = volume.bands[band];
+                previousVolume_[band] = b.primary.at(trigger_.clock(band, b.phase, b.step).at(b.step, 0));
+            }
+        }
+        trigger_.restart();
+        start = i;
+    }
+    processStages(outL + start, outR + start, frames - start, key.advanced(start));
+}
+
+void AdiShaper::processStages(float* outL, float* outR, std::size_t frames, KeyInput key) noexcept {
     auto run = [&]<Stage kind>() {
         auto& stage = stages_[static_cast<std::size_t>(kind)];
         if constexpr (kind >= Stage::Filter) {
             if (!stage.enabled) return;
         }
         if (!stage.active && stage.layout == 0) return;
+        const auto renderSegment = [&]<bool moving>() {
+            if constexpr (kind == Stage::Volume) {
+                if (trigger_.active()) {
+                    render<kind, moving, true>(stage, outL, outR, outL, outR, frames, key);
+                    return;
+                }
+            }
+            render<kind, moving>(stage, outL, outR, outL, outR, frames, key);
+        };
         const bool moving = ((stage.layout & 1) && stage.low.changing) || ((stage.layout & 2) && stage.high.changing);
         if (moving) {
-            render<kind, true>(stage, outL, outR, outL, outR, frames);
+            renderSegment.template operator()<true>();
         } else if constexpr (kind == Stage::Width) {
-            if (!renderFixedWidth(stage, outL, outR, frames))
-                render<kind, false>(stage, outL, outR, outL, outR, frames);
+            if (!renderFixedWidth(stage, outL, outR, frames)) renderSegment.template operator()<false>();
         } else {
-            render<kind, false>(stage, outL, outR, outL, outR, frames);
+            renderSegment.template operator()<false>();
         }
         bool repaired = false;
         if (stage.layout != 0) {
@@ -1335,6 +1454,10 @@ void AdiShaper::process(const float* inL, const float* inR, float* outL, float* 
         if (!stage.enabled) continue;
         for (auto& band : stage.bands)
             band.phase += band.step * static_cast<std::uint64_t>(frames);
+    }
+    if (trigger_.active()) {
+        const auto& volume = stages_[static_cast<std::size_t>(Stage::Volume)].bands;
+        trigger_.advance(frames, {volume[0].step, volume[1].step, volume[2].step});
     }
     if (playing_) {
         const double advance = (bpm_ / (60.0 * sampleRate_)) * static_cast<double>(frames);

@@ -38,6 +38,9 @@ static_assert(static_cast<int>(Stage::Noise) == 9 && static_cast<int>(Stage::Rev
 static_assert(Shaper::stageCount == 10 && Shaper::stageSlots == 11);
 static_assert(Shaper::orderParam(Stage::Time) == 722 && !Shaper::hasParameter(723));
 static_assert(Shaper::orderParam(Stage::Noise) == 724 && Shaper::orderParam(Stage::Reverb) == 725);
+static_assert(Shaper::TriggerLowMode == 753 && Shaper::TriggerSmoothing == 763);
+static_assert(Shaper::followerParam(Band::High, Shaper::FollowerRelease) + 1 == Shaper::WidthFollowerEnd);
+static_assert(Shaper::WidthFollowerEnd == Shaper::TriggerLowMode);
 int failures = 0;
 
 void check(bool condition, const char* description) {
@@ -1755,6 +1758,542 @@ void timeWetMixExtremes() {
     constexpr float expected = -.31f + (37.f * .01f) * (.73f - (-.31f));
     check(left.back() == expected && right.back() == -expected, "Time retains ordinary band-mix rounding");
 }
+void audioTrigger() {
+    // These are stable public parameter IDs; sparse sessions only contain active controls.
+    const auto parameter = [](int publicId) {
+        return publicId <= Shaper::Count ? static_cast<Shaper::Param>(publicId - 1) : Shaper::Count;
+    };
+    constexpr std::array rates{44100, 48000, 96000};
+    constexpr int expected[][4] = {{617, 882, 1058, 1323}, {672, 961, 1152, 1441}, {1344, 1921, 2304, 2881}};
+    for (std::size_t rate = 0; rate < rates.size(); ++rate) {
+        for (int cell = 0; cell < 4; ++cell) {
+            Shaper rack;
+            rack.prepare(rates[rate]);
+            rack.set(parameter(755), 2); // Mid band, one shot
+            rack.set(parameter(762), static_cast<float>(cell < 2 ? 0 : 2));
+            rack.set(parameter(764), static_cast<float>(cell % 2));
+            const int latency = expected[rate][cell];
+            std::vector<float> l(4096), r(4096);
+            l[31] = .5f;
+            r[79] = -.25f;
+            rack.process(l.data(), r.data(), l.data(), r.data(), l.size());
+            check(rack.latency() == latency && l[31 + latency] == .5f && r[79 + latency] == -.25f &&
+                  std::count(l.begin(), l.end(), 0.f) == 4095 && std::count(r.begin(), r.end(), 0.f) == 4095,
+                  "reported detector latency equals both observed stereo impulse offsets");
+            rack.set(Shaper::DriveOn, 1);
+            check(rack.latency() == latency + 16, "Drive compensation is added to detector latency");
+            rack.set(parameter(755), 0);
+            check(rack.latency() == 16, "synchronized Volume releases only its own compensation");
+        }
+    }
+
+    for (const auto& setting : std::array<std::array<int, 3>, 4>{{
+             {0, 0, 479}, {0, 100, 863}, {1, 50, 671}, {2, 50, 1153}}}) {
+        Shaper rack;
+        rack.prepare(48000);
+        rack.set(parameter(755), 2);
+        rack.set(parameter(758), 75);
+        rack.set(parameter(762), static_cast<float>(setting[0]));
+        rack.set(parameter(763), static_cast<float>(setting[1]) * .01f);
+        point(rack, Stage::Volume, Band::Mid, 0, 0);
+        std::vector<float> l(6000), r(6000, .0125f);
+        l[3000] = .7f;
+        rack.process(l.data(), r.data(), l.data(), r.data(), l.size());
+        const auto first = static_cast<std::size_t>(3000 + setting[2]);
+        check(r[first - 1] == .0125f && r[first] == 0,
+              "onset shift and profile set the restart independently of dry delay");
+    }
+    for (int stop : {25, 50, 75}) {
+        Shaper rack;
+        rack.prepare(48000);
+        rack.set(parameter(755), 2);
+        rack.set(parameter(758), static_cast<float>(stop));
+        for (int i = 0; i < 8; ++i) point(rack, Stage::Volume, Band::Mid, i, 12.5f * static_cast<float>(i));
+        std::vector<float> l(2048), r(2048, .0125f);
+        rack.process(l.data(), r.data(), l.data(), r.data(), l.size());
+        check(near(r.back(), .0125 * stop * .01), "one-shot without hits holds the selected contour endpoint");
+    }
+
+    constexpr int length = 96000;
+    const std::array<int, 4> starts{14000, 31300, 53500, 81400};
+    const std::array<float, 4> amplitudes{.7f, .045f, .7f, .7f};
+    const std::array<int, 3> restarts{14671, 54171, 82071};
+    for (int mode : {1, 2}) {
+        Shaper rack;
+        rack.prepare(48000);
+        rack.set(parameter(755), static_cast<float>(mode));
+        rack.set(parameter(758), 75.f);
+        rack.set(Shaper::bandParam(Stage::Volume, Band::Mid, Shaper::Cycle), .5f);
+        point(rack, Stage::Volume, Band::Mid, 0, 0);
+        std::vector<float> l(length), r(length, .0125f);
+        for (std::size_t burst = 0; burst < starts.size(); ++burst)
+            for (int j = 0; j < 1800; ++j)
+                l[starts[burst] + j] = amplitudes[burst] * static_cast<float>(
+                    std::cos(2 * std::numbers::pi * 920 * j / 48000.0) * std::exp(-j / 420.0));
+        constexpr std::array blocks{31, 256, 7, 2048, 19};
+        for (int at = 0, block = 0; at < length; ++block) {
+            const int n = std::min(blocks[static_cast<std::size_t>(block) % blocks.size()], length - at);
+            rack.sync(at / 24000.0);
+            rack.process(l.data() + at, r.data() + at, l.data() + at, r.data() + at, n);
+            at += n;
+        }
+        for (int restart : restarts)
+            check(r[restart - 1] == .0125f && r[restart] == 0 && r[restart + 1499] == 0 &&
+                  r[restart + 1501] == .0125f, "strong stereo onset restarts at the measured frame");
+        check(r[31970] == .0125f && r[31971] == .0125f, "quiet burst leaves the phase undisturbed");
+        check(mode == 1 ? r[26672] == 0 : r[26672] == .0125f, "loop continues while one-shot holds");
+        check(mode == 1 ? r[12001] == 0 : r[12001] == .0125f, "pre-trigger loop and one-shot starting phase");
+    }
+}
+
+
+
+void setFollower(Shaper& rack, Band band, Shaper::FollowerControl control, float value) {
+    rack.set(Shaper::followerParam(band, control), value);
+}
+
+void followerSignedPeaks() {
+    Shaper rack;
+    flat(rack, Stage::Width, Band::Mid, 0);
+    auto set = [&](Shaper::FollowerControl id, float v) { setFollower(rack, Band::Mid, id, v); };
+    set(Shaper::FollowerOn, 1);
+    set(Shaper::FollowerAmount, 75);
+    set(Shaper::FollowerAttack, 0);
+    set(Shaper::FollowerRelease, 0);
+    set(Shaper::FollowerHold, 3.5f);
+    auto read = [&](int frame, float level) {
+        const float left = frame % 3 == 0 ? -level : level;
+        return one(rack, left, -left)[0] / (2.f * left);
+    };
+    // A signed plateau followed by a one-sample peak. At 96 kHz the
+    // 3.5-percent hold spans 58 previous frames, before the envelope falls.
+    struct Capture { double rate; std::array<float, 6> envelope; };
+    constexpr std::array<int, 6> frames{385, 387, 610, 611, 640, 669};
+    constexpr Capture reads[]{
+        {44100, {.24998784f, .25f, .61946333f, .62494051f, .61655682f, .54059649f}},
+        {48000, {.24896085f, .24999976f, .61712301f, .62487769f, .62236190f, .55154723f}},
+        {96000, {.25f, .24947989f, .56986404f, .61813009f, .62483800f, .62353802f}}
+    };
+    for (const auto& row : reads) {
+        rack.prepare(row.rate);
+        std::size_t mark = 0;
+        for (int i = 0; i <= frames.back(); ++i) {
+            const float level = i <= 400 ? .25f : i == 610 ? .625f : .0625f;
+            const auto actual = read(i, level);
+            if (i == frames[mark])
+                check(near(actual, row.envelope[mark++], 5e-6), "signed plateau and single-frame peak hold");
+        }
+    }
+
+    // Lengthening the window can recover an older peak. Frames delivered
+    // during zero hold drive the envelope without advancing this history.
+    rack.prepare(48000);
+    constexpr std::array<int, 10> at{167, 168, 169, 639, 640, 642, 767, 768, 1168, 1169};
+    constexpr std::array<double, 10> captured{.32955289, .37429443, .37498903, .38544315, .38384101,
+                                               .38065666, .37497580, .37341717, .49755105, .49996197};
+    std::size_t mark = 0;
+    for (int i = 0; i <= at.back(); ++i) {
+        if (i == 168) set(Shaper::FollowerHold, 10);
+        if (i == 310) set(Shaper::FollowerHold, 0);
+        if (i == 640) set(Shaper::FollowerHold, 16);
+        if (i == 768) set(Shaper::FollowerHold, 2.5f);
+        if (i == 1168) set(Shaper::FollowerHold, 17);
+        float level = .03125f;
+        if (i >= 102 && i < 108) level = .375f;
+        if (i == 522 || i == 523) level = .625f;
+        if (i == 1060 || i == 1061) level = .5f;
+        const auto actual = read(i, level);
+        if (i == at[mark])
+            check(near(actual, captured[mark++], 5e-6), "changing hold recalls only positive-window input");
+    }
+
+    // The oldest input still belongs to the half-second window at the
+    // highest supported sample rate, including after the circular queue wraps.
+    rack.prepare(768000);
+    set(Shaper::FollowerHold, 100);
+    std::array<float, 2048> l{}, r{}, outL{}, outR{};
+    l.fill(.03125f);
+    r.fill(-.03125f);
+    auto feedLow = [&](int n) {
+        while (n > 0) {
+            const auto framesThisTime = std::min(n, static_cast<int>(l.size()));
+            rack.process(l.data(), r.data(), outL.data(), outR.data(), static_cast<std::size_t>(framesThisTime));
+            n -= framesThisTime;
+        }
+    };
+    feedLow(384019);
+    (void)read(0, .625f);
+    feedLow(383999);
+    check(near(read(0, .03125f), .625, 2e-6), "768 kHz retains the oldest peak at the 500 ms limit");
+    check(near(read(0, .03125f), .6248373, 2e-6), "the oldest peak expires on the next frame");
+
+    struct Release { double rate; float percent, sample800, sample1200; };
+    constexpr Release releases[]{
+        {48000, 2, .33241251f, .14692384f}, {48000, 7.25f, .42682707f, .31103966f},
+        {96000, 2, .40769157f, .27105471f}, {96000, 11, .47488791f, .42838410f}
+    };
+    set(Shaper::FollowerHold, 0);
+    for (const auto& release : releases) {
+        rack.prepare(release.rate);
+        set(Shaper::FollowerRelease, release.percent);
+        for (int i = 0; i <= 1200; ++i) {
+            const auto actual = read(i, i <= 600 ? .5f : .0625f);
+            if (i == 800) check(near(actual, release.sample800, 3e-5), "early measured decay between release anchors");
+            // After 600 decay steps a two-ULP pole error can reach 0.000036.
+            if (i == 1200) check(near(actual, release.sample1200, 4e-5), "later measured decay between release anchors");
+        }
+    }
+}
+
+void followerLevels() {
+    Shaper rack;
+    flat(rack, Stage::Width, Band::Mid, 50);
+    auto set = [&](Shaper::FollowerControl id, float value) { setFollower(rack, Band::Mid, id, value); };
+    set(Shaper::FollowerOn, 1);
+    set(Shaper::FollowerAmount, 75);
+    set(Shaper::FollowerAttack, 0);
+    set(Shaper::FollowerRelease, 0);
+    auto measure = [&](float left, float right, bool narrows = false) {
+        std::array<float, 4096> l, r;
+        l.fill(left);
+        r.fill(right);
+        rack.process(l.data(), r.data(), l.data(), r.data(), l.size());
+        // Compare the maximum modulation over a complete plateau ripple.
+        float extreme = (l.back() - r.back()) / (left - right);
+        for (std::size_t i = l.size() - 16; i < l.size(); ++i) {
+            const float gain = (l[i] - r[i]) / (left - right);
+            extreme = narrows ? std::min(extreme, gain) : std::max(extreme, gain);
+        }
+        return extreme;
+    };
+    for (const auto& pair : {std::array{-.2f,.02f}, std::array{.02f,-.2f}, std::array{.15f,-.15f},
+                             std::array{-.03f,-.09f}, std::array{.01f,.35f}}) {
+        const float e = std::max(std::abs(pair[0]), std::abs(pair[1]));
+        check(near(measure(pair[0], pair[1]), .5f + 2.f * e), "Width detects the larger absolute channel level");
+    }
+    set(Shaper::FollowerDepth, 1);
+    check(near(measure(.11f,.09f), .94), "second Depth setting doubles the measured positive modulation");
+    set(Shaper::FollowerDepth, 2);
+    check(near(measure(.11f,.09f), 1.38), "third Depth setting quadruples the measured modulation");
+    set(Shaper::FollowerThreshold, 25);
+    check(near(measure(.21f,.19f), .5, 1e-4) && near(measure(.41f,.39f), 2.0, 1e-5),
+          "threshold gates quieter plateaus and larger peaks can saturate the width");
+    set(Shaper::FollowerThreshold, 0);
+    set(Shaper::FollowerDepth, 0);
+    set(Shaper::FollowerAmount, 25);
+    check(near(measure(.21f,.19f,true), .08, 1e-5), "negative Add amount narrows the stereo signal");
+    set(Shaper::FollowerMode, 1);
+    set(Shaper::FollowerAmount, 75);
+    set(Shaper::FollowerOffset, 75);
+    check(near(measure(-.2f,.02f), 1.15), "Multiply uses a unipolar amount and applies the offset afterwards");
+    rack.set(Shaper::MasterMix, 50);
+    rack.set(Shaper::bandParam(Stage::Width, Band::Mid, Shaper::Mix), 50);
+    check(near(measure(-.2f,.02f), 1.0375), "the follower feeds the existing master and band dry/wet mix");
+    set(Shaper::FollowerOn, 0);
+    check(near(measure(-.2f,.02f), .875), "disabling the detector restores the independent Width contour");
+
+    flat(rack, Stage::Width, Band::Mid, 25);
+    rack.set(Shaper::MasterMix, 100);
+    rack.set(Shaper::bandParam(Stage::Width, Band::Mid, Shaper::Mix), 100);
+    set(Shaper::FollowerOn, 1);
+    set(Shaper::FollowerAmount, 50);
+    set(Shaper::FollowerOffset, 0);
+    check(near(measure(.25f,.125f), -1.9375, 1e-6),
+          "negative Multiply offset reverses the stereo difference");
+    std::array<float, 64> left, right;
+    left.fill(.25f);
+    right.fill(.125f);
+    rack.process(left.data(), right.data(), left.data(), right.data(), left.size());
+    for (std::size_t i = 0; i < left.size(); ++i)
+        check(near(left[i] + right[i], .375, 1e-7), "signed Width preserves the sum");
+    set(Shaper::FollowerMode, 0);
+    check(near(measure(.25f,.125f), 0, 1e-6), "Add stops at mono at the same minimum offset");
+    set(Shaper::FollowerMode, 1);
+    set(Shaper::FollowerAmount, 100);
+    set(Shaper::FollowerDepth, 2);
+    set(Shaper::FollowerOffset, 100);
+    check(near(measure(.75f,.375f), 2, 1e-6), "Multiply limits a positive side gain to two");
+}
+
+void followerTimeConstants() {
+    Shaper rack;
+    flat(rack, Stage::Width, Band::Mid, 50);
+    auto set = [&](Shaper::FollowerControl id, float value) { setFollower(rack, Band::Mid, id, value); };
+    set(Shaper::FollowerOn, 1);
+    set(Shaper::FollowerAmount, 75);
+    set(Shaper::FollowerAttack, 0);
+    set(Shaper::FollowerRelease, 0);
+    // The side pilot stays at .01 across the common-mode level step.
+    auto baseline = [&] {
+        set(Shaper::FollowerOn, 0);
+        set(Shaper::FollowerOn, 1);
+        std::array<float, 4096> l, r;
+        l.fill(.01f);
+        r.fill(-.01f);
+        rack.process(l.data(), r.data(), l.data(), r.data(), l.size());
+    };
+    auto gainAfter = [&](std::size_t frames, float common) {
+        std::vector<float> l(frames, common + .01f), r(frames, common - .01f);
+        rack.process(l.data(), r.data(), l.data(), r.data(), frames);
+        return (l.back() - r.back()) / .02f;
+    };
+    baseline();
+    check(near(gainAfter(1, .18f), .87441205978, 3e-6), "minimum attack matches the first measured step sample at 48 kHz");
+    rack.prepare(96000);
+    baseline();
+    check(near(gainAfter(1, .18f), .83514451981, 3e-6), "minimum attack matches the first measured step sample at 96 kHz");
+    rack.prepare(48000);
+    const std::array attackMs{1.562,12.500,42.188,99.938};
+    for (std::size_t i = 0; i < attackMs.size(); ++i) {
+        set(Shaper::FollowerAttack, 0);
+        baseline();
+        set(Shaper::FollowerAttack, 25.f * static_cast<float>(i + 1));
+        const auto count = static_cast<std::size_t>(std::round(attackMs[i] * 48)) + 1;
+        check(near(gainAfter(count, .18f), .52 + .36 * .63212, .002),
+              "all four measured Attack positions reach their 63.2 percent crossing");
+    }
+    set(Shaper::FollowerAttack, 0);
+    for (const float h : {25.f, 50.f, 75.f, 100.f}) {
+        set(Shaper::FollowerHold, h);
+        baseline();
+        (void)gainAfter(100, .18f);
+        const auto held = static_cast<std::size_t>(std::round(24000 * h * h / 10000));
+        check(near(gainAfter(held, 0), .88, 2e-6) && gainAfter(1, 0) < .879,
+              "hold freezes the plateau for precisely 31.25, 125, 281.25 or 500 ms");
+    }
+    set(Shaper::FollowerHold, 0);
+    constexpr std::array<float, 6> release{0, 20, 25, 50, 75, 100};
+    constexpr std::array<double, 6> measuredHalfMs{3.208, 55.083, 77.208, 306.438, 1019.708, 3251.188};
+    for (std::size_t i = 0; i < release.size(); ++i) {
+        set(Shaper::FollowerRelease, release[i]);
+        baseline();
+        (void)gainAfter(100, .18f);
+        const auto n = static_cast<std::size_t>(std::round(measuredHalfMs[i] * 48)) + 1;
+        check(near(gainAfter(n, 0), .7, .001), "absolute peak decay reproduces the six measured release crossings");
+    }
+}
+
+void followerPoleLandmarks() {
+    using Follower = adi::dsp::AdiShaperFollower;
+    using Control = Follower::Control;
+    Follower meter;
+    meter.set(Control::On, 1);
+    meter.set(Control::Amount, 75);
+    struct Reading { double rate; float percent, rise, fall, fourth, twelfth; };
+    constexpr Reading readings[]{
+        {44100, 12.5f, .10700142384f, .99951541424f, .18203955889f, .37141829729f},
+        {48000, 20, .02554094791f, .99975728989f, .04915797710f, .13345009089f},
+        {48000, 11, .13999295235f, .99948495626f, .22648695111f, .41815462708f},
+        {88200, 17.6f, .02039110661f, .99984222651f, .03955170512f, .10951656103f},
+        {96000, 18.75f, .01555687189f, .99986714125f, .03039520979f, .08575469255f},
+        {192000, .5f, .64609569311f, .99916821718f, .49215644598f, .49999806285f}
+    };
+    for (const auto& row : readings) {
+        meter.prepare(row.rate);
+        meter.set(Control::Attack, row.percent);
+        meter.set(Control::Release, 0);
+        for (int i = 0; i < 12; ++i) {
+            const float sign = i % 2 ? 1.f : -1.f;
+            const float e = meter.apply(sign * .5f, -sign * .5f, 0);
+            if (i == 0) {
+                // The fastest held-out 192 kHz attack differs by one float step.
+                const float tolerance = row.rate == 192000 ? 0x1p-24f : 0.f;
+                check(std::abs(2.f * e - row.rise) <= tolerance, "measured first attack coefficient");
+            }
+            if (i == 3 || i == 11) {
+                const float value = .5f + (e - .5f); // Read with the signed half-scale reference's rounding.
+                check(std::abs(value - (i == 3 ? row.fourth : row.twelfth)) <= 0x1p-25f,
+                      "independent signed attack trajectory at the fourth and twelfth frames");
+            }
+        }
+        meter.reset();
+        meter.set(Control::Attack, 0);
+        meter.set(Control::Release, row.percent);
+        float e = 0;
+        for (int i = 0; i < 256 && e != .5f; ++i) e = meter.apply(-.5f, .25f, 0);
+        check(e == .5f && 2.f * meter.apply(0, 0, 0) == row.fall, "measured first falling coefficient");
+    }
+
+    meter.prepare(48000);
+    meter.set(Control::Threshold, 10);
+    check(meter.apply(0, -std::nextafter(.1f, 0.f), 0) == 0 && meter.apply(0, -.1f, 0) > 0,
+          "a physical threshold is normalized by division and includes the exact boundary");
+    meter.set(Control::Threshold, 0);
+    meter.set(Control::Release, 0);
+    meter.prepare(1);
+    check(meter.apply(1, 0, 0) == 1 && meter.apply(0, 0, 0) == 0,
+          "an underflowed pole settles immediately at the slowest supported rate");
+    meter.prepare(std::numeric_limits<double>::max());
+    check(meter.apply(1, 0, 0) == 0, "the rising increment rounds to zero at extreme finite rates");
+}
+
+void followerSplitInputs() {
+    constexpr std::size_t frames = 3072;
+    std::array<float, frames> left{}, right{}, l{}, r{}, sumL{}, sumR{};
+    for (std::size_t i = 0; i < frames; ++i) {
+        const auto t = static_cast<double>(i) / 48000;
+        left[i] = static_cast<float>(.41 * std::sin(2 * std::numbers::pi * 65 * t) + .13 * std::sin(2 * std::numbers::pi * 4100 * t));
+        right[i] = static_cast<float>(.23 * std::cos(2 * std::numbers::pi * 870 * t));
+    }
+    Shaper rack;
+    rack.set(Shaper::WidthBands, 3);
+    for (int k = 0; k < 3; ++k) {
+        const auto band = static_cast<Band>(k);
+        const auto configure = [&](Shaper& processor, Band target) {
+            flat(processor, Stage::Width, target, 70.f);
+            setFollower(processor, target, Shaper::FollowerOn, 1);
+            setFollower(processor, target, Shaper::FollowerMode, k == 0 ? 1.f : 0.f);
+            setFollower(processor, target, Shaper::FollowerAmount, 70.f + static_cast<float>(k) * 10.f);
+            setFollower(processor, target, Shaper::FollowerAttack, static_cast<float>(k) * 14.f);
+            setFollower(processor, target, Shaper::FollowerHold, static_cast<float>(k) * 20.f);
+        };
+        configure(rack, band);
+        Shaper isolate, full;
+        isolate.set(Shaper::VolumeBands, 3);
+        for (int j = 0; j < 3; ++j) flat(isolate, Stage::Volume, static_cast<Band>(j), j == k ? 100.f : 0.f);
+        configure(full, Band::Mid);
+        isolate.process(left.data(), right.data(), l.data(), r.data(), frames);
+        full.process(l.data(), r.data(), l.data(), r.data(), frames);
+        for (std::size_t i = 0; i < frames; ++i) {
+            sumL[i] += l[i];
+            sumR[i] += r[i];
+        }
+    }
+    rack.process(left.data(), right.data(), l.data(), r.data(), frames);
+    bool matches = true;
+    for (std::size_t i = 0; i < frames; ++i)
+        matches &= near(l[i], sumL[i], 2e-6) && near(r[i], sumR[i], 2e-6);
+    check(matches && rack.latency() == 0, "three follower bands independently track their split stereo inputs");
+}
+void externalWidthKey() {
+    constexpr std::size_t block = 256, plateau = 245760;
+    constexpr std::array keys{std::array{0.f, 0.f}, std::array{.2f, 0.f}, std::array{0.f, -.4f},
+                              std::array{.15f, -.15f}, std::array{0.f, 0.f}};
+    constexpr std::array reference{.49999999, .89999102, 1.29998205, .79999100, .50000690};
+    std::array<float, block> inL{}, inR{}, keyL{}, keyR{}, outL{}, outR{};
+    inL.fill(.01f);
+    inR.fill(-.01f);
+    for (bool external : {false, true}) {
+        Shaper s;
+        flat(s, Stage::Width, Band::Mid, 50.f);
+        for (auto setting : {std::pair{Shaper::FollowerOn, 1.f}, {Shaper::FollowerAmount, 75.f},
+                             {Shaper::FollowerAttack, 50.f}, {Shaper::FollowerHold, 0.f},
+                             {Shaper::FollowerRelease, 50.f}, {Shaper::FollowerThreshold, 0.f}})
+            setFollower(s, Band::Mid, setting.first, setting.second);
+        s.useExternalWidthKey(Band::Mid, external);
+        for (std::size_t j = 0; j < keys.size(); ++j) {
+            keyL.fill(keys[j][0]);
+            keyR.fill(keys[j][1]);
+            const Shaper::KeyInput key{keys[j][0] ? keyL.data() : nullptr, keys[j][1] ? keyR.data() : nullptr};
+            double gain = 0.;
+            bool opposite = true;
+            for (std::size_t frame = 0; frame < plateau; frame += block) {
+                s.process(inL.data(), inR.data(), outL.data(), outR.data(), block, key);
+                if (frame < plateau - 2048) continue;
+                for (std::size_t i = 0; i < block; ++i) {
+                    gain += outL[i] / .01;
+                    opposite &= outL[i] == -outR[i];
+                }
+            }
+            check(std::abs(gain / 2048. - (external ? reference[j] : .51999944)) < .00005 && opposite,
+                  "input or independent stereo key drives the measured Width plateau");
+        }
+        check(s.latency() == 0, "the external Width detector adds no delay");
+    }
+}
+
+void keyedWidthAcrossRetriggers() {
+    constexpr std::size_t length = 12017;
+    std::array<std::vector<float>, 2> program, key;
+    for (auto* buffer : {&program, &key})
+        for (auto& channel : *buffer) channel.resize(length);
+    for (std::size_t i = 0; i < length; ++i) {
+        const float x = i % 1957 < 11 ? .95f : .02f;
+        program[0][i] = x;
+        program[1][i] = -.8f * x;
+        key[0][i] = static_cast<float>((i / 43) % 31) * .025f;
+        key[1][i] = -static_cast<float>((i / 67) % 19) * .043f;
+    }
+    const auto render = [&](std::size_t block, bool external, bool sendNotes) {
+        auto out = program;
+        Shaper rack;
+        flat(rack, Stage::Width, Band::Mid, 50.f);
+        setFollower(rack, Band::Mid, Shaper::FollowerOn, 1.f);
+        setFollower(rack, Band::Mid, Shaper::FollowerAmount, 75.f);
+        setFollower(rack, Band::Mid, Shaper::FollowerAttack, 0.f);
+        setFollower(rack, Band::Mid, Shaper::FollowerHold, 0.f);
+        setFollower(rack, Band::Mid, Shaper::FollowerRelease, 0.f);
+        rack.useExternalWidthKey(Band::Mid, external);
+        rack.useVolumeNotes(Band::Mid, true);
+        rack.set(Shaper::TriggerLowMode, 1.f);
+        rack.set(Shaper::TriggerMidMode, 1.f);
+        rack.set(Shaper::bandParam(Stage::Volume, Band::Mid, Shaper::Curve), 1.f);
+        for (int j = 0; j < 8; ++j) point(rack, Stage::Volume, Band::Mid, j, 12.5f * static_cast<float>(j));
+        check(rack.latency() == 672, "an audio-triggered band retains its detector delay beside a note-triggered band");
+        constexpr std::array<std::size_t, 3> notes{1507, 5581, 9803};
+        for (std::size_t i = 0; i < length;) {
+            auto end = std::min(length, i + block);
+            for (auto at : notes) {
+                if (i == at && sendNotes) rack.noteOn(127, 1);
+                if (at > i) end = std::min(end, at);
+            }
+            rack.process(program[0].data() + i, program[1].data() + i,
+                         out[0].data() + i, out[1].data() + i, end - i,
+                         {key[0].data() + i, key[1].data() + i});
+            i = end;
+        }
+        return out;
+    };
+    const auto oracle = render(1, true, true);
+    check(oracle != render(256, false, true) && oracle != render(256, true, false),
+          "the key planes and delivered notes independently affect the mixed fixture");
+    for (std::size_t block : {37u, 256u, 2048u})
+        check(oracle == render(block, true, true), "audio retriggers keep key offsets and note phases frame-exact");
+}
+
+void midiVolumeRetrigger() {
+    constexpr int length = 96000, period = 12000;
+    constexpr std::array notes{14000, 31300, 53500, 81400};
+    for (int block : {256, 2048}) for (int mode : {1, 2}) {
+        Shaper s;
+        s.useVolumeNotes(Band::Mid, true);
+        s.set(Shaper::TriggerMidMode, static_cast<float>(mode));
+        s.set(Shaper::TriggerMidEnd, 75.f);
+        s.set(Shaper::bandParam(Stage::Volume, Band::Mid, Shaper::Cycle), .5f);
+        s.set(Shaper::bandParam(Stage::Volume, Band::Mid, Shaper::Curve), 1.f);
+        for (int i = 0; i < 8; ++i) point(s, Stage::Volume, Band::Mid, i, 12.5f * static_cast<float>(i));
+        std::vector<float> left(length, .25f), right(length, -.125f);
+        int frame = 0;
+        while (frame < length) {
+            int end = std::min(length, (frame / block + 1) * block);
+            for (int on : notes) {
+                if (frame == on) s.noteOn(60, 100);
+                if (frame == on + 1440) s.noteOn(60, 0);
+                for (int event : {on, on + 1440}) if (event > frame) end = std::min(end, event);
+            }
+            s.sync(static_cast<double>(frame) / 24000.);
+            s.process(left.data()+frame, right.data()+frame, left.data()+frame, right.data()+frame, end-frame);
+            frame = end;
+        }
+        bool exact = true;
+        int last = -1;
+        double worst = 0.;
+        for (int i = 0; i < length; ++i) {
+            if (std::find(notes.begin(), notes.end(), i) != notes.end()) {
+                last = i;
+                exact &= left[i] == 0.f && right[i] == 0.f && left[i-1] > .001f && left[i+1] > 0.f;
+            }
+            const int age = last < 0 ? i : i-last;
+            const double pos = mode == 2 ? (last < 0 ? .75 : std::min(.75, static_cast<double>(age)/period))
+                                         : static_cast<double>(age % period)/period;
+            const double gain = pos < .875 ? pos : 7. * (1. - pos);
+            worst = std::max({worst, std::abs(left[i] - .25*gain), std::abs(right[i] + .125*gain)});
+        }
+        check(exact && worst < 1.e-6 && s.latency() == 0,
+              "four sample-addressed notes restart loop and one-shot contours and ignore note-off velocity");
+    }
+}
+
 } // namespace
 
 int main() {
@@ -1764,6 +2303,10 @@ int main() {
     panDelayBlend();
     beatGate();
     clocksAndLinearCurve();
+    audioTrigger();
+    externalWidthKey();
+    midiVolumeRetrigger();
+    keyedWidthAcrossRetriggers();
     splitBands();
     movingSplitFrequency();
     independentBandClocks();
@@ -1793,6 +2336,12 @@ int main() {
     timeRanges();
     timeBandHistory();
     timeWetMixExtremes();
+
+    followerSignedPeaks();
+    followerLevels();
+    followerTimeConstants();
+    followerPoleLandmarks();
+    followerSplitInputs();
     if (failures == 0) std::puts("ADI-Shaper DSP fixtures passed");
     return failures == 0 ? 0 : 1;
 }

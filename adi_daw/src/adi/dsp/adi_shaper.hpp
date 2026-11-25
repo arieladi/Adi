@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
+#include "adi/dsp/adi_shaper_audio_trigger.hpp"
 #include "adi/dsp/adi_shaper_crush.hpp"
 #include "adi/dsp/adi_shaper_drive.hpp"
 #include "adi/dsp/adi_shaper_filter.hpp"
 #include "adi/dsp/adi_shaper_noise.hpp"
 #include "adi/dsp/adi_shaper_reverb.hpp"
+#include "adi/dsp/adi_shaper_follower.hpp"
 #include "adi/dsp/adi_shaper_sweep.hpp"
 #include "adi/dsp/adi_shaper_time.hpp"
 #include <array>
@@ -34,6 +36,7 @@ class AdiShaper {
     static constexpr int noiseBandParameterCount = modBandParameterCount + 5;
     static constexpr int reverbBandParameterCount = modBandParameterCount - 1 + 6;
     static constexpr int timeBandParameterCount = 14;
+    static constexpr int followerParameterCount = 9;
     enum Param : int { MasterMix, VolumeBands, WidthBands = VolumeBands + stageParameterCount,
                  PanBands = WidthBands + stageParameterCount,
                  VolumeLowSlope = PanBands + stageParameterCount, WidthLowSlope, PanLowSlope,
@@ -46,6 +49,9 @@ class AdiShaper {
                  NoiseOn = 535, NoiseEnd = NoiseOn + modHeaderSize + 3 * noiseBandParameterCount,
                  ReverbOn = 625, ReverbEnd = ReverbOn + modHeaderSize + 3 * reverbBandParameterCount,
                  VolumeOrder = 715,
+                 WidthFollowerLow = 726, WidthFollowerEnd = WidthFollowerLow + 3 * followerParameterCount,
+                 TriggerLowMode = 753, TriggerMidMode, TriggerHighMode, TriggerLowEnd, TriggerMidEnd, TriggerHighEnd,
+                 TriggerThreshold, TriggerDetail, TriggerProfile, TriggerShift, TriggerSmoothing,
                  PanLowDelayBlend = 855, PanMidDelayBlend, PanHighDelayBlend,
                  DriveLowRounded = 927, DriveMidRounded, DriveHighRounded,
                  DriveLowPower, DriveMidPower, DriveHighPower,
@@ -57,6 +63,12 @@ class AdiShaper {
     }
     [[nodiscard]] static StageOrder orderFor(const StageRanks& ranks) noexcept;
     enum class Band { Low, Mid, High };
+    enum FollowerControl { FollowerOn, FollowerMode, FollowerAmount, FollowerDepth, FollowerOffset,
+                           FollowerThreshold, FollowerAttack, FollowerHold, FollowerRelease };
+    static constexpr Param followerParam(Band band, FollowerControl control) noexcept {
+        return static_cast<Param>(WidthFollowerLow + followerParameterCount * static_cast<int>(band)
+                                  + static_cast<int>(control));
+    }
     enum BandControl { Mix, Clock, Cycle, Rate, Curve, Point1, Point2, Point3, Point4,
                        Point5, Point6, Point7, Point8 };
     static constexpr Param bandParam(Stage stage, Band band, BandControl control) noexcept {
@@ -91,6 +103,7 @@ class AdiShaper {
         return (id >= MasterMix && id < TimeEnd) || (id >= NoiseOn && id < ReverbEnd)
             || (id >= VolumeOrder && id <= orderParam(Stage::Time))
             || (id >= orderParam(Stage::Noise) && id <= orderParam(Stage::Reverb))
+            || (id >= WidthFollowerLow && id <= TriggerSmoothing)
             || (id >= PanLowDelayBlend && id <= PanHighDelayBlend)
             || (id >= DriveLowRounded && id <= DriveHighFold);
     }
@@ -116,10 +129,23 @@ class AdiShaper {
     void tempo(double bpm) noexcept;
     void sync(double quarterNotes, bool playing = true, unsigned historyToleranceFrames = 0) noexcept;
     void syncAtSample(double quarterNotes, bool playing, std::int64_t sample, std::uint64_t revision) noexcept;
+    struct KeyInput {
+        const float* left = nullptr;
+        const float* right = nullptr;
+        [[nodiscard]] KeyInput advanced(std::size_t frames) const noexcept {
+            return {left ? left + frames : nullptr, right ? right + frames : nullptr};
+        }
+    };
+    void useExternalWidthKey(Band band, bool enabled) noexcept;
+    void useVolumeNotes(Band band, bool enabled) noexcept;
+    // Apply at the start of the next process span, including spans beginning within a host block.
+    void noteOn(int note, int velocity) noexcept;
     void process(const float* inL, const float* inR, float* outL, float* outR,
                  std::size_t frames) noexcept;
+    void process(const float* inL, const float* inR, float* outL, float* outR,
+                 std::size_t frames, KeyInput key) noexcept;
     [[nodiscard]] int latency() const noexcept {
-        return stages_[static_cast<std::size_t>(Stage::Drive)].enabled ? AdiShaperDrive::latencySamples : 0;
+        return trigger_.latency() + (stages_[static_cast<std::size_t>(Stage::Drive)].enabled ? AdiShaperDrive::latencySamples : 0);
     }
 
   private:
@@ -138,7 +164,7 @@ class AdiShaper {
         double beats = 4.0, hz = 1.0;
         float mix = 1.0f, blend = 1.0f, returnDry = 0.0f, returnWet = 1.0f;
         int type = 0;
-        bool hertz = false, active = false;
+        bool hertz = false, active = false, followWidth = false;
         std::array<Gain, 8> heldGains{};
     };
     struct Split {
@@ -224,12 +250,16 @@ class AdiShaper {
     void updateTimeRanges() noexcept;
     void restart(Stage kind) noexcept;
     void resetKernels(Stage kind) noexcept;
-    template <Stage kind, bool moving> void render(StageData& stage, const float* inL, const float* inR,
-                                     float* outL, float* outR, std::size_t frames) noexcept;
+    void processStages(float* outL, float* outR, std::size_t frames, KeyInput key) noexcept;
+    void setTrigger(Param id, float value) noexcept;
+    template <Stage kind, bool moving, bool triggered = false> void render(StageData& stage, const float* inL, const float* inR,
+                                     float* outL, float* outR, std::size_t frames, KeyInput key) noexcept;
     std::array<StageData, stageSlots> stages_;
     StageRanks ranks_{};
     StageOrder order_ = activeStages;
     bool orderDirty_ = false, defaultOrder_ = true;
+    std::array<bool, 3> externalWidth_{};
+    std::array<AdiShaperFollower, 3> widthFollowers_;
     std::array<AdiShaperFilter, 3> filters_;
     std::array<AdiShaperSweep, 3> sweeps_;
     std::array<AdiShaperDrive, 3> drives_;
@@ -243,6 +273,8 @@ class AdiShaper {
     std::array<std::array<float, 2>, 3> driveTrims_{{{.5f, .5f}, {.5f, .5f}, {.5f, .5f}}};
     std::array<DriveDryDelay, 3> driveDry_;
     DriveDryDelay driveSource_;
+    AdiShaperAudioTrigger trigger_;
+    std::array<float, 3> previousVolume_{};
     double sampleRate_ = 48000.0, bpm_ = 120.0, quarterNotes_ = 0.0;
     double historyQuarterNotes_ = 0.0, lastHistoryStamp_ = 0.0;
     std::uint64_t expectedSample_ = 0, transportRevision_ = 0;

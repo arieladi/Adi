@@ -13,6 +13,7 @@
 #include <fstream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -179,7 +180,7 @@ void driveShapeState(DeviceInstance& device) {
     constexpr std::array physical{1,0,1, 0,1,1, 1,2,3};
     for (std::size_t i = 0; i < physical.size(); ++i) {
         const auto host = 928 + static_cast<int>(i);
-        const auto* desc = device.paramAt(418 + static_cast<int>(i));
+        const auto* desc = device.paramAt(656 + static_cast<int>(i));
         const auto id = std::to_string(host);
         check(desc && desc->id == id && device.getParam(id).real == 0., "Drive choices append with Off selected");
         set(device, host, physical[i] / (host < 934 ? 1. : 3.));
@@ -289,13 +290,13 @@ void driveShapeCanvas(const std::string& directory, bool crossed) {
 }
 
 void modulationPd(const std::string& editedDir, bool filterOn, bool sweepOn, bool driveOn = false,
-                  bool crushOn = false, bool noiseOn = false, bool reverbOn = false) {
+                  bool crushOn = false, bool noiseOn = false, bool reverbOn = false, bool followerOn = false) {
     using Engine = adi::device::LibPdEngine;
     using Shaper = adi::dsp::AdiShaper;
     using Stage = Shaper::Stage;
     constexpr auto mid = Shaper::Band::Mid;
     constexpr int frames = 4096;
-    const bool onlyVolume = !filterOn && !sweepOn && !driveOn && !crushOn && !noiseOn && !reverbOn;
+    const bool onlyVolume = !filterOn && !sweepOn && !driveOn && !crushOn && !noiseOn && !reverbOn && !followerOn;
     std::array<adi::device::PdLatencyReceiver, 2> latency;
     Engine native(ADI_SHAPER_PATCH_DIR, "ADI-Shaper.pd", 2, 2);
     Engine pd(editedDir, "ADI-Shaper.pd", 2, 2);
@@ -311,6 +312,20 @@ void modulationPd(const std::string& editedDir, bool filterOn, bool sweepOn, boo
         auto send = [&](Shaper::Param id, float natural) {
             check(path.sendParameter(static_cast<int>(id) + 1, natural), "modulation message accepted");
         };
+        if (followerOn) {
+            send(Shaper::WidthBands, 3);
+            for (const auto band : {Shaper::Band::Low, mid, Shaper::Band::High}) {
+                send(Shaper::followerParam(band, Shaper::FollowerOn), 1);
+                send(Shaper::followerParam(band, Shaper::FollowerMode), band == mid ? 1.f : 0.f);
+                send(Shaper::followerParam(band, Shaper::FollowerAmount), 70);
+                send(Shaper::followerParam(band, Shaper::FollowerDepth), band == mid ? 2.f : 1.f);
+                send(Shaper::followerParam(band, Shaper::FollowerOffset), 54);
+                send(Shaper::followerParam(band, Shaper::FollowerThreshold), 2);
+                send(Shaper::followerParam(band, Shaper::FollowerAttack), 25);
+                send(Shaper::followerParam(band, Shaper::FollowerHold), 7);
+                send(Shaper::followerParam(band, Shaper::FollowerRelease), 43);
+            }
+        }
         if (onlyVolume) {
             for (int j = 0; j < 8; ++j)
                 send(Shaper::bandParam(Stage::Volume, mid, static_cast<Shaper::BandControl>(Shaper::Point1 + j)), 50);
@@ -659,6 +674,9 @@ void combinedDeclarations(DeviceInstance& device) {
     for (int id = 536; id <= 715; ++id) next(id);
     for (int id = 416; id <= 463; ++id) next(id);
     for (int id : {723, 725, 726}) next(id);
+    for (int id = 928; id <= 936; ++id) next(id);
+    for (int id = 754; id <= 764; ++id) next(id);
+    for (int id = 727; id <= 753; ++id) next(id);
     check(ordinal == device.paramCount(), "all combined stage descriptors are accounted for");
     for (int id : {464, 500, 535, 724})
         check(!device.setParam(std::to_string(id), ParamValue::fromNormalized(1.)), "absent Pitch controls reject writes");
@@ -795,13 +813,57 @@ void combinedStageState(const std::string& editedDir) {
     combinedDeclarations(*device);
     check(combinedDifference(combinedAudio(*device, false), silent) == 0., "old project again plays just the original zero Volume gate");
 }
+void audioTriggerPd() {
+    using Engine = adi::device::LibPdEngine;
+    using Shaper = adi::dsp::AdiShaper;
+    constexpr std::size_t length = 8192;
+    std::array<std::vector<float>, 2> native;
+    const auto declarations = adi::device::parsePdDeclarations(adi::builtinCanvas(uid));
+    for (auto execution : {Engine::Execution::Automatic, Engine::Execution::PureData}) {
+        adi::device::PdLatencyReceiver latency;
+        Engine path(ADI_SHAPER_PATCH_DIR, "ADI-Shaper.pd", 2, 2, execution, Engine::BlockMode::WholeBlocks);
+        std::string error;
+        path.addSearchPath(ADI_PD_PATCH_DIR);
+        check(path.open(latency, error), "audio-trigger canvas opens");
+        check(path.isNative() == (execution == Engine::Execution::Automatic), "requested DSP route is active");
+        path.prepare(48000, 256);
+        path.bindParameters(declarations);
+        const auto write = [&](Shaper::Param control, float value) {
+            check(path.sendParameter(static_cast<int>(control) + 1, value), "trigger control accepts its declaration ID");
+        };
+        write(Shaper::TriggerMidMode, 2);
+        write(Shaper::TriggerMidEnd, 75);
+        write(Shaper::bandParam(Shaper::Stage::Volume, Shaper::Band::Mid, Shaper::Cycle), .5f);
+        write(Shaper::bandParam(Shaper::Stage::Volume, Shaper::Band::Mid, Shaper::Point1), 0);
+        std::array<std::vector<float>, 2> signal{std::vector<float>(length), std::vector<float>(length, .0125f)};
+        signal[0][1111] = .7f;
+        for (std::size_t frame = 0; frame < length; frame += 256) {
+            const float* in[]{signal[0].data() + frame, signal[1].data() + frame};
+            float* out[]{signal[0].data() + frame, signal[1].data() + frame};
+            adi::engine::NodeIo io;
+            io.in = in;
+            io.out = out;
+            io.frames = 256;
+            io.channels = 2;
+            path.process(io);
+        }
+        check(latency.latencySamples() == 672 && signal[1][1781] == .0125f && signal[1][1782] == 0.f &&
+              signal[1][3283] == .0125f, "reported delay and non-grid onset reach the shipped device");
+        if (path.isNative()) native = std::move(signal);
+        else check(signal == native, "editable Pd and registered native Volume retrigger match sample for sample");
+    }
+}
 
 } // namespace
 
 int main() try {
     auto device = open();
     const auto* info = adi::findBuiltin(uid);
-    check(info && info->name == "ADI-Shaper" && device->paramCount() == 665, "device registration");
+    check(info && info->name == "ADI-Shaper" && device->paramCount() == 703, "device registration");
+    for (int id = 727; id <= 753; ++id) {
+        const auto* control = device->paramAt(676 + id - 727);
+        check(control && control->id == std::to_string(id), "Width follower follows the existing trigger declarations");
+    }
     for (int id = 1; id <= 415; ++id)
         check(device->paramAt(id - 1) && device->paramAt(id - 1)->id == std::to_string(id), "contiguous stable parameter IDs");
     for (int i = 0; i < 90; ++i) {
@@ -827,6 +889,29 @@ int main() try {
     }
     panBlendState(*device);
     device = open();
+    for (int id = 754; id <= 764; ++id)
+        check(device->paramAt(665 + id - 754)->id == std::to_string(id), "new trigger controls have sparse stable IDs");
+    auto sparse = adi::Payload::from_cbor(device->saveState("state"));
+    for (int id = 754; id <= 764; ++id) {
+        sparse.at("params").erase(std::to_string(id));
+        sparse.at("real").erase(std::to_string(id));
+    }
+    std::array<float, 64> probeL{}, probeR{};
+    const float* probeInputs[]{probeL.data(), probeR.data()};
+    float* probeOutputs[]{probeL.data(), probeR.data()};
+    adi::engine::NodeIo probe;
+    probe.channels = 2;
+    probe.frames = 64;
+    probe.in = probeInputs;
+    probe.out = probeOutputs;
+    set(*device, 755, 1);
+    device->process(probe);
+    check(device->getParam("755").real == 2 && device->latencySamples() == 672,
+          "running one-shot publishes its delay before recall");
+    check(device->loadState("state", adi::Payload::to_cbor(sparse)), "recall a project predating audio retrigger");
+    device->process(probe);
+    check(device->getParam("755").real == 0 && device->latencySamples() == 0,
+          "a sparse project resets detector delay and restores legacy transport sync");
     check(device->wantsDeviceTransport() && device->latencySamples() == 0, "position and latency");
     for (int id = 23; id <= 26; ++id) set(*device, id, 0);  // half-bar gate
     for (int id = 65; id <= 72; ++id) set(*device, id, 0);  // mono
@@ -1015,6 +1100,21 @@ int main() try {
     check(device->loadState("state", roomState) && device->getParam("626").real == 1
           && device->getParam("660").real == 100 && device->getParam("715").real == 1,
           "room control endpoints recall");
+    auto beforeFollower = sevenStageState;
+    for (int id = 727; id <= 753; ++id) {
+        beforeFollower.at("params").erase(std::to_string(id));
+        beforeFollower.at("real").erase(std::to_string(id));
+    }
+    set(*device, 736, 1);
+    set(*device, 753, .83);
+    const auto followerState = device->saveState("state");
+    device = open();
+    check(device->loadState("state", followerState) && device->getParam("736").real == 1 &&
+          std::abs(device->getParam("753").real - 83) < 1e-4, "Width follower settings persist");
+    check(device->loadState("state", adi::Payload::to_cbor(beforeFollower)) &&
+          device->getParam("736").real == 0 && std::abs(device->getParam("753").real - 20) < 1e-4,
+          "an old state restores the disabled follower and original release");
+    audioTriggerPd();
     automationKeepsTheClock();
     savedSplitFrequency();
     adi::test::TempDirectory edited{"shaper_pd", "crossed_outputs"};
@@ -1031,6 +1131,7 @@ int main() try {
     modulationPd(editedDir, false, false);
     modulationPd(editedDir, false, false, false, false, true);
     modulationPd(editedDir, false, false, false, false, false, true);
+    modulationPd(editedDir, false, false, false, false, false, false, true);
     modulationPd(editedDir, true, false);
     modulationPd(editedDir, false, true);
     modulationPd(editedDir, true, true);
