@@ -1420,6 +1420,39 @@ void timeBandHistory() {
         matches &= near(actual[i], sum[i], 1e-6) && near(actualRight[i], sum[i], 1e-6);
     check(matches, "three independent Time histories sum the separately delayed split-band impulses");
 }
+
+void timeWetMixExtremes() {
+    Shaper rack;
+    rack.prepare(48000);
+    rack.set(Shaper::timeParam(Band::Mid, Shaper::TimeRange), 5);
+    timeHeight(rack, Band::Mid, 0);
+    constexpr float peak = std::numeric_limits<float>::max();
+    for (float percent : {25.f, 50.f, 75.f}) {
+        rack.set(Shaper::TimeOn, 0);
+        rack.set(Shaper::TimeOn, 1);
+        rack.set(Shaper::timeParam(Band::Mid, Shaper::TimeMix), percent);
+        std::array<float, 240> left{}, right{};
+        left.front() = peak;
+        right.front() = -peak;
+        left.back() = -peak;
+        right.back() = peak;
+        rack.process(left.data(), right.data(), left.data(), right.data(), left.size());
+        const float expected = (2.f * (percent * .01f) - 1.f) * peak;
+        check(left.back() == expected && right.back() == -expected,
+              "Time mixes opposite finite dry and delayed peaks at the band mix setting");
+    }
+    rack.set(Shaper::TimeOn, 0);
+    rack.set(Shaper::TimeOn, 1);
+    rack.set(Shaper::timeParam(Band::Mid, Shaper::TimeMix), 37.f);
+    std::array<float, 240> left{}, right{};
+    left.front() = .73f;
+    right.front() = -.73f;
+    left.back() = -.31f;
+    right.back() = .31f;
+    rack.process(left.data(), right.data(), left.data(), right.data(), left.size());
+    constexpr float expected = -.31f + (37.f * .01f) * (.73f - (-.31f));
+    check(left.back() == expected && right.back() == -expected, "Time retains ordinary band-mix rounding");
+}
 } // namespace
 
 int main() {
@@ -1451,6 +1484,7 @@ int main() {
     reverbReturnCrossings();
     timeRanges();
     timeBandHistory();
+    timeWetMixExtremes();
     if (failures == 0) std::puts("ADI-Shaper DSP fixtures passed");
     return failures == 0 ? 0 : 1;
 }

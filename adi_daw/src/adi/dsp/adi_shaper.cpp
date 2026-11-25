@@ -825,8 +825,13 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
                 l = finiteOrZero(band.returnDry * dryL + band.returnWet * l);
                 r = finiteOrZero(band.returnDry * dryR + band.returnWet * r);
             } else if (band.blend != 1.0f) {
-                l = dryL + band.blend * (l - dryL);
-                r = dryR + band.blend * (r - dryR);
+                if constexpr (kind == Stage::Time) {
+                    l = AdiShaperTime::blend(dryL, l, band.blend);
+                    r = AdiShaperTime::blend(dryR, r, band.blend);
+                } else {
+                    l = dryL + band.blend * (l - dryL);
+                    r = dryR + band.blend * (r - dryR);
+                }
             }
         } else {
             if constexpr (kind == Stage::Pan) {

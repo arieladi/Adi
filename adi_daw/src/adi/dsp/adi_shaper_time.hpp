@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <memory>
 
@@ -13,6 +14,13 @@ class AdiShaperTime {
     static constexpr std::size_t maximumDelay = capacity - 512;
     [[nodiscard]] bool prepare() noexcept;
     void reset() noexcept;
+    static float blend(float from, float to, float fraction) noexcept {
+        const float delta = to - from;
+        if (std::isfinite(delta)) return from + fraction * delta;
+        // Opposite finite peaks may span more than a float can represent.
+        const double wideDelta = static_cast<double>(to) - from;
+        return static_cast<float>(from + static_cast<double>(fraction) * wideDelta);
+    }
     // Fast full-wet path once a stationary read lies inside contiguous history.
     // A false result leaves the ring and both outputs untouched.
     [[nodiscard]] bool processFixedBlock(const float* inL, const float* inR, float* outL, float* outR,

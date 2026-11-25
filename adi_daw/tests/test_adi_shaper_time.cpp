@@ -33,6 +33,19 @@ int main() {
     time.reset();
     check(read(.5f, -.25f, .25, true) == std::array{.375f,-.1875f}, "startup fraction uses zero prehistory");
     check(read(0.f,0.f,.25,true) == std::array{.125f,-.0625f}, "fractional impulse tail");
+    constexpr float peak = std::numeric_limits<float>::max();
+    for (float fraction : {.25f, .5f, .75f}) {
+        time.reset();
+        (void)read(-peak, peak, 0.);
+        const float expected = (1.f - 2.f * fraction) * peak;
+        check(read(peak, -peak, fraction, true) == std::array{expected, -expected},
+              "fractional taps between opposite finite extremes stay on their stereo line");
+    }
+    time.reset();
+    (void)read(.73f, -.73f, 0.);
+    constexpr float normal = -.31f + .37f * (.73f - (-.31f));
+    check(read(-.31f, .31f, .37f, true) == std::array{normal, -normal},
+          "ordinary fractional taps retain their sample rounding");
     time.reset();
     for (const double invalid : {static_cast<double>(Time::maximumDelay + 1), -1.0,
                                  std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity()})
