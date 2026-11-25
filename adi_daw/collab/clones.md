@@ -17,6 +17,18 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 25 November 2026 — Four moving Drive instances meet the callback p99 target
+
+`clones/shaper-drive-margin-1125` at `dbc4c2cf` — Process each Drive oversampling phase group with one transfer selection. Select the nonlinear transfer once per base-rate sample, advance the mirrored delay ring once per phase group, and keep the rounded filter coefficients available in double precision. The measured impulse, transfer, alias and low-drive tests passed. Changing the starting ring position across 17 offsets at both oversampling factors preserved every output frame. Static and automated audio matched the prior kernel bit for bit in all three styles at 44.1, 48 and 96 kHz.
+
+Four registered stereo tracks processed kick and bass at 48 kHz, 120 BPM, with a moving Drive contour and 16 frames of reported latency on each track. Nine alternating paired trials each covered 8,192 callbacks of 256 frames. The revised trial p99 values in milliseconds were **0.3370, 0.5833, 0.3092, 0.2979, 0.2932, 0.5288, 0.3041, 0.2996, 0.3158**. All were below 5.3333 ms. All four captured stereo streams matched in every pair. Across the 73,728 callbacks, the prior and revised versions had 58 and 40 individual overruns, pooled p99 0.3893 and 0.3256 ms, and median thread cycles 656,857 and 609,585.
+
+At 2,048 frames the revised trial p99 values were 11.0068, 2.8235 and 17.6568 ms against 42.6667 ms. Median thread cycles decreased from 5,343,149 to 4,973,873. Pooled p99 increased from 12.4987 to 13.7114 ms and individual overruns rose from 8 to 19 across 24,576 callbacks. Every paired audio capture again matched. A first experiment that changed only the ring reached 12.4864 ms at p99 in one 256-frame trial and was rejected. Timing includes scheduling on the shared system.
+
+Release MSVC `/W4 /WX` passed the Drive and registered Pd suites at both signal precisions. The final Pd64 gate also passed the complete rack and session fixtures.
+
+PR requested
+
 ## 25 November 2026 — Repair the 32 kHz crossover slew test
 
 `clones/shaper-split-repair-1125` at `0ac2daa7` — Apply crossover slew within the measured frequency limits. This repair is ready before 3 December and supersedes the earlier split-slew submission.
