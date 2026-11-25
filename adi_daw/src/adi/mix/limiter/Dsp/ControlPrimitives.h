@@ -35,6 +35,15 @@ public:
         return true;
     }
     std::size_t synchronizationBytes() const noexcept { return values.size() * sizeof(float) + sizeof(cursor); }
+    std::size_t capacity() const noexcept { return values.size(); }
+    bool isSilent() const noexcept
+    {
+        return std::all_of(values.begin(), values.end(), [](float v) { return std::bit_cast<std::uint32_t>(v) == 0; });
+    }
+
+    // The caller has established that every slot holds the incoming constant.
+    void advanceHomogeneous(std::size_t frames) noexcept { cursor = (cursor + frames) & mask; }
+
     void push(float input) noexcept { cursor = (cursor + 1) & mask; values[cursor] = input; }
     float read(std::size_t age) const noexcept { return values[(cursor - age) & mask]; }
     float process(float input, std::size_t age) noexcept { push(input); return read(age); }
@@ -136,6 +145,8 @@ public:
         feedbackSecond = (1.0 - std::sqrt(2.0) * warped + warped * warped) / denominator;
         reset();
     }
+
+    bool isNeutral() const noexcept { return stateFirst == 0.0 && stateSecond == 0.0; }
 
     void reset() noexcept { stateFirst = 0.0; stateSecond = 0.0; }
 

@@ -13,6 +13,7 @@ public:
         if(channels!=1 && channels!=2)
             throw std::invalid_argument("Combined Clip/Limiter supports explicit mono or stereo only");
         core_.prepare({rate,maximum,channels==1?limiter::ChannelLayout::mono():limiter::ChannelLayout::stereo()},settings);
+        core_.trackSilenceForSuspension(!settings.offline);
         if(restoreQueued_) {
             if(!core_.restoreClipContinuationWord(restoreWord_))
                 throw std::invalid_argument("Clip continuation was not admitted before processing");
@@ -34,6 +35,8 @@ public:
     }
     std::int32_t advertisedLatency() const noexcept override {return latency_.load(std::memory_order_acquire);}
     bool configurationBusy() const noexcept override {return prepared_&&core_.configurationBusy();}
+    bool canSkipSilence() const noexcept override {return prepared_&&core_.canSkipSilence();}
+    void skipSilence(std::uint32_t frames) noexcept override {core_.skipSilence(frames);}
     bool needsBypassTransition(std::int32_t configuredTotal) const noexcept override {
         return prepared_ && core_.needsBypassTransition(configuredTotal);
     }

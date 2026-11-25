@@ -148,6 +148,7 @@ public:
         prepared_=false;
         engine_.prepare(rate,maximum,channels==1?l::ChannelLayout::mono():l::ChannelLayout::stereo(),s.limiter);
         engine_.setMeteringOptions(false,true);engine_.setLoudnessRecording(false);
+        engine_.trackSilenceForSuspension(!s.offline);
         enabled_.store(s.limiterEnabled,std::memory_order_release);transition_.store(0,std::memory_order_release);
         latency_.store(s.limiterEnabled?engine_.latencySamples():0,std::memory_order_release);
         stagePending_.store(false,std::memory_order_release);lastBlock_=0;prepared_=true;
@@ -169,6 +170,12 @@ public:
         // Keep that token for reenable, but do not make reenable itself illegal.
         return prepared_&&(stagePending_.load(std::memory_order_acquire)||
             (enabled_.load(std::memory_order_acquire)&&transition_.load(std::memory_order_acquire)!=0));
+    }
+    bool canSkipSilence() const noexcept override {
+        return prepared_ && enabled_.load(std::memory_order_acquire) && !configurationBusy() && engine_.canSkipSilence();
+    }
+    void skipSilence(std::uint32_t frames) noexcept override {
+        engine_.skipSilence(frames);
     }
     bool needsBypassTransition(std::int32_t configuredTotal) const noexcept override {
         if (!prepared_ || configuredTotal != advertisedLatency()) return false;
@@ -256,6 +263,7 @@ public:
         // recovery paths clear prepared_, so they still re-prepare.
         if (prepared_ && loaded() && rate == rate_ && maximum == maximum_) return;
         const ReactivationGate::Hold hold(gate_);
+        quietRevision_.store(0, std::memory_order_release);
         reduction_->setPrepared(false);
         refreshValues();
         prepared_ = false;
@@ -278,6 +286,7 @@ public:
     }
     void release() override {
         const ReactivationGate::Hold hold(gate_);
+        quietRevision_.store(0, std::memory_order_release);
         reduction_->setPrepared(false);
         prepared_=false;backend_->release();
     }
@@ -290,6 +299,17 @@ public:
         backend_->pumpMainThread(settings(readValues(),offline_));publishLatency(backend_->advertisedLatency());
     }
     std::int32_t sidechainInputChannels() const noexcept override {return channels_;}
+    void setOffline(bool value) noexcept override {offlineProcess_.store(value,std::memory_order_release);}
+    std::int64_t tailSamples() const noexcept override {
+        if (offline_ || offlineProcess_.load(std::memory_order_acquire)) return engine::kInfiniteTail;
+        const auto quiet=quietRevision_.load(std::memory_order_acquire);
+        return quiet && quiet-1 == controlRevision_.load(std::memory_order_acquire) ? 0 : engine::kInfiniteTail;
+    }
+    void didSkip(std::int32_t frames) noexcept override {
+        if (frames <= 0 || quietRevision_.load(std::memory_order_acquire) == 0) return;
+        const ReactivationGate::Pass pass(gate_);
+        if (pass && prepared_ && loaded()) backend_->skipSilence(static_cast<std::uint32_t>(frames));
+    }
     void process(const engine::NodeIo& io) noexcept override { processAudio(io, false); }
     bool needsBypassTransition(std::int32_t configuredLatency) noexcept override {
         const ReactivationGate::Pass pass(gate_);
@@ -305,6 +325,7 @@ private:
             if (!bypassTransition) passThrough(io);
             return;
         }
+        const auto revision=controlRevision_.load(std::memory_order_acquire);
         refreshValues();
         // The graph splits at parameter boundaries. Its numeric ids are this
         // adapter's stable decimal ids; never forward them to another device.
@@ -332,6 +353,10 @@ private:
         const auto render = [&](l::BlockReduction* measured) {
             backend_->process(audio.data(), io.sidechain ? key.data() : nullptr, io.frames,
                               settings(cached_, io.exporting), io.renderBlock, io.configuredLatency, measured);
+            const bool quiet=!bypassTransition && !io.exporting && io.configuredLatency==backend_->advertisedLatency() &&
+                !offlineProcess_.load(std::memory_order_acquire) && (stateVersion_.load(std::memory_order_acquire)&1)==0 &&
+                revision == controlRevision_.load(std::memory_order_acquire) && backend_->canSkipSilence();
+            quietRevision_.store(quiet ? revision+1 : 0,std::memory_order_release);
         };
         const auto observation = bypassTransition ? std::uint64_t{} : reduction_->observationEpoch();
         if (observation == 0 || io.exporting) {
@@ -370,7 +395,9 @@ public:
         if(!loaded()||!availableIndex(i)||!std::isfinite(value.normalized)||value.normalized<0||value.normalized>1)return false;
         const auto next=physical(i,value.normalized);
         if(ownerConfiguration(i)&&next!=values_[i].load(std::memory_order_acquire)&&backend_->configurationBusy())return false;
-        values_[i].store(next,std::memory_order_release); return true;
+        if (values_[i].exchange(next,std::memory_order_acq_rel) != next)
+            controlRevision_.fetch_add(1,std::memory_order_release);
+        return true;
     }
     std::string paramText(const std::string& id,double n) const override {
         const auto i=indexFor(id); if(!availableIndex(i)||!std::isfinite(n)||n<0||n>1)return {};
@@ -454,6 +481,7 @@ public:
             extra_=std::move(state);
             stateVersion_.fetch_add(1,std::memory_order_acq_rel);
             for(std::size_t i=0;i<Count;++i)values_[i].store(pending[i],std::memory_order_release);
+            controlRevision_.fetch_add(1,std::memory_order_release);
             stateVersion_.fetch_add(1,std::memory_order_release);
             if(unavailable_.exchange(false,std::memory_order_acq_rel)) {
                 // A graph may have prepared the unavailable placeholder at zero
@@ -491,6 +519,8 @@ private:
     std::array<ParamDescriptor,Count> descriptors_;
     std::array<std::atomic<float>,Count> values_{}; Values cached_{};
     std::atomic<std::uint64_t> stateVersion_{0},latencyEpoch_{0},restartEpoch_{0};
+    std::atomic<std::uint64_t> controlRevision_{0},quietRevision_{0};
+    std::atomic<bool> offlineProcess_{false};
     std::atomic<std::int32_t> latency_{0}; bool prepared_=false,everPrepared_=false;
     double rate_=0;std::int32_t maximum_=0;
     std::atomic<bool> unavailable_{false};std::vector<std::uint8_t> unavailableState_;
