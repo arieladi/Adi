@@ -1442,18 +1442,25 @@ void focusScopeDifference() {
     b.scopeLeft.assign(inverted.begin(), inverted.end());
     b.scopeRight.assign(silent.begin(), silent.end());
     FocusSumColumn stereo{}, mid{}, null{};
+    std::array<double, 2> stereoEnergy{}, foldedEnergy{}, nullEnergy{};
     const auto capture = [](FocusSumColumn &out) { return [&](std::size_t, const auto &column) { out = column; }; };
     allocationSizeCount = 0;
     observeAllocationSizes = true;
-    const auto overlap = focusProjectDifference(a, b, 1, FocusScopeChannels::Stereo, capture(stereo));
+    const auto overlap = focusProjectDifference(a, b, 1, FocusScopeChannels::Stereo, capture(stereo), {}, {}, &stereoEnergy);
     observeAllocationSizes = false;
     check(overlap && overlap->first == 2 && overlap->frames == 2 && allocationSizeCount == 0 &&
               stereo.low == std::array{-1.5, .25} && stereo.high == std::array{1.5, .25},
           "short Difference subtracts stamped samples before extrema, with no allocation");
-    check(focusProjectDifference(a, b, 1, FocusScopeChannels::Mid, capture(mid)) && mid.low[0] == -.625 && mid.high[0] == .875,
+    check(focusReadDifferenceRms(stereoEnergy, 2) == std::array{1.5, .25},
+          "the short Difference measures unclipped signed samples over the aligned intersection");
+    check(focusProjectDifference(a, b, 1, FocusScopeChannels::Mid, capture(mid), {}, {}, &foldedEnergy) &&
+              mid.low[0] == -.625 && mid.high[0] == .875,
           "Mid combines the paired L/R sample differences before binning");
-    check(focusProjectDifference(a, a, 1, FocusScopeChannels::Stereo, capture(null)) &&
-              null.low == std::array{0., 0.} && null.high == std::array{0., 0.},
+    check(std::abs(focusReadDifferenceRms(foldedEnergy, 2)[0] - std::sqrt(37.) / 8.) < 1.e-14,
+          "the short Difference folds continuously before measuring RMS");
+    check(focusProjectDifference(a, a, 1, FocusScopeChannels::Stereo, capture(null), {}, {}, &nullEnergy) &&
+              null.low == std::array{0., 0.} && null.high == std::array{0., 0.} &&
+              focusReadDifferenceRms(nullEnergy, 2) == std::array{0., 0.},
           "a waveform subtracts from itself to exact silence");
     ++b.transportRevision;
     bool wrongRevision = false;
@@ -1487,6 +1494,9 @@ void focusScopeDifference() {
     check(values.size() == 1 && values.front().low == stereo.low && values.front().high == stereo.high &&
               read->projection->differenceColumns(second).empty(),
           "the grouped result contains the same A minus B as the short projection and excludes C");
+    check(read && read->projection && read->projection->differenceRms(first) == std::array{1.5, .25} &&
+              !read->projection->differenceRms(second),
+          "the grouped immutable RMS matches the short path and belongs only to its measured pair");
 
     check(lease.request({2, 2, rate}, revision), "Difference keeps its grouped cursor across bars");
     write(2, 0);
@@ -1497,6 +1507,10 @@ void focusScopeDifference() {
               replaced->projection->differenceColumns(second).empty() && values.size() == 1 &&
               values.front().low == stereo.low,
           "changing B discards the incomplete comparison and does not mutate a published bar");
+    check(replaced && replaced->projection && !replaced->projection->differenceRms(first) &&
+              !replaced->projection->differenceRms(second) && read && read->projection &&
+              read->projection->differenceRms(first) == std::array{1.5, .25},
+          "discarding an unfinished pair clears only its RMS and leaves the previous publication intact");
     check(lease.request({4, 2, rate}, revision), "new selection begins on the next full bar");
     write(4, 0);
     write(5, 1);

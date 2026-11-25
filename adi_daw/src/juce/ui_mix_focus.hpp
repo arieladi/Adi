@@ -86,6 +86,7 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     void refreshScopeRegion();
     void paintScopeRegion(juce::Graphics &) const;
     void rebuildScope();
+    void rebuildScopePaths();
     FocusScopeChannels scopeChannelView() const noexcept;
     bool showsScopeDifference() const noexcept;
     void updateScopeDifference();
@@ -117,7 +118,7 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     juce::ComboBox scopeDisplay_, scopeChannels_;
     juce::TextButton alignMeasure_{"Measure Align"}, scopeLayer_{"Layer"};
     juce::ToggleButton differenceSpectrum_{"Spectrum"}, scopeFreeze_{"Freeze"};
-    juce::Label alignReadout_, scopeCursor_, scopeRegionReadout_;
+    juce::Label alignReadout_, scopeCursor_, scopeRegionReadout_, differenceRmsReadout_;
     std::optional<juce::Point<float>> scopeCursorPoint_;
     struct ScopeRegion {
         FocusScopeRange range;
@@ -145,6 +146,7 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     std::array<juce::Path, 2> scopeSumPaths_, scopeDifferencePaths_;
     juce::Path differenceSpectrumPath_;
     std::optional<SharedAnalysis::ScopeDifference> differenceRequest_;
+    std::optional<std::array<double, 2>> differenceRms_;
     std::optional<std::uint64_t> differenceLocate_, differenceRenderedRevision_;
     std::uint64_t differenceSelection_ = 0;
     std::optional<FocusMatchReading> match_;

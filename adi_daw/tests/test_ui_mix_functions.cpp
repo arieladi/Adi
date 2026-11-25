@@ -3209,6 +3209,16 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
             freeze = dynamic_cast<juce::ToggleButton *>(component);
     check(freeze && freeze->isVisible() && freeze->getButtonText() == "Freeze" && !freeze->isEnabled(),
           "Focus Scope shows Freeze but cannot hold a picture before it has received aligned audio");
+    juce::Label *differenceRms = nullptr;
+    for (auto *component : focus.getChildren())
+        if (component->getTitle() == "Scope Difference RMS")
+            differenceRms = dynamic_cast<juce::Label *>(component);
+    check(differenceRms && !differenceRms->isVisible(),
+          "Scope exposes an accessible Difference RMS only for a valid Difference waveform");
+    const auto rmsText = [&]() -> juce::String {
+        return differenceRms && differenceRms->isVisible() ? differenceRms->getText() : juce::String{};
+    };
+    const auto hasRms = [&](const char *level) { return rmsText().contains(level) && rmsText().contains("dBFS"); };
     const auto &meters = initial.meters();
     check(root->playing() && root->bpm() == 120. && doc->mailbox().sampleRate() == rate &&
               (meters.empty() || (meters[0].numerator == 4 && meters[0].denominator == 4)) &&
@@ -3394,26 +3404,45 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
         frame();
         check(display->getText() == "Difference" && !MixFocusTestAccess::hasDifference(focus),
               "choosing Difference never shows the previous combined projection");
+        check(rmsText().isEmpty(), "entering Difference waits for a matching waveform before showing RMS");
         writeUntil(4 * bar);
         check(MixFocusTestAccess::hasDifference(focus) &&
                   MixFocusTestAccess::differencePulseAt(focus, .125f, .75f) &&
                   MixFocusTestAccess::differencePulseAt(focus, .875f, .625f),
               "Stereo Difference subtracts the selected channel from starred Main");
+        // Each pulse covers 600 of 96,000 samples. Left has amplitudes .75
+        // and .625, while Right has only the first .75 pulse.
+        check(hasRms("-22.2") && hasRms("-24.5"),
+              "a completed Stereo bar reports both independent RMS values from every source sample");
+        const auto stereoWork = broker->stats();
+        channels->setSelectedId(static_cast<int>(FocusScopeChannels::Left), juce::sendNotificationSync);
+        frame();
+        check(hasRms("-22.2") && !rmsText().contains("-24.5"),
+              "Left Difference immediately uses the existing left-lane RMS alone");
         channels->setSelectedId(static_cast<int>(FocusScopeChannels::Right), juce::sendNotificationSync);
         frame();
         check(MixFocusTestAccess::hasDifference(focus) &&
                   MixFocusTestAccess::differencePulseAt(focus, .125f, -.75f) &&
                   !MixFocusTestAccess::differencePulseAt(focus, .875f, .625f),
               "Right Difference reuses the existing Stereo pair projection immediately");
+        check(hasRms("-24.5") && !rmsText().contains("-22.2"),
+              "Right Difference immediately uses the existing right-lane RMS alone");
+        const auto laneWork = broker->stats();
+        check(opens == std::array{1, 1} && laneWork.taps == stereoWork.taps &&
+                  laneWork.consumers == stereoWork.consumers && laneWork.transforms == stereoWork.transforms &&
+                  laneWork.cursorReads == stereoWork.cursorReads && laneWork.publications == stereoWork.publications,
+              "changing the visible stereo lane creates no capture, publication or transform work");
         channels->setSelectedId(static_cast<int>(FocusScopeChannels::Mid), juce::sendNotificationSync);
         frame();
         check(!MixFocusTestAccess::hasDifference(focus),
               "switching to Mid clears the previous Stereo Difference");
+        check(rmsText().isEmpty(), "a new folded projection hides the former lane RMS until it is measured");
         writeUntil(5 * bar);
         check(MixFocusTestAccess::hasDifference(focus) &&
                   !MixFocusTestAccess::differencePulseAt(focus, .125f, .75f) &&
                   MixFocusTestAccess::differencePulseAt(focus, .875f, .3125f),
               "Mid Difference cancels opposed stereo and halves a single-sided difference");
+        check(hasRms("-32.1"), "Mid combines the paired samples before squaring");
         channels->setSelectedId(static_cast<int>(FocusScopeChannels::Side), juce::sendNotificationSync);
         frame();
         check(!MixFocusTestAccess::hasDifference(focus),
@@ -3423,6 +3452,7 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
                   MixFocusTestAccess::differencePulseAt(focus, .125f, .75f) &&
                   MixFocusTestAccess::differencePulseAt(focus, .875f, .3125f),
               "Side Difference projects the signed paired differences before extrema");
+        check(hasRms("-23.8"), "Side reflects the anti-phase pulse and the half-strength single-sided pulse");
         check(opens == std::array{1, 1} && broker->stats().taps == 2 && broker->stats().consumers == 1 &&
                   broker->stats().transforms == 0,
               "Difference adds no tap, consumer or spectrum transform");
@@ -3447,6 +3477,7 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
                   "choosing the Difference spectrum immediately hides the waveform cursor");
             check(MixFocusTestAccess::scopeRegionText(focus).isEmpty(),
                   "choosing the Difference spectrum clears the waveform region");
+            check(rmsText().isEmpty(), "the Difference spectrum immediately removes the waveform RMS");
             frame();
             // The demand is picked up by a newly requested full bar.
             writeUntil(8 * bar);
@@ -3505,6 +3536,7 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
         check(doc->mailbox().post(TransportMailbox::Command::Locate, 0), "queue a Difference Locate");
         frame();
         check(!MixFocusTestAccess::hasDifference(focus), "a pending Locate immediately clears the old Difference");
+        check(rmsText().isEmpty(), "an unfrozen queued Locate removes the old RMS with its waveform");
         doc->mailbox().drain(driver);
         frame();
         check(!MixFocusTestAccess::hasDifference(focus),
@@ -3610,6 +3642,39 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
                       "changing the channel projection invalidates the held Scope and its region");
             }
             sibling.reset();
+        }
+    }
+    if (differenceRms && freeze && display && channels) {
+        focus.select(second);
+        channels->setSelectedId(static_cast<int>(FocusScopeChannels::Stereo), juce::sendNotificationSync);
+        display->setSelectedId(5, juce::sendNotificationSync);
+        frame();
+        writeUntil(5 * bar);
+        const auto reading = rmsText();
+        check(hasRms("-22.2") && hasRms("-24.5") && freeze->isEnabled(),
+              "an aligned Difference waveform can hold its own RMS");
+        if (!reading.isEmpty() && freeze->isEnabled() && freeze->onClick) {
+            freeze->setToggleState(true, juce::dontSendNotification); freeze->onClick();
+            const auto held = broker->stats();
+            driver.play(false);
+            frame();
+            check(doc->mailbox().post(TransportMailbox::Command::Locate, driver.position()),
+                  "queue a same-position Locate while Difference RMS is frozen");
+            frame();
+            doc->mailbox().drain(driver);
+            frame();
+            const auto bounds = focus.getBounds();
+            focus.setBounds(bounds.withWidth(bounds.getWidth() - 8));
+            const auto still = broker->stats();
+            check(rmsText() == reading && freeze->getToggleState() && held.taps == 0 && still.taps == 0 &&
+                      still.publications == held.publications && still.workerPasses == held.workerPasses &&
+                      still.transforms == held.transforms && still.cursorReads == held.cursorReads,
+                  "a frozen RMS survives Stop, Locate and resize without new analysis work");
+            focus.setBounds(bounds);
+            freeze->setToggleState(false, juce::dontSendNotification); freeze->onClick();
+            driver.play(true);
+            frame();
+            check(rmsText().isEmpty(), "thaw clears frozen RMS until fresh paired audio arrives");
         }
     }
     const auto visibleBounds = focus.getBounds();

@@ -122,10 +122,11 @@ inline FocusSumColumn focusEmptyExtrema(bool mono = false) noexcept {
 
 template <class ReadDifference>
 inline void focusIncludeDifference(FocusSumColumn &extrema, std::size_t count, FocusScopeChannels fold,
-                                   const ReadDifference &read) noexcept {
+                                   const ReadDifference &read, std::array<double, 2> *energy = nullptr) noexcept {
     const auto include = [&](std::size_t channel, double sample) {
         extrema.low[channel] = std::min(extrema.low[channel], sample);
         extrema.high[channel] = std::max(extrema.high[channel], sample);
+        if (energy) (*energy)[channel] += sample * sample;
     };
     const bool mono = focusScopeIsFolded(fold);
     for (std::size_t i = 0; i < count; ++i) {
@@ -136,6 +137,11 @@ inline void focusIncludeDifference(FocusSumColumn &extrema, std::size_t count, F
             include(1, right);
         }
     }
+}
+inline std::array<double, 2> focusReadDifferenceRms(const std::array<double, 2> &energy, std::size_t frames) noexcept {
+    if (frames == 0) return {};
+    const auto count = static_cast<double>(frames);
+    return {std::sqrt(energy[0] / count), std::sqrt(energy[1] / count)};
 }
 inline std::array<double, 2> focusBarSample(const FocusScopeBarBlock &block, std::size_t i) noexcept {
     if (block.inverted) return {-static_cast<double>(block.left[i]), -static_cast<double>(block.right[i])};
@@ -244,7 +250,7 @@ class FocusScopeBarProjection {
         framesPerColumn_ = range.frames / columns;
         remainder_ = range.frames % columns;
         frames_ = column_ = endOfColumn_ = carry_ = visibleColumns_ = 0;
-        peak_ = energy_ = {};
+        peak_ = energy_ = differenceEnergy_ = {};
         sumPhase_ = midPairPhase_ = {};
         measuresPhase_ = measurePhase;
         extendColumn();
@@ -299,8 +305,14 @@ class FocusScopeBarProjection {
         return difference_ == expected ? std::span(differenceBins_).first(visibleColumns_)
                                        : std::span<const FocusSumColumn>{};
     }
+    [[nodiscard]] std::optional<std::array<double, 2>> differenceRms(
+        const SharedAnalysis::ScopeDifference &expected) const noexcept {
+        if (expected.spectrum || difference_ != expected || !frames_) return {};
+        return focusReadDifferenceRms(differenceEnergy_, frames_);
+    }
     void discardDifference() noexcept {
         difference_.reset();
+        differenceEnergy_ = {};
         std::vector<FocusSumColumn>{}.swap(differenceBins_);
     }
     [[nodiscard]] std::span<const FocusSumColumn> sumColumns() const noexcept { return lane(sources_.size()); }
@@ -361,7 +373,7 @@ class FocusScopeBarProjection {
                 focusIncludeDifference(differenceBins_[column_], added, difference_->fold, [&](std::size_t i) {
                     const auto first = focusBarSample(a, begin + i), second = focusBarSample(b, begin + i);
                     return std::array{first[0] - second[0], first[1] - second[1]};
-                });
+                }, difference_->spectrum ? nullptr : &differenceEnergy_);
             }
             frames_ += added;
             begin = end;
@@ -397,6 +409,7 @@ class FocusScopeBarProjection {
     FocusScopeChannels mono_ = FocusScopeChannels::Stereo;
     std::vector<FocusSumColumn> differenceBins_;
     std::optional<SharedAnalysis::ScopeDifference> difference_;
+    std::array<double, 2> differenceEnergy_{};
     std::array<std::size_t, 2> differenceIndexes_{};
     std::uint64_t transportRevision_ = 0;
     std::size_t columns_ = 0, framesPerColumn_ = 0, remainder_ = 0;
@@ -442,7 +455,9 @@ std::optional<FocusScopeRange> focusProjectDifference(const SharedAnalysis::Resu
                                                       std::size_t columns, FocusScopeChannels fold,
                                                       PublishColumn &&publish,
                                                       FocusScopeLayerAdjustment adjustA = {},
-                                                      FocusScopeLayerAdjustment adjustB = {}) {
+                                                      FocusScopeLayerAdjustment adjustB = {},
+                                                      std::array<double, 2> *energy = nullptr) {
+    if (energy) *energy = {};
     const std::array<const SharedAnalysis::Result *, 2> pair{&a, &b};
     const auto range = focusScopeRange(pair);
     if (!range || !columns) return {};
@@ -457,7 +472,7 @@ std::optional<FocusScopeRange> focusProjectDifference(const SharedAnalysis::Resu
             focusIncludeDifference(extrema, length, fold, [&](std::size_t i) {
                 return std::array{static_cast<double>(a.scopeLeft[startA + begin + i]) - b.scopeLeft[startB + begin + i],
                                   static_cast<double>(a.scopeRight[startA + begin + i]) - b.scopeRight[startB + begin + i]};
-            });
+            }, energy);
         } else {
             focusIncludeDifference(extrema, length, fold, [&](std::size_t i) {
                 const auto subtract = [&](auto &first, auto &second) {
@@ -465,7 +480,7 @@ std::optional<FocusScopeRange> focusProjectDifference(const SharedAnalysis::Resu
                          - focusScopeDisplayedSample(second, startB, range->frames, begin + i, adjustB);
                 };
                 return std::array{subtract(a.scopeLeft, b.scopeLeft), subtract(a.scopeRight, b.scopeRight)};
-            });
+            }, energy);
         }
         publish(column, extrema);
     }

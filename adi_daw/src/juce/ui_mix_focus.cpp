@@ -138,6 +138,12 @@ MixFocus::MixFocus(AdiRootComponent &root) : root_(root) {
     scopeRegionReadout_.setColour(juce::Label::backgroundColourId, look::panel);
     scopeRegionReadout_.setInterceptsMouseClicks(false, false);
     addChildComponent(scopeRegionReadout_);
+    differenceRmsReadout_.setTitle("Scope Difference RMS");
+    differenceRmsReadout_.setJustificationType(juce::Justification::centredRight);
+    differenceRmsReadout_.setColour(juce::Label::textColourId, look::text);
+    differenceRmsReadout_.setColour(juce::Label::backgroundColourId, look::panel);
+    differenceRmsReadout_.setInterceptsMouseClicks(false, false);
+    addChildComponent(differenceRmsReadout_);
     scroll_.setViewedComponent(&strip_, false);
     scroll_.setScrollBarsShown(false, true);
     for (auto *c : std::array<juce::Component *, 13>{&available, &add, &star, &mute, &solo, &hearOne, &hearAll,
@@ -576,6 +582,7 @@ void MixFocus::drop() {
     scopeSources_.clear();
     clearBarScopeData();
     clearScopeSum();
+    differenceRmsReadout_.setVisible(false);
     clearScopeRegion();
     scopeCursorPoint_.reset();
     scopeCursor_.setVisible(false);
@@ -1020,6 +1027,7 @@ void MixFocus::clearScopeSum() {
     scopeRange_.reset();
     scopeWaveformRevision_.reset();
     sum_.reset();
+    differenceRms_.reset();
     for (auto &path : scopeSumPaths_) path.clear();
     if (differenceRenderedRevision_) {
         for (auto &path : scopeDifferencePaths_) path.clear();
@@ -1061,6 +1069,8 @@ void MixFocus::updateScopeDifference() {
     if (next) next->selection = ++differenceSelection_;
     differenceRequest_ = next;
     barScope_.setDifferenceRequested(next);
+    differenceRms_.reset();
+    differenceRmsReadout_.setVisible(false);
     if (differenceRenderedRevision_) {
         for (auto &path : scopeDifferencePaths_) path.clear();
         differenceSpectrumPath_.clear();
@@ -1099,6 +1109,23 @@ void MixFocus::rebuildDifferenceSpectrum(const SharedAnalysis::ScopeDifferenceSp
 }
 
 void MixFocus::rebuildScope() {
+    rebuildScopePaths();
+    if (!differenceRms_) {
+        differenceRmsReadout_.setVisible(false);
+        return;
+    }
+    const auto &rms = *differenceRms_;
+    const auto db = [](double sample) {
+        return (sample > 0. ? juce::String(20. * std::log10(sample), 1) : juce::String("-inf")) + " dBFS";
+    };
+    const auto channels = scopeChannelView();
+    const auto reading = channels == FocusScopeChannels::Stereo ? "RMS L " + db(rms[0]) + "   R " + db(rms[1])
+        : "RMS " + db(rms[channels == FocusScopeChannels::Right ? 1 : 0]);
+    differenceRmsReadout_.setText(reading, juce::dontSendNotification);
+    differenceRmsReadout_.setVisible(true);
+}
+
+void MixFocus::rebuildScopePaths() {
     clearScopeSum();
     scopeHasTrace_ = false;
     scopeSources_.clear();
@@ -1159,6 +1186,7 @@ void MixFocus::rebuildScope() {
             if (columns.empty()) return;
             scopeRange_ = FocusScopeRange{shownBar_->firstStamp, shownBar_->frames, shownBar_->sampleRate};
             differenceRenderedRevision_ = shownBar_->transportRevision;
+            differenceRms_ = shownBar_->projection->differenceRms(*differenceRequest_);
             for (std::size_t i = 0; i < columns.size(); ++i) draw(i, columns.size(), columns[i]);
         } else {
             const auto pair = matchMembers();
@@ -1169,9 +1197,11 @@ void MixFocus::rebuildScope() {
             const auto range = focusScopeRange(windows);
             if (!range) return;
             const auto columns = std::min(plotColumns, range->frames);
+            std::array<double, 2> differenceEnergy{};
             scopeRange_ = focusProjectDifference(a, b, columns, differenceRequest_->fold,
                 [&](std::size_t i, const FocusSumColumn &extrema) { draw(i, columns, extrema); },
-                pair[0]->scopeAdjustment, pair[1]->scopeAdjustment);
+                pair[0]->scopeAdjustment, pair[1]->scopeAdjustment, &differenceEnergy);
+            if (scopeRange_) differenceRms_ = focusReadDifferenceRms(differenceEnergy, scopeRange_->frames);
             differenceRenderedRevision_ = a.transportRevision;
         }
         for (std::size_t ch = 0; ch < visibleLanes; ++ch)
@@ -1584,6 +1614,10 @@ void MixFocus::resized() {
     scopeCursor_.setVisible(false);
     scopeRegionReadout_.setFont(look::font(look::fontCaption));
     scopeRegionReadout_.setBounds(plot_.toNearestInt().reduced(look::gap).withHeight(cursorBounds.getHeight()));
+    auto rmsArea = plot_.toNearestInt().reduced(look::gap);
+    auto rmsRow = rmsArea.removeFromBottom(std::min(look::fieldHeight, rmsArea.getHeight()));
+    differenceRmsReadout_.setFont(look::font(look::fontCaption));
+    differenceRmsReadout_.setBounds(rmsRow.removeFromRight(std::min(2 * look::mixFocusSourceWidth, rmsRow.getWidth())));
     rebuildMatchPath();
     for (auto &m : members_)
         m.spectrumChanged = true;
