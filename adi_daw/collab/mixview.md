@@ -41,6 +41,12 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - Both exact position and bar-start checks failed before the fix. Release passed 1,195 shared-analysis, 572 Mix View and 594 spectrum assertions. Editor and broker test compiled with warnings treated as errors.
 - Review ZIP SHA-256 `35ffa1236d434edacacd5ff524d20068af6ea5a62aba381a260d33ea81d40534`. Executable `cc780a2d39c6c7229787579ad0b2dbb85907a60354dac36826673c7e37cff236`. Retest brief uses the same source hash.
 
+## 25 November 2026 · MX-13 Focus Scope seek revisions · lands after 3 December
+
+- **PR requested** `mixview/mx13-scope-seek-fence-lands-after-2026-12-03` at `792cf7e64b50cab90f61f318f0a19adc907951c7`. A pending seek retracts the old live capture across Scope views. After acknowledgement, a grouped request skips old audio at overlapping timeline stamps and can start at the first sample of the new revision, without replacing its taps. Freeze keeps the deliberately held interval.
+- Both the stale Overlay picture and the missing first complete beat failed before the fix. The broker test also rejected old overlapping samples and checked the exact new start. Release passed 1,203 shared-analysis, 578 Mix View and 594 spectrum assertions. The four changed units compiled with warnings treated as errors. The portable broker check passed.
+- Review ZIP SHA-256 `877028155a003120440adf0075f6aeb742fe3dc423e5c0deb1c0f3718b3d6abd`. Executable `ddd9986d9cc615db3f6b9ca3e14468dea90fb932094da386914b4aef6cf8e0b7`. Retest brief uses the same source hash.
+
 ### 25 November — MX13 Focus musical windows
 
 **PR requested** `mixview/mx13-musical-window-lands-after-2026-12-03` at `5c88abf073d56cd9e5c99f3aeac3d4cb24a68532`, after captured true peak. Focus Scope offers One Beat and One Bar. The default is still One Bar. A view change clears the former interval and region and requests the new window on the same grouped sources. Tempo and signature edges share exact rounded sample positions. A Locate or selection at a rounded-down boundary starts the new interval. The existing Sum level summary remains readable with the added control.
