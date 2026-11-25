@@ -336,6 +336,10 @@ class ArrangementCanvas final : public juce::Component,
     // without one, it selects that clip alone, from where it was pressed.
     bool selectOnUp_ = false;
     juce::Point<int> pressedAt_;
+    // Ctrl/Cmd+press on a picked clip's bar: let go on release only if no drag came of it.
+    std::int64_t toggleOnUp_ = 0;
+    // The drag holds Ctrl (Option on the Mac): released, it copies the clips instead of moving them.
+    bool copying_ = false;
     // The offset the drag gives every selected clip: the dragged clip's, stopped where the earliest
     // of them reaches the arrangement's start.
     std::int64_t movingDelta() const noexcept { return movingTo_ - movingFrom_; }

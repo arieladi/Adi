@@ -2337,11 +2337,11 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
         const auto colour = view.colourFor(row.position);
         if (row.place.group)
             paintGroupLane(g, i, y, h, colour);
-        auto drawClip = [&](const engine::ClipNode &clip) {
+        auto drawClip = [&](const engine::ClipNode &clip, bool home = false) {
             const auto *c = &clip;
-            // A clip being moved by its bar is drawn where it would land.
-            const bool along = moving_ != 0 && !geo.selection.pickedClips.empty() && geo.clipSelected(c->id);
-            const auto pos = c->id == moving_ ? movingTo_ : along ? c->posTicks + movingDelta() : c->posTicks;
+            // A clip being moved by its bar is drawn where it would land; `home`, where it is.
+            const bool along = !home && moving_ != 0 && !geo.selection.pickedClips.empty() && geo.clipSelected(c->id);
+            const auto pos = home ? c->posTicks : c->id == moving_ ? movingTo_ : along ? c->posTicks + movingDelta() : c->posTicks;
             const auto length = c->id == resizing_ ? resizeLength_ : c->lengthTicks;
             const double x = geo.x(pos), end = geo.x(pos + length);
             if (end < 0 || x > getWidth())
@@ -2388,15 +2388,20 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
             }
             // Its fades, and their handles (manual 6.8), over the waveform and any selection tint;
             // not while it moves.
-            if (c->audio && c->id != moving_ && !along && c->id != resizing_)
+            if (c->audio && (home || (c->id != moving_ && !along)) && c->id != resizing_)
                 paintFades(g, *c, static_cast<float>(x), static_cast<float>(end), static_cast<float>(y + 1 + kClipBarHeight),
                            static_cast<float>(y + h - 3));
         };
         // A clip dragged onto another track is drawn on that track's lane, in its colour; so is
         // each of several selected clips dragged across tracks.
-        for (const auto &c : t->clips)
+        for (const auto &c : t->clips) {
+            // A copy being dragged leaves its original drawn where it is.
+            if (copying_ && moving_ != 0 &&
+                (c->id == moving_ || (!geo.selection.pickedClips.empty() && geo.clipSelected(c->id))))
+                drawClip(*c, true);
             if (const auto to = movingTargetOf(c->id); to == 0 || to == t->id)
                 drawClip(*c);
+        }
         if (moving_ != 0)
             for (const auto &other : view.reader().tracks())
                 if (other->id != t->id)
@@ -2904,6 +2909,7 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
     view.followPaused = false; // a click in the Arrangement starts Follow again (§6.2)
     last = e.position;
     moving_ = resizing_ = 0;
+    copying_ = false;
     keyResize_ = false; // a click ends a resize begun from the keyboard, as Esc does
     selectedFade_.reset(); // a click chooses a fade handle again, or nothing
     focusLost(focusChangedDirectly);
@@ -2961,22 +2967,37 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
             return;
         }
         // Ctrl/Cmd+click on another clip picks it besides the selected one, or lets it go again
-        // (Live's "Select Multiple Items", §42.5); it moves nothing. A plain click lets them all go.
+        // (Live's "Select Multiple Items", §42.5). A plain click lets them all go. On its bar the
+        // press also begins a drag of every selected clip, which Ctrl copies (mouseUp); a picked
+        // clip is let go only when released without one.
+        selectOnUp_ = false;
+        toggleOnUp_ = 0;
         if (e.mods.isCommandDown() && view.geometry.selection.clip != 0)
             if (const auto *t = view.geometry.trackAt(view.reader(), e.y))
                 if (const auto *c = view.geometry.hit(*t, view.geometry.tick(e.x));
                     c != nullptr && c->id != view.geometry.selection.clip) {
+                    const auto *bar = barAt(e.x, e.y, track, edge);
+                    const bool onBar = bar != nullptr && bar->id == c->id;
                     auto &picked = view.geometry.selection.pickedClips;
-                    if (const auto at = std::find(picked.begin(), picked.end(), c->id); at != picked.end())
-                        picked.erase(at);
-                    else
+                    if (const auto at = std::find(picked.begin(), picked.end(), c->id); at == picked.end())
                         picked.push_back(c->id);
+                    else if (onBar)
+                        toggleOnUp_ = c->id;
+                    else
+                        picked.erase(at);
+                    if (onBar) {
+                        moving_ = c->id;
+                        movingFrom_ = movingTo_ = c->posTicks;
+                        movingSource_ = movingTrack_ = track;
+                        movingAcross_.clear();
+                        grabTicks_ = view.geometry.tick(e.x) - c->posTicks;
+                        pressedAt_ = e.getPosition();
+                    }
                     view.changed();
                     return;
                 }
         // A plain press on the bar of one of several selected clips keeps them all for the drag,
         // which moves them together; released without a drag, it selects that clip alone.
-        selectOnUp_ = false;
         if (!e.mods.isShiftDown() && !view.geometry.selection.pickedClips.empty())
             if (const auto *c = barAt(e.x, e.y, track, edge); c != nullptr && view.geometry.clipSelected(c->id)) {
                 moving_ = c->id;
@@ -3115,8 +3136,17 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
         // track follows the lane under it when that track can take it (Live 12 manual 6.7);
         // over one that cannot, it stays on the last that could. At the lanes' edge they scroll.
         const bool scrolled = e.mouseWasDraggedSinceMouseDown() && view.edgeScroll(e.x, e.y, true);
-        if (e.mouseWasDraggedSinceMouseDown())
+        if (e.mouseWasDraggedSinceMouseDown()) {
             selectOnUp_ = false;
+            toggleOnUp_ = 0;
+        }
+        // Ctrl held (Option on the Mac) makes the drag a copy, the originals staying, as Live's and
+        // the Note Editor's; it can be pressed or let go during the drag.
+#if JUCE_MAC
+        copying_ = e.mods.isAltDown();
+#else
+        copying_ = e.mods.isCtrlDown();
+#endif
         // Several selected clips move together: in time, and across tracks each by the same rows
         // when every one lands on a track that can take it; else they stay on the last rows that
         // could.
@@ -3243,9 +3273,27 @@ void ArrangementCanvas::mouseUp(const juce::MouseEvent &e) {
                 for (const auto &op : edit.ops)
                     places.push_back({op.payload.at("id").get<std::int64_t>(), op.payload.at("track").get<std::int64_t>(),
                                       op.payload.at("to").get<std::int64_t>()});
-                if (!edit.refusal.empty())
+                if (!edit.refusal.empty()) {
                     view.root.say(edit.refusal);
-                else if (!places.empty() && view.root.placeClips(places, edit.ops.front().label.c_str())) {
+                } else if (copying_ && !places.empty()) {
+                    // Copied: the originals stay, and the copies are what is selected after.
+                    if (const auto copies = view.root.copyClips(places, places.size() == 1 ? "Copy Clip" : "Copy Clips");
+                        !copies.empty()) {
+                        sel.clip = 0;
+                        sel.pickedClips.clear();
+                        for (std::size_t i = 0; i < places.size(); ++i) {
+                            if (places[i].clip == clip) {
+                                sel.clip = copies[i];
+                                sel.track = places[i].track;
+                                sel.toTrack = 0;
+                            } else {
+                                sel.pickedClips.push_back(copies[i]);
+                            }
+                        }
+                        sel.start += delta;
+                        sel.end += delta;
+                    }
+                } else if (!places.empty() && view.root.placeClips(places, edit.ops.front().label.c_str())) {
                     sel.start += delta;
                     sel.end += delta;
                     // The selection follows the clip dragged, onto its new track.
@@ -3256,21 +3304,36 @@ void ArrangementCanvas::mouseUp(const juce::MouseEvent &e) {
                         }
                 }
             }
-        } else if (selectOnUp_)
+        } else if (selectOnUp_) {
             view.select(pressedAt_.x, pressedAt_.y, view.snaps(juce::ModifierKeys::currentModifiers));
+        } else if (toggleOnUp_ != 0) {
+            // Ctrl/Cmd+click on a picked clip's bar, without a drag: it is let go.
+            auto &picked = sel.pickedClips;
+            picked.erase(std::remove(picked.begin(), picked.end(), toggleOnUp_), picked.end());
+        }
         selectOnUp_ = false;
+        toggleOnUp_ = 0;
+        copying_ = false;
         repaint();
     }
     if (moving_ != 0) {
         const auto clip = moving_, to = movingTo_, from = movingFrom_, track = movingTrack_;
         const bool across = movingTrack_ != movingSource_;
+        const bool copy = std::exchange(copying_, false);
         moving_ = 0;
         // One drag, one undo step (§6.7), in time and to another track at once; the selection
-        // follows the clip.
+        // follows the clip, or its copy when Ctrl copied it (the original staying).
         if (to != from || across) {
             auto &sel = view.geometry.selection;
             const auto length = sel.end - sel.start;
-            if (view.root.placeClips({{clip, track, to}}, "Move Clip")) {
+            bool landed = false;
+            if (!copy) {
+                landed = view.root.placeClips({{clip, track, to}}, "Move Clip");
+            } else if (const auto copies = view.root.copyClips({{clip, track, to}}, "Copy Clip"); !copies.empty()) {
+                sel.clip = copies.front();
+                landed = true;
+            }
+            if (landed) {
                 sel.start = to;
                 sel.end = to + length;
                 sel.track = track;
