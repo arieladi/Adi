@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <limits>
+#include <memory>
 #include <numbers>
 #include <vector>
 
@@ -1337,6 +1338,45 @@ void timeBandHistory() {
         matches &= near(actual[i], sum[i], 1e-6) && near(actualRight[i], sum[i], 1e-6);
     check(matches, "three independent Time histories sum the separately delayed split-band impulses");
 }
+void continuousPointEdits() {
+    using Bank = adi::dsp::AdiShaperWaveBank;
+    constexpr int key = Bank::key(0, 1, 0);
+    constexpr auto corner = Bank::Shape::SourceCorner;
+    std::array<Bank::Point, 5> points{{{0.f,.25f,-1.f,corner}, {.17f,.82f,1.f,corner},
+        {.43f,.12f,0.f,corner}, {.69f,.71f,-1.f,corner}, {.88f,.38f,-1.f,corner}}};
+    auto write = [&](Bank& bank) {
+        for (std::size_t i = 0; i < points.size(); ++i) {
+            const int id = Bank::firstId + 2 * static_cast<int>(i);
+            bank.set(id, static_cast<float>(Bank::address(key, points[i])));
+            bank.set(id+1, static_cast<float>(Bank::value(points[i])));
+        }
+    };
+    Bank bank;
+    auto memo = std::make_unique<Bank::AudioMemo>();
+    for (int edit = 0; edit < 64; ++edit) {
+        points[1].y = static_cast<float>((37 * edit) % 61) / 60.f;
+        if (edit == 16) points[4].x = points[3].x;
+        if (edit == 20) points[4].y = points[3].y;
+        if (edit == 24) points[4].y = 1.f;
+        if (edit == 32) for (auto& point : points) point.y = .375f;
+        if (edit == 48) points[4].x = .88f;
+        write(bank);
+        bank.prepareBlock(memo.get());
+        Bank rebuilt;
+        write(rebuilt);
+        rebuilt.prepareBlock();
+        const auto actual = bank.view(key, memo.get()), expected = rebuilt.view(key);
+        std::uint64_t phase = static_cast<std::uint64_t>(edit) << 56;
+        for (int frame = 0; frame < 256; ++frame, phase += 0x104321123456789ULL) {
+            bool moving = false, expectedMoving = false;
+            const auto a = Bank::at(actual, phase, &moving), b = Bank::at(expected, phase, &expectedMoving);
+            if (std::bit_cast<std::uint32_t>(a) != std::bit_cast<std::uint32_t>(b) || moving != expectedMoving) {
+                check(false, "continuous edits match a fully rebuilt uncached contour at every sample");
+                return;
+            }
+        }
+    }
+}
 } // namespace
 
 int main() {
@@ -1366,6 +1406,7 @@ int main() {
     crushHoldClockBlocks();
     timeRanges();
     timeBandHistory();
+    continuousPointEdits();
     if (failures == 0) std::puts("ADI-Shaper DSP fixtures passed");
     return failures == 0 ? 0 : 1;
 }

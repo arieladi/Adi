@@ -122,15 +122,19 @@ public:
             if (k >= 0 && k < curves) changed_[static_cast<std::size_t>(k)] = true;
         };
         changed(words_[addressSlot]);
+        const bool addressChanged = (hostId-firstId) % 2 == 0;
+        if (addressChanged || ((next ^ dest) >> 16) != 0) edit_ = Edit::Knots;
+        else if (edit_ == Edit::None) edit_ = Edit::Heights;
         dest = next;
-        if ((hostId-firstId) % 2 == 0) changed(next);
-        dirty_ = true;
+        if (addressChanged) changed(next);
     }
     void prepareBlock(AudioMemo* memo = nullptr) noexcept {
-        if (memo) memo->beginBlock(dirty_ ? &changed_ : nullptr);
-        if (!dirty_) return;
+        if (memo) memo->beginBlock(edit_ == Edit::None ? nullptr : &changed_);
+        if (edit_ == Edit::None) return;
+        const bool reused = edit_ == Edit::Heights && refreshHeights();
+        edit_ = Edit::None;
         changed_.fill(false);
-        dirty_ = false;
+        if (reused) return;
         starts_.fill(0);
         std::size_t count = 0;
         for (int i = 0; i < slots; ++i) {
@@ -212,6 +216,26 @@ public:
         return segment(left,right,x,x0,x1,moving);
     }
 private:
+    bool refreshHeights() noexcept {
+        for (std::size_t k = 0; k < curves; ++k) {
+            if (!changed_[k]) continue;
+            auto nodes = std::span(nodes_).subspan(starts_[k], starts_[k+1]-starts_[k]);
+            if (nodes.empty()) continue;
+            for (std::size_t i = 0; i < nodes.size(); ++i) {
+                auto& n = nodes[i];
+                const auto value = words_[2 * static_cast<std::size_t>(n.slot) + 1];
+                n.y = static_cast<float>(value & 65535) / 65535.f;
+                // A coincident hard pair can gain or lose a discontinuity.
+                if (i > 0 && n.x == nodes[i-1].x && n.shape == Shape::SourceCorner && n.bend < -.5f &&
+                    nodes[i-1].shape == Shape::SourceCorner && nodes[i-1].bend < -.5f) return false;
+            }
+            // Constant contours have no compiled spans. Rebuild on entry or
+            // exit; all other ordinate edits preserve the span control indices.
+            const bool constant = std::all_of(nodes.begin(), nodes.end(), [&](const Node& n) { return n.y == nodes.front().y; });
+            if (constant != constants_[k]) return false;
+        }
+        return true;
+    }
     static float geometry(const View& curve, double x, bool* moving = nullptr) noexcept {
         const double start = curve.spans.front().start;
         const double at = x < start ? x+8192 : x >= start+8192 ? x-8192 : x;
@@ -339,6 +363,7 @@ private:
     std::array<Node, slots> nodes_{};
     std::array<std::size_t, curves + 1> starts_{};
     std::array<bool,curves> changed_{};
-    bool dirty_ = false;
+    enum class Edit : std::uint8_t { None, Heights, Knots };
+    Edit edit_ = Edit::None;
 };
 } // namespace adi::dsp
