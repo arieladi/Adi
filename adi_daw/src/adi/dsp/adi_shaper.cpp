@@ -27,6 +27,10 @@ float panGain(double position) noexcept {
     return static_cast<float>(position * (c + position * (b + a * position)));
 }
 
+double panDelayMs(double excursion) noexcept {
+    return 40. * excursion * excursion * excursion + std::max(0., excursion * (2. - 4. * excursion));
+}
+
 float finiteOrZero(float sample) noexcept {
     return std::isfinite(sample) ? sample : 0.0f;
 }
@@ -437,7 +441,11 @@ void AdiShaper::setMod(Param id, float value) noexcept {
 
 void AdiShaper::set(Param id, float value) noexcept {
     if (id < MasterMix || id >= Count || !std::isfinite(value)) return;
-    if (id >= PanLowDelayBlend) {
+    if (id >= PanLowDelayRange) {
+        panHistory_[static_cast<std::size_t>(id - PanLowDelayRange)].setRange(value);
+        return;
+    }
+    if (id >= PanLowDelayBlend && id <= PanHighDelayBlend) {
         panHistory_[static_cast<std::size_t>(id - PanLowDelayBlend)].setBlend(value);
         return;
     }
@@ -531,13 +539,30 @@ double AdiShaper::Contour::heldPanAt(std::uint64_t position) const noexcept {
 void AdiShaper::PanHistory::prepare(double rate) noexcept {
     head = valid = 0;
     if (rate > 1536000.) { frames.clear(); return; }
-    // The 2 ms far-ear delay reaches 2.87 ms while the contour overshoots.
-    const auto length = static_cast<std::size_t>(std::ceil(.003 * rate)) + 2;
+    // Keep history for the full travel so range automation can use the preceding audio.
+    const auto length = static_cast<std::size_t>(std::ceil(.040 * rate)) + 2;
     try {
         frames.resize(std::bit_ceil(length));
     } catch (const std::bad_alloc&) {
         frames.clear();
     }
+}
+
+void AdiShaper::PanHistory::setRange(float milliseconds) noexcept {
+    const float next = std::clamp(milliseconds, 0.f, 40.f);
+    if (next == rangeMs) return;
+    rangeMs = next;
+    if (next == 2.f) return;
+    if (next >= 5.f) {
+        rangeScale = std::cbrt(next / 40.);
+        return;
+    }
+    // Invert 40s³ - 4s² + 2s on the lower half of the control travel.
+    // Its derivative is positive throughout. Solve once per control edit.
+    double s = std::min(.5, .5 * next);
+    for (int i = 0; i < 6; ++i)
+        s -= (s * (2. + s * (40. * s - 4.)) - next) / (2. + s * (120. * s - 8.));
+    rangeScale = s;
 }
 
 void AdiShaper::PanHistory::setBlend(float percent) noexcept {
@@ -553,10 +578,10 @@ AdiShaper::PanHistory::Tap AdiShaper::PanHistory::tap(double position, double ra
     Tap result;
     result.gain = {leftGain + unity * (1.f - leftGain), rightGain + unity * (1.f - rightGain)};
     if (current == 1.f || frames.empty()) return result;
-    // At the two-millisecond range a stationary contour reads a whole frame.
-    // A moving contour also interpolates between the two neighboring frames.
+    // Retain the calibrated default tap exactly, including its fractional moving read.
     const double far = std::abs(position);
-    const double ms = far * (.710640 + far * (-.505011 + far * 1.794401));
+    const double ms = rangeMs == 2.f ? far * (.710640 + far * (-.505011 + far * 1.794401))
+                    : far == 1. ? rangeMs : panDelayMs(std::min(1., far * rangeScale));
     const double delay = ms * (.001 * rate);
     result.age = static_cast<std::size_t>(delay);
     result.fraction = constant ? 0. : delay - static_cast<double>(result.age);

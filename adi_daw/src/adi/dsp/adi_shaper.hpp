@@ -30,7 +30,8 @@ class AdiShaper {
                  SweepMidPolarity, SweepHighPolarity, DriveOn,
                  CrushOn = DriveOn + modHeaderSize + 3 * driveBandParameterCount,
                  BaseCount = CrushOn + modStageParameterCount,
-                 PanLowDelayBlend = 855, PanMidDelayBlend, PanHighDelayBlend, Count };
+                 PanLowDelayBlend = 855, PanMidDelayBlend, PanHighDelayBlend,
+                 PanLowDelayRange = 921, PanMidDelayRange, PanHighDelayRange, Count };
     enum class Stage { Volume, Width, Pan, Filter, Sweep, Drive, Crush };
     enum class Band { Low, Mid, High };
     enum BandControl { Mix, Clock, Cycle, Rate, Curve, Point1, Point2, Point3, Point4,
@@ -124,9 +125,12 @@ class AdiShaper {
         std::vector<std::array<float, 2>> frames;
         std::size_t head = 0, valid = 0;
         float current = 0.f, unity = 0.f;
+        float rangeMs = 2.f;
+        double rangeScale = 0.;
         Tap constantTap;
         void prepare(double rate) noexcept;
         void setBlend(float percent) noexcept;
+        void setRange(float milliseconds) noexcept;
         [[nodiscard]] Tap tap(double position, double rate, bool constant) const noexcept;
         void process(const Tap& tap, float& left, float& right) noexcept;
     };
