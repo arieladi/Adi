@@ -205,6 +205,12 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - Four visibility and default assertions failed first. The 48 kHz fixture verified matching 2048/512 primary and pin windows on their existing physical taps, then a fresh 4096/1024 Auto picture after Thaw. The strict Release passed 11 suites, 5,642 checks.
 - Review ZIP SHA-256 `ae2ebd1234bf92fee7b2187849b390b1220b46ec2789ec83a4f99d0b7594d94f`. Executable `47536b7548734af324266aed14676dc6368a14a3cfaf44f4812f142b2e9d63ce`. Retest brief uses the same source hash.
 
+## 25 November 2026 · MX-21 Spectrum overlap · lands after 3 December
+
+- **PR requested** `mixview/mx21-spectrum-overlap-lands-after-2026-12-03` at `9c08ae51e37cd7e61aaf63a742ebd6448e4cca36`. Spectrum keeps 75% as its existing default and offers 0%, 50% and 90% as explicit choices. The block size and hop form one calibration for the primary and pins. A held picture retains its previous profile until Thaw.
+- Four control assertions failed first. The tests then verified fresh, matched 4096/2048 windows at 50%, recovery of 4096/1024 at 75% and reuse of the physical taps. Strict Release passed 11 suites, 5,648 checks.
+- Review ZIP SHA-256 `e9ee4f3f2ba7895a36fbf68aacc15aad357d9d18d97b34d8d038981f6b7e3f49`. Executable `c1cec9698d3747386ad2ffa0af4a780917906ef42a97dcf980f1b0adc9773f42`. Retest brief uses the same source hash.
+
 ### 25 November — MX13 Focus musical windows
 
 **PR requested** `mixview/mx13-musical-window-lands-after-2026-12-03` at `5c88abf073d56cd9e5c99f3aeac3d4cb24a68532`, after captured true peak. Focus Scope offers One Beat and One Bar. The default is still One Bar. A view change clears the former interval and region and requests the new window on the same grouped sources. Tempo and signature edges share exact rounded sample positions. A Locate or selection at a rounded-down boundary starts the new interval. The existing Sum level summary remains readable with the added control.
