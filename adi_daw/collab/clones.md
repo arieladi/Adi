@@ -17,6 +17,16 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 25 November 2026 — Signed power saturation in Drive
+
+The signed power response occurs in 36 of the 873 programs, with 38 selected bands and four of the previous 81 regressions. A nonzero Drive excursion remains in 32 programs. Seven programs have neutral tone, accent, grip and push. Three also have representable contour timing. They are the clean subset for an eventual complete-rack comparison.
+
+For input x and strength d from 0 to 1, the output before reconstruction and DC removal follows sign(x) × |x| raised to 1/(1+6d²), times a drive-dependent gain. At d = 0, 0.125, 0.25, 0.5, 0.75 and 1 the measured compensation is approximately 1, 0.91472, 0.73347, 0.45317, 0.34499 and 0.30189. Signed plateaus and coherent tones isolated the exponent and gain. At 96 kHz the fitted exponents differed from the predicted values by less than 0.000000075. A 33-knot compensation fit was checked on 224 withheld settings with maximum gain error 0.0000483.
+
+At half drive and 48 kHz the direct fourfold transfer reproduced random stereo with 0.000114 RMS error. An eightfold version gave 0.00585, and an antiderivative version gave about 0.0078. All six half- and full-drive 256/2,048-frame captures were independent of block size. The source reports 16 frames of latency at 44.1, 48 and 96 kHz. A reference tone on the opposite channel preserved a signed input of 0.000000000001. Per-sample gating at this level would erase measured audio.
+
+The clones seat takes the ADI-Shaper Drive kernel, existing rack and canvas, and focused DSP and registered tests on `clones/shaper-power-saturation`. Three appended switches, host IDs 931–933, select the signed power variant of the original saturation choice in the low, middle and high bands. Existing saturation, hard clipping and rectification must retain their previous values on sparse recall. Lands after 3 December.
+
 ## 25 November 2026 — Combining rounded Drive with the four-track repair
 
 For Win when combining `dbc4c2cf6` with `ce4fcfbf4`. The Drive source and its test need a hand merge. Keep the four-track branch's mirrored ring, symmetric FIR and once-per-phase-group selection. Select rounded hard clipping at that dispatch. Update previous input and the eight-frame rounded-control history once. Keep both test entry lists. A private replayable resolution is available.
