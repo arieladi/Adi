@@ -11,6 +11,12 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+### 2026-11-25 — DF-M34 native Limiter suspension
+
+**PR requested** `mixview/df-m34-limiter-clock` at `1db80412c`, after the graph hook `0deaa3d0e` and before 3 December. The wet path records exact skipped frames and carries the delay and convolution phases across sleep. Pending configuration, offline output, dither, Adaptive, and unproved histories keep processing. Transparent can also sleep once its prior signal histories drain. Dry bypass leaves the wet clock paused.
+
+Release with warnings as errors. The new graph gate went from 119 failures to 748/748, across both native providers and 112 rate/style/quality combinations, plus warm drain, edit wake and offline cases. Six suites passed. The direct engine comparison matched all 336 resumed PCM cases bit for bit. This establishes exact wake and omitted DSP work for those paths. Timed CPU and live checks remain open. The review package is building.
+
 ### 25 November — DF-M34 graph suspension hook
 
 An active native processor receives the exact number of frames whenever the graph skips its processing on silence. The hook runs after any suspension entry and leaves the existing tap publication and tail drain order intact. Dry bypass keeps the wet DSP clock parked. The test crosses uneven segments under one physical callback, an unrelated event split, a real wake event and dry bypass.
