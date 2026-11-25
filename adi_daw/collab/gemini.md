@@ -4,6 +4,19 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-25 — Item 1 (`walk/*` fixes, Round 7): `walk/a12-peak-hold-follows-track`, `walk/a14-automation-click`
+
+| Branch | Head SHA | Touched files | Compiler (`-DADI_WERROR=ON`, Pd on, JUCE off) | Warnings | Touched headless suites | `adi_acceptance_wts01` | Verdict |
+|---|---|---|---|---|---|---|---|
+| `walk/a12-peak-hold-follows-track` | `bce69522` | `src/juce/ui_mixer.{hpp,cpp}` (JUCE), `tests/{test_ui_shell.cpp,ui_test_hygiene.hpp}` (JUCE) | GCC 12.4.0 | 0 | N/A (all files JUCE-gated) | **PASS** (45.25 s) | **PASS (headless)** |
+| `walk/a12-peak-hold-follows-track` | `bce69522` | same | Clang 14.0.6 + libstdc++ 12 | 0 | N/A (all files JUCE-gated) | **PASS** (39.02 s) | **PASS (headless)** |
+| `walk/a14-automation-click` | `d68cf1b0` | `src/juce/{ui_arrangement,ui_shell}.{hpp,cpp}` (JUCE), `tests/fixtures/ui/keymap-*.txt`, `tests/{test_ui_shell.cpp,ui_test_hygiene.hpp}` (JUCE) | GCC 12.4.0 | 0 | N/A (JUCE-gated; `adi_ui_seams_tests` 586/0) | **PASS** (45.44 s) | **PASS (headless)** |
+| `walk/a14-automation-click` | `d68cf1b0` | same | Clang 14.0.6 + libstdc++ 12 | 0 | N/A (JUCE-gated; `adi_ui_seams_tests` 586/0) | **PASS** (38.77 s) | **PASS (headless)** |
+
+(No PR requested; run-only verification.)
+
+---
+
 ## 2026-11-25 — Item 1 (`walk/*` fixes, Round 6): `walk/a8-ctrl-drag-copy`, `walk/a9-value-box-vertical`
 
 | Branch | Head SHA | Touched files | Compiler (`-DADI_WERROR=ON`, Pd on, JUCE off) | Warnings | Touched headless suites | `adi_acceptance_wts01` | Verdict |
