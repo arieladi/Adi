@@ -2,6 +2,7 @@
 #include "adi/appdata.hpp"
 #include "adi/render/queue.hpp"
 #include "adi/render/host_dispatch.hpp"
+#include "adi/settings/device_grant.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include "adi/ui/plugin_scan.hpp"
 #include "adi/ui/project_document.hpp"
@@ -1122,8 +1123,10 @@ class AdiApplication final : public juce::JUCEApplication,
             root_->mixer.resolveMeters();
             root_->mixerView.resolveMeters();
         }
-        if (bridge_->mismatchReport().isNotEmpty())
-            report(bridge_->mismatchReport().toStdString());
+        // Another size than requested is the driver's grant, not an error (ADR-0049 d3, ADR-0145 d5):
+        // noted in the Status Bar, shown on Settings > Audio.
+        if (root_ && bridge_->mismatchReport().isNotEmpty())
+            root_->say("Audio buffer: " + bridge_->mismatchReport().toStdString());
     }
     // Take Snapshot: the name prompt is pre-filled with the project's name and
     // the time (ADR-0203 d13); the snapshot is history metadata, not an edit.
@@ -1403,19 +1406,17 @@ class AdiApplication final : public juce::JUCEApplication,
         const auto setup = manager_.getAudioDeviceSetup();
         if (!manager_.getCurrentAudioDevice())
             return;
-        std::string why;
-        auto set = [&](const char *key, const settings::Value &value) {
-            if (!settings_->set(key, value, {}, why))
-                report(why);
-        };
-        set("audio.inputDevice", setup.inputDeviceName.toStdString());
-        set("audio.outputDevice", setup.outputDeviceName.toStdString());
-        set("audio.sampleRate", static_cast<int>(setup.sampleRate));
-        set("audio.bufferSize", setup.bufferSize);
+        // A grant the setting does not offer (WASAPI's 480) keeps the request; the page shows the grant.
         auto type = manager_.getCurrentAudioDeviceType();
         if (type.startsWith("Windows Audio"))
             type = "WASAPI";
-        set("audio.driverType", type.toStdString());
+        std::string why;
+        if (!settings::keepGrant(*settings_,
+                                 {type.toStdString(), setup.inputDeviceName.toStdString(),
+                                  setup.outputDeviceName.toStdString(), static_cast<int>(setup.sampleRate),
+                                  setup.bufferSize},
+                                 {}, why))
+            report(why);
         if (!settings_->save(why))
             report(why);
         if (settingsWindow_)
