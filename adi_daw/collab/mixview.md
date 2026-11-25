@@ -11,6 +11,14 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+### 2026-11-25 — Spectrogram wake keeps its analysis hop (MX-30)
+
+The Spectrogram held still during a certified silent span but lost the partial hop on the way back. It now advances the analysis phase over that span without manufacturing history columns. A compatible Scope view can attach while quiet and reuse the retained result without an FFT or a raster step. A first Spectrogram can still seed its own history.
+
+Four checks failed initially. Release passed 920 broker, 513 Spectrum and 508 Mix View checks. The 13,233-sample odd gap crosses the tap ring, leaves it idle, and wakes on sample 207 with one real column and bin-for-bin agreement against continuous analysis. Both changed units passed warnings as errors, with an additional portable check of the broker. Application SHA-256 `ddb24e75c27c9e4d44af190a30f04896e5372f71e5c280f7253f9f7c91be2d0f`; archive `bb44bad203578b8209f4748fd96e0d84e311c8599cfc88440a9f6977322b20ac`. The review handoff covers Sweep and Scroll and keeps the native comparison pending.
+
+PR requested — `mixview/mx30-parked-spectrogram-hop-lands-after-2026-12-03` at `7fa1d1cb8b176d4183ed00659c506debed494150`, after Scope region measurement. Lands after 3 December.
+
 ### 2026-11-25 — Spectral delay signed-silence diagnostic (DF-M34)
 
 Needs Engine only if sign-bit identity is required across graph sleep. The prepared native EQ keeps the exact 1,024-sample delay and both nonzero markers. At wake, an uninterrupted low-resolution spectral dry ring returns the 793 negative zeros it received during the gap, while the suspended path returns positive zeros. The other 980 checks pass, including the positive-zero control. This is the same numerical silence the graph already treats as quiet. The private failing fixture is available for a shared policy review. A local normalization would change saved exact zeros, and the graph loan covers the skipped frame count.
