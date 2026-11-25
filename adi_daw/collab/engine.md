@@ -12,6 +12,10 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 ---
 
+## FOR THE DIRECTOR — DEV-25, VST3 readiness evidence
+
+May Win add a status-bearing seam to pinned JUCE 9.0.5 under ADR-0097 §3? I recommend exposing the existing opaque-state restore's SDK outcomes and the fallback audio process result. That preserves saved project chunks, controller resynchronization and the wrapper's parameter cache. The current void calls discard those results. Keep VST3 state acceptance and wrapper-only first process unverified until that seam exists. The CLAP and raw VST3 evidence can proceed on their own.
+
 ## FOR THE DIRECTOR — DF-E29(e), MIDI timing with Delay Compensation off
 
 Should MIDI keep the upstream plug-in's physical latency when Delay Compensation is off, or follow the same heard-time clock as the addressed automation? On current main the setting is reachable through the engine API. The app registry declares the setting, and its production switch has no Session binding yet. A real graph with a 1,024-sample reporting delay put the note and automation at sample 4,116 when compensation was on. With compensation off the note arrived at 5,140 and automation still arrived at 4,116.
@@ -31,6 +35,930 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 ### N54 clipboard track hints and hybrid material
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
+
+### 22 November — AU-08 Simplify Envelope
+
+**PR requested** for `engine/au08-simplify-envelope` at `be846d1b86e460b89cdc867cd92bafc69b09d12d`, stacked on `engine/au03-write-guards` for the sealed arrangement splice. The native preparation reduces selected sampled linear runs to linear or exponential segments within the caller's absolute playback tolerance. The bound covers the original knots and the analytic extrema between them. Retained knot identities, authored curves outside the interval, stream trailers, and exact Undo/Redo are preserved. Holds, unequal coincident points, enumerated values, and selections with no valid reduction remain untouched.
+
+Strict GCC 14 and Clang 19 each passed 1,984 checks across seven suites. A 1,001-point ramp reduced to two points, a joined linear and exponential run kept its original pivot, and the test rejected a sparse fit that exceeded tolerance between knots. Window selection and its tolerance control remain with the caller.
+
+### 22 November — AU-08 Arrangement envelope Copy, Paste and Duplicate
+
+**PR requested** for `engine/au08-envelope-clipboard` at `9ad32e5ea71b3ccf092fae2e9a8929dc7125f41c`, stacked on AU-02's guarded splice at `8e44fe5281b68e0c8b5014b548fd1b156e581f4a`. Copy owns the selected lane material, including partial nonlinear domains. Paste and adjacent Duplicate each prepare one sealed splice. Native offsets follow the destination clock. Numeric cross-parameter paste requires the same clock, domain and unit and checks destination bounds. Enum paste stays with its source parameter.
+
+Strict GCC 14 and Clang 19 each passed 2,034 checks across seven suites. Playback was checked at every sample for six curve types in each clock, including Hold steps, already sliced curves, exterior destination playback, sibling streams, and literal Undo/Redo.
+
+Parked AU-08 Cut and range Delete pending the removed-span playback rule, the selection adapter with window-fn, and cross-clock or cross-unit conversion pending a mapping rule. Other AU-08 native branches can advance independently.
+
+### FOR THE DIRECTOR
+
+- AU-08 Cut and Delete. I recommend the same half-open interval and exterior curve guards as Paste. Check Live with a selection starting inside a nonlinear ramp and ending just after a step to choose the value heard in the emptied range. I recommend carrying the left value through the range if Live leaves a gap with no interpolation.
+
+### 22 November — MI-06 Fit to Scale, native note operation
+
+**PR requested** for `engine/mi06-fit-to-scale` at `e6d0c93c0fa880ed6c165ecaff0a2070f6f1c104` from main. The pure utility snaps explicitly selected note pitches using ScaleContext, picks the lower degree on a tie and prepares one existing note.applyDiff when pitches change. The owner adapter captures the clip's local or inherited scale and notes in one SQLite snapshot. An implicit twelve-tone scale uses the clip root. Custom tuning takes an explicit absolute tonic. Unchanged pitches, note IDs, forward record tails, opaque expression and all nonpitch fields survive.
+
+GCC 14 and Clang 19 strict builds each passed 1,168 checks across four suites. Tests cover a non-octave tuning, a lower tie, a local override, empty and invalid selections, idempotence with float cents, and byte-exact Undo/Redo. Window wiring and the Live preset census remain parked with their owners.
+
+### 22 November — MI-04 native chromatic Pitch Invert
+
+**PR requested** for `engine/mi04-invert-selected-pitches` at `c7c7927a828b30edf5343a34d084d6de738b67fd`, stacked on MI-06 Fit to Scale at `e6d0c93c0fa880ed6c165ecaff0a2070f6f1c104`. The pure utility reflects explicitly selected note pitches across a caller-supplied absolute axis and reuses one existing note.applyDiff. It preserves the timing, IDs, expressions and future record tails. An unrepresentable target refuses the entire selection.
+
+GCC 14 and Clang 19 strict builds each passed 1,173 checks across four suites. Tests cover a fractional axis, negative starts, unchanged notes on the axis, whole-selection refusal, exact Undo/Redo and double reflection of physical pitch.
+
+Parked MI-04 Split, Chop and Join on the MI-08 expression write reservation and Live's expression carry rules. The window action's automatic axis awaits the Live reading. Native degree stepping is next.
+
+### FOR THE DIRECTOR
+
+- MI-04 automatic Invert axis. I recommend testing an asymmetric three-note selection and a single selected note in Live. Use the middle of the selected pitch extent if the outer notes swap and the single note stays put. The engine already accepts any explicit axis.
+
+### 22 November — MI-04 and MI-06 scale-degree transposition
+
+**PR requested** for `engine/mi04-step-scale-degrees` at `c3b8664762cbcc2255616849ce0a30b0954bcd82`, stacked on MI-04 Pitch Invert. ScaleContext can move a resolved member forward or backward through the authored degree IDs and repeating periods with no allocation. The native selection utility applies that to in-scale notes via one existing note.applyDiff and keeps expression, timing and stable IDs. Off-scale selection refuses atomically; Fit to Scale is already available as a separate command.
+
+GCC 14 and Clang 19 strict builds each passed 1,180 checks across four suites. Tests cover both wrap directions, sparse IDs and a tritave, signed bounds, callback allocation audit, unequal pitch steps, and byte-exact Undo/Redo.
+
+Parked the automatic handling of off-scale transposition and degree inversion pending the Live reading. Parked RE-03 on the Info Text side-table and op reservation and Live's object/preset census. TM-WT-02's native interior marker edits can proceed on the existing AWRP codec. Reserve the four documented audioClip marker op names and the existing TM-WT-02 settings/transients minor before journal registration.
+
+### FOR THE DIRECTOR
+
+- MI-04 off-scale scale-degree motion. Check C-sharp moving one degree up and down within C major and whether Invert repairs off-scale notes. I recommend keeping Fit to Scale explicit until those rules are measured.
+
+### 22 November — TM-WT-02 interior AWRP marker edits
+
+**PR requested** for `engine/tm-wt02-interior-warp-markers` at `6fa013a5405452ec4932cda8fccc31956621ae59` from main. The native codec inserts, moves and removes an explicit interior marker while retaining origin, end coverage, flags, neighboring bytes and opaque trailer. It refuses stale original coordinates, either clock crossing a neighbor, and future layouts. No I/O or Store access is needed to produce the replacement BLOB.
+
+GCC 14 and Clang 19 strict builds each passed 353 checks across five Warp suites. An edited interior marker played at approximately 146.7 Hz then 440 Hz from one 440 Hz test tone in both Session widths, with the clip silent at its exact original end. The tests also returned identical original AWRP bytes after insert, move and remove.
+
+Parked TM-WT-02 journal registration on the op reservation, rightmost-marker behavior and ratio constraints on Live, and signed pickup origin on Win's table-or-v2 decision. Parked TM-WT-01 on Q-D and a labeled corpus, and TM-WT-05 on Q-E and the import/drop readings. TM-WT-03's documented offline interpolation can proceed while those gates remain open.
+
+### 22 November — TM-WT-03 four-point native Warp interpolation
+
+**PR requested** for `engine/tm-wt03-native-warp-interpolation` at `7745cd4b304babf3ab5958b12be72d8f7904d5f9` from main. The offline native Beats and Texture sampler applies four-point Hermite interpolation with one source frame of left overlap and two of right overlap in the reader cache. Integer positions remain literal PCM, and interpolation uses silence outside the selected source window.
+
+GCC 14 and Clang 19 strict builds each passed 342 checks across five suites. An independent half-phase formula matched all 8,201 stereo frames, between frames as well as at integer positions, across the 4,096-frame page boundaries and trimmed window edges. This qualifies the DSP change. The effect's Live listening gate remains open.
+
+### 22 November — TM-WT-03 Beats loop crossing
+
+**PR requested** for `engine/tm-wt03-beats-zero-crossing` at `c52e6ccda93c05fd2c0da42de0898d99fce63655`, stacked on the four-point Warp interpolation branch. Forward and PingPong use the closest zero crossing within five percent of the slice midpoint, shared across channels. The fallback is the midpoint bounded by the last source sample. A slice is searched only when playback actually repeats it. PingPong reflects around its endpoints in both directions.
+
+GCC 14 and Clang 19 strict builds each passed 345 checks across five suites. An antiphase stereo PCM fixture picks the closer of two crossings, enters the repeat between source frames, and mirrors the samples around the turn. A second slice exercises the midpoint fallback.
+
+Parked the remaining TM-WT-03 settings and Preserve grid on the Warp settings reservation and microfade length and listening acceptance on Live. DEV-22's device contract is present at `4054d859`; the hardware routing rows and native substitution will need the schema and the catalogue handoff. DEV-19 engine scale context can proceed without touching device DSP paths.
+
+### 22 November — DEV-19 the device's compensated project scale
+
+**PR requested** for `engine/dev19-device-scale-timeline` at `33880f60f4681c1a7cdba2903b521b199b2820da` from main. Opted-in hosted devices see the project's immutable ScaleContext at the compensated input sample. Key changes split those devices' segments, and the later authored key wins where rows round to one sample. The compiled context uses the graph's captured rows. Malformed tuning reports a problem while playback continues. Clip-local priority is the next engine portion.
+
+Strict GCC 14 and Clang 19 each passed 624 checks across five suites. The Session fixture crosses coincident keys, a 50-cent tuning degree, and a changed key after refresh. The graph fixture splits exactly at sample 12,000 after seven samples of source latency. Transport-only nodes retain their original segment count. Callback allocation and I/O audits passed.
+
+Parked DEV-20 on the XC-15 input-row reservation, the MidiMemory decision and LM5. DEV-21 hardware loadable instruments remain with the devices seat under its current loan.
+
+### 22 November — DEV-19 per-track clip scale publication
+
+**PR requested** for `engine/dev19-clip-local-device-scale` at `ad26772cf3d1a6bf65a06dae553851848d95398b`, stacked on the compensated project-scale publication. A sole unmuted main Arrangement MIDI clip can supply its local scale to devices on its own track. Its half-open span uses the MIDI playback clock in either placement domain. Suppressed takes, muted clips and unavailable aliases are excluded. Where eligible clips overlap, the device borrows the project scale until one remains.
+
+Strict GCC 14 and Clang 19 each passed 1,251 checks across seven suites. A real Session applies two track-local scales independently, suppresses an underlying project change while a clip owns the scale, restores the correct project key on overlap and at a clip end, and publishes a changed clip root through a seek. Existing native MIDI, graph, realisation and callback audits passed.
+
+Parked device DSP switches with the devices seat and the Live policy for overlap, live input and Session launch focus. The next engine PLAN item is DEV-24's native deadline meter.
+
+### FOR THE DIRECTOR
+
+- DEV-19 competing clip scales. I recommend the project fallback while simultaneous Arrangement clips disagree. Please include a Live reading with two local clips, a local clip overlapping an inheriting clip, and incoming played notes over each.
+
+### 22 November — DEV-24 / MX-28 physical audio callback load
+
+**PR requested** for `engine/dev24-callback-load-meter` at `72679a12103aedde0a42625e106ddc75d989eb0c` from main. The driver core times the processor once per physical callback and divides by the budget from the actual frame count and granted rate. The owner can read a coherent current and average load plus the count of observed over-budget callbacks through DeviceBridge's existing core accessor. The average uses a 250 ms time constant. Real driver XRuns remain a separate reading.
+
+GCC 14 and Clang 19 strict builds each passed 246 checks across three suites. A controlled driver fixture measures 50%, 150% and 100%, exercises a sample-rate change and an oversized refusal, and verifies the callback's allocation and floating-point control contracts. Window meter controls and Live's overload presentation await the owning seat. Per-track node timing is next.
+
+### 22 November — DEV-24 / MX-28 track processing time per driver callback
+
+**PR requested** for `engine/dev24-track-processing-time` at `a16019c01f949be92209b4125effe893d5e170b2`, stacked on the graph's track association from DEV-19. The owner can enable profiling and read sorted per-track processing nanoseconds plus the physical frame count. Prepared slots accumulate across logical slices and workers, then publish once at physical callback completion. Timing covers scheduled slot processing and its input mixing. Shared graph work such as event forwarding remains visible in the separate driver load metric.
+
+Strict GCC 14 and Clang 19 each passed 815 checks across six suites. A controlled clock gives exact 200 ns and 400 ns totals for different tracks across two slices, and the worker fixture checks aggregation after the render barrier. GraphHost preserves PCM, publishes both hosted slices together, and leaves callback allocation, reclamation and file-I/O counts at zero. The six-rectangle thresholds and presentation remain with window and the Live reading.
+
+Parked DEV-10/11/12/14/15 on Q-K and the user Pd safety, editor and voice contracts. DEV-13's native delay is already requested. Parked DEV-27 on the native protocol choices and repeatable AudioGridder server measurements. Parked TM-SV-02 on the scene/slot/launch reservations and CT-01's shared clip accessor. TM-SV-03's transient gesture admission and pure launch edge policy can proceed without storage changes.
+
+### 22 November — TM-SV-03 launch gesture admission and settled edge policy
+
+**PR requested** for `engine/tm-sv03-launch-gestures` at `39ed432576762f5ff35ebb82b217d6d27e6c9c52` from main. Trigger, Gate, Toggle and Repeat have a pure press/release result for idle and running slots. The fixed single-producer/single-driver mailbox moves a whole gesture, retaining literal addresses, velocity and the target incarnation. A scene enters as one captured identity. Saturation and a short driver buffer leave the whole gesture untouched.
+
+Strict GCC 14 and Clang 19 each passed 25 checks. Twenty-five stress runs per compiler transferred one million gestures across concurrent wrap and backpressure with no reorder or partial gesture. Driver quantization, run handover, pending edge cancellation, aborting stale incarnations, Legato, and Fade still need the slot/runtime reservation and the remaining Live readings. The next independent Session View piece is Follow Action target resolution.
+
+### FOR THE DIRECTOR
+
+- TM-SV-03 Gate and Repeat release. I recommend canceling a Gate press that is still queued when released, and ending only Repeat's retrigger hold on release. Check both across a quantization boundary in Live, including a slot already running on the same track.
+
+### 22 November — TM-SV-04 Follow Action targets
+
+**PR requested** for `engine/tm-sv04-follow-targets` at `59056abc5475bcfb28684079db6fb0a13e81e9bd`, stacked on the launch gesture tests. The pure resolver finds runs of occupied slots on one track and returns a literal slot and clip or an explicit stop, unchanged, unavailable or unresolved group boundary. Any and Other consume a uniform rank from the session's pass. Jump validates the explicit destination supplied by its owner. No playback clock or storage change is needed for this part.
+
+GCC 14 and Clang 19 strict builds each passed 32 checks. The fixture covers all ten action names and all 256 occupancy patterns over eight slots, including boundaries, holes, singleton groups, all admissible ranks and the original launch queue stress.
+
+Parked Follow Action chance coupling, boundary wrap, Jump scope, timing, scene-tempo application and capture on their existing Live readings and the launcher/slot dependencies. Parked MX-15 on its master-section reservation and Live's seven curves and Post-send behavior. TM-WT-04/-07/-08 await the native Warp setting and analysis prerequisites. DEV-02 chain-zone admission can proceed on the existing four-byte rows.
+
+### FOR THE DIRECTOR
+
+- TM-SV-04 group ends. I recommend wrapping Previous/Next within the occupied group only if Live does, and leaving a lone Other unchanged until the reading. Please include whether Jump can cross an empty slot and what happens when its chosen destination is empty.
+
+### 22 November — DEV-02 chain zone reading and admission
+
+**PR requested** for `engine/dev02-chain-zone-admission` at `61e95403820931834613a0e7f460a8e79020b0e3` from main. The model reads the existing four-byte key, velocity and chain-select zones. SQL NULL keeps the full range. A malformed field is named and cannot admit an event to which it applies. The pure predicate uses integer endpoints, supports gain and square-root power fades, and exposes the three factors for the appropriate rack kinds.
+
+Strict GCC 14 and Clang 19 each passed 739 checks across six suites. The native database fixture keeps malformed neighbors readable, distinguishes a zero fade edge from outside admission, and checks both laws and rack-kind scope. The schema and op validators passed, including 1.0–1.22 upgrades. The branch combines cleanly with DEV-18 at `4e749553`. DEV-01 at `cb8b4fb6` already conflicts with current main in `device_model.cpp`; the same conflict remains in the join with this branch and none is introduced by the zone hunks.
+
+Parked the rack transform hookup and note-off ownership on the DEV-01/DEV-18 landing, and the default curve and controller filtering on the Live reading. DEV-04's native drum receive and play mapping is next. It needs no persisted pad settings yet.
+
+### 22 November — DEV-04 Drum Rack Receive and Play mapping
+
+**PR requested** for `engine/dev04-drum-pad-routing` at `b1b50df2eda0506ef28a170f669c1ca3cfc916f1`, stacked on rack-zone admission. The owner compiles one immutable 128-pad map. A played key reaches its Multi chains and All Notes chains in authored order, with literal chain IDs, explicit Play overrides and choke-group tags. A short output refuses the complete fan-out. The callback traverses only the selected pad and All Notes, with no heap work.
+
+Strict GCC 14 and Clang 19 each passed 751 checks across six suites. The test covers both MIDI endpoints, All Notes, multiple chains on one pad, a pad swap without changing the played note, the previous generation staying immutable, malformed notes and groups, and callback rejection for owner compilation.
+
+Parked persisted pad edits, returns and sends on their reservations and R0. Choke arbitration and release wait on A8D-004 and DEV-18's graph hook. Parked DEV-16 on the Pd/Max allowlist and DEV-10/07, and SRF-07 feed integration on CTL-06 and the shared playing-value source. SRF-08's native MCU fader wire codec and servo feedback can proceed while host/profile wiring waits.
+
+### 22 November — SRF-08 MCU fader wire and servo feedback
+
+**PR requested** for `engine/srf08-mcu-fader-feedback` at `52563508827f695c9125b856a6d01fc6cf5f76ca` from main. The native MCU codec handles the eight channel faders and Main at fourteen bits, plus touch and both release encodings. The per-port feedback state emits changed values, withholds motor packets while touched and filters exact servo acknowledgments from the most recent eight commands on that strip, including late earlier acknowledgments.
+
+Strict GCC 14 and Clang 19 each passed 11 checks, including all 147,456 possible strip-position packets. The fixture covers malformed wire data, physical movement at a previous motor position, current and late acknowledgments, touched fader protection, and independent strips. No MIDI device or Live instance was needed for the wire tests.
+
+Parked app slot/profile/lock plumbing on the feed and settings ownership, MCU button meanings on SF-22a, and actual hardware service on the surface seat. HUI's independent wire heartbeat and fader messages are next.
+
+### 22 November — SRF-08 HUI fader wire and heartbeat
+
+- PR requested for `engine/srf08-hui-wire` at `34db332338487fc22f0e248fa6c7c11e19407338`, stacked on the requested MCU wire/feedback branch `52563508827f695c9125b856a6d01fc6cf5f76ca`. Standard eight-strip HUI channel-1 fader pairs, zone/port touch and release, explicit reconnect resets and one-second host pings. The wire references are [DrivenByMoss](https://github.com/git-moss/DrivenByMoss/blob/824f8740ad01d468e6053ff58cc70170d9ef6308/src/main/java/de/mossgrabers/controller/mackie/hui/controller/HUIControlSurface.java) and [REAPER's Baby HUI](https://github.com/justinfrankel/reaper-sdk/blob/61cc0d4ada1e4d8438186ed8ba5e5f9d72b148b9/reaper-plugins/reaper_csurf/csurf_babyhui.cpp).
+- Strict Linux GCC 14 and Clang 19 both passed 19 checks, covering 131,072 HUI wire round trips, interleaved strips, touch and ping boundaries, and the existing 147,456 MCU wire round trips. Checked the Nov 20 patterns. Baseline logs are under `/workspace/adi-engine-validation/srf08-mcu-*-hui-*.log`.
+- Parked SRF-08 host slots, profiles, lock/pin, button parity and real feedback scheduling on the window-owned port host, CTL-06 and SF-22a. SRF-09/10 and SRF-13/14 host integration wait on the shared control feed and settings/permission wiring.
+
+### 22 November — TM-IC-02 Standard MIDI File codec
+
+- PR requested for `engine/tm-ic02-smf-codec` at `ec51512380ec79aea98e4f0a0475bd992c593f1e` from main `73f13028`. The JUCE-free reader/writer covers SMF 0/1/2, PPQ/SMPTE divisions, bounded VLQs, 64-bit ticks, running status, opaque meta and SysEx, unknown chunks, and named structural errors with byte offsets. Preserved VLQ widths allow exact re-export of accepted unedited input.
+- Strict Linux GCC 14 and Clang 19 each passed 27 focused checks. In the pinned DryWetMIDI corpus an ASan/UBSan run exercised 63 valid-labelled and 666 invalid-labelled files. All 270 accepted files round-tripped byte for byte. The other valid-labelled fixture contains only a format-1 header declaring zero tracks. The 208 accepted invalid-labelled files had opaque meta data, unknown material or wire-valid divisions that DryWetMIDI classified differently. No sanitizer issue. Checked the Nov 20 patterns. [DryWetMIDI corpus](https://github.com/melanchall/drywetmidi/tree/b2f4dbaaaaecb58e746dc62588b492c2bd91e3e5/Resources/MIDI%20files)
+- Parked project import/export and extension storage on TM-IC-03 shared ops, the window's command wiring and AWAITING 13.
+
+### FOR THE DIRECTOR
+
+- For AWAITING 13, I recommend retaining the source division, keeping project tempo on ordinary import, and measuring Live 12.4 multi-track placement and format/PPQ before locking the defaults. The codec is usable while those decisions are open.
+
+### 22 November — TM-LS-03 MIDI sync wire
+
+- PR requested for `engine/tm-ls03-midi-sync-wire` at `8fdbe416e1aa30341393cf9fd58aeec8f07ee6cc`, stacked on exact timecode `ba6109f0e05d730e9f02142abaad3e8add5cdc72`. The MIDI 1.0 wire reader decodes Clock, Start, Continue, Stop and SPP. SPP is exact at 1,441,440 ticks per sixteenth and the writer rejects off-grid and out-of-range positions. The MTC decoder locks after eight contiguous pieces in either direction, detects the rate bits, and uses the shared time base to reject skipped drop-frame labels.
+- Strict Linux GCC 14 and Clang 19 each passed 103 checks across MIDI sync and time-code suites. The wire check exhausts all 16,384 SPP values and covers realtime interleave, missing pieces, every MTC rate and exact 29.97 drop-frame. Checked the Nov 20 patterns. Logs are under `/workspace/adi-engine-validation/tm-ls03-*-wire-*.log`.
+- Parked port wiring, timed output and Live's chase and Hardware Resync behavior on the window port seam and AWAITING 13. The engine clock follower proceeds independently.
+
+### 22 November — TM-LS-03 MIDI clock follower
+
+- PR requested for `engine/tm-ls03-midi-clock-follower` at `5f83cc24b514228b59ea721377412ff1a23335e0`, stacked on the MIDI sync wire codec `8fdbe416`. The pure driver-side second-order delay-locked loop follows timestamped F8 pulses, exposes BPM and phase error after one sixteenth of warm-up, and drops stale lock after a missed pulse. Arithmetic stays relative to the last pulse and accepts long-running clock domains. The approximate one-Hz bandwidth and warm-up are initial engine settings pending Live measurement. [Ardour MIDI clock reference](https://github.com/Ardour/ardour/blob/0f45032f6dbe636b8cfa21fd274d4ebf4ce2c48d/libs/ardour/midi_clock_slave.cc)
+- Strict Linux GCC 14 and Clang 19 each passed 110 focused checks. The simulation stays locked through 120→121 BPM under ±1 ms timestamp jitter and settles within 0.02 BPM on each side. It also covers a missed pulse, duplicate and older timestamps, reconnect and stale estimates. Checked the Nov 20 patterns.
+- The effect on the Session tempo overlay waits on the window's timestamped Sync port and the Live comparison in AWAITING 13. The engine transport edge rules proceed independently.
+
+### 22 November — TM-LS-03 exact MIDI input transport edges
+
+- PR requested for `engine/tm-ls03-midi-transport-edges` at `eb545c1e05941003d608a60630415723ccf97a97`, stacked on the clock follower `5f83cc24`. Stopped SPP locates to the literal ADI tick, Start and Continue act on the next clock, each rolling pulse advances exactly 240,240 ticks, and Stop rewinds to the last complete MIDI beat. Canceling a pending Start retains the prior stopped position. Running Start and SPP are ignored, matching the input reference.
+- Strict Linux GCC 14 and Clang 19 each passed 118 checks across sync and time-base suites. Checked the Nov 20 patterns. [Ardour MIDI clock input reference](https://github.com/Ardour/ardour/blob/0f45032f6dbe636b8cfa21fd274d4ebf4ce2c48d/libs/ardour/midi_clock_slave.cc)
+- Parked the remaining MIDI-sync app bindings, clock-out restart policy, audio-block timestamp scheduling and Live confirmation on the window port seam and AWAITING 13.
+
+### 22 November — MI-05 seeded note timing preparation
+
+- PR requested for `engine/mi05-seeded-note-timing` at `4bc52ffc6920af2aed51e62b48c7ba86fb02a62e` from main `73f13028`. A supplied seed and literal MIDI note ID select an unbiased signed tick offset inside the caller's bounds. The preparation uses the captured snapshot and preserves the note's duration, other fields and opaque bytes. The test commits one existing applyDiff and checks byte-exact Undo and Redo. It leaves collision policy to the tool's existing overlap preparation.
+- Strict Linux GCC 14 and Clang 19 each passed 1,394 checks across note transforms, note diffs and overlap ops. The new cases cover selection order and subset, full-width IDs and signed ticks, malformed selection and tick overflow. Checked the Nov 20 patterns.
+- Parked the Humanize control's grid span and Groove Pool on A6M-022 and Win's project-table reservation. MI-07's Arpeggiate ordering waits on the shared Arpeggiator and A-T02. AU-09's pass and Freeze Trim wiring wait on the AU-03 landing and AT-11.
+
+### 22 November — TM-IC-04 exact OpenTimelineIO time
+
+- PR requested for `engine/tm-ic04-otio-exact-time` at `1980d55a1780a0025cce34360ab6b14e3f56d500`, stacked on `ba6109f0`. OTIO RationalTime.1 and TimeRange.1 read and write exact signed integer values and reduced fractions. The common NTSC spellings use denominator 1001. The writer rejects rationals it cannot represent on the wire, and nanosecond conversion uses the caller's explicit rounding.
+- Strict Linux GCC 14 and Clang 19 each passed 83 checks. The pinned upstream sample audit round-tripped all 458 time objects and 219 ranges across 12 JSON timelines. One upstream stress fixture uses non-JSON Infinity and NaN tokens in metadata and was reported as unsupported at the JSON boundary. Checked the Nov 20 patterns. [OpenTimelineIO samples](https://github.com/AcademySoftwareFoundation/OpenTimelineIO/tree/f101411e11968d3255488f4aaccf041d965a2148/tests/sample_data)
+- Project mutation and loss-report wiring remain parked on TM-IC-03 shared rules, additive frame-rate persistence and the window. Linear OTIO document handling can proceed independently. AAF project I/O still needs the shared converter and EX-04 writers.
+
+### 22 November — TM-IC-04 linear OpenTimelineIO reader
+
+- PR requested for `engine/tm-ic04-otio-linear-timeline` at `36713a41fd4427050a524f8584e70c3a316122bb`, stacked on exact OTIO time `1980d55a`. Read the Timeline/Stack/Track serial Clip/Gap subset, both clip revisions, exact source and available ranges, active media, global start and enable state. Unsupported timing-bearing constructs carry a JSON Pointer. The caller retains the supplied document for inactive sources and opaque metadata.
+- Strict Linux GCC 14 and Clang 19 each passed 94 checks. In the pinned upstream corpus, three documents projected five tracks, 14 clips and nine gaps. Nine documents encountered named subset limits. The upstream stress fixture with non-JSON numeric tokens was rejected before typed projection. Checked the Nov 20 patterns. [OpenTimelineIO samples](https://github.com/AcademySoftwareFoundation/OpenTimelineIO/tree/f101411e11968d3255488f4aaccf041d965a2148/tests/sample_data)
+
+### 22 November — TM-IC-04 linear OpenTimelineIO writer
+
+- PR requested for `engine/tm-ic04-otio-linear-writer` at `2f41446926013eab40283b6fbaaa699e33ad8e6b`, stacked on the linear reader `36713a41`. Write canonical Timeline/Stack/Track documents with clips, gaps, exact source ranges, time origin and explicit current external or missing clip media. Unrepresentable time and unlowered media return named errors with a JSON Pointer.
+- Strict Linux GCC 14 and Clang 19 each passed 100 checks. Independent OpenTimelineIO 0.18.1 reopened three exported upstream samples and matched five tracks and 23 items, including ranges, enable state and media URLs. The exact JSON boundary retains wide integers; upstream OTIO uses binary64 for its native RationalTime API. Checked the Nov 20 patterns.
+- Project lowering, reattaching preserved opaque fields and the native import/export commands remain parked on TM-IC-03 shared converter ops and the window bindings.
+
+### 22 November — TM-IC-04 Compound File Binary writer
+
+- PR requested for `engine/tm-ic04-compound-file` at `3ff8ba64d53f31aebd229e852c8238212a8e5ebc` from main `73f13028`. The CFB v3 byte writer supports nested storages, CLSIDs, regular and mini streams, red-black directory trees, FAT and extended DIFAT. Output is deterministic and uses the ASCII subset needed for AAF storage names. [CFB format reference](https://github.com/libyal/libolecf/blob/148cef77c93f5597a05ed3d9ed0f6b8ca9247d24/documentation/OLE%20Compound%20File%20format.asciidoc)
+- Strict Linux GCC 14 and Clang 19 each passed 14 checks. Independent olefile 0.47 in strict defect mode reopened six streams from the ASan/UBSan fixture, including nested, empty, 4095/4096-byte cutoff cases and a 16 MiB payload spanning two DIFAT sectors. All bytes matched. Checked the Nov 20 patterns.
+- AAF object and property lowering, vendor reader integration, and delivery remain parked on TM-IC-03, the pinned LibAAF source and EX-04/AAF-3.
+
+### 22 November — MX-32 VST3 track-context measurement fixture
+
+- PR requested for `engine/mx32-vst3-context-fixture` at `db99def9b5a071a710e80f1c76c403ecced410df` from main `73f13028`. All three existing ADI Expression Test classes expose Steinberg's `ChannelContext::IInfoListener`. Opt-in receipts include the instance, exact UTF-16 name units and host color. The measurement changes no app host path.
+- Strict Linux GCC 14 and Clang 19 built the real VST3 bundles. The native scanner discovered each bundle's three classes under separate `ADI_HOME` roots. A direct SDK host delivered six notifications per build and verified Unicode including a surrogate pair, ARGB alpha, absent color and per-instance ordering. Scan itself produced no context receipt. Checked the Nov 20 patterns.
+- Win's Live measurement is ready once the fixture lands or its branch is used. Set `ADI_VST3_CHANNEL_CONTEXT_LOG` to a fresh absolute path, fully restart Live 12.4 from that environment, load ADI Test Plain, then rename and recolor its track. Record the Live build and receipt after load, rename and recolor. MX-32 production behavior stays parked on that Live result or director approval.
+
+### 22 November — SRF-08 MCU LCD feedback
+
+- PR requested for `engine/srf08-mcu-lcd-feedback` at `961a0cb47997ba0fee238d9faa20266990957d77`, stacked on MCU and HUI wire. Format two addressed LCD rows as seven-bit data and send at most one contiguous SysEx patch per dirty row. Successful sends advance only their own baseline. Failed writes retry and reconnect sends the complete frame. MCU and Extender have independent device headers. [REAPER MCU wire reference](https://github.com/justinfrankel/reaper-sdk/blob/61cc0d4ada1e4d8438186ed8ba5e5f9d72b148b9/reaper-plugins/reaper_csurf/csurf_mcu.cpp)
+- Strict Linux GCC 14 and Clang 19 each passed 29 checks. New cases verify exact offsets, mixed acknowledgement, Extender separation, label clearing and full reconnect. Checked the Nov 20 patterns.
+
+### 22 November — SRF-08 MCU and HUI V-Pots
+
+- PR requested for `engine/srf08-mcu-vpot-wire` at `5f41d14d4e891f20485d78c0f3b36ddccc887770`, stacked on MCU LCD feedback `961a0cb4`. Decode raw six-bit turn magnitudes with the two surfaces' opposite polarities. Encode ring modes, positions and the MCU center LED, and suppress unchanged updates once the output has confirmed them. [Ardour ring reference](https://github.com/Ardour/ardour/blob/0f45032f6dbe636b8cfa21fd274d4ebf4ce2c48d/libs/surfaces/mackie/pot.cc) · [DrivenByMoss HUI reference](https://github.com/git-moss/DrivenByMoss/blob/824f8740ad01d468e6053ff58cc70170d9ef6308/src/main/java/de/mossgrabers/controller/mackie/hui/controller/HUIControlSurface.java)
+- Strict Linux GCC 14 and Clang 19 each passed 36 checks, including all 2,016 strip/protocol/polarity movements, ring mode bytes, failed send and reconnect. Checked the Nov 20 patterns.
+
+## 2026-11-22 — PLAN AU-08, Clear Envelope and Delete Automation
+
+**PR requested** after the 3 December gate for `engine/au08-clear-clip-envelope` at `75ae50ef82a81391237ec27fca9940c844d3bccc`, based on `73f13028`. The owner can clear one literal clip envelope or delete the addressed parameter's Arrangement and clip streams together. The lane remains editable. Removing one clip's stream lets Arrangement automation play there. The prepared operation captures complete rows, including opaque data and each stored range, and the existing sealed splice carries one Undo. An already absent envelope produces no operation.
+
+Strict Linux GCC 14 and Clang 19 each passed seven suites and 642 checks. Real clip envelope playback kept the sibling's value. The affected clip played its Arrangement value after clearing. The same head with modified retained metadata refused without writing. Exact Undo/Redo preserved future columns and the original range, and an uncaptured cascade refused before touching data. The DF-E53 merge-tree auto-merged this branch's automation lane changes. Gemini's pre-existing main conflict is in `check.cpp`, outside these changes.
+
+Taking bounded Simplify next. Lane-scoped Cut, Copy and Duplicate still need the window-fn selection adapter.
+
+## 2026-11-22 — PLAN AU-03, original curve guards around Arrangement recording
+
+**PR requested** after the 3 December gate for `engine/au03-guarded-arrangement-passes` at `da8b4adc8052ba595cb0fd6f3eff34ccb5d9b9e3`. It stacks on thinning `2782fb8a` and includes current main `73f13028`. A completed Arrangement pass spanning rendered samples uses the same sealed envelope splice as Insert Shape. Playback keeps the original curve outside `[first,last)`, including the exact old value at the right boundary. Captured tempo and envelope state are checked before publication. The requested stream identity, recorded Hold, optional thinning receipt and one Record Automation undo step are retained. A same-sample or clip-local capture keeps its native timestamp path.
+
+Strict GCC 14 and Clang 19 each passed seven suites and 1,970 checks. In both clocks, the original Bezier curve matched all exterior samples within 1e-9, and the native Hold and retouch values played inside. The sealed write refused a captured tempo change with an unchanged journal head. Undo and Redo restored exact rows and curve slices. The previous wide-timestamp capture, shape insertion, write policy and optional thinning regressions also passed.
+
+The engine endpoint and history behavior are available to the transport and Window binding. Punch and the clip-local playback-clock rule remain parked. AU-06 awaits the modulation minor and DEV-07 route authority. AU-07 depends on that ordering against Clip Gain modulation. Taking AU-08's clip-scoped Clear Envelope next.
+
+## 2026-11-22 — PLAN AU-03, bounded write-pass thinning
+
+**PR requested** after the 3 December gate for `engine/au03-bounded-write-thinning` at `2782fb8a9383155bf706080db61356085687bfdb`. It joins guarded Insert Shape `8e44fe52` and write-pass boundaries `c85c9f34` at `e1619db6`. The native owner can pass a value tolerance and the session's sample rate when preparing a completed Arrangement pass. Linear replacement is checked on the projected playback clock with floating-point allowance. Endpoints, Hold transitions and coincident steps retain their original anchors. The journal records the number removed and the tolerance if any points were removed. With no tolerance, the original capture is retained.
+
+Strict GCC 14 and Clang 19 each passed four suites and 391 checks. For both nanosecond and musical lanes, including changing tempo, a 401-point pass retained fewer than a quarter of its points. Every playback sample stayed within 0.00025 of the exact capture. Tests also cover a transient spike, a hard Hold, coincident timestamps, exact Undo/Redo bytes and an invalid policy. Clip-local passes retain all points until their playback-clock mapping is integrated.
+
+The application setting and initial tolerance belong with the Window binding and the Live spacing reading. Taking the shared Arrangement write-pass exterior guards next.
+
+## 2026-11-22 — PLAN AU-03, automation write-pass boundaries
+
+**PR requested** after the 3 December gate for `engine/au03-write-pass-boundaries` at `c85c9f3463592df295d44d5c39f714c3d3cdc735`, based on `87ea349c`. The recorder has explicit Touch and Latch modes. Latch keeps the released value at its recorded time, holds it until a new touch, and carries it across loop or locate boundaries. The transport producer supplies both native boundary positions. Stop closes the last open pass. A re-touch stays in that pass. A gap after release stores a Hold knot, so the next touch does not create an unplayed ramp. Existing Touch callers keep their release behavior.
+
+Strict GCC 14 and Clang 19 each passed four suites and 345 checks. Two loop wraps, retouch, forward locate and Stop kept their exact native clocks. The loss of the restarted Begin preserves the already completed pass and discards the affected one. Backward old-clock input invalidated the whole pass. Producer allocation count was zero. The completed pass used the current native writer and retained its Hold, Undo and Redo bytes.
+
+Window-fn and the transport owner retain the Arm/control binding, sample boundary dispatch and Punch gate. The measured Live mouse latch in its loop is available through explicit Latch. ADR-0124 groups a completed pass as one Undo. Shared exterior pass guards and bounded thinning are separate engine changes.
+
+## 2026-11-22 — PLAN AU-02, guarded Arrangement Insert Shape
+
+**PR requested** after the 3 December gate for `engine/au02-guarded-insert-shape` at `8e44fe5281b68e0c8b5014b548fd1b156e581f4a`, based on `87ea349c`. Arrangement Insert Shape uses the shared envelope splice with both guard points and native sliced curves. The shape plays from the selection start up to its end. The old curve plays again at the end. The requested automation data ID is retained, and the committed edit is one sealed Undo step named Insert Automation Shape. A caller can pass its session rate; the project rate is the default. The separately addressed clip point path and recording producer keep their established contracts.
+
+Strict GCC 14 and Clang 19 each passed five suites and 1,693 checks. The real compiled lanes matched every exterior sample within 1e-9 for all six curve kinds, across both nanosecond and tick clocks with tempo steps. One Undo and Redo restored exact data and range rows. The prior delete/write path failed all twelve exterior comparisons when substituted for the guarded path; the restored exact tree passed again. The head, lane and stream remain captured in one read revision.
+
+Clip-local guard ranges wait on the clip playback clock integration. Window-fn owns the menu and selection wiring. Lower-row ramp and ADSR anchoring waits on L-AUTO-8.
+
+### FOR THE DIRECTOR
+
+- AU-02 lower-row shapes. Recommend using the existing curve at the two selection boundaries as the ramp and ADSR anchors, with the old curve preserved outside `[start,end)`. The Live reading should confirm which ends each menu variant joins.
+
+## 2026-11-22 — PLAN EX-02, native Via Main isolation
+
+**PR requested** after the 3 December gate for `engine/ex02-via-main-routing` at `99c36e2e2d882bd225340d1a1d4b2ead445cf6ba`, based on `87ea349c`. The private offline Session takes `SessionSpec::viaMainTrack` on a read-only Store without performance controls. The planner keeps the selected source, the group's children that actually route into it, its path to Main and enabled returns that reach Main. Gates silence ordinary audio and notes from outside that mix while leaving the timing topology, device keys and track sidechains connected. The selection ignores stored solo, including the controls applied when the graph publishes.
+
+Strict Linux GCC 14 and Clang 19 each passed eight suites and 1,834 checks. Real 32- and 64-bit Session paths measured 0.78125 for full Main and 0.1875 for the selected group through Main, with the same 37-sample compensation. A Post Mixer detector key still heard its unselected feeding track. A redirected group child, external ordinary inputs and sends, two cascaded returns, a disabled send, and a saved unrelated solo are tested. The sum of five isolated sources equalled full Main in the linear fixture. The fixture exposed the generation-time solo reapplication before that calculation was shared. The merge-tree with engine-win Direct taps `a4112b4a` passed without a conflict.
+
+**For engine-win, EX-02:** Set the resolved source track in the private SessionSpec for a Via Main job, then capture Main at the named endpoint. The Job source schema, validation and queue bindings stay with your Direct tap and EX-01 branches. Group bounce through Main without Main effects, and MainFxOnly, are separate capture consumers. No queue-file edit is on this branch.
+
+AGT-04 waits for the CTL-03 binding. TU-01 Live oracle remains with its reading, TU-02 waits on the source/reference table reservation, TU-03 waits on Live's index order and labels. ED-07's EditScope work follows engine-win CT-04 and the agreed automation-follow policy. ED-08 follows the frozen and linked-track rulings. Taking AU-02's engine-side guarded Insert Shape next.
+
+## 2026-11-22 — PLAN PD-14, native project templates
+
+**PR requested** after the 3 December gate for `engine/pd14-project-templates` at `ca5cd357006d5363a9c8f5bd901126b22d981221`, based on `87ea349c`. `Store::saveTemplate` stages and publishes a marked Set. `Store::createFromTemplate` opens that marked state into a new, no-clobber Set. Both get fresh project identities and a single stored origin with no source undo, branch or agent-history entries. Media paths are rebased from the canonical project folders and the source is untouched. An older supported minor migrates privately before publication. The new Set remains replayable from its stored origin.
+
+Both strict Linux GCC 14 and Clang 19 gates passed five suites, 433 checks each. Tested a branched, compacted WAL project, a real Unicode template path and separately nested new Set, stale session lock, undo/redo/reopen, replay-base digest, an occupied destination, supported 1.22 private migration and a future-major refusal. Schema and OPS validators passed. The window-fn template actions and `files.startTemplate` wiring remain with its seat. MX-29 still gates the CTZ template content.
+
+PD-05's lock-neutral branch `b73f36da` intersects this branch at one `saveCopyImpl` hunk. Keep its supported-major `DELETE FROM session_lock` for ordinary copies; template variants already clear the lock in their private reset. Keep this branch's older-minor template migration and stored origin. The two test families merged without a conflict. For the earlier TM-IC-01 gate, suppressing drop-frame skips in an isolated build triggered ten failures.
+
+M5 PD-05/PD-06/PD-13 remain with engine-win's submitted work; PD-09 follows PD-05, and PD-12 needs the native workstation evidence. PD-07 stays on Q-A. EX-03 through EX-10 proceed on engine-win's queue and native delivery work. For EX-02, ADR-0221 already defines the common capture contract; the shared capture implementation and queue integration remain pending. Direct signal taps are on engine-win's `a4112b4a`; the engine owns the routing-plan work for Via Main.
+
+## 2026-11-22 — PLAN TM-IC-01, integer time conversion and SMPTE labels
+
+**PR requested** after the 3 December gate for `engine/tm-ic01-integer-timecode` at `ba6109f0e05d730e9f02142abaad3e8add5cdc72`, based on `87ea349c`. ADR-0234 keeps the integer conversion and timecode. The implementation uses rational caller-supplied scales with explicit Exact, Floor or Nearest, supports the full signed 64-bit range and uses the exact NTSC ratios. No FilmCraft clock or link table. Drop-frame supports 29.97 and 59.94, rejects skipped labels and bounds each timecode to one day. Longer timelines keep their day count separately. Samples, nanoseconds, video frame indices and rational musical conversions share the same arithmetic. Tempo-map integration and on-wire MTC belong to their callers.
+
+Strict GCC 14 and Clang 19 each passed 902 checks across time base, time edits and clip edits. All 7,768,224 actual drop-frame indices in both 24-hour formats round-tripped, including minute, tenth-minute, hour and day transitions. An independent Python arbitrary-precision oracle matched 100,525 signed conversion cases, including both signed endpoints and products beyond 64 bits. The API uses portable integer operations. Native MSVC was unavailable for this branch.
+
+TM-IC-01's persistent drop-frame setting waits on Win's additive table reservation. TM-IC-03 and the IC-01 converter wait on the converter ADR and the `extension.write` / `extension.delete` and MI-08 reservations; TM-IC-04 then needs those shared interchange rules and EX-04 delivery support. TM-IC-05 / EX-10 waits on TM-MD-01 and the native post-AAC gate.
+
+### FOR THE DIRECTOR
+
+- TM-IC-01 project timecode persistence. Recommend Win reserve the additive table for the project drop-frame flag after the integer API, preserving the established project frame rate and origin fields.
+
+## 2026-11-22 — PLAN TM-FC-01, Post FX bounce and editable mixer settings
+
+**PR requested** after the 3 December gate for `engine/tm-fc01-bounce-mixer` at `8bc053ca28743ad0695808ffe52352eabbae2cd4`. Stack joins range mute `d1146559` and in-place insert removal `6689b97c` at `f75567f4`. The join resolves their shared audition helper and keeps the range and device loader arguments.
+
+Regular Bounce to New Track renders Post FX and creates a fresh audio sibling with the source's static strip, split pan, signed delay, VCA association, explicit Main route and sends. Each send keeps its route settings and any explicit tap at a new identity. Baked input gain resets to 0 dB on the sibling, which starts unarmed and on Auto. All creation, copied controls, audio and range mute share one journal transaction. The existing track image and routing operations carry the captured rows.
+
+Strict GCC 14 and Clang 19 passed all seven suites, 1,834 checks each. The complete 1,024-sample master audition matched with the range replacement at +23 and -19 track delay, split pan, live Post FX and Post Mixer sends, a separate Main destination, baked input gain and a disabled Pre FX send. Same-job retry, Undo, Redo and reopen exercised the stack. An enabled Pre FX send on the sibling receives the wet file. Source automation, incoming/live inputs and sidechains stay on the original. Multi-track action waits on window-fn's selection wiring and the shared capture contract. Isolated Group/Via Main waits on engine-win's EX-02 path.
+
+ED-06 / TM-FC-02 parked on the shared capture ADR and Q-H for audio Consolidate, the clipboard/wet-source integration with window-fn for Paste Bounced Audio, and Live/Win clarification for mapping two clip-local MIDI IDs or multiple loop occurrences to the new single clip. TM-FC-03 and TM-FC-04 stay parked on the one-capture and Q-A contracts and Live frozen-clip readings.
+
+### FOR THE DIRECTOR
+
+- ED-06 MIDI Consolidate needs one output ID per audible note. Recommend preserving every original ID that can remain unique, assigning a fresh ID deterministically to a duplicate ID or a repeated loop occurrence after its first, and carrying the matching expression through the same remap. Retain the full originals on Undo.
+- TM-FC-01 Live reading on automation and Pre FX sends remains open. Recommend copying static settings in this slice and retaining the source automation on the source until Live's behavior is measured. Preserving separately processed dry sends needs the separate-stream capture contract.
+
+## 2026-11-22 — TM-FC-01 mute the bounced source range — PR requested
+
+- Ready at `d114655929b0ef7af501894c2e9900ce4cb102ee` on `engine/tm-fc01-bounce-range-mute`, for after 3 December.
+- Bounce to New Track captures regular-track main-lane edits with its render head. Existing clip split and mute operations reserve the bounce identity, cut at each boundary, and mute the covered pieces in the same Undo step as the new track and rendered clip. Unselected material and take lanes remain live under their existing lane rules. Group bounce keeps its group-output policy pending the isolated group contract.
+- GCC and Clang each passed 1,827 checks across seven strict suites. The full 1,024-sample source and replacement null through the actual parent/explicit routing in both precisions, including the portions before and after selection. Native tests verify exact interval, explicit output, one Undo/Redo, reopen and retry on deferred failure. Cuts use existing split-fade behavior. Checked Win's five portability patterns.
+
+## 2026-11-22 — TM-FC-01 remove inserts after Bounce in Place — PR requested
+
+- Ready at `6689b97c4e02f18863061a5fe2b1b98756b9d3a9` on `engine/tm-fc01-remove-bounced-inserts`, for after 3 December.
+- The whole-track operation removes each baked insert, including existing disabled inserts, with the native device remover in the same transaction as the replacement clip and gain/arm changes. The native inverse captures saved parameter, state and rack contents. Rendering and device removal use the same expected head.
+- Both strict Linux compilers passed 949 checks across six suites. The changed fixture measures a real 17-sample delayed insert, source and replacement PCM alignment at both widths, the disabled insert's stored state on Undo, and a deferred device-removal fault with same-job retry and no second render. The original code failed six targeted controls. Checked Win's five portability patterns.
+- **Parked TM-FC-01 remainder** — rack capture waits for DEV-01/ADR-0060, frozen flattening has its separate verified-wet-file contract, and MIDI track-kind conversion needs the hybrid-track decision. The DF-E35(b) extent hunk stays untouched.
+- **Parked ED-06 audio Consolidate** — Q-H and the shared scope are pending. The audio Warp decision does not alter the Bounce in Place contract.
+
+#### FOR THE DIRECTOR — Q-H
+
+- Recommendation already given by PLAN is to keep Consolidate warped at the project tempo as in Live for loop reuse, while Bounce, Freeze and Flatten remain Warp off.
+
+## 2026-11-22 — MX-33 seeded sync measurements — PR requested
+
+- Ready at `53fad1c3b1142d897877ea962c1b9472e88858cd` on `engine/mx33-sync-spikes`, stacked on `d8c0eeaa` for after 3 December.
+- `adi_measure gen sync` produces a sample-addressed marker on a seeded noise bed, independent of write block size. `adi_measure sync` locates an isolated event in a bounded, explicitly selected channel and sample window, preserving its sign and absolute coordinate. Refusal covers low input, competing spikes and invalid samples.
+- Strict GCC and Clang passed 216 checks across four suites each. Both passed nine sync command checks at a real marker frame of 1234, a separate seeded capture delayed 257 samples, a partial last WAV block and ambiguous input. All 24 preceding offline/fixture command checks reran green with the same executable. Checked Win's five portability patterns.
+- Win still owns the native hardware/Live gate, record schema and three-system CI registration. Local fixture renders already null across three block sizes and both widths. Worker-count and physical hardware acceptance remain open.
+
+## 2026-11-22 — MX-33 measurement fixtures and track render — PR requested
+
+- Ready at `d8c0eeaa4d001de455f79c05dc1292d2ad9d5480` on `engine/mx33-fixture-render`, stacked on `5e192277` for after 3 December.
+- `adi_measure build` uses ordinary project, track and material journal operations in a private fixture, then publishes through Save a Copy. The final project resolves the input WAV after the fixture stage is removed. `adi_measure render` runs the existing export queue for a literal track or Main over an explicit sample range, with Float32 delivery, no dither, and selected 32- or 64-bit graph processing. The JSON receipt identifies the actual captured head and track.
+- Both strict Linux compilers passed 563 checks across five suites and 12 command checks against actual WAVs per compiler. The independently sliced PCM matched the track and Main exactly at blocks 64, 511 and 4096, with both graph widths. Tests also verify journal contents, source resolution, no-clobber project/output publication, missing track and bad range. Checked the five portability patterns.
+
+## 2026-11-22 — MX-33 offline measurement commands — PR requested
+
+- Ready at `5e192277e77c96df351a2f4b1e5541bb1581954a` on `engine/mx33-offline-measure`, stacked on native loopback `63cad539`, for after 3 December.
+- The headless `adi_measure` generates a no-clobber Float32 loopback WAV, resolves a selected capture channel at an explicit absolute frame, and compares already-aligned WAVs with decoded bit equality, RMS/peak residual and error-to-signal dB. Native comparison carries float or double streams in bounded blocks and preserves the prior prefix on invalid input.
+- Both strict Linux compilers passed four suites and 315 checks, plus 12 command-level checks each against actual WAVs. These cover a 257-sample inverted stereo capture, exact null, one known changed sample, frame/rate refusals, a silent channel, search limits, an existing Unicode output path and private-stage cleanup. Checked Win's five portability patterns.
+- Fixture project building, render orchestration and the physical Windows loopback remain separate work.
+
+## 2026-11-22 — MX-33 and MX-09 native loopback measurement — PR requested
+
+- Ready at `63cad53905d83509fc20624fc9227af3397819c4` on `engine/mx33-loopback-measurement` for after 3 December. The owner prepares a phase-coherent MTDM tone ladder derived from the pinned, credited Ardour algorithm. The driver renders the prepared samples without allocating. The native resolver takes one settled period and returns physical delay in samples, signal polarity and coherence, with explicit refusals for short, missing, invalid, incoherent and out-of-range input.
+- Strict GCC and Clang each passed six suites and 532 checks. The native probe's 54 checks exercise exact digital zero, 256/256.5 samples, ranges to 65,530.5 samples, reversed polarity, independent analytic fractional returns, noise, a missing ladder and block-independent output. The same checks passed in both optimized standalone builds. Checked Win's five portability patterns.
+- **Parked, window-fn/Win** — driver loopback selection, physical interface calibration and the real rig acceptance. The branch supplies the sample-domain core and adds no device I/O.
+
+## 2026-11-22 — M4 dependencies before native measurement work
+
+- **DEV-30 — parked on Win.** The revised Drive engages no plug-in slots. Reserve the saved global op and automation target before the engine connects the existing pre-insert leaf input gain stages.
+- **MX-09 — parked for the recording handoff.** The callback monitoring seam landed in #685. Physical input and output latency comes from the window's driver; window-fn should supply an owner snapshot in samples to engine-win's recording owner.
+- **MX-25 — parked on Win.** Track input tap rows and stored Sends Only and No Output need the format reservations.
+- **MX-26 — parked on Win's AWAITING 15 reading.** Group mute keeps current behavior while the Live child-send case is measured.
+- **MX-29 — parked on Win.** The Reference route exists. Role storage remains the dependency for matching and spot controls in ordinary projects.
+- **MX-30 — parked on Win and Mix View.** Shared tap retirement and the visual worker follow their publication and ownership contract.
+- **MX-32 — parked on the Live channel-context fixture.** The native host change follows that measurement or the director's approval for an addition.
+
+## 2026-11-22 — SRF-04 surface nudge and takeover — PR requested
+
+- Ready at `45e69a22d5ca0e283dd4170a8e72d3089ce115bc` on `engine/srf04-controller-nudge`, stacked on SRF-03 `169fd401` for after 3 December.
+- The per-binding atomic counter preserves signed ticks and every rising toggle edge through a message-thread stall. The resolver uses the sounding value for a driven control and returns an absolute normalized edit. Discrete controls move one choice per tick, and eligible continuous sources get the ADR-0188 curve on the owner. Existing ParamOps applies each burst immediately and settles one absolute edit with the first-touch origin.
+- Pick-Up waits for a crossing and re-arms on a competing write. Its own applied value does not re-arm it. None and provisional Value Scaling use the same gate. Relative sources reach the resolver directly.
+- Both strict Linux toolchains passed all seven suites and 2,032 checks each. Controller Maps exercised 1,000 ticks through a 50 ms stall, concurrent signed drains, each toggle edge and all Takeover modes. Param Ops exercised immediate sound-side value, one settled edit and stable first-touch origin. OPS and the five portability patterns passed.
+- **Parked SRF-05/SRF-06, window-fn and Win** — the MIDI port host, settings ownership and Focus Dial presentation remain separate. The engine provides the relative and absolute owner helpers for the existing gesture path.
+
+#### FOR THE DIRECTOR — SRF-04
+
+- SF-22c is still pending. Recommendation is to start continuous nudges at 1% of normalized range, one tenth in Fine, and keep Pick-Up as the default. The branch uses that step and keeps Value Scaling's endpoint-anchored law provisional pending the Live reading.
+
+## 2026-11-22 — SRF-03 native controller encoders and project keyboard rows — PR requested
+
+- Ready at `169fd401c72d978db66a5b163b3aea69de6c4baf` on `engine/srf03-controller-encoders`, lands after 3 December. Controller bindings keep numeric mode 1 as two's complement and admit codes 3–9. A witnessed slow left turn resolves the wire polarity. Linear variants keep the same signed wire counts. Native signal helpers cover seven- and fourteen-bit input, exact pitch-bend center, note-like CC threshold and inverted activator membership.
+- Key Map rows use the existing columns and exact journal inverses. The native source contract uses a positive signed-32-bit key code with an empty device name and null channel and OSC path. The scope is project parameter mapping. No schema or opcode reservation is needed.
+- Strict GCC and Clang passed all seven suites and 1,147 checks each. Controller Maps passed 99 checks, including all codes, legacy mode 1, learned polarity, bounds, refusal and exact Undo/Redo of keyboard rows. OPS and all nine schema checks passed. Checked Win's five portability patterns.
+- **Parked, Win/engine-win and window-fn** — widen `midi.focusDialMode` in the settings registry and wire the real input/Key Map producer. SF-22d owns the Live display labels and can confirm the manual variant choices. Direction evidence does not distinguish a linear variant from the corresponding accelerated wire format.
+
+## 2026-11-22 — PLAN dependencies for the decode index and source memo
+
+- **Parked PD-04 index, engine-win.** The decode index is rewritten on each cache hit under the cache mutex. On 300 local tiny index updates, the existing close-and-rename measured p50 139 us and p99 534 us. The shared durable replacement measured p50 1,042 us and p99 6,922 us. The held-lease regression also showed the existing writer can replace a held index on POSIX. Recommend an explicit optional-cache path in the shared publisher that preserves atomic replacement and refusal semantics with optional sync. The normal cache writer stays in place while engine-win owns that API.
+- **Parked TM-MD-03 integration, engine-win/Win.** The standalone source hash memo is ready at `03c440ab`. Connecting it to decode, plain and warped playback follows landing that interface and the audio-path ownership handoff.
+
+## 2026-11-22 — DF-E35(a) and CT-01 review, DF-E17 updated — PR requested
+
+- Reviewed engine-win's take projection at `430ea825` and literal EditScope at `4c2b07f3`. The snapshot keeps main readers on the main row and includes the lane in take-node reuse. Move, trim, resize and delete respect the literal take scope. Both seats agree that a same-track move keeps the lane and a cross-track move requires an explicit detach, move and attach in one journal transaction.
+- `engine/df-e17-edit-invariants-current` now fast-forwards to `4eda2b5bd134ef97ef4c2e4e89e7f84c68caa4e2`, stacked on the exact DF-E35(a) head for landing after it. The first joined run caught DF-E17's fixture looking for a linear take in the main row. The updated fixture checks its projected timing and lane identity on the take row and verifies its exclusion from main. The branch keeps all native move, duration and Undo controls.
+- Local three-way join `eb906e43` passed six strict Linux suites with GCC and Clang, 1,927 checks per compiler, including 434 clip edits, 680 EditScope and 553 UI seam checks. The OPS validator passed all 214 entries. Reviewed the five portability patterns. Win can land the snapshot before DF-E17. Window-fn can wire take rows with `takeClips` and literal EditScope. Audition remains parked on its separate contract.
+
+## 2026-11-22 — DF-E64 live prefetch follow-up reviewed
+
+- Reviewed engine-win's exact `01b1e723`. The live stopped callback requests the upcoming pages using a private playing transport. A stopped candidate still needs no pages, and Link and other callers keep the strict default for failed sources. The engine hunks are ready for the current-main join.
+- Current main has one conflict, in the Window-fn mailbox. Local review join `675189c3` retains #710's locate revision store immediately after `transport.locate` and keeps the pending Play, Stop and Record paths. Strict GCC and Clang each passed the joined delayed-reader suite (95), Window State (135), and the 20-check Locate acknowledgement probe, including retargeting two times and eventually starting with the last explicit Locate revision intact.
+- **Parked, window-fn/Win:** Window-fn owns the mailbox reconciliation. Engine-win proved Windows WTS-01 step 2b matches all 384,000 recorded frames with zero underrun. The later unpaced fader acceptance loop needs Win's harness follow-up. The review changed no loan branch.
+
+## 2026-11-22 — MI08-MPE, join Gemini's refused-attack fix — PR requested
+
+- Both original requests fast-forward. `engine/mi08-expression-units-current` is `922e275d6862f5f44dc56231663dbf13d6d0beab`, and `engine/mi08-expression-playback-current` is `b755e07e3dcdb6e014bd79f42df798bc7defeee4`. Both incorporate Gemini's exact `0b539fb2`. The router reserves four slots before channel allocation. With one to three slots it leaves the held note's pitch and the note table untouched; with four it accepts the attack. Reviewed Gemini's owned hunks and the five portability patterns.
+- GCC and Clang tested both exact heads, 132 pure router checks each. Joined native source `755eb280` passed all nine GCC headless suites. Native CLAP passed 614 checks with each compiler, and native VST3 passed 132 bus/wire checks and 225 probe checks with each. The Clang host runs use the ABI-compatible GCC core. At 16 frames both adapters retain the 128-release continuity check. CLAP preserves dialect across a segment.
+- The joined, pinned Linux Surge XT 1.3.4 rendered the saved pitch expression at 261.641, 369.900 and 523.062 Hz, all within 0.6 cents, with zero dropped or out-of-range generated events and parameters. One deliberately unmapped ordinary CC retained its single unsupported diagnostic. Windows Surge and Serum 2 rig acceptance stays with Win.
+
+## 2026-11-22 — PD-04 analysis cache publication — PR requested
+
+- Ready at `da074f14` on `engine/pd04-analysis-publication`, based on main `87ea349c`, for the after-3-December window. The ADIA writer now passes its closed private stage to `replaceFile`. A destination lease refusal leaves the prior complete file in place and removes staging. An installed optional cache remains successful if its parent sync reports a warning.
+- Strict Linux GCC and Clang passed six suites and 648 checks each. The coverage includes a held destination, stage cleanup, successful retry, preserving unknown sections, rebuilding corrupt data and the common publisher's own failure boundaries. Checked Win's five portability patterns.
+- **Parked, engine-win/Win:** After this caller changes, engine-win can remove the unused `replaceCacheFile` declaration and definition in its publication files. Dead-session stage cleanup still needs the PD-05 lease and Win's held integration. PD-11 and EX-01 use engine-win's existing settings and export work. The earlier native WAVE tags reader also belongs in the after-3-December window.
+
+## 2026-11-22 — TM-MD-04 native WAVE metadata — PR requested
+
+- Ready at `d59778d7728d060314acb772986e705c6259d011` on `engine/tm-md04-wave-metadata`, based on main `87ea349c`. The read-only native decoder now returns ACID tempo, root, meter and shot hints, separate instrument and sampler roots, validated half-open source loops, and bounded UTF-8 RIFF INFO. It scans the container without decoding audio or writing to the source, caps read and allocation work, and refuses cancellation and audio-thread use before opening a file.
+- Strict Linux GCC and Clang passed all six suites each (decode, space, decode cache, library, analysis cache, playback). The decode suite has 64 checks on each, including tags after 2 MiB of PCM, malformed/duplicate INFO strings, an out-of-range loop, oversized metadata and callback refusal. Checked the five Win portability patterns. TagLib, key-analysis corpus, wider ADIA consumers, window display and media synchronization remain parked as recorded below.
+
+## 2026-11-22 — TM-TT-01 and TM-SV-01 together
+
+Local integration `fb043d678e9970a67eb48a65842803c60dcadd48` kept both MIDI test selectors and added the rolling locate fixture under a 90–210 BPM Bézier ramp. Strict GCC passed all three joined suites and the focused 38-check ramp-locate run, including both precisions, MIDI release and chase, loop wrap, a callback-edge grid line and Stop cancellation. The production branch heads are unchanged.
+
+## 2026-11-22 — M3 media order
+
+- TM-LS-01's remaining window and workstation gates wait on Window and Win. The engine Link consumer was exercised in the tempo-ramp and quantized-locate work.
+- TM-MD-01 waits on Win's media ADR. TM-MD-02 follows it in PLAN and its decode-cache consistency part is with engine-win.
+- TM-MD-04's native WAVE metadata is available work using the existing dr_libs pin. TagLib, the analysed key detector and the remaining cache and app integration have their separate gates.
+
+## 2026-11-22 — TM-TT-01 play authored tempo ramps
+
+**PR requested.** `engine/tm-tt01-tempo-ramps` at `8f0705dbec7a88eebef470946854eda25afb071d`, based on main `87ea349c`. Title **Play authored tempo ramps on the shared project clock**.
+
+The outgoing tempo point gives the shape. Linear and Bézier ramps use analytic integrals, with the existing quadratic Bézier tension law. Musical audio and MIDI placement, automation and clip envelopes, recording and Capture, clip and warp edits, freeze, and both transport quantizers read the effective time conversion. Warp keeps its authored points and adds sample-rounded anchors through the ramp. The native Play-Q helper keeps its upward sample rounding and forgiveness. The metronome checks integrated beat boundaries and resets its cached beat across a seek, loop wrap or meter change.
+
+Link takeover retains the original curve on the part that already played. Resuming the authored clock inside a ramp restores its original phase at the new physical origin. The span information lives in the private performed model. SQL, project format and history stay authored. TM-SV-01 can land beside this branch. The trial merge has one additive conflict at the MIDI test dispatch, where both the tempo-ramp and quantized-locate selectors are needed.
+
+GCC and Clang both passed all 15 strict suites. Independent 60-digit references anchored 44.1, 48 and 96 kHz midpoint tests. Native MIDI had 522 checks, Session 224 and Warp Playback 146 per compiler. The tests cover integrated automation and envelopes, sounding warped PCM to the rounded boundary, metronome timing, Link-style takeover and resume, and a clean decode after reclaiming scratch disk headroom. OPS validation, `git diff --check` and Win's five 20 November portability patterns were checked. Linux fixtures ran with independent `ADI_HOME` paths. The remaining app control bindings and director-side Live parity go with their PLAN rows.
+
+## 2026-11-22 — MX-23 preview signed Track Delay
+
+**PR requested.** `engine/mx23-track-delay-preview` at `b33398f683d4a2fe2bc7ce859c436a54dc9f6300`, based on main `87ea349c`. Title **Preview signed Track Delay through mixer gestures**. This is the Engine producer requested by window-fn. Use `ScalarKind::TrackDelay` and `Strategy::Structural` with the existing single or relative producer, passing an absolute coordinate in signed project samples.
+
+Values prepare off the audio thread, using the same signed compensation arithmetic and the current clip, MIDI and monitor readers. The candidate graph pins the delay of its strip, Post send and cue stage while plug-ins keep their regular latency reporting. The same graph stays audible on End. Esc restores the previous graph and an unchanged End adds no history. A multi-track drag writes the ordinary `mixer.setDelay` group as one undo step. Preview requires Delay Compensation on. Stores without a project metadata row use the existing 48 kHz fallback.
+
+GCC and Clang each passed ten strict suites, including 623 native playback checks per compiler. Stereo impulses confirmed signed timing of the dry path and Post send at both precisions, including a later retap. The tests also cover reader reuse, no undo step during drag, Esc, one Undo over a multi-track drag, unchanged End and refusal while compensation is off. `git diff --check` and Win's five 20 November portability patterns were checked. Linux tests used separate `ADI_HOME` fixtures. Actual window wiring and AU-03's armed recording pass remain with their PLAN work. This branch and TM-SV-01 share Session files, so Win can land them in either order with a recheck of the combined gesture and transport suites.
+
+## 2026-11-22 — PLAN resumes at MX-23 Track Delay
+
+- ED-03's remaining cross-track lane rule waits on engine-win's DF-E35(a) and CT-01 EditScope work, as recorded with DF-E17.
+- ED-04 Crop and AU-05 wait on the DF-E38 Live readings. ED-05 follows ED-04 in PLAN.
+- MI-03 waits for the director-approved Clip View design. MI-02's remaining overlap precedence follows the Live reading recorded with its existing versioned kernel.
+- MX-23's Track Delay preview is the next available Engine piece in M2. Window-fn requested the producer in its standing queue.
+
+## 2026-11-22 — DEV-14 / DF-E40(b) parked
+
+Pd reset and MIDI-effect patches wait on Win's ADR for patch kinds, Consume semantics and [clone] voice ownership.
+
+## 2026-11-22 — TM-SV-01 engine Global Quantization
+
+**PR requested.** `engine/tm-sv01-launch-quantization` at `a676ca80c1e14a0d2e0b4f26121815073fc5789b`, based on main `87ea349c`. Title **Add saved Global Quantization and sample-accurate locates**. Lands behind the rack, macro, modulation and rack-import rows in the standing queue.
+
+`transport.setLaunchQuantization {code}` saves the 14 choices in `session_state` outside undo, with a 1 Bar default. `nextGridTick` is inclusive in ADI_PPQ. Multi-bar groups restart at a signature change. Sub-bar values follow song zero, including the measured quarter-note launch at eleven quarters in 7/8 from RESEARCH-INTAKE §6.2. The render driver queues one destination tick, finds the reachable sample in the pinned timing generation, and splits the existing render token there. Release and MIDI chase use the ordinary seek path. Stop and a subsequent transport discontinuity cancel the pending destination. With a loop that contains no reachable grid, the destination stays pending until the grid becomes reachable or the driver cancels it.
+
+The Link consumer reads the same grid width in quarter notes. None locates locally without waiting and preserves the caller's positive Link phase cycle. A meter whose selected grid exceeds the adapter's existing 256-quarter bound also keeps that cycle. The fresh-install default, installed chooser and Link None behavior still have Live 12.4 readings open. Window-fn owns the live chooser, Ctrl+6 through 0, scrub and locator calls to `RenderBlock::locateQuantized`.
+
+GCC and Clang each passed nine strict suites. The focused cases cover both render precisions, a sample inside the callback, the next callback's first sample, a wrapped grid, cancellation, ephemeral journal admission and the document presentation image. The actual Link SDK playback suite passed 149 checks with two local participants. OPS validation and `git diff --check` passed. The new code was checked against Win's five 20 November patterns. It uses no platform-specific helpers or file path comparisons, and the fixtures run with independent `ADI_HOME` paths.
+
+## 2026-11-22 — MI-08 note expression journal ops parked
+
+MI-08's write and clear journal operations still wait for Win to reserve `noteExpression.write` and `noteExpression.clear` on main.
+
+## 2026-11-22 — DEV-28 Main loudness and LD7 readout, lands after 3 December
+
+Branch `engine/dev28-main-loudness-meter` at `f8308a5554f65d5e4b3be7bdb2077aa150c20053`, from `87ea349c`. Suggested PR title **Measure Main with the shared loudness meter**. [Compare](https://github.com/arieladi/Adi/compare/main...engine/dev28-main-loudness-meter)
+
+Main measures its final audio with `dsp::LoudnessMeter`. The LD7 snapshot publishes M, S, I, true peak, range, max M/S, validity flags, run state and format identity together. Existing clients retain the original four readings, including negative infinity for an empty true-peak hold. The snapshot pairs the shared system's numeric value with its validity flag. Format adoption, reset, explicit pause, missing channels and excessive wide samples preserve the live callback contract. Each float sample is widened once in owner-allocated storage.
+
+GCC 14 and Clang 19 built with warnings as errors. Main Loudness 72, Session, Gain Stage, Normalization and Control Projection passed under both. The unchanged shared Meter 87 and FFmpeg oracle 6 passed under both. The standalone Main parity proof passed 164 checks per compiler across the synthesized Tech 3341 and 3342 cases. The Main suite covers float and double, sparse output, extreme input, reset, pause, format adoption, concurrent validity and no callback allocations. Reviewed the five Win portability patterns.
+
+Paired Release measurement at 48 kHz used a pinned core, five alternating runs of 13,000 callbacks, the production driver’s denormal mode, stereo silence and a repeated sine. At 64 frames, float audio changed from 6.932 to 7.003 microseconds of thread CPU per callback and double audio from 6.810 to 6.880. At 128 frames the same values were 13.780 to 13.600 and 13.679 to 14.095. All tested 64, 128 and 512 frame cases fell between −3.7% and +3.9%. These figures measure the meter in isolation on the cloud host.
+
+- Auto Gain Stage LUFS waits for Win’s selection-under-400-ms rule.
+- Window can adopt `readout().snapshot()` for the complete LD7 view and explicit run/pause. Agree the landing order with `engine/empty-project-cost`, whose old meter implementation is replaced here.
+
+PR requested
+
+## 2026-11-22 — DEV-13 native Pd join verified
+
+The scratch join of `engine/dev13-node-segment-quantum` `59453a16` and `devices/pd-block-quantum` `b8ff1a6e` passed 758 strict GCC checks. The real Pd device rendered five callbacks per combination at 64, 128, 256 and 511 frames with all admissible offsets among 1, 63, 64, 65 and 127. Both channels nulled at the declared adapter delay, with exact segment call counts and zero unexpected fallbacks. The device declared zero at 64, 128 and 256, and one 64-sample block at 511. The first probe had used the stock fixture's synthetic latency report. The successful run used an isolated identity fixture reporting zero own delay.
+
+Keep main's already-landed tick-carried transport and position virtual when reconciling the three Devices files. The production engine branch and its PR request remain at `59453a16`. [Compare](https://github.com/arieladi/Adi/compare/main...engine/dev13-node-segment-quantum)
+
+## 2026-11-22 — DEV-13 / DF-E40(a) node segment quantum, lands after 3 December
+
+Branch `engine/dev13-node-segment-quantum` at `59453a164662768232a8815d2c459f62ce84f174`, from main `87ea349c`. Suggested PR title **Keep node segments on the declared processing quantum**. [Compare](https://github.com/arieladi/Adi/compare/main...engine/dev13-node-segment-quantum)
+
+The graph caches the prepared device quantum. Events mark the start of their containing tick, and the device receives the original callback-relative frames in each segment. Clock cuts round up to the next legal boundary. The ordinary one-sample mode keeps the existing scheduler and floor. A partial final segment preserves the physical host callback length.
+
+GCC 14 and Clang 19 passed six suites with warnings as errors. Graph 261, Graph Workers 92, Pd Engine 701, CLAP 585, Delay Compensation 117 and MIDI Clock Continuity 121. The graph fixture covers 64, 128, 256 and 511 frames with event offsets 1, 63, 64, 65 and 127. With a simultaneous ordinary 1+255 split, the quantum device receives one 256-frame segment and nulls at its zero declared delay. Its clock update waits for the next legal tick. Reviewed the five Win portability patterns.
+
+| Seat | Needs |
+|---|---|
+| win and devices | Join Devices' Automatic adapter at `b8ff1a6e` with main's tick-carried transport state and existing position virtual. Mark PdDevice::segmentQuantum as an override of the new engine DeviceInstance virtual. The engine branch's six suites are green. A separate reconciled native graph/patch test is running. |
+
+PR requested
+
+## 2026-11-22 — DEV-18 event transform phase, lands after DEV-17 and 3 December
+
+Branch `engine/dev18-event-transforms` at `4e7495537cc04b8816e2c52eb624fe5456281d6e`, stacked on `4af8d018`. Suggested PR title **Transform gathered MIDI events before graph segmentation**. [Compare](https://github.com/arieladi/Adi/compare/engine/dev17-note-identity...engine/dev18-event-transforms)
+
+The graph invokes each transform after gathering its input in topological order. It passes notes separately from addressed parameter events, preserves callback-relative frames and collects split points after transforming. The usual DeviceNode forwards the device's transform and ownership acknowledgements. Bypass releases the effect's generated notes and keeps its clock and incoming note stream. Stop, seek and loop wrap release notes and withdraw queued attacks. A surviving generator keeps its delayed releases across publication. A departing generator delivers held and already queued releases to the nearest surviving transform or consumer before its publication retires.
+
+GCC 14 and Clang 19 passed six suites with warnings as errors. Graph 16,476, Graph Workers 92, MIDI Clips 519, MIDI Clock Continuity 125, Gesture Playback 569 and Session 214. The timing fixture ports #207's exhaustive block-size method, covering every integer size from 32 to 4,096 with identical notes and zero observed callback allocations. It exercises chained DeviceNode transforms, native owner acknowledgement, bypass, stop, seek, an in-block loop wrap, removal and reintroduction, and delayed releases on both sides of a publication. Reviewed against Win's five portability patterns.
+
+| Seat | Needs |
+|---|---|
+| win | Reserve the DEV-18 phase and lifecycle ADR. |
+| devices | Bind the MIDI effect kernels through DeviceInstance. The Pd kind and reset policy still follows DEV-14. |
+
+PR requested
+
+## 2026-11-22 — DEV-17 note identity, lands after 3 December
+
+Branch `engine/dev17-note-identity` at `4af8d0188553bd7b4b7ba261180069d3b1829047`, from `ac07be74`. Suggested PR title **Keep graph note ownership distinct through native plug-in hosts**. [Compare](https://github.com/arieladi/Adi/compare/main...engine/dev17-note-identity)
+
+One process-wide allocator gives clip tracks, live inputs and the MPE parser independent source prefixes. A held clip's existing `(clip, repeat, ANOT note id)` match retains its runtime serial across a graph publication. The graph addresses note delivery to the source by prefix and broadcasts legacy prefix-zero events. Each native SDK instance uses a fixed map with positive int32 wire IDs. A mapped off or exact CLAP NOTE_END frees the slot. A stale NOTE_END cannot match a different voice after slot reuse.
+
+GCC 14 and Clang 19 built with warnings as errors and passed eight suites each. CLAP 593, MPE parser 88 and output 91, Graph 200, MIDI Clips 519, MIDI Clock Continuity 125, MIDI Controllers 94, and the fixed-map million-admission gate. The latter detects the planted old fold on both compilers. The isolated native VST3 probe passed 225 plus 16 editor checks per compiler. In real CLAP, the deliberately colliding graph pair arrived with distinct IDs and NOTE_END silenced only its own next expression. Real VST3 rendered both same-key pitches, bent and released the live voice, and kept the clip sounding. The clock fixture checks exactly one matching full runtime ID across both paths of a graph swap while the independent reference has its own prefix. Reviewed against the five Win portability patterns.
+
+| Seat | Needs |
+|---|---|
+| win | Reserve the DEV-17 contract ADR. Order the host/event-list pieces with MI-08 and DF-E56. |
+| devices | Use the shared prefix allocator for DEV-18 generators and native Pd MIDI output when those entry points exist. The MIDI 1 same-key decision stays with LM3. |
+
+PR requested
+
+## 2026-11-22 — DEV-25 hosted readiness evidence, lands after 3 December
+
+Branch `engine/dev25-plugin-readiness` at `d8995f97b7119a6ca72d44e96faa8406e9b6ff14`, from main `ac07be74`. Suggested PR title **Publish verified readiness from hosted plug-ins**. [Compare](https://github.com/arieladi/Adi/compare/main...engine/dev25-plugin-readiness)
+
+The per-instance snapshot records successful instantiation, the CLAP SDK accepting an explicit chunk, and the first successful nonempty CLAP or raw VST3 process. The three evidence bits stay with their native instance and publish through one byte-sized lock-free atomic. Empty blocks, activation, and failing process calls leave FirstProcessed clear.
+
+GCC 14 and Clang 19 each built with warnings as errors and passed CLAP 588, the native VST3 fixture 127, and the scanner-isolated real CLAP readiness case. The two real SDK fixtures show zero measured C++ allocations in the first successful callback. Real CLAP rejected malformed state before accepting the valid chunk and rendered 84 exact stereo frames. Real VST3 refused the first process in both precisions, then completed an actual render. The broader Clang Play Render run stopped at its earlier VST3 canonical path-alias assertion. The separate readiness CTest ran the same owned CLAP case independently. Reviewed the changes against the five Win portability patterns.
+
+| Seat | Needs |
+|---|---|
+| engine-win | Use `DeviceInstance::hostedReadiness()` for the DEV-25 display and export. The evidence bits are independent, so a native instance can process before an explicit state load. |
+| win and Director | VST3 state acceptance and fallback process evidence await the status-bearing JUCE seam described under FOR THE DIRECTOR. Existing load and fallback paths continue to handle project bytes and audio. |
+| win | Order the host hunks with MI-08 and its DF-E56 follow-up when landing. |
+
+PR requested
+
+## 2026-11-22 — DEV-07 and DEV-32 parked
+
+- DEV-07 waits for Devices' LFO and Shaper kernels and Win's route-table schema reservation.
+- DEV-32 waits for the Devices ONE list's minimal stock-only Live 12.4 rack evidence and Win's verified legacy type/version mapping. A synthetic raw-Deflate/CRC gate passed six cases with the existing miniz; the ADG grammar and one-Undo import gate await those inputs.
+
+## 2026-11-22 — DEV-06 rack macro playback, lands after DEV-03 and 3 December
+
+Branch `engine/dev06-rack-macros` at `0a2e3eb94b9826248ac4962fc996310f9a2b97b5`, stacked on DEV-03 `757d934a`. Suggested PR title **Play rack macros through mapped device parameters**. [Compare](https://github.com/arieladi/Adi/compare/engine/dev03-rack-structure...engine/dev06-rack-macros)
+
+All 16 stable macro references read their existing native rows. Stored values and automation use the existing sample clock and deliver one ParamValue per mapped target. Contributions are curved and summed in target units before the target range clamps the result. Takeover suppresses ordinary automation only on the owned target. Removing the last mapping chases that target's ordinary lane again. The journal supports value, rename, map, unmap and range edits, and playback generates no parameter writes in the project.
+
+GCC 14 and Clang 19 passed eight suites each with warnings as errors. Parameter Automation 148, Gesture Playback 569, Session 291, OPS Schema 277, CLAP 589, Graph 200, Device Copy 105 and Built-in Values 16. The rack fixture proves an exact sample-131 change, two spellings of one CLAP parameter, native-range clamp, takeover and release, Undo, and zero callback allocations. Standalone macro math passed 34 under each compiler and detected planted sum/clamp defects. OPS validation passed. Reviewed against Win's five portability patterns.
+
+| Seat | Needs |
+|---|---|
+| win | Reserve selector/settings, enabled mappings, breakpoint curves and authored target caps. This branch exposes the stable chainSelect handle. Saved selector values and gating await DEV-02 and the reservation. |
+| window-fn | Bind the new edit operations and use Session::macroControls for the mapped control's takeover affordance. |
+
+PR requested
+
+## 2026-11-22 — DEV-03 rack structure, lands after DEV-01 and 3 December
+
+Branch `engine/dev03-rack-structure` at `757d934ab821cac25756452010a679970cb853f7`, stacked on DEV-01 `cb8b4fb6`. Suggested PR title **Capture rack subtrees and paste them under fresh identities**. [Compare](https://github.com/arieladi/Adi/compare/engine/dev01-rack-playback...engine/dev03-rack-structure)
+
+The typed chain image carries descendants, params, panels, shared state references, macros, mappings and causal routes and bindings. Prospective edits refuse invalid parentage and self-nesting. Legacy recorded cascades and movements replay as logged. New typed Redo checks the recorded closure before deleting it. Group and unambiguous Ungroup each use one sealed transaction. Same-project rack paste remaps internal identities and routes, checks the captured targets and uses the shared allocator for descendants and the optional engine-allocated root. Orphaned remarks stay detached.
+
+GCC 14 and Clang 19 each passed eight suites with warnings as errors. Device Ops 176, Device Copy 105, Ops Schema 272, Catalog 111, Track Delete 38, History Stored 75, Return Send Tap 122 and Gesture Playback 569. The baseline chain and ancestry probe failed six targeted assertions. The current budget test hits 4 MiB minus one, exactly 4 MiB, and plus one. It also verifies whole-transaction rollback, an existing older oversized inverse, legacy malformed rack ownership, a huge cell plus many smaller rows and a large pooled state blob. OPS validator passed.
+
+| Seat | Needs |
+|---|---|
+| window-fn | Let `ProjectDocument::copyDevice` pass the stored nested image to the clipboard. Bind `prepareDevicePasteWithFreshId` and `prepareDevicePasteForTrackWithFreshId` so Cut and Duplicate share the same allocator for root and children. Wire the native Group/Ungroup calls in their command handlers. |
+| win and window-fn | Decide the confirmation and history navigation policy for a deliberately lossy edit. The engine returns structured `lossy_undo` before committing and leaves the complete edit eligible for retry. Existing large exact history is readable. |
+| win | Keep DEV-03 in the post–3 December window after the DEV-01/ADR-0060 amendment. Reserve the DEV-06 side tables and schema minor for saved rack selector, macro settings, mapping curves and target caps. |
+
+PR requested
+
+## 2026-11-22 — DEV-01 rack playback, lands after 3 December
+
+Branch `engine/dev01-rack-playback` at `cb8b4fb645ba262bf57525642af0b8e5e19c6920`, from main `ac07be74`. Suggested PR title **Play nested device racks in the compensated track graph**. [Compare](https://github.com/arieladi/Adi/compare/main...engine/dev01-rack-playback)
+
+The Session plays stored rack chains in its one graph. Stable branch and join identities preserve delayed audio and events across a reorder. Branch instruments hear the input notes; the compensated dry event path forwards one copy beyond each rack. Rack latency is a coherent read from the applied physical-block plan. The numeric fallback and the report's validity travel together, so a missing or invalid leaf can use zero compensation while the encompassing rack's report remains unknown. Pre FX follows both explicitly typed and legacy kindless instrument racks. Branch mute and sibling solo travel in the same controls publication and ramp in 5 ms. The receipt checks the rest of the material before reusing the graph and therefore admits a later Collect-style material refresh.
+
+GCC 14 and Clang 19 built with warnings as errors. Both passed the same 12 suites, including Session 291, MIDI clock 131, PDC physical pin 94, parameter automation 136, CLAP 589, gesture playback 569, Return Send Tap 122, Device Keys 192, Graph 200, Plan 77, Freeze Capture 31 and Freeze Group 65. The exact VST3 fixture passed 225 probe, 97 device-key and 16 editor checks under each compiler with an isolated scanned home. OPS schema 270, Catalog 111 and the OPS validator passed. WTS-01 kept the same 13 headless verdicts, with DF-E64 2b the sole known failure.
+
+| Seat | Needs |
+|---|---|
+| win | Amend ADR-0060 d1 before landing and keep the post–3 December window. Stored branch volume and pan need their side-table reservation. Current playback uses unity and centre, including an empty stored chain. The no-child rack currently passes dry, pending the Live reading already named in PLAN. |
+| win | Order the shared `session.cpp` hunk with DF-E64 and PD-06, and the native latency-report declarations with MI-08 and the DF-E56 follow-up. |
+
+The empty-project stock timing control also finished. With five representative devices at both block sizes, stock `ac07be74` missed exactly the same ten p99 thresholds as the candidate in a matched cloud run. Both allocated zero objects. The full candidate real-time suite ran 162 checks and missed 21 elapsed-time deadlines under shared load. The factory-New byte and allocation checks all passed, and the independently paired Release p99 measurements and headless WTS verdicts in the preceding entry stand.
+
+PR requested
+
+## 2026-11-22 — Empty factory New callback cost
+
+Branch `engine/empty-project-cost` at `899a3a269af0074d895b2dab27628c09c51f441d`, from main `ac07be74`. Suggested PR title **Skip silent Main loudness work and benchmark factory New**. [Compare](https://github.com/arieladi/Adi/compare/main...engine/empty-project-cost)
+
+Main now advances already silent filter and true-peak histories in blocks, retaining window positions and held peaks. The integrated histogram is rescanned only when a new entry can change its result. `adi_block_benchmark --empty-project` creates real factory New with both return FX. The now-landed `adi_builtin_realtime_tests` also covers stopped and rolling New with zero allocations starting at its first callback.
+
+| Factory New at 48 kHz | Before p50 µs | After p50 µs | Before p99 µs | After p99 µs |
+|---|---:|---:|---:|---:|
+| 64 frames stopped | 92.584 | 86.826 | 295.206 | 282.675 |
+| 64 frames rolling | 92.984 | 86.905 | 303.336 | 284.617 |
+| 128 frames stopped | 186.267 | 172.932 | 541.123 | 512.128 |
+| 128 frames rolling | 185.745 | 173.411 | 533.252 | 518.304 |
+
+These are medians of five alternating pairs of 12,000 callbacks per case, GCC 14 Release `-O2` pinned to one cloud CPU. The stock loudness object was relinked into the same `ac07be74` core. Output was verified bit by bit after poisoning both output buffers. The focused factory-New suite passed 8/8 with 2 of 31 nodes processing and 29 suspended. Isolated Main's silent p99 fell from 73.366 to 0.299 µs at 64 frames and 144.407 to 0.513 µs at 128. Sampling on the pre-#708 Release baseline attributed most remaining CPU to the factory Reverb/Delay. In the after-meter profile they took about 82% of text CPU samples, with source events 3.83%, Graph runNode 3.06%, strip tap 0.51%, GraphHost block acquisition 0.26%, and Main loudness 0.26%. Planning occurs on the owner side. The return DSP must maintain clocks, modulation and tails.
+
+Gates: Main loudness 57/57, bit-identical sounding and draining filter traces in the offline meter control at four rates and both precisions, benchmark self-test and existing loudness mode passed. WTS-01 before and after produced identical outcomes for all 13 steps, including existing DF-E64 2b as the sole failure. Clang 19 Release compiled every changed C++ unit with warnings as errors. In the GCC Release scratch build, existing `maybe-uninitialized` diagnostics in ParamOps, ClipCommands and SampleDefaults and the existing allocator shim's `mismatched-new-delete` diagnostic were downgraded on those four objects only. The broader #708 elapsed-time gates missed on the cloud; a stock control is running. The factory-New silence and allocation gates passed.
+
+| Seat | Needs |
+|---|---|
+| devices | Consider the separately proven single-wrap ring indexing in the factory Reverb and Delay. The scratch render matched active, Freeze and rollover PCM at 64 and 128 frames. The engine change leaves those DSP kernels alone. |
+
+PR requested
+
+## 2026-11-22 — #677 landed with DF-E30 and one-click Post
+
+Win landed #677 from `25e3dfe9f2c46773c6af6f9931df92410c066347` as `cc74097c862bd8dc3ccbde93e88983c2df137d17`. Main `ac07be74` includes that merge. Both `adi_daw` and Step 7 UI passed at the exact PR head, including the GCC, Clang, and macOS/Windows JUCE jobs. [PR checks](https://github.com/arieladi/Adi/pull/677/checks)
+
+The identical `engine/df-e23-followups` head is now in main. Win can close the companion request and the superseded staging branch. WTS-01 Step 5b still needs the window-fn grouping rule and Win's acceptance step. DF-E64 Step 2b and Gemini's DF-E56 refused attack remain with their respective owners. Their branch heads are still `c7f3d9cc` and `da6d1629`.
+
+## 2026-11-22 — DF-E17 current-main rebase, lands after DF-E35(a)
+
+**PR requested, lands after DF-E35(a)**, for `engine/df-e17-edit-invariants-current` at `ab14b5ddfc54a4578abe9ceb83f2b5e47f9551b3`. Title **Preserve native clip placement and automation lane bounds**. Base main `9f2abf4a`. This replaces the older `engine/df-e17-edit-invariants` `0c30d4ce` without rewriting it. Main already contains DF-E47's projection, DF-E27(a)'s fade fix, checked freeze extents, and rack cascade Undo. The rebased branch retains their stronger regression controls and adds native placement and automation bounds.
+
+Move and resize preserve exact linear placement and inactive tick columns through Undo/Redo. Linear resize converts both endpoints across tempo changes. Valid zero-length clips and signed musical positions keep their existing admission. Saved scalar inverses replay literally. New automation point edits refuse values outside the lane range, and history preserves old points. Nested rack removal, overflow and bounce identity controls exercise main's existing code.
+
+Exact candidate objects with GCC 14 and Clang 19 warnings-as-errors passed Clip Edit 433, Device Ops 143, Automation Edits 52, Material Commands 30, Take Lane Ops 74 and Engine 147 checks against the compatible reconciled core. The prior handlers fail nine clip-placement and four automation checks using the same fixtures. OPS validator passes.
+
+| Seat | Landing dependency |
+|---|---|
+| engine-win | Confirm CT-01 EditScope and this branch keep the existing `dc65a5f7` contract. A same-track move retains its lane, and a raw cross-track move requires explicit detach. Detach, native move and attach form one Undo step. Both the atomic refusal and the explicit transaction are covered. DF-E35(a) lands first. |
+
+## 2026-11-22 — PD-03 capture attached device state before document saves
+
+**PR requested** for `engine/pd03-snapshot-all` at `67515e1c3d2c402179f8a23ffe57b6393ccf2eda`. Title **Capture attached device state before document saves**. Base main `9f2abf4a`. `ParamOps::snapshotAll` commits through the attached Session. Successful zero `journalOps` means unchanged. Failure carries the reason and device when known, plus the counts of any previous durable operations. Each device's save still uses the existing guarded gesture and ADR-0142 first-state semantics.
+
+GCC 14 and Clang 19 warnings-as-errors passed all 193 ParamOps checks each. Two attached devices cover silent `stateEpoch == 0`, exactly one loadState per edited existing chunk, no op for unchanged state, capture refusal, journal refusal, and retry. The snapshot persists its sampled bytes without replacing a later silent edit in the plug-in. The earlier implementation fails the two checks for preserving and saving that later edit. The separate device-replacement branch `4a1b47e7` has a clean textual join.
+
+| Seat | Adoption |
+|---|---|
+| window-fn | Call `snapshotAll(nowMs)` and check `.ok()` before Take Snapshot, close, Save As, Save a Copy, and Collect. The operation reports any earlier durable writes so a retry can finish the remainder. |
+
+## 2026-11-22 — MI-08 hosted release continuity and real VST3 MPE
+
+**PR requested** for `engine/mi08-expression-playback-current` at `e105cf3ef7439c989966a430ea004cfb8c0fcdb2`. Title **Restore legacy VST3 MPE controls and prove hosted release continuity**. Fast-forward from `2f1b9d41`, after `engine/mi08-expression-units-current` `f0b5b6a7` and Gemini `da6d1629`. Mapped VST3 controls retain unrounded parameter delivery. The MpeMidi route uses ADR-0097's legacy event wire for its own unmapped configuration and per-note controls. An ordinary Controller event retains the existing unsupported diagnostic when its mapping is absent, including on MpeMidi. Provenance attaches to the emitted control. Gemini retains the refused-attack change.
+
+The ABI-aligned local join `6c606baa` includes #677, DF-E24(a), the MIDI API, N63/N64/N67 and the queued Engine heads. Exact GCC warnings-as-errors passed nine headless suites on the release candidate, including CLAP and MPE Output. The pure candidate MPE Output suite passes 128 under Clang as well. Native VST3 GCC and Clang each pass 132 key/wire checks plus 225 probe and 16 editor checks with the owned fixture scanned in isolated ADI_HOME. CLAP's 585-check gate passes both compilers. At 16 frames both hosts deliver every one of 128 switch releases. CLAP delivers its 16 new attacks afterwards. A deliberately full router segment queues one release and the next segment sends it in its original dialect. The two pending-wire plants and the old undersized adapter fail the intended checks.
+
+Real pinned Linux Surge XT 1.3.4 (`release_xt_1.3.4`, `f7b97c68`) reopened a persisted ANOT/AEXP project. On the original host the three pitch windows stayed at 261.641 Hz and counted 509 unsupported generated controls. The production candidate measured C4 261.641 Hz, C4 +6 369.900 Hz, and C5 523.062 Hz, within 0.6 cents. There were zero event or parameter drops and no out-of-range events. A separate authored unmapped CC remains counted exactly once. The plugin's controller was unreachable in both runs. The native waveform is Linux evidence. The Windows Surge and Serum 2 rig acceptance remains Win's.
+
+## 2026-11-22 — DF-E10 Link stopped-frame diagnostics
+
+**PR requested** for `engine/df-e10-link-stop-diagnostic` at `b29455f43bfe21268836660b1e38d9f9c89c60b0`. Title **Report Link stop intent and timing when the shared beat stalls**. Base main `9f2abf4a`. The #548 assertion keeps its behaviour and now prints validity, requested playing state, beat, and tempo for both frames when it fails.
+
+Pinned Link 4.1.1 `5ba907a`, GCC 14 and Clang 19 warnings-as-errors, 43 checks each. Reusing the Stop timestamp failed exactly one check in both runs and printed `valid=1 requestedPlaying=0 beat=2 tempo=60` for each frame. Next native ARM64 recurrence can be diagnosed from that output.
+
+## 2026-11-22 — MI-08 units joined with Gemini's release retry
+
+**PR requested** for `engine/mi08-expression-units-current` at `f0b5b6a7ab17b4fe3615926045c85e2aceb0fb8d`. Title **Convert authored note expression units with the bounded MIDI release queue**. This fast-forwards the prior `0273aa63` by joining Gemini's exact `da6d1629`. GCC 14 and Clang 19 warnings-as-errors each passed 128 MPE output checks, including the 120-note/104-slot pending-release probe and the authored dB and pan checks. The playback branch joins this exact head. Gemini retains its refused-attack fix.
+
+The local hosted CLAP integration uses the exact `f41debbd` adapter and capacity calculation with `da6d1629` and the authored units. At 48 kHz and 16 frames, both MPE MIDI to CLAP and the reverse delivered all 128 releases in their original dialect, in order, followed by all 16 new attacks. Nothing was dropped, and no release remained pending or appeared twice. The stock adapter admitted only 32 of the 128 releases and zero new notes in both directions. The tracked playback regressions are in progress.
+
+## 2026-11-22 — deferred sub-parts audited on main
+
+Exact main `9f2abf4a3c3979bfe3b17efa62aba5fe7a0f22f3`. Win can move the individual Engine parts below to Done.
+
+| Part | Status | Commit and scope |
+|---|---|---|
+| DF-E45(b) | Landed | `55fd8bbd`, `5a416811`, `f26b6396`. Exact tick boundaries and integer-nanosecond origins round-trip. Genuine fractions keep floor semantics. The 90, 110 and 140 BPM cases cover both contracts. |
+| DF-E47(b) | Landed | `f26b6396`. The snapshot makes one set of track IDs for the remarks lookup. |
+| DF-E51(c) | Landed | `418a16b0`. A new accepted MPE note receives its member channel's initial bend and timbre. |
+| DF-E51(d) | Landed | `ba87710e`. Complete polyphonic aftertouch and program changes are counted as unsupported. |
+| DF-E52(b) | Landed | `b2c79ba7`. Absorbing an ungestured parameter edit preserves the previous explicit `lastTouched`. |
+| DF-E54(b) | Landed | `3887a4cb` checks parent and main-route cycles, missing or negative native lengths, and failed tempo queries. Window's guarded parent walks landed separately as `67854419`. |
+| DF-E16, Window half | Open | Engine `RowIds` landed in `ab09e120`. Window's live-ID scan from `7481782b` is still in Track Insert, and other live-only callers remain in imports, paste and automation. |
+
+The native Window helper probe deletes remarked track 9 while retaining track 8. Insert MIDI Track takes 9 and the real journal reattaches the orphaned remark to the unrelated track. Undo orphans the remark again. `RowIds` chooses 10. Window-fn owns the migration of its producers. The schema allows remark subjects for track, clip and device. Check those orphan cases separately from lane identity and lane-data Undo/Redo.
+
+## 2026-11-22 — the standing queue's E23-FU branch
+
+**PR requested** for `engine/df-e23-followups` at `25e3dfe9f2c46773c6af6f9931df92410c066347`, base Win's `76c8aaa1`. Title **Preserve grouped sends, one-click Post and main-route ownership**. This is the exact tree and three commits gated below for DF-E30, DF-E55(b) and DF-E24(b,c), including the 512-frame MIDI clock fixture. The prior direct instruction placed these three commits on #677 before the standing queue reached this checkout. #677 already contains the identical head, so Win can take its existing review or use this companion branch. `engine/df-e23-followups-staged` is superseded. GitHub's gate for the published #677 head is run `45010141132`.
+
+| Seat | Review needed |
+|---|---|
+| Window | `src/juce/ui_mixer.cpp` submits `return.setSendTap` with `click: true` for the physical switch. Review the caller. The existing UI Seams suite passed with the three commits. |
+| window-fn | Group Tracks still refuses a selected return. The engine route, sound and Undo already pass the Step 5b engine probe. |
+| Win | WTS-01 Step 5b acceptance follows the Window grouping rule. |
+
+## 2026-11-22 — #677 reconciled, follow-ups pushed and ready for review
+
+**PR requested on existing #677** (`engine/df-e23-plugin-workers`) at `25e3dfe9f2c46773c6af6f9931df92410c066347`. Title **Plug-in host inputs, group returns and send taps, hosted plug-ins on graph workers**. GitHub shows that exact PR head Open after Win's ready-for-review event. Win's reconciliation `056ac81b`, send-tap preview fix `79c424de` and EQ Eight FMA merge `76c8aaa1` are all ancestors. The schema remains 1.23 with both device key taps and individual send taps. The frozen 1.22 DDL matches main's 1.22 and the reconciled host retains per-bus `inputBuses_`.
+
+- **PR requested on #677** for DF-E30 and ADR-0247 d2 one-click Post, `0f2f33c4a11e95f738922353fc0a4cbb61dcd5f0`, **Preserve grouped sends through Ungroup and normalize a mixed return on click**. Ungroup judges connections against the complete parent edit in the same Undo group. Fresh disconnections capture routing-owned automation, controller maps and taps. Pre FX uses a neutral source strip. One mixed click makes every incoming send Post with one exact Undo.
+- **PR requested on #677** for DF-E55(b), `7449992a239c72c36f61854adc45a408a2d05007`, **Refuse new sends from Main or a VCA**. New prepare and raw/captured edits share the source guard. Saved history replays.
+- **PR requested on #677** for DF-E24(b,c), `25e3dfe9f2c46773c6af6f9931df92410c066347`, **Guard main routes and staged mixer lane ownership**. New routes cannot double the main output. Legacy duplicates keep a checker problem and render one edge. The callback keeps the acquired strip-lane owner and cue binding. The 512-frame MIDI clock control from #696 is retained. DF-E24(a)'s auxiliary sinks remain on the separately requested `2705f6d2`.
+
+The exact GCC 14 warnings-as-errors build passed all 24 headless suites. Clang 19 warnings-as-errors compiled every changed core unit and passed the five focused suites against the exact core. The production mixer caller compiled with both compilers. Native VST3 passed 225 probe checks including worker delivery and bit-exact serial/worker audio, 97 key checks and the 16 editor checks in both compilers. Those runs used child scanning in isolated ADI_HOME. The schema, operations, CI and Pd validators and the SPEC layout check passed. All five patterns from 20 November were checked.
+
+A project written by the actual 1.22 journal migrated to 1.23 and replayed its literal key-tap disconnect and Undo/Redo repeatedly. The separate-Undo-group probe proved that Ungroup normalizes only within the intended group. The frozen-track gesture probe measured wet PCM switching from L .125/R .25 to L .25/R .5 in both precisions. Undo restores the original tap. Removing only Win's preview table classification failed four assertions, two rebuilds and two PCM checks. The original EQ source with FMA contraction failed three unity assertions. Win's flags passed all 45.
+
+The WTS-01 engine path in Step 5b hears the group return at exactly the expected reported gain of 0.3143 and restores the project in three Undos. The Window grouping command still needs its seat's update. Step 5a passes, and Step 2b remains the sole failing WTS verdict with the existing loaned DF-E64 first 256 frames. Hosted worker performance measurement on Windows remains the separate engine-win gate.
+
+A read-only merge preflight against the queued local integration `f41debbd` found one text conflict in the owned VST3 fixture. Retain both the worker owner's thread ID and the auxiliary bus activity arrays. Re-run both the native worker probe and key suite together after joining DF-E24(a) and MI-08. The current engine sources for those changes and N63/N64/N67 merge textually.
+
+## 2026-11-22 — Gemini follow-up reviews for DF-E53 and DF-E56
+
+DF-E53 `gemini/df-e53-canonical-param-ref` `03be0b99a848966e1211fe81ea72c08bf0e4ba00` is green for the engine. GCC 14 and Clang 19 warnings-as-errors each pass 56 lane, 152 parameter automation and 74 checker checks. The candidate opens a project written by main and redoes stored `001` and `cutoff` creates verbatim. History navigation and delete Undo preserve the exact rows, fresh writes refuse both, the findings are Warnings, and Collect and Export produces a ZIP whose extracted project reopens with the original refs. Window-fn's DF-W38 still owns the parameter menu. Its lookup sees no lane for an overridden `001`, or picks the losing `1` alias while playback binds the older lane.
+
+DF-E56 `gemini/df-e56-mpe-router-overflow` `da6d1629c820fb077260dcd6d619cf0106ac7080` passes all 126 router checks with GCC 14 warnings as errors. At the router boundary the immediate switch and ordinary refused-release retry now work. The pending release keeps its original key, member channel and velocity.
+
+A separate exact adapter probe drove 128 sounding notes through the current hosts' 16-frame route-change ordering and both SDK event lists. CLAP delivered 32 releases in the original MIDI MPE dialect. It tried the 24 queued releases again in the same segment using the new dialect, with its SDK list already full. Nothing reached the next callback. VST3 delivered 32 on the first callback and 24 on the second, with zero left pending. The router only sees its own list, whose capacity at 48 kHz is 104. The two SDK lists have 32 entries. MI-08's shared capacity calculation raises both SDK floors to 256, enough for this 128-release batch. A joined host regression is the next check for that integration. The CLAP adapter must preserve the original dialect whenever an old release crosses a segment.
+
+The separate refused-attack case is still reproducible in the router. With one allowed member channel, the first note's bend is 10240. A second note fills a three-slot list with its resets, setting the first voice's bend to 8192, while its own attack is refused. A capacity check for the complete reset-and-attack sequence would keep the first note sounding at its intended pitch. The Engine seat reviewed the loaned branches and left their source and ownership with Gemini and Win.
+
+## 2026-11-22 — joined native validation of the engine heads
+
+Local integration `f41debbd55a4d561efd2904722c2a8823733ad47` combined current MI-08, DF-E63, the same-transaction MIDI API and N63, N64, N67, DF-E55(a), ParamOps, DF-E27(f,g) and DF-E24(a). Its only merge conflict was the owned VST3 test's observer check. The joined check retains both DF-E24(a)'s auxiliary buffer observers and MI-08's completed process counter.
+
+GCC 14 warnings-as-errors passed all 15 joined headless suites. Native GCC and Clang each passed 110 VST3 checks. An additional sounding Session probe passed eight checks, and the expanded MIDI suite passed 582. It created the clip and note together, played a stored Timbre curve, submitted N63's byte-identical delete/reinsert and heard the old voice release and the replacement start with its expression removed. Undo restored the exact AEXP bytes, playback chased the restored 0.75 value, and the final note released at its original sample.
+
+Joined WTS-01 records all 384,000 samples exactly on Auto. Its one failure remains Step 2b, the DF-E64 first 256 playback samples. The remote #677 head still points to `4f58f30d88de74be0cae1128ed30b9856e5cb5a9`; transfer and the combined green gate wait for Win's published reconciliation. The integration commits are local validation only. The individual PR-requested heads remain as logged.
+
+## 2026-11-22 — DF-E50 built-in automation review
+
+`devices/df-e50` at `854050e33bba4f9b85719c448273e9c40ced128b` is already on main through `40cb0599`. The Engine review confirms Utility's lane is heard live and offline. With a stored +6 dB and a 0 dB lane, the exact native result is 0.250000 in both paths. The current full Built-in Devices suite passes 183 checks with GCC and Clang warnings as errors, and the WTS-01 6b engine exercise hears its scripted Utility change.
+
+The rapid manual override residual belongs to DF-E61. A real same-session ParamOps edit from saved +6 dB through +3 dB and back to +6 dB before the next callback overrides the lane and leaves 0.250000 on current main. Published `devices/df-e57` at `25dbda759ce449ee1966f0f5bb83ffc1626aab92` supplies the per-parameter edit counts and passes all 16 native probe checks, including +6 dB restored to 0.498810 and the unchanged live/offline lane. It is outside the current main ancestry.
+
+The reviewed patch holds ParamMod until the next value. For DEV-07, have the evaluator explicitly clear a withdrawn or disabled source so a held offset has a defined end. Utility's 3 December exercise uses ParamValue.
+
+## 2026-11-22 — DF-E27(g) graph host telemetry and swap policies
+
+**PR requested** for `engine/df-e27-host-telemetry` at `0d14bd14def1d84171f02564cb48800acad19ee0`. Title **DF-E27 snapshot graph host telemetry across the callback**. Base main `0ea10b8eecb402f112b9a1cc384257adab111ab8`. `GraphHost::stats()` returns a value snapshot of six independently sampled lock-free counters. The owner can set history carry and fade safely across callback acquisition. Each swap uses one fade length for the whole ramp.
+
+Exact GCC 14 and Clang 19 warnings-as-errors pass nine suites, including 128 Host checks with concurrent owner publishing and callback rendering, plus Graph, Graph Workers, Engine, MIDI Clock Continuity, Strip Lane Bindings, Gesture Graph, Render Slices and Link Playback. Both `adi_play`'s native caller and the Edit Placement benchmark compile at GCC warnings as errors. The old host changes a retained observation after one callback. A forced fade setting change between assignments passes with one policy read and fails two audible assertions when a second read is restored.
+
+## 2026-11-22 — DF-E44 recorder cleanup reviewed
+
+The recorder changes in `engine-win/recorder-failure-recovery` at `0ed2c355e2c71087ccd896c65e5c30fa40e5a6fa` pass Engine review. A write or close failure still leads to a close attempt on every sink. The worker destroys the writers before announcing completion. The owner clears the pending job before discarding and retains the directory on a cleanup refusal. The exact GCC warning-as-error fixture passes 167 Linux checks. With current main's recorder, two cases fail to close both writers, covering both the live and stopped acknowledgements. Engine-win's Windows run additionally exercised actual delete sharing and passed 170 checks.
+
+The N66 branch `0747821d` still needs this behavior when the recorder changes are joined. The dry merge conflicts in the recorder, header and tests. Its `finalizedPrefix_` should require successful completion of the write loop and all closes. PD-06 already carries the underlying DF-E44 fix. For Window, the current placement path ignores the cleanup result returned by `discard()`. Surface the refusal and retained directory when connecting the final Record path.
+
+## 2026-11-22 — DF-E27(f) finite numbers in open op fields
+
+**PR requested** for `engine/df-e27-finite-open-payloads` at `d0cf6d3c2abad8e64a19d0431d1d0f5c9a16ca08`. Title **DF-E27 refuse non-finite values in open op payloads**. Base main `0ea10b8eecb402f112b9a1cc384257adab111ab8`. Current local submissions validate each open object and array down to finite numeric leaves and report the failing member path. The existing remote bounds still apply, and saved CBOR and history playback retain their existing behavior.
+
+The old engine fails four of the same 140 Ops assertions, including a real captured `routing.connect` that writes infinite gain and grows the journal. The candidate refuses it at `row.gain_db` before either changes, accepts a finite route, and restores an already stored non-finite row through Undo. Exact GCC 14 and Clang 19 warnings-as-errors pass all ten suites (Ops, Catalog, History, Stored History, Replay, Changeset, Applied Batches, Track Delete, Note Diff and UI Seams). The OPS validator passes.
+
+## 2026-11-22 — MI-08 stored expression playback refreshed
+
+**PR requested** for `engine/mi08-expression-playback-current` at `2f1b9d418fe5da89fdd1dc6b826d8a0982d79098`. Title **MI-08 play stored note expression through the session and hosted devices**. Dependencies DF-E63 `c37e20e0`, the current reader `db864e54` and current hosted units `0273aa63`. This supersedes `engine/mi08-expression-playback` `cd8d8e69`. The Session reads notes and expression in the same SQLite snapshot at load and refresh. Note edges and authored knots share the recovered clip clock. The graph and CLAP/VST3 preparation size the five dimensions and chased values for ADR-0056's 16-voice bound.
+
+Exact GCC 14 and Clang 19 warnings-as-errors pass all 17 headless suites, including MIDI Clips 576, CLAP 567 and the graph, device keys, clock continuity, candidate readiness, Link, render slices, MIDI capture and gesture suites. Clang also passes Freeze Capture, Freeze Commands and Project Replace. The four repo validators and SPEC layout pass. Native VST3 under Xvfb with a dedicated scan passes 102 checks with either compiler, including all 3,552 events in one callback. The old host dropped 1,472. Old CLAP queues gave the actual receiver 2,064 of 3,440 dense values and zero of 16 releases. The candidate gives all 3,440 values and all releases. The native Session fixtures expose the old mixed ANOT/AEXP snapshot, the 24,287 versus 24,288 sample disagreement, and the budget below 6,960 expected expression updates.
+
+Headless WTS-01 has the same sole failure at 2b, DF-E64's first 256 samples after Play. The 384,000-sample recording and other implemented checks pass. The Surge XT MPE and Serum 2 note-expression runs on the ADR-0098 hardware rig remain for Windows acceptance. The editor op names still await reservation.
+
+## 2026-11-22 — Window handoff for Save As during recording
+
+The PD-06 stack at `db039e655ac2dd9ee39c2eab7d5563e9479a0d92` also exposes an existing Window lifecycle edge. Save As can switch files during Record or while placement is pending. The take is bound to the old SQLite file. `landTake` then prepares against the new file, refuses the source-path mismatch and discards the take. Please cover Save As during active and pending placement when wiring PD-06. A Window guard that defers the file switch until placement is settled preserves the take. This is independent of rebinding the Session path for an idle Save As.
+
+## 2026-11-22 — PD-06 recovery receipt and Session review
+
+**Changes requested from engine-win** on `engine-win/interrupted-audio-recording` at `db039e655ac2dd9ee39c2eab7d5563e9479a0d92`. The `recording.placed.<id>` prefix is isolated from history metadata. The native lease retains exclusive take ownership through preparation. The journal hook checks project UUID, inserts the unique receipt and rejects a duplicate in the same SQLite transaction as placement and head changes. A two-connection test of the candidate's exact DDL and insertion verified writer exclusion, rollback of the receipt and staged material, successful retry and duplicate refusal after the original material was removed.
+
+The remaining issue is Save As. `Session::startRecording` checks recovery's project path against `recordingProject_`. `Session::load` sets that field, and the retained Session's `refresh` leaves the old path after `ProjectDocument::saveAs` switches the Store connection. Fresh recovery configuration for the new file then receives “Recording recovery was configured for a different project.” Bind the recording path to the successfully accepted successor connection and add a Save As regression for fresh and stale recovery options. This finding is from the exact source lifecycle. The candidate's native recording tests do not exercise that transition.
+
+## 2026-11-22 — MI-08 hosted expression units refreshed
+
+**PR requested** for `engine/mi08-expression-units-current` at `0273aa6341b2dac44bb49345c88925f237757b23`. Title **MI-08 convert authored note gain and pan for hosted instruments**. Base main `0ea10b8eecb402f112b9a1cc384257adab111ab8`. This supersedes `engine/mi08-expression-host-units` `0c3d63ea`. Tagged authored gain in dB and signed pan reach the VST3 normalized and CLAP native domains. The CLAP regression uses a fresh note and list so the newer overlapping live/clip identity fixture can run beside it.
+
+Exact GCC 14 and Clang 19 warnings-as-errors passed all six suites. CLAP 559, MPE Output 93, MPE Input 88, Graph 200, Device 52 and Engine 147 checks. Linking the previous MPE output source fails the authored unity and center assertion; linking the previous CLAP adapter fails the above-unity amplitude assertion. This changes expression units, separate from DF-E56's router state review.
+
+## 2026-11-22 — MI-08 native expression reader refreshed
+
+**PR requested** for `engine/mi08-expression-read-current` at `db864e543d7c80de9020e5e16174ced4d42b5b99`, after DF-E63 `c37e20e0395ac3783e46c30f48f1583086cb025d`. Title **MI-08 read stored note expression on the current clip clock**. This supersedes `engine/mi08-note-expression-read` `e5b350cd`. The Clip View can ask for decoded curves and row-level diagnostics while ordinary property reads avoid that work. The refreshed branch keeps DF-E63's recovered stored clock and its exact linear End regression. It reads historical strides and unknown dimensions while preserving the original bytes.
+
+GCC 14 and Clang 19 Debug warnings-as-errors passed six suites (Clip Details, MIDI Clips, Clip Edit, UI Seams, Project Bootstrap and Engine). Clip Details passes 41 checks. Eager decoding planted in the native Clip Details gate fails the explicit opt-in check. The editor's `noteExpression.write` and `noteExpression.clear` still await Win's reservation.
+
+## 2026-11-22 — DF-E24(b,c) staged with the DF-E20 stack
+
+**PR requested with #677 after Win's reconciliation and the combined gate.** The additional staged commit is `72dfdc77deacf0269fa3ea7e27c1a32ea20ca40e` on `engine/df-e23-followups-staged`, after `096edc93`. Title **DF-E24 guard main routes and staged mixer lane ownership**. New direct and captured main routes and disabled-route activation refuse a second enabled track output. The planner retains the lowest-ID valid main route and reports every duplicate. Replay restores saved duplicates. The callback overlay changes published scalar controls through its image and reads automation from the acquired generation. The owner retains its lane pointer and holder during a rebuild. The cue monitor retains its explicit binding.
+
+GCC and Clang warnings-as-errors native overlays on the exposed #677 stack pass Catalog 111, Plan 77, Strip Lane Bindings 26, MIDI Clock Continuity 109 and Return Send Tap 122 checks each. GCC also passes Cue Monitor 96, Replay 69, Track Delete 38, UI Seams 533 and Ops Schema 267. The old stack fails three duplicate journal guards, one graph sum and six lane-capture or render checks. The staged Pre FX test now checks the actual callback against its acquired lane publication and reads unity PCM. The OPS validator passes. When transferring to the newer main, retain #696's 512-frame MIDI clock fixture in the explicit GraphHost fan-out test. The existing E20(a) CLAP commit on #677 was also retested against current main, with two planted boundary failures and 559 passing checks per compiler after the port.
+
+## 2026-11-22 — DF-E24(a) VST3 auxiliary output sinks
+
+**PR requested** for `engine/df-e24-vst3-aux-sinks` at `2705f6d218c17235d4ba2c7e793fce9e1bd70631`. Title **DF-E24 clear auxiliary VST3 output sinks per segment**. Dependency main `0ea10b8eecb402f112b9a1cc384257adab111ab8` with #651/#685 and the dormant-key adapter. The current host's declared bus layout and in-place programme path pass the expanded owned fixture. Active auxiliary outputs now start each segment with a clear dedicated sink, using their already prepared buffers.
+
+Native JUCE with the dedicated scanner and isolated ADI_HOME under Xvfb passed all 105 bus and key checks with GCC 14 and Clang 19 warnings as errors. With the exact main host, the two repeated-sink checks fail after the fixture writes a sentinel, one per sample width. The exact GCC fixture probe also passes 216 hosted expression, transport, preset and segmentation checks and 16 editor ownership checks. DF-E24(b,c) follow DF-E20 with #677.
+
+## 2026-11-22 — #677 follow-up commits available for transfer
+
+`engine/df-e23-followups-staged` now saves the two tested commits at remote head `096edc93f972392b966fff5dbc5006976e0d1512`. It carries DF-E30 and one-click Post at `167d863e6af3008d477b45803f90e478c6e251f4` and DF-E55(b) immediately after it. Transfer these to Win's published reconciliation in order. The staging branch is based on the exposed November 19 head and is a Git backup for the transfer. **PR requested for the follow-ups on #677 once the reconciled head passes its gates.** The actual #677 head still resolves to `4f58f30d88de74be0cae1128ed30b9856e5cb5a9`.
+
+## 2026-11-22 — Mix View handoff for same-ID replacement receipts
+
+**PR requested** for `engine/param-replacement-receipt` at `4a1b47e7aa5a5fa8bd263bd33a98f28350ced716`. Title **Preserve parameter receipts across same-ID device replacement**. Base main `0ea10b8eecb402f112b9a1cc384257adab111ab8`. Credit the reproduction `eb41c1210dc464de45fd62c1813fb58cc4c6879c`. The ParamOps side waits for the replacement's exact Session publication and attachment. It skips queued parameter and state work for the incompatible device superseded within the transaction, including the replacement's gain inverse ahead of restoring the original. Compatible retained devices still receive their numeric inverse. The distinct plug-in replacement after refresh follows Mix View's existing Session resolver on `3f6b08b7297842162c3d576a626e9d65b32a392b`. No changes to the loaned resolver.
+
+Exact GCC 14 and Clang 19 Debug warnings-as-errors passed all nine suites (Param Live Replay, Param Ops, Applied Batches, Gesture, Gesture Graph, Gesture Playback, Engine, Param Edits and Device Copy). Param Live Replay passes 985 checks. With main's old ParamOps the same suite fails its waiting and Undo assertions. The GCC join with the exact Mix View resolver and expanded fixture passes 991 checks, including delayed replacement attachment, a superseded state change, exact original and replacement instance reuse through Undo and Redo, and the compatible Undo's recorded gain.
+
+## 2026-11-22 — DF-E55(b) gated for #677
+
+DF-E55(b) is committed locally at `096edc93f972392b966fff5dbc5006976e0d1512`, after the prepared DF-E30 and one-click Post commit `167d863e6af3008d477b45803f90e478c6e251f4`. Title **DF-E55 refuse new sends from Main or a VCA**. The shared source-role guard covers prepare and fresh `routing.connect` including captured rows. Grouped-return ancestry and saved history replay retain their rules.
+
+Exact exposed-branch native archive plus local overlays, GCC 14 warning-as-error Return Send Tap 121, UI Seams 533, Track Delete 38, Plan 75, Replay 69 and Ops Schema 267 checks. Changed units and the 121-check suite also pass with Clang 19 warnings as errors. The same fixture on the previous local commit fails six assertions. An old executable saved an undone real Main send, and the candidate passed 5/5 after reopen, including Redo and exact disconnect Undo with a Pre FX tap.
+
+**PR requested with #677 after Win's real merge is published and the combined head is green.** Remote #677 still advertises `4f58f30d88de74be0cae1128ed30b9856e5cb5a9`. The three follow-ups are on the local stack pending that prerequisite. Window can also hide the VCA send knob under its existing mixer role check.
+
+## 2026-11-22 — DF-E55(a), refuse new devices on a VCA
+
+**PR requested** for `engine/df-e55-vca-device-insert` at `b157aa00084a30ec39d6a81d7cf75e6a90a38438`. Title **DF-E55 refuse device insertion on a VCA track**. Dependency main `0ea10b8eecb402f112b9a1cc384257adab111ab8`. Built-in and hosted prepare refuse with a VCA reason before preparing edits. Fresh `device.insert` resolves the owning track through rack chains, including the actual restored root of captured inserts. Journal replay preserves saved devices and their complete state.
+
+Eight exact GCC 14 and Clang 19 Debug suites with warnings as errors (Device Ops, Built-in Devices, Device Copy, Device Key Routes, Ops, Replay, Ops Schema, UI Seams). The planted main run failed two prepare and four journal assertions. The candidate passes 183 Built-in Devices and 147 Device Ops checks, including legacy Undo/Redo and atomic refusal. The OPS validator passes. DF-E55(b) follows #677 as the register requires.
+
+## 2026-11-22 — DF-E53 and DF-E56 exact heads reviewed
+
+**Changes requested from Gemini and Win.** DF-E53 `gemini/df-e53-canonical-param-ref` at `8cde0b320ca1d9b7fb36b32ceb3b21127f7fa646`. The binder, session override and parameter feed agree on the numeric key. The exact GCC warning-as-error Automation Lanes, Parameter Automation and Project Check suites passed 52, 150 and 73 checks. Two additional native probes found regressions:
+
+- A project saved by main with an undone, previously valid `automation.createLane` with `param_ref:"001"` reopens under both versions. Main's Redo restores the literal row and advances the head. This head's Redo refuses it in `automation_lanes.cpp` and leaves the row absent. Use the existing replay context to preserve the recorded value. Keep fresh op validation and the checker strict.
+- The per-control Re-Enable Automation menu still compares raw strings in `ui/automation_override.hpp`. An overridden `001` lane binds to control `00000001`, while the menu sees no lane. With a later `1` alias, the binder still uses the first lane and the menu chooses the second, disabling Re-Enable. Coordinate with Window to give the menu the same resolved lane ID as the binder.
+
+DF-E56 `gemini/df-e56-mpe-router-overflow` at `c798e2a47f8e070b111a088ecb2818289da7f462`. Its exact router suite passes 118 checks under GCC and Clang with warnings as errors. All three follow-up cases reproduced under both toolchains:
+
+- After 128 held notes, a route change at 48 kHz with 16-frame blocks emits 104 releases into the router list and retains 24 on the old route. The VST3 and CLAP callers mark the route applied and never retry that same route. The exact SDK adapters each accept 32 of those 104 releases, leaving 96 old voices unreleased across the two limits. The route transition needs an end-to-end delivery or retry contract. Both host boundaries are affected.
+- A refused live Note Off stays in the router but produces no release when the next block is empty. The graph and clip source retire delivered input events, so nothing resubmits the original Note Off.
+- With three slots free and one shared member channel, a refused Note On still emits its three reset events. The existing voice's bend changes from 10240 to 8192 while the new voice never starts. Reserve room for the reset and attack together.
+
+The two loaned branches were reviewed at their published heads.
+
+## 2026-11-22 — DF-E63 native clip tick readers
+
+**PR requested** for `engine/df-e63-native-tick-readers` at `c37e20e0395ac3783e46c30f48f1583086cb025d`. Title **DF-E63 recover stored clip ticks across native readers**. Dependency main `0ea10b8eecb402f112b9a1cc384257adab111ab8`, including #696's Clip Playback correction. Clip Fade validation, Clip Details End and inherited meter, and MIDI Clips origin/window now use the Tempo Map's existing stored-nanosecond integer recovery. MIDI sample placement still uses the exact session seconds. A native nonintegral split exercises all three, and a separate one-tick tail checks Note On and Note Off across the block.
+
+Exact GCC 14 and Clang 19 Debug with warnings as errors, eight suites each (Clip Details, Clip Edit, Clip Playback, Edit Plan, Warp Playback, MIDI Clips, MIDI Capture and Engine). The planted native fixture failed 5/10 against main and passed 10/10 with the fix. In the fixture a real split MIDI attack moves from sample 8 to 9, the one-tick tail becomes audible, Clip Details recovers End and the inherited meter, and the fade accepts the full split span.
+
+## 2026-11-22 — N67 new input tracks monitor on Auto
+
+**PR requested** · `engine/n67-auto-monitor-default` · `f2802a0030d9e9ad0a02d4404276cf1ccf140422`
+**Title** — Default new input tracks to Auto monitoring.
+
+New sets Auto for its four audio and MIDI tracks. Ordinary `track.create` also sets Auto for audio, MIDI and instrument kinds. The create's Undo capture records the new default for Redo. An older create without that capture still replays Off. Existing rows and the raw schema default retain their stored behavior.
+
+**Gate** — GCC 14 and Clang 19, warnings as errors with Pd. All seven suites passed: project bootstrap, Ops, History, track recording, Session, Applied Batches and UI Seams. Previous main compiled against the updated bootstrap test failed all three new Auto assertions. The updated JUCE shell test compiled with GCC 14 warnings as errors. WTS-01 step 2a recorded 384,000 exact samples with Auto. Its playback fixture explicitly selects Off before Play and still shows the one existing DF-E64 failure, the 256-sample underrun, with no additional failed steps. `git diff --check` passes.
+
+**Dependency** — Current main `0ea10b8e`. The WTS fixture selects Off only for its controlled playback comparison and can merge alongside the DF-E64 loan.
+
+## 2026-11-22 — N63 ordered note batches write the stream once
+
+**PR requested** · `engine/n63-ordered-note-batch` · `c97f2a961c4623b1fa0ffe0e0cbbeef09b68ddad`
+**Title** — Prepare one ordered native note edit for the legacy batch.
+
+`notes::prepareBatch(snapshot, ops)` takes one clip's scalar insert, delete, move, resize, velocity and mute requests in order. Pass the editor's overlap-generated requests in that same sequence. Preparation emits one `note.applyDiff`. Stable equal-time order, the distinction between an absent and an empty stream, and expression removed during a delete and reinsert all match scalar replay. The batch retains exact captured rows and guards for Undo and Redo.
+
+**Gate** — GCC 14 and Clang 19, warnings as errors with Pd. All nine native suites passed: note diff, historical compatibility, note flags, overlap, overlap ops and playback, Ops, History and UI Seams. The 1,074-check note suite verifies 10,000 ordered mutations use one stream write and one journal operation. Compiled faults reversed equal-time ordering, kept an erased expression and discarded a newly created empty stream. Each failed its dedicated test. OPS validator and `git diff --check` pass.
+
+**Dependency** — Stack after the same-transaction note API `254d7d1c`. Window can adopt the new producer without changing its overlap planning.
+
+## 2026-11-22 — N64 track record controls in the snapshot
+
+**PR requested** · `engine/n64-recording-snapshot` · `8a32d9e382affc8cc5ed16ffe504181a0eb76535`
+**Title** — Expose track record controls in immutable snapshots.
+
+`TrackNode` now publishes the stored `recordArmed`, `monitorMode` and `inputRef`. A changed control replaces its track's node, and unrelated tracks retain pointer identity. The input reference preserves the distinction between an empty string and SQL NULL.
+
+**Gate** — GCC 14 and Clang 19, warnings as errors with Pd. Engine, snapshot remarks, track recording, UI Seams, transport info and Session passed on both. The 154-check engine suite tests the three edits independently, immutable published state and Undo. Removing the comparison compiled and yielded five failures, including each stale control assertion. `git diff --check` passes.
+
+**Dependency** — Current main `0ea10b8e`. Window can read the values for its Arm, Monitor and input binding. N67's creation default is a separate item.
+
+## 2026-11-22 — #677 follow-ups prepared against the published base
+
+Local `engine/df-e23-followups-local` at `167d863e6af3008d477b45803f90e478c6e251f4` contains DF-E30(a–c) and the mixed-switch rule. Ungroup judges sends against the final parent tree, disconnects capture routing-dependent automation and MIDI mappings, and Pre FX resets the send's strip controls. The mixer switch moves a mixed return to Post and the next click to Pre in separate Undo steps.
+
+The native GCC warnings-as-errors gate against `4f58f30d` passed Return Send Tap 113, UI Seams 533 and Track Delete 38. The old DF-E30 units failed 12 planted checks. The old mixed toggle failed both direction assertions. The changed mixer caller compiled under GCC 14 and Clang 19. The exact combined schema and per-bus host still need the published reconciliation before adding this commit to #677 and marking it ready.
+
+## 2026-11-22 — Same-transaction MIDI note capture for engine-win
+
+**PR requested** · `engine/midi-notes-new-clip` · `254d7d1ce918958315c360bc93d5401fb26c3331`
+**Title** — Capture notes for a MIDI clip created in the same transaction.
+
+`notes::captureNotesForNewClip(store, clipId, streamId)` captures the absent clip, exact native stream defaults, source identity and Undo head on the owner connection. Pass the snapshot to `notes::prepareDiff`. Append the resulting `note.applyDiff` after the clip creation in the same journal transaction or Undo group. Use the captured source and expected head and reserve distinct stream IDs for each planned clip. No new operation or format change is needed.
+
+**Gate** — Eight suites passed on clean GCC 14 and Clang 19 Debug builds with warnings as errors and Pd enabled: note diff, historical note compatibility, note overlap and overlap operations, Ops, History, MIDI Capture and engine. The 1,062-check note suite covers native defaults, an exact one-write stream, two clips in one Undo, wrong order and parent kind, late collision rollback and stale head. Two compiled faults accepted an occupied clip or stream and each failed its dedicated assertion. All four validators, the SPEC binary layout and `git diff --check` pass.
+
+**Dependency** — Current main `0ea10b8e`. Engine-win can take this API for CT-03 MIDI takes as soon as it lands.
+
+## 2026-11-22 — Engine review of DF-E64's playback loan
+
+**Changes requested for engine-win** · `engine-win/play-first-block` · `c7f3d9cceda09073cb6765c8737830e9d5a8669d`
+
+The new stopped read-ahead also reaches strict `ClipPlayback::primeAt`. With the worker paused and no pending requests, the existing clip-readiness fixture expects an empty stopped request to succeed immediately. Current main passed 90 of 90 checks. I verified the candidate's exact playback source and reran the candidate tests with GCC 14 and Clang 19. Both report 89 of 90, with “a stopped captured transport needs no pages” as the sole failure.
+
+Scope the stopped prefetch to the driver's Play path so strict candidate preparation keeps its current contract. Keep the existing pending Play clock, Stop and Locate behavior. WTS-01's simulated driver primes from the owner before each callback, so its green result alone cannot distinguish a working async hold from that prime. Rerun clip candidate readiness and WTS-01 step 2b, with an intentionally delayed reader in the focused driver test.
+
+DF-E53 and DF-E56 remain Gemini's loaned items. No candidate refs or Gemini log were published at this check. The engine will review the exact hunks when they arrive.
+
+## 2026-11-22 — #677 reconciliation review for Win
+
+GitHub advertises `4f58f30d88de74be0cae1128ed30b9856e5cb5a9` for both `engine/df-e23-plugin-workers` and `refs/pull/677/head`. Its second parent is `bedee5ab`, before #685. The synthetic PR merge `75fb057d` uses that same base. I executed all three DDLs in SQLite. The older base creates neither table at 1.21, the PR creates only `routing_send_taps` at 1.22, and current main `0ea10b8e` creates only `routing_key_taps` at 1.22. The advertised PR also lacks the Mix View's per-bus `inputBuses_` in both host source and header. `win/claim-677` contains the log entry.
+
+The reconciled code head described in Win's 21 November entry is needed to review the 1.22 to 1.23 migration and the combined VST3 adapter. #677 stays draft pending that head. I am advancing the independent MIDI take API while keeping DF-E30 and the one-click Post analysis available for the reconciliation.
 
 ## 2026-11-19 — DF-E52(a,b) explicit plug-in parameter gestures and last touch
 

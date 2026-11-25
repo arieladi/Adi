@@ -6,6 +6,450 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-25 — the engine's re-review of gemini's four fixed branches; the Codex work seat's Linux rows lent
+
+Win, in the engine seat's place, read each branch at the head the gemini seat logged on 24 November. SRF-10 may be requested; the other three need the changes below first. All four land after 3 December.
+
+- **`gemini/srf09-osc-core` (94ba8bce4): changes needed.** The first review's findings: 5 of 6 fixed.
+  - Still partly fixed: Medium: no gesture brackets on strip writes (ADR-0181 d2)
+  - New, major (`src/adi/osc_namespace.cpp:824-839 (withStripGesture), header contract osc_namespace.hpp:33-37`): Writes with no explicit touch are bracketed one message at a time. A probe of three fader messages from a plain client gave 9 callbacks: begin, set, end, three times. Three dial nudges gave the same. So a fader sweep from TouchOSC (which sends no touch messages by default) becomes dozens of gestures. That means dozens of undo steps, and each end releases a touch-automation override. ADR-0181 d1 asks for one undo step per turn ('coalesces into one device.setParam per settle'), and d2 says one gesture is one undo step from touch to release. The PLAN row puts SRF-09 after SRF-02, whose QuietSession (docs/ENGINE-QUIET-GESTURE.md) is the quiet-window End for a source without release. 'Deltas are never coalesced' means no delta is merged or dropped on the wire. It does not mean one undo step per tick. Fix: When no explicit gesture is open, open an implicit gesture on the first write and keep it open while writes continue. Close it after a quiet interval on a monotonic clock passed in (for example flushFeedback(now) or a poll(now)), following SRF-02's QuietSession semantics. An explicit .../gesture 0 also closes it. Add a test that a 3-message sweep gives one begin and one end, and one more for a 3-tick nudge turn.
+  - New, medium (`src/adi/osc_namespace.cpp:806-818 (handleExplicitGesture, end branch)`): A gesture end is passed to the sink even when this client has no open gesture on that control. A probe confirmed both cases: a .../volume/gesture 0 with no begin reaches the sink as an end. Client b sending .../pan/gesture 0 while client a holds that touch reaches the sink as an end (origin osc:b), twice, while a's gesture stays open in activeGestures_. Begins are idempotent but ends are not. Depending on how the sink keys gestures, a sink can close another client's gesture or undo step, or receive an end with no begin. Fix: Emit the end only when the entry was found and erased for this client. Otherwise return Applied as a no-op (or IgnoredRelease). Test an unmatched end and a cross-client end.
+  - New, medium (`src/adi/osc_namespace.cpp:622-627 (setPolicy), 636-652 (removeFeedbackPeer)`): Open gestures survive the service being switched off, a client being removed from the allow-list, and removeFeedbackPeer. A probe shows endAllGestures() still closes the gesture after setPolicy({}) and removeFeedbackPeer. setPolicy() has no sink, so it cannot close them itself. UDP has no disconnect, and there is no timeout. A client that vanishes mid-touch therefore leaves the gesture and automation override latched until someone calls endAllGestures/endClientGestures, and nothing in the contract says who must call them. Fix: Either have setPolicy take the sink (or return the gestures it closed) and end the gestures of every client the new policy no longer allows. Or state in the header that the owner must call endAllGestures()/endClientGestures() before disabling, de-listing or forgetting a client, and test that. The quiet-window close from finding 1 also covers a client that vanishes.
+- **`gemini/srf10-oscquery-core` (13717f7cd): passes with notes.** The first review's findings: 4 of 4 fixed.
+- **`gemini/co01-collab-core` (4de5cc8ec): changes needed.** The first review's findings: 7 of 9 fixed.
+  - Still partly fixed: Medium: no id-space check on remote ops
+  - Still partly fixed: Medium: the row's remote-commit and single-allocator items not met
+  - New, major (`src/adi/collab/replica.cpp:717-740`): A rewind that fails partway leaves the store half-rewound, and sync then stops for good. The loop (src/adi/collab/replica.cpp:719-738) undoes pending entries from the newest while checking each one. Take pending [P1, P2] with an unrelated txn X committed between them. P2 is undone, then P1's check finds X and returns Error. P2's effect is gone from the store but is still in pending_, its undo sits on the redo stack, and currentOrderKeys_ is not reset. Every later syncStep fails the same check again: the incoming slots are still there, so step 3 is never reached. There is no recovery path. Any ordinary Ctrl+Z or any edit that bypasses commitLocal does this. The existing test only covers an edit above the whole suffix. Fix: Check the whole suffix before undoing anything: the last N undoable txns must be exactly the pending txnIds, in order. Or redo the steps already undone when a check fails. Give the replica a way out, for example rebase-from-base or folding the foreign txn into a pending batch, rather than an Error that never clears. Add a test with a foreign txn between two pending batches.
+  - New, major (`src/adi/collab/replica.cpp:630-660, 814-820; src/adi/collab/batch.hpp:91-97`): The fix bounds decoding but not encoding, so a replica can push a batch that every peer then skips. commitLocal (replica.cpp:630-660) and the step 3 push (814-820) never check the encoded batch against DecodeLimits. Peers decode with the defaults: 4 MiB, 4096 ops, 65536 CBOR items, depth 32 (replica.cpp:691). One MIDI clip with about 6000 notes, or a large paste, goes over 65536 items. The author applies the batch locally, pushes it and marks it applied (841). Every peer, and the author itself after a restart, skips it as corrupt (742-747). The result is silent, permanent divergence with only a warning. Fix: In commitLocal, before applying, encode the batch and run validateCborLimits/decodeBatch with the same limits. Refuse an oversize batch, or split it into several batches. Add a test that a batch over the limits is refused locally and never pushed.
+  - New, major (`src/adi/collab/replica.cpp:249-296, 298-380`): The pending suffix is not persisted, so a restart with unsynced local batches loses them for sync. pending_ is not in the session_state document (replica.cpp:278-287), but its edits are committed in the store. After a restart they are never pushed. seedInitialOrderKeys then adds keys for the local-only devices and tracks to baseOrderKeys_ (329-333, 370-374). The replica diverges from its peers with nothing pending and no warning. The restart test converges before closing, so this case is untested. Restarting after offline edits is the normal offline case. Fix: Persist the pending batches and their localTxnIds next to the other state, and restore them on load after checking that the txn ids are still the undo head. Add a restart test with batches still pending.
+  - New, medium (`src/adi/collab/batch.cpp:513; src/adi/collab/replica.cpp:751-771`): A batchId is not bound to its author, and dedup uses batchId alone. decodeBatch checks only that the id is non-empty and at most 128 bytes (batch.cpp:513). The replica erases a pending entry (replica.cpp:751-756) and skips a sequenced batch (758) by batchId only. A hostile or buggy peer can sequence a batch carrying another replica's next batchId. That silently drops the victim's pending edit. When the victim's real batch is sequenced later, every peer skips it as already applied, while the victim keeps it applied locally: divergence. Fix: In decodeBatch, require batchId == author + "-" + a decimal counter, or key both dedup and the pending match on (author, batchId).
+  - New, medium (`src/adi/collab/replica.cpp:643, 773-778; src/adi/collab/batch.cpp:502, 527`): A hostile, or even rejected, remote batch can push the Lamport clock to INT64_MAX, and the next local commit then overflows a signed integer (undefined behaviour). Decode accepts lamport and vector clocks up to INT64_MAX (batch.cpp:502, 527). syncStep merges the vector and Lamport of every valid-decoding batch, including ones it rejected (replica.cpp:773-778). commitLocal then runs ++localLamport_ (643). UBSan would trap this, and so would a release build that does. Fix: Cap accepted clocks well below INT64_MAX at decode, and check before incrementing (refuse the local commit). Consider not merging the vector and Lamport of a batch that was rejected.
+  - New, medium (`src/adi/collab/replica.cpp:658, 802, 843`): The persisted state is not written atomically with the journal commits it describes. syncStep commits remote batches with OpJournal, then writes session_state in a separate statement (replica.cpp:802, 843; commitLocal at 658). A crash in between restores an older appliedSeq_ and appliedBatchIds_. The replica then applies the same remote batches a second time onto a store that already has them. Create ops get rejected, and set or move ops apply twice, which shifts canonical order. The same applies to a crash after a successful putIfAbsent and before the save at 843. Fix: Write the state inside the same SQLite transaction as the batch commit, through the remote-commit seam or a savepoint around both. Otherwise make replay idempotent by recording the applied seq in the same transaction.
+- **`gemini/pd15-project-paste` (81e487a25): changes needed.** The first review's findings: 9 of 10 fixed.
+  - Still partly fixed: Pan law dropped silently
+  - New, medium (`adi_daw/src/adi/project_paste.cpp:599-701, 150-164`): Routing other than sends is still dropped silently. This contradicts the branch's own header contract (project_paste.hpp:23-26) and ADR-0068's 'routing following'. Step 4 reads only routing rows with kind='send' (project_paste.cpp:607-611). Three kinds of routing are lost with no warning: a user Main output (kind='main', origin='user', for example a child routed somewhere other than its group); every device key (kind='sidechain' with dst_kind='device' plus routing_key_taps), including a kick-to-bass sidechain wholly inside a pasted group; and VCA membership (mixer_strip.vca_group_id and kind 'vca'). readTrackSnapshot (150-153) never reads vca_group_id. For example, a pasted group whose bass compressor is keyed from its kick plays unducked in dest, and result.warnings is empty. Fix: Copy sidechain routes whose source track and destination device are both in the subtree. Remap both ends and carry routing_key_taps through routing.connect's keyTap. Copy user Main routes whose destination is inside the subtree. Report every other main, sidechain and VCA route, and a non-null vca_group_id, in warnings. Add one test each for an internal sidechain and an external one.
+
+**Lent to the Codex work seat** (RESERVATIONS.md, PLAN rows on loan), each row's paths for that row only, on `codex-linux/<row>` branches: DF-E76, DF-E36's tests, DF-E67 (b), DF-E12, DF-E78 (on engine-win's export branch) and DF-E77 (on the devices lane's vinyl branch).
+
+**Changed the same day:** the Codex work seat is at its limit until Sunday 29 November. Its Linux rows go to the seats that can prove them now: DF-E76, DF-E67 (b), DF-E12 and DF-E78 to the window-fn seat (it builds on Linux; branches `window-fn/<row>`), and DF-E36's tests and DF-E77 back to the devices lane, whose rows they are. The devices lane also takes its queue's item 6 and DF-E68 (a); the `.amxd` chain stays held (ADR-0248 d8) and shaper-scope-feed stays blocked until ADI-Shaper's panel has its sheet.
+
+---
+
+## 2026-11-25 — status; the shaper panel's hold ruled; seats for the rest of the week
+
+**Since 24 November:** #739 to #744 landed, and main is green at 48fb9953a (both workflows). The gemini seat proved
+every fix of 24 November on Linux. DF-M63, M64, M66 and W40 move to Done; DF-E67 (a) is proved; DF-M65 stays open
+(no test fails without it yet). Its new finding is DF-M69: GCC Release refuses `test_mix_focus.cpp:1325`. It fixed its
+four after-3-December branches after win's engine review; the engine re-review is on win, today. The window lane's
+WTS-01 window half lands in #745, with ADI_HOME set in ui.yml's native smoke step as it asked. Its DF-E35a is
+withdrawn in favour of #744, and WIN-05, WIN-06 and WTS-03 stand for after 3 December.
+
+**#708's hold, ruled (the clones queue's items 3 and 6, ADR-0248 d11):** ADI-Shaper's panel (#716, with the window
+lane's fixes for its four findings on `window/shaper-panel-fixes` c10003c4, proved by gemini on GCC 12.2 and Clang
+14) lands after 3 December, and only once the director agrees a proposal sheet for it (ADR-0244 d3, d9). Until
+then the device plays from the generic device panel. DSP work goes on: CURVE-EDIT-P99's evaluator cost is DSP and is
+unblocked. The clones seat keeps the panel stack current on main and folds the window lane's fixes into it.
+
+**Lent:** DF-M34's device hook to the Mix View seat (RESERVATIONS.md, PLAN rows on loan). The graph already tells
+`Node::silenceTaps` each skipped segment's length; the device backend gets the same length, so the Limiter and the
+stateful EQ modes can sleep without losing their phase.
+
+**Seats, the director's word of 25 November:**
+- Codex Max takes the Mix View seat and the clones seat (ADI-Shaper is not finished: the panel waits for its sheet,
+  the split-slew hold is unanswered, DRIVE-4X is partly done, and 15 stage branches land after 3 December).
+- The window lane is at its limit until Sunday.
+- The Codex work seat leaves the engine lane for a simpler lane: the rows whose proof is Linux-only.
+- The engine lane's queue before 3 December is done. Win covers its reviews and small fixes until a new seat takes it.
+
+---
+
+## 2026-11-24 — win covers the seats out of usage (window, window-fn, engine, engine-win, devices, Mix View, clones)
+
+The director's order: every seat but gemini is out of usage until tomorrow, and win covers them. Win writes here,
+never in another seat's log.
+
+**Landing (#739, `land/window-1124`), the window lane's and window-fn's requests that land before 3 December:**
+WIN-01's tail and WIN-04 (`window/shortcut-ids` with `window/function-keys`), WIN-09 (`window/help-menu`), WTS-02's
+first half (`window/test-hygiene`), WIN-02 and WIN-03 (`window/window-kinds` with `window/window-places`), WTS-09
+(`window/parity-bookkeeping`), the GCC 13 `adi_play` fix with DF-E71 (`window-fn/play-indent`), DF-W39
+(`window-fn/seams-gcc12`). In the merges, Help's two commands take stable ids `help.manual` and
+`help.keyboard-shortcuts` (table 127) and lines 29053 and 29054 in the PC key-map goldens, as the window log asked of the
+second to land. Win's commits on the stack:
+- `tools/validate_parity.py`, lent by win, moved from `collab/window/`, so ci.yml's every-validator step runs it. Its
+  self-test copies the sheets rather than linking them, because Windows refuses a symlink without Developer Mode. WIN-03's
+  rows 13 to 15 are tagged, which keeps the untagged count at 145.
+- Three fixes the stack's first CI runs asked for:
+  - WIN-03's local `flags` shadowed a JUCE member, which MSVC C4458 refuses.
+  - Two search boxes took the keyboard focus while unshown: the Stack picker's and the Mix View's channel search. Both
+    now go through `focusIfShowing`.
+  - WTS-02's list of machine-caused assertions named the X11 cursor line of the JUCE before 9.0.5: it is 2703 now, not
+    2623.
+- **Not in it:**
+  - `window/launch-isolation` (WTS-01's window half): it was not requested, and it conflicts with WIN-02 and WIN-03 in
+    five files. The window lane rebuilds it on main.
+  - WIN-05, WIN-06 and WTS-03: they land after 3 December, as the queue says.
+  - `window/held-peak`: it lands with the Mixer sheet.
+
+**Landing (#740, `land/cover-1124`), fixes win built for the seats** (each built and run on MSVC, each read by a
+skeptical reviewer):
+- DF-M67 and DF-M36's rest: the Limiter's unchanged prepare returns at once, with tests on it and on the Delay
+  built-in.
+- DF-M66: the Focus mailbox check without the race.
+- DF-M63 and DF-M64: the two mix tests without undefined behaviour.
+- DF-M65: `-ffp-contract=off` for the function and compressor hosts.
+- DF-E67 (a): the four device suites on the shared operator-new header, in the ASan job.
+- DF-W40: the Clang 14 lambda.
+
+The rows close when gemini's runs say so: ASan and `_GLIBCXX_DEBUG` for DF-M63 and M64, Clang 14 for DF-W40,
+200 runs for DF-M66, and the macOS leg for DF-M65's build.
+
+**Held, the director's question:** `engine/df-e17a-move-overlap` (98ee01f8, DF-E17 (a)). Following ADR-0217 d1, it
+refuses a raw `clip.move` onto another clip: only the planner may clear what a move covers. The reviewer found two
+things for the director:
+- **What Delete Overlaps off should do:** keep the overlap (as before) or refuse. Live has no such switch, so this is
+  ADI's addition.
+- **A regression with default settings:** on a track with an automation lane, the planner refuses until AU-05. A drag
+  onto a clip there would then do nothing, where today it moves and keeps the overlap.
+
+Win recommends keeping the overlap while Delete Overlaps is off or the planner refuses, and refusing only when Delete
+Overlaps is on and the planner could place it. The branch waits for his answer.
+
+**The engine's reviews of gemini's four branches** (the engine seat's job; its verdicts here). All four need changes
+before their PRs are requested, and all four land after 3 December:
+- `gemini/srf09-osc-core` (5e42fa61):
+  - A nudge suppresses an address that carries no feed, so the echo comes back.
+  - A refused or unchanged write is never confirmed to its sender, because the flush sends only changed values.
+  - SRF-09 reads `{n}` in `/adi/track/{n}` as a 1-based position; SRF-10 publishes stable ids there. One meaning has
+    to be chosen for both.
+  - Medium: no gesture brackets on strip writes (ADR-0181 d2); no bind-interface policy for the next slice; no threading
+    contract between dispatch and flush.
+- `gemini/srf10-oscquery-core` (195892d7):
+  - Blocker: `test_oscquery.cpp` runs MSVC out of compiler heap (C1060); it needs splitting.
+  - Blocker: the same address split with SRF-09.
+  - Major: `build()` throws on invalid UTF-8 in a name; use a replacing error handler.
+  - Major: the HTTP responder never checks Host, which is open to DNS rebinding.
+- `gemini/co01-collab-core` (909961ae):
+  - Hostile bucket input crashes the replica: CBOR nesting is unbounded.
+  - A decodable op with a malformed payload throws out of `syncStep`.
+  - Rewind undoes blindly, without checking the transaction ids.
+  - Order keys live only in memory, so a restarted replica disagrees with its peers.
+  - Batch ids repeat after a restart.
+  - Medium: numbers narrowed silently; one bad batch stops sync for good; no id-space check on remote ops; the row's
+    remote-commit and single-allocator items not met.
+- `gemini/pd15-project-paste` (ba43cddc):
+  - Media is copied where ADR-0068 d5 and Live reference it in place.
+  - Take-lane clips become main-lane clips.
+  - Media is deduplicated on an empty hash.
+  - Medium: a group pastes without its children; alias links cut; several track tables dropped silently (pan law,
+    split pan, recording options, sends); tests miss MIDI, take lanes and the refusals.
+
+**Logs landed** (in this PR): engine, devices, clones (the seat's side of `clones.md`; nothing main had scrubbed comes
+back), and gemini (a2b41755).
+
+**DEFERRED:**
+- DF-E65 and DF-E69 close on gemini's TSan and Clang 14 runs on main 01c70983.
+- Every row a seat called met was read against main first. DF-M61, M51, M52, E46, E50, E28, E31, E33 and E58 move to
+  Done. DF-E25 (c), E32 (a)(b), E34 (a)(c), E36's tests and E37 (c) stay, each saying what is left.
+- New DF-E76 (engine-win): `adi_play_render_tests`' symlinked-bundle check fails on Linux under GCC 13. The window-fn
+  seat found it once DF-E71 let the test compile.
+
+**Reserved:** N69 to N75 for the window-fn seat's open needs, in its table's order:
+- N69: DF-W37, a parameter back to its stored value when its lane goes.
+- N70: the scanner helper's own failure state. (Withdrawn the next day: it duplicates N59, met on main in #694. Win's error; the window-fn seat reads `HelperCouldNotStart`.)
+- N71: recording after a Save As.
+- N72: a dropped file clears what it lands on.
+- N73: a loop recording keeps its passes.
+- N74: Live's undo for a loop recording, after a reading.
+- N75: MX-07's registry half.
+
+Next free N76.
+
+**For the window-fn seat:**
+- Its parked recording and export parity checklists are drafted from the Live 12 manual's text by win, each row
+  checked by a second reader, on `window-fn/parity-recording-export`:
+  - `parity-recording.md`: 48 rows.
+  - `parity-export.md`: 39 rows.
+  - The floors gain recording 9 and export 3.
+  - It lands after #739.
+- RE-01 stays with the window-fn seat (its branch `window-fn/remarks` is built). The window lane reviews its shell
+  lines when it is requested.
+- Superseded branches stay on origin and are not landed: `window-fn/function-keys`, `shortcut-overrides`,
+  `lane-ref-canonical`, `play-first-block-main`, and the window lane's `plugins-browser` and `browser-devices-test`.
+
+**The gemini seat's PR-BUILDS rounds 6 and 7** (23 November) registered: DF-M68 (Clang 14, `shared_analysis.cpp`, the Mix View's after-date stack), DF-E77 (GCC 12, `test_vinyl_distortion.cpp`, devices), DF-E78 (two unused test functions, engine-win's export stack), DF-E79 (`adi_midi_capture_tests` on DEV-17, engine). Each lands with its after-date branch.
+
+**Next free:** schema 1.26, ADR-0254, DF-E80, DF-W41, DF-M69, N76.
+
+---
+
+## 2026-11-23, night (second entry) — ADR-0253 for DEV-01; the engine seat's reservations
+
+**ADR-0253** (on this PR): the amendment of ADR-0060 d1 the engine's queue (item 9) waited on. A rack is spliced into
+its track's graph: router, chain gates, chains in series, chain strips, a dry leg, a double-precision sum. Win read
+`engine/dev01-rack-playback` (cb8b4fb6) against Live's manual (ch. 24), and the ADR takes Live's way where the branch
+differs, so **the branch changes before it lands** (d10): an Instrument Rack consumes notes and carries no audio through
+its dry leg; a rack switched off stops calculating its children (ADR-0203 d4); Drum Racks, MIDI Effect Racks and unknown
+kinds stay skipped and named; stored zones are named until DEV-02. New rows: DF-E73 (chain volume and pan), DF-E74
+(MIDI Effect Racks merge their chains), DF-E75 (an empty Audio Effect Rack: the Live reading). The draft was read by a
+second, skeptical reader, whose corrections are in.
+
+**Reserved** (`collab/RESERVATIONS.md`): `noteExpression.write` and `noteExpression.clear` for MI-08 (engine queue item
+19, asked since 19 November; both already in OPS.md §9.5; DF-W12's gain and pan are existing dimensions). Schema **1.24**
+for DEV-06's rack macro side tables (asked 22 November) and **1.25** for DEV-07's route tables, in landing order (ADR-0249
+d3). Minors land in order with no gap (check 9): a minor that lands sooner takes the lower number and the reserved rows
+move up, recorded there. 1.22 (#651) and 1.23 (#677) and their ops are marked landed. The register-id table is current.
+
+**Still open for win from the engine's log:** RE-03's and TM-WT-02's op names, TM-WT-02's settings and transients minor,
+the TM-IC-01 drop-frame table (all after 3 December).
+
+**Next free:** schema 1.26, ADR-0254, DF-E76, DF-W41, DF-M68.
+
+---
+
+## 2026-11-23, night — win covers the engine lane until its limit resets; main green
+
+**The director's order:** win takes the engine lane until the engine seat's next limit reset. Win does not write
+`collab/engine.md`; this entry is the record, and the engine seat reads it first when it returns.
+
+**Main is green** at dbf98b0cd (#734). The landing merge c0a8f9bb4 (#733) failed once on macOS in
+`adi_mix_focus_tests` and passed on the rerun of that leg: DF-M66, a flaky check, the Mix View seat's.
+
+**Engine rows already done on main**, found by a triage of every open engine row against the code (moved to
+Done on this PR): DF-E19, E45, E51, E52, E54, and DF-E29 (a) to (d). DF-E29 (e) and DF-E6 (b) are the
+director's questions (the engine log's FOR THE DIRECTOR). DF-E17's overlap needs a window change in the same
+stack (`ui_shell.cpp`'s raw move fallback) and waits for the window lane.
+
+**Built, reviewed and requested** (#735, one landing branch `land/engine-cover-1123` over five branches cut from
+main; each built and tested under MSVC `/W4 /WX`, then read by two independent reviewers, every real finding fixed):
+- `engine/df-e70-resize-fades`: DF-E70. `clip.resize` clamps both fades; Undo restores the authored ones; old
+  journal entries replay as recorded; a whole-clip fade-out renders over the exact span either way.
+- `engine/df-e65-vorbis-table`: DF-E65. One lock around the stb_vorbis calls that reach its CRC table. The
+  ThreadSanitizer proof is the gemini seat's.
+- `engine/df-e66-test-new-forms`: DF-E66. One header replaces every `operator new` form for the seven suites, and a
+  new CI job runs them under ASan after a canary proves the old harness is still caught.
+- `engine/df-e69-clang14`: DF-E69. `timelineClips` without `std::views::filter`; init-captures at every engine
+  site. The window's one site is DF-W40. The Clang 14 proof is the gemini seat's.
+- `engine/df-e6-countin-latency`: DF-E6 (a). Count-in clicks on the compensated clock up to one beat of latency;
+  above one beat unchanged, for the director.
+
+**Repaired, held for after 3 December:** `engine/tm-tt01-tempo-ramps-current` (7c37df259): the engine's TM-TT-01 on
+current main, its two implicit conversions explicit, and the two suites it changes on purpose
+(`adi_transport_info_tests`, `adi_scale_context_tests`) updated to the ramp, each change following the branch's own
+log entry; 44 suites pass; a second reader approved it with three test-comment notes. The engine seat owns it:
+review it, then mark it "lands after 3 December".
+
+**The engine's review of DF-M36** (owed since #579): bf221a35 is correct in all three hosts. It found a worse case
+outside them, the Limiter, which re-prepares on every rebuild while playing: DF-M67, the Mix View seat's, now.
+
+**Next free:** DF-E73, DF-W41, DF-M68, ADR-0253.
+
+---
+
+## 2026-11-23, evening — the landing window of 23 November is on main (#733); nine rows closed
+
+**Landed** as one stack through its top, #733 (c0a8f9bb4): #722 engine-win, #729 engine, #730 window, #731 Mix
+View, #732 devices, #733 clones. #729 to #732 are closed as landed; #665 is closed (superseded by
+`engine-win/hosted-workers-current-main`). The first build of this stack (#723 to #728) carried rows that come
+after 3 December by the queues' own wording, so it was rebuilt without them (`-1123b`) and those PRs closed.
+- **engine-win:** play-first-block (DF-E64), take-lane-snapshot (DF-E35 (a)), take-lane-edit-scope (CT-01),
+  recording-placement-offset (MX-09), midi-loop-takes (CT-03), hosted-workers-current-main and
+  worker-rejection-evidence (DEV-23).
+- **engine:** empty-project-cost, mx23-track-delay-preview (MX-23, joined to the cost work), the DF-E17 edit
+  invariants.
+- **window:** return-in-group (DF-W33), input-clock (DF-W18), menu-parameters (DF-W19), undo-settles (DF-W29),
+  grid-ticks (DF-W30), function-keys (WIN-01, with the `browserDevices` fixture under Pd).
+- **Mix View:** the cumulative branch of 22 November (DF-M62, Focus FIR work for DF-M13, the neutral EQ for
+  DF-M34, DF-M36's compressor test).
+- **devices:** perf-sampler, perf-debug-timeout (DF-E68 (c)), denormal-tail, shifter-nan.
+- **clones:** nine ADI-Shaper repairs, with win's casts and one `else` (C4702).
+- **win's own fixes on the links:** WTS-01's harness (a pending Play keeps the song position at 0; silence is
+  required only when no track monitors while stopped), `test_ui_document`'s `primeAt`, a Clang 14 capture in
+  `ui_mixer.cpp`, `returnInGroup` holding a copy of the node, and WTS-01 step 5b's real step (grouping takes the
+  return, the group is heard at -12 dB, a send from outside is refused, Undo restores). **WTS-01: 13 of 13.**
+
+**Held, not in this window.**
+- **engine:** the 15 PLAN rows logged after #715 (SRF-08, TM-IC-02/04, TM-SV-03/04, DEV-02/04/19/24,
+  TM-WT-02/03, MI-05, MX-32) and MI-04/MI-06 (fit-to-scale, invert, step): not among the queue's items 1 to 8.
+  tm-tt01-tempo-ramps fails `adi_transport_info_tests` (6) and `adi_scale_context_tests` (1), whose expectations
+  it changes on purpose, and has two implicit `int64_t` to `long double` returns (C4244).
+- **window-fn:** every branch. Items 9 to 18 and send-pan come after 3 December; `window-fn/function-keys` is a
+  second WIN-01 (the window lane's landed).
+- **window:** held-peak (DF-W32) waits for the Mixer sheet. WIN-01's moved tip c4a62e25d (the PC key-map goldens)
+  is not taken: the goldens lack Options ids 29050 to 29052, and `*.txt` has no `eol=lf` rule for a Windows
+  checkout.
+- **clones:** shaper-split-slew contradicts shaper-split-spacing (its 32 kHz case needs an edge above spacing's
+  measured limit); shaper-audio-retrigger is after 3 December; #716 (the panel) waits on the window lane's four
+  findings, all in the seat's files.
+- **devices:** the .amxd chain, the DEV-22 effects stack, hybrid-reverb-nupc (after 3 December).
+- **engine-win:** the export chains, the 19 November set, export-format-name-tokens (needs a rebuild on main and
+  a ruling: it serves multi-format delivery), and three withdrawn branches.
+
+**DEFERRED, on this PR** (each row checked against the code at c0a8f9bb4 by a reader and a second, skeptical
+reader; nothing run here beyond the landing's own CI).
+- **Closed:** DF-E35, E47, E64; DF-W18, W19, W29, W30, W33; DF-M62.
+- **Partly, still open:** DF-E17 ((a)'s overlap only), DF-E68 ((c) done), DF-M13 (counted work cut; the timed
+  pass waits on the director), DF-M34 (Limiter and stateful EQ modes left), DF-M36 (built-in host test and the
+  engine's review left).
+- **New:** DF-E71 (engine-win: GCC 13 rejects a range loop in `tests/scanner_session_reopen.hpp`, from the window
+  log), DF-E72 (engine-win: a held Play has no time limit).
+- **Next free:** DF-E73, DF-W40, DF-M67, ADR-0253 (DF-M66 added after this entry: a flaky Focus mailbox check on main).
+
+---
+
+## 2026-11-23, later — follow-ups: nine rows closed, two rows added, step 5b's text, a scrub
+
+**DEFERRED, on this PR** (main 7aa3ab58, #720; each closed row checked against its code and tests).
+- **Closed:** DF-E16 (#685, #718); DF-E20 (a) to (e) (#677; #651 through #685; #686; #688; #718); DF-E22
+  (#677); DF-E23 (#677, and ADR-0248 d6's default in #685; what is left belongs to PLAN DEV-23's own gates);
+  DF-E30 (a) to (c) (#677); DF-E57, E59, E60, E61 (#708).
+- **New:** DF-E70 (engine seat): `clip.resize` keeps a fade longer than the clip, so a Warp clip trimmed below
+  its fade-in can no longer be copied, cut, duplicated or split; win's probe on main fails 2 of 8 checks, Warp
+  only. DF-M65 (Mix View seat): `mix_function_host.cpp` and `mix_compressor_host.cpp` compile without
+  `-ffp-contract=off`; no test fails today, the first exact Clip-control test would fail on macOS only.
+- **DF-W33's trigger is met** (DF-E22 on main); its rule is on `window/return-in-group`. It is the window
+  lane's: the entry below names window-fn for it, which is wrong.
+- **Next free:** DF-E71, DF-M66; DF-W40, ADR-0253 and N69 unchanged.
+
+**WTS-01 step 5b.** `tests/acceptance/**` is win's. The step's text now says what it waits on: DF-W33 on
+`window/return-in-group`, with the engine's half (DF-E22) on main since #677. Text only; the step is unchanged.
+
+**Scrub of the public text.** Neutral wording replaces inspection-tool names, machine names and hardware,
+private paths and private research file names in `collab/clones.md`, `docs/DAW-RESEARCH-INTEGRATION.md`,
+four prompts, this log, `collab/linux.md`, `collab/mac.md`, `collab/window.md`, a parity note, a handoff,
+`docs/LANES.md`, `docs/BUILD-BRIEF.md` and `docs/STEP-7-PLAN.md`. Meaning unchanged. Not edited: four
+passages of `docs/DECISIONS.md` (the ADR log is append-only; a redaction there is the director's call) and
+three files outside `adi_daw/`.
+
+**PR-request duty** (main 7aa3ab58). About 110 requests are ready and have no PR; win opens them separately,
+as stacks where they stack. "Conflict" means the branch does not merge cleanly into main.
+- **The two asks in the entry below are answered:** the engine log of 22 Nov already reviewed
+  `engine-win/play-first-block` 01b1e723 and engine-win requested it that day (it conflicts in
+  `window_state.hpp`, window-fn's to reconcile); `devices/perf-debug-timeout` was requested on 22 Nov.
+- **window** (22 Nov, all conflict): `return-in-group` b882c743 (DF-W33), `browser-devices-test` 88649293,
+  `grid-ticks` f2bc7285 (DF-W30), `input-clock` b57b118e (DF-W18), `menu-parameters` 3b4a35cb (DF-W19),
+  `undo-settles` 03941fea (DF-W29), `held-peak` 8b527bbb (DF-W32), `function-keys` 724851f5 (WIN-01).
+- **window-fn** (23 Nov): `function-keys` 97036ee9 (the same WIN-01; the window log's split gives it to the
+  window lane), `send-pan` d0b88a02, `summing-drive` 1e2915b9, `loop-record` e2164d45, `tap-quiet` 608e3c02,
+  `automation-curves` 920e68e6 (the last three conflict), `note-batch` 52a803f9, `n64-snapshot-arm` d7ee1334,
+  `open-saved-path` 2dac3567; `shaped-dither` 93f7541b waits on `engine-win/export-quantizer`.
+- **engine** (22 Nov): `mx23-track-delay-preview` b33398f6 (conflict), `tm-tt01-tempo-ramps` 8f0705db,
+  `tm-sv01-launch-quantization` a676ca80, `empty-project-cost` 899a3a26, `mi06-fit-to-scale` e6d0c93c, then
+  `mi04-invert-selected-pitches` c7c7927a and `mi04-step-scale-degrees` c3b86647 (all three conflict),
+  `tm-wt02-interior-warp-markers` 6fa013a5, `tm-wt03-native-warp-interpolation` 7745cd4b then
+  `tm-wt03-beats-zero-crossing` c52e6ccd, `dev19-device-scale-timeline` 33880f60 then
+  `dev19-clip-local-device-scale` ad26772c and `dev24-track-processing-time` a16019c0 (both conflict),
+  `dev24-callback-load-meter` 72679a12, `tm-sv03-launch-gestures` 39ed4325 then `tm-sv04-follow-targets`
+  59056abc, `dev02-chain-zone-admission` 61e95403 then `dev04-drum-pad-routing` b1b50df2 (both conflict),
+  `srf08-mcu-fader-feedback` 52563508 then `srf08-hui-wire` 34db3323, `srf08-mcu-lcd-feedback` 961a0cb4 and
+  `srf08-mcu-vpot-wire` 5f41d14d, `tm-ic02-smf-codec` ec515123, `tm-ic04-compound-file` 3ff8ba64,
+  `mx32-vst3-context-fixture` db99def9, `mi05-seeded-note-timing` 4bc52ffc (conflict),
+  `df-e17-edit-invariants-current` 4eda2b5b (conflict; on `engine-win/take-lane-snapshot`). To close as
+  superseded: `df-e23-followups-staged`, `mi08-expression-units-current`, `mi08-expression-playback-current`
+  and six older heads.
+- **engine-win** (22 Nov): `play-first-block` 01b1e723 (conflict), `take-lane-snapshot` 430ea825 (conflict),
+  `take-lane-edit-scope` 4c2b07f3, `midi-loop-takes` a889fa3e, `recording-placement-offset` 01abcaa3,
+  `hosted-workers-current-main` 8d10b9a5, `worker-rejection-evidence` 310e3691,
+  `scanner-paused-reader-proof` b944e252, `source-hash-memo` 03c440ab, `project-cloud-backup` 25bf2855,
+  `project-sync-folder` 2a2d0f96, `export-file-converter` dae10235, `after-export-import` 86b3c519,
+  `export-loop-tails` d84677d2 (the last three conflict); `export-meter-statistics` a1daa886 then
+  `export-normalization-targets` e8c029d4 and `export-analyze-only` 435c4365 (conflict); on
+  `export-quantizer` 7a9fe563 (EX-06, waiting for its M5 turn): `export-flac-writer` d54c75a8,
+  `export-aiff-writer` 90a3b1e5, `export-wav-speaker-mask` 2b5a5da8 (all conflict). From 20 Nov, each waiting
+  for the engine's review and in conflict: `mpe-held-notes` fc2d0a7b, `midi-capture-clock` f26730fb,
+  `project-check-journal-targets` 55f20c8c. The five combined export candidates carry branches held until
+  after 3 December.
+- **mixview** (22 Nov): `review-cumulative-20261122` e665a9aa, which joins the eight before-3-December fixes
+  and merges cleanly. Its log's "existing #558" (3c767304) is stale: #558 is closed, landed through #712.
+- **clones** (22 Nov, all merge cleanly): `shaper-split-slew` ef2ca023, `shaper-three-band-split` 42c4135a,
+  `shaper-split-spacing` 34ee3fbd, `shaper-crush-clock-precision` 51901a1a, `shaper-crush-endpoint` 761744fb,
+  `shaper-crush-resolution` 2afb86d5, `shaper-pan-edge` 82caa7d5, `shaper-crush-hold-grid` 9925a705,
+  `shaper-audio-retrigger` e08b932f, `shaper-session-gate` 046e5248, `shaper-drive-deadline` 44de27f0.
+- **devices:** `shifter-nan` 14472a18; `perf-sampler` d7ab9897 then `perf-debug-timeout` a4146193 then
+  `denormal-tail` a53b1e68; the `.amxd` chain (`amxd-translator` 74aefaff to `amxd-audit` 9fc81e1d) waits on
+  win's ruling, since #706 holds translator steps 3 and 4 while DEV-16 holds at step 2.
+- **gemini:** none; its requests landed in #713.
+- **Held for after 3 December:** engine 25, engine-win 26, mixview about 39, clones 14, devices the DEV-22
+  stack and five more, window-fn `split-pan`. Open PRs: #716 (draft, held), #665 and #663 (not requested
+  now), #210 (green since 30 September, never merged).
+
+---
+
+## 2026-11-23 — what landed 22-23 November; gemini's sanitizer round; rulings
+
+**For every seat — read first.** Main is at 7e3e627d (#718). What landed on 22 and 23 November:
+- **#677 (engine):** a return can sit inside a group and a send has its tap (DF-E22); hosted plug-ins can
+  run on the graph's workers (DF-E23's first half; on by default only after the Windows measurement); EQ Eight
+  bit-exact again on macOS.
+- **#706 and #708:** the devices lane's and the clones seat's landing windows.
+- **#707 and #709 (win):** the review of the gemini trial; a standing queue for every seat.
+- **#710 and #712 (Mix View, windows 1 and 2):** #651's follow-ups, the device keys (DF-M60 (a), (b), (d)) and
+  the folded pill; #712 carried #555, #558, #560-#562, #564, #566, #567, #570, #572 and #573: the filters, the
+  de-esser, the key EQ, the clean key, the opto gain and the gate.
+- **#714 (win):** PROVENANCE read as UTF-8.
+- **The 22 November stack, landed through its top, #718, on 23 November** (#711, #713 and #715 show as merged):
+  - **#711 engine-win:** the recorder no longer sticks after a disk error (DF-E44, with N66), the scan cache
+    drops and refreshes what it should (DF-E62), N62, N68, #642's acceptance CI and the worker measurement kit.
+  - **#713 gemini:** DF-E53 (a lane's `param_ref` canonical) and DF-E56 (MpeRouter on a full list), with the
+    review's fixes.
+  - **#715 engine:** one nanosecond-to-tick conversion (DF-E63); MI-08's note expressions read, their units and
+    playback; CT-03's notes for a new clip; N63, N64, N67; DF-E55 (a); the parameter receipts; DF-E27 (f) and (g);
+    one buffer per VST3 bus (DF-E24 (a)); a diagnostic for DF-E10; PD-03's snapshot of everything; and win's N67
+    changeset patch (90da32b0).
+  - **#718 window-fn:** live MIDI into a track (N60), the lane chooser (DF-W37), Auto monitoring, Delay
+    Compensation (MX-04), cueing (MX-08), the browser fixture, the window's row ids (DF-E16's half), the Save As
+    guard, DF-E44's discard in the window, the MIDI port name, Re-Enable Automation (DF-W38), and the test that
+    Duplicate and Paste clear what they land on (DF-W28).
+- **Held:** #716, the clones panel (draft), for the window lane's four items and the GCC `-Wconversion` casts.
+
+**DEFERRED, on this PR** (each row checked against the code and its tests on main; nothing built or run).
+Closed: DF-W1, W9, W25, W34, W35, W36, W37, W38; DF-E1, E2, E3, E4, E5, E7, E9, E11, E13, E14, E15, E18,
+E24, E27, E44, E48, E49, E53, E55, E56, E62, E63; DF-M14, M43, M44, M45, M56, M57, M58, M59, M60. Partly done,
+still open: DF-W28 (a dropped file, the planner's refusals, Live's measurement), DF-E26 ((c) is win's for the
+director), DF-E29 ((e) is parked for the director), DF-M46 (the audible CLAP key). DF-E10 stays open: only a
+diagnostic landed, and the row's remedy (`RESOURCE_LOCK adi_link_network`) was in place before the failure; it
+becomes "watch for a recurrence with the diagnostic". Read more lightly, to close after a full check: DF-E16,
+E22, E30, E57, E59, E60, E61 (done); DF-E20 (a, b) and DF-E23's first half (done, the rest open). New: DF-M63,
+M64, DF-W39, DF-E65 to E69, and DF-E12's cause (below).
+
+**WTS-01 on the new top: 17 of 18.**
+- **2b** (play the take back) still fails: DF-E64. engine-win's `engine-win/play-first-block` (01b1e723) passes
+  2b on Linux bit for bit, and 5a, 7b and 7c from frame 0 too (gemini, fe76899d). **The engine** re-reviews that
+  head; **engine-win** then writes "PR requested" for it.
+- **5b** (a return inside a group): the engine's half is on main since #677. Left: **window-fn**'s grouping rule
+  for a return, then **win**'s acceptance step. The harness's 5b text (`tests/acceptance/test_session_wts01.cpp`
+  523 and 558) still names #677 as missing; win corrects it with that step.
+
+**Asks.**
+- **The engine:** review win's N67 changeset patch (90da32b0, on main through #715): in the inverse,
+  `track.create`'s `monitorMode` is replay data, not a before-state. And re-review `engine-win/play-first-block`
+  at 01b1e723.
+- **engine-win:** "PR requested" for `engine-win/play-first-block` after that review. DF-E12 is yours now
+  (publication, ADR-0246 d4): gemini found its cause.
+- **devices:** write "PR requested" for `devices/perf-debug-timeout` (a4146193): it runs
+  `adi_builtin_realtime_tests` in 152.8 s in Debug, where main runs past the 900 s timeout (DF-E68 (c)).
+- **The window lane:** the four items #716 waits on, then the GCC `-Wconversion` casts on its branch.
+- **Closing:** `engine/df-e23-followups-staged` (72dfdc77) is superseded by #677, as the engine log says;
+  delete it when you next push.
+
+**Rulings (win, 23 November).**
+- **Gemini's findings are registered as rows for their owners; gemini does not fix them.** From its sanitizer
+  and compiler round on main abbc32ab: DF-M63 (the gate's test processes freed buffers, ASan) and DF-M64 (the
+  opto gain test's wrapping span, `_GLIBCXX_DEBUG`), the Mix View seat's; DF-E65 (two Ogg decoders race on
+  stb_vorbis's CRC table, TSan), the engine's; DF-E12's cause (a lease keyed on an inode that ext4 recycles
+  while its lock is held; an orphan file on a refused lock; an unchecked pointer in the test), engine-win's;
+  DF-E66 and DF-E67 (test harnesses replacing `operator new` without its nothrow and aligned forms; the Pd
+  tier's one-byte leak in `canvas_setargs`; low), the engine's and the devices lane's; DF-E68 (Vocoder's p99,
+  Hybrid Reverb's cost, the Debug timeout), the devices lane's; DF-E69 (Clang 14's five front-end errors), the
+  engine's; DF-W39 (`adi_ui_seams_tests` with GCC 12), window-fn's.
+- The review's candidate, a warped clip shortened past its fade-in failing Freeze and Split
+  (`clip_commands.cpp` 122-124, the twin of DF-E27 (a)), becomes a row only after a probe, at the next free id.
+- **Public text:** the private research folder's path is gone from `docs/DAW-RESEARCH-INTEGRATION.md` and
+  `collab/clones.md`, and the other local paths from the logs, prompts and docs.
+- **Next free:** ADR-0253 (ADR-0252, the gemini seat made permanent as the verification seat, landed in
+  #719 on 23 November); DF-E70, DF-W40, DF-M65.
+
+---
+
 ## 2026-11-22 — standing queues for every seat; the window-fn split
 
 **For every seat — read first.** The director asked why the seats keep stopping. The cause was win's: the
@@ -504,7 +948,7 @@ it in your log first.
   5. #530's linear B2 test uses a zero ns offset, so it proves only the clamp. Add a case with a one-sample offset.
   6. Count-in clicks are not on the latency-compensated clock (outside review 3.2), so with a latency-reporting plug-in, bar 1 lands that many samples after the count-in's grid. When the latency exceeds a beat, it needs a decision: extend the count-in, or let the metronome emit count-in beats. Measure Live first.
 
-**The outside reviews (Gemini via Antigravity), each claim checked twice against the code with probes:**
+**The outside reviews (the gemini seat), each claim checked twice against the code with probes:**
 - **Round 2,** on #520, #522 and #527: 8 claims; 5 real or partly real (all minor), 1 false, 2 harmless. Fixed in #529 (deferred foreign keys leaking out of compaction's rolled-back probe; leftover files on a failed project creation) and on #527 (count-in on device stop).
 - **Round 3,** on #515 and #530 to #533: 17 claims; 15 real or partly real (all minor), 2 false.
   - #535 fixes #515's follow-ups: the worker no longer claims a ready page of its own request; reservations stop at End; a muted clip opens nothing; three tests now prove what they say.
@@ -552,7 +996,7 @@ code; win reruns them as the mirror recovers and merges nothing on a red leg.
 
 **#512, the control MCP slice (ADR-0233), is held for the director.** Its head `5eab55a4` passes
 every leg that ran, apart from the outage legs above. It waits for his rulings on Q-O (where the token lives)
-and on consent before AGT-03 (ADR-0233 d8), and for his go. His Antigravity (Gemini) round was
+and on consent before AGT-03 (ADR-0233 d8), and for his go. The gemini seat's review round was
 verified claim by claim: the real findings are fixed in `5eab55a4`; the rest were misreadings.
 
 **FilmCraft (ADR-0234, #513).** At the director's word, the FilmCraft integration plans are
@@ -694,7 +1138,7 @@ finisher from the start.
 **The Live 12 readings, first checkpoint.** His seats on his second PC ran the brief of the 5th: measured
 the 70-colour palette in both themes, the Pre/Post colours through save and reopen, Insert Return with
 its undo; read the build, the settings census and the export census; the rest not run, the true-peak
-method invalid. Mission 2 is written, `NowWeReverse/Live12-readings/MISSION-2-2026-11-08.md`: 113
+method invalid. Mission 2 is written, in the private measurement folder: 113
 readings, part A for the Claude seat, part B for Codex, on his account with the manual's defaults.
 
 **ADI-View combined, the headless round.** Group 1 of the plan of the 5th ran while the builds ran:
@@ -776,12 +1220,12 @@ his words, STACK as each track's own devices until his list; Q-C (a), the contro
 its own (ADR-0232). M0 started at once: the records (landed on the 8th as #464 and #466) and W1, the
 StackModel, whose PR #463 opened in the evening.
 
-**The Live 12 readings and ADI-View.** The readings brief is written,
-`NowWeReverse/Live12-readings/BRIEF-2026-11-05.md`: 122 readings by milestone, on a fresh Live profile
+**The Live 12 readings and ADI-View.** The readings brief of 5 November is written,
+in the private measurement folder: 122 readings by milestone, on a fresh Live profile
 on his second PC; G-1 answered, he runs it with his own seats, from Sunday. He called the three plug-ins'
 current builds good enough and handed a new brief, the ADI-View combined retest against five analyser
 references, with a standalone test app to be built by Codex; the plan is in
-`NowWeReverse/UI-Testing/20261105T1420-adi-view-combined-reference` (plan, handoff to Codex, report,
+the 5 November combined-view reference round, in the private test folder (plan, handoff to Codex, report,
 evidence index, three mock-ups, decisions D1 to D13): group 1 headless tonight while Codex builds,
 group 2's CPU cells once the machine is quiet.
 
@@ -1050,7 +1494,7 @@ view says UNKNOWN. The window lane rebases it and win merges it when green.
 `tools/test_all.sh build` **9915 checks across 107 suites**, validators clean. The README's count
 line is set to that in this PR.
 
-**The director's build refreshed (ADR-0210 d6, LANES §5):** `D:\adi-ui\adi_app_artefacts\Debug\ADI.exe`
+**The director's build refreshed (ADR-0210 d6, LANES §5):** `adi_app_artefacts\Debug\ADI.exe` in his build folder
 rebuilt from `add5102` at 18:23 (Ninja, Debug, JUCE on, Pd off, `/WX`), clean. It carries the Mix
 View button and F4, the STACK tab and the ★ Reference strip, the send knobs, the volume floor, the
 audio drop, the range selection and the Settings tabs in Live's order. Handed to the director with
@@ -1062,7 +1506,7 @@ plan already (the window lane builds on stubs; the first-window gate is his), an
 the model, not the audio: most of the window's dead buttons wait on engine needs, so pausing it makes
 the build he reviews worse. Both lanes continue; his remarks on the exe are the review step.
 
-**Housekeeping:** the worktrees of merged PRs (`D:\wt-engine-merge`, `wt-mref13`, `wt-msvc`,
+**Housekeeping:** the worktrees of merged PRs (`wt-engine-merge`, `wt-mref13`, `wt-msvc`,
 `wt-n2`, `wt-n35`, `wt-n36`, `wt-relay`, `wt-ruled`, `wt-rulings`, `wt-settings`) removed after a
 check that none held unmerged commits or uncommitted work (only N35's ignored renders).
 
@@ -1134,7 +1578,7 @@ leg, which hung once and was re-run, is green. Nothing of the lanes is left open
 #207, #208, #210.
 
 **The window opened on this PC.** Built as `.github/workflows/ui.yml` does (Ninja, Debug, JUCE on, Pd
-off, `/WX`): `D:\adi-ui\adi_app_artefacts\Debug\ADI.exe`. Live's layout; the three UI suites pass
+off, `/WX`): `adi_app_artefacts\Debug\ADI.exe` in the director's build folder. Live's layout; the three UI suites pass
 (55, 38 and 438 checks). One thing for the window lane's queue: on start an alert says
 `audio.bufferSize does not offer 480` on this machine's device; the Settings page should offer what
 the device offers and fall back without a dialog. Handed to the director with this entry (ADR-0210 d6).
@@ -1266,7 +1710,7 @@ this one task only; it stays retired (ADR-0202).
 **Measured on main at `cf20417`:** 7826 checks across 95 suites (README still says 7682/93; win
 updates it with the next merge to main, as the rule says).
 
-**Worktrees on this PC** are at `D:\wt-<topic>` rather than `Adi-wt\<topic>`: JUCE builds need
+**Worktrees on this PC** are at `wt-<topic>` on a drive root rather than `Adi-wt\<topic>`: JUCE builds need
 short paths, and the main checkout is the drone's.
 
 ---
@@ -1275,15 +1719,14 @@ short paths, and the main checkout is the drone's.
 
 **Why:** the director moved the Windows lead to a new PC. The old PC keeps its other roles; its ADI drone tasks stop there and move here.
 
-**The machine:** Windows 10 IoT Enterprise LTSC 2021 (build 19044), i7-4930K (no AVX2),
-16 GB, GTX 1070 (8 GB). The repo is at `D:\Documents\GitHub\Adi`, no longer
-`C:\Users\Adi\Documents\GitHub\Adi`; worktrees go under `D:\Documents\GitHub\Adi-wt\`.
+**The machine:** Windows 10 IoT Enterprise LTSC 2021 (build 19044), an older desktop without AVX2.
+The repo is outside the user profile; worktrees go under `Adi-wt\` beside it.
 
 **The toolchain is the old PC's, component for component:**
 - VS 2022 Community 17.14.41 at the default path, installed from the old PC's exported `.vsconfig`
   (27 components). MSVC 14.44.35207 (cl 19.44.35229), with the bundled CMake 3.31.6 and Ninja 1.12.1.
 - Python 3.14.7 and Node 24.19 LTS.
-- Ollama 0.35.0 with qwen2.5-coder:7b, 100% on the 1070. It runs through the CUDA 12 runner, because
+- a local LLM for the drone, on the GPU. It runs through the CUDA 12 runner, because
   the CUDA 13 runner no longer supports compute 6.1.
 
 **Measured on main at db6cac9:**
@@ -1294,10 +1737,10 @@ short paths, and the main checkout is the drone's.
 **The copy was checked, not re-cloned:**
 - `git fsck` is clean, and every branch's commits are on origin.
 - The old PC's eight worktree registrations are pruned.
-- The AdiGuard worktree `adiguard-osc4` is re-pointed at the D: path.
+- The other project's worktree is re-pointed at the new path.
 
 **Still to do:**
-- The drone tasks (`adi-drone`, `adi-drone-a2000`) are recreated here once their state is copied.
+- The drone's scheduled tasks are recreated here once their state is copied.
 - The Vital fork checkout still sits at `adi-vst/vital`; `.gitignore` expects `adi-vital/vital`.
 
 ---

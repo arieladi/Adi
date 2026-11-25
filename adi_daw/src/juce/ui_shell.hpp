@@ -14,6 +14,7 @@
 #include "adi/ui/momentary_latch.hpp"
 #include "adi/ui/reference_audition.hpp"
 #include "adi/ui/tap_tempo.hpp"
+#include "ui_input_clock.hpp"
 #include "adi/ui/snapshot_reader.hpp"
 #include "adi/ui/window_state.hpp"
 #include "ui_arrangement.hpp"
@@ -21,6 +22,7 @@
 #include "ui_browser.hpp"
 #include "ui_controlbar.hpp"
 #include "ui_look.hpp"
+#include "ui_place.hpp"
 #include "adi/clip_commands.hpp"
 #include "ui_devices.hpp"
 #include "ui_clipview.hpp"
@@ -28,6 +30,7 @@
 #include "ui_mixer.hpp"
 #include "ui_mixview.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
+#include <juce_gui_extra/juce_gui_extra.h> // the Shortcuts page's key editor (WIN-04)
 #include <functional>
 #include <memory>
 #include <optional>
@@ -159,10 +162,29 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         FitToTimeRange, // the Note Editor's (manual 10.5.5), Ctrl/Cmd+Alt+J
         ArrangementRecord, // the Control Bar's Arrangement Record (manual 21.1), F9
         ExportAudio,       // the File menu's Export Audio/Video (manual 5.2.1), Ctrl/Cmd+Shift+R
-        LastId = ExportAudio
+        DelayCompensation, // Live's Options > Delay Compensation (manual 18.7; MX-04)
+        SoloSwitches,      // Live's Options menu (manual 18.6; MX-08): the Solo buttons solo
+        CueSwitches,       // ... or cue, sending the track to Cue Out
+        HelpManual,        // the Help menu's manual (WIN-09)
+        KeyboardReference, // the Help menu's keyboard reference, written from the keys in force (WIN-09)
+        LastId = KeyboardReference
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
+    // WIN-04: each command's stable text id ("view.browser", "edit.redo"), never renumbered, the list
+    // only growing; its category, the Live menu that holds it (Transport, Arrangement and Mixer for the
+    // commands no menu holds: keys and controls only); the command a stable id names (0: none).
+    static const char *stableId(int id) noexcept;
+    static const char *category(int id) noexcept;
+    static int commandFor(const std::string &stableId) noexcept;
+    // A chord as canonical text, the same on every platform ("Cmd+Alt+B", "F4", "Space"): Cmd is the
+    // command key (Ctrl off the Mac), Ctrl the Mac's own; then Alt, Shift, the key. And back.
+    static std::string chordText(const juce::KeyPress &);
+    static std::optional<juce::KeyPress> parseChord(const std::string &);
+    // The keys that differ from the key map's, as shortcuts.overrides holds them; written only when
+    // they differ from what it holds (false with why when the write fails).
+    settings::Value userKeys() const;
+    bool storeUserKeys(std::string &why);
     bool key(const juce::KeyPress &, AdiRootComponent &);
     void activate(AdiRootComponent &);
     void detach(AdiRootComponent &);
@@ -180,6 +202,11 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     // How Follow keeps the playhead on screen: by page (Live's default), or by scrolling.
     bool followByPage() const noexcept { return followByPage_; }
     bool setTabMovesFocus(bool on, std::string &why);
+    // Live's Options > Delay Compensation (manual 18.7; MX-04; `audio.delayCompensation`, on by
+    // default): every track lined up with the slowest chain. Off, nothing is compensated and Track
+    // Delay is unavailable, its stored values kept. An application setting, not an undo step.
+    bool delayCompensation() const noexcept { return delayCompensation_; }
+    bool setDelayCompensation(bool on, std::string &why);
     // Live's Wrap Tab Navigation (§41.1.1), on by default: Tab from an area's last control
     // returns to its first; off, it stops there.
     bool wrapTabNavigation() const noexcept { return wrapTab_; }
@@ -193,6 +220,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     // Auto-Hide Plug-In Windows and Plug-in windows always on top.
     bool multiplePluginWindows() const noexcept { return multiplePluginWindows_; }
     bool autoHidePluginWindows() const noexcept { return autoHidePluginWindows_; }
+    // Live's Auto-Open Plug-In Windows (manual 23.3.1.1; plugins.autoOpenWindows, on by default).
+    bool autoOpenPluginWindows() const noexcept { return autoOpenPluginWindows_; }
     bool pluginWindowsOnTop() const noexcept { return pluginWindowsOnTop_; }
     // Live's Exclusive Solo (Record, Warp & Launch Settings), on by default: soloing a track unsolos
     // the others unless Ctrl/Cmd is held.
@@ -250,7 +279,9 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     int tooltipDelayMs_ = 600;
     bool zoomOnSelection_ = true;
     bool tabMovesFocus_ = false;
+    bool delayCompensation_ = true;
     bool multiplePluginWindows_ = false, autoHidePluginWindows_ = true, pluginWindowsOnTop_ = true;
+    bool autoOpenPluginWindows_ = true;
     bool wrapTab_ = true, arrowKeysMoveClips_ = true;
     bool followByPage_ = true;
     bool exclusiveSolo_ = true;
@@ -259,6 +290,28 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     bool linkLoop_ = false;
     bool splitAll_ = true;
     ClipClipboard clipClipboard_;
+};
+// WIN-04: the Settings window's Shortcuts page, in place of the shortcuts.overrides row: JUCE's key
+// mapping editor on the application's commands, under Live's menus, in the theme's colours. Each change
+// is written to the record at once, and only when the user's keys differ from what it holds; when the
+// write fails, why shows under the editor.
+class ShortcutsPage final : public juce::Component, private juce::ChangeListener {
+  public:
+    explicit ShortcutsPage(AppCommands &);
+    ~ShortcutsPage() override;
+    void paint(juce::Graphics &) override;
+    void resized() override;
+    juce::KeyMappingEditorComponent &editor() noexcept { return editor_; }
+    const std::string &error() const noexcept { return error_; }
+    // Writes the user's keys now (the change message comes later, on the message loop).
+    void store();
+    static constexpr int kHeight = 440, kErrorHeight = 20;
+
+  private:
+    void changeListenerCallback(juce::ChangeBroadcaster *) override;
+    AppCommands &commands_;
+    juce::KeyMappingEditorComponent editor_;
+    std::string error_;
 };
 // Live's Status Bar (manual 3.2): messages along the window's foot, with the
 // Info View's show/hide toggle in its bottom-left corner (manual 2.2.2).
@@ -302,6 +355,10 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // of 500 ms or more goes back (Live 42.25).
     bool keyStateChanged(bool isKeyDown) override;
     bool command(int);
+    // Live's Insert Return Track (§18.4; Ctrl/Cmd+Alt+T): a return after the others, named by its
+    // letter, selected; the returns shown again if they were hidden. With `group`, Insert Return Track
+    // in Group (ADR-0247 d2): inside it, after what it holds, lettered with its initial ("DA").
+    bool insertReturnTrack(std::int64_t group = 0);
     void mark(unsigned bits) noexcept { dirty_.mark(bits); }
     const SnapshotReader &reader() const noexcept { return *reader_; }
     bool playing() const noexcept { return playing_; }
@@ -330,7 +387,12 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // What the Status Bar says when there is no message: Live's line for the insert
     // marker or the time selection.
     juce::String selectionText() const;
-    bool canUndo(bool redo) const { return redo ? submitter_.canRedo() : submitter_.canUndo(); }
+    // Undo can act with a knob edit still held (DF-W29): it commits it first, then takes it back, so
+    // a project's first edit is undoable at once. Redo cannot: that commit clears what Redo would do.
+    bool canUndo(bool redo) const {
+        const bool held = editsHeld && editsHeld();
+        return redo ? submitter_.canRedo() && !held : submitter_.canUndo() || held;
+    }
     // What Live's Edit menu shows: "Undo" and the step's own label, or "Nothing to Undo" with no
     // step (Live 12's menu, the director's LK-02 capture; Readings M1-16a); the same for Redo.
     std::string undoTitle(bool redo) const;
@@ -338,6 +400,11 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // the engine refresh after an edit belong to whoever owns the document.
     std::function<bool(int)> applicationCommand;
     std::function<void()> afterEdit;
+    // Commits the parameter edits the document still holds before Undo, Redo or a restored step acts
+    // (DF-W29); false, with the document's reason said, when it could not.
+    std::function<bool()> settleEdits;
+    // Whether the document holds parameter edits Undo would commit first (DF-W29).
+    std::function<bool()> editsHeld;
     // Reads a dropped file and captures its media row, writing nothing (the document's
     // `prepareImport`, #308); false with `why` when it can't. Unset, a drop says it needs one.
     std::function<bool(const std::string &utf8Path, AudioImport &, std::string &why)> importAudio;
@@ -363,6 +430,14 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // Live's Export Audio/Video (EX-11): the application shows the Export page with these choices, the
     // render range the selection, else the loop, else the whole song. Unset outside the application.
     std::function<void(const ExportChoices &)> exportAudio;
+    // Opens a Help target (WIN-09): the manual's address, or the keyboard reference's file. Empty, the
+    // system's browser opens it; a test puts its own here.
+    std::function<bool(const juce::URL &)> openHelp;
+    // The manual the Help menu opens: Live 12's, which ADI's behaviour is written against (ADR-0203
+    // d1), until ADI has its own (the director's question in the window log).
+    static constexpr const char *kManualAddress = "https://www.ableton.com/en/live-manual/12/";
+    // The keyboard reference: every command with the keys it has now, as a page; its file.
+    juce::File writeKeyboardReference() const;
     // The Export page's starting choices, from the frame's snapshot and selection.
     ExportChoices exportDefaults() const;
     // A mixer drag heard while it moves (MX-23, SRF-02): the document's live gesture. The strip begins it
@@ -374,6 +449,13 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     std::function<bool()> endMixerDrag;
     std::function<void()> cancelMixerDrag;
     std::function<bool()> reenableAutomation;
+    // The session follows Options > Delay Compensation (MX-04): set by the application, called when
+    // the command toggles the setting. Unset, the setting changes and the session hears it at the next
+    // project open.
+    std::function<bool(bool)> applyDelayCompensation; // false: refused, and the reason said
+    // How many outputs the audio device has open (the highest open channel's number), for Cue Out's
+    // stereo pairs (MX-08). Unset or 0: none known, and Cue Out offers only 1/2.
+    std::function<int()> outputChannels;
     // Live's per-parameter Re-Enable Automation (manual 25.4; AU-04): one overridden lane follows its
     // envelope again; false with the reason said. Session state, no undo step, as the global switch.
     std::function<bool(std::int64_t)> reenableLane;
@@ -477,6 +559,10 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     static std::string pluginWindowKey(std::int64_t device);
     // Each frame: Auto-Hide and Show/Hide applied, Always on Top followed.
     void followPluginWindows();
+    // WIN-03, Live's Auto-Open Plug-In Windows: a plug-in just added opens its window once the device
+    // feed shows it (within a second of frames), when the setting is on. The app calls it after an
+    // insert lands.
+    void pluginAdded(std::int64_t device);
     // Live's Show/Hide Plug-In Windows (Ctrl/Cmd+Alt+P): every plug-in window at once.
     bool pluginWindowsShown() const noexcept { return pluginWindowsShown_; }
     // A built-in device loaded from the browser (D4): the app wires the load (`insertBuiltin`, one
@@ -529,6 +615,9 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     const MomentaryLatch &latch() const noexcept { return latch_; }
     void letGoUnseen() noexcept { latch_.letGo(); }
     const ReferenceAudition &reference() const noexcept { return reference_; }
+    // Where the window reads the time and the keys held (ADR-0231 d2; DF-W18): the system's unless a
+    // test gives its own.
+    InputClock input;
     // The ★ Reference track, or 0 when no track is it.
     std::int64_t referenceTrack() const noexcept;
     MixerViewResizer mixerViewResizer{*this};
@@ -619,12 +708,38 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     bool automationMode() const noexcept { return automationMode_; }
     void setAutomationMode(bool on);
     bool addAutomationPoint(std::int64_t track, std::int64_t tick, double value);
+    // Live's lane chooser (DF-W37; manual 25.2): what a track's lane shows in Automation Mode, its
+    // Volume until another is chosen; a choice whose device or send is gone reads as Volume again.
+    // Window state, kept while the window lives.
+    AutomationTarget automationTarget(std::int64_t track) const;
+    std::vector<AutomationTarget> automationChoices(std::int64_t track) const;
+    // Shows `target` on its track's lane and turns Automation Mode on (Live's Show Automation).
+    void showAutomation(std::int64_t track, const AutomationTarget &target);
+    // A device parameter's Show Automation, from its control's menu: false when it has no lane to show.
+    bool showDeviceAutomation(std::int64_t device, const std::string &parameter);
+    // The track and target a device parameter's Show Automation would show; none for one the engine
+    // would not play.
+    std::optional<std::pair<std::int64_t, AutomationTarget>> deviceAutomationTarget(std::int64_t device,
+                                                                                   const std::string &parameter) const;
+    // The target's value now, where its control stands: the line drawn while its lane has no point.
+    double automationCurrent(const AutomationTarget &target) const;
+    // The feed publishes a device's parameters only to a surface that demands it: while Automation
+    // Mode is on, or a chooser is built, this window demands every device, so any track's chooser lists
+    // its devices' parameters. Off, the demand goes.
+    void demandAutomationDevices(bool on);
     bool moveAutomationPoint(std::int64_t track, std::uint64_t point, std::int64_t tick, double value);
     bool deleteAutomationPoint(std::int64_t track, std::uint64_t point);
     // Live's Solo in Place (manual 18.6): soloing leaves the returns audible. The project's one
     // field, which the Solo button's menu and the Options menu's entry share (`mixer.setSoloInPlace`,
     // #412); outside undo, saved with the project; the session re-reads the project after it.
     bool setSoloInPlace(bool on);
+    // Live's cueing (manual 18.6; MX-08), each one transport op outside undo, saved with the project:
+    // Solo Switches or Cue Switches; a track's Cue button; Main's Cue Volume; Cue Out's stereo pair.
+    bool setCueMode(bool cue);
+    bool cueTrack(std::int64_t track);
+    bool setCueVolume(double db);
+    bool setCueOutput(int firstChannel);
+    bool submitCue(TrackEdit edit, const char *needs);
     // A track's Rec-Q or Play-Q ("off" or a grid) and its Keep Monitoring Latency in Recorded Audio
     // (#397, N31; MR V.2 §9; Live 12 manual 18.8), each one undo step. Nothing follows them yet.
     bool setQuantize(std::int64_t track, bool record, const std::string &choice);
@@ -731,9 +846,6 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
 
   private:
     bool insertTrack(bool midi);
-    // Live's Insert Return Track (§18.4; Ctrl/Cmd+Alt+T): a return after the others, named by its
-    // letter, selected; the returns shown again if they were hidden.
-    bool insertReturnTrack();
     bool deleteTrack();
     // Live's Group Tracks and Ungroup Tracks (manual 18.3), each one undo step.
     bool groupTracks(bool ungroup);
@@ -759,6 +871,8 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     std::optional<SnapshotReader> reader_;
     std::uint64_t generation_ = 0;
     bool pluginWindowsShown_ = true;
+    std::int64_t autoOpen_ = 0; // a plug-in added, its window to open (WIN-03)
+    int autoOpenFrames_ = 0;
     unsigned lastDrain_ = 0;
     bool playing_ = false;
     bool midiOverdub_ = false; // Live's MIDI Arrangement Overdub, off in a new Set
@@ -766,6 +880,8 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     RecordStates freshRecordStates() const { return readRecordStates ? readRecordStates() : recordStates_; }
     bool midiIn_ = false;
     bool automationMode_ = false;
+    std::map<std::int64_t, AutomationTarget> automationTargets_;
+    std::vector<std::int64_t> automationDemand_;
     bool infoShown_ = true;
     std::int64_t position_ = 0;
     double sampleRate_ = 0; // the device's granted rate, once a driver runs
@@ -813,6 +929,9 @@ std::optional<float> nextZoom(float now, bool in) noexcept;
 // monitors (JUCE exposes no stable EDID identifier); the one nearest a point on the screen.
 std::string displayId(const juce::Displays::Display &);
 std::string displayAt(juce::Point<int> screen);
+// WTS-01: a test launch (--smoke-output, --control-test): an instance of its own, never the running
+// copy's, which keeps its window out of the foreground and reports to stderr.
+bool isTestLaunch(const juce::String &commandLine);
 // Holds a root at its window's interface zoom: the root lays out in logical
 // units and the transform scales it, so nothing below knows the zoom exists.
 class ZoomHost final : public juce::Component {
@@ -855,7 +974,17 @@ class AdiWindow final : public juce::DocumentWindow, private juce::KeyListener {
     juce::MenuBarModel *menu() noexcept;
     // Placed, or moved onto another display: the root takes the zoom kept for it there (N4).
     void moved() override;
+    void resized() override;
+    // The displays changed (a monitor gone, another resolution or scale): the title bar kept on one.
+    void parentSizeChanged() override;
     void minimisationStateChanged(bool) override;
+    void broughtToFront() override;
+    // Where the window stands, saved after each move or size once it stands still (WIN-02).
+    PlaceWatch place;
+    // WTS-01: a test launch's window shows without taking the foreground (JUCE brings a window to the
+    // front as it shows); set before it is first shown.
+    bool quiet = false;
+    void visibilityChanged() override;
     // What the window keeps of the App settings, brought up to date: each frame does it.
     void followSettings();
     AdiRootComponent &root() noexcept { return *root_; }

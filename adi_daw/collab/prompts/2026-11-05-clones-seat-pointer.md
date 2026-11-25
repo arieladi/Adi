@@ -6,7 +6,7 @@ never merge, never touch main, never `git add -A`).
 
 **Where your brief is.** Your ADI-View Lab brief and your prompt are not in this repository. They
 are in the director's private round folder
-`NowWeReverse/UI-Testing/20261105T1420-adi-view-combined-reference`, in the file
+for the 5 November combined-view reference round, in the file
 `HANDOFF-TO-CODEX.md`, **section 3**. Read it there and work from it; nothing of it is copied
 here, because the plug-ins' internals stay private and this repository is public. The standing
 prompt of 25 October (`2026-10-25-clones-lane.md`) and the reference-reading prompt of 4 November

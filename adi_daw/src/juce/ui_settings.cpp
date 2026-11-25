@@ -457,6 +457,16 @@ void SettingsPanel::showPage(const std::string &name) {
         if (name == "Tempo & MIDI")
             order_.push_back(midi_.get());
     }
+    if (name == "Shortcuts" && shortcutKeys && !shortcuts_) {
+        shortcuts_ = shortcutKeys();
+        if (shortcuts_)
+            content_.addChildComponent(*shortcuts_);
+    }
+    if (shortcuts_) {
+        shortcuts_->setVisible(name == "Shortcuts");
+        if (name == "Shortcuts")
+            order_.push_back(shortcuts_.get());
+    }
     if (audio_) {
         audio_->setVisible(name == "Audio");
         if (name == "Audio")
@@ -473,6 +483,8 @@ void SettingsPanel::showPage(const std::string &name) {
                 // What the device chooser shows is not listed twice under it.
                 // The MIDI Ports table stands for the record's own row.
                 if (midi_ && name == "Tempo & MIDI" && s->key.rfind("midi.port", 0) == 0) // the record and its rows
+                    continue;
+                if (shortcuts_ && name == "Shortcuts" && s->key == "shortcuts.overrides")
                     continue;
                 if (audio_ && name == "Audio" &&
                     (s->key == "audio.driverType" || s->key == "audio.inputDevice" ||
@@ -531,6 +543,8 @@ void SettingsPanel::find(const juce::String &query) {
         audio_->setVisible(false);
     if (midi_)
         midi_->setVisible(false);
+    if (shortcuts_)
+        shortcuts_->setVisible(false);
     // Restoring defaults is a page's; the results are no page.
     defaults.setEnabled(false);
     rescanPlugins.setVisible(false);
@@ -545,7 +559,7 @@ void SettingsPanel::layoutRows() {
     const int width = std::max(0, scroll_.getWidth() - scroll_.getScrollBarThickness());
     int y = 0;
     for (auto *c : order_) {
-        const int height = c == audio_.get() || c == midi_.get()               ? c->getHeight()
+        const int height = c == audio_.get() || c == midi_.get() || c == shortcuts_.get() ? c->getHeight()
                            : dynamic_cast<SettingsHeading *>(c) != nullptr ? SettingsHeading::kHeight
                                                                             : SettingRow::kHeight;
         c->setBounds(0, y, width, height);
@@ -639,8 +653,35 @@ SettingsWindow::SettingsWindow(settings::AppSettings &store,
     setContentOwned(panel.release(), false);
     setResizable(true, false);
     setResizeLimits(500, 560, 2000, 1600);
-    // Live 11's Preferences open 500 by 607; ADI's has more pages and its Find box.
-    centreWithSize(560, 680);
+    // Live 11's Preferences open 500 by 607; ADI's has more pages and its Find box. Then where it was
+    // left, as the main window (window.places, WIN-02).
+    fullScreenOwed = restorePlace(*this, store, "settings", 560, 680);
+    place.save = [this, &store] {
+        std::string why;
+        if (!keepPlace(*this, store, "settings", why))
+            panel_->setHelp("The window's place was not kept: " + juce::String::fromUTF8(why.c_str()));
+    };
 }
-void SettingsWindow::closeButtonPressed() { setVisible(false); }
+SettingsWindow::~SettingsWindow() { place.flush(); }
+void SettingsWindow::closeButtonPressed() {
+    place.flush();
+    setVisible(false);
+}
+void SettingsWindow::moved() {
+    DocumentWindow::moved();
+    place.moved();
+}
+void SettingsWindow::resized() {
+    DocumentWindow::resized();
+    place.moved();
+}
+void SettingsWindow::parentSizeChanged() {
+    DocumentWindow::parentSizeChanged();
+    if (keepReachable(*this))
+        place.moved();
+}
+void SettingsWindow::visibilityChanged() {
+    if (!quiet)
+        DocumentWindow::visibilityChanged();
+}
 } // namespace adi::ui

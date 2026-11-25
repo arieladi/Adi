@@ -3,6 +3,7 @@
 #include "ControlMapping.hpp"
 #include "adi/mix/filters/FiniteInput.hpp"
 #include "adi/mix/filters/FlushDenormals.hpp"
+#include "detail/HoldPeak.hpp"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -127,7 +128,13 @@ float piece(float v, const std::array<float, N> &x, const std::array<float, N> &
 }
 
 bool sameRouting(const Settings &a, const Settings &b) noexcept {
-    return a.keySource == b.keySource && a.stereoLink == b.stereoLink && a.linkMode == b.linkMode;
+    return a.keySource == b.keySource && a.stereoLink == b.stereoLink && a.linkMode == b.linkMode &&
+           a.holdMs == b.holdMs;
+}
+
+bool holdSupported(const Settings &s, std::int32_t channels) noexcept {
+    return s.holdMs <= epsilon || (channels == 2 && s.keySource == KeySource::Internal &&
+                                   s.stereoLink == 1.0f && !s.autoRelease && !s.autoGain);
 }
 
 struct Span {
@@ -150,8 +157,9 @@ bool validSettings(const Settings &s) noexcept {
     return std::isfinite(s.thresholdDb) && s.thresholdDb >= -60.0f && s.thresholdDb <= 0.0f &&
            std::isfinite(s.ratio) && s.ratio >= 1.0f && s.ratio <= 100.0f && std::isfinite(s.kneeDb) &&
            s.kneeDb >= 0.0f && s.kneeDb <= 72.0f && std::isfinite(s.rangeDb) && s.rangeDb >= 0.0f &&
-           s.rangeDb <= 60.0f && unit(s.attack) && unit(s.release) && std::isfinite(s.stereoLink) &&
-           s.stereoLink >= 0.0f && s.stereoLink <= 2.0f &&
+           s.rangeDb <= 60.0f && unit(s.attack) && unit(s.release) && std::isfinite(s.holdMs) &&
+           s.holdMs >= 0.0f && s.holdMs <= 500.0f && std::isfinite(s.stereoLink) && s.stereoLink >= 0.0f &&
+           s.stereoLink <= 2.0f &&
            (s.keySource == KeySource::Internal || s.keySource == KeySource::External) &&
            (s.linkMode == LinkMode::Mid || s.linkMode == LinkMode::Side ||
             s.linkMode == LinkMode::MidToSide || s.linkMode == LinkMode::SideToMid);
@@ -195,6 +203,14 @@ std::optional<float> ratioFromNormalized(float n) noexcept {
         v = q * (1.0f - pivot) + pivot;
     }
     return v * 99.0f + 1.0f;
+}
+
+std::optional<float> holdMsFromNormalized(float n) noexcept {
+    if (!unit(n))
+        return std::nullopt;
+    constexpr std::array<float, 7> x{0, .2f, .3f, .5f, .6f, .8f, 1};
+    constexpr std::array<float, 7> y{0, .01f, .02f, .08f, .16f, .4f, 1};
+    return (n <= 0.0f ? 0.0f : piece(n, x, y)) * 500.0f;
 }
 
 namespace {
@@ -247,6 +263,11 @@ struct Core::Impl {
     std::array<double, tableSize> attackTable{}, kneeTable{}, releaseTable{};
     std::array<double, 2> envelope{}, slow{};
     CoefficientCache coefficientCache;
+    detail::HoldPeak holdPeak;
+    double holdEnvelope = 0;
+    float holdScale = 0;
+    float holdSamples = -1, holdCoefficient = 1;
+    bool holdActive = false;
     double attackSamples = 0, slowUp = 0, slowDown = 0, releaseDown = 0;
     double ratioScale = 0;
     double kneeAt100 = 0, kneeSlope = 0;
@@ -259,6 +280,13 @@ struct Core::Impl {
         // The processing-rate domain is float, even though the owner accepts a
         // double host rate. This also makes fractional-rate behavior explicit.
         spec.sampleRate = static_cast<double>(static_cast<float>(p.sampleRate));
+        holdActive = s.holdMs > epsilon;
+        if (holdActive) {
+            const float sampleProduct = static_cast<float>(spec.sampleRate) * s.holdMs;
+            const auto window = static_cast<std::uint32_t>(static_cast<double>(sampleProduct) * .001);
+            holdPeak.prepare(window);
+            holdScale = s.holdMs * .0001f;
+        }
         const Curve kneeCurve(.093f, .287f, .52f, .822f), releaseCurve(0, .372f, .492f, .304f);
         const auto kneeValue = [&kneeCurve](double x) {
             const double d = std::max(0.0, x + 11.0);
@@ -287,6 +315,10 @@ struct Core::Impl {
         slow = {};
         coefficientCache = {};
         makeup.snap(makeup.target);
+        holdPeak.reset();
+        holdEnvelope = 0;
+        holdSamples = -1;
+        holdCoefficient = 1;
         blockFrames = cursor = 0;
         sequence = 0;
         epoch = nextEpoch.fetch_add(1, std::memory_order_relaxed);
@@ -362,7 +394,7 @@ struct Core::Impl {
         controls = s;
         controlsInitialized = true;
     }
-    float gain(float detector, std::size_t channel) noexcept {
+    template <bool HoldEnabled> float gain(float detector, std::size_t channel) noexcept {
         const float db = std::max(-180.0f, logAmplitude(std::max(detector, 1e-10f)) * 8.68588924407959f);
         double shaped =
             knee(static_cast<double>(db) - static_cast<double>(controls.thresholdDb), controls.kneeDb);
@@ -388,10 +420,24 @@ struct Core::Impl {
             c = coefficientCache.get(attackSamples + (.05 * spec.sampleRate - .2 * attackSamples) * e);
         }
         y += c * (m - y);
-        return amplitudeFromLog(-static_cast<float>(y) * .115129254758358f);
+        if constexpr (HoldEnabled) {
+            const float held = holdPeak.push(static_cast<float>(y));
+            const float releaseTime = held * holdScale;
+            const float samples = releaseTime * static_cast<float>(spec.sampleRate);
+            if (samples != holdSamples) {
+                const float exponent = samples != 0 ? -2.3025851249694824f / samples : -88.0f;
+                holdCoefficient = 1.0f - amplitudeFromLog(exponent);
+                holdSamples = samples;
+            }
+            const double difference = static_cast<double>(held) - holdEnvelope;
+            holdEnvelope += (difference > 0 ? 1.0 : static_cast<double>(holdCoefficient)) * difference;
+            return amplitudeFromLog(-static_cast<float>(holdEnvelope) * .115129254758358f);
+        } else {
+            return amplitudeFromLog(-static_cast<float>(y) * .115129254758358f);
+        }
     }
 
-    template <bool Moving, class T>
+    template <bool Moving, bool HoldEnabled, class T>
     void render(std::int32_t first, std::int32_t end, T *const *main, const T *const *key,
                 std::int32_t keyChannels, const Settings &s) noexcept {
         const bool stereo = spec.mainChannels == 2;
@@ -414,7 +460,8 @@ struct Core::Impl {
             }
             // Prepared routing cannot change. At and above full linking both
             // detectors start together and remain identical for this stream.
-            const float gl = gain(dl, 0), gr = s.stereoLink >= 1.0f ? gl : gain(dr, 1);
+            const float gl = gain<HoldEnabled>(dl, 0),
+                        gr = s.stereoLink >= 1.0f ? gl : gain<HoldEnabled>(dr, 1);
             // A unity gain is a copy even when detector arithmetic flushes
             // denormals. Preserve the neutral signal's original float bits.
             float outL = gl == 1.f ? left : left * gl;
@@ -444,7 +491,8 @@ struct Core::Impl {
                    const T *const *key, std::int32_t keyChannels, const Settings &s) noexcept {
         if (!validSettings(s))
             return Status::InvalidSettings;
-        if (!sameRouting(s, routing) || (s.autoGain && s.stereoLink > 1.0f))
+        if (!sameRouting(s, routing) || !holdSupported(s, spec.mainChannels) ||
+            (s.autoGain && s.stereoLink > 1.0f))
             return Status::UnsupportedConfiguration;
         if (!context.valid() || context.epoch != epoch || context.sequence != sequence ||
             context.frames != blockFrames || offset != cursor || frames <= 0 || frames > blockFrames - cursor)
@@ -474,11 +522,18 @@ struct Core::Impl {
         [[maybe_unused]] filters::FlushDenormals flush;
         if (s != controls)
             update(s);
-        const auto moving = std::min(frames, makeup.remaining());
-        if (moving > 0)
-            render<true>(offset, offset + moving, main, key, keyChannels, s);
-        if (moving < frames)
-            render<false>(offset + moving, offset + frames, main, key, keyChannels, s);
+        // Prepared Hold selection occurs once per segment. The zero-Hold sample
+        // loop retains the old gain expression and performs no queue/capacitor work.
+        // Hold admits Auto Gain off only, so its make-up never moves.
+        if (holdActive) {
+            render<false, true>(offset, offset + frames, main, key, keyChannels, s);
+        } else {
+            const auto moving = std::min(frames, makeup.remaining());
+            if (moving > 0)
+                render<true, false>(offset, offset + moving, main, key, keyChannels, s);
+            if (moving < frames)
+                render<false, false>(offset + moving, offset + frames, main, key, keyChannels, s);
+        }
         cursor += frames;
         return Status::Ok;
     }
@@ -494,7 +549,8 @@ Status Core::prepare(const PrepareSpec &p, const Settings &s) noexcept {
         return Status::UnsupportedLayout;
     if (!validSettings(s))
         return Status::InvalidSettings;
-    if ((p.mainChannels == 1 && s.stereoLink != 1.0f) || (s.autoGain && s.stereoLink > 1.0f))
+    if ((p.mainChannels == 1 && s.stereoLink != 1.0f) || (s.autoGain && s.stereoLink > 1.0f) ||
+        !holdSupported(s, p.mainChannels))
         return Status::UnsupportedConfiguration;
     try {
         auto replacement = std::make_unique<Impl>(p, s);
@@ -513,7 +569,8 @@ Status Core::reset(const Settings &s) noexcept {
         return Status::NotPrepared;
     if (!validSettings(s))
         return Status::InvalidSettings;
-    if (!sameRouting(s, impl_->routing) || (s.autoGain && s.stereoLink > 1.0f))
+    if (!sameRouting(s, impl_->routing) || !holdSupported(s, impl_->spec.mainChannels) ||
+        (s.autoGain && s.stereoLink > 1.0f))
         return Status::UnsupportedConfiguration;
     impl_->controlsInitialized = false;
     impl_->update(s);

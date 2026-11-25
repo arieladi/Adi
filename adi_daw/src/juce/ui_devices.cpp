@@ -136,6 +136,12 @@ void ParameterControl::showMenu() {
     if (!current)
         return;
     juce::PopupMenu m;
+    // Live's Show Automation (manual 25.2; DF-W37): the track's lane shows this parameter's envelope.
+    if ((!record || !record->missing) && strip.root.deviceAutomationTarget(device, parameter))
+        m.addItem("Show Automation", [safe = SafePointer<ParameterControl>(this)] {
+            if (safe)
+                safe->strip.root.showDeviceAutomation(safe->device, safe->parameter);
+        });
     strip.root.addReenableAutomation(m, deviceLaneOf(*current, device, format, parameter));
     if (m.getNumItems() > 0)
         m.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(this));
@@ -859,7 +865,7 @@ DevicePanelView::DevicePanelView(DeviceChainStrip &s, const DevicePanelData &d, 
     search.setTextToShowWhenEmpty("Find parameter", juce::Colours::grey);
     search.setTitle("Find parameter");
     title.addMouseListener(this, false);
-    title.onClick = [this] { grabKeyboardFocus(); };
+    title.onClick = [this] { focusIfShowing(*this); };
     enabled.onClick = [this] {
         const auto safe = SafePointer<DevicePanelView>(this);
         if (!validTarget()) return;
@@ -1006,8 +1012,8 @@ void DevicePanelView::presentFunctionSelection(const DevicePanelData &next) {
             if (std::find(bandSections.begin(), bandSections.end(), metadata.sectionId) == bandSections.end())
                 bandSections.push_back(metadata.sectionId);
         }
-        if (!metadata.sectionId.empty() && std::none_of(sections.begin(), sections.end(), [&](const auto &section) {
-                return section.first == metadata.sectionId;
+        if (!metadata.sectionId.empty() && std::none_of(sections.begin(), sections.end(), [&sectionId = metadata.sectionId](const auto &section) {
+                return section.first == sectionId;
             })) sections.emplace_back(metadata.sectionId, metadata.sectionName.empty() ? metadata.sectionId : metadata.sectionName);
     }
     std::sort(bands.begin(), bands.end());
@@ -1702,7 +1708,7 @@ bool DevicePanelView::beginRename() {
     rename.selectAll();
     rename.setVisible(true);
     if (rename.isShowing())
-        rename.grabKeyboardFocus();
+        focusIfShowing(rename);
     return true;
 }
 void DevicePanelView::endRename(bool commit) {
@@ -1714,7 +1720,7 @@ void DevicePanelView::endRename(bool commit) {
     if (commit && validTarget() && data != nullptr && !name.empty() && name != data->name)
         strip.action("device.rename", {{"id", id}, {"name", name}});
     if (isShowing())
-        grabKeyboardFocus();
+        focusIfShowing(*this);
     endInteraction(Interaction::Text);
 }
 void DevicePanelView::configure() {
@@ -1800,7 +1806,7 @@ DeviceChainStrip::DeviceChainStrip(AdiRootComponent &r) : root(r) {
 void DeviceChainStrip::mouseDown(const juce::MouseEvent &e) {
     if (e.eventComponent == &content && e.x >= end_ - 11 && !e.mods.isPopupMenu()) {
         chosen_.reset();
-        grabKeyboardFocus();
+        focusIfShowing(*this);
     }
 }
 std::optional<std::int64_t> DeviceChainStrip::insertPoint() const {
@@ -2223,9 +2229,9 @@ bool DeviceChainStrip::focusNext(std::int64_t from, bool forward) {
     for (std::size_t i = 0; i < panels.size(); ++i)
         if (panels[i]->id == from) {
             if (forward && i + 1 < panels.size())
-                panels[i + 1]->grabKeyboardFocus();
+                focusIfShowing(*panels[i + 1]);
             else if (!forward && i > 0)
-                panels[i - 1]->grabKeyboardFocus();
+                focusIfShowing(*panels[i - 1]);
             return true;
         }
     return false;

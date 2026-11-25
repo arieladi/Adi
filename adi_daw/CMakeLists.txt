@@ -1336,7 +1336,7 @@ add_test(NAME adi_textproj_store_tests COMMAND adi_textproj_store_tests)
 option(ADI_BUILD_BENCHMARKS "Build headless diagnostic benchmarks" OFF)
 if(ADI_BUILD_BENCHMARKS)
     add_executable(adi_block_benchmark tools/benchmark_blocks.cpp)
-    target_link_libraries(adi_block_benchmark PRIVATE adi_core adi_warnings)
+    target_link_libraries(adi_block_benchmark PRIVATE adi_core adi_settings adi_warnings)
     add_executable(adi_edit_placement_measure tools/measure_edit_placement.cpp)
     target_link_libraries(adi_edit_placement_measure PRIVATE adi_core adi_warnings Threads::Threads)
 endif()
@@ -2079,9 +2079,20 @@ add_executable(adi_ui_seams_tests tests/test_ui_seams.cpp)
 target_link_libraries(adi_ui_seams_tests PRIVATE adi_core adi_warnings)
 # A signed overflow in the window's pure edits (DF-W35 b: an id counted past INT64_MAX) traps here
 # instead of passing unseen; trap mode needs no sanitizer runtime.
+# GCC takes -fsanitize-trap=<group> from version 13; older GCC has -fsanitize-undefined-trap-on-error (DF-W39).
 if(NOT MSVC)
-    target_compile_options(adi_ui_seams_tests PRIVATE -fsanitize=signed-integer-overflow
-                                                      -fsanitize-trap=signed-integer-overflow)
+    include(CheckCXXCompilerFlag)
+    set(CMAKE_REQUIRED_FLAGS "-fsanitize=signed-integer-overflow")
+    check_cxx_compiler_flag("-fsanitize-trap=signed-integer-overflow" ADI_HAS_SANITIZE_TRAP_GROUP)
+    check_cxx_compiler_flag("-fsanitize-undefined-trap-on-error" ADI_HAS_SANITIZE_TRAP_ON_ERROR)
+    unset(CMAKE_REQUIRED_FLAGS)
+    if(ADI_HAS_SANITIZE_TRAP_GROUP)
+        target_compile_options(adi_ui_seams_tests PRIVATE -fsanitize=signed-integer-overflow
+                                                          -fsanitize-trap=signed-integer-overflow)
+    elseif(ADI_HAS_SANITIZE_TRAP_ON_ERROR)
+        target_compile_options(adi_ui_seams_tests PRIVATE -fsanitize=signed-integer-overflow
+                                                          -fsanitize-undefined-trap-on-error)
+    endif()
 endif()
 add_test(NAME adi_ui_seams_tests COMMAND adi_ui_seams_tests)
 # Step 7.2 (ADR-0080 via ADR-0180 2.3): MainSplit's panel->slot map. Pure
@@ -2260,6 +2271,9 @@ add_test(NAME adi_automation_shapes_tests COMMAND adi_automation_shapes_tests)
 add_executable(adi_automation_recording_tests tests/test_automation_recording.cpp)
 target_link_libraries(adi_automation_recording_tests PRIVATE adi_core adi_warnings Threads::Threads)
 add_test(NAME adi_automation_recording_tests COMMAND adi_automation_recording_tests)
+add_executable(adi_replace_operator_new_tests tests/test_replace_operator_new.cpp)
+target_link_libraries(adi_replace_operator_new_tests PRIVATE adi_warnings)
+add_test(NAME adi_replace_operator_new_tests COMMAND adi_replace_operator_new_tests)
 
 
 
@@ -2323,3 +2337,8 @@ add_test(NAME adi_midi_capture_input_tests COMMAND adi_midi_capture_input_tests)
 add_executable(adi_midi_capture_tests tests/test_midi_capture.cpp)
 target_link_libraries(adi_midi_capture_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_midi_capture_tests COMMAND adi_midi_capture_tests)
+# Test modules from the director's research are available on Windows hosting builds.
+if(ADI_WITH_JUCE)
+    include(tests/research_intake/plugins/targets.cmake)
+endif()
+include(tests/research_intake/df_e21/targets.cmake)

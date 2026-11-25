@@ -7,7 +7,7 @@ enum class KeySource { Internal, External };
 enum class LinkMode { Mid, Side, MidToSide, SideToMid };
 
 // Clean compression at the input sample rate, with zero latency. This component
-// has no other style, oversampling, lookahead, hold, key EQ, audition or wet/dry
+// has no other style, oversampling, lookahead, key EQ, audition or wet/dry
 // controls. Its neutral defaults are component defaults, not a factory preset.
 struct Settings {
     // Physical units: threshold [-60, 0] dB, ratio [1, 100] (100 is infinity
@@ -23,6 +23,10 @@ struct Settings {
     float release = 0.5f;
     bool autoRelease = false;
     bool autoGain = false;
+    // Physical milliseconds [0, 500], fixed until prepare. Hold above float
+    // epsilon is admitted only for internal-key, fully linked stereo with Auto
+    // controls off. Zero/near-zero Hold retains the existing routing modes.
+    float holdMs = 0.0f;
     KeySource keySource = KeySource::Internal;
     // 0 = separate L/R, 1 = linked maximum, 2 = selected M/S detector.
     float stereoLink = 1.0f;

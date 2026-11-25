@@ -81,6 +81,12 @@ double Resonators::Biquad::tick(double x) noexcept {
     const double y = b0 * x + z1;
     z1 = b1 * x - a1 * y + z2;
     z2 = b2 * x - a2 * y;
+    if (std::abs(z1) < 1e-30) {
+        z1 = 0;
+    }
+    if (std::abs(z2) < 1e-30) {
+        z2 = 0;
+    }
     return y;
 }
 void Resonators::prepare(double sampleRate) {
@@ -201,6 +207,9 @@ double Resonators::sample(Voice &v, Lane &l, double input) noexcept {
         b + .5 * fraction *
                 (c - a + fraction * (2 * a - 5 * b + 4 * c - d + fraction * (3 * (b - c) + d - a)));
     l.lowpass += v.alpha * (delayed - l.lowpass);
+    if (std::abs(l.lowpass) < 1e-30) {
+        l.lowpass = 0;
+    }
     // COMBquad: d=softclip(in+DBRead*feedback), write d, return wet DBRead.
     double value = softclip(input + v.g * l.lowpass);
     if (std::abs(value) < 1e-30)

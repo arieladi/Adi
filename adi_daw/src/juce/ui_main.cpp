@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/appdata.hpp"
 #include "adi/render/queue.hpp"
+#include "adi/render/host_dispatch.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include "adi/ui/plugin_scan.hpp"
 #include "adi/ui/project_document.hpp"
@@ -29,6 +30,34 @@
 #include <future>
 namespace adi::ui {
 namespace {
+// The document's process with the keyboard in front of it (N60's window half): in the device callback
+// the feed drains the MIDI ports' rings into the session's live input, stamped in this block's stream
+// samples, and then the document renders the block. A device (re)start re-anchors the feed and resets
+// the session's input, as `Session::enqueueMidiInput` asks of a producer whose sample clock restarts.
+class LiveMidiProcessor final : public engine::BlockProcessor {
+  public:
+    LiveMidiProcessor(ProjectDocument &document, MidiInputFeed &feed) : document_(document), feed_(feed) {}
+    void prepare(double sampleRate, std::int32_t maxFrames) override {
+        rate_ = sampleRate;
+        feed_.restart();
+        document_.session().resetMidiInput();
+        document_.prepare(sampleRate, maxFrames);
+    }
+    void process(const engine::AudioIo &io) noexcept override {
+        auto &session = document_.session();
+        feed_.pump(io.streamTimeSamples, io.frames, rate_, juce::Time::getMillisecondCounterHiRes(),
+                   [&session](std::int64_t sample, const engine::Event &event) noexcept {
+                       return session.enqueueMidiInput(sample, event);
+                   });
+        document_.process(io);
+    }
+    void release() override { document_.release(); }
+
+  private:
+    ProjectDocument &document_;
+    MidiInputFeed &feed_;
+    double rate_ = 0;
+};
 // A name typed into a save chooser, as an `.adi` file. Appended, never swapped in: JUCE's
 // `withFileExtension` cuts the name at its last dot, so "Song v1.2" would become "Song v1.adi"
 // where Live writes "Song v1.2.als". The native choosers on Windows and macOS add the extension
@@ -59,7 +88,9 @@ class AdiApplication final : public juce::JUCEApplication,
   public:
     const juce::String getApplicationName() override { return "ADI"; }
     const juce::String getApplicationVersion() override { return ADI_VERSION_STRING; }
-    bool moreThanOneInstanceAllowed() override { return false; }
+    // WTS-01: a test launch is an instance of its own beside an ordinary ADI, never handing its command
+    // line to the running copy; an ordinary launch hands a file to the copy already running.
+    bool moreThanOneInstanceAllowed() override { return isTestLaunch(getCommandLineParameters()); }
     void initialise(const juce::String &commandLine) override {
         const auto args = juce::StringArray::fromTokens(commandLine, true);
         juce::File project;
@@ -71,6 +102,8 @@ class AdiApplication final : public juce::JUCEApplication,
                 smokeOutput_ = juce::File(args[++i].unquoted());
             else if (a == "--smoke-settings")
                 smokeSettings_ = true; // the smoke renders the Settings window's Audio page
+            else if (a == "--control-test")
+                controlTest_ = true; // WTS-01: a test drives this instance (its API is WTS-05's)
             else if (a.startsWithChar('-')) {
                 setApplicationReturnValue(2);
                 quit();
@@ -83,6 +116,19 @@ class AdiApplication final : public juce::JUCEApplication,
             setApplicationReturnValue(2);
             quit();
             return;
+        }
+        // WTS-01: a test launch keeps everything under ADI_HOME, never the user's folders. --control-test
+        // refuses to start without it; a smoke run says so and keeps its settings beside its project
+        // until CI's smoke step sets ADI_HOME, when it refuses too.
+        if (const auto home = juce::SystemStats::getEnvironmentVariable("ADI_HOME", {}); home.isEmpty()) {
+            if (controlTest_) {
+                std::fprintf(stderr, "ADI: --control-test needs ADI_HOME, a folder of its own for this instance\n");
+                setApplicationReturnValue(2);
+                quit();
+                return;
+            }
+            if (smokeOutput_ != juce::File{})
+                std::fprintf(stderr, "ADI: a smoke run without ADI_HOME keeps its settings beside its project\n");
         }
         if (smokeOutput_ != juce::File{})
             settings_ = std::make_unique<settings::AppSettings>(
@@ -123,7 +169,24 @@ class AdiApplication final : public juce::JUCEApplication,
         }
         // The MIDI ports (SRF-05): listed and opened by the Settings' MIDI Ports; never in a smoke run.
         if (smokeOutput_ == juce::File{}) {
-            midiPorts_ = std::make_unique<MidiPortHost>([this] { return settings_->get("midi.ports"); });
+            // A port's record keeps its name, and follows the port to a new identifier (N61): written and
+            // saved as a switch is.
+            midiPorts_ = std::make_unique<MidiPortHost>([this] { return settings_->get("midi.ports"); },
+                                                        [this](const settings::Value &ports) {
+                                                            std::string why;
+                                                            if (!settings_->set("midi.ports", ports,
+                                                                                {settings::Actor::User, {},
+                                                                                 juce::Time::currentTimeMillis() * 1000},
+                                                                                why))
+                                                                return false;
+                                                            (void)settings_->save(why);
+                                                            return true;
+                                                        });
+            midiPorts_->setFeed(&midiFeed_);
+            midiPorts_->onInputsChanged = [this] {
+                if (document_)
+                    document_->session().resetMidiInput();
+            };
             // A port plugged in or out, or a switch thrown: the Settings' table follows.
             // Posted: a refresh can run inside a Settings row's own commit, which the page must outlive.
             midiPorts_->onChange = [this] {
@@ -215,8 +278,7 @@ class AdiApplication final : public juce::JUCEApplication,
     // Live's Export Audio/Video (EX-11; manual 5.2.1): the page with the choices, Export asks for a file,
     // and the render runs on a worker of its own while the window works on. The renderer (render::renderWav)
     // opens the project's file read-only on its own connection, so it reads the project as committed.
-    // Devices are made on the message thread, as a session makes them; a project with a VST3 or CLAP
-    // device waits for the engine's render worker (EX-11's engine half), and is refused with that reason.
+    // The render Session owns its plug-ins on the message thread and processes on the worker.
     void openExport(const ExportChoices &initial) {
         if (exportWindow_) {
             // Shown again while it is up or rendering; one Escape or the close button hid is made afresh,
@@ -263,18 +325,6 @@ class AdiApplication final : public juce::JUCEApplication,
     void chooseExportFile(const ExportChoices &c) {
         if (chooser_ || render_.joinable() || !document_)
             return;
-        // A plug-in of another maker cannot be rendered here yet.
-        {
-            SQLite::Statement q(document_->store().db(),
-                                "SELECT count(*) FROM devices d JOIN plugin_refs r ON r.id = d.plugin_ref_id "
-                                "WHERE r.format <> 'internal'");
-            if (q.executeStep() && q.getColumn(0).getInt() > 0) {
-                if (exportPage_)
-                    exportPage_->showDone("A project with VST3 or CLAP plug-ins renders once the engine's render "
-                                          "worker is on main (EX-11).");
-                return;
-            }
-        }
         const auto project = juce::File(juce::String::fromUTF8(media::pathUtf8(document_->store().path()).c_str()));
         chooser_ = std::make_unique<juce::FileChooser>("Export Audio", project.getParentDirectory().getChildFile(
                                                                            project.getFileNameWithoutExtension() + ".wav"),
@@ -328,44 +378,17 @@ class AdiApplication final : public juce::JUCEApplication,
         auto alive = renderAlive_;
         if (exportPage_)
             exportPage_->showProgress(0);
-        // Each device is made on the message thread and handed back; Cancel or Quit stops the wait.
-        engine::DeviceLoader made = [this, alive, stop = renderStop_.get_token()](const engine::DeviceRequest &rq,
-                                                                                  std::string &error) {
-            if (stop.stop_requested() || !alive->load()) {
-                error = "the export was stopped";
-                return std::unique_ptr<device::DeviceInstance>{};
-            }
-            // Only ADI's own devices render here; another maker's plug-in waits for the engine's render
-            // worker, whatever the project held when Export was pressed.
-            if (rq.ref == nullptr || rq.ref->format != "internal") {
-                error = "A project with VST3 or CLAP plug-ins renders once the engine's render worker is on main (EX-11).";
-                return std::unique_ptr<device::DeviceInstance>{};
-            }
-            // The posted call owns copies of what it reads: the render's rows may be gone when it runs.
-            auto row = std::make_shared<rows::Device>(*rq.device);
-            auto ref = std::make_shared<rows::PluginRef>(*rq.ref);
-            engine::DeviceRequest owned = rq;
-            owned.device = row.get();
-            owned.ref = ref.get();
-            auto promise = std::make_shared<std::promise<std::unique_ptr<device::DeviceInstance>>>();
-            auto future = promise->get_future();
-            auto why = std::make_shared<std::string>();
-            juce::MessageManager::callAsync([this, alive, stop, owned, row, ref, promise, why] {
-                std::unique_ptr<device::DeviceInstance> instance;
-                if (alive->load() && !stop.stop_requested())
-                    instance = loader_.fn()(owned, *why);
-                promise->set_value(std::move(instance));
-            });
-            while (future.wait_for(std::chrono::milliseconds(20)) != std::future_status::ready)
-                if (stop.stop_requested() || !alive->load()) {
-                    error = "the export was stopped";
-                    return std::unique_ptr<device::DeviceInstance>{};
-                }
-            error = *why;
-            return future.get();
-        };
+        auto host = std::make_shared<render::HostDispatch>();
+        renderHost_ = host;
+        auto completed = std::make_shared<std::promise<void>>();
+        renderDone_ = completed->get_future();
         render::Control control;
         control.stop = renderStop_.get_token();
+        control.onHost = [host](std::function<void()> action) {
+            host->invoke(std::move(action), [host] {
+                juce::MessageManager::callAsync([host] { (void)host->service(); });
+            });
+        };
         control.progress = [this, alive](render::JobId, std::uint64_t written, std::uint64_t total) {
             const double fraction = total > 0 ? static_cast<double>(written) / static_cast<double>(total) : 0.0;
             juce::MessageManager::callAsync([this, alive, fraction] {
@@ -373,16 +396,19 @@ class AdiApplication final : public juce::JUCEApplication,
                     exportPage_->showProgress(fraction);
             });
         };
-        render_ = std::thread([this, alive, job = std::move(job), made, control, stop = renderStop_.get_token()] {
-            auto result = render::renderWav(job, made, control);
+        render_ = std::thread([this, alive, completed, job = std::move(job),
+                               made = loader_.fn(), control, stop = renderStop_.get_token()]() mutable {
+            auto result = render::renderWav(std::move(job), std::move(made), std::move(control));
             // A Cancel while devices were made reads as the cancel it is.
             if (stop.stop_requested() && result.state != render::JobState::Completed)
                 result.state = render::JobState::Cancelled;
-            juce::MessageManager::callAsync([this, alive, result] {
+            completed->set_value();
+            juce::MessageManager::callAsync([this, alive, result = std::move(result)] {
                 if (!alive->load())
                     return;
                 if (render_.joinable())
                     render_.join();
+                renderHost_.reset();
                 std::string message;
                 if (result.state == render::JobState::Completed)
                     message = "Exported " + media::pathUtf8(result.output.filename()) + ".";
@@ -400,8 +426,11 @@ class AdiApplication final : public juce::JUCEApplication,
     void stopRender() {
         renderStop_.request_stop();
         renderAlive_->store(false);
-        if (render_.joinable())
+        if (render_.joinable()) {
+            renderHost_->wait(renderDone_);
             render_.join();
+        }
+        renderHost_.reset();
         renderAlive_ = std::make_shared<std::atomic<bool>>(true);
     }
     // The plug-in catalogue's service (DF-W34): engine-win's discovery jobs (N58), started, read and
@@ -552,10 +581,12 @@ class AdiApplication final : public juce::JUCEApplication,
         detachAudio();
         // A take still recording or landing goes into its project before the project closes (MX-09).
         if (document_)
-            document_->settleRecording();
+            (void)document_->settleRecording(); // Quit: nothing is left to tell
         mainMeterSource_.reset();
         floating_.reset();
         historyWindow_.reset();
+        if (window_)
+            window_->place.flush(); // a move still settling is kept (WIN-02)
         window_.reset();
         document_.reset();
         commands_.reset();
@@ -564,6 +595,9 @@ class AdiApplication final : public juce::JUCEApplication,
     // Every edit is already in the file (ADR-0203 d13): quitting asks nothing.
     void systemRequestedQuit() override { quit(); }
     void anotherInstanceStarted(const juce::String &commandLine) override {
+        // A test launch runs on its own (WTS-01); should one reach here, it opens nothing.
+        if (isTestLaunch(commandLine))
+            return;
         auto file = juce::File(commandLine.unquoted());
         if (file.existsAsFile())
             openSettled(file, false);
@@ -575,7 +609,8 @@ class AdiApplication final : public juce::JUCEApplication,
         if(!device::configurePluginSearchPaths(loader_,*settings_,error))report(error);
     }
     void report(const std::string &text) {
-        if (smokeOutput_ != juce::File{}) {
+        // A test launch reports to stderr, never in a window (WTS-01).
+        if (testLaunch()) {
             std::fprintf(stderr, "ADI: %s\n", text.c_str());
             return;
         }
@@ -587,6 +622,7 @@ class AdiApplication final : public juce::JUCEApplication,
             manager_.removeAudioCallback(bridge_.get());
         manager_.closeAudioDevice();
         bridge_.reset();
+        live_.reset();
     }
     juce::File projectsFolder() const {
         const auto chosen = settings_->get("files.projectsFolder");
@@ -621,13 +657,21 @@ class AdiApplication final : public juce::JUCEApplication,
         // A take still recording or landing goes into the project it was recorded in (MX-09); a take that
         // could not be kept says so before that project goes.
         if (document_) {
-            document_->settleRecording();
-            if (auto landed = document_->takeLanded(); landed && !landed->ok)
+            if (!document_->settleRecording())
+                report("The last take was still being saved and could not be kept; the new project opened.");
+            else if (auto landed = document_->takeLanded(); landed && !landed->ok)
                 report(landed->message);
         }
         mainMeterSource_.reset();
         floating_.reset();
         historyWindow_.reset();
+        // A project opened keeps the main window where it stands, full screen or not (WIN-02).
+        std::optional<window_place::Rect> standingAt;
+        bool fullScreen = false;
+        if (window_) {
+            window_->place.flush();
+            standingAt = standing(*window_, fullScreen);
+        }
         window_.reset();
         document_ = std::move(next);
         auto root = std::make_unique<AdiRootComponent>(document_->view(), document_->ops(),
@@ -802,6 +846,9 @@ class AdiApplication final : public juce::JUCEApplication,
                 root_->say(ref.name + " did not load (" + entry->error + "); it stays in the chain, bypassed. Undo removes it.");
                 return true;
             }
+            // Auto-Open Plug-In Windows (WIN-03): its window, once the feed shows it.
+            if (made > before_)
+                root_->pluginAdded(made);
             const auto kind = ref.subtype == "instrument" ? "an instrument" : ref.subtype == "midi_effect" ? "a MIDI effect" : "an audio effect";
             if (kindGuessed)
                 root_->say(stored ? ref.name + " went in as " + kind + ", as this project holds it." :
@@ -816,11 +863,30 @@ class AdiApplication final : public juce::JUCEApplication,
                 root_->say(document_->error());
             return ok;
         };
+        // Options > Delay Compensation (MX-04): the application's setting, which this project's session
+        // follows from its open and at each toggle.
+        root->applyDelayCompensation = [this](bool on) {
+            // The Settings window's row follows the menu's switch, so its next click is not wasted.
+            if (settingsWindow_)
+                settingsWindow_->panel().refreshValues();
+            if (!document_ || document_->setDelayCompensation(on))
+                return true;
+            if (root_)
+                root_->say(document_->error());
+            return false;
+        };
+        if (!document_->setDelayCompensation(commands_->delayCompensation()))
+            root->say(document_->error());
         root->reenableLane = [this](std::int64_t lane) {
             const bool ok = document_->reenableAutomation(lane);
             if (!ok && root_)
                 root_->say(document_->error());
             return ok;
+        };
+        // Cue Out's stereo pairs (MX-08): as many outputs as the device has open, to the highest.
+        root->outputChannels = [this] {
+            const auto *device = manager_.getCurrentAudioDevice();
+            return device != nullptr ? device->getActiveOutputChannels().getHighestBit() + 1 : 0;
         };
         root->automationArmed = [this] { return document_->automationArmed(); };
         root->armAutomation = [this](bool armed) { document_->setAutomationArmed(armed); };
@@ -919,6 +985,14 @@ class AdiApplication final : public juce::JUCEApplication,
             why = document_->error();
             return false;
         };
+        // Undo and Redo commit the knob edits still held first (DF-W29).
+        root->editsHeld = [this] { return !document_->pendingParameterGestures().empty(); };
+        root->settleEdits = [this] {
+            const bool ok = document_->settleParameters();
+            if (!ok && root_)
+                root_->say(document_->error());
+            return ok;
+        };
         root->afterEdit = [this] {
             if (!document_->synchronise())
                 report(document_->error());
@@ -932,7 +1006,17 @@ class AdiApplication final : public juce::JUCEApplication,
         window_ = std::make_unique<AdiWindow>(std::move(root), *commands_);
         window_->onClose = [this] { systemRequestedQuit(); };
         window_->setName("ADI - " + file.getFileNameWithoutExtension());
-        window_->centreWithSize(1200, 720);
+        // Where it was when the application last stood (window.places, WIN-02), at first run centred; full
+        // screen again once it shows, so JUCE keeps the rectangle it goes back to.
+        if (standingAt)
+            window_->setBounds(fromPlace(*standingAt));
+        else
+            fullScreen = restorePlace(*window_, *settings_, "main", 1200, 720);
+        window_->place.save = [this] {
+            std::string why;
+            if (window_ && !keepPlace(*window_, *settings_, "main", why))
+                report("The window's place was not kept: " + why);
+        };
         // The floating-window host, built before anything needs two windows (STEP-7-PLAN
         // 7.5). Its users arrive with the hosts' plug-in editors (collab/window.md, N8)
         // and the analyser device's big view (ADR-0183 d4).
@@ -975,7 +1059,11 @@ class AdiApplication final : public juce::JUCEApplication,
             out.view = std::move(editor);
             return out;
         };
+        // A test launch never takes the foreground from the person at the desk (WTS-01).
+        window_->quiet = testLaunch();
         window_->setVisible(true);
+        if (fullScreen)
+            window_->setFullScreen(true);
         // A Mix View kept open in its own window opens there again.
         syncMixView(*floating_, *root_, true);
         if (!noAudio_)
@@ -1021,9 +1109,13 @@ class AdiApplication final : public juce::JUCEApplication,
             return cores > 1 ? (std::min)(cores - 1U, static_cast<unsigned>(engine::RenderWorkers::maximum))
                              : 0U;
         }, settings::kGraphWorkersMinimumFrames);
-        bridge_ = std::make_unique<device::DeviceBridge>(*document_);
+        // The keyboard into the session (N60): the ports' rings drained in the device callback, in
+        // front of the document's process.
+        live_ = std::make_unique<LiveMidiProcessor>(*document_, midiFeed_);
+        bridge_ = std::make_unique<device::DeviceBridge>(*live_);
         bridge_->setRequestedBlockSize(setup.bufferSize);
         manager_.addAudioCallback(bridge_.get());
+        applyInputChannels(); // the tracks' monitoring inputs (N65)
         // The meters are the session's strips', which outlive a device change; a strip bound
         // while the session had none for its track finds it now.
         if (root_) {
@@ -1070,8 +1162,18 @@ class AdiApplication final : public juce::JUCEApplication,
         if (!document_ || !root_ || !window_)
             return;
         const auto before = document_->deviceCopyIdentity();
-        if (!document_->saveAs(pathFromUtf8(file.getFullPathName().toStdString()))) {
-            root_->say(document_->error());
+        const bool saved = document_->saveAs(pathFromUtf8(file.getFullPathName().toStdString()));
+        // A take landed before the switch (PD06-SAVEAS-GUARD) is told here with Save As's own words, so the
+        // timer finds nothing to say over them; a kept take is chosen, as when it lands on its own.
+        std::string landedFirst;
+        if (auto landed = document_->takeLanded()) {
+            if (!landed->ok)
+                landedFirst = landed->message + " ";
+            else if (!landed->clips.empty())
+                root_->selectClip(landed->clips.front());
+        }
+        if (!saved) {
+            root_->say(landedFirst + document_->error());
             return;
         }
         // The same project under a new file: a copy held from it still pastes into it.
@@ -1079,7 +1181,7 @@ class AdiApplication final : public juce::JUCEApplication,
             deviceClipboard_->sourceFile = document_->deviceCopyIdentity();
         commands_->clipClipboard().rebase(before, document_->deviceCopyIdentity());
         window_->setName("ADI - " + file.getFileNameWithoutExtension());
-        root_->say(document_->warning());
+        root_->say(landedFirst + document_->warning());
     }
     // Save a Copy, once the chooser has a file. The Status Bar says where it went, since nothing
     // else in the window changes.
@@ -1235,8 +1337,15 @@ class AdiApplication final : public juce::JUCEApplication,
                     settingsWindow_->panel().midiPorts = [this]() -> std::unique_ptr<juce::Component> {
                         return std::make_unique<MidiPortsTable>(*midiPorts_, *settings_);
                     };
+                // The Shortcuts page's key editor on the application's commands (WIN-04).
+                settingsWindow_->panel().shortcutKeys = [this]() -> std::unique_ptr<juce::Component> {
+                    return std::make_unique<ShortcutsPage>(*commands_);
+                };
                 settingsWindow_->panel().onChange = [this] {
                     commands_->reload();
+                    // The Audio page's Delay Compensation row is the Options menu's switch.
+                    if (root_ && root_->applyDelayCompensation)
+                        root_->applyDelayCompensation(commands_->delayCompensation());
                     pluginSourcesChanged();
                     // The MIDI Ports' switches open or close inputs: after the row's commit has unwound.
                     juce::MessageManager::callAsync([this] {
@@ -1245,8 +1354,13 @@ class AdiApplication final : public juce::JUCEApplication,
                     });
                 };
             }
+            // A test launch's Settings window (--smoke-settings) shows without the foreground too (WTS-01).
+            settingsWindow_->quiet = testLaunch();
             settingsWindow_->setVisible(true);
-            settingsWindow_->toFront(true);
+            if (std::exchange(settingsWindow_->fullScreenOwed, false))
+                settingsWindow_->setFullScreen(true);
+            if (!settingsWindow_->quiet)
+                settingsWindow_->toFront(true);
             return true;
         }
         if (id != AppCommands::NewProject && id != AppCommands::OpenProject)
@@ -1274,9 +1388,18 @@ class AdiApplication final : public juce::JUCEApplication,
         });
         return true;
     }
+    // The device's open inputs, for the tracks' monitoring (N65): every audio track hears inputs 1/2 as
+    // its Arm and monitoring say.
+    void applyInputChannels() {
+        if (!document_)
+            return;
+        const auto *device = manager_.getCurrentAudioDevice();
+        document_->setInputChannels(device != nullptr ? device->getActiveInputChannels().countNumberOfSetBits() : 0);
+    }
     void changeListenerCallback(juce::ChangeBroadcaster *) override {
         if (!settings_ || noAudio_)
             return;
+        applyInputChannels(); // a device with other inputs, or none
         const auto setup = manager_.getAudioDeviceSetup();
         if (!manager_.getCurrentAudioDevice())
             return;
@@ -1315,11 +1438,13 @@ class AdiApplication final : public juce::JUCEApplication,
             }
         }
         if (midiPorts_ && root_) {
-            // The ports' events go to the engine's live MIDI input once it is on main (ADR-0248 d6 item
-            // 4); until then they light the MIDI Indicators for 150 ms and are let go.
+            // The ports' events go to the session from the device callback (N60); a message arriving
+            // lights the MIDI Indicators for 150 ms.
             const auto now = juce::Time::getMillisecondCounter();
-            if (midiPorts_->drain({}) > 0)
+            if (const auto activity = midiPorts_->activity(); activity != midiSeen_) {
+                midiSeen_ = activity;
                 midiLitUntil_ = now + 150;
+            }
             root_->setMidiIn(now < midiLitUntil_);
         }
         if (floating_) {
@@ -1355,6 +1480,8 @@ class AdiApplication final : public juce::JUCEApplication,
     }
     bool noAudio_ = false, smokeSettings_ = false;
     juce::File smokeOutput_;
+    bool controlTest_ = false;
+    bool testLaunch() const { return smokeOutput_ != juce::File{} || controlTest_; }
     std::unique_ptr<settings::AppSettings> settings_;
     std::unique_ptr<AppCommands> commands_;
     device::JuceDeviceLoader loader_;
@@ -1363,11 +1490,17 @@ class AdiApplication final : public juce::JUCEApplication,
     std::unique_ptr<PluginCatalogueService> catalogue_;
     std::string pluginSourcesKey_;
     // The MIDI port host (SRF-05) and until when the MIDI Indicators stay lit.
+    // The ports' one consumer (N60), declared before the port host that publishes to it and the
+    // processor and the bridge that pump it, so it outlives all three.
+    MidiInputFeed midiFeed_;
     std::unique_ptr<MidiPortHost> midiPorts_;
+    std::uint64_t midiSeen_ = 0;
     juce::uint32 midiLitUntil_ = 0;
     std::unique_ptr<ProjectDocument> document_;
     std::shared_ptr<const MainMeterSource> mainMeterSource_;
     juce::AudioDeviceManager manager_;
+    // The document with the keyboard in front of it, which the bridge drives (N60).
+    std::unique_ptr<LiveMidiProcessor> live_;
     std::unique_ptr<device::DeviceBridge> bridge_;
     std::unique_ptr<AdiWindow> window_;
     AdiRootComponent *root_ = nullptr;
@@ -1398,6 +1531,8 @@ class AdiApplication final : public juce::JUCEApplication,
     ExportPage *exportPage_ = nullptr;
     std::thread render_;
     std::stop_source renderStop_;
+    std::shared_ptr<render::HostDispatch> renderHost_;
+    std::future<void> renderDone_;
     std::shared_ptr<std::atomic<bool>> renderAlive_ = std::make_shared<std::atomic<bool>>(true);
     std::unique_ptr<UndoHistoryWindow> historyWindow_; // shows the main root's list; goes before it
 };

@@ -22,6 +22,7 @@
 #include "adi/history.hpp"
 #include "adi/ops.hpp"
 #include "adi/store.hpp"
+#include "adi/ui/fade_edits.hpp"
 #include "adi/ui/op_submitter.hpp"
 #include "adi/ui/arrangement_geometry.hpp"
 #include "adi/ui/audio_drop.hpp"
@@ -38,6 +39,8 @@
 #include "adi/ui/reference_audition.hpp"
 #include "adi/ui/session_state.hpp"
 #include "adi/ui/send_edits.hpp"
+#include "adi/row_ids.hpp"
+#include "adi/ui/audio_drop.hpp"
 #include "adi/ui/automation_override.hpp"
 #include "adi/ui/snapshot_reader.hpp"
 #include "adi/ui/track_edits.hpp"
@@ -905,7 +908,7 @@ void groupAndUngroupAsBatches() {
     check(sub.submit(std::move(inner.ops)).ok && order() == Order{{2, 0}, {6, 0}, {3, 1}, {4, 0}, {1, 0}},
           "the inner group ungrouped: Snare in the outer one");
 
-    check(ui::groupTrack(view.current()->tracks, 1).refusal == "Main and return tracks can't be grouped." &&
+    check(ui::groupTrack(view.current()->tracks, 1).refusal == "Main can't be grouped." &&
               ui::groupTrack(view.current()->tracks, 99).refusal == "Select a track to group." &&
               ui::ungroupTrack(view.current()->tracks, 2).refusal == "Select a group track to ungroup.",
           "Main, a missing track and a track that is not a group are refused, with the reason");
@@ -1004,9 +1007,18 @@ void groupAndUngroupAsBatches() {
           "A dragged below the last return: after B, before Main");
     check(sub.undo().ok && ui::moveTracks(view.current()->tracks, {21}, {0, 0}).ops.empty(),
           "B dropped where it stands: no step");
-    check(ui::moveTracks(view.current()->tracks, {20, 2}, {0, 0}).refusal == "Return tracks move among the returns only." &&
-              ui::moveTracks(view.current()->tracks, {20}, {6, 0}).refusal == "Return tracks move among the returns only.",
-          "a return with a track, or into a group, is refused, with the reason");
+    check(ui::moveTracks(view.current()->tracks, {20, 2}, {0, 0}).refusal == "Return tracks move among the returns only.",
+          "a return with a track is refused, with the reason");
+    // A return dragged into a group (ADR-0247 d2): after what the group holds, one step; and out again.
+    auto intoGroup = ui::moveTracks(view.current()->tracks, {20}, {6, 0});
+    check(intoGroup.refusal.empty() && sub.submit(std::move(intoGroup.ops)).ok &&
+              order() == Order{{2, 0}, {6, 0}, {3, 1}, {20, 1}, {4, 0}, {21, 0}, {1, 0}} && sub.nextUndo()->label == "Move Track",
+          "A dragged into the group: after the group's track, the foot keeps B and Main; one step");
+    auto outOfGroup = ui::moveTracks(view.current()->tracks, {20}, {0, 21});
+    check(outOfGroup.refusal.empty() && sub.submit(std::move(outOfGroup.ops)).ok &&
+              order() == Order{{2, 0}, {6, 0}, {3, 1}, {4, 0}, {20, 0}, {21, 0}, {1, 0}},
+          "and dragged out before B: back at the foot");
+    check(sub.undo().ok && sub.undo().ok && order() == withReturns, "both undone");
     check(sub.undo().ok && sub.undo().ok && order() == before, "the returns undone");
 
     // A group holding a soloed track (manual 18.3: its Solo shows half coloured).
@@ -1194,6 +1206,22 @@ void sendsAsBatches() {
               !ui::returnPre(view.current()->tracks, 11) && !ui::returnPre(view.current()->tracks, 2) &&
               !ui::returnPre(view.current()->tracks, 12),
           "a return with no choice yet reads Post from its sends; a track, or no track, reads Post");
+    // An older file whose sends into A disagree, one Pre and one Post, no choice on the return: the
+    // engine reads it mixed, and so does the switch (ADR-0247 d2); its first click sets every send to
+    // Post. Undone.
+    {
+        OpRequest r;
+        r.opType = "routing.setPreFader";
+        r.payload = {{"id", first}, {"pre", true}};
+        r.label = "Older file";
+        check(sub.submit(std::move(r)).ok, "one send into A written Pre, the other left Post");
+        check(ui::returnTapMixed(*view.current(), 10), "A's switch reads mixed");
+        check(sub.submit(adi::clickReturnSendTap(10)).ok && !ui::returnTapMixed(*view.current(), 10) &&
+                  !ui::returnPre(view.current()->tracks, 10) && !ui::findSend(view.current()->sends, 2, 10)->preFader,
+              "its first click (the engine's) sets every send to Post");
+        check(sub.undo().ok && ui::returnTapMixed(*view.current(), 10) && sub.undo().ok &&
+                  !ui::returnTapMixed(*view.current(), 10), "undone: mixed, then not");
+    }
     // An older file: every send into A written Pre by the per-send op with no choice on the return
     // (what `allowSendEdgeTapEdit` allows while none is held). The return reads Pre without holding
     // it, and a new send into it still carries `routing.setPreFader`, as the engine's own
@@ -1412,11 +1440,12 @@ void audioDropAsOneStep() {
 
     // The same file again, below the tracks: the pool row is reused, and a new audio track holds it.
     auto again = ui::dropAudio(*view.current(), 0, 0, "snare", capture(2));
-    check(again.refusal.empty() && again.ops.size() == 3 && again.ops[0].opType == "track.create" &&
+    check(again.refusal.empty() && again.ops.size() == 4 && again.ops[0].opType == "track.create" &&
               again.ops[0].payload["kind"] == "audio" && again.ops[0].payload["id"] == 5 &&
-              again.ops[1].payload["track"] == 5 && again.ops[2].payload["media"] == 1 && again.select == 5 &&
+              again.ops[1].opType == "track.setMonitorMode" && again.ops[1].payload["mode"] == 2 &&
+              again.ops[2].payload["track"] == 5 && again.ops[3].payload["media"] == 1 && again.select == 5 &&
               again.clip == 2,
-          "the drop area: a new audio track, the pool's row reused");
+          "the drop area: a new audio track monitoring on Auto (N67), the pool's row reused");
     check(sub.submit(std::move(again.ops)).ok && view.current()->findTrack(5) != nullptr &&
               view.current()->findTrack(5)->clips.size() == 1,
           "and lands");
@@ -1852,8 +1881,15 @@ void returnsStandBeforeMain() {
     check(geometry.footTop(reader) == 1000 - 2 * geometry.height &&
               geometry.rowTop(reader, 1) == 1000 - geometry.height && geometry.rowTop(reader, 3) == 0,
           "with its view, it stands at the bottom of the lanes");
-    check(ui::groupTrack(view.current()->tracks, 2).refusal == "Main and return tracks can't be grouped.",
-          "a return can't be grouped");
+    {
+        // A return may go into a group now (DF-W33; ADR-0247 d2): Group Tracks makes the group and
+        // moves the return into it. Not submitted: the checks after this one read the foot as it is.
+        const auto grouped = ui::groupTrack(view.current()->tracks, 2);
+        check(grouped.refusal.empty() && !grouped.ops.empty() && grouped.ops.front().opType == "track.create" &&
+                  std::any_of(grouped.ops.begin(), grouped.ops.end(),
+                              [](const OpRequest &o) { return o.opType == "track.setParent" && o.payload.at("id") == 2; }),
+              "a return can be grouped: a new group, and the return moved into it");
+    }
 
     // A track's own colour (ADR-0211): an index into Live's palette, or none.
     auto colour = [&sub](std::int64_t id, std::int64_t value) {
@@ -1935,6 +1971,47 @@ void meterGrid() {
           "a change part-way through bar 2 ends it there, and 3/4's bars run on from it");
     check(geo.barHolding(5 * q).index == 1 && geo.barHolding(5 * q).end == 6 * q && geo.barHolding(7 * q).index == 2,
           "bar 2 is cut short; the next is bar 3");
+    // DF-W30 (a): a long bar and a wide grid. In 23/4 on the 8 Bars grid a tick is less than 1e-9 of a
+    // cell; the lines are still every eight bars, and the arrows still step by them.
+    const std::vector<textproj::Meter> long23{{0, 23, 4}};
+    geo.meters = &long23;
+    geo.grid.fixedQuarters = 32; // 8 Bars
+    const auto eight = 8 * 23 * q;
+    lines.clear();
+    geo.forEachGridLine(0, 3 * eight, [&](std::int64_t t) { lines.push_back(t); });
+    check(lines == std::vector<std::int64_t>{0, eight, 2 * eight, 3 * eight} && geo.snap(1, true) == eight &&
+              geo.snap(eight - 1, false) == 0 && geo.snap(eight + 1, false) == eight,
+          "in 23/4 on 8 Bars a line is every eight bars, a tick past one snaps back to it");
+    check(geo.nextGridLine(eight, true) == 2 * eight && geo.nextGridLine(eight, false) == 0,
+          "and the arrows step from one to the next");
+    geo.grid.fixedQuarters = 4;
+    const std::vector<textproj::Meter> long180{{0, 180, 4}};
+    geo.meters = &long180;
+    check(geo.nextGridLine(0, true) == 180 * q && geo.nextGridLine(180 * q, true) == 360 * q,
+          "a bar of 180 quarters on 1 Bar steps a whole bar");
+    // DF-W30 (c): a fade already that long is no op, unless an edit pinned its clock, so it plays at
+    // another length (its handles say so): then Create Fade puts it back on its ticks.
+    {
+        auto clip = std::make_shared<engine::ClipNode>();
+        clip->id = 9;
+        clip->posTicks = 0;
+        clip->lengthTicks = 1000;
+        clip->audio.emplace();
+        clip->fadeInTicks = 200;
+        clip->fadeInHandles = {0, 200};
+        auto track = std::make_shared<engine::TrackNode>();
+        track->id = 1;
+        track->kind = "audio";
+        track->clips = {clip};
+        const ui::SnapshotTracks fadeTracks{track};
+        const auto plainFade = ui::createFades(fadeTracks, {1}, -10, 200);
+        check(plainFade.ops.empty() && plainFade.refusal == "The fades are already that long.",
+              "a plain fade already that long: no op, and says so");
+        clip->fadeInHandles = {0, 300}; // the clock a split pinned, at a new tempo
+        const auto pinnedFade = ui::createFades(fadeTracks, {1}, -10, 200);
+        check(pinnedFade.ops.size() == 1 && pinnedFade.refusal.empty(),
+              "a fade of that length playing at another (its clock pinned) still takes the op");
+    }
 }
 
 void positionsTyped() {
@@ -2325,7 +2402,9 @@ void recordingDefaultsRideTheBatch() {
         if (op.opType == "track.setRecordQuantize")
             off = !op.payload.at("on").get<bool>() && !op.payload.contains("grid");
     check(off, "record.quantize off: Rec-Q Free");
-    check(ui::insertTrack(none, 0, true).ops.size() == 1, "without defaults, the track alone, as before");
+    check(ui::insertTrack(none, 0, true).ops.size() == 2 && ui::insertTrack(none, 0, true).ops[1].opType == "track.setMonitorMode" &&
+              ui::insertTrack(none, 0, true).ops[1].payload["mode"] == 2,
+          "without defaults, the track and its monitoring on Auto, as Live's (N67)");
 }
 
 void reenableFindsThePlayedLane() {
@@ -2357,10 +2436,101 @@ void reenableFindsThePlayedLane() {
     check(device != nullptr && device->id == 14, "a CLAP's parameter by its decimal id, in normalized units");
     check(ui::laneOf(snap, "track", 4, "pan") == nullptr && ui::deviceLaneOf(snap, 8, "clap", "zz") == nullptr,
           "no lane: none; an id a CLAP cannot spell: none");
+    // DF-W38: a device lane stored with a non-canonical ref ("001", a hand-made or older file) is the
+    // parameter it parses to, as the engine binds it.
+    lane(20, "device", 9, "001", "normalized", true);
+    check(ui::laneOf(snap, "device", 9, "1") != nullptr && ui::laneOf(snap, "device", 9, "1")->id == 20 &&
+              ui::deviceLaneOf(snap, 9, "test", "1") != nullptr && ui::laneOf(snap, "device", 9, "2") == nullptr,
+          "\"001\" is parameter 1; parameter 2 has no lane");
+    lane(21, "track", 4, "Pan", "real", true);
+    check(ui::laneOf(snap, "track", 4, "pan") == nullptr, "a track's ref is compared as written");
+}
+
+void heldIdsAreSkipped() {
+    section("A deleted row's id that a remark still holds is never given again (DF-E16, window half)");
+    adi::test::TempDirectory temp("ui_seams", "held");
+    auto store = freshProject(temp.path() / "p.adi");
+    check(store != nullptr, "store created");
+    if (!store) return;
+    engine::ProjectView view;
+    ui::OpSubmitter sub(*store, view);
+    auto request = [](const char* type, Payload payload, const char* label) {
+        OpRequest r;
+        r.opType = type;
+        r.payload = std::move(payload);
+        r.label = label;
+        return r;
+    };
+    bool made = true;
+    for (const auto& [id, kind, name, index] : {std::tuple{1, "master", "Main", 0}, std::tuple{3, "midi", "Lead", 0},
+                                                std::tuple{4, "audio", "Kick", 1}})
+        made = sub.submit(request("track.create", {{"id", id}, {"kind", kind}, {"name", name}, {"index", index}},
+                                  "Create track")).ok && made;
+    made = sub.submit(request("clip.create", {{"id", 7}, {"track", 3}, {"kind", "midi"}, {"pos", 0}, {"length", 3840}},
+                              "Create clip")).ok && made;
+    // Remarks on Kick and on the clip, then both deleted: the remarks stay, holding ids 4 and 7.
+    check(made, "tracks and a clip");
+    auto r1 = sub.submit(request("remark.add", {{"id", 1}, {"kind", "track"}, {"target", 4}, {"author", "user"}, {"text", "kick"}, {"created", 40}},
+                              "Add remark"));
+    check(r1.ok, "remark on Kick: " + r1.error);
+    auto r2 = sub.submit(request("remark.add", {{"id", 2}, {"kind", "clip"}, {"target", 7}, {"author", "user"}, {"text", "riff"}, {"created", 41}},
+                              "Add remark"));
+    check(r2.ok, "remark on the clip: " + r2.error);
+    auto r3 = sub.submit(request("clip.delete", {{"id", 7}}, "Delete clip"));
+    check(r3.ok, "clip deleted: " + r3.error);
+    auto r4 = sub.submit(request("track.delete", {{"id", 4}}, "Delete Track"));
+    check(r4.ok, "Kick deleted: " + r4.error);
+    made = r1.ok && r2.ok && r3.ok && r4.ok;
+    check(made && view.current()->findTrack(4) == nullptr && view.current()->remarks.size() == 2,
+          "Kick and the clip deleted, their remarks kept");
+    // The window's ids: past the live rows and past what the remarks hold.
+    check(ui::audio_drop_detail::newTrackId(*view.current()) == 5 && ui::audio_drop_detail::newClipId(*view.current()) == 8,
+          "the snapshot's next track is 5 (not 4), its next clip 8 (not 1)");
+    RowIds rows(store->db());
+    const auto next = rows.next("tracks");
+    auto made2 = ui::insertTrack(view.current()->tracks, 0, false, nullptr, next);
+    check(next == 5 && !made2.ops.empty() && made2.ops.front().payload["id"] == 5, "Insert Audio Track takes 5 from RowIds");
+    auto dropped = ui::newAudioTrack(*view.current());
+    check(!dropped.ops.empty() && dropped.ops.front().payload["id"] == 5, "a dropped file's new track takes 5 too");
+    check(sub.submit(std::move(made2.ops)).ok && view.current()->findTrack(5) != nullptr, "and lands");
+    check(sub.undo().ok && sub.undo().ok && view.current()->findTrack(4) != nullptr, "Undo brings Kick back, with its id");
+    check(sub.redo().ok && view.current()->findTrack(4) == nullptr && sub.redo().ok && view.current()->findTrack(5) != nullptr,
+          "Redo deletes it again and puts the new track back as 5");
+}
+
+void takesStayOffTheMainRow() {
+    section("DF-E35 (a): the Arrangement's readers take the main row; a new clip's id passes the takes");
+    adi::test::TempDirectory temp("ui_seams", "takes");
+    StoreError err = StoreError::Ok;
+    auto store = Store::create(temp.path() / "p.adi", err);
+    check(store != nullptr, "store created");
+    if (!store) return;
+    // Clip 1 on the main row and clip 2 on take lane 7, both at 0-960; clip 3 on the take at quarter 100,
+    // past the end's floor of 16 quarters, so an end() that read the takes would move.
+    store->db().exec("INSERT INTO tracks(id,kind,name) VALUES(1,'audio','Vocal');"
+                     "INSERT INTO lanes(id,track_id,kind) VALUES(7,1,'take');"
+                     "INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks,lane_id) VALUES"
+                     "(1,1,'audio',0,960,NULL),(2,1,'audio',0,960,7),(3,1,'audio',576576000,960,7);");
+    engine::ProjectView view;
+    view.refresh(*store);
+    const ui::SnapshotReader reader(view.current());
+    const auto *track = reader.findTrack(1);
+    check(track && track->clips.size() == 1 && track->takeClips.size() == 2, "one clip on the main row, two on the take");
+    if (!track) return;
+    ui::ArrangementGeometry geometry;
+    const auto *hit = geometry.hit(*track, 480);
+    check(hit && hit->id == 1, "hit(track 1, 480) is clip 1, not the take over it");
+    const auto content = ui::rangeContent(view.current()->tracks, {1}, 0, 960);
+    check(content.inside.size() == 1 && content.inside.front()->id == 1 && content.crossing == 0,
+          "a time selection over 0-960 holds clip 1 only");
+    check(geometry.end(reader) == 16 * textproj::kPPQ, "a take past the last clip does not extend the end");
+    check(ui::audio_drop_detail::newClipId(*view.current()) == 4, "the next clip is 4: past the takes' ids, not 2");
 }
 
 int main() {
     theWrongThingDoesNotCompile();
+    heldIdsAreSkipped();
+    takesStayOffTheMainRow();
     reenableFindsThePlayedLane();
     invalidReaderAnswersEmpty();
     readsTheModel();

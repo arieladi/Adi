@@ -63,6 +63,114 @@ struct Fixture {
         return result;
     }
 };
+void latencyCompensatedPlacement() {
+    struct DriverLatency {
+        std::int64_t input=256,output=384;
+        double errorCompensationMs=1.0;
+    } driver;
+    constexpr std::uint32_t rate=48000;
+    constexpr std::int64_t capturedAt=800;
+    constexpr std::uint32_t frames=128;
+    const auto offset=driver.input+driver.output+std::llround(driver.errorCompensationMs*rate/1000.0);
+    check(offset==688,"simulated input, output and 1 ms driver error total 688 samples");
+    struct Case {std::int64_t offset,position;};
+    for(const auto test:{Case{offset,112},Case{0,capturedAt},Case{-24,824},Case{offset+capturedAt,0}}) {
+        Fixture f;
+        auto recorded=f.capture(false,Precision::Float32,false,frames,{},capturedAt);
+        const std::array<recording::ClipIds,1> ids={{{7,8,"Latency placement"}}};
+        const auto bad=recording::prepareCommit(*f.store,recorded,ids,std::numeric_limits<std::int64_t>::min());
+        check(!bad.ok && std::filesystem::is_regular_file(recorded.tracks[0].file),
+              "an overflowing placement offset leaves the private recording available");
+        auto prepared=recording::prepareCommit(*f.store,recorded,ids,test.offset);
+        const auto committed=prepared.ok && recording::commit(*f.store,prepared).ok;
+        check(committed,"latency-compensated take commits through the normal recording commands");
+        if(!committed)continue;
+        const auto heard=f.play(Precision::Float32);
+        bool exact=recorded.startSample==capturedAt && recorded.frames==frames;
+        for(std::size_t frame=0;frame<heard.size();++frame) {
+            const auto local=static_cast<std::int64_t>(frame)-test.position;
+            const auto expected=local>=0 && local<frames ? Fixture::sample(static_cast<std::size_t>(local)) : 0.0f;
+            exact=exact && heard[frame]==expected;
+        }
+        check(exact,"corrected song position shifts the whole take without changing its recorded samples");
+    }
+}
+void midiLoopTakes() {
+    constexpr std::int64_t width=5765760;
+    Fixture f;
+    auto& store=*f.store;
+    store.db().exec("INSERT INTO tracks(id,kind,name) VALUES(23,'midi','MIDI Takes')");
+    const std::array<notes::NoteValues,1> held{{{.start=3*width/4,.duration=width/2,.id=17,
+        .key=60,.velocity=100,.releaseVelocity=71}}};
+    std::array<std::array<notes::NoteValues,1>,3> later{};
+    for(std::size_t i=0;i<later.size();++i)
+        later[i][0]={.start=width/8,.duration=width/8,.id=18+i,.key=64,.velocity=90};
+    const std::array<recording::MidiTakePass,4> passes{{
+        {{101,201,"First"},301,width,held,held},
+        {{102,202,"Second"},302,width,later[0],held},
+        {{103,203,"Third"},303,width,later[1],held},
+        {{104,204,"Partial"},304,width/2,later[2],held},
+    }};
+    const recording::MidiLoopPlacement placement{23,2*width,width,200,300,"MIDI Take"};
+    const auto before=digestProject(store).text;
+    auto invalid=passes;
+    invalid[1].length=width/2;
+    check(!recording::prepareMidiLoopCommit(store,placement,invalid).ok && digestProject(store).text==before,
+          "a partial MIDI pass in the middle is refused without creating a clip");
+    auto prepared=recording::prepareMidiLoopCommit(store,placement,passes);
+    if(!prepared.ok)throw std::runtime_error(prepared.error);
+    check(digestProject(store).text==before,"MIDI take preparation publishes no files or project rows");
+    const auto commit=recording::commit(store,prepared);
+    if(!commit.ok)throw std::runtime_error(commit.error);
+    const auto count=[&](const char* sql){return store.db().execAndGet(sql).getInt();};
+    check(count("SELECT count(*) FROM clips WHERE track_id=23 AND lane_id IS NOT NULL")==4 &&
+          count("SELECT count(*) FROM clips WHERE track_id=23 AND lane_id IS NULL")==1 &&
+          count("SELECT count(*) FROM lanes WHERE track_id=23 AND kind='take' AND id=101+ord")==4 &&
+          count("SELECT count(*) FROM clips WHERE id=204 AND length_ticks=2882880")==1,
+          "3.5 captured passes create four ordered take clips, one main clip and a half-length final take");
+    const auto readSingle=[&](std::int64_t clip) {
+        const auto snapshot=notes::captureNotes(store,clip);
+        if(!snapshot.ok || snapshot.records().size()!=1)throw std::runtime_error("expected one stored MIDI note");
+        std::string error;
+        const auto decoded=notes::values(snapshot.records().front(),error);
+        if(!decoded)throw std::runtime_error(error);
+        return *decoded;
+    };
+    const auto first=readSingle(201),main=readSingle(200);
+    check(first.id==17 && first.duration==width/4 && first.releaseVelocity==0 &&
+          main.id==17 && main.duration==width/2 && main.releaseVelocity==71,
+          "the take closes the held note at the pass end while the main copy retains its hold and real release");
+    {
+        const auto last=notes::captureNotes(store,204);
+        auto snapped=readSingle(204);snapped.start=0;
+        std::string error;
+        auto replacement=notes::withValues(last.records().front(),snapped,error);
+        if(!replacement)throw std::runtime_error(error);
+        notes::Diff diff;
+        diff.changed.push_back({last.records().front(),*replacement});
+        const auto quantize=recording::prepareRecordQuantize(store,204,diff);
+        History history(store);
+        check(quantize.ok && notes::commitDiff(store,quantize).ok && readSingle(204).start==0 &&
+              history.nextUndo() && history.nextUndo()->label=="Record Quantize",
+              "record quantize commits as a distinct Undo step after the raw pass");
+        check(history.undo().ok && readSingle(204).start==width/8 &&
+              count("SELECT count(*) FROM clips WHERE track_id=23")==5,
+              "Undo Record Quantize restores the raw note and keeps every take");
+    }
+    History history(store);
+    for(int remaining=3;remaining>=0;--remaining) {
+        const auto next=history.nextUndo();
+        check(next && next->label=="Record MIDI" && history.undo().ok &&
+              count("SELECT count(*) FROM clips WHERE track_id=23 AND lane_id IS NOT NULL")==remaining &&
+              count("SELECT count(*) FROM clips WHERE track_id=23 AND lane_id IS NULL")== (remaining>0?1:0),
+              "one Record MIDI Undo removes one take and restores the previous main image");
+    }
+    for(int restored=1;restored<=4;++restored)
+        check(history.redo().ok && count("SELECT count(*) FROM clips WHERE track_id=23 AND lane_id IS NOT NULL")==restored,
+              "Redo restores one literal MIDI pass");
+    check(readSingle(200)==main && readSingle(204).start==width/8,
+          "pass redo preserves note identities and the unquantized captured timing");
+}
 void publicationStagingOwnership() {
     namespace fs=std::filesystem;
     Fixture f;auto recorded=f.capture();const auto before=digestProject(*f.store).text;
@@ -137,6 +245,60 @@ void crossVolumePublication(const std::filesystem::path& workFolder) {
 #else
     (void)workFolder;throw std::runtime_error("the opt-in cross-volume native identity regression is Windows-only");
 #endif
+}
+// Default-suite stand-in for a stage that cannot reach its destination's
+// volume: the native exclusive rename refuses with the cross-device error.
+struct CrossDeviceRename {
+    static inline int renames=0,waits=0;
+    static inline std::filesystem::path source,target;
+    static std::error_code rename(const std::filesystem::path& from,const std::filesystem::path& to) {
+        ++renames;source=from;target=to;
+#if defined(_WIN32)
+        return {17,std::system_category()}; // ERROR_NOT_SAME_DEVICE
+#else
+        return std::make_error_code(std::errc::cross_device_link);
+#endif
+    }
+    static void wait(unsigned){++waits;}
+};
+void forcedCrossDevicePublication() {
+    namespace fs=std::filesystem;
+    Fixture f;auto recorded=f.capture();const auto before=digestProject(*f.store).text;
+    const auto take=recorded.tracks[0].file;const auto takeHash=media::blake3File(take);
+    const auto audioFolder=media::projectFolder(*f.store)/"audio";
+    const std::array<recording::ClipIds,1> ids={{{7,8,"Other device"}}};
+    fs::path published,staged;
+    {
+        auto prepared=recording::prepareCommit(*f.store,recorded,ids);
+        check(prepared.ok,"prepare a take for a forced cross-device publication");
+        if(!prepared.ok)throw std::runtime_error(prepared.error);
+        for(const auto& request:prepared.requests)if(request.opType=="media.import")
+            published=media::projectFolder(*f.store)/media::pathFromUtf8(request.payload.at("row").at("rel_path").get<std::string>());
+        prepared.publicationHooks.rename=CrossDeviceRename::rename;prepared.publicationHooks.retryWait=CrossDeviceRename::wait;
+        const auto refused=recording::commit(*f.store,prepared);
+        staged=CrossDeviceRename::source;
+        check(!refused.ok && refused.error.find("Cannot publish recorded audio")!=std::string::npos &&
+            refused.error.find("atomic publication")!=std::string::npos,
+            "a cross-device refusal fails the take with a reason naming the recorded audio publication");
+        check(CrossDeviceRename::renames==1 && CrossDeviceRename::waits==0 && !published.empty() && CrossDeviceRename::target==published,
+            "the cross-device refusal is tried once at the owned destination and never retried");
+        check(!fs::exists(published) && digestProject(*f.store).text==before &&
+            f.store->db().execAndGet("SELECT count(*) FROM media_files").getInt()==0 &&
+            f.store->db().execAndGet("SELECT count(*) FROM clips").getInt()==0,
+            "refused publication leaves no destination file and no project rows");
+        check(staged.parent_path().parent_path()==audioFolder && staged.parent_path().filename().string().starts_with(".adi-media-") &&
+            fs::is_regular_file(staged) && media::blake3File(staged).hex==takeHash.hex,
+            "the refused stage stays in its preparation's project-side directory with the take's bytes");
+        check(fs::is_regular_file(take) && media::blake3File(take).hex==takeHash.hex,
+            "the private take is retained for retry after a cross-device refusal");
+        prepared.publicationHooks={};
+        const auto retried=recording::commit(*f.store,prepared);
+        if(!retried.ok)std::printf("cross-device retry: %s\n",retried.error.c_str());
+        check(retried.ok && retried.seqs.size()==3 && media::blake3File(published).hex==takeHash.hex && !fs::exists(recorded.directory()),
+            "the same preparation publishes its retained stage once the rename succeeds");
+    }
+    check(!staged.empty() && !fs::exists(staged.parent_path()) && fs::exists(published),
+        "releasing the preparation removes only its own stage directory");
 }
 void heardPlacementAndHistory() {
     for(const auto precision:{Precision::Float32,Precision::Float64}) {
@@ -549,8 +711,10 @@ void loopReuseRefusesUnprovedExtents() {
 
 }
 int main(int argc,char** argv){try{
+    latencyCompensatedPlacement();
+    midiLoopTakes();
     if(argc!=1 && (argc!=3 || std::string(argv[1])!="--cross-volume-work-folder"))throw std::runtime_error("usage: recording tests [--cross-volume-work-folder PATH]");
-    publicationStagingOwnership();heardPlacementAndHistory();rollbackNeverDeletesLaterWriter();lateSqlAndOwnedReuse();existingMediaAndHistoryPaths();groupDedupAndGuards();loopPublicationRefusesFlattening();
+    publicationStagingOwnership();forcedCrossDevicePublication();heardPlacementAndHistory();rollbackNeverDeletesLaterWriter();lateSqlAndOwnedReuse();existingMediaAndHistoryPaths();groupDedupAndGuards();loopPublicationRefusesFlattening();
     loopPassesAndHistory();loopPartialEdgesAndPriorComp();loopSinglePassBoundaries();loopAtomicRefusalAndDedup();
     loopReusesOrderedLanes();loopMixedReuseAndFallback();loopReuseRefusesUnprovedExtents();
     if(argc==3) {

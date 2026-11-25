@@ -4,7 +4,9 @@
 #include "adi/audio/wav_file.hpp"
 #include "adi/engine/clip_playback.hpp"
 #include "adi/store.hpp"
+#include "adi/ui/window_state.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -172,6 +174,79 @@ void refusalAndRetry() {
     phase.store(2,std::memory_order_release);
     check(fixture.clips->primeAt(target,std::chrono::seconds(2)),"a failed candidate wait can retry once its worker becomes available");
     check(fixture.live.position()==0 && !fixture.live.playing(),"candidate preparation never changes the live transport");
+}
+void stoppedDriverWaitsForDisk() {
+    constexpr std::int64_t first=32000, second=60000;
+    std::atomic<int> phase{0};
+    ClipPlayback::RequestSnapshotProbeForTest probe;
+    probe.context=&phase;
+    probe.afterSnapshot=[](void* context,std::int64_t page) noexcept {
+        if(page>=0)holdOnce(context,0);
+    };
+    Fixture fixture;
+    auto ready=fixture.clips->readiness();
+    const auto sources=fixture.clips->sourcesFor(1);
+    if(!ready || sources.size()!=1)throw std::runtime_error("stopped driver fixture source");
+    fixture.clips->setRequestSnapshotProbeForTest(&probe);
+    ui::TransportMailbox mailbox;
+    using Command=ui::TransportMailbox::Command;
+    const auto post=[&](Command command,std::int64_t sampleAt=0) {
+        if(!mailbox.post(command,sampleAt))throw std::runtime_error("stopped driver fixture mailbox");
+    };
+    std::array<std::array<float,blockFrames>,2> narrow{};
+    const std::array<std::array<double,blockFrames>,2> unusedWide{};
+    float* out[]{narrow[0].data(),narrow[1].data()};
+    NodeIo io;io.channels=2;io.frames=blockFrames;io.sampleRate=48000;io.out=out;
+    const auto block=[&] {
+        audio::CallbackScope callback;
+        mailbox.drain(fixture.live,[&](std::int64_t) noexcept {fixture.live.play(true);},
+            [&](std::int64_t sampleAt) noexcept {
+                auto requested=fixture.live;
+                requested.locate(sampleAt);
+                requested.play();
+                return ready(requested,blockFrames);
+            });
+        sources.front()->process(io);
+        if(fixture.live.playing())fixture.live.advance(blockFrames);
+    };
+    const auto silent=[&] {
+        return std::all_of(narrow.begin(),narrow.end(),[](const auto& channel) {
+            return std::all_of(channel.begin(),channel.end(),[](float value) {return value==0;});
+        });
+    };
+    post(Command::Locate,first);
+    block();
+    const bool prefetched=waitPhase(phase,1); // worker cannot fill a page until released
+    check(prefetched && silent() && fixture.live.position()==first,
+          "a stopped Locate requests the disk page without audio or advancing the song clock");
+    post(Command::Play);
+    bool silentWhilePending=true;
+    for(int i=0;i<3;++i) {
+        block();
+        silentWhilePending=silentWhilePending && silent() && !fixture.live.playing() &&
+            mailbox.desiredPlaying() && fixture.live.position()==first;
+    }
+    check(silentWhilePending,"Play stays pending and silent while the disk worker is deliberately held");
+    post(Command::Stop);
+    block();
+    check(!mailbox.desiredPlaying() && silent() && fixture.live.position()==first,
+          "Stop cancels pending Play without consuming song samples");
+    post(Command::Play);
+    block();
+    post(Command::Locate,second);
+    block();
+    check(!fixture.live.playing() && silent() && fixture.live.position()==second && mailbox.desiredPlaying(),
+          "a second Locate retargets pending Play while the worker is still held");
+    phase.store(2,std::memory_order_release);
+    const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(2);
+    while(!fixture.live.playing() && std::chrono::steady_clock::now()<deadline) {
+        block();
+        if(!fixture.live.playing())std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    Transport expected;expected.locate(second);expected.play();
+    check(fixture.live.playing() && fixture.live.position()==second+blockFrames &&
+          rendered(Precision::Float32,narrow,unusedWide,expected) && fixture.clips->underrunSamples()==0,
+          "the first playing callback contains the exact relocated samples and no underrun");
 }
 void callbackReadiness(Precision precision) {
     std::atomic<int> phase{0};
@@ -537,6 +612,7 @@ int main() {
             reservationTurnover(precision);
         }
         refusalAndRetry();
+        stoppedDriverWaitsForDisk();
         mutedOpensNothing();
     }catch(const std::exception& error){++failures;std::printf("EXCEPTION: %s\n",error.what());}
     std::printf("%d checks, %d failures\n",checks,failures);
