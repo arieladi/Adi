@@ -17,6 +17,16 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 25 November 2026 — Stereo transfer in each Pan band
+
+`clones/shaper-pan-transfer` at `16cbbf6c` — Add per-band stereo transfer to Pan. Lands after 3 December. IDs 919–921 append three independent switches. Older projects recall the existing balance law. At zero delay blend and half excursion, half of the far input moves to the near speaker and half stays in the far speaker. The delay stores both mixed channels, so a change of direction can replay the previous near speaker in the far ear.
+
+Across 666 measured stationary settings at 44.1, 48 and 96 kHz, separate left and right impulses reproduced all four matrix paths to within 0.000000166 gain. On the moving hard-switch kick and bass at 48 kHz, both 256- and 2,048-frame runs gave less than 0.000000015 RMS error per channel over 192,000 aligned frames. The worst sample differed by 0.00000224. The previous balance mode produced 0.07847 left and 0.07688 right RMS error on the same signal. Sparse-state recall, distinct band switches and both columns of the matrix are covered through the registered and editable Pd paths.
+
+Release MSVC `/W4 /WX` passed all four rack, Drive, session and Pd suites at each signal precision.
+
+PR requested
+
 ## 25 November 2026 — Stage order on the current seven-stage device
 
 `clones/shaper-order-current-1125` at `0c16c68b` — Preserve Pan controls when recalling stage order. Lands after 3 December. Use this head for queue item 20. It incorporates the earlier order submission and preserves the 418 descriptors on main, including the three Pan delay blends. Ranks 716–722 append to the descriptor list. Ties use persistent stage identity, and sparse recall restores the legacy order over an already reordered device.
