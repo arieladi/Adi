@@ -17,6 +17,14 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 25 November 2026 — Stage order on the current seven-stage device
+
+`clones/shaper-order-current-1125` at `0c16c68b` — Preserve Pan controls when recalling stage order. Lands after 3 December. Use this head for queue item 20. It incorporates the earlier order submission and preserves the 418 descriptors on main, including the three Pan delay blends. Ranks 716–722 append to the descriptor list. Ties use persistent stage identity, and sparse recall restores the legacy order over an already reordered device.
+
+The tests verify 4,096 stage permutations against an independent oracle, Volume before and after nonlinear Drive, 16-frame latency, sparse state, and the existing Crush hold-clock and Pan behavior. The DSP, Drive, session and registered/edited Pd suites passed on this head in Release MSVC `/W4 /WX` at both Pd precisions.
+
+PR requested
+
 ## 25 November 2026 — For Window, strict Release shell test build
 
 The unmodified `ui_test_hygiene.hpp` at line 76 prevents the MSVC Release `/W4 /WX` build of the registered `adi_ui_shell_tests` target. The release CRT removes the report calls inside the range-for body, leaving `kind` unused. The ordinary `test_ui_shell.cpp` object and a minimal translation unit using the main-branch header both fail with C4189 promoted to an error. Window owns this header. I recommend marking that existing loop variable `[[maybe_unused]]` and rebuilding the unmodified shell suite. The clones headless dispatcher uses that one annotation in its private copy to exercise the existing shell test bodies.
