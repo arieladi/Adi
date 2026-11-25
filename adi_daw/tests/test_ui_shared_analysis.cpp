@@ -1904,6 +1904,159 @@ void spectrogramHistoryMotion() {
           "hiding the last observers releases their raster and acquisition and hidden settings do no analysis work");
 }
 
+void spectrogramFrequencyScales() {
+    using namespace adi::ui;
+    using Mode = SharedSpectrumView::Mode;
+    using Motion = SharedSpectrumView::HistoryMotion;
+    constexpr int left = 5, top = 21, width = 128, height = 256, fft = 1024, hop = fft / 4, toneBin = 86;
+    constexpr std::array names{"Linear", "Log", "Mel", "Bark", "ERB"};
+    const auto findScale = [](AnalysisPane &pane) -> juce::ComboBox * {
+        for (auto *child : pane.getChildren())
+            if (auto *box = dynamic_cast<juce::ComboBox *>(child);
+                box && box->getTitle() == "Spectrogram frequency scale") return box;
+        return nullptr;
+    };
+    const auto pick = [](juce::ComboBox &box, int id) {
+        box.setSelectedId(id, juce::dontSendNotification);
+        if (box.onChange) box.onChange();
+    };
+    const auto sameWork = [](const auto &before, const auto &after) {
+        return before.transforms == after.transforms && before.analysisWindows == after.analysisWindows &&
+            before.publications == after.publications && before.cursorReads == after.cursorReads &&
+            before.workerPasses == after.workerPasses && before.frameRequests == after.frameRequests &&
+            before.consumers == after.consumers && before.domains == after.domains &&
+            before.taps == after.taps && before.spectralPlans == after.spectralPlans &&
+            before.historyBytes == after.historyBytes;
+    };
+    const auto ordinate = [](int id, double frequency) {
+        switch (id) {
+            case 1: return frequency;
+            case 2: return std::log(frequency);
+            case 3: return std::log10(1. + frequency / 700.);
+            case 4: return 26.81 * frequency / (1960. + frequency) - .53;
+            default: return std::log10(1. + .00437 * frequency);
+        }
+    };
+    const auto toneRow = [&](int id, double rate) {
+        const auto hz = rate * toneBin / fft;
+        const auto low = ordinate(id, 20.);
+        const auto high = ordinate(id, std::min(20000., rate * .5));
+        const auto normalized = (ordinate(id, hz) - low) / (high - low);
+        return top + height - 1 - static_cast<int>(normalized * height);
+    };
+    const auto ridgeAt = [&](const juce::Image &image, const SharedAnalysis::Result &result, int x, int id) {
+        if (result.columns.empty() || !result.columns.back().binsDbfs) return false;
+        const auto &bins = *result.columns.back().binsDbfs;
+        if (bins.empty() || std::ranges::max_element(bins) - bins.begin() != toneBin) return false;
+        const auto intensity = static_cast<std::uint8_t>(255.f *
+            std::clamp((bins[static_cast<std::size_t>(toneBin)] + 96.f) / 96.f, 0.f, 1.f));
+        const auto expected = analysisPaletteColour(palettes::defaultIndex, intensity);
+        const auto y = toneRow(id, result.sampleRate);
+        for (int offset = -1; offset <= 1; ++offset)
+            if (image.getPixelAt(x, y + offset) == expected) return true;
+        return false;
+    };
+
+    AnalysisPane controls;
+    auto *scale = findScale(controls);
+    check(scale && !scale->isVisible(), "the Spectrogram frequency scale does not occupy another analysis mode");
+    if (!scale) return;
+    controls.setMode(Mode::Spectrogram);
+    bool ordered = scale->isVisible() && scale->getSelectedId() == 2 &&
+                   scale->getNumItems() == static_cast<int>(names.size());
+    for (std::size_t i = 0; i < names.size(); ++i)
+        ordered = ordered && scale->getItemText(static_cast<int>(i)) == names[i];
+    check(ordered, "Spectrogram offers Linear, Log, Mel, Bark and ERB with Log selected by default");
+    pick(*scale, 5);
+    controls.setMode(Mode::Spectrum); controls.setMode(Mode::Spectrogram);
+    check(scale->isVisible() && scale->getSelectedId() == 5,
+          "the Spectrogram frequency scale is retained across mode changes");
+
+    for (const double rate : {48000., 32000.}) {
+        Fixture f;
+        f.tap = std::make_shared<ScopeTap>(rate, SharedAnalysis::kTapSeconds);
+        Root root;
+        AnalysisPane pane;
+        SharedSpectrumView sibling;
+        root.setBounds(0, 0, 460, 420); root.setVisible(true); root.addToDesktop(0);
+        root.addAndMakeVisible(pane); pane.setBounds(0, 0, 280, 420);
+        pane.setMode(Mode::Spectrogram);
+        // A logical pixel per raster cell exposes the real projected bin edges.
+        pane.view.setBounds(0, 0, 156, 311);
+        root.addAndMakeVisible(sibling); sibling.setBounds(295, 0, 156, 311);
+        sibling.setMode(Mode::Spectrogram);
+        const auto frame = [&] {
+            pane.frame(f.broker, 1, 1);
+            sibling.present(f.broker, 1); sibling.frame();
+        };
+        const auto write = [&](int frames) {
+            std::vector<float> samples(static_cast<std::size_t>(frames));
+            const auto start = f.tap->written();
+            for (std::size_t i = 0; i < samples.size(); ++i)
+                samples[i] = .5f * static_cast<float>(std::sin(2. * std::numbers::pi * toneBin *
+                    static_cast<double>((start + static_cast<std::int64_t>(i)) % fft) / fft));
+            f.tap->write(samples.data(), samples.data(), frames, start, true);
+            f.broker->pump(); frame();
+        };
+        auto *picker = findScale(pane);
+        check(picker && picker->isShowing(), "the software-peer Spectrogram exposes its frequency scale");
+        if (!picker) continue;
+        frame();
+        write(fft + 2 * hop);
+        const auto initial = pane.view.snapshot();
+        const auto started = f.broker->stats();
+        const auto logImage = softwarePicture(pane.view), siblingImage = softwarePicture(sibling);
+        check(initial && initial == sibling.snapshot() && initial->columns.size() == 3 &&
+                  initial->request.fftSize == fft && initial->sampleRate == rate && started.consumers == 2 &&
+                  originalRasterPixels(pane.view, *initial) && ridgeAt(logImage, *initial, left + width - 1, 2),
+              "default Log exactly preserves the existing pixels on the shared history at the actual source rate");
+        if (!initial || initial->columns.empty()) continue;
+        for (const auto id : {1, 3, 4, 5}) {
+            pick(*picker, id);
+            const auto projected = softwarePicture(pane.view);
+            check(!samePixels(logImage, projected) && ridgeAt(projected, *initial, left + width - 1, id) &&
+                      pane.view.snapshot() == initial && sibling.snapshot() == initial &&
+                      samePixels(siblingImage, softwarePicture(sibling)) && sameWork(started, f.broker->stats()),
+                  "an independent frequency mapping moves the tone ridge on the same columns without broker work");
+        }
+        pick(*picker, 2);
+        check(samePixels(logImage, softwarePicture(pane.view)),
+              "returning to Log restores every pixel without replacing the immutable publication");
+
+        pane.setHistoryMotion(Motion::Sweep);
+        pane.view.clear();
+        write(hop);
+        const auto fresh = pane.view.snapshot();
+        check(fresh && fresh == sibling.snapshot() && fresh->historySerial == initial->historySerial + 1 &&
+                  fresh->columns.size() == initial->columns.size() + 1,
+              "the local Clear keeps pre-fence history available to its sibling");
+        if (!fresh) continue;
+        pane.view.freeze(true);
+        const auto held = f.broker->stats();
+        const auto frozenLog = softwarePicture(pane.view);
+        pick(*picker, 1);
+        const auto frozenLinear = softwarePicture(pane.view);
+        bool noRetiredPixels = true;
+        // Only x=0 is a post-Clear data column. x=1 is the sweep cursor.
+        for (int x = 2; x < width; ++x) for (int y = 0; y < height; ++y)
+            noRetiredPixels = noRetiredPixels && frozenLinear.getPixelAt(left + x, top + y) == look::display;
+        pane.view.frame();
+        check(held.consumers == 1 && !pane.view.subscribed() && pane.view.snapshot() == fresh &&
+                  pane.view.historyMotion() == Motion::Sweep && noRetiredPixels &&
+                  !samePixels(frozenLog, frozenLinear) && ridgeAt(frozenLinear, *fresh, left, 1) &&
+                  sameWork(held, f.broker->stats()),
+              "a frozen scale change keeps the Sweep origin and never restores pixels from before Clear");
+        pick(*picker, 2);
+        check(samePixels(frozenLog, softwarePicture(pane.view)) && sameWork(held, f.broker->stats()),
+              "restoring the frozen scale preserves the exact held raster with no work");
+        const auto repaints = root.fake->repaints;
+        for (int i = 0; i < 5; ++i) pane.view.frame();
+        check(root.fake->repaints == repaints && sameWork(held, f.broker->stats()),
+              "unchanged frozen frames do no repaint or analysis after switching scales");
+        root.removeFromDesktop();
+    }
+}
+
 void classicScopeSurface() {
     using namespace adi::ui;
     using Trigger = adi::dsp::TriggeredScope::Trigger;
@@ -2937,7 +3090,7 @@ int main() {
           compactAnalyzerDock(); cumulativeAverageTitlePaint(); paletteMenuTheme(); palettesAndFrozenRaster(); restartedRasterDomain();
           clearSpectrogramWhileWorkerAhead(); freshActionsWithSharedConsumer(); backlogAndLifecycleFreshness(); spectrumSlopeProjection(); spectrumWideCachedGeometry(); spectrumDetailScale(); spectrumExtendedGridGeometry(); spectrumExtendedScale();
           pinnedSpectrumWaitsForHeardPrimary();
-          spectrumDeviceScale(); spectrogramHistoryMotion(); classicScopeSurface();
+          spectrumDeviceScale(); spectrogramHistoryMotion(); spectrogramFrequencyScales(); classicScopeSurface();
           classicScopeUnchangedTrace(); detailedPhasePreservesHighFrequencyTrace(); mixPhaseRailViews(); mixAnalyserPages();
           compareAndAveragePages(); compareHoldSurvivesInvalidA(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }

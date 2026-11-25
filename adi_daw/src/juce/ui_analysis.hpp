@@ -89,6 +89,9 @@ class SharedSpectrumView final : public juce::Component,
     enum class HistoryMotion { Scroll, Sweep };
     void setHistoryMotion(HistoryMotion);
     HistoryMotion historyMotion() const noexcept { return historyMotion_; }
+    enum class SpectrogramScale { Linear, Log, Mel, Bark, Erb };
+    void setSpectrogramScale(SpectrogramScale);
+    SpectrogramScale spectrogramScale() const noexcept { return spectrogramScale_; }
     // Weak owner token: closing/replacing the document revokes future reads.
     // Main-only eligibility is checked before invoking the callback.
     void setMainMeterSource(const std::shared_ptr<const MainMeterSource> &);
@@ -200,6 +203,7 @@ class SharedSpectrumView final : public juce::Component,
     std::size_t paletteIndex_ = palettes::defaultIndex;
     bool paletteReversed_ = false;
     HistoryMotion historyMotion_ = HistoryMotion::Scroll;
+    SpectrogramScale spectrogramScale_ = SpectrogramScale::Log;
     std::uint64_t clearedRevision_ = 0, clearedEpoch_ = 0, clearedColumn_ = 0;
     // Owner-only source position, independent of parked stamps and worker backlog.
     // Initial compatible pictures may be reused; explicit fresh actions fence them.
@@ -265,7 +269,8 @@ class AnalysisPane final : public juce::Component {
     std::function<void()> onSpectrumSlopeChange;
     std::function<void(std::int64_t)> onExpand;
     SharedSpectrumView view;
-    juce::ComboBox modeBox, sourceBox, pointBox, channelBox, paletteBox, slopeBox, scaleBox, historyBox;
+    juce::ComboBox modeBox, sourceBox, pointBox, channelBox, paletteBox, slopeBox, scaleBox, historyBox,
+        spectrogramScaleBox;
     juce::ToggleButton reverseButton{"Reverse"};
     juce::TextButton freezeButton{"Freeze"}, resetButton{"Reset"}, expandButton{"Window"};
   private:

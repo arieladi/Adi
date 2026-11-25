@@ -762,6 +762,7 @@ void MixAnalysers::frame(const std::shared_ptr<SharedAnalysis> &broker, const Sn
             tile.setPalette(detail.view.palette(), detail.view.paletteReversed());
             tile.setSpectrumSlope(detail.view.spectrumSlope());
             if (tile.mode() == Mode::Spectrum) tile.setSpectrumScale(detail.view.spectrumScale());
+            if (tile.mode() == Mode::Spectrogram) tile.setSpectrogramScale(detail.view.spectrogramScale());
             tile.present(broker, track);
             tile.frame();
         }

@@ -263,16 +263,73 @@ struct SharedSpectrumView::SpectrumOverlay {
     void clearPicture() noexcept { picture = {}; waiting = {}; plot.reset(); }
 };
 
+namespace {
+using SpectrogramScale = SharedSpectrumView::SpectrogramScale;
+
+double spectrogramPosition(SpectrogramScale scale, double hz) noexcept {
+    switch (scale) {
+    case SpectrogramScale::Linear: return hz;
+    case SpectrogramScale::Log: return std::log(hz);
+    case SpectrogramScale::Mel: return std::log1p(hz / 700.);
+    case SpectrogramScale::Bark: return 26.81 * hz / (1960. + hz) - .53;
+    case SpectrogramScale::Erb: return std::log1p(.00437 * hz);
+    }
+    return hz;
+}
+
+double spectrogramFrequency(SpectrogramScale scale, double position) noexcept {
+    switch (scale) {
+    case SpectrogramScale::Linear: return position;
+    case SpectrogramScale::Log: return std::exp(position);
+    case SpectrogramScale::Mel: return 700. * std::expm1(position);
+    case SpectrogramScale::Bark:
+        return 1960. * (position + .53) / (26.81 - (position + .53));
+    case SpectrogramScale::Erb: return std::expm1(position) / .00437;
+    }
+    return position;
+}
+} // namespace
+
 struct SharedSpectrumView::Raster {
     static constexpr int width = 128, height = 256;
     static constexpr std::uint16_t gap = 256;
     std::array<std::uint16_t, static_cast<std::size_t>(width * height)> intensity{};
     std::array<juce::Colour, 256> colors{};
+    std::array<std::size_t, height> firstBin{}, lastBin{};
+    SpectrogramScale scale = SpectrogramScale::Log;
+    double sampleRate = 0.;
+    std::int32_t fftSize = 0;
     juce::Image image;
     std::uint64_t revision = 0, epoch = 0, column = 0, sweepOrigin = 0;
     ThemeId theme = ThemeId::Dark;
     bool paletteDirty = true;
     Raster() { intensity.fill(gap); }
+    bool matchesFrequencyMap(SpectrogramScale next, double rate, std::int32_t size) const noexcept {
+        return scale == next && sampleRate == rate && fftSize == size;
+    }
+    void prepareFrequencyMap(SpectrogramScale next, double rate, std::int32_t size, double topHz) noexcept {
+        scale = next;
+        sampleRate = rate;
+        fftSize = size;
+        constexpr auto lowestHz = 20.;
+        const auto lowPosition = spectrogramPosition(scale, lowestHz);
+        const auto highPosition = spectrogramPosition(scale, topHz);
+        const auto edgeBin = [&](int row) {
+            const auto fraction = static_cast<double>(row) / height;
+            // Preserve the precise endpoint computation of the default grid.
+            const auto hz = scale == SpectrogramScale::Log ? lowestHz * std::pow(topHz / lowestHz, fraction) :
+                spectrogramFrequency(scale, std::lerp(lowPosition, highPosition, fraction));
+            return static_cast<std::size_t>(hz * size / rate);
+        };
+        auto low = edgeBin(0);
+        for (int row = 0; row < height; ++row) {
+            const auto y = static_cast<std::size_t>(row);
+            const auto high = edgeBin(row + 1);
+            firstBin[y] = std::max<std::size_t>(1, low);
+            lastBin[y] = std::max(firstBin[y] + 1, high + 1);
+            low = high;
+        }
+    }
     void setPalette(std::size_t index, bool reverse) noexcept {
         theme = look::themeId();
         for (std::size_t i = 0; i < colors.size(); ++i)
@@ -1170,9 +1227,20 @@ void SharedSpectrumView::frame() noexcept {
     if (pictureChanged && spectrumMode()) updateScaledSpectrum();
     updateSpectrumOverlays(pictureChanged);
 }
+void SharedSpectrumView::setSpectrogramScale(SpectrogramScale scale) {
+    if (spectrogramScale_ == scale) return;
+    spectrogramScale_ = scale;
+    if (mode_ != Mode::Spectrogram || !shown_) return;
+    try { updateRaster(); } catch (...) { raster_.reset(); }
+    repaint();
+}
+
 void SharedSpectrumView::updateRaster() {
     if (mode_ != Mode::Spectrogram || !shown_) return;
-    const bool needsColumns = !raster_ || raster_->image.isNull() ||
+    const auto rate = shown_->sampleRate;
+    const auto fftSize = shown_->request.fftSize;
+    const bool frequencyChanged = !raster_ || !raster_->matchesFrequencyMap(spectrogramScale_, rate, fftSize);
+    const bool needsColumns = frequencyChanged || raster_->image.isNull() ||
         raster_->revision != shown_->revision || raster_->epoch != shown_->sourceEpoch;
     if (needsColumns) {
         const auto &columns = shown_->columns;
@@ -1194,13 +1262,14 @@ void SharedSpectrumView::updateRaster() {
         }
         const auto skipped = static_cast<std::size_t>(firstVisible - columns.begin());
         const auto count = columns.size() - skipped;
-        const auto topHz = std::min(20000., shown_->sampleRate * .5);
-        if ((!count && !shown_->historySerial) || topHz <= 20) return;
+        const auto topHz = std::min(20000., rate * .5);
+        if ((!count && !shown_->historySerial) || !std::isfinite(rate) || topHz <= 20 || fftSize <= 0) return;
         if (!raster_) {
             raster_ = std::make_unique<Raster>();
             raster_->setPalette(paletteIndex_, paletteReversed_);
         }
         auto &raster = *raster_;
+        if (frequencyChanged) raster.prepareFrequencyMap(spectrogramScale_, rate, fftSize, topHz);
         auto firstColumn = skipped;
         const bool newSweep = raster.image.isNull() || raster.epoch != shown_->sourceEpoch ||
             shown_->historySerial < raster.column;
@@ -1212,7 +1281,7 @@ void SharedSpectrumView::updateRaster() {
             else
                 raster.sweepOrigin = count ? columns[skipped].serial : shown_->historySerial;
         }
-        if (newSweep || shown_->historySerial - raster.column >= Raster::width) {
+        if (newSweep || frequencyChanged || shown_->historySerial - raster.column >= Raster::width) {
             // History scrolls and changes individual pixels on the message thread.
             // Keep those edits in memory so shifts and clears never read back a GPU surface.
             if (raster.image.isNull())
@@ -1230,32 +1299,28 @@ void SharedSpectrumView::updateRaster() {
             for (auto column = skipped; column < columns.size(); ++column) {
                 const auto serial = columns[column].serial;
                 if (serial <= shown_->historySerial && shown_->historySerial - serial < Raster::width)
-                    retained[127 - static_cast<std::size_t>(shown_->historySerial - serial)] = true;
+                    retained[Raster::width - 1 - static_cast<std::size_t>(shown_->historySerial - serial)] = true;
             }
             for (std::size_t x = 0; x < retained.size(); ++x)
                 if (!retained[x]) raster.clearColumns(static_cast<int>(x), 1);
         }
-        std::array<std::size_t, Raster::height> firstBin{}, lastBin{};
-        for (int row = 0; row < Raster::height; ++row) {
-            const auto low = 20. * std::pow(topHz / 20., static_cast<double>(row) / Raster::height);
-            const auto high = 20. * std::pow(topHz / 20., static_cast<double>(row + 1) / Raster::height);
-            firstBin[static_cast<std::size_t>(row)] = std::max<std::size_t>(1, static_cast<std::size_t>(low * shown_->request.fftSize / shown_->sampleRate));
-            lastBin[static_cast<std::size_t>(row)] = std::max(firstBin[static_cast<std::size_t>(row)] + 1,
-                static_cast<std::size_t>(high * shown_->request.fftSize / shown_->sampleRate) + 1);
-        }
         juce::Image::BitmapData pixels(raster.image, juce::Image::BitmapData::writeOnly);
-        for (auto column = firstColumn; column < columns.size(); ++column) for (int row = 0; row < Raster::height; ++row) {
+        for (auto column = firstColumn; column < columns.size(); ++column) {
             const auto &entry = columns[column];
             if (!entry.binsDbfs || entry.serial > shown_->historySerial || shown_->historySerial - entry.serial >= Raster::width) continue;
             const auto &bins = *entry.binsDbfs;
-            float peak = floorDb;
-            for (auto i = firstBin[static_cast<std::size_t>(row)]; i < std::min(bins.size(), lastBin[static_cast<std::size_t>(row)]); ++i)
-                peak = std::max(peak, bins[i]);
-            const auto strength = std::clamp((peak - floorDb) / -floorDb, 0.f, 1.f);
-            const auto value = static_cast<std::uint16_t>(strength * 255.f);
-            const int x = 127 - static_cast<int>(shown_->historySerial - entry.serial), y = Raster::height - row - 1;
-            raster.intensity[static_cast<std::size_t>(y * Raster::width + x)] = value;
-            pixels.setPixelColour(x, y, raster.colors[value]);
+            const int x = Raster::width - 1 - static_cast<int>(shown_->historySerial - entry.serial);
+            for (int row = 0; row < Raster::height; ++row) {
+                const auto rangeIndex = static_cast<std::size_t>(row);
+                float peak = floorDb;
+                for (auto i = raster.firstBin[rangeIndex]; i < std::min(bins.size(), raster.lastBin[rangeIndex]); ++i)
+                    peak = std::max(peak, bins[i]);
+                const auto strength = std::clamp((peak - floorDb) / -floorDb, 0.f, 1.f);
+                const auto value = static_cast<std::uint16_t>(strength * 255.f);
+                const int y = Raster::height - row - 1;
+                raster.intensity[static_cast<std::size_t>(y * Raster::width + x)] = value;
+                pixels.setPixelColour(x, y, raster.colors[value]);
+            }
         }
         raster.revision = shown_->revision; raster.epoch = shown_->sourceEpoch; raster.column = shown_->historySerial;
     }
@@ -1694,6 +1759,15 @@ AnalysisPane::AnalysisPane() {
     };
     setHistoryMotion(SharedSpectrumView::HistoryMotion::Scroll);
     addAndMakeVisible(historyBox);
+    spectrogramScaleBox.setTitle("Spectrogram frequency scale");
+    spectrogramScaleBox.addItemList({"Linear", "Log", "Mel", "Bark", "ERB"}, 1);
+    spectrogramScaleBox.setSelectedId(static_cast<int>(SharedSpectrumView::SpectrogramScale::Log) + 1,
+                                     juce::dontSendNotification);
+    spectrogramScaleBox.onChange = [this] {
+        const auto id = spectrogramScaleBox.getSelectedId();
+        if (id > 0) view.setSpectrogramScale(static_cast<SharedSpectrumView::SpectrogramScale>(id - 1));
+    };
+    addAndMakeVisible(spectrogramScaleBox);
     slopeBox.addItemList({"Slope: Flat", "+4.5 dB/oct @ 1k"}, 1);
     slopeBox.setTitle("Spectrum display slope");
     slopeBox.setTooltip("Display tilt around 1 kHz only. Raw sine-calibrated dBFS, peak/RMS and comparison bins are unchanged.");
@@ -1752,6 +1826,7 @@ void AnalysisPane::setMode(SharedSpectrumView::Mode mode) {
     channelBox.setEnabled(spectral || mode == SharedSpectrumView::Mode::Spectrogram);
     const bool spectrogram = mode == SharedSpectrumView::Mode::Spectrogram;
     historyBox.setVisible(spectrogram);
+    spectrogramScaleBox.setVisible(spectrogram);
     paletteBox.setVisible(spectrogram);
     paletteBox.setEnabled(spectrogram);
     reverseButton.setVisible(spectrogram);
@@ -1816,8 +1891,8 @@ void AnalysisPane::usePageControls() {
     resized();
 }
 void AnalysisPane::resized() {
-    const std::array<juce::Component *, 12> controls{&modeBox, &sourceBox, &pointBox, &channelBox, &paletteBox, &slopeBox,
-        &scaleBox, &historyBox, &reverseButton, &freezeButton, &resetButton, &expandButton};
+    const std::array<juce::Component *, 13> controls{&modeBox, &sourceBox, &pointBox, &channelBox, &paletteBox, &slopeBox,
+        &scaleBox, &spectrogramScaleBox, &historyBox, &reverseButton, &freezeButton, &resetButton, &expandButton};
     const bool pageControls = !modeBox.isVisible();
     const int columns = std::clamp(getWidth() / (pageControls ? look::mixPageWidth : 96), 1, 4);
     const int count = static_cast<int>(std::ranges::count_if(controls, [](const auto *control) { return control->isVisible(); }));
