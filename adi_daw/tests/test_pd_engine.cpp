@@ -1860,6 +1860,52 @@ void testManyEnginesOpenedAndClosedLeaveNothingBehind() {
 #endif
 }
 
+// DF-E67 (b): Pd's loader ends every abstraction with canvas_setargs(0, 0),
+// whose empty copy took a byte; the last stayed pending and the instance's
+// teardown never freed it (LSan: a byte per canvas load in 23 suites). The
+// patch here loads an abstraction twice, with arguments and without, so both
+// the copy and the empty case are taken. Under the MSVC debug heap forty
+// cycles must leave fewer live blocks than cycles; before the fix each cycle
+// left one.
+void testAbstractionArgumentsLeaveNothingBehind() {
+    section("forty engines loading abstractions leave no canvas arguments behind");
+    TempDir tmp("canvas-args");
+    tmp.write("args_abs.pd", "#N canvas 0 0 100 100 12;\n#X obj 0 0 inlet;\n#X obj 0 30 f \\$1;\n"
+                             "#X obj 0 60 outlet;\n#X connect 0 0 1 0;\n#X connect 1 0 2 0;\n");
+    tmp.write("args.pd", "#N canvas 0 0 200 100 12;\n#X obj 10 10 args_abs 7;\n#X obj 10 40 args_abs;\n");
+    auto cycle = [&](int i) {
+        LibPdEngine engine(tmp.str(), "args.pd", 2, 2);
+        PdLatencyReceiver latency;
+        std::string error;
+        const bool opened = engine.open(latency, error);
+        if (!opened) check(false, "cycle " + std::to_string(i) + " opens: " + error);
+        for (const auto& line : engine.consoleLines())
+            if (line.find("couldn't create") != std::string::npos) {
+                check(false, "cycle " + std::to_string(i) + ": " + line);
+                return false;
+            }
+        return opened;
+    };
+    for (int i = 0; i < 10; ++i)   // warm up, as above
+        if (!cycle(i)) return;
+#if defined(_MSC_VER) && defined(_DEBUG)
+    _CrtMemState before{}, after{}, difference{};
+    _CrtMemCheckpoint(&before);
+#endif
+    for (int i = 10; i < 50; ++i)
+        if (!cycle(i)) return;
+#if defined(_MSC_VER) && defined(_DEBUG)
+    _CrtMemCheckpoint(&after);
+    (void)_CrtMemDifference(&difference, &before, &after);
+    const auto blocks = difference.lCounts[_NORMAL_BLOCK];
+    std::printf("METRIC canvas-args: %lld live blocks after forty cycles\n", static_cast<long long>(blocks));
+    check(blocks < 40, "forty engines with abstractions leave fewer live heap blocks than cycles: " +
+                           std::to_string(blocks));
+#else
+    check(true, "forty engines with abstractions (the count is the MSVC debug heap's; LSan checks it elsewhere)");
+#endif
+}
+
 // DEV-09 AR7 helpers: open a patch through the engine and return its console.
 std::string consoleOf(const TempDir& dir, const char* file, bool* opened = nullptr) {
     LibPdEngine engine(dir.str(), file, 2, 2);
@@ -2638,6 +2684,7 @@ int main() {
     std::printf("adi_pd_engine_tests -- libpd, actually running\n\n");
     testRepeatedAbstractionLifetimes();
     testManyEnginesOpenedAndClosedLeaveNothingBehind();
+    testAbstractionArgumentsLeaveNothingBehind();
     testPdOpensARealPatch();
     testTheAdapterCostsOneBlockAndSaysSo();
     testAudioGoesThroughPdAndComesBack();
