@@ -904,6 +904,11 @@ void AdiShaper::set(Param id, float value) noexcept {
         panHistory_[static_cast<std::size_t>(id - PanLowDelayRange)].setRange(value);
         return;
     }
+    if (id >= PanLowGainLaw && id <= PanHighGainLaw) {
+        auto& history = panHistory_[static_cast<std::size_t>(id - PanLowGainLaw)];
+        history.law = static_cast<PanHistory::Law>(static_cast<int>(std::round(std::clamp(value, 0.f, 3.f))));
+        return;
+    }
     if (id >= PanLowDelayBlend && id <= PanHighDelayBlend) {
         panHistory_[static_cast<std::size_t>(id - PanLowDelayBlend)].setBlend(value);
         return;
@@ -1048,7 +1053,7 @@ void AdiShaper::PanHistory::setRange(float milliseconds) noexcept {
         rangeScale = std::cbrt(next / 40.);
         return;
     }
-    // Invert 40sÂ³ - 4sÂ² + 2s on the lower half of the control travel.
+    // Invert 40sÃ‚Â³ - 4sÃ‚Â² + 2s on the lower half of the control travel.
     // Its derivative is positive throughout. Solve once per control edit.
     double s = std::min(.5, .5 * next);
     for (int i = 0; i < 6; ++i)
@@ -1063,15 +1068,26 @@ void AdiShaper::PanHistory::setBlend(float percent) noexcept {
     unity = std::max(0.f, twice - 1.f);
 }
 
+AdiShaper::Gain AdiShaper::PanHistory::gains(double position) const noexcept {
+    const double height = std::clamp(.5 + .5 * position, 0., 1.);
+    if (law == Law::LinearLift || law == Law::CutOnly) {
+        const float ceiling = law == Law::CutOnly ? 1.f : 2.f;
+        return {std::min(ceiling, static_cast<float>(2. * height)),
+                std::min(ceiling, static_cast<float>(2. * (1. - height)))};
+    }
+    const float left = panGain(height), right = panGain(1. - height);
+    if (law == Law::Lift45) return {left * std::sqrt(left), right * std::sqrt(right)};
+    return {left, right};
+}
+
 AdiShaper::PanHistory::Tap AdiShaper::PanHistory::tap(double position, double rate, bool constant) const noexcept {
     Tap result;
     result.channel = position > 0. ? 1u : 0u;
     if (transfer) {
         result.crossfeed = static_cast<float>(std::min(std::abs(position), 1.)) * (1.f - unity);
     } else {
-        const double height = std::clamp(.5 + .5 * position, 0., 1.);
-        const float leftGain = panGain(height), rightGain = panGain(1. - height);
-        result.gain = {leftGain + unity * (1.f - leftGain), rightGain + unity * (1.f - rightGain)};
+        const auto gain = gains(position);
+        result.gain = {gain.left + unity * (1.f - gain.left), gain.right + unity * (1.f - gain.right)};
     }
     if (current == 1.f || frames.empty()) return result;
     // Retain the calibrated default tap exactly, including its fractional moving read.
@@ -1140,11 +1156,16 @@ void AdiShaper::DriveDryDelay::advance(float& l, float& r) noexcept {
 template <AdiShaper::Stage kind, bool moving, bool triggered>
 void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
                        float* outL, float* outR, std::size_t frames, KeyInput key) noexcept {
+    // A held Pan contour repeats the same tap between its short joins. The
+    // cache lasts one render segment, so edits and sample-rate changes apply
+    // to the first sample. Each channel's audio history still advances.
+    constexpr double unset = std::numeric_limits<double>::quiet_NaN();
+    std::array<double, 3> previousPan{unset, unset, unset};
     if constexpr (kind == Stage::Pan) {
         for (std::size_t i = 0; i < stage.bands.size(); ++i) {
             const auto& band = stage.bands[i];
             if (band.active && band.primary.constant)
-                panHistory_[i].constantTap = panHistory_[i].tap(band.primary.points[0], sampleRate_, true);
+                panHistory_[i].blockTap = panHistory_[i].tap(band.primary.points[0], sampleRate_, true);
         }
     }
     [[maybe_unused]] std::array<AdiShaperAudioTrigger::Clock, 3> clocks;
@@ -1222,10 +1243,15 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
             }
             if constexpr (kind == Stage::Pan) {
                 auto& history = panHistory_[index];
-                if (band.primary.constant) history.process(history.constantTap, l, r);
+                if (band.primary.constant) history.process(history.blockTap, l, r);
+                else if (band.primary.linear) history.process(history.tap(band.primary.at(p), sampleRate_, false), l, r);
                 else {
-                    const double position = band.primary.linear ? band.primary.at(p) : band.primary.heldPanAt(p);
-                    history.process(history.tap(position, sampleRate_, false), l, r);
+                    const double position = band.primary.heldPanAt(p);
+                    if (position != previousPan[index]) {
+                        history.blockTap = history.tap(position, sampleRate_, false);
+                        previousPan[index] = position;
+                    }
+                    history.process(history.blockTap, l, r);
                 }
                 if (band.blend != 1.f) {
                     l = dryL + band.blend * (l - dryL);

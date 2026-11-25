@@ -55,6 +55,7 @@ class AdiShaper {
                  PanLowDelayBlend = 855, PanMidDelayBlend, PanHighDelayBlend,
                  PanLowTransfer = 918, PanMidTransfer, PanHighTransfer,
                  PanLowDelayRange = 921, PanMidDelayRange, PanHighDelayRange,
+                 PanLowGainLaw = 924, PanMidGainLaw, PanHighGainLaw,
                  DriveLowRounded = 927, DriveMidRounded, DriveHighRounded,
                  DriveLowPower, DriveMidPower, DriveHighPower,
                  DriveLowFold, DriveMidFold, DriveHighFold, Count };
@@ -107,7 +108,7 @@ class AdiShaper {
             || (id >= orderParam(Stage::Noise) && id <= orderParam(Stage::Reverb))
             || (id >= WidthFollowerLow && id <= TriggerSmoothing)
             || (id >= PanLowDelayBlend && id <= PanHighDelayBlend)
-            || (id >= PanLowTransfer && id <= PanHighDelayRange)
+            || (id >= PanLowTransfer && id <= PanHighGainLaw)
             || (id >= DriveLowRounded && id <= DriveHighFold);
     }
     enum DriveControl { DriveStyle, DriveMix, DriveClock, DriveCycle, DriveRate, DriveCurve,
@@ -228,14 +229,17 @@ class AdiShaper {
         };
         std::vector<std::array<float, 2>> frames;
         std::size_t head = 0, valid = 0;
+        enum class Law { Lift3, Lift45, LinearLift, CutOnly };
+        Law law = Law::Lift3;
         float current = 0.f, unity = 0.f;
         bool transfer = false;
         float rangeMs = 2.f;
         double rangeScale = 0.;
-        Tap constantTap;
+        Tap blockTap;
         void prepare(double rate) noexcept;
         void setBlend(float percent) noexcept;
         void setRange(float milliseconds) noexcept;
+        [[nodiscard]] Gain gains(double position) const noexcept;
         [[nodiscard]] Tap tap(double position, double rate, bool constant) const noexcept;
         void process(const Tap& tap, float& left, float& right) noexcept;
     };
