@@ -115,6 +115,14 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - Strict Release passed all ten suites, 5,419 checks. Archive SHA-256 `d8e6c6c00fa1580455a61b536819c4c3e5ab2a9253f3709ef6fa42bbc7d69ea5`.
 - **Devices loan requested:** a positioned true-peak group observer on the shared meter, so Scope can mark the sample and phase of an overshoot with its existing interpolation and work budget. The maximum readout is already built. Marker placement waits for that seam.
 
+## 25 November 2026 — MX-21 heard-time Spectrogram grid
+
+**PR requested — `mixview/mx21-spectrogram-heard-grid-lands-after-2026-12-03`, `b04acc606`, after `832dfcabb`. Lands after 3 December.**
+
+- The Spectrogram comparison producer can opt in to exact heard-sample hop boundaries. Ordinary history retains its own cadence. Comparison history advances only with advancing audio and starts a fresh grid on a seek, gap or source replacement.
+- A generated pre/post pair starts 137 samples apart and first matches at heard sample 256. The gate verifies +6.02 and -6.02 dB, overlapping seek revisions, a replaced tap, and zero additional broker work after release. The ordinary reader still starts at sample 17.
+- Strict Release passed all ten suites, 5,430 checks. This is a headless producer slice. The signed comparison pane needs the matched columns and its display treatment.
+
 ### 25 November — MX13 Focus musical windows
 
 **PR requested** `mixview/mx13-musical-window-lands-after-2026-12-03` at `5c88abf073d56cd9e5c99f3aeac3d4cb24a68532`, after captured true peak. Focus Scope offers One Beat and One Bar. The default is still One Bar. A view change clears the former interval and region and requests the new window on the same grouped sources. Tempo and signature edges share exact rounded sample positions. A Locate or selection at a rounded-down boundary starts the new interval. The existing Sum level summary remains readable with the added control.
