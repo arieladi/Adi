@@ -106,6 +106,15 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - The broker and component tests failed first. The completed 85 ms window owns exactly 4,080 samples at 48 kHz, including both pulse edges. One source takes one tap, one grouped reader and zero FFTs. Stop detaches the tap and retains the picture. The missing-pair probe produces no residual FFT.
 - Strict Release passed all ten suites, 5,398 checks. Archive SHA-256 `fa7f0b6a379a7224b4d138e77b95f63613837b133dfdd12974f1d89a085408d0`.
 
+## 25 November 2026 — MX-13 independent Scope layer channels
+
+**PR requested — `mixview/mx13-scope-layer-channels-lands-after-2026-12-03`, `832dfcabb`, after `339cf8259`. Lands after 3 December.**
+
+- Each layer can follow the window or choose Stereo, Left, Right, Mid or Side. Grouped Mid and Side use the same heard sample pairs as the existing raw extrema. Sum, Difference and the phase operands keep their prior math. Left or Right can select the stored raw bins immediately.
+- The worker allocates folded bins only for the requested lanes when views differ. The uniform projection uses its existing sample loop. The new checks cover two asymmetric displayed folds, one-source Side, a global change during capture, and offset edits from Freeze. Two taps and one grouped reader remain enough for two sources, with zero FFTs.
+- Strict Release passed all ten suites, 5,419 checks. Archive SHA-256 `d8e6c6c00fa1580455a61b536819c4c3e5ab2a9253f3709ef6fa42bbc7d69ea5`.
+- **Devices loan requested:** a positioned true-peak group observer on the shared meter, so Scope can mark the sample and phase of an overshoot with its existing interpolation and work budget. The maximum readout is already built. Marker placement waits for that seam.
+
 ### 25 November — MX13 Focus musical windows
 
 **PR requested** `mixview/mx13-musical-window-lands-after-2026-12-03` at `5c88abf073d56cd9e5c99f3aeac3d4cb24a68532`, after captured true peak. Focus Scope offers One Beat and One Bar. The default is still One Bar. A view change clears the former interval and region and requests the new window on the same grouped sources. Tempo and signature edges share exact rounded sample positions. A Locate or selection at a rounded-down boundary starts the new interval. The existing Sum level summary remains readable with the added control.
