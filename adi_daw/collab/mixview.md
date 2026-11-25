@@ -3,9 +3,9 @@
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
 ## FOR THE DIRECTOR
+
 - **Scope onset trigger.** Recommend an adjustable rising level trigger on the starred Main channel, with a hold-off and threshold shown in Scope. Please confirm the trigger and whether stereo sensitivity follows the louder channel. This gates the extra trigger mode.
 - **Scope layers.** Recommend up to eight visible layers without changing the Focus group. Keep Main and the active channel visible, using group order for the remaining places. Confirm whether L+R means the existing two-trace Stereo view or a separate unity-gain mono sum. This gates overflow selection and that additional projection.
-
 
 - **Quiet CPU window.** Keep timing deferred until you can give us a quiet window. Recommend matched Release callbacks at the same routing, quality, rate and block size. This gates DF-M3 CPU numbers, Focus FIR's 2.667 ms worst-callback check and the MX-30/MX-36 budgets.
 - **Focus Match Apply.** Recommend previewing the new bands for the selected recipient, then using its existing native EQ's free slots and committing one Undo step. Existing bands and automation stay in place. This gates Apply. Match measurement and preview can proceed.
