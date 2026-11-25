@@ -691,7 +691,7 @@ void MixerStrip::paint(juce::Graphics &g) {
         }
         if (position_ > 0) {
             g.setColour(panel_.root.arrangement.colourFor(position_ - 1));
-            g.fillRect(0, 0, w, 17);
+            g.fillRect(0, 0, w, kTitleHeight);
             // A track in a group: a band in the group's colour along its top, as Live's Session
             // View draws what a group holds (manual 18.3).
             if (group_ > 0) {
@@ -927,7 +927,7 @@ bool MixerStrip::hitTest(int x, int y) {
 }
 void MixerStrip::mouseDoubleClick(const juce::MouseEvent &e) {
     // Live: a track's title bar, double-clicked, brings up the Device View with its devices.
-    if (!panel_.vertical() || e.eventComponent != this || e.y >= 17 || track_ == 0)
+    if (!panel_.vertical() || e.eventComponent != this || e.y >= kTitleHeight || track_ == 0)
         return;
     panel_.root.arrangement.geometry.selection.track = track_;
     panel_.root.arrangement.geometry.selection.toTrack = 0;
@@ -978,6 +978,31 @@ void MixerStrip::mouseDown(const juce::MouseEvent &e) {
     // Main's Cue Out chooser opens on any click, as Live's choosers do (MX-08).
     if (e.eventComponent == this && onCueOut(e.getPosition())) {
         cueOutMenu();
+        return;
+    }
+    // A click on a Mixer View strip's title bar selects its track, as a click on its header does
+    // (Live 12 manual 18.1): Ctrl/Cmd+click picks it apart or lets it go, Shift+click reaches across
+    // the tracks between. So Ctrl+G after picking strips groups them (walk-B B10).
+    if (panel_.vertical() && e.eventComponent == this && e.y < kTitleHeight && track_ != 0 &&
+        !e.mods.isPopupMenu()) {
+        auto &selection = panel_.root.arrangement.geometry.selection;
+        if (e.mods.isCommandDown() && selection.track != 0) {
+            auto &picked = selection.picked;
+            if (track_ != selection.track) {
+                if (const auto at = std::find(picked.begin(), picked.end(), track_); at != picked.end())
+                    picked.erase(at);
+                else
+                    picked.push_back(track_);
+            }
+        } else if (e.mods.isShiftDown() && selection.track != 0)
+            selection.toTrack = track_ == selection.track ? 0 : track_;
+        else {
+            selection.track = track_;
+            selection.toTrack = 0;
+            selection.picked.clear();
+        }
+        panel_.root.publishSelection();
+        panel_.root.arrangement.changed();
         return;
     }
     if (!e.mods.isPopupMenu()) {
