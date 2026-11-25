@@ -17,6 +17,12 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 25 November 2026 — Maximum delay and moving excursions in Pan
+
+Two staggered stereo ramps measured the instantaneous distance to the far-side sample in 24 cases. Smooth and sharp contours crossed both stereo directions at four range settings and 44.1, 48 and 96 kHz. Across 2,934,336 measured positions, put v = min(1, range × absolute excursion). The measured distance in milliseconds follows 40v³ + max(0, 2v − 4v²). The largest difference was 0.00181 sample. With the range fully open, authored corners reached ±1.148 excursion but the observed delay stopped at exactly 40 ms. A steady line reads the lower whole frame, as measured separately in the 60 stationary cases on 22 November.
+
+For the after-date Pan range control I take the ADI-Shaper DSP source and header, its device patch and its two focused DSP and registered tests. Each band will display the end-of-travel delay in milliseconds, 0 to 40, with 2 ms on a sparse recall. The existing 2 ms law has its own bit-exact audio regression.
+
 ## 25 November 2026 — Restore Width envelope detection on current main
 
 `clones/shaper-width-current-1125` at `932753575` — Apply the Width follower to constant and moving band contours. Lands after 3 December. The 418 existing descriptor positions stay in order. Removing the active-follower guard from the constant Width path fails the three-band regression.
