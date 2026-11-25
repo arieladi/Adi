@@ -557,7 +557,7 @@ class SpectrumLevelHistory {
 
     void completeWindow() noexcept {
         if (frames_ == 0) return;
-        completed.emplace();
+        completed = SharedAnalysis::SpectrumLevels{};
         completed->samplePeak = samplePeak_;
         completed->sampleClips = sampleClips_;
         for (std::size_t c = 0; c < integrated_.size(); ++c) {
