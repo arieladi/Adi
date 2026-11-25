@@ -47,6 +47,16 @@ constexpr std::array<double,33> rectGain{
     .41626222,.39068521,.36903397,.35063857,.33494174,.32148527,.30987649,.29980891,
     .29100422,.28327260,.27642702,.27033272,.26487023,.25995288,.25549255,.25143078,
     .24771312,.24429436,.24113551,.23820631,.23548045,.23293363,.23054671,.22830192};
+constexpr std::array<double, 65> roundedGain{
+    1, .917416013, .842286241, .774153828, .712567755, .657054308, .607143490, .562381440,
+    .522333082, .486856312, .455323788, .427463779, .402948633, .381424841, .362534783, .345932080,
+    .331291688, .318496251, .307144241, .297085598, .288160788, .280212280, .273090858, .266659372,
+    .260794099, .255529532, .250666502, .246192488, .242076599, .238276769, .234744969, .231431141,
+    .228285595, .225388196, .222606286, .219964091, .217464512, .215095814, .212836731, .210660462,
+    .208537369, .206553958, .204600406, .202708618, .200889756, .199140381, .197447178, .195790701,
+    .194148039, .192603852, .191059409, .189547505, .188081371, .186660182, .185273627, .183905353,
+    .182535430, .181244804, .179942092, .178659172, .177409510, .176193354, .175001770, .173819979,
+    .172629823};
 
 // The gain knots are fixed. Only the position within a segment changes as
 // the contour moves, so build its Hermite coefficients once.
@@ -54,12 +64,13 @@ struct GainSegment {
     double value, slope, quadratic, cubic;
 };
 
-constexpr auto gainSegments(const std::array<double, 33>& values) noexcept {
-    std::array<GainSegment, 32> segments{};
+template<std::size_t N>
+constexpr auto gainSegments(const std::array<double, N>& values) noexcept {
+    std::array<GainSegment, N - 1> segments{};
     for (std::size_t i = 0; i < segments.size(); ++i) {
         const double left = values[i], right = values[i + 1];
         const double a = i > 0 ? (right - values[i - 1]) * .5 : (4 * right - 3 * left - values[2]) * .5;
-        const double b = i < 31 ? (values[i + 2] - left) * .5 : (3 * right - 4 * left + values[30]) * .5;
+        const double b = i < N - 2 ? (values[i + 2] - left) * .5 : (3 * right - 4 * left + values[N - 3]) * .5;
         const double delta = right - left;
         segments[i] = {left, a, 3 * delta - 2 * a - b, a + b - 2 * delta};
     }
@@ -68,10 +79,12 @@ constexpr auto gainSegments(const std::array<double, 33>& values) noexcept {
 
 constexpr auto clipSegments = gainSegments(clipGain);
 constexpr auto rectSegments = gainSegments(rectGain);
+constexpr auto roundedSegments = gainSegments(roundedGain);
 
-double compensation(const std::array<GainSegment, 32>& segments, float amount) noexcept {
-    const double pos = 32.0 * amount;
-    const auto i = static_cast<std::size_t>(std::min(31, static_cast<int>(pos)));
+template<std::size_t N>
+double compensation(const std::array<GainSegment, N>& segments, float amount) noexcept {
+    const double pos = static_cast<double>(N) * amount;
+    const auto i = std::min(N - 1, static_cast<std::size_t>(pos));
     const double t = pos - static_cast<double>(i);
     const auto& s = segments[i];
     return s.value + t * (s.slope + t * (s.quadratic + t * s.cubic));
@@ -141,12 +154,25 @@ void AdiShaperDrive::reset() noexcept {
     input_ = {};
     wet_ = {};
     inputHead_ = wetHead_ = 0;
+    roundedHead_ = driveDelay;
 }
 
 void AdiShaperDrive::setMode(Mode mode) noexcept {
     if (mode_ == mode) return;
     mode_ = mode;
+    roundedHead_ = driveDelay;
     previousDrive_ = -1;
+}
+
+void AdiShaperDrive::setRoundedClip(bool enabled) noexcept {
+    if (roundedClip_ == enabled) return;
+    roundedClip_ = enabled;
+    if (mode_ == Mode::HardClip && previousDrive_ >= 0.0f) {
+        const float latest = roundedHead_ < driveDelay
+            ? roundedAmounts_[(roundedHead_ + driveDelay - 1) % driveDelay] : previousDrive_;
+        tune(latest);
+    }
+    roundedHead_ = driveDelay;
 }
 
 void AdiShaperDrive::setTrims(float inputNormalized, float outputNormalized) noexcept {
@@ -164,14 +190,23 @@ void AdiShaperDrive::setTrims(float inputNormalized, float outputNormalized) noe
 
 void AdiShaperDrive::tune(float amount) noexcept {
     previousDrive_ = amount;
-    const double a = 1.0+amount, square=a*a, fourth=square*square;
-    const bool rect = mode_ == Mode::Rectify;
-    pre_ = inputGain_ * (rect ? fourth : fourth*fourth);
-    post_ = outputGain_ * compensation(rect ? rectSegments : clipSegments, amount);
+    const bool rounded = roundedClip_ && mode_ == Mode::HardClip;
+    if (rounded) {
+        pre_ = inputGain_ * std::exp2(8.0 * amount);
+        post_ = outputGain_ * compensation(roundedSegments, amount);
+        knee_ = .85 + .12 * amount;
+        kneeNumerator_ = (1.0 - knee_) * (1.0 - knee_);
+        kneeOffset_ = 1.0 - 2.0 * knee_;
+    } else {
+        const double a = 1.0+amount, square=a*a, fourth=square*square;
+        const bool rect = mode_ == Mode::Rectify;
+        pre_ = inputGain_ * (rect ? fourth : fourth*fourth);
+        post_ = outputGain_ * compensation(rect ? rectSegments : clipSegments, amount);
+    }
     // Bring in the nonlinear transfer below the first nonzero compensation
     // knot. A smoothstep joins both existing paths with zero blend slope.
-    constexpr double firstKnot = 1.0 / 32.0;
-    const double x = std::min(1.0, static_cast<double>(amount) / firstKnot);
+    const auto knotCount = rounded ? roundedSegments.size() : clipSegments.size();
+    const double x = std::min(1.0, amount * static_cast<double>(knotCount));
     driveFade_ = x * x * (3.0 - 2.0 * x);
 }
 
@@ -222,7 +257,7 @@ AdiShaperDrive::Phases AdiShaperDrive::interpolate(const Stereo* history) const 
     return out;
 }
 
-template<int Factor>
+template<int Factor, bool Rounded>
 AdiShaperDrive::StereoSum AdiShaperDrive::oversample(const Stereo* inputHistory) noexcept {
     constexpr std::size_t taps = 16 * Factor + 1;
     const auto upsampled = interpolate<Factor>(inputHistory);
@@ -234,7 +269,20 @@ AdiShaperDrive::StereoSum AdiShaperDrive::oversample(const Stereo* inputHistory)
         Stereo wet{};
         for (std::size_t c=0; c<2; ++c) {
             const double input = upsampled[p][c];
-            double shaped = shape(input * pre_, channels_[c]) * post_;
+            const double z = input * pre_;
+            double shaped;
+            if constexpr (Rounded) {
+                // The rounded corner acts on this substep. Retain its input so a
+                // switch back to hard clipping can integrate the next segment.
+                channels_[c].lastZ = z;
+                const double magnitude = std::abs(z);
+                const double value = previousDrive_ > 0.0f && magnitude > knee_
+                    ? std::copysign(1.0 - kneeNumerator_ / (magnitude + kneeOffset_), z)
+                    : z;
+                shaped = value * post_;
+            } else {
+                shaped = shape(z, channels_[c]) * post_;
+            }
             if (fading) {
                 const double zeroDrive = (input * inputGain_) * outputGain_;
                 shaped = zeroDrive + driveFade_ * (shaped - zeroDrive);
@@ -256,13 +304,30 @@ AdiShaperDrive::StereoSum AdiShaperDrive::oversample(const Stereo* inputHistory)
 }
 
 void AdiShaperDrive::process(float& left, float& right, float driveNormalized) noexcept {
-    if (!std::isfinite(driveNormalized)) driveNormalized = std::max(0.0f,previousDrive_);
-    if (driveNormalized != previousDrive_) tune(std::clamp(driveNormalized,0.0f,1.0f));
+    const bool rounded = roundedClip_ && mode_ == Mode::HardClip;
+    if (!std::isfinite(driveNormalized))
+        driveNormalized = rounded && roundedHead_ < driveDelay
+            ? roundedAmounts_[(roundedHead_ + driveDelay - 1) % driveDelay] : std::max(0.0f, previousDrive_);
+    if (rounded) {
+        const float requested = std::clamp(driveNormalized, 0.0f, 1.0f);
+        if (roundedHead_ == driveDelay) {
+            roundedAmounts_.fill(requested);
+            roundedHead_ = 0;
+        }
+        driveNormalized = roundedAmounts_[roundedHead_];
+        roundedAmounts_[roundedHead_] = requested;
+        roundedHead_ = (roundedHead_ + 1) % driveDelay;
+    }
+    if (driveNormalized != previousDrive_) {
+        const auto amount = std::clamp(driveNormalized,0.0f,1.0f);
+        if (amount != previousDrive_) tune(amount);
+    }
     inputHead_ = inputHead_ == 0 ? inputs-1 : inputHead_-1;
     const auto inputHead = static_cast<std::size_t>(inputHead_);
     input_[inputHead] = input_[inputHead+inputs] = {left, right};
     const Stereo* in = input_.data()+inputHead_;
-    auto base = factor_ == 4 ? oversample<4>(in) : oversample<2>(in);
+    auto base = rounded ? (factor_ == 4 ? oversample<4, true>(in) : oversample<2, true>(in))
+                        : (factor_ == 4 ? oversample<4, false>(in) : oversample<2, false>(in));
     for (std::size_t c=0; c<channels_.size(); ++c) {
         auto& dc = channels_[c].dc;
         const double high=base[c]-dc;

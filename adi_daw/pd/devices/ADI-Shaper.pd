@@ -844,6 +844,12 @@
 #X msg 3860 111 p 856 \$1;
 #X obj 3860 148 adi.param \$0 858 0 100 50 % lin Pan_High_Delay_Blend;
 #X msg 3860 175 p 857 \$1;
+#X obj 4200 20 adi.param \$0 928 0 1 0 - toggle Drive_Low_Round_Hard_Clip;
+#X msg 4200 47 p 927 \$1;
+#X obj 4200 84 adi.param \$0 929 0 1 0 - toggle Drive_Mid_Round_Hard_Clip;
+#X msg 4200 111 p 928 \$1;
+#X obj 4200 148 adi.param \$0 930 0 1 0 - toggle Drive_High_Round_Hard_Clip;
+#X msg 4200 175 p 929 \$1;
 #X connect 0 0 1 0;
 #X connect 1 0 2 0;
 #X connect 0 1 1 1;
@@ -1690,3 +1696,9 @@
 #X connect 842 0 1 0;
 #X connect 843 0 844 0;
 #X connect 844 0 1 0;
+#X connect 845 0 846 0;
+#X connect 846 0 1 0;
+#X connect 847 0 848 0;
+#X connect 848 0 1 0;
+#X connect 849 0 850 0;
+#X connect 850 0 1 0;

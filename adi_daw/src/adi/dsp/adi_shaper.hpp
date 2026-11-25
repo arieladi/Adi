@@ -30,7 +30,8 @@ class AdiShaper {
                  SweepMidPolarity, SweepHighPolarity, DriveOn,
                  CrushOn = DriveOn + modHeaderSize + 3 * driveBandParameterCount,
                  BaseCount = CrushOn + modStageParameterCount,
-                 PanLowDelayBlend = 855, PanMidDelayBlend, PanHighDelayBlend, Count };
+                 PanLowDelayBlend = 855, PanMidDelayBlend, PanHighDelayBlend,
+                 DriveLowRounded = 927, DriveMidRounded, DriveHighRounded, Count };
     enum class Stage { Volume, Width, Pan, Filter, Sweep, Drive, Crush };
     enum class Band { Low, Mid, High };
     enum BandControl { Mix, Clock, Cycle, Rate, Curve, Point1, Point2, Point3, Point4,

@@ -2,6 +2,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 
 namespace adi::dsp {
 
@@ -14,6 +15,7 @@ class AdiShaperDrive {
     void prepare(double sampleRate) noexcept;
     void reset() noexcept;
     void setMode(Mode mode) noexcept;
+    void setRoundedClip(bool enabled) noexcept;
     void setTrims(float inputNormalized, float outputNormalized) noexcept;
     void process(float& left, float& right, float driveNormalized) noexcept;
     bool finishBlock() noexcept;
@@ -24,7 +26,7 @@ class AdiShaperDrive {
     using StereoSum = std::array<double, 2>;
     using Phases = std::array<StereoSum, maxFactor>;
     template<int Factor> [[nodiscard]] Phases interpolate(const Stereo* history) const noexcept;
-    template<int Factor> [[nodiscard]] StereoSum oversample(const Stereo* input) noexcept;
+    template<int Factor, bool Rounded> [[nodiscard]] StereoSum oversample(const Stereo* input) noexcept;
     std::array<double, inputs/2> oddSum_{}, oddDifference_{};
     std::array<Stereo, inputs * 2> input_{};
     std::array<Stereo, maxTaps * 2> wet_{};
@@ -36,9 +38,15 @@ class AdiShaperDrive {
     std::array<float, maxTaps> decimate_{};
     int factor_ = 4, taps_ = maxTaps, inputHead_ = 0, wetHead_ = 0;
     Mode mode_ = Mode::Saturate;
+    bool roundedClip_ = false;
+    // Match the input interpolation filter's base-rate group delay.
+    static constexpr std::size_t driveDelay = latencySamples / 2;
+    std::array<float, driveDelay> roundedAmounts_{};
+    std::size_t roundedHead_ = driveDelay;
     float previousDrive_ = -1.0f, inputTrim_ = 0.5f, outputTrim_ = 0.5f;
     double inputGain_ = 1.0, outputGain_ = 1.0, pre_ = 1.0, post_ = 1.0;
     double driveFade_ = 0.0;
+    double knee_ = 0.85, kneeNumerator_ = 0.0, kneeOffset_ = 0.0;
     double dcRate_ = 0.0, sampleRate_ = 0.0;
     void tune(float amount) noexcept;
     [[nodiscard]] double transfer(double z) const noexcept;
