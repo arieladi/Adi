@@ -24,6 +24,13 @@ public:
 
     void reset() noexcept { peak.reset(); smoother.reset(); }
 
+    bool canSkipSilence() const noexcept { return peak.canSkipSilence(); }
+    void skipSilence(std::size_t frames) noexcept
+    {
+        peak.skipSilence(frames);
+        smoother.skipSilence(frames);
+    }
+
     float process(float key, float threshold = 1.0f) noexcept
     {
         if (!std::isfinite(threshold) || threshold <= 0.0f)

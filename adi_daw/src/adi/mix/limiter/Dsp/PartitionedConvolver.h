@@ -95,6 +95,16 @@ public:
             output[index] = process(input[index]);
     }
 
+    // The owner has checked that every stored sample and partition is zero.
+    void skipSilence(std::size_t frames) noexcept
+    {
+        if (partitions == 0) return;
+        const auto end = position + frames % hop;
+        const auto completed = frames / hop + end / hop;
+        position = end % hop;
+        newest = (newest + completed % partitions) % partitions;
+    }
+
 private:
     using Spectrum = typename Transform<transformLength>::Spectrum;
 
