@@ -17,6 +17,14 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 25 November 2026 — Restore the Volume audio retrigger on current main
+
+`clones/shaper-trigger-current-1125` at `58cb2115` — Retrigger Volume contours from stereo audio onsets. Lands after 3 December. Use this update for queue item 18. The existing three Pan descriptor positions, optimized Width path, Crush processing and effective crossover spacing remain in the current integration. The eleven trigger controls at IDs 754–764 append after the 418 existing descriptors. The patch graph check verified all 429 declarations and their physical parameter messages.
+
+The three onset markers restarted the contour at frames 14,671, 54,171 and 82,071. The quiet burst passed without a restart. The reported delay agreed with the measured delay across the twelve rate and detector combinations, including 672 and 1,152 frames at 48 kHz. The rack, Drive, real session and registered/edited Pd suites passed in Release MSVC `/W4 /WX` at both signal precisions.
+
+PR requested
+
 ## 25 November 2026 — Generated room stage on current main
 
 `clones/shaper-reverb-current-1125` at `95b31475` — Restore the generated stereo room on current main. Lands after 3 December. This replaces the previous room review head. IDs 626–715 append after the 418 existing descriptor positions, including the Pan blend controls. ADI generates the room response. The control-law, tail reset, ordered reflection, session recall and registered/edited Pd tests passed in five Release MSVC `/W4 /WX` suites at each signal precision.
