@@ -150,7 +150,7 @@ class AdiApplication final : public juce::JUCEApplication,
         if (project == juce::File{}) {
             // ADI has no unsaved state: every op is committed to a file, so a new
             // project is made in the default projects folder (File & Folder).
-            project = projectsFolder().getNonexistentChildFile("Untitled", ".adi");
+            project = nextUntitledProject(*settings_);
             if (!install(project, true)) {
                 setApplicationReturnValue(1);
                 quit();
@@ -628,17 +628,6 @@ class AdiApplication final : public juce::JUCEApplication,
         manager_.closeAudioDevice();
         bridge_.reset();
         live_.reset();
-    }
-    juce::File projectsFolder() const {
-        const auto chosen = settings_->get("files.projectsFolder");
-        auto directory =
-            chosen.is_string() && !chosen.get<std::string>().empty()
-                ? juce::File(juce::String::fromUTF8(chosen.get<std::string>().c_str()))
-                : juce::File(juce::String::fromUTF8(reinterpret_cast<const char *>(
-                                 settings_->file().parent_path().u8string().c_str())))
-                      .getChildFile("projects");
-        directory.createDirectory();
-        return directory;
     }
     bool install(const juce::File &file, bool create) {
         std::string error;
@@ -1368,23 +1357,21 @@ class AdiApplication final : public juce::JUCEApplication,
                 settingsWindow_->toFront(true);
             return true;
         }
+        // Live's New Live Set (manual 5.4.1): the next untitled project opens at once, as at launch, with
+        // no chooser; Save As names and places it (walk-A A3).
         if (id != AppCommands::NewProject && id != AppCommands::OpenProject)
             return false;
         if (chooser_)
             return false;
-        const bool create = id == AppCommands::NewProject;
-        chooser_ = std::make_unique<juce::FileChooser>(
-            create ? "New ADI project" : "Open ADI project", juce::File{}, "*.adi");
-        int flags =
-            juce::FileBrowserComponent::canSelectFiles |
-            (create ? juce::FileBrowserComponent::saveMode : juce::FileBrowserComponent::openMode);
-        chooser_->launchAsync(flags, [this, create](const juce::FileChooser &chooser) {
-            auto file = chooser.getResult();
-            if (file != juce::File{}) {
-                if (create)
-                    file = withAdiExtension(file);
-                openSettled(file, create);
-            }
+        if (id == AppCommands::NewProject) {
+            openSettled(nextUntitledProject(*settings_), true);
+            return true;
+        }
+        chooser_ = std::make_unique<juce::FileChooser>("Open ADI project", juce::File{}, "*.adi");
+        const int flags = juce::FileBrowserComponent::canSelectFiles | juce::FileBrowserComponent::openMode;
+        chooser_->launchAsync(flags, [this](const juce::FileChooser &chooser) {
+            if (const auto file = chooser.getResult(); file != juce::File{})
+                openSettled(file, false);
             // Do not destroy the chooser while its completion callback is on the stack.
             juce::MessageManager::callAsync([this] {
                 if (juce::JUCEApplicationBase::getInstance() == this)

@@ -14767,6 +14767,26 @@ void firstRunAudioInput(const std::filesystem::path &dir) {
           ("a default input that will not open leaves the output open, without an error: " + why.toStdString())
               .c_str());
 }
+// Live's New Live Set (manual 5.4.1; walk-A A3): New opens the next untitled project in the projects folder
+// at once, as launch does, with no chooser; Save As names and places it.
+void untitledProjects(const std::filesystem::path &dir) {
+    const auto file = [](const std::filesystem::path &p) {
+        return juce::File(juce::String::fromUTF8(reinterpret_cast<const char *>(p.u8string().c_str())));
+    };
+    settings::AppSettings fresh(appdata::App::Daw, dir / "untitled-settings.json");
+    check(nextUntitledProject(fresh) == file(dir / "projects" / "Untitled.adi") &&
+              std::filesystem::is_directory(dir / "projects"),
+          "with no projects folder chosen, the first untitled project is <config>/projects/Untitled.adi");
+    const auto folder = dir / "untitled";
+    std::string why;
+    check(fresh.set("files.projectsFolder", folder.string(), {}, why), "the projects folder is chosen");
+    check(nextUntitledProject(fresh) == file(folder / "Untitled.adi") && std::filesystem::is_directory(folder),
+          "the chosen projects folder is made, and its first untitled project is Untitled.adi");
+    std::ofstream(folder / "Untitled.adi").put('x');
+    std::ofstream(folder / "Untitled(2).adi").put('x');
+    check(nextUntitledProject(fresh) == file(folder / "Untitled(3).adi"),
+          "beside Untitled.adi and Untitled(2).adi, the next untitled project is Untitled(3).adi");
+}
 int main(int argc, char **argv) {
     // WTS-02: no dialog box on Windows; JUCE's assertions counted, the run failing on one.
     adi::uitest::noDialogs();
@@ -18127,6 +18147,7 @@ int main(int argc, char **argv) {
     trace("keymapGolden", [&] { keymapGolden(commands, settings, temp.path(), write); });
     trace("userShortcuts", [&] { userShortcuts(commands, settings); });
     trace("launchIsolation", [&] { launchIsolation(commands); });
+    trace("untitledProjects", [&] { untitledProjects(temp.path()); });
     trace("paintHygiene", [&] { paintHygiene(commands, temp.path()); });
     check(assertions.count() == 0, ("no JUCE assertion in the run; the last: " + assertions.last().toStdString()).c_str());
     if (assertions.queueFull() > 0)
