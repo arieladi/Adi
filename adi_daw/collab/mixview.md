@@ -11,6 +11,16 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+### 2026-11-25 — Focus Scope Freeze and fresh resume (MX-13)
+
+Freeze holds the displayed waveform, phase and selected measurement through Stop, Locate and resize. It immediately releases its own short and grouped consumers. Thaw discards the held picture and rejects a sibling's pre-thaw window before it can draw. Changing the channel projection or source, or hiding Focus, clears the hold.
+
+The missing-control check failed first. Release passed 521 Mix View, 513 Spectrum and 920 broker checks. Frozen playback causes no tap reads, requests, publications or worker passes from this Focus view. Capture, freeze and thaw create no project edits. Both changed translation units passed warnings as errors.
+
+Application SHA-256 `4b7dc1f3d9a969252b1ff276358e2e768557b0dc2815ca4c5a4aa9b9b84677ce`; review archive `b5ccf6e129c2b5b99069c6932998a271eb71b665e7249af64ce421f03cb0e2d2`. The retest brief covers the visible waveform and a simultaneously open sibling.
+
+PR requested — `mixview/mx13-focus-scope-freeze-lands-after-2026-12-03` at `8243e08d92b48acac2d036c0721a3b6afadb7f7b`, after the parked Spectrogram hop. Lands after 3 December.
+
 ### 2026-11-25 — Spectrogram wake keeps its analysis hop (MX-30)
 
 The Spectrogram held still during a certified silent span but lost the partial hop on the way back. It now advances the analysis phase over that span without manufacturing history columns. A compatible Scope view can attach while quiet and reuse the retained result without an FFT or a raster step. A first Spectrogram can still seed its own history.
