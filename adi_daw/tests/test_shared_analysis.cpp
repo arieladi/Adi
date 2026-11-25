@@ -1210,6 +1210,19 @@ void focusScopeBeatTiming() {
     check(matchesDense(denseBar, beatsPerBar), "the grid includes every beat of the largest project signature");
     check(matchesDense(denseFourBars, beatsPerBar * visibleBars),
           "a dense four-bar extent retains all of its bar and beat lines through its last sample");
+    using adi::ui::FocusScopeRange;
+    using adi::ui::focusScopeTimedWindow;
+    const auto firstTimed = focusScopeTimedWindow(12345, rate, 85);
+    const auto nextTimed = focusScopeTimedWindow(16425, rate, 85);
+    check(firstTimed == FocusScopeRange{12345, 4080, rate} && nextTimed == FocusScopeRange{16425, 4080, rate} &&
+              focusScopeTimedWindow(0, 44100., 85) == FocusScopeRange{0, 3749, 44100.} &&
+              focusScopeTimedWindow(0, 44100., 170) == FocusScopeRange{0, 7497, 44100.} &&
+              focusScopeTimedWindow(0, rate, 340) == FocusScopeRange{0, 16320, rate},
+          "fixed-time windows use absolute sample starts, whole-frame rounding and contiguous ends");
+    check(!focusScopeTimedWindow(-1, rate, 85) && !focusScopeTimedWindow(0, 0., 85) &&
+              !focusScopeTimedWindow(0, rate, 0) &&
+              !focusScopeTimedWindow(std::numeric_limits<std::int64_t>::max() - 10, rate, 85),
+          "fixed-time windows reject unusable rates, lengths and timeline overflow");
 }
 
 void focusScopeBarProjection() {

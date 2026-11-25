@@ -172,7 +172,11 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     SharedAnalysis::BarScopeLease barScope_;
     std::shared_ptr<const engine::TempoMap> barTempo_;
     std::vector<textproj::Meter> barMeters_;
-    std::optional<FocusScopeBar> requestedBar_;
+    struct ScopeRequest {
+        FocusScopeRange range;
+        std::optional<std::int64_t> nextTick;
+    };
+    std::optional<ScopeRequest> requestedScope_;
     bool scopeWindowAwaiting_ = false;
     std::shared_ptr<const SharedAnalysis::BarScopeResult> shownBar_;
     std::optional<FocusSumReading> sum_;

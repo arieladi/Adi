@@ -3229,7 +3229,7 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
     const SnapshotReader initial(root->current());
     juce::ComboBox *musicalWindow = nullptr;
     for (auto *component : focus.getChildren())
-        if (component->getTitle() == "Scope musical window")
+        if (component->getTitle() == "Scope window")
             musicalWindow = dynamic_cast<juce::ComboBox *>(component);
     check(musicalWindow && musicalWindow->isVisible() && musicalWindow->getSelectedId() == 2 &&
               musicalWindow->getText() == "One Bar" && musicalWindow->getItemId(0) == 3 &&
@@ -4008,6 +4008,56 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
                   MixFocusTestAccess::sumPulseAt(focus, (3.f + .875f) / 4.f, -.625f) &&
                   opens == sourcesBefore && statsAfter.taps == 2 && statsAfter.transforms == statsBefore.transforms,
               "Four Bars keeps the first and last pulses through 384000 samples using the same two taps");
+    }
+    if (musicalWindow && display && channels) {
+        constexpr std::int64_t firstTimed = 12345, timedFrames = 4080;
+        const auto oldOpens = opens;
+        const auto oldTransforms = broker->stats().transforms;
+        check(doc->mailbox().post(TransportMailbox::Command::Locate, firstTimed), "queue a non-grid start for Free Run");
+        musicalWindow->setSelectedId(static_cast<int>(FocusScopeWindow::Milliseconds85), juce::sendNotificationSync);
+        frame();
+        check(!MixFocusTestAccess::hasScopeTrace(focus), "Free Run waits for the acknowledged non-grid start");
+        doc->mailbox().drain(driver);
+        frame();
+        writeUntil(firstTimed + timedFrames - 1);
+        check(!MixFocusTestAccess::hasScopeTrace(focus) && broker->stats().consumers == 1,
+              "the first fixed-time window waits for its final sample with one grouped reader");
+        writeUntil(firstTimed + timedFrames);
+        check(musicalWindow->getText() == "85 ms" &&
+                  MixFocusTestAccess::scopeInterval(focus, firstTimed, static_cast<std::size_t>(timedFrames), rate),
+              "the fixed-time window starts at sample 12345 and captures all 4080 frames");
+        check(root->setTempoAtPlay("123") && root->setMeterAtPlay("3/4"),
+              "edit the musical grid while the next fixed-time window is pending");
+        frame();
+        writeUntil(firstTimed + 2 * timedFrames);
+        check(MixFocusTestAccess::scopeInterval(focus, firstTimed + timedFrames, static_cast<std::size_t>(timedFrames), rate) &&
+                  opens == oldOpens && broker->stats().transforms == oldTransforms,
+              "free-running captures stay contiguous across tempo and meter edits on the same source taps");
+        const auto selectTimed = [&](FocusScopeWindow choice, const juce::String &label, std::int64_t frames) {
+            const auto first = driver.position();
+            musicalWindow->setSelectedId(static_cast<int>(choice), juce::sendNotificationSync);
+            frame();
+            writeUntil(first + frames);
+            check(musicalWindow->getText() == label &&
+                      MixFocusTestAccess::scopeInterval(focus, first, static_cast<std::size_t>(frames), rate) && opens == oldOpens,
+                  "changing the millisecond preset starts its full interval on the same taps");
+            return first;
+        };
+        selectTimed(FocusScopeWindow::Milliseconds170, "170 ms", 8160);
+        const auto wideStart = selectTimed(FocusScopeWindow::Milliseconds340, "340 ms", 16320);
+        if (freeze && freeze->isEnabled()) {
+            freeze->setToggleState(true, juce::dontSendNotification);
+            freeze->onClick();
+            const auto held = broker->stats();
+            check(doc->mailbox().post(TransportMailbox::Command::Locate, 0), "queue a seek while Free Run is frozen");
+            doc->mailbox().drain(driver);
+            frame();
+            check(MixFocusTestAccess::scopeInterval(focus, wideStart, 16320, rate) &&
+                      held.taps == 0 && broker->stats().frameRequests == held.frameRequests,
+                  "Freeze holds the completed time window across Locate without new broker work");
+            freeze->setToggleState(false, juce::dontSendNotification);
+            freeze->onClick();
+        }
     }
     const auto visibleBounds = focus.getBounds();
     focus.setTopLeftPosition(peer.getWidth(), 0);

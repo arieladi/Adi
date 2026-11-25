@@ -102,20 +102,24 @@ MixFocus::MixFocus(AdiRootComponent &root) : root_(root) {
         redraw_ = true;
     };
     addChildComponent(scopeChannels_);
-    scopeWindow_.setTitle("Scope musical window");
-    scopeWindow_.setTooltip("Choose the length of the aligned capture on the project's musical grid.");
+    scopeWindow_.setTitle("Scope window");
+    scopeWindow_.setTooltip("Choose a musical window or a fixed-time window that free-runs from the heard sample.");
     scopeWindow_.addItem("1/16 Note", static_cast<int>(FocusScopeWindow::Sixteenth));
     scopeWindow_.addItem("One Beat", static_cast<int>(FocusScopeWindow::Beat));
     scopeWindow_.addItem("One Bar", static_cast<int>(FocusScopeWindow::Bar));
     scopeWindow_.addItem("Two Bars", static_cast<int>(FocusScopeWindow::TwoBars));
     scopeWindow_.addItem("Four Bars", static_cast<int>(FocusScopeWindow::FourBars));
+    scopeWindow_.addSeparator();
+    for (const auto window : {FocusScopeWindow::Milliseconds85, FocusScopeWindow::Milliseconds170,
+                              FocusScopeWindow::Milliseconds340})
+        scopeWindow_.addItem(juce::String(focusScopeWindowMilliseconds(window)) + " ms", static_cast<int>(window));
     scopeWindow_.setSelectedId(static_cast<int>(FocusScopeWindow::Bar), juce::dontSendNotification);
     scopeWindow_.onChange = [this] {
         const SafePointer<MixFocus> alive(this);
         thawScope();
         if (!alive) return;
         shownBar_.reset();
-        requestedBar_.reset();
+        requestedScope_.reset();
         scopeWindowAwaiting_ = true;
         clearScopeRegion();
         scopeCursor_.setVisible(false);
@@ -792,7 +796,7 @@ void MixFocus::frame(const SnapshotReader &reader) {
         if (locate != scopeLocate_) {
             scopeLocate_ = locate;
             shownBar_.reset();
-            requestedBar_.reset();
+            requestedScope_.reset();
             redraw_ = true;
         }
     }
@@ -889,7 +893,7 @@ void MixFocus::frame(const SnapshotReader &reader) {
 void MixFocus::clearBarScopeData() {
     redraw_ |= static_cast<bool>(shownBar_);
     shownBar_.reset();
-    requestedBar_.reset();
+    requestedScope_.reset();
     if (barTempo_) scopeGridStamp_.reset();
     barTempo_.reset();
     barMeters_.clear();
@@ -899,8 +903,10 @@ void MixFocus::clearBarScopeData() {
 }
 void MixFocus::updateBarScope(const SnapshotReader &reader, const std::shared_ptr<SharedAnalysis> &broker) {
     const auto *tempo = reader.tempo();
+    const auto choice = scopeWindowChoice();
+    const auto milliseconds = focusScopeWindowMilliseconds(choice);
     if (!scopePlaying_ || !scope.getToggleState() || alignment_ != Alignment::Ready || plot_.isEmpty() ||
-        members_.size() < 2 || !tempo || !broker || !broker->active()) {
+        members_.size() < 2 || (!tempo && !milliseconds) || !broker || !broker->active()) {
         clearBarScopeData();
         barScope_.reset();
         return;
@@ -912,11 +918,17 @@ void MixFocus::updateBarScope(const SnapshotReader &reader, const std::shared_pt
         return a.start_ticks == b.start_ticks && a.numerator == b.numerator && a.denominator == b.denominator;
     };
     if (barTempo_.get() != tempo || !std::ranges::equal(barMeters_, reader.meters(), sameMeter)) {
-        clearBarScopeData();
-        barScope_.reset();
-        if (!alive || pose != membershipPose_ || !isShowing() || suspended_ || root_.sharedAnalysis != broker)
-            return;
-        barTempo_ = reader.get()->tempo;
+        if (milliseconds) {
+            scopeGridStamp_.reset();
+            scopeCursorBeat_.reset();
+            redraw_ = true;
+        } else {
+            clearBarScopeData();
+            barScope_.reset();
+            if (!alive || pose != membershipPose_ || !isShowing() || suspended_ || root_.sharedAnalysis != broker)
+                return;
+        }
+        barTempo_ = reader.get() ? reader.get()->tempo : nullptr;
         barMeters_ = reader.meters();
     }
 
@@ -938,10 +950,10 @@ void MixFocus::updateBarScope(const SnapshotReader &reader, const std::shared_pt
         barScope_.setSumTruePeakRequested(scopeTruePeak_.isVisible() && scopeTruePeak_.getToggleState());
     }
     const auto rate = barScope_.sampleRate();
-    if (!(rate > 0.) || (requestedBar_ && requestedBar_->range.sampleRate != rate)) {
+    if (!(rate > 0.) || (requestedScope_ && requestedScope_->range.sampleRate != rate)) {
         if (shownBar_) redraw_ = true;
         shownBar_.reset();
-        requestedBar_.reset();
+        requestedScope_.reset();
         return;
     }
 
@@ -960,8 +972,9 @@ void MixFocus::updateBarScope(const SnapshotReader &reader, const std::shared_pt
         redraw_ = true;
     }
     std::optional<std::int64_t> tick;
+    std::optional<std::int64_t> nextSample;
     bool missed = false;
-    if (requestedBar_) {
+    if (requestedScope_) {
         using Status = SharedAnalysis::BarScopeStatus;
         const auto status = barScope_.status();
         if (status == Status::Pending) return;
@@ -974,7 +987,8 @@ void MixFocus::updateBarScope(const SnapshotReader &reader, const std::shared_pt
                     scopeWindowAwaiting_ = false;
                     redraw_ = true;
                 }
-                tick = requestedBar_->nextTick;
+                tick = requestedScope_->nextTick;
+                nextSample = *end;
                 heardRevision = current->transportRevision;
             }
         } else if (status == Status::Missed) {
@@ -983,13 +997,18 @@ void MixFocus::updateBarScope(const SnapshotReader &reader, const std::shared_pt
             missed = true;
         }
     }
-    const auto choice = scopeWindowChoice();
+    if (milliseconds) {
+        if (const auto next = focusScopeTimedWindow(nextSample.value_or(heard), rate, milliseconds);
+            next && barScope_.request(*next, heardRevision, *scopeLocate_))
+            requestedScope_ = ScopeRequest{*next, std::nullopt};
+        return;
+    }
     auto next = tick ? focusScopeWindowAtTick(*tick, rate, *tempo, reader.meters(), choice)
                      : focusScopeWindowAtSample(heard, rate, *tempo, reader.meters(), choice);
-    if (missed && next && next->firstTick == requestedBar_->firstTick)
+    if (missed && next && next->range == requestedScope_->range)
         next = focusScopeWindowAtTick(next->nextTick, rate, *tempo, reader.meters(), choice);
     if (next && barScope_.request(next->range, heardRevision, *scopeLocate_))
-        requestedBar_ = next;
+        requestedScope_ = ScopeRequest{next->range, next->nextTick};
 }
 void MixFocus::rebuildPlot() {
     masked_.clear();
@@ -1104,6 +1123,9 @@ FocusScopeWindow MixFocus::scopeWindowChoice() const noexcept {
     case FocusScopeWindow::Sixteenth:
     case FocusScopeWindow::Beat:
     case FocusScopeWindow::TwoBars:
+    case FocusScopeWindow::Milliseconds85:
+    case FocusScopeWindow::Milliseconds170:
+    case FocusScopeWindow::Milliseconds340:
     case FocusScopeWindow::FourBars: return window;
     default: return FocusScopeWindow::Bar;
     }
@@ -1911,12 +1933,16 @@ void MixFocus::paint(juce::Graphics &g) {
             g.setColour(look::record);
         }
         if (shownBar_) {
-            switch (scopeWindowChoice()) {
+            const auto window = scopeWindowChoice();
+            switch (window) {
             case FocusScopeWindow::Sixteenth: title += "   1/16 note"; break;
             case FocusScopeWindow::Beat: title += "   1 beat"; break;
             case FocusScopeWindow::Bar: title += "   1 bar"; break;
             case FocusScopeWindow::TwoBars: title += "   2 bars"; break;
             case FocusScopeWindow::FourBars: title += "   4 bars"; break;
+            case FocusScopeWindow::Milliseconds85:
+            case FocusScopeWindow::Milliseconds170:
+            case FocusScopeWindow::Milliseconds340: title += "   " + juce::String(focusScopeWindowMilliseconds(window)) + " ms"; break;
             }
         } else {
             title += "   " + juce::String(1000. * static_cast<double>(scopeRange_->frames) / scopeRange_->sampleRate, 1) + " ms";

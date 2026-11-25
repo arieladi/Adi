@@ -26,7 +26,16 @@ struct FocusScopeBar {
     std::int64_t firstTick = 0, nextTick = 0;
     FocusScopeRange range;
 };
-enum class FocusScopeWindow { Beat = 1, Bar, Sixteenth, TwoBars, FourBars };
+enum class FocusScopeWindow { Beat = 1, Bar, Sixteenth, TwoBars, FourBars, Milliseconds85, Milliseconds170, Milliseconds340 };
+
+inline constexpr int focusScopeWindowMilliseconds(FocusScopeWindow window) noexcept {
+    switch (window) {
+    case FocusScopeWindow::Milliseconds85: return 85;
+    case FocusScopeWindow::Milliseconds170: return 170;
+    case FocusScopeWindow::Milliseconds340: return 340;
+    default: return 0;
+    }
+}
 
 // Use the Arrangement's signature boundaries and the driver's nearest-sample
 // convention. Keep absolute edges so consecutive windows never gain a rounding gap.
@@ -51,6 +60,9 @@ inline std::optional<FocusScopeBar> focusScopeWindowAtTick(std::int64_t tick, do
         break;
     }
     case FocusScopeWindow::Bar: break;
+    case FocusScopeWindow::Milliseconds85:
+    case FocusScopeWindow::Milliseconds170:
+    case FocusScopeWindow::Milliseconds340: return {};
     }
     if (windowTicks <= 0) return {};
     const auto intoSignature = tick - meter.start_ticks;
@@ -228,6 +240,16 @@ class FocusScopePathReducer {
 inline std::optional<std::int64_t> focusWindowEnd(std::int64_t first, std::int64_t length) noexcept {
     if (length <= 0 || first > std::numeric_limits<std::int64_t>::max() - length) return {};
     return first + length;
+}
+
+inline std::optional<FocusScopeRange> focusScopeTimedWindow(std::int64_t first, double rate, int milliseconds) noexcept {
+    if (first < 0 || !std::isfinite(rate) || rate <= 0. || milliseconds <= 0) return {};
+    const auto rounded = std::round(static_cast<long double>(rate) * milliseconds / 1000.L);
+    const auto limit = std::ldexp(1.L, std::numeric_limits<std::int64_t>::digits);
+    if (!(rounded >= 1.L && rounded < limit)) return {};
+    const auto frames = static_cast<std::int64_t>(rounded);
+    if (!std::in_range<std::size_t>(frames) || !focusWindowEnd(first, frames)) return {};
+    return FocusScopeRange{first, static_cast<std::size_t>(frames), rate};
 }
 
 template <typename Visit>
