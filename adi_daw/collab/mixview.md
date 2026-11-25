@@ -35,6 +35,12 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - The pan test failed before the change. Release passed 1,193 shared-analysis, 572 Mix View and 594 spectrum assertions. Editor and test compiled with warnings treated as errors. Pan and reversal use the existing capture with no extra analyser requests or project edit.
 - Review ZIP SHA-256 `91ec30d136176072ad6c6064a2013a49f8a3d68b2c3ff8ddf8816debfb18acfb`. Executable `381a6c241503598f0e0fd0b28faea50db927800ccea353bef578eafd7108dea2`. Retest brief uses the same source hash.
 
+## 25 November 2026 · MX-13 largest signature grid · lands after 3 December
+
+- **PR requested** `mixview/mx13-scope-dense-grid-lands-after-2026-12-03` at `c984222a62033893f5ce91f6a7c24426c086f3b6`. The project format permits signatures with 255 beats. The old grid stopped after 128 intervals. The bounded pass now covers all 255 beats and has room for all 1,020 marks in a four-bar interval.
+- Both exact position and bar-start checks failed before the fix. Release passed 1,195 shared-analysis, 572 Mix View and 594 spectrum assertions. Editor and broker test compiled with warnings treated as errors.
+- Review ZIP SHA-256 `35ffa1236d434edacacd5ff524d20068af6ea5a62aba381a260d33ea81d40534`. Executable `cc780a2d39c6c7229787579ad0b2dbb85907a60354dac36826673c7e37cff236`. Retest brief uses the same source hash.
+
 ### 25 November — MX13 Focus musical windows
 
 **PR requested** `mixview/mx13-musical-window-lands-after-2026-12-03` at `5c88abf073d56cd9e5c99f3aeac3d4cb24a68532`, after captured true peak. Focus Scope offers One Beat and One Bar. The default is still One Bar. A view change clears the former interval and region and requests the new window on the same grouped sources. Tempo and signature edges share exact rounded sample positions. A Locate or selection at a rounded-down boundary starts the new interval. The existing Sum level summary remains readable with the added control.
