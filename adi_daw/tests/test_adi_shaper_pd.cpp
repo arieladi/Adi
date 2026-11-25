@@ -102,6 +102,7 @@ void cachedPdTransport(const std::string& directory, bool native) {
 
 void panDelayBlend(const std::string& directory, bool crossed) {
     using Engine = adi::device::LibPdEngine;
+    using Shaper = adi::dsp::AdiShaper;
     adi::device::PdLatencyReceiver latency;
     Engine path(directory, "ADI-Shaper.pd", 2, 2, Engine::Execution::Automatic, Engine::BlockMode::WholeBlocks);
     path.addSearchPath(ADI_PD_PATCH_DIR);
@@ -114,7 +115,7 @@ void panDelayBlend(const std::string& directory, bool crossed) {
 
     // Independently measured impulse gains with a 2 ms range. The two
     // input markers differ in frame, sign and amplitude to expose crossfeed.
-    struct Reading { float blend, bandMix, masterMix, leftNow, leftAt21, rightNow; };
+    struct Reading { float blend, bandMix, masterMix, leftNow, leftAt21, rightNow, law = 0; };
     constexpr std::array readings{
         Reading{0,   100, 100, .550475776f, 0,           1.303077579f},
         Reading{25,  100, 100, .068809472f, .481666297f, 1.303077579f},
@@ -122,7 +123,10 @@ void panDelayBlend(const std::string& directory, bool crossed) {
         Reading{75,  100, 100, 0,           .775237918f, 1.151538730f},
         Reading{100, 100, 100, 0,          1,            1},
         Reading{100,   0, 100, 1,          0,            1},
-        Reading{100, 100,   0, 1,          0,            1}};
+        Reading{100, 100,   0, 1,          0,            1},
+        Reading{0,   100, 100, .40842030f, 0,            1.4874946f, 1},
+        Reading{25,  100, 100, .0625f,     .4375f,       1.5f,       2},
+        Reading{75,  100, 100, 0,          .75f,         1.f,        3}};
     std::array<float, 64> left{}, right{}, outL{}, outR{};
     const float* in[]{left.data(), right.data()};
     float* out[]{outL.data(), outR.data()};
@@ -133,7 +137,8 @@ void panDelayBlend(const std::string& directory, bool crossed) {
     io.frames = 64;
     for (const auto& row : readings) {
         check(path.sendParameter(857, row.blend) && path.sendParameter(102, row.bandMix)
-              && path.sendParameter(1, row.masterMix), "deliver blend and dry/wet controls");
+              && path.sendParameter(1, row.masterMix) && path.sendParameter(926, row.law),
+              "deliver Pan gain law, delay blend and dry/wet controls");
         left.fill(0);
         right.fill(0);
         for (int block = 0; block < 32; ++block) path.process(io);
@@ -148,6 +153,35 @@ void panDelayBlend(const std::string& directory, bool crossed) {
             check(std::abs(actualLeft[n] - expectedLeft) < 2e-6f && std::abs(actualRight[n] - expectedRight) < 2e-6f,
                   "settled Pan blend reproduces both measured channel gains and the 21-frame tap");
         }
+    }
+
+    check(path.sendParameter(Shaper::PanBands + 1, 3) && path.sendParameter(Shaper::PanBands + 2, 82.40689f)
+          && path.sendParameter(Shaper::PanBands + 3, 1147.8298f), "select the three Pan crossover bands");
+    for (int band = 0; band < 3; ++band) {
+        check(path.sendParameter(856 + band, 0.f) && path.sendParameter(925 + band, static_cast<float>(band + 1)),
+              "send distinct Pan gain laws to all three bands");
+        for (int point = 0; point < 8; ++point) {
+            const auto id = Shaper::bandParam(Shaper::Stage::Pan, static_cast<Shaper::Band>(band),
+                                              static_cast<Shaper::BandControl>(Shaper::Point1 + point));
+            check(path.sendParameter(id + 1, -50.f), "set each band's Pan contour");
+        }
+    }
+    left.fill(0.f);
+    right.fill(0.f);
+    for (int block = 0; block < 32; ++block) path.process(io);
+    left[0] = 1.f;
+    right[0] = -.5f;
+    path.process(io);
+    const auto& actualLeft = crossed ? outR : outL;
+    const auto& actualRight = crossed ? outL : outR;
+    // First-order crossover impulse coefficients at frames 0 and 17.
+    struct BandTap { std::size_t frame; double low, mid, high; };
+    for (const auto tap : {BandTap{0, .00037551573, .07461194992, .92501249313},
+                           BandTap{17, .00877333507, .00309078321, -.01186411828}}) {
+        const double expectedL = std::pow(.550475776, 1.5) * tap.low + .5 * (tap.mid + tap.high);
+        const double expectedR = -.5 * (std::pow(1.303077579, 1.5) * tap.low + 1.5 * tap.mid + tap.high);
+        check(std::abs(actualLeft[tap.frame] - expectedL) < 2.e-6 && std::abs(actualRight[tap.frame] - expectedR) < 2.e-6,
+              "each routed gain law weights its own Pan band on both speakers");
     }
 }
 
@@ -172,6 +206,27 @@ void panBlendState(DeviceInstance& device) {
         for (int id : ids) sparse.at(group).erase(std::to_string(id));
     check(next->loadState("state", adi::Payload::to_cbor(sparse)), "recall the prior Pan state on a running device");
     for (int id : ids) check(next->getParam(std::to_string(id)).real == 50., "omitted Pan blend recalls its original setting");
+}
+
+void panGainLawState(DeviceInstance& device) {
+    constexpr std::array ids{925, 926, 927};
+    for (std::size_t i = 0; i < ids.size(); ++i) {
+        const auto id = std::to_string(ids[i]);
+        const auto* desc = device.paramAt(418 + static_cast<int>(i));
+        check(desc && desc->id == id && device.getParam(id).real == 0., "Pan gain laws append in band order at the original gain");
+        set(device, ids[i], static_cast<double>(i + 1) / 3.);
+    }
+    const auto saved = device.saveState("state");
+    auto next = open();
+    check(next->loadState("state", saved), "restore three distinct Pan gain laws");
+    for (std::size_t i = 0; i < ids.size(); ++i)
+        check(next->getParam(std::to_string(ids[i])).real == static_cast<double>(i + 1), "recall the selected law for each band");
+    auto sparse = adi::Payload::from_cbor(saved);
+    for (const auto* group : {"params", "real"})
+        for (int id : ids) sparse.at(group).erase(std::to_string(id));
+    check(next->loadState("state", adi::Payload::to_cbor(sparse)), "recall an earlier Pan state over the three active laws");
+    for (int id : ids) check(next->getParam(std::to_string(id)).real == 0., "an omitted Pan gain law recalls the original curve");
+    check(next->getParam("857").real == device.getParam("857").real, "the saved Pan delay blend survives gain law recall");
 }
 
 void modulationPd(const std::string& editedDir, bool filterOn, bool sweepOn, bool driveOn = false,
@@ -381,10 +436,11 @@ void savedSplitFrequency() {
 int main() try {
     auto device = open();
     const auto* info = adi::findBuiltin(uid);
-    check(info && info->name == "ADI-Shaper" && device->paramCount() == 418, "device registration");
+    check(info && info->name == "ADI-Shaper" && device->paramCount() == 421, "device registration");
     for (int id = 1; id <= 415; ++id)
         check(device->paramAt(id - 1) && device->paramAt(id - 1)->id == std::to_string(id), "contiguous stable parameter IDs");
     panBlendState(*device);
+    panGainLawState(*device);
     device = open();
     check(device->wantsDeviceTransport() && device->latencySamples() == 0, "position and latency");
     for (int id = 23; id <= 26; ++id) set(*device, id, 0);  // half-bar gate

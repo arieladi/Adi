@@ -20,6 +20,7 @@ static_assert(Shaper::VolumeLowSlope == 127 && Shaper::VolumeHighSlope == 130 &&
 static_assert(Shaper::SweepOn == 208 && Shaper::SweepLowPolarity == 283 && Shaper::DriveOn == 286);
 static_assert(Shaper::CrushOn == 340 && Shaper::BaseCount == 415);
 static_assert(Shaper::PanLowDelayBlend == 855 && Shaper::PanHighDelayBlend == 857);
+static_assert(Shaper::PanLowGainLaw == 924 && Shaper::PanMidGainLaw == 925 && Shaper::PanHighGainLaw == 926);
 static_assert(Shaper::driveParam(Band::High, Shaper::OutputTrim) + 1 == Shaper::CrushOn);
 static_assert(Shaper::modParam(Stage::Crush, Band::High, Shaper::Secondary8) + 1 == Shaper::BaseCount);
 int failures = 0;
@@ -304,8 +305,50 @@ void panDelayBlend() {
     check(l[48] == 0.f && near(l[69]+l[70], .5) && r[65] == -.25f,
           "a linear Pan contour applies the far-ear delay independently of gain");
     Shaper gaps;
-    for (int id : {415, 720, 854, 858, 2000}) gaps.set(static_cast<Shaper::Param>(id), 100.f);
+    for (int id : {415, 720, 854, 858, 900, 923, 927, 2000}) gaps.set(static_cast<Shaper::Param>(id), 100.f);
     check(one(gaps) == std::array{.375f, .25f}, "unassigned parameter numbers leave the rack dry");
+}
+
+void panGainLaws() {
+    constexpr std::array positions{-100.f, -50.f, 0.f, 50.f, 100.f};
+    constexpr std::array original{0., .550475776, 1., 1.303077579, 1.414213562};
+    const std::array gains{
+        original,
+        std::array{0., std::pow(original[1], 1.5), 1., std::pow(original[3], 1.5), std::pow(original[4], 1.5)},
+        std::array{0., .5, 1., 1.5, 2.},
+        std::array{0., .5, 1., 1., 1.}};
+    Shaper shaper;
+    shaper.set(Shaper::PanMidDelayBlend, 0.f);
+    for (std::size_t law = 0; law < gains.size(); ++law) {
+        shaper.set(Shaper::PanMidGainLaw, static_cast<float>(law));
+        for (std::size_t i = 0; i < positions.size(); ++i) {
+            flat(shaper, Stage::Pan, Band::Mid, positions[i]);
+            const auto out = one(shaper, -.5f, .25f);
+            check(near(out[0], -.5 * gains[law][i]) && near(out[1], .25 * gains[law][positions.size()-1-i]),
+                  "each Pan gain law follows its balance curve on both channels");
+        }
+    }
+
+    flat(shaper, Stage::Pan, Band::Mid, -50.f);
+    shaper.set(Shaper::PanMidDelayBlend, 25.f);
+    shaper.set(Shaper::PanMidGainLaw, 0.f);
+    std::array<float, 64> l{}, r{};
+    shaper.process(l.data(), r.data(), l.data(), r.data(), l.size());
+    l.fill(0.f);
+    r.fill(0.f);
+    l[4] = -.5f;
+    l[14] = .25f;
+    r[14] = -.75f;
+    shaper.process(l.data(), r.data(), l.data(), r.data(), 10);
+    shaper.set(Shaper::PanMidGainLaw, 2.f);
+    shaper.process(l.data()+10, r.data()+10, l.data()+10, r.data()+10, l.size()-10);
+    for (std::size_t i = 0; i < l.size(); ++i) {
+        const double left = i == 4 ? -.5 * .125 * original[1] : i == 25 ? -.5 * .875 * original[1] :
+                            i == 14 ? .25 * .125 * .5 : i == 35 ? .25 * .875 * .5 : 0.;
+        check(near(l[i], left) && near(r[i], i == 14 ? -.75 * 1.5 : 0.),
+              "a Pan gain law edit preserves the queued marker and applies the new gain to the next marker");
+    }
+    check(shaper.latency() == 0, "Pan gain law edits add no rack latency");
 }
 
 void clocksAndLinearCurve() {
@@ -500,6 +543,26 @@ void firstOrderBandImpulses() {
                           && near(outR[56 + taps[i]], -.375 * tap, 1.0e-7),
                       "isolated first-order band has the measured stereo impulse response across a block boundary");
             }
+        }
+        Shaper pan;
+        pan.prepare(rates[rate]);
+        pan.set(Shaper::PanBands, 3);
+        pan.set(static_cast<Shaper::Param>(Shaper::PanBands + 1), 82.40689f);
+        pan.set(static_cast<Shaper::Param>(Shaper::PanBands + 2), 1147.8298f);
+        for (int band = 0; band < 3; ++band) {
+            flat(pan, Stage::Pan, static_cast<Band>(band), -50.f);
+            pan.set(static_cast<Shaper::Param>(Shaper::PanLowDelayBlend + band), 0.f);
+            pan.set(static_cast<Shaper::Param>(Shaper::PanLowGainLaw + band), static_cast<float>(band + 1));
+        }
+        std::array<float, 64> left{}, right{};
+        left[0] = 1.f;
+        right[0] = -.5f;
+        pan.process(left.data(), right.data(), left.data(), right.data(), left.size());
+        for (std::size_t i = 0; i < taps.size(); ++i) {
+            const auto low = response[rate][0][i], mid = response[rate][1][i], high = response[rate][2][i];
+            check(near(left[taps[i]], std::pow(.550475776, 1.5) * low + .5 * (mid + high)) &&
+                  near(right[taps[i]], -.5 * (std::pow(1.303077579, 1.5) * low + 1.5 * mid + high)),
+                  "the three Pan gain laws weight their own crossover bands");
         }
     }
 }
@@ -1126,6 +1189,7 @@ int main() {
     balanceSweep();
     heldPanEdges();
     panDelayBlend();
+    panGainLaws();
     beatGate();
     clocksAndLinearCurve();
     splitBands();

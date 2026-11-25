@@ -437,7 +437,12 @@ void AdiShaper::setMod(Param id, float value) noexcept {
 
 void AdiShaper::set(Param id, float value) noexcept {
     if (id < MasterMix || id >= Count || !std::isfinite(value)) return;
-    if (id >= PanLowDelayBlend) {
+    if (id >= PanLowGainLaw) {
+        auto& history = panHistory_[static_cast<std::size_t>(id - PanLowGainLaw)];
+        history.law = static_cast<PanHistory::Law>(static_cast<int>(std::round(std::clamp(value, 0.f, 3.f))));
+        return;
+    }
+    if (id >= PanLowDelayBlend && id <= PanHighDelayBlend) {
         panHistory_[static_cast<std::size_t>(id - PanLowDelayBlend)].setBlend(value);
         return;
     }
@@ -547,11 +552,22 @@ void AdiShaper::PanHistory::setBlend(float percent) noexcept {
     unity = std::max(0.f, twice - 1.f);
 }
 
-AdiShaper::PanHistory::Tap AdiShaper::PanHistory::tap(double position, double rate, bool constant) const noexcept {
+AdiShaper::Gain AdiShaper::PanHistory::gains(double position) const noexcept {
     const double height = std::clamp(.5 + .5 * position, 0., 1.);
-    const float leftGain = panGain(height), rightGain = panGain(1. - height);
+    if (law == Law::LinearLift || law == Law::CutOnly) {
+        const float ceiling = law == Law::CutOnly ? 1.f : 2.f;
+        return {std::min(ceiling, static_cast<float>(2. * height)),
+                std::min(ceiling, static_cast<float>(2. * (1. - height)))};
+    }
+    const float left = panGain(height), right = panGain(1. - height);
+    if (law == Law::Lift45) return {left * std::sqrt(left), right * std::sqrt(right)};
+    return {left, right};
+}
+
+AdiShaper::PanHistory::Tap AdiShaper::PanHistory::tap(double position, double rate, bool constant) const noexcept {
+    const auto gain = gains(position);
     Tap result;
-    result.gain = {leftGain + unity * (1.f - leftGain), rightGain + unity * (1.f - rightGain)};
+    result.gain = {gain.left + unity * (1.f - gain.left), gain.right + unity * (1.f - gain.right)};
     if (current == 1.f || frames.empty()) return result;
     // At the two-millisecond range a stationary contour reads a whole frame.
     // A moving contour also interpolates between the two neighboring frames.
