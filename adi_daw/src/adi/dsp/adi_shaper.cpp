@@ -597,7 +597,7 @@ void AdiShaper::set(Param id, float value) noexcept {
         panHistory_[static_cast<std::size_t>(id - PanLowDelayBlend)].setBlend(value);
         return;
     }
-    if (id >= VolumeOrder && id <= orderParam(Stage::Crush)) {
+    if (id >= VolumeOrder) {
         const auto rank = static_cast<std::uint8_t>(std::round(std::clamp(value, 0.f, 127.f)));
         auto& current = ranks_[static_cast<std::size_t>(id - VolumeOrder)];
         if (rank != current) {

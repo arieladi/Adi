@@ -13,6 +13,7 @@
 #include <fstream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace {
 constexpr auto uid = "org.adidaw.builtin.adi-shaper";
@@ -483,12 +484,161 @@ void timePd() {
         }
     }
 }
+// The final three ranks retain the stage identities of the full project format.
+// Pitch parameters 464..535 and Pitch rank 724 may occur in an imported state.
+void combinedDeclarations(DeviceInstance& device) {
+    int ordinal = 418;
+    const auto next = [&](int id) {
+        const auto* descriptor = device.paramAt(ordinal++);
+        check(descriptor && descriptor->id == std::to_string(id), "combined stages retain their declaration order");
+    };
+    for (int id = 716; id <= 722; ++id) next(id);
+    for (int id = 536; id <= 715; ++id) next(id);
+    for (int id = 416; id <= 463; ++id) next(id);
+    for (int id : {723, 725, 726}) next(id);
+    check(ordinal == device.paramCount(), "all combined stage descriptors are accounted for");
+    for (int id : {464, 500, 535, 724})
+        check(!device.setParam(std::to_string(id), ParamValue::fromNormalized(1.)), "absent Pitch controls reject writes");
+    check(device.getParam("723").real == 78 && device.getParam("725").real == 98
+          && device.getParam("726").real == 108, "stage ranks retain their original identity defaults");
+}
+
+using StageAudio = std::array<std::vector<float>, 2>;
+
+template<class Device>
+StageAudio combinedAudio(Device& device, bool crossed) {
+    constexpr std::size_t frames = 8192;
+    StageAudio result{std::vector<float>(frames), std::vector<float>(frames)};
+    std::array<float, 64> left{}, right{};
+    const float* inputs[]{left.data(), right.data()};
+    adi::engine::NodeIo io;
+    io.channels = 2;
+    io.frames = 64;
+    io.in = inputs;
+    for (std::size_t offset = 0; offset < frames; offset += left.size()) {
+        for (std::size_t i = 0; i < left.size(); ++i) {
+            const auto t = static_cast<double>(offset + i);
+            left[i] = static_cast<float>(.32 * std::cos(.039 * t));
+            right[i] = static_cast<float>(.18 * std::sin(.071 * t));
+        }
+        float* outputs[]{result[crossed ? 1 : 0].data() + offset, result[crossed ? 0 : 1].data() + offset};
+        io.out = outputs;
+        device.process(io);
+    }
+    return result;
+}
+
+double combinedDifference(const StageAudio& a, const StageAudio& b) {
+    double peak = 0.;
+    for (std::size_t ch = 0; ch < a.size(); ++ch) {
+        for (std::size_t i = 0; i < a[ch].size(); ++i) {
+            check(std::isfinite(a[ch][i]) && std::isfinite(b[ch][i]), "finite combined stage audio");
+            peak = std::max(peak, std::abs(static_cast<double>(a[ch][i]) - b[ch][i]));
+        }
+    }
+    return peak;
+}
+
+StageAudio restoredStageAudio(const adi::Payload& state, const std::string& editedDir) {
+    using Engine = adi::device::LibPdEngine;
+    auto restored = open();
+    check(restored->loadState("state", adi::Payload::to_cbor(state)), "restore combined stage project");
+    const auto decl = adi::device::parsePdDeclarations(adi::builtinCanvas(uid));
+    const auto savedAgain = adi::Payload::from_cbor(restored->saveState("state"));
+    for (const auto& param : decl.params) {
+        const auto key = std::to_string(param.id);
+        for (const auto* group : {"params", "real", "units"})
+            check(savedAgain.at(group).at(key) == state.at(group).at(key), "normalized values, units and real values round-trip exactly");
+    }
+    const auto expected = combinedAudio(*restored, false);
+    // DeviceInstance implements project state. Each physical value recovered from
+    // that state is also delivered via both registered Pd parameter paths.
+    for (bool crossed : {false, true}) {
+        adi::device::PdLatencyReceiver latency;
+        Engine path(crossed ? editedDir : ADI_SHAPER_PATCH_DIR, "ADI-Shaper.pd", 2, 2,
+                    Engine::Execution::Automatic, Engine::BlockMode::WholeBlocks);
+        std::string error;
+        path.addSearchPath(ADI_PD_PATCH_DIR);
+        check(path.open(latency, error) && path.isNative() != crossed, "select canonical native and crossed generic Pd routes");
+        path.prepare(48000, 64);
+        path.bindParameters(decl);
+        for (const auto& param : decl.params) {
+            const auto value = restored->getParam(std::to_string(param.id));
+            check(path.sendParameter(param.id, static_cast<float>(value.real)), "send every recalled value through its declared receiver");
+        }
+        check(!path.sendParameter(724, 0) && !path.sendParameter(464, 1), "unbound Pitch receivers remain absent");
+        const auto actual = combinedAudio(path, crossed);
+        check(latency.latencySamples() == 0 && path.adapterLatencySamples() == 0, "whole-block stage test has zero adapter and reported delay");
+        check(combinedDifference(expected, actual) < 2.e-6, "restored project and both Pd routes reproduce the same stereo stream");
+    }
+    return expected;
+}
+
+void combinedStageState(const std::string& editedDir) {
+    auto device = open();
+    combinedDeclarations(*device);
+    for (int id = 716; id <= 722; ++id) set(*device, id, (12. + 10. * (id - 716)) / 127.);
+    set(*device, 723, 80. / 127.);
+    set(*device, 725, 50. / 127.);
+    set(*device, 726, 110. / 127.);
+    for (int id = 23; id <= 30; ++id) set(*device, id, 0.); // Volume silences the full-band input.
+    for (int id : {416, 536, 626, 438, 441, 572, 575, 576, 661, 664, 665}) set(*device, id, 1.);
+    set(*device, 440, .5);      // Independent free-running Time, Noise and Room clocks.
+    set(*device, 574, .5625);
+    set(*device, 663, .4375);
+    set(*device, 436, 5. / 7.); // 2.5 ms Time range
+    set(*device, 570, 1.);      // Pink Noise responds to both level and pitch.
+    set(*device, 593, 0.);      // Independent noise in the two channels
+    set(*device, 660, .75);     // Room mix
+    set(*device, 682, .25);     // Short room
+    for (int i = 0; i < 8; ++i) {
+        set(*device, 442 + i, (2. + (3*i)%11) / 16.);  // Time height
+        set(*device, 577 + i, (7. + (5*i)%9) / 16.);   // Noise level
+        set(*device, 585 + i, (3. + (7*i)%11) / 16.);  // Noise pitch
+        set(*device, 666 + i, (6. + (2*i)%9) / 16.);   // Room send
+        set(*device, 674 + i, (5. + (7*i)%10) / 16.);  // Room return
+    }
+    const auto state = adi::Payload::from_cbor(device->saveState("state"));
+    check(state.at("real").at("442").get<double>() == 12.5 && state.at("real").at("577").get<double>() == 43.75
+          && state.at("real").at("585").get<double>() == -15. && state.at("real").at("666").get<double>() == 37.5
+          && state.at("real").at("674").get<double>() == 31.25, "independent curves save their authored values in the correct units");
+    const auto sound = restoredStageAudio(state, editedDir);
+    const StageAudio silent{std::vector<float>(sound[0].size()), std::vector<float>(sound[1].size())};
+    check(combinedDifference(sound, silent) > .001, "Noise after Volume reaches the output");
+    for (const int rank : {723, 725, 726}) {
+        check(device->loadState("state", adi::Payload::to_cbor(state)), "restore independent rank fixture");
+        set(*device, rank, 1. / 127.);
+        const auto moved = restoredStageAudio(adi::Payload::from_cbor(device->saveState("state")), editedDir);
+        if (rank == 725)
+            check(combinedDifference(moved, silent) == 0., "Volume after Noise removes its complete output");
+        check(combinedDifference(moved, sound) > .0001, "moving the individual Time, Noise or Room rank changes stereo audio");
+    }
+    auto withPitch = state;
+    for (const int id : {464, 500, 535, 724}) {
+        const auto key = std::to_string(id);
+        withPitch["params"][key] = .75;
+        withPitch["real"][key] = 93.;
+    }
+    check(combinedDifference(sound, restoredStageAudio(withPitch, editedDir)) == 0., "saved Pitch fields leave all represented stages unchanged");
+    auto previous = state;
+    for (const auto* group : {"params", "real"}) {
+        for (int id = 416; id <= 463; ++id) previous.at(group).erase(std::to_string(id));
+        for (int id = 536; id <= 715; ++id) previous.at(group).erase(std::to_string(id));
+        for (const int id : {723, 725, 726}) previous.at(group).erase(std::to_string(id));
+    }
+    check(device->loadState("state", adi::Payload::to_cbor(previous)), "restore a project that predates the three added stages");
+    check(device->getParam("416").real == 0 && device->getParam("536").real == 0 && device->getParam("626").real == 0,
+          "older project restores Time, Noise and Room to Off");
+    combinedDeclarations(*device);
+    check(combinedDifference(combinedAudio(*device, false), silent) == 0., "old project again plays just the original zero Volume gate");
+}
+
 } // namespace
 
 int main() try {
     auto device = open();
     const auto* info = adi::findBuiltin(uid);
-    check(info && info->name == "ADI-Shaper" && device->paramCount() == 653, "device registration");
+    check(info && info->name == "ADI-Shaper" && device->paramCount() == 656, "device registration");
     for (int id = 1; id <= 415; ++id)
         check(device->paramAt(id - 1) && device->paramAt(id - 1)->id == std::to_string(id), "contiguous stable parameter IDs");
     for (int i = 0; i < 90; ++i) {
@@ -642,7 +792,7 @@ int main() try {
     device = open();
     check(device->loadState("state", adi::Payload::to_cbor(realOnly))
           && std::abs(device->getParam("170").real - 37) < 1e-4, "a value saved only in its unit is kept");
-    auto preOrder = adi::Payload::from_cbor(sevenStageState);
+    auto preOrder = sevenStageState;
     for (int i = 0; i < 7; ++i) {
         const auto id = std::to_string(716 + i);
         const auto* desc = device->paramAt(418 + i);
@@ -659,7 +809,7 @@ int main() try {
     check(device->loadState("state", adi::Payload::to_cbor(preOrder)), "load a project without ranks");
     for (int i = 0; i < 7; ++i)
         check(device->getParam(std::to_string(716+i)).real == 8 + 10*i, "old project restores legacy order");
-    auto beforeNoise = adi::Payload::from_cbor(sevenStageState);
+    auto beforeNoise = sevenStageState;
     for (int id = 536; id <= 625; ++id) {
         beforeNoise.at("params").erase(std::to_string(id));
         beforeNoise.at("real").erase(std::to_string(id));
@@ -721,6 +871,7 @@ int main() try {
     modulationPd(editedDir, false, false, false, true);
     modulationPd(editedDir, false, false, true, true);
     timePd();
+    combinedStageState(editedDir);
     std::puts("ADI-Shaper built-in state, transport and editable modulation parity passed.");
     return 0;
 } catch (const std::exception& error) {

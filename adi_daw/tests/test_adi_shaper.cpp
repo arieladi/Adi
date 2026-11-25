@@ -31,6 +31,10 @@ static_assert(Shaper::hasParameter(415) && Shaper::hasParameter(624) && Shaper::
               && !Shaper::hasParameter(854) && Shaper::hasParameter(855) && !Shaper::hasParameter(858));
 static_assert(static_cast<int>(Stage::Time) == 7 && Shaper::TimeOn == 415 && Shaper::TimeEnd == 463);
 static_assert(Shaper::timeParam(Band::High, Shaper::Time8) + 1 == Shaper::TimeEnd);
+static_assert(static_cast<int>(Stage::Noise) == 9 && static_cast<int>(Stage::Reverb) == 10);
+static_assert(Shaper::stageCount == 10 && Shaper::stageSlots == 11);
+static_assert(Shaper::orderParam(Stage::Time) == 722 && !Shaper::hasParameter(723));
+static_assert(Shaper::orderParam(Stage::Noise) == 724 && Shaper::orderParam(Stage::Reverb) == 725);
 int failures = 0;
 
 void check(bool condition, const char* description) {

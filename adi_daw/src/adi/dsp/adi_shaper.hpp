@@ -86,7 +86,8 @@ class AdiShaper {
     }
     static constexpr bool hasParameter(int id) noexcept {
         return (id >= MasterMix && id < TimeEnd) || (id >= NoiseOn && id < ReverbEnd)
-            || (id >= VolumeOrder && id <= orderParam(Stage::Crush))
+            || (id >= VolumeOrder && id <= orderParam(Stage::Time))
+            || (id >= orderParam(Stage::Noise) && id <= orderParam(Stage::Reverb))
             || (id >= PanLowDelayBlend && id < Count);
     }
     enum DriveControl { DriveStyle, DriveMix, DriveClock, DriveCycle, DriveRate, DriveCurve,

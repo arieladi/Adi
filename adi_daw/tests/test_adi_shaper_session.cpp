@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/dsp/adi_shaper.hpp"
 #include "adi/engine/session.hpp"
+#include "adi/engine/param_ops.hpp"
+#include "adi/ops.hpp"
 #include "adi/store.hpp"
 #include "adi/textproj.hpp"
 #include "juce/builtin_host.hpp"
@@ -11,6 +13,8 @@
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -107,6 +111,88 @@ void render(const Store& store, int blockSize, bool compensate) {
         }
     }
 }
+using StereoCapture = std::array<std::array<float, 8192>, 2>;
+
+StereoCapture renderProjectState(Store& store, int blockSize, bool record, bool reverseOrder) {
+    DelayedSignal input;
+    Session session;
+    session.graph().setFadeFrames(0);
+    session.setSourcesFor([&](std::int64_t track) {
+        return track == 1 ? std::vector<Node*>{&input} : std::vector<Node*>{};
+    });
+    SessionSpec spec;
+    spec.sampleRate = sampleRate;
+    spec.maxFrames = blockSize;
+    if (!session.load(store, device::withBuiltinDevices(), spec))
+        throw std::runtime_error(session.error());
+    auto* instance = session.instanceFor(1);
+    if (!instance || !instance->loaded() || session.stats().statesLoaded != (record ? 0 : 1))
+        throw std::runtime_error("shaper project state did not reach the registered device");
+
+    // Persist independent values for Time height, Noise level and pitch, and room send and return.
+    // These are the stable project IDs on either side of the space reserved for Pitch.
+    struct Setting { int id; double value; };
+    constexpr std::array settings{
+        Setting{2, 0.}, Setting{416, 1.}, Setting{442, .625}, Setting{443, .875},
+        Setting{536, 1.}, Setting{570, .5}, Setting{577, .25}, Setting{585, .375}, Setting{594, 1.},
+        Setting{626, 1.}, Setting{660, .75}, Setting{666, .5}, Setting{674, .875},
+        Setting{723, 1.}, Setting{725, 0.}, Setting{726, 64. / 127.}};
+    if (record) {
+        ParamOps edits;
+        if (edits.attachSession(session) != 1) throw std::runtime_error("cannot attach shaper project capture");
+        for (const auto& setting : settings)
+            if (!instance->setParam(std::to_string(setting.id), device::ParamValue::fromNormalized(setting.value)))
+                throw std::runtime_error("cannot set shaper project parameter " + std::to_string(setting.id));
+        std::vector<OpRequest> requests;
+        if (edits.snapshot(1, 1000, requests) == 0) throw std::runtime_error("empty shaper project snapshot");
+        const auto result = OpJournal(store).commit(requests);
+        if (!result.ok) throw std::runtime_error(result.error);
+    }
+    for (const auto& setting : settings)
+        if (std::abs(instance->getParam(std::to_string(setting.id)).normalized - setting.value) > 1.e-6)
+            throw std::runtime_error("shaper parameter changed on project recall " + std::to_string(setting.id));
+    if (reverseOrder) {
+        if (!instance->setParam("723", device::ParamValue::fromNormalized(0.)) ||
+            !instance->setParam("725", device::ParamValue::fromNormalized(1.)))
+            throw std::runtime_error("cannot reverse Time and Noise in the recalled shaper");
+    }
+    StereoCapture out{};
+    session.transport().play();
+    for (int frame = 0; frame < static_cast<int>(out[0].size()); frame += blockSize) {
+        float* channels[]{out[0].data() + frame, out[1].data() + frame};
+        AudioIo io;
+        io.frames = blockSize;
+        io.numOut = 2;
+        io.out = channels;
+        session.process(io);
+    }
+    return out;
+}
+
+void reopenedStages(std::unique_ptr<Store>& store, const std::filesystem::path& file) {
+    const auto before = renderProjectState(*store, 256, true, false);
+    if (!store->close()) throw std::runtime_error("could not close the staged shaper project");
+    store.reset();
+    StoreError error{};
+    auto reopened = Store::open(file, error);
+    if (!reopened) throw std::runtime_error(toString(error));
+    if (renderProjectState(*reopened, 256, false, false) != before)
+        throw std::runtime_error("reopened Time, Noise and room differ from the saved render");
+    const auto large = renderProjectState(*reopened, 2048, false, false);
+    const auto reversed = renderProjectState(*reopened, 2048, false, true);
+    double orderEnergy = 0.;
+    for (std::size_t ch = 0; ch < before.size(); ++ch) {
+        for (std::size_t frame = 0; frame < before[ch].size(); ++frame) {
+            if (!(std::abs(before[ch][frame] - large[ch][frame]) < 1.e-5))
+                throw std::runtime_error("reopened shaper changed with callback size");
+            const double delta = static_cast<double>(large[ch][frame]) - reversed[ch][frame];
+            orderEnergy += delta * delta;
+        }
+    }
+    if (!(orderEnergy > 1.e-5 * before[0].size()))
+        throw std::runtime_error("restoring the reverse stage order made no audible difference");
+}
+
 } // namespace
 
 int main() {
@@ -124,12 +210,15 @@ int main() {
                 "INSERT INTO device_chains(id,track_id) VALUES(1,1);"
                 "INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name) VALUES(1,1,0,1,'ADI-Shaper');"
                 "INSERT INTO tempo_map(pos_ticks,bpm,curve) VALUES(0,175.78125,0);");
-        SQLite::Statement change(db, "INSERT INTO tempo_map(pos_ticks,bpm,curve) VALUES(?,87.890625,0)");
-        change.bind(1, adi::textproj::kPPQ);
-        change.exec();
+        {
+            SQLite::Statement change(db, "INSERT INTO tempo_map(pos_ticks,bpm,curve) VALUES(?,87.890625,0)");
+            change.bind(1, adi::textproj::kPPQ);
+            change.exec();
+        }
         for (const int size : {256, 2048}) {
             for (const bool compensate : {true, false}) render(*store, size, compensate);
         }
+        reopenedStages(store, temp.path() / "gate.adi");
         std::puts("ADI-Shaper Session beat gate passed at both block sizes with compensation on and off.");
         return 0;
     } catch (const std::exception& e) {
