@@ -52,6 +52,362 @@ void writeCrossedCanvas(const std::filesystem::path& file) {
     check(output.good(), "write edited project canvas");
 }
 
+void filterPeakRecall() {
+    auto source = open();
+    set(*source, 134, 1);
+    set(*source, 140, .25);
+    set(*source, 163, .75);
+    set(*source, 186, 1);
+    set(*source, 913, 1);
+    set(*source, 914, 1);
+    const auto saved = source->saveState("state");
+    auto device = open();
+    check(device->loadState("state", saved), "recall independent peak switches");
+    check(device->getParam("913").real == 1 && device->getParam("914").real == 1
+          && device->getParam("915").real == 0, "the three saved peak switches are independent");
+    check(device->getParam("140").real == 1 && device->getParam("163").real == 3
+          && device->getParam("186").real == 4, "legacy normalized Filter selections retain their meaning");
+
+    const auto impulse = [](DeviceInstance& effect) {
+        effect.prepare(48000, 64);
+        std::array<std::array<float, 64>, 2> input{}, output{};
+        input[0][0] = -.25f;
+        input[1][11] = .375f;
+        const float* in[]{input[0].data(), input[1].data()};
+        float* out[]{output[0].data(), output[1].data()};
+        adi::engine::NodeIo io;
+        io.channels = 2;
+        io.frames = 64;
+        io.in = in;
+        io.out = out;
+        effect.process(io);
+        return output;
+    };
+    const auto peak = impulse(*device);
+    check(peak == impulse(*source), "peak state reproduces stereo audio after reopening");
+    auto legacy = adi::Payload::from_cbor(saved);
+    for (int id = 913; id <= 915; ++id) {
+        legacy.at("params").erase(std::to_string(id));
+        legacy.at("real").erase(std::to_string(id));
+    }
+    set(*device, 915, 1);
+    check(device->loadState("state", adi::Payload::to_cbor(legacy)), "recall an older state on the running Filter");
+    check(device->getParam("913").real == 0 && device->getParam("914").real == 0
+          && device->getParam("915").real == 0, "absent peak switches restore their defaults");
+    set(*source, 913, 0);
+    set(*source, 914, 0);
+    const auto restored = impulse(*device);
+    check(restored != peak && restored == impulse(*source), "sparse recall restores the selected high-pass response");
+}
+
+void filterPeakPd(const std::string& directory, bool crossed) {
+    using Engine = adi::device::LibPdEngine;
+    using Shaper = adi::dsp::AdiShaper;
+    Engine path(directory, "ADI-Shaper.pd", 2, 2, Engine::Execution::Automatic, Engine::BlockMode::WholeBlocks);
+    adi::device::PdLatencyReceiver latency;
+    std::string error;
+    path.addSearchPath(ADI_PD_PATCH_DIR);
+    check(path.open(latency, error) && path.isNative() == !crossed, "open the requested peak processing path");
+    path.prepare(48000, 64);
+    path.bindParameters(adi::device::parsePdDeclarations(adi::builtinCanvas(uid)));
+    Shaper expected, plain;
+    const auto send = [&](Shaper::Param id, float value) {
+        check(path.sendParameter(static_cast<int>(id) + 1, value), "send a Filter control");
+        expected.set(id, value);
+        if (id < Shaper::BaseCount) plain.set(id, value);
+    };
+    send(Shaper::FilterOn, 1);
+    send(static_cast<Shaper::Param>(Shaper::FilterOn + 1), 3);
+    send(Shaper::FilterLowOffset, -61);
+    send(Shaper::FilterMidOffset, 43);
+    send(Shaper::FilterHighOffset, -27);
+    for (int b = 0; b < 3; ++b) {
+        const auto band = static_cast<Shaper::Band>(b);
+        for (int i = 0; i < 8; ++i) {
+            send(Shaper::modParam(Shaper::Stage::Filter, band, static_cast<Shaper::ModControl>(Shaper::Primary1 + i)), 55);
+            send(Shaper::modParam(Shaper::Stage::Filter, band, static_cast<Shaper::ModControl>(Shaper::Secondary1 + i)), 40);
+        }
+    }
+    using Block = std::array<std::array<float, 64>, 2>;
+    Block input{}, actual{}, wanted{}, unboosted{};
+    const float* in[]{input[0].data(), input[1].data()};
+    float* out[]{actual[0].data(), actual[1].data()};
+    adi::engine::NodeIo io;
+    io.channels = 2;
+    io.frames = 64;
+    io.in = in;
+    io.out = out;
+    for (int block = 0; block < 10; ++block) {
+        if (block > 0) {
+            const int band = (block - 1) / 3;
+            const auto peak = static_cast<Shaper::Param>(Shaper::FilterLowPeak + band);
+            const auto type = Shaper::modParam(Shaper::Stage::Filter, static_cast<Shaper::Band>(band), Shaper::Type);
+            const auto nextType = static_cast<float>(band + 1);
+            if (block % 3 == 1) {
+                send(peak, 1);
+            } else if (block % 3 == 2) {
+                // Delay this write in the oracle by one block. Editing the underlying
+                // choice while Peak is active must preserve its running filter history.
+                check(path.sendParameter(static_cast<int>(type) + 1, nextType), "edit the underlying Filter selection");
+                plain.set(type, nextType);
+            } else {
+                expected.set(type, nextType);
+                send(peak, 0);
+            }
+        }
+        for (int i = 0; i < io.frames; ++i) {
+            const auto n = block * io.frames + i;
+            input[0][static_cast<std::size_t>(i)] = static_cast<float>(.3 * std::sin(.071 * n)) + (n % 11 == 1 ? .4f : 0.f);
+            input[1][static_cast<std::size_t>(i)] = static_cast<float>(.2 * std::cos(.163 * n)) - (n % 17 == 3 ? .3f : 0.f);
+        }
+        expected.process(in[0], in[1], wanted[0].data(), wanted[1].data(), 64);
+        plain.process(in[0], in[1], unboosted[0].data(), unboosted[1].data(), 64);
+        path.process(io);
+        for (std::size_t ch = 0; ch < 2; ++ch)
+            check(actual[crossed ? 1 - ch : ch] == wanted[ch], "each band receives its peak switch on the live stereo canvas");
+        if (block % 3 == 1) check(wanted != unboosted, "the selected peak band changes the stereo waveform");
+    }
+    check(latency.latencySamples() == 0, "peak processing adds zero latency");
+}
+
+void stereoFilterPd(const std::string& directory, bool crossed) {
+    using Engine = adi::device::LibPdEngine;
+    using Shaper = adi::dsp::AdiShaper;
+    constexpr auto mid = Shaper::Band::Mid;
+    adi::device::PdLatencyReceiver latency;
+    Engine path(directory, "ADI-Shaper.pd", 2, 2, Engine::Execution::Automatic, Engine::BlockMode::WholeBlocks);
+    path.addSearchPath(ADI_PD_PATCH_DIR);
+    std::string error;
+    check(path.open(latency, error), "open stereo filter");
+    path.prepare(48000, 64);
+    path.bindParameters(adi::device::parsePdDeclarations(adi::builtinCanvas(uid)));
+    check(path.sendParameter(Shaper::FilterOn + 1, 1), "enable filter");
+    for (int n = 0; n < 8; ++n) {
+        const auto point = static_cast<Shaper::ModControl>(Shaper::Primary1 + n);
+        check(path.sendParameter(Shaper::modParam(Shaper::Stage::Filter, mid, point) + 1, 50), "set filter cutoff");
+    }
+    check(path.sendParameter(851, 50), "set middle band's stereo offset");
+    std::array<float, 64> input{}, left{}, right{};
+    const float* in[]{input.data(), input.data()};
+    float* out[]{left.data(), right.data()};
+    adi::engine::NodeIo io;
+    io.in = in;
+    io.out = out;
+    io.channels = 2;
+    io.frames = 64;
+    path.process(io);
+    input[0] = .025f;
+    path.process(io);
+    const float higher = crossed ? right[0] : left[0], lower = crossed ? left[0] : right[0];
+    check(std::abs(higher / .025 - .14177298) < 3e-5 && std::abs(lower / .025 - .02680684) < 3e-5,
+          "stereo cutoff reaches the native wrapper and editable external");
+}
+
+void steepFilterRecall() {
+    auto source = open();
+    for (int i = 0; i < 5; ++i) {
+        for (const int id : {140, 163, 186}) {
+            set(*source, id, i * .25);
+            check(source->getParam(std::to_string(id)).real == i, "legacy normalized Filter type positions");
+        }
+    }
+    for (int id = 1; id <= 415; ++id) set(*source, id, (id % 5) * .25);
+    set(*source, 916, 1);
+    set(*source, 918, 1);
+    auto saved = adi::Payload::from_cbor(source->saveState("state"));
+    auto restored = open();
+    check(restored->loadState("state", adi::Payload::to_cbor(saved)), "recall steep Filter selectors");
+    check(restored->getParam("916").real == 1 && restored->getParam("917").real == 0
+          && restored->getParam("918").real == 1, "independent steep selectors survive reopening");
+    saved.erase("real");
+    for (int id = 916; id <= 918; ++id) saved.at("params").erase(std::to_string(id));
+    set(*restored, 917, 1);
+    check(restored->loadState("state", adi::Payload::to_cbor(saved)), "recall normalized legacy state over steep Filter");
+    for (int id = 1; id <= 415; ++id) {
+        const auto key = std::to_string(id);
+        check(restored->getParam(key).normalized == source->getParam(key).normalized,
+              "normalized legacy controls survive a sparse recall");
+    }
+    for (int id = 916; id <= 918; ++id)
+        check(restored->getParam(std::to_string(id)).real == 0, "absent steep selectors return to their default");
+}
+
+void steepFilterPd(const std::string& directory, bool crossed) {
+    using Engine = adi::device::LibPdEngine;
+    using Shaper = adi::dsp::AdiShaper;
+    Engine path(directory, "ADI-Shaper.pd", 2, 2, Engine::Execution::Automatic, Engine::BlockMode::WholeBlocks);
+    adi::device::PdLatencyReceiver latency;
+    std::string error;
+    path.addSearchPath(ADI_PD_PATCH_DIR);
+    check(path.open(latency, error) && path.isNative() == !crossed, "open the requested steep Filter path");
+    path.prepare(48000, 64);
+    path.bindParameters(adi::device::parsePdDeclarations(adi::builtinCanvas(uid)));
+    Shaper expected, ordinary;
+    expected.prepare(48000);
+    ordinary.prepare(48000);
+    const auto send = [&](Shaper::Param id, float value) {
+        check(path.sendParameter(static_cast<int>(id) + 1, value), "send the live Filter parameter");
+        expected.set(id, value);
+        ordinary.set(id, value);
+    };
+    send(Shaper::FilterOn, 1);
+    send(static_cast<Shaper::Param>(Shaper::FilterOn + 1), 3);
+    for (int i = 0; i < 3; ++i) {
+        const auto band = static_cast<Shaper::Band>(i);
+        send(Shaper::modParam(Shaper::Stage::Filter, band, Shaper::Type), static_cast<float>(2 * i));
+        for (int j = 0; j < 8; ++j) {
+            send(Shaper::modParam(Shaper::Stage::Filter, band, static_cast<Shaper::ModControl>(Shaper::Primary1 + j)), 53);
+            send(Shaper::modParam(Shaper::Stage::Filter, band, static_cast<Shaper::ModControl>(Shaper::Secondary1 + j)), 42);
+        }
+    }
+    using Block = std::array<std::array<float, 64>, 2>;
+    Block input{}, got{}, want{}, unmodified{};
+    const float* in[]{input[0].data(), input[1].data()};
+    float* out[]{got[0].data(), got[1].data()};
+    adi::engine::NodeIo io;
+    io.channels = 2;
+    io.frames = 64;
+    io.in = in;
+    io.out = out;
+    for (int block = 0; block < 19; ++block) {
+        const int index = block == 0 ? 0 : (block - 1) / 6;
+        const int step = block == 0 ? 0 : (block - 1) % 6 + 1;
+        const auto selector = static_cast<Shaper::Param>(Shaper::FilterLowSteep + index);
+        const auto type = Shaper::modParam(Shaper::Stage::Filter, static_cast<Shaper::Band>(index), Shaper::Type);
+        if (step == 1) {
+            // The oracle receives no edit while a 6 dB or band-pass response is ringing.
+            check(path.sendParameter(static_cast<int>(selector) + 1, 1), "toggle steep on an unaffected type");
+        } else if (step == 2) {
+            expected.set(selector, 1);
+            send(type, 1);
+        } else if (step == 3) {
+            send(type, 3);
+        } else if (step == 4) {
+            send(type, static_cast<float>(2 * index));
+        } else if (step == 5) {
+            check(path.sendParameter(static_cast<int>(selector) + 1, 0), "clear steep on an unaffected type");
+        } else if (step == 6) {
+            expected.set(selector, 0);
+            send(type, 1);
+        }
+        for (std::size_t i = 0; i < input[0].size(); ++i) {
+            const int n = block * 64 + static_cast<int>(i);
+            input[0][i] = static_cast<float>(.29 * std::sin(.061 * n)) + (n % 13 == 2 ? .35f : 0.f);
+            input[1][i] = static_cast<float>(.23 * std::cos(.19 * n)) - (n % 19 == 4 ? .43f : 0.f);
+        }
+        expected.process(in[0], in[1], want[0].data(), want[1].data(), 64);
+        ordinary.process(in[0], in[1], unmodified[0].data(), unmodified[1].data(), 64);
+        path.process(io);
+        for (std::size_t ch = 0; ch < 2; ++ch)
+            check(got[crossed ? 1 - ch : ch] == want[ch], "live steep selection and unaffected filter history agree");
+        if (step == 2 || step == 3)
+            check(want != unmodified, "both supported steep responses change the chosen band's audio");
+        if (step == 1 || step == 5)
+            check(want == unmodified, "unsupported steep edits preserve every running sample");
+    }
+    check(latency.latencySamples() == 0, "steep Filter adds zero latency");
+}
+
+void combinedFilterRecall() {
+    constexpr std::array ids{850,851,852,913,914,915,916,917,918};
+    constexpr std::array values{0.,.75,1.,1.,0.,1.,0.,1.,1.};
+    auto source = open();
+    for (std::size_t i = 0; i < ids.size(); ++i) set(*source, ids[i], values[i]);
+    const auto saved = adi::Payload::from_cbor(source->saveState("state"));
+    for (const bool realOnly : {false, true}) {
+        auto state = saved;
+        if (realOnly) {
+            for (const auto id : ids) state.at("params").erase(std::to_string(id));
+        } else {
+            state.erase("real");
+        }
+        const auto group = realOnly ? "real" : "params";
+        for (int keep = 0; keep < 3; ++keep) {
+            auto sparse = state;
+            auto target = open();
+            for (std::size_t i = 0; i < ids.size(); ++i) {
+                set(*target, ids[i], i < 3 ? .125 : 1.);
+                if (static_cast<int>(i % 3) != keep) sparse.at(group).erase(std::to_string(ids[i]));
+            }
+            check(target->loadState("state", adi::Payload::to_cbor(sparse)), "overlap sparse recall");
+            for (std::size_t i = 0; i < ids.size(); ++i) {
+                const auto wanted = static_cast<int>(i % 3) == keep ? values[i] : (i < 3 ? .5 : 0.);
+                check(target->getParam(std::to_string(ids[i])).normalized == wanted, "sparse recall preserves present Filter controls and defaults absent ones");
+            }
+        }
+    }
+}
+
+void combinedFilterPd(const std::string& directory, bool crossed) {
+    using Engine = adi::device::LibPdEngine;
+    using Filter = adi::dsp::AdiShaperFilter;
+    using Mode = Filter::Mode;
+    Engine path(directory, "ADI-Shaper.pd", 2, 2, Engine::Execution::Automatic, Engine::BlockMode::WholeBlocks);
+    adi::device::PdLatencyReceiver latency;
+    std::string error;
+    path.addSearchPath(ADI_PD_PATCH_DIR);
+    check(path.open(latency, error) && path.isNative() == !crossed, "select native or edited combined Filter");
+    path.prepare(48000, 64);
+    path.bindParameters(adi::device::parsePdDeclarations(adi::builtinCanvas(uid)));
+    const auto send = [&](int id, float real) { check(path.sendParameter(id, real), "combined Filter write"); };
+    send(134, 1);
+    for (int i = 0; i < 8; ++i) {
+        send(170 + i, 50);
+        send(178 + i, 75);
+    }
+    Filter first, second;
+    // The independent oracle uses only the previous 12 dB kernel responses.
+    // A signed dry addition forms Peak; two complete sections form the steep paths.
+    enum class Response { Low, LowSteep, High, HighSteep, Peak, Band };
+    using R = Response;
+    struct Event { int id; float value; R response; };
+    constexpr std::array<Event,18> events{{
+        Event{163, 1, R::Low}, {851, -50, R::Low}, {917, 1, R::LowSteep},
+        {914, 1, R::Peak}, {163, 3, R::Peak}, {917, 0, R::Peak},
+        {917, 1, R::Peak}, {851, 75, R::Peak}, {914, 0, R::HighSteep},
+        {917, 0, R::High}, {163, 1, R::Low}, {917, 1, R::LowSteep},
+        {163, 4, R::Band}, {917, 0, R::Band}, {914, 1, R::Peak},
+        {163, 1, R::Peak}, {914, 0, R::Low}, {851, 0, R::Low}
+    }};
+    using Block = std::array<std::array<float, 64>, 2>;
+    Block in{}, out{};
+    const float* inputs[]{in[0].data(), in[1].data()};
+    float* outputs[]{out[0].data(), out[1].data()};
+    adi::engine::NodeIo io;
+    io.channels = 2; io.frames = 64; io.in = inputs; io.out = outputs;
+    R previous = R::Band;
+    unsigned index = 0;
+    for (const auto& e : events) {
+        send(e.id, e.value);
+        if (e.id == 851) {
+            first.setStereoOffset(.01f * e.value);
+            second.setStereoOffset(.01f * e.value);
+        }
+        if (e.response != previous) {
+            const auto mode = e.response == R::Low || e.response == R::LowSteep ? Mode::LowPass12
+                : e.response == R::High || e.response == R::HighSteep ? Mode::HighPass12 : Mode::BandPass12;
+            first.setMode(mode);
+            second.setMode(mode);
+            first.reset();
+            second.reset();
+        }
+        for (std::size_t i=0; i<in[0].size(); ++i, ++index) {
+            in[0][i] = static_cast<float>(static_cast<int>(index % 79) - 38) / 47.f;
+            in[1][i] = static_cast<float>(19 - static_cast<int>(index % 43)) / 27.f;
+        }
+        path.process(io);
+        for (std::size_t i=0; i<in[0].size(); ++i) {
+            float l=in[0][i], r=in[1][i];
+            first.process(l, r, .5f, .75f);
+            if (e.response == R::Peak) { l=in[0][i]+l; r=in[1][i]+r; }
+            if (e.response == R::LowSteep || e.response == R::HighSteep) second.process(l, r, .5f, .2f);
+            check(out[crossed ? 1 : 0][i] == l && out[crossed ? 0 : 1][i] == r, "live Filter overlap differs from independent 12 dB signed output");
+        }
+        previous=e.response;
+    }
+    check(latency.latencySamples() == 0, "combined Filter has zero latency");
+}
+
 void cachedPdTransport(const std::string& directory, bool native) {
     using Engine = adi::device::LibPdEngine;
     adi::device::PdLatencyReceiver latency;
@@ -840,6 +1196,8 @@ void combinedDeclarations(DeviceInstance& device) {
     for (int id = 754; id <= 764; ++id) next(id);
     for (int id = 727; id <= 753; ++id) next(id);
     for (int id = 919; id <= 927; ++id) next(id);
+    for (int id = 850; id <= 852; ++id) next(id);
+    for (int id = 913; id <= 918; ++id) next(id);
     check(ordinal == device.paramCount(), "all combined stage descriptors are accounted for");
     for (int id : {464, 500, 535, 724})
         check(!device.setParam(std::to_string(id), ParamValue::fromNormalized(1.)), "absent Pitch controls reject writes");
@@ -977,6 +1335,36 @@ void combinedStageState(const std::string& editedDir) {
     combinedDeclarations(*device);
     check(combinedDifference(combinedAudio(*device, false), silent) == 0., "old project again plays just the original zero Volume gate");
 }
+void earlierFilterProject(const std::string& editedDir) {
+    auto device = open();
+    set(*device, 134, 1.);       // Full-band Filter
+    set(*device, 163, .25);      // Previous 12 dB low-pass choice
+    set(*device, 287, 1.);       // A newer Drive control from the earlier project
+    set(*device, 932, 1.);
+    for (int i = 0; i < 8; ++i) {
+        set(*device, 170 + i, (4. + i) / 16.);
+        set(*device, 178 + i, .375);
+        set(*device, 315 + i, .5);
+    }
+    const auto original = adi::Payload::from_cbor(device->saveState("state"));
+    const auto legacyAudio = restoredStageAudio(original, editedDir);
+    auto previous = original;
+    for (const int id : {850, 851, 852, 913, 914, 915, 916, 917, 918}) {
+        set(*device, id, 1.);
+        for (const auto* group : {"params", "real", "units"}) previous.at(group).erase(std::to_string(id));
+    }
+    check(previous.at("params").size() == 712, "earlier project retains every previous parameter");
+    const auto withPeak = adi::Payload::from_cbor(device->saveState("state"));
+    check(combinedDifference(legacyAudio, restoredStageAudio(withPeak, editedDir)) > .0001,
+          "the active signed Peak changes the Filter output on both device routes");
+    check(device->loadState("state", adi::Payload::to_cbor(previous)), "reopen a project predating the Filter extensions");
+    const auto recalled = adi::Payload::from_cbor(device->saveState("state"));
+    for (const auto* group : {"params", "real", "units"})
+        check(recalled.at(group) == original.at(group), "the older Filter project restores all values and units");
+    check(combinedDifference(legacyAudio, restoredStageAudio(recalled, editedDir)) == 0.,
+          "reopening restores the earlier Filter and Drive samples on both device routes");
+}
+
 void combinedControlRecall(const std::string& editedDir) {
     auto device = open();
     const auto defaults = adi::Payload::from_cbor(device->saveState("state"));
@@ -989,7 +1377,9 @@ void combinedControlRecall(const std::string& editedDir) {
     }
     auto earlier = adi::Payload::from_cbor(device->saveState("state"));
     const auto legacySound = restoredStageAudio(earlier, editedDir);
-    const auto appended = [](int id) { return (id >= 727 && id <= 764) || (id >= 919 && id <= 936); };
+    const auto appended = [](int id) {
+        return (id >= 727 && id <= 764) || (id >= 850 && id <= 852) || (id >= 913 && id <= 936);
+    };
     for (int id = 1; id <= 936; ++id) {
         if (!appended(id)) continue;
         for (const auto* group : {"params", "real", "units"}) earlier.at(group).erase(std::to_string(id));
@@ -1062,7 +1452,7 @@ void audioTriggerPd() {
 int main() try {
     auto device = open();
     const auto* info = adi::findBuiltin(uid);
-    check(info && info->name == "ADI-Shaper" && device->paramCount() == 712, "device registration");
+    check(info && info->name == "ADI-Shaper" && device->paramCount() == 721, "device registration");
     for (int id = 727; id <= 753; ++id) {
         const auto* control = device->paramAt(676 + id - 727);
         check(control && control->id == std::to_string(id), "Width follower follows the existing trigger declarations");
@@ -1090,6 +1480,31 @@ int main() try {
         const auto* desc = device->paramAt(605 + id - 416);
         check(desc && desc->id == std::to_string(id), "Time appends its stable IDs after the previous descriptors");
     }
+    for (int band = 0; band < 3; ++band) {
+        const auto id = std::to_string(850 + band);
+        check(device->paramAt(712 + band) && device->paramAt(712 + band)->id == id
+              && device->getParam(id).real == 0, "three stable stereo offset IDs default to center");
+    }
+    const auto savedOffsets = [&] {
+        auto source = open();
+        set(*source, 850, 0.);
+        set(*source, 851, .75);
+        set(*source, 852, 1.);
+        return source->saveState("state");
+    }();
+    check(device->loadState("state", savedOffsets) && device->getParam("850").real == -100
+          && device->getParam("851").real == 50 && device->getParam("852").real == 100,
+          "each band's signed stereo offset round-trips independently");
+    device = open();
+    for (int i = 0; i < 3; ++i)
+        check(device->paramAt(715 + i) && device->paramAt(715 + i)->id == std::to_string(913 + i),
+              "append the peak switches after the legacy parameters");
+    for (int i = 0; i < 3; ++i)
+        check(device->paramAt(718 + i) && device->paramAt(718 + i)->id == std::to_string(916 + i),
+              "append the steep switches after the other Filter extensions");
+    steepFilterRecall();
+    filterPeakRecall();
+    combinedFilterRecall();
     panBlendState(*device);
     panTransferState(*device);
     panRangeState(*device);
@@ -1123,12 +1538,16 @@ int main() try {
     for (int id = 65; id <= 72; ++id) set(*device, id, 0);  // mono
     // Restore an actual earlier-format parameter map, with no Filter or Sweep keys.
     auto state = adi::Payload::from_cbor(device->saveState("state"));
+    for (const auto* group : {"params", "real", "units"})
+        for (int id : {850, 851, 852, 913, 914, 915, 916, 917, 918}) state.at(group).erase(std::to_string(id));
     for (const auto* group : {"params", "real"})
         for (int id = 134; id <= 463; ++id) state.at(group).erase(std::to_string(id));
     device = open();
     set(*device, 416, 1.0);
     set(*device, 423, 0.);
-    check(device->loadState("state", adi::Payload::to_cbor(state)), "restore earlier curve and width");
+    set(*device, 851, 1.);
+    check(device->loadState("state", adi::Payload::to_cbor(state)) && device->getParam("851").real == 0,
+          "restore earlier curve, width and centered Filter");
     check(device->getParam("416").real == 0. && device->getParam("423").real == 100.,
           "older sessions reset Time enable and band mix on a running device");
     check(device->getParam("134").real == 0 && device->getParam("209").real == 0,
@@ -1348,6 +1767,15 @@ int main() try {
     modulationPd(editedDir, false, false, true, true);
     timePd();
     combinedStageState(editedDir);
+    filterPeakPd(ADI_SHAPER_PATCH_DIR, false);
+    filterPeakPd(editedDir, true);
+    stereoFilterPd(ADI_SHAPER_PATCH_DIR, false);
+    stereoFilterPd(editedDir, true);
+    steepFilterPd(ADI_SHAPER_PATCH_DIR, false);
+    steepFilterPd(editedDir, true);
+    combinedFilterPd(ADI_SHAPER_PATCH_DIR, false);
+    combinedFilterPd(editedDir, true);
+    earlierFilterProject(editedDir);
     combinedControlRecall(editedDir);
     std::puts("ADI-Shaper built-in state, transport and editable modulation parity passed.");
     return 0;

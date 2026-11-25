@@ -42,6 +42,9 @@ static_assert(Shaper::orderParam(Stage::Noise) == 724 && Shaper::orderParam(Stag
 static_assert(Shaper::TriggerLowMode == 753 && Shaper::TriggerSmoothing == 763);
 static_assert(Shaper::followerParam(Band::High, Shaper::FollowerRelease) + 1 == Shaper::WidthFollowerEnd);
 static_assert(Shaper::WidthFollowerEnd == Shaper::TriggerLowMode);
+static_assert(Shaper::FilterLowOffset == 849 && Shaper::FilterHighOffset == 851);
+static_assert(Shaper::FilterLowPeak == 912 && Shaper::FilterHighPeak == 914);
+static_assert(Shaper::FilterLowSteep == 915 && Shaper::FilterHighSteep == 917);
 int failures = 0;
 
 void check(bool condition, const char* description) {
@@ -65,6 +68,47 @@ std::array<float, 2> one(Shaper& shaper, float l = 0.375f, float r = 0.25f) {
     shaper.process(&l, &r, &output[0], &output[1], 1);
     return output;
 }
+void filterStereoOffsets() {
+    // Equal independent-channel impulses at an authored bipolar offset. Each
+    // channel was also rendered at its shifted cutoff with the offset centered.
+    struct Case { int mode; double rate; float cutoff, resonance, offset; std::array<double, 6> taps; };
+    constexpr std::array cases{
+        Case{0, 48000.0, 0.50000f, 0.00000f, 0.50000f, {0.141772982, 0.026806835, 0.086075058, 0.031102614, 0.000097306, 0.009392233}},
+        Case{1, 44100.0, 0.87500f, 0.35000f, 0.75000f, {1.116191670, 0.009725519, -0.028984072, 0.099784611, -0.000000000, 0.002958530}},
+        Case{2, 96000.0, 0.12500f, 0.52000f, -1.00000f, {0.998988673, 0.922845900, -0.001348906, -0.100484025, -0.001352238, 0.040594959}},
+        Case{3, 48000.0, 0.43750f, 0.76000f, -0.37500f, {0.996703357, 0.990338475, -0.010609420, -0.045656925, -0.030547068, 0.025989972}},
+        Case{4, 96000.0, 0.50000f, 0.00000f, 0.50000f, {0.070739649, 0.013402505, 0.037554265, 0.015501995, -0.006334765, 0.002993015}}};
+    constexpr std::array frames{0, 4, 37};
+    double worst = 0;
+    for (const auto& c : cases) {
+        Shaper rack;
+        rack.prepare(c.rate);
+        rack.set(Shaper::FilterOn, 1);
+        rack.set(Shaper::modParam(Stage::Filter, Band::Mid, Shaper::Type), static_cast<float>(c.mode));
+        for (int n = 0; n < 8; ++n) {
+            rack.set(Shaper::modParam(Stage::Filter, Band::Mid, static_cast<Shaper::ModControl>(Shaper::Primary1 + n)),
+                     c.cutoff * 100.f);
+            rack.set(Shaper::modParam(Stage::Filter, Band::Mid, static_cast<Shaper::ModControl>(Shaper::Secondary1 + n)),
+                     c.resonance * 100.f);
+        }
+        rack.set(Shaper::FilterMidOffset, c.offset * 100.f);
+        for (int id = Shaper::BaseCount; id < Shaper::FilterLowOffset; ++id)
+            if (!Shaper::hasParameter(id)) rack.set(static_cast<Shaper::Param>(id), -100.f);
+        std::size_t tap = 0;
+        for (int n = 0; n <= frames.back(); ++n) {
+            const float impulse = n == 0 ? .025f : 0.f;
+            const auto sample = one(rack, impulse, impulse);
+            if (n == frames[tap]) {
+                for (std::size_t ch = 0; ch < 2; ++ch)
+                    worst = std::max(worst, std::abs(sample[ch] / .025 - c.taps[2 * tap + ch]));
+                ++tap;
+            }
+        }
+    }
+    std::printf("Stereo cutoff offset maximum impulse error %.9g\n", worst);
+    check(worst < .00015, "five filter responses honor opposite signed stereo cutoff offsets");
+}
+
 void endpoints() {
     Shaper shaper;
     shaper.prepare(48000);
@@ -455,7 +499,7 @@ void panDelayBlend() {
     check(l[48] == 0.f && near(l[69]+l[70], .5) && r[65] == -.25f,
           "a linear Pan contour applies the far-ear delay independently of gain");
     Shaper gaps;
-    for (int id : {463, 534, 723, 764, 854, 858, 900, 917, 936, 2000}) gaps.set(static_cast<Shaper::Param>(id), 100.f);
+    for (int id : {463, 534, 723, 764, 848, 852, 854, 858, 900, 911, 936, 2000}) gaps.set(static_cast<Shaper::Param>(id), 100.f);
     check(one(gaps) == std::array{.375f, .25f}, "unassigned parameter numbers leave the rack dry");
 }
 
@@ -2491,6 +2535,7 @@ void midiVolumeRetrigger() {
 } // namespace
 
 int main() {
+    filterStereoOffsets();
     endpoints();
     balanceSweep();
     stereoPanTransfer();

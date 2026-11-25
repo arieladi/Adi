@@ -756,6 +756,18 @@ void AdiShaper::setReverbOption(std::size_t band, ReverbOption option, float val
     reverb.setShape(settings.size, settings.decay, settings.gate);
 }
 
+void AdiShaper::updateFilterMode(std::size_t band) noexcept {
+    using Mode = AdiShaperFilter::Mode;
+    const auto type = stages_[static_cast<std::size_t>(Stage::Filter)].bands[band].type;
+    auto mode = static_cast<Mode>(type);
+    if (filterPeak_[band]) mode = Mode::Peak12;
+    else if (filterSteep_[band]) {
+        if (mode == Mode::LowPass12) mode = Mode::LowPass24;
+        else if (mode == Mode::HighPass12) mode = Mode::HighPass24;
+    }
+    filters_[band].setMode(mode);
+}
+
 void AdiShaper::setMod(Param id, float value) noexcept {
     if (id >= SweepLowPolarity && id < DriveOn) {
         sweeps_[static_cast<std::size_t>(id - SweepLowPolarity)].setPolarity(value >= 0.5f);
@@ -829,7 +841,7 @@ void AdiShaper::setMod(Param id, float value) noexcept {
     case Type:
         if (kind == Stage::Filter) {
             band.type = static_cast<int>(std::round(std::clamp(value, 0.0f, 4.0f)));
-            filters_[index].setMode(static_cast<AdiShaperFilter::Mode>(band.type));
+            updateFilterMode(index);
         } else if (kind == Stage::Sweep) {
             band.type = static_cast<int>(std::round(std::clamp(value, 0.0f, 5.0f)));
             sweeps_[index].setMode(static_cast<AdiShaperSweep::Mode>(band.type));
@@ -894,6 +906,22 @@ void AdiShaper::set(Param id, float value) noexcept {
     if (id >= DriveLowFold && id <= DriveHighFold) {
         const auto shape = static_cast<int>(std::round(std::clamp(value, 0.0f, 3.0f)));
         drives_[static_cast<std::size_t>(id - DriveLowFold)].setFold(static_cast<AdiShaperDrive::Fold>(shape));
+        return;
+    }
+    if (id >= FilterLowOffset && id <= FilterHighOffset) {
+        filters_[static_cast<std::size_t>(id - FilterLowOffset)].setStereoOffset(value * .01f);
+        return;
+    }
+    if (id >= FilterLowPeak && id <= FilterHighPeak) {
+        const auto band = static_cast<std::size_t>(id - FilterLowPeak);
+        filterPeak_[band] = value >= .5f;
+        updateFilterMode(band);
+        return;
+    }
+    if (id >= FilterLowSteep && id <= FilterHighSteep) {
+        const auto band = static_cast<std::size_t>(id - FilterLowSteep);
+        filterSteep_[band] = value >= .5f;
+        updateFilterMode(band);
         return;
     }
     if (id >= PanLowTransfer && id <= PanHighTransfer) {
@@ -1053,7 +1081,7 @@ void AdiShaper::PanHistory::setRange(float milliseconds) noexcept {
         rangeScale = std::cbrt(next / 40.);
         return;
     }
-    // Invert 40sÃ‚Â³ - 4sÃ‚Â² + 2s on the lower half of the control travel.
+    // Invert 40sÃƒâ€šÃ‚Â³ - 4sÃƒâ€šÃ‚Â² + 2s on the lower half of the control travel.
     // Its derivative is positive throughout. Solve once per control edit.
     double s = std::min(.5, .5 * next);
     for (int i = 0; i < 6; ++i)

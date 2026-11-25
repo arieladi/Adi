@@ -52,7 +52,10 @@ class AdiShaper {
                  WidthFollowerLow = 726, WidthFollowerEnd = WidthFollowerLow + 3 * followerParameterCount,
                  TriggerLowMode = 753, TriggerMidMode, TriggerHighMode, TriggerLowEnd, TriggerMidEnd, TriggerHighEnd,
                  TriggerThreshold, TriggerDetail, TriggerProfile, TriggerShift, TriggerSmoothing,
+                 FilterLowOffset = 849, FilterMidOffset, FilterHighOffset,
                  PanLowDelayBlend = 855, PanMidDelayBlend, PanHighDelayBlend,
+                 FilterLowPeak = 912, FilterMidPeak, FilterHighPeak,
+                 FilterLowSteep = 915, FilterMidSteep, FilterHighSteep,
                  PanLowTransfer = 918, PanMidTransfer, PanHighTransfer,
                  PanLowDelayRange = 921, PanMidDelayRange, PanHighDelayRange,
                  PanLowGainLaw = 924, PanMidGainLaw, PanHighGainLaw,
@@ -107,6 +110,8 @@ class AdiShaper {
             || (id >= VolumeOrder && id <= orderParam(Stage::Time))
             || (id >= orderParam(Stage::Noise) && id <= orderParam(Stage::Reverb))
             || (id >= WidthFollowerLow && id <= TriggerSmoothing)
+            || (id >= FilterLowOffset && id <= FilterHighOffset)
+            || (id >= FilterLowPeak && id <= FilterHighSteep)
             || (id >= PanLowDelayBlend && id <= PanHighDelayBlend)
             || (id >= PanLowTransfer && id <= PanHighGainLaw)
             || (id >= DriveLowRounded && id <= DriveHighFold);
@@ -256,6 +261,7 @@ class AdiShaper {
     void clock(CurveBand& band, BandControl control, float value) const noexcept;
     void setNoiseOption(std::size_t band, NoiseOption option, float value) noexcept;
     void setReverbOption(std::size_t band, ReverbOption option, float value) noexcept;
+    void updateFilterMode(std::size_t band) noexcept;
     void setMod(Param id, float value) noexcept;
     void prepareStages(double sampleRate) noexcept;
     void syncClock(double quarterNotes, bool playing) noexcept;
@@ -273,6 +279,8 @@ class AdiShaper {
     std::array<bool, 3> externalWidth_{};
     std::array<AdiShaperFollower, 3> widthFollowers_;
     std::array<AdiShaperFilter, 3> filters_;
+    std::array<bool, 3> filterPeak_{};
+    std::array<bool, 3> filterSteep_{};
     std::array<AdiShaperSweep, 3> sweeps_;
     std::array<AdiShaperDrive, 3> drives_;
     std::array<AdiShaperCrush, 3> crush_;
