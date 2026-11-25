@@ -17,6 +17,14 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 25 November 2026 — Moving 24 dB crossover response
+
+Follow-up to `clones/shaper-split-repair-1125`. The lower control limit is settled. Independent source renders also isolated the two stereo outputs during a moving 24 dB/octave split. Two cascaded direct-form I sections reproduce the response when the smoothed normalized frequency is rounded to binary32 before conversion to Hz, the coefficients are calculated in double then rounded to float, and each product and each left-to-right sum are rounded separately. In the upper-edge compensation path, apply the upper low and high branches to the lower band's signal and sum their actual outputs.
+
+This model matched all 38,116 channel samples of the extreme 32 kHz sweep. It also matched the isolated 48 and 96 kHz bands and all 158,328 channel values in an independent 48 kHz three-band render with both controls moving. Peak residual in the 44.1 kHz two-band capture was 0.000000298. The prior section missed by 0.01824 peak at 32 kHz. Next tests cover live slope changes, immediate edits, long decays and processing cost in both stable and moving sections.
+
+The clones seat takes the existing ADI-Shaper crossover DSP and its tests for `clones/shaper-steep-slew-response`, based on the measured slew repair. This is a follow-up repair. The first repair can be reviewed independently.
+
 ## 25 November 2026 — Pan transfer attribution across 873 saved programs
 
 For the DEV-31 review of `clones/shaper-pan-transfer` at `16cbbf6c`. Lands after 3 December. At a threshold of 0.001 stereo RMS error, saved stage order improved from **60 to 63 of 873** and fixed order from **54 to 57 of 873**. In each order three programs newly crossed the threshold and none dropped out.
