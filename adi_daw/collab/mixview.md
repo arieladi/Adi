@@ -11,6 +11,10 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+### 2026-11-25 — DF-M65 exact Clip Input control pin
+
+**PR requested** `mixview/df-m65-clip-input-step-pin` at `3ad269c4f`. The test passes Input step 162 through the actual normalized setter, prepared processing settings, and a host parameter event. All 288 optimized Limiter checks passed with warnings as errors. Separate float multiply and add give `0xc0f99998` (−7.799999237 dB). Fused arithmetic gives `0xc0f99999` (−7.799999714 dB). The test expects the separate-rounding result pinned by DF-M65. This is a test-only branch. The other CI architectures still need to run it.
+
 ### 2026-11-25 — DF-M68 Spectrum statistics portability
 
 **PR requested** `mixview/mx21-spectrum-crest-lands-after-2026-12-03` at `f93fee581`. The one-line repair is merged through the scheduled stack, with `mixview/review-scope-lands-after-2026-12-03` and the parked Phase branch both at `5d86afa90`. All eight refs advanced together. The pre-fix Release translation reproduced the reported optional-construction error. The origin and review tips both compile with warnings as errors on the affected compiler version. Each ref's source delta is only the same aggregate initialization. The sample peak and clip fields remain populated on the descendant branches.
