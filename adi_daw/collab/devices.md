@@ -233,6 +233,168 @@ method); Live's files and renders stay in the director's research.
   - or have the export's brickwall read finer than the meter, at some CPU cost.
 - Nothing changes until you say.
 
+## 2026-11-25 — win's list of 25 November: item 6, DF-E36's tests, DF-E68 (a), DF-E77, pd-midi-out's window; and DF-E67 (b)
+
+Read first: `collab/win.md`, 24 and 25 November. Items 1 to 3 (perf-sampler, perf-debug-timeout,
+denormal-tail) and shifter-nan are on main; DF-E67 (a) landed as #740. The `.amxd` chain stays held
+(ADR-0248 d8) and shaper-scope-feed stays blocked; neither was touched.
+
+### 1. Item 6, time-locate-revision — a fix, before 3 December
+
+**PR requested:** `devices/time-locate-revision` (80bbcb6b), from main.
+- `native_devices.*` only. The native adapter's position path now goes through one
+  `syncPosition(core, position, transport)`. A core that has `syncAtSample(quarterNotes, playing,
+  timelineSample, transportRevision)` gets the timeline sample and the transport revision; a core
+  without it keeps `sync(quarterNotes, playing)`.
+- Main's AdiShaper has no Time stage and no `syncAtSample` yet (they are on `clones/shaper-time`), so
+  the fields reach it the moment it gains that call, with no adapter change.
+- The test, as the queue allows while clones has not supplied the regression: `positionForwarding()`
+  in `tests/test_pd_native_devices.cpp`, with two fake cores (one with `syncAtSample`, one without).
+  It checks the sample and the revision arrive, that a second call at the same position with the next
+  revision reaches the core, that a missing transport gives revision 0, and that the plain core still
+  gets `sync` and the tempo. 291 checks; the plant (revision dropped) fails 2.
+- CTest 278/278 at PD_FLOATSIZE 32 and 64.
+- **Needs (clones):** the same-position Time regression (a locate to the same position with a new
+  revision restarts the Time stage), to add once `clones/shaper-time` lands.
+
+### 2. DF-E36's tests — the code was done
+
+**PR requested:** `devices/df-e36-tests` (fae3ce72), from main.
+- `LibPdEngine::topLevelCanvases()` (message thread) counts Pd's top-level canvases, leaving out
+  Pd's three template canvases (`_float_template`, `_float_array_template`, `_text_template`).
+- `testHelpIntroAndArrayHelpAreRefused()` in `tests/test_pd_engine.cpp` plants help patches that
+  would print "leaked" if opened, then sends each form:
+  - `[; pd help-intro(` (`m_glob.c:52`);
+  - `[done-popup 2 0 0(` into `[array define arr 16]`;
+  - `[; pd-<canvas> done-popup 2 …(` to the patch's own canvas.
+- Each must log ADI's refusal, never "leaked", and leave exactly one top-level canvas (a plain patch
+  first shows 0 before open and 1 after, so the count is proven).
+- `adi_pd_engine_tests` 706 checks. The plant (the refusal disabled in the `s_path.c` overlay) fails 4.
+- CTest with Pd on, 278/278 at PD_FLOATSIZE 32 and 64; tidy clean on both files.
+
+### 3. DF-E68 (a): the Vocoder's periodic block — a fix, before 3 December
+
+**PR requested:** `devices/vocoder-p99` (4697d2dc), from main.
+
+**The cause.** The realtime suite moves each device's first parameter every block on a slow sine. The
+Vocoder's first parameter is Carrier, so for about a fifth of each run Carrier sits at Pitch Tracking.
+There, every 128 decimated samples (512 samples at 48 kHz), the tracker ran a whole autocorrelation
+scan inside one block: 141 lags of 512 products at the default 80 to 1200 Hz range, up to 510 lags.
+That is one block in every eight at 64 frames and one in four at 128. On the suite's noise input the
+scan never stops early, so it runs its full length every time.
+
+**The fix.** The scan copies its window when it starts and takes its lags evenly over the next 120
+decimated samples, so each block carries about an eighth of it. The lags, the peak test and the order
+each correlation sums in are as before, so the pitch found is the same. Only its arrival is later, by
+at most 10 ms.
+
+**Measured on this seat (MSVC, Release).** A probe outside the repository timed 20 s of noise with
+Carrier held at Pitch Tracking. Each block's position in the 512-sample cycle was timed separately.
+- Main: one position costs about 55 µs more than the others (64 frames: 172 against 117 µs; 128
+  frames: 288 against 233 µs).
+- The branch: every position is the same (64 frames: 124 µs; 128 frames: 248 µs). That is about 7 µs
+  more per block, which is the scan's cost spread evenly.
+- p99 at 64 frames: 173 to 209 µs on main, 157 to 178 µs on the branch.
+- The realtime suite (RelWithDebInfo), which moves Carrier:
+
+  | | 64 frames p99 | 64 frames recurring | 128 frames p99 | 128 frames recurring |
+  |---|---|---|---|---|
+  | main | 128.7 µs | 158.7 µs | 229.8 µs | 236.6 µs |
+  | branch | 117.6 µs | 115.5 µs | 232.3 µs | 225.9 µs |
+
+  On this seat the spike is about 55 µs, so p99 stays at 7 to 10 % of the deadline either way.
+  Linux's 731 µs block is about 13 times that. **The gemini seat's Linux re-measurement is the proof
+  for that platform.** If Linux still shows a block over half the deadline, it is not the tracker.
+- **An MSVC finding along the way.** The first version walked the window with two pointers. MSVC
+  unrolled that loop and spilled an accumulator to the stack on every step, about 3.5 times slower,
+  which raised the median by 27 µs. The indexed form keeps all three accumulators in registers.
+
+**The test.** `spreadTracker()` in `tests/test_vocoder.cpp`, 48 checks:
+- At 64 frames, no process() call carries more than a fifth of a scan (worst 9,728 of 64,552
+  products). At 128 frames, no more than two fifths (19,456).
+- The tracker still finds 90 Hz.
+- The plant (the whole scan in one step) gives a worst of 63,488 and fails.
+- CTest 278/278 at PD_FLOATSIZE 32 and 64; tidy clean on both files.
+
+**Review.** Three skeptics (correctness, realtime and state, tests): one finding, the summation order.
+It is fixed; the order is the old one again.
+
+**Also in the suite's run.** Hybrid Reverb at 64 frames FAILs its 25 % p99 bound (DF-E68 (b), queue
+item 10, on `devices/hybrid-reverb-nupc`). "Contended at 64 frames" FAILs at a worst raw 5.5 ms
+callback while the director worked alongside. Neither involves the Vocoder.
+
+### 4. DF-E77 — the crackle count's addend, merged up the DEV-22 stack
+
+**PR requested with the stack** (it lands after 3 December, with DEV-22):
+- `devices/vinyl-distortion` b653df0b: `tests/test_vinyl_distortion.cpp:178` now adds
+  `std::size_t{1} : std::size_t{0}`, so GCC 12's `-Wsign-conversion` has no int to convert.
+- Merged up with `--no-ff`, each a one-line diff, with no conflicts. The new heads:
+
+  | branch | head |
+  |---|---|
+  | filter-delay | 19835445 |
+  | dj-filter | 20b2cabf |
+  | auto-shift | 1f615326 |
+  | spectrum-device | 037c5c91 |
+  | live-amp | 0c8e39e4 |
+  | live-cabinet | 3366bfe6 |
+  | corpus | 2b134cc8 |
+  | drum-buss | 5f6c96db |
+  | dynamic-tube | 5daf45ba |
+  | grain-delay | 9ac311f9 |
+  | live-pedal | 5fe14707 |
+  | roar | e7dbc32e |
+  | spectral-time | a897fef8 |
+  | **spectral-resonator** (the stack's tip) | **920177d9**, in place of 9a6ea54f |
+
+- CTest at the tip: 295/295 at PD_FLOATSIZE 32 and 64; both builds clean.
+- This seat has no GCC, so the warning itself is the window-fn or gemini seat's to re-check on Linux.
+- The stack has other `count += cond ? 1 : 0` lines, for example `auto_shift.cpp:282` on a bool. GCC 12
+  flagged only line 178, whose condition is a float comparison, so the others are left as they are.
+
+### 5. `devices/pd-midi-out` (DEV-14, 52782524): after 3 December
+
+It is not meant to land before 3 December, for three reasons:
+- **It is an M7 row.** PLAN DEV-14 is in M7. The standing queue, after ADR-0248 d2, puts only its
+  items 1 to 4 and fixes before 3 December, and lists `pd-midi-out` and `pd-block-quantum` under "After
+  3 December".
+- **Its engine half is not on main.** The branch adds the device side of `segmentQuantum()`. The
+  engine's DF-E40 consumer, which splits the graph's segments on it, is not on main (no
+  `segmentQuantum` in `src/` there). Landed alone, the quantum would be read by nothing.
+- **Its notes have no consumer yet.** DEV-14's note output decodes under DEV-17's note prefix, and the
+  transform phase is DEV-18's. Both are the engine's.
+
+That it merges into main cleanly today (52782524 carries the 23 November resolution) makes it cheap
+to land when DF-E40, DEV-17 and DEV-18 do, but it is not a reason to land it now.
+
+### 6. After-3-December items 7 onward
+
+Every one is built and on its branch already (see the entries of 21 to 23 November). Two are
+blocked, as the queue says: item 13 (Beat Repeat core: reading 18 and the contract branch) and item
+14 (the shared two-head reader: clones' step 1). With the list done, this seat took this lane's one
+open DEFERRED row, DF-E67 (b) (below).
+
+### 7. DF-E67 (b): the Pd canvas-arguments byte — a fix (DEFERRED says "any time"; win's choice of window)
+
+**PR requested:** `devices/df-e67b-canvas-args` (aab2e60c), from main.
+- **The leak.** After every abstraction, Pd's loader (`s_loader.c`) calls `canvas_setargs(0, 0)`. Its
+  `copybytes(argv, 0)` still allocated one byte, which stayed pending in the instance's canvas state
+  until the next load. `g_canvas_freepdinstance` never freed the last one: one byte per engine.
+- **The fix**, in the `g_canvas.c` overlay (`src/juce/pd_loader_fix.cmake`), with DEFERRED's two
+  options together:
+  - no arguments store no copy (`canvas_new` already makes the empty list it needs from a null);
+  - the instance's teardown frees whatever is still pending.
+- **The test.** `testAbstractionArgumentsLeaveNothingBehind` in `adi_pd_engine_tests`: forty engines
+  whose patch loads an abstraction with arguments and without, measured as the existing forty-cycle
+  test is.
+  - Under the MSVC debug heap they leave 0 live blocks; 703 checks pass.
+  - The plant (the overlay's two lines put back) leaves 40, one per engine, and fails.
+  - Elsewhere the check is the cycles themselves. **An LSan run of `adi_pd_engine_tests` on Linux (the
+    gemini seat) is DEFERRED's own test and the proof there.**
+- **Review.** Three skeptics (the Pd readers of the pending arguments, whether every leaked byte is
+  gone, the test): no findings.
+- CTest 278/278 at PD_FLOATSIZE 32 and 64; tidy clean.
+
 ## 2026-11-23 — every open devices branch together on today's main: 303/303 at 32 and 64
 
 **For win (landing windows).** This lane has 43 branches not yet on main. Seven tips contain all the
