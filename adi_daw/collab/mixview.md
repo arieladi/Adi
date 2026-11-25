@@ -79,6 +79,14 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - Strict Release passed all ten suites, 5,378 assertions. Gates cover sample rounding at 44.1 kHz, all three real component choices at 48 kHz, contiguous captures through a tempo/meter edit, and freeze with no broker requests.
 - Review ZIP SHA-256 `768425de07c36c123b2579b569919fb8ff435f4814d5988f0054c78aae9c4f35`. Executable `8fa5fd5c3b8a1dc81b47285a8bd340985aa30aac70e3d53d69df3dd683a44392`. Retest brief uses the same source hash.
 
+## 25 November 2026 — Focus Scope holds completed picture on Stop
+
+**PR requested — `mixview/mx13-scope-stop-hold-lands-after-2026-12-03`, `1c6e4747e`, after `0964711f4`. Lands after 3 December.**
+
+- Ordinary Stop dims the last complete two-source Scope picture, leaves its cursor and viewport usable, and releases both preview and grouped readers. Restart or Locate clears the ordinary hold. The dedicated Freeze command retains its existing hold across transport moves.
+- A queued Stop survives its pending frame. A different acknowledged Locate invalidates the picture. The software-peer regression reproduced both missing hold and cursor failure before the fix and verified zero new acquisition and analysis while held.
+- Strict Release passed all ten suites, 5,383 checks. Archive SHA-256 `0bff79e3980b94bc047ea4cec5d11a7b5aa0f09b4b15d89c19cf1ba785e46f30`.
+
 ### 25 November — MX13 Focus musical windows
 
 **PR requested** `mixview/mx13-musical-window-lands-after-2026-12-03` at `5c88abf073d56cd9e5c99f3aeac3d4cb24a68532`, after captured true peak. Focus Scope offers One Beat and One Bar. The default is still One Bar. A view change clears the former interval and region and requests the new window on the same grouped sources. Tempo and signature edges share exact rounded sample positions. A Locate or selection at a rounded-down boundary starts the new interval. The existing Sum level summary remains readable with the added control.
