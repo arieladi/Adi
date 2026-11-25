@@ -37,6 +37,9 @@ public:
     /// Manual structural edits must be refused before publishing values while a latency
     /// offer is claimed. Ordinary sound controls remain available.
     [[nodiscard]] virtual bool configurationBusy() const noexcept { return false; }
+    /// Audio side. Only a fully drained, settled provider may report readiness.
+    [[nodiscard]] virtual bool canSkipSilence() const noexcept { return false; }
+    virtual void skipSilence(std::uint32_t /*frames*/) noexcept {}
     /// Audio side, with the graph's pinned latency and prepared state.
     [[nodiscard]] virtual bool needsBypassTransition(std::int32_t /*configuredTotal*/) const noexcept { return false; }
 

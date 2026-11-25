@@ -50,6 +50,9 @@ class Backend final {
     void pumpMainThread() noexcept;
     [[nodiscard]] std::int32_t advertisedLatency() const noexcept;
     [[nodiscard]] BackendStatus status() const noexcept;
+    void trackEqSilenceForSuspension(bool enabled) noexcept;
+    [[nodiscard]] bool hasStationaryEqSilence() const noexcept;
+    void skipSilentEqFrames(std::uint32_t frames) noexcept;
     // Audio-owner diagnostics, or after stopping; not a concurrent UI snapshot.
     [[nodiscard]] double learnedThreshold(std::size_t band) const noexcept;
     [[nodiscard]] double learnedKnee(std::size_t band) const noexcept;

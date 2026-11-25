@@ -135,6 +135,47 @@ public:
             output[index] = process(input[index]);
     }
 
+    bool canSkipSilence() const noexcept
+    {
+        return capacity != 0 && previous < 0 && (active < 0 || !hasPendingKernel());
+    }
+
+    bool hasSilentHistory() const noexcept
+    {
+        const auto zero = [](const auto& samples)
+        {
+            return std::all_of(samples.begin(), samples.end(), [](float v) { return std::bit_cast<std::uint32_t>(v) == 0; });
+        };
+        if (!zero(incoming) || !zero(pastInput) || !zero(outgoing) || !zero(alignment) || !zero(timeHistory))
+            return false;
+        for (std::size_t i = 0; i < history.size(); ++i)
+            if (historyValid[i] && std::any_of(history[i].begin(), history[i].end(), [](auto bin)
+            {
+                return bin.real() != 0 || bin.imag() != 0;
+            })) return false;
+        return true;
+    }
+
+    // All signal history is already zero. The audio owner excludes new kernel
+    // requests and an existing fade before calling this.
+    void skipSilence(std::size_t frames) noexcept
+    {
+        const auto end = position + frames % hop;
+        const auto completed = frames / hop + end / hop;
+        position = end % hop;
+        timePosition = (timePosition + frames) & timeMask;
+        if (completed == 0) return;
+
+        // A freshly prepared initial kernel takes effect on the first hop.
+        // Existing replacements and fades continue through ordinary processing.
+        if (active < 0)
+            active = pending.exchange(-1, std::memory_order_acquire);
+
+        // Valid spectra are already zero. Invalid spectra can still be
+        // recovered from the zero time history when a longer kernel needs them.
+        newest = (newest + completed % capacity) % capacity;
+    }
+
     bool hasPendingKernel() const noexcept { return pending.load(std::memory_order_acquire) >= 0; }
 
 private:

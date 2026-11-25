@@ -168,6 +168,15 @@ void Core::reset(const Settings& settings) noexcept {
     d.pending.store(0,std::memory_order_release);
 }
 void Core::setBackgroundActive(bool active) noexcept {impl_->limiter.setBackgroundActive(active);}
+void Core::trackSilenceForSuspension(bool enabled) noexcept {impl_->limiter.trackSilenceForSuspension(enabled);}
+bool Core::canSkipSilence() const noexcept {
+    const auto& d=*impl_;
+    return d.prepared && !d.clipOn && d.limiterOn && !d.clipOffline && d.pending.load(std::memory_order_acquire)==0 &&
+        d.limiter.canSkipSilence();
+}
+void Core::skipSilence(std::uint32_t frames) noexcept {
+    impl_->limiter.skipSilence(frames);
+}
 bool Core::supportsClip() const noexcept {return impl_->prepared;}
 std::int32_t Core::latencySamples() const noexcept {return impl_->appliedLatency.load(std::memory_order_acquire);}
 LatencyChange Core::pendingLatencyChange() const noexcept {

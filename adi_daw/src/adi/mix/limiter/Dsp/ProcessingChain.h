@@ -153,6 +153,75 @@ public:
             ramps[index].setTarget(targets[index], true, index >= 8 ? 20.0f : -1.0f);
     }
 
+    // From prepare/reset, process this many real zero frames with fixed
+    // controls to fill the compensation ring and finish detector startup.
+    std::size_t silenceWarmupFrames() const noexcept
+    {
+        return std::max(compensationDelay.capacity(), engine.silenceWarmupFrames());
+    }
+
+    bool canRecheckSilentHistory() const noexcept
+    {
+        return settings.style == Style::transparent && factor == 1 && !settings.truePeak;
+    }
+
+    bool hasDrainedSignal() const noexcept
+    {
+        if (!canRecheckSilentHistory() || !canSkipSilence()) return false;
+        const auto silent = [](const auto& history)
+        {
+            return std::all_of(history.begin(), history.end(), [](const auto& delay) { return delay.isSilent(); });
+        };
+        return silent(dryDelays) && silent(inputDelays) && silent(mainInputDelays) &&
+            silent(roundingDelays) && silent(mainRoundingDelays) && engine.hasSilentTransparentHistory();
+    }
+
+    // This checks the supported topology and outstanding transitions. The
+    // caller also owns the certificate that the rings contain their stationary
+    // values: zero for signal/reduction, constant gain for compensation.
+    bool canSkipSilence() const noexcept
+    {
+        const auto correctionActive = factor > 1 || settings.truePeak;
+        return maximumBlock > 0 && settings.style != Style::dynamic && settings.ditherBits == 0
+            && !(shadowAliased && settings.externalSidechain)
+            && std::all_of(ramps.begin(), ramps.end(), [](const auto& ramp) { return ramp.remaining() == 0; })
+            && std::all_of(dcFilters.begin(), dcFilters.end(), [](const auto& filter) { return filter.isNeutral(); })
+            && std::all_of(mainDcFilters.begin(), mainDcFilters.end(), [](const auto& filter) { return filter.isNeutral(); })
+            && (!correctionActive || std::all_of(corrections.begin(), corrections.end(),
+                    [](const auto& correction) { return correction.canSkipSilence(); }))
+            && engine.canSkipSilence(settings.style == Style::modern);
+    }
+
+    void skipSilence(std::size_t frames) noexcept
+    {
+        if (frames == 0) return;
+        const auto internalFrames = frames * static_cast<std::size_t>(factor);
+        engine.skipSilence(internalFrames, shadowAliased, settings.style == Style::modern);
+        compensationDelay.advanceHomogeneous(internalFrames);
+        for (auto& delay : dryDelays) delay.advanceHomogeneous(frames);
+        for (auto& delay : inputDelays) delay.advanceHomogeneous(internalFrames);
+        for (auto& delay : roundingDelays) delay.advanceHomogeneous(internalFrames);
+        if (!shadowAliased)
+        {
+            for (auto& delay : mainInputDelays) delay.advanceHomogeneous(internalFrames);
+            for (auto& delay : mainRoundingDelays) delay.advanceHomogeneous(internalFrames);
+        }
+        // The resampler and true-peak FIR rings are indexed relative to their
+        // write heads. Rotating an already zero ring leaves that state equal.
+        // The correction FFT instead has a block grid at the host rate.
+        if (factor > 1 || settings.truePeak)
+        {
+            for (auto& delay : outputDelays) delay.advanceHomogeneous(frames);
+            for (auto& correction : corrections) correction.skipSilence(frames);
+        }
+        if (displayBuffer)
+        {
+            displayPadding.advanceHomogeneous(internalFrames);
+            displayReductionDelay.advanceHomogeneous(frames);
+        }
+        meterReduction = 0.0f;
+    }
+
     void serviceKernelUpdates() noexcept { engine.serviceKernelUpdates(); }
     bool needsKernelService() const noexcept { return engine.needsKernelService(); }
     void setDisplayBuffer(DisplaySample* buffer) noexcept

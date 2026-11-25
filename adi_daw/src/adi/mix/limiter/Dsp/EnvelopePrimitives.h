@@ -837,6 +837,18 @@ public:
         left = {};
     }
 
+    bool canSkipSilence() const noexcept
+    {
+        return size == 0 && previousDirection == 1 && previousReduction == 0.0f;
+    }
+
+    // The detector is stationary and the reduction ring is all zero.
+    void skipSilence(std::size_t frames) noexcept
+    {
+        time += static_cast<std::int64_t>(frames);
+        reductions.advanceHomogeneous(frames);
+    }
+
     float process(float detectorInput, float reduction) noexcept
     {
         const auto difference = detectorInput - previousInput;

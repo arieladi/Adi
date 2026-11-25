@@ -35,6 +35,15 @@ public:
         total = 0.0;
     }
 
+    bool isNeutral() const noexcept { return total == 0.0; }
+
+    // The prepared ring is all zero and the window is unchanged.
+    void skipSilence(std::size_t frames) noexcept
+    {
+        const auto capacity = values.size();
+        cursor = (cursor + frames % capacity) % capacity;
+    }
+
     bool setWindow(std::size_t samples) noexcept
     {
         if (samples == 0 || samples > values.size())
