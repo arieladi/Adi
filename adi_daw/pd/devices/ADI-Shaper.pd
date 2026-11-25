@@ -844,6 +844,12 @@
 #X msg 3860 111 p 856 \$1;
 #X obj 3860 148 adi.param \$0 858 0 100 50 % lin Pan_High_Delay_Blend;
 #X msg 3860 175 p 857 \$1;
+#X obj 3860 212 adi.param \$0 919 0 1 0 - toggle Pan_Low_Stereo_Transfer;
+#X msg 3860 239 p 918 \$1;
+#X obj 3860 276 adi.param \$0 920 0 1 0 - toggle Pan_Mid_Stereo_Transfer;
+#X msg 3860 303 p 919 \$1;
+#X obj 3860 340 adi.param \$0 921 0 1 0 - toggle Pan_High_Stereo_Transfer;
+#X msg 3860 367 p 920 \$1;
 #X connect 0 0 1 0;
 #X connect 1 0 2 0;
 #X connect 0 1 1 1;
@@ -1690,3 +1696,9 @@
 #X connect 842 0 1 0;
 #X connect 843 0 844 0;
 #X connect 844 0 1 0;
+#X connect 845 0 846 0;
+#X connect 846 0 1 0;
+#X connect 847 0 848 0;
+#X connect 848 0 1 0;
+#X connect 849 0 850 0;
+#X connect 850 0 1 0;
