@@ -574,6 +574,7 @@ private:
     };
     void publishDriverClock() noexcept; // single audio driver only
     bool readDriverClock(DriverClock&) const noexcept; // bounded owner observation
+    void primeWhilePlaying(ClipPlayback&, const TimingView&); // owner, an unpublished candidate only
     std::atomic<std::uint64_t> driverClockSequence_{0}, driverRevision_{0};
     std::atomic<std::int64_t> driverSample_{0};
     std::atomic<bool> driverPlaying_{false};
