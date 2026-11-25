@@ -1288,8 +1288,8 @@ struct SharedAnalysis::Domain {
                (!(bits & CumulativeMaximum) || cumulativeReady.load(std::memory_order_acquire));
     }
     bool keepsParkedHop(std::uint32_t bits) const noexcept {
-        constexpr std::uint32_t windowed = Spectrum | Scope | Phase | PhaseBands | PhaseBandDetail |
-                                           RealtimeMaximum | RealtimeSigma;
+        constexpr std::uint32_t windowed = Spectrum | Scope | Phase | Spectrogram | PhaseBands |
+                                           PhaseBandDetail | RealtimeMaximum | RealtimeSigma;
         return !(bits & ~windowed) || canParkAverage(bits) || spectrumLevelHistory;
     }
     void skipCertifiedSilenceTo(std::int64_t next) noexcept {
@@ -1314,6 +1314,9 @@ struct SharedAnalysis::Domain {
                 if (maximum && maximum->lastWindow) maximum->lastWindow = windowSerial;
                 if (sigma && sigma->lastWindow) sigma->lastWindow = windowSerial;
                 spectralWindow = windowSerial;
+                // Keep the existing raster parked. A newly requested sibling may reuse
+                // this window, but must not append one of the omitted quiet columns.
+                if (historyWindow) historyWindow = windowSerial;
                 firstSequence = complete - request.fftSize;
                 completedWindowEnd.store(complete, std::memory_order_release);
             }

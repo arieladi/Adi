@@ -2714,6 +2714,99 @@ void parkedSilence() {
     check(view.read() && view.read()->advancing && view.read()->peak[0] == .5f,
           "playback resumes with the first complete window");
 }
+void parkedSpectrogramWake() {
+    constexpr int window = 480, hop = 240, block = 401, blocks = 33;
+    constexpr int quietFrames = block * blocks, untilHop = hop - quietFrames % hop;
+    constexpr std::int64_t stamp = 800;
+    constexpr std::uint64_t revision = 62;
+    const std::array<float, window> zeros{};
+    std::array<float, window> left, right;
+    left.fill(.5f);
+    right.fill(-.25f);
+
+    for (const bool joinScope : {false, true}) {
+        Fixture parked, reference;
+        parked.tap = std::make_shared<ScopeTap>(48000., .25);
+        reference.tap = std::make_shared<ScopeTap>(48000., .25);
+        SharedAnalysis::Request request{1, ScopePoint::PostFader, window};
+        request.hopSize = hop;
+        request.window = adi::dsp::Window::Rectangular;
+        request.outputs = SharedAnalysis::Spectrogram;
+        auto view = parked.broker.acquire(request);
+        auto control = reference.broker.acquire(request);
+        const auto write = [=](Fixture &fixture, const float *l, const float *r, int frames) {
+            fixture.tap->write(l, r, frames, stamp, false, revision);
+            fixture.broker.pump();
+        };
+        write(parked, nullptr, nullptr, window);
+        write(reference, zeros.data(), zeros.data(), window);
+        const auto first = view.read();
+        const auto settled = parked.broker.stats();
+        check(first && first->columns.size() == 1 && first->columns.back().firstSequence == 0 &&
+                  settled.analysisWindows == 1 && settled.transforms == 0 && settled.spectralPlans == 1,
+              "the stopped Spectrogram seeds one retained quiet column without an FFT");
+
+        for (int i = 0; i < blocks; ++i) {
+            write(parked, nullptr, nullptr, block);
+            write(reference, zeros.data(), zeros.data(), block);
+        }
+        const auto idle = parked.broker.stats();
+        const auto controlQuiet = control.read();
+        check(first && view.read() == first && controlQuiet &&
+                  controlQuiet->firstSequence == quietFrames - quietFrames % hop &&
+                  parked.tap->oldest() > window && idle.workerPasses == settled.workerPasses &&
+                  idle.cursorReads == settled.cursorReads && idle.transforms == settled.transforms &&
+                  idle.analysisWindows == settled.analysisWindows && idle.publications == settled.publications,
+              "the Spectrogram stays still with no worker work across a certified silent tap wrap");
+
+        SharedAnalysis::Lease scope;
+        if (joinScope) {
+            request.outputs = SharedAnalysis::Scope;
+            scope = parked.broker.acquire(request);
+            parked.broker.pump();
+            const auto joined = view.read(), scopeWindow = scope.read();
+            const auto stats = parked.broker.stats();
+            check(first && scopeWindow && joined == scopeWindow && scopeWindow->scopeLeft.size() == window &&
+                      joined->historySerial == first->historySerial && joined->columns.size() == 1 &&
+                      joined->columns.back().serial == first->columns.back().serial &&
+                      joined->columns.back().binsDbfs == first->columns.back().binsDbfs &&
+                      stats.taps == 1 && stats.domains == 1 && stats.consumers == 2 &&
+                      stats.spectralPlans == idle.spectralPlans && stats.cursorReads == idle.cursorReads &&
+                      stats.analysisWindows == idle.analysisWindows && stats.transforms == idle.transforms,
+                  "a compatible Scope joins the retained quiet window without appending a Spectrogram column");
+        }
+        const auto held = view.read();
+        const auto beforeWake = parked.broker.stats();
+        write(parked, left.data(), right.data(), untilHop - 1);
+        write(reference, left.data(), right.data(), untilHop - 1);
+        const auto partial = parked.broker.stats();
+        check(held && view.read() == held && control.read() == controlQuiet &&
+                  partial.transforms == beforeWake.transforms && partial.publications == beforeWake.publications,
+              "a partial resumed Spectrogram hop does not advance the held raster");
+
+        write(parked, left.data(), right.data(), 1);
+        write(reference, left.data(), right.data(), 1);
+        const auto audible = view.read(), expected = control.read();
+        const auto wake = parked.broker.stats();
+        check(first && held && audible && expected && audible != held && expected != controlQuiet &&
+                  audible->firstSequence == quietFrames + untilHop && audible->firstSequence == expected->firstSequence &&
+                  audible->firstStamp == stamp && audible->windowSerial == expected->windowSerial &&
+                  audible->transportRevision == revision && !audible->advancing && !audible->discontinuity &&
+                  audible->sourceEpoch == first->sourceEpoch && audible->overrunCount == first->overrunCount &&
+                  audible->peak == std::array{.5f, .25f} && exactBins(audible->binsDbfs, expected->binsDbfs) &&
+                  wake.analysisWindows == beforeWake.analysisWindows + 1 && wake.transforms == beforeWake.transforms + 1 &&
+                  wake.publications == beforeWake.publications + 1,
+              "the first audible Spectrogram window completes at the original hop with exact bins and stamps");
+        check(first && audible && expected && audible->historySerial == first->historySerial + 1 &&
+                  audible->columns.size() == first->columns.size() + 1 && !expected->columns.empty() &&
+                  audible->columns.back().firstSequence == expected->columns.back().firstSequence &&
+                  audible->columns.back().firstStamp == stamp && audible->columns.back().binsDbfs &&
+                  expected->columns.back().binsDbfs &&
+                  exactBins(*audible->columns.back().binsDbfs, *expected->columns.back().binsDbfs) &&
+                  audible->droppedHistoryColumns == first->droppedHistoryColumns,
+              "the sweep advances just one real column after the pause with no synthetic gap");
+    }
+}
 void parkedWindowHopPhase() {
     constexpr int window = 480, hop = 240, block = 401, blocks = 33;
     constexpr int quietFrames = block * blocks, untilHop = hop - quietFrames % hop;
@@ -5330,7 +5423,7 @@ void operator delete(void *p,std::size_t) noexcept {::operator delete(p);}
 void operator delete[](void *p,std::size_t) noexcept {::operator delete(p);}
 int main() {
     try { stripCadenceAndEpochs(); stripReusesRawSpectrum(); stripWorkerBudget(); stripLeaseInSession(); phaseBandSpatialMeasurements();
-          continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeMidDemand(); focusScopeDifference(); focusScopeSideDemand(); focusBarScopeBrokerBoundaries(); focusBarScopeWaitsOnAllSources(); focusScopeSumProjection(); focusScopeLayerPreview(); focusBarLayerPreview(); focusBarResidualSpectrum(); focusScopePhaseOperands(); focusScopeFlatPath(); focusLagPreviewRequests(); focusLagPreviewCases(); focusLagTapReads(); focusLagHighRateTaps(); focusMatchWindows(); parkedSilence(); parkedWindowHopPhase();
+          continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeMidDemand(); focusScopeDifference(); focusScopeSideDemand(); focusBarScopeBrokerBoundaries(); focusBarScopeWaitsOnAllSources(); focusScopeSumProjection(); focusScopeLayerPreview(); focusBarLayerPreview(); focusBarResidualSpectrum(); focusScopePhaseOperands(); focusScopeFlatPath(); focusLagPreviewRequests(); focusLagPreviewCases(); focusLagTapReads(); focusLagHighRateTaps(); focusMatchWindows(); parkedSilence(); parkedSpectrogramWake(); parkedWindowHopPhase();
           parkedRealtimeModeJoins<SharedAnalysis::RealtimeMaximum>(); parkedRealtimeModeJoins<SharedAnalysis::RealtimeSigma>(); parkedStereoBalance(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
           sharedModesAndCursors(); phaseBandCorrelation(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); spectrumLevels(); spectrumSamplePeaksAndClips(); restartSpectrumLevels(); restartParkedSpectrumLevels(); spectrumTruePeak(); parkedSpectrumLevels(false); parkedSpectrumLevels(true); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); realtimeSigmaSpectrum(); cumulativeMaximumSpectrum(); cumulativeAverageSpectrum(); cumulativeMaximumParkedRollover(); sharedAverage(); parkedRealtimeAverage(); parkedRealtimeAverageJoinsScope(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); deviceSpectrumLease(); parkedDeviceSpectrum(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
