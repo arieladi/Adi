@@ -270,8 +270,7 @@ void foldMarkers() {
             if (n == 2516) readings[3] = signal[1];
         }
         check(isolated, "a left fold marker leaves the right history silent");
-        if (test.strength == 0.f)
-            check(peakFrames == std::array{336, 739}, "both independent fold markers peak 16 frames after input");
+        check(peakFrames == std::array{336, 739}, "both independent fold markers peak 16 frames after input");
         for (std::size_t i = 0; i < readings.size(); ++i) {
             check(std::isfinite(readings[i]), "fold marker output is finite");
             worst = std::max(worst, std::abs(readings[i] - test.expected[i]));
