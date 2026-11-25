@@ -17,6 +17,16 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 25 November 2026 — Match the moving 24 dB/octave crossover
+
+`clones/shaper-steep-slew-response` at `7a322d2cc` — Preserve the measured steep crossover histories while its cutoff moves. This repair stacks on the 32 kHz split-limit correction at `0ac2daa75`. Either stable edge can move. The three-band phase adjustment takes the sum of the actual upper branches, including their histories.
+
+All 610,592 reference channel samples matched bit for bit at 32, 44.1, 48 and 96 kHz. All 1,144,952 comparison samples for the existing 6 and 12 dB/octave paths matched the prior build. Four registered suites passed at each Pd precision, in Release MSVC with warnings as errors. The ADI slope-change reset, non-finite recovery and high-rate stability fixtures passed. The reference reset its filter histories on even an identical state reload, leaving the original live slope-switch reset unverified.
+
+Moving stereo kick and bass at 256 frames measured median/p99 of 35.0/57.6 microseconds before and 34.5/50.8 after. At 2,048 frames these measured 282.6/796.7 before and 264.7/412.2 after. Stationary p99 fell from 33.9 to 29.4 and from 256.2 to 206.5 microseconds. Stationary/moving deadline misses per 60,000 callbacks at 256 went from 11/49 to 16/10. Per 7,480 callbacks at 2,048 they went from 1/1 to 0/2.
+
+PR requested
+
 ## 25 November 2026 — Continuous point edits in the audio evaluator
 
 `clones/shaper-curve-edit` at `ef692ef7a` — Reuse compiled curve spans during point height edits. Review this two-file DSP change against `clones/shaper-panel-trim-1125` at `8698acb53`. The panel has its separate landing hold.
