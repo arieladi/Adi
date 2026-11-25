@@ -296,6 +296,17 @@ double spectrogramFrequency(SpectrogramScale scale, double position) noexcept {
 }
 } // namespace
 
+void spectrogram::configureScaleBox(juce::ComboBox &box) {
+    box.addItemList({"Linear", "Log", "Mel", "Bark", "ERB"}, 1);
+    box.setSelectedId(static_cast<int>(SpectrogramScale::Log) + 1, juce::dontSendNotification);
+}
+
+double spectrogram::frequencyAt(SpectrogramScale scale, double lowHz, double topHz, double fraction) noexcept {
+    if (scale == SpectrogramScale::Log) return lowHz * std::pow(topHz / lowHz, fraction);
+    return spectrogramFrequency(scale, std::lerp(spectrogramPosition(scale, lowHz),
+                                                 spectrogramPosition(scale, topHz), fraction));
+}
+
 struct SharedSpectrumView::Raster {
     static constexpr int width = 128, height = 256;
     static constexpr std::uint16_t gap = 256;
@@ -1909,9 +1920,7 @@ AnalysisPane::AnalysisPane() {
     setHistoryMotion(SharedSpectrumView::HistoryMotion::Scroll);
     addAndMakeVisible(historyBox);
     spectrogramScaleBox.setTitle("Spectrogram frequency scale");
-    spectrogramScaleBox.addItemList({"Linear", "Log", "Mel", "Bark", "ERB"}, 1);
-    spectrogramScaleBox.setSelectedId(static_cast<int>(SharedSpectrumView::SpectrogramScale::Log) + 1,
-                                     juce::dontSendNotification);
+    spectrogram::configureScaleBox(spectrogramScaleBox);
     spectrogramScaleBox.onChange = [this] {
         const auto id = spectrogramScaleBox.getSelectedId();
         if (id > 0) view.setSpectrogramScale(static_cast<SharedSpectrumView::SpectrogramScale>(id - 1));

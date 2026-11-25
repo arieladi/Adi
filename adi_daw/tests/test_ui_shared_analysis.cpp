@@ -3614,6 +3614,7 @@ void spectrogramComparisonPage() {
     juce::TextButton *freeze = nullptr;
     juce::Button *exportPng = nullptr;
     juce::ToggleButton *ruler = nullptr;
+    juce::ComboBox *frequencyScale = nullptr;
     juce::Label *cursor = nullptr;
     juce::Component *plot = nullptr;
     for (auto *child : pages.getChildren()) {
@@ -3624,12 +3625,15 @@ void spectrogramComparisonPage() {
         if (child->getTitle() == "Freeze Spectrogram comparison") freeze = dynamic_cast<juce::TextButton *>(child);
         if (child->getTitle() == "Export Spectrogram comparison PNG") exportPng = dynamic_cast<juce::Button *>(child);
         if (child->getTitle() == "Spectrogram comparison frequency ruler") ruler = dynamic_cast<juce::ToggleButton *>(child);
+        if (child->getTitle() == "Spectrogram comparison frequency scale")
+            frequencyScale = dynamic_cast<juce::ComboBox *>(child);
         if (child->getTitle() == "Spectrogram comparison cursor") cursor = dynamic_cast<juce::Label *>(child);
     }
-    check(compared && freeze && exportPng && ruler && cursor && plot && !compared->isShowing() &&
-              !freeze->isShowing() && !exportPng->isShowing() && !ruler->isShowing() && !plot->isShowing(),
+    check(compared && freeze && exportPng && ruler && frequencyScale && cursor && plot && !compared->isShowing() &&
+              !freeze->isShowing() && !exportPng->isShowing() && !ruler->isShowing() && !frequencyScale->isShowing() &&
+              !plot->isShowing(),
           "All keeps the dedicated Spectrogram comparison controls and plot hidden");
-    if (!compared || !freeze || !exportPng || !ruler || !cursor || !plot) {
+    if (!compared || !freeze || !exportPng || !ruler || !frequencyScale || !cursor || !plot) {
         root.removeFromDesktop();
         return;
     }
@@ -3680,6 +3684,8 @@ void spectrogramComparisonPage() {
           "comparison replaces the ordinary lease with the selected track's pre and post taps");
     check(exportPng->isShowing() && !exportPng->isEnabled(), "comparison export waits for matched audio");
     check(ruler->isShowing() && !ruler->getToggleState(), "the signed frequency ruler defaults to off");
+    check(frequencyScale->isShowing() && frequencyScale->getSelectedId() == 2 && frequencyScale->getNumItems() == 5,
+          "the signed frequency scale offers five options and defaults to Log");
     const auto waiting = picture();
 
     std::array<float, window> input, output;
@@ -3759,6 +3765,28 @@ void spectrogramComparisonPage() {
               readCursor({(plainBounds.getX() + ruledBounds.getX()) / 2.f, remapped.y}).isEmpty() &&
               readCell(ruledBounds, 127.5f, 60.5f) == "750.0 Hz   +6.02 dB   Sample 0",
           "the frozen cursor follows the narrower raster and excludes its frequency gutter");
+
+    // Cell centres for 750 and 5625 Hz on each 128-row axis from 20 Hz to 20 kHz.
+    constexpr std::array<std::array<float, 2>, 5> scaleRows{{
+        {123.5f, 92.5f}, // Linear
+        {60.5f, 23.5f}, // Log
+        {101.5f, 45.5f}, // Mel
+        {90.5f, 24.5f}, // Bark
+        {88.5f, 36.5f}, // ERB
+    }};
+    for (std::size_t i = 0; i < scaleRows.size(); ++i) {
+        const auto id = static_cast<int>(i) + 1;
+        frequencyScale->setSelectedId(id, juce::sendNotificationSync);
+        frame(0, revision + 1);
+        check(frequencyScale->getSelectedId() == id && freeze->getButtonText() == "Thaw" &&
+                  readCell(ruledBounds, 127.5f, scaleRows[i][0]) == "750.0 Hz   +6.02 dB   Sample 0" &&
+                  readCell(ruledBounds, 127.5f, scaleRows[i][1]) == "5625.0 Hz   -6.02 dB   Sample 0",
+              "the selected frequency scale moves the frozen signed tones to their expected rows");
+    }
+    check(broker->stats().transforms == held.transforms && broker->stats().frameRequests == held.frameRequests &&
+              broker->stats().workerPasses == held.workerPasses && broker->stats().taps == held.taps,
+          "changing the frozen frequency scale starts no analysis work");
+    frequencyScale->setSelectedId(2, juce::sendNotificationSync);
     click(*ruler, false);
     frame(0, revision + 1);
     check(readCursor(remapped) == "750.0 Hz   +6.02 dB   Sample 0" &&
@@ -3769,7 +3797,7 @@ void spectrogramComparisonPage() {
     pages.setPage(Page::Spectrum);
     frame(0, revision + 1);
     check(!compared->isShowing() && !freeze->isShowing() && !exportPng->isShowing() && !ruler->isShowing() &&
-              !plot->isShowing() &&
+              !frequencyScale->isShowing() && !plot->isShowing() &&
               pages.detail.view.subscribed() && broker->stats().taps == 1,
           "leaving the dedicated page hides the comparison and keeps only the new page's ordinary demand");
 

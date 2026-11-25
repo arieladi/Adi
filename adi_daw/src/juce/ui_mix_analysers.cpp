@@ -532,6 +532,16 @@ class MixAnalysers::SpectrogramDelta final : public juce::Component {
             repaint();
         };
         addAndMakeVisible(ruler_);
+        spectrogram::configureScaleBox(scaleBox_);
+        scaleBox_.setTitle("Spectrogram comparison frequency scale");
+        scaleBox_.setTooltip("Choose how frequency is spaced vertically.");
+        scaleBox_.onChange = [this] {
+            const auto id = scaleBox_.getSelectedId();
+            if (id <= 0) return;
+            scale_ = static_cast<FrequencyScale>(id - 1);
+            if (image_.isValid() && scale_ != rasterScale_) renderColumns();
+        };
+        addAndMakeVisible(scaleBox_);
     }
 
     void stop() {
@@ -577,14 +587,7 @@ class MixAnalysers::SpectrogramDelta final : public juce::Component {
         syncFreeze();
         if (held && image_.isValid() && theme_ == look::themeId()) return;
         comparison_->frame();
-        if (!minimumRevision && !held) { clear(); return; }
-        std::array<SpectrogramColumnPair, width> storage;
-        const auto columns = comparison_->columns(heardEnd, minimumRevision.value_or(0), storage);
-        const auto format = comparison_->format();
-        if (columns.empty() || !format) { clear(); return; }
-        freeze_.setEnabled(true);
-        updateRaster(columns, *format);
-        export_.setEnabled(true);
+        renderColumns();
     }
 
     void visibilityChanged() override { if (!isShowing()) stop(); }
@@ -601,8 +604,10 @@ class MixAnalysers::SpectrogramDelta final : public juce::Component {
 
     void resized() override {
         auto header = getLocalBounds().reduced(look::border).removeFromTop(look::fieldHeight);
-        auto actions = header.removeFromRight(std::min(3 * look::mixPageWidth + 2 * look::gap, header.getWidth() / 2));
-        const auto buttonWidth = std::max(0, (actions.getWidth() - 2 * look::gap) / 3);
+        auto actions = header.removeFromRight(std::min(4 * look::mixPageWidth + 3 * look::gap, header.getWidth() / 2));
+        const auto buttonWidth = std::max(0, (actions.getWidth() - 3 * look::gap) / 4);
+        scaleBox_.setBounds(actions.removeFromLeft(buttonWidth));
+        actions.removeFromLeft(look::gap);
         ruler_.setBounds(actions.removeFromLeft(buttonWidth));
         actions.removeFromLeft(look::gap);
         freeze_.setBounds(actions.removeFromLeft(buttonWidth));
@@ -619,7 +624,7 @@ class MixAnalysers::SpectrogramDelta final : public juce::Component {
         graphics.fillAll(look::display);
         bounds.reduce(look::border, look::border);
         auto header = bounds.removeFromTop(look::fieldHeight);
-        header = header.withRight(ruler_.getX());
+        header = header.withRight(scaleBox_.getX());
         graphics.setFont(look::font());
         graphics.setColour(look::record);
         graphics.drawFittedText("-24 dB", header.removeFromLeft(header.getWidth() / 3), juce::Justification::centredLeft, 1);
@@ -634,7 +639,7 @@ class MixAnalysers::SpectrogramDelta final : public juce::Component {
         if (image_.isValid()) {
             graphics.drawImage(image_, plot);
             if (ruler_.getToggleState())
-                spectrogram::paintRuler(graphics, basePlotBounds(), plot, SharedSpectrumView::SpectrogramScale::Log,
+                spectrogram::paintRuler(graphics, basePlotBounds(), plot, rasterScale_,
                                         lowestHz, upperFrequency(format_.sampleRate));
         } else {
             graphics.setColour(look::textDim);
@@ -647,6 +652,7 @@ class MixAnalysers::SpectrogramDelta final : public juce::Component {
     static constexpr float rangeDb = 24.f;
     static constexpr double lowestHz = 20.;
     using ColumnKey = std::array<std::uint64_t, 2>;
+    using FrequencyScale = SharedSpectrumView::SpectrogramScale;
     struct BinChange {
         std::size_t bin = 0;
         float db = 0.f;
@@ -688,18 +694,34 @@ class MixAnalysers::SpectrogramDelta final : public juce::Component {
         export_.setEnabled(false);
     }
 
+    void renderColumns() {
+        if (!comparison_ || (!minimumRevision_ && !comparison_->frozen())) { clear(); return; }
+        std::array<SpectrogramColumnPair, width> storage;
+        const auto columns = comparison_->columns(heardEnd_, minimumRevision_.value_or(0), storage);
+        const auto format = comparison_->format();
+        if (columns.empty() || !format) { clear(); return; }
+        freeze_.setEnabled(true);
+        updateRaster(columns, *format);
+        export_.setEnabled(true);
+    }
+
     void prepareImage(SpectrogramComparison::Format format, std::size_t bins) {
         format_ = format;
+        rasterScale_ = scale_;
         theme_ = look::themeId();
         image_ = juce::Image(juce::Image::RGB, width, height, true, juce::SoftwareImageType{});
         image_.clear(image_.getBounds(), look::display);
         keys_.fill({});
         lastHop_.reset();
-        const double upper = (upperFrequency(format.sampleRate) / format.sampleRate) * 2.;
-        const double lower = std::min(upper, 2. * lowestHz / format.sampleRate);
+        const double topHz = upperFrequency(format.sampleRate);
+        const double lowHz = std::min(lowestHz, topHz);
         const auto edge = [&](int row) {
             const double fraction = 1. - static_cast<double>(row) / height;
-            return static_cast<std::size_t>(lower * std::pow(upper / lower, fraction) * static_cast<double>(bins - 1));
+            // Log uses the normalized endpoints to preserve the original comparison pixels.
+            const auto normalized = rasterScale_ == FrequencyScale::Log
+                ? spectrogram::frequencyAt(rasterScale_, 2. * lowHz / format.sampleRate, (topHz / format.sampleRate) * 2., fraction)
+                : 2. * spectrogram::frequencyAt(rasterScale_, lowHz, topHz, fraction) / format.sampleRate;
+            return static_cast<std::size_t>(std::clamp(normalized, 0., 1.) * static_cast<double>(bins - 1));
         };
         auto high = edge(0);
         for (int y = 0; y < height; ++y) {
@@ -757,7 +779,7 @@ class MixAnalysers::SpectrogramDelta final : public juce::Component {
 
     void updateRaster(std::span<const SpectrogramColumnPair> columns, SpectrogramComparison::Format format) {
         const auto nextHop = columns.back().pre->firstStamp / format.hop;
-        const bool reset = !image_.isValid() || format != format_ || theme_ != look::themeId() ||
+        const bool reset = !image_.isValid() || format != format_ || rasterScale_ != scale_ || theme_ != look::themeId() ||
             (lastHop_ && nextHop < *lastHop_);
         if (reset) prepareImage(format, columns.back().pre->binsDbfs->size());
         const auto distance = lastHop_ ? static_cast<std::uint64_t>(nextHop) - static_cast<std::uint64_t>(*lastHop_) : 0;
@@ -818,6 +840,8 @@ class MixAnalysers::SpectrogramDelta final : public juce::Component {
     ThemeId theme_ = ThemeId::Dark;
     juce::TextButton freeze_{"Freeze"}, export_{"Export PNG"};
     juce::ToggleButton ruler_{"Hz ruler"};
+    juce::ComboBox scaleBox_;
+    FrequencyScale scale_ = FrequencyScale::Log, rasterScale_ = FrequencyScale::Log;
     juce::Label cursor_;
 };
 
