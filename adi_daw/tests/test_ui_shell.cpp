@@ -16795,6 +16795,16 @@ int main(int argc, char **argv) {
         for (int i = 0; i < 30; ++i)
             check(integrated.command(AppCommands::InsertAudioTrack), "many tracks");
         integrated.frame();
+        {
+            // Live brings the new track into sight (manual 18.2): the last one inserted stands whole
+            // above the foot, the lanes scrolled to it. Back to the top for the picture below.
+            auto &lanes = integrated.arrangement.geometry;
+            const auto newest = lanes.selection.track;
+            const int top = lanes.rowTop(integrated.reader(), newest);
+            check(lanes.scrollY > 0 && top >= 0 && top + lanes.heightFor(newest) <= lanes.footTop(integrated.reader()),
+                  "the newest of many inserted tracks is scrolled into sight, above the foot");
+            lanes.scrollY = 0;
+        }
         integrated.mark(DirtySet::All);
         integrated.frame();
         std::size_t visibleRows = 0;

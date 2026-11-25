@@ -2527,6 +2527,117 @@ void takesStayOffTheMainRow() {
     check(ui::audio_drop_detail::newClipId(*view.current()) == 4, "the next clip is 4: past the takes' ids, not 2");
 }
 
+void insertTrackMovesTheReturnsAndMainDown() {
+    section("Insert Track in the default project: every later track down one, the returns and Main too (manual 18.2)");
+    adi::test::TempDirectory temp("ui_seams", "insert-foot");
+    StoreError err = StoreError::Ok;
+    auto store = Store::createNewProject(temp.path() / "p.adi", err);
+    check(store != nullptr, "the default project");
+    if (!store) return;
+    engine::ProjectView view;
+    ui::OpSubmitter sub(*store, view);
+    view.refresh(*store);
+    using Ix = std::vector<std::pair<std::int64_t, std::int64_t>>;
+    // The top level as the file holds it, by index alone, as the control projection and the
+    // engine's snapshot read it.
+    auto file = [&store] {
+        Ix out;
+        SQLite::Statement st(store->db(),
+                             "SELECT id,index_in_parent FROM tracks WHERE parent_id IS NULL ORDER BY index_in_parent,id");
+        while (st.executeStep()) out.emplace_back(st.getColumn(0).getInt64(), st.getColumn(1).getInt64());
+        return out;
+    };
+    auto shared = [&store] {
+        return store->db().execAndGet("SELECT COUNT(*) FROM (SELECT 1 FROM tracks GROUP BY parent_id,index_in_parent "
+                                      "HAVING COUNT(*)>1)").getInt();
+    };
+    auto order = [&view] {
+        const ui::SnapshotReader reader(view.current());
+        std::vector<ui::TrackRow> rows;
+        ui::rowsFromSnapshot(reader, rows);
+        ui::TrackOrder built;
+        built.build(reader, rows);
+        std::vector<std::int64_t> out;
+        for (const auto& p : built.places()) out.push_back(p.id);
+        return out;
+    };
+    auto ids = [](const Ix& ix) {
+        std::vector<std::int64_t> out;
+        for (const auto& [id, index] : ix) out.push_back(id);
+        return out;
+    };
+    // 1 MIDI 2, 2 MIDI 3, 3 Audio 4, 4 Audio 5, A Reverb 6, B Delay 7, Main 1.
+    const Ix before{{2, 0}, {3, 1}, {4, 2}, {5, 3}, {6, 4}, {7, 5}, {1, 6}};
+    check(file() == before && shared() == 0, "1 MIDI .. 4 Audio, A Reverb, B Delay, Main: indexes 0..6");
+
+    // '3 Audio' selected, the walk's case: the new track at 3; 4 Audio, A Reverb, B Delay and Main down one.
+    auto third = ui::insertTrack(view.current()->tracks, 4, false, nullptr, 8);
+    check(third.ops.front().payload["index"] == 3 && sub.submit(std::move(third.ops)).ok, "Insert Audio Track after 3 Audio");
+    check(file() == Ix{{2, 0}, {3, 1}, {4, 2}, {8, 3}, {5, 4}, {6, 5}, {7, 6}, {1, 7}} && shared() == 0,
+          "after 3 Audio: 4 Audio, A Reverb, B Delay and Main each down one; no index shared");
+    check(ids(file()) == order(), "the file's order by index is the arrangement's");
+    check(sub.undo().ok && file() == before, "undo puts every index back");
+
+    // '4 Audio' selected: the new track at 4, where A Reverb stood.
+    auto fourth = ui::insertTrack(view.current()->tracks, 5, true, nullptr, 8);
+    check(fourth.ops.front().payload["index"] == 4 && sub.submit(std::move(fourth.ops)).ok &&
+              file() == Ix{{2, 0}, {3, 1}, {4, 2}, {5, 3}, {8, 4}, {6, 5}, {7, 6}, {1, 7}} && shared() == 0 &&
+              ids(file()) == order(),
+          "Insert MIDI Track after 4 Audio: after it, before the returns and Main; no index shared");
+    // A second insert after 1 MIDI: the first new track must not fall among the returns.
+    auto again = ui::insertTrack(view.current()->tracks, 2, false, nullptr, 9);
+    check(sub.submit(std::move(again.ops)).ok &&
+              file() == Ix{{2, 0}, {9, 1}, {3, 2}, {4, 3}, {5, 4}, {8, 5}, {6, 6}, {7, 7}, {1, 8}} && shared() == 0 &&
+              ids(file()) == order(),
+          "a second insert after 1 MIDI: every track after it down one, the returns and Main still last");
+    check(sub.undo().ok && sub.undo().ok && file() == before, "undo, twice");
+
+    // Main or nothing selected: after the last track, before the returns.
+    for (const std::int64_t selected : {std::int64_t{1}, std::int64_t{0}}) {
+        auto last = ui::insertTrack(view.current()->tracks, selected, false, nullptr, 8);
+        check(sub.submit(std::move(last.ops)).ok &&
+                  file() == Ix{{2, 0}, {3, 1}, {4, 2}, {5, 3}, {8, 4}, {6, 5}, {7, 6}, {1, 7}} && shared() == 0,
+              selected == 1 ? "with Main selected: after 4 Audio, the returns and Main down one"
+                            : "with nothing selected: after 4 Audio, the returns and Main down one");
+        check(sub.undo().ok && file() == before, "undo");
+    }
+
+    // Group Tracks, an insert, then Ungroup Tracks: the tracks come back more than the top level held,
+    // and Main, moved up by the insert, must move down with them rather than keep a taken index.
+    auto grouped = ui::groupTracks(view.current()->tracks, {2, 3, 4}, 8);
+    check(sub.submit(std::move(grouped.ops)).ok && shared() == 0, "1 MIDI, 2 MIDI and 3 Audio grouped");
+    auto between = ui::insertTrack(view.current()->tracks, 5, false, nullptr, 9);
+    check(sub.submit(std::move(between.ops)).ok && shared() == 0, "an audio track inserted after 4 Audio");
+    auto ungrouped = ui::ungroupTrack(view.current()->tracks, 8);
+    check(sub.submit(std::move(ungrouped.ops)).ok &&
+              file() == Ix{{2, 0}, {3, 1}, {4, 2}, {5, 3}, {9, 4}, {6, 5}, {7, 6}, {1, 7}} && shared() == 0 &&
+              ids(file()) == order(),
+          "ungrouped: every track at its place, Main last; no index shared");
+    check(sub.undo().ok && sub.undo().ok && sub.undo().ok && file() == before, "undo, three times");
+
+    // The new track in sight: inserted after 4 Audio, its row would stand under the foot (the
+    // returns and Main pinned at the bottom of the lanes) until the tracks scroll.
+    auto hidden = ui::insertTrack(view.current()->tracks, 5, false, nullptr, 8);
+    check(sub.submit(std::move(hidden.ops)).ok, "Insert Audio Track after 4 Audio");
+    const ui::SnapshotReader reader(view.current());
+    std::vector<ui::TrackRow> rows;
+    ui::rowsFromSnapshot(reader, rows);
+    ui::ArrangementGeometry geometry;
+    geometry.order.build(reader, rows);
+    geometry.lanesHeight = 600; // 3 rows of foot at 88: it starts at 336
+    const int h = geometry.height;
+    check(geometry.footTop(reader) == 336 && geometry.rowTop(reader, 8) == 4 * h,
+          "the new track's row starts at 352, under the foot");
+    check(geometry.reveal(reader, 8) && geometry.scrollY == 5 * h - 336 && geometry.rowTop(reader, 8) >= 0 &&
+              geometry.rowTop(reader, 8) + h == geometry.footTop(reader),
+          "reveal scrolls it just above the foot");
+    check(!geometry.reveal(reader, 8) && !geometry.reveal(reader, 6) && !geometry.reveal(reader, 1),
+          "a track in sight, a return and Main: no scroll");
+    check(geometry.reveal(reader, 2) && geometry.scrollY == 0, "1 MIDI, scrolled above the top: back to 0");
+    geometry.lanesHeight = 0;
+    check(!geometry.reveal(reader, 8), "a geometry without its view: nothing to scroll");
+}
+
 int main() {
     theWrongThingDoesNotCompile();
     heldIdsAreSkipped();
@@ -2555,6 +2666,7 @@ int main() {
     projectViewRowsFromTheSnapshot();
     metersCountBars();
     groupAndUngroupAsBatches();
+    insertTrackMovesTheReturnsAndMainDown();
     deleteTrackAndUngroupComeBackWhole();
     returnsStandBeforeMain();
     sendsAsBatches();

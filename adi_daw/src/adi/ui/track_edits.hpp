@@ -67,12 +67,12 @@ inline OpRequest op(const char *type, Payload payload, const char *label) {
     r.label = label;
     return r;
 }
-// A reorder for each track of `order` whose index is not its place. Main keeps its own: it stands
-// last whatever its index says.
+// A reorder for each track of `order` whose index is not its place, Main's too: it shares the
+// parent's index_in_parent, so an index it kept could be one an ungrouped or inserted track takes.
 inline void renumber(std::vector<OpRequest> &ops, const std::vector<const engine::TrackNode *> &order, const char *label) {
     for (std::size_t i = 0; i < order.size(); ++i) {
         const auto place = static_cast<std::int64_t>(i);
-        if (order[i]->kind != "master" && order[i]->indexInParent != place)
+        if (order[i]->indexInParent != place)
             ops.push_back(op("track.reorder", {{"id", order[i]->id}, {"index", place}}, label));
     }
 }
@@ -275,10 +275,10 @@ inline TrackEdit groupTracks(const SnapshotTracks &tracks, const std::vector<std
 // The selected track into a new group, which takes its place and is selected.
 inline TrackEdit groupTrack(const SnapshotTracks &tracks, std::int64_t id) { return groupTracks(tracks, {id}); }
 // Live's Insert Audio Track and Insert MIDI Track (Ctrl/Cmd+T, Ctrl/Cmd+Shift+T; manual 18.2): a new
-// track right after the selected one, in the group that holds it, selected. The tracks after it move
-// down one place in the same batch, as `track.create` moves none. With nothing selected, or Main or
-// a return, it comes after the last track at the top. Named "# Audio" or "# MIDI": '#' shows its
-// number.
+// track right after the selected one, in the group that holds it, selected. The tracks after it, the
+// returns and Main too, move down one place in the same batch, as `track.create` moves none. With
+// nothing selected, or Main or a return, it comes after the last track at the top. Named "# Audio"
+// or "# MIDI": '#' shows its number.
 // The registry's recording defaults for a new track (#397, N31): `record.quantize` ("off" or a grid)
 // and `audio.keepMonitoringLatency`, captured into the creating batch as ops, so a replay never
 // reads the settings again.
@@ -318,10 +318,14 @@ inline TrackEdit insertTrack(const SnapshotTracks &tracks, std::int64_t selected
     if (t != nullptr && rank(*t) != 0)
         t = nullptr;
     const auto parent = t != nullptr ? t->parent : 0;
-    // What the group holds, the returns and Main aside: they keep their own places.
-    auto order = children(tracks, parent);
-    order.erase(std::remove_if(order.begin(), order.end(), [](const auto *k) { return rank(*k) != 0; }), order.end());
-    std::size_t at = order.size();
+    // What the group holds, in the arrangement's order: its tracks, then its returns, then Main; the
+    // new track comes before the returns. They share the parent's index_in_parent (the default
+    // project numbers them 0..6, Main last), so every one after the new track moves down one, the
+    // returns and Main too, as a bounce moves them: an index left behind would be shared, and what
+    // orders by index alone (the control projection, the engine's snapshot) would misorder.
+    const auto order = children(tracks, parent);
+    std::size_t at = static_cast<std::size_t>(
+        std::count_if(order.begin(), order.end(), [](const auto *k) { return rank(*k) == 0; }));
     if (t != nullptr)
         at = static_cast<std::size_t>(std::find(order.begin(), order.end(), t) - order.begin()) + 1;
     edit.ops.push_back(op("track.create",

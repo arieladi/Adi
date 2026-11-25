@@ -1460,6 +1460,11 @@ void AdiRootComponent::frame() noexcept {
         generation_ = generation;
         // The project view's tree follows the project: tracks come and go, groups with them.
         arrangement.applyView();
+        // A newly inserted track brought into sight above the foot, now that the rows hold it.
+        if (arrangement.revealTrack != 0) {
+            arrangement.geometry.reveal(reader(), arrangement.revealTrack);
+            arrangement.revealTrack = 0;
+        }
         // An open Undo History lists the step every edit, undo or redo made.
         if (undoHistory.isShowing())
             undoHistory.refresh();
@@ -2786,6 +2791,7 @@ bool AdiRootComponent::insertTrack(bool midi) {
     if (!result)
         return fail(result.error);
     arrangement.followPaused = true;
+    arrangement.revealTrack = edit.select; // in sight on the next frame, not under the foot
     arrangement.geometry.selection.track = edit.select;
     arrangement.geometry.selection.toTrack = 0;
     arrangement.geometry.selection.picked.clear();
