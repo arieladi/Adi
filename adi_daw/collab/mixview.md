@@ -131,6 +131,14 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - Signed post-minus-pre dB is available per valid bin. The probes cover missing stamps and buffers, independent tap sequences, delayed or mismatched revisions, partial future windows, both signs and censored values.
 - Strict Release passed 11 suites, 5,576 checks. This slice prepares the comparison data. The paired view's demand and presentation follow.
 
+## 25 November 2026 — MX-21 paired Spectrogram demand and Freeze
+
+**PR requested — `mixview/mx21-spectrogram-comparison-demand-lands-after-2026-12-03`, `767187cd1`, after `1854d60dc`. Lands after 3 December.**
+
+- The paired producer uses the existing visual worker clock. Hiding releases both live leases. Freeze retains the exact heard horizon and drops demand. Thaw requires a fresh window from each source, including when other readers keep older results available.
+- A failed source replacement preserves the previously accepted pair and releases temporary demand. The probe verifies both failures, ±6.02 dB, the frozen horizon, hidden no-work and a fresh matched hop after thaw.
+- Strict Release passed 11 suites, 5,591 checks. This is the headless lifetime slice. The Spectrogram control and signed history can now use it.
+
 ### 25 November — MX13 Focus musical windows
 
 **PR requested** `mixview/mx13-musical-window-lands-after-2026-12-03` at `5c88abf073d56cd9e5c99f3aeac3d4cb24a68532`, after captured true peak. Focus Scope offers One Beat and One Bar. The default is still One Bar. A view change clears the former interval and region and requests the new window on the same grouped sources. Tempo and signature edges share exact rounded sample positions. A Locate or selection at a rounded-down boundary starts the new interval. The existing Sum level summary remains readable with the added control.
