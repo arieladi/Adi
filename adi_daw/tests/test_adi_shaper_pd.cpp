@@ -174,6 +174,74 @@ void panBlendState(DeviceInstance& device) {
     for (int id : ids) check(next->getParam(std::to_string(id)).real == 50., "omitted Pan blend recalls its original setting");
 }
 
+void foldState(DeviceInstance& device) {
+    for (int i = 0; i < 3; ++i) {
+        const auto* desc = device.paramAt(418+i);
+        const auto id = std::to_string(934+i);
+        check(desc && desc->id == id && device.getParam(id).real == 0., "fold menus append with Off selected");
+        set(device, 934+i, (i+1)/3.);
+    }
+    const auto state = device.saveState("state");
+    auto next = open();
+    check(next->loadState("state", state), "restore the three fold shapes");
+    auto sparse = adi::Payload::from_cbor(state);
+    for (int i = 0; i < 3; ++i) {
+        const auto id = std::to_string(934+i);
+        check(std::abs(next->getParam(id).real - (i+1)) < 1e-5, "band recalls its own shape");
+        sparse.at("params").erase(id);
+        sparse.at("real").erase(id);
+    }
+    check(next->loadState("state", adi::Payload::to_cbor(sparse)), "recall a state preceding the fold menus");
+    for (int id = 934; id <= 936; ++id)
+        check(next->getParam(std::to_string(id)).real == 0., "sparse recall returns to the prior Drive mode");
+}
+
+void foldCanvas(const std::string& directory, bool crossed) {
+    using Engine = adi::device::LibPdEngine;
+    using Shaper = adi::dsp::AdiShaper;
+    // Independent stereo impulses at frames 320 and 723, half-strength, 48 kHz.
+    constexpr std::array leftPeaks{.20818031f, .15459639f, .31630379f};
+    constexpr std::array rightPeaks{-.18044062f, -.21635081f, -.17763694f};
+    for (int shape = 1; shape <= 3; ++shape) {
+        adi::device::PdLatencyReceiver latency;
+        Engine path(directory, "ADI-Shaper.pd", 2, 2, Engine::Execution::Automatic, Engine::BlockMode::WholeBlocks);
+        path.addSearchPath(ADI_PD_PATCH_DIR);
+        std::string error;
+        check(path.open(latency, error) && path.isNative() == !crossed, "open the expected fold playback path");
+        path.prepare(48000, 64);
+        path.bindParameters(adi::device::parsePdDeclarations(adi::builtinCanvas(uid)));
+        const auto send = [&](Shaper::Param id, float v) {
+            check(path.sendParameter(static_cast<int>(id)+1, v), "send Drive fold control");
+        };
+        send(Shaper::DriveOn, 1);
+        send(Shaper::DriveMidFold, static_cast<float>(shape));
+        for (int i = 0; i < 8; ++i)
+            send(Shaper::driveParam(Shaper::Band::Mid, static_cast<Shaper::DriveControl>(Shaper::Drive1+i)), 50);
+        std::array<float, 64> left{}, right{}, outL{}, outR{};
+        const float* in[]{left.data(), right.data()};
+        float* out[]{outL.data(), outR.data()};
+        adi::engine::NodeIo io;
+        io.in = in;
+        io.out = out;
+        io.channels = 2;
+        io.frames = 64;
+        const auto index = static_cast<std::size_t>(shape-1);
+        for (int block = 0; block < 12; ++block) {
+            left.fill(0);
+            right.fill(0);
+            if (block == 5) left[0] = .73f;
+            if (block == 11) right[19] = -.61f;
+            path.process(io);
+            if (block == 5)
+                check(std::abs((crossed ? outR : outL)[16]-leftPeaks[index]) < 5e-5f,
+                      "selected fold gives the measured positive impulse");
+            if (block == 11)
+                check(std::abs((crossed ? outL : outR)[35]-rightPeaks[index]) < 5e-5f,
+                      "selected fold gives the measured negative impulse");
+        }
+    }
+}
+
 void modulationPd(const std::string& editedDir, bool filterOn, bool sweepOn, bool driveOn = false,
                   bool crushOn = false) {
     using Engine = adi::device::LibPdEngine;
@@ -381,7 +449,7 @@ void savedSplitFrequency() {
 int main() try {
     auto device = open();
     const auto* info = adi::findBuiltin(uid);
-    check(info && info->name == "ADI-Shaper" && device->paramCount() == 418, "device registration");
+    check(info && info->name == "ADI-Shaper" && device->paramCount() == 421, "device registration");
     for (int id = 1; id <= 415; ++id)
         check(device->paramAt(id - 1) && device->paramAt(id - 1)->id == std::to_string(id), "contiguous stable parameter IDs");
     panBlendState(*device);
@@ -499,6 +567,9 @@ int main() try {
     const auto editedDir = edited.path().string();
     panDelayBlend(ADI_SHAPER_PATCH_DIR, false);
     panDelayBlend(editedDir, true);
+    foldState(*open());
+    foldCanvas(ADI_SHAPER_PATCH_DIR, false);
+    foldCanvas(editedDir, true);
     cachedPdTransport(ADI_SHAPER_PATCH_DIR, true);
     cachedPdTransport(editedDir, false);
     modulationPd(editedDir, false, false);

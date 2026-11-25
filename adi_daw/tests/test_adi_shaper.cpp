@@ -20,6 +20,7 @@ static_assert(Shaper::VolumeLowSlope == 127 && Shaper::VolumeHighSlope == 130 &&
 static_assert(Shaper::SweepOn == 208 && Shaper::SweepLowPolarity == 283 && Shaper::DriveOn == 286);
 static_assert(Shaper::CrushOn == 340 && Shaper::BaseCount == 415);
 static_assert(Shaper::PanLowDelayBlend == 855 && Shaper::PanHighDelayBlend == 857);
+static_assert(Shaper::DriveLowFold == 933 && Shaper::DriveHighFold == 935);
 static_assert(Shaper::driveParam(Band::High, Shaper::OutputTrim) + 1 == Shaper::CrushOn);
 static_assert(Shaper::modParam(Stage::Crush, Band::High, Shaper::Secondary8) + 1 == Shaper::BaseCount);
 int failures = 0;
@@ -1007,6 +1008,42 @@ void driveDryAndLatency() {
     check(aligned, "all three dry Drive bands preserve the 12/24 crossover phase and sixteen-sample delay");
 }
 
+void foldBands() {
+    for (int bandIndex = 0; bandIndex < 3; ++bandIndex) {
+        std::array<Shaper, 4> racks;
+        for (auto& rack : racks) {
+            rack.set(Shaper::DriveOn, 1);
+            rack.set(static_cast<Shaper::Param>(Shaper::DriveOn + 1), 3);
+            for (int i = 0; i < 3; ++i) {
+                const auto band = static_cast<Band>(i);
+                rack.set(Shaper::driveParam(band, Shaper::DriveMix), i == bandIndex ? 100.f : 0.f);
+                for (int point = 0; point < 8; ++point)
+                    rack.set(Shaper::driveParam(band, static_cast<Shaper::DriveControl>(Shaper::Drive1 + point)), 50);
+            }
+        }
+        const float selection = static_cast<float>(bandIndex + 1);
+        racks[1].set(static_cast<Shaper::Param>(Shaper::DriveLowFold + (bandIndex+1)%3), selection);
+        racks[1].set(static_cast<Shaper::Param>(Shaper::DriveLowFold-1), selection);
+        racks[2].set(static_cast<Shaper::Param>(Shaper::DriveLowFold + bandIndex), selection);
+        racks[3].set(static_cast<Shaper::Param>(Shaper::DriveLowFold + bandIndex), selection);
+        racks[3].set(Shaper::driveParam(static_cast<Band>(bandIndex), Shaper::DriveStyle), 1);
+        bool neighborsEqual = true;
+        bool overrideEqual = true;
+        float peakDifference = 0.f;
+        for (int i = 0; i < 2048; ++i) {
+            const float l = static_cast<float>(.6*std::sin(.009*i) + .4*std::cos(.15*i) + .3*std::sin(1.2*i));
+            const float r = static_cast<float>(.5*std::cos(.013*i) + .5*std::sin(.22*i) + .3*std::cos(1.4*i));
+            const auto base = one(racks[0], l, r);
+            neighborsEqual &= one(racks[1], l, r) == base;
+            const auto folded = one(racks[2], l, r);
+            overrideEqual &= one(racks[3], l, r) == folded;
+            peakDifference = std::max({peakDifference, std::abs(folded[0]-base[0]), std::abs(folded[1]-base[1])});
+        }
+        check(neighborsEqual && peakDifference > .002f, "fold selection belongs to its own wet band");
+        check(overrideEqual, "a selected fold plays identically over either underlying Drive mode");
+    }
+}
+
 void driveAndCrush() {
     Shaper rack;
     rack.set(Shaper::DriveOn, 1);
@@ -1143,6 +1180,7 @@ int main() {
     modulationBands();
     driveDryAndLatency();
     driveAndCrush();
+    foldBands();
     crushHoldClockBlocks();
     if (failures == 0) std::puts("ADI-Shaper DSP fixtures passed");
     return failures == 0 ? 0 : 1;

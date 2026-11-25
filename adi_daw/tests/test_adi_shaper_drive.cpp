@@ -11,6 +11,7 @@
 namespace {
 using Drive = adi::dsp::AdiShaperDrive;
 using Mode = Drive::Mode;
+using Fold = Drive::Fold;
 int failures = 0;
 void check(bool passed, const char* label) {
     if (!passed) { std::printf("FAIL %s\n", label); ++failures; }
@@ -216,6 +217,153 @@ void movingStereo() {
         check(independent, "moving Drive keeps both stereo FIR histories independent at each rate");
     }
 }
+
+void foldMarkers() {
+    // Two isolated signed markers, then two stereo steps above the first wrap.
+    // Each reading samples the causal output, including the DC filter.
+    struct Case { Fold shape; int rate; float strength; std::array<double,4> expected; };
+    constexpr std::array<Case,15> cases{{
+        {Fold::Sine,     44100, .37f, {.26150358,-.21372926,.20258918,.17685172}},
+        {Fold::Triangle, 44100, .37f, {.20828502,-.25206289,.15857016,.17463632}},
+        {Fold::Saw,      44100, .37f, {.26097262,-.34279054,.18175191,.19954555}},
+        {Fold::Sine,     48000, .37f, {.26151153,-.21373630,.20258996,.17697892}},
+        {Fold::Triangle, 48000, .37f, {.20829174,-.25207469,.15857042,.17523086}},
+        {Fold::Saw,      48000, .37f, {.26098210,-.34281272,.18175474,.19987714}},
+        {Fold::Sine,     96000, .37f, {.16108949,-.17815891,.18738486,.18831335}},
+        {Fold::Triangle, 96000, .37f, {.18408582,-.16295061,.19079559,.13858804}},
+        {Fold::Saw,      96000, .37f, {.41836667,-.24060534,.26817626,.23202392}},
+        {Fold::Sine,     48000, 0.f, {.59527951,-.49742535,1.09761047,1.28790915}},
+        {Fold::Triangle, 48000, 0.f, {.59527951,-.49742535,1.09761047,1.28790915}},
+        {Fold::Saw,      48000, 0.f, {.59527951,-.49742535,1.09761047,1.28790915}},
+        {Fold::Sine,     48000, .0001f, {.59465456,-.49741781,.91613245,.96652347}},
+        {Fold::Triangle, 48000, .0001f, {.59527951,-.49742535,.75939047,.72144502}},
+        {Fold::Saw,      48000, .0001f, {.59527963,-.49742547,.48796594,.47637159}}
+    }};
+    double worst = 0.;
+    for (const auto& test : cases) {
+        Drive drive;
+        drive.prepare(test.rate);
+        drive.setFold(test.shape);
+        std::array<float,4> readings{};
+        std::array<float,2> peaks{};
+        std::array<int,2> peakFrames{};
+        bool isolated = true;
+        for (int n = 0; n <= 2516; ++n) {
+            std::array<float,2> signal{};
+            if (n == 320) signal[0] = .73f;
+            if (n == 723) signal[1] = -.61f;
+            if (n >= 1200 && n < 1360) signal = {1.21f, -.84f};
+            if (n >= 2500) signal = {-.36f, 1.38f};
+            drive.process(signal[0], signal[1], test.strength);
+            if (n < 723) isolated &= signal[1] == 0.f;
+            if (n < 1200) {
+                for (std::size_t ch = 0; ch < peaks.size(); ++ch) {
+                    if (std::abs(signal[ch]) > peaks[ch]) {
+                        peaks[ch] = std::abs(signal[ch]);
+                        peakFrames[ch] = n;
+                    }
+                }
+            }
+            if (n == 336) readings[0] = signal[0];
+            if (n == 739) readings[1] = signal[1];
+            if (n == 1216) readings[2] = signal[0];
+            if (n == 2516) readings[3] = signal[1];
+        }
+        check(isolated, "a left fold marker leaves the right history silent");
+        if (test.strength == 0.f)
+            check(peakFrames == std::array{336, 739}, "both independent fold markers peak 16 frames after input");
+        for (std::size_t i = 0; i < readings.size(); ++i) {
+            check(std::isfinite(readings[i]), "fold marker output is finite");
+            worst = std::max(worst, std::abs(readings[i] - test.expected[i]));
+        }
+    }
+    std::printf("Fold signed marker maximum error %.8g\n", worst);
+    check(worst < .00003, "fold signed markers at three rates and zero versus first positive strength");
+}
+
+void foldContour() {
+    // A two-second cycle rises between grid coordinates 2047 and 2048.
+    // The first oversampled phase reads one frame earlier than the others.
+    const auto level = [](int coordinate) { return coordinate < 2048 ? .12 : .86; };
+    constexpr std::array folds{Fold::Sine, Fold::Triangle, Fold::Saw};
+    constexpr std::array expected{
+        std::array{.04932128, .07201698, .17009312, .20642202},
+        std::array{.04695194, .05836519, .18991593, .21032459},
+        std::array{.05277730, .05681935, .16513643, .15378042}
+    };
+    constexpr std::array frames{24006, 24011, 24016, 24021};
+    double worst = 0.;
+    for (std::size_t m = 0; m < folds.size(); ++m) {
+        Drive drive;
+        drive.prepare(48000);
+        drive.setFold(folds[m]);
+        std::size_t reading = 0;
+        for (int n = 0; n <= frames.back(); ++n) {
+            const double phase = n * (8192. / 96000.);
+            const auto i = static_cast<int>(phase);
+            const double x = phase - i;
+            const double a = level(i-1), b = level(i), c = level(i+1), d = level(i+2);
+            const double curve = b + .5*x*(c-a + x*(2*a-5*b+4*c-d + x*(3*(b-c)+d-a)));
+            const double t = 2.*std::numbers::pi*n/48000.;
+            float left = static_cast<float>(.037*std::cos(278*t) + .015*std::sin(443*t) + .005);
+            float right = static_cast<float>(-.039*std::cos(365*t) - .018*std::sin(517*t) - .014);
+            drive.process(left, right, static_cast<float>(std::clamp(curve, 0., 1.)));
+            if (n == frames[reading]) {
+                const float value = reading % 2 == 0 ? left : right;
+                check(std::isfinite(value), "fold contour output is finite");
+                worst = std::max(worst, std::abs(value - expected[m][reading]));
+                ++reading;
+            }
+        }
+    }
+    std::printf("Fold rising contour maximum error %.8g\n", worst);
+    check(worst < .00003, "fold control arrives at the measured subphase on a sharp rising edge");
+}
+
+void sawWrapAndFoldReset() {
+    Drive drive;
+    drive.prepare(48000);
+    const double dcRate = -std::expm1(-2. * std::numbers::pi * 10. / 48000.);
+    constexpr std::array expected{.33883445, .00035526};
+    for (std::size_t i = 0; i < expected.size(); ++i) {
+        drive.setFold(Fold::Saw);
+        drive.reset();
+        const float level = (159.f + static_cast<float>(i)) / 1024.f;
+        double sum = 0.;
+        for (int n = 0; n <= 96; ++n) {
+            float left = level, right = -level;
+            drive.process(left, right, .5f);
+            if (n == 96) {
+                // Restore the settled DC value from the causal high-pass output.
+                const auto settled = (left + dcRate * sum) / (1. - .5 * dcRate);
+                check(std::abs(settled - expected[i]) < .00003 && left == -right,
+                      "signed saw levels one input step apart straddle the first wrap");
+            }
+            sum += left;
+        }
+    }
+    for (Fold shape : {Fold::Triangle, Fold::Off, Fold::Saw, Fold::Sine, Fold::Saw}) {
+        drive.setFold(shape);
+        for (int n = 0; n < 72; ++n) {
+            float left = .71f, right = -.23f;
+            drive.process(left, right, static_cast<float>(n) / 72.f);
+        }
+        drive.reset();
+        Drive fresh;
+        fresh.prepare(48000);
+        fresh.setFold(shape);
+        bool equal = true;
+        for (int n = 0; n < 128; ++n) {
+            float left = n == 11 ? .41f : 0.f, right = n == 47 ? -.32f : 0.f;
+            float referenceL = left, referenceR = right;
+            const float amount = n < 19 ? .83f : .27f;
+            drive.process(left, right, amount);
+            fresh.process(referenceL, referenceR, amount);
+            equal &= left == referenceL && right == referenceR;
+        }
+        check(equal, "reset restores fresh stereo output after repeated fold selection");
+    }
+}
 } // namespace
 
 int main() {
@@ -225,5 +373,8 @@ int main() {
     nearZeroContinuity();
     trimsAndReset();
     movingStereo();
+    foldMarkers();
+    foldContour();
+    sawWrapAndFoldReset();
     return failures==0 ? 0 : 1;
 }

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi_shaper_drive.hpp"
+#include "adi_shaper_fold_tables.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -69,9 +70,33 @@ constexpr auto gainSegments(const std::array<double, 33>& values) noexcept {
 constexpr auto clipSegments = gainSegments(clipGain);
 constexpr auto rectSegments = gainSegments(rectGain);
 
-double compensation(const std::array<GainSegment, 32>& segments, float amount) noexcept {
-    const double pos = 32.0 * amount;
-    const auto i = static_cast<std::size_t>(std::min(31, static_cast<int>(pos)));
+// Five-point derivatives keep the rapidly changing compensation near zero smooth.
+constexpr double foldSlope(const std::array<double, 65>& v, std::size_t i) noexcept {
+    if (i == 0) return (-25*v[0] + 48*v[1] - 36*v[2] + 16*v[3] - 3*v[4]) / 12;
+    if (i == 1) return (-3*v[0] - 10*v[1] + 18*v[2] - 6*v[3] + v[4]) / 12;
+    if (i == 64) return (25*v[64] - 48*v[63] + 36*v[62] - 16*v[61] + 3*v[60]) / 12;
+    if (i == 63) return (3*v[64] + 10*v[63] - 18*v[62] + 6*v[61] - v[60]) / 12;
+    return (v[i-2] - 8*v[i-1] + 8*v[i+1] - v[i+2]) / 12;
+}
+
+constexpr auto foldSegments(const std::array<double, 65>& values) noexcept {
+    std::array<GainSegment, 64> segments{};
+    for (std::size_t i = 0; i < segments.size(); ++i) {
+        const double a = foldSlope(values, i), b = foldSlope(values, i+1);
+        const double delta = values[i+1] - values[i];
+        segments[i] = {values[i], a, 3*delta - 2*a - b, a + b - 2*delta};
+    }
+    return segments;
+}
+
+constexpr auto sineSegments = foldSegments(fold_detail::sineGain);
+constexpr auto triangleSegments = foldSegments(fold_detail::triangleGain);
+constexpr auto sawSegments = foldSegments(fold_detail::sawGain);
+
+template<std::size_t N>
+double compensation(const std::array<GainSegment, N>& segments, float amount) noexcept {
+    const double pos = static_cast<double>(N) * amount;
+    const auto i = std::min(N-1, static_cast<std::size_t>(pos));
     const double t = pos - static_cast<double>(i);
     const auto& s = segments[i];
     return s.value + t * (s.slope + t * (s.quadratic + t * s.cubic));
@@ -99,6 +124,20 @@ double clipArea(double z) noexcept {
 
 AdiShaperDrive::AdiShaperDrive() noexcept { prepare(48000.0); }
 
+void AdiShaperDrive::Filters::preparePhases(int factor, int taps) noexcept {
+    const auto count = static_cast<std::size_t>(factor);
+    up = {};
+    for (std::size_t i = 0; i < static_cast<std::size_t>(taps); ++i)
+        up[i % count][i / count] = static_cast<float>(factor) * down[i];
+    if (factor == 4) {
+        for (std::size_t j = 0; j < inputs / 2; ++j) {
+            const double a = up[1][j], b = up[3][j];
+            oddSum[j] = .5 * (a + b);
+            oddDifference[j] = .5 * (a - b);
+        }
+    }
+}
+
 void AdiShaperDrive::prepare(double sampleRate) noexcept {
     if (!(sampleRate > 0 && std::isfinite(sampleRate))) return;
     if (sampleRate_ != sampleRate) {
@@ -115,22 +154,18 @@ void AdiShaperDrive::prepare(double sampleRate) noexcept {
             const double t = offset/8;
             const double h = (s == 0 ? 1.0 : std::sin(s)/s)
                            * besselI0(beta*std::sqrt(std::max(0.0,1.0-t*t)))*windowScale;
-            decimate_[static_cast<std::size_t>(i)] = static_cast<float>(h);
+            legacyFilters_.down[static_cast<std::size_t>(i)] = static_cast<float>(h);
             sum += h;
         }
-        interpolate_ = {};
-        const auto factor = static_cast<std::size_t>(factor_), taps = static_cast<std::size_t>(taps_);
+        const auto taps = static_cast<std::size_t>(taps_);
         for (std::size_t i=0; i<taps; ++i) {
-            decimate_[i] = static_cast<float>(decimate_[i]/sum);
-            interpolate_[i%factor][i/factor] = static_cast<float>(factor_)*decimate_[i];
+            legacyFilters_.down[i] = static_cast<float>(legacyFilters_.down[i]/sum);
+            const auto edge = std::min(i, taps - 1 - i);
+            foldFilters_.down[i] = static_cast<float>(factor_ == 4 ? fold_detail::fourfoldTaps[edge]
+                                                                   : fold_detail::twofoldTaps[edge]);
         }
-        if (factor_ == 4) {
-            for (std::size_t j = 0; j < inputs / 2; ++j) {
-                const double a = interpolate_[1][j], b = interpolate_[3][j];
-                oddSum_[j] = .5 * (a + b);
-                oddDifference_[j] = .5 * (a - b);
-            }
-        }
+        legacyFilters_.preparePhases(factor_, taps_);
+        foldFilters_.preparePhases(factor_, taps_);
         dcRate_ = 1.0-std::exp(-2.0*std::numbers::pi*10.0/sampleRate);
     }
     reset();
@@ -141,6 +176,14 @@ void AdiShaperDrive::reset() noexcept {
     input_ = {};
     wet_ = {};
     inputHead_ = wetHead_ = 0;
+    foldHead_ = controlDelay;
+}
+
+void AdiShaperDrive::setFold(Fold shape) noexcept {
+    if (fold_ == shape) return;
+    fold_ = shape;
+    foldHead_ = controlDelay;
+    previousDrive_ = -1;
 }
 
 void AdiShaperDrive::setMode(Mode mode) noexcept {
@@ -164,6 +207,19 @@ void AdiShaperDrive::setTrims(float inputNormalized, float outputNormalized) noe
 
 void AdiShaperDrive::tune(float amount) noexcept {
     previousDrive_ = amount;
+    if (fold_ != Fold::Off) {
+        const double d = amount;
+        if (fold_ == Fold::Saw) {
+            pre_ = inputGain_ * (1.0 + (16.0 * std::numbers::sqrt2 - 1.0) * d * d);
+            post_ = outputGain_ * compensation(sawSegments, amount);
+        } else {
+            const double a = 1.0 + (fold_ == Fold::Sine ? 1.7987877 : 1.5) * d;
+            const double square = a * a;
+            pre_ = inputGain_ * (square * square);
+            post_ = outputGain_ * compensation(fold_ == Fold::Sine ? sineSegments : triangleSegments, amount);
+        }
+        return;
+    }
     const double a = 1.0+amount, square=a*a, fourth=square*square;
     const bool rect = mode_ == Mode::Rectify;
     pre_ = inputGain_ * (rect ? fourth : fourth*fourth);
@@ -198,20 +254,20 @@ double AdiShaperDrive::shape(double z, Channel& channel) const noexcept {
 // The center and half-rate phases are symmetric. In fourfold interpolation
 // the two odd phases are reversals of each other, sharing a sum and difference.
 template<int Factor>
-AdiShaperDrive::Phases AdiShaperDrive::interpolate(const Stereo* history) const noexcept {
+AdiShaperDrive::Phases AdiShaperDrive::interpolate(const Stereo* history, const Filters& filters) const noexcept {
     FilterPair center{}, half{}, oddSum{}, oddDifference{};
     for (std::size_t j = 0; j < inputs / 2; ++j) {
         const auto a = FilterPair::read(history[j]);
         const auto b = FilterPair::read(history[inputs - 2 - j]);
         const auto sum = a + b;
-        center = center + (a + FilterPair::read(history[inputs - 1 - j])) * interpolate_[0][j];
-        half = half + sum * interpolate_[Factor / 2][j];
+        center = center + (a + FilterPair::read(history[inputs - 1 - j])) * filters.up[0][j];
+        half = half + sum * filters.up[Factor / 2][j];
         if constexpr (Factor == 4) {
-            oddSum = oddSum + sum * oddSum_[j];
-            oddDifference = oddDifference + (a - b) * oddDifference_[j];
+            oddSum = oddSum + sum * filters.oddSum[j];
+            oddDifference = oddDifference + (a - b) * filters.oddDifference[j];
         }
     }
-    center = center + FilterPair::read(history[inputs / 2]) * interpolate_[0][inputs / 2];
+    center = center + FilterPair::read(history[inputs / 2]) * filters.up[0][inputs / 2];
     Phases out{};
     out[0] = center.result();
     out[Factor / 2] = half.result();
@@ -222,10 +278,11 @@ AdiShaperDrive::Phases AdiShaperDrive::interpolate(const Stereo* history) const 
     return out;
 }
 
-template<int Factor>
+template<int Factor, AdiShaperDrive::Fold Shape>
 AdiShaperDrive::StereoSum AdiShaperDrive::oversample(const Stereo* inputHistory) noexcept {
     constexpr std::size_t taps = 16 * Factor + 1;
-    const auto upsampled = interpolate<Factor>(inputHistory);
+    const auto& filters = Shape == Fold::Off ? legacyFilters_ : foldFilters_;
+    const auto upsampled = interpolate<Factor>(inputHistory, filters);
     const bool fading = driveFade_ > 0.0 && driveFade_ < 1.0;
     FilterPair base{};
     for (std::size_t p=0; p<Factor; ++p) {
@@ -234,10 +291,30 @@ AdiShaperDrive::StereoSum AdiShaperDrive::oversample(const Stereo* inputHistory)
         Stereo wet{};
         for (std::size_t c=0; c<2; ++c) {
             const double input = upsampled[p][c];
-            double shaped = shape(input * pre_, channels_[c]) * post_;
-            if (fading) {
-                const double zeroDrive = (input * inputGain_) * outputGain_;
-                shaped = zeroDrive + driveFade_ * (shaped - zeroDrive);
+            double shaped;
+            if constexpr (Shape == Fold::Off) {
+                shaped = shape(input * pre_, channels_[c]) * post_;
+                if (fading) {
+                    const double zeroDrive = (input * inputGain_) * outputGain_;
+                    shaped = zeroDrive + driveFade_ * (shaped - zeroDrive);
+                }
+            } else {
+                // The base-aligned phase still uses the preceding strength.
+                // The remaining phases use the strength at this input frame.
+                const double z = input * (p == 0 ? firstFoldPre_ : pre_);
+                channels_[c].lastZ = z;
+                double magnitude = std::abs(z);
+                if (p == 0 ? firstPhaseFolds_ : previousDrive_ != 0.0f) {
+                    if constexpr (Shape == Fold::Sine) {
+                        if (magnitude > .5) magnitude = .5 + .5 * std::sin(2*magnitude - 1);
+                    } else if constexpr (Shape == Fold::Triangle) {
+                        const double phase = magnitude - 2*std::floor(.5*magnitude);
+                        magnitude = 1 - std::abs(1 - phase);
+                    } else {
+                        magnitude -= std::floor(magnitude);
+                    }
+                }
+                shaped = std::copysign(magnitude, z) * (p == 0 ? firstFoldPost_ : post_);
             }
             wet[c] = static_cast<float>(shaped);
         }
@@ -247,22 +324,51 @@ AdiShaperDrive::StereoSum AdiShaperDrive::oversample(const Stereo* inputHistory)
             constexpr std::size_t middle = taps / 2;
             for (std::size_t j = 0; j < middle; ++j) {
                 const auto pair = FilterPair::read(history[j]) + FilterPair::read(history[taps - 1 - j]);
-                base = base + pair * decimate_[j];
+                base = base + pair * filters.down[j];
             }
-            base = base + FilterPair::read(history[middle]) * decimate_[middle];
+            base = base + FilterPair::read(history[middle]) * filters.down[middle];
         }
     }
     return base.result();
 }
 
+template<int Factor>
+AdiShaperDrive::StereoSum AdiShaperDrive::render(const Stereo* input) noexcept {
+    switch (fold_) {
+    case Fold::Sine: return oversample<Factor, Fold::Sine>(input);
+    case Fold::Triangle: return oversample<Factor, Fold::Triangle>(input);
+    case Fold::Saw: return oversample<Factor, Fold::Saw>(input);
+    default: return oversample<Factor>(input);
+    }
+}
+
 void AdiShaperDrive::process(float& left, float& right, float driveNormalized) noexcept {
+    if (fold_ != Fold::Off) {
+        if (!std::isfinite(driveNormalized))
+            driveNormalized = foldHead_ < controlDelay ? foldStrength_[(foldHead_ + controlDelay-1) % controlDelay] : 0.0f;
+        driveNormalized = std::clamp(driveNormalized, 0.0f, 1.0f);
+        if (foldHead_ == controlDelay) {
+            foldStrength_.fill(driveNormalized);
+            foldHead_ = 0;
+            lastFoldStrength_ = driveNormalized;
+        }
+        if (previousDrive_ != lastFoldStrength_) tune(lastFoldStrength_);
+        firstFoldPre_ = pre_;
+        firstFoldPost_ = post_;
+        firstPhaseFolds_ = lastFoldStrength_ != 0.0f;
+        const float delayed = foldStrength_[foldHead_];
+        foldStrength_[foldHead_] = driveNormalized;
+        foldHead_ = (foldHead_ + 1) % controlDelay;
+        driveNormalized = delayed;
+        lastFoldStrength_ = delayed;
+    }
     if (!std::isfinite(driveNormalized)) driveNormalized = std::max(0.0f,previousDrive_);
     if (driveNormalized != previousDrive_) tune(std::clamp(driveNormalized,0.0f,1.0f));
     inputHead_ = inputHead_ == 0 ? inputs-1 : inputHead_-1;
     const auto inputHead = static_cast<std::size_t>(inputHead_);
     input_[inputHead] = input_[inputHead+inputs] = {left, right};
     const Stereo* in = input_.data()+inputHead_;
-    auto base = factor_ == 4 ? oversample<4>(in) : oversample<2>(in);
+    auto base = factor_ == 4 ? render<4>(in) : render<2>(in);
     for (std::size_t c=0; c<channels_.size(); ++c) {
         auto& dc = channels_[c].dc;
         const double high=base[c]-dc;
