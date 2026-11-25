@@ -73,7 +73,9 @@ inline void noDialogs() {
 #if defined(_WIN32)
     _set_error_mode(_OUT_TO_STDERR);
     _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
-    for (const int kind : {_CRT_WARN, _CRT_ERROR, _CRT_ASSERT}) {
+    // Without _DEBUG the two _CrtSetReport* macros expand to nothing, so `kind` is unused in a
+    // release build, and C4189 under ADI_WERROR stopped every optimised UI test build.
+    for ([[maybe_unused]] const int kind : {_CRT_WARN, _CRT_ERROR, _CRT_ASSERT}) {
         _CrtSetReportMode(kind, _CRTDBG_MODE_FILE);
         _CrtSetReportFile(kind, _CRTDBG_FILE_STDERR);
     }
