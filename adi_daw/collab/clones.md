@@ -17,6 +17,16 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 25 November 2026 — Alternate balance laws in the registered Pan bands
+
+`clones/shaper-pan-gain-laws` at `fb744c450` — Add three gain laws to the per-band Pan menu. Lands after 3 December. The 3 dB law remains the default. The extra endpoint choices are 4.5 dB lift, linear lift and cut only. Held positions reuse their computed tap until the position changes.
+
+Release MSVC with warnings as errors passed all four registered suites at each Pd precision. Across 64 synchronized and free-running cases at 256 and 2,048 frames the native device and crossed editable Pd canvas produced 24,576,000 matching channel values after undoing the deliberate output swap. The default law reproduced all 3,072,000 tested values from current main. The exact four-beat core's peak difference from the reference was 0.00000255. The registered comparison reached 0.00007143 channel RMS and 0.03063 peak at sharp joins. Supplying the registered host's physical 3.999999285-quarter default to the direct core reproduced its samples exactly.
+
+Three alternating pairs of source and ADI runs used five trials of 2,048 callbacks each per mode and block size. In menu order, ADI/reference median times at 256 frames were 12.3/36.6, 13.8/24.0 and 8.5/24.2 microseconds. Their p99 values were 23.6/59.7, 19.7/43.0 and 19.8/39.8. At 2,048 frames the median times were 101.0/202.9, 66.2/111.9 and 73.8/112.8, with p99 of 144.3/301.7, 143.5/162.9 and 149.7/179.6. At 256 frames ADI/reference misses were 2/12, 1/4 and 0/1. No run missed at 2,048 frames.
+
+PR requested
+
 ## 25 November 2026 — Rounded clipping in Drive
 
 This alternative appears on 46 bands in 44 of the 873 private programs, including five of the original 81 regressions. A nonzero stored Drive excursion remains in 42 programs, three of them in the earlier 81. Fifteen programs use the neutral auxiliary settings exercised here.
