@@ -17,6 +17,16 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 25 November 2026 — Rounded clipping in Drive
+
+This alternative appears on 46 bands in 44 of the 873 private programs, including five of the original 81 regressions. A nonzero stored Drive excursion remains in 42 programs, three of them in the earlier 81. Fifteen programs use the neutral auxiliary settings exercised here.
+
+For normalized drive d, the measured input gain is 2 to the power 8d and the corner k = 0.85 + 0.12d. Let t be the absolute value after input gain. Through the corner the output equals the signed input. Above it the magnitude is 1 − (1−k)²/(t+1−2k), with the input sign restored. The measured level compensation after this transfer at 0%, 25%, 50%, 75% and 100% was 1, 0.331292, 0.228286, 0.194148 and 0.172630 respectively. Two small coherent tones isolate the compensation. Opposite signed steps around the corner at independent settings test the nonlinear transfer.
+
+At 48 kHz and half drive, direct evaluation at each interpolated input gave stereo-noise RMS error of 0.0000784. Antiderivative evaluation gave 0.00854 even after phase adjustment. On the hard-clip control the antiderivative gave 0.0000761, versus 0.03440 for direct evaluation. The reference reported 16 frames of latency at 44.1, 48 and 96 kHz. On moving kick and bass, using the existing reconstruction filters and the measured gain curve gave largest channel RMS below 0.000039 at those rates. The existing twofold filter at 96 kHz has a larger residual on wideband random input. A private filter fit lowered it, with no shared filter change proposed in this feature.
+
+For DEV-31 the clones seat takes the Drive kernel, the rack's DSP header and source, the device patch and the existing shaper, Drive and registered tests for `clones/shaper-rounded-clip`. Three appended switches, host IDs 928–930, round the existing hard clipping choice independently in each band. The existing style menu and the default hard clip retain their meanings. Lands after 3 December.
+
 ## 25 November 2026 — Pan delay range across 873 saved programs
 
 The 0–40 ms Pan range on `clones/shaper-pan-range-1125` at `1d47fa1b2` was measured with the independent transfer selector on `clones/shaper-pan-transfer` at `16cbbf6c8`. The registered device compared the previous route, the selected route still at 2 ms, and that same route with each program's saved range. The 58 programs contain 45 standard Pan bands and all 13 previously held stereo-transfer bands. The remaining 815 retain their prior measurements.
