@@ -183,6 +183,10 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - The app, scanner and 11 headless suites built with warnings as errors. All 4,473 checks passed. The shared Release shell fixture fails on the unrelated warning logged below, so its Arrangement and Appearance gates are with their owner. The neutral Minimum Phase signed-zero exception remains open.
 - Review ZIP SHA-256 `3899a89b175bb96a621b58b8c30b7bcf722c28a169746c0a0e144641571d6f16`. Executable `745d3f9f3ec1da10e5d958abada8cb79d7f76009aa8ee28e7448227f6f6addbf`. Retest brief uses the same source hash.
 
+## 25 November 2026 · DF-M69 optimized Focus suite verification
+
+- The complete Focus core and allocation test compiled at `-O3` with warnings as errors, including the mismatched allocation diagnostic. The executable passed all 480 checks, 5,081,550 compared samples and zero counted callback allocations or deallocations. This covers the full affected translation unit on the optimized Windows target. The native Linux and macOS legs remain their usual review gates.
+
 ### 25 November — MX13 Focus musical windows
 
 **PR requested** `mixview/mx13-musical-window-lands-after-2026-12-03` at `5c88abf073d56cd9e5c99f3aeac3d4cb24a68532`, after captured true peak. Focus Scope offers One Beat and One Bar. The default is still One Bar. A view change clears the former interval and region and requests the new window on the same grouped sources. Tempo and signature edges share exact rounded sample positions. A Locate or selection at a rounded-down boundary starts the new interval. The existing Sum level summary remains readable with the added control.
