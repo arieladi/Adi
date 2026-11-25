@@ -236,6 +236,8 @@ class ArrangementCanvas final : public juce::Component,
         std::uint64_t point = 0;
     };
     std::optional<AutomationPick> automationPointAt(juce::Point<float>) const;
+    // The lane whose envelope line, as drawn, passes within a few pixels of a point (A14).
+    std::optional<LaneBody> automationLineAt(juce::Point<float>) const;
     std::optional<AutomationPick> chosenAutomationPoint() const noexcept { return chosenPoint_; }
     void mouseMagnify(const juce::MouseEvent &, float) override;
     bool isInterestedInFileDrag(const juce::StringArray &) override;
@@ -311,7 +313,7 @@ class ArrangementCanvas final : public juce::Component,
     bool automationDown(const juce::MouseEvent &);
     std::optional<AutomationPick> pointDrag_, chosenPoint_;
     std::int64_t pointTick_ = 0;
-    bool pointAdded_ = false; // the press added a breakpoint: its drag moves nothing
+    bool pointAdded_ = false; // the press added a breakpoint: its drag moves that one or nothing
     double pointValue_ = 0;
     std::int64_t fadeTicks_ = 0, hoverClip_ = 0;
     double fadeTension_ = 0, fadeTensionFrom_ = 0;

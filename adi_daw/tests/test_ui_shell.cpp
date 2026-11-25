@@ -11459,19 +11459,32 @@ void automationMode(AppCommands &commands, const std::filesystem::path &dir) {
     const auto laneOf = [&] { return trackEnvelope(*document->view().current(), 4); };
     const float midY = (audio->top + audio->bottom) / 2;
     const float barX = static_cast<float>(root.arrangement.geometry.x(textproj::kWhole));
+    // With no breakpoint the line is the fader's level across the lane.
+    const double level = root.automationCurrent(volumeTarget(4));
+    const float lineY = audio->scaleBottom - static_cast<float>((level + 70) / 76) * (audio->scaleBottom - audio->top);
+    // A14: a click in the lane away from the line adds nothing; it selects there, as without the mode
+    // (Live 12 manual 25.5.2).
+    const auto titleBefore = root.undoTitle(false);
+    root.arrangement.geometry.selection.track = 2;
     canvas.mouseDown(pressAt(canvas, {barX + 1, midY}));
     canvas.mouseUp(pressAt(canvas, {barX + 1, midY}));
     root.frame();
+    check(std::abs(midY - lineY) > 12 && laneOf().lane == nullptr && root.undoTitle(false) == titleBefore &&
+              root.arrangement.geometry.selection.track == 4,
+          "a click in the lane off the envelope's line adds no breakpoint and no lane: it selects the track there");
+    canvas.mouseDown(pressAt(canvas, {barX + 1, lineY + 2}));
+    canvas.mouseUp(pressAt(canvas, {barX + 1, lineY + 2}));
+    root.frame();
     auto env = laneOf();
     check(env.lane != nullptr && env.data != nullptr && env.data->points.size() == 1 &&
-              env.data->points[0].time == textproj::kWhole && std::abs(env.data->points[0].value + 32) < 1.5 &&
+              env.data->points[0].time == textproj::kWhole && std::abs(env.data->points[0].value - level) < 1e-6 &&
               root.undoTitle(false) == "Undo Add Automation Point",
-          "a click on the lane adds a breakpoint on the grid at the value there, the Volume lane with it, one step");
+          "a click on the line adds a breakpoint on the grid, on the line, the Volume lane with it, one step");
     check(env.lane->paramRef == "volume" && env.lane->valueDomain == "real" && env.lane->ownerKind == "track",
           "the lane is the track's Volume in dB, as the engine plays it");
     check(env.data->points[0].curve == 1, "a new breakpoint is linear to the next, as the lane draws it");
-    // Drag it a bar later and up.
-    const auto pointAt = juce::Point<float>(barX, (audio->top + audio->bottom) / 2);
+    // Drag it a bar later and down.
+    const auto pointAt = juce::Point<float>(barX, lineY);
     const auto hit = canvas.automationPointAt(pointAt);
     check(hit && hit->track == 4, "the breakpoint is found where it is drawn");
     const float twoBars = static_cast<float>(root.arrangement.geometry.x(2 * textproj::kWhole));
@@ -11483,8 +11496,8 @@ void automationMode(AppCommands &commands, const std::filesystem::path &dir) {
     root.frame();
     env = laneOf();
     check(env.data->points.size() == 1 && env.data->points[0].time == 2 * textproj::kWhole &&
-              env.data->points[0].value > -32 && root.undoTitle(false) == "Undo Move Automation Point",
-          "let go, it is a bar later and higher: one step");
+              env.data->points[0].value < level - 6 && root.undoTitle(false) == "Undo Move Automation Point",
+          "let go, it is a bar later and lower: one step");
     check(root.command(AppCommands::Undo) && laneOf().data->points[0].time == textproj::kWhole, "Undo puts it back");
     check(root.command(AppCommands::Redo), "and Redo moves it again");
     root.frame();
@@ -11499,22 +11512,65 @@ void automationMode(AppCommands &commands, const std::filesystem::path &dir) {
               "a double-click on the last breakpoint deletes it and its lane, so the fader plays again: one step");
     }
     // Chosen, Delete takes it away.
-    canvas.mouseDown(pressAt(canvas, {barX + 1, midY}));
-    canvas.mouseUp(pressAt(canvas, {barX + 1, midY}));
+    canvas.mouseDown(pressAt(canvas, {barX + 1, lineY}));
+    canvas.mouseUp(pressAt(canvas, {barX + 1, lineY}));
     root.frame();
-    canvas.mouseDown(pressAt(canvas, {barX, midY}));
-    canvas.mouseUp(pressAt(canvas, {barX, midY}));
+    canvas.mouseDown(pressAt(canvas, {barX, lineY}));
+    canvas.mouseUp(pressAt(canvas, {barX, lineY}));
     check(canvas.chosenAutomationPoint().has_value(), "a click on a breakpoint chooses it");
     check(canvas.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)) && laneOf().lane == nullptr,
           "Delete takes the chosen breakpoint away");
-    // The lane's foot is silence, as the fader's.
+    // A14: the press that adds a breakpoint on the line goes on to move it while it drags.
+    canvas.mouseDown(pressAt(canvas, {barX + 1, lineY}));
+    canvas.mouseDrag(dragAt(canvas, {barX + 1, lineY}, {twoBars + 1, upper}));
+    canvas.mouseUp(dragAt(canvas, {barX + 1, lineY}, {twoBars + 1, upper}));
+    root.frame();
+    env = laneOf();
+    check(env.data != nullptr && env.data->points.size() == 1 && env.data->points[0].time == 2 * textproj::kWhole &&
+              env.data->points[0].value < level - 6 && root.undoTitle(false) == "Undo Move Automation Point",
+          "a press on the line and a drag: the new breakpoint follows the mouse and lands where it is let go");
+    check(root.command(AppCommands::Undo) && laneOf().data != nullptr && laneOf().data->points.size() == 1 &&
+              laneOf().data->points[0].time == textproj::kWhole && root.command(AppCommands::Undo) && laneOf().lane == nullptr,
+          "Undo puts it where the press added it, and again takes it away");
+    root.frame();
+    // Off the line a double-click adds a breakpoint where it is (manual 25.5.2): at the foot, silence.
     canvas.mouseDown(pressAt(canvas, {barX + 1, audio->scaleBottom}));
     canvas.mouseUp(pressAt(canvas, {barX + 1, audio->scaleBottom}));
+    check(laneOf().lane == nullptr, "the double-click's first press, off the line, adds nothing");
+    canvas.mouseDoubleClick(pressAt(canvas, {barX + 1, audio->scaleBottom}));
     root.frame();
     check(laneOf().data != nullptr && laneOf().data->points.size() == 1 && laneOf().data->points[0].value == -150,
-          "a breakpoint at the lane's foot is silence (-150 dB, as the fader writes it)");
+          "a double-click off the line adds a breakpoint there; at the lane's foot it is silence (-150 dB, as the fader writes it)");
     root.namesBar.automation.onClick();
     check(!root.automationMode(), "and the switch turns Automation Mode off");
+    // A14: A toggles Automation Mode (Live 12 manual 25.2, 41.7), the View menu's entry ticked with it.
+    commands.activate(root);
+    juce::ApplicationCommandInfo modeInfo(AppCommands::AutomationMode);
+    commands.getCommandInfo(AppCommands::AutomationMode, modeInfo);
+    check(modeInfo.shortName == "Automation Mode" && modeInfo.defaultKeypresses.contains(juce::KeyPress('a', 0, 0)) &&
+              (modeInfo.flags & juce::ApplicationCommandInfo::isTicked) == 0,
+          "Automation Mode is a command on A, unticked while off");
+    check(root.keyPressed(juce::KeyPress('a', 0, 'a')) && root.automationMode() && root.namesBar.automation.getToggleState(),
+          "A turns Automation Mode on, the bar's switch lit");
+    commands.getCommandInfo(AppCommands::AutomationMode, modeInfo);
+    check((modeInfo.flags & juce::ApplicationCommandInfo::isTicked) != 0, "and the menu's entry is ticked");
+    check(root.keyPressed(juce::KeyPress('a', 0, 'a')) && !root.automationMode() && !root.namesBar.automation.getToggleState(),
+          "A again turns it off");
+    // The Note Editor with the keyboard keeps A; so does a text field.
+    root.clipView.notes.contextOverride = true;
+    check(!root.keyPressed(juce::KeyPress('a', 0, 'a')) && !root.automationMode(), "A in the Note Editor is not Automation Mode's");
+    root.clipView.notes.contextOverride.reset();
+    {
+        juce::TextEditor field;
+        root.addAndMakeVisible(field);
+        field.setBounds(10, 10, 120, 24);
+        field.grabKeyboardFocus();
+        auto *peer = surfacePeer.getPeer();
+        check(field.hasKeyboardFocus(false) && peer != nullptr && peer->handleKeyPress(juce::KeyPress('a', 0, 'a')) &&
+                  field.getText() == "a" && !root.automationMode(),
+              "A typed into a text field is the field's");
+        root.removeChildComponent(&field);
+    }
     document->release();
 }
 // The Mix View (ADR-0209, ruled 1 November): F4 and the control bar's Mix button open it in place
@@ -15219,7 +15275,8 @@ int main(int argc, char **argv) {
                       C::ArrangementRecord == C::FitToTimeRange + 1 && C::ExportAudio == C::ArrangementRecord + 1 &&
                       C::DelayCompensation == C::ExportAudio + 1 && C::SoloSwitches == C::DelayCompensation + 1 &&
                       C::CueSwitches == C::SoloSwitches + 1 && C::HelpManual == C::CueSwitches + 1 &&
-                      C::KeyboardReference == C::HelpManual + 1 && C::LastId == C::KeyboardReference,
+                      C::KeyboardReference == C::HelpManual + 1 && C::AutomationMode == C::KeyboardReference + 1 &&
+                      C::LastId == C::AutomationMode,
                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
                   "Select Loop, Save a Copy, Collect All and Save, Collect and Export, Cut, Copy, Paste, Duplicate, "
                   "Show/Hide Plug-In Windows, Split, Clip View, Insert Empty MIDI Clip(s), the …Time commands and "
@@ -15374,9 +15431,9 @@ int main(int argc, char **argv) {
             check(has(C::ExpandClipView) && at(C::ExpandClipView) == at(C::ToggleClipView) + 1 && has(C::FoldToNotes) &&
                       at(C::FoldToScale) == at(C::FoldToNotes) + 1 && at(C::HighlightScales) == at(C::FoldToScale) + 1 &&
                       has(C::ArrangePanelsAutomatically) && at(C::ArrangePanelsHorizontally) == at(C::ArrangePanelsAutomatically) + 1 &&
-                      at(C::ArrangePanelsVertically) == at(C::ArrangePanelsHorizontally) + 1,
+                      at(C::ArrangePanelsVertically) == at(C::ArrangePanelsHorizontally) + 1 && has(C::AutomationMode),
                   "the View menu: Expand Clip View after Clip View (10.2), the three that arrange the Clip View's panels (8.1.2), "
-                  "and the Note Editor's Fold to Notes, Fold to Scale and Highlight Scales (10.6)");
+                  "the Note Editor's Fold to Notes, Fold to Scale and Highlight Scales (10.6), and Automation Mode (25.2)");
             // Live 12's groups (manual 6.1, the Mixer Controls submenu's figure): In/Out, Sends,
             // Volume | Track Options, Crossfader, Performance Impact | Return Tracks.
             check(submenus == juce::StringArray{"Arrangement Track Controls", "Mixer Controls"} &&

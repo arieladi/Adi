@@ -167,7 +167,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         CueSwitches,       // ... or cue, sending the track to Cue Out
         HelpManual,        // the Help menu's manual (WIN-09)
         KeyboardReference, // the Help menu's keyboard reference, written from the keys in force (WIN-09)
-        LastId = KeyboardReference
+        AutomationMode,    // the View menu's Automation Mode, A (Live 12 manual 25.2, 41.7)
+        LastId = AutomationMode
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();

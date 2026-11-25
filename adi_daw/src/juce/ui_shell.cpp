@@ -177,7 +177,7 @@ struct StableEntry {
     const char *category;
 };
 const StableEntry *stableEntry(int id) noexcept {
-    static const std::array<StableEntry, 127> table{{
+    static const std::array<StableEntry, 128> table{{
         {"transport.play-stop", "Transport"}, // PlayStop
         {"transport.stop", "Transport"}, // Stop
         {"edit.undo", "Edit"}, // Undo
@@ -305,6 +305,7 @@ const StableEntry *stableEntry(int id) noexcept {
         {"options.cue-switches", "Options"}, // CueSwitches
         {"help.manual", "Help"}, // HelpManual
         {"help.keyboard-shortcuts", "Help"}, // KeyboardReference
+        {"view.automation-mode", "View"}, // AutomationMode
     }};
     const auto at = id - AppCommands::PlayStop;
     return at >= 0 && at < static_cast<int>(table.size()) ? &table[static_cast<std::size_t>(at)] : nullptr;
@@ -529,7 +530,7 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Draw Mode", "Arrange Clip View Panels Automatically", "Arrange Clip View Panels Horizontally",
                                   "Arrange Clip View Panels Vertically", "Clip View", "Fit to Time Range",
                                   "Arrangement Record", "Export Audio/Video...", "Delay Compensation", "Solo Switches", "Cue Switches",
-                                  "Live 12 Manual", "Keyboard Shortcuts"};
+                                  "Live 12 Manual", "Keyboard Shortcuts", "Automation Mode"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], category(id), 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -826,6 +827,11 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         info.addDefaultKeypress('0', 0);
         info.setActive(active_ != nullptr);
         break;
+    case AutomationMode: // manual 25.2, 41.7: A, the View menu's; the names bar's switch too
+        info.addDefaultKeypress('a', 0);
+        info.setTicked(active_ != nullptr && active_->automationMode());
+        info.setActive(active_ != nullptr);
+        break;
     case SelectAll: // §42.5: Ctrl/Cmd+A; a text field with the focus selects its own text first
         info.addDefaultKeypress('a', cmd);
         info.setActive(active_ != nullptr);
@@ -1055,6 +1061,9 @@ bool AppCommands::key(const juce::KeyPress &key, AdiRootComponent &root) {
     // F, G, K and B are the Note Editor's own keys: it takes them itself while it has the keyboard.
     // A key that comes here was pressed elsewhere, where they are no command's.
     if (const auto id = manager.getKeyMappings()->findCommandForKeyPress(key); id >= FoldToNotes && id <= DrawMode)
+        return false;
+    // A with the Note Editor's keyboard stays the editor's: Automation Mode is the Arrangement's.
+    if (manager.getKeyMappings()->findCommandForKeyPress(key) == AutomationMode && root.clipView.notes.hasContext())
         return false;
     // A latching key runs its command once while it is held (Live 42.25): the root times it. One let
     // go where the window could not see it (the focus elsewhere) goes down anew, and nothing goes back.
@@ -3259,7 +3268,7 @@ void AdiRootComponent::setAutomationMode(bool on) {
     demandAutomationDevices(on);
     namesBar.automation.setToggleState(on, juce::dontSendNotification);
     say(on ? "Automation Mode: each track shows its chosen envelope, its Volume until Show Automation chooses "
-             "another; click a lane to add a breakpoint, drag one to move it, double-click one to delete it."
+             "another; click its line to add a breakpoint, drag one to move it, double-click one to delete it."
            : "");
     arrangement.repaint();
 }
@@ -4047,6 +4056,9 @@ bool AdiRootComponent::command(int id) {
         if (!toggleRecord())
             return false;
         break;
+    case AppCommands::AutomationMode:
+        setAutomationMode(!automationMode_);
+        return true;
     case AppCommands::HelpManual:
     case AppCommands::KeyboardReference: {
         const auto target = id == AppCommands::HelpManual ? juce::URL(kManualAddress)
@@ -4453,12 +4465,13 @@ const std::vector<MenuEntries> &menuBar() {
         {"Create", {C::InsertAudioTrack, C::InsertMidiTrack, C::InsertReturnTrack, 0, C::InsertMidiClip, 0,
                     C::InsertTimeSignatureChange, 0,
                     C::AddLocator, C::DeleteLocator, 0, C::CreateFade, C::DeleteFades}},
-        // The show and hide toggles in §42.1's order, ADI's Channel EQ after the Mixer.
+        // The show and hide toggles in §42.1's order, ADI's Channel EQ after the Mixer. Automation Mode
+        // (manual 25.2) after them; its place in Live 12's menu is to be read on Live (PROVISIONAL).
         {"View",
          {C::FullScreen, 0, C::ToggleBrowser, C::ToggleOverview, kTrackControlsMenu, kMixerControlsMenu,
           C::ToggleMixerView, C::ShowChannelEq, C::ToggleMixView, C::DetachMixView, C::ToggleReferenceTrack,
           C::PlayReference, C::ToggleClipView, C::ExpandClipView, C::ToggleDeviceView, C::TogglePluginWindows,
-          C::ToggleInfoView, C::UndoHistory, 0, C::ZoomIn, C::ZoomOut, 0,
+          C::ToggleInfoView, C::UndoHistory, 0, C::AutomationMode, 0, C::ZoomIn, C::ZoomOut, 0,
           C::ZoomToSelection, C::ZoomBack, C::OptimizeWidth, C::OptimizeHeight, C::LargeTracks, 0,
           C::ArrangePanelsAutomatically, C::ArrangePanelsHorizontally, C::ArrangePanelsVertically, 0,
           C::FoldToNotes, C::FoldToScale, C::HighlightScales, 0,

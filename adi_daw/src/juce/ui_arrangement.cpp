@@ -2532,8 +2532,8 @@ void ArrangementCanvas::paintAutomation(juce::Graphics &g) const {
     }
 }
 bool ArrangementCanvas::automationDown(const juce::MouseEvent &e) {
-    // In Automation Mode a click on a lane is the envelope's: on a breakpoint it chooses it and a drag
-    // moves it; elsewhere it adds one there, on the grid as the view snaps (Live 12 manual 25.3).
+    // In Automation Mode a click on a breakpoint chooses it and a drag moves it; on the envelope's line
+    // it adds one, on the grid as the view snaps (Live 12 manual 25.3, 25.5.2).
     if (!view.root.automationMode() || e.mods.isPopupMenu())
         return false;
     const auto at = e.position;
@@ -2554,21 +2554,63 @@ bool ArrangementCanvas::automationDown(const juce::MouseEvent &e) {
     // Shift extends and Ctrl/Cmd picks, as without the mode.
     if (e.mods.isShiftDown() || e.mods.isCommandDown())
         return false;
-    for (const auto &body : laneBodies())
-        if (at.y >= body.top && at.y <= body.bottom) {
-            // A double-click's second press adds nothing more.
-            if (e.getNumberOfClicks() > 1)
-                return true;
-            const auto raw = std::max<std::int64_t>(0, view.geometry.tick(at.x));
-            const auto tick = view.snaps(e.mods) ? view.geometry.snap(raw, false) : raw;
-            view.root.addAutomationPoint(body.track->id, tick,
-                                         automationValue(at.y, automationRange(view.root.automationTarget(body.track->id)),
-                                                         body.top, body.scaleBottom));
-            pointAdded_ = true;
-            repaint();
-            return true;
-        }
-    return false;
+    // On the line a click adds a breakpoint there, on the line, and its drag moves it on; off the line
+    // the lane selects as without the mode (Live 12 manual 25.5.2).
+    const auto line = automationLineAt(at);
+    if (!line)
+        return false;
+    // A double-click's second press adds nothing more.
+    if (e.getNumberOfClicks() > 1)
+        return true;
+    const auto track = line->track->id;
+    const auto target = view.root.automationTarget(track);
+    const auto raw = std::max<std::int64_t>(0, view.geometry.tick(at.x));
+    const auto tick = view.snaps(e.mods) ? view.geometry.snap(raw, false) : raw;
+    auto value = view.root.automationCurrent(target);
+    if (const auto current = view.root.current())
+        if (const auto env = envelopeOf(*current, target); env.data != nullptr)
+            value = envelopeValue(*env.data, tick).value_or(value);
+    pointAdded_ = true;
+    if (view.root.addAutomationPoint(track, tick, value))
+        if (const auto current = view.root.current())
+            if (const auto env = envelopeOf(*current, target); env.data != nullptr)
+                for (const auto &p : env.data->points)
+                    if (p.time == tick && (!pointDrag_ || p.id > pointDrag_->point)) {
+                        // The newest point at the tick is the one added: chosen, and dragged.
+                        pointDrag_ = chosenPoint_ = AutomationPick{track, p.id};
+                        pointTick_ = p.time;
+                        pointValue_ = p.value;
+                    }
+    repaint();
+    return true;
+}
+std::optional<ArrangementCanvas::LaneBody> ArrangementCanvas::automationLineAt(juce::Point<float> at) const {
+    // The lane whose envelope, as paintAutomation draws it, passes within a few pixels of `at`.
+    const auto current = view.root.current();
+    if (!current)
+        return std::nullopt;
+    constexpr float kLineHit = 4.f;
+    for (const auto &body : laneBodies()) {
+        if (at.y < body.top - kLineHit || at.y > body.bottom + kLineHit)
+            continue;
+        const auto target = view.root.automationTarget(body.track->id);
+        const auto range = automationRange(target);
+        const auto env = envelopeOf(*current, target);
+        std::vector<juce::Point<float>> points;
+        if (env.data != nullptr)
+            for (const auto &p : env.data->points)
+                points.push_back({static_cast<float>(view.geometry.x(p.time)), automationY(p.value, range, body.top, body.scaleBottom)});
+        std::sort(points.begin(), points.end(), [](auto a, auto b) { return a.x < b.x; });
+        if (points.empty())
+            points.push_back({0, automationY(view.root.automationCurrent(target), range, body.top, body.scaleBottom)});
+        points.insert(points.begin(), {0, points.front().y});
+        points.push_back({static_cast<float>(getWidth()), points.back().y});
+        juce::Point<float> nearest;
+        for (std::size_t i = 1; i < points.size(); ++i)
+            if (juce::Line<float>(points[i - 1], points[i]).getDistanceFromPoint(at, nearest) <= kLineHit)
+                return body;
+    }
+    return std::nullopt;
 }
 std::vector<ArrangementCanvas::ClipBody> ArrangementCanvas::clipBodies() const {
     // Every clip drawn, where it is drawn: the same walk as the paint, the foot over the tracks
@@ -3079,7 +3121,7 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
         return;
     }
     if (pointAdded_)
-        return; // the press added a breakpoint; its drag edits nothing else
+        return; // the press added a breakpoint it could not take up; its drag edits nothing else
     if (fadeDrag_) {
         // A peak's square follows the mouse along the clip; a curve's diamond, up and down.
         if (fadeDrag_->curve) {
@@ -3393,10 +3435,19 @@ void ArrangementCanvas::mouseDoubleClick(const juce::MouseEvent &e) {
             repaint();
             return;
         }
-        // Elsewhere on a lane a double-click is the envelope's too: it neither makes a clip nor opens one.
+        // Elsewhere on a lane a double-click is the envelope's too: off the line it adds a breakpoint
+        // there (manual 25.5.2; on the line the first press added it); it neither makes a clip nor opens one.
         for (const auto &body : laneBodies())
-            if (e.position.y >= body.top && e.position.y <= body.bottom && !e.mods.isShiftDown() && !e.mods.isCommandDown())
+            if (e.position.y >= body.top && e.position.y <= body.bottom && !e.mods.isShiftDown() && !e.mods.isCommandDown()) {
+                if (!automationLineAt(e.position)) {
+                    const auto raw = std::max<std::int64_t>(0, view.geometry.tick(e.position.x));
+                    view.root.addAutomationPoint(body.track->id, view.snaps(e.mods) ? view.geometry.snap(raw, false) : raw,
+                                                 automationValue(e.position.y, automationRange(view.root.automationTarget(body.track->id)),
+                                                                 body.top, body.scaleBottom));
+                    repaint();
+                }
                 return;
+            }
     }
     const auto *t = view.geometry.trackAt(view.reader(), e.y);
     const auto *c = t != nullptr ? view.geometry.hit(*t, view.geometry.tick(e.x)) : nullptr;
