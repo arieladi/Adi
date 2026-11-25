@@ -17,6 +17,21 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 25 November 2026 — The measured contribution of freely positioned curve points
+
+For Win's DSP and panel reviews, `clones/shaper-filter-integration` at `4315c3e72` and the evaluator already on `clones/shaper-curve-edit` at `bd54530a9`. The publicly playable generic device scores 26 of 873 below 0.001 stereo RMS in both orders. A private audio-only comparison substituted the existing point evaluator for the eight-height lookup on exactly the available bands and contours of eight stages. Both arms used the same 721 control settings, sample clock, starting phases, stage order, gain, audio and latency compensation. Noise and room kept their generic curves. The side input contained 26,589 measured points across 4,039 curves in 858 programs. All 1,746 runs with this input disabled exactly reproduced the generic scores and audio fingerprints.
+
+| Order | Generic → private below 0.001 RMS | Median stereo RMS | Lower / higher / within 0.000001 |
+| --- | ---: | ---: | ---: |
+| Saved | 26 → 63 | 0.116408 → 0.063622 | 607 / 154 / 112 |
+| Fixed | 26 → 57 | 0.118183 → 0.076181 | 596 / 162 / 115 |
+
+No previous pass was lost in either order. Fixed order recovered all 37 original passing program identities and saved order recovered 36. With all active source stages represented at least in part, 20 of 306 became 49 of 306 in saved order. The corresponding fixed-order counts were 19 and 43. Among the 567 programs still missing at least one stage, the counts rose from 6 to 14 saved and 7 to 14 fixed. Eight of the 63 saved-order passing reference signals themselves had RMS below 0.001, including three silent signals. The fixed-order counts were nine and four.
+
+The 81 previously flagged programs kept one threshold pass in each order. At the tighter improvement tolerance, 61 improved in saved order and 60 improved in fixed order. A further 494 renders restored equal-grid points on one stage at a time while keeping the other curves freely positioned. Restoring the free points on Time gave the largest median reductions, 0.01918 saved and 0.00364 fixed. On the 41 affected Time programs the saved counts were 32 lower, 5 higher and 4 within tolerance. Fixed order gave 30, 7 and 4. Individual stage effects interact and their counts overlap.
+
+Five independent stereo renders at 256 and 2,048 frames reproduced all 3,921,920 ordinary samples with the private points disabled. With the points enabled, the two buffer sizes differed by at most 0.000000483 peak, and the independent 256-frame scores agreed within 0.000000000000004. An off-grid curve and the two limits of a loop with coincident end points had separate known answers. The private comparison measured sound only. Public curve controls stay on the existing panel stack and its landing waits for the director's sheet. The review request applies to the DSP branch. PR requested
+
 ## 25 November 2026 — Effect of the three Filter additions on 873 programs
 
 For Win, `clones/shaper-filter-integration` at `4315c3e72`. Lands after 3 December. All 873 states were measured in their saved order and again in fixed order on the reviewed 721-control device. Holding the 712-control settings constant reproduced all 1,746 earlier output fingerprints, latency readings and scores. Applying the supported Filter settings took both orders from 23 to **26 of 873 below 0.001 stereo RMS**, with three entrants and zero losses. One entrant came from the peak response and two from the steeper response. The stereo offset added no threshold crossings. Across the complete saved-order bank, 101 errors fell by more than 0.000001 and 57 rose, with 715 within that tolerance. In fixed order the counts were 100, 58 and 715. Median whole-bank RMS was 0.116408 saved and 0.118183 fixed.
