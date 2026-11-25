@@ -4,6 +4,21 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-25 — Item 1 (`walk/*` fixes, Round 9): `walk/a18-record-after-save-as`, `walk/a20-gesture-drain-hang`, `walk/b11-launch-args`
+
+| Branch | Head SHA | Touched files | Compiler (`-DADI_WERROR=ON`, Pd on, JUCE off) | Warnings | Touched headless suites | `adi_acceptance_wts01` | Verdict |
+|---|---|---|---|---|---|---|---|
+| `walk/a18-record-after-save-as` | `35f58275` | `src/adi/engine/session.cpp`, `tests/test_ui_document.cpp` | GCC 12.4.0 | 0 | `adi_session_tests` **214/0**, `adi_ui_document_tests` **349/0**, `adi_recording_commands_tests` **185/0** | **PASS** (45.97 s) | **PASS** |
+| `walk/a18-record-after-save-as` | `35f58275` | same | Clang 14.0.6 + libstdc++ 12 | 0 | `adi_session_tests` **214/0**, `adi_ui_document_tests` **349/0**, `adi_recording_commands_tests` **185/0** | **PASS** (38.31 s) | **PASS** |
+| `walk/a20-gesture-drain-hang` | `e2a6c89b` | `src/adi/gesture_session.cpp`, `tests/test_gesture_playback.cpp`, `tests/ui_test_hygiene.hpp` (JUCE) | GCC 12.4.0 | 0 | `adi_gesture_tests` **780/0**, `adi_gesture_playback_tests` **643/0**, `adi_gesture_graph_tests` **125/0**, `adi_quiet_gesture_tests` **185/0** | **PASS** (42.89 s) | **PASS** |
+| `walk/a20-gesture-drain-hang` | `e2a6c89b` | same | Clang 14.0.6 + libstdc++ 12 | 0 | `adi_gesture_tests` **780/0**, `adi_gesture_playback_tests` **643/0**, `adi_gesture_graph_tests` **125/0**, `adi_quiet_gesture_tests` **185/0** | **PASS** (39.50 s) | **PASS** |
+| `walk/b11-launch-args` | `eff67d85` | `src/juce/{ui_main.cpp,ui_shell.{hpp,cpp}}` (JUCE), `tests/test_ui_shell.cpp` (JUCE) | GCC 12.4.0 | 0 | N/A (all files JUCE-gated) | **PASS** (42.63 s) | **PASS (headless)** |
+| `walk/b11-launch-args` | `eff67d85` | same | Clang 14.0.6 + libstdc++ 12 | 0 | N/A (all files JUCE-gated) | **PASS** (39.95 s) | **PASS (headless)** |
+
+(No PR requested; run-only verification.)
+
+---
+
 ## 2026-11-25 — Item 1 (`walk/*` fixes, Round 8): `walk/b10-mixer-title-select`
 
 | Branch | Head SHA | Touched files | Compiler (`-DADI_WERROR=ON`, Pd on, JUCE off) | Warnings | Touched headless suites | `adi_acceptance_wts01` | Verdict |
