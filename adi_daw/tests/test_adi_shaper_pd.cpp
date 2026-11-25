@@ -175,6 +175,119 @@ void panBlendState(DeviceInstance& device) {
     for (int id : ids) check(next->getParam(std::to_string(id)).real == 50., "omitted Pan blend recalls its original setting");
 }
 
+void driveShapeState(DeviceInstance& device) {
+    constexpr std::array physical{1,0,1, 0,1,1, 1,2,3};
+    for (std::size_t i = 0; i < physical.size(); ++i) {
+        const auto host = 928 + static_cast<int>(i);
+        const auto* desc = device.paramAt(418 + static_cast<int>(i));
+        const auto id = std::to_string(host);
+        check(desc && desc->id == id && device.getParam(id).real == 0., "Drive choices append with Off selected");
+        set(device, host, physical[i] / (host < 934 ? 1. : 3.));
+    }
+    const auto state = device.saveState("state");
+    auto next = open();
+    check(next->loadState("state", state), "restore the three bands' Drive choices together");
+    auto sparse = adi::Payload::from_cbor(state);
+    for (std::size_t i = 0; i < physical.size(); ++i) {
+        const auto id = std::to_string(928 + static_cast<int>(i));
+        check(std::abs(next->getParam(id).real - physical[i]) < 1e-5, "band restores both switches and its menu");
+        sparse.at("params").erase(id);
+        sparse.at("real").erase(id);
+    }
+    check(next->loadState("state", adi::Payload::to_cbor(sparse)), "recall a state preceding the Drive choices");
+    for (int id = 928; id <= 936; ++id)
+        check(next->getParam(std::to_string(id)).real == 0., "sparse recall returns to the prior Drive mode");
+
+    for (const int first : {928, 931, 934}) {
+        auto previous = adi::Payload::from_cbor(state);
+        for (int id = 928; id <= 936; ++id) {
+            if (id >= first && id < first+3) continue;
+            previous.at("params").erase(std::to_string(id));
+            previous.at("real").erase(std::to_string(id));
+        }
+        check(next->loadState("state", state) && next->loadState("state", adi::Payload::to_cbor(previous)),
+              "recall a state saved with only one optional Drive family");
+        for (int id = 928; id <= 936; ++id) {
+            const auto index = static_cast<std::size_t>(id-928);
+            const double expected = id >= first && id < first+3 ? physical[index] : 0.;
+            check(std::abs(next->getParam(std::to_string(id)).real-expected) < 1e-5,
+                  "intermediate states retain the original IDs and clear absent families");
+        }
+    }
+}
+
+void driveShapeCanvas(const std::string& directory, bool crossed) {
+    using Engine = adi::device::LibPdEngine;
+    using Shaper = adi::dsp::AdiShaper;
+    // Independent stereo impulses at frames 320 and 723, half-strength, 48 kHz.
+    enum Shape { rounded, power, sine, triangle, saw };
+    struct Case { std::array<Shape,3> bands; bool split; std::array<float,3> left, right; };
+    constexpr std::array<Case,8> cases{{
+        {{rounded,rounded,rounded},false,{.33306658f},{-.32755145f}},
+        {{power,power,power},false,{.44623795f},{-.41529372f}},
+        {{sine,sine,sine},false,{.20818031f},{-.18044062f}},
+        {{triangle,triangle,triangle},false,{.15459639f},{-.21635081f}},
+        {{saw,saw,saw},false,{.31630379f},{-.17763694f}},
+        {{rounded,power,sine},true,{.34421364f,.04694234f,-.03637318f},{-.31950659f,-.04419442f,.03664365f}},
+        {{triangle,rounded,power},true,{.61537170f,-.04379823f,.00870728f},{-.58093429f,.04487343f,-.00920766f}},
+        {{power,saw,rounded},true,{.50446570f,.02793778f,.04626411f},{-.53372568f,-.03096548f,-.04416558f}}}};
+    constexpr std::array offsets{16,24,51};
+    for (const auto& settings : cases) {
+        adi::device::PdLatencyReceiver latency;
+        Engine path(directory, "ADI-Shaper.pd", 2, 2, Engine::Execution::Automatic, Engine::BlockMode::WholeBlocks);
+        path.addSearchPath(ADI_PD_PATCH_DIR);
+        std::string error;
+        check(path.open(latency, error) && path.isNative() == !crossed, "open the expected Drive playback path");
+        path.prepare(48000, 64);
+        path.bindParameters(adi::device::parsePdDeclarations(adi::builtinCanvas(uid)));
+        const auto send = [&](Shaper::Param id, float v) {
+            check(path.sendParameter(static_cast<int>(id)+1, v), "send Drive fold control");
+        };
+        send(Shaper::DriveOn, 1);
+        if (settings.split) {
+            send(static_cast<Shaper::Param>(Shaper::DriveOn+1), 3);
+            send(static_cast<Shaper::Param>(Shaper::DriveOn+2), 160);
+            send(static_cast<Shaper::Param>(Shaper::DriveOn+3), 2560);
+        }
+        for (int b = 0; b < 3; ++b) {
+            const auto band = static_cast<Shaper::Band>(b);
+            const auto choice = settings.bands[static_cast<std::size_t>(b)];
+            const int style = (choice == rounded || choice == sine) ? 1 : choice == saw ? 2 : 0;
+            send(Shaper::driveParam(band, Shaper::DriveStyle), static_cast<float>(style));
+            send(static_cast<Shaper::Param>(Shaper::DriveLowPower+b), 1);
+            send(static_cast<Shaper::Param>(Shaper::DriveLowRounded+b), 1);
+            send(static_cast<Shaper::Param>(Shaper::DriveLowFold+b),
+                 choice >= sine ? static_cast<float>(choice-sine+1) : 0.f);
+            for (int i = 0; i < 8; ++i)
+                send(Shaper::driveParam(band, static_cast<Shaper::DriveControl>(Shaper::Drive1+i)), 50);
+        }
+        std::array<float, 64> left{}, right{}, outL{}, outR{};
+        const float* in[]{left.data(), right.data()};
+        float* out[]{outL.data(), outR.data()};
+        adi::engine::NodeIo io;
+        io.in = in;
+        io.out = out;
+        io.channels = 2;
+        io.frames = 64;
+        for (int block = 0; block < 13; ++block) {
+            left.fill(0);
+            right.fill(0);
+            if (block == 5) left[0] = .73f;
+            if (block == 11) right[19] = -.61f;
+            path.process(io);
+            for (std::size_t i = 0; i < (settings.split ? offsets.size() : 1); ++i) {
+                const int leftFrame = 320+offsets[i], rightFrame = 723+offsets[i];
+                if (leftFrame/64 == block)
+                    check(std::abs((crossed ? outR : outL)[leftFrame%64]-settings.left[i]) < 5e-5f,
+                          "Drive gives the measured response to the positive marker");
+                if (rightFrame/64 == block)
+                    check(std::abs((crossed ? outL : outR)[rightFrame%64]-settings.right[i]) < 5e-5f,
+                          "Drive gives the measured response to the negative marker");
+            }
+        }
+    }
+}
+
 void modulationPd(const std::string& editedDir, bool filterOn, bool sweepOn, bool driveOn = false,
                   bool crushOn = false, bool noiseOn = false, bool reverbOn = false) {
     using Engine = adi::device::LibPdEngine;
@@ -334,6 +447,56 @@ void modulationPd(const std::string& editedDir, bool filterOn, bool sweepOn, boo
             check(latency[i].latencySamples() == 0, "disabling Drive publishes zero latency on delivery");
         }
     }
+}
+
+void automatedCrossoverPd(const std::string& editedDir) {
+    using Engine = adi::device::LibPdEngine;
+    using Shaper = adi::dsp::AdiShaper;
+    constexpr int frames = 8192, tick = 64;
+    using Stereo = std::array<std::array<float, frames>, 2>;
+    Stereo input{}, nativeAudio{}, editedAudio{};
+    for (int n = 0; n < frames; ++n) {
+        input[0][n] = static_cast<float>(.4 * std::sin(.115 * n));
+        input[1][n] = static_cast<float>(.3 * std::cos(.237 * n));
+    }
+    const auto render = [&](const std::string& directory, bool native, Stereo& audio) {
+        adi::device::PdLatencyReceiver latency;
+        Engine path(directory, "ADI-Shaper.pd", 2, 2, Engine::Execution::Automatic, Engine::BlockMode::WholeBlocks);
+        path.addSearchPath(ADI_PD_PATCH_DIR);
+        std::string error;
+        check(path.open(latency, error) && path.isNative() == native, "open the selected stereo crossover path");
+        path.prepare(48000, tick);
+        path.bindParameters(adi::device::parsePdDeclarations(adi::builtinCanvas(uid)));
+        check(path.sendParameter(2, 1) && path.sendParameter(3, 160), "set an initial low split");
+        for (int j = 0; j < 8; ++j) {
+            const auto id = Shaper::bandParam(Shaper::Stage::Volume, Shaper::Band::Mid,
+                                               static_cast<Shaper::BandControl>(Shaper::Point1 + j));
+            check(path.sendParameter(id + 1, 0), "isolate the low band");
+        }
+        for (int first = 0; first < frames; first += tick) {
+            if (first == 512) check(path.sendParameter(3, 3200), "start an audible cutoff change");
+            if (first == 3072) check(path.sendParameter(3, 500), "reverse the moving cutoff");
+            const float* in[]{input[0].data() + first, input[1].data() + first};
+            float* out[]{audio[0].data() + first, audio[1].data() + first};
+            adi::engine::NodeIo io;
+            io.channels = 2;
+            io.frames = tick;
+            io.in = in;
+            io.out = out;
+            path.process(io);
+        }
+    };
+    render(ADI_SHAPER_PATCH_DIR, true, nativeAudio);
+    render(editedDir, false, editedAudio);
+    check(nativeAudio[0] == editedAudio[1] && nativeAudio[1] == editedAudio[0],
+          "live cutoff and reversal agree sample for sample through the edited stereo canvas");
+    const auto peak = [&](int first, int last) {
+        float value = 0;
+        for (int n = first; n < last; ++n) value = std::max(value, std::abs(nativeAudio[0][n]));
+        return value;
+    };
+    check(peak(512, 576) < .09f && peak(2600, 3000) > .29f && peak(7800, 8192) < .24f,
+          "both registered frequency edits are heard with the measured direction and gradual onset");
 }
 // The host splits a block at every lane event (DF-E50), and every piece of
 // the segment carries the transport of the segment's first sample. A synced
@@ -638,7 +801,7 @@ void combinedStageState(const std::string& editedDir) {
 int main() try {
     auto device = open();
     const auto* info = adi::findBuiltin(uid);
-    check(info && info->name == "ADI-Shaper" && device->paramCount() == 656, "device registration");
+    check(info && info->name == "ADI-Shaper" && device->paramCount() == 665, "device registration");
     for (int id = 1; id <= 415; ++id)
         check(device->paramAt(id - 1) && device->paramAt(id - 1)->id == std::to_string(id), "contiguous stable parameter IDs");
     for (int i = 0; i < 90; ++i) {
@@ -859,8 +1022,12 @@ int main() try {
     const auto editedDir = edited.path().string();
     panDelayBlend(ADI_SHAPER_PATCH_DIR, false);
     panDelayBlend(editedDir, true);
+    driveShapeState(*open());
+    driveShapeCanvas(ADI_SHAPER_PATCH_DIR, false);
+    driveShapeCanvas(editedDir, true);
     cachedPdTransport(ADI_SHAPER_PATCH_DIR, true);
     cachedPdTransport(editedDir, false);
+    automatedCrossoverPd(editedDir);
     modulationPd(editedDir, false, false);
     modulationPd(editedDir, false, false, false, false, true);
     modulationPd(editedDir, false, false, false, false, false, true);

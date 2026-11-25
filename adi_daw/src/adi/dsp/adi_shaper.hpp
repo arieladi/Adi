@@ -46,7 +46,10 @@ class AdiShaper {
                  NoiseOn = 535, NoiseEnd = NoiseOn + modHeaderSize + 3 * noiseBandParameterCount,
                  ReverbOn = 625, ReverbEnd = ReverbOn + modHeaderSize + 3 * reverbBandParameterCount,
                  VolumeOrder = 715,
-                 PanLowDelayBlend = 855, PanMidDelayBlend, PanHighDelayBlend, Count };
+                 PanLowDelayBlend = 855, PanMidDelayBlend, PanHighDelayBlend,
+                 DriveLowRounded = 927, DriveMidRounded, DriveHighRounded,
+                 DriveLowPower, DriveMidPower, DriveHighPower,
+                 DriveLowFold, DriveMidFold, DriveHighFold, Count };
     using StageRanks = std::array<std::uint8_t, stageSlots>;
     using StageOrder = std::array<Stage, stageCount>;
     static constexpr Param orderParam(Stage stage) noexcept {
@@ -88,7 +91,8 @@ class AdiShaper {
         return (id >= MasterMix && id < TimeEnd) || (id >= NoiseOn && id < ReverbEnd)
             || (id >= VolumeOrder && id <= orderParam(Stage::Time))
             || (id >= orderParam(Stage::Noise) && id <= orderParam(Stage::Reverb))
-            || (id >= PanLowDelayBlend && id < Count);
+            || (id >= PanLowDelayBlend && id <= PanHighDelayBlend)
+            || (id >= DriveLowRounded && id <= DriveHighFold);
     }
     enum DriveControl { DriveStyle, DriveMix, DriveClock, DriveCycle, DriveRate, DriveCurve,
                         Drive1, Drive2, Drive3, Drive4, Drive5, Drive6, Drive7, Drive8, InputTrim, OutputTrim };
@@ -140,16 +144,33 @@ class AdiShaper {
     struct Split {
         struct Integrator { double band = 0, low = 0; };
         using StereoPole = std::array<double, 2>;
+        using Lanes = std::array<float, 4>; // low left/right, high left/right
+        struct Section { Lanes x1{}, x2{}, y1{}, y2{}; };
+        using Cascade = std::array<Section, 2>;
         struct Bands { float low, high; };
         std::array<StereoPole, 4> poles{};
         std::array<std::array<Integrator, 3>, 2> pairs{};
         std::array<Integrator, 2> compensation{};
+        Cascade branches{}, alignment{};
+        Lanes numerator{}, middle{};
+        float feedback1 = 0, feedback2 = 0;
+        bool wide = false;
         double coefficient = 0, a1 = 0, a2 = 0, a3 = 0;
+        std::array<double, 3> logFrequency{};
+        double targetHz = 0, logTarget = 0;
+        bool rendered = false, changing = false;
         int slope = 0;
         void prepare(double hz, double sampleRate) noexcept;
+        void setFrequency(double hz, double sampleRate, bool cold) noexcept;
+        bool startChunk(double sampleRate) noexcept;
+        void advanceFrequency(double step, double logNyquist) noexcept;
+        void steepCoefficients(double low, double high) noexcept;
         void reset() noexcept;
         [[nodiscard]] double pole(double x, double& z) const noexcept;
         void butterworth(double x, Integrator&, double& low, double& high, double& all) const noexcept;
+        [[nodiscard]] std::array<Bands, 2> steep(float left, float right, Cascade&) const noexcept;
+        [[nodiscard]] std::array<Bands, 2> splitStereo(float left, float right) noexcept;
+        void alignStereo(float& left, float& right) noexcept;
         [[nodiscard]] Bands split(float input, std::size_t channel) noexcept;
         [[nodiscard]] float align(float input, std::size_t channel) noexcept;
         bool finishBlock() noexcept;
@@ -191,7 +212,7 @@ class AdiShaper {
     void updateActivity(StageData& stage) noexcept;
     void updateStage(Stage kind) noexcept;
     void updateStep(CurveBand& band) const noexcept;
-    void updateSplits(StageData& stage) const noexcept;
+    void updateSplits(StageData& stage, bool cold = false) const noexcept;
     void layout(StageData& stage, int value) noexcept;
     void slope(Split& split, float value) noexcept;
     void clock(CurveBand& band, BandControl control, float value) const noexcept;
@@ -203,7 +224,7 @@ class AdiShaper {
     void updateTimeRanges() noexcept;
     void restart(Stage kind) noexcept;
     void resetKernels(Stage kind) noexcept;
-    template <Stage kind> void render(StageData& stage, const float* inL, const float* inR,
+    template <Stage kind, bool moving> void render(StageData& stage, const float* inL, const float* inR,
                                      float* outL, float* outR, std::size_t frames) noexcept;
     std::array<StageData, stageSlots> stages_;
     StageRanks ranks_{};
@@ -225,6 +246,7 @@ class AdiShaper {
     double sampleRate_ = 48000.0, bpm_ = 120.0, quarterNotes_ = 0.0;
     double historyQuarterNotes_ = 0.0, lastHistoryStamp_ = 0.0;
     std::uint64_t expectedSample_ = 0, transportRevision_ = 0;
+    double splitStep_ = 0.0, steepStep_ = 0.0;
     float masterMix_ = 1.0f;
     bool playing_ = true, historyStampSet_ = false, sampleStampSet_ = false;
 };
