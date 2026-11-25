@@ -1652,6 +1652,11 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
         return nullptr;
     };
     auto *control = findToggle(findToggle, pages);
+    juce::ComboBox *blockSize = nullptr;
+    for (auto *child : pages.detail.getChildren())
+        if (child->getTitle() == "Spectrum block size") blockSize = dynamic_cast<juce::ComboBox *>(child);
+    check(blockSize && blockSize->isShowing() && blockSize->getNumItems() == 6 && blockSize->getSelectedId() == 1,
+          "the dedicated Spectrum offers six block-size choices and defaults to Auto");
     check(control && control->isShowing() && !control->getToggleState() &&
               attached(main) && !attached(first) && !attached(wide) && !attached(missing),
           "Spectrum offers Pinned tracks default off with no extra demand");
@@ -1737,6 +1742,64 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
                   a->hopSize == overviewFft / 4 && b->hopSize == overviewFft / 4 &&
                   peakBin(a->binsDbfs) == 4 && peakBin(b->binsDbfs) == 32,
               "matching pinned observers keep their real source identities and distinct tone bins");
+
+        if (rate == 48000 && blockSize) {
+            constexpr int fixedFft = 2048;
+            constexpr std::int64_t fixedStamp = 20000, thawStamp = fixedStamp + fixedFft;
+            auto &view = pages.detail.view;
+            const auto attachmentCount = attachments;
+            const auto selectBlockSize = [&](int id) {
+                blockSize->setSelectedId(id, juce::sendNotificationSync);
+                root.frame();
+            };
+            const auto writeBlock = [&](int size, std::int64_t stamp) {
+                sendTone(*primaryTap, size, 16, stamp);
+                sendTone(*firstTap, size, 4, stamp);
+                sendTone(*wideTap, size, 32, stamp);
+                for (int pass = 0; pass < 12; ++pass) broker->pump();
+                root.frame();
+            };
+            selectBlockSize(3);
+            const auto selected = broker->stats();
+            auto fixedRequest = request;
+            fixedRequest.fftSize = fixedFft;
+            fixedRequest.hopSize = fixedFft / 4;
+            const auto observeFixed = [&](std::int64_t track) {
+                fixedRequest.track = track;
+                return broker->acquire(fixedRequest);
+            };
+            auto fixedMain = observeFixed(main), fixedLow = observeFixed(first), fixedHigh = observeFixed(wide);
+            check(broker->stats().spectralPlans == selected.spectralPlans && broker->stats().domains == selected.domains,
+                  "the selected block size is already requested by the primary and both pins");
+            writeBlock(fixedFft, fixedStamp);
+            const auto fixedPicture = view.snapshot(), fixedA = fixedLow.read(), fixedB = fixedHigh.read();
+            const auto coherent = [&](const auto &item, std::int64_t track, int bin) {
+                return item && item->request.track == track && item->request.fftSize == fixedFft &&
+                    item->hopSize == fixedFft / 4 && item->firstStamp == fixedStamp &&
+                    item->binsDbfs.size() == static_cast<std::size_t>(fixedFft / 2 + 1) && peakBin(item->binsDbfs) == bin;
+            };
+            check(fixedPicture == fixedMain.read() && coherent(fixedPicture, main, 16) &&
+                      coherent(fixedA, first, 4) && coherent(fixedB, wide, 32) &&
+                      tapFor(main) == primaryTap && tapFor(first) == firstTap && tapFor(wide) == wideTap &&
+                      attachments == attachmentCount,
+                  "2048 uses a fresh coherent primary and both pins on their existing physical taps");
+
+            view.freeze(true);
+            const auto held = broker->stats();
+            selectBlockSize(1);
+            check(view.frozen() && view.snapshot() == fixedPicture && broker->stats().consumers == held.consumers &&
+                      broker->stats().spectralPlans == held.spectralPlans && broker->stats().transforms == held.transforms,
+                  "selecting Auto while frozen preserves the displayed 2048-point picture and demand");
+            view.freeze(false);
+            root.frame();
+            check(!view.snapshot(), "thaw waits for a fresh window using the newly selected block size");
+            writeBlock(overviewFft, thawStamp);
+            const auto automatic = view.snapshot();
+            check(automatic && automatic == primary.read() && automatic->request.fftSize == 4096 &&
+                      automatic->hopSize == 1024 && automatic->firstStamp >= thawStamp && blockSize->getSelectedId() == 1 &&
+                      attachments == attachmentCount,
+                  "thaw restores the 48 kHz Auto profile on the existing taps");
+        }
 
         if (rate == 48000) {
             using Mode = SharedSpectrumView::Mode;
@@ -1957,6 +2020,7 @@ void pinnedSpectrumOverlay(AppCommands &commands, const std::filesystem::path &d
     choose(true);
     pages.setPage(Page::Compare);
     check(!attached(first) && !attached(wide), "switching to Compare releases all pinned Spectrum demand immediately");
+    check(blockSize && !blockSize->isShowing(), "Compare hides the dedicated Spectrum block-size control");
 
     root.frame();
     const bool pairSelected = select(pages.compareA, "Pinned 11") && select(pages.compareB, "Renamed wide ID");

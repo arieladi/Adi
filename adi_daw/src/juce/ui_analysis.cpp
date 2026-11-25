@@ -527,7 +527,7 @@ void SharedSpectrumView::setMode(Mode mode) {
         mode_ == Mode::SpectrumRealtimeSigma || mode == Mode::SpectrumRealtimeSigma)
         describeAnalysisView(*this, mode);
     mode_ = mode;
-    if (!supportsSpectrumOverlays(mode_)) activeSpectrumFftSize_ = 1024;
+    if (!spectrumMode()) activeSpectrumFftSize_ = 1024;
     if (classicPanel_) {
         resetClassic(false);
         classicPanel_->setVisible(mode_ == Mode::ClassicScope);
@@ -625,7 +625,7 @@ bool SharedSpectrumView::usesOverviewSpectrum() const noexcept {
            overlayProfile_ == SpectrumOverlayProfile::Overview;
 }
 SharedAnalysis::Request SharedSpectrumView::spectrumRequest(std::int64_t track) const noexcept {
-    const auto size = supportsSpectrumOverlays(mode_) ? activeSpectrumFftSize_ : 1024;
+    const auto size = spectrumMode() ? activeSpectrumFftSize_ : 1024;
     SharedAnalysis::Request request{track, point_, size, channel_, dsp::Window::Hann};
     request.device = device_;
     if (mode_ == Mode::SpectrumAverage) request.outputs = SharedAnalysis::Average1s;
@@ -825,6 +825,12 @@ void SharedSpectrumView::setHistoryMotion(HistoryMotion motion) {
     historyMotion_ = motion;
     if (mode_ == Mode::Spectrogram && eligible()) repaint();
 }
+void SharedSpectrumView::setSpectrumBlockSize(std::int32_t size) {
+    if (requestedSpectrumFftSize_ == size || std::ranges::find(spectrumBlockSizes, size) == spectrumBlockSizes.end()) return;
+    requestedSpectrumFftSize_ = size;
+    if (spectrumMode() && !frozen_) updateDemand();
+}
+
 void SharedSpectrumView::setSpectrumSlope(SpectrumSlope slope) {
     slope = spectrumSlopeFromId(spectrumSlopeId(slope));
     if (slope == SpectrumSlope::Flat) spectrumProjection_.reset();
@@ -1035,13 +1041,14 @@ void SharedSpectrumView::updateDemand() noexcept {
         lease_.reset();
         if (mainMeterSource_.expired()) mainMeter_.reset();
     } else {
-        const bool overview = usesOverviewSpectrum();
+        const bool overview = requestedSpectrumFftSize_ == 0 && usesOverviewSpectrum();
         const auto rate = overview ? lease_.preparedSampleRate() : 0.;
         if (rate > 0. && overviewRate_ != rate) {
             overviewFftSize_ = overviewFftForRate(rate);
             overviewRate_ = rate;
         }
-        const auto size = overview ? (rate > 0. ? overviewFftSize_ : activeSpectrumFftSize_) : 1024;
+        auto size = overview ? (overviewRate_ > 0. ? overviewFftSize_ : activeSpectrumFftSize_) : 1024;
+        if (spectrumMode() && requestedSpectrumFftSize_ > 0) size = requestedSpectrumFftSize_;
         std::optional<SpectrumLeases> retired;
         if (activeSpectrumFftSize_ != size) {
             takeSpectrumLeases(retired.emplace());
@@ -1926,6 +1933,20 @@ AnalysisPane::AnalysisPane() {
     };
     setHistoryMotion(SharedSpectrumView::HistoryMotion::Scroll);
     addAndMakeVisible(historyBox);
+    spectrumBlockBox_.setTitle("Spectrum block size");
+    spectrumBlockBox_.setTooltip("Set the analysis block in samples for this Spectrum and its pinned channels.");
+    for (std::size_t i = 0; i < SharedSpectrumView::spectrumBlockSizes.size(); ++i) {
+        const auto size = SharedSpectrumView::spectrumBlockSizes[i];
+        spectrumBlockBox_.addItem(size == 0 ? juce::String("Block: Auto") : "Block: " + juce::String(size),
+                                  static_cast<int>(i) + 1);
+    }
+    spectrumBlockBox_.setSelectedId(1, juce::dontSendNotification);
+    spectrumBlockBox_.onChange = [this] {
+        const auto index = spectrumBlockBox_.getSelectedItemIndex();
+        if (index >= 0 && index < static_cast<int>(SharedSpectrumView::spectrumBlockSizes.size()))
+            view.setSpectrumBlockSize(SharedSpectrumView::spectrumBlockSizes[static_cast<std::size_t>(index)]);
+    };
+    addChildComponent(spectrumBlockBox_);
     spectrogramScaleBox.setTitle("Spectrogram frequency scale");
     spectrogram::configureScaleBox(spectrogramScaleBox);
     spectrogramScaleBox.onChange = [this] {
@@ -2054,6 +2075,7 @@ void AnalysisPane::setMode(SharedSpectrumView::Mode mode) {
         ? "Clear this view and restart its cumulative average."
         : "Clear this view's display interval; other analyzer views and audio are unchanged.");
     channelBox.setEnabled(spectral || mode == SharedSpectrumView::Mode::Spectrogram);
+    spectrumBlockBox_.setVisible(spectral && !modeBox.isVisible());
     const bool spectrogram = mode == SharedSpectrumView::Mode::Spectrogram;
     historyBox.setVisible(spectrogram);
     spectrogramScaleBox.setVisible(spectrogram);
@@ -2191,11 +2213,11 @@ void AnalysisPane::frame(std::shared_ptr<SharedAnalysis> broker, std::int64_t ma
 void AnalysisPane::usePageControls() {
     modeBox.setVisible(false);
     sourceBox.setVisible(false);
-    resized();
+    setMode(view.mode());
 }
 void AnalysisPane::resized() {
-    const std::array<juce::Component *, 18> controls{&modeBox, &sourceBox, &pointBox, &channelBox, &paletteBox, &slopeBox,
-        &scaleBox, &spectrogramScaleBox, &spectrogramFloor_, &spectrogramCeiling_, &spectrogramGammaBox_, &spectrogramRulerButton_,
+    const std::array<juce::Component *, 19> controls{&modeBox, &sourceBox, &pointBox, &channelBox, &paletteBox, &slopeBox,
+        &scaleBox, &spectrumBlockBox_, &spectrogramScaleBox, &spectrogramFloor_, &spectrogramCeiling_, &spectrogramGammaBox_, &spectrogramRulerButton_,
         &historyBox, &reverseButton, &freezeButton, &resetButton, &expandButton, &spectrogramPngButton_};
     const bool pageControls = !modeBox.isVisible();
     const int columns = std::clamp(getWidth() / (pageControls ? look::mixPageWidth : 96), 1, 4);
