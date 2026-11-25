@@ -92,10 +92,10 @@ class AdiApplication final : public juce::JUCEApplication,
     // line to the running copy; an ordinary launch hands a file to the copy already running.
     bool moreThanOneInstanceAllowed() override { return isTestLaunch(getCommandLineParameters()); }
     void initialise(const juce::String &commandLine) override {
-        const auto args = juce::StringArray::fromTokens(commandLine, true);
+        const auto args = launchArguments(commandLine);
         juce::File project;
         for (int i = 0; i < args.size(); ++i) {
-            const auto a = args[i].unquoted();
+            const auto &a = args[i];
             if (a == "--no-audio")
                 noAudio_ = true;
             else if (a == "--smoke-output" && i + 1 < args.size())
@@ -598,9 +598,13 @@ class AdiApplication final : public juce::JUCEApplication,
         // A test launch runs on its own (WTS-01); should one reach here, it opens nothing.
         if (isTestLaunch(commandLine))
             return;
-        auto file = juce::File(commandLine.unquoted());
-        if (file.existsAsFile())
-            openSettled(file, false);
+        for (const auto &argument : launchArguments(commandLine))
+            if (!argument.startsWithChar('-')) {
+                const auto file = juce::File::getCurrentWorkingDirectory().getChildFile(argument);
+                if (file.existsAsFile())
+                    openSettled(file, false);
+                return;
+            }
     }
 
   private:
