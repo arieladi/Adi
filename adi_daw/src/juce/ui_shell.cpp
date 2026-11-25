@@ -12,6 +12,7 @@
 #include "adi/ui/meter_edits.hpp"
 #include "adi/ui/meters.hpp"
 #include "adi/ui/recording_edits.hpp"
+#include "adi/ui/send_edits.hpp"
 #include "adi/ui/tempo_edits.hpp"
 #include "adi/ui/track_edits.hpp"
 #include "adi/store.hpp"
@@ -2864,6 +2865,10 @@ bool AdiRootComponent::insertReturnTrack(std::int64_t group) {
     const auto id = edit.select;
     edit.ops.front().selBefore = session_.advisory();
     colourNewTrack(current->tracks, edit.ops, [this](std::int64_t t) { return arrangement.colourIndex(t); }); // ADR-0211 d2
+    // The tracks' sends to it, fully down, in the same step, so a first drag is heard (walk-A A10).
+    const std::string stepLabel = edit.ops.front().label;
+    for (auto &send : newReturnSends(*current, id, group, stepLabel.c_str()))
+        edit.ops.push_back(std::move(send));
     const auto result = submitter_.submit(std::move(edit.ops));
     if (!result)
         return fail(result.error);
