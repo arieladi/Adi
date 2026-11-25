@@ -93,6 +93,15 @@ public:
     std::unique_ptr<DeviceInstance> makeDevice(const juce::PluginDescription& desc,
                                                double sampleRate, int blockSize,
                                                std::string& error);
+    /// The same, with the identity taken from `desc` (the project's saved
+    /// spelling of the module, and so its exact uid) and the plug-in loaded
+    /// from `module`, the catalogue's real bundle (DF-E76: a symlinked alias
+    /// of a bundle is opened as the bundle it names; on Linux the alias's own
+    /// name does not name the binary inside).
+    std::unique_ptr<DeviceInstance> makeDevice(const juce::PluginDescription& desc,
+                                               const juce::PluginDescription& module,
+                                               double sampleRate, int blockSize,
+                                               std::string& error);
 
     [[nodiscard]] juce::AudioPluginFormatManager& formats() noexcept { return formats_; }
 
