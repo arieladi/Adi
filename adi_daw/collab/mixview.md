@@ -155,6 +155,12 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - The software-peer tests verify 750 Hz at +6.02 dB and 5,625 Hz at -6.02 dB, both at the correct heard sample, with unchanged worker passes, transforms and frame requests on hover.
 - Strict Release passed 11 suites, 5,605 checks. Archive SHA-256 `eb70c281d9818f75c1a9b3a10489cd6ff6aad6bf2978ae383f3bfae735cba1bb`.
 
+## 25 November 2026 · MX-21 Pre/Post Spectrogram PNG · lands after 3 December
+
+- **PR requested** `mixview/mx21-spectrogram-delta-png-lands-after-2026-12-03` at `833d19674703adac7784648f0c546707bea37844`. Export PNG waits for a complete heard pair, copies the signed raster when selected and uses the shared atomic PNG writer. A frozen comparison remains exportable across a seek. Thaw waits for a fresh heard pair.
+- The missing Export PNG control failed first. The strict Release passed all 11 suites, 5,609 checks. The chooser and pixel identity across two saved files are in the live brief.
+- Review ZIP SHA-256 `4639beb5bdb27f1e87dd6be8f5c1af9c176a21de679ee69da3af45bb73c1aeea`. Executable `926d020439621c761c7526dd830bc75ca053bbed644f51d46c4f73968dfe4425`. Retest brief uses the same source hash.
+
 ### 25 November — MX13 Focus musical windows
 
 **PR requested** `mixview/mx13-musical-window-lands-after-2026-12-03` at `5c88abf073d56cd9e5c99f3aeac3d4cb24a68532`, after captured true peak. Focus Scope offers One Beat and One Bar. The default is still One Bar. A view change clears the former interval and region and requests the new window on the same grouped sources. Tempo and signature edges share exact rounded sample positions. A Locate or selection at a rounded-down boundary starts the new interval. The existing Sum level summary remains readable with the added control.
