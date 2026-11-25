@@ -11,6 +11,12 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 - **Native dynamics admission (DF-M28).** Recommend Opto and Filtered Clean first, then internal-key Gate and De-esser after the preset and device-key prerequisites pass review. This gates their Add entries. Which middle-function default order do you want? Recommend EQ → Gate → Compressor → De-esser → Clip/Limiter, preserving existing chain edits.
 - **Mix View forms (DF-M47/48).** Recommend the whole-window editor and its optional analyser dock. Confirm any additional detached or docked form after reviewing the Window sheets. This gates those variants.
 
+### 25 November — MX13 Focus Difference RMS
+
+**PR requested** `mixview/mx13-difference-rms-lands-after-2026-12-03` at `a6b79cad5b99498fdb016139f5222a74cdea2a28`, after the frequency ruler. The waveform's RMS reads the same aligned A minus B samples as its graph before decimation and display clipping. Stereo shows both lanes, Left and Right reuse them, and Mid and Side fold before measuring. Freeze holds the number with its waveform. Pair changes, a pending Locate, and Difference Spectrum clear an obsolete readout.
+
+Six checks failed on the parent. Release passed 924 shared analysis, 536 Mix View and 594 spectrum checks. The existing paths produce identical RMS for equivalent short and grouped captures. Exact null, folded pulses, no extra tap or transform, and Freeze through Stop, Locate, resize and thaw pass. Changed units passed warnings as errors. Review archive `fe4e857f1dfa6843a7360cb9137d2208e29638e414760902068c38a5979b8248`, application `c9a4b9cabfa8a274885cf32eaf3d90043a7e7adf917dd17162d3cc6707907e80`.
+
 ### 25 November — MX21 Spectrogram frequency ruler
 
 **PR requested** `mixview/mx21-spectrogram-ruler-lands-after-2026-12-03` at `578e321f2b8f037da3939c893f5a6f32904cb843`, after the display levels. The dedicated Spectrogram has an optional frequency ruler in a left gutter. The ticks use the same frequency map as the history and cursor, including the active Nyquist limit. Turning it off restores the original picture exactly. Compact tiles and exported data images keep their original geometry.
