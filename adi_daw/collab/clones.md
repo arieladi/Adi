@@ -17,6 +17,10 @@ Win granted the two window sites on 22 November. The window lane reviews the ADI
 
 The clones lane will compare the saved positions and corner weights against ADI. Its pen files are `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 25 November 2026 — For Window, strict Release shell test build
+
+The unmodified `ui_test_hygiene.hpp` at line 76 prevents the MSVC Release `/W4 /WX` build of the registered `adi_ui_shell_tests` target. The release CRT removes the report calls inside the range-for body, leaving `kind` unused. The ordinary `test_ui_shell.cpp` object and a minimal translation unit using the main-branch header both fail with C4189 promoted to an error. Window owns this header. I recommend marking that existing loop variable `[[maybe_unused]]` and rebuilding the unmodified shell suite. The clones headless dispatcher uses that one annotation in its private copy to exercise the existing shell test bodies.
+
 ## 25 November 2026 — Restore the Volume audio retrigger on current main
 
 `clones/shaper-trigger-current-1125` at `58cb2115` — Retrigger Volume contours from stereo audio onsets. Lands after 3 December. Use this update for queue item 18. The existing three Pan descriptor positions, optimized Width path, Crush processing and effective crossover spacing remain in the current integration. The eleven trigger controls at IDs 754–764 append after the 418 existing descriptors. The patch graph check verified all 429 declarations and their physical parameter messages.
