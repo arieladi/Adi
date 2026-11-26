@@ -195,9 +195,11 @@ void NoteEditor::shapeStroke() {
 }
 void NoteEditor::setTrimMode(bool on) {
     trimMode_ = on;
-    if (on)
-        drawMode_ = false;
-    setMouseCursor(on ? juce::MouseCursor::CrosshairCursor : juce::MouseCursor::NormalCursor);
+    if (on && drawMode_) {
+        setDrawMode(false);
+        return;
+    }
+    setMouseCursor(on || drawMode_ ? juce::MouseCursor::CrosshairCursor : juce::MouseCursor::NormalCursor);
     panel.repaint();
 }
 void NoteEditor::trimStroke() {
@@ -298,8 +300,11 @@ void NoteEditor::setDrawMode(bool on) {
     drawMode_ = on;
     if (on)
         trimMode_ = false;
-    setMouseCursor(on ? juce::MouseCursor::CrosshairCursor : juce::MouseCursor::NormalCursor);
+    setMouseCursor(on || trimMode_ ? juce::MouseCursor::CrosshairCursor : juce::MouseCursor::NormalCursor);
     panel.repaint();
+    panel.root.transport.draw.setToggleState(on, juce::dontSendNotification);
+    panel.root.arrangement.canvas.repaint();
+    panel.root.commands().manager.commandStatusChanged();
 }
 std::vector<std::int64_t> NoteEditor::drawnSteps() const {
     std::vector<std::int64_t> out;
@@ -2299,10 +2304,8 @@ bool NoteEditor::keyPressed(const juce::KeyPress &k) {
         panel.setFocus(!panel.focus());
         return true;
     }
-    if (!mods.isAnyModifierKeyDown() && (code == 'b' || code == 'B')) {
-        setDrawMode(!drawMode_);
-        return true;
-    }
+    if (!mods.isAnyModifierKeyDown() && (code == 'b' || code == 'B'))
+        return panel.root.commands().key(k, panel.root);
     if (!mods.isAnyModifierKeyDown() && (code == 'f' || code == 'F')) {
         setFold(!folded_);
         return true;
@@ -4460,7 +4463,7 @@ void ClipViewPanel::mouseDown(const juce::MouseEvent &e) {
         return;
     }
     if (drawBox().contains(at)) {
-        notes.setDrawMode(!notes.drawMode());
+        root.command(AppCommands::DrawMode);
         return;
     }
     if (trimBox().contains(at)) {

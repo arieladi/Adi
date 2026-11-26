@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
+#include "adi/applied_batches.hpp"
 #include "adi/ops.hpp"
 #include "adi/store_rows.hpp"
 #include <span>
@@ -46,6 +47,12 @@ struct PluginInsertOptions {
 [[nodiscard]] PreparedBuiltinInsert preparePluginInsert(Store&,const rows::PluginRef&,std::int64_t track,
     std::optional<std::int64_t> beforeDevice={},const PluginInsertOptions& = {},
     std::int64_t retainedDeviceId=0,std::span<const OpRequest> newTrack={});
+// Replace a device of the same role in its chain. The caller may append
+// parameter and state requests for the new device before committing.
+[[nodiscard]] PreparedBuiltinInsert prepareBuiltinReplacement(Store&, std::string_view uid,
+    std::int64_t targetDevice, std::int64_t retainedDeviceId=0);
+[[nodiscard]] PreparedBuiltinInsert preparePluginReplacement(Store&, const rows::PluginRef&,
+    std::int64_t targetDevice, std::int64_t retainedDeviceId=0);
 [[nodiscard]] CommitResult commitBuiltinInsert(Store&,const PreparedBuiltinInsert&,Actor=Actor::User);
 
 struct DeviceMoveSource {
@@ -53,7 +60,8 @@ struct DeviceMoveSource {
 };
 struct PreparedDeviceMove {
     bool ok = false;
-    std::string error, sourceFile;
+    std::string error;
+    AppliedSource source;
     std::vector<OpRequest> requests;
     CommitOptions options;
 };
@@ -61,11 +69,24 @@ struct PreparedDeviceMove {
 // track's root chain, which is created in the same Undo step when needed.
 [[nodiscard]] PreparedDeviceMove prepareDeviceMove(Store&, DeviceMoveSource, std::int64_t track,
                                                     std::optional<std::int64_t> before);
+// Move one contiguous range from a single chain in its existing visual order.
+[[nodiscard]] PreparedDeviceMove prepareDeviceMove(Store&, std::span<const DeviceMoveSource>,
+                                                    std::int64_t track, std::optional<std::int64_t> before);
 [[nodiscard]] CommitResult commitDeviceMove(Store&, const PreparedDeviceMove&, Actor = Actor::User);
 std::span<const OpDescriptor> builtinReferenceOps();
 
 namespace detail {
+enum class DeviceRole { MidiEffect, Instrument, AudioEffect };
+struct ChainDevice {
+    std::int64_t id, ord;
+    DeviceRole role;
+    bool rack;
+};
+DeviceRole deviceRole(std::string_view subtype) noexcept;
+std::vector<ChainDevice> deviceChainOrder(const SQLite::Database&, std::int64_t chain);
+std::size_t deviceInsertPosition(std::span<const ChainDevice>, DeviceRole, std::size_t requested);
 std::int64_t deviceChainOwner(const SQLite::Database&, std::int64_t chain);
-void requireDeviceInsertTrack(const SQLite::Database&, std::int64_t track);
+void requireDeviceInsertTrack(const SQLite::Database&, std::int64_t track,
+                              DeviceRole = DeviceRole::AudioEffect, std::string_view deviceName = {});
 }
 }
