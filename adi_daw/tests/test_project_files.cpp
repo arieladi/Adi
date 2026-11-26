@@ -22,15 +22,15 @@ struct Fixture {
     test::TempDirectory temp{"project_files","source"};
     std::unique_ptr<Store> store;
     fs::path source,folder;
-    Fixture() {
-        folder=temp.path()/"original";fs::create_directories(folder/"audio");
+    explicit Fixture(const fs::path& sample = "audio/tone.wav") {
+        folder=temp.path()/"original";fs::create_directories((folder/sample).parent_path());
         source=folder/"Source.adi";StoreError error{};store=Store::createEmpty(source,error);
         if(!store)throw std::runtime_error("create fixture");
         store->db().exec("INSERT INTO project(id,name) VALUES(1,'Original');"
             "INSERT INTO tracks(id,kind,name) VALUES(1,'audio','Audio'),(9,'master','Main');");
-        {audio::WavWriter wave(folder/"audio/tone.wav",48000,1,audio::WavFormat::Float32);
+        {audio::WavWriter wave(folder/sample,48000,1,audio::WavFormat::Float32);
             std::array<float,512> samples{};samples.fill(0.25f);wave.write(samples.data(),512);}
-        OpRequest capture;const auto prepared=media::prepareImport(*store,"audio/tone.wav",10,1,capture);
+        OpRequest capture;const auto prepared=media::prepareImport(*store,sample,10,1,capture);
         if(!prepared.ok)throw std::runtime_error(prepared.error);
         OpRequest clip;clip.opType="clip.create";clip.payload={{"id",5},{"track",1},{"kind","audio"},{"pos",0},{"length",5765760}};
         OpRequest attach;attach.opType="clip.attachAudio";attach.payload={{"id",5},{"media",10},{"frames",512}};
@@ -93,6 +93,37 @@ void copiesAndSwitches() {
     original.reset();f.store.reset();
     auto reopened=Store::open(newPath,error);
     check(reopened && resolves(*reopened) && History(*reopened).canUndo(),"Save As and its history survive reopen");
+}
+void namedSaveAsKeepsMediaReferences() {
+    const fs::path recording = "Samples/Recorded/Audio.wav";
+    Fixture f(recording);
+    const auto target = f.target("new-project", "Variation.adi");
+    const auto originalTake = f.folder / recording;
+    const auto saved = f.store->saveAs(target);
+    check(saved.ok, "Save As switches an already named song to a new project folder");
+    if (!saved.ok) return;
+
+    const auto resolvedTake = [&] {
+        std::string error;
+        return media::resolveMedia(media::projectFolder(*f.store), media::mediaRow(f.store->db(), 10), error);
+    };
+    const auto linked = resolvedTake();
+    check(fs::exists(f.source) && !linked.empty() && fs::equivalent(linked, originalTake),
+          "named Save As preserves the original project and keeps referencing its audio");
+
+    const auto hidden = f.temp.path() / "renamed-original";
+    fs::rename(f.folder, hidden);
+    check(resolvedTake().empty(), "named Save As depends on the original media until it is collected");
+    fs::rename(hidden, f.folder);
+
+    const auto collected = f.store->collectAllAndSave();
+    check(collected.ok, "Collect All and Save copies the media into the new project");
+    if (!collected.ok) return;
+    fs::rename(f.folder, hidden);
+    const auto local = resolvedTake();
+    const auto relative = local.lexically_normal().lexically_relative(media::projectFolder(*f.store));
+    check(!local.empty() && !relative.empty() && *relative.begin() != "..",
+          "the collected variation still resolves its own copy after the original project moves");
 }
 void refusalsAndMissingMedia() {
     Fixture f;const auto target=f.target("pending");
@@ -214,5 +245,5 @@ void unknownMajorAndReaders() {
     check(!newer->saveAs(refused).ok && !fs::exists(refused),"Save As cannot turn an unsupported major into an editable project");
 }
 }
-int main(){try{copiesAndSwitches();refusalsAndMissingMedia();readOnlySource();historyBranches();symlinkedDestination();checkpointRelocation();unknownMajorAndReaders();}catch(const std::exception& e){check(false,e.what());}
+int main(){try{copiesAndSwitches();namedSaveAsKeepsMediaReferences();refusalsAndMissingMedia();readOnlySource();historyBranches();symlinkedDestination();checkpointRelocation();unknownMajorAndReaders();}catch(const std::exception& e){check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;}
