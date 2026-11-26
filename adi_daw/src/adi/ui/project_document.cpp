@@ -245,45 +245,115 @@ std::unique_ptr<ProjectDocument> ProjectDocument::open(const std::filesystem::pa
                                                        bool create, engine::DeviceLoader loader,
                                                        std::string &error, const RecordingDefaults *defaults) {
     try {
-        StoreError result{};
-        // New is the store's: the project row, Main and Live's default Set (two MIDI and two audio
-        // tracks), their strips and the 120 BPM, 4/4 maps, written as the history's root, not an
-        // undo step (#307, N2; Live 12 manual 5.4.2; ADR-0209 §10 d10).
-        auto store = !create          ? Store::open(path, result)
-                     : defaults != nullptr ? Store::createNewProject(path, result, defaults->quantize,
-                                                                     defaults->keepMonitoringLatency)
-                                           : Store::createNewProject(path, result);
-        if (!store) {
-            error = "Cannot open project: " + std::string(toString(result));
-            return {};
-        }
-        // New's audio and MIDI tracks monitor on Auto, as Live's (N67, ruled by win under ADR-0203 d1),
-        // where the store's seed writes Off. Part of the new file, as the seed is: no op, no undo step.
-        if (create)
-            store->db().exec("UPDATE tracks SET monitor_mode = " + std::to_string(kNewTrackMonitorMode) +
-                             " WHERE kind IN ('audio', 'midi')");
-        const auto stem = path.stem().u8string();
-        auto document = std::unique_ptr<ProjectDocument>(new ProjectDocument(
-            std::move(store), std::string(reinterpret_cast<const char *>(stem.data()), stem.size())));
-        document->view_.refresh(*document->store_);
-        // A project made by an earlier build began its history with a "New project" step that made
-        // Main; that step stays the floor undo stops at. A project made now has no such step.
-        document->ops_.protectRoot(kNewProjectLabel);
-        engine::SessionSpec spec;
-        spec.sampleRate = document->view_.current()->sampleRate;
-        if (!document->session_.load(*document->store_, std::move(loader), spec)) {
-            error = document->session_.error();
-            return {};
-        }
-        document->realisedGeneration_ = document->view_.generation();
-        document->parameterOps_.attachSession(document->session_);
-        document->feed_.publish(document->session_, document->realisedGeneration_);
-        document->persistReportedLatencies();
-        error.clear();
-        return document;
+        auto job = startOpen(path, create, std::move(loader), defaults);
+        while (job->phase() != OpenJob::Phase::ready && job->phase() != OpenJob::Phase::failed)
+            job->advance();
+        error = job->error();
+        return job->takeDocument();
     } catch (const std::exception &e) {
         error = e.what();
         return {};
+    }
+}
+
+ProjectDocument::OpenJob::OpenJob(std::filesystem::path path, bool create, engine::DeviceLoader loader,
+                                 const RecordingDefaults *defaults)
+    : path_(std::move(path)), create_(create), loader_(std::move(loader)) {
+    if (defaults) defaults_ = *defaults;
+}
+
+ProjectDocument::OpenJob::~OpenJob() = default;
+
+std::unique_ptr<ProjectDocument::OpenJob> ProjectDocument::startOpen(const std::filesystem::path &path,
+                                                                    bool create, engine::DeviceLoader loader,
+                                                                    const RecordingDefaults *defaults) {
+    return std::unique_ptr<OpenJob>(new OpenJob(path, create, std::move(loader), defaults));
+}
+
+std::unique_ptr<ProjectDocument> ProjectDocument::OpenJob::takeDocument() {
+    return phase_ == Phase::ready ? std::move(document_) : nullptr;
+}
+
+void ProjectDocument::OpenJob::fail(std::string reason) {
+    error_ = std::move(reason);
+    phase_ = Phase::failed;
+    document_.reset();
+}
+
+void ProjectDocument::OpenJob::prepare() {
+    StoreError result{};
+    // New starts from the store's default Set and history root.
+    auto store = !create_ ? Store::open(path_, result)
+                 : defaults_ ? Store::createNewProject(path_, result, defaults_->quantize, defaults_->keepMonitoringLatency)
+                             : Store::createNewProject(path_, result);
+    if (!store) {
+        fail("Cannot open project: " + std::string(toString(result)));
+        return;
+    }
+    // New's audio and MIDI tracks monitor on Auto (N67, ADR-0203 d1),
+    // as part of the initial file, before the first Undo step.
+    if (create_)
+        store->db().exec("UPDATE tracks SET monitor_mode = " + std::to_string(kNewTrackMonitorMode) +
+                         " WHERE kind IN ('audio', 'midi')");
+    const auto stem = path_.stem().u8string();
+    document_.reset(new ProjectDocument(std::move(store),
+                                       std::string(reinterpret_cast<const char *>(stem.data()), stem.size())));
+    auto &doc = *document_;
+    doc.view_.refresh(*doc.store_);
+    // Legacy projects can keep their initial New project history floor.
+    doc.ops_.protectRoot(kNewProjectLabel);
+    if (!doc.view_.storeCurrent(*doc.store_)) {
+        fail("The project changed while opening. Open it again to load the current version.");
+        return;
+    }
+    engine::SessionSpec spec;
+    spec.sampleRate = doc.view_.current()->sampleRate;
+    if (!doc.session_.beginLoad(*doc.store_, std::move(loader_), spec)) {
+        fail(doc.session_.error());
+        return;
+    }
+    totalDevices_ = doc.session_.loadProgress().totalDevices;
+    phase_ = totalDevices_ ? Phase::loadingDevices : Phase::buildingGraph;
+}
+
+void ProjectDocument::OpenJob::advance() {
+    try {
+        if (phase_ == Phase::preparing) {
+            prepare();
+            return;
+        }
+        if (phase_ == Phase::ready || phase_ == Phase::failed)
+            return;
+        auto &doc = *document_;
+        if (phase_ == Phase::loadingDevices) {
+            if (!doc.session_.loadNextDevice(*doc.store_)) {
+                fail(doc.session_.error());
+                return;
+            }
+            completedDevices_ = doc.session_.loadProgress().completedDevices;
+            if (completedDevices_ == totalDevices_)
+                phase_ = Phase::buildingGraph;
+            return;
+        }
+        if (!doc.view_.storeCurrent(*doc.store_)) {
+            fail("The project changed while opening. Open it again to load the current version.");
+            return;
+        }
+        if (!doc.session_.finishLoad(*doc.store_)) {
+            fail(doc.session_.error());
+            return;
+        }
+        if (!doc.view_.storeCurrent(*doc.store_)) {
+            fail("The project changed while opening. Open it again to load the current version.");
+            return;
+        }
+        doc.realisedGeneration_ = doc.view_.generation();
+        doc.parameterOps_.attachSession(doc.session_);
+        doc.feed_.publish(doc.session_, doc.realisedGeneration_);
+        doc.persistReportedLatencies();
+        phase_ = Phase::ready;
+    } catch (const std::exception &error) {
+        fail(error.what());
     }
 }
 History::SnapshotResult ProjectDocument::takeSnapshot(const std::string &name,

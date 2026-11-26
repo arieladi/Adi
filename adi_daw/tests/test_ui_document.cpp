@@ -4,6 +4,7 @@
 #include "adi/blob.hpp"
 #include "adi/edit_plan.hpp"
 #include "adi/engine/clip_details.hpp"
+#include "adi/media/blake3.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/settings/store.hpp"
 #include "adi/ui/project_document.hpp"
@@ -174,6 +175,159 @@ class SurfaceKnobs final : public device::DeviceInstance {
 Payload readLatencyReport(Store &store) {
     SQLite::Statement query(store.db(), "SELECT value FROM session_state WHERE key='devices.reported_latency'");
     return query.executeStep() ? Payload::parse(query.getColumn(0).getString()) : Payload(nullptr);
+}
+
+void slowProjectOpen(const std::filesystem::path &dir) {
+    using Clock = std::chrono::steady_clock;
+    constexpr int deviceCount = 20;
+    constexpr auto deviceTime = std::chrono::milliseconds(25);
+    const auto file = dir / "slow-open.adi";
+    {
+        StoreError error{};
+        auto store = Store::createEmpty(file, error);
+        if (!store) throw std::runtime_error(toString(error));
+        auto &db = store->db();
+        db.exec("INSERT INTO project(id,name) VALUES(1,'Slow project');"
+                "INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(1,'audio','Slow source',0),(9,'master','Main',1);"
+                "INSERT INTO mixer_strip(track_id) SELECT id FROM tracks;"
+                "INSERT INTO plugin_refs(id,format,uid,name) VALUES"
+                "(1,'clap','test.slow-open','Slow Open'),(2,'clap','test.slow-unavailable','Unavailable');"
+                "INSERT INTO device_chains(id,track_id) SELECT 1,id FROM tracks WHERE kind='audio' ORDER BY id LIMIT 1");
+        const std::array bytes{std::byte{0x42}};
+        const auto hash = media::blake3Bytes(bytes);
+        if (!hash) throw std::runtime_error("hash slow-open state");
+        SQLite::Statement blob(db, "INSERT INTO state_blobs(hash_blake3,data,size_bytes) VALUES(?,?,1)");
+        blob.bind(1, hash.hex);
+        blob.bind(2, bytes.data(), 1);
+        blob.exec();
+        SQLite::Statement device(db, "INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name) VALUES(?,1,?,?,'Slow device')");
+        SQLite::Statement state(db, "INSERT INTO plugin_state(device_id,stream_role,state_hash) VALUES(?,'state',?)");
+        for (int id = 1; id <= deviceCount; ++id) {
+            device.bind(1, id);
+            device.bind(2, id - 1);
+            device.bind(3, id == deviceCount ? 2 : 1);
+            device.exec();
+            device.reset();
+            state.bind(1, id);
+            state.bind(2, hash.hex);
+            state.exec();
+            state.reset();
+        }
+    }
+    struct Trace {
+        std::thread::id owner = std::this_thread::get_id();
+        bool ownerOnly = true;
+        int attempts = 0, created = 0, restored = 0, prepared = 0, destroyed = 0;
+        void onOwner() { ownerOnly = ownerOnly && std::this_thread::get_id() == owner; }
+    } trace;
+    class SlowDevice final : public device::DeviceInstance {
+      public:
+        explicit SlowDevice(Trace &events) : events_(events) { events_.onOwner(); ++events_.created; }
+        ~SlowDevice() override { events_.onOwner(); ++events_.destroyed; }
+        const device::DeviceIdentity &identity() const noexcept override { return identity_; }
+        bool loaded() const noexcept override { return true; }
+        bool loadState(const std::string &role, const std::vector<std::uint8_t> &bytes) override {
+            events_.onOwner();
+            const bool accepted = role == "state" && bytes == std::vector<std::uint8_t>{0x42};
+            if (accepted) ++events_.restored;
+            return accepted;
+        }
+        void prepare(double, std::int32_t) override { events_.onOwner(); ++events_.prepared; }
+        void process(const engine::NodeIo &io) noexcept override { device::passThrough(io); }
+      private:
+        Trace &events_;
+        device::DeviceIdentity identity_;
+    };
+    const auto loader = [&](const engine::DeviceRequest &request, std::string &error)
+        -> std::unique_ptr<device::DeviceInstance> {
+        trace.onOwner();
+        ++trace.attempts;
+        std::this_thread::sleep_for(deviceTime);
+        if (request.ref && request.ref->uid == "test.slow-open") return std::make_unique<SlowDevice>(trace);
+        error = "the fixture plug-in is unavailable";
+        return {};
+    };
+    const auto elapsed = [](Clock::time_point start) {
+        return std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+    };
+    using OpenJob = ui::ProjectDocument::OpenJob;
+    using Phase = OpenJob::Phase;
+    const auto active = [](const OpenJob &job) {
+        return job.phase() != Phase::ready && job.phase() != Phase::failed;
+    };
+    const auto start = Clock::now();
+    auto job = ui::ProjectDocument::startOpen(file, false, loader);
+    check(job && job->phase() == Phase::preparing && trace.attempts == 0, "opening starts before any device is loaded");
+    if (!job) return;
+    double longestTurn = elapsed(start);
+    int turns = 0;
+    std::size_t lastCompleted = 0;
+    bool monotonic = true, sawDevices = false, sawGraph = false;
+    while (active(*job) && turns < 4 * deviceCount) {
+        sawDevices = sawDevices || job->phase() == Phase::loadingDevices;
+        sawGraph = sawGraph || job->phase() == Phase::buildingGraph;
+        const auto turn = Clock::now();
+        job->advance();
+        longestTurn = std::max(longestTurn, elapsed(turn));
+        ++turns;
+        const auto completed = job->completedDevices();
+        monotonic = monotonic && completed >= lastCompleted && completed <= job->totalDevices();
+        lastCompleted = completed;
+    }
+    const double wall = elapsed(start);
+    std::printf("SC-415 20 slow plug-ins: %.2f ms wall, %.2f ms longest owner turn, %d turns, %d loader calls, %d resolved\n",
+                wall, longestTurn, turns, trace.attempts, trace.created);
+    check(monotonic && sawDevices && sawGraph && lastCompleted == deviceCount && job->totalDevices() == deviceCount &&
+              turns >= deviceCount && job->phase() == Phase::ready,
+          "device progress is monotonic and owner turns continue through graph preparation");
+    auto document = job->takeDocument();
+    check(document != nullptr, job->error().empty() ? "the slow project opens" : job->error().c_str());
+    if (!document) return;
+    const auto *missing = document->session().entryFor(deviceCount);
+    check(trace.attempts == deviceCount && document->session().stats().loaded == deviceCount - 1 &&
+              document->session().stats().placeholders == 1 && missing && missing->placeholder,
+          "all twenty devices are attempted, including one retained placeholder");
+    document.reset();
+    check(trace.ownerOnly && trace.created == deviceCount - 1 && trace.restored == trace.created &&
+              trace.prepared >= trace.created && trace.destroyed == trace.created,
+          "plug-in creation, state restore, DSP preparation and destruction stay with the document owner");
+    check(longestTurn < wall / 3, "opening yields to the owner between slow plug-in loads");
+
+    trace = {};
+    auto cancelled = ui::ProjectDocument::startOpen(file, false, loader);
+    check(cancelled != nullptr, "create a second candidate to cancel");
+    if (!cancelled) return;
+    for (int step = 0; active(*cancelled) && trace.attempts < 4 && step < deviceCount; ++step)
+        cancelled->advance();
+    check(active(*cancelled) && trace.attempts == 4 && !cancelled->takeDocument(),
+          "a partial open exposes progress without exposing an installable document");
+    cancelled.reset();
+    check(trace.ownerOnly && trace.created == 4 && trace.restored == 4 && trace.destroyed == 4,
+          "cancelling between steps destroys only the devices created so far on their owner");
+    {
+        StoreError error{};
+        const auto reopened = Store::open(file, error);
+        check(reopened != nullptr, "a cancelled open releases its project file lease");
+    }
+
+    trace = {};
+    auto stale = ui::ProjectDocument::startOpen(file, false, loader);
+    check(stale != nullptr, "create a candidate to test a concurrent project change");
+    if (!stale) return;
+    for (int step = 0; active(*stale) && trace.attempts < 1 && step < deviceCount; ++step)
+        stale->advance();
+    check(active(*stale) && trace.attempts == 1, "a staged candidate has begun resolving the original stored project");
+    {
+        SQLite::Database writer(media::pathUtf8(file), SQLite::OPEN_READWRITE);
+        writer.exec("UPDATE project SET name='Changed during Open' WHERE id=1");
+    }
+    for (int step = 0; active(*stale) && step < 4 * deviceCount; ++step)
+        stale->advance();
+    check(stale->phase() == Phase::failed && !stale->error().empty() && !stale->takeDocument(),
+          "a change on another SQLite connection refuses the now-stale candidate");
+    stale.reset();
+    check(trace.ownerOnly && trace.created > 0 && trace.destroyed == trace.created,
+          "a stale candidate releases all of its devices on the owner");
 }
 
 void reportedDeviceLatency(const std::filesystem::path &dir) {
@@ -1873,6 +2027,11 @@ int main(int argc, char **argv) {
         largeSongResponse(speedDir.path());
         return failures != 0;
     }
+    if (argc == 2 && std::string_view(argv[1]) == "--slow-open-only") {
+        test::TempDirectory speedDir("ui_document", "slow-open");
+        slowProjectOpen(speedDir.path());
+        return failures != 0;
+    }
     if (argc == 2 && std::string_view(argv[1]) == "--long-take-speed-only") {
         test::TempDirectory speedDir("ui_document", "long-take");
         longTakeStopResponse(speedDir.path());
@@ -2883,6 +3042,7 @@ int main(int argc, char **argv) {
     dropDeviceOnNewTrack(temp.path());
     mixSurfacePublication(temp.path() / "mix-surface.adi");
     reportedDeviceLatency(temp.path());
+    slowProjectOpen(temp.path());
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

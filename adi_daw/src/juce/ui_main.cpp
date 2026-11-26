@@ -83,6 +83,55 @@ class UndoHistoryWindow final : public juce::DocumentWindow {
     }
     void closeButtonPressed() override { setVisible(false); }
 };
+class ProjectOpenWindow final : public juce::DocumentWindow {
+  public:
+    ProjectOpenWindow(const juce::File& file, juce::Component* previous)
+        : juce::DocumentWindow("Open ADI Project", look::frame, juce::DocumentWindow::closeButton),
+          body_(new Body(file.getFileName())) {
+        setContentOwned(body_, true);
+        setUsingNativeTitleBar(true);
+        centreAroundComponent(previous, getWidth(), getHeight());
+        setVisible(true);
+    }
+    void showStage(const juce::String& text, double progress = -1.0) {
+        body_->status.setText(text, juce::dontSendNotification);
+        body_->progress = progress;
+    }
+    bool cancelled() const noexcept { return body_->cancelled; }
+    void closeButtonPressed() override { body_->requestCancel(); }
+
+  private:
+    struct Body final : juce::Component {
+        explicit Body(const juce::String& filename) {
+            name.setText(filename, juce::dontSendNotification);
+            progressBar.setPercentageDisplay(false);
+            cancel.addShortcut(juce::KeyPress(juce::KeyPress::escapeKey));
+            cancel.onClick = [this] { requestCancel(); };
+            addAndMakeVisible(name);
+            addAndMakeVisible(status);
+            addAndMakeVisible(progressBar);
+            addAndMakeVisible(cancel);
+            setSize(390, 136);
+        }
+        void resized() override {
+            auto area = getLocalBounds().reduced(14);
+            name.setBounds(area.removeFromTop(23));
+            status.setBounds(area.removeFromTop(23));
+            progressBar.setBounds(area.removeFromTop(17));
+            cancel.setBounds(area.removeFromBottom(29).removeFromRight(92));
+        }
+        void requestCancel() {
+            cancelled = true;
+            cancel.setEnabled(false);
+        }
+        juce::Label name, status;
+        double progress = -1;
+        juce::ProgressBar progressBar{progress};
+        juce::TextButton cancel{"Cancel"};
+        bool cancelled = false;
+    };
+    Body* body_;
+};
 } // namespace
 class AdiApplication final : public juce::JUCEApplication,
                              private juce::Timer,
@@ -152,16 +201,19 @@ class AdiApplication final : public juce::JUCEApplication,
             // ADI has no unsaved state: every op is committed to a file, so a new
             // project is made in the default projects folder (File & Folder).
             project = nextUntitledProject(*settings_);
-            if (!install(project, true)) {
+            if (!installNew(project)) {
                 setApplicationReturnValue(1);
                 quit();
                 return;
             }
-        } else if (!install(project, false)) {
-            setApplicationReturnValue(1);
-            quit();
-            return;
+            startAfterFirstOpen();
+            startTimer(20);
+        } else {
+            startTimer(20);
+            openSettled(project, false);
         }
+    }
+    void startAfterFirstOpen() {
         startLibrary();
         // The catalogue the first project read is listed at once; an Incremental discovery then finds
         // what was installed or removed since, in the background (engine-win's N58 handoff).
@@ -204,7 +256,6 @@ class AdiApplication final : public juce::JUCEApplication,
                 });
             };
         }
-        startTimer(20);
     }
     // The browser's Samples and Places (D1): the library index (#102) at its app-data file, on one
     // background owner. It registers and scans the User Library and the added content folders the
@@ -529,19 +580,135 @@ class AdiApplication final : public juce::JUCEApplication,
         return key;
     }
     // A project opened while a discovery runs waits for its adoption, so the plug-ins it finds load
-    // (`PluginCatalogueService::settleThen`); the Status Bar says why the open waits.
+    // (`PluginCatalogueService::settleThen`).
     void openSettled(const juce::File &file, bool create) {
-        if (!catalogue_ || !catalogue_->running()) {
-            install(file, create);
+        if (projectOpen_ || installingDocument_) {
+            if (root_)
+                root_->say("Another project is already opening.");
             return;
         }
+        if (create) {
+            if (!catalogue_ || !catalogue_->running()) {
+                (void)installNew(file);
+                return;
+            }
+            if (root_)
+                root_->say("Opening " + file.getFileName().toStdString() + " once the plug-in scan has finished…");
+            catalogue_->settleThen([this, file] {
+                if (!projectOpen_ && !installingDocument_ && !installNew(file) && root_)
+                    root_->say({});
+            });
+            return;
+        }
+        const auto request = ++openRequest_;
+        projectOpen_.emplace(PendingProjectOpen{file, request, {}});
+        if (!testLaunch()) {
+            openProgress_ = std::make_unique<ProjectOpenWindow>(file, window_.get());
+            openProgress_->showStage(catalogue_ && catalogue_->running() ? "Waiting for the plug-in scan…"
+                                                                         : "Reading the project…");
+        }
+        const auto start = [this, request] {
+            if (!projectOpen_ || projectOpen_->request != request || openWasCancelled())
+                return;
+            try {
+                std::string catalogueError;
+                (void)loader_.hydrateCatalogue(catalogueError);
+                projectOpen_->job = ProjectDocument::startOpen(
+                    pathFromUtf8(projectOpen_->file.getFullPathName().toStdString()), false, loader_.fn());
+                if (!projectOpen_->job) {
+                    openFailed("The project load could not start.");
+                    return;
+                }
+                if (openProgress_)
+                    openProgress_->showStage("Reading the project…");
+            } catch (const std::exception& error) {
+                openFailed(error.what());
+            }
+        };
+        if (catalogue_)
+            catalogue_->settleThen(start);
+        else
+            start();
+    }
+    bool openWasCancelled() const noexcept { return openProgress_ && openProgress_->cancelled(); }
+    void clearProjectOpen() {
+        openProgress_.reset();
+        projectOpen_.reset();
+    }
+    void openFailed(std::string error) {
+        clearProjectOpen();
+        report(error);
+        if (!document_) {
+            setApplicationReturnValue(1);
+            stopTimer();
+            quit();
+        }
+    }
+    void openCancelled() {
+        clearProjectOpen();
         if (root_)
-            root_->say("Opening " + file.getFileName().toStdString() + " once the plug-in scan has finished…");
-        catalogue_->settleThen([this, file, create] {
-            // A refused open leaves the project as it was; its alert says why, and the waiting line goes.
-            if (!install(file, create) && root_)
-                root_->say({});
-        });
+            root_->say("Project open cancelled.");
+        if (!document_) {
+            stopTimer();
+            quit();
+        }
+    }
+    void advanceProjectOpen() {
+        if (!projectOpen_)
+            return;
+        if (openWasCancelled()) {
+            openCancelled();
+            return;
+        }
+        auto &job = projectOpen_->job;
+        if (!job)
+            return;
+        try {
+            job->advance();
+        } catch (const std::exception& error) {
+            openFailed(error.what());
+            return;
+        }
+        // A plug-in can run a nested message loop while loading. A cancel in
+        // that loop is handled here, once the host call has returned.
+        if (openWasCancelled()) {
+            openCancelled();
+            return;
+        }
+        using Phase = ProjectDocument::OpenJob::Phase;
+        switch (job->phase()) {
+        case Phase::preparing:
+            break;
+        case Phase::loadingDevices:
+            if (openProgress_) {
+                const auto complete = job->completedDevices(), total = job->totalDevices();
+                const auto count = "Loading devices " + juce::String(static_cast<juce::int64>(complete)) +
+                                   " of " + juce::String(static_cast<juce::int64>(total)) + "…";
+                openProgress_->showStage(count, total ? static_cast<double>(complete) / static_cast<double>(total) : -1.0);
+            }
+            break;
+        case Phase::buildingGraph:
+            if (openProgress_)
+                openProgress_->showStage("Building the playback graph…");
+            break;
+        case Phase::failed:
+            openFailed(job->error());
+            break;
+        case Phase::ready: {
+            const auto file = projectOpen_->file;
+            auto next = job->takeDocument();
+            if (!next) {
+                openFailed("The loaded project was unavailable.");
+                return;
+            }
+            const bool first = !document_;
+            clearProjectOpen();
+            install(file, false, std::move(next));
+            if (first)
+                startAfterFirstOpen();
+            break;
+        }
+        }
     }
     void stopPluginCatalogue() {
         if (catalogue_)
@@ -564,6 +731,8 @@ class AdiApplication final : public juce::JUCEApplication,
             libraryThread_.detach();
     }
     void shutdown() override {
+        stopTimer();
+        clearProjectOpen();
         // A Collect and Export still running finishes first: its ZIP is not left half written.
         if (export_.joinable())
             export_.join();
@@ -574,7 +743,6 @@ class AdiApplication final : public juce::JUCEApplication,
         stopLibrary();
         stopPluginCatalogue();
         midiPorts_.reset();
-        stopTimer();
         chooser_.reset();
         settingsWindow_.reset();
         if (snapshotPrompt_ != nullptr)
@@ -630,7 +798,7 @@ class AdiApplication final : public juce::JUCEApplication,
         bridge_.reset();
         live_.reset();
     }
-    bool install(const juce::File &file, bool create) {
+    bool installNew(const juce::File &file) {
         if (file == juce::File{}) {
             report("Cannot create an Untitled project folder in " + projectsFolder(*settings_).getFullPathName().toStdString());
             return false;
@@ -638,12 +806,17 @@ class AdiApplication final : public juce::JUCEApplication,
         std::string error;
         std::string catalogueError;
         (void)loader_.hydrateCatalogue(catalogueError); // no scanner child or root enumeration
-        auto next = ProjectDocument::open(pathFromUtf8(file.getFullPathName().toStdString()), create, loader_.fn(), error,
+        auto next = ProjectDocument::open(pathFromUtf8(file.getFullPathName().toStdString()), true, loader_.fn(), error,
                                           &commands_->recordingDefaults());
         if (!next) {
             report(error);
             return false;
         }
+        install(file, true, std::move(next));
+        return true;
+    }
+    void install(const juce::File &file, bool create, std::unique_ptr<ProjectDocument> next) {
+        const juce::ScopedValueSetter<bool> installing(installingDocument_, true);
         // A worker preparing for the document going is stopped; its result is dropped.
         ++installGeneration_;
         importStop_.request_stop();
@@ -1078,7 +1251,6 @@ class AdiApplication final : public juce::JUCEApplication,
         syncMixView(*floating_, *root_, true);
         if (!noAudio_)
             attachAudio();
-        return true;
     }
     void attachAudio() {
         juce::AudioDeviceManager::AudioDeviceSetup setup;
@@ -1394,7 +1566,7 @@ class AdiApplication final : public juce::JUCEApplication,
         // no chooser; Save As names and places it (walk-A A3).
         if (id != AppCommands::NewProject && id != AppCommands::OpenProject)
             return false;
-        if (chooser_)
+        if (chooser_ || projectOpen_ || installingDocument_)
             return false;
         if (id == AppCommands::NewProject) {
             openSettled(nextUntitledProject(*settings_), true);
@@ -1445,9 +1617,13 @@ class AdiApplication final : public juce::JUCEApplication,
             settingsWindow_->panel().refreshValues();
     }
     void timerCallback() override {
+        if (ticking_)
+            return;
+        const juce::ScopedValueSetter<bool> ticking(ticking_, true);
         // The plug-in catalogue's running discovery: its progress, and its result once it has finished.
         if (catalogue_)
             catalogue_->poll();
+        advanceProjectOpen();
         if (!document_)
             return;
         document_->tick(static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
@@ -1519,6 +1695,15 @@ class AdiApplication final : public juce::JUCEApplication,
     std::unique_ptr<MidiPortHost> midiPorts_;
     std::uint64_t midiSeen_ = 0;
     juce::uint32 midiLitUntil_ = 0;
+    struct PendingProjectOpen {
+        juce::File file;
+        std::uint64_t request;
+        std::unique_ptr<ProjectDocument::OpenJob> job;
+    };
+    std::optional<PendingProjectOpen> projectOpen_;
+    std::unique_ptr<ProjectOpenWindow> openProgress_;
+    std::uint64_t openRequest_ = 0;
+    bool installingDocument_ = false, ticking_ = false;
     std::unique_ptr<ProjectDocument> document_;
     std::shared_ptr<const MainMeterSource> mainMeterSource_;
     juce::AudioDeviceManager manager_;

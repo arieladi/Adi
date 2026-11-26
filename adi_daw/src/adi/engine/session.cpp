@@ -29,6 +29,7 @@
 #include <utility>
 #include <functional>
 #include <mutex>
+#include <thread>
 
 namespace adi::engine {
 namespace {
@@ -235,6 +236,16 @@ struct Session::ScopeRuntime {
             port.store(nullptr, std::memory_order_release);
         }
     }
+};
+
+struct Session::PendingLoad {
+    const Store* store = nullptr;
+    std::thread::id owner;
+    gesture::detail::StoreWriteStamp stamp{};
+    std::uint64_t sequence = 0;
+    std::vector<std::size_t> deviceRows;
+    std::size_t next = 0;
+    bool failed = false;
 };
 
 Session::Session()
@@ -1481,9 +1492,16 @@ std::optional<bool> Session::refreshDeviceKeys(const Store& store, const std::sh
 }
 
 bool Session::load(const Store& store, DeviceLoader loader, SessionSpec spec) {
+    if (!beginLoad(store, std::move(loader), spec)) return false;
+    while (pendingLoad_->next < pendingLoad_->deviceRows.size())
+        if (!loadNextDevice(store)) return false;
+    return finishLoad(store);
+}
+
+bool Session::beginLoad(const Store& store, DeviceLoader loader, SessionSpec spec) {
     if(audio::onAudioThread)return false;
     error_.clear();
-    if (loaded_) {
+    if (loaded_ || pendingLoad_) {
         // One session, one project. A second project is a second session --
         // the instances this one holds are in a graph that may be rendering.
         error_ = "a project is already loaded in this session";
@@ -1496,6 +1514,12 @@ bool Session::load(const Store& store, DeviceLoader loader, SessionSpec spec) {
     }
     loader_ = std::move(loader);
     appliedSource_ = adi::appliedSource(store);
+    const auto sequence = appliedSource_.sequence();
+    const auto revision = gesture::detail::storeWriteStamp(store);
+    if (!revision) {
+        error_ = "cannot capture the project revision for opening";
+        return false;
+    }
     // Offline rendering loads a coherent read-only project. It retains its
     // source identity without entering the editable gesture domain.
     if(!store.readOnly()) {
@@ -1510,11 +1534,99 @@ bool Session::load(const Store& store, DeviceLoader loader, SessionSpec spec) {
     recordingProject_ = recordingIdentity(store);
     if (!readPlayback(store))
         return false;
-    loaded_ = true;
-    resolveNewRows(store);
-    const bool rebuilt = rebuild();
-    if (rebuilt) appliedSequence_ = appliedSource_.sequence();
-    return rebuilt;
+    if (gesture::detail::storeWriteStamp(store) != revision || appliedSource_.sequence() != sequence) {
+        error_ = "the project changed while it was opening";
+        return false;
+    }
+    auto pending = std::make_unique<PendingLoad>();
+    pending->store = &store;
+    pending->owner = std::this_thread::get_id();
+    pending->stamp = *revision;
+    pending->sequence = sequence;
+    pending->deviceRows.reserve(model_.devices.size());
+    for (std::size_t index = 0; index < model_.devices.size(); ++index)
+        if (!parkedDevice(model_.devices[index])) pending->deviceRows.push_back(index);
+    pendingLoad_ = std::move(pending);
+    return true;
+}
+
+Session::LoadProgress Session::loadProgress() const noexcept {
+    if (!pendingLoad_) return {};
+    const auto& pending = *pendingLoad_;
+    LoadProgress result{pending.next, pending.deviceRows.size(), {}};
+    if (pending.next < pending.deviceRows.size()) {
+        const auto& row = model_.devices[pending.deviceRows[pending.next]];
+        result.nextDevice = row.name;
+        if (result.nextDevice.empty()) {
+            if (const auto* ref = refFor(row)) result.nextDevice = ref->name;
+        }
+    }
+    return result;
+}
+
+bool Session::checkLoadRevision(const Store& store) {
+    if (audio::onAudioThread) return false;
+    if (!pendingLoad_) {
+        error_ = "no project opening is in progress";
+        return false;
+    }
+    auto& pending = *pendingLoad_;
+    if (pending.owner != std::this_thread::get_id() || pending.failed) return false;
+    if (pending.store != &store || !appliedSource_.sameConnection(adi::appliedSource(store)) ||
+        appliedSource_.sequence() != pending.sequence || gesture::detail::storeWriteStamp(store) != pending.stamp) {
+        pending.failed = true;
+        error_ = "the project changed while it was opening";
+        return false;
+    }
+    return true;
+}
+
+bool Session::loadNextDevice(const Store& store) {
+    if (!checkLoadRevision(store)) return false;
+    auto& pending = *pendingLoad_;
+    if (pending.next == pending.deviceRows.size()) return true;
+    try {
+        // SDK construction and state restoration stay on the owner. Leave
+        // no SQLite transaction open across a yield between devices.
+        resolveOne(store, model_.devices[pending.deviceRows[pending.next]]);
+        if (!checkLoadRevision(store)) return false;
+        ++pending.next;
+        error_.clear();
+        return true;
+    } catch (const std::exception& exception) {
+        pending.failed = true;
+        error_ = exception.what();
+        return false;
+    }
+}
+
+bool Session::finishLoad(const Store& store) {
+    if (!checkLoadRevision(store)) return false;
+    auto& pending = *pendingLoad_;
+    if (pending.next != pending.deviceRows.size()) {
+        error_ = "project devices are still opening";
+        return false;
+    }
+    try {
+        // Initial device preparation uses the saved sidechain/routing flags.
+        syncFlags();
+        loaded_ = true;
+        if (!rebuild()) {
+            pending.failed = true;
+            return false;
+        }
+        if (!checkLoadRevision(store)) {
+            loaded_ = false;
+            return false;
+        }
+        appliedSequence_ = pending.sequence;
+        pendingLoad_.reset();
+        return true;
+    } catch (const std::exception& exception) {
+        pending.failed = true;
+        error_ = exception.what();
+        return false;
+    }
 }
 
 std::optional<std::string> automationParamRef(const std::string& format, const std::string& id) {
