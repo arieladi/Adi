@@ -4156,14 +4156,7 @@ bool AdiRootComponent::jumpTo(std::int64_t tick) {
             return fail("The project has no tempo map to locate in.");
         return true;
     }
-    auto &sel = arrangement.geometry.selection;
-    sel.insert = sel.start = sel.end = tick;
-    sel.clip = 0;
-    sel.pickedClips.clear();
-    sel.marked = true;
-    arrangement.locate();
-    publishSelection();
-    arrangement.changed();
+    arrangement.placeInsertMarker(tick, true);
     return true;
 }
 bool AdiRootComponent::addLocatorAt(std::int64_t pos) {
@@ -4377,17 +4370,6 @@ bool AdiRootComponent::tapTempo(std::int64_t nowMs) {
         tapStep_ = after->txnId;
     return true;
 }
-namespace {
-// The insert marker, a point, at `tick`, and the playhead with it.
-void placeInsertMarker(ArrangementView &arrangement, std::int64_t tick) {
-    auto &sel = arrangement.geometry.selection;
-    sel.insert = sel.start = sel.end = tick;
-    sel.clip = 0;
-    sel.pickedClips.clear();
-    sel.marked = true;
-    arrangement.root.locate(tick);
-}
-} // namespace
 bool AdiRootComponent::setPositionAt(const std::string &text) {
     const auto at = parsePosition(text);
     if (!at)
@@ -4396,9 +4378,7 @@ bool AdiRootComponent::setPositionAt(const std::string &text) {
     if (!tick)
         return fail("Bar " + std::to_string(at->bar) + " has no beat " + std::to_string(at->beat) + ", sixteenth " +
                     std::to_string(at->sixteenth) + " in its time signature.");
-    placeInsertMarker(arrangement, *tick);
-    publishSelection();
-    arrangement.changed();
+    arrangement.placeInsertMarker(*tick);
     return true;
 }
 bool AdiRootComponent::stepPosition(int bars) {
@@ -4410,9 +4390,7 @@ bool AdiRootComponent::stepPosition(int bars) {
         tick = tickOf({to.bar, 1, 1}, meters); // a beat that bar does not have: its start
     if (!tick)
         return false;
-    placeInsertMarker(arrangement, *tick);
-    publishSelection();
-    arrangement.changed();
+    arrangement.placeInsertMarker(*tick);
     return true;
 }
 bool AdiRootComponent::setTempoAtPlay(const std::string &text, const char *label) {

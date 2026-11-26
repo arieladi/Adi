@@ -9895,6 +9895,57 @@ void undoHistoryWindow(AppCommands &commands, const std::filesystem::path &dir) 
     root.afterEdit = nullptr;
     document->release();
 }
+void insertMarkerRevealsPosition(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "insert-marker-view.adi", true, {}, error);
+    check(document != nullptr, "a new project for insert marker navigation");
+    if (!document)
+        return;
+    constexpr auto bar = 4 * textproj::kPPQ;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "insert-marker-view");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.setSize(1440, 900);
+    root.state().follow = false; // Explicit navigation works independently of playback Follow.
+    auto &arrangement = root.arrangement;
+    auto &lanes = arrangement.geometry;
+    auto &selection = lanes.selection;
+    lanes.scale = 30;
+    lanes.left = 0;
+    root.frame();
+    check(root.addLocatorAt(16 * bar), "add the offscreen locator at bar 17");
+    selection.track = 2;
+
+    auto typePosition = [&](const char *position) {
+        root.transport.position.onClick();
+        root.transport.fieldEditor.setText(position, false);
+        root.transport.fieldEditor.onReturnKey();
+        root.frame();
+    };
+    check(lanes.x(32 * bar) >= arrangement.canvas.getWidth(), "bar 33 starts to the right of the lanes");
+    typePosition("33.1.1");
+    check(selection.insert == 32 * bar && lanes.x(selection.insert) == 0 && root.state().timelineLeft == 128,
+          "typing an offscreen position places the marker at the left edge and saves the new view");
+    typePosition("34.1.1");
+    check(selection.insert == 33 * bar && lanes.x(selection.insert) == 120 && lanes.left == 128,
+          "typing a visible position moves the marker without scrolling");
+
+    selection.end = selection.start + bar;
+    check(lanes.x(0) < 0, "the song start is to the left of the lanes");
+    check(arrangement.canvas.keyPressed(juce::KeyPress(juce::KeyPress::homeKey)),
+          "Home invokes Go to Start from the Arrangement");
+    root.frame();
+    check(selection.insert == 0 && selection.start == selection.end && selection.track == 2 &&
+              lanes.x(selection.insert) == 0 && root.state().timelineLeft == 0,
+          "Home reveals the insert marker at the start and keeps the selected track");
+
+    check(lanes.x(16 * bar) >= arrangement.canvas.getWidth(), "the locator is to the right of the lanes");
+    arrangement.mouseDown(pressAt(arrangement, arrangement.topButton(ArrangementView::TopButton::Next).getCentre()));
+    root.frame();
+    check(selection.insert == 16 * bar && lanes.x(selection.insert) == 0 && root.state().timelineLeft == 64 &&
+              lanes.scale == 30 && !root.state().follow,
+          "Next Locator reveals the marker without changing zoom or enabling Follow");
+}
 // Live's locators (C3, N25; Live 12 manual 6.4, 6.9; MR 3.3): Set, which reads Del on a selected
 // locator; Previous and Next, to the arrangement's start or end past the first or the last; a click
 // jumps, a double-click while stopped plays; Ctrl/Cmd+R renames, Edit Info Text, the arrows move it,
@@ -20576,6 +20627,7 @@ int main(int argc, char **argv) {
     trace("showcase", [&] { showcase(commands, temp.path()); });
     trace("returnInGroup", [&] { returnInGroup(commands, temp.path()); });
     trace("loopMetronome", [&] { loopMetronome(commands, settings, temp.path()); });
+    trace("insertMarkerRevealsPosition", [&] { insertMarkerRevealsPosition(commands, temp.path()); });
     trace("locators", [&] { locators(commands, temp.path()); });
     trace("windowPlaces", [&] { windowPlaces(temp.path()); });
     trace("keymapGolden", [&] { keymapGolden(commands, settings, temp.path(), write); });

@@ -522,6 +522,8 @@ class ArrangementView final : public juce::Component {
     // earliest clip's start to the latest one's end across every track that holds clips; one clip
     // alone is selected as that clip. False, saying so, when there is nothing to select.
     bool selectAll();
+    // Explicit positioning reveals the insert marker and locates the transport.
+    void placeInsertMarker(std::int64_t tick, bool fromInsertMarker = false);
     void locate();
     // Live's right-click menu for the track area and the headers.
     // The lanes' or a header's menu at `where`. `lane`: in Automation Mode, the envelope under the click, whose
