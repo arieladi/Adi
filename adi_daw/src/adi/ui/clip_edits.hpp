@@ -5,6 +5,7 @@
 #pragma once
 #include "adi/engine/clip_details.hpp"
 #include "adi/engine/snapshot.hpp"
+#include "adi/ui/arrangement_geometry.hpp"
 #include "adi/ui/audio_drop.hpp"
 #include "adi/ui/midi_tracks.hpp"
 #include "adi/ui/note_geometry.hpp"
@@ -39,7 +40,12 @@ inline TrackEdit insertMidiClips(const engine::Snapshot &snapshot, const std::ve
         for (const auto &c : t->clips)
             if (c && c->posTicks < end && c->posTicks + c->lengthTicks > start) {
                 edit.ops.clear();
-                edit.refusal = "There is already a clip in that time on " + t->name + ".";
+                // The track named as its header shows it (walk-B B13); the reader borrows the snapshot.
+                const SnapshotReader reader(SnapshotPtr(std::shared_ptr<void>{}, &snapshot));
+                const auto shown = shownTrackNames(reader);
+                const auto named = shown.find(t->id);
+                edit.refusal = "There is already a clip in that time on " +
+                               (named != shown.end() ? named->second : t->name) + ".";
                 return edit;
             }
         edit.ops.push_back(op("clip.create",

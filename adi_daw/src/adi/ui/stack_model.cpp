@@ -489,6 +489,7 @@ void tracksFromSnapshot(const SnapshotReader &reader, const ArrangementGeometry 
                         SnapshotRows &out) {
     const auto rows = geometry.rows(reader);
     out.tracks.resize(rows.size());
+    out.names.resize(rows.size());
     out.items.clear();
     const TrackId referenceTrack = provider.reference(reader.tracks());
     out.chainOrder.resize(devices.size());
@@ -519,7 +520,9 @@ void tracksFromSnapshot(const SnapshotReader &reader, const ArrangementGeometry 
                     : roleName == "bass"  ? role::Bass
                     : roleName == "vocal" ? role::Vocal
                                           : std::uint8_t{0};
-        track.name = node.name;
+        // As its header shows it (walk-B B13). `names` was sized with `tracks`, so the view stays valid.
+        assignDisplayName(out.names[i], node.name, row.number());
+        track.name = out.names[i];
         track.itemBegin = static_cast<std::uint32_t>(out.items.size());
         auto at = std::lower_bound(out.chainOrder.begin(), out.chainOrder.end(),
                                    std::pair<TrackId, std::size_t>{track.id, 0});

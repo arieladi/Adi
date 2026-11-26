@@ -26,6 +26,30 @@ inline std::string displayName(const std::string &name, std::size_t position) {
         number.insert(0, hashes - number.size(), '0');
     return number + name.substr(hashes);
 }
+// displayName written into `out` in place: no temporary, so a string that already holds a name as long
+// allocates nothing (the Mix View's rows refill theirs each publication, walk-B B13).
+inline void assignDisplayName(std::string &out, const std::string &name, std::size_t position) {
+    std::size_t hashes = 0;
+    while (hashes < name.size() && name[hashes] == '#')
+        ++hashes;
+    if (hashes == 0) {
+        if (out != name)
+            out.assign(name);
+        return;
+    }
+    char digits[24];
+    std::size_t n = 0;
+    do {
+        digits[n++] = static_cast<char>('0' + position % 10);
+        position /= 10;
+    } while (position != 0 && n < sizeof digits);
+    out.clear();
+    for (std::size_t pad = n; pad < hashes; ++pad)
+        out.push_back('0');
+    while (n != 0)
+        out.push_back(digits[--n]);
+    out.append(name, hashes, std::string::npos);
+}
 // Track `id`'s name as its header shows it (displayName at its Live number), for what is named after a
 // track (a recorded take, Live 12 manual 19.2). Builds the order once: for commands, not for painting.
 inline std::string shownTrackName(const SnapshotReader &reader, std::int64_t id) {
@@ -37,6 +61,18 @@ inline std::string shownTrackName(const SnapshotReader &reader, std::int64_t id)
         if (place.id == id)
             return displayName(reader.tracks()[place.at]->name, place.number);
     return {};
+}
+// Every track's name as its header shows it, by id (walk-B B13): the order built once, for what lists
+// the tracks on a change, not for painting.
+inline std::map<std::int64_t, std::string> shownTrackNames(const SnapshotReader &reader) {
+    std::vector<TrackRow> rows;
+    rowsFromSnapshot(reader, rows);
+    TrackOrder order;
+    order.build(reader, rows);
+    std::map<std::int64_t, std::string> out;
+    for (const auto &place : order.places())
+        out.emplace(place.id, displayName(reader.tracks()[place.at]->name, place.number));
+    return out;
 }
 // What Live shows for the grid's spacing (manual §6.10): "1/16", "1/8T", "1 Bar", "2 Bars". A bar
 // here is four quarters: the ruler and the positions count bars in the project's meters (#299),
@@ -511,4 +547,11 @@ struct ArrangementGeometry {
         return result;
     }
 };
+// Track `id`'s name as its header shows it, from the geometry's rows (what the window draws by): a
+// stored "# Audio" at 3 reads "3 Audio" (walk-B B13). Empty for a track the rows do not hold.
+inline std::string shownName(const ArrangementGeometry &geometry, const SnapshotReader &reader, std::int64_t id) {
+    const auto rows = geometry.rows(reader);
+    const auto at = rows.find(id);
+    return at < rows.size() ? displayName(rows[at].track->name, rows[at].number()) : std::string();
+}
 } // namespace adi::ui
