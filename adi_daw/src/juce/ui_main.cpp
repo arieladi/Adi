@@ -48,8 +48,8 @@ class LiveMidiProcessor final : public engine::BlockProcessor {
     void process(const engine::AudioIo &io) noexcept override {
         auto &session = document_.session();
         feed_.pump(io.streamTimeSamples, io.frames, rate_, juce::Time::getMillisecondCounterHiRes(),
-                   [&session](std::int64_t sample, const engine::Event &event) noexcept {
-                       return session.enqueueMidiInput(sample, event);
+                   [&session](std::int64_t sample, const engine::Event &event, std::int64_t inputSample) noexcept {
+                       return session.enqueueMidiInput(sample, event, inputSample);
                    });
         document_.process(io);
     }
@@ -914,6 +914,7 @@ class AdiApplication final : public juce::JUCEApplication,
         };
         root->stopRecording = [this] { document_->stopRecording(); };
         root->recording = [this] { return document_->recording(); };
+        root->liveMidiTakes = [this] { return document_->liveMidiTakes(); };
         // Export Audio/Video (EX-11): the Export page, then a file, then a render on a worker.
         root->exportAudio = [this](const ExportChoices &c) { openExport(c); };
         // A mixer drag heard while it moves (MX-23, SRF-02): the document's live gesture.

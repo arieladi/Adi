@@ -38,7 +38,7 @@ public:
         mutable NodeId slot = kInvalidNode;
     };
 
-    bool push(std::int64_t sample, const Event&) noexcept;
+    bool push(std::int64_t sample, const Event&, std::int64_t inputSample) noexcept;
     void reset() noexcept;
     void render(const GraphHost::RenderBlock&, const AudioIo&, std::span<const Route>,
                 const Transport&, MidiInputCapture*) noexcept;
@@ -46,6 +46,7 @@ public:
 private:
     struct Timed {
         std::int64_t sample = 0;
+        std::int64_t inputSample = 0;
         std::uint64_t epoch = 0;
         Event event;
     };
