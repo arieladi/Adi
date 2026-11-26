@@ -15252,9 +15252,12 @@ void launchIsolation(AppCommands &commands) {
 // hardware is opened. A type that refuses inputs stands for a default input that cannot open.
 struct ListedAudioType final : juce::AudioIODeviceType {
     struct Device final : juce::AudioIODevice {
-        Device(const juce::String &out, const juce::String &in, bool refused)
+        Device(const juce::String &out, const juce::String &in, bool refused, bool outputHeld = false)
             : AudioIODevice(out.isNotEmpty() ? out : in, "Listed"), ins(in.isNotEmpty() ? 2 : 0),
-              outs(out.isNotEmpty() ? 2 : 0), error(refused && in.isNotEmpty() ? "The input will not open." : "") {}
+              outs(out.isNotEmpty() ? 2 : 0),
+              error(refused && in.isNotEmpty()       ? "The input will not open."
+                    : outputHeld && out.isNotEmpty() ? "The device is in use by another program."
+                                                     : "") {}
         int ins, outs;
         juce::String error;
         juce::BigInteger activeIns, activeOuts;
@@ -15294,11 +15297,12 @@ struct ListedAudioType final : juce::AudioIODeviceType {
         int getOutputLatencyInSamples() override { return 0; }
         int getInputLatencyInSamples() override { return 0; }
     };
-    ListedAudioType(juce::StringArray inputs, int defaultInput, bool refuseInputs = false)
-        : AudioIODeviceType("Listed Audio"), ins(std::move(inputs)), defaultIn(defaultInput), refused(refuseInputs) {}
+    ListedAudioType(juce::StringArray inputs, int defaultInput, bool refuseInputs = false, bool holdOutputs = false)
+        : AudioIODeviceType("Listed Audio"), ins(std::move(inputs)), defaultIn(defaultInput), refused(refuseInputs),
+          held(holdOutputs) {}
     juce::StringArray ins, outs{"Speakers"};
     int defaultIn;
-    bool refused;
+    bool refused, held; // held: every output is in use by another program (SC-375, the walk's A35)
     void scanForDevices() override {}
     juce::StringArray getDeviceNames(bool wantInputNames) const override { return wantInputNames ? ins : outs; }
     int getDefaultDeviceIndex(bool forInput) const override { return forInput ? defaultIn : 0; }
@@ -15307,7 +15311,7 @@ struct ListedAudioType final : juce::AudioIODeviceType {
     }
     bool hasSeparateInputsAndOutputs() const override { return true; }
     juce::AudioIODevice *createDevice(const juce::String &out, const juce::String &in) override {
-        return new Device(out, in, refused);
+        return new Device(out, in, refused, held);
     }
 };
 // A16 (walk-A): a first run (no device kept) on a machine with an input opened no input, so F9 had
@@ -15347,6 +15351,26 @@ void firstRunAudioInput(const std::filesystem::path &dir) {
     check(why.isEmpty() && stuck.isEmpty() && stuckIns == 0 && out == "Speakers",
           ("a default input that will not open leaves the output open, without an error: " + why.toStdString())
               .c_str());
+}
+// SC-375 and the walk's A35: when the output cannot be opened at launch (unplugged, or held by another
+// program), the box names the device and the cause, and a free input is not dropped with it; a device
+// chosen afterwards in Settings then plays at once, which the application makes sure of by attaching its
+// callback whether or not the first open succeeded (ui_main's attachAudio).
+void heldOutputKeepsInput(const std::filesystem::path &dir) {
+    settings::AppSettings fresh(appdata::App::Daw, dir / "held-output-audio.json");
+    juce::AudioDeviceManager manager;
+    manager.addAudioDeviceType(std::make_unique<ListedAudioType>(juce::StringArray{"Cable Output"}, 0, false, true));
+    juce::AudioDeviceManager::AudioDeviceSetup setup;
+    setup.outputDeviceName = "Speakers";
+    const auto why = openAudioDevice(manager, setup, fresh);
+    std::printf("held output: \"%s\"\n", why.toRawUTF8());
+    check(why.contains("Speakers") && why.contains("in use by another program"),
+          "the box names the device that would not open and the cause");
+    const auto *device = manager.getCurrentAudioDevice();
+    check(device != nullptr && manager.getAudioDeviceSetup().inputDeviceName == "Cable Output" &&
+              device->getActiveInputChannels().countNumberOfSetBits() == 2,
+          "the free input is open, inputs 1/2 on, though the output is not");
+    check(why.contains("Settings"), "and it says where to choose another output");
 }
 // Walk-A A27: New, Open and Quit destroy the main window, and on Windows that can run the message loop
 // (UiaDisconnectAllProviders waits in a COM modal loop with a UI Automation client attached). The
@@ -18763,6 +18787,7 @@ int main(int argc, char **argv) {
         }
     }
     trace("firstRunAudioInput", [&] { firstRunAudioInput(temp.path()); });
+    trace("heldOutputKeepsInput", [&] { heldOutputKeepsInput(temp.path()); });
     trace("liveParity", [&] { liveParity(commands, temp.path(), write); });
     trace("groupTracks", [&] { groupTracks(commands, temp.path()); });
     trace("footRows", [&] { footRows(commands, temp.path()); });

@@ -1086,17 +1086,16 @@ class AdiApplication final : public juce::JUCEApplication,
                     break;
                 }
             }
-        if (!matched) {
-            report("Requested audio driver is unavailable: " + requested);
-            return;
-        }
+        // SC-375: a driver or device that will not open is said, and the rest goes on: the callback below
+        // is attached whatever opened, so a device chosen afterwards in Settings plays at once. Returning
+        // here left it unattached, and a device chosen later opened, showed its latency and stayed
+        // silent, Play not moving, until the project was opened again.
+        if (!matched)
+            report("The audio driver \"" + requested + "\" is not available. Choose one in Settings > Audio.");
         // The devices named, an empty one the system's, then the channels each device's record keeps
         // in use: Live's 1, 2 and 1/2 in and out where none is kept (N20; Live 12 manual 17.2).
-        const auto error = openAudioDevice(manager_, setup, *settings_);
-        if (error.isNotEmpty()) {
+        else if (const auto error = openAudioDevice(manager_, setup, *settings_); error.isNotEmpty())
             report(error.toStdString());
-            return;
-        }
         document_->configureGraphWorkers([this](std::int32_t granted) -> std::uint32_t {
             if (!settings::graphWorkersEnabled(settings_->get(settings::kGraphWorkersKey), granted))
                 return 0;
