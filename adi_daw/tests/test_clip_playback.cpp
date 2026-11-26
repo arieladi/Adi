@@ -26,6 +26,9 @@
 #include <cstdlib>
 #include <filesystem>
 #include <new>
+#if !defined(_WIN32)
+#include <sys/resource.h>
+#endif
 using namespace adi;
 using namespace adi::engine;
 namespace fs = std::filesystem;
@@ -1174,6 +1177,74 @@ void externalSourceSnapshots() {
     {audio::CallbackScope callback;refused=f.session.clips()->externalSources().empty();}
     check(refused,"source descriptor copy refuses callback use without allocation or I/O");
 }
+// Reproduce the descriptor budget of the Windows CRT on hosts that normally
+// run the suite with a higher limit. Leave any lower host limit in effect.
+struct ClipFileLimit {
+#if defined(_WIN32)
+    int previous = _getmaxstdio();
+    ClipFileLimit() {
+        if (_setmaxstdio(std::min(previous, 512)) < 0)
+            throw std::runtime_error("could not set the clip test file limit");
+    }
+    ~ClipFileLimit() { (void)_setmaxstdio(previous); }
+#else
+    struct rlimit previous{};
+    ClipFileLimit() {
+        if (getrlimit(RLIMIT_NOFILE, &previous) != 0)
+            throw std::runtime_error("could not get the clip test file limit");
+        auto limit = previous;
+        limit.rlim_cur = std::min(limit.rlim_cur, rlim_t{512});
+        if (setrlimit(RLIMIT_NOFILE, &limit) != 0)
+            throw std::runtime_error("could not set the clip test file limit");
+    }
+    ~ClipFileLimit() { (void)setrlimit(RLIMIT_NOFILE, &previous); }
+#endif
+};
+void sharedWavReaders() {
+    constexpr int clipCount = 600;
+    constexpr int frames = 64;
+    constexpr int sampleRate = 48000;
+    Fixture f(sampleRate, 1, clipCount * frames);
+    const auto sourceStart = [](int i, int edit) {
+        return ((i * 37 + edit) % clipCount) * frames;
+    };
+    for (int i = 0; i < clipCount; ++i)
+        f.add(i + 1, i * frames, frames, sourceStart(i, 0), frames);
+
+    const ClipFileLimit limit;
+    f.load(frames);
+    const auto keepFirstGeneration = f.session.clips()->readiness();
+    for (int edit = 0; edit < 2; ++edit) {
+        if (edit != 0) {
+            f.store->db().exec("UPDATE audio_clips SET src_start_frames=(src_start_frames + 64) % 38400");
+            if (!f.session.refresh(*f.store)) throw std::runtime_error(f.session.error());
+            f.session.graph().collect();
+        }
+
+        const auto* playback = f.session.clips();
+        const auto admitted = playback->externalSources().size();
+        bool independentOpen = false;
+        try {
+            audio::WavReader waveformReader(f.dir.path() / "audio.wav");
+            independentOpen = waveformReader.frames() == f.media.size();
+        } catch (const std::exception&) {}
+
+        f.session.transport().locate(0);
+        int heard = 0;
+        for (int i = 0; i < clipCount; ++i) {
+            const auto block = f.render(frames);
+            const auto expected = f.media.begin() + sourceStart(i, edit);
+            if (std::equal(block.begin(), block.begin() + frames, expected) &&
+                std::equal(block.begin() + frames, block.end(), expected)) ++heard;
+        }
+        std::printf("SC-408 generation %d: %zu/%d admitted, %d/%d exact, %zu errors, independent WAV open %s\n",
+                    edit + 1, admitted, clipCount, heard, clipCount, playback->problems().size(),
+                    independentOpen ? "yes" : "no");
+        check(keepFirstGeneration && admitted == clipCount && heard == clipCount &&
+              playback->problems().empty() && independentOpen,
+              "600 clips share a source under the file limit across an edit with the old generation alive");
+    }
+}
 void decodedPins() {
     // ADR-0156: a decoded clip pins its cache copy while a generation reads
     // it, and the pin goes back with the generation. Every edit rebuilds, and
@@ -1404,6 +1475,7 @@ int main(int argc,char** argv) {
         if(only=="all" || only=="relative")relativeProject();
         if(only=="all" || only=="endpoint"){fractionalEndpoint();anchoredTrimPlayback();trimAcrossTempoWithSourceEnd();signedPhysicalAudioOffset();pinnedMarkerOrderWitness();}
         if(only=="all" || only=="highRates")highRates();
+        if(only=="all" || only=="shared-wav")sharedWavReaders();
         if(only=="all" || only=="pins")decodedPins();
         if(only=="all" || only=="inputs")externalSourceSnapshots();
     }
