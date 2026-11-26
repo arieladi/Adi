@@ -70,6 +70,9 @@ class FloatingHost {
     void show(const std::string &key, bool shown);
     bool shown(const std::string &key) const;
     void setAlwaysOnTop(const std::string &key, bool onTop);
+    // SC-328: a plug-in window the user can resize from its edges, when the plug-in can be resized; the
+    // window stays fitted to the size the plug-in takes.
+    void setUserResizable(const std::string &key, bool resizable);
     bool alwaysOnTop(const std::string &key) const;
     // SC-313: "on top" for an owned window (a plug-in's, a device's view) means above ADI's own window,
     // never above the other programs. On Windows the owner is made the window's native owner, which keeps

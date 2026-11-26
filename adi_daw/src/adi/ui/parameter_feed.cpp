@@ -10,7 +10,7 @@ bool samePanel(const DevicePanelData &a, const DevicePanelData &b) {
     const auto card = [](const DevicePanelData &d) {
         // The instance stamp includes the preparation shape and token epoch.
         return std::tie(d.id, d.track, d.chain, d.instance, d.available, d.latency,
-                        d.name, d.enabled, d.instrument, d.plugin, d.uid, d.sidechainChannels, d.processingIssue,
+                        d.name, d.enabled, d.instrument, d.plugin, d.uid, d.route, d.sidechainChannels, d.processingIssue,
                         d.metadata, d.cachedRecords, d.defaults, d.parameterGroups,
                         d.resolved.configured, d.resolved.showsConfigureHint, d.resolved.modifiableCount);
     };
@@ -82,6 +82,11 @@ void ParameterFeed::publish(engine::Session &session, std::uint64_t modelRevisio
                         data.uid = ref.uid; data.format = ref.format; data.plugin = ref.format != "internal";
                         break;
                     }
+            for (const auto &route : model.deviceRoutes)
+                if (route.deviceId == row.id) {
+                    data.route = route.route;
+                    break;
+                }
             auto *instance = session.instanceFor(row.id);
             const auto *entry = session.entryFor(row.id);
             data.available = instance && instance->loaded() && entry && !entry->retired && !entry->parked &&

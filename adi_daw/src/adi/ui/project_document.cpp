@@ -467,6 +467,17 @@ std::span<const ExternalAudioInput> ProjectDocument::externalAudioInputs() const
         return *externalAudioInputs_;
     return {};
 }
+std::size_t ProjectDocument::wakeMissingPlugins() {
+    if (!store_)
+        return 0;
+    const std::size_t woke = session_.retryPlaceholders(*store_);
+    if (woke == 0)
+        return 0;
+    refreshLimiterReductionSources();
+    parameterOps_.attachSession(session_); // the woken plug-in's own edits become undo steps
+    analysis_->refreshSources();
+    return woke;
+}
 void ProjectDocument::setInputChannels(std::int32_t inputs) {
     inputChannels_ = std::max(0, inputs);
     syncMonitorInputs();
@@ -1105,6 +1116,8 @@ bool ProjectDocument::insertPlugin(const rows::PluginRef &ref, std::int64_t trac
 bool ProjectDocument::loadPlugin(const rows::PluginRef &ref, std::int64_t track, std::optional<std::int64_t> before,
                                  const RecordingDefaults *defaults) {
     PluginInsertOptions options;
+    if (pluginRouteDefault)
+        options.expressionRoute = pluginRouteDefault(ref.format, ref.uid);
     if (track == 0)
         return finishInsert(prepareDeviceDrop(*store_, ref.subtype == "instrument" || ref.subtype == "midi_effect", defaults,
             [&](std::int64_t id, std::span<const OpRequest> newTrack) {
@@ -2229,6 +2242,7 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
         return false;
     }
     recording_ = true;
+    session_.setRecordingForDevices(true); // SC-333
     error_.clear();
     return true;
 }
@@ -2240,6 +2254,7 @@ void ProjectDocument::stopRecording() {
     if (midiRecording_)
         session_.midiInputCapture().stop();
     recording_ = false;
+    session_.setRecordingForDevices(false);
     landing_ = true;
 }
 std::span<const LiveMidiTake> ProjectDocument::liveMidiTakes() const noexcept {
@@ -2263,6 +2278,7 @@ void ProjectDocument::pollRecording(bool deviceStopped) {
     if (midiDone && audioDone) {
         captureReady_.store(false, std::memory_order_release);
         recording_ = false;
+        session_.setRecordingForDevices(false);
         landing_ = false;
         landTake();
     }
