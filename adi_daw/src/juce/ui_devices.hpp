@@ -254,7 +254,9 @@ class DevicePanelView final : public juce::Component, public juce::FileDragAndDr
     std::unique_ptr<LimiterPreview> limiterPreview_;
     friend class DeviceChainStrip;
 };
-class DeviceChainStrip final : public juce::Component, public juce::DragAndDropTarget {
+class DeviceChainStrip final : public juce::Component,
+                               public juce::DragAndDropTarget,
+                               public juce::FileDragAndDropTarget {
   public:
     explicit DeviceChainStrip(AdiRootComponent &);
     ~DeviceChainStrip() override;
@@ -303,6 +305,8 @@ class DeviceChainStrip final : public juce::Component, public juce::DragAndDropT
     // A device dragged from the browser drops into the chain, in front of the device it lands on.
     bool isInterestedInDragSource(const SourceDetails &) override;
     void itemDropped(const SourceDetails &) override;
+    bool isInterestedInFileDrag(const juce::StringArray &) override;
+    void filesDropped(const juce::StringArray &, int, int) override;
     // The device a drop at `x` (the strip's coordinates) goes in front of; none past the last.
     std::optional<std::int64_t> dropBefore(int x) const;
     void mouseDown(const juce::MouseEvent &) override;
@@ -339,6 +343,7 @@ class DeviceChainStrip final : public juce::Component, public juce::DragAndDropT
     std::vector<std::unique_ptr<DevicePanelView>> panels;
 
   private:
+    bool acceptsSample() const;
     const DevicePanelData *dataOf(std::int64_t device) const;
     void showSamples();
     void updateParameterDemand(std::vector<std::int64_t>);

@@ -7,6 +7,7 @@
 #include "adi/ui/arrangement_geometry.hpp"
 #include "knobs_device.hpp"
 #include "temp_directory.hpp"
+#include "juce/builtin_host.hpp"
 #include "juce/device_core.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
@@ -333,6 +334,106 @@ void refusedBeginOwnership(const std::filesystem::path &dir) {
                   }), "refused Begin: a completed newer edit does not silently retry an older refused transaction");
         } catch (const std::exception &e) { check(false, e.what()); }
     }
+}
+
+void dropSampleInstrument(const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ui::ProjectDocument::open(dir / "sample-instrument.adi", true, device::withBuiltinDevices(), error);
+    check(document != nullptr, "SC-283: a project for a sample instrument");
+    if (!document)
+        return;
+    constexpr std::int64_t midiTrack = 2, audioTrack = 4;
+    auto &db = document->store().db();
+    const auto deviceOnTrack = [&] {
+        SQLite::Statement row(db, "SELECT d.id FROM devices d JOIN device_chains c ON c.id=d.chain_id WHERE c.track_id=?");
+        row.bind(1, midiTrack);
+        return row.executeStep() ? row.getColumn(0).getInt64() : std::int64_t{0};
+    };
+    const auto file = dir / media::pathFromUtf8("drop-tone-\xc3\xa9.wav");
+    {
+        std::array<float, 1024> samples{};
+        for (std::size_t sample = 0; sample < samples.size(); ++sample)
+            samples[sample] = static_cast<float>(.5 * std::sin(static_cast<double>(sample) * .13));
+        audio::WavWriter writer(file, 48000, 1, audio::WavFormat::Float32);
+        writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
+        writer.close();
+    }
+    const auto *oneShot = findBuiltin("org.adidaw.builtin.oneshot");
+    if (oneShot == nullptr || !oneShot->available) {
+        check(!document->loadSampleInstrument(midiTrack, file, 7) && deviceOnTrack() == 0,
+              "SC-283: without the instrument backend, the drop leaves no device");
+        return;
+    }
+    document->session().graph().setFadeFrames(0);
+    document->prepare(48000, 64);
+    std::vector<OpRequest> setup(2);
+    setup[0].opType = "clip.create";
+    setup[0].payload = {{"id", 1}, {"track", midiTrack}, {"kind", "midi"}, {"pos", 0}, {"length", textproj::kWhole}};
+    setup[1].opType = "note.insert";
+    setup[1].payload = {{"clip", 1}, {"note", 1}, {"start", 0}, {"dur", textproj::kPPQ}, {"key", 60}, {"vel", 127}};
+    const bool ready = document->ops().submit(std::move(setup)).ok && document->synchronise() &&
+                       document->insertBuiltin("org.adidaw.builtin.oneshot", midiTrack, {});
+    check(ready, "SC-283: a MIDI clip and an existing empty instrument");
+    if (!ready)
+        return;
+    const auto original = deviceOnTrack();
+    const auto head = OpJournal(document->store()).headSeq();
+    const auto mediaCount = [&] { return db.execAndGet("SELECT count(*) FROM media_files").getInt(); };
+    const auto beforeMedia = mediaCount();
+    check(original != 0 && !document->loadSampleInstrument(midiTrack, dir / "missing-drop.wav", 7) &&
+              !document->loadSampleInstrument(audioTrack, file, 7) && deviceOnTrack() == original &&
+              mediaCount() == beforeMedia && OpJournal(document->store()).headSeq() == head,
+          "SC-283: an invalid source or an audio destination leaves the original instrument and history alone");
+    db.exec("CREATE TEMP TRIGGER reject_sample_state BEFORE INSERT ON main.ops WHEN NEW.op_type='device.loadState' "
+            "BEGIN SELECT RAISE(ABORT,'state rejected'); END");
+    check(!document->loadSampleInstrument(midiTrack, file, 7) && deviceOnTrack() == original &&
+              mediaCount() == beforeMedia && OpJournal(document->store()).headSeq() == head,
+          "SC-283: a late state refusal rolls back instrument replacement and media import");
+    db.exec("DROP TRIGGER reject_sample_state");
+    const bool loaded = document->loadSampleInstrument(midiTrack, file, 7);
+    const auto instrument = deviceOnTrack();
+    const auto hasSample = [&] {
+        const auto view = document->view().current();
+        return std::any_of(view->sampleSlots.begin(), view->sampleSlots.end(), [&](const auto &slot) {
+            return slot && slot->deviceId == instrument && slot->slot == 1 && !slot->empty && !slot->missing;
+        });
+    };
+    check(loaded && instrument != 0 && instrument != original && hasSample() && mediaCount() == beforeMedia + 1,
+          "SC-283: dropping one sample creates a filled OneShot on the MIDI track");
+    if (!loaded)
+        return;
+    std::int64_t stream = 0;
+    const auto play = [&] {
+        document->mailbox().post(ui::TransportMailbox::Command::Locate, 0);
+        document->mailbox().post(ui::TransportMailbox::Command::Play);
+        std::array<float, 64> left{}, right{};
+        float *out[]{left.data(), right.data()};
+        engine::AudioIo io;
+        io.out = out;
+        io.numOut = 2;
+        io.frames = 64;
+        float peak = 0.f;
+        for (int block = 0; block < 16; ++block) {
+            io.streamTimeSamples = stream;
+            document->process(io);
+            stream += io.frames;
+            for (const float value : left)
+                peak = std::max(peak, std::abs(value));
+        }
+        document->mailbox().post(ui::TransportMailbox::Command::Stop);
+        io.streamTimeSamples = stream;
+        document->process(io);
+        stream += io.frames;
+        return peak;
+    };
+    check(play() > .05f, "SC-283: the MIDI clip's note plays the dropped sample through the live document");
+    const auto step = document->ops().nextUndo();
+    check(step && step->label == "Load Sample Instrument" && document->ops().undo().ok && document->synchronise() &&
+              deviceOnTrack() == original && mediaCount() == beforeMedia && OpJournal(document->store()).headSeq() == head,
+          "SC-283: one Undo restores the previous instrument and removes the sample import");
+    check(document->ops().redo().ok && document->synchronise() && deviceOnTrack() == instrument && hasSample() && play() > .05f,
+          "SC-283: Redo restores the same loaded instrument and its sound");
+    document->release();
 }
 
 void mixSurfacePublication(const std::filesystem::path &file) {
@@ -2267,6 +2368,7 @@ int main(int argc, char **argv) {
     deviceGraphWorkers(temp.path());
     refusedBeginOwnership(temp.path());
     importWithChoices(temp.path());
+    dropSampleInstrument(temp.path());
     mixSurfacePublication(temp.path() / "mix-surface.adi");
     reportedDeviceLatency(temp.path());
     std::printf("%d checks, %d failures\n", checks, failures);

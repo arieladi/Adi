@@ -410,6 +410,11 @@ void BrowserPanel::setPluginScan(const PluginScan &scan) {
 }
 bool BrowserPanel::load(int row) {
     if (row >= 0 && row < static_cast<int>(rows_.size()))
+        if (const auto *file = rows_[static_cast<std::size_t>(row)].file) {
+            const auto track = root_.arrangement.geometry.selection.track;
+            return root_.sampleInstrumentTarget(track) && root_.loadSampleAsInstrument(track, file->path);
+        }
+    if (row >= 0 && row < static_cast<int>(rows_.size()))
         if (const auto *p = rows_[static_cast<std::size_t>(row)].plugin) {
             if (!root_.loadPlugin) {
                 root_.say(pluginWaits(*p));

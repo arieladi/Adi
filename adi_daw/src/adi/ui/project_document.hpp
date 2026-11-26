@@ -239,6 +239,8 @@ class ProjectDocument final : public engine::BlockProcessor {
     // empties it. The live device takes the new state at once (`ParamOps::appliedState`). The
     // engine's refusals (a device this build cannot run, an undeclared slot, a file that is not
     // audio) come back in `error()`. Preparation decodes on the calling thread.
+    // Drop a sample on a MIDI track: OneShot and its filled sample slot are one Undo step.
+    bool loadSampleInstrument(std::int64_t track, const std::filesystem::path &file, std::int64_t nowUtc);
     bool assignSample(std::int64_t device, std::int32_t slot, const std::filesystem::path &file, std::int64_t nowUtc);
     bool clearSample(std::int64_t device, std::int32_t slot);
     // The parameter glue's counters (for the tests: a sample's state reached the live device).
