@@ -4,6 +4,18 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-26 — `basics/*` Round 4 (plugins chain `sc-375-device-chosen-later` `f73df1dd` — PASS)
+
+Verified `origin/basics/sc-375-device-chosen-later` at `f73df1dd` (5-branch plugins chain covering `sc-310-vst3-param-to-processor`, `sc-311-vst3-editor-and-automation-follow`, `sc-312-vst3-controllers`, `sc-313-plugin-window-owned`, `sc-375-device-chosen-later`) under **GCC 12.4.0** and **Clang 14.0.6 + libstdc++ 12** (`-DADI_WERROR=ON`, headless Pd on, JUCE off, `-DADI_ACCEPTANCE=ON`), all 9 touched JUCE TUs (`-DADI_WITH_JUCE=ON -DADI_WERROR=ON`), and **Clang 14 ASan + LSan + UBSan**.
+
+| Branch | SHA | GCC 12.4.0 (`-DADI_WERROR=ON`) | Clang 14.0.6 + libstdc++ 12 (`-DADI_WERROR=ON`) | JUCE TUs (`-DADI_WITH_JUCE=ON -DADI_WERROR=ON`) | Clang 14 ASan + LSan + UBSan | Verdict |
+|---|---|---|---|---|---|---|
+| `basics/sc-375-device-chosen-later` (chains `sc-310`, `sc-311`, `sc-312`, `sc-313`) | `f73df1dd` | **PASS** (0 warnings; `adi_clap_probe` + 3/3 touched `adi_clap_tests`, `adi_mpe_output_tests`, `adi_ui_seams_tests` + `adi_acceptance_wts01`, 51.85 s) | **PASS** (0 warnings; `adi_clap_probe` + 3/3 touched + `adi_acceptance_wts01`, 46.34 s) | **PASS** (9/9 TUs both compilers, 0 warnings: `ui_main.cpp.o`, `clap_probe.cpp.o`, `vst3_expression_synth.cpp.o`, `ui_floating.cpp.o`, `app_audio_page.cpp.o`, `test_ui_shell.cpp.o`, `test_vst3_key.cpp.o`, `vst3_host.cpp.o`, `vst3_probe.cpp.o`) | **PASS** (3/3 touched, 12.11 s; 0 errors, 0 leaks) | **PASS** |
+
+No findings on `basics/sc-375-device-chosen-later` (`f73df1dd`).
+
+---
+
 ## 2026-11-26 — `land/*` Round 2 (`land/basics-1127b` `6ecdb2b6` — PASS)
 
 Verified `origin/land/basics-1127b` at `6ecdb2b6` (win's stack merging `land/basics-1127a` `b6753499` + 15 `basics/*` branches: `sc-02-lane-transport`, `sc-01-protect-main`, `sc-05-selection-delete`, `sc-80-track-clipboard`, `sc-82-value-controls`, `sc-83-device-drag`, `sc-84-browser-device-drops`, `sc-259-track-fold`, `sc-220-midi-loop`, `sc-50-arrangement-midi`, `sc-310-vst3-param-to-processor`, `sc-311-vst3-editor-and-automation-follow`, `sc-407-resampled-playback`, `sc-408-shared-wav-readers`, `sc-148-project-folders`) under **GCC 12.4.0** and **Clang 14.0.6 + libstdc++ 12** (`-DADI_WERROR=ON`, headless Pd on, JUCE off, `-DADI_ACCEPTANCE=ON`), all 11 touched JUCE TUs (`-DADI_WITH_JUCE=ON -DADI_WERROR=ON`), and **Clang 14 ASan + LSan + UBSan** (`-O1 -g1 -fsanitize=address,undefined -fno-sanitize-recover=undefined`).
