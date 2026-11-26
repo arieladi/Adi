@@ -4,6 +4,18 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-26 — `basics/*` Round 6 (`basics/recording-chain` `27e72637` — PASS)
+
+Verified `origin/basics/recording-chain` at `27e72637` (recording queue consolidated chain on `land/basics-1127b`, covering `SC-02`, `SC-22`, `SC-245`, `SC-247`, `SC-20`, `SC-21`, `SC-246`, `SC-23`, `SC-24`; 35 files vs `origin/land/basics-1127b`) under **GCC 12.4.0** and **Clang 14.0.6 + libstdc++ 12** (`-DADI_WERROR=ON`, headless Pd on, JUCE off, `-DADI_ACCEPTANCE=ON`), all 7 touched JUCE TUs (`-DADI_WITH_JUCE=ON -DADI_WERROR=ON`), and **Clang 14 ASan + LSan + UBSan**.
+
+| Branch | SHA | GCC 12.4.0 (`-DADI_WERROR=ON`) | Clang 14.0.6 + libstdc++ 12 (`-DADI_WERROR=ON`) | JUCE TUs (`-DADI_WITH_JUCE=ON -DADI_WERROR=ON`, 7 TUs) | Clang 14 ASan + LSan + UBSan | Verdict |
+|---|---|---|---|---|---|---|
+| `basics/recording-chain` | `27e72637` | **PASS** (0 warnings; 7/7 touched `adi_audio_recording_tests`, `adi_clip_playback_tests`, `adi_recording_commands_tests`, `adi_settings_tests`, `adi_ui_document_tests`, `adi_ui_seams_tests`, `adi_ui_window_state_tests` + `adi_acceptance_wts01`, 148.10 s) | **PASS** (0 warnings; 7/7 touched + `adi_acceptance_wts01`, 135.00 s) | **PASS** (7/7 both compilers, 0 warnings: `ui_main.cpp.o`, `ui_arrangement.cpp.o`, `ui_controlbar.cpp.o`, `ui_mixer.cpp.o`, `ui_shell.cpp.o`, `app_audio_page.cpp.o`, `test_ui_shell.cpp.o`) | **PASS** (7/7 touched, 108.89 s; 0 errors, 0 leaks) | **PASS** |
+
+No findings on `basics/recording-chain` (`27e72637`).
+
+---
+
 ## 2026-11-26 — `basics/*` Round 5 (`basics/tracks-chain` `8ff3358f` — FAIL on Clang 14 JUCE)
 
 Verified `origin/basics/tracks-chain` at `8ff3358f` (tracks queue consolidated chain on `land/basics-1127b`, covering `SC-282`, `SC-283`, `SC-86`, `SC-87`, `SC-85`, `SC-262`, `SC-263`, `SC-264`, `SC-265`; 56 files vs `origin/land/basics-1127b`) under **GCC 12.4.0** and **Clang 14.0.6 + libstdc++ 12** (`-DADI_WERROR=ON`, headless Pd on, JUCE off, `-DADI_ACCEPTANCE=ON`) and all 9 touched JUCE TUs (`-DADI_WITH_JUCE=ON -DADI_WERROR=ON`).
