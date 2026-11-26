@@ -29,17 +29,18 @@ wave 2 once the first recording queue is finished.
 
 ## Windows landing check
 
-The reported `[shell] mix fixture seek checks start` line comes from the old nested call in `1127d`.
-The nested call comes from DF-M5 (`7368447e`). The Windows Debug reproduction logged exception `0xC00000FD`, and the three nested test frames
-accounted for 997,080 bytes of the 1 MiB reserve. Recording items increased the shared window
-fixture size. SC-21 added state to each Control Bar item, SC-23 added input UI and test state, and
-SC-20 and SC-28 also enlarged the root. The reproduction establishes fixture stack exhaustion.
-The seek fixture did not arm a track, route audio input, or start capture.
+`basics/recording-chain` head `73e75feb` merges Windows landing `90f4091d` and current `origin/main`
+`da484062`. The reported `[shell] mix fixture seek checks start` line was the nested DF-M5 seek call
+introduced in `7368447e`. Windows raised `0xC00000FD`. The nested frames used 997,080 bytes of a
+1 MiB stack before SQLite's deeper calls. SC-21 grew each of the 31 Control Bar items, and SC-20,
+SC-23 and SC-28 also grew the shared root. The failure was in fixture stack usage. The seek project
+runs two synthetic CLAP devices on an unarmed MIDI track and supplies zero hardware input channels.
 
-The published chain `45f0a9b0` already contains `40ab091e`, which runs the seek checks after the
-Mix View fixture unwinds. Both Windows entry points then passed. The follow-up puts the seek
-fixture's 100,080-byte root on the heap. The Windows Debug rebuild and the Linux ASan/UBSan UI
-suites are running on that candidate. [Linux sanitizer run](https://github.com/arieladi/Adi/actions/runs/45899114794)
+`40ab091e` runs the independent seek checks after the parent Mix View fixture unwinds. `45533c9c`
+moves the seek fixture's 100,080-byte fake root to the heap. Windows MSVC Debug passed all 926
+focused Mix View checks and both the full shell and document suites. On GitHub's Linux runner, all
+17 `adi_ui_` suites passed in 232.07 seconds with ASan and UBSan and `DISPLAY` unset, including the
+full shell suite in 138.83 seconds. Main's subsequent merge changed only Markdown. [Linux sanitizer run](https://github.com/arieladi/Adi/actions/runs/45899114794)
 
 ## For the director
 
