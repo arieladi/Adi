@@ -4,6 +4,7 @@
 #include "adi/ops.hpp"
 #include "adi/return_send_tap.hpp"
 #include "adi/ui/arm_edits.hpp"
+#include "adi/ui/track_edits.hpp"
 #include "ui_controls.hpp"
 #include <array>
 #include <functional>
@@ -182,7 +183,10 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     juce::PopupMenu soloMenu();
 
   private:
+    friend class MixerPanel;
     void trackTitleMenu(juce::Point<int> where);
+    void selectTitle(std::int64_t track);
+    bool cancelTitleDrag();
     void paintInOut(juce::Graphics &, int x) const;
 
     // The Mixer View strip's In/Out section, as Live 12's Mixer draws it.
@@ -269,6 +273,15 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     void beginLive(gesture::ScalarKind, std::int64_t id, gesture::ScalarControlDomain, const std::string &label);
     bool endLive();
     int resizeFrom_ = -1; // the track's height when its split line was pressed; -1 while not resizing
+    struct TitleDrag {
+        std::int64_t source;
+        std::uint64_t generation;
+        int startX;
+        bool movingReturn;
+        bool selectOnRelease;
+        bool moving = false;
+    };
+    std::optional<TitleDrag> titleDrag_;
     bool onSplitLine(const juce::MouseEvent &) const noexcept;
     // The engine's scalar meter for the track (UI-ARCHITECTURE §9; `StripNode::meter()`, #381),
     // written per callback by the audio thread and read here with relaxed loads; null until the
@@ -300,6 +313,7 @@ class MixerPanel final : public juce::Component {
     // The frame above and below the lanes stands in front of a row scrolled past either edge.
     void paintOverChildren(juce::Graphics &) override;
     void mouseDown(const juce::MouseEvent &) override;
+    bool keyPressed(const juce::KeyPress &) override;
     void mouseWheelMove(const juce::MouseEvent &, const juce::MouseWheelDetails &) override;
     void contextMenu(juce::Point<int>);
     void showContextMenu(juce::PopupMenu, juce::Point<int>);
@@ -339,12 +353,21 @@ class MixerPanel final : public juce::Component {
     const std::vector<std::unique_ptr<MixerStrip>> &strips() const noexcept { return strips_; }
 
   private:
+    friend class MixerStrip;
+    struct TitleDrop {
+        TrackDrop target;
+        int x;
+        bool intoGroup = false;
+    };
+    TitleDrop trackDropAt(int x, bool movingReturn) const;
+    void previewTrackDrop(std::optional<TitleDrop> drop);
     void place();
     void placeColumns();
     // Live's frame above the rows: the band, and H and W beside the Overview's end.
     void paintTop(juce::Graphics &) const;
     bool vertical_;
     int scrollX_ = 0;
+    std::optional<TitleDrop> trackDrop_;
     std::vector<std::unique_ptr<MixerStrip>> strips_;
 };
 // Bitwig's Use Large Track Height (Master Reference 10, Figure 33; the director, 28 October

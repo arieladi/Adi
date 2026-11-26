@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <utility>
 namespace adi::ui {
 namespace {
 // The meter's ballistics, the window's (UI-ARCHITECTURE §9: the engine writes {peak, rms} per
@@ -1018,13 +1019,45 @@ void MixerStrip::mouseMove(const juce::MouseEvent &e) {
     setMouseCursor(onSplitLine(e) ? juce::MouseCursor::UpDownResizeCursor : juce::MouseCursor::NormalCursor);
 }
 void MixerStrip::mouseDrag(const juce::MouseEvent &e) {
+    if (titleDrag_) {
+        auto &drag = *titleDrag_;
+        const auto at = e.getEventRelativeTo(&panel_).getPosition();
+        if (drag.generation != panel_.root.committedGeneration()) {
+            titleDrag_.reset();
+            panel_.previewTrackDrop(std::nullopt);
+        } else if (drag.moving || std::abs(at.x - drag.startX) > 4) {
+            if (!drag.moving)
+                focusIfShowing(panel_);
+            drag.moving = true;
+            if (panel_.getLocalBounds().contains(at))
+                panel_.previewTrackDrop(panel_.trackDropAt(at.x, drag.movingReturn));
+            else
+                panel_.previewTrackDrop(std::nullopt);
+        }
+        return;
+    }
     if (resizeFrom_ < 0)
         return;
     auto &view = panel_.root.arrangement;
     view.geometry.resizeTrack(track_, resizeFrom_ + e.getDistanceFromDragStartY(), e.mods.isAltDown());
     view.frame(true);
 }
-void MixerStrip::mouseUp(const juce::MouseEvent &) {
+void MixerStrip::mouseUp(const juce::MouseEvent &e) {
+    if (const auto drag = std::exchange(titleDrag_, std::nullopt)) {
+        panel_.previewTrackDrop(std::nullopt);
+        if (drag->generation != panel_.root.committedGeneration())
+            return;
+        if (drag->moving) {
+            const auto at = e.getEventRelativeTo(&panel_).getPosition();
+            if (panel_.getLocalBounds().contains(at))
+                panel_.root.moveTracks(drag->source, panel_.trackDropAt(at.x, drag->movingReturn).target);
+        } else if (drag->selectOnRelease) {
+            selectTitle(drag->source);
+            panel_.root.publishSelection();
+            panel_.root.arrangement.changed();
+        }
+        return;
+    }
     if (resizeFrom_ < 0)
         return;
     resizeFrom_ = -1;
@@ -1057,7 +1090,15 @@ void MixerStrip::trackTitleMenu(juce::Point<int> where) {
     view.changed();
     panel_.showContextMenu(view.headerMenu(track), where);
 }
+void MixerStrip::selectTitle(std::int64_t track) {
+    auto &selection = panel_.root.arrangement.geometry.selection;
+    selection.track = track;
+    selection.toTrack = 0;
+    selection.picked.clear();
+}
 void MixerStrip::mouseDown(const juce::MouseEvent &e) {
+    if (std::exchange(titleDrag_, std::nullopt))
+        panel_.previewTrackDrop(std::nullopt);
     if (onSplitLine(e) && !e.mods.isPopupMenu()) {
         // Kept bound to its track while the drag resizes the rows (MixerPanel::place).
         resizeFrom_ = panel_.root.arrangement.geometry.heightFor(track_);
@@ -1089,7 +1130,18 @@ void MixerStrip::mouseDown(const juce::MouseEvent &e) {
             trackTitleMenu(e.getScreenPosition());
             return;
         }
-        auto &selection = panel_.root.arrangement.geometry.selection;
+        const auto &reader = panel_.root.reader();
+        auto &geometry = panel_.root.arrangement.geometry;
+        auto &selection = geometry.selection;
+        if (e.mods.isLeftButtonDown() && !e.mods.isAnyModifierKeyDown() && kind_ != "master") {
+            // The pool can rebind this strip as the Mixer scrolls. Keep the pressed track's ID.
+            const bool deferSelection = geometry.inSelection(reader, track_) &&
+                                        geometry.selectedTracks(reader).size() > 1;
+            titleDrag_ = TitleDrag{track_, panel_.root.committedGeneration(), e.getEventRelativeTo(&panel_).x,
+                                   kind_ == "return", deferSelection};
+            if (deferSelection)
+                return;
+        }
         if (e.mods.isCommandDown() && selection.track != 0) {
             auto &picked = selection.picked;
             if (track_ != selection.track) {
@@ -1100,11 +1152,8 @@ void MixerStrip::mouseDown(const juce::MouseEvent &e) {
             }
         } else if (e.mods.isShiftDown() && selection.track != 0)
             selection.toTrack = track_ == selection.track ? 0 : track_;
-        else {
-            selection.track = track_;
-            selection.toTrack = 0;
-            selection.picked.clear();
-        }
+        else
+            selectTitle(track_);
         panel_.root.publishSelection();
         panel_.root.arrangement.changed();
         return;
@@ -1307,7 +1356,15 @@ bool MixerStrip::endLive() {
         panel_.root.endMixerDrag();
     return true;
 }
+bool MixerStrip::cancelTitleDrag() {
+    if (!std::exchange(titleDrag_, std::nullopt))
+        return false;
+    panel_.previewTrackDrop(std::nullopt);
+    return true;
+}
 bool MixerStrip::keyPressed(const juce::KeyPress &key) {
+    if (key == juce::KeyPress::escapeKey && cancelTitleDrag())
+        return true;
     // Esc during a drag puts every value back (MX-23).
     if (key == juce::KeyPress::escapeKey && live_) {
         live_ = false;
@@ -1461,7 +1518,16 @@ void MixerStrip::volumeMenu() {
     if (m.getNumItems() > 0)
         m.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(&volume));
 }
-MixerPanel::MixerPanel(AdiRootComponent &r, bool vertical) : root(r), vertical_(vertical) {}
+MixerPanel::MixerPanel(AdiRootComponent &r, bool vertical) : root(r), vertical_(vertical) {
+    setWantsKeyboardFocus(vertical_);
+    setMouseClickGrabsKeyboardFocus(false);
+}
+bool MixerPanel::keyPressed(const juce::KeyPress &key) {
+    // The panel keeps focus while scrolling can recycle or hide the source strip.
+    if (key != juce::KeyPress::escapeKey)
+        return false;
+    return std::any_of(strips_.begin(), strips_.end(), [](const auto &strip) { return strip->cancelTitleDrag(); });
+}
 bool MixerPanel::submit(const std::string &op, Payload payload, const char *label) {
     return root.submitEdit(op, std::move(payload), label);
 }
@@ -1600,6 +1666,82 @@ void MixerPanel::placeColumns() {
         if (!strips_[n]->dragging())
             strips_[n]->setVisible(false);
 }
+MixerPanel::TitleDrop MixerPanel::trackDropAt(int x, bool movingReturn) const {
+    const auto &geometry = root.arrangement.geometry;
+    const auto rows = geometry.rows(root.reader());
+    const auto foot = geometry.footStart(rows);
+    auto at = rows.size();
+    int left = -scrollX_, column = left, footX = left, mainX = left;
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+        const auto &place = rows[i].place;
+        if (i == foot)
+            footX = column;
+        if (place.main)
+            mainX = column;
+        if (!geometry.inView(place.id))
+            continue;
+        if (x >= column && x < column + kStripWidth) {
+            at = i;
+            left = column;
+        }
+        column += kStripWidth;
+    }
+    if (foot == rows.size())
+        footX = mainX = column;
+
+    if (movingReturn) {
+        if (at == rows.size() || rows[at].place.main)
+            return {{0, 0}, mainX};
+        const auto &place = rows[at].place;
+        if (place.ret) {
+            if ((x - left) * 2 < kStripWidth)
+                return {{place.parent, place.id}, left};
+            const auto next = at + 1;
+            const auto before = next < rows.size() && rows[next].place.ret && rows[next].place.parent == place.parent
+                                    ? rows[next].place.id : 0;
+            return {{place.parent, before}, left + kStripWidth};
+        }
+        if (const auto group = place.group ? place.id : place.parent)
+            return {{group, 0}, left, place.group};
+        const auto before = foot < rows.size() && rows[foot].place.ret ? rows[foot].place.id : 0;
+        return {{0, before}, footX};
+    }
+
+    // Main and the top-level returns start after the last ordinary track.
+    if (at >= foot)
+        return {{0, 0}, footX};
+    const auto &place = rows[at].place;
+    const int across = x - left;
+    if (place.ret)
+        return {{place.parent, 0}, left};
+    if (across * (place.group ? 4 : 2) < kStripWidth)
+        return {{place.parent, place.id}, left};
+    if (place.group) {
+        const auto next = at + 1;
+        const bool open = root.state().foldedGroups.count(place.id) == 0;
+        const bool holds = next < foot && rows[next].place.parent == place.id && !rows[next].place.ret;
+        if (open && holds)
+            return {{place.id, rows[next].place.id}, left + kStripWidth};
+        if (across * 4 < kStripWidth * 3)
+            return {{place.id, 0}, left, true};
+    }
+    // Past this track and its children, before its next sibling if there is one.
+    auto next = at + 1;
+    int right = left + kStripWidth;
+    while (next < foot && rows[next].place.depth > place.depth) {
+        if (geometry.inView(rows[next].place.id))
+            right += kStripWidth;
+        ++next;
+    }
+    const auto before = next < foot && rows[next].place.parent == place.parent ? rows[next].place.id : 0;
+    return {{place.parent, before}, right};
+}
+void MixerPanel::previewTrackDrop(std::optional<TitleDrop> drop) {
+    if (!drop && !trackDrop_)
+        return;
+    trackDrop_ = drop;
+    repaint();
+}
 void MixerPanel::place() {
     if (vertical_) {
         placeColumns();
@@ -1702,8 +1844,18 @@ juce::Range<int> MixerPanel::rowsBand() const noexcept {
 void MixerPanel::paintOverChildren(juce::Graphics &g) {
     // The rows scroll with the lanes; above and below them, Live's frame stays in front: a row
     // scrolled partly above the lanes shows no more than the lanes do (UI-ARCHITECTURE §4).
-    if (vertical_)
+    if (vertical_) {
+        if (trackDrop_) {
+            g.setColour(look::accent);
+            if (trackDrop_->intoGroup)
+                g.drawRect(trackDrop_->x, 0, kStripWidth, MixerStrip::kTitleHeight, 2);
+            else {
+                const int x = std::clamp(trackDrop_->x - 1, 0, std::max(0, getWidth() - 2));
+                g.fillRect(x, 0, 2, getHeight());
+            }
+        }
         return;
+    }
     const int bottom = rowsBand().getEnd();
     paintTop(g);
     // Below the lanes, as paint() leaves it: the columns' grey, the frame's band at the foot.
@@ -1791,6 +1943,7 @@ void MixerPanel::mouseWheelMove(const juce::MouseEvent &e, const juce::MouseWhee
         // The Mixer View scrolls sideways, whichever way the wheel turns.
         const float delta = std::abs(w.deltaX) > std::abs(w.deltaY) ? w.deltaX : w.deltaY;
         scrollX_ -= static_cast<int>(delta * 300);
+        previewTrackDrop(std::nullopt);
         placeColumns();
         return;
     }

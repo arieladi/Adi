@@ -2589,6 +2589,51 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
             four->mouseDown(pressAt(*four, {20.f, 8.f}, juce::ModifierKeys::commandModifier));
             check(selection.track == 3 && selection.picked.empty(), "Ctrl/Cmd+click again lets 4 Audio go");
 
+            // SC-263: a plain title press keeps the selection until it is a click or a drag.
+            const auto beforeDrag = laneOrder(root);
+            const auto selectionBeforeDrag = selection;
+            const auto left = juce::ModifierKeys::leftButtonModifier;
+            const juce::Point<float> grab{20.f, 8.f};
+            const auto drop = grab.translated(static_cast<float>(two->getX() - four->getX()), 0.f);
+            four->mouseDown(pressAt(*four, grab, juce::ModifierKeys::commandModifier));
+            four->mouseDown(pressAt(*four, grab, left));
+            check(selection.track == 3 && selection.picked == std::vector<std::int64_t>{4},
+                  "a pressed title holds the selected siblings for a potential reorder");
+            four->mouseDrag(dragAt(*four, grab, drop, left));
+            check(laneOrder(root) == beforeDrag, "crossing a channel title only previews the reorder");
+            four->mouseUp(dragAt(*four, grab, drop));
+            root.frame();
+            const auto reordered = laneOrder(root);
+            const auto firstMoved = std::find(reordered.begin(), reordered.end(), 3);
+            const auto secondMoved = std::find(reordered.begin(), reordered.end(), 4);
+            const auto before = std::find(reordered.begin(), reordered.end(), 2);
+            check(firstMoved < secondMoved && secondMoved < before && root.undoTitle(false) == "Undo Move Tracks",
+                  "dragging a selected title moves its selected siblings in order in one edit");
+            const bool undone = root.command(AppCommands::Undo);
+            root.frame();
+            check(undone && laneOrder(root) == beforeDrag, "one undo restores both channels to their places");
+            selection.track = 3;
+            selection.toTrack = 0;
+            selection.picked = {4};
+            four->mouseDown(pressAt(*four, grab, left));
+            four->mouseUp(pressAt(*four, grab));
+            check(selection.track == 4 && selection.picked.empty(), "a title released in place selects only that channel");
+            const auto beforeCancelled = root.committedGeneration();
+            four->mouseDown(pressAt(*four, grab, left));
+            four->mouseDrag(dragAt(*four, grab, drop, left));
+            four->mouseUp(dragAt(*four, grab, {drop.x, -5.f}));
+            check(root.committedGeneration() == beforeCancelled,
+                  "releasing a dragged channel outside the Mixer makes no track edit");
+            four->mouseDown(pressAt(*four, grab, left));
+            four->mouseDrag(dragAt(*four, grab, drop, left));
+            check(root.mixerView.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey)),
+                  "the Mixer panel handles Escape during a title drag");
+            four->mouseUp(dragAt(*four, grab, drop));
+            check(root.committedGeneration() == beforeCancelled,
+                  "releasing after Escape makes no track edit");
+            selection = selectionBeforeDrag;
+            root.publishSelection();
+
             // SC-262: inspect the actual popup request without opening a native window.
             const auto savedSelection = selection;
             auto &view = root.arrangement;
@@ -18543,8 +18588,19 @@ int main(int argc, char **argv) {
                 integrated.arrangement.geometry.selection.toTrack = 0;
                 integrated.arrangement.geometry.selection.picked.clear();
                 integrated.publishSelection();
-                check(integrated.moveTracks(next, {integrated.reader().findTrack(2)->parent, 2}),
-                      "move the next track before track 2");
+                const auto nextColumn = std::find_if(columns.begin(), columns.end(),
+                                                     [next](const auto *strip) { return strip->track() == next; });
+                check(nextColumn != columns.end(), "the next track has a Mixer strip");
+                if (nextColumn != columns.end()) {
+                    auto &nextStrip = **nextColumn;
+                    const auto left = juce::ModifierKeys::leftButtonModifier;
+                    const juce::Point<float> grab{20.f, 8.f};
+                    const auto drop = grab.translated(static_cast<float>(sounding->getX() - nextStrip.getX()), 0.f);
+                    nextStrip.mouseDown(pressAt(nextStrip, grab, left));
+                    nextStrip.mouseDrag(dragAt(nextStrip, grab, drop, left));
+                    nextStrip.mouseUp(dragAt(nextStrip, grab, drop));
+                    check(integrated.undoTitle(false) == "Undo Move Track", "the strip title drag is one track move");
+                }
                 integrated.mark(DirtySet::All);
                 integrated.frame();
                 const MixerStrip *two = nullptr, *moved = nullptr;
