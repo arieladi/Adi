@@ -1125,6 +1125,14 @@ void waveformDetail(const std::filesystem::path &dir) {
     check(ui::peakSpan(*peaks, 0., frames, 0) == media::PeakBin{0, .75f} &&
               ui::peakSpan(*peaks, 0., frames, 1) == media::PeakBin{-.5f, 0},
           "zoomed out, both channels retain the full sample, including its last bin");
+    check(ui::peakSpan(*peaks, 16., frames - 2., 0) == media::PeakBin{} &&
+              ui::peakSpan(*peaks, 16., frames - 2., 1) == media::PeakBin{},
+          "wide unaligned columns combine finer edges with whole coarse bins");
+    ui::WaveformPeaks overview(peaks->finest());
+    check(overview.detailValues() > 0 && overview.limitDetail(0) == 0 &&
+              overview.finest().bins.size() <= ui::kWaveformOverviewBins * overview.finest().channels &&
+              ui::peakSpan(overview, 0., frames, 1) == media::PeakBin{-.5f, 0},
+          "an exhausted detail budget keeps bounded overview bins and their extrema");
 }
 void peakSpans() {
     media::MediaPeaks p;
@@ -1586,7 +1594,7 @@ int main(int argc, char **argv) {
                     for (int i = 0; i < 2000 && !(waves.idle() && waves.builds() > 0); ++i)
                         std::this_thread::sleep_for(std::chrono::milliseconds(5));
                     const auto built = waves.peaks(*clip.audio);
-                    check(built != nullptr && built->frames == 12000 && !built->bins.empty() && waves.problem().empty(),
+                    check(built != nullptr && built->finest().frames == 12000 && !built->finest().bins.empty() && waves.problem().empty(),
                           "a file imported after Save As gets its waveform");
                 }
             }
@@ -1660,9 +1668,9 @@ int main(int argc, char **argv) {
                 for (int i = 0; i < 2000 && !(waves.idle() && waves.builds() > 0); ++i)
                     std::this_thread::sleep_for(std::chrono::milliseconds(5));
                 const auto built = clip.audio ? waves.peaks(*clip.audio) : nullptr;
-                check(first && !hash.empty() && built != nullptr && built->contentHash == hash &&
-                          built->sampleRate == 48000 && built->channels == 1 && built->frames == 24000 &&
-                          !built->bins.empty() && waves.builds() == 1 && waves.delivered() == 1 && waves.problem().empty(),
+                check(first && !hash.empty() && built != nullptr && built->finest().contentHash == hash &&
+                          built->finest().sampleRate == 48000 && built->finest().channels == 1 && built->finest().frames == 24000 &&
+                          !built->finest().bins.empty() && waves.builds() == 1 && waves.delivered() == 1 && waves.problem().empty(),
                       "the worker builds the file's peaks once: none drawn at the first request, there at the next");
                 const auto again = waves.peaks(*clip.audio);
                 for (int i = 0; i < 20; ++i)

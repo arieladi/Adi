@@ -51,7 +51,9 @@ WaveformCache::Build peaksFrom(std::shared_ptr<WaveformSource> source) {
                 return refused;
             }
         }
-        return media::buildMediaPeaks(**reader, mediaId, 4096, std::move(stop));
+        constexpr std::uint32_t fineBinsPerChannel = 65536;
+        return media::buildMediaPeaks(**reader, mediaId, fineBinsPerChannel, std::move(stop), nullptr,
+                                     media::PeakCacheResolution::PreferRequested);
     };
 }
 } // namespace

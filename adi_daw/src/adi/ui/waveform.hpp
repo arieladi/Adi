@@ -13,13 +13,82 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <optional>
 #include <set>
 #include <span>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 namespace adi::ui {
+inline constexpr std::size_t kWaveformOverviewBins = 4096;
+inline constexpr std::size_t kWaveformPeakGroup = 4;
+
+inline void mergePeakBins(media::PeakBin &into, const media::PeakBin &bin) noexcept {
+    into.minimum = std::min(into.minimum, bin.minimum);
+    into.maximum = std::max(into.maximum, bin.maximum);
+}
+
+// Every coarser bin summarizes up to four bins from the previous level. The
+// finest level is the worker's source analysis or the best cached APKS fallback.
+class WaveformPeaks {
+  public:
+    explicit WaveformPeaks(media::MediaPeaks finest) {
+        levels_.push_back(std::move(finest));
+        while (levels_.back().channels > 0 && levels_.back().bins.size() > levels_.back().channels) {
+            const auto &previous = levels_.back();
+            if (previous.framesPerBin > std::numeric_limits<std::uint64_t>::max() / kWaveformPeakGroup)
+                break;
+            const auto channels = previous.channels;
+            const auto bins = previous.bins.size() / channels;
+            const auto count = (bins + kWaveformPeakGroup - 1) / kWaveformPeakGroup;
+            media::MediaPeaks next{previous.contentHash, previous.sampleRate, channels, previous.frames,
+                                  previous.framesPerBin * kWaveformPeakGroup,
+                                  std::vector<media::PeakBin>(count * channels)};
+            for (std::size_t i = 0; i < bins; ++i)
+                for (std::uint32_t channel = 0; channel < channels; ++channel) {
+                    const auto &from = previous.bins[i * channels + channel];
+                    auto &into = next.bins[(i / kWaveformPeakGroup) * channels + channel];
+                    if (i % kWaveformPeakGroup == 0)
+                        into = from;
+                    else
+                        mergePeakBins(into, from);
+                }
+            levels_.push_back(std::move(next));
+        }
+    }
+
+    std::span<const media::MediaPeaks> levels() const noexcept { return levels_; }
+    const media::MediaPeaks &finest() const noexcept { return levels_.front(); }
+
+    std::size_t detailValues() const noexcept {
+        std::size_t values = 0;
+        for (const auto &level : levels_) {
+            if (level.bins.size() <= kWaveformOverviewBins * level.channels)
+                break;
+            values += level.bins.size();
+        }
+        return values;
+    }
+
+    // The overview remains available even when the document has used its
+    // budget for finer waveforms. Called by the worker before publication.
+    std::size_t limitDetail(std::size_t budget) {
+        auto remaining = detailValues();
+        auto keep = levels_.begin();
+        while (remaining > budget) {
+            remaining -= keep->bins.size();
+            ++keep;
+        }
+        levels_.erase(levels_.begin(), keep);
+        return remaining;
+    }
+
+  private:
+    std::vector<media::MediaPeaks> levels_;
+};
+
 // An audio clip's waveform (Live 12 manual 6.1, chapter 9; parity-7.3 row 35; N40, #404).
 //
 // The peaks come from `media::buildMediaPeaks` (APKS v1), on a worker of their own, never on the
@@ -49,7 +118,7 @@ class WaveformCache {
     }
     // The peaks of a clip's file, from memory; else none, and the file queued once. A clip whose pool
     // row is missing, or marks the file missing, asks for nothing.
-    std::shared_ptr<const media::MediaPeaks> peaks(const engine::AudioClipSource &audio) {
+    std::shared_ptr<const WaveformPeaks> peaks(const engine::AudioClipSource &audio) {
         if (!audio.mediaInfo || audio.mediaInfo->missing || audio.mediaInfo->contentHash.empty())
             return nullptr;
         const auto &hash = audio.mediaInfo->contentHash;
@@ -76,7 +145,12 @@ class WaveformCache {
                 if (c->audio && c->audio->mediaInfo && !c->audio->mediaInfo->contentHash.empty())
                     used.insert(c->audio->mediaInfo->contentHash);
         std::lock_guard lock(mutex_);
-        std::erase_if(kept_, [&used](const auto &entry) { return !used.contains(entry.first); });
+        std::erase_if(kept_, [&](const auto &entry) {
+            if (used.contains(entry.first))
+                return false;
+            detailValues_ -= entry.second->detailValues();
+            return true;
+        });
         std::erase_if(asked_, [&used](const std::string &hash) { return !used.contains(hash); });
         std::erase_if(queue_, [&used](const Request &r) { return !used.contains(r.hash); });
         wanted_ = std::move(used);
@@ -100,6 +174,8 @@ class WaveformCache {
     }
 
   private:
+    static constexpr std::size_t fileDetailValues = 2 * 1024 * 1024 / sizeof(media::PeakBin);
+    static constexpr std::size_t documentDetailValues = 32 * 1024 * 1024 / sizeof(media::PeakBin);
     struct Request {
         std::int64_t mediaId = 0;
         std::string hash;
@@ -121,29 +197,42 @@ class WaveformCache {
                 busy_ = true;
             }
             auto result = build_(next.mediaId, stop);
+            std::shared_ptr<WaveformPeaks> built;
+            if (result && !stop.stop_requested()) {
+                try {
+                    built = std::make_shared<WaveformPeaks>(std::move(*result.data));
+                } catch (const std::bad_alloc &) {
+                    result.problem = media::PeakProblem::resource;
+                }
+            }
             builds_.fetch_add(1, std::memory_order_acq_rel);
             {
                 std::lock_guard lock(mutex_);
                 busy_ = false;
-                if (!result) {
+                if (!built) {
                     problem_ = result.detail.empty() ? "the file's peaks could not be built" : result.detail;
                     continue; // asked_ keeps it: a file that fails is not tried again this session
                 }
                 // Kept under the hash the worker read; dropped when the document let the file go.
-                if (wanted_.contains(next.hash))
-                    kept_[next.hash] = std::make_shared<const media::MediaPeaks>(std::move(*result.data));
+                if (wanted_.contains(next.hash) && !kept_.contains(next.hash)) {
+                    const auto budget = std::min(fileDetailValues, documentDetailValues - detailValues_);
+                    const auto values = built->limitDetail(budget);
+                    kept_.emplace(std::move(next.hash), std::move(built));
+                    detailValues_ += values;
+                }
+                delivered_.fetch_add(1, std::memory_order_acq_rel);
             }
-            delivered_.fetch_add(1, std::memory_order_acq_rel);
         }
     }
     Build build_;
     mutable std::mutex mutex_;
     std::condition_variable_any wake_;
     std::deque<Request> queue_;
-    std::map<std::string, std::shared_ptr<const media::MediaPeaks>> kept_;
+    std::map<std::string, std::shared_ptr<const WaveformPeaks>> kept_;
     std::set<std::string> asked_, wanted_;
     std::string problem_;
     bool busy_ = false;
+    std::size_t detailValues_ = 0;
     std::uint64_t generation_ = 0;
     std::atomic<std::uint64_t> delivered_{0};
     std::atomic<int> builds_{0};
@@ -216,7 +305,8 @@ class ClipSourceMap {
 // lies in a bin (three faults a review of 18 November found: the seed was {1, -1}, which clipped
 // such a bin's near edge to full scale and came back as it stood, minimum above maximum, for a
 // span inside one frame; and a span before the file answered with the first bin).
-inline std::optional<media::PeakBin> peakSpan(const media::MediaPeaks &p, double from, double to, std::uint32_t channel) {
+inline std::optional<std::pair<std::size_t, std::size_t>> peakSpanBins(const media::MediaPeaks &p, double from,
+                                                                    double to, std::uint32_t channel) {
     if (p.channels == 0 || p.framesPerBin == 0 || channel >= p.channels || !(to > from) || !(to > 0.))
         return std::nullopt;
     const auto binCount = p.bins.size() / p.channels;
@@ -229,11 +319,51 @@ inline std::optional<media::PeakBin> peakSpan(const media::MediaPeaks &p, double
     const auto lastAt = std::max(0., to - 1.) / perBin;
     auto last = lastAt < static_cast<double>(binCount) ? static_cast<std::size_t>(lastAt) : binCount - 1;
     last = std::max(last, first); // a span inside one frame: `to - 1` falls in the bin before
+    return std::pair{first, last + 1};
+}
+
+inline std::optional<media::PeakBin> peakSpan(const media::MediaPeaks &p, double from, double to, std::uint32_t channel) {
+    const auto range = peakSpanBins(p, from, to, channel);
+    if (!range)
+        return std::nullopt;
+    const auto [first, end] = *range;
     auto out = p.bins[first * p.channels + channel];
-    for (auto b = first + 1; b <= last; ++b) {
-        const auto &bin = p.bins[b * p.channels + channel];
-        out.minimum = std::min(out.minimum, bin.minimum);
-        out.maximum = std::max(out.maximum, bin.maximum);
+    for (auto b = first + 1; b < end; ++b)
+        mergePeakBins(out, p.bins[b * p.channels + channel]);
+    return out;
+}
+
+inline std::optional<media::PeakBin> peakSpan(const WaveformPeaks &p, double from, double to, std::uint32_t channel) {
+    const auto range = peakSpanBins(p.finest(), from, to, channel);
+    if (!range)
+        return std::nullopt;
+    auto [first, end] = *range;
+    std::optional<media::PeakBin> out;
+    const auto levels = p.levels();
+    for (const auto &level : levels) {
+        const auto add = [&](std::size_t bin) {
+            const auto &peak = level.bins[bin * level.channels + channel];
+            if (out)
+                mergePeakBins(*out, peak);
+            else
+                out = peak;
+        };
+        // Scan the edges at their own resolution, then use the next level for
+        // complete groups. Wide spans cost O(log bins) without using a bin
+        // that extends outside the pixel's range in the finest level.
+        if (&level == &levels.back()) {
+            while (first < end)
+                add(first++);
+            break;
+        }
+        while (first < end && first % kWaveformPeakGroup != 0)
+            add(first++);
+        while (first < end && end % kWaveformPeakGroup != 0)
+            add(--end);
+        if (first == end)
+            break;
+        first /= kWaveformPeakGroup;
+        end /= kWaveformPeakGroup;
     }
     return out;
 }

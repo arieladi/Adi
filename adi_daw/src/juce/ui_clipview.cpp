@@ -2846,13 +2846,16 @@ void SampleEditor::paint(juce::Graphics &g) {
     if (node == nullptr || !node->audio || waveforms == nullptr)
         return;
     const auto peaks = waveforms->peaks(*node->audio);
-    if (!peaks || peaks->channels == 0 || peaks->sampleRate == 0)
+    if (!peaks)
+        return;
+    const auto &finest = peaks->finest();
+    if (finest.channels == 0 || finest.sampleRate == 0)
         return;
     const auto *snapshot = panel.root.reader().get();
     const ClipSourceMap source(*node, snapshot != nullptr ? snapshot->tempo.get() : nullptr,
-                               static_cast<double>(peaks->sampleRate));
+                               static_cast<double>(finest.sampleRate));
     const float top = static_cast<float>(area.getY()) + 4.f, bottom = static_cast<float>(area.getBottom()) - 4.f;
-    const float band = (bottom - top) / static_cast<float>(peaks->channels);
+    const float band = (bottom - top) / static_cast<float>(finest.channels);
     const int from = std::max(0, static_cast<int>(std::floor(time.x(window.pos)))),
               to = std::min(getWidth(), static_cast<int>(std::ceil(time.x(window.end()))));
     g.setColour(look::ink.withAlpha(node->muted ? 0.35f : 0.7f));
@@ -2861,7 +2864,7 @@ void SampleEditor::paint(juce::Graphics &g) {
         if (!f0)
             continue;
         const double end = f1 ? *f1 : *f0 + 1.;
-        for (std::uint32_t ch = 0; ch < peaks->channels; ++ch) {
+        for (std::uint32_t ch = 0; ch < finest.channels; ++ch) {
             const auto span = peakSpan(*peaks, std::min(*f0, end), std::max(*f0 + 1., end), ch);
             if (!span)
                 continue;

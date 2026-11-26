@@ -2934,15 +2934,18 @@ void ArrangementCanvas::paintWaveform(juce::Graphics &g, const engine::ClipNode 
     if (view.waveforms == nullptr || !clip.audio || bottom - top < 4.f)
         return;
     const auto peaks = view.waveforms->peaks(*clip.audio);
-    if (!peaks || peaks->channels == 0 || peaks->sampleRate == 0)
+    if (!peaks)
+        return;
+    const auto &finest = peaks->finest();
+    if (finest.channels == 0 || finest.sampleRate == 0)
         return;
     const auto *snapshot = view.reader().get();
     const auto &geo = view.geometry;
     auto moved = clip;
     moved.posTicks = pos; // drawn where a drag would put it
     const ClipSourceMap source(moved, snapshot != nullptr ? snapshot->tempo.get() : nullptr,
-                               static_cast<double>(peaks->sampleRate));
-    const float band = (bottom - top) / static_cast<float>(peaks->channels);
+                               static_cast<double>(finest.sampleRate));
+    const float band = (bottom - top) / static_cast<float>(finest.channels);
     const auto gain = std::abs(clip.gainDb) <= 120.f ? std::pow(10.f, clip.gainDb / 20.f) : 0.f;
     g.setColour(look::ink.withAlpha(clip.muted ? 0.4f : 0.85f));
     const int from = std::max(0, static_cast<int>(std::floor(left))),
@@ -2952,7 +2955,7 @@ void ArrangementCanvas::paintWaveform(juce::Graphics &g, const engine::ClipNode 
         if (!f0)
             continue;
         const double end = f1 ? *f1 : *f0 + 1.;
-        for (std::uint32_t ch = 0; ch < peaks->channels; ++ch) {
+        for (std::uint32_t ch = 0; ch < finest.channels; ++ch) {
             const auto span = peakSpan(*peaks, std::min(*f0, end), std::max(*f0 + 1., end), ch);
             if (!span)
                 continue;
