@@ -976,7 +976,7 @@ juce::File projectsFolder(const settings::AppSettings &settings);
 // Live's New Live Set (manual 5.4.1): a new project is untitled and asks nothing; Save As names and
 // places it. Reserve an exclusive Untitled, Untitled(2), ... directory for launch or New.
 juce::File nextUntitledProject(const settings::AppSettings &settings);
-// Map the save chooser's file to the song file inside its own same-named folder.
+// Keep an explicitly selected existing file. New songs get a same-named folder.
 juce::File songProjectFile(const juce::File &file);
 // After closing the document: discard its provisional file only when the identity is still the
 // one created by this instance and it contains no edits or named snapshots.

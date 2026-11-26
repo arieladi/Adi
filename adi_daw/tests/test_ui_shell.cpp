@@ -15668,6 +15668,11 @@ void untitledProjects(const std::filesystem::path &dir) {
     check(songProjectFile(file(folder / "Song v1.2.adi")) == file(saved) &&
               songProjectFile(file(saved)) == file(saved),
           "Save As adds one same-named folder and preserves dots in the song name");
+    const auto flat = file(folder / "Legacy.adi");
+    const auto nested = file(folder / "Legacy" / "Legacy.adi");
+    check(nested.getParentDirectory().createDirectory().wasOk() && flat.replaceWithText("flat") &&
+              nested.replaceWithText("nested") && songProjectFile(flat) == flat && songProjectFile(nested) == nested,
+          "Save As keeps the exact existing file selected for replacement in either layout");
 }
 void discardUneditedUntitled(const std::filesystem::path &dir) {
     std::string why;

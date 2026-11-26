@@ -1528,12 +1528,13 @@ class AdiApplication final : public juce::JUCEApplication,
                 return false;
             const auto current = juce::File(juce::String::fromUTF8(reinterpret_cast<const char *>(
                 document_->store().path().u8string().c_str())));
+            const auto containingFolder = current.getParentDirectory();
             // A named variation starts beside the song folder. First save starts in Projects.
             auto suggested = current;
             if (firstSave)
                 suggested = projectsFolder(*settings_).getChildFile(current.getFileName());
-            else if (songProjectFile(current) == current)
-                suggested = current.getParentDirectory().getSiblingFile(current.getFileName());
+            else if (containingFolder == containingFolder.getSiblingFile(current.getFileNameWithoutExtension()))
+                suggested = containingFolder.getSiblingFile(current.getFileName());
             const auto generation = installGeneration_;
             // The app confirms the resolved destination after the file chooser closes.
             chooser_ = std::make_unique<juce::FileChooser>(firstSave ? "Save ADI project" : "Save ADI project as",

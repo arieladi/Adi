@@ -4762,7 +4762,7 @@ juce::File songProjectFile(const juce::File &file) {
     if (name.isEmpty() || name == "." || name == "..")
         return {};
     const auto parent = file.getParentDirectory();
-    if (parent == parent.getSiblingFile(name))
+    if (file.existsAsFile() || parent == parent.getSiblingFile(name))
         return file;
     return parent.getChildFile(name).getChildFile(file.getFileName());
 }
