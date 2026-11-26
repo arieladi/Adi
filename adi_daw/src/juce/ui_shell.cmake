@@ -125,14 +125,15 @@ if(ADI_WITH_JUCE)
         COMPILE_OPTIONS "$<TARGET_PROPERTY:adi_warnings,INTERFACE_COMPILE_OPTIONS>")
     add_test(NAME adi_ui_eq_pages_tests COMMAND adi_ui_eq_pages_tests)
     set(adi_program_icon "${CMAKE_CURRENT_SOURCE_DIR}/src/juce/assets/program.png")
+    set(adi_notice_dir "${CMAKE_CURRENT_SOURCE_DIR}/third_party_notices")
     juce_add_binary_data(adi_app_resources NAMESPACE AdiAppResources HEADER_NAME adi_app_resources.hpp SOURCES
         "${adi_program_icon}"
-        third_party_notices/analysis_palettes/README.md
-        third_party_notices/analysis_palettes/CMasher-LICENSE.txt
-        third_party_notices/analysis_palettes/matplotlib-LICENSE.txt
-        third_party_notices/analysis_palettes/seaborn-LICENSE.txt
-        third_party_notices/smexoscope/NOTICE.md
-        third_party_notices/smexoscope/LICENSE.txt)
+        "${adi_notice_dir}/analysis_palettes/README.md"
+        "${adi_notice_dir}/analysis_palettes/CMasher-LICENSE.txt"
+        "${adi_notice_dir}/analysis_palettes/matplotlib-LICENSE.txt"
+        "${adi_notice_dir}/analysis_palettes/seaborn-LICENSE.txt"
+        "${adi_notice_dir}/smexoscope/NOTICE.md"
+        "${adi_notice_dir}/smexoscope/LICENSE.txt")
     juce_add_gui_app(adi_app PRODUCT_NAME "ADI" COMPANY_NAME "ADI" BUNDLE_ID "org.adi.daw"
         ICON_BIG "${adi_program_icon}")
     target_sources(adi_app PRIVATE src/juce/ui_main.cpp src/juce/app_audio_page.cpp src/juce/app_midi_ports.cpp src/juce/juce_device_loader.cpp src/juce/vst3_host.cpp src/juce/vst3_events.cpp src/juce/editor_host_component.cpp)
