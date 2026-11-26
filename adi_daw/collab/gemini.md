@@ -4,6 +4,36 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-26 — Closing Rule / Queue Item 11 (Clang 14.0.6 + libstdc++ 12 ASan + LSan + UBSan on `origin/main` `2b1f777f`)
+
+Completed the second compiler leg of Standing Queue Item 11: all **278** headless suites (`-LE performance`, `-DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF -DADI_ACCEPTANCE=ON`) under **Clang 14.0.6 + libstdc++ 12** with `-O1 -g1 -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=undefined -DADI_WERROR=ON`, `ASAN_OPTIONS=detect_leaks=1:alloc_dealloc_mismatch=1:halt_on_error=1`, `UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1` on `origin/main` `2b1f777f` (identical source tree to `5ebc7453`). All 479 core/helper targets built with **0 warnings**.
+
+| Outcome | Count | Details |
+|---|---|---|
+| **PASS (ASan + LSan + UBSan)** | **271 / 278** | 270 within 180 s + `adi_history_retention_fuzz_tests` PASS in 286.74 s (`detect_leaks=1`). Includes `adi_acceptance_wts01` (31.13 s) and **all 23 Pd suites with `detect_leaks=1`** — confirming landed `DF-E67 (b)` completely resolved the prior 23-suite `canvas_setargs` LSan leak. |
+| **SKIP** | **1 / 278** | `adi_loudness_ffmpeg_tests` (no `ffmpeg` binary in VM). |
+| **PASS (ASan + UBSan, `detect_leaks=0`); system LSan only** | **4 / 278** | `adi_progressive_decode_tests` (8.37 s), `adi_mp4_aac_tests` (0.79 s), `adi_ni_stems_tests` (5.99 s), `adi_aac_import_tests` (1.31 s): 0 ASan/UBSan errors; same Ubuntu 24.04 system `dlopen("libavcodec.so.60")` `call_init` LSan report via `src/adi/audio/aac_ffmpeg.inc:51` as in the GCC 12 ASan sweep. |
+| **FAIL (known `DF-M79`, sharpened)** | **1 / 278** | `adi_mix_compressor_tests`: 0 ASan/LSan/UBSan reports; fails `neutral path preserves signed zero and subnormal programme` (196 checks, 1 failure) because Clang 14 folds `gr == 1.f ? right : right * gr` (`src/adi/mix/compressor/Core.cpp:467-468`) into unconditional `mulss` inside `FlushDenormals` **at `-O1` as well as `-O2`/`-O3`**. |
+| **FAIL (NEW UBSan finding)** | **1 / 278** | `adi_pd_object_walk_tests` — `float-cast-overflow` UB in `canvas_connect` (`pd-loader-fixed/g_editor.c:4567:51`), caught by Clang 14 UBSan (GCC 12 `-fsanitize=undefined` omits `float-cast-overflow` by default). See Finding below. |
+
+### New Finding on `origin/main` (`2b1f777f` / `5ebc7453`) under Clang 14 UBSan
+
+- **Undefined behavior (`float-cast-overflow`) in Pure Data `canvas_connect` on untrusted `.pd` patch input (`src/juce/pd_loader_fix.cmake:291-317` / generated `pd-loader-fixed/g_editor.c:4567:51`):**
+  - `canvas_connect(t_canvas *x, t_floatarg fwhoout, t_floatarg foutno, t_floatarg fwhoin, t_floatarg finno)` immediately executes `int whoout = fwhoout, outno = foutno, whoin = fwhoin, inno = finno;` **before** ADI's `DEV-09 PD2` bounds checks (`pd_loader_fix.cmake:299-314`).
+  - When `testASeededFuzzOfPatchTextNeverCrashes()` (`tests/test_pd_object_walk.cpp:447`) opens a fuzzed `.pd` patch with `1e+21` in a `#X connect` line, Clang 14 UBSan aborts:
+    ```
+    pd-loader-fixed/g_editor.c:4567:51: runtime error: 1e+21 is outside the range of representable values of type 'int'
+        #0 in canvas_connect pd-loader-fixed/g_editor.c:4567:51
+        #1 in mess_dispatch third_party/libpd/pure-data/src/m_dispatch.h:120:21
+        #7 in adi::device::LibPdEngine::open src/juce/pd_engine.cpp:355:14
+        #8 in testASeededFuzzOfPatchTextNeverCrashes tests/test_pd_object_walk.cpp:447:18
+    ```
+  - On x86_64 out-of-range float-to-`int` yields `INT_MIN` (caught accidentally by `whoin < 0`), whereas on ARM64 `fcvtzs` saturates positive overflow to `INT_MAX`. Guarding `fwhoout`, `foutno`, `fwhoin`, `finno` for finite values in `[0, INT_MAX]` before casting to `int` inside `src/juce/pd_loader_fix.cmake` eliminates the UB portably.
+  - **Owner:** `devices` (`src/juce/pd_loader_fix.cmake:291-317`).
+  - **Smallest repro:** Configure with Clang 14.0.6 `-fsanitize=undefined -fno-sanitize-recover=undefined -DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF`, build `adi_pd_object_walk_tests`, run `./adi_pd_object_walk_tests`.
+
+---
+
 ## 2026-11-26 — Closing Rule (`origin/main` `2b1f777f`: `#790` `win/df-w52-w57` + `#791`)
 
 Verified `origin/main` at `2b1f777f` (merging `#790` `468402f9`, fixing `DF-W52` plug-in instrument loading/replacement and `DF-W57` empty track rename default, plus `#791`) under **GCC 12.4.0** and **Clang 14.0.6 + libstdc++ 12** with `-DADI_WERROR=ON` (headless Pd on, JUCE off, `-DADI_ACCEPTANCE=ON`), plus all 5 touched/adjacent JUCE UI translation units with `-DADI_WITH_JUCE=ON -DADI_WERROR=ON`.
