@@ -1389,10 +1389,13 @@ void arrangementMidiRecord(const std::filesystem::path &path, bool mixed) {
         return;
     if (mixed) {
         const auto relative = doc->store().db().execAndGet("SELECT rel_path FROM media_files").getString();
+        if (relative != "Samples/Recorded/3 Audio 0001.wav")
+            std::printf("Mixed take path: %s\n", relative.c_str());
         check(relative == "Samples/Recorded/3 Audio 0001.wav" &&
-                  std::filesystem::is_regular_file(media::projectFolder(doc->store()) / media::pathFromUtf8(relative)) &&
-                  std::filesystem::is_directory(workFolder) && std::filesystem::is_empty(workFolder),
-              "the mixed take publishes under the displayed audio track name and removes its private capture");
+                  std::filesystem::is_regular_file(media::projectFolder(doc->store()) / media::pathFromUtf8(relative)),
+              "the mixed take publishes under the displayed audio track name");
+        check(std::filesystem::is_directory(workFolder) && std::filesystem::is_empty(workFolder),
+              "publication removes the private capture from the configured work folder");
     } else {
         check(!std::filesystem::exists(workFolder), "MIDI-only recording does not create an audio work folder");
     }
@@ -1904,8 +1907,10 @@ int main(int argc, char **argv) {
         test::TempDirectory externalInputDir("ui_document", "external-input");
         externalInputRecording(externalInputDir.path());
         arrangementRecord(recordDir.path());
-        arrangementMidiRecord(recordDir.path() / "midi.adi", false);
-        arrangementMidiRecord(recordDir.path() / "mixed.adi", true);
+        test::TempDirectory midiRecordingDir("ui_document", "record-midi");
+        arrangementMidiRecord(midiRecordingDir.path() / "midi.adi", false);
+        test::TempDirectory mixedRecordingDir("ui_document", "record-mixed");
+        arrangementMidiRecord(mixedRecordingDir.path() / "mixed.adi", true);
         test::TempDirectory latencyDir("ui_document", "latency");
         recordWithDeviceLatency(latencyDir.path());
         test::TempDirectory refusedPublicationDir{"ui_document", "recording_publication_refused"};
