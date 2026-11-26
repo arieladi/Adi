@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "../src/juce/app_audio_page.hpp"
 #include "../src/juce/app_midi_ports.hpp"
+#include "../src/juce/builtin_host.hpp"
 #include "../src/juce/ui_export.hpp"
 #include "../src/juce/ui_controls.hpp"
 #include "../src/juce/ui_floating.hpp"
@@ -4156,7 +4157,7 @@ void colorCabTile(AppCommands &commands, const std::filesystem::path &dir) {
 void oneShotTile(AppCommands &commands, const std::filesystem::path &dir) {
 #if ADI_WITH_PD
     std::string error;
-    auto document = ProjectDocument::open(dir / "oneshot-tile.adi", true, {}, error);
+    auto document = ProjectDocument::open(dir / "oneshot-tile.adi", true, device::withBuiltinDevices(), error);
     check(document != nullptr, "a project for OneShot's tile");
     if (!document)
         return;
@@ -4166,8 +4167,10 @@ void oneShotTile(AppCommands &commands, const std::filesystem::path &dir) {
     AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
                           document->sessionState(), "oneshot");
     UiPeerRoot surfacePeer;
-    surfacePeer.setSize(1600, 1000);surfacePeer.addAndMakeVisible(root);
-    surfacePeer.setVisible(true);surfacePeer.addToDesktop(0);
+    surfacePeer.setSize(1600, 1000);
+    surfacePeer.addAndMakeVisible(root);
+    surfacePeer.setVisible(true);
+    surfacePeer.addToDesktop(0);
     root.afterEdit = [&] { document->synchronise(); };
     root.devices.publication = [&] { return document->parameterFeed().current(); };
     root.devices.parameterDemand = [&](const void *owner, const std::vector<std::int64_t> &ids) {
@@ -11498,6 +11501,7 @@ void deviceClipboard(AppCommands &commands, const std::filesystem::path &dir) {
         check(device.rename.getText() == "q" && !swapped, "Q typed in the name editor stays in the editor");
         device.rename.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey));
         root.devices.hotSwap = {};
+        root.arrangement.canvas.grabKeyboardFocus();
     }
     const auto chain = [&] {
         std::vector<std::int64_t> out;
