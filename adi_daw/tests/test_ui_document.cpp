@@ -2961,6 +2961,50 @@ void reversedWaveform() {
           "arrangement offsets and the Sample Editor's source ruler agree on reverse Warp position");
 }
 
+void waveformLoopRepeats(const std::filesystem::path &dir) {
+    constexpr auto beat = textproj::kPPQ;
+    StoreError error{};
+    auto store = Store::create(dir / "loop-waveforms.adi", error);
+    check(store != nullptr, "a project for loop repeat waveforms");
+    if (!store)
+        return;
+    auto &db = store->db();
+    db.exec("INSERT INTO tracks(id,kind,name) VALUES(21,'audio','Loops');"
+            "INSERT INTO media_files(id,hash_blake3,rel_path,format,sample_rate,channels,frames) "
+            "VALUES(1,'loop-waveforms','source.wav','wav',48000,1,96100);"
+            "INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks,loop_enabled,loop_start_ticks,loop_len_ticks) "
+            "VALUES(7,21,'audio',0,46126080,1,5765760,5765760),(8,21,'audio',0,46126080,1,2882880,5765760);"
+            "INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames) "
+            "VALUES(7,1,100,96000),(8,1,100,96000);"
+            "INSERT INTO clip_playback_details(clip_id,loop_begin_ns,loop_end_ns) VALUES(8,250000000,750000000);"
+            "DELETE FROM tempo_map; INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120),(17297280,60);");
+    const std::array markers{WarpMarker{0, 0}, WarpMarker{96000, 4 * beat}};
+    const auto warp = audio::writeWarpMap(markers, 96000);
+    SQLite::Statement attachWarp(db, "UPDATE audio_clips SET warp_enabled=1,warp_mode='beats',warp_markers=? WHERE clip_id=7");
+    attachWarp.bind(1, warp.bytes.data(), static_cast<int>(warp.bytes.size()));
+    attachWarp.exec();
+    auto snapshot = engine::SnapshotBuilder::fromStore(*store, {}, false);
+    const auto frameIs = [&](std::int64_t id, std::int64_t at, double expected) {
+        const auto *track = snapshot->findTrack(21);
+        if (!track)
+            return false;
+        for (const auto &clip : track->clips)
+            if (clip->id == id && clip->audio) {
+                const auto frame = ui::ClipSourceMap(*clip, snapshot->tempo.get(), 48000).frameAt(at);
+                return frame && std::abs(*frame - expected) < .01;
+            }
+        return false;
+    };
+    check(frameIs(7, 0, 100) && frameIs(7, beat, 24100), "the initial material plays into the loop");
+    check(frameIs(7, 2 * beat, 24100) && frameIs(7, 5 * beat / 2, 36100),
+          "the warped waveform repeats the loop's own source region");
+    check(frameIs(7, 7 * beat / 2, 24100), "a tempo change after the first repeat follows playback's rendered loop clock");
+    check(frameIs(8, 5 * beat / 2, 12100), "the legacy unwarped waveform repeats its physical loop bounds");
+    db.exec("UPDATE clips SET content_offset_ticks=20180160,pos_ticks=20180160 WHERE id=7");
+    snapshot = engine::SnapshotBuilder::fromStore(*store, *snapshot, {}, false);
+    check(frameIs(7, 7 * beat / 2, 24100), "the first pixel of a clip split at a repeat keeps its loop source position");
+}
+
 // PD06-SAVEAS-GUARD: Save As during Record, or while a take's placement is pending, lands the take in
 // the file it was recorded in first, as one undo step, and then switches; the saved file holds it.
 void saveAsKeepsTheTake(const std::filesystem::path &dir) {
@@ -3144,6 +3188,10 @@ int main(int argc, char **argv) {
     {
         test::TempDirectory offsetDir("ui_document", "wave-offsets");
         waveformSourceOffsets(offsetDir.path());
+    }
+    {
+        test::TempDirectory loopDir("ui_document", "loop-waveforms");
+        waveformLoopRepeats(loopDir.path());
     }
     {
         test::TempDirectory bitDepthDir("ui_document", "record-bit-depth");
