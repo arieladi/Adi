@@ -14189,10 +14189,18 @@ void exportPage(AppCommands &commands, const std::filesystem::path &dir) {
     page.encodeMp3.setToggleState(true, juce::dontSendNotification);
     page.encodeMp3.onClick();
     check(!page.exportButton.isEnabled() && page.refusals().size() == 1 &&
-              page.refusals()[0].find("MP3 waits") != std::string::npos,
-          "MP3 on: Export waits, saying why");
+              page.refusals()[0] == "MP3 export is unavailable. Turn off Encode MP3 to export audio.",
+          "MP3 on: Export names the unavailable format and the control to turn off");
     page.encodeMp3.setToggleState(false, juce::dontSendNotification);
     page.encodeMp3.onClick();
+    check(page.dither.getItemText(3) == "Shaped 1" && page.dither.getItemText(4) == "Shaped 2" &&
+              page.dither.getItemText(5) == "Shaped 3",
+          "the dither menu uses the agreed shaped dither names");
+    page.dither.setSelectedId(4, juce::sendNotificationSync);
+    check(!page.exportButton.isEnabled() && page.refusals().size() == 1 &&
+              page.refusals().front() == "Shaped dither is unavailable. Choose triangular, rectangular or no dither.",
+          "shaped dither explains which choices can be used");
+    page.dither.setSelectedId(3, juce::sendNotificationSync);
     page.renderedTrack.setSelectedId(2, juce::sendNotificationSync);
     check(page.choices().tracks == ExportTracks::All &&
               page.choices().stemTracks == std::vector<std::int64_t>{4, 6, 0} && page.exportButton.isEnabled(),

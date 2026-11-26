@@ -43,7 +43,7 @@ struct ExportChoices {
     bool encodePcm = true;
     std::string fileType = "WAV";            // WAV, AIFF, FLAC
     int bitDepth = 24;                       // 16, 24, 32 (float)
-    std::string dither = "Triangular";       // No Dither, Rectangular, Triangular, POW-r 1, 2, 3
+    std::string dither = "Triangular";       // No Dither, Rectangular, Triangular, Shaped 1, 2, 3
     bool encodeMp3 = false;
     bool video = false;
     render::Normalization normalization{render::NormalizeMode::Peak, -14, 0};
@@ -55,7 +55,7 @@ inline render::PcmContainer exportContainer(const ExportChoices &c) {
 }
 inline constexpr std::array<int, 3> kExportBitDepths{16, 24, 32};
 inline constexpr std::array<const char *, 6> kExportDithers{"No Dither", "Rectangular", "Triangular",
-                                                            "POW-r 1", "POW-r 2", "POW-r 3"};
+                                                            "Shaped 1", "Shaped 2", "Shaped 3"};
 // Why a choice cannot be made yet, for the page to show beside it; empty when the renderer takes it.
 inline std::string unsupported(const ExportChoices &c, const char *choice) {
     const std::string what(choice);
@@ -63,24 +63,23 @@ inline std::string unsupported(const ExportChoices &c, const char *choice) {
     // the engine's through-Main stems, not on main yet. Main always renders whole.
     if (what == "includeReturnAndMain" && (c.track != 0 || c.tracks != ExportTracks::One) &&
         c.includeReturnAndMain)
-        return "A track through the returns and Main waits for the engine's stems (EX-07); turn Include Return "
-               "and Main Effects off to render the track's own signal.";
+        return "Turn Include Return and Main Effects off to export individual track signals.";
     if (what == "renderAsLoop" && c.renderAsLoop)
-        return "Render as Loop waits for the engine's export (EX-07).";
+        return "Loop export is unavailable. Turn off Render as Loop to export the selected range.";
     if (what == "convertToMono" && c.convertToMono)
-        return "Convert to Mono waits for the engine's export (EX-07).";
+        return "Mono export is unavailable. Turn off Convert to Mono to export in stereo.";
     if (what == "createAnalysisFile" && c.createAnalysisFile)
-        return "Analysis files wait for the engine's export (EX-07).";
+        return "Analysis files are unavailable. Turn off Create Analysis File to export audio.";
     if (what == "fileType" && c.fileType != "WAV" && c.fileType != "AIFF")
         return c.fileType + " export is unavailable. Choose WAV or AIFF.";
-    if (what == "dither" && c.dither.rfind("POW-r", 0) == 0)
-        return "The shaped dithers wait for the engine's noise shaping (EX-06).";
+    if (what == "dither" && c.dither.starts_with("Shaped "))
+        return "Shaped dither is unavailable. Choose triangular, rectangular or no dither.";
     if (what == "encodeMp3" && c.encodeMp3)
-        return "MP3 waits for the engine's encoders (EX-08).";
+        return "MP3 export is unavailable. Turn off Encode MP3 to export audio.";
     if (what == "video" && c.video)
-        return "Video export is not part of ADI yet (P2, ADR-0206 d4).";
+        return "Video export is unavailable. Turn off Export Video to export audio.";
     if (what == "encodePcm" && !c.encodePcm)
-        return "With PCM off there is nothing to render until MP3 does.";
+        return "Turn on Encode PCM to export an audio file.";
     return {};
 }
 // Every reason the choices cannot render now, in the dialog's order: empty when Export can go.
