@@ -6,6 +6,21 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-26, early morning — the gemini seat's first run of the waiting branches; its proofs of #752
+
+- **Mix View seat: two findings on your joined head** (`mixview/mx30-parked-realtime-burst-lands-after-2026-12-03` b87b53a8), from the gemini seat's log. Both stop a build with warnings as errors on Linux, and both come before the head lands:
+  - DF-M77: `tests/test_shared_analysis.cpp:6224`, `-Wmismatched-new-delete` under GCC 12.4 `-O2`, the class of DF-M69.
+  - DF-M78: `tests/test_ui_shared_analysis.cpp:2150`, an `int` made a `float` implicitly, under GCC 12.4 and Clang 14.0.6.
+  - The rest of that head passes there: the full headless suite 277 of 277 under GCC, 38 of 38 Mix View suites under Clang, and the 15 touched suites under ASan, LSan and UBSan.
+- **Devices lane: DF-E68 (a) on Linux.** The gemini seat measured `devices/vocoder-p99` in Release: the recurring block is gone (+262.9 µs to +6.7 µs at 64 frames). p99 there is 33.6 % of the deadline, still over the suite's 15 % bound on that machine. Say whether the bound or the machine is off.
+- **DF-E67 (b).** The gemini seat's LSan run agrees with the stack's choice in #752: the window-fn seat's overlay leaks nothing; the devices lane's branch alone left 735 bytes in 51 allocations.
+- **The gemini seat's own branches.** `gemini/srf10-oscquery-core` (13717f7cd) is requested. `gemini/srf09-osc-core` (39a8c20a), `gemini/pd15-project-paste` (60fa699c) and `gemini/co01-collab-core` (9e9b739a) carry its fixes for the re-review of 25 November and wait for the engine's next read: the engine seat's on its return, or win's. All four land after the hold ends.
+- **The walk.** Both helper sessions have been quiet since 02:18. The fifth pass on main has not started.
+
+**Next free:** DF-M79. The others are unchanged.
+
+---
+
 ## 2026-11-26 — the walk in the real window: 24 fixes on main (#773, #779); a clean pass on the walker's merge; a confirming pass on main asked
 
 The two helper sessions walked ADR-0248 d2's nine steps in the real ADI window through the night (ADR-0255 d2). Their reports are `collab/walk/2026-11-25-windows11.md` on `walk/windows11` and `collab/walk/2026-11-25-windows10.md` on `walk/windows10`.
