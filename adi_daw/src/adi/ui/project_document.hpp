@@ -160,7 +160,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     // marker after the saved Count-In (`RenderBlock::startPlayback`). Playing, it records from the
     // playhead on, as Live's punch in. False with `error()` saying why.
     // `inputs` is the device's input channel count, `insertTick` where a stopped transport starts.
-    bool startRecording(std::int64_t insertTick, std::int32_t inputs, bool playing);
+    bool startRecording(std::int64_t insertTick, std::int32_t inputs, bool playing, bool overdub = false);
     // How many inputs the audio device has open (N65's window half): every audio track is fed by inputs
     // 1/2 (input 1 alone on a one-input device) until a track's input has its grammar (MX-25), as
     // recording takes them, and the session hears them as each track's Arm and monitoring say (In
@@ -186,6 +186,8 @@ class ProjectDocument final : public engine::BlockProcessor {
         std::vector<std::int64_t> clips;
         std::string message;
     };
+    [[nodiscard]] bool canCaptureMidi() const noexcept;
+    TakeLanded captureRecentMidi(std::int64_t positionTick, bool playing);
     std::optional<TakeLanded> takeLanded();
     // A mixer drag heard while it moves (MX-23, SRF-02; Live 12 manual 18.1): a fader, a pan or a send
     // knob, on its track or, when that track is among the selected, on every selected track by the same

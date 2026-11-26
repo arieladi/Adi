@@ -128,6 +128,7 @@ void BarItem::paintButton(juce::Graphics &g, bool over, bool down) {
     }
     if (glyph != Glyph::None)
         paintGlyph(g, glyph, content,
+                   !isEnabled() ? look::text.withMultipliedAlpha(.4f) :
                    getToggleState() ? (boxed ? look::ink : look::accent) : look::text);
     if (text.isNotEmpty()) {
         g.setColour(boxed && getToggleState() ? look::ink : look::text);
@@ -273,6 +274,12 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
     };
     // Live 12 manual 21.1: Arrangement Record records every armed track; F9 is the same command.
     record.onClick = [this] { root_.command(AppCommands::ArrangementRecord); };
+    capture.setEnabled(false);
+    capture.onClick = [this] {
+        const bool playing = root_.playing();
+        const auto tick = playing ? root_.timelineTick() : root_.arrangement.geometry.selection.insert;
+        if (root_.captureRecentMidi) root_.captureRecentMidi(tick, playing);
+    };
     keyboard.onClick = [this] { root_.command(AppCommands::ComputerMidiKeyboard); };
     // Manual 21.2: MIDI Arrangement Overdub, the window's own switch; it decides what a MIDI recording
     // does to the notes already there, once MIDI records (SRF-05).
@@ -288,7 +295,7 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
             item != &signature && item != &tempo &&
             item != &tap && item != &position && item != &automationArm && item != &reEnable && item != &metronome &&
             item != &loop && item != &loopStart && item != &loopLength && item != &record && item != &overdub &&
-            item != &indicators && item != &keyboard)
+            item != &indicators && item != &keyboard && item != &capture)
             item->onClick = [this, item] {
                 root_.say(item->getTitle().toStdString() + " is not built yet.");
             };

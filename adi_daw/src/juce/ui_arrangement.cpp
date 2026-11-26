@@ -4134,11 +4134,18 @@ void ArrangementCanvas::filesDropped(const juce::StringArray &files, int x, int 
     const auto *track = view.geometry.trackAt(view.reader(), y);
     // Several files go one after another on that track, or each on a track of its own with Ctrl/Cmd
     // held, as Live places them; one undo step for them all.
-    std::vector<std::pair<std::string, std::string>> dropped;
-    for (const auto &path : files)
-        dropped.emplace_back(path.toStdString(),
-                             juce::File::createFileWithoutCheckingPath(path).getFileNameWithoutExtension().toStdString());
-    view.root.dropAudioFiles(dropped, track != nullptr ? track->id : 0, at,
-                             juce::ModifierKeys::currentModifiers.isCommandDown());
+    std::vector<std::pair<std::string, std::string>> audio, midi;
+    for (const auto &path : files) {
+        const auto file = juce::File::createFileWithoutCheckingPath(path);
+        auto &dropped = file.hasFileExtension("mid;smf") ? midi : audio;
+        dropped.emplace_back(path.toStdString(), file.getFileNameWithoutExtension().toStdString());
+    }
+    const auto on = track != nullptr ? track->id : 0;
+    const bool onMidi = track != nullptr && isMidiTrack(*track);
+    const bool separate = juce::ModifierKeys::currentModifiers.isCommandDown();
+    if (!audio.empty())
+        view.root.dropAudioFiles(audio, !midi.empty() && onMidi ? 0 : on, at, separate);
+    if (!midi.empty())
+        view.root.dropMidiFiles(midi, !audio.empty() && !onMidi ? 0 : on, at, separate);
 }
 } // namespace adi::ui
