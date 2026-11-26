@@ -4608,7 +4608,7 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
                   browser.list.getNumRowsOnScreen() > 0,
               "Samples lists all three, and says nothing");
         geometry.selection.track = 2;
-        browser.list.getModel()->listBoxItemDoubleClicked(0, pressAt(browser.list, {10, 10}));
+        browser.list.getListBoxModel()->listBoxItemDoubleClicked(0, pressAt(browser.list, {10, 10}));
         check(instruments.size() == 4 && instruments.back().first == 2 &&
                   instruments.back().second == browser.shown()[0]->path,
               "SC-283: a Browser sample double-click loads an instrument on the selected MIDI track");
