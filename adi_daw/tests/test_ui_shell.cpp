@@ -12988,6 +12988,108 @@ void automationMode(AppCommands &commands, const std::filesystem::path &dir) {
     }
     document->release();
 }
+void automationChooserPersistence(AppCommands &commands, const std::filesystem::path &dir) {
+    const auto project = dir / "automation-chooser.adi";
+    const auto selected = panTarget(2);
+    std::string error;
+    {
+        auto document = ProjectDocument::open(project, true, {}, error);
+        check(document != nullptr, "a project for the automation chooser");
+        if (!document)
+            return;
+        AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                              document->sessionState(), "automation-chooser");
+        root.showAutomation(2, selected);
+        check(root.automationTarget(2) == selected, "the selected MIDI track shows its Pan envelope");
+    }
+    {
+        auto document = ProjectDocument::open(project, false, {}, error);
+        check(document != nullptr, "reopen the project with its selected automation target");
+        if (!document)
+            return;
+        AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                              document->sessionState(), "automation-chooser");
+        root.setAutomationMode(true);
+        check(root.automationTarget(2) == selected, "the MIDI track still shows its Pan envelope after reopening");
+    }
+}
+void automationChooserControls(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "automation-chooser-controls.adi", true, test::knobsLoader("7"), error);
+    check(document != nullptr, "a project for the automation controls");
+    if (!document)
+        return;
+    document->store().db().exec(std::string("INSERT INTO plugin_refs(id,format,uid,name) VALUES(3,'vst3','") +
+                                test::kKnobsUid + "','UI knobs')");
+    std::vector<OpRequest> make(3);
+    make[0].opType = "chain.create";
+    make[0].payload = {{"id", 3}, {"track", 2}, {"ord", 0}, {"name", "Devices"}};
+    for (std::size_t i = 1; i < make.size(); ++i) {
+        make[i].opType = "device.insert";
+        make[i].payload = {{"id", i + 2}, {"chain", 3}, {"ord", i - 1}, {"ref", 3}, {"name", "UI knobs"}, {"latency", 0}};
+    }
+    check(document->ops().submit(std::move(make)).ok && document->synchronise(), "two devices with the same name on one track");
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "automation-chooser-controls");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.devices.publication = [&] { return document->parameterFeed().current(); };
+    root.devices.parameterDemand = [&](const void *owner, const std::vector<std::int64_t> &ids) {
+        document->setParameterDemand(owner, ids);
+    };
+    root.setSize(1440, 900);
+    document->tick(0);
+    root.setAutomationMode(true);
+    document->tick(1);
+    root.frame();
+    check(root.showDeviceAutomation(3, "7") && root.addAutomationPoint(2, 0, .25),
+          "only the first device has authored Cutoff automation");
+    root.showAutomation(2, volumeTarget(2));
+
+    auto &headers = root.arrangement.headers;
+    const auto deviceBox = headers.automationChooserBox(0, 0, 72, true);
+    const auto parameterBox = headers.automationChooserBox(0, 0, 72, false);
+    check(!deviceBox.isEmpty() && !parameterBox.isEmpty() && !deviceBox.intersects(parameterBox),
+          "Device and Parameter have separate hit areas on the track header");
+
+    const auto groups = headers.automationChooserMenu(2, true);
+    std::vector<std::function<void()>> devices;
+    std::vector<bool> authored;
+    for (juce::PopupMenu::MenuItemIterator it(groups); it.next();)
+        if (it.getItem().text == "UI knobs") {
+            devices.push_back(it.getItem().action);
+            authored.push_back(it.getItem().image != nullptr);
+        }
+    check(groups.getNumItems() == 3 && devices.size() == 2 && authored == std::vector<bool>{true, false},
+          "Mixer is grouped once and the identically named devices keep separate rows and authored marks");
+    const auto checkCutoff = [&](std::int64_t owner, bool expected) {
+        const auto menu = headers.automationChooserMenu(2, false);
+        juce::PopupMenu::MenuItemIterator it(menu);
+        const auto first = it.next();
+        check(menu.getNumItems() == 1 && first && it.getItem().text == "Cutoff" &&
+                  (it.getItem().image != nullptr) == expected && root.automationTarget(2).ownerId == owner,
+              "the Parameter chooser follows the chosen device and marks only its authored Cutoff");
+    };
+    if (devices.size() == 2 && devices[0] && devices[1]) {
+        devices[0]();
+        checkCutoff(3, true);
+        devices[1]();
+        checkCutoff(4, false);
+    }
+
+    root.frame();
+    const auto &strips = root.mixer.strips();
+    const auto strip = std::find_if(strips.begin(), strips.end(), [](const auto &row) { return row->track() == 2; });
+    check(strip != strips.end(), "the track's mixer strip is present");
+    if (strip != strips.end()) {
+        auto &row = **strip;
+        const auto left = juce::ModifierKeys::leftButtonModifier;
+        row.mouseDown(pressAt(row.pan, row.pan.getLocalBounds().getCentre().toFloat(), left));
+        check(root.automationTarget(2) == panTarget(2), "clicking the pan control shows its envelope in Automation Mode");
+        root.setAutomationMode(false);
+        row.mouseDown(pressAt(row.volume, row.volume.getLocalBounds().getCentre().toFloat(), left));
+        check(root.automationTarget(2) == panTarget(2), "clicking Volume with Automation Mode off leaves the choice alone");
+    }
+}
 void automationRangeEdits(AppCommands &commands,const std::filesystem::path &dir) {
     std::string error;
     auto document=ProjectDocument::open(dir/"automation-range.adi",true,{},error);
@@ -19433,6 +19535,8 @@ int main(int argc, char **argv) {
     trace("mixerViewFaderHandle", [&] { mixerViewFaderHandle(commands, temp.path()); });
     trace("firstSendDragHeard", [&] { firstSendDragHeard(commands, temp.path()); });
     trace("automationMode", [&] { automationMode(commands, temp.path()); });
+    trace("automationChooserPersistence", [&] { automationChooserPersistence(commands, temp.path()); });
+    trace("automationChooserControls", [&] { automationChooserControls(commands, temp.path()); });
     trace("automationRangeEdits", [&] { automationRangeEdits(commands, temp.path()); });
     trace("sendKnobs", [&] { sendKnobs(commands, temp.path()); });
     trace("audioDrop", [&] { audioDrop(commands, temp.path()); });
