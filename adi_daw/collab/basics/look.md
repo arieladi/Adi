@@ -7,6 +7,7 @@ The Linux session owns `basics/look-chain`, started from `origin/main`. The queu
 | SC-70 | `basics/look-chain` at `f8f32f63` | Plain ruler ticks, darker bar lines, a grid badge above the elapsed ruler and a whole-bar opening zoom. Window seat. | Four regression checks failed on the baseline. Debug Werror passed, as did 17 UI suites without DISPLAY and all 3 acceptance suites. The subsequent upstream conversion yielded the same GCC object with debug sections stripped. | Pushed |
 | SC-112 | `basics/look-chain` at `3ddd7c56` | Independent persistent Info analyser with Spectrogram as its initial mode. Right click chooses a renderer and left click opens Analysers. Window and Mix View seats. | Peerless menu, render and persistence checks passed. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 | SC-111 | `basics/look-chain` at `587573d1` | Info uses the Browser column width through the dock layout. Window seat. | Peerless width, swap and narrow layout assertions passed. Reviewed and refreshed the structural software fixtures. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
+| SC-110 | `basics/look-chain` at `26569ddf` | Removed the AI tab and its chat space so the list reaches the preview. Old projects can still decode the former flag. Window seat. | Headless geometry and legacy settings checks passed. Reviewed and refreshed the structural software fixtures. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 
 ## Measurements
 
@@ -44,5 +45,17 @@ Notes for the Mix View seat (DF-W22).
 At 1200 × 720 Compact the Browser is `(8, 35, 308, 443)`. The Info panel goes from `(8, 486, 200, 196)` to `(8, 486, 308, 196)` and its inset analyser goes from `(12, 490, 192, 188)` to `(12, 490, 300, 188)`. The Device View moves from `(216, 486, 976, 196)` to `(324, 486, 868, 196)`. These are root-relative logical pixels. At 480 px with both side panels open the Info width decreases from 200 to 112, the actual width available to the Browser. When the Browser is collapsed its saved width supplies the Info width, bounded to half the window.
 
 Both columns in the 1920 × 1080 approved sheet are 326 px wide. The Browser is `(6, 74, 326, 702)` and the Info box is `(6, 782, 326, 266)`.
+
+### SC-110
+
+At 1440 × 900 Compact the Browser frame `(8, 35, 308, 623)`, search box `(32, 39, 280, 21)` and preview `(32, 633, 280, 21)` retain their bounds in root-relative logical pixels.
+
+| Element | Before | After |
+|---|---|---|
+| Collapsed tab | `(12, 607, 300, 20)` | Removed |
+| Expanded tab and chat | `(12, 391, 300, 236)` | Removed |
+| Browser content viewport | `(127, 81, 185, 526)` collapsed or `(127, 81, 185, 310)` saved open | `(127, 81, 185, 546)` in both cases |
+
+The original collapsed tab bounds were confirmed by the peerless masked regression reference. Legacy `aiChat: true` is still decoded. The approved sheet uses the full list area up to the preview and has no intervening tab.
 
 ## For the director
