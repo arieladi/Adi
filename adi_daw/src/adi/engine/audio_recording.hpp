@@ -106,7 +106,9 @@ public:
     /// and the worker has drained/finalized it. A result is returned once.
     /// deviceStopped=true requires the driver already quiescent.
     [[nodiscard]] std::optional<AudioRecordingResult> poll(bool deviceStopped=false);
-    void capture(const AudioIo&,const Transport&)noexcept; // callback only
+    // Callback only. Returns the sorted track IDs whose input was accepted in
+    // this slice. The view is valid until the next capture call on the driver.
+    std::span<const std::int64_t> capture(const AudioIo&,const Transport&)noexcept;
     // Owner-thread status queries.
     [[nodiscard]] bool pending()const noexcept;
     [[nodiscard]] std::uint64_t acceptedFrames()const noexcept;

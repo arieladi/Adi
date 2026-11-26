@@ -908,6 +908,68 @@ void refusedRecordingKeepsAudio(const std::filesystem::path &dir) {
         check(exact, "the saved but unplaced WAV still holds all captured PCM");
     }
 }
+void recordWithDeviceLatency(const std::filesystem::path &dir) {
+    std::string error;
+    auto doc = ui::ProjectDocument::open(dir / "overdub.adi", true, {}, error);
+    check(doc != nullptr, "SC-22: a project to record an overdub");
+    if (!doc)
+        return;
+    OpRequest arm;
+    arm.opType = "track.setArm";
+    arm.payload = {{"id", 4}, {"armed", true}};
+    check(doc->ops().submit(arm).ok && doc->synchronise(), "SC-22: arm the audio track");
+
+    constexpr int rate = 48000, frames = 64;
+    constexpr int startSample = rate, referenceClick = 256;
+    constexpr int inputLatency = 64, outputLatency = 128;
+    constexpr int delayedClick = referenceClick + inputLatency + outputLatency;
+    constexpr int captureFrames = 512;
+    doc->prepare(rate, frames);
+    const auto tempo = doc->view().current()->tempo;
+    const auto insert = tempo->secondsToTicks(static_cast<double>(startSample) / rate);
+    const bool started = doc->startRecording(insert, 1, false, inputLatency + outputLatency);
+    check(started, "SC-22: start a take with the driver's reported round-trip latency");
+    if (!started)
+        return;
+
+    std::array<float, frames> input{}, left{}, right{};
+    const float *inputs[]{input.data()};
+    float *outputs[]{left.data(), right.data()};
+    engine::AudioIo io;
+    io.in = inputs;
+    io.numIn = 1;
+    io.out = outputs;
+    io.numOut = 2;
+    io.frames = frames;
+    for (int blockStart = 0; blockStart < captureFrames; blockStart += frames) {
+        input.fill(0);
+        if (delayedClick >= blockStart && delayedClick < blockStart + frames)
+            input[static_cast<std::size_t>(delayedClick - blockStart)] = 0.75f;
+        io.streamTimeSamples = blockStart;
+        doc->process(io);
+    }
+    doc->release();
+    check(doc->settleRecording(), "SC-22: settle the overdub after the device closes");
+    const auto landed = doc->takeLanded();
+    check(landed && landed->ok && landed->clips.size() == 1, "SC-22: the overdub lands");
+    if (!landed || !landed->ok || landed->clips.size() != 1)
+        return;
+    SQLite::Statement take(doc->store().db(),
+                           "SELECT c.pos_ticks, m.rel_path FROM clips c JOIN audio_clips a ON a.clip_id=c.id "
+                           "JOIN media_files m ON m.id=a.media_id WHERE c.id=?");
+    take.bind(1, landed->clips.front());
+    check(take.executeStep(), "SC-22: the overdub has a timeline position and a media file");
+    if (!take.hasRow())
+        return;
+
+    const auto mediaPath = media::projectFolder(doc->store()) / media::pathFromUtf8(take.getColumn(1).getString());
+    audio::WavReader saved(mediaPath);
+    std::array<float, captureFrames> audio{};
+    const auto clipStart = std::llround(tempo->ticksToSeconds(take.getColumn(0).getInt64()) * rate);
+    check(saved.frames() == audio.size() && saved.read(audio.data(), captureFrames) == audio.size() &&
+              audio[delayedClick] == 0.75f && clipStart + delayedClick == startSample + referenceClick,
+          "SC-22: the saved impulse is unmodified and lines up with the reference click on the timeline");
+}
 // MX-23 and SRF-02: a fader dragged is heard while it moves, writes nothing until the mouse lets go, then
 // lands as one undo step; Esc puts it back (Live 12 manual 18.1).
 void mixerDragHeard(const std::filesystem::path &dir) {
@@ -1348,6 +1410,8 @@ int main(int argc, char **argv) {
     {
         test::TempDirectory recordDir("ui_document", "record");
         arrangementRecord(recordDir.path());
+        test::TempDirectory latencyDir("ui_document", "latency");
+        recordWithDeviceLatency(latencyDir.path());
         test::TempDirectory refusedPublicationDir{"ui_document", "recording_publication_refused"};
         refusedRecordingKeepsAudio(refusedPublicationDir.path());
         test::TempDirectory guardDir("ui_document", "guard");

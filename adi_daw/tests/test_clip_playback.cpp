@@ -98,11 +98,8 @@ void liveInputMonitoring() {
             if(!OpJournal(*f.store).commit(r).ok || !f.session.refresh(*f.store))
                 throw std::runtime_error("refreshing the track monitor controls failed");
         };
-        auto render = [&](bool playing, bool haveRight = true, std::int64_t start = 0) {
-            f.session.transport().locate(start);
-            f.session.transport().play(playing);
-            if (playing && !f.session.clips()->prime())
-                throw std::runtime_error("could not prime the Arrangement clip");
+        std::int64_t stream = 0;
+        auto renderBlock = [&](bool haveRight = true) {
             std::array<float,64> a{}, b{}, c{};
             a.fill(0.125f); b.fill(0.25f); c.fill(0.5f);
             const float* in[]{haveRight ? a.data() : nullptr, b.data(), c.data()};
@@ -110,11 +107,45 @@ void liveInputMonitoring() {
             std::array<double,128> wide{};
             float* out[]{pcm.data(),pcm.data()+64};
             double* out64[]{wide.data(),wide.data()+64};
-            AudioIo io{precision == Precision::Float32 ? out : nullptr, in, 2, 3, 64, 0};
+            AudioIo io{precision == Precision::Float32 ? out : nullptr, in, 2, 3, 64, stream};
             if (precision == Precision::Float64) io.out64 = out64;
             { const audio::CallbackScope callback; f.session.process(io); }
+            stream += io.frames;
             if (precision == Precision::Float32) std::copy(pcm.begin(),pcm.end(),wide.begin());
             return wide;
+        };
+        auto render = [&](bool playing, bool haveRight = true, std::int64_t start = 0) {
+            f.session.transport().locate(start);
+            f.session.transport().play(playing);
+            if (playing && !f.session.clips()->prime())
+                throw std::runtime_error("could not prime the Arrangement clip");
+            return renderBlock(haveRight);
+        };
+        auto& recorder = f.session.recording();
+        auto startCapture = [&] {
+            AudioRecordingSpec spec;
+            spec.workFolder = f.dir.path();
+            spec.sampleRate = 48000;
+            spec.maxFrames = 64;
+            spec.ringFrames = 4096;
+            spec.targets = {{1, {2, 0}}};
+            std::string error;
+            if (!f.session.startRecording(spec, error))
+                throw std::runtime_error(error);
+        };
+        auto checkCapture = [&](std::uint64_t frames, std::int64_t start) {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            while (std::chrono::steady_clock::now() < deadline) {
+                if (auto result = recorder.poll()) {
+                    check(result->failure == RecordingFailure::None && result->hasAttachableAudio() &&
+                              result->frames == frames && result->startSample == start,
+                          "the take has the expected recorded interval");
+                    check(!result->discard(), "remove the test take after the writer closed it");
+                    return;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            throw std::runtime_error("recording writer did not finish");
         };
         const auto unarmed = render(false);
         check(std::all_of(unarmed.begin(),unarmed.end(),[](double sample){return sample==0;}),
@@ -132,6 +163,26 @@ void liveInputMonitoring() {
                 exact = exact && playing[channel*64+frame] == wanted;
             }
         check(exact, "Auto returns to the live input at the exact Arrangement clip end");
+
+        // Start in an existing clip. The callback crosses the end of the count-in,
+        // so only its suffix is recorded and must play the armed track's input.
+        startCapture();
+        auto& transport = f.session.transport();
+        transport.locate(17);
+        transport.play();
+        if (!f.session.clips()->prime())
+            throw std::runtime_error("could not prime the clip under the recording start");
+        transport.countIn(7);
+        const auto recorded = renderBlock();
+        check(std::all_of(recorded.begin() + 7, recorded.begin() + 64,
+                          [](double sample) { return sample == 0.5; }) &&
+                  std::all_of(recorded.begin() + 71, recorded.end(),
+                              [](double sample) { return sample == 0.125; }),
+              "SC-245: armed Auto plays only the input over the existing clip once capture starts");
+        recorder.stop();
+        check(render(true) == playing, "stopping capture while playing restores Auto clip playback");
+        checkCapture(57, 17);
+
         f.session.transport().loop(5,41,true);
         const auto looped = render(true,true,35);
         bool loopExact = true;
@@ -161,6 +212,11 @@ void liveInputMonitoring() {
         const auto off = render(true);
         check(off[0]==0 && off[16]==0 && off[17]==f.media[0] && off[48]==f.media[62] &&
               off[49]==0 && off[63]==0, "Off keeps Arrangement PCM and discards hardware even when armed");
+        startCapture();
+        check(render(true) == off, "Monitor Off keeps the old clip audible during capture pending R45");
+        recorder.stop();
+        (void)render(false);
+        checkCapture(64, 0);
         check(f.session.setAudioMonitorInputs({}), "disconnect all runtime inputs");
     }
 }
