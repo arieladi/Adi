@@ -161,6 +161,25 @@ void editorAndAutomationFollow(device::Vst3Host& host, const juce::PluginDescrip
           "an automated parameter moves where it is shown: the controller follows the lane");
     controller->release();
 }
+// SC-315: a mono plug-in on ADI's stereo channel is heard on both sides, and hears both sides folded.
+// The decision both hosts (VST3 and CLAP) take for each graph channel, and the fold.
+void monoOnStereo() {
+    check(device::sourceChannelFor(0, 1) == 0 && device::sourceChannelFor(1, 1) == 0,
+          "a plug-in with one output is heard on the left and on the right");
+    check(device::sourceChannelFor(0, 2) == 0 && device::sourceChannelFor(1, 2) == 1,
+          "a stereo plug-in is heard channel for channel");
+    check(device::sourceChannelFor(2, 2) == -1 && device::sourceChannelFor(0, 0) == -1,
+          "a channel the plug-in has no output for is silent; so is a plug-in with none");
+    std::array<float, 3> mono{0.5f, -1.f, 0.f};
+    const std::array<float, 3> right{0.5f, 1.f, 0.25f};
+    device::foldIntoMono(mono.data(), right.data(), 3);
+    check(mono == std::array<float, 3>{0.5f, 0.f, 0.125f},
+          "a stereo channel into one input: the two sides folded, a centred signal at its own level");
+    std::array<double, 2> wide{0.25, 0.75};
+    const std::array<double, 2> wideRight{0.25, -0.75};
+    device::foldIntoMono(wide.data(), wideRight.data(), 2);
+    check(wide == std::array<double, 2>{0.25, 0.0}, "and at double width");
+}
 void expressionBlock(device::Vst3Host& host, const juce::PluginDescription& desc,
                      std::uint64_t (*completedProcessCalls)()) {
     constexpr double sampleRate = 48000.0;
@@ -554,6 +573,7 @@ void documentContract(device::Vst3Host &host, const juce::PluginDescription &des
 
 void contract() {
     declaredMidiMap();
+    monoOnStereo();
     test::TempDirectory temp("vst3_key", "owned");
     scan::Config config;
     config.executable = native(ADI_SCAN_HELPER);

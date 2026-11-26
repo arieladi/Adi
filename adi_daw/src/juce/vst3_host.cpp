@@ -1064,6 +1064,20 @@ void Vst3Device::copyIn(const engine::NodeIo& io, std::int32_t n, std::int32_t /
                 else std::fill_n(dst,n,0.f);
             }
         }
+        // SC-315: a plug-in with one main input hears both sides of a stereo channel, folded.
+        if(main && bus.channels==1 && io.channels>=2) {
+            if(double_) {
+                auto* dst=processor_?rawIn64_[static_cast<std::size_t>(bus.offset)]:wide.getWritePointer(bus.offset);
+                if(io.wide() && source64 && source64[1])foldIntoMono(dst,source64[1]+off,n);
+                else if(!io.wide() && source32 && source32[1])
+                    for(int i=0;i<n;++i){const double r=source32[1][off+i];foldIntoMono(dst+i,&r,1);}
+            } else {
+                auto* dst=processor_?rawIn_[static_cast<std::size_t>(bus.offset)]:narrow.getWritePointer(bus.offset);
+                if(!io.wide() && source32 && source32[1])foldIntoMono(dst,source32[1]+off,n);
+                else if(io.wide() && source64 && source64[1])
+                    for(int i=0;i<n;++i){const float r=static_cast<float>(source64[1][off+i]);foldIntoMono(dst+i,&r,1);}
+            }
+        }
     }
 }
 
@@ -1072,21 +1086,23 @@ void Vst3Device::copyOut(const engine::NodeIo& io, std::int32_t n, std::int32_t 
     // A segment shorter than the buffer leaves the tail untouched, and the
     // tail is last block's audio: the rest of the segment is silenced.
     for (std::int32_t c = 0; c < io.channels; ++c) {
+        // SC-315: a plug-in with one main output is heard on both sides.
+        const std::int32_t s = sourceChannelFor(c, std::min(ch, mainOutputChannels_));
         if (io.wide()) {
             double* out = io.out64[c];
             if (out == nullptr) continue;
             out += off;
-            if (c < ch && c < mainOutputChannels_ && double_) std::copy(scratch64_.getReadPointer(c), scratch64_.getReadPointer(c) + n, out);
-            else if (c < ch && c < mainOutputChannels_)       for (std::int32_t i = 0; i < n; ++i) out[i] = scratch_.getReadPointer(c)[i];
+            if (s >= 0 && double_) std::copy(scratch64_.getReadPointer(s), scratch64_.getReadPointer(s) + n, out);
+            else if (s >= 0)       for (std::int32_t i = 0; i < n; ++i) out[i] = scratch_.getReadPointer(s)[i];
             else                   std::fill(out, out + n, 0.0);
             for (std::int32_t i = n; i < io.frames; ++i) out[i] = 0.0;
         } else {
             float* out = io.out[c];
             if (out == nullptr) continue;
             out += off;
-            if (c < ch && c < mainOutputChannels_ && !double_) std::copy(scratch_.getReadPointer(c), scratch_.getReadPointer(c) + n, out);
-            else if (c < ch && c < mainOutputChannels_)
-                for (std::int32_t i = 0; i < n; ++i) out[i] = static_cast<float>(scratch64_.getReadPointer(c)[i]);
+            if (s >= 0 && !double_) std::copy(scratch_.getReadPointer(s), scratch_.getReadPointer(s) + n, out);
+            else if (s >= 0)
+                for (std::int32_t i = 0; i < n; ++i) out[i] = static_cast<float>(scratch64_.getReadPointer(s)[i]);
             else std::fill(out, out + n, 0.0f);
             for (std::int32_t i = n; i < io.frames; ++i) out[i] = 0.0f;
         }
