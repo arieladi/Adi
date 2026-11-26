@@ -4,6 +4,20 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-26 — `basics/*` Round 2 (`basics/sc-02-lane-transport` `4eb6353c` — PASS)
+
+Verified updated `origin/basics/sc-02-lane-transport` head `4eb6353c` (`tests/test_ui_shell.cpp` float coordinates fix over `ac621acb`) under **GCC 12.4.0** and **Clang 14.0.6 + libstdc++ 12** with `-DADI_WERROR=ON` (headless Pd on, JUCE off, `-DADI_ACCEPTANCE=ON`), all 3 touched JUCE TUs (`-DADI_WITH_JUCE=ON -DADI_WERROR=ON`), and **Clang 14 ASan + LSan + UBSan** (`-O1 -g1 -fsanitize=address,undefined -fno-sanitize-recover=undefined`).
+
+| Branch | SHA | Compiler / Tool | Warnings | Touched Headless Suites (`ctest`, 3/3) | Acceptance (`ctest -L acceptance`) | JUCE TUs (`-DADI_WITH_JUCE=ON -DADI_WERROR=ON`) | Verdict |
+|---|---|---|---|---|---|---|---|
+| `basics/sc-02-lane-transport` | `4eb6353c` | GCC 12.4.0 | 0 | **PASS** (3/3, 26.67 s: `adi_ui_seams_tests` 9.88 s, `adi_ui_document_tests` 16.57 s, `adi_ui_window_state_tests` 0.21 s) | **PASS** (2/2, 293.52 s: `adi_builtin_realtime_tests` 252.17 s, `adi_acceptance_wts01` 41.34 s) | **PASS** (3/3, 0 warnings: `ui_arrangement.cpp.o`, `ui_shell.cpp.o`, `test_ui_shell.cpp.o`) | **PASS** |
+| `basics/sc-02-lane-transport` | `4eb6353c` | Clang 14.0.6 + libstdc++ 12 | 0 | **PASS** (3/3, 24.96 s, headless unchanged from `ac621acb`) | **PASS** (2/2, 270.91 s, headless unchanged from `ac621acb`) | **PASS** (3/3, 0 warnings: `ui_arrangement.cpp.o`, `ui_shell.cpp.o`, `test_ui_shell.cpp.o`) | **PASS** |
+| `basics/sc-02-lane-transport` | `4eb6353c` | Clang 14 ASan + LSan + UBSan | 0 | **PASS** (3/3, 30.45 s: `adi_ui_seams_tests` 11.14 s, `adi_ui_document_tests` 19.05 s, `adi_ui_window_state_tests` 0.25 s; 0 sanitizer reports, 0 leaks) | — | — | **PASS** |
+
+No findings on `basics/sc-02-lane-transport` (`4eb6353c`).
+
+---
+
 ## 2026-11-26 — `basics/*` Round 1 (`basics/sc-02-lane-transport` `ac621acb`)
 
 Verified `origin/basics/sc-02-lane-transport` at `ac621acb` (`basics/recording`, SC-02 / SC-03) under **GCC 12.4.0** and **Clang 14.0.6 + libstdc++ 12** with `-DADI_WERROR=ON` (headless Pd on, JUCE off, `-DADI_ACCEPTANCE=ON`), plus all 3 touched JUCE translation units with `-DADI_WITH_JUCE=ON -DADI_WERROR=ON`.
