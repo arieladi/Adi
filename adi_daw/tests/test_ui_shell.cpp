@@ -3164,6 +3164,31 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
         late.poll();
         check(!late.running() && started.size() == startedBefore + 1, "and nothing runs twice");
         late.stop();
+        // SC-330: the scan's progress in the Status Bar while it runs; another message keeps the bar.
+        {
+            ScanStatusLine bar;
+            PluginScan scanning;
+            scanning.phase = PluginScan::Phase::Scanning;
+            scanning.candidates = 40;
+            scanning.completed = 7;
+            const auto shownFirst = bar.next(scanning, "");
+            check(shownFirst && *shownFirst == "Scanning plug-ins: 7 of 40 files…",
+                  "a running scan's count stands in an empty Status Bar (SC-330)");
+            scanning.completed = 8;
+            const auto second = bar.next(scanning, shownFirst.value_or(""));
+            check(second && *second == "Scanning plug-ins: 8 of 40 files…", "and follows the count");
+            check(!bar.next(scanning, "Snapshot taken: Verse"), "another message holds the bar: the scan leaves it");
+            PluginScan done;
+            done.phase = PluginScan::Phase::Done;
+            done.listing.complete = true;
+            done.listing.plugins.resize(1);
+            check(!bar.next(done, "Snapshot taken: Verse"), "the end leaves another message alone");
+            ScanStatusLine ending;
+            const auto line = ending.next(scanning, "");
+            const auto end = ending.next(done, line.value_or(""));
+            check(end && end->empty(), "at the end the scan's own line goes");
+            check(!ending.next(done, ""), "and nothing more is said");
+        }
         // SC-327: Alt held as ADI starts skips the startup scan; the stored list shows and says why.
         {
             PluginCatalogueService skipping(port);

@@ -69,6 +69,30 @@ inline std::string pluginScanStatus(const PluginScan &scan) {
                " could not be scanned; the rest are listed.";
     return {};
 }
+// SC-330: the scan's line in the Status Bar. While a scan runs its progress stands there, unless another
+// message holds the bar; at its end the line goes, or says what went wrong. `next` takes the scan's state
+// and what the bar shows now, and gives what to say, or nothing to leave the bar as it is.
+class ScanStatusLine {
+  public:
+    std::optional<std::string> next(const PluginScan &scan, const std::string &shown) {
+        if (scan.phase == PluginScan::Phase::Scanning) {
+            if (!shown.empty() && shown != line_)
+                return std::nullopt; // another message: it stays
+            line_ = pluginScanStatus(scan);
+            return line_;
+        }
+        if (line_.empty())
+            return std::nullopt;
+        const bool ours = shown == line_;
+        line_.clear();
+        if (!ours)
+            return std::nullopt;
+        return pluginScanStatus(scan);
+    }
+
+  private:
+    std::string line_;
+};
 // The loader's job API as the service drives it, in its own words (`juce_device_loader.hpp`).
 enum class DiscoveryMode { CacheOnly, Incremental, Refresh };
 struct DiscoveryAdmission {

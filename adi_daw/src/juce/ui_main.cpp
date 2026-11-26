@@ -447,8 +447,14 @@ class AdiApplication final : public juce::JUCEApplication,
     void startPluginCatalogue() {
         catalogue_ = std::make_unique<PluginCatalogueService>(discoveryPort());
         catalogue_->onChange = [this] {
-            if (root_ && catalogue_)
-                root_->browser.setPluginScan(catalogue_->state());
+            if (!root_ || !catalogue_)
+                return;
+            const auto &state = catalogue_->state();
+            root_->browser.setPluginScan(state);
+            // SC-330: the scan's progress stands in the Status Bar while it runs, wherever the Browser is,
+            // unless another message holds it; at its end the line goes, or says what went wrong.
+            if (auto line = scanLine_.next(state, root_->error()))
+                root_->say(std::move(*line));
         };
     }
     // The loader's job API (N58) in the service's words.
@@ -534,21 +540,10 @@ class AdiApplication final : public juce::JUCEApplication,
             key += '\n' + c;
         return key;
     }
-    // A project opened while a discovery runs waits for its adoption, so the plug-ins it finds load
-    // (`PluginCatalogueService::settleThen`); the Status Bar says why the open waits.
-    void openSettled(const juce::File &file, bool create) {
-        if (!catalogue_ || !catalogue_->running()) {
-            install(file, create);
-            return;
-        }
-        if (root_)
-            root_->say("Opening " + file.getFileName().toStdString() + " once the plug-in scan has finished…");
-        catalogue_->settleThen([this, file, create] {
-            // A refused open leaves the project as it was; its alert says why, and the waiting line goes.
-            if (!install(file, create) && root_)
-                root_->say({});
-        });
-    }
+    // A project opens at once, a discovery running or not (SC-330): a plug-in the catalogue does not know
+    // yet stands as a placeholder, and the running discovery's adoption wakes it (SC-318's
+    // `discoverAfter`), where the open used to wait for the whole scan behind one Status Bar line.
+    void openSettled(const juce::File &file, bool create) { install(file, create); }
     // A discovery asked for (Rescan, a folder change, the Browser's scan, the startup's): once it has been
     // adopted, a device the open kept as a placeholder whose plug-in is now installed wakes in its place,
     // its stored state restored, without reopening the project (SC-318).
@@ -1619,6 +1614,7 @@ class AdiApplication final : public juce::JUCEApplication,
     // loader holds off.
     std::shared_ptr<LoadingGuard> loadGuard_ = std::make_shared<LoadingGuard>(loadingMarkerFile());
     std::shared_ptr<PluginHoldOff> holdOff_;
+    ScanStatusLine scanLine_; // SC-330: the scan's progress in the Status Bar
     std::shared_ptr<const MainMeterSource> mainMeterSource_;
     juce::AudioDeviceManager manager_;
     // The document with the keyboard in front of it, which the bridge drives (N60).
