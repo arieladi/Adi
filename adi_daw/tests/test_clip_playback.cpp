@@ -326,6 +326,45 @@ void unwarpedTempoChanges() {
         atTempo(60, "tempo redo restores the exact unwarped endpoint");
     }
 }
+void reversedSource() {
+    constexpr int start=73, source=37, length=21001, block=317;
+    Fixture f(48000,2,30000);
+    f.add(1,start,length,source,length);
+    f.store->db().exec("UPDATE audio_clips SET reverse=1");
+    f.load(block);
+    bool exact=true;
+    for(int at=0;at<start+length+block;at+=block) {
+        const auto out=f.render(block);
+        for(int channel=0;channel<2;++channel)for(int frame=0;frame<block;++frame) {
+            const auto local=at+frame-start;
+            const auto expected=local<0 || local>=length ? 0.0f :
+                f.media[static_cast<std::size_t>(2*(source+length-1-local)+channel)];
+            exact=exact && out[static_cast<std::size_t>(channel*block+frame)]==expected;
+        }
+    }
+    check(exact && f.session.problems().empty() && f.session.clips()->underrunSamples()==0,
+          "native reverse plays the source window frame-exactly with intact channels across disk pages");
+
+    Fixture forward(48000,2,30000);
+    forward.add(1,start,length,source,length);
+    for(int i=0;i<length/2;++i)for(int c=0;c<2;++c)
+        std::swap(forward.media[static_cast<std::size_t>(2*(source+i)+c)],
+                  forward.media[static_cast<std::size_t>(2*(source+length-1-i)+c)]);
+    {
+        audio::WavWriter writer(forward.dir.path()/"audio.wav",48000,2,audio::WavFormat::Float32);
+        writer.write(forward.media.data(),30000);
+        writer.close();
+    }
+    f.load(block,44100);
+    forward.load(block,44100);
+    bool resampled=true;
+    for(const auto at:{13000,200,7500}) {
+        f.session.transport().locate(at);
+        forward.session.transport().locate(at);
+        resampled=resampled && f.render(block)==forward.render(block);
+    }
+    check(resampled,"reverse seeks and resampling match a physically reversed source window");
+}
 void takeLanePlayback() {
     Fixture f;
     f.add(1, 0, 500, 11, 1000);
@@ -1516,11 +1555,10 @@ void decodedPins() {
     check(pins()==0,"closing the session gives every pin back");
 }
 void unsupported() {
-    for(int kind=0;kind<3;++kind) {
+    for(int kind=0;kind<2;++kind) {
         Fixture f;f.add(1,0,500,0,1000);
         if(kind==0)f.store->db().exec("UPDATE audio_clips SET warp_enabled=1");
-        if(kind==1)f.store->db().exec("UPDATE audio_clips SET reverse=1");
-        if(kind==2){std::ofstream file(f.dir.path()/"audio.wav",std::ios::binary|std::ios::trunc);file<<"not WAV";}
+        if(kind==1){std::ofstream file(f.dir.path()/"audio.wav",std::ios::binary|std::ios::trunc);file<<"not WAV";}
         f.load(512);const auto o=f.render(512);
         check(!f.session.problems().empty() && std::all_of(o.begin(),o.end(),[](float x){return x==0;}),"unsupported clip is silent with named session problem");
     }
@@ -1699,6 +1737,7 @@ int main(int argc,char** argv) {
     try {
         if(only=="all" || only=="placement")placement();
         if(only=="all" || only=="unwarped-tempo")unwarpedTempoChanges();
+        if(only=="all" || only=="reverse")reversedSource();
         if(only=="all" || only=="monitor-input")liveInputMonitoring();
         if(only=="all" || only=="take-lanes")takeLanePlayback();
         if(only=="all" || only=="properties")properties();
