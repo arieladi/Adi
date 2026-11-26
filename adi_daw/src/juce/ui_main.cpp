@@ -1163,9 +1163,14 @@ class AdiApplication final : public juce::JUCEApplication,
         };
         // A test launch never takes the foreground from the person at the desk (WTS-01).
         window_->quiet = testLaunch();
-        window_->setIcon(juce::ImageCache::getFromMemory(AdiAppResources::program_png,
-                                                       AdiAppResources::program_pngSize));
+        const auto icon = juce::ImageCache::getFromMemory(AdiAppResources::program_png,
+                                                         AdiAppResources::program_pngSize);
+        window_->setIcon(icon);
         window_->setVisible(true);
+#if JUCE_LINUX
+        if (auto *peer = window_->getPeer())
+            peer->setIcon(icon);
+#endif
         if (fullScreen)
             window_->setFullScreen(true);
         // A Mix View kept open in its own window opens there again.
