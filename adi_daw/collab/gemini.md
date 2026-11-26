@@ -4,6 +4,18 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-26 — `basics/*` Round 7 (automation chain `sc-337-breakpoint-values` `3d810714` — PASS)
+
+Verified `origin/basics/sc-337-breakpoint-values` at `3d810714` (4-branch automation chain covering `sc-334-automation-follows-clips`, `sc-335-write-arrangement-automation`, `sc-336-automation-range-edits`, `sc-337-breakpoint-values`; 29 files vs `origin/main`) under **GCC 12.4.0** and **Clang 14.0.6 + libstdc++ 12** (`-DADI_WERROR=ON`, headless Pd on, JUCE off, `-DADI_ACCEPTANCE=ON`), all 4 touched JUCE TUs (`-DADI_WITH_JUCE=ON -DADI_WERROR=ON`), and **Clang 14 ASan + LSan + UBSan**.
+
+| Branch | SHA | GCC 12.4.0 (`-DADI_WERROR=ON`) | Clang 14.0.6 + libstdc++ 12 (`-DADI_WERROR=ON`) | JUCE TUs (`-DADI_WITH_JUCE=ON -DADI_WERROR=ON`, 4 TUs) | Clang 14 ASan + LSan + UBSan | Verdict |
+|---|---|---|---|---|---|---|
+| `basics/sc-337-breakpoint-values` (chains `sc-334`, `sc-335`, `sc-336`) | `3d810714` | **PASS** (0 warnings; 6/6 touched `adi_automation_splice_store_tests`, `adi_clip_edit_tests`, `adi_edit_plan_tests`, `adi_material_commands_tests`, `adi_ui_document_tests`, `adi_ui_seams_tests` + `adi_acceptance_wts01`, 91.88 s) | **PASS** (0 warnings; 6/6 touched + `adi_acceptance_wts01`, 84.45 s) | **PASS** (4/4 both compilers, 0 warnings: `ui_main.cpp.o`, `ui_arrangement.cpp.o`, `ui_shell.cpp.o`, `test_ui_shell.cpp.o`) | **PASS** (6/6 touched, 63.52 s; 0 errors, 0 leaks) | **PASS** |
+
+No findings on `basics/sc-337-breakpoint-values` (`3d810714`).
+
+---
+
 ## 2026-11-26 — `land/*` Round 3 (`land/basics-1127c` `e73d84ce` & `land/basics-1127d` `90f4091d` — FAIL on Clang 14 JUCE)
 
 Verified `origin/land/basics-1127c` at `e73d84ce` (merging `land/basics-1127b` + `basics/tracks-chain` + `basics/recording-chain`) and `origin/land/basics-1127d` at `90f4091d` (without `recording-chain`, plus Apple Clang conversion fix `90f4091d`) under **GCC 12.4.0**, **Clang 14.0.6 + libstdc++ 12**, JUCE (`-DADI_WITH_JUCE=ON -DADI_WERROR=ON`), and **Clang 14 ASan + LSan + UBSan**.
