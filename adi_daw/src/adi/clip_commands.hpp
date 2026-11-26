@@ -80,6 +80,7 @@ struct RangeCopy {
     std::string error,sourceFile;
     RangeSelection selection;
     std::vector<Payload> images; // clipped material, offsets relative to selection
+    bool clearsRange=true; // explicit clips clear only where their images land
 };
 struct RangeCut {RangeCopy copy;PreparedEdit edit;};
 /// Ordinary material ranges select only main-lane clips (NULL lane_id).
@@ -89,6 +90,8 @@ struct RangeCut {RangeCopy copy;PreparedEdit edit;};
 [[nodiscard]] RangeCut prepareCutRange(Store&,const RangeSelection&,double referenceRate);
 [[nodiscard]] RangeCut prepareCutRange(Store&,const RangeSelection&,const edit_plan::Options&);
 [[nodiscard]] RangeCopy copyRange(Store&,const RangeSelection&,double referenceRate);
+[[nodiscard]] RangeCopy copySelectedClips(Store&,const RangeSelection&,std::span<const std::int64_t>,double referenceRate);
+[[nodiscard]] RangeCut prepareCutClips(Store&,const RangeSelection&,std::span<const std::int64_t>,double referenceRate);
 [[nodiscard]] PreparedEdit prepareDeleteRange(Store&,const RangeSelection&,double referenceRate,std::int64_t reserveClipId=0);
 [[nodiscard]] PreparedEdit preparePasteRange(Store&,const RangeCopy&,const std::vector<std::int64_t>& tracks,
                                             TimePoint at,double referenceRate,bool insertTime=false);

@@ -2266,7 +2266,7 @@ bool AdiRootComponent::canClipClipboard(ClipCommand command) const {
     const auto &sel = arrangement.geometry.selection;
     if (command == ClipCommand::Paste)
         return !commands_.clipClipboard().empty() && pasteOrigin() != 0;
-    if (chosenClip(*current, sel).clip != nullptr)
+    if (!sel.pickedClips.empty() || chosenClip(*current, sel).clip != nullptr)
         return true;
     if (sel.start == sel.end)
         return false;
@@ -2296,7 +2296,8 @@ bool AdiRootComponent::clipClipboard(ClipCommand command) {
                                               return t == nullptr || !arrangement.geometry.shown(id) || !holdsClips(*t);
                                           }),
                            selection.tracks.end());
-    if (command != ClipCommand::Paste && chosen.clip == nullptr && (!range || selection.tracks.empty()))
+    if (command != ClipCommand::Paste && sel.pickedClips.empty() && chosen.clip == nullptr &&
+        (!range || selection.tracks.empty()))
         return fail("Select a device, a clip, or a time selection on tracks with clips, first.");
     // A clip chosen after an edit: the new one, at its span in the refreshed snapshot.
     const auto chooseClip = [&](std::int64_t id) {
@@ -2330,6 +2331,67 @@ bool AdiRootComponent::clipClipboard(ClipCommand command) {
         dirty_.mark(DirtySet::Status);
         arrangement.changed();
     };
+    if (command != ClipCommand::Paste && !sel.pickedClips.empty()) {
+        const auto ids = arrangement.geometry.selectedClips();
+        std::vector<std::int64_t> lanes;
+        std::vector<ClipPlace> places;
+        std::size_t firstLane = 0, lastLane = 0;
+        auto begin = std::numeric_limits<std::int64_t>::max();
+        std::int64_t end = 0;
+        for (const auto row : arrangement.geometry.rows(reader())) {
+            const auto *track = row.track;
+            if (!arrangement.geometry.shown(track->id) || !holdsClips(*track))
+                continue;
+            const auto lane = lanes.size();
+            lanes.push_back(track->id);
+            for (const auto &clip : track->clips) {
+                if (!clip || !arrangement.geometry.clipSelected(clip->id))
+                    continue;
+                if (places.empty())
+                    firstLane = lane;
+                lastLane = lane;
+                begin = std::min(begin, clip->posTicks);
+                end = std::max(end, clip->posTicks + clip->lengthTicks);
+                places.push_back({clip->id, track->id, clip->posTicks});
+            }
+        }
+        if (places.size() != ids.size() || end <= begin)
+            return fail("The selected clips are no longer in the Arrangement.");
+
+        if (command == ClipCommand::Duplicate) {
+            const auto span = end - begin;
+            if (end > std::numeric_limits<std::int64_t>::max() - span)
+                return fail("The duplicates would extend past the end of the timeline.");
+            for (auto &place : places)
+                place.position += span;
+            const auto copies = copyClips(places, "Duplicate Clips");
+            if (copies.empty())
+                return false;
+            chooseClip(copies.front());
+            sel.pickedClips.assign(std::next(copies.begin()), copies.end());
+        } else {
+            clip_edit::RangeSelection group{{}, {0, begin}, {0, end}};
+            for (auto lane = firstLane; lane <= lastLane; ++lane)
+                group.tracks.push_back(lanes[lane]);
+            if (command == ClipCommand::Cut) {
+                auto cut = clip_edit::prepareCutClips(store, group, ids, rate);
+                if (!cut.copy.ok)
+                    return fail(cut.copy.error);
+                if (!commitEdit(std::move(cut.edit)))
+                    return false;
+                board.held = std::move(cut.copy);
+                timeSelection(group.tracks.front(), group.tracks.front(), begin, begin);
+            } else {
+                auto copy = clip_edit::copySelectedClips(store, group, ids, rate);
+                if (!copy.ok)
+                    return fail(copy.error);
+                board.held = std::move(copy);
+            }
+            commands_.manager.commandStatusChanged();
+        }
+        succeeded();
+        return true;
+    }
     switch (command) {
     case ClipCommand::Copy: {
         if (chosen.clip != nullptr) {
@@ -2428,6 +2490,11 @@ bool AdiRootComponent::clipClipboard(ClipCommand command) {
             // Each source track's material onto a track of its kind: the source's kind from the
             // project, else from its copied clips.
             for (std::size_t i = 0; i < wanted; ++i) {
+                if (!rangeCopy.clearsRange &&
+                    std::none_of(rangeCopy.images.begin(), rangeCopy.images.end(), [i, wanted](const auto &image) {
+                        return image.value("trackIndex", wanted) == i;
+                    }))
+                    continue;
                 const auto source = rangeCopy.selection.tracks[i];
                 std::string kind;
                 if (const auto *t = reader().findTrack(source))

@@ -752,31 +752,37 @@ PreparedEdit prepareDeleteTime(Store& store,std::int64_t beginTicks,std::int64_t
 }
 
 namespace {
-RangeCopy copyRangeImpl(Store& store,const RangeSelection& selection,double referenceRate,ClipLaneScope scope) {
-    RangeCopy result;result.selection=selection;
+RangeCopy copyRangeImpl(Store& store,const RangeSelection& selection,double referenceRate,ClipLaneScope scope,
+                        std::span<const std::int64_t> selectedClips={}) {
+    RangeCopy result;result.selection=selection;result.clearsRange=selectedClips.empty();
     try {
         validRange(selection);validRate(referenceRate);Read read(store.db());
         result.sourceFile=filename(store);edit::TimeMap time(store.db());CopyIds ids(store.db());OpContext context{store,store.db()};
         for(std::size_t track=0;track<selection.tracks.size();++track) {
             SQLite::Statement clips(store.db(),clipRangeQuery(scope));clips.bind(1,selection.tracks[track]);
             while(clips.executeStep()) {
-                const auto id=clips.getColumn(0).getInt64();const auto root=*edit::row(store.db(),"clips",id);
+                const auto id=clips.getColumn(0).getInt64();
+                if(!result.clearsRange && std::find(selectedClips.begin(),selectedClips.end(),id)==selectedClips.end())
+                    continue;
+                const auto root=*edit::row(store.db(),"clips",id);
                 const int base=static_cast<int>(detail::signedInteger(root.at("time_base")));
                 const char* position=base==0?"pos_ticks":"pos_ns";const char* length=base==0?"length_ticks":"length_ns";
                 const auto begin=coordinate(selection.begin,base,time),end=coordinate(selection.end,base,time);
                 const auto first=detail::signedInteger(root.at(position));
-                if(first>=end)continue;
+                if(result.clearsRange && first>=end)continue;
                 if(root.at(length).is_null())throw std::runtime_error("copy range needs finite clip extents");
                 const auto last=edit::addTime(first,detail::signedInteger(root.at(length)));
-                if(last<=begin || first>=end)continue;
+                if(result.clearsRange && last<=begin)continue;
                 auto image=captureDeleted(context,id);captureMediaKeys(store,image);
                 freezeAudio(store,image,time,referenceRate);
-                if(first<begin)image=splitImage(store,image,ids.next("clips"),{base,begin},time,referenceRate,ids);
-                if(last>end)(void)splitImage(store,image,ids.next("clips"),{base,end},time,referenceRate,ids);
+                if(result.clearsRange && first<begin)image=splitImage(store,image,ids.next("clips"),{base,begin},time,referenceRate,ids);
+                if(result.clearsRange && last>end)(void)splitImage(store,image,ids.next("clips"),{base,end},time,referenceRate,ids);
                 image["row"][position]=detail::signedInteger(image.at("row").at(position))-begin;
                 image["trackIndex"]=track;result.images.push_back(std::move(image));
             }
         }
+        if(!result.clearsRange && result.images.size()!=selectedClips.size())
+            throw std::runtime_error("A selected clip is no longer in the Arrangement.");
         result.ok=true;
     } catch(const std::exception& exception){result.ok=false;result.error=exception.what();}
     return result;
@@ -784,6 +790,30 @@ RangeCopy copyRangeImpl(Store& store,const RangeSelection& selection,double refe
 } // namespace
 RangeCopy copyRange(Store& store,const RangeSelection& selection,double referenceRate) {
     return copyRangeImpl(store,selection,referenceRate,ClipLaneScope::MainLane);
+}
+RangeCopy copySelectedClips(Store& store,const RangeSelection& selection,std::span<const std::int64_t> clips,
+                            double referenceRate) {
+    if(clips.empty()) {
+        RangeCopy result;result.error="Select clips to copy.";return result;
+    }
+    return copyRangeImpl(store,selection,referenceRate,ClipLaneScope::MainLane,clips);
+}
+RangeCut prepareCutClips(Store& store,const RangeSelection& selection,std::span<const std::int64_t> clips,
+                         double referenceRate) {
+    RangeCut result;
+    try {
+        Read read(store.db());expectedHead(store,result.edit);
+        result.copy=copySelectedClips(store,selection,clips,referenceRate);
+        if(!result.copy.ok)throw std::runtime_error(result.copy.error);
+        result.edit.sourceFile=result.copy.sourceFile;
+        for(const auto id:clips) {
+            OpRequest request;request.opType="clip.delete";request.payload={{"id",id}};request.label="Cut Clips";
+            request.targetKind="clip";request.targetId=id;
+            result.edit.requests.push_back(std::move(request));
+        }
+        result.edit.ok=true;
+    } catch(const std::exception& exception){result.edit.error=exception.what();}
+    return result;
 }
 RangeCut prepareCutRange(Store& store,const RangeSelection& selection,double referenceRate) {
     return prepareCutRange(store,selection,edit_plan::Options{referenceRate,{}});
@@ -870,19 +900,21 @@ PreparedEdit preparePasteRange(Store& store,const RangeCopy& copy,const std::vec
         const auto base=copy.selection.begin.base;
         const auto begin=coordinate(at,base,time),end=edit::addTime(begin,copy.selection.end.value-copy.selection.begin.value);
         RangeSelection destination{tracks,{base,begin},{base,end}};validRange(destination);
-        std::set<std::int64_t> scopeTracks(tracks.begin(),tracks.end());
-        for(const auto track:copy.selection.tracks)if(detail::captureRow(store.db(),"tracks","id",track))scopeTracks.insert(track);
-        const std::vector<std::int64_t> literals(scopeTracks.begin(),scopeTracks.end());
+        std::set<std::int64_t> scopeTracks;
+        edit_plan::detail::PlacementBatch batch;
+        if(copy.clearsRange) {
+            scopeTracks.insert(tracks.begin(),tracks.end());
+            batch.sourceTracks=copy.selection.tracks;
+        }
         const auto beginNs=coordinate({base,begin},1,time),endNs=coordinate({base,end},1,time);
         const auto sourceBeginNs=coordinate(copy.selection.begin,1,time),sourceEndNs=coordinate(copy.selection.end,1,time);
         if(endNs<=beginNs || sourceEndNs<=sourceBeginNs)throw std::runtime_error("range paste span collapses in physical time");
         // This adapter constructs its literal scope. A linear image retains
         // its physical duration when pasted into a faster musical selection;
         // admit and clear that entire image as well as the clipboard's gaps.
-        auto scope=edit_plan::materialScope(literals,edit_plan::PlacementClock::Nanoseconds,
-            {std::min(beginNs,sourceBeginNs),std::max(endNs,sourceEndNs)});
-        edit_plan::detail::PlacementBatch batch;batch.sourceTracks=copy.selection.tracks;
-        for(const auto track:tracks)batch.clear.push_back({{track,std::nullopt},{beginNs,endNs}});
+        auto scopeBegin=std::min(beginNs,sourceBeginNs),scopeEnd=std::max(endNs,sourceEndNs);
+        if(copy.clearsRange)
+            for(const auto track:tracks)batch.clear.push_back({{track,std::nullopt},{beginNs,endNs}});
         for(const auto& image:copy.images)ids.reserve("clips",detail::signedInteger(image.at("id")));
         for(const auto& original:copy.images) {
             verifyMediaKeys(store,original);auto image=cloneImage(original,ids.next("clips"),ids);
@@ -893,10 +925,18 @@ PreparedEdit preparePasteRange(Store& store,const RangeCopy& copy,const std::vec
             row[position]=edit::addTime(coordinate(at,native,time),detail::signedInteger(row.at(position)));
             const auto first=detail::signedInteger(row.at(position));
             const auto last=edit::addTime(first,detail::signedInteger(row.at(native==0?"length_ticks":"length_ns")));
-            scope.bounds.begin=std::min(scope.bounds.begin,coordinate({native,first},1,time));
-            scope.bounds.end=std::max(scope.bounds.end,coordinate({native,last},1,time));
+            scopeBegin=std::min(scopeBegin,coordinate({native,first},1,time));
+            scopeEnd=std::max(scopeEnd,coordinate({native,last},1,time));
+            if(!copy.clearsRange) {
+                scopeTracks.insert(tracks[index]);
+                batch.sourceTracks.push_back(copy.selection.tracks[index]);
+            }
             row["track_id"]=tracks[index];row["lane_id"]=nullptr;batch.incoming.push_back(std::move(image));
         }
+        for(const auto track:batch.sourceTracks)
+            if(detail::captureRow(store.db(),"tracks","id",track))scopeTracks.insert(track);
+        const std::vector<std::int64_t> literals(scopeTracks.begin(),scopeTracks.end());
+        const auto scope=edit_plan::materialScope(literals,edit_plan::PlacementClock::Nanoseconds,{scopeBegin,scopeEnd});
         result=edit_plan::detail::prepareCaptured(store,scope,std::move(batch),options,ids,"Paste Material");
     } catch(const std::exception& exception){result.ok=false;result.error=exception.what();}
     return result;
