@@ -1038,9 +1038,9 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
                     return strip->outputLabel();
             return {};
         };
-        check(outputOf(10) == "Master" && outputOf(11) == "Group" && outputOf(16) == "Group" && outputOf(17) == "Group" &&
+        check(outputOf(10) == "Main" && outputOf(11) == "Group" && outputOf(16) == "Group" && outputOf(17) == "Group" &&
                   outputOf(1) == "1/2",
-              "Drums plays to Master; Clap/Snare, Fx And Hits (in Body) and Rises (in Fx And Hits) to their group; Main to 1/2");
+              "Drums plays to Main, the nested tracks play to their group, and Main plays to 1/2");
         // Live's group strip (manual 18.3, the figure of a group's strip): no Arm, and its Solo half
         // coloured while a track inside it is soloed.
         auto stripOf = [&root](std::int64_t id) -> MixerStrip * {
@@ -2109,6 +2109,10 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
               !firstMidi->volume.isVisible() && !firstMidi->pan.isVisible() && firstMidi->sendKnobs().empty(),
           "1 MIDI: its switches, no volume, pan or sends");
     check(!audio->isMidi() && audio->hasAudio() && audio->volume.isVisible(), "3 Audio keeps its mixer");
+    check(juce::String(audio->outputLabel()) == "Main" && reverb != nullptr &&
+              juce::String(reverb->outputLabel()) == "Main" && firstMidi != nullptr &&
+              juce::String(firstMidi->outputLabel()) == "No Output",
+          "SC-92: Audio To names Main for audio tracks and returns, and MIDI To says No Output without an instrument");
     // An instrument on 2 MIDI gives it volume, pan and a send per return.
     auto withSynth = std::make_shared<ParameterPublication>();
     DevicePanelData synth;

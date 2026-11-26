@@ -179,7 +179,7 @@ class MixerStrip final : public juce::Component,
     // audio mixer: a MIDI track holding no instrument has no volume, pan or sends, as Live's.
     bool isMidi() const noexcept { return midi_; }
     bool hasAudio() const noexcept { return audio_; }
-    // Where the track plays to, as its output chooser shows it: Main's outputs (1/2), Master, its
+    // Where the track plays to, as its output chooser shows it: Main's outputs (1/2), Main, its
     // group ("Group"), or No Output.
     const char *outputLabel() const noexcept;
     // Main's strip in the Mixer View: each return's Pre/Post switch in its Sends section, as Live's.

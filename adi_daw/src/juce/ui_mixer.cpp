@@ -1129,7 +1129,7 @@ const char *MixerStrip::outputLabel() const noexcept {
         return "1/2";
     if (!audio_)
         return "No Output";
-    return inGroup_ ? "Group" : "Master";
+    return inGroup_ ? "Group" : "Main";
 }
 void MixerStrip::paintMixerInOut(juce::Graphics &g) const {
     // Live 12's In/Out section in the Mixer (manual, the Mixer in Arrangement View): where the track
