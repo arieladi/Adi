@@ -3043,7 +3043,12 @@ void captureSharesLiveTap() {
 }
 
 } // namespace
-void *operator new(std::size_t bytes) {
+#if defined(__GNUC__) && !defined(__clang__)
+#define ADI_TEST_NOINLINE __attribute__((noinline))
+#else
+#define ADI_TEST_NOINLINE
+#endif
+ADI_TEST_NOINLINE void *operator new(std::size_t bytes) {
     if(observeAllocationSizes && allocationSizeCount<allocationSizes.size()) allocationSizes[allocationSizeCount++]=bytes;
     if(refuseAllocationBytes && bytes==refuseAllocationBytes && !refusedAllocationSize) {
         refusedAllocationSize=true; throw std::bad_alloc{};
@@ -3053,11 +3058,12 @@ void *operator new(std::size_t bytes) {
     if(auto *p=std::malloc(bytes?bytes:1)) return p;
     throw std::bad_alloc{};
 }
-void *operator new[](std::size_t bytes) {return ::operator new(bytes);}
-void operator delete(void *p) noexcept {std::free(p);}
-void operator delete[](void *p) noexcept {::operator delete(p);}
-void operator delete(void *p,std::size_t) noexcept {::operator delete(p);}
-void operator delete[](void *p,std::size_t) noexcept {::operator delete(p);}
+ADI_TEST_NOINLINE void *operator new[](std::size_t bytes) {return ::operator new(bytes);}
+ADI_TEST_NOINLINE void operator delete(void *p) noexcept {std::free(p);}
+ADI_TEST_NOINLINE void operator delete[](void *p) noexcept {::operator delete(p);}
+ADI_TEST_NOINLINE void operator delete(void *p,std::size_t) noexcept {::operator delete(p);}
+ADI_TEST_NOINLINE void operator delete[](void *p,std::size_t) noexcept {::operator delete(p);}
+#undef ADI_TEST_NOINLINE
 int main() {
     try { continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeMidDemand(); focusScopeDifference(); focusScopeSideDemand(); focusBarScopeBrokerBoundaries(); focusScopeSumProjection(); focusScopeFlatPath(); focusLagPreviewRequests(); focusLagPreviewCases(); focusLagTapReads(); focusMatchWindows(); parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
           sharedModesAndCursors(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); cumulativeMaximumSpectrum(); cumulativeMaximumParkedRollover(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
