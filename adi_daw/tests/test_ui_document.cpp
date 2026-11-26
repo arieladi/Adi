@@ -836,7 +836,7 @@ void arrangementRecord(const std::filesystem::path &dir) {
     check(settled && settled->ok && !doc->recording() && !doc->landingTake(),
           "a take whose device stopped is settled into the project, not lost");
 }
-void arrangementMidiRecord(const std::filesystem::path &path, bool mixed) {
+void arrangementMidiRecord(const std::filesystem::path &path, bool mixed, bool quantize = false) {
     std::string error;
     constexpr std::int32_t upstreamLatency = 16;
     auto doc = ui::ProjectDocument::open(path, true,
@@ -865,9 +865,11 @@ void arrangementMidiRecord(const std::filesystem::path &path, bool mixed) {
                   set("device.insert", {{"id", 31}, {"chain", 30}, {"ord", 1}, {"ref", 31}, {"name", "Keys"}, {"latency", 0}}),
               "the monitored track has an instrument after a device with latency");
     }
-    check(set("track.setArm", {{"id", 2}, {"armed", true}}) &&
+    check(set("track.setRecordQuantize", {{"id", 2}, {"on", quantize}, {"grid", "1/16"}}) &&
+              set("track.setArm", {{"id", 2}, {"armed", true}}) &&
               set("track.setMonitorMode", {{"id", 2}, {"mode", 1}}) &&
-              (!mixed || (set("track.setArm", {{"id", 3}, {"armed", true}}) &&
+              (!mixed || (set("track.setRecordQuantize", {{"id", 3}, {"on", quantize}, {"grid", "1/32"}}) &&
+                          set("track.setArm", {{"id", 3}, {"armed", true}}) &&
                           set("track.setMonitorMode", {{"id", 3}, {"mode", 0}}) &&
                           set("track.setArm", {{"id", 4}, {"armed", true}}))) && doc->synchronise(),
           "armed monitored MIDI, optionally with unmonitored MIDI and audio");
@@ -892,22 +894,26 @@ void arrangementMidiRecord(const std::filesystem::path &path, bool mixed) {
         io.streamTimeSamples += io.frames;
         doc->tick(io.streamTimeSamples);
     };
-    block();
-    check(doc->session().enqueueMidiInput(112, {0, engine::EventType::NoteOn, 1, 64, 9, 0, 1.0}, 80) &&
-              doc->session().enqueueMidiInput(120, {0, engine::EventType::NoteExpression, 1,
-                   static_cast<std::uint16_t>(ExpressionDim::Pitch), 9, 0, 3.0}, 88) &&
-              doc->session().enqueueMidiInput(120, {0, engine::EventType::NoteExpression, 1,
-                   static_cast<std::uint16_t>(ExpressionDim::Timbre), 9, 0, 0.25}, 88) &&
-              doc->session().enqueueMidiInput(120, {0, engine::EventType::NoteExpression, 1,
-                   static_cast<std::uint16_t>(ExpressionDim::Pressure), 9, 0, 0.5}, 88),
+    const std::int64_t lead = quantize ? 4096 : 0;
+    while (io.streamTimeSamples < lead + 64)
+        block();
+    check(doc->session().enqueueMidiInput(lead + 112, {0, engine::EventType::NoteOn, 1, 64, 9, 0, 1.0}, lead + 80) &&
+              doc->session().enqueueMidiInput(lead + 120, {0, engine::EventType::NoteExpression, 1,
+                   static_cast<std::uint16_t>(ExpressionDim::Pitch), 9, 0, 3.0}, lead + 88) &&
+              doc->session().enqueueMidiInput(lead + 120, {0, engine::EventType::NoteExpression, 1,
+                   static_cast<std::uint16_t>(ExpressionDim::Timbre), 9, 0, 0.25}, lead + 88) &&
+              doc->session().enqueueMidiInput(lead + 120, {0, engine::EventType::NoteExpression, 1,
+                   static_cast<std::uint16_t>(ExpressionDim::Pressure), 9, 0, 0.5}, lead + 88),
           "one held note with bend, slide and pressure and separate played and heard timestamps");
     block();
     const auto live = doc->liveMidiTakes();
     check(!live.empty() && live.front().notes.size() == 1 && live.front().notes.front().end == live.front().end &&
               clipCount() == before, "the held note appears before any clip row is committed");
-    check(doc->session().enqueueMidiInput(160, {0, engine::EventType::NoteOff, 1, 64, 9, 0, 0.5}, 128),
+    check(doc->session().enqueueMidiInput(lead + 160, {0, engine::EventType::NoteOff, 1, 64, 9, 0, 0.5}, lead + 128),
           "the held note releases");
     block();
+    while (quantize && io.streamTimeSamples < 6400)
+        block();
     doc->stopRecording();
     block();
     doc->release();
@@ -918,13 +924,29 @@ void arrangementMidiRecord(const std::filesystem::path &path, bool mixed) {
           "one committed clip per armed track replaces the growing take");
     if (!landed || !landed->ok)
         return;
+    if (quantize) {
+        for (const auto id : landed->clips) {
+            const auto read = engine::readClipDetails(doc->store(), id, true, true);
+            if (!read.clip || read.clip->kind != "midi")
+                continue;
+            const auto &clip = *read.clip;
+            const auto expectedTick = textproj::kPPQ / (clip.trackId == 2 ? 4 : 8);
+            check(clip.notes.size() == 1 && clip.notes.front().startTicks == expectedTick &&
+                      clip.noteExpressions.curves.size() == 3,
+                  "each track's Rec-Q grid moves its recorded note and retains note expression");
+        }
+        const auto step = doc->ops().nextUndo();
+        check(step && step->label == "Record Quantize" && step->opCount == 2 &&
+                  doc->ops().undo().ok && clipCount() == before + expected,
+              "one Record Quantize undo restores both tracks and leaves the raw mixed take");
+    }
     for (const auto id : landed->clips) {
         const auto read = engine::readClipDetails(doc->store(), id, true, true);
         if (!read.clip || read.clip->kind != "midi")
             continue;
         const auto &clip = *read.clip;
         const double samples = clip.trackId == 2 ? 112.0 - (mixed ? upstreamLatency : 0) : 80.0;
-        const auto ticks = static_cast<std::int64_t>(std::lround(samples * textproj::kPPQ / 24000.0));
+        const auto ticks = static_cast<std::int64_t>(std::lround((static_cast<double>(lead) + samples) * textproj::kPPQ / 24000.0));
         check(clip.notes.size() == 1 && clip.notes.front().startTicks == ticks && clip.notes.front().key == 64,
               "monitored notes land where heard and unmonitored notes where played");
         const auto &curves = clip.noteExpressions.curves;
@@ -935,6 +957,9 @@ void arrangementMidiRecord(const std::filesystem::path &path, bool mixed) {
     }
     check(doc->ops().undo().ok && clipCount() == before && doc->ops().redo().ok && clipCount() == before + expected,
           "one Undo and one Redo for the whole take");
+    if (quantize)
+        check(doc->ops().redo().ok && doc->ops().nextUndo()->label == "Record Quantize" && clipCount() == before + expected,
+              "redo reapplies Record Quantize as a separate step");
 }
 // MX-23 and SRF-02: a fader dragged is heard while it moves, writes nothing until the mouse lets go, then
 // lands as one undo step; Esc puts it back (Live 12 manual 18.1).
@@ -1378,6 +1403,7 @@ int main(int argc, char **argv) {
         arrangementRecord(recordDir.path());
         arrangementMidiRecord(recordDir.path() / "midi.adi", false);
         arrangementMidiRecord(recordDir.path() / "mixed.adi", true);
+        arrangementMidiRecord(recordDir.path() / "quantized-mixed.adi", true, true);
         test::TempDirectory guardDir("ui_document", "guard");
         saveAsKeepsTheTake(guardDir.path());
         test::TempDirectory afterDir("ui_document", "after-save-as");

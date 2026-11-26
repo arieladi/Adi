@@ -3,6 +3,7 @@
 #include "adi/engine/audio_memory.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/engine/snapshot.hpp"
+#include "adi/engine/clip_details.hpp"
 #include "adi/media/blake3.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/media/publish_file.hpp"
@@ -10,7 +11,9 @@
 #include "adi/store.hpp"
 #include "adi/clip_image.hpp"
 #include "adi/edit_plan.hpp"
+#include "adi/edit_rows.hpp"
 #include "adi/edit_time.hpp"
+#include "adi/freeze_groups.hpp"
 #include "adi/note_stream_detail.hpp"
 #include "adi/take_lane_ops.hpp"
 #include <algorithm>
@@ -193,6 +196,136 @@ Payload recordedMidiImage(Store& store, const MidiLinearTake& take, clip_edit::C
     return {{"id", take.clip}, {"row", std::move(row)}, {"children", std::move(children)},
             {"alias_links", Payload::array()}};
 }
+
+OpRequest recordingRows(const edit::RowEdits& rows, std::int64_t clip, const char* label) {
+    OpRequest request;
+    request.opType = "arranger.splice";
+    request.payload = {{"id", clip}, {"changes", rows.changes()}};
+    request.label = label;
+    request.targetKind = "clip";
+    request.targetId = clip;
+    return request;
+}
+
+// An in-place overdub needs the recorded span to map to one unique source interval. On a
+// repeating, linked, or partially overlapping clip, preserve the take on a new lane.
+bool prepareOverdub(Store& store, const MidiLinearTake& take, Payload& image, clip_edit::CopyIds& ids,
+                    RecordingEdit& result, MidiLinearLanding& landing, const char* label) {
+    const auto end = take.start + take.length;
+    const edit::TimeMap time(store.db());
+    SQLite::Statement overlaps(store.db(),
+        "SELECT id,time_base,alias_of,muted,EXISTS(SELECT 1 FROM clips AS linked WHERE linked.alias_of=clip.id) "
+        "FROM clips AS clip WHERE track_id=? AND lane_id IS NULL AND "
+        "((time_base=0 AND pos_ticks<? AND pos_ticks+length_ticks>?) OR "
+        "(time_base=1 AND pos_ns<? AND pos_ns+length_ns>?)) ORDER BY id");
+    overlaps.bind(1, take.track);
+    overlaps.bind(2, end);
+    overlaps.bind(3, take.start);
+    overlaps.bind(4, time.nanos(end));
+    overlaps.bind(5, time.nanos(take.start));
+    if (!overlaps.executeStep())
+        return false; // a gap is an ordinary new recording
+
+    for (const auto& [root, members] : freeze::groups(store.db()))
+        if (root == take.track || std::any_of(members.begin(), members.end(),
+                [&](const auto& member) { return member.id == take.track; }))
+            throw std::runtime_error("cannot overdub inside a frozen group");
+
+    const auto clipId = overlaps.getColumn(0).getInt64();
+    const bool independent = overlaps.getColumn(1).getInt() == 0 && overlaps.getColumn(2).isNull() &&
+                             overlaps.getColumn(3).getInt() == 0 && overlaps.getColumn(4).getInt() == 0;
+    const auto single = !overlaps.executeStep();
+    const auto read = single && independent ? engine::readClipDetails(store, clipId, true, true) : engine::ClipDetailsRead{};
+    const auto* clip = read.clip ? &*read.clip : nullptr;
+    constexpr auto tickLimit = std::int64_t{1} << 50;
+    if (clip && clip->kind == "midi" && clip->posTicks && clip->lengthTicks && clip->contentOffsetTicks >= 0 &&
+        clip->contentOffsetTicks <= tickLimit && *clip->posTicks >= 0 && *clip->posTicks <= tickLimit && *clip->posTicks <= take.start &&
+        *clip->lengthTicks > 0 && *clip->lengthTicks <= tickLimit && end <= *clip->posTicks + *clip->lengthTicks) {
+        const auto sourceStart = clip->contentOffsetTicks + (take.start - *clip->posTicks);
+        const auto sourceEnd = sourceStart + take.length;
+        const bool visible = clip->loopEnabled ?
+            clip->loopLengthTicks && *clip->loopLengthTicks > 0 && *clip->loopLengthTicks <= tickLimit &&
+                clip->loopStartTicks >= 0 && clip->loopStartTicks <= tickLimit &&
+                clip->contentOffsetTicks + *clip->lengthTicks <= clip->loopStartTicks + *clip->loopLengthTicks :
+            !clip->endMarkerTicks || sourceEnd <= *clip->endMarkerTicks;
+        if (visible && (clip->notesRecordSize == 0 || clip->notesRecordSize == sizeof(NoteRecord))) {
+            if (take.notes.empty()) {
+                landing = {clipId, sourceStart, {}, false};
+                return true;
+            }
+            auto captured = notes::captureNotes(store, clipId);
+            if (captured.ok && !captured.hasStream())
+                captured = notes::captureNotes(store, clipId, ids.next("event_streams"));
+            std::uint64_t highestNoteId = 0;
+            std::string error;
+            for (const auto& record : captured.records()) {
+                const auto note = notes::values(record, error);
+                if (!note)
+                    throw std::runtime_error(error);
+                highestNoteId = std::max(highestNoteId, note->id);
+            }
+            if (captured.ok && highestNoteId <= static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) - take.notes.size()) {
+                std::map<std::uint64_t, std::uint64_t> remap;
+                auto& children = image.at("children");
+                if (children.contains("note_expression"))
+                    for (const auto& row : children.at("note_expression"))
+                        remap.emplace(row.at("note_id").get<std::uint64_t>(), 0);
+                notes::Diff diff;
+                diff.added.reserve(take.notes.size());
+                std::vector<std::uint64_t> newIds;
+                newIds.reserve(take.notes.size());
+                for (auto note : take.notes) {
+                    const auto oldId = note.id;
+                    note.id = ++highestNoteId;
+                    note.start += sourceStart;
+                    note.flags &= ~static_cast<std::uint32_t>(NoteFlags::HasExpression);
+                    if (const auto found = remap.find(oldId); found != remap.end()) {
+                        found->second = note.id;
+                        note.flags |= NoteFlags::HasExpression;
+                    }
+                    auto record = notes::makeRecord(note, {}, error);
+                    if (!record)
+                        throw std::runtime_error(error);
+                    diff.added.push_back(std::move(*record));
+                    newIds.push_back(note.id);
+                }
+                auto prepared = notes::prepareDiff(captured, diff);
+                if (!prepared.ok)
+                    throw std::runtime_error(prepared.error);
+                for (auto& request : prepared.requests) {
+                    request.label = label;
+                    result.requests.push_back(std::move(request));
+                }
+                if (!remap.empty()) {
+                    edit::RowEdits expressions(store.db());
+                    for (auto& row : children.at("note_expression")) {
+                        const auto id = row.at("id").get<std::int64_t>();
+                        row["clip_id"] = clipId;
+                        row["note_id"] = remap.at(row.at("note_id").get<std::uint64_t>());
+                        expressions.set("note_expression", id, std::move(row));
+                    }
+                    result.requests.push_back(recordingRows(expressions, clipId, label));
+                }
+                landing = {clipId, sourceStart, std::move(newIds), false};
+                return true;
+            }
+        }
+    }
+    if (take.notes.empty()) {
+        landing = {clipId, 0, {}, false};
+        return true;
+    }
+    const auto lane = ids.next("lanes");
+    auto laneOp = createTakeLane(store, lane, take.track, "Overdub Take");
+    laneOp.label = label;
+    result.requests.push_back(std::move(laneOp));
+    image.at("row")["lane_id"] = lane;
+    edit::RowEdits rows(store.db());
+    clip_edit::createImage(rows, image);
+    result.requests.push_back(recordingRows(rows, take.clip, label));
+    landing.inTakeLane = true;
+    return true;
+}
 }
 engine::AudioRecordingResult captureMemory(Store& store,const engine::AudioMemorySnapshot& memory,
     std::int64_t track,std::int64_t timelineStartSample,const fs::path& workFolder) {
@@ -347,10 +480,21 @@ RecordingEdit RecordingEdit::prepareLinear(Store& store, const engine::AudioReco
         }
         for (const auto& take : midi) {
             auto image = recordedMidiImage(store, take, allocated);
-            place(std::move(image), take.track, take.start, take.start + take.length);
+            MidiLinearLanding landing;
+            landing.clip = take.clip;
+            landing.noteIds.reserve(take.notes.size());
+            for (const auto& note : take.notes)
+                landing.noteIds.push_back(note.id);
+            if (!take.overdub || !prepareOverdub(store, take, image, allocated, result, landing, label))
+                place(std::move(image), take.track, take.start, take.start + take.length);
+            result.midiLandings.push_back(std::move(landing));
+        }
+        if (batch.incoming.empty()) {
+            result.ok = true;
+            return result;
         }
 
-        // Resolve every destination in one splice. Existing material is cut
+        // Resolve every replacement in one splice. Existing material is cut
         // around the take and any surviving fragments get distinct row IDs.
         auto scope = edit_plan::materialScope(trackIds, edit_plan::PlacementClock::Ticks, {first, last});
         scope.domains = edit_plan::Domains::Clips;
@@ -664,6 +808,72 @@ notes::PreparedDiff prepareRecordQuantize(Store& store,std::int64_t clip,const n
     auto edit=notes::prepareDiff(notes::captureNotes(store,clip),diff);
     for(auto& request:edit.requests)request.label="Record Quantize";
     return edit;
+}
+
+notes::PreparedDiff prepareRecordQuantize(Store& store, std::span<const MidiRecordQuantize> targets) {
+    notes::PreparedDiff batch;
+    try {
+        Read read(store.db());
+        for (const auto& target : targets) {
+            if (target.noteIds.empty() || target.grid == 0)
+                continue;
+            if (target.grid < 0 || target.length <= 0 || target.sourceStart < 0 || target.timelineStart < 0 ||
+                target.sourceStart > std::numeric_limits<std::int64_t>::max() - target.length ||
+                target.timelineStart > std::numeric_limits<std::int64_t>::max() - target.length)
+                throw std::runtime_error("invalid recorded note window");
+
+            const auto snapshot = notes::captureNotes(store, target.clip);
+            if (!snapshot.ok)
+                throw std::runtime_error(snapshot.error);
+            std::set<std::uint64_t> remaining(target.noteIds.begin(), target.noteIds.end());
+            notes::Diff diff;
+            std::string error;
+            for (const auto& record : snapshot.records()) {
+                auto note = notes::values(record, error);
+                if (!note)
+                    throw std::runtime_error(error);
+                if (remaining.erase(note->id) == 0)
+                    continue;
+                if (note->start < target.sourceStart)
+                    throw std::runtime_error("record quantize note lies outside its take");
+                const auto offset = note->start - target.sourceStart;
+                if (offset >= target.length || note->duration > target.length - offset)
+                    throw std::runtime_error("record quantize note lies outside its take");
+                const auto before = (target.timelineStart + offset) % target.grid;
+                if (before == 0)
+                    continue;
+                const auto after = target.grid - before;
+                // Keep the full note and its expression inside the recorded interval.
+                const bool canMoveBack = before <= offset;
+                const bool canMoveForward = after <= target.length - offset - note->duration;
+                if (!canMoveBack && !canMoveForward)
+                    continue;
+                note->start += canMoveBack && (!canMoveForward || before < after) ? -before : after;
+                auto changed = notes::withValues(record, *note, error);
+                if (!changed)
+                    throw std::runtime_error(error);
+                diff.changed.push_back({record, std::move(*changed)});
+            }
+            if (!remaining.empty())
+                throw std::runtime_error("a recorded note disappeared before record quantize");
+            auto prepared = notes::prepareDiff(snapshot, diff);
+            if (!prepared.ok)
+                throw std::runtime_error(prepared.error);
+            batch.sourceFile = std::move(prepared.sourceFile);
+            batch.options = std::move(prepared.options);
+            for (auto& request : prepared.requests) {
+                request.label = "Record Quantize";
+                batch.requests.push_back(std::move(request));
+            }
+            for (auto& change : prepared.effects.changed)
+                batch.effects.changed.push_back(std::move(change));
+        }
+        batch.ok = true;
+    } catch (const std::exception& exception) {
+        batch = {};
+        batch.error = exception.what();
+    }
+    return batch;
 }
 
 CommitResult commit(Store& store,RecordingEdit& edit,Actor actor) {

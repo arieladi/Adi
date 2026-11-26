@@ -972,9 +972,19 @@ void Session::prepareMidiInput(TimingView& timing, const rows::Model& model, con
         std::span<const MidiMonitorRange> blockedRanges;
     };
     std::map<const Node*, Target> monitored;
+    decltype(midiHistories_) histories;
     for (const auto& track : model.tracks) {
         const bool midi = track.kind == "midi" || track.kind == "instrument";
         const bool armed = recordArmed(track);
+        if (midi && !track.locked && !track.frozen && !frozenGroupChildren_.contains(track.id) &&
+            (armed || track.monitorMode == 1) && timing.sampleRate >= 8000 && timing.sampleRate <= 768000) {
+            const auto rate = static_cast<std::uint32_t>(std::lround(timing.sampleRate));
+            const auto found = midiHistories_.find(track.id);
+            auto history = found != midiHistories_.end() && found->second->sampleRate == rate
+                ? found->second : std::make_shared<LiveMidiInput::History>(track.id, rate);
+            timing.midiHistories.push_back(history);
+            histories.emplace(track.id, std::move(history));
+        }
         const bool monitorMidi = midi && (track.monitorMode == 1 || (track.monitorMode == 2 && armed));
         if (!monitorMidi && !(track.kind == "audio" && armed))
             continue;
@@ -1014,6 +1024,7 @@ void Session::prepareMidiInput(TimingView& timing, const rows::Model& model, con
         }
         timing.midiInputRoutes.push_back(std::move(route));
     }
+    midiHistories_.swap(histories);
     prepareMidiPreview(timing, model);
 }
 
@@ -2509,7 +2520,8 @@ bool Session::RenderBlock::process(const AudioIo& io, bool captureRecording) noe
         block.exporting = timing->spec.exporting;
         auto* capture = captureRecording && timing->spec.performanceState && !timing->spec.exporting
             ? session_.midiInputCapture_.get() : nullptr;
-        session_.midiInput_->render(graph_, io, timing->midiInputRoutes, session_.transport_, capture);
+        session_.midiInput_->render(graph_, io, timing->midiInputRoutes, timing->midiHistories,
+                                    session_.transport_, capture);
         session_.midiInput_->renderPreview(graph_, io.frames, timing->midiPreviewRoutes, timing->sampleRate);
     }
     auto* inputMonitors = timing ? timing->inputMonitors.get() : nullptr;
@@ -2565,6 +2577,52 @@ void Session::resetMidiInput() noexcept {
     midiInput_->reset();
 }
 
+bool Session::midiHistoryAvailable() const noexcept {
+    const auto* timing = dynamic_cast<const TimingView*>(graph_.currentTransportState());
+    if (!live_ || !timing) return false;
+    return std::any_of(timing->midiHistories.begin(), timing->midiHistories.end(), [](const auto& history) {
+        return history->memory.hasEventsAfter(history->consumed);
+    });
+}
+
+bool Session::readMidiHistories(std::vector<MidiMemorySnapshot>& output, std::string& error) const {
+    output.clear();
+    const auto* timing = dynamic_cast<const TimingView*>(graph_.currentTransportState());
+    if (live_ && timing) {
+        const auto before = midiInput_->historyRevision();
+        if ((before & 1) != 0) {
+            error = "A MIDI input block is arriving. Try Capture MIDI again.";
+            return false;
+        }
+        for (const auto& history : timing->midiHistories) {
+            if (!history->memory.hasEventsAfter(history->consumed)) continue;
+            MidiMemorySnapshot snapshot;
+            if (!history->memory.snapshot(snapshot, error)) {
+                output.clear();
+                return false;
+            }
+            std::erase_if(snapshot.events, [&](const auto& event) { return event.serial < history->consumed; });
+            if (!snapshot.events.empty()) output.push_back(std::move(snapshot));
+        }
+        if (midiInput_->historyRevision() != before) {
+            output.clear();
+            error = "MIDI input changed during Capture. Try Capture MIDI again.";
+            return false;
+        }
+    }
+    if (!output.empty()) return true;
+    error = "No recent MIDI input on an armed or input-monitored track.";
+    return false;
+}
+
+void Session::consumeMidiHistories(std::span<const MidiMemorySnapshot> snapshots) noexcept {
+    for (const auto& snapshot : snapshots) {
+        const auto found = midiHistories_.find(snapshot.trackId);
+        if (found != midiHistories_.end() && !snapshot.events.empty())
+            found->second->consumed = snapshot.events.back().serial + 1;
+    }
+}
+
 const LiveMidiInput::PreviewRoute* Session::midiPreviewRoute(std::int64_t track) const noexcept {
     const auto* timing = dynamic_cast<const TimingView*>(graph_.currentTransportState());
     if (!live_ || !timing || track <= 0)
@@ -2595,7 +2653,7 @@ void Session::clearMidiPreviewDevice() noexcept {
     }
 }
 
-bool Session::startMidiInputCapture(std::span<const std::int64_t> tracks, std::string& error) {
+bool Session::startMidiInputCapture(std::span<const std::int64_t> tracks, std::string& error, bool overdub) {
     if (!loaded_ || !spec_.performanceState || spec_.exporting || tracks.empty() || tracks.size() > 256) {
         error = "MIDI capture needs a live project and between 1 and 256 armed tracks";
         return false;
@@ -2610,7 +2668,7 @@ bool Session::startMidiInputCapture(std::span<const std::int64_t> tracks, std::s
             return false;
         }
     }
-    if (!midiInputCapture_->start({tracks.begin(), tracks.end()}, spec_.sampleRate)) {
+    if (!midiInputCapture_->start({tracks.begin(), tracks.end()}, spec_.sampleRate, overdub)) {
         error = "finish and drain the previous MIDI capture first";
         return false;
     }

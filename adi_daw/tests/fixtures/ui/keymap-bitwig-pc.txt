@@ -127,3 +127,5 @@
 29054 Keyboard Shortcuts: 
 29055 Automation Mode: A
 29056 Computer MIDI Keyboard: M
+29057 Import MIDI File...: 
+29058 Export MIDI Clip...: Cmd+Shift+E

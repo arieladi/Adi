@@ -272,14 +272,15 @@ struct ArrangementGeometry {
     static constexpr std::array<const char *, 5> kAdaptiveNames{"Widest", "Wide", "Medium", "Narrow",
                                                                 "Narrowest"};
     static constexpr int kGridNarrowest = 2;
-    // The step between grid lines, in quarter notes. The adaptive grid at its default keeps
-    // lines at least 14 pixels apart and never finer than a quarter, as it is drawn.
+    // The adaptive grid targets at least 14 pixels between lines at its default width.
+    // Arrangement keeps its quarter-note floor; the Note Editor uses the full range.
+    double adaptiveGridFloor = 1.;
     double gridQuarters() const noexcept {
         return grid.triplet ? plainGridQuarters() * 2 / 3 : plainGridQuarters();
     }
     // The same step before triplets.
     double plainGridQuarters() const noexcept {
-        const double adaptive = std::max(1., std::pow(2., std::ceil(std::log2(14. / scale)))) *
+        const double adaptive = std::max(adaptiveGridFloor, std::pow(2., std::ceil(std::log2(14. / scale)))) *
                                 std::pow(2., -grid.narrow);
         return std::clamp(grid.fixed ? grid.fixedQuarters : adaptive, kFinestGrid, kWidestGrid);
     }
