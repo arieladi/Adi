@@ -14929,6 +14929,14 @@ void settingsAvailabilityAndTestTone(const std::filesystem::path &dir) {
     row = rowFor(language->key);
     check(row && !row->control->isEnabled() && row->getTooltip().contains("Not available in this build"),
           "Find also explains an unavailable setting");
+    panel.showPage("Record, Warp & Launch");
+    const auto *monitoringLatency = rowFor("audio.keepMonitoringLatency");
+    const auto *recordQuantize = rowFor("record.quantize");
+    check(monitoringLatency && !monitoringLatency->control->isEnabled() &&
+              monitoringLatency->getTooltip().contains("Not available in this build") &&
+              recordQuantize && !recordQuantize->control->isEnabled() &&
+              recordQuantize->getTooltip().contains("Not available in this build"),
+          "new-track defaults for monitoring latency and quantization stay dim until recording uses them");
     panel.showPage("Licenses & Updates");
     const auto *diagnostics = rowFor("privacy.diagnosticLog");
     check(diagnostics && diagnostics->control->isEnabled(), "the diagnostic logging setting remains editable");
