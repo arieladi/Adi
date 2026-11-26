@@ -1214,7 +1214,8 @@ RecordStates ProjectDocument::recordStates() const {
         out[t.id] = {t.recordArmed, t.monitorMode == 1 ? Monitor::In : t.monitorMode == 2 ? Monitor::Auto : Monitor::Off};
     return out;
 }
-bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t inputs, bool playing) {
+bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t inputs, bool playing,
+                                     std::int64_t deviceLatencySamples) {
     if (recording_ || landing_) {
         error_ = recording_ ? "Recording is already running." : "The last take is still being saved.";
         return false;
@@ -1264,6 +1265,7 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
         error_ = "Transport command queue is full" + (kept.empty() ? std::string() : "." + kept);
         return false;
     }
+    takeLatencySamples_ = deviceLatencySamples;
     recording_ = true;
     error_.clear();
     return true;
@@ -1328,7 +1330,7 @@ void ProjectDocument::landTake(engine::AudioRecordingResult &result) {
         ids.push_back({clip, rows.next("media_files"), name.empty() ? std::string("Take") : std::move(name)});
         outcome.clips.push_back(ids.back().clip);
     }
-    auto edit = recording::prepareCommit(*store_, result, ids);
+    auto edit = recording::prepareCommit(*store_, result, ids, takeLatencySamples_);
     if (!edit.ok) {
         outcome.clips.clear();
         outcome.message = "The take was recorded but could not be added: " + edit.error + "." + discardTake(result);

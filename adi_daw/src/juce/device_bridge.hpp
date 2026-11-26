@@ -28,7 +28,16 @@
 
 #include <juce_audio_devices/juce_audio_devices.h>
 
+#include <algorithm>
+
 namespace adi::device {
+
+// A driver may return a nonpositive latency when an endpoint has no report.
+inline std::int64_t reportedRoundTripLatency(juce::AudioIODevice& device) {
+    const auto input = (std::max)(0, device.getInputLatencyInSamples());
+    const auto output = (std::max)(0, device.getOutputLatencyInSamples());
+    return static_cast<std::int64_t>(input) + output;
+}
 
 class DeviceBridge final : public juce::AudioIODeviceCallback {
 public:

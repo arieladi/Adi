@@ -160,7 +160,9 @@ class ProjectDocument final : public engine::BlockProcessor {
     // playhead on, as Live's punch in. False with `error()` saying why: nothing armed, only MIDI armed
     // (the engine's live MIDI input is not on main yet), a device with no inputs, the engine's refusal.
     // `inputs` is the device's input channel count, `insertTick` where a stopped transport starts.
-    bool startRecording(std::int64_t insertTick, std::int32_t inputs, bool playing);
+    // The driver's round-trip latency is captured in samples at the recording's rate.
+    bool startRecording(std::int64_t insertTick, std::int32_t inputs, bool playing,
+                        std::int64_t deviceLatencySamples = 0);
     // How many inputs the audio device has open (N65's window half): every audio track is fed by inputs
     // 1/2 (input 1 alone on a one-input device) until a track's input has its grammar (MX-25), as
     // recording takes them, and the session hears them as each track's Arm and monitoring say (In
@@ -324,6 +326,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     // Discards a take that is not kept; what the Status Bar adds when its files stay (DF-E44), else empty.
     std::string discardTake(engine::AudioRecordingResult &);
     bool recording_ = false, landing_ = false;
+    std::int64_t takeLatencySamples_ = 0;
     std::atomic<bool> deviceStopped_{true}; // `release` without a `prepare` since
     std::optional<TakeLanded> landed_;
     // The mixer drag's gesture (MX-23): the coordinator of this store's gestures, and the open session.
