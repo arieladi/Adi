@@ -176,7 +176,7 @@ void collectionCancellation() {
 void collection() {
     Fixture f;
     f.add("one/clip.wav", std::string(140000,'A') + "first", 1);
-    f.add("two/clip.wav", std::string(140000,'B') + "second", 2);
+    f.add("two/CLIP.wav", std::string(140000,'B') + "second", 2);
     const auto before = digestProject(*f.store).text;
     const auto original = media::mediaRow(f.store->db(), 1);
     const auto zip = f.temp.path() / "portable.zip";
@@ -198,9 +198,9 @@ void collection() {
         const auto named = [](const Payload& row) {
             return media::pathFromUtf8(row.at("rel_path").get<std::string>()).filename();
         };
-        check((named(a) == "clip.wav" && named(b) == "clip (2).wav") ||
-              (named(b) == "clip.wav" && named(a) == "clip (2).wav"),
-              "the ZIP keeps the sample's basename with a short suffix for the clash");
+        check((named(a) == "clip.wav" && named(b) == "CLIP (2).wav") ||
+              (named(b) == "CLIP.wav" && named(a) == "clip (2).wav"),
+              "the ZIP keeps both names recognizable when they clash on a case-insensitive system");
         bool resolved = true;
         for (const auto& row : {a,b}) {
             const auto path = media::pathFromUtf8(row.at("rel_path").get<std::string>());

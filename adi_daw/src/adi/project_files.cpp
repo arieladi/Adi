@@ -13,8 +13,10 @@
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <SQLiteCpp/Backup.h>
 #include <sqlite3.h>
+#include <utf8proc.h>
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <stdexcept>
 #include <limits>
 #include <map>
@@ -254,9 +256,21 @@ std::string joinedWarning(std::string first,const std::string& next) {
     if(!first.empty())first+="; ";
     first+=next;return first;
 }
+std::string collectionNameKey(const fs::path& filename) {
+    const auto name = media::pathUtf8(filename);
+    // Reserve aliases too, so a collected ZIP can be unpacked on a platform
+    // that folds case or normalizes filenames. Keep the original spelling.
+    utf8proc_uint8_t* data = nullptr;
+    const auto flags = static_cast<utf8proc_option_t>(UTF8PROC_STABLE | UTF8PROC_COMPOSE | UTF8PROC_CASEFOLD);
+    const auto size = utf8proc_map(reinterpret_cast<const utf8proc_uint8_t*>(name.data()),
+                                  static_cast<utf8proc_ssize_t>(name.size()), &data, flags);
+    const std::unique_ptr<utf8proc_uint8_t, decltype(&std::free)> owned(data, &std::free);
+    return size < 0 ? name : std::string(reinterpret_cast<const char*>(data), static_cast<std::size_t>(size));
+}
+using CollectionNames = std::map<std::string, fs::path>;
 fs::path publishCollectedMedia(const fs::path& directory, const fs::path& stage, const fs::path& source,
                                const std::string& original, const std::string& hash,
-                               media::detail::PublishedRollback& owned) {
+                               CollectionNames& names, media::detail::PublishedRollback& owned) {
     auto fallbackExtension = media::pathUtf8(source.extension());
     if (fallbackExtension.empty() || fallbackExtension.size() > 16 ||
         fallbackExtension.find_first_not_of(".abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") != std::string::npos)
@@ -272,9 +286,17 @@ fs::path publishCollectedMedia(const fs::path& directory, const fs::path& stage,
     };
     const auto staged = stage / hash;
     for (unsigned number = 1; number <= 10000; ++number) {
-        const auto target = directory / (number == 1 ? filename
-            : media::pathFromUtf8(stem + " (" + std::to_string(number) + ")" + extension));
+        const auto leaf = number == 1 ? filename
+            : media::pathFromUtf8(stem + " (" + std::to_string(number) + ")" + extension);
+        const auto key = collectionNameKey(leaf);
+        if (const auto occupied = names.find(key); occupied != names.end()) {
+            if (!occupied->second.empty() && matches(occupied->second))
+                return occupied->second;
+            continue;
+        }
+        const auto target = directory / leaf;
         if (fs::symlink_status(target).type() != fs::file_type::not_found) {
+            names.emplace(key, target);
             if (matches(target)) return target;
             continue;
         }
@@ -286,10 +308,12 @@ fs::path publishCollectedMedia(const fs::path& directory, const fs::path& stage,
         const auto result = media::publishFile(staged, target, {}, media::PublishPolicy::VerifiedCopyFallback);
         if (result.status == media::PublishStatus::published) {
             owned.files.back().identity = result.identity;
+            names.emplace(key, target);
             return target;
         }
         owned.files.pop_back();
         if (result.status != media::PublishStatus::exists) throw std::runtime_error("publish media: " + result.error);
+        names.emplace(key, target);
         if (matches(target)) {
             fs::remove(staged);
             return target;
@@ -530,9 +554,15 @@ StoreFileResult Store::collectAllAndSave() {
         if(!sources.empty()) {
             if(fs::is_symlink(fs::symlink_status(audio)))throw std::runtime_error("audio/ must not be a symlink");
             fs::create_directories(audio);
+            CollectionNames names;
+            for (const auto& item : fs::directory_iterator(audio)) {
+                const auto [found, inserted] = names.try_emplace(collectionNameKey(item.path().filename()), item.path());
+                if (!inserted)
+                    found->second.clear(); // existing ambiguities are left alone
+            }
             Stage stage(audio);
             for (const auto& [hash, path, original] : sources) {
-                const auto target = publishCollectedMedia(audio, stage.path, path, original, hash, files);
+                const auto target = publishCollectedMedia(audio, stage.path, path, original, hash, names, files);
                 locations[hash] = media::pathUtf8(target.lexically_relative(folder));
             }
         }
