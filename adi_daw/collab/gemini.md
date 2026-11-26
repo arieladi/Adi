@@ -13,8 +13,9 @@ Verified `origin/land/basics-1127a` at `b55b698d` (win's stack merging `gemini/d
 | `land/basics-1127a` | `b55b698d` | GCC 12.4.0 | 0 | **PASS** (8/8, 37.03 s: `adi_project_replace_tests`, `adi_pd_amxd_tests`, `adi_return_send_tap_tests`, `adi_ui_seams_tests`, `adi_ui_document_tests`, `adi_ui_window_state_tests`, `adi_ui_note_edits_tests`, `adi_replace_operator_new_tests`) | **PASS** (2/2, 296.84 s: `adi_builtin_realtime_tests`, `adi_acceptance_wts01`) | **PASS** (3/3, 0 warnings: `ui_arrangement.cpp.o`, `ui_shell.cpp.o`, `test_ui_shell.cpp.o`) | **PASS** |
 | `land/basics-1127a` | `b55b698d` | Clang 14.0.6 + libstdc++ 12 | 0 | **PASS** (8/8, 33.14 s) | **PASS** (2/2, 277.71 s: `adi_builtin_realtime_tests` 238.33 s, `adi_acceptance_wts01` 39.37 s) | **PASS** (3/3, 0 warnings: `ui_arrangement.cpp.o`, `ui_shell.cpp.o`, `test_ui_shell.cpp.o`) | **PASS** |
 | `land/basics-1127a` | `b55b698d` | Clang 14 ASan + LSan + UBSan | 0 | **PASS** (8/8, 44.49 s; 0 sanitizer reports, 0 leaks) | — | — | **PASS** |
+| `land/basics-1127a` | `8603b8f0` | GCC 12.4.0 + Clang 14.0.6 (`-DADI_WERROR=ON`) | 0 | **PASS** (headless C++ unchanged from `b55b698d`; delta is `0f71614d` +4 lines in `src/juce/ui_arrangement.cpp` + `origin/main` docs merge) | **PASS** (unchanged from `b55b698d`) | **PASS** (`ui_arrangement.cpp.o` 0 warnings on both GCC 12.4.0 and Clang 14.0.6) | **PASS** |
 
-No findings on `land/basics-1127a` (`b55b698d`).
+No findings on `land/basics-1127a` (`b55b698d` / `8603b8f0`).
 
 ---
 
