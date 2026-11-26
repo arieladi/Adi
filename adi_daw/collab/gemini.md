@@ -4,6 +4,29 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-26 — Closing Rule (After-3-December `PR requested` sweep, `engine-win` stacks): `engine-win/export-profile-validation` (`2b3b7e5c`), `engine-win/source-hash-flac-proof` (`ab4fab82`)
+
+Both branches predate `DF-M62` (`FloatRealTransform.h:61`) and `DF-E69` (Clang 14 structured-binding / `std::ranges` fixes since landed on `main`); `FloatRealTransform.h:61` was patched transiently locally only to compile past it and reverted immediately afterwards.
+
+| Branch | Head | Touched scope | GCC 12.4.0 `-DADI_WERROR=ON` | Clang 14.0.6 + libstdc++ 12 `-DADI_WERROR=ON` | Findings |
+|---|---|---|---|---|---|
+| `engine-win/export-profile-validation` (includes `export-slice-readback`, `export-conditional-normalization`, `export-cycle-and-matrix`, `export-windowed-delivery`, and all 6 export codecs) | `2b3b7e5c` | 37 files / +5,832 lines (`aiff/flac/mp3/opus/vorbis_writer`, `delivery_src`, `after_export`, `quantizer`, `normalization`, `queue`, tests) | **FAIL (`-Werror=unused-function` in `test_render_queue.cpp:827,873`)** — all 12 export `src/adi/...` TUs compile with 0 warnings; `adi_wav_file_tests` (2.54 s), `adi_material_commands_tests` (1.38 s), `adi_normalization_tests` (4.64 s), `adi_ni_stems_tests` (5.68 s) PASS; `adi_render_queue_tests` passes **633/0** at runtime when built with `-Wno-unused-function`. | **FAIL (`-Werror,-Wunused-function` in `test_render_queue.cpp:827,873`)** — all 12 export `src/adi/...` TUs compile with 0 warnings (pre-DF-E69 base `project_files.cpp`/`param_ops.cpp`/`timeline_clips.hpp` prevents linking until rebased on `main`). | **Real Linux `-Werror` + dead-test blocker** (see Finding below). |
+| `engine-win/source-hash-flac-proof` | `ab4fab82` | 22 files (`source_hash_memo.{hpp,cpp}`, `flac_writer`, `quantizer`, `test_source_hash_memo.cpp`) | **PASS (6/6)** — 0 warnings (`adi_source_hash_memo_tests`, `adi_wav_file_tests`, `adi_normalization_tests`, `adi_render_queue_tests`, `adi_decode_tests`, `adi_pcm_stream_tests`). | **PASS (0 warnings on touched TUs)** (`source_hash_memo.cpp.o`, `test_source_hash_memo.cpp.o`; pre-DF-E69 base). | Clean (needs rebase onto `main` for `DF-M62`/`DF-E69` before landing). |
+
+### Finding on `engine-win/export-profile-validation` (`2b3b7e5c`)
+
+- **`adi_daw/tests/test_render_queue.cpp:827:6` (`explicitDirectTaps`) and `:873:6` (`directStemBatch`) fail `-DADI_WERROR=ON` on BOTH GCC 12.4.0 and Clang 14.0.6 (`-Werror=unused-function`) — and neither test is ever called from `main()`:**
+  - MSVC `/W4 /WX` does not emit `C4505` for uncalled functions inside an anonymous namespace, hiding the issue on Windows; both Linux compilers reject it under `-DADI_WERROR=ON`, and both test functions (`explicitDirectTaps` and `directStemBatch`) are dead code never executed in `adi_render_queue_tests`.
+  - **Owner:** `engine-win` (`tests/test_render_queue.cpp`).
+  - **Smallest repro:**
+    ```sh
+    git checkout 2b3b7e5c
+    cmake -S adi_daw -B build -G Ninja -DADI_WERROR=ON -DADI_WITH_JUCE=OFF
+    cmake --build build --target adi_render_queue_tests
+    ```
+
+---
+
 ## 2026-11-26 — Closing Rule (`land/*` stack): `land/walk-1126e` (`4de90ea5`)
 
 Verified win's combined landing stack (`walk/a28-vblank-window-open` + `walk/a31-plugin-tables-per-tick` + `walk/b12-play-start-dropout` + `walk/b14-clip-rename`) under **GCC 12.4.0** and **Clang 14.0.6 + libstdc++ 12** (`-DADI_WERROR=ON -DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF -DADI_ACCEPTANCE=ON`), plus all four touched JUCE TUs under `-DADI_WITH_JUCE=ON -DADI_WERROR=ON`.
