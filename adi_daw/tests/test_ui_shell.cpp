@@ -10254,6 +10254,91 @@ void clipWarpSwitch(AppCommands &commands, const std::filesystem::path &dir) {
     }
     commands.detach(root);
 }
+void sampleEditorMouse(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "sample-gestures.adi", true, {}, error);
+    check(document != nullptr, "a project to exercise the Sample Editor");
+    if (!document)
+        return;
+    const auto wav = dir / "sample-gestures.wav";
+    {
+        std::vector<float> frames(192000, .3f);
+        audio::WavWriter writer(wav, 48000, 1, audio::WavFormat::Pcm16);
+        writer.write(frames.data(), static_cast<std::uint32_t>(frames.size()));
+    }
+    constexpr std::int64_t track = 4, beat = textproj::kPPQ;
+    AudioImport imported;
+    if (!document->prepareImport(wav.string(), 1'700'000'000'000'000, imported)) {
+        check(false, "read the Sample Editor's source");
+        return;
+    }
+    auto placed = dropAudio(*document->view().current(), track, 4 * beat, "Eight Beats", imported);
+    if (!placed.refusal.empty() || !document->ops().submit(std::move(placed.ops)).ok || !document->synchronise()) {
+        check(false, "place the Sample Editor's source on the track");
+        return;
+    }
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "sample-gestures");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.setSize(1440, 900);
+    root.frame();
+    commands.activate(root);
+    const auto *row = root.reader().findTrack(track);
+    if (!row || row->clips.empty()) {
+        check(false, "find the Sample Editor's source on the track");
+        commands.detach(root);
+        return;
+    }
+    root.arrangement.selectClip(track, row->clips.front()->id);
+    if (!root.state().clipView)
+        root.command(AppCommands::ToggleClipView);
+    root.frame();
+    auto &panel = root.clipView;
+    auto &edit = panel.sample;
+    using Field = ClipViewPanel::Field;
+    check(panel.setField(Field::Start, 2 * beat) && panel.setField(Field::End, 6 * beat),
+          "start with material trimmed at both ends");
+    root.frame();
+    check(edit.time.tick(0) == 0 && edit.time.tick(edit.getWidth()) >= 8 * beat,
+          "the editor still shows the whole source around both markers");
+    const auto x = [&](std::int64_t at) { return static_cast<float>(std::ceil(edit.time.x(at))); };
+    const auto y = edit.waveArea().getY();
+    const auto drag = [&](std::int64_t from, std::int64_t to, int atY) {
+        const juce::Point<float> down{x(from), static_cast<float>(atY)}, up{x(to), static_cast<float>(atY)};
+        edit.mouseDown(pressAt(edit, down, juce::ModifierKeys::leftButtonModifier));
+        edit.mouseDrag(dragAt(edit, down, up, juce::ModifierKeys::leftButtonModifier));
+        edit.mouseUp(dragAt(edit, down, up));
+        root.frame();
+    };
+    drag(2 * beat, 3 * beat, y - 4);
+    check(panel.details() && panel.details()->startMarkerTicks == 3 * beat &&
+              root.undoTitle(false) == "Undo Set Clip Start",
+          "drag the waveform's Start marker as one undo step");
+    drag(6 * beat, 5 * beat, y - 4);
+    check(panel.details() && panel.details()->endMarkerTicks == 5 * beat,
+          "drag the waveform's End marker");
+    check(panel.toggleLoop() && panel.setField(Field::Position, 3 * beat) && panel.setField(Field::Length, 2 * beat),
+          "set a loop from beat four to beat six");
+    root.frame();
+    drag(4 * beat, 5 * beat, y - 14);
+    check(panel.details() && panel.details()->loopStartTicks == 4 * beat &&
+              panel.details()->loopLengthTicks == 2 * beat,
+          "moving the loop brace keeps its length");
+    const juce::Point<float> point{x(beat), static_cast<float>(y + 5)};
+    edit.mouseDown(pressAt(edit, point, juce::ModifierKeys::leftButtonModifier));
+    edit.mouseUp(pressAt(edit, point));
+    check(panel.setFieldHere(Field::Start), "Set Start takes the point picked in the waveform");
+    root.frame();
+    check(panel.details() && panel.details()->startMarkerTicks == beat,
+          "a waveform click supplies the sample-local edit point");
+    const auto scale = edit.time.scale;
+    const juce::Point<float> down{100.f, 6.f}, up{100.f, 26.f};
+    edit.mouseDown(pressAt(edit, down, juce::ModifierKeys::leftButtonModifier));
+    edit.mouseDrag(dragAt(edit, down, up, juce::ModifierKeys::leftButtonModifier));
+    edit.mouseUp(dragAt(edit, down, up));
+    check(edit.time.scale > scale, "dragging down on the time ruler zooms in");
+    commands.detach(root);
+}
 void clipWaveforms(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto document = ProjectDocument::open(dir / "waves.adi", true, {}, error);
@@ -18994,6 +19079,7 @@ int main(int argc, char **argv) {
     trace("undoHistoryWindow", [&] { undoHistoryWindow(commands, temp.path()); });
     trace("clipWaveforms", [&] { clipWaveforms(commands, temp.path()); });
     trace("clipWarpSwitch", [&] { clipWarpSwitch(commands, temp.path()); });
+    trace("sampleEditorMouse", [&] { sampleEditorMouse(commands, temp.path()); });
     trace("clipFades", [&] { clipFades(commands, temp.path()); });
     trace("showcase", [&] { showcase(commands, temp.path()); });
     trace("returnInGroup", [&] { returnInGroup(commands, temp.path()); });
