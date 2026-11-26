@@ -1459,6 +1459,11 @@ void AdiRootComponent::followPluginWindows() {
             pluginHost->setAlwaysOnTop(key, commands_.pluginWindowsOnTop());
     }
 }
+void AdiRootComponent::vblankFrame() noexcept {
+    vblankFrame_ = true;
+    frame();
+    vblankFrame_ = false;
+}
 void AdiRootComponent::frame() noexcept {
     // Root owns exactly one reader for the presented frame; descendants borrow it.
     // JUCE may paint after this callback, so it remains alive until the next frame.
@@ -1545,7 +1550,10 @@ void AdiRootComponent::frame() noexcept {
         if (shown != clipView.clip() || (lastDrain_ & DirtySet::Content) != 0)
             status.repaint();
     }
-    followPluginWindows();
+    if (vblankFrame_)
+        windowFollower_.triggerAsyncUpdate(); // not inside JUCE's vblank listener walk (A28)
+    else
+        followPluginWindows();
     mixer.frame((lastDrain_ & (DirtySet::Layout | DirtySet::Content)) != 0);
     if (mixerView.isVisible())
         mixerView.frame((lastDrain_ & (DirtySet::Layout | DirtySet::Content)) != 0);
@@ -4634,7 +4642,7 @@ AdiWindow::AdiWindow(std::unique_ptr<AdiRootComponent> root, AppCommands &comman
     : DocumentWindow("ADI", look::windowBack, DocumentWindow::allButtons, onDesktop),
       root_(root.get()), commands_(commands), clock_(this, [this](double) {
           followSettings();
-          root_->frame();
+          root_->vblankFrame();
       }) {
     setContentOwned(new ZoomHost(std::move(root)), true);
     setResizable(true, false);

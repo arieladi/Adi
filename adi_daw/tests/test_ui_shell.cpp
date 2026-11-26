@@ -10835,6 +10835,16 @@ void pluginWindows(AppCommands &commands, settings::AppSettings &settings, const
         root.pluginAdded(3);
         root.frame();
         check(host.contains(key3), "Auto-Open Plug-In Windows: a plug-in added opens its window [P:7.5-floating#14]");
+        // Walk-A A28: the window's own clock runs the frame inside JUCE's VBlankThread::handleAsyncUpdate,
+        // which walks its listener list by reference; a window opened there adds to that list and crashed
+        // ADI. A vblank frame opens no window itself; the message it leaves opens it right after.
+        host.closeAll(false);
+        root.pluginAdded(3);
+        root.vblankFrame();
+        const bool openedInsideVBlank = host.contains(key3);
+        root.settlePluginWindows();
+        check(!openedInsideVBlank && host.contains(key3),
+              "a vblank frame leaves Auto-Open's window to a message of its own, which opens it");
         host.closeAll(false);
         std::string offWhy;
         check(settings.set("plugins.autoOpenWindows", false, {}, offWhy), "Auto-Open off");

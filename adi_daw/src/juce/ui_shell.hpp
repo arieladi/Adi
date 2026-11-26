@@ -560,6 +560,12 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     static std::string pluginWindowKey(std::int64_t device);
     // Each frame: Auto-Hide and Show/Hide applied, Always on Top followed.
     void followPluginWindows();
+    // The window's vblank clock runs the frame from inside JUCE's VBlankThread::handleAsyncUpdate, which
+    // walks its listener list by reference; a window opened there (Auto-Open) adds its peer's listener
+    // to that list and crashed ADI (walk-A A28). So a vblank frame leaves the plug-in windows to a
+    // message of their own, right after it; `frame()` called directly follows them at once.
+    void vblankFrame() noexcept;
+    void settlePluginWindows() { windowFollower_.handleUpdateNowIfNeeded(); }
     // WIN-03, Live's Auto-Open Plug-In Windows: a plug-in just added opens its window once the device
     // feed shows it (within a second of frames), when the setting is on. The app calls it after an
     // insert lands.
@@ -878,6 +884,13 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     bool pluginWindowsShown_ = true;
     std::int64_t autoOpen_ = 0; // a plug-in added, its window to open (WIN-03)
     int autoOpenFrames_ = 0;
+    bool vblankFrame_ = false; // the frame running is the window's vblank clock's (A28)
+    struct WindowFollower final : juce::AsyncUpdater {
+        explicit WindowFollower(AdiRootComponent &r) : root(r) {}
+        ~WindowFollower() override { cancelPendingUpdate(); }
+        void handleAsyncUpdate() override { root.followPluginWindows(); }
+        AdiRootComponent &root;
+    } windowFollower_{*this};
     unsigned lastDrain_ = 0;
     bool playing_ = false;
     bool midiOverdub_ = false; // Live's MIDI Arrangement Overdub, off in a new Set
