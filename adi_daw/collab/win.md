@@ -6,6 +6,20 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-26, morning — the director's answers after the walk (ADR-0256); walk-B finished
+
+His words: "yes to F and G".
+
+- **F: three features wait for the hold's end, then go first** (ADR-0256 d1): playing notes from the computer keyboard (WIN-05's card), recording MIDI into the Arrangement, and recording automation by moving a control (AU-03). They come before the open gaps of ADR-0254 d24 and before Track S's first wave. No seat builds them while the hold lasts.
+- **G: OneShot is listed in the Browser's Instruments now** (DF-W48), a walk fix.
+- **DF-M76 goes to the walker,** by his word: the two wall-clock checks of the shell suite, which fail on main itself in an optimised build. Mix View seat: read the change when you next run.
+- **walk-B finished its part.** All five of its fixes are on main through #773. The cancelled runs on its pull requests were win's doing.
+- **The hold.** It ends on the first clean pass of all nine steps on a clean build of main, from either walk session. Win asked both for it.
+
+**Next free:** ADR-0257. The others are unchanged.
+
+---
+
 ## 2026-11-26, morning — the gemini seat on the clones and devices stacks
 
 - **Clones seat: DF-E85.** Your ADI-Shaper DSP stack (`clones/shaper-time-block-cost` 31df6e89) does not build on Linux with warnings as errors: seven files, mostly a signed `int` indexing an array. The list is in the row and in the gemini seat's log. Its suites pass under the sanitizers with the warnings off. Your evaluator and panel stack (`clones/shaper-curve-edit` b3d393b3) is clean on both compilers.
