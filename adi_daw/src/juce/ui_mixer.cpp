@@ -341,7 +341,7 @@ void ArmButton::paintButton(juce::Graphics &g, bool over, bool down) {
 void MixerStrip::bind(std::int64_t id) {
     track_ = id;
     position_ = number_ = 0;
-    peak_ = rms_ = 0;
+    levels_ = {};
     lastFrame_ = -1;
     // The Peak Level is the track's: what it held on the strip that showed it before, else -Inf.
     const auto held = panel_.peakLevels.find(id);
@@ -484,35 +484,41 @@ void MixerStrip::frame(bool changed) noexcept {
     // overrides the lane, so the control dragged shows the hand's value.
     if (t && !dragging_)
         followAutomation(t->volumeDb, t->pan);
-    // The meter: the engine's {peak, rms} for the strip, written per callback by the audio thread
-    // and read with relaxed loads (UI-ARCHITECTURE §9; #381), never a tap, no allocation. A strip
-    // bound before the session had a strip for its track finds the meter on a refresh.
+    // Read each channel with relaxed loads. A strip bound before the session
+    // had a strip for its track finds the meter on a refresh.
     if (changed)
         resolveMeter();
-    const float peakNow = meter_ != nullptr ? meter_->peak.load(std::memory_order_relaxed) : 0.f;
-    const float rmsNow = meter_ != nullptr ? meter_->rms.load(std::memory_order_relaxed) : 0.f;
+    const float stripPeak = meter_ != nullptr ? meter_->peak.load(std::memory_order_relaxed) : 0.f;
     const double now = panel_.clock ? panel_.clock() : juce::Time::getMillisecondCounterHiRes() / 1000.;
     const double seconds = lastFrame_ < 0 ? 0 : std::max(0., now - lastFrame_);
     lastFrame_ = now;
     // Live's peak level holds the highest peak it is shown (manual 18.1); the engine holds nothing
     // between reads, so a callback no frame read is not in it (the held peak is N9's open half).
-    if (panel_.vertical() && peakNow > peakHold.held) {
-        peakHold.held = peakNow;
-        panel_.peakLevels[track_] = peakNow; // a track's entry is made at its first rise only
+    if (panel_.vertical() && stripPeak > peakHold.held) {
+        peakHold.held = stripPeak;
+        panel_.peakLevels[track_] = stripPeak; // a track's entry is made at its first rise only
         peakHold.repaint();
     }
     // The window's ballistics: the level falls from where it was drawn; the peak line holds
     // kPeakHoldSeconds from its last rise, then falls for the part of this frame past the hold.
-    const float r = fallen(rms_, rmsNow, seconds);
-    float p = peak_;
-    if (peakNow >= peak_) {
-        p = peakNow;
-        peakSince_ = now;
-    } else if (const double falling = std::min(seconds, now - peakSince_ - kPeakHoldSeconds); falling > 0)
-        p = fallen(peak_, peakNow, falling);
-    if (p != peak_ || r != rms_) {
-        peak_ = p;
-        rms_ = r;
+    bool meterChanged = false;
+    for (std::size_t channel = 0; channel < levels_.size(); ++channel) {
+        auto &level = levels_[channel];
+        const auto *readout = meter_ != nullptr ? &meter_->stereo[channel] : nullptr;
+        const float peakNow = readout != nullptr ? readout->peak.load(std::memory_order_relaxed) : 0.f;
+        const float rmsNow = readout != nullptr ? readout->rms.load(std::memory_order_relaxed) : 0.f;
+        const float rms = fallen(level.rms, rmsNow, seconds);
+        float peak = level.peak;
+        if (peakNow >= level.peak) {
+            peak = peakNow;
+            level.peakSince = now;
+        } else if (const double falling = std::min(seconds, now - level.peakSince - kPeakHoldSeconds); falling > 0)
+            peak = fallen(level.peak, peakNow, falling);
+        meterChanged = meterChanged || peak != level.peak || rms != level.rms;
+        level.peak = peak;
+        level.rms = rms;
+    }
+    if (meterChanged) {
         repaint(panel_.vertical() ? meterArea().expanded(1)
                                   : juce::Rectangle<int>((showsInOut() ? MixerPanel::kInOutWidth : 0) + 105, 0,
                                                          10, getHeight()));
@@ -961,17 +967,19 @@ void MixerStrip::paintMeter(juce::Graphics &g, juce::Rectangle<int> area) const 
         return static_cast<int>(static_cast<double>(height) *
                                 meterDepth(20 * std::log10(std::max(v, 1.e-6f))));
     };
-    const auto left = area.withWidth(area.getWidth() / 2 - 1);
-    const auto right = area.withTrimmedLeft(area.getWidth() / 2 + 1);
-    const int rmsTop = depth(rms_), peakTop = depth(peak_);
-    for (const auto &channel : {left, right}) {
+    const std::array columns{area.withWidth(area.getWidth() / 2 - 1),
+                             area.withTrimmedLeft(area.getWidth() / 2 + 1)};
+    for (std::size_t channel = 0; channel < columns.size(); ++channel) {
+        const auto &column = columns[channel];
+        const auto &level = levels_[channel];
         g.setColour(look::display);
-        g.fillRect(channel);
+        g.fillRect(column);
         g.setColour(look::meterLevel);
-        g.fillRect(channel.withTrimmedTop(rmsTop));
-        g.setColour(peak_ >= 1 ? look::record : look::meterPeak);
-        if (peak_ > 1.e-6f)
-            g.fillRect(channel.getX(), channel.getY() + peakTop, channel.getWidth(), 1);
+        g.fillRect(column.withTrimmedTop(depth(level.rms)));
+        if (level.peak > 1.e-6f) {
+            g.setColour(level.peak >= 1 ? look::record : look::meterPeak);
+            g.fillRect(column.getX(), column.getY() + depth(level.peak), column.getWidth(), 1);
+        }
     }
     if (!panel_.vertical())
         return;
