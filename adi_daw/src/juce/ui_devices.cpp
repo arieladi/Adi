@@ -13,6 +13,10 @@
 #include <cmath>
 #include <iterator>
 namespace adi::ui {
+namespace {
+constexpr int kLoadIssueHeight = 48;
+constexpr const char *kPluginUnavailable = "Plug-in unavailable";
+}
 ParameterControl::ParameterControl(DeviceChainStrip &s, std::int64_t d, const panel::Record &r,
                                    double defaultNormalized)
     : device(d), parameter(r.id), strip(s) {
@@ -1411,6 +1415,8 @@ void DevicePanelView::present(const DevicePanelData &d) {
     data = &d;
     if (bypassChanged)
         repaint();
+    const bool loadFailed = !d.loadIssue.empty();
+    const bool loadStateChanged = wrench.isEnabled() == loadFailed;
     auto hint = juce::String("Double-click to fold; right-click for device commands.\n") +
                       (d.available ? "Latency: " + juce::String(d.latency) + " samples."
                                    : juce::String("This device is unavailable."));
@@ -1421,16 +1427,21 @@ void DevicePanelView::present(const DevicePanelData &d) {
         hint += "\nConfiguration failed: " + juce::String(d.processingIssue);
         hint += "\nTo retry, reopen this project using File > Open Project.";
     }
+    if (loadFailed)
+        hint += "\n" + juce::String(kPluginUnavailable) + ": " + juce::String(d.loadIssue);
     if (title.getTooltip() != hint) title.setTooltip(hint);
     const auto activatorHint = juce::String(nativeFunction() ? "Remove this Mix View function. Undo restores its settings."
-                                                          : "Switches the device on or off.");
+                                           : loadFailed ? "This plug-in is unavailable."
+                                                        : "Switches the device on or off.");
     if (enabled.getTooltip() != activatorHint) enabled.setTooltip(activatorHint);
     const auto caption = d.processingIssue.empty() ? juce::String(d.name)
                                                   : "Configuration failed: " + juce::String(d.name);
     if (title.getButtonText() != caption) {
         title.setButtonText(caption);
     }
-    enabled.setToggleState(d.enabled, juce::dontSendNotification);
+    enabled.setEnabled(!loadFailed);
+    enabled.setToggleState(d.enabled && !loadFailed, juce::dontSendNotification);
+    wrench.setEnabled(!loadFailed);
     // The declarations ProjectDocument::assignSample checks also name the sample slots on the panel.
     // With Pd off Color Cab still keeps its Impulse tile so a drop can explain why it cannot load.
     if (!sample && !sampleSlotsRead_ && d.format == "internal" && !d.uid.empty()) {
@@ -1527,12 +1538,13 @@ void DevicePanelView::present(const DevicePanelData &d) {
         page.enabled->setEnabled(record && validTarget());
         page.enabled->setToggleState(record && record->playing >= .5, juce::dontSendNotification);
     }
-    if (!parameterPages.empty() || mixCard_) resized();
+    if (loadStateChanged || !parameterPages.empty() || mixCard_) resized();
 }
 int DevicePanelView::widthFor(int height) const noexcept {
     if (strip.folded(id))
         return kFoldedWidth;
     const int top = kTitleHeight + (configuring ? 26 : 2) + (parameterPages.empty() ? 0 : kPageHeight) +
+                    (data && !data->loadIssue.empty() ? kLoadIssueHeight : 0) +
                     (eqPresentation() && parameterPageUnavailableReason().empty() &&
                      (!functionBands_.empty() || !functionSections_.empty()) ? kPageHeight : 0);
     const int rows = std::max(1, (height - top - 2) / ParameterControl::kHeight);
@@ -1603,6 +1615,8 @@ void DevicePanelView::resized() {
     search.setBounds(4, kTitleHeight + 2, std::max(0, getWidth() - 8), 22);
     const int rail = mixCard_ ? look::fieldHeight : 0;
     int top = mixCard_ ? look::border : kTitleHeight + (configuring ? 26 : 2);
+    if (data && !data->loadIssue.empty())
+        top += kLoadIssueHeight;
     if (mixCard_ && !isFolded) {
         const auto graph = eqPreviewBounds();
         if (!graph.isEmpty()) top = static_cast<int>(graph.getBottom()) + 2;
@@ -1660,9 +1674,11 @@ void DevicePanelView::paint(juce::Graphics &g) {
     auto edge = range || hasKeyboardFocus(true) ? look::focus : look::field;
     if (nativeFunction() && !range)
         edge = look::accent;
+    const bool loadFailed = data && !data->loadIssue.empty();
     g.fillAll(look::panel);
     g.setColour(edge);
     if (!mixCard_) g.fillRect(0, 0, getWidth(), kTitleHeight);
+    if (loadFailed) g.setColour(look::error);
     g.drawRect(getLocalBounds().toFloat(), mixCard_ ? look::hairline : look::heavyLine);
     if (mixCard_ && eqPreview_) {
         const auto graph = eqPreviewBounds();
@@ -1705,7 +1721,7 @@ void DevicePanelView::paint(juce::Graphics &g) {
     }
     if (strip.folded(id) && data) {
         // A folded device is a narrow bar with its name running up it, as Live's.
-        g.setColour(look::text);
+        g.setColour(loadFailed ? look::error : look::text);
         g.setFont(look::font(11.5f));
         juce::Graphics::ScopedSaveState saved(g);
         g.addTransform(juce::AffineTransform::rotation(-juce::MathConstants<float>::halfPi, 0,
@@ -1713,6 +1729,16 @@ void DevicePanelView::paint(juce::Graphics &g) {
         g.drawText(title.getButtonText(), kTitleHeight + 2, getHeight() + 4,
                    std::max(0, getHeight() - kTitleHeight - 4), kFoldedWidth - 8,
                    juce::Justification::centredLeft);
+    } else if (loadFailed) {
+        const int statusTop = kTitleHeight + (configuring ? 28 : 4);
+        g.setColour(look::error);
+        g.setFont(look::font(12.f, true));
+        g.drawText(kPluginUnavailable, 8, statusTop, getWidth() - 16, 16,
+                   juce::Justification::centredLeft);
+        g.setColour(look::text);
+        g.setFont(look::font(11.5f));
+        g.drawFittedText(juce::String(data->loadIssue), 8, statusTop + 18, getWidth() - 16, 24,
+                         juce::Justification::topLeft, 2);
     } else if (data && !parameterPageUnavailableReason().empty()) {
         g.setColour(look::text);
         g.setFont(look::font(12.f));

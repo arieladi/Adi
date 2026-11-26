@@ -3406,7 +3406,9 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
                          {"clap", "org.adi.arp", "Arpeggiate", "Northwind Audio", "1.0", "/x/arp.clap",
                           PluginEntry::Kind::MidiEffect},
                          *bare};
-        found.failed = 1;
+        scan::Report failedScan;
+        failedScan.failures.push_back({"/test/Broken.vst3", "The plug-in crashed during scanning.", scan::State::Failed});
+        applyReport(found, failedScan);
         // The app's scan as the Browser sees it (DF-W34): choosing Plug-Ins asks for a scan and returns at
         // once; the list fills when the scan's state arrives.
         int asked = 0;
@@ -3434,11 +3436,21 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
             layout.emplace_back(r.plugin != nullptr ? juce::String(r.plugin->name) : r.heading, r.depth);
         const std::vector<std::pair<juce::String, int>> expected{
             {"CLAP", 0}, {"Northwind Audio", 1}, {"Arpeggiate", 2}, {"Glass Piano", 2},
-            {"VST3", 0}, {"Other", 1},           {"Hiss", 2},       {"Zeta Audio", 1}, {"Echo", 2}};
+            {"VST3", 0}, {"Other", 1},           {"Hiss", 2},       {"Zeta Audio", 1}, {"Echo", 2},
+            {"Scan failed: Broken.vst3", 0}};
         check(layout == expected,
               "Plug-Ins lists a folder per format, then per vendor, the plug-ins by name; no vendor goes in Other");
         check(root.error() == "1 plug-in file could not be scanned; the rest are listed.",
               "a file a complete scan could not read is counted; the rest are listed");
+        if (browser.rows().size() == expected.size()) {
+            const auto failedRow = static_cast<int>(expected.size()) - 1;
+            juce::SparseSet<int> failureSelection;
+            failureSelection.addRange({failedRow, failedRow + 1});
+            auto *model = browser.list.getListBoxModel();
+            check(model->getTooltipForRow(failedRow).contains("The plug-in crashed during scanning.") &&
+                      !browser.load(failedRow) && model->getDragSourceDescription(failureSelection).isVoid(),
+                  "SC-89: the scan failure has a reason and cannot be loaded or dragged");
+        }
         browser.choose(plugIns);
         check(asked == 1 && browser.rows().size() == expected.size(),
               "choosing Plug-Ins again lists what was found and scans nothing");
@@ -3559,6 +3571,28 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
               "the search keeps a plug-in by its vendor too, and asks for no scan");
         browser.search.setText({}, false);
         browser.search.onTextChange();
+        {
+            // SC-89: the real document feed carries the engine's placeholder reason into the device strip.
+            const auto ref = pluginReference(*echo, false);
+            check(document->loadPlugin(ref, 4, {}), "the missing plug-in remains in its track's chain");
+            refresh();
+            check(root.devices.panels.size() == 1, "the Device View contains the missing plug-in");
+            if (root.devices.panels.size() == 1) {
+                auto &panel = *root.devices.panels.front();
+                check(panel.title.getTooltip().contains("Plug-in unavailable: no device loader") &&
+                          !panel.enabled.isEnabled() && !panel.enabled.getToggleState() &&
+                          !panel.wrench.isEnabled(),
+                      "the placeholder shows its load reason and has no live processing or editor controls");
+                juce::Image image(juce::Image::ARGB, panel.getWidth(), panel.getHeight(), true,
+                                  juce::SoftwareImageType{});
+                juce::Graphics graphics(image);
+                panel.paint(graphics);
+                check(image.getPixelAt(0, panel.getHeight() / 2) == look::error,
+                      "the placeholder has a visible error border");
+            }
+            check(root.command(AppCommands::Undo), "a missing plug-in can still be undone");
+            refresh();
+        }
         // DF-W34 (c): one folder per vendor ignoring case, spelled as the first in sort order; no vendor
         // and "other" share one folder.
         PluginScan spelled;
@@ -3770,6 +3804,9 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
         done.failures.push_back({"/x/C.clap", "quarantined", scan::State::Quarantined});
         applyReport(l, done);
         check(l.complete && l.stopped.empty() && l.failed == 2, "a complete scan counts the files it could not read");
+        check(l.scanFailures.size() == 2 && l.scanFailures.back().path == "/x/C.clap" &&
+                  l.scanFailures.back().state == scan::State::Quarantined,
+              "SC-89: the Browser receives the blocked file from the scan report too");
     }
     {
         // The catalogue's service (DF-W34 on N58): it starts the loader's discovery jobs, reads their

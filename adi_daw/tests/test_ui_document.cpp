@@ -418,6 +418,15 @@ void heldOffAfterACrash(const std::filesystem::path &dir) {
     check(calm && calm->placeholder && crashy && crashy->placeholder &&
               calm->error.find("held off") != std::string::npos,
           "held off: both stand as placeholders, their reason said");
+    const auto loadIssueFor = [&document](std::int64_t id) {
+        const auto publication = document->parameterFeed().current();
+        const auto panel = std::find_if(publication->begin(), publication->end(),
+                                        [id](const auto &device) { return device.id == id; });
+        return panel == publication->end() ? std::string{} : panel->loadIssue;
+    };
+    check(loadIssueFor(3).find("this project's plug-ins") != std::string::npos &&
+              loadIssueFor(4).find("this project's plug-ins") != std::string::npos,
+          "SC-89: both device panels carry the project-wide hold-off reason");
     check(document->wakeMissingPlugins() == 0, "held off: a scan's wake leaves them held off");
     // "Load All but Crashy".
     holdOff->scope = ui::PluginHoldOff::Scope::One;
@@ -429,6 +438,9 @@ void heldOffAfterACrash(const std::filesystem::path &dir) {
     check(calm && !calm->placeholder && session.instanceFor(3) && session.instanceFor(3)->loaded(),
           "held off: Calm is loaded");
     check(crashy && crashy->placeholder, "held off: Crashy stays held off");
+    document->tick(0);
+    check(loadIssueFor(3).empty() && loadIssueFor(4).find("this plug-in") != std::string::npos,
+          "SC-89: loading clears the first warning and the second retains the current hold-off reason");
     // "Load All" (or the next ordinary open).
     holdOff->scope = ui::PluginHoldOff::Scope::None;
     check(document->wakeMissingPlugins() == 1 && session.entryFor(4) && !session.entryFor(4)->placeholder,
