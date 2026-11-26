@@ -12124,6 +12124,39 @@ void clipWarpSwitch(AppCommands &commands, const std::filesystem::path &dir) {
               "the half button recomputes the warp clock in one edit");
         click(twice);
         check(std::abs(panel.sample.sourceBpm() - 120.) < .01, "the double button restores the original warp tempo");
+        // The editable marker band uses the clip's normal source clock. The
+        // file has only the immutable boundary anchors until the double click.
+        auto &sample = panel.sample;
+        sample.time.grid.snap = false;
+        const auto markers = [&]() {
+            const auto *node = panel.node();
+            if (!node || !node->audio || !node->audio->warpMarkers)
+                return std::vector<WarpMarker>{};
+            return audio::readWarpMap(*node->audio->warpMarkers,
+                static_cast<std::uint64_t>(node->audio->sourceLengthFrames)).markers;
+        };
+        const auto before = markers();
+        const auto eventAt = [&](std::int64_t tick) {
+            return pressAt(sample, {static_cast<float>(sample.time.x(tick)), static_cast<float>(sample.waveArea().getY() - 4)},
+                           juce::ModifierKeys::leftButtonModifier);
+        };
+        sample.mouseDoubleClick(eventAt(textproj::kPPQ));
+        root.frame();
+        const auto added = markers();
+        check(before.size() == 2 && added.size() == 3 && added.front() == before.front() && added.back() == before.back(),
+              "double click adds an interior Warp marker without changing either source anchor");
+        if (added.size() == 3) {
+            sample.mouseDown(eventAt(added[1].tick));
+            sample.mouseDrag(eventAt(2 * textproj::kPPQ));
+            sample.mouseUp(eventAt(2 * textproj::kPPQ));
+            root.frame();
+            const auto moved = markers();
+            check(moved.size() == 3 && moved[1].sourceFrame == added[1].sourceFrame && moved[1].tick > added[1].tick,
+                  "dragging a Warp marker changes only its tick");
+            check(sample.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)), "Delete is consumed by the selected Warp marker");
+            root.frame();
+            check(markers() == before, "deleting the interior marker restores a straight map");
+        }
         click(button);
         check(!warped() && root.undoTitle(false) == "Undo Disable Warp", "the switch disables Warp in one edit");
         check(!panel.chooseWarpMode(texture), "the Warp mode chooser is inactive while Warp is off");
