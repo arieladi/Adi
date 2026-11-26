@@ -1627,10 +1627,10 @@ juce::PopupMenu ArrangementView::headerMenu() {
     return menu;
 }
 void ArrangementView::contextMenu(juce::Point<int> where, bool header, const engine::AutomationLaneNode *lane) {
-    // A menu placed by screen position makes a window of its own. With no window of ours on screen there
-    // is nowhere for it to be (and no display at all in a headless run), so none is opened.
-    if (!isShowing())
+    if (onContextMenu) {
+        onContextMenu(where, header, lane);
         return;
+    }
     contextMenuItems(header, lane).showMenuAsync(juce::PopupMenu::Options{}.withTargetScreenArea(
         juce::Rectangle<int>(where.x, where.y, 1, 1)));
 }
