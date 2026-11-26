@@ -16672,10 +16672,10 @@ int main(int argc, char **argv) {
                   "and undo brings the track back");
         }
         check(items("Create") == std::vector<int>{C::InsertAudioTrack, C::InsertMidiTrack, C::InsertReturnTrack, 0,
-                                                  C::InsertMidiClip, 0, C::InsertTimeSignatureChange, 0, C::AddLocator,
-                                                  C::DeleteLocator, 0, C::CreateFade, C::DeleteFades},
-              "the Create menu inserts tracks, returns too (§18.4), then an empty MIDI clip, then a time signature "
-              "change (§6.5), then Add and Delete Locator (§6.4), then Create Fade In/Out and Delete "
+                                                  C::InsertMidiClip, C::ImportAudioFile, 0, C::InsertTimeSignatureChange,
+                                                  0, C::AddLocator, C::DeleteLocator, 0, C::CreateFade, C::DeleteFades},
+              "the Create menu inserts tracks, returns too (§18.4), then an empty MIDI clip or an audio file, "
+              "then a time signature change (§6.5), then Add and Delete Locator (§6.4), then Create Fade In/Out and Delete "
               "Fades/Crossfades (§6.8)");
         check(items("Navigate") == std::vector<int>{C::FocusControlBar, C::FocusArrangement, C::FocusClipView,
                                                     C::FocusDeviceView, C::FocusBrowser, 0,
