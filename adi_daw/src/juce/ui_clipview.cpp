@@ -2928,7 +2928,7 @@ void SampleEditor::mouseDown(const juce::MouseEvent &e) {
     const auto near = [&](std::int64_t tick) { return std::abs(time.x(tick) - last_.x) <= 5.; };
     if (last_.y < kRulerHeight) {
         drag_ = Drag::Ruler;
-    } else if (last_.y < kRulerHeight + kMarkerHeight && clip->loopEnabled) {
+    } else if (last_.y < kRulerHeight + kMarkerHeight && clip->loopEnabled && panel.loopAvailable()) {
         const auto first = clip->loopStartTicks, end = first + loopLengthOf(*clip);
         if (near(first)) {
             drag_ = Drag::LoopStart;
@@ -2986,7 +2986,10 @@ void SampleEditor::mouseUp(const juce::MouseEvent &) {
     switch (drag) {
     case Drag::Start: panel.setField(Field::Start, preview_); break;
     case Drag::End: panel.setField(Field::End, preview_); break;
-    case Drag::LoopStart: panel.commit(setClipLoop(*clip, preview_, first + length - preview_)); break;
+    case Drag::LoopStart:
+        if (panel.loopAvailable())
+            panel.commit(setClipLoop(*clip, preview_, first + length - preview_));
+        break;
     case Drag::LoopEnd: panel.setField(Field::Length, preview_ - first); break;
     case Drag::Loop: panel.setField(Field::Position, preview_); break;
     default: break;
@@ -3015,7 +3018,7 @@ void SampleEditor::paint(juce::Graphics &g) {
     const auto start = drag_ == Drag::Start ? preview_ : sourceTick(ClipWindow::of(*clip).pos);
     const auto end = drag_ == Drag::End ? preview_ : endMarker();
     shadeOutside(g, area, time, {start, std::max<std::int64_t>(1, end - start), 0});
-    if (clip->loopEnabled) {
+    if (clip->loopEnabled && panel.loopAvailable()) {
         const auto first = drag_ == Drag::Loop || drag_ == Drag::LoopStart ? preview_ : clip->loopStartTicks;
         const auto base = drag_ == Drag::Loop ? preview_ : clip->loopStartTicks;
         const auto last = drag_ == Drag::LoopEnd ? preview_ : base + loopLengthOf(*clip);
@@ -3710,8 +3713,11 @@ void ClipViewPanel::frame(const SnapshotReader &reader) {
         trackStored_.clear();
         trackNamed_ = false;
     }
-    if (refresh)
+    if (refresh) {
+        if (!fieldEnabled(editing_))
+            closeEditor();
         sample.updateSource();
+    }
     sample.frame();
 }
 ClipViewPanel::Readings ClipViewPanel::readings() const {
@@ -4330,13 +4336,19 @@ std::int64_t ClipViewPanel::fieldTicks(Field field) const noexcept {
         return 0;
     }
 }
+bool ClipViewPanel::loopAvailable() const noexcept {
+    return midi() || (node_ && node_->audio && node_->audio->warpEnabled);
+}
+bool ClipViewPanel::fieldEnabled(Field field) const noexcept {
+    return (field != Field::Position && field != Field::Length) || loopAvailable();
+}
 ClipViewPanel::Field ClipViewPanel::fieldAt(juce::Point<int> at) const noexcept {
     for (const auto field : {Field::Start, Field::End, Field::Position, Field::Length, Field::Signature, Field::Scale,
                              Field::Transpose, Field::VelocityAmount, Field::VelocityPercent, Field::VelocityLow,
                              Field::VelocityHigh, Field::Voices, Field::RandomAmount, Field::RampStart, Field::RampEnd,
                              Field::FilterA, Field::FilterB, Field::FilterC, Field::QuantizeAmount, Field::QuantizeSwing,
                              Field::Interval, Field::Stretch, Field::Gain})
-        if (fieldBox(field).contains(at) && (midi() || (field != Field::Scale && field != Field::Transpose)))
+        if (fieldEnabled(field) && fieldBox(field).contains(at) && (midi() || (field != Field::Scale && field != Field::Transpose)))
             return field;
     return Field::None;
 }
@@ -4354,7 +4366,7 @@ bool ClipViewPanel::commit(TrackEdit edit) {
     return true;
 }
 bool ClipViewPanel::setField(Field field, std::int64_t ticks) {
-    if (!details_)
+    if (!details_ || !fieldEnabled(field))
         return false;
     const auto &d = *details_;
     switch (field) {
@@ -4483,7 +4495,7 @@ bool ClipViewPanel::setFieldHere(Field field) {
     // the arrangement's insert marker. In the clip's own time. On the loop they also switch it on:
     // Set Position moves the loop's start there; Set Length moves its end there, or, when the loop
     // was off, keeps its length.
-    if (!details_)
+    if (!details_ || !fieldEnabled(field))
         return false;
     const auto &d = *details_;
     const auto at = root.playing() ? root.timelineTick() : root.arrangement.geometry.selection.insert;
@@ -4564,7 +4576,7 @@ bool ClipViewPanel::recolour(int colour) {
     return commitForAll([colour](const engine::ClipDetails &clip) { return recolourClip(clip, colour); });
 }
 bool ClipViewPanel::toggleLoop() {
-    if (!details_)
+    if (!details_ || !loopAvailable())
         return false;
     // Every shown clip takes the state the edited clip is switched to.
     const bool on = !details_->loopEnabled;
@@ -4990,11 +5002,13 @@ void ClipViewPanel::paint(juce::Graphics &g) {
         if (box.isEmpty())
             return; // folded
         const auto set = setBox(which);
+        const bool enabled = fieldEnabled(which);
         text(name, {box.getX(), box.getY() - 15, box.getWidth() - (set.isEmpty() ? 0 : 26), 15},
-             juce::Justification::centredLeft, look::text, look::fontCaption);
+             juce::Justification::centredLeft, enabled ? look::text : look::textDim, look::fontCaption);
         // Live's Set button: a small pill beside the field's name, the shared button at rest.
         if (!set.isEmpty()) {
-            controls::button(g, set.toFloat(), controls::ButtonState::Rest, "Set", look::fontMicro);
+            controls::button(g, set.toFloat(), enabled ? controls::ButtonState::Rest : controls::ButtonState::Disabled,
+                             "Set", look::fontMicro);
             labels_.push_back(set);
         }
         // The field's value: the shared value box (language.png part D); Scale's opens the scales,
@@ -5002,7 +5016,7 @@ void ClipViewPanel::paint(juce::Graphics &g) {
         if (which == Field::Scale)
             controls::chooser(g, box.toFloat(), value, look::fontLabel);
         else
-            controls::valueBox(g, box.toFloat(), value, std::nullopt, look::fontLabel);
+            controls::valueBox(g, box.toFloat(), enabled ? value : juce::String{}, std::nullopt, look::fontLabel);
         labels_.push_back(box);
     };
     field(Field::Start, "Start", r.start);
@@ -5010,9 +5024,11 @@ void ClipViewPanel::paint(juce::Graphics &g) {
     if (const auto loop = loopBox(); !loop.isEmpty()) {
         // The shared button, lit while the clip loops. Looped and unlooped clips together: the
         // button is half lit (manual 10.8), its left half drawn lit over the button at rest.
-        controls::button(g, loop.toFloat(), r.loop && !r.loopMixed ? controls::ButtonState::On : controls::ButtonState::Rest,
-                         "Loop", look::fontLabel);
-        if (r.loopMixed) {
+        const bool enabled = loopAvailable();
+        const auto state = !enabled ? controls::ButtonState::Disabled
+                           : r.loop && !r.loopMixed ? controls::ButtonState::On : controls::ButtonState::Rest;
+        controls::button(g, loop.toFloat(), state, "Loop", look::fontLabel);
+        if (enabled && r.loopMixed) {
             juce::Graphics::ScopedSaveState half(g);
             g.reduceClipRegion(loop.withWidth(loop.getWidth() / 2));
             controls::button(g, loop.toFloat(), controls::ButtonState::On, "Loop", look::fontLabel);

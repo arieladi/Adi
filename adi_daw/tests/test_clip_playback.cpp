@@ -464,14 +464,17 @@ void properties() {
     }
 }
 void legacyUnwarpedLoopPastSource() {
-    Fixture f;
-    f.add(1, 0, 2000, 7, 300);
-    f.store->db().exec("DELETE FROM tempo_map; INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,60);"
-                       "UPDATE clips SET loop_enabled=1,loop_start_ticks=24024,loop_len_ticks=48048");
-    f.load(512);
-    const auto audio = f.render(512);
-    check(audio.front() == f.media[14] && audio[299] == f.media[612] && audio[300] == 0,
-          "an old unwarped loop that outgrows the source plays the file once instead of silencing it");
+    for (const auto offset : {0, 96096}) {
+        Fixture f;
+        f.add(1, 0, 2000, 7, 300);
+        f.store->db().exec("DELETE FROM tempo_map; INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,60);"
+                           "UPDATE clips SET loop_enabled=1,loop_start_ticks=24024,loop_len_ticks=48048,"
+                           "content_offset_ticks=" + std::to_string(offset));
+        f.load(512);
+        const auto audio = f.render(512);
+        check(audio.front() == f.media[14] && audio[299] == f.media[612] && audio[300] == 0,
+              "an old unwarped loop that outgrows the source plays the file once instead of silencing it");
+    }
 }
 void editedFades() {
     for(const auto width:{Precision::Float32,Precision::Float64}) {

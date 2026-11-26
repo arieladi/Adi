@@ -200,6 +200,13 @@ void disableWarpOnLoop() {
     History history(*f.store);
     check(history.undo().ok && digestProject(*f.store).text == before,
           "one Undo restores Warp, the enabled loop and its unrolled playback offset");
+    check(history.redo().ok, "redo stops the loop with Warp again");
+    if (!apply(f, clip_edit::prepareSetWarp(*f.store, 7, on, 48000), "re-enable Warp with its saved source map"))
+        return;
+    check(db.execAndGet("SELECT loop_enabled FROM clips WHERE id=7").getInt() == 0 &&
+              db.execAndGet("SELECT loop_start_ticks FROM clips WHERE id=7").getInt64() == q &&
+              db.execAndGet("SELECT loop_len_ticks FROM clips WHERE id=7").getInt64() == 2 * q,
+          "re-enabling Warp leaves the saved loop brace valid and the switch off");
 }
 void modesAndGuards() {
     Fixture f;auto& db=f.store->db();

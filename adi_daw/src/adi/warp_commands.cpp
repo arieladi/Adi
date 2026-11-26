@@ -80,12 +80,13 @@ PreparedEdit prepareSetWarp(Store& store,std::int64_t clipId,const WarpOptions& 
         if(root.at("kind")!="audio" || !root.at("alias_of").is_null() || sources.size()!=1)throw std::runtime_error("Warp needs an attached, independent audio clip");
         auto source=sources[0];
         const bool warped=integer(source,"warp_enabled")!=0;
+        const bool looping=integer(root,"loop_enabled")!=0;
         const auto requested=options.enabled?options.analysis.sourceBpm:std::nullopt;
         const bool retiming=warped && requested.has_value();
         if(requested && (!std::isfinite(*requested) || *requested<=0 || *requested>=1000))
             throw std::runtime_error("source BPM must be greater than zero and below 1000");
         if(warped==options.enabled && !retiming)throw std::runtime_error("clip already has the requested Warp state");
-        if(!retiming && (integer(root,"loop_enabled")!=0 || integer(source,"reverse")!=0 ||
+        if(!retiming && ((options.enabled && looping) || integer(source,"reverse")!=0 ||
            source.at("transpose_semis")!=0 || source.at("formant_shift")!=0))
             throw std::runtime_error("Warp switching requires a clip without looping, reverse or pitch edits");
         const auto& savedProperties=image.at("children").at("clip_properties");
@@ -208,10 +209,28 @@ PreparedEdit prepareSetWarp(Store& store,std::int64_t clipId,const WarpOptions& 
             const auto frameAt=[&](std::int64_t ticks) {
                 return mapPosition(map.markers,ticks,&WarpMarker::tick,&WarpMarker::sourceFrame);
             };
-            const auto sourceEnd=hasEnd?integer(properties,"end_marker_ticks"):map.markers.back().tick;
-            const auto visibleEnd=edit::addTime(offsetTicks,base==0?integer(root,"length_ticks"):
+            const auto sourceLimit = map.markers.back().tick;
+            auto sourceStart = offsetTicks;
+            if (looping) {
+                const auto begin = integer(root, "loop_start_ticks");
+                const auto length = root.at("loop_len_ticks").is_null() ? 0 : integer(root, "loop_len_ticks");
+                if (begin >= 0 && length > 0 && begin <= sourceLimit && length <= sourceLimit - begin) {
+                    // Splitting a repeat stores an unrolled offset. Start at the
+                    // same sample when the loop is switched off with Warp.
+                    if (sourceStart >= begin)
+                        sourceStart = begin + (sourceStart - begin) % length;
+                } else {
+                    root["loop_start_ticks"] = 0;
+                    root["loop_len_ticks"] = nullptr;
+                }
+                root["loop_enabled"] = 0;
+            }
+            auto sourceEnd=hasEnd?integer(properties,"end_marker_ticks"):sourceLimit;
+            if (looping && sourceEnd <= sourceStart)
+                sourceEnd = sourceLimit;
+            const auto visibleEnd=edit::addTime(sourceStart,base==0?integer(root,"length_ticks"):
                                               time.ticks(edit::addTime(beginNs,spanNs))-origin);
-            const auto offsetNs=nanosAtFrame(frameAt(offsetTicks));
+            const auto offsetNs=nanosAtFrame(frameAt(sourceStart));
             const auto lastNs=nanosAtFrame(frameAt(std::min(sourceEnd,visibleEnd)));
             const auto endNs=nanosAtFrame(frameAt(sourceEnd));
             if(lastNs<=offsetNs)throw std::runtime_error("Warp off needs a nonempty source interval");

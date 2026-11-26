@@ -713,6 +713,8 @@ class ClipViewPanel final : public juce::Component {
     friend class NoteEditor;
     friend class SampleEditor;
     bool commit(TrackEdit);
+    bool loopAvailable() const noexcept;
+    bool fieldEnabled(Field) const noexcept;
     bool setGain(double db);
     bool setWarp(bool enabled, std::optional<double> sourceBpm = {});
     double draggedGain() const noexcept;

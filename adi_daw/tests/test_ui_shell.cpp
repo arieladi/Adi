@@ -12234,8 +12234,6 @@ void sampleEditorMouse(AppCommands &commands, const std::filesystem::path &dir) 
     check(!panel.toggleLoop() && !panel.setField(Field::Position, beat) &&
               !panel.setField(Field::Length, 2 * beat) && !panel.setFieldHere(Field::Length),
           "Warp-off audio cannot enter Loop through the switch or the loop fields");
-    if (panel.details() && panel.details()->loopEnabled)
-        panel.toggleLoop();
     check(panel.setField(Field::Start, 2 * beat) && panel.setField(Field::End, 6 * beat),
           "start with material trimmed at both ends");
     root.frame();
@@ -12257,13 +12255,22 @@ void sampleEditorMouse(AppCommands &commands, const std::filesystem::path &dir) 
     drag(6 * beat, 5 * beat, y - 4);
     check(panel.details() && panel.details()->endMarkerTicks == 5 * beat,
           "drag the waveform's End marker");
-    check(panel.toggleLoop() && panel.setField(Field::Position, 3 * beat) && panel.setField(Field::Length, 2 * beat),
-          "set a loop from beat four to beat six");
+    clip_edit::WarpOptions warp;
+    warp.analysis.sourceBpm = 120;
+    warp.analysis.fromFirstBeat = false;
+    if (!panel.details() || !root.commitEdit(clip_edit::prepareSetWarp(root.editStore(), panel.details()->id, warp, root.editRate()))) {
+        check(false, "enable Warp before editing the loop brace");
+        commands.detach(root);
+        return;
+    }
     root.frame();
-    drag(4 * beat, 5 * beat, y - 14);
+    check(panel.toggleLoop() && panel.setField(Field::Position, 3 * beat) && panel.setField(Field::Length, beat),
+          "set a warped loop from beat four to beat five");
+    root.frame();
+    drag(3 * beat + beat / 2, 4 * beat + beat / 2, y - 14);
     check(panel.details() && panel.details()->loopStartTicks == 4 * beat &&
-              panel.details()->loopLengthTicks == 2 * beat,
-          "moving the loop brace keeps its length");
+              panel.details()->loopLengthTicks == beat,
+          "moving the warped loop brace keeps its length");
     const juce::Point<float> point{x(beat), static_cast<float>(y + 5)};
     edit.mouseDown(pressAt(edit, point, juce::ModifierKeys::leftButtonModifier));
     edit.mouseUp(pressAt(edit, point));

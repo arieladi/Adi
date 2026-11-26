@@ -681,7 +681,30 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             }
             auto fixedTime=[&](std::int64_t nanos) {return samplesAtNs(nanos,clip->rate);};
             clip->offset=!a->warpEnabled && row.contentOffsetNs?fixedTime(*row.contentOffsetNs):sourceDuration(row.contentOffsetTicks);
-            if(!row.loopEnabled) {
+            if (row.loopEnabled) {
+                try {
+                    const auto ticks = row.loopLenTicks.value_or(0);
+                    if (ticks < 0 || row.loopStartTicks < 0 || row.loopStartTicks > std::numeric_limits<std::int64_t>::max() - ticks)
+                        throw std::runtime_error("invalid loop ticks");
+                    const auto loopBegin = !a->warpEnabled && row.loopBeginNs ? fixedTime(*row.loopBeginNs)
+                                                                           : sourceDuration(row.loopStartTicks);
+                    const auto loopEnd = !a->warpEnabled && row.loopEndNs ? fixedTime(*row.loopEndNs)
+                                                                         : sourceDuration(row.loopStartTicks + ticks);
+                    if (loopBegin < 0 || loopEnd <= loopBegin || loopEnd > clip->length)
+                        throw std::runtime_error("clip loop outside source window");
+                    clip->loopBegin = loopBegin;
+                    clip->loopLength = loopEnd - loopBegin;
+                } catch (const std::runtime_error&) {
+                    if (a->warpEnabled)
+                        throw;
+                    // Older projects could enable Loop with Warp off. If a tempo change
+                    // puts the loop outside the file, play the original material once.
+                    // An unrolled offset into a repeat can also be beyond the source.
+                    if (clip->offset >= clip->length)
+                        clip->offset = 0;
+                }
+            }
+            if (!row.loopEnabled) {
                 // A physical pin survives placement and tempo edits. Warp and
                 // unpinned clips derive End from the same clock as their offset.
                 if (!a->warpEnabled && row.sourceEndNs) {
@@ -733,13 +756,6 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                (row.fadeOutTension && (!std::isfinite(*row.fadeOutTension) || std::abs(*row.fadeOutTension)>1)))
                 throw std::runtime_error("invalid fade tension; silent");
             clip->inTension=row.fadeInTension;clip->outTension=row.fadeOutTension;
-            if(row.loopEnabled) {
-                const auto loopTicks=row.loopLenTicks.value_or(0);
-                if(loopTicks<0 || row.loopStartTicks<0 || row.loopStartTicks>std::numeric_limits<std::int64_t>::max()-loopTicks) throw std::runtime_error("invalid loop ticks");
-                clip->loopBegin=!a->warpEnabled && row.loopBeginNs?fixedTime(*row.loopBeginNs):sourceDuration(row.loopStartTicks);
-                clip->loopLength=!a->warpEnabled && row.loopEndNs?fixedTime(*row.loopEndNs)-clip->loopBegin:sourceDuration(row.loopStartTicks+loopTicks)-clip->loopBegin;
-                if(clip->loopLength<=0 || clip->loopBegin+clip->loopLength>clip->length) throw std::runtime_error("clip loop outside source window; silent");
-            }
             if(!std::isfinite(row.gainDb) || std::abs(row.gainDb)>120) throw std::runtime_error("invalid clip gain; silent");
             clip->gain=static_cast<float>(std::pow(10.0,row.gainDb/20)); clip->gainWide=std::pow(10.0,row.gainDb/20); clip->mode=static_cast<int>(a->channelMode); clip->track=row.trackId;
             for(auto& p:clip->pages) p.data.resize(static_cast<std::size_t>(clip->pageFrames)*clip->channels);
