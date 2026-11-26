@@ -10261,15 +10261,16 @@ void clipWaveforms(AppCommands &commands, const std::filesystem::path &dir) {
     const int sourceEnd = static_cast<int>(lanes.x(clip->lengthTicks / 2)), clipEnd = static_cast<int>(lanes.x(clip->lengthTicks));
     // A waveform pixel is much darker than the clip's body around it.
     const auto body = image.getPixelAt(sourceEnd + 20, top + 1).getBrightness();
-    auto darkIn = [&](int x0, int x1) {
+    auto darkIn = [&](const juce::Image &drawn, int x0, int x1) {
         int dark = 0;
-        for (int x = std::max(0, x0); x < std::min(x1, image.getWidth()); ++x)
+        for (int x = std::max(0, x0); x < std::min(x1, drawn.getWidth()); ++x)
             for (int y = top; y < bottom; ++y)
-                if (image.getPixelAt(x, y).getBrightness() < body - .2f)
+                if (drawn.getPixelAt(x, y).getBrightness() < body - .2f)
                     ++dark;
         return dark;
     };
-    const int inside = darkIn(static_cast<int>(lanes.x(0)) + 2, sourceEnd - 1), past = darkIn(sourceEnd + 2, clipEnd - 2);
+    const int sourceBegin = static_cast<int>(lanes.x(0)) + 2;
+    const int inside = darkIn(image, sourceBegin, sourceEnd - 1), past = darkIn(image, sourceEnd + 2, clipEnd - 2);
     check(inside > 200 && past == 0, "waveform pixels inside the clip's body over its file, none past its source window");
     if (inside <= 200 || past != 0)
         std::printf("waveform pixels: %d inside, %d past\n", inside, past);
@@ -10285,6 +10286,45 @@ void clipWaveforms(AppCommands &commands, const std::filesystem::path &dir) {
         if (auto stream = file.createOutputStream())
             juce::PNGImageFormat{}.writeImageToStream(picture, *stream);
     }
+    const auto clipId = clip->id;
+    const auto waveformHeight = [&] { return darkIn(paintCanvas(), sourceBegin, sourceEnd - 1); };
+    check(root.submitEdit("clip.setGain", {{"id", clipId}, {"gain", -24.}}, "Set Clip Gain"), "lower the audio clip's gain");
+    root.frame();
+    check(waveformHeight() + 40 < inside, "the arrangement waveform shrinks with clip gain");
+    check(root.command(AppCommands::Undo), "undo the lower gain");
+    root.frame();
+    check(waveformHeight() == inside && waves.builds() == 1, "undo restores the waveform height using the same peaks");
+
+    lanes.selection.clip = clipId;
+    check(root.showClipView(), "open the audio clip's Clip View for Gain");
+    root.frame();
+    auto &panel = root.clipView;
+    using Field = ClipViewPanel::Field;
+    const auto signature = panel.fieldBox(Field::Signature);
+    const auto gain = signature.getCentre().translated(signature.getWidth() + 6, 0).toFloat();
+    panel.mouseDown(pressAt(panel, gain));
+    panel.mouseUp(pressAt(panel, gain));
+    check(panel.fieldEditor().isVisible(), "clicking the audio Gain field opens it for typing");
+    if (panel.fieldEditor().isVisible()) {
+        panel.fieldEditor().setText("-6.5 dB", false);
+        panel.fieldEditor().onReturnKey();
+    }
+    const auto gainIs = [&](double db) { return panel.details() && panel.details()->gainDb == db; };
+    const auto undoIsGain = [&] {
+        const auto step = document->ops().nextUndo();
+        return step && step->label == "Set Clip Gain" && step->opCount == 1;
+    };
+    check(gainIs(-6.5) && undoIsGain(), "typed fractional gain applies in one undo step");
+    const auto to = gain.translated(0.f, -8.f);
+    panel.mouseDown(pressAt(panel, gain));
+    panel.mouseDrag(dragAt(panel, gain, to));
+    panel.mouseUp(dragAt(panel, gain, to));
+    check(gainIs(-4.5) && undoIsGain(), "a drag changes clip Gain by two dB in one undo step");
+    if (gainIs(-4.5)) {
+        check(root.command(AppCommands::Undo), "undo the edit made by dragging Gain");
+        root.frame();
+    }
+    check(gainIs(-6.5), "undo restores the earlier Gain in Clip View");
     root.afterEdit = nullptr;
     document->release();
 }
