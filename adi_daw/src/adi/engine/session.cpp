@@ -2577,6 +2577,19 @@ void Session::resetMidiInput() noexcept {
     midiInput_->reset();
 }
 
+std::optional<Session::MidiRecordMonitor> Session::midiRecordMonitor(std::int64_t track) const {
+    const auto* timing = dynamic_cast<const TimingView*>(graph_.currentTransportState());
+    const auto* graph = graph_.currentGraph();
+    if (!live_ || !timing || !graph || track <= 0) return std::nullopt;
+    for (const auto& route : timing->midiInputRoutes) {
+        if (route.monitorTrack != track || !route.processes) continue;
+        const auto instrument = graph->find(*route.node);
+        if (instrument != kInvalidNode)
+            return MidiRecordMonitor{std::max(0, graph->arrivalOf(instrument)), route.blockedRanges};
+    }
+    return std::nullopt;
+}
+
 bool Session::midiHistoryAvailable() const noexcept {
     const auto* timing = dynamic_cast<const TimingView*>(graph_.currentTransportState());
     if (!live_ || !timing) return false;

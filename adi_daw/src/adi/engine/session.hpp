@@ -354,6 +354,12 @@ public:
     void resetMidiInput() noexcept;
     /// Owner only. Start a new capture with the listed armed MIDI tracks.
     bool startMidiInputCapture(std::span<const std::int64_t> tracks, std::string& error, bool overdub = false);
+    struct MidiRecordMonitor {
+        std::int32_t instrumentArrival = 0;
+        std::vector<MidiMonitorRange> blockedRanges;
+    };
+    /// Owner only. Timing and Auto suppression from the published live input route.
+    [[nodiscard]] std::optional<MidiRecordMonitor> midiRecordMonitor(std::int64_t track) const;
     [[nodiscard]] MidiInputCapture& midiInputCapture() noexcept { return *midiInputCapture_; }
     // With the audio callback detached, finish without waiting for another slice.
     void finishMidiInputCapture() noexcept;
