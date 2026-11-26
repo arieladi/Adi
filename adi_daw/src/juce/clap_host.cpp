@@ -61,6 +61,7 @@ clap_event_transport_t clapTransport(const engine::DeviceTransport& clock, doubl
     transport.flags = CLAP_TRANSPORT_HAS_TEMPO | CLAP_TRANSPORT_HAS_BEATS_TIMELINE |
                       CLAP_TRANSPORT_HAS_SECONDS_TIMELINE | CLAP_TRANSPORT_HAS_TIME_SIGNATURE;
     if (clock.playing) transport.flags |= CLAP_TRANSPORT_IS_PLAYING;
+    if (clock.recording) transport.flags |= CLAP_TRANSPORT_IS_RECORDING; // SC-333
     transport.tempo = clock.bpm;
     transport.song_pos_beats = transportFixedPoint(clock.quarterNotes, CLAP_BEATTIME_FACTOR);
     transport.song_pos_seconds = transportFixedPoint(static_cast<double>(clock.sample) / rate, CLAP_SECTIME_FACTOR);
@@ -79,6 +80,10 @@ clap_event_transport_t clapTransport(const engine::DeviceTransport& clock, doubl
     return transport;
 }
 }  // namespace
+
+clap_event_transport_t clapTransportEvent(const engine::DeviceTransport& clock, double rate) noexcept {
+    return clapTransport(clock, rate);
+}
 
 // ---------------------------------------------------------------------------
 // ClapEventList

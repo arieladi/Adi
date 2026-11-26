@@ -75,8 +75,13 @@ public:
         ++releases;
         prepared = false;
     }
+    [[nodiscard]] bool wantsDeviceTransport() const noexcept override { return wantsClock; }
     void process(const NodeIo& io) noexcept override {
         if (!prepared) ++unpreparedBlocks;
+        if (io.deviceTransport != nullptr) {
+            sawPlaying = io.deviceTransport->playing;
+            sawRecording = io.deviceTransport->recording;
+        }
         for (std::int32_t c = 0; c < io.channels; ++c) {
             float* o = io.out[c] + io.blockOffset;
             const float* i = (io.in != nullptr && io.in[c] != nullptr)
@@ -118,6 +123,7 @@ public:
     std::map<std::string, double> values;
     std::vector<engine::RouteChoice> routes;
     bool acceptRoutes = true;
+    bool wantsClock = false, sawPlaying = false, sawRecording = false; // SC-333
 
 private:
     device::DeviceIdentity id_;
@@ -127,6 +133,7 @@ struct Loader {
     int calls = 0;
     bool acceptRoutes = true;   ///< ADR-0149: false makes a device that cannot take a route
     bool ghostInstalled = false;  ///< SC-318: the absent plug-in installed since the open
+    bool clocked = false;         ///< SC-333: the devices made ask for the transport
     std::vector<HalfDevice*> made;
     std::vector<std::string> asked;
 
@@ -143,6 +150,7 @@ struct Loader {
                 id.name = rq.ref->name;
                 auto d = std::make_unique<HalfDevice>(id);
                 d->acceptRoutes = acceptRoutes;
+                d->wantsClock = clocked;
                 made.push_back(d.get());
                 return d;
             }
@@ -749,6 +757,41 @@ void testAPlaceholderWakesOnceInstalled() {
     eqi(static_cast<long long>(s.retryPlaceholders(*store)), 0, "a second retry finds nothing to wake");
 }
 
+void testADeviceKnowsADIRecords() {
+    const adi::test::TempDirectory scratch("session", "records");
+    section("SC-333 -- a hosted device is told ADI records, while it plays");
+    auto store = makeProject(scratch.path() / "p.adi");
+    if (!store) return;
+    Loader loader;
+    loader.clocked = true;
+    Session s;
+    ToneNode tone(0.5f); // a sounding input, so the device is not left to doze
+    s.setSourcesFor([&](std::int64_t id) {
+        return id == 1 ? std::vector<Node*>{&tone} : std::vector<Node*>{};
+    });
+    SessionSpec spec;
+    spec.sampleRate = 48000.0;
+    spec.maxFrames = 512;
+    check(s.load(*store, loader.fn(), spec), "load: " + s.error());
+    HalfDevice* warm = loader.made.empty() ? nullptr : loader.made[0];
+    if (warm == nullptr) return;
+    Out o(512);
+    AudioIo io = makeIo(o, 512);
+    s.transport().play();
+    s.process(io);
+    check(warm->sawPlaying && !warm->sawRecording, "playing: the device is told it plays, not that it records");
+    s.setRecordingForDevices(true);
+    s.process(io);
+    check(warm->sawPlaying && warm->sawRecording, "recording: it is told so");
+    s.transport().play(false);
+    s.process(io);
+    check(!warm->sawPlaying && !warm->sawRecording, "stopped: a recording that has not ended yet does not say it records");
+    s.transport().play();
+    s.setRecordingForDevices(false);
+    s.process(io);
+    check(warm->sawPlaying && !warm->sawRecording, "the take ended: playing only");
+}
+
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     std::printf("adi_session_tests -- a project, live (ADR-0122)\n\n");
@@ -761,6 +804,7 @@ int main() {
     testTheExpressionRoute();
     testARouteADeviceCannotTake();
     testAPlaceholderWakesOnceInstalled();
+    testADeviceKnowsADIRecords();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

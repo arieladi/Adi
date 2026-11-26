@@ -1490,6 +1490,7 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
         return false;
     }
     recording_ = true;
+    session_.setRecordingForDevices(true); // SC-333
     error_.clear();
     return true;
 }
@@ -1501,6 +1502,7 @@ void ProjectDocument::stopRecording() {
     if (midiRecording_)
         session_.midiInputCapture().stop();
     recording_ = false;
+    session_.setRecordingForDevices(false);
     landing_ = true;
 }
 std::span<const LiveMidiTake> ProjectDocument::liveMidiTakes() const noexcept {
@@ -1524,6 +1526,7 @@ void ProjectDocument::pollRecording(bool deviceStopped) {
     if (midiDone && audioDone) {
         captureReady_.store(false, std::memory_order_release);
         recording_ = false;
+        session_.setRecordingForDevices(false);
         landing_ = false;
         landTake();
     }

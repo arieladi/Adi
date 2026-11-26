@@ -250,6 +250,9 @@ public:
     // Turning a gate off prevents new writes but keeps a pending write suspended
     // until its captured data is committed/refreshed and explicitly finished.
     void setAutomationWriteState(bool armed, bool recording) noexcept;
+    /// SC-333: a take is being recorded, so the transport a hosted plug-in is handed says it records
+    /// while it plays. Set by the document as its recording starts and ends; read on the audio thread.
+    void setRecordingForDevices(bool on) noexcept { recordingForDevices_.store(on, std::memory_order_release); }
     [[nodiscard]] bool automationArmed() const noexcept { return automationArmed_; }
     [[nodiscard]] bool automationRecording() const noexcept { return automationRecording_; }
     [[nodiscard]] const std::set<std::int64_t>& writingAutomationLanes() const noexcept { return writingAutomation_; }
@@ -588,6 +591,7 @@ private:
     std::atomic<std::uint64_t> driverClockSequence_{0}, driverRevision_{0};
     std::atomic<std::int64_t> driverSample_{0};
     std::atomic<bool> driverPlaying_{false};
+    std::atomic<bool> recordingForDevices_{false}; // SC-333
     bool loopApplied_=false,loopOn_=false;
     std::int64_t loopBegin_=0,loopEnd_=0;
     std::int64_t loopStartTick_=0,loopEndTick_=0;

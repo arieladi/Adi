@@ -2232,6 +2232,7 @@ DeviceTransport Session::TimingView::deviceAt(std::int64_t sample) const noexcep
     result.bpm = tempo.bpmAt(tick);
     const auto& transport = session->transport_;
     result.playing = transport.playing();
+    result.recording = result.playing && session->recordingForDevices_.load(std::memory_order_acquire);
     result.looping = transport.looping();
     if (result.looping) {
         result.loopBegin = transport.loopBegin();

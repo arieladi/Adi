@@ -984,6 +984,7 @@ void Vst3Device::process(const engine::NodeIo& io) noexcept {
             context.state = Context::kProjectTimeMusicValid | Context::kBarPositionValid |
                             Context::kTempoValid | Context::kTimeSigValid;
             if (clock->playing) context.state |= Context::kPlaying;
+            if (clock->recording) context.state |= Context::kRecording; // SC-333
             context.sampleRate = sampleRate_;
             context.projectTimeSamples = clock->sample;
             context.projectTimeMusic = clock->quarterNotes;
