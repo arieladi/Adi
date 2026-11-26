@@ -543,6 +543,7 @@ private:
     std::unique_ptr<MidiInputCapture> midiInputCapture_;
     std::map<std::size_t, std::shared_ptr<LiveMidiInput::Voices>> midiInputVoices_;
     std::map<std::int64_t, std::shared_ptr<LiveMidiInput::History>> midiHistories_;
+    std::int64_t lastMidiHistoryId_ = 0; // owner only
     // Device nodes persist across graph swaps and Undo. Their audition voices
     // retain any pending releases even if the device temporarily leaves the graph.
     std::map<const Node*, LiveMidiInput::PreviewVoice> midiPreviewVoices_;
