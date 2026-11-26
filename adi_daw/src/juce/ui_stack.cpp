@@ -15,7 +15,7 @@
 #include <tuple>
 namespace adi::ui {
 namespace {
-stack::TimeMs clockNow() noexcept {
+stack::TimeMs monotonicNow() noexcept {
     return static_cast<stack::TimeMs>(juce::Time::getMillisecondCounterHiRes());
 }
 juce::Rectangle<float> rect(stack::Rect r) {
@@ -67,7 +67,7 @@ struct StackTab::State : juce::ScrollBar::Listener {
     }
     ~State() override { scrollbar.removeListener(this); }
     void scrollBarMoved(juce::ScrollBar *, double start) override {
-        if (!syncing) owner.effects(model.scrollTo(start, clockNow()), false);
+        if (!syncing) owner.effects(model.scrollTo(start, owner.now()), false);
     }
     StackTab &owner;
     StackModel model;
@@ -220,9 +220,9 @@ void StackRow::present(const stack::RowGeo &input) {
             tile.view->navigate = [owner, target](bool forward) {
                 if (!owner || owner->state_->destroying || !owner->stack_.validTarget(target)) return false;
                 const juce::Component::SafePointer<StackTab> surface(&owner->stack_);
-                surface->effects(surface->model().focusItem(target, clockNow()), false);
+                surface->effects(surface->model().focusItem(target, surface->now()), false);
                 if (!surface) return false;
-                const auto fx = surface->model().key(forward ? stack::Key::Right : stack::Key::Left, {}, clockNow());
+                const auto fx = surface->model().key(forward ? stack::Key::Right : stack::Key::Left, {}, surface->now());
                 surface->effects(fx);
                 if (!surface) return fx.consumed;
                 surface->layoutRows();
@@ -413,11 +413,11 @@ StackTab::StackTab(AdiRootComponent &r) : root(r), state_(std::make_unique<State
     search.setTitle("Find channels or devices");
     search.setTextToShowWhenEmpty("Find channel or device", look::textDim);
     search.onTextChange = [this] {
-        effects(model().setSearch(search.getText().toStdString(), clockNow()), false);
+        effects(model().setSearch(search.getText().toStdString(), now()), false);
         layoutRows();
     };
     search.onEscapeKey = [this] { search.clear(); };
-    search.onReturnKey = [this] { effects(model().searchKey(stack::Key::Enter, clockNow())); layoutRows(); };
+    search.onReturnKey = [this] { effects(model().searchKey(stack::Key::Enter, now())); layoutRows(); };
     addAndMakeVisible(search);
     channelScope.setTitle("Channels shown");
     channelScope.setTooltip("Choose channels containing native Mix View tools, or show every channel. This only changes the list.");
@@ -428,7 +428,7 @@ StackTab::StackTab(AdiRootComponent &r) : root(r), state_(std::make_unique<State
     channelScope.onChange = [this] {
         const auto scope = channelScope.getSelectedId() == 2 ? stack::ChannelScope::AllChannels
                                                            : stack::ChannelScope::WithTools;
-        effects(model().setChannelScope(scope, clockNow()), false);
+        effects(model().setChannelScope(scope, now()), false);
         layoutRows();
     };
     addAndMakeVisible(channelScope);
@@ -449,7 +449,7 @@ StackTab::StackTab(AdiRootComponent &r) : root(r), state_(std::make_unique<State
     rowSize.setRange(model().constants().baseMin, model().constants().baseMax, 1);
     rowSize.setValue(model().windowView().baseHeight, juce::dontSendNotification);
     rowSize.onValueChange = [this] {
-        effects(model().setBaseHeight(static_cast<int>(rowSize.getValue()), clockNow()), false);
+        effects(model().setBaseHeight(static_cast<int>(rowSize.getValue()), now()), false);
     };
     rowSize.onDragEnd = [this] { persistWindowControls(); };
     addAndMakeVisible(rowSize);
@@ -460,14 +460,14 @@ StackTab::StackTab(AdiRootComponent &r) : root(r), state_(std::make_unique<State
     autoZoom.setToggleState(true, juce::dontSendNotification);
     navigator.setToggleState(true, juce::dontSendNotification);
     autoZoom.onClick = [this] {
-        effects(model().setAutoZoom(autoZoom.getToggleState(), clockNow()), false);
+        effects(model().setAutoZoom(autoZoom.getToggleState(), now()), false);
     };
     pinsOnly.onClick = [this] {
-        effects(model().setFilterPinned(pinsOnly.getToggleState(), clockNow()), false);
+        effects(model().setFilterPinned(pinsOnly.getToggleState(), now()), false);
         layoutRows();
     };
     navigator.onClick = [this] {
-        effects(model().setNavigator(navigator.getToggleState(), false, clockNow()), false);
+        effects(model().setNavigator(navigator.getToggleState(), false, now()), false);
         layoutRows();
     };
     state_->rename.setTitle("Channel name");
@@ -478,7 +478,7 @@ StackTab::StackTab(AdiRootComponent &r) : root(r), state_(std::make_unique<State
             endRename(true);
     };
     state_->rename.onTab = [this](bool forward) {
-        effects(model().key(stack::Key::Tab, {!forward, false, false}, clockNow()));
+        effects(model().key(stack::Key::Tab, {!forward, false, false}, now()));
         layoutRows();
     };
     state_->canvas.addChildComponent(state_->rename);
@@ -600,7 +600,8 @@ void StackTab::refreshRows(const SnapshotReader &reader, stack::TimeMs time) {
     }
     state_->structure = state_->publication;
 }
-void StackTab::frame(const SnapshotReader &reader) { frameAt(reader, clockNow()); }
+stack::TimeMs StackTab::now() const { return clock ? clock() : monotonicNow(); }
+void StackTab::frame(const SnapshotReader &reader) { frameAt(reader, now()); }
 void StackTab::frameAt(const SnapshotReader &reader, stack::TimeMs time) {
     const juce::Component::SafePointer<StackTab> alive(this);
     if (state_->pairEdit && state_->pairEdit->waitingForCancel) {
@@ -795,7 +796,7 @@ void StackTab::effects(const stack::Effects &fx, bool takeFocus) {
     if (fx.sharedViewChanged && model().pins() != state_->persistedPins) {
         std::string error;
         if (root.viewStateStore().saveStackPins(state_->persistedPins, model().pins(), error))
-            syncStoredPins(clockNow());
+            syncStoredPins(now());
         else
             root.say(std::move(error));
     }
@@ -829,7 +830,7 @@ void StackTab::resized() {
     state_->canvas.setBounds(listArea());
     state_->scrollbar.setBounds(listArea().getRight(), listArea().getY(), 8,
                                 listArea().getHeight());
-    effects(model().setViewport(listArea().getWidth(), listArea().getHeight(), clockNow()), false);
+    effects(model().setViewport(listArea().getWidth(), listArea().getHeight(), now()), false);
     layoutRows();
 }
 juce::PopupMenu StackTab::functionMenu() {
@@ -1023,14 +1024,14 @@ stack::Hit StackTab::presentedHit(double x, double y) const {
 void StackTab::mouseMove(const juce::MouseEvent &e) {
     if (!fromList(e)) return;
     const auto p = modelPoint(e);
-    effects(model().pointerMove(p.x, p.y, e.mods.isAnyMouseButtonDown(), clockNow()), false);
+    effects(model().pointerMove(p.x, p.y, e.mods.isAnyMouseButtonDown(), now()), false);
 }
 void StackTab::mouseEnter(const juce::MouseEvent &e) { mouseMove(e); }
 void StackTab::mouseExit(const juce::MouseEvent &e) {
     const auto p = modelPoint(e);
     if (p.x < 0 || p.y < 0 || p.x >= static_cast<float>(listArea().getWidth()) ||
         p.y >= static_cast<float>(listArea().getHeight()))
-        effects(model().pointerExit(clockNow()), false);
+        effects(model().pointerExit(now()), false);
 }
 void StackTab::mouseDown(const juce::MouseEvent &e) {
     const juce::Component::SafePointer<StackTab> alive(this);
@@ -1047,7 +1048,7 @@ void StackTab::mouseDown(const juce::MouseEvent &e) {
     if (presented.item.place == stack::ItemPlace::Chain && !validTarget(presented.item)) return;
     const auto button = e.mods.isPopupMenu() ? stack::Button::Right
                       : e.mods.isMiddleButtonDown() ? stack::Button::Middle : stack::Button::Left;
-    auto fx = model().pointerDownPresented(p.x, p.y, button, mods(e.mods), e.getNumberOfClicks(), presented, clockNow());
+    auto fx = model().pointerDownPresented(p.x, p.y, button, mods(e.mods), e.getNumberOfClicks(), presented, now());
     const auto* selected = device(fx.hit.item.device);
     const bool pluginChip = fx.hit.part == stack::HitPart::ChainPill && selected && selected->plugin;
     if (pluginChip && button == stack::Button::Left) fx.showDevices = {};
@@ -1116,7 +1117,7 @@ void StackTab::mouseDrag(const juce::MouseEvent &e) { mouseMove(e); }
 void StackTab::mouseUp(const juce::MouseEvent &e) {
     if (!fromList(e)) return;
     const auto p = modelPoint(e);
-    effects(model().pointerUp(p.x, p.y, clockNow()), false);
+    effects(model().pointerUp(p.x, p.y, now()), false);
 }
 void StackTab::mouseWheelMove(const juce::MouseEvent &e, const juce::MouseWheelDetails &w) {
     if (!fromList(e)) return;
@@ -1124,7 +1125,7 @@ void StackTab::mouseWheelMove(const juce::MouseEvent &e, const juce::MouseWheelD
     stack::WheelDelta wheel;
     if (w.isSmooth) { wheel.pixelsX = -w.deltaX * 120; wheel.pixelsY = -w.deltaY * 120; }
     else wheel.notches = -w.deltaY * 10;
-    effects(model().wheel(p.x, p.y, wheel, mods(e.mods), clockNow()), false);
+    effects(model().wheel(p.x, p.y, wheel, mods(e.mods), now()), false);
     layoutRows();
 }
 bool StackTab::hasToolbarFocus() const {
@@ -1203,16 +1204,16 @@ bool StackTab::keyPressed(const juce::KeyPress &key) {
         }
     }
     if (const auto k = modelKey(key)) {
-        const auto fx = model().key(*k, mods(key.getModifiers()), clockNow());
+        const auto fx = model().key(*k, mods(key.getModifiers()), now());
         effects(fx); layoutRows();
         if (fx.takeFocus) focusTile(model().focus().item);
         return fx.consumed;
     }
     return false;
 }
-void StackTab::focusGained(FocusChangeType) { effects(model().setKeyboardFocus(true, clockNow()), false); }
+void StackTab::focusGained(FocusChangeType) { effects(model().setKeyboardFocus(true, now()), false); }
 void StackTab::focusLost(FocusChangeType) {
-    effects(model().setKeyboardFocus(hasKeyboardFocus(true), clockNow()), false);
+    effects(model().setKeyboardFocus(hasKeyboardFocus(true), now()), false);
     if (!hasKeyboardFocus(true) && state_->interaction && state_->interaction->kind == stack::CaptureKind::Drag)
         cancelInteractions();
 }
@@ -1222,7 +1223,7 @@ void StackTab::focusOfChildComponentChanged(FocusChangeType type) {
         for (const auto &row : rows_)
             for (const auto &tile : row->state_->tiles)
                 if (tile.view->hasKeyboardFocus(true) && model().focus().item != tile.target && validTarget(tile.target))
-                    effects(model().focusItem(tile.target, clockNow()), false);
+                    effects(model().focusItem(tile.target, now()), false);
         focusGained(type);
     } else focusLost(type);
 }
@@ -1234,8 +1235,8 @@ void StackTab::visibilityChanged() {
         releaseCardObservations();
         if (!safe) return;
         cancelInteractions();
-        effects(model().pointerExit(clockNow()), false);
-        effects(model().setKeyboardFocus(false, clockNow()), false);
+        effects(model().pointerExit(now()), false);
+        effects(model().setKeyboardFocus(false, now()), false);
         updateParameterDemand({});
     }
 }
@@ -1259,7 +1260,7 @@ void StackTab::suspendParameters(bool suspended) {
 }
 void StackTab::focus(std::int64_t track) {
     const juce::Component::SafePointer<StackTab> alive(this);
-    const auto time = clockNow();
+    const auto time = now();
     // The channel's explicit shortcut must still reach a chain before its first
     // tool is added. Change the visible scope instead of inventing membership or
     // creating a processor; other deliberate filters remain in force.
@@ -1284,7 +1285,7 @@ void StackTab::filterChannels(std::optional<std::vector<std::int64_t>> tracks, b
         if (!alive) return;
     }
     state_->focusGroup = focusGroup;
-    const auto fx = model().setChannelSubset(std::move(tracks), clockNow(), focusGroup);
+    const auto fx = model().setChannelSubset(std::move(tracks), now(), focusGroup);
     effects(fx, false);
     if (!alive) return;
     if (changedPage) {
@@ -1298,7 +1299,7 @@ void StackTab::filterChannels(std::optional<std::vector<std::int64_t>> tracks, b
 }
 std::int64_t StackTab::focused() const noexcept { return model().focus().row.track; }
 void StackTab::hover(std::int64_t track) {
-    const auto time = clockNow();
+    const auto time = now();
     if (const auto at = model().shownIndex(track)) {
         const auto row = model().row(*at);
         effects(model().pointerMove(8, row.top + row.height / 2, false, time), false);
@@ -1323,14 +1324,14 @@ bool StackTab::beginInteraction(const stack::ItemRef &target, stack::CaptureKind
     if (state_->interaction) return state_->interaction->target == target && state_->interaction->kind == kind;
     // Child controls receive their own mouseDown before the canvas listener. Select their
     // stable target here as well, without stealing keyboard focus from the control.
-    effects(model().focusItem(target, clockNow()), false);
+    effects(model().focusItem(target, now()), false);
     if (!alive) return false;
     stack::CaptureResult capture;
     capture.refusal = stack::CaptureRefusal::NotShown;
     for (const auto &row : rows_)
         if (row->state_->geo.ref == target.row) {
             capture = model().beginCapturePresented(kind, target, row->state_->presentedRow,
-                row->state_->presentedLane, row->state_->presentedItems, clockNow());
+                row->state_->presentedLane, row->state_->presentedItems, now());
             break;
         }
     if (capture.refusal != stack::CaptureRefusal::None) return false;
@@ -1365,7 +1366,7 @@ bool StackTab::endInteraction(engine::ParameterPairEvent pairEnd) {
     if (state_->interaction) {
         const auto capture = *state_->interaction;
         state_->interaction.reset();
-        effects(model().endCapture(capture, clockNow()), false);
+        effects(model().endCapture(capture, now()), false);
     }
     if (alive) state_->ending = false;
     return accepted;
@@ -1465,7 +1466,7 @@ void StackTab::cancelInteractions() {
 }
 void StackTab::beginRename(stack::RowRef row) {
     const stack::ItemRef target{row, stack::ItemPlace::None, 0, 0, 0};
-    const auto capture = model().beginCapture(stack::CaptureKind::Text, target, clockNow());
+    const auto capture = model().beginCapture(stack::CaptureKind::Text, target, now());
     if (capture.refusal != stack::CaptureRefusal::None) return;
     state_->interaction = capture.ref;
     const auto at = model().shownIndex(row.track);

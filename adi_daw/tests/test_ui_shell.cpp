@@ -13674,6 +13674,14 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                 const auto heldItemBounds = first->getBounds();
                 const auto unseenTime = dragPoseTime + 7;
                 surface.model().advance(unseenTime); // model events may advance between visible frames
+                // The shell frame and the release below are stamped by the surface's own clock. On the
+                // wall clock they land over a second before this synthetic timeline in an optimised run
+                // (past clockRebaseMs the model rebases), or, when the machine stalls, so far after it
+                // that the release's easing is over before the next frame. Either way the pending
+                // enlargement completes at once (walk-A A24). Hold the surface's clock at the timeline's
+                // present until the tile has settled.
+                surface.clock = [unseenTime] { return unseenTime; };
+                const auto rebasesBeforeDrag = surface.model().stats().clockRebases;
                 auto *knobs = dynamic_cast<test::Knobs *>(document->session().instanceFor(30));
                 const auto beforeUndo = actual.undoTitle(false);
                 auto &slider = first->controls[0]->slider;
@@ -13691,9 +13699,10 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                       "new live parameter publications preserve the tile, capture identity and intermediate item rectangle");
                 slider.onDragEnd();
                 document->tick(20);
-                // A frame at the pre-release stamp is normalised to the release tick.
-                // The next wall-clock shell frame may already be partway through easing.
+                // The release was stamped at unseenTime, so this frame is the release tick itself.
                 surface.frameAt(actual.reader(), unseenTime);
+                check(surface.model().stats().clockRebases == rebasesBeforeDrag,
+                      "the shell frame and release inside the tile drag do not rebase the model clock");
                 check(!surface.model().capture() && begins == 1 && ends == 1 &&
                           actual.undoTitle(false) == "Undo UI knobs: Cutoff" && findPanel(30) == first &&
                           surface.model().chainRef(2, 30) == stable && first->getBounds() == heldItemBounds,
@@ -13705,6 +13714,7 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                     surface.frameAt(actual.reader(), settledTime);
                 check(hasResumeFrame && findPanel(30) == first && first->getHeight() > heldItemBounds.getHeight(),
                       "the released tile resumes its pending enlargement on a later frame");
+                surface.clock = {}; // the window's clock again for the rest of the fixture
                 check(actual.command(AppCommands::Undo), "undo the tile drag");
                 document->tick(30); actual.frame();
                 check(knobs && std::abs(knobs->getParam("cutoff").normalized - .5) < 1e-9 &&
