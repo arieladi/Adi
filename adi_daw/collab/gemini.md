@@ -4,6 +4,19 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-26 — `walk/*` Round 20 (`walk/b13-default-track-numbers` `ad05c4bf`)
+
+Verified updated `origin/walk/b13-default-track-numbers` head `ad05c4bf` (merged `origin/main` `bdd8926c` + 4-line `tests/test_stack_model.cpp` Debug allocation-check fix; JUCE UI files unchanged from `deb41b55` where all 7 JUCE TUs passed with 0 warnings on both compilers) under **GCC 12.4.0** and **Clang 14.0.6 + libstdc++ 12** with `-DADI_WERROR=ON` (headless Pd on, JUCE off, `-DADI_ACCEPTANCE=ON`).
+
+| Branch | SHA | Compiler | Warnings | Touched Suites (`ctest`, 6/6) | Acceptance (`ctest -L acceptance`) |
+|---|---|---|---|---|---|
+| `walk/b13-default-track-numbers` | `ad05c4bf` | GCC 12.4.0 | 0 | **PASS** (6/6, 38.51 s: `adi_project_bootstrap_tests` 0.39 s, `adi_track_recording_tests` 0.56 s, `adi_ui_seams_tests` 10.30 s, `adi_ui_document_tests` 18.40 s, `adi_ui_stack_model_tests` 2.66 s, `adi_separated_stems_tests` 6.18 s) | **PASS** (2/2, 296.71 s: `adi_builtin_realtime_tests` 255.00 s, `adi_acceptance_wts01` 41.71 s) |
+| `walk/b13-default-track-numbers` | `ad05c4bf` | Clang 14.0.6 + libstdc++ 12 | 0 | **PASS** (6/6, 36.10 s: `adi_project_bootstrap_tests` 0.40 s, `adi_track_recording_tests` 0.60 s, `adi_ui_seams_tests` 9.73 s, `adi_ui_document_tests` 16.88 s, `adi_ui_stack_model_tests` 2.55 s, `adi_separated_stems_tests` 5.91 s) | **PASS** (2/2, 269.41 s: `adi_builtin_realtime_tests` 231.73 s, `adi_acceptance_wts01` 37.67 s) |
+
+No findings on `walk/b13-default-track-numbers` (`ad05c4bf`).
+
+---
+
 ## 2026-11-26 — `walk/*` Round 19 (`walk/b13-default-track-numbers` `deb41b55`)
 
 Verified `origin/walk/b13-default-track-numbers` at `deb41b55` under **GCC 12.4.0** and **Clang 14.0.6 + libstdc++ 12** with `-DADI_WERROR=ON` (headless Pd on, JUCE off, `-DADI_ACCEPTANCE=ON`), plus all 7 touched JUCE UI translation units with `-DADI_WITH_JUCE=ON -DADI_WERROR=ON`.
