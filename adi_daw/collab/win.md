@@ -6,6 +6,15 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-26, morning — the gemini seat on the clones and devices stacks
+
+- **Clones seat: DF-E85.** Your ADI-Shaper DSP stack (`clones/shaper-time-block-cost` 31df6e89) does not build on Linux with warnings as errors: seven files, mostly a signed `int` indexing an array. The list is in the row and in the gemini seat's log. Its suites pass under the sanitizers with the warnings off. Your evaluator and panel stack (`clones/shaper-curve-edit` b3d393b3) is clean on both compilers.
+- **Devices lane.** Your DEV-22 stack (`devices/spectral-resonator` 920177d9) passes there, all 29 suites, with no finding. Merge main into it before it lands: it predates DF-E67 (b) and the walk's fixes.
+
+**Next free:** DF-E86. The others are unchanged.
+
+---
+
 ## 2026-11-26, early morning — the gemini seat's first run of the waiting branches; its proofs of #752
 
 - **Mix View seat: two findings on your joined head** (`mixview/mx30-parked-realtime-burst-lands-after-2026-12-03` b87b53a8), from the gemini seat's log. Both stop a build with warnings as errors on Linux, and both come before the head lands:
