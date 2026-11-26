@@ -1222,6 +1222,23 @@ void unsupported() {
         check(!f.session.problems().empty() && std::all_of(o.begin(),o.end(),[](float x){return x==0;}),"unsupported clip is silent with named session problem");
     }
 }
+void missingMediaOnUnplayedClips() {
+    for (const bool missing : {false, true}) {
+        Fixture f;
+        f.add(1, 0, 500, 0, 1000);
+        f.add(2, 0, 500, 0, 1000);
+        f.store->db().exec("UPDATE clips SET muted=1 WHERE id=1;"
+                           "UPDATE audio_clips SET reverse=1 WHERE clip_id=2");
+        if (missing) fs::rename(f.dir.path() / "audio.wav", f.dir.path() / "moved.wav");
+        f.load(64);
+        const auto* playback = f.session.clips();
+        check(playback->mediaUnavailable(1) == missing, "a muted clip reports whether its source file is missing");
+        check(playback->mediaUnavailable(2) == missing, "a reversed clip reports whether its source file is missing");
+        const auto pcm = f.render(64);
+        check(playback->externalSources().empty() && std::all_of(pcm.begin(), pcm.end(), [](float value) { return value == 0.f; }),
+              "checking skipped clip media leaves both clips out of playback");
+    }
+}
 
 void highRates() {
     auto nsHigh = [](std::int64_t frames, double rate) {
@@ -1405,6 +1422,7 @@ int main(int argc,char** argv) {
         if(only=="all" || only=="markers"){sourceMarkers();editPinnedSourceMarkers();endSourceClocks();absoluteLinearEndSamples();}
         if(only=="all" || only=="refresh")refreshAndVariableBlocks();
         if(only=="all" || only=="unsupported")unsupported();
+        if(only=="all" || only=="unplayed-media")missingMediaOnUnplayedClips();
         if(only=="all" || only=="segments")segmentsAndCrop();
         if(only=="all" || only=="ahead")readAhead();
         if(only=="all" || only=="relative")relativeProject();

@@ -509,42 +509,70 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
         impl_->problems.push_back("tempo_map: TempoMap does not implement ramps; clip timing uses step tempos");
     struct RelocatedSource { fs::path path; std::string error; };
     std::unordered_map<std::int64_t, RelocatedSource> relocatedSources;
+    const auto mediaRow = [&](std::int64_t id) -> const rows::Media* {
+        const auto found = std::find_if(project->rows.media.begin(), project->rows.media.end(),
+                                       [id](const auto& media) { return media.id == id; });
+        return found == project->rows.media.end() ? nullptr : &*found;
+    };
+    const auto mediaPath = [&](const rows::Media& source) -> fs::path {
+        const auto hint = project->hints.find(source.id);
+        if (source.relPath) {
+            const auto relative = utf8Path(*source.relPath);
+            const auto path = project->folder / relative;
+            // In the ordinary case both stored locations name the same file.
+            // Verify differing candidates once per media asset, not per clip.
+            if (hint != project->hints.end() && !relative.empty() && *relative.begin() == ".." &&
+                path.lexically_normal() != hint->second.lexically_normal()) {
+                auto [found, inserted] = relocatedSources.try_emplace(source.id);
+                auto& resolved = found->second;
+                if (inserted) resolved.path = media::resolveMedia(project->folder, relative, hint->second,
+                    source.origName, source.hashBlake3, resolved.error);
+                if (resolved.path.empty()) throw std::runtime_error(
+                    (resolved.error.empty() ? "missing media: " + source.origName : resolved.error) + "; silent");
+                return resolved.path;
+            }
+            return path;
+        }
+        if (hint != project->hints.end()) return hint->second;
+        throw std::runtime_error("no media path; silent");
+    };
+    std::unordered_map<std::int64_t, bool> skippedMediaAvailable;
+    const auto checkSkippedMedia = [&](std::int64_t clipId, std::int64_t mediaId) {
+        auto [known, inserted] = skippedMediaAvailable.try_emplace(mediaId, false);
+        if (inserted) {
+            try {
+                const auto* source = mediaRow(mediaId);
+                std::error_code error;
+                known->second = source && !source->embedded && fs::is_regular_file(mediaPath(*source), error);
+            } catch (const std::exception&) {} // No reader is opened for an unplayed clip.
+        }
+        if (!known->second) impl_->unavailableMedia.insert(clipId);
+    };
     for(const auto& row:timelineClips(project->rows)) {
-        // Muted clips do not need a reader or a playable media source.
-        if(row.kind!="audio" || row.muted) continue;
+        if(row.kind!="audio") continue;
+        const auto a=std::find_if(project->rows.audioClips.begin(),project->rows.audioClips.end(),[&](const auto& x){return x.clipId==row.id;});
+        if (row.muted) {
+            if (a != project->rows.audioClips.end()) checkSkippedMedia(row.id, a->mediaId);
+            continue;
+        }
         const auto label="clips#"+std::to_string(row.id)+": ";
         bool openingMedia = false;
         try {
-            const auto a=std::find_if(project->rows.audioClips.begin(),project->rows.audioClips.end(),[&](const auto& x){return x.clipId==row.id;});
             if(a==project->rows.audioClips.end()) throw std::runtime_error("no audio row; silent");
-            if(a->reverse) throw std::runtime_error("reverse unsupported; silent");
+            if(a->reverse) {
+                checkSkippedMedia(row.id, a->mediaId);
+                throw std::runtime_error("reverse unsupported; silent");
+            }
             if(!a->warpEnabled && (a->transposeSemis!=0 || a->formantShift!=0)) throw std::runtime_error("pitch/formant shift unsupported; silent");
             if(row.aliasOf) throw std::runtime_error("alias resolution unsupported; silent");
             if(row.fadeInCurve<0 || row.fadeInCurve>5 || row.fadeOutCurve<0 || row.fadeOutCurve>5) throw std::runtime_error("fade curve unsupported; silent");
             if(a->channelMode<0 || a->channelMode>3) throw std::runtime_error("unknown channel mode; silent");
             openingMedia = true;
-            const auto source=std::find_if(project->rows.media.begin(),project->rows.media.end(),[&](const auto& m){return m.id==a->mediaId;});
-            if(source==project->rows.media.end() || source->embedded) throw std::runtime_error("missing or embedded media; extract first; silent");
+            const auto* source = mediaRow(a->mediaId);
+            if(!source || source->embedded) throw std::runtime_error("missing or embedded media; extract first; silent");
             auto clip=std::make_unique<Clip>();
             clip->clipId=row.id; clip->mediaId=source->id; clip->storedBlake3=source->hashBlake3;
-            const auto hint = project->hints.find(source->id);
-            if (source->relPath) {
-                const auto relative = utf8Path(*source->relPath);
-                clip->path = project->folder / relative;
-                // In the ordinary case both stored locations name the same file.
-                // Verify differing candidates once per media asset, not per clip.
-                if (hint != project->hints.end() && !relative.empty() && *relative.begin() == ".." &&
-                    clip->path.lexically_normal() != hint->second.lexically_normal()) {
-                    auto [found, inserted] = relocatedSources.try_emplace(source->id);
-                    auto& resolved = found->second;
-                    if (inserted) resolved.path = media::resolveMedia(project->folder, relative, hint->second,
-                        source->origName, source->hashBlake3, resolved.error);
-                    if (resolved.path.empty()) throw std::runtime_error(
-                        (resolved.error.empty() ? "missing media: " + source->origName : resolved.error) + "; silent");
-                    clip->path = resolved.path;
-                }
-            } else if (hint != project->hints.end()) clip->path = hint->second;
-            else throw std::runtime_error("no media path; silent");
+            clip->path = mediaPath(*source);
             // Direct WAV remains unchanged. Plain compressed clips consume a
             // shared worker's flushed prefixes; Warp still needs its complete
             // offline render and unknown-length sources retain the full path.
