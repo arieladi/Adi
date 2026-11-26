@@ -4,6 +4,38 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-26 — Item 5 (Standing Queue Item 11): Full ASan + LSan + UBSan sweep on `origin/main` (`dd80444a`)
+
+Built and ran all **277** headless CTest suites (`-LE performance`, `-DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF`) on `origin/main` (`dd80444a`) under GCC 12.4.0 (`-O1 -g1 -fsanitize=address,undefined -fno-omit-frame-pointer`) with `ASAN_OPTIONS=detect_leaks=1:alloc_dealloc_mismatch=1:halt_on_error=1` and `UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1`.
+
+| Outcome | Count | Suites / Details |
+|---|---|---|
+| **PASS (ASan + LSan + UBSan, 0 reports, 0 leaks)** | **271 / 277** | Includes `adi_pd_engine_tests`, `adi_pd_native_devices_tests`, `adi_shaper_pd_tests`, every Pd device suite (`DF-E67 (b)` holds cleanly across the whole tree), `adi_plugin_scanner_tests`, `adi_scan_self_test_tests`, `adi_builtin_devices_tests`, and `adi_history_retention_fuzz_tests` (17,095/0, run without 180 s cap) |
+| **SKIP** | **1 / 277** | `adi_loudness_ffmpeg_tests` (no `ffmpeg` binary installed in VM) |
+| **FAIL (LSan only; PASS under ASan+UBSan with `detect_leaks=0`)** | **5 / 277** | 2 distinct root causes (Findings 1 & 2 below). **0 ASan errors and 0 UBSan errors across all 276 executed suites.** |
+
+### Findings on `origin/main` (`dd80444a`)
+
+1. **LSan leak in `adi_pd_object_walk_tests` (`169 byte(s) leaked in 5 allocation(s)`)**
+   - **Location:** `adi_daw/tests/test_pd_object_walk.cpp:447` (`testASeededFuzzOfPatchTextNeverCrashes`) → `adi_daw/src/juce/pd_engine.cpp:355` (`LibPdEngine::open`) → `adi_daw/third_party/libpd/pure-data/src/g_text.c:529-536` (`canvas_msg`: `pd_new` 80 B + `clock_new` 40 B + `outlet_new` 32 B + `binbuf_new` 16 B + 1 B; self-referencing `t_message` / `t_clock` cycle left behind on a fuzzed malformed patch).
+   - **Owner:** `devices` (Pd runtime / overlay; `window-fn` if Pd overlay fix).
+   - **Compiler / tool:** GCC 12.4.0 ASan+LSan+UBSan (`ASAN_OPTIONS=detect_leaks=1:alloc_dealloc_mismatch=1:halt_on_error=1`).
+   - **Smallest repro:** Build `adi_pd_object_walk_tests` with `-fsanitize=address,undefined` and run `ASAN_OPTIONS=detect_leaks=1 ./adi_pd_object_walk_tests` (passes cleanly with `detect_leaks=0`).
+
+2. **LSan leak on repeated `dlopen`/`dlclose` of system `libavcodec`/`libavutil` (`~187,320 byte(s) leaked in 120 allocation(s)`) in 4 AAC suites**
+   - **Affected suites:** `adi_progressive_decode_tests`, `adi_mp4_aac_tests`, `adi_ni_stems_tests`, `adi_aac_import_tests` (all 4 pass with `detect_leaks=0`).
+   - **Location:** `adi_daw/src/adi/audio/aac_ffmpeg.inc:51-52, 90-97` (`Api()` calls `dlopen(ADI_AVCODEC_NAME, RTLD_NOW | RTLD_LOCAL)` and `~Api()` calls `dlclose(codec)` on every `ffmpeg60Available()` / `encode` / `decode` call, unloading transitive system shared libraries whose `call_init` static constructors allocate memory never freed on `dlclose`).
+   - **Owner:** `engine-win` (audio / media).
+   - **Compiler / tool:** GCC 12.4.0 ASan+LSan+UBSan (`ASAN_OPTIONS=detect_leaks=1`).
+   - **Smallest repro:** Build `adi_mp4_aac_tests` with `-fsanitize=address,undefined` on Linux with `libavcodec60` installed and run `ASAN_OPTIONS=detect_leaks=1 ./adi_mp4_aac_tests`.
+
+3. **Additional GCC 12 `-O1` / Release `-Werror` warnings spotted on `origin/main` (`dd80444a`) during the `-O1` ASan build**
+   - `adi_daw/tests/test_cue_monitor.cpp:21:62` — `-Wmismatched-new-delete` on `void operator delete(void* p, std::size_t) noexcept { std::free(p); }` (class of `DF-M69` / `DF-M77`; owner: `engine`).
+   - `adi_daw/tests/test_audio_recording.cpp:29:60` — `-Wmismatched-new-delete` on `void operator delete(void* p, std::size_t) noexcept { std::free(p); }` (class of `DF-M69` / `DF-M77`; owner: `engine-win`).
+   - `adi_daw/tests/test_project_replace.cpp:289, 292` — `-Wunused-result` on `(void)::write(...)` / `(void)::read(...)` under glibc `_FORTIFY_SOURCE=2` at `-O1`/`-O2` (owner: `engine-win` / `window-fn`).
+
+---
+
 ## 2026-11-26 — Item 4 (part 3, after-3-December pile): Devices lane's DEV-22 stack head `devices/spectral-resonator` (`920177d9`)
 
 `devices/spectral-resonator` (`920177d9`) is the tip of the full DEV-22 after-date stack (172 files changed vs merge-base `ac07be74`, +18,854 / -29 lines), carrying all 27 new post-3-December devices (Align Delay, Auto Pan-Tremolo, Auto Shift, Channel EQ, Corpus, DJ Filter, Drum Buss, Dynamic Tube, EQ Three, Erosion, Filter Delay, Glue Compressor, Grain Delay, LFO Modulator, Live Amp, Live Cabinet, Live Compressor, Live Gate, Live Limiter, Live Pedal, Roar, Shaper Modulator, Spectral Resonator, Spectral Time, Spectrum, Tuner, Vinyl Distortion + DF-E77 merged up).
