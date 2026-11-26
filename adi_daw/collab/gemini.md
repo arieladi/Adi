@@ -4,6 +4,28 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-26 — Item 1 (`walk/*` Round 15): `walk/a24-mixview-test-clock` (`91ead564`), `walk/a25-scan-fixture-optimised` (`dff01c74`)
+
+Both heads built under **GCC 12.4.0** and **Clang 14.0.6 + libstdc++ 12** with `-DADI_WERROR=ON -DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF -DADI_ACCEPTANCE=ON`, plus targeted JUCE `-DADI_WERROR=ON` (A24) and optimised `-O2 -DNDEBUG -Werror` checks (A25).
+
+| Branch | Head | Touched files | GCC 12.4.0 `-DADI_WERROR=ON` | Clang 14.0.6 + libstdc++ 12 `-DADI_WERROR=ON` | Acceptance (`ctest -L acceptance`) | Extra checks / Findings |
+|---|---|---|---|---|---|---|
+| `walk/a24-mixview-test-clock` | `91ead564` | `src/juce/ui_stack.{hpp,cpp}`, `tests/test_ui_shell.cpp` | **PASS** (0 warnings; headless + JUCE TUs `ui_stack.cpp.o` & `test_ui_shell.cpp.o` 0 warnings) | **PASS** (0 warnings; headless + JUCE TUs `ui_stack.cpp.o` & `test_ui_shell.cpp.o` 0 warnings) | **2/2 PASS** on both (`adi_builtin_realtime_tests` 252.39 s / 230.47 s; `adi_acceptance_wts01` 41.46 s / 38.79 s) | Clean across all legs. |
+| `walk/a25-scan-fixture-optimised` | `dff01c74` | `tests/fixtures/scan_clap.cpp`, `tests/test_reverb.cpp` | **PASS (Debug)** — 3/3 touched (`adi_reverb_tests`, `adi_plugin_scanner_tests`, `adi_scan_self_test_tests`; both `adi_scan_clap_fixture` & `adi_scan_clap_static_fixture` built clean); **FAIL (`-O2 -Werror`, see below)** | **PASS (Debug & `-O2 -Werror`)** — 3/3 touched (`adi_reverb_tests`, `adi_plugin_scanner_tests`, `adi_scan_self_test_tests`); `scan_clap.cpp` (dynamic & static) and `test_reverb.cpp` 0 warnings at `-O2 -Werror` | **2/2 PASS** on both (`adi_builtin_realtime_tests` 250.62 s / 229.81 s; `adi_acceptance_wts01` 41.79 s / 37.79 s) | **Note (GCC 12 `-O2 -Werror`):** `tests/test_reverb.cpp:25:64` still fails GCC 12 optimised `-Werror` (see finding below). `tests/fixtures/scan_clap.cpp` passes GCC 12 `-O2 -Werror` cleanly in both dynamic and `ADI_CLAP_STATIC_FIXTURE=1` modes. |
+
+### Finding on `walk/a25-scan-fixture-optimised` (`dff01c74`)
+
+- **GCC 12.4.0 `-O2 -Werror` still fails on `adi_daw/tests/test_reverb.cpp:25:64` (`-Werror=mismatched-new-delete`):**
+  - `void operator delete(void *p, std::size_t) noexcept { std::free(p); }` is inlined into `std::vector` destructors (`liveDefault()` at `:224,:228`, `rt60()` at `:52,:75`) while `operator new` is not inlined, triggering `-Werror=mismatched-new-delete` (same root cause as `DF-M77` in `test_shared_analysis.cpp`; pre-existing on `main`, not introduced by `dff01c74`, but relevant because A25 targets optimised `-Werror` builds of `test_reverb.cpp`).
+  - **Owner:** `walk-A` / `devices` (`tests/test_reverb.cpp`).
+  - **Smallest repro:**
+    ```sh
+    g++-12 -std=c++20 -O2 -DNDEBUG -Wall -Wextra -Wpedantic -Wswitch-enum -Wshadow -Werror \
+      -c adi_daw/tests/test_reverb.cpp -Iadi_daw/src -Iadi_daw/third_party/json/include -o /tmp/test_reverb.o
+    ```
+
+---
+
 ## 2026-11-26 — Item 5 (Standing Queue Item 12): TSan across all 38 threaded suites on `origin/main` (`559c528a`)
 
 Tested all **38** threaded suites (graph workers, host, gesture, recording, decode, playback, scanner, Link, shared analysis, limiter owner, render queue, control/MCP, project replace/files) on `origin/main` (`559c528a`) with `TSAN_OPTIONS=halt_on_error=1:second_deadlock_stack=1`.
