@@ -8,6 +8,7 @@
 | SC-247, SC-254 | `basics/sc-247-preserve-takes` `71350ac5` | Failed placement or writing leaves the original WAV files at their capture path, which the Status Bar reports. If the device stops during Record, the document timer can settle the take without another callback. Touched window-fn recording and engine-win recorder tests. | Main failed to land a take after device loss and removed the WAV after a publication refusal. The fixed regression verified the reported path and the complete retained PCM. An injected write and close failure preserved the first completed WAV block. Windows MSVC Debug document and audio-recording suites and both WTS-01 suites passed. | PR requested |
 | SC-20 | `basics/sc-20-recording-waveform` `8a506549` | The recorder's writer computes bounded per-input peaks and publishes immutable snapshots. Arrangement uses the captured start and extent, keeps the preview through Stop, and hands off from the final recorded peaks to the file's own peaks. Touched engine-win recording, window-fn document and window Arrangement code. | The recorder regression failed without peak accumulation. Windows MSVC Debug recorder, document and shell suites, app build and all acceptance tests passed. Headless rendering verified waveform pixels, the Stop-to-clip transition and an allocation-free preview update in a window frame. | PR requested |
 | SC-21, SC-246 | `basics/sc-21-metronome-count-in` `34f6f1d7` | The metronome arrow and its right-click menu offer None, 1, 2 and 4 Bars and share the Cue Volume used by the mixer. The transport shows the count-in in its Bar field and clears it on the capture boundary or Stop. Touched the window and window-fn transport, metronome and document code. | The document probe failed seven assertions with count-in feedback disabled. Windows MSVC Debug app, document, window-state and shell, and all three acceptance tests passed. The tests cover the precise 6/8 boundaries, the native-menu seam and the shared gain. | PR requested |
+| SC-23 | `basics/sc-23-external-inputs` and `basics/recording-chain` `a43567a6` | Both Audio From choosers list the enabled external mono inputs and stereo pairs using their configured names, per-channel meters and a Configure action. The saved physical choice drives monitoring and capture. Touched the window Mixer and shell, window-fn document and app wiring, and engine-win Audio Settings adapter. | The legacy capture path failed the mono, stereo and missing-input checks. Windows MSVC Debug app, document and shell, and both WTS-01 suites passed with the fix. The private-desktop WASAPI cable probe returned four right-output pulses in an actual one-channel WAV from physical input 2. Performance acceptance is running. | PR requested |
 
 The recording branches now form a chain in queue order. Windows Debug passed the combined recorder,
 placement, playback, document and mailbox suites, all acceptance tests, and 3,332 shell checks. The lane
@@ -17,8 +18,8 @@ placement shift and a 5,140-sample residual on each of four clicks.
 
 `basics/recording-chain` `392a6a6e` brings all six item branches through SC-21 and SC-246 into the
 Windows landing stack. The combined Debug app, private-desktop Audio Settings smoke, all six touched
-suites, and both WTS-01 tests passed. The latest landing update allows rounding in two unrelated SC-82
-test assertions. The combined performance acceptance test is running.
+suites, and all three acceptance tests passed. The latest landing update allows rounding in two
+unrelated SC-82 test assertions.
 
 Routing has its own claimed log. Under the current handoff, this session continues with recording
 wave 2 once the first recording queue is finished.
