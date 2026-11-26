@@ -276,6 +276,12 @@ FreezeAudioCapture captureFreezeAudio(Store &store, FreezeCaptureSpec spec, engi
                 why += "; " + problem;
             throw std::runtime_error(why);
         }
+        if (!session.clips()->waitForWarp(control.stop)) {
+            cancellation(control);
+            std::string why = "freeze Warp preparation failed";
+            for (const auto &problem : session.clips()->decodeProblems()) why += "; " + problem;
+            throw std::runtime_error(why);
+        }
         auto *graph = session.graph().currentGraph();
         if (!graph)
             throw std::runtime_error("freeze has no prepared graph");

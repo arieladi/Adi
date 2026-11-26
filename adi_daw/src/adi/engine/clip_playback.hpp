@@ -8,6 +8,7 @@
 #include <functional>
 #include <memory>
 #include <span>
+#include <stop_token>
 #include <utility>
 #include <vector>
 namespace adi { class Store; }
@@ -49,20 +50,26 @@ public:
     // Offline/test driver support ONLY, between callbacks: request the next
     // block and wait for disk. Session::process NEVER calls this.
     bool prime(std::chrono::milliseconds timeout = std::chrono::seconds(10));
+    // Wait for preparation independently of the page-read timeout. Offline
+    // renders use this before reading their first block of a cold Warp clip.
+    bool waitForWarp(std::stop_token stop = {}) const;
     // Owner only, BEFORE publishing a candidate source generation: request and
     // wait for the pages selected by an immutable, owner-owned transport value.
     // Unlike prime(), this never reads the live driver Transport. Construct the
     // value from captured sample/loop state; copying a running Transport on the
     // owner is not safe. Do not process this candidate concurrently: its request
     // slots have one producer. False on callback use, read failure, or timeout;
-    // the caller must retain its previous graph on failure.
+    // the caller must retain its previous graph on failure. Live edits can
+    // request pages without waiting for Warp jobs that are still preparing.
     bool primeAt(const Transport& snapshot,
-                 std::chrono::milliseconds timeout = std::chrono::seconds(10));
+                 std::chrono::milliseconds timeout = std::chrono::seconds(10),
+                 bool waitForPendingWarp = true);
     // Prime two possible adoption positions under one request, e.g. the
     // current position and a retimed loop head. Refuses if their combined
     // page set cannot fit the existing bounded page slots.
     bool primeAt(const Transport& snapshot,const Transport& alternate,
-                 std::chrono::milliseconds timeout = std::chrono::seconds(10));
+                 std::chrono::milliseconds timeout = std::chrono::seconds(10),
+                 bool waitForPendingWarp = true);
     struct Readiness {
         std::function<bool(const Transport&,std::int32_t,bool)> check;
         explicit operator bool() const noexcept { return static_cast<bool>(check); }
@@ -99,7 +106,7 @@ public:
     // Initial construction problems remain in problems().
     std::vector<std::string> decodeProblems() const;
 private:
-    bool primeTargets(const Transport&,const Transport*,std::chrono::milliseconds);
+    bool primeTargets(const Transport&,const Transport*,std::chrono::milliseconds,bool waitForPendingWarp);
     struct Impl;
     std::shared_ptr<Impl> impl_;
 };

@@ -4,6 +4,7 @@
 #include "adi/engine/session.hpp"
 #include "adi/gesture_capture_detail.hpp"
 #include "adi/history.hpp"
+#include "adi/op_transaction_resources_detail.hpp"
 #include "adi/row_capture.hpp"
 #include "adi/store.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -50,7 +51,18 @@ Tables readTables(const Store& store) {
         if(name=="state_blobs")queryText+=" WHERE hash_blake3 IN (SELECT s.state_hash FROM plugin_state s JOIN devices d ON d.id=s.device_id JOIN plugin_refs p ON p.id=d.plugin_ref_id WHERE p.format='internal' AND s.stream_role LIKE 'sample:%')";
         SQLite::Statement query(store.db(),queryText);
         while(query.executeStep())rows.push_back(adi::detail::captureQueryRow(query));
-        std::sort(rows.begin(),rows.end(),[](const Payload& a,const Payload& b){return Payload::to_cbor(a)<Payload::to_cbor(b);});
+        if (rows.size() > 1) {
+            // Keep the canonical image order while encoding each row once.
+            // A row can contain the full contents of a MIDI note stream.
+            std::vector<std::pair<std::vector<std::uint8_t>, Payload>> ordered;
+            ordered.reserve(rows.size());
+            for (auto& row : rows) ordered.emplace_back(Payload::to_cbor(row), std::move(row));
+            std::sort(ordered.begin(), ordered.end(), [](const auto& a, const auto& b) {
+                return std::lexicographical_compare(a.first.begin(), a.first.end(), b.first.begin(), b.first.end(),
+                    [](std::uint8_t left, std::uint8_t right) { return left < right; });
+            });
+            for (std::size_t i = 0; i < rows.size(); ++i) rows[i] = std::move(ordered[i].second);
+        }
     }
     return result;
 }
@@ -70,6 +82,7 @@ PresentationStatus refused(std::string message) {return {PresentationState::Refu
 Status failed(Error code,std::string message) {return {code,std::move(message)};}
 struct Image {
     Base base;
+    std::optional<gesture::detail::StoreWriteStamp> storeStamp;
     rows::Model model;
     std::shared_ptr<const ClipProject> clips;
     std::shared_ptr<const Snapshot> snapshot;
@@ -79,12 +92,14 @@ struct Image {
     std::set<std::int64_t> overrides;
     std::vector<std::uint8_t> bytes;
     std::shared_ptr<const std::vector<std::uint8_t>> viewBytes;
+    bool faderOnly = false;
 };
 std::shared_ptr<Image> readImage(const Store& store,const Base& base,const std::set<std::int64_t>& overridden,
                                const TempoFor& tempoFor) {
     std::optional<SQLite::Transaction> read;
     if(sqlite3_get_autocommit(store.db().getHandle())!=0)
         read.emplace(const_cast<SQLite::Database&>(store.db()),SQLite::TransactionBehavior::DEFERRED);
+    const auto stamp=read ? gesture::detail::storeWriteStamp(store) : std::nullopt;
     if(History(const_cast<Store&>(store)).head()!=base.head)throw std::runtime_error("presentation journal base changed during capture");
     auto out=std::make_shared<Image>();out->base=base;out->overrides=overridden;
     out->model=rows::readModel(store);
@@ -96,6 +111,10 @@ std::shared_ptr<Image> readImage(const Store& store,const Base& base,const std::
     auto playback=out->model;
     playback.tempo=tempoFor(playback);
     out->clips=readClipProject(store,playback);
+    if(read) {
+        read->commit();
+        if(stamp && gesture::detail::storeWriteStamp(store)==stamp)out->storeStamp=stamp;
+    }
     return out;
 }
 Tables topology(Tables value, const std::set<std::int64_t>& trackDelayTargets = {}) {
@@ -189,9 +208,16 @@ void applyPatch(rows::Model& target,const rows::Model& projected,const Patch& pa
 std::shared_ptr<const Snapshot> scalarSnapshot(const Snapshot& base,const rows::Model& model) {
     auto out=std::make_shared<Snapshot>(base);
     for(auto& track:out->tracks) {
+        const auto* flags=findValue(model.tracks,track->id,[](const auto& row){return row.id;});
+        const auto* strip=findValue(model.strips,track->id,[](const auto& row){return row.trackId;});
+        if((!flags || (track->muted==flags->muted && track->soloed==flags->soloed)) &&
+           (!strip || (track->volumeDb==static_cast<float>(strip->volumeDb) &&
+                       track->pan==static_cast<float>(strip->pan) && track->panLeft==strip->panLeft &&
+                       track->panRight==strip->panRight)))continue;
         auto value=std::make_shared<TrackNode>(*track);
-        for(const auto& row:model.tracks)if(row.id==value->id){value->muted=row.muted;value->soloed=row.soloed;}
-        for(const auto& row:model.strips)if(row.trackId==value->id) {
+        if(flags){value->muted=flags->muted;value->soloed=flags->soloed;}
+        if(strip) {
+            const auto& row=*strip;
             value->volumeDb=static_cast<float>(row.volumeDb);value->pan=static_cast<float>(row.pan);
             value->panLeft=row.panLeft;value->panRight=row.panRight;
         }
@@ -201,6 +227,55 @@ std::shared_ptr<const Snapshot> scalarSnapshot(const Snapshot& base,const rows::
         auto value=std::make_shared<SendRoute>(*send);value->gainDb=row.gainDb;value->pan=row.pan;send=std::move(value);break;
     }
     return out;
+}
+std::shared_ptr<Image> faderImage(const Store& store,const Image& committed,std::span<const Patch> changes) {
+    auto& db=store.db();
+    // A TEMP table/view can shadow the actual mixer table, and a trigger can
+    // change material outside the scalar target. Both require full capture.
+    SQLite::Statement nativeMixer(db,"SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='mixer_strip') "
+                     "AND NOT EXISTS(SELECT 1 FROM pragma_table_xinfo('mixer_strip','main') WHERE hidden<>0) "
+                     "AND NOT EXISTS(SELECT 1 FROM sqlite_temp_master WHERE "
+                     "(type IN ('table','view') AND name='mixer_strip' COLLATE NOCASE) OR "
+                     "(type='trigger' AND tbl_name='mixer_strip' COLLATE NOCASE) UNION ALL "
+                     "SELECT 1 FROM sqlite_master WHERE type='trigger' AND tbl_name='mixer_strip' COLLATE NOCASE)");
+    if(!nativeMixer.executeStep() || nativeMixer.getColumn(0).getInt()==0)return {};
+    auto out=std::make_shared<Image>();out->base=committed.base;out->faderOnly=true;
+    out->cue=committed.cue;out->transport=committed.transport;
+    SQLite::Statement row(db,"SELECT volume_db FROM main.mixer_strip WHERE track_id=?");
+    for(const auto& change:changes) {
+        const auto* existing=findValue(committed.model.strips,change.id,[](const auto& strip){return strip.trackId;});
+        if(!existing)return {};
+        row.bind(1,change.id);
+        if(!row.executeStep() || !row.getColumn(0).isFloat())return {};
+        auto strip=*existing;strip.volumeDb=row.getColumn(0).getDouble();
+        out->model.strips.push_back(std::move(strip));
+        row.reset();
+    }
+    out->snapshot=scalarSnapshot(*committed.snapshot,out->model);
+    return out;
+}
+bool sameFaderImage(const Image& preview,const Image& committed,const Image& actual) {
+    const auto sameRows=[](const auto& a,const auto& b) {
+        return std::equal(a.begin(),a.end(),b.begin(),b.end(),adi::detail::sameSqlValue);
+    };
+    if(committed.tables.size()!=actual.tables.size())return false;
+    for(const auto& [name,rows]:committed.tables) {
+        const auto at=actual.tables.find(name);
+        if(at==actual.tables.end())return false;
+        if(name!="mixer_strip") {
+            if(!sameRows(rows,at->second))return false;
+            continue;
+        }
+        auto projected=rows;
+        for(const auto& strip:preview.model.strips) {
+            auto* row=findValue(projected,strip.trackId,[](const auto& value){return adi::detail::signedInteger(value.at("track_id"));});
+            if(!row)return false;
+            (*row)["volume_db"]=strip.volumeDb;
+        }
+        std::sort(projected.begin(),projected.end(),[](const Payload& a,const Payload& b){return Payload::to_cbor(a)<Payload::to_cbor(b);});
+        if(!sameRows(projected,at->second))return false;
+    }
+    return true;
 }
 std::shared_ptr<const Snapshot> annotateSnapshot(const Snapshot& snapshot,const std::set<std::int64_t>& excluded) {
     auto out=std::make_shared<Snapshot>(snapshot);out->automationOverridden=!excluded.empty();
@@ -556,7 +631,7 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
         if(!ready.ok())throw std::runtime_error(ready.error);
         out->ready=std::move(ready.graph);return out;
     }
-    void viewCommitted(const std::shared_ptr<const Image>& image) {
+    void viewCommitted(const Store& store,const std::shared_ptr<const Image>& image) {
         if(auto* target=project()) {
             // An ordinary document refresh can already have published this
             // base before a completed private device gesture's receipt is
@@ -567,9 +642,11 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
                 shown->automationLanes.size()==image->snapshot->automationLanes.size() &&
                 std::equal(shown->automationLanes.begin(),shown->automationLanes.end(),image->snapshot->automationLanes.begin(),
                     [](const auto& a,const auto& b){return a->id==b->id && a->overridden==b->overridden;});
-            if(sameBase(target->base_,image->base) && target->image_ && image->viewBytes &&
-               *target->image_==*image->viewBytes && sameOverrides)return;
-            target->adoptCommitted(image->snapshot,image->base,image->viewBytes);
+            if(!sameBase(target->base_,image->base) || !target->image_ || !image->viewBytes ||
+               *target->image_!=*image->viewBytes || !sameOverrides)
+                target->adoptCommitted(image->snapshot,image->base,image->viewBytes);
+            if(image->storeStamp && gesture::detail::storeWriteStamp(store)==image->storeStamp)
+                target->storeStamp_=image->storeStamp;
         }
     }
     PresentationStatus adopt(const Store& store,const Base& base,const AppliedBatch*) {
@@ -577,6 +654,12 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
         if(sqlite3_get_autocommit(store.db().getHandle())==0)return refused("committed presentation adoption requires no SQL transaction");
         if(!owner->appliedSource_.sameConnection(base.source))return refused("preview source does not match the loaded Session");
         try {
+            if(committed && sameBase(committed->base,base) && committed->storeStamp &&
+               gesture::detail::storeWriteStamp(store)==committed->storeStamp && committed->overrides==owner->overridden_) {
+                viewCommitted(store,committed);
+                return owner->presentationReady(base.source,base.sequence) ? PresentationStatus{} :
+                    PresentationStatus{PresentationState::Pending,"earlier device delivery or capture is pending",{}};
+            }
             auto next=readImage(store,base,owner->overridden_,tempoRule(owner));
             // The document and the coordinator can see the same key transaction
             // on different ticks. Publish it once, keeping the running readers.
@@ -584,7 +667,7 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
                 if (const auto keyed = owner->refreshDeviceKeys(store, next->viewBytes)) {
                     if (!*keyed) return refused(owner->error());
                     committed = next;
-                    viewCommitted(next);
+                    viewCommitted(store,next);
                     return owner->presentationReady(base.source, base.sequence) ? PresentationStatus{} :
                         PresentationStatus{PresentationState::Pending, "waiting for earlier device delivery", {}};
                 }
@@ -610,7 +693,7 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
                 next->overrides=owner->overridden_;next->snapshot=annotateSnapshot(*next->snapshot,next->overrides);
                 committed=next;
                 for(auto& entry:active){entry->current=false;entry->restoreGeneration.reset();}
-                renderedGeneration.reset();viewCommitted(next);
+                renderedGeneration.reset();viewCommitted(store,next);
                 if(!owner->presentationReady(base.source,base.sequence))return {PresentationState::Pending,"topology realised; earlier device delivery or capture is pending",{}};
                 return {PresentationState::Current,"committed topology adopted; gesture targets require revalidation",{}};
             }
@@ -641,16 +724,24 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
             owner->model_=std::move(nextModel);owner->playbackModel_=std::move(nextPlayback);
             owner->overridden_=std::move(nextOverrides);
             owner->clipProject_=next->clips;owner->transportSettings_=next->transport;owner->cueSettings_=std::move(nextCue);
-            owner->appliedSequence_=base.sequence;viewCommitted(next);
+            owner->appliedSequence_=base.sequence;viewCommitted(store,next);
             return {};
         } catch(const std::exception& error){return refused(error.what());}
     }
     gesture::CaptureResult capture(const Store& store,const Base& base,const OwnerToken& token,gesture::Strategy strategy,
-                                   std::span<const OpRequest> requests) {
+                                   std::span<const OpRequest> requests,const OpPresentationImageGuard* verifiedImage) {
         auto* owner=engine();if(!owner || !project())return {failed(Error::SourceLost,"preview endpoint ended"),{}, {}};
         if(!committed || !sameBase(committed->base,base))return {failed(Error::StaleBase,"preview committed base is stale"),{}, {}};
         try {
             auto changes=patches(requests,strategy);
+            if(verifiedImage && strategy==gesture::Strategy::LiveValues && verifiedImage->image==committed->viewBytes &&
+               std::all_of(changes.begin(),changes.end(),[](const Patch& change){return change.operation=="mixer.setVolume";})) {
+                if(auto image=faderImage(store,*committed,changes)) {
+                    auto value=std::make_unique<Captured>(token,image,committed,strategy,std::move(changes),owner->runtimeEpoch_,false);
+                    image->snapshot=annotateSnapshot(*image->snapshot,suspended({std::make_shared<Active>(*value)}));
+                    return {{},image->snapshot,std::move(value),OpPresentationImageGuard{committed->viewBytes}};
+                }
+            }
             std::set<std::int64_t> trackDelayTargets;
             for (const auto& request : requests) {
                 if (request.opType == "mixer.setDelay")
@@ -677,7 +768,7 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
             const bool delayOnly = !trackDelayTargets.empty() || unchangedReaders;
             auto value=std::make_unique<Captured>(token,image,committed,strategy,std::move(changes),owner->runtimeEpoch_,delayOnly);
             if(strategy==gesture::Strategy::LiveValues)image->snapshot=annotateSnapshot(*image->snapshot,suspended({std::make_shared<Active>(*value)}));
-            return {{},image->snapshot,std::move(value),OpPresentationImageGuard{committed->bytes}};
+            return {{},image->snapshot,std::move(value),OpPresentationImageGuard{committed->viewBytes}};
         } catch(const std::exception& error){return {failed(Error::UnsupportedPreview,error.what()),{}, {}};}
     }
     gesture::PrepareResult prepare(std::unique_ptr<const gesture::CapturedPresentation> raw) {
@@ -780,7 +871,9 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
         try {
             auto actual=readImage(store,base,owner->overridden_,tempoRule(owner));
             const auto entry=*at;
-            if(entry->image->bytes!=actual->bytes || entry->image->cue!=actual->cue || entry->image->transport!=actual->transport) {
+            const bool matching=entry->image->faderOnly ? sameFaderImage(*entry->image,*committed,*actual)
+                                                         : entry->image->bytes==actual->bytes;
+            if(!matching || entry->image->cue!=actual->cue || entry->image->transport!=actual->transport) {
                 const auto status=adopt(store,base,&receipt);
                 if(status.state!=PresentationState::Current)return status;
                 return clear(token);
@@ -794,7 +887,7 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
             owner->clipProject_=actual->clips;owner->appliedSequence_=base.sequence;
             // SQL's actual typed after-image matched the heard material. Keep
             // its resources; removing ownership does not replay the operation.
-            active.erase(at);viewCommitted(actual);
+            active.erase(at);viewCommitted(store,actual);
             if(active.empty())project()->showCommitted();
             else {auto composed=compose(active);std::static_pointer_cast<Audio>(owner->gestureAudio_)->publish(composed.first);project()->showPreview(std::move(composed.second));}
             return {};
@@ -872,7 +965,15 @@ EnginePresentation::EnginePresentation(engine::ProjectView& view,engine::Session
 }
 EnginePresentation::~EnginePresentation()=default;
 PresentationStatus EnginePresentation::adoptCommitted(const Store& store,const Base& base,const AppliedBatch* receipt){return data_->runtime->adopt(store,base,receipt);}
-CaptureResult EnginePresentation::capture(const Store& store,const Base& base,const OwnerToken& owner,Strategy strategy,std::span<const OpRequest> requests){return data_->runtime->capture(store,base,owner,strategy,requests);}
+std::optional<OpPresentationImageGuard> EnginePresentation::adoptedImage(const Base& base) const noexcept {
+    const auto& committed=data_->runtime->committed;
+    if(!committed || !engine::sameBase(committed->base,base) || !committed->viewBytes)return {};
+    return OpPresentationImageGuard{committed->viewBytes};
+}
+CaptureResult EnginePresentation::capture(const Store& store,const Base& base,const OwnerToken& owner,Strategy strategy,
+    std::span<const OpRequest> requests){return data_->runtime->capture(store,base,owner,strategy,requests,nullptr);}
+CaptureResult EnginePresentation::captureVerified(const Store& store,const Base& base,const OwnerToken& owner,Strategy strategy,
+    std::span<const OpRequest> requests,const OpPresentationImageGuard& verifiedImage){return data_->runtime->capture(store,base,owner,strategy,requests,&verifiedImage);}
 PrepareResult EnginePresentation::prepare(std::unique_ptr<const CapturedPresentation> value){return data_->runtime->prepare(std::move(value));}
 PresentationStatus EnginePresentation::publish(std::unique_ptr<PreparedPresentation> value){return data_->runtime->publish(std::move(value));}
 PresentationStatus EnginePresentation::promote(const Store& store,const Base& base,const OwnerToken& owner,const AppliedBatch& receipt){return data_->runtime->promote(store,base,owner,receipt);}

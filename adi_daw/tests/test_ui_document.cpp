@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/audio/wav_file.hpp"
 #include "adi/automation_lanes.hpp"
+#include "adi/blob.hpp"
+#include "adi/edit_plan.hpp"
 #include "adi/engine/clip_details.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/settings/store.hpp"
@@ -12,6 +14,7 @@
 #include "juce/builtin_host.hpp"
 #include "juce/device_core.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <sqlite3.h>
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -25,6 +28,7 @@
 #include <cstdlib>
 #include <iterator>
 #include <optional>
+#include <string_view>
 #include <thread>
 #if !defined(_WIN32)
 #include <sys/stat.h>
@@ -2332,6 +2336,168 @@ void trackRenderLifecycle(const std::filesystem::path &dir) {
               "one Undo gives back the original unfrozen track");
     doc->release();
 }
+
+// SC-409 to SC-411. Count scans as well as elapsed time so the failure is
+// reproducible on slow and fast builders. Indexed reads for the edited clip
+// and rebuilding the containing track are allowed by the scan budget.
+void largeSongResponse(const std::filesystem::path &dir) {
+    constexpr int firstTrack = 11, trackCount = 40, firstClip = 100, clipCount = 2000;
+    constexpr std::int64_t clipLength = 3072;
+    std::string error;
+    const auto file = dir / "large-song.adi";
+    auto doc = ui::ProjectDocument::open(file, true, {}, error);
+    check(doc != nullptr, "large song: create a project");
+    if (!doc)
+        return;
+    {
+        std::vector<OpRequest> tracks;
+        for (int track = firstTrack; track < firstTrack + trackCount; ++track) {
+            OpRequest request;
+            request.opType = "track.create";
+            request.payload = {{"id", track}, {"kind", "midi"}, {"name", "Song track"}};
+            tracks.push_back(std::move(request));
+        }
+        if (!doc->ops().submit(std::move(tracks)).ok) {
+            check(false, "large song: create 40 tracks");
+            return;
+        }
+        std::array<NoteRecord, 25> notes{};
+        for (std::size_t i = 0; i < notes.size(); ++i) {
+            notes[i].start_ticks = static_cast<std::int64_t>(i) * 96;
+            notes[i].dur_ticks = 72;
+            notes[i].note_id = i + 1;
+            notes[i].key = 60;
+            notes[i].vel_on = 100;
+            notes[i].probability = 10000;
+        }
+        const auto bytes = writeStream<NoteRecord>(FourCC::Notes, notes, 1, StreamFlags::SortedByTime);
+        auto &db = doc->store().db();
+        SQLite::Transaction seed(db);
+        SQLite::Statement clip(db, "INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks) VALUES(?,?,'midi',?,?)");
+        for (int i = 0; i < clipCount; ++i) {
+            const int id = firstClip + i;
+            clip.bind(1, id);
+            clip.bind(2, firstTrack + i % trackCount);
+            clip.bind(3, (i / trackCount) * clipLength);
+            clip.bind(4, clipLength);
+            clip.exec();
+            clip.reset();
+            if (!doc->store().putEventStream(id, "notes", bytes)) {
+                check(false, "large song: write the MIDI stream");
+                return;
+            }
+        }
+        seed.commit();
+    }
+    doc.reset();
+    doc = ui::ProjectDocument::open(file, false, {}, error);
+    check(doc && doc->session().model().clips.size() == clipCount &&
+              doc->session().model().notes.size() == clipCount * 25,
+          "large song: load 2,000 clips with 50,000 notes");
+    if (!doc)
+        return;
+    struct Scans {
+        int statements = 0;
+        int steps = 0;
+    };
+    auto *db = doc->store().db().getHandle();
+    const auto measure = [&](const char *action, auto &&perform, std::size_t repetitions = 3, bool checkScans = true) {
+        Scans scans;
+        std::vector<double> durations(repetitions);
+        const auto trace = [](unsigned, void *data, void *statement, void *) -> int {
+            auto *stmt = static_cast<sqlite3_stmt *>(statement);
+            const auto *text = sqlite3_sql(stmt);
+            if (!text)
+                return 0;
+            const std::string_view sql(text);
+            if (sql.find("event_streams") == sql.npos && sql.find("FROM clips") == sql.npos &&
+                sql.find("FROM \"clips\"") == sql.npos)
+                return 0;
+            const int steps = sqlite3_stmt_status(stmt, SQLITE_STMTSTATUS_FULLSCAN_STEP, 1);
+            auto &count = *static_cast<Scans *>(data);
+            count.statements += steps > 0;
+            count.steps += steps;
+            return 0;
+        };
+        bool ok = true;
+        for (std::size_t i = 0; i < durations.size(); ++i) {
+            sqlite3_trace_v2(db, SQLITE_TRACE_PROFILE, trace, &scans);
+            const auto start = std::chrono::steady_clock::now();
+            const bool performed = perform(static_cast<int>(i));
+            durations[i] = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+            sqlite3_trace_v2(db, 0, nullptr, nullptr);
+            ok = ok && performed;
+        }
+        std::sort(durations.begin(), durations.end());
+        std::printf("Large song %s: %.2f ms median, %d scan statements, %d scan steps across %zu calls\n",
+                    action, durations[durations.size() / 2], scans.statements, scans.steps, durations.size());
+        check(ok, action);
+        if (checkScans)
+            check(scans.steps < clipCount / 2, "large song: action does not scan unrelated clips or MIDI streams");
+    };
+    const auto submit = [&](std::string operation, Payload payload) {
+        OpRequest request;
+        request.opType = std::move(operation);
+        request.payload = std::move(payload);
+        return doc->ops().submit(std::move(request)).ok;
+    };
+    const auto graphBeforeRename = doc->session().graph().stats().published;
+    const auto untouchedMidi = doc->session().midiClips()->sourcesFor(firstTrack + 1).front();
+    measure("rename", [&](int i) {
+        return submit("track.rename", {{"id", firstTrack}, {"name", "Renamed " + std::to_string(i)}}) &&
+               doc->synchronise();
+    });
+    check(doc->view().current()->findTrack(firstTrack)->name == "Renamed 2", "large song: rename reaches the view");
+    check(doc->session().graph().stats().published == graphBeforeRename, "large song: rename leaves the playing graph in place");
+    measure("move clip", [&](int i) {
+        return submit("clip.move", {{"id", firstClip}, {"to", i + 1}, {"track", firstTrack}}) && doc->synchronise();
+    });
+    check(doc->view().current()->findTrack(firstTrack)->clips.front()->posTicks == 3,
+          "large song: edited clip reaches the view");
+    measure("insert note", [&](int i) {
+        return submit("note.insert", {{"clip", firstClip}, {"note", 30 + i}, {"start", 48 + i}, {"dur", 24},
+                                       {"key", 62}}) && doc->synchronise();
+    });
+    check(doc->session().model().notes.size() == clipCount * 25 + 3, "large song: inserted notes reach the engine");
+    check(doc->session().midiClips()->sourcesFor(firstTrack + 1).front() == untouchedMidi,
+          "large song: MIDI edits retain the source on an untouched track");
+    constexpr std::int64_t lastClipIndex = clipCount / trackCount - 1;
+    constexpr auto lastClip = firstClip + lastClipIndex * trackCount;
+    constexpr auto lastPosition = lastClipIndex * clipLength;
+    const std::array<std::int64_t, 1> movedTracks{firstTrack};
+    const auto scope = edit_plan::materialScope(movedTracks, edit_plan::PlacementClock::Ticks,
+                                               {lastPosition, lastPosition + clipLength + 7});
+    const std::array<edit_plan::Move, 1> positions{{{lastClip, {firstTrack, std::nullopt}, {0, lastPosition + 7}}}};
+    auto prepared = edit_plan::prepareMove(doc->store(), scope, positions, {});
+    check(prepared.ok && prepared.requests.size() == 1, "large song: prepare the Arrangement's clip move");
+    measure("commit prepared clip move", [&](int) {
+        return doc->ops().commitPrepared(std::move(prepared), [](Store& store, clip_edit::PreparedEdit& edit, Actor actor) {
+                   return clip_edit::commitPrepared(store, edit, actor);
+               }).ok && doc->synchronise();
+    }, 1);
+    check(doc->view().current()->findTrack(firstTrack)->clips.back()->posTicks == lastPosition + 7,
+          "large song: the prepared clip move reaches the view");
+    const auto undoCount = [&] { return doc->store().db().execAndGet("SELECT count(*) FROM ops").getInt(); };
+    const auto beforeDrag = undoCount();
+    const gesture::RelativeScalarSelection fader{gesture::ScalarKind::TrackVolume, firstTrack, {}, {-70, 6, -150}};
+    measure("mixer begin", [&](int) { return doc->beginMixerDrag(fader, -6, "Change Track Volume"); }, 1, false);
+    measure("mixer move and tick", [&](int i) {
+        const bool ok = doc->mixerDrag(-7 - i);
+        doc->tick(i);
+        return ok;
+    });
+    check(undoCount() == beforeDrag && doc->view().current()->findTrack(firstTrack)->volumeDb == -9,
+          "large song: preview follows the fader and leaves SQLite history alone");
+    measure("mixer release", [&](int) { return doc->endMixerDrag(); }, 1, false);
+    check(undoCount() == beforeDrag + 1, "large song: fader release lands one op");
+    const auto afterDrag = undoCount();
+    measure("play/stop before mailbox", [&](int i) {
+        const bool play = i % 2 == 0;
+        return submit(play ? "transport.play" : "transport.stop", Payload::object()) &&
+               doc->mailbox().post(play ? ui::TransportMailbox::Command::Play : ui::TransportMailbox::Command::Stop);
+    });
+    check(doc->mailbox().desiredPlaying() && undoCount() == afterDrag + 3, "large song: transport reaches mailbox and journal");
+}
 void peakSpans() {
     media::MediaPeaks p;
     p.channels = 2;
@@ -2605,6 +2771,11 @@ int main(int argc, char **argv) {
         }
         return 0;
     }
+    if (argc == 2 && std::string_view(argv[1]) == "--large-song-speed-only") {
+        test::TempDirectory speedDir("ui_document", "large-song");
+        largeSongResponse(speedDir.path());
+        return failures != 0;
+    }
     peakSpans();
     punchedWaveformBounds();
     recordedWaveformHandoff();
@@ -2641,6 +2812,8 @@ int main(int argc, char **argv) {
         playRightAfterAStoppedCommit(stoppedDir.path());
         test::TempDirectory renderDir("ui_document", "track-render");
         trackRenderLifecycle(renderDir.path());
+        test::TempDirectory speedDir("ui_document", "large-song");
+        largeSongResponse(speedDir.path());
     }
     test::TempDirectory temp("ui_document", "lifetime");
     std::string error;

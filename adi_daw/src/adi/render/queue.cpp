@@ -562,6 +562,12 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
             cancellation(control);
         };
         progress();
+        if (!session.clips()->waitForWarp(control.stop)) {
+            cancellation(control);
+            std::string why = "export Warp preparation failed";
+            for (const auto& problem : session.clips()->decodeProblems()) why += "; " + problem;
+            throw std::runtime_error(why);
+        }
         // Signed output latency may map a requested position before transport
         // zero: that is silence, not a negative locate (which clamps).
         if (rawBegin < 0) {

@@ -10,6 +10,7 @@
 // mechanics. ADR-0122.
 
 #include "adi/engine/session.hpp"
+#include "adi/engine/project_view.hpp"
 
 #include "adi/store.hpp"
 #include "adi/textproj.hpp"
@@ -753,9 +754,14 @@ void Session::attach(std::shared_ptr<const TimingView> timing) {
         FeedbackLoop* loop = strips_.loopFor(routingId);
         return loop == nullptr ? FeedbackNodes{} : FeedbackNodes{&loop->writer(), &loop->reader()};
     };
-    auto* clipSource = clips();
-    auto* midiSource = midi_.get();
-    rs.sourcesFor = [this, clipSource, midiSource, timing=std::move(timing)](std::int64_t id) {
+    rs.sourcesFor = playbackSources(clips(), midi_.get(), std::move(timing));
+    rs.monitors=cueMonitor_.points([this](std::int64_t id,Tap tap){return tapFor(id,tap);});
+    devices_.attachHost(graph_, std::move(rs));
+}
+
+SourceFn Session::playbackSources(ClipPlayback* clipSource, MidiClips* midiSource,
+                                  std::shared_ptr<const TimingView> timing) {
+    return [this, clipSource, midiSource, timing=std::move(timing)](std::int64_t id) {
         auto nodes = sources_ && !frozenSources_.contains(id) ? sources_(id) : std::vector<Node *>{};
         if (auto* monitor = timing->inputMonitorSource(id)) nodes.push_back(monitor);
         if (clipSource) {
@@ -769,8 +775,6 @@ void Session::attach(std::shared_ptr<const TimingView> timing) {
         }
         return nodes;
     };
-    rs.monitors=cueMonitor_.points([this](std::int64_t id,Tap tap){return tapFor(id,tap);});
-    devices_.attachHost(graph_, std::move(rs));
 }
 
 bool Session::validateDeviceKey(const rows::Model& candidate,std::string& error) {
@@ -1594,6 +1598,96 @@ std::map<std::int64_t, StripValues> stripValues(const rows::Model& m) {
 }
 }  // namespace
 
+std::optional<bool> Session::refreshLocalEdit(const Store& store, const ProjectView& view) {
+    using Kind = ProjectView::LocalEdit::Kind;
+    const auto& delta = view.localEdit();
+    const auto source = adi::appliedSource(store);
+    if (!delta || !live_ || !appliedSource_.sameConnection(source) || !view.storeCurrent(store) ||
+        gestureHoldsExternalTempo(gestureRuntime_) || !model_.problems.empty()) return {};
+    if (delta->kind == Kind::TrackName) {
+        const auto byId = [&](const rows::Track& track) { return track.id == delta->id; };
+        const auto authored = std::find_if(model_.tracks.begin(), model_.tracks.end(), byId);
+        const auto playback = std::find_if(playbackModel_.tracks.begin(), playbackModel_.tracks.end(), byId);
+        if (authored == model_.tracks.end() || playback == playbackModel_.tracks.end()) return {};
+        auto name = delta->name;
+        auto playbackName = delta->name;
+        authored->name.swap(name);
+        playback->name.swap(playbackName);
+        appliedSequence_ = source.sequence();
+        error_.clear();
+        return true;
+    }
+    if (delta->kind == Kind::Transport || !midi_ || !clipProject_ || gestureClips(gestureRuntime_) ||
+        !frozenSources_.empty() || !frozenGroupChildren_.empty()) return {};
+    const auto timing = std::dynamic_pointer_cast<const TimingView>(devices_.rebuildSpec().transportState);
+    if (!timing) return {};
+    const bool honorMonitoring = spec_.performanceState && !spec_.exporting;
+    const auto byId = [&](const rows::Clip& clip) { return clip.id == delta->id && clip.kind == "midi"; };
+    const auto authored = std::find_if(model_.clips.begin(), model_.clips.end(), byId);
+    if (authored == model_.clips.end()) return {};
+    try {
+        auto candidate = playbackModel_;
+        const auto clip = std::find_if(candidate.clips.begin(), candidate.clips.end(), byId);
+        if (clip == candidate.clips.end()) return {};
+        std::set<std::int64_t> affected{clip->trackId};
+        std::vector<rows::Note> authoredNotes;
+        if (delta->kind == Kind::MidiPlacement) {
+            // A clip-local automation stream moves with the clip. Its clock
+            // changes the existing full automation generation as well.
+            if (authored->trackId != delta->fromTrack || clip->trackId != delta->fromTrack ||
+                std::any_of(model_.automationData.begin(), model_.automationData.end(),
+                            [&](const auto& data) { return data.clipId == delta->id; })) return {};
+            affected.insert(delta->toTrack);
+            // The published timing view holds the old clip ranges for armed
+            // Auto tracks. Rebuild it when moving a clip changes those ranges.
+            if (honorMonitoring && std::any_of(model_.tracks.begin(), model_.tracks.end(), [&](const rows::Track& track) {
+                    return affected.contains(track.id) && track.recordArmed && track.monitorMode == 2 &&
+                           (track.kind == "midi" || track.kind == "instrument");
+                }))
+                return {};
+            clip->trackId = delta->toTrack;
+            clip->posTicks = delta->position;
+        } else {
+            rows::Model material;
+            rows::readClipNotes(material, store, delta->id);
+            if (material.notes.empty() || !material.problems.empty()) return {};
+            const auto replaceNotes = [&](std::vector<rows::Note>& notes) {
+                const auto byClip = [](const rows::Note& note, std::int64_t id) { return note.clipId < id; };
+                const auto first = std::lower_bound(notes.begin(), notes.end(), delta->id, byClip);
+                const auto last = std::find_if(first, notes.end(), [&](const auto& note) { return note.clipId != delta->id; });
+                notes.insert(notes.erase(first, last), material.notes.begin(), material.notes.end());
+            };
+            const auto byClipOrder = [](const rows::Note& a, const rows::Note& b) { return a.clipId < b.clipId; };
+            if (!std::is_sorted(candidate.notes.begin(), candidate.notes.end(), byClipOrder) ||
+                !std::is_sorted(model_.notes.begin(), model_.notes.end(), byClipOrder)) return {};
+            replaceNotes(candidate.notes);
+            authoredNotes = candidate.notes;
+        }
+        auto midi = std::make_shared<MidiClips>(candidate, transport_, spec_.sampleRate, midiState_,
+            eventPathFor(model_), clipNoteExpressions(*clipProject_), honorMonitoring, midi_.get(), affected);
+        if (!view.storeCurrent(store)) return {};
+        if (!devices_.publishSources(candidate, playbackSources(clips_.get(), midi.get(), timing))) return {};
+        // The graph now owns the affected MIDI sources and the old timing.
+        // No subsequent housekeeping failure can roll back that publication.
+        midi_ = std::move(midi);
+        if (delta->kind == Kind::MidiPlacement) {
+            authored->trackId = delta->toTrack;
+            authored->posTicks = delta->position;
+        } else model_.notes.swap(authoredNotes);
+        playbackModel_ = std::move(candidate);
+        appliedSequence_ = source.sequence();
+        ++stats_.rebuilds;
+        error_.clear();
+    } catch (const std::exception&) { return {}; }
+    try {
+        presentationPending_ = !cueMonitor_.publish(cueSettings_, spec_.sampleRate, spec_.maxFrames, spec_.channels,
+                                                    spec_.performanceState, graph_.currentGraph());
+        attachTaps();
+        refreshProblems();
+    } catch (const std::exception&) { presentationPending_ = true; }
+    return true;
+}
+
 bool Session::refresh(const Store& store) {
     if(const auto handled=refreshGestureRuntime(gestureRuntime_,store))return *handled;
     error_.clear();
@@ -2311,6 +2405,8 @@ bool Session::readDriverClock(DriverClock& result) const noexcept {
 // commits `transport.play` before it posts Play, and the generation that commit builds
 // while stopped could be published just after the driver started, cold, so the second
 // block of playback was silent. Only while a driver runs: with no device nothing plays.
+// An unfinished Warp render must not hold the owner here. Prime the other
+// sources and post the Warp page requests so its worker can join when ready.
 void Session::primeWhilePlaying(ClipPlayback& clips, const TimingView& timing) {
     DriverClock clock;
     if (driverClockSequence_.load() == 0 || !readDriverClock(clock)) return;
@@ -2320,12 +2416,12 @@ void Session::primeWhilePlaying(ClipPlayback& clips, const TimingView& timing) {
     requested.play();
     constexpr auto timeout = std::chrono::milliseconds(100);
     if (!timing.settings.hasLoop || !timing.settings.loopEnabled) {
-        (void)clips.primeAt(requested, timeout);
+        (void)clips.primeAt(requested, timeout, false);
         return;
     }
     Transport loopHead = requested;
     loopHead.locate(timing.loopBegin);
-    (void)clips.primeAt(requested, loopHead, timeout);
+    (void)clips.primeAt(requested, loopHead, timeout, false);
 }
 
 Session::RenderBlock::RenderBlock(Session& session) noexcept

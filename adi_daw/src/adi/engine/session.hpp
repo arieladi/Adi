@@ -206,6 +206,9 @@ public:
     /// chain but kept alive, because a graph the audio thread may still be
     /// rendering holds their nodes. Then rebuild.
     bool refresh(const Store& store);
+    /// Apply a single material edit admitted by the document's current view.
+    /// Empty means the ordinary refresh path must handle the edit.
+    std::optional<bool> refreshLocalEdit(const Store&, const ProjectView&);
 
     /// Plan, realise, prepare and publish a new graph from the current model.
     bool rebuild();
@@ -494,6 +497,7 @@ private:
     friend std::shared_ptr<const GestureControls> nativeGestureControls(Session&);
     friend class gesture::EnginePresentation;
     struct TimingView;
+    SourceFn playbackSources(ClipPlayback*, MidiClips*, std::shared_ptr<const TimingView>);
     struct InputMonitors;
     void attach(std::shared_ptr<const TimingView>);
     void prepareInputMonitors(TimingView&, const rows::Model&, ClipPlayback&);
