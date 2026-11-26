@@ -1635,14 +1635,14 @@ std::int64_t AdiRootComponent::timelineTick() const noexcept {
     const double rate = sampleRate_ > 0 ? sampleRate_ : reader_->sampleRate();
     return tempo && rate > 0 ? tempo->secondsToTicks(static_cast<double>(position_) / rate) : 0;
 }
-bool AdiRootComponent::locate(std::int64_t tick) {
+bool AdiRootComponent::locate(std::int64_t tick, bool fromInsertMarker) {
     // Landing reads the current cell, not this window's presented frame.
     const auto current = view_.current();
     const double rate = mailbox_.sampleRate() > 0 ? mailbox_.sampleRate() : current->sampleRate;
     if (!current->tempo || !mailbox_.hasRoom())
         return false;
-    const bool posted = mailbox_.post(TransportMailbox::Command::Locate,
-                                      static_cast<std::int64_t>(current->tempo->ticksToSeconds(tick) * rate));
+    const auto command = fromInsertMarker ? TransportMailbox::Command::LocateMarker : TransportMailbox::Command::Locate;
+    const bool posted = mailbox_.post(command, static_cast<std::int64_t>(current->tempo->ticksToSeconds(tick) * rate));
     return posted;
 }
 bool AdiRootComponent::playFrom(std::int64_t tick) {
@@ -4091,7 +4091,7 @@ void placeInsertMarker(ArrangementView &arrangement, std::int64_t tick) {
     sel.clip = 0;
     sel.pickedClips.clear();
     sel.marked = true;
-    arrangement.locate();
+    arrangement.root.locate(tick);
 }
 } // namespace
 bool AdiRootComponent::setPositionAt(const std::string &text) {
@@ -4360,7 +4360,8 @@ bool AdiRootComponent::command(int id) {
             return fail(result.error);
         if (fromMarker)
             locate(arrangement.geometry.selection.insert);
-        mailbox_.post(play ? TransportMailbox::Command::Play : TransportMailbox::Command::Stop);
+        using Command = TransportMailbox::Command;
+        mailbox_.post(!play ? Command::Stop : fromMarker ? Command::Play : Command::Continue);
         break;
     }
     case AppCommands::ArrangementRecord:

@@ -32,17 +32,22 @@ void freeing(void* p) noexcept {
     if (p != nullptr && inAudio.load(std::memory_order_relaxed)) audioFrees.fetch_add(1, std::memory_order_relaxed);
 }
 }
-void* operator new(std::size_t n) {
+#if defined(__GNUC__) && !defined(__clang__)
+#define ADI_TEST_NOINLINE __attribute__((noinline))
+#else
+#define ADI_TEST_NOINLINE
+#endif
+ADI_TEST_NOINLINE void* operator new(std::size_t n) {
     allocation();
     if (void* p = std::malloc(n == 0 ? 1 : n)) return p;
     throw std::bad_alloc();
 }
-void* operator new[](std::size_t n) { return operator new(n); }
-void operator delete(void* p) noexcept { freeing(p); std::free(p); }
-void operator delete[](void* p) noexcept { operator delete(p); }
-void operator delete(void* p, std::size_t) noexcept { operator delete(p); }
-void operator delete[](void* p, std::size_t) noexcept { operator delete(p); }
-void* operator new(std::size_t n, std::align_val_t alignment) {
+ADI_TEST_NOINLINE void* operator new[](std::size_t n) { return operator new(n); }
+ADI_TEST_NOINLINE void operator delete(void* p) noexcept { freeing(p); std::free(p); }
+ADI_TEST_NOINLINE void operator delete[](void* p) noexcept { operator delete(p); }
+ADI_TEST_NOINLINE void operator delete(void* p, std::size_t) noexcept { operator delete(p); }
+ADI_TEST_NOINLINE void operator delete[](void* p, std::size_t) noexcept { operator delete(p); }
+ADI_TEST_NOINLINE void* operator new(std::size_t n, std::align_val_t alignment) {
     allocation();
     const auto a = static_cast<std::size_t>(alignment);
 #ifdef _WIN32
@@ -53,8 +58,8 @@ void* operator new(std::size_t n, std::align_val_t alignment) {
 #endif
     throw std::bad_alloc();
 }
-void* operator new[](std::size_t n, std::align_val_t a) { return operator new(n, a); }
-void operator delete(void* p, std::align_val_t) noexcept {
+ADI_TEST_NOINLINE void* operator new[](std::size_t n, std::align_val_t a) { return operator new(n, a); }
+ADI_TEST_NOINLINE void operator delete(void* p, std::align_val_t) noexcept {
     freeing(p);
 #ifdef _WIN32
     _aligned_free(p);
@@ -62,9 +67,10 @@ void operator delete(void* p, std::align_val_t) noexcept {
     std::free(p);
 #endif
 }
-void operator delete[](void* p, std::align_val_t a) noexcept { operator delete(p, a); }
-void operator delete(void* p, std::size_t, std::align_val_t a) noexcept { operator delete(p, a); }
-void operator delete[](void* p, std::size_t, std::align_val_t a) noexcept { operator delete(p, a); }
+ADI_TEST_NOINLINE void operator delete[](void* p, std::align_val_t a) noexcept { operator delete(p, a); }
+ADI_TEST_NOINLINE void operator delete(void* p, std::size_t, std::align_val_t a) noexcept { operator delete(p, a); }
+ADI_TEST_NOINLINE void operator delete[](void* p, std::size_t, std::align_val_t a) noexcept { operator delete(p, a); }
+#undef ADI_TEST_NOINLINE
 
 namespace {
 using namespace adi;

@@ -223,7 +223,7 @@ void slotMode() {
         // published anyway, key 60 would play both slots below.
         auto refused = zones;
         refused[2].key = {0, 127, 0, 0};
-        refused[4].samples = {1.f};
+        refused[4].samples.assign(1, 1.f);
         check(!d.publishSlotZones(refused), "a zone holding samples is refused");
         refused[4].samples.clear();
         refused[4].key = {80, 20, 0, 0};
