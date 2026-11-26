@@ -729,12 +729,19 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
     case DetachMixView: // ADR-0209 d11: docked in the centre, or in a window onto any display
         info.setTicked(active_ != nullptr && active_->state().mixViewDetached);
         break;
-    case ToggleReferenceTrack: // ADR-0209 §4, d11: the reference track, hidden by default
-        info.setTicked(active_ != nullptr && active_->state().showReference);
+    case ToggleReferenceTrack: { // ADR-0209 §4, d11: the reference track, hidden by default
+        const bool assigned = active_ != nullptr && active_->referenceTrack() != 0;
+        info.setActive(assigned);
+        info.setTicked(assigned && active_->state().showReference);
+        if (!assigned)
+            info.description = AdiRootComponent::kNoReferenceTrack;
         break;
+    }
     case PlayReference: // ADR-0209 d9: [REF] and Shift+R; Ctrl+R stays Rename
         info.addDefaultKeypress('r', shift);
-        info.setTicked(active_ != nullptr && active_->reference().on());
+        info.setActive(false);
+        info.description = active_ != nullptr && active_->referenceTrack() != 0
+            ? AdiRootComponent::kReferencePlaybackUnavailable : AdiRootComponent::kNoReferenceTrack;
         break;
     case InsertReturnTrack: // §18.4, §42.19: Ctrl/Cmd+Alt+T
         info.addDefaultKeypress('t', cmd | juce::ModifierKeys::altModifier);
@@ -2089,21 +2096,22 @@ void AdiRootComponent::setMixProvider(const MixViewProvider &provider) {
     arrangement.firstShownIfHidden();
     dirty_.mark(DirtySet::All);
 }
-std::int64_t AdiRootComponent::referenceTrack() const noexcept { return mixProvider_->reference(reader().tracks()); }
-bool AdiRootComponent::referenceKey(bool down, std::int64_t nowMs) {
-    const bool was = reference_.on();
-    if (down)
-        reference_.press(nowMs);
-    else
-        reference_.release(nowMs);
-    if (reference_.on() == was)
-        return false;
-    // What sounds is the engine's: the reference on the cue path, the Main bypassed (N23).
-    say(!reference_.on()             ? "Reference off."
-        : referenceTrack() == 0     ? "No track is the Reference yet: a track's role arrives with the format (N38)."
-                                    : "Reference on: it plays on the cue path once the engine routes it (N23).");
-    dirty_.mark(DirtySet::Layout);
-    return true;
+std::int64_t AdiRootComponent::referenceTrack() const noexcept { return referenceTrack(reader()); }
+void AdiRootComponent::addReferenceCommand(juce::PopupMenu &menu, int command) {
+    const bool assigned = referenceTrack() != 0;
+    juce::String label;
+    if (command == AppCommands::PlayReference)
+        label = assigned ? "Play Reference (no monitor connection)" : "Play Reference (no track assigned)";
+    else if (!assigned)
+        label = "Reference Track (no track assigned)";
+    menu.addCommandItem(&commands_.manager, command, std::move(label));
+}
+std::int64_t AdiRootComponent::referenceTrack(const SnapshotReader &snapshot) const noexcept {
+    const auto provided = mixProvider_->reference(snapshot.tracks());
+    if (provided != 0 && snapshot.findTrack(provided)) return provided;
+    if (const auto *current = snapshot.get(); current && snapshot.findTrack(current->cue.projectReferenceTrack))
+        return current->cue.projectReferenceTrack;
+    return 0;
 }
 bool AdiRootComponent::keyStateChanged(bool isKeyDown) {
     const auto now = input.ms();
@@ -2111,9 +2119,6 @@ bool AdiRootComponent::keyStateChanged(bool isKeyDown) {
     bool handled = false;
     if (latch_.held() && !input.down(latch_.key()))
         handled = latchKey(0, latch_.key(), false, now);
-    // Shift+R let go: a hold of the ★ Reference ends, a tap latches it (ADR-0209 d9).
-    if (reference_.held() && !input.down('r'))
-        return referenceKey(false, now) || handled;
     return handled || juce::Component::keyStateChanged(isKeyDown);
 }
 bool AdiRootComponent::latches(int command) noexcept {
@@ -4792,6 +4797,8 @@ bool AdiRootComponent::command(int id) {
         mixViewPanel.stack.focus(arrangement.geometry.selection.track);
         break;
     case AppCommands::ToggleReferenceTrack:
+        if (referenceTrack(SnapshotReader(view_.current())) == 0)
+            return fail(kNoReferenceTrack);
         state_.showReference = !state_.showReference;
         if (!persist()) {
             state_.showReference = !state_.showReference;
@@ -4801,15 +4808,7 @@ bool AdiRootComponent::command(int id) {
         arrangement.firstShownIfHidden();
         break;
     case AppCommands::PlayReference:
-    {
-        // The key goes down; keyStateChanged lets it go. From a menu, a tap: up at the moment it went
-        // down, however long the machine took between the two (DF-W18).
-        const auto now = input.ms();
-        referenceKey(true, now);
-        if (!input.down('r'))
-            referenceKey(false, now);
-        return true;
-    }
+        return fail(referenceTrack(SnapshotReader(view_.current())) == 0 ? kNoReferenceTrack : kReferencePlaybackUnavailable);
     case AppCommands::ToggleMixView:
         return setMixView(!state_.mixView, state_.mixViewDetached);
     case AppCommands::ToggleClipView:
@@ -5206,6 +5205,8 @@ class ShellMenu final : public juce::MenuBarModel {
                         menu.addSubMenu("Arrangement Track Controls", root.trackControlsMenu());
                     else if (id == kMixerControlsMenu)
                         menu.addSubMenu("Mixer Controls", root.mixerOptionsMenu(true));
+                    else if (id == AppCommands::ToggleReferenceTrack || id == AppCommands::PlayReference)
+                        root.addReferenceCommand(menu, id);
                     else
                         menu.addCommandItem(&commands.manager, id);
                 }

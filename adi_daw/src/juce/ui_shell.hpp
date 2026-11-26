@@ -14,7 +14,6 @@
 #include "adi/ui/loop_edits.hpp"
 #include "adi/ui/op_submitter.hpp"
 #include "adi/ui/momentary_latch.hpp"
-#include "adi/ui/reference_audition.hpp"
 #include "adi/ui/recording_edits.hpp"
 #include "adi/ui/tap_tempo.hpp"
 #include "ui_input_clock.hpp"
@@ -652,9 +651,6 @@ class AdiRootComponent final : public juce::Component,
     // Device rows and native functions come from their real authored chains.
     const MixViewProvider &mixProvider() const noexcept { return *mixProvider_; }
     void setMixProvider(const MixViewProvider &);
-    // The ★ Reference's [REF] and Shift+R, down or up at a time in milliseconds (ADR-0209 d9): a
-    // tap latches, a hold auditions. True when the reference's state changed.
-    bool referenceKey(bool down, std::int64_t nowMs);
     // Live's momentary latching (§42.25) for S, F1…F8, Z and B: the key goes down and its command runs,
     // once, however long it is held; it comes up after 500 ms or more and the window goes back: the
     // solo or the activator's step is undone while it is still the latest, and zoom or Draw Mode goes back.
@@ -662,12 +658,14 @@ class AdiRootComponent final : public juce::Component,
     bool latchKey(int command, int keyCode, bool down, std::int64_t nowMs);
     const MomentaryLatch &latch() const noexcept { return latch_; }
     void letGoUnseen() noexcept { latch_.letGo(); }
-    const ReferenceAudition &reference() const noexcept { return reference_; }
     // Where the window reads the time and the keys held (ADR-0231 d2; DF-W18): the system's unless a
     // test gives its own.
     InputClock input;
     // The ★ Reference track, or 0 when no track is it.
     std::int64_t referenceTrack() const noexcept;
+    void addReferenceCommand(juce::PopupMenu &, int command);
+    static constexpr auto kNoReferenceTrack = "No Reference track is assigned.";
+    static constexpr auto kReferencePlaybackUnavailable = "Reference playback needs an audio engine connection in this window.";
     MixerViewResizer mixerViewResizer{*this};
     // Live's strip down the arrangement's outer edge: the view switches and the track height.
     SideStrip strip;
@@ -913,6 +911,7 @@ class AdiRootComponent final : public juce::Component,
 
   private:
     void globalFocusChanged(juce::Component *) override;
+    std::int64_t referenceTrack(const SnapshotReader &) const noexcept;
     std::vector<std::int64_t> trackAutomationLanes(std::int64_t track);
     bool deleteAutomationLanes(const std::vector<std::int64_t> &, const char *label);
     enum class TrackRenderAction { Freeze, Unfreeze, Flatten, BounceToNewTrack, BounceInPlace };
@@ -999,7 +998,6 @@ class AdiRootComponent final : public juce::Component,
     void finishImport(const std::string &why);
     MixViewProvider defaultMixProvider_;
     const MixViewProvider *mixProvider_ = &defaultMixProvider_;
-    ReferenceAudition reference_;
     MomentaryLatch latch_;
     bool drawBeforeLatch_ = false, trimBeforeDrawLatch_ = false;
     TapTempo tap_;

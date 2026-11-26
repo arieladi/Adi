@@ -1249,7 +1249,8 @@ juce::PopupMenu ArrangementView::projectViewMenu() {
         }
     // The ★ Reference track's toggle (ADR-0209 §4, d11), hidden by default.
     menu.addSeparator();
-    menu.addCommandItem(&root.commands().manager, AppCommands::ToggleReferenceTrack);
+    root.commands().activate(root);
+    root.addReferenceCommand(menu, AppCommands::ToggleReferenceTrack);
     return menu;
 }
 const SnapshotReader &ArrangementView::reader() const { return root.reader(); }

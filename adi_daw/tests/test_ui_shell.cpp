@@ -559,8 +559,8 @@ void liveParity(AppCommands &commands, const std::filesystem::path &dir, bool wr
     check(before.size() == 5 && before[0].first == "Project" && before[0].second && before[1].first == "Body" &&
               before[2].first == "Fx" && !before[2].second && !root.namesBar.show.getToggleState(),
           "the project view's menu: the whole project, ticked, then its groups as a tree");
-    check(before[4].first == "Reference Track" && !before[4].second,
-          "and, after them, the Reference track's toggle, off (ADR-0209 d11: hidden by default)");
+    check(before.size() == 5 && before[4].first == "Reference Track (no track assigned)" && !before[4].second,
+          "the project menu explains why Reference visibility is unavailable");
     auto &lanes = root.arrangement.geometry;
     lanes.selection.track = 2;
     choose("Fx");
@@ -15888,8 +15888,8 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
               "the existing channel command lands on the real model row");
         check(surface.scope() == "Project", "the rows follow the project scope");
     }
-    // The ★ Reference (ADR-0209 §4, d9, d11): its strip in the Mix View, hidden from the project view
-    // until [Reference Track] shows it, [REF] and Shift+R, a tap to latch, a hold to audition.
+    // The ★ Reference (ADR-0209 §4, d9, d11): visibility requires an assigned track, and the
+    // audition surface waits for a connection to the engine's monitor path.
     {
         commands.activate(root);
         juce::ApplicationCommandInfo refInfo(AppCommands::PlayReference);
@@ -15900,18 +15900,35 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                   refInfo.defaultKeypresses[0] == juce::KeyPress('r', juce::ModifierKeys::shiftModifier, 0) &&
                   renameInfo.defaultKeypresses[0] == juce::KeyPress('r', juce::ModifierKeys::commandModifier, 0),
               "Play Reference on Shift+R; Ctrl/Cmd+R stays Live's Rename (d9)");
-        check(root.referenceTrack() == 0 && panel.referenceText() == "None yet",
-              "the stub names no Reference track until the format carries a track's role (N38)");
-        // The window's clock is the test's (ADR-0231 d2; DF-W18): no key is held, and every reading is
-        // 300 ms after the last, slower than any machine; the menu's Play Reference is still a tap.
-        auto clockMs = std::make_shared<std::int64_t>(0);
-        root.input.keyDown = [](int) { return false; };
-        root.input.now = [clockMs] { return *clockMs += 300; };
-        check(root.keyPressed(juce::KeyPress('r', juce::ModifierKeys::shiftModifier, 0)) &&
-                  root.error().find("No track is the Reference") != std::string::npos && !root.reference().held(),
-              "Shift+R with none says so, and lets go at once: a tap, however slow the machine");
-        root.referenceKey(true, 0);
-        root.referenceKey(false, 50);
+        check(root.referenceTrack() == 0 && panel.referenceText() == "None yet" &&
+                  !panel.eye.isEnabled() && !panel.ref.isEnabled() &&
+                  panel.eye.getTooltip() == AdiRootComponent::kNoReferenceTrack &&
+                  panel.ref.getTooltip() == AdiRootComponent::kNoReferenceTrack,
+              "SC-268: both controls are grey with the assignment reason in an ordinary project");
+        const auto refBounds = panel.ref.getBounds(), eyeBounds = panel.eye.getBounds();
+        check(refBounds.getWidth() == look::mixReferenceButtonWidth && eyeBounds.getWidth() == look::mixReferenceVisibilityWidth &&
+                  refBounds.getY() == eyeBounds.getY() && refBounds.getHeight() == look::fieldHeight &&
+                  eyeBounds.getHeight() == look::fieldHeight,
+              "the disabled buttons keep the strip's established bounds");
+        auto referenceMenu = [&] {
+            juce::PopupMenu menu;
+            root.addReferenceCommand(menu, AppCommands::ToggleReferenceTrack);
+            root.addReferenceCommand(menu, AppCommands::PlayReference);
+            return menuLine(menu);
+        };
+        check(referenceMenu() == "Reference Track (no track assigned) -, Play Reference (no track assigned) -",
+              "the View commands are grey with the reason in their labels");
+        const auto ops = value(*store, "SELECT count(*) FROM ops");
+        check(!root.command(AppCommands::ToggleReferenceTrack) && !root.command(AppCommands::PlayReference) &&
+                  root.error() == AdiRootComponent::kNoReferenceTrack && !root.state().showReference &&
+                  !persistence.load("mix").showReference && !root.current()->cue.referenceOn &&
+                  value(*store, "SELECT count(*) FROM ops") == ops,
+              "unavailable invocations leave the view, cue state and journal untouched");
+        root.state().showReference = true;
+        root.frame();
+        check(!panel.eye.getToggleState() && referenceMenu().startsWith("Reference Track (no track assigned) -"),
+              "an old visibility preference cannot light the eye or tick the menu before assignment");
+        root.state().showReference = false;
         // A provider that names Lead, as the snapshot's will once tracks carry their role.
         struct Named final : MixViewProvider {
             std::int64_t reference(const std::vector<std::shared_ptr<const engine::TrackNode>> &tracks) const noexcept override {
@@ -15930,9 +15947,15 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                     return true;
             return false;
         };
-        check(root.referenceTrack() == 12 && panel.referenceText() == "Lead" && !root.arrangement.geometry.inView(12) &&
-                  !inStack(12) && inStack(11),
+        check(root.referenceTrack() == 12 && panel.referenceText() == "Lead" && panel.eye.isEnabled() &&
+                  panel.ref.getBounds() == refBounds && panel.eye.getBounds() == eyeBounds &&
+                  !root.arrangement.geometry.inView(12) && !inStack(12) && inStack(11),
               "Lead the Reference: named in the strip, hidden from the project view and from STACK's rows");
+        check(!panel.ref.isEnabled() && !panel.ref.getToggleState() &&
+                  panel.ref.getTooltip() == AdiRootComponent::kReferencePlaybackUnavailable &&
+                  referenceMenu() == "Reference Track, Play Reference (no monitor connection) -" &&
+                  !root.command(AppCommands::PlayReference) && !root.current()->cue.referenceOn,
+              "an assigned track enables visibility but leaves audition grey with the playback reason");
         panel.eye.onClick();
         root.frame();
         check(root.state().showReference && root.arrangement.geometry.inView(12) && panel.eye.getToggleState() &&
@@ -15940,42 +15963,8 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
               "[Reference Track] shows it, lit, kept with the window's view");
         check(root.command(AppCommands::ToggleReferenceTrack) && !root.arrangement.geometry.inView(12),
               "and hides it again");
-        // [REF] and Shift+R: a tap latches, a second tap lets go, a hold auditions.
-        check(root.command(AppCommands::PlayReference) && root.reference().latched() && !root.reference().held(),
-              "Play Reference from the menu latches it, with the clock 300 ms on at each reading");
-        check(root.command(AppCommands::PlayReference) && !root.reference().on(), "and a second lets it go");
-        check(root.referenceKey(true, 1000) && root.reference().on() && root.reference().held(), "down: it plays");
-        check(!root.referenceKey(false, 1100) && root.reference().latched() &&
-                  root.error().find("cue path") != std::string::npos,
-              "a tap under 200 ms latches it; the Status Bar says it waits for the cue path (N23)");
-        root.frame();
-        check(panel.ref.getToggleState(), "[REF] lit while it is on");
-        // [REF] clicked times its press through the seam too (DF-W18): with the test's clock 600 ms
-        // between press and release it is a hold, which plays only while held, however fast the
-        // machine delivers the click.
-        {
-            const bool wasOn = root.reference().on();
-            if (wasOn) {
-                root.referenceKey(true, 2000);
-                root.referenceKey(false, 2050); // a second tap lets it go
-            }
-            const auto kept = root.input.now;
-            std::int64_t reading = 3000;
-            root.input.now = [&reading] { const auto t = reading; reading += 600; return t; };
-            const auto at = panel.ref.getLocalBounds().getCentre().toFloat();
-            panel.ref.mouseDown(pressAt(panel.ref, at));
-            const bool playing = root.reference().on();
-            panel.ref.mouseUp(dragAt(panel.ref, at, at));
-            check(!root.reference().latched() && playing && !root.reference().on(),
-                  "[REF] held 600 ms by the test's clock plays while held and stops on release: a hold, not a tap");
-            root.input.now = kept;
-            if (wasOn) { // latched again, as the checks after this one expect
-                root.referenceKey(true, 2500);
-                root.referenceKey(false, 2550);
-            }
-        }
         if (const auto out = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); !headlessOnly && out.isNotEmpty()) {
-            // Lead with two clips, the Reference latched, for the picture; undone after.
+            // Lead with two clips for the software picture, undone after.
             int made = 0;
             for (const auto &[clipId, pos, length] : {std::tuple{900, 0, 8}, std::tuple{901, 10, 6}}) {
                 OpRequest clip;
@@ -16002,17 +15991,10 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                 root.command(AppCommands::Undo);
             root.frame();
         }
-        check(!root.referenceKey(true, 2000) && root.referenceKey(false, 2050) && !root.reference().on(),
-              "a second tap lets it go");
-        check(root.referenceKey(true, 3000) && root.referenceKey(false, 3400) && !root.reference().on(),
-              "a hold auditions it only while held");
-        check(root.keyPressed(juce::KeyPress('r', juce::ModifierKeys::shiftModifier, 0)) && root.reference().latched(),
-              "Shift+R from the keyboard, let go at once: a tap, latched");
-        check(root.keyPressed(juce::KeyPress('r', juce::ModifierKeys::shiftModifier, 0)) && !root.reference().on(),
-              "and again, off");
         root.setMixProvider(own);
         root.frame();
-        check(root.referenceTrack() == 0 && root.arrangement.geometry.inView(12), "back to the stub: Lead shows");
+        check(root.referenceTrack() == 0 && root.arrangement.geometry.inView(12) && !panel.eye.isEnabled(),
+              "losing the assignment restores the ordinary track and disables the eye");
     }
     // A second window keeps its own.
     auto otherFixture = std::make_unique<AdiRootComponent>(view, submitter, mailbox, commands, persistence, session, "mix-other");
