@@ -29,6 +29,7 @@
 #include <semaphore>
 #include <set>
 #include <stop_token>
+#include <system_error>
 #include <thread>
 #include <future>
 namespace adi::ui {
@@ -606,6 +607,8 @@ class AdiApplication final : public juce::JUCEApplication,
     // A project opened while a discovery runs waits for its adoption, so the plug-ins it finds load
     // (`PluginCatalogueService::settleThen`).
     void openSettled(const juce::File &file, bool create) {
+        if (quitAfterExport_)
+            return;
         if (projectSave_) {
             if (root_)
                 root_->say("The project is still being saved.");
@@ -763,7 +766,8 @@ class AdiApplication final : public juce::JUCEApplication,
         stopTimer();
         clearProjectOpen();
         stopProjectSave();
-        // A Collect and Export still running finishes first: its ZIP is not left half written.
+        // The normal Quit path waits in the message loop. Keep ownership here
+        // if the platform shuts the application down directly.
         if (export_.joinable())
             export_.join();
         finishQuitExportProbe();
@@ -793,8 +797,16 @@ class AdiApplication final : public juce::JUCEApplication,
         commands_.reset();
         settings_.reset();
     }
-    // Every edit is already in the file (ADR-0203 d13): quitting asks nothing.
-    void systemRequestedQuit() override { quit(); }
+    // Every edit is already in the file (ADR-0203 d13). Keep the window
+    // responsive while an archive finishes before quitting.
+    void systemRequestedQuit() override {
+        if (export_.joinable()) {
+            quitAfterExport_ = true;
+            showExportQuitProgress();
+            return;
+        }
+        quit();
+    }
     void anotherInstanceStarted(const juce::String &commandLine) override {
         // A test launch runs on its own (WTS-01); should one reach here, it opens nothing.
         if (isTestLaunch(commandLine))
@@ -1504,11 +1516,11 @@ class AdiApplication final : public juce::JUCEApplication,
     }
     // Collect and Export, once the chooser has a file: on a worker the application owns, so the
     // window keeps working and a project opened meanwhile does not wait for it; the Status Bar says it
-    // runs, then how it ended. One at a time. Quitting waits for it, the window still up.
+    // runs, then how it ended. One at a time.
     void collectAndExport(const juce::File &file, media::ArchiveControl control = {}) {
-        if (!document_ || !root_)
+        if (!document_ || !root_ || quitAfterExport_)
             return;
-        if (exportRunning_->load()) {
+        if (export_.joinable()) {
             root_->say("Collect and Export is already running.");
             return;
         }
@@ -1517,20 +1529,39 @@ class AdiApplication final : public juce::JUCEApplication,
             root_->say(document_->error());
             return;
         }
-        if (export_.joinable())
-            export_.join(); // the last one has finished
-        const auto name = file.getFileName().toStdString();
-        exportRunning_->store(true);
-        export_ = std::thread([this, job, name, running = exportRunning_, control = std::move(control)] {
-            const auto result = ProjectDocument::runCollectAndExport(job, control);
-            running->store(false);
-            juce::MessageManager::callAsync([this, name, result] {
-                if (juce::JUCEApplicationBase::getInstance() != this || !root_ || !window_)
-                    return;
-                root_->say(result.ok ? "Exported " + name : "Collect and Export failed: " + result.error);
+        exportName_ = file.getFileName().toStdString();
+        std::promise<StoreFileResult> completion;
+        auto result = completion.get_future();
+        try {
+            export_ = std::thread([job = std::move(job), control = std::move(control),
+                                   completion = std::move(completion)]() mutable {
+                completion.set_value_at_thread_exit(ProjectDocument::runCollectAndExport(job, control));
             });
-        });
-        root_->say("Collecting and exporting to " + name + "...");
+        } catch (const std::system_error &error) {
+            root_->say(std::string("Cannot start Collect and Export: ") + error.what());
+            return;
+        }
+        exportResult_ = std::move(result);
+        root_->say("Collecting and exporting to " + exportName_ + "...");
+    }
+    void showExportQuitProgress() {
+        constexpr auto message = "Finishing Collect and Export before quitting…";
+        if (root_ && root_->error() != message) root_->say(message);
+    }
+    void pollCollectAndExport() {
+        if (!exportResult_.valid()) return;
+        if (exportResult_.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+            if (quitAfterExport_) showExportQuitProgress();
+            return;
+        }
+        const auto result = exportResult_.get();
+        export_.join(); // the result becomes ready at thread exit
+        if (quitAfterExport_) {
+            quit();
+            return;
+        }
+        if (root_)
+            root_->say(result.ok ? "Exported " + exportName_ : "Collect and Export failed: " + result.error);
     }
     void advanceQuitExportProbe() {
         const auto probe = quitExportProbe_;
@@ -1547,7 +1578,7 @@ class AdiApplication final : public juce::JUCEApplication,
                 probe->closeRequested = std::chrono::steady_clock::now();
                 probe->status = root_->error();
                 window_->closeButtonPressed();
-            } else if (!exportRunning_->load()) {
+            } else if (!export_.joinable()) {
                 quit(); // The test will report that the worker never reached the checkpoint.
             }
             return;
@@ -1783,9 +1814,12 @@ class AdiApplication final : public juce::JUCEApplication,
         // The plug-in catalogue's running discovery: its progress, and its result once it has finished.
         if (catalogue_)
             catalogue_->poll();
-        advanceProjectOpen();
-        if (!document_)
+        if (!quitAfterExport_)
+            advanceProjectOpen();
+        if (!document_) {
+            pollCollectAndExport();
             return;
+        }
         requestProjectSaveCancellation();
         document_->tick(static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
         if (root_) {
@@ -1814,6 +1848,7 @@ class AdiApplication final : public juce::JUCEApplication,
             floating_->collect();
             syncMixView(*floating_, *root_);
         }
+        pollCollectAndExport();
         if (quitExportProbe_)
             advanceQuitExportProbe();
         if (smokeOutput_ != juce::File{}) {
@@ -1894,8 +1929,11 @@ class AdiApplication final : public juce::JUCEApplication,
     std::shared_ptr<LibraryOwner> libraryOwner_;
     LibraryListing library_;
     bool libraryReady_ = false;
-    // Collect and Export's worker and whether it runs (A4); the flag is shared with the worker.
+    // Collect and Export's worker. Completion becomes visible at thread exit.
     std::thread export_;
+    std::future<StoreFileResult> exportResult_;
+    std::string exportName_;
+    bool quitAfterExport_ = false;
     // The import with choices' worker (E5) and whether it runs.
     std::thread import_;
     std::shared_ptr<std::atomic<bool>> importing_;
@@ -1905,7 +1943,6 @@ class AdiApplication final : public juce::JUCEApplication,
     // Live's device clipboard (manual 23.2.1): the app's, so a copy outlives the document it came
     // from; the engine refuses a paste into another project and says so.
     std::optional<adi::DeviceCopy> deviceClipboard_;
-    std::shared_ptr<std::atomic<bool>> exportRunning_ = std::make_shared<std::atomic<bool>>(false);
     juce::Component::SafePointer<juce::AlertWindow> snapshotPrompt_;
     std::unique_ptr<SettingsWindow> settingsWindow_;
     // The Export page (EX-11) and its render: the worker, its stop, and the job counter the renderer
