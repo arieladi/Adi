@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "temp_directory.hpp"
 #include "adi/blob.hpp"
+#include "adi/automation_clipboard.hpp"
 #include "adi/digest.hpp"
 #include "adi/edit_plan.hpp"
 #include "adi/history.hpp"
@@ -812,6 +813,39 @@ void automationAdmissionAndPolicy() {
               "locked material placement retains nested device/send rows and restores exact typed state on Undo");
     }
 }
+void explicitEnvelopeRanges() {
+    Project project;auto& store=*project.store;
+    addClip(store,7,21,0,0,4*q);
+    store.db().exec("INSERT INTO automation_lanes(id,owner_kind,owner_id,param_ref,value_domain,unit,min_value,max_value)"
+                    " VALUES(91,'track',21,'pan','real','',-1,1),(92,'track',21,'volume','real','dB',-150,6)");
+    authoredAutomation(store,91,2*q,0.5);
+    authoredAutomation(store,92,2*q,-6);
+    automation::LaneSpec pan;pan.id=91;pan.ownerId=21;pan.paramRef="pan";pan.valueDomain="real";
+    automation::LaneSpec volume;volume.id=92;volume.ownerId=21;volume.paramRef="volume";volume.valueDomain="real";
+    volume.unit="dB";volume.minValue=-150;volume.maxValue=6;
+    const std::array source{pan,volume};
+    auto newVolume=volume;newVolume.id=0;newVolume.ownerId=22;newVolume.defaultValue=-12;
+    auto newPan=pan;newPan.id=0;newPan.ownerId=22;newPan.minValue=-1;newPan.maxValue=1;
+    const std::array destination{newVolume,newPan};
+    const ReadGuard before(store);
+    const auto copied=edit::copyAutomationRange(store,source,q,3*q,48000);
+    check(copied.ok && before.unchanged(store) && commit(store,edit::preparePasteAutomationRange(store,copied,destination,5*q,48000)),
+          "two literal lanes paste by selection order across unlike control ranges");
+    const auto lane=store.db().execAndGet("SELECT coalesce(max(id),0) FROM automation_lanes WHERE owner_id=22 AND param_ref='volume'").getInt64();
+    check(envelopeKnot(store,lane,6*q,-33) && envelopeKnot(store,lane,7*q,-12) &&
+          tableRows(store,"clips")==before.rows.at("clips"),
+          "cross-parameter paste maps travel, guards the destination value and leaves clips alone");
+    check(History(store).undo().ok && typedRows(store)==before.rows,
+          "one Undo removes both destination lanes and restores the complete project state");
+
+    const std::array selected{pan};
+    check(commit(store,edit::prepareDeleteAutomationRange(store,selected,q,3*q,48000)) &&
+          !envelopeKnot(store,91,2*q,0.5) && envelopeKnot(store,92,2*q,-6) &&
+          tableRows(store,"clips")==before.rows.at("clips"),
+          "deleting one selected envelope leaves the other and its clip untouched");
+    check(History(store).undo().ok && typedRows(store)==before.rows,"envelope range Delete has exact undo");
+}
+
 void irrelevantRowsAndAliasDeletion() {
     for(const bool zeroLength:{false,true}) {
         Project p;auto& store=*p.store;
@@ -1155,7 +1189,7 @@ int main() {
     try {
         clipEditBoundaries();anchoredLeftTrim();trimSourceZeroAndCollapse();trimPhysicalPinsAndCapture();trimWarpFadeDomains();relationsAndSurvivors();swapsAndSparseGroups();completeChildrenAndResize();explicitScopeAndConversions();takeLaneEdits();roundedPhysicalBoundaries();
         signedIdentitiesAndKinds();preparationAndTransactions();descriptionBinding();automationAdmissionAndPolicy();
-        irrelevantRowsAndAliasDeletion();placementAdapters();seededTransactions();
+        explicitEnvelopeRanges();irrelevantRowsAndAliasDeletion();placementAdapters();seededTransactions();
     } catch(const std::exception& error) {check(false,error.what());}
     std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;
 }

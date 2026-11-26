@@ -12443,6 +12443,102 @@ void automationMode(AppCommands &commands, const std::filesystem::path &dir) {
     }
     document->release();
 }
+void automationRangeEdits(AppCommands &commands,const std::filesystem::path &dir) {
+    std::string error;
+    auto document=ProjectDocument::open(dir/"automation-range.adi",true,{},error);
+    check(document!=nullptr,"a project for envelope time selections");
+    if(!document)return;
+    constexpr auto bar=textproj::kWhole;
+    OpRequest clip;
+    clip.opType="clip.create";
+    clip.payload={{"id",81},{"track",2},{"kind","midi"},{"name","Material under the envelope"},{"pos",0},{"length",2*bar}};
+    check(document->ops().submit(clip).ok && document->synchronise(),"MIDI material beneath the selected range");
+    AdiRootComponent root(document->view(),document->ops(),document->mailbox(),commands,document->views(),
+                          document->sessionState(),"automate-range");
+    UiPeerRoot peer;
+    peer.setSize(1440,900);
+    peer.addAndMakeVisible(root);
+    peer.setVisible(true);
+    peer.addToDesktop(0);
+    root.afterEdit=[&] {document->synchronise();};
+    root.setSize(1440,900);
+    root.setAutomationMode(true);
+    root.frame();
+    check(root.addAutomationPoint(2,3*bar/4,-6) && root.addAutomationPoint(2,5*bar/4,-3),
+          "Volume breakpoints inside and outside the selected range");
+    root.frame();
+    auto &canvas=root.arrangement.canvas;
+    const auto bodies=canvas.laneBodies();
+    const auto body=std::find_if(bodies.begin(),bodies.end(),[](const auto &item) {return item.track->id==2;});
+    if(body==bodies.end()) {check(false,"the MIDI automation body is visible");return;}
+    const float y=body->bottom-4;
+    const auto at=[&](std::int64_t tick) {return juce::Point<float>(static_cast<float>(root.arrangement.geometry.x(tick))+1,y);};
+    const auto choose=[&](std::int64_t first,std::int64_t last) {
+        canvas.mouseDown(pressAt(canvas,at(first)));
+        canvas.mouseDrag(dragAt(canvas,at(first),at(last)));
+        canvas.mouseUp(dragAt(canvas,at(first),at(last)));
+        root.frame();
+    };
+    const auto point=[&](const AutomationTarget &target,std::int64_t tick,double value) {
+        const auto env=envelopeOf(*root.current(),target);
+        return env.data && std::any_of(env.data->points.begin(),env.data->points.end(),[&](const auto &p) {
+            return p.time==tick && p.value==value;
+        });
+    };
+    const auto clipIntact=[&] {
+        const auto *track=root.reader().findTrack(2);
+        return track && track->clips.size()==1 && track->clips[0]->id==81 && track->clips[0]->lengthTicks==2*bar;
+    };
+    const auto volume=volumeTarget(2);
+    choose(bar/2,bar);
+    check(canvas.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)),"Delete is handled in the automation time range");
+    root.frame();
+    check(clipIntact() && !point(volume,3*bar/4,-6) && point(volume,5*bar/4,-3),
+          "Delete edits the selected envelope range while the MIDI clip stays whole");
+    check(root.command(AppCommands::Undo),"Undo the automation range edit");
+    root.frame();
+    check(clipIntact() && point(volume,3*bar/4,-6),"Undo restores the selected breakpoint");
+    auto savedClipboard=std::move(commands.clipClipboard());
+    choose(bar,bar/2);
+    check(root.command(AppCommands::Copy),"Copy handles a backward automation time selection");
+    const auto pan=panTarget(2);
+    root.showAutomation(2,pan);
+    canvas.mouseDown(pressAt(canvas,at(0)));
+    canvas.mouseUp(pressAt(canvas,at(0)));
+    root.frame();
+    check(root.command(AppCommands::Paste),"Paste can target another parameter at an automation insert marker");
+    root.frame();
+    const auto hasPanPoint=[&](std::int64_t tick) {
+        const auto env=envelopeOf(*root.current(),pan);
+        return env.data && std::any_of(env.data->points.begin(),env.data->points.end(),[&](const auto &p) {
+            return p.time==tick && p.value>0 && p.value<=1;
+        });
+    };
+    check(hasPanPoint(bar/4) && clipIntact() && point(volume,3*bar/4,-6),
+          "a cross-parameter paste creates the Pan envelope without editing other material");
+    check(root.command(AppCommands::Duplicate),"Duplicate follows the selected envelope");
+    root.frame();
+    check(hasPanPoint(3*bar/4) && clipIntact(),"Duplicate copies the Pan range beside itself");
+    check(root.command(AppCommands::Undo),"Undo the envelope duplicate");
+    root.frame();
+    check(root.command(AppCommands::Duplicate),"the restored range still edits automation after Undo");
+    root.frame();
+    check(hasPanPoint(3*bar/4) && clipIntact(),"duplicating that restored range leaves the clip whole");
+    check(root.command(AppCommands::Cut),"Cut takes the currently selected Pan range");
+    root.frame();
+    check(!hasPanPoint(3*bar/4) && point(volume,3*bar/4,-6) && clipIntact(),
+          "Cut leaves the neighbouring Volume envelope and clip intact");
+    check(root.command(AppCommands::Undo),"Undo the Pan cut");
+    root.frame();
+    check(hasPanPoint(3*bar/4),"Undo restores the Pan automation");
+    commands.clipClipboard()=std::move(savedClipboard);
+    // Clicking the material title is explicitly a clip selection even when the envelope is drawn.
+    canvas.mouseDown(pressAt(canvas,{at(bar/2).x,body->top-6}));
+    canvas.mouseUp(pressAt(canvas,{at(bar/2).x,body->top-6}));
+    check(root.arrangement.geometry.selection.clip==81,"a title click still chooses the material clip");
+    document->release();
+}
+
 // The Mix View (ADR-0209, ruled 1 November): F4 and the control bar's Mix button open it in place
 // of the arrangement; its tabs in the draft's order, STACK first; kept per window.
 void mixChannelNavigation(AppCommands &commands, const std::filesystem::path &dir) {
@@ -18774,6 +18870,7 @@ int main(int argc, char **argv) {
     trace("mixerViewFaderHandle", [&] { mixerViewFaderHandle(commands, temp.path()); });
     trace("firstSendDragHeard", [&] { firstSendDragHeard(commands, temp.path()); });
     trace("automationMode", [&] { automationMode(commands, temp.path()); });
+    trace("automationRangeEdits", [&] { automationRangeEdits(commands, temp.path()); });
     trace("sendKnobs", [&] { sendKnobs(commands, temp.path()); });
     trace("audioDrop", [&] { audioDrop(commands, temp.path()); });
     trace("importPrompt", [&] { importPrompt(commands, settings, temp.path()); });

@@ -7,6 +7,7 @@
 #include "adi/row_capture.hpp"
 #include "adi/store.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <sqlite3.h>
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -14,6 +15,7 @@
 #include <map>
 #include <set>
 #include <stdexcept>
+#include <tuple>
 
 namespace adi::edit {
 namespace {
@@ -218,9 +220,33 @@ double destinationDefault(SQLite::Database& db,const AutomationOwner& owner,cons
     if(!lane.at("max_value").is_null())value=std::min(value,lane.at("max_value").get<double>());
     return value;
 }
+double pastedValue(double value,const Payload& source,const Payload& destination) {
+    // The manual allows unrelated parameter targets. Preserve literal values
+    // for the same unit and map bounded controls through normalized travel
+    // when the units differ.
+    constexpr bool kMapBetweenControlRanges=true;
+    const auto bounds=[](const Payload& lane) {
+        const double low=lane.at("min_value").is_null()?0:lane.at("min_value").get<double>();
+        const double high=lane.at("max_value").is_null()?1:lane.at("max_value").get<double>();
+        const bool known=lane.at("value_domain")=="normalized" ||
+            (!lane.at("min_value").is_null() && !lane.at("max_value").is_null());
+        return std::tuple(low,high,known);
+    };
+    const auto [fromLow,fromHigh,fromKnown]=bounds(source);
+    const auto [toLow,toHigh,toKnown]=bounds(destination);
+    if(kMapBetweenControlRanges && fromKnown && toKnown && fromLow<fromHigh && toLow<toHigh &&
+       (source.at("value_domain")!=destination.at("value_domain") || source.at("unit")!=destination.at("unit"))) {
+        const auto position=std::clamp((value-fromLow)/(fromHigh-fromLow),0.0,1.0);
+        value=toLow+(toHigh-toLow)*position;
+    }
+    if(!destination.at("min_value").is_null())value=std::max(value,toLow);
+    if(!destination.at("max_value").is_null())value=std::min(value,toHigh);
+    return value;
+}
+
 bool placeLane(Store& store,RowEdits& rows,clip_edit::CopyIds& ids,const TimeMap& time,
                const Payload& staged,const Payload& lane,const Payload* source,clip_edit::TimePoint first,
-               clip_edit::TimePoint last,double rate) {
+               clip_edit::TimePoint last,double rate,bool crossParameter=false) {
     const auto base=static_cast<int>(detail::signedInteger(lane.at("time_base")));
     const auto begin=nativePosition(first,base,time),end=nativePosition(last,base,time);
     if(begin>=end || sampleAt(time,base,begin,rate)==sampleAt(time,base,end,rate))return false;
@@ -241,8 +267,16 @@ bool placeLane(Store& store,RowEdits& rows,clip_edit::CopyIds& ids,const TimeMap
                 static_cast<long double>(point.time)/static_cast<long double>(length)*
                 static_cast<long double>(end-begin))));
             const auto found=envelope.ranges.find(i);
-            incoming.push_back({point,found==envelope.ranges.end()?std::nullopt:
-                std::optional<engine::CurveSlice>(sliceAt(envelope,i))});
+            auto slice=found==envelope.ranges.end()?std::nullopt:std::optional<engine::CurveSlice>(sliceAt(envelope,i));
+            if(crossParameter) {
+                const auto& sourceLane=source->at("lane");
+                point.value=pastedValue(point.value,sourceLane,lane);
+                if(slice) {
+                    slice->sourceFirst=pastedValue(slice->sourceFirst,sourceLane,lane);
+                    slice->sourceLast=pastedValue(slice->sourceLast,sourceLane,lane);
+                }
+            }
+            incoming.push_back({point,slice});
         }
     } else {
         if(!hasGlobalEnvelope(store.db(),staged,laneId))return false;
@@ -254,6 +288,133 @@ bool placeLane(Store& store,RowEdits& rows,clip_edit::CopyIds& ids,const TimeMap
     return true;
 }
 } // namespace
+
+namespace {
+struct RangeRead {
+    std::optional<SQLite::Transaction> transaction;
+    explicit RangeRead(SQLite::Database& db) {
+        if(sqlite3_get_autocommit(db.getHandle())!=0)
+            transaction.emplace(db,SQLite::TransactionBehavior::DEFERRED);
+    }
+};
+void validateAutomationRange(std::span<const automation::LaneSpec> targets,std::int64_t first,
+                             std::int64_t last,double rate) {
+    if(first<0 || last<=first || !std::isfinite(rate) || rate<=0 || rate>768000 || targets.empty())
+        throw std::runtime_error("automation edit needs selected lanes and a positive time range");
+    std::set<std::tuple<std::string,std::int64_t,std::string>> unique;
+    for(const auto& target:targets)
+        if(!unique.emplace(target.ownerKind,target.ownerId,target.paramRef).second)
+            throw std::runtime_error("automation edit cannot address a lane twice");
+}
+std::optional<Payload> rangeLane(SQLite::Database& db,const automation::LaneSpec& target) {
+    const char* owner=nullptr;
+    if(target.ownerKind=="track")owner="SELECT 1 FROM tracks WHERE id=?";
+    else if(target.ownerKind=="device")owner="SELECT 1 FROM devices WHERE id=?";
+    else if(target.ownerKind=="routing")owner="SELECT 1 FROM routing WHERE id=? AND kind='send'";
+    if(!owner)throw std::runtime_error("automation range needs an Arrangement control");
+    SQLite::Statement present(db,owner);present.bind(1,target.ownerId);
+    if(!present.executeStep())throw std::runtime_error("the selected automation control is gone");
+    SQLite::Statement query(db,"SELECT * FROM automation_lanes WHERE owner_kind=? AND owner_id=?"
+                               " AND param_ref=? AND value_domain=? AND (?=0 OR id=?) ORDER BY enabled DESC,id LIMIT 1");
+    query.bind(1,target.ownerKind);query.bind(2,target.ownerId);
+    query.bind(3,target.paramRef);query.bind(4,target.valueDomain);
+    query.bind(5,target.id);query.bind(6,target.id);
+    if(query.executeStep())return detail::captureQueryRow(query);
+    if(target.id)throw std::runtime_error("the selected automation lane changed");
+    return std::nullopt;
+}
+Payload newRangeLane(SQLite::Database& db,const automation::LaneSpec& target,std::int64_t id) {
+    const Payload low=target.minValue?Payload(*target.minValue):Payload(nullptr);
+    const Payload high=target.maxValue?Payload(*target.maxValue):Payload(nullptr);
+    return defaultRow(db,"automation_lanes",
+        {{"id",id},{"owner_kind",target.ownerKind},{"owner_id",target.ownerId},{"param_ref",target.paramRef},
+         {"param_name",target.paramName},{"time_base",target.timeBase},{"value_domain",target.valueDomain},
+         {"unit",target.unit},{"default_value",target.defaultValue},{"min_value",low},{"max_value",high}});
+}
+Payload flatEnvelope(Payload lane,std::int64_t length) {
+    Envelope copied;copied.header={static_cast<std::uint32_t>(FourCC::Automation),
+        1,sizeof(AutomationPoint),0,StreamFlags::SortedByTime};
+    AutomationPoint point{};point.value=lane.at("default_value");
+    copied.points.push_back(point);point.time=length;copied.points.push_back(point);
+    return {{"lane",std::move(lane)},{"data",encoded(copied)},{"ranges",Payload::array()}};
+}
+
+clip_edit::PreparedEdit prepareLaneRange(Store& store,std::span<const automation::LaneSpec> targets,
+        std::int64_t begin,std::int64_t end,double rate,const AutomationRangeCopy* copy) {
+    clip_edit::PreparedEdit result;
+    try {
+        auto& db=store.db();RangeRead read(db);
+        validateAutomationRange(targets,begin,end,rate);
+        if(copy && copy->envelopes.size()!=targets.size())
+            throw std::runtime_error("Select one destination for each copied automation lane.");
+        const auto* filename=sqlite3_db_filename(db.getHandle(),"main");
+        if(!filename)throw std::runtime_error("automation edit needs a project connection");
+        result.sourceFile=filename;
+        result.options.expectHead.emplace(OpJournal(store).headSeq());
+        const TimeMap time(db);
+        clip_edit::CopyIds ids(db);RowEdits rows(db);
+        for(std::size_t i=0;i<targets.size();++i) {
+            auto lane=rangeLane(db,targets[i]);
+            if(!lane && !copy)continue;
+            const auto* source=copy?&copy->envelopes[i]:nullptr;
+            if(lane)placeLane(store,rows,ids,time,Payload::array(),*lane,source,{0,begin},{0,end},rate,copy!=nullptr);
+            else {
+                const auto id=ids.next("automation_lanes");
+                lane=newRangeLane(db,targets[i],id);
+                rows.set("automation_lanes",id,lane);
+                if(!placeLane(store,rows,ids,time,Payload::array(),*lane,source,{0,begin},{0,end},rate,true))
+                    rows.set("automation_lanes",id,std::nullopt);
+            }
+        }
+        auto changes=rows.changes();
+        if(!changes.empty()) {
+            OpRequest request;request.opType="arranger.splice";request.label=copy?"Paste Automation":"Delete Automation";
+            request.payload={{"id",0},{"changes",std::move(changes)}};
+            result.requests.push_back(std::move(request));
+        }
+        result.ok=true;
+    } catch(const std::exception& exception) {result.error=exception.what();}
+    return result;
+}
+} // namespace
+
+AutomationRangeCopy copyAutomationRange(Store& store,std::span<const automation::LaneSpec> targets,
+        std::int64_t begin,std::int64_t end,double rate) {
+    AutomationRangeCopy result;
+    try {
+        auto& db=store.db();RangeRead read(db);
+        validateAutomationRange(targets,begin,end,rate);
+        const TimeMap time(db);
+        result.ticks=end-begin;
+        for(const auto& target:targets) {
+            if(const auto lane=rangeLane(db,target)) {
+                const int base=lane->at("time_base");
+                const auto first=nativePosition({0,begin},base,time),last=nativePosition({0,end},base,time);
+                if(first>=last)throw std::runtime_error("automation selection is too short for the lane clock");
+                result.envelopes.push_back(copyLane(db,*lane,time,first,last,rate,true));
+            } else {
+                auto flat=target;flat.timeBase=0;
+                result.envelopes.push_back(flatEnvelope(newRangeLane(db,flat,1),result.ticks));
+            }
+        }
+        result.ok=true;
+    } catch(const std::exception& exception) {result.error=exception.what();}
+    return result;
+}
+
+clip_edit::PreparedEdit prepareDeleteAutomationRange(Store& store,std::span<const automation::LaneSpec> targets,
+        std::int64_t begin,std::int64_t end,double rate) {
+    return prepareLaneRange(store,targets,begin,end,rate,nullptr);
+}
+
+clip_edit::PreparedEdit preparePasteAutomationRange(Store& store,const AutomationRangeCopy& copy,
+        std::span<const automation::LaneSpec> targets,std::int64_t at,double rate) {
+    clip_edit::PreparedEdit result;
+    if(!copy.ok){result.error=copy.error;return result;}
+    try {
+        return prepareLaneRange(store,targets,at,addTime(at,copy.ticks),rate,&copy);
+    } catch(const std::exception& exception) {result.error=exception.what();return result;}
+}
 
 Payload copyAutomationTime(Store& store,const TimeMap& time,std::int64_t beginTicks,std::int64_t endTicks,
                            std::int64_t beginNanos,std::int64_t endNanos,double rate) {

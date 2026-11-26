@@ -24,6 +24,7 @@
 #include "ui_look.hpp"
 #include "ui_place.hpp"
 #include "adi/clip_commands.hpp"
+#include "adi/automation_clipboard.hpp"
 #include "ui_devices.hpp"
 #include "ui_clipview.hpp"
 #include "ui_analysis.hpp"
@@ -246,12 +247,17 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     // the device clipboard is, so it outlives a window; the engine refuses it in another project.
     struct ClipClipboard {
         // A Time copy (E3: Cut and Copy Time) shares it: the selected time across the whole Set.
-        std::variant<std::monostate, clip_edit::ClipCopy, clip_edit::RangeCopy, clip_edit::TimeCopy> held;
+        struct EnvelopeCopy {
+            edit::AutomationRangeCopy range;
+            std::string sourceFile;
+        };
+        std::variant<std::monostate, clip_edit::ClipCopy, clip_edit::RangeCopy, clip_edit::TimeCopy, EnvelopeCopy> held;
         bool empty() const noexcept { return std::holds_alternative<std::monostate>(held); }
         // The project file a copy names; a Time copy names it by its material.
         static std::string *fileOf(clip_edit::ClipCopy &c) { return &c.sourceFile; }
         static std::string *fileOf(clip_edit::RangeCopy &c) { return &c.sourceFile; }
         static std::string *fileOf(clip_edit::TimeCopy &c) { return &c.material.sourceFile; }
+        static std::string *fileOf(EnvelopeCopy &c) { return &c.sourceFile; }
         static std::string *fileOf(std::monostate &) { return nullptr; }
         std::string sourceFile() {
             auto *file = std::visit([](auto &copy) { return fileOf(copy); }, held);
@@ -671,11 +677,13 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // to the Status Bar. `canClipClipboard` says whether there is something to act on.
     enum class ClipCommand { Cut, Copy, Paste, Duplicate };
     bool clipClipboard(ClipCommand);
+    bool deleteAutomationRange();
     bool canClipClipboard(ClipCommand) const;
     // Whether Cut, Copy, Paste or Duplicate (an AppCommands id) has something to act on, on a device
     // or in the Arrangement; and whether the device chain takes it first.
     bool canClipboard(int commandId) const;
     bool deviceClipboardFirst(DeviceChainStrip::Clip) const;
+    bool automationClipboard(ClipCommand);
     // Where Paste starts: the top selected track the lanes show that can hold clips; 0 if none.
     std::int64_t pasteOrigin() const;
     // Live's …Time commands and Insert Silence (manual 6.11, 41.5; E3): across every track, from the
