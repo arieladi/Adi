@@ -30,6 +30,12 @@ std::string mode;
 #endif
     std::abort();
 }
+// The static-crash variant never finishes constructing `lifetime`, so an optimised MSVC build
+// finds its registration unreachable (C4702, an error under ADI_WERROR; walk-A A25). Deliberate.
+#if defined(_MSC_VER) && defined(ADI_SCAN_STATIC_CRASH)
+#pragma warning(push)
+#pragma warning(disable : 4702)
+#endif
 struct StaticLifetime {
     StaticLifetime() {
 #if defined(ADI_SCAN_STATIC_CRASH)
@@ -38,6 +44,9 @@ struct StaticLifetime {
     }
     ~StaticLifetime(){if(mode.find("unload-crash")!=mode.npos)crash();}
 } lifetime;
+#if defined(_MSC_VER) && defined(ADI_SCAN_STATIC_CRASH)
+#pragma warning(pop)
+#endif
 bool CLAP_ABI initialize(const char* path) {
     const std::filesystem::path native(std::u8string(path,path+std::strlen(path)));
     const auto bytes=native.filename().u8string();mode.assign(bytes.begin(),bytes.end());

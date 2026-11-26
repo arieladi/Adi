@@ -67,7 +67,11 @@ double rt60(const std::vector<float> &x, double sr) {
         sxy += t * db;
         ++n;
     }
-    return -60 / ((n * sxy - sx * sy) / (n * sxx - sx * sx));
+    // No fit (fewer than two points in the window, or a flat decay) gives 0, which fails the caller's
+    // check, rather than a division by zero (C4723 in an optimised build; walk-A A25).
+    const double spread = n * sxx - sx * sx;
+    const double slope = spread != 0 ? (n * sxy - sx * sy) / spread : 0;
+    return slope < 0 ? -60 / slope : 0;
 }
 void decay() {
     for (double sr : {48000., 96000.})
