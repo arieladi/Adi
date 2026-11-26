@@ -18,6 +18,7 @@
 #include "adi/engine/clip_fade.hpp"
 #include "adi/engine/mixer.hpp"
 #include "adi/ui/fade_edits.hpp"
+#include "adi/ui/audio_test_tone.hpp"
 #include "adi/ui/midi_tracks.hpp"
 #include "adi/ui/library_listing.hpp"
 #include "adi/ui/project_document.hpp"
@@ -14903,6 +14904,63 @@ void appearanceSettingsView(settings::AppSettings &settings, AppCommands &comman
         commands.reload();
     }
 }
+void settingsAvailabilityAndTestTone(const std::filesystem::path &dir) {
+    settings::AppSettings settings(appdata::App::Daw, dir / "settings-availability.json");
+    SettingsPanel panel(settings);
+    panel.setSize(560, 680);
+    const auto *language = settings::find("lookfeel.language");
+    check(language != nullptr && language->choices.size() > 1, "Language setting fixture");
+    if (!language || language->choices.size() <= 1)
+        return;
+    const auto rowFor = [&panel](std::string_view key) -> SettingRow * {
+        for (const auto &row : panel.rows())
+            if (row->setting.key == key)
+                return row.get();
+        return nullptr;
+    };
+    panel.showPage("Display & Input");
+    auto *row = rowFor(language->key);
+    check(row && !row->control->isEnabled() && row->getTooltip().contains("Not available in this build"),
+          "an unimplemented setting is dimmed with an explanation on its page");
+    const auto before = settings.get(language->key);
+    check(!panel.change(*language, language->choices[1]) && settings.get(language->key) == before,
+          "an unavailable setting cannot apply a change");
+    panel.find("Language");
+    row = rowFor(language->key);
+    check(row && !row->control->isEnabled() && row->getTooltip().contains("Not available in this build"),
+          "Find also explains an unavailable setting");
+    panel.showPage("Licenses & Updates");
+    const auto *diagnostics = rowFor("privacy.diagnosticLog");
+    check(diagnostics && diagnostics->control->isEnabled(), "the diagnostic logging setting remains editable");
+
+    panel.showPage("Audio");
+    const auto *tone = settings::find("audio.testTone");
+    const auto *toneRow = rowFor("audio.testTone");
+    check(tone && toneRow && toneRow->control->isEnabled(), "Test Tone has an active switch");
+    if (!tone)
+        return;
+    check(panel.change(*tone, true) && panel.testTone() && settings.get(tone->key) == false,
+          "setting the test tone only enables the current window's tone");
+
+    AudioTestTone oscillator;
+    std::array<float, 512> left{}, right{};
+    float *outputs[]{left.data(), right.data(), nullptr};
+    engine::AudioIo io;
+    io.out = outputs;
+    io.numOut = 3;
+    io.frames = 512;
+    oscillator.set(panel.testTone(), -6.0206f, 12000);
+    oscillator.mix(io, 48000.);
+    check(left == right && std::abs(left[401] - 0.5f) < 1e-4f && std::abs(left[403] + 0.5f) < 1e-4f,
+          "the output uses the selected frequency and level on each active channel");
+    panel.stopTestTone();
+    oscillator.set(panel.testTone(), -6.0206f, 12000);
+    left.fill(0.1f);
+    right.fill(0.1f);
+    oscillator.mix(io, 48000.);
+    check(!panel.testTone() && left[401] == 0.1f && left == right,
+          "closing Settings ramps the tone out and leaves project audio alone");
+}
 // The keyboard into the session (N60's window half): the feed drains every port's ring on the
 // audio thread, in time order across ports, each event stamped in the block's stream samples.
 // A function of its own, so its rings and feed are not in main's frame: MSVC's Debug build gives
@@ -18971,14 +19029,17 @@ int main(int argc, char **argv) {
         bool closed = false;
         panel.onClose = [&closed] { closed = true; };
         check(panel.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey)) && closed, "Esc closes the window");
-        // Restore Defaults puts the open tab back, settings moved onto it from other pages included.
+        // Restore Defaults leaves settings with no current implementation alone.
         if (const auto *toggle = settings::find("sync.showLinkToggle")) {
             panel.showPage("Link");
             const auto was = settings.get(toggle->key);
-            panel.change(*toggle, !toggle->defaultValue.get<bool>());
+            std::string why;
+            const bool kept = !toggle->defaultValue.get<bool>();
+            settings.set(toggle->key, kept, {}, why);
             panel.defaults.onClick();
-            check(settings.get(toggle->key) == toggle->defaultValue, "Restore Defaults puts the open tab back");
-            panel.change(*toggle, was);
+            check(settings.get(toggle->key) == kept, "Restore Defaults preserves the value of a dimmed setting");
+            settings.set(toggle->key, was, {}, why);
+            settings.save(why);
         }
         // Taller than the window, the tab column scrolls; the open tab is kept in view.
         panel.pageList.resized();
@@ -19112,6 +19173,7 @@ int main(int argc, char **argv) {
     trace("clipViewMulti", [&] { clipViewMulti(commands, temp.path()); });
     trace("mixViewShell", [&] { mixViewShell(commands, temp.path()); });
     trace("recordingOptions", [&] { recordingOptions(commands, settings, temp.path()); });
+    trace("settingsAvailabilityAndTestTone", [&] { settingsAvailabilityAndTestTone(temp.path()); });
     trace("undoHistoryWindow", [&] { undoHistoryWindow(commands, temp.path()); });
     trace("clipWaveforms", [&] { clipWaveforms(commands, temp.path()); });
     trace("clipFades", [&] { clipFades(commands, temp.path()); });

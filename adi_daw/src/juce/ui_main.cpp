@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/appdata.hpp"
+#include "adi/audio/decode.hpp"
 #include "adi/render/queue.hpp"
 #include "adi/render/host_dispatch.hpp"
 #include "adi/settings/device_grant.hpp"
+#include "adi/ui/audio_test_tone.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include "adi/ui/plugin_scan.hpp"
 #include "adi/ui/project_document.hpp"
@@ -54,8 +56,10 @@ class LiveMidiProcessor final : public engine::BlockProcessor {
                        return session.enqueueMidiInput(sample, event);
                    });
         document_.process(io);
+        testTone.mix(io, rate_);
     }
     void release() override { document_.release(); }
+    AudioTestTone testTone;
 
   private:
     ProjectDocument &document_;
@@ -159,6 +163,7 @@ class AdiApplication final : public juce::JUCEApplication,
             refreshDiagnosticLog();
         }
         commands_ = std::make_unique<AppCommands>(*settings_);
+        refreshCacheLimits();
         configurePluginSources();
         pluginSourcesKey_ = pluginSourcesKey();
         // The plug-in catalogue's service (DF-W34, N58); its first job starts once the window is open.
@@ -701,6 +706,22 @@ class AdiApplication final : public juce::JUCEApplication,
     void refreshDiagnosticLog() {
         if (diagnosticLog_ && diagnosticLog_->refresh(*settings_) && document_)
             diagnosticLog_->write("Open project", media::pathUtf8(document_->store().path().filename()));
+    }
+    void refreshCacheLimits() {
+        const auto limits = audio::limitsFromSettings({
+            {audio::kCacheMaxSizeKey, settings_->get(audio::kCacheMaxSizeKey)},
+            {audio::kCacheMinFreeKey, settings_->get(audio::kCacheMinFreeKey)},
+        });
+        if (limits.maxBytes == cacheLimits_.maxBytes && limits.minFreeBytes == cacheLimits_.minFreeBytes)
+            return;
+        audio::defaultDecodeCache().setLimits(limits);
+        cacheLimits_ = limits;
+    }
+    void refreshTestTone() {
+        if (live_)
+            live_->testTone.set(settingsWindow_ && settingsWindow_->panel().testTone(),
+                                settings_->get("audio.testToneVolumeDb").get<float>(),
+                                settings_->get("audio.testToneFrequencyHz").get<int>());
     }
     void report(const std::string &text) {
         if (diagnosticLog_)
@@ -1283,6 +1304,7 @@ class AdiApplication final : public juce::JUCEApplication,
         // The keyboard into the session (N60): the ports' rings drained in the device callback, in
         // front of the document's process.
         live_ = std::make_unique<LiveMidiProcessor>(*document_, midiFeed_);
+        refreshTestTone();
         bridge_ = std::make_unique<device::DeviceBridge>(*live_);
         bridge_->setRequestedBlockSize(setup.bufferSize);
         manager_.addAudioCallback(bridge_.get());
@@ -1582,6 +1604,8 @@ class AdiApplication final : public juce::JUCEApplication,
                         root_->applyDelayCompensation(commands_->delayCompensation());
                     pluginSourcesChanged();
                     startLibrary();
+                    refreshCacheLimits();
+                    refreshTestTone();
                     // The MIDI Ports' switches open or close inputs: after the row's commit has unwound.
                     juce::MessageManager::callAsync([this] {
                         if (juce::JUCEApplicationBase::getInstance() == this && midiPorts_)
@@ -1715,6 +1739,7 @@ class AdiApplication final : public juce::JUCEApplication,
     bool testLaunch() const { return smokeOutput_ != juce::File{} || controlTest_; }
     std::unique_ptr<settings::AppSettings> settings_;
     std::optional<DiagnosticLog> diagnosticLog_;
+    audio::DecodeCacheLimits cacheLimits_;
     std::unique_ptr<AppCommands> commands_;
     device::JuceDeviceLoader loader_;
     // The plug-in catalogue's service (DF-W34, N58), declared after the loader it drives so it goes

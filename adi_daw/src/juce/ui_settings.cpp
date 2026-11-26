@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_settings.hpp"
 #include "ui_look.hpp"
+#include "adi/ui/settings_availability.hpp"
 #include <cmath>
 namespace adi::ui {
 namespace {
 using settings::Scope;
 using settings::Type;
 using settings::Value;
+constexpr auto unavailable = "Not available in this build.";
 // A value as the page shows it: words as they are, nothing as Live's "None", numbers
 // plainly, a list one per ";".
 juce::String text(const Value &v) {
@@ -70,9 +72,10 @@ class SettingSwitch final : public juce::TextButton {
 };
 } // namespace
 SettingRow::SettingRow(SettingsPanel &panel, const settings::Setting &s)
-    : setting(s), panel_(panel) {
+    : setting(s), panel_(panel), available_(settingAvailable(s.key)) {
     setTitle(juce::String::fromUTF8(s.label.c_str()));
-    setTooltip(juce::String::fromUTF8(s.help.c_str()));
+    setTooltip(available_ ? juce::String::fromUTF8(s.help.c_str())
+                          : juce::String(unavailable) + " " + juce::String::fromUTF8(s.help.c_str()));
     switch (s.type) {
     case Type::Bool: {
         auto button = std::make_unique<SettingSwitch>();
@@ -163,7 +166,7 @@ SettingRow::SettingRow(SettingsPanel &panel, const settings::Setting &s)
     }
     // A project's settings are changed by their ops and a device's are kept with the
     // device: shown here with their mark, changed where they live (R-03).
-    control->setEnabled(s.scope == Scope::App);
+    control->setEnabled(s.scope == Scope::App && available_);
     control->setTitle(getTitle());
     addAndMakeVisible(*control);
     if (s.key == "library.userLibrary" || s.key == "library.contentFolders") {
@@ -176,7 +179,7 @@ SettingRow::SettingRow(SettingsPanel &panel, const settings::Setting &s)
     refresh();
 }
 void SettingRow::refresh() {
-    const auto value = panel_.store.get(setting.key);
+    const auto value = panel_.value(setting);
     if (auto *button = dynamic_cast<juce::TextButton *>(control.get())) {
         const bool on = value.is_boolean() && value.get<bool>();
         button->setToggleState(on, juce::dontSendNotification);
@@ -221,7 +224,7 @@ void SettingRow::resized() {
     case Type::Choice:
         break;
     }
-    width = std::min(width, std::max(40, getWidth() - kControlX - 8));
+    width = std::min(width, std::max(40, getWidth() - kControlX - (available_ ? 8 : 152)));
     juce::Rectangle<int> field(kControlX, 3, width, kHeight - 6);
     if (folderPicker_)
         folderPicker_->setBounds(field.removeFromRight(std::min(88, width / 2)).withTrimmedLeft(4));
@@ -240,7 +243,7 @@ void SettingRow::paint(juce::Graphics &g) {
         g.setColour(look::accent);
         g.drawRect(control->getBounds().expanded(1), 1);
     }
-    g.setColour(setting.scope == Scope::App ? look::text : look::textDim);
+    g.setColour(setting.scope == Scope::App && available_ ? look::text : look::textDim);
     g.setFont(look::font(look::fontHeading));
     int right = kControlX - 8;
     // The scope's mark beside the name when the value is not the application's (R-03).
@@ -257,6 +260,11 @@ void SettingRow::paint(juce::Graphics &g) {
     }
     g.drawText(getTitle(), kLabelX, 0, std::max(0, right - kLabelX), kHeight, juce::Justification::centredLeft,
                true);
+    if (!available_) {
+        g.setFont(look::font(look::fontCaption));
+        g.drawFittedText(unavailable, getLocalBounds().withTrimmedLeft(control->getRight() + 8).withTrimmedRight(4),
+                         juce::Justification::centredLeft, 1);
+    }
 }
 void SettingRow::mouseEnter(const juce::MouseEvent &) {
     panel_.setHelp(getTitle() + ": " + getTooltip());
@@ -413,10 +421,12 @@ SettingsPanel::SettingsPanel(settings::AppSettings &settingsStore,
         if (const auto *tab = settingsTab(page_))
             for (const auto &group : tab->groups)
                 for (const auto *setting : group.settings)
-                    if (setting->scope == settings::Scope::App) {
+                    if (setting->scope == settings::Scope::App && settingAvailable(setting->key)) {
                         std::string ignored;
                         store.reset(setting->key, who, ignored);
                     }
+        if (page_ == "Audio")
+            testTone_ = false;
         if (onChange)
             onChange();
         std::string why;
@@ -636,6 +646,18 @@ bool SettingsPanel::acceptLibraryFolder(const settings::Setting &setting, const 
 bool SettingsPanel::change(const settings::Setting &s, const settings::Value &v) {
     // Applied at once and written at once: Live has no OK button (Master Reference V.1).
     std::string why;
+    if (!settingAvailable(s.key)) {
+        setHelp(unavailable);
+        return false;
+    }
+    // A speaker test runs only by request in this Settings window. The momentary On
+    // switch is never written to disk, so reopening ADI cannot start a tone.
+    if (s.key == "audio.testTone" && v.is_boolean()) {
+        testTone_ = v.get<bool>();
+        if (onChange)
+            onChange();
+        return true;
+    }
     if (!store.set(s.key, v, {settings::Actor::User, {}, juce::Time::currentTimeMillis() * 1000}, why)) {
         setHelp(juce::String::fromUTF8(why.c_str()));
         return false;
@@ -648,6 +670,17 @@ bool SettingsPanel::change(const settings::Setting &s, const settings::Value &v)
         return false;
     }
     return true;
+}
+settings::Value SettingsPanel::value(const settings::Setting &s) const {
+    return s.key == "audio.testTone" ? settings::Value(testTone_) : store.get(s.key);
+}
+void SettingsPanel::stopTestTone() {
+    if (!testTone_)
+        return;
+    testTone_ = false;
+    if (onChange)
+        onChange();
+    refreshValues();
 }
 juce::Rectangle<int> SettingsPanel::pageArea() const noexcept {
     return {kPageListWidth, 6, std::max(0, getWidth() - kPageListWidth - 7), std::max(0, getHeight() - 12)};
@@ -739,5 +772,7 @@ void SettingsWindow::parentSizeChanged() {
 void SettingsWindow::visibilityChanged() {
     if (!quiet)
         DocumentWindow::visibilityChanged();
+    if (panel_ && !isVisible())
+        panel_->stopTestTone();
 }
 } // namespace adi::ui
