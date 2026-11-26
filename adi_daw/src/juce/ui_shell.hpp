@@ -357,7 +357,9 @@ class StatusBar final : public juce::Component {
     bool selectorDragged_ = false;
 };
 // The window is JUCE's drag container, so a browser row can be dragged onto the lanes (D1).
-class AdiRootComponent final : public juce::Component, public juce::DragAndDropContainer {
+class AdiRootComponent final : public juce::Component,
+                               public juce::DragAndDropContainer,
+                               private juce::FocusChangeListener {
   public:
     AdiRootComponent(engine::ProjectView &, OpSubmitter &, TransportMailbox &, AppCommands &,
                      ViewStateStore &, SessionState &, std::string window,
@@ -365,6 +367,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     ~AdiRootComponent() override;
     void frame() noexcept;
     void paint(juce::Graphics &) override;
+    void paintOverChildren(juce::Graphics &) override;
     void resized() override;
     void mouseDown(const juce::MouseEvent &) override;
     void mouseUp(const juce::MouseEvent &) override;
@@ -908,6 +911,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     bool clipViewFull() const noexcept { return clipViewRestore_ > 0; }
 
   private:
+    void globalFocusChanged(juce::Component *) override;
     std::vector<std::int64_t> trackAutomationLanes(std::int64_t track);
     bool deleteAutomationLanes(const std::vector<std::int64_t> &, const char *label);
     enum class TrackRenderAction { Freeze, Unfreeze, Flatten, BounceToNewTrack, BounceInPlace };

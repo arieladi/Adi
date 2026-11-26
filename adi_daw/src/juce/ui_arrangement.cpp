@@ -2824,6 +2824,16 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
     }
     if (view.root.automationMode())
         paintAutomation(g);
+    // The returns and Main stay pinned over the scrolled tracks. Mark the bottom of
+    // the scrolling band when another part of the arrangement continues underneath.
+    const int scrollBottom = foot < rows.size() ? std::min(getHeight(), geo.footTop(view.reader())) : getHeight();
+    if (scrollBottom >= 12 && geo.tracksHeight(view.reader()) - geo.scrollY > scrollBottom) {
+        const juce::Rectangle<int> badge{8, scrollBottom - 10, 16, 8};
+        g.setColour(look::frame);
+        g.fillRect(badge);
+        look::triangle(g, badge.toFloat().withSizeKeepingCentre(5.f, 8.f),
+                       juce::MathConstants<float>::halfPi, look::text);
+    }
     if (!dropPreview_.bounds.isEmpty()) {
         g.setColour(look::dropTarget);
         if (dropPreview_.device)

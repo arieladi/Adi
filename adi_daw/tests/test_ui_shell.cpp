@@ -11529,6 +11529,44 @@ void clipFades(AppCommands &commands, const std::filesystem::path &dir) {
     commands.detach(root);
     document->release();
 }
+void panelFocusAndOverflow(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "panel-focus.adi", true, {}, error);
+    check(document != nullptr, "SC-91: a project for panel feedback");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "panel-focus");
+    UiPeerRoot peer;
+    peer.setSize(1200, 720);
+    peer.addAndMakeVisible(root);
+    peer.setVisible(true);
+    peer.addToDesktop(0);
+    check(peer.getPeer() && peer.getPeer()->getNativeHandle() == nullptr, "SC-91: the test uses a software-only peer");
+    root.setBounds(peer.getLocalBounds());
+    root.frame();
+    const auto focusPoint = [](const juce::Component &panel) { return panel.getPosition() + juce::Point<int>{8, 1}; };
+    const auto arrangementPoint = focusPoint(root.arrangement);
+    const auto browserPoint = focusPoint(root.browser);
+    check(root.command(AppCommands::FocusArrangement) && root.arrangement.canvas.hasKeyboardFocus(false) &&
+              renderedPixel(root, arrangementPoint) == look::focus && renderedPixel(root, browserPoint) != look::focus,
+          "SC-91: only the Arrangement gains the mark when its lanes get the keyboard");
+    root.browser.search.grabKeyboardFocus();
+    check(root.browser.search.hasKeyboardFocus(false) &&
+              renderedPixel(root, arrangementPoint) != look::focus && renderedPixel(root, browserPoint) == look::focus,
+          "SC-91: the mark follows focus to a child of another panel");
+
+    auto &geometry = root.arrangement.geometry;
+    auto &canvas = root.arrangement.canvas;
+    const int bottom = geometry.footTop(root.reader());
+    const juce::Point<int> overflowPoint{8, bottom - 10};
+    for (std::int64_t track = 2; track <= 5; ++track)
+        geometry.resizeTrack(track, 220);
+    check(geometry.tracksHeight(root.reader()) > bottom && renderedPixel(canvas, overflowPoint) == look::frame,
+          "SC-91: a badge appears immediately above the pinned foot while tracks continue below");
+    geometry.scrollY = geometry.tracksHeight(root.reader()) - bottom;
+    check(renderedPixel(canvas, overflowPoint) != look::frame, "SC-91: the badge disappears at the last track");
+}
 void arrangementClipColour(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto document = ProjectDocument::open(dir / "clip-colour.adi", true, {}, error);
@@ -21417,6 +21455,7 @@ int main(int argc, char **argv) {
     trace("mixSeekChecks", [&] { adi::uitest::mixSeekChecks(commands, temp.path(), check); });
     trace("recordingOptions", [&] { recordingOptions(commands, settings, temp.path()); });
     trace("undoHistoryWindow", [&] { undoHistoryWindow(commands, temp.path()); });
+    trace("panelFocusAndOverflow", [&] { panelFocusAndOverflow(commands, temp.path()); });
     trace("arrangementClipColour", [&] { arrangementClipColour(commands, temp.path()); });
     trace("clipWaveforms", [&] { clipWaveforms(commands, temp.path()); });
     trace("clipFades", [&] { clipFades(commands, temp.path()); });

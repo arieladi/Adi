@@ -1370,8 +1370,10 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
     reader_.emplace(view_.current());
     setSize(1200, 720);
     frame();
+    juce::Desktop::getInstance().addFocusChangeListener(this);
 }
 AdiRootComponent::~AdiRootComponent() {
+    juce::Desktop::getInstance().removeFocusChangeListener(this);
     mixViewPanel.stack.persistWindowControls();
     commands_.detach(*this);
     setLookAndFeel(nullptr);
@@ -1960,6 +1962,29 @@ void AdiRootComponent::mouseUp(const juce::MouseEvent &e) {
     if (std::exchange(infoPressed_, false) && infoArea_.contains(e.getPosition()) &&
         !e.mouseWasDraggedSinceMouseDown() && (state_.mixView || setMixView(true, state_.mixViewDetached)))
         chooseMixViewTab(static_cast<int>(MixViewPanel::Tab::Analysis));
+}
+void AdiRootComponent::globalFocusChanged(juce::Component *) { repaint(); }
+void AdiRootComponent::paintOverChildren(juce::Graphics &g) {
+    const auto *focused = juce::Component::getCurrentlyFocusedComponent();
+    if (!focused || !isParentOf(focused))
+        return;
+    const auto containsFocus = [focused](const juce::Component &panel) {
+        return panel.isVisible() && (&panel == focused || panel.isParentOf(focused));
+    };
+    const juce::Component *owner = nullptr;
+    if (containsFocus(arrangement.overview) || containsFocus(namesBar))
+        owner = &arrangement;
+    else
+        for (const auto *panel : std::array<const juce::Component *, 8>{
+                 &transport, &browser, &arrangement, &mixer, &mixerView, &devices, &clipView, &mixViewPanel})
+            if (containsFocus(*panel)) {
+                owner = panel;
+                break;
+            }
+    if (owner && owner->getWidth() > 8) {
+        g.setColour(look::focus);
+        g.fillRect(owner->getX() + 4, owner->getY() + 1, std::min(32, owner->getWidth() - 8), 2);
+    }
 }
 bool AdiRootComponent::keyPressed(const juce::KeyPress &key) {
     // With Use Tab Key to Move Focus off, Live's default (§41.1.1), Tab and Shift+Tab move
