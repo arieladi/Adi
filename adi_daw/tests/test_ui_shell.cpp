@@ -8485,6 +8485,69 @@ void rangeSelection(AppCommands &commands, const std::filesystem::path &dir) {
     click(title(2));
     check(geo.selectedTracks(root.reader()) == std::vector<std::int64_t>{2} && geo.selection.picked.empty(),
           "a plain click on 2 selects it alone");
+
+    // SC-174: opening a menu on selected material keeps the target of its commands.
+    const auto popup = [](juce::Component &component, juce::Point<float> at) {
+        component.mouseDown(pressAt(component, at, juce::ModifierKeys::rightButtonModifier));
+        component.mouseUp(pressAt(component, at));
+        juce::PopupMenu::dismissAllActiveMenus();
+    };
+    const juce::Point<float> rangeFrom{x(0) + 1, lane(1)}, rangeTo{x(2 * bar) - 1, lane(3)};
+    canvas.mouseDown(pressAt(canvas, rangeFrom));
+    canvas.mouseDrag(dragAt(canvas, rangeFrom, rangeTo));
+    canvas.mouseUp(dragAt(canvas, rangeFrom, rangeTo));
+    const auto timeSelection = geo.selection;
+    check(timeSelection.clip == 0 && timeSelection.toTrack == 3 && timeSelection.start < timeSelection.end,
+          "SC-174 fixture selects time across three tracks");
+    popup(canvas, {x(bar) + 6, lane(2)});
+    check(geo.selection == timeSelection, "SC-174: a clip under a selected range keeps the time selection");
+
+    const auto clipTitle = [&](std::int64_t id) {
+        return juce::Point<float>{x(bar) + 6, static_cast<float>(laneTop(root, id) + 5)};
+    };
+    canvas.mouseDown(pressAt(canvas, clipTitle(1)));
+    canvas.mouseUp(pressAt(canvas, clipTitle(1)));
+    const juce::Point<float> splitPoint{x(bar + bar / 2) + 1, lane(1)};
+    auto singleClipSelection = geo.selection;
+    singleClipSelection.insert = geo.tick(juce::roundToInt(splitPoint.x));
+    check(singleClipSelection.insert != geo.selection.insert, "SC-174 fixture opens at a new point in the clip");
+    const bool wasSnapping = std::exchange(geo.grid.snap, false);
+    popup(canvas, splitPoint);
+    geo.grid.snap = wasSnapping;
+    check(geo.selection == singleClipSelection, "SC-174: a single clip keeps its selection and Split uses the popup point");
+
+    canvas.mouseDown(pressAt(canvas, clipTitle(3), cmd));
+    canvas.mouseUp(pressAt(canvas, clipTitle(3)));
+    const auto clipSelection = geo.selection;
+    check(clipSelection.clip == 11 && clipSelection.pickedClips == std::vector<std::int64_t>{13},
+          "SC-174 fixture picks two clips");
+    popup(canvas, clipTitle(3));
+    check(geo.selection == clipSelection, "SC-174: a right-click keeps both picked clips");
+
+    click(title(1));
+    click(title(3), cmd);
+    const auto trackSelection = geo.selection;
+    popup(headers, title(3));
+    check(geo.selection == trackSelection && geo.selectedTracks(root.reader()) == std::vector<std::int64_t>{1, 3},
+          "SC-174: a right-click on a selected header keeps both picked tracks");
+
+    engine::Transport driver;
+    mailbox.setSampleRate(48000.);
+    mailbox.drain(driver);
+    driver.locate(1357);
+    driver.play();
+    mailbox.publish(driver);
+    root.frame();
+    const auto position = driver.position();
+    const auto revision = driver.revision();
+    const juce::Point<float> outside{x(2 * bar) + 6, lane(4)};
+    popup(canvas, outside);
+    mailbox.drain(driver);
+    const auto insert = geo.snap(geo.tick(static_cast<int>(outside.x)), false);
+    check(geo.selection.track == 4 && geo.selection.clip == 14 && geo.selection.insert == insert,
+          "SC-174: a right-click outside the selection chooses the clicked clip and sets the insert marker");
+    check(driver.playing() && driver.position() == position && driver.revision() == revision,
+          "SC-174: opening the menu outside the selection does not seek during playback");
 }
 // Live's foot (Live 12 manual 6.1, its demo arrangement): the returns and Main pinned at the
 // bottom of the lanes, below the drop area, whatever the scroll.
