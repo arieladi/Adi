@@ -89,6 +89,25 @@ void fullInverse() {
     check(project.store && History(*project.store).undo().ok && digestProject(*project.store).text==before,"CBOR inverse survives close/reopen with full typed metadata");
     check(project.scalar("PRAGMA defer_foreign_keys")==0 && project.scalar("PRAGMA foreign_keys")==1,"temporary FK deferral never leaks to the caller");
 }
+void mainCannotBeDeleted() {
+    Project project;
+    auto& store = *project.store;
+    OpJournal journal(store);
+    const auto before = digestProject(store).text;
+    const auto head = journal.headSeq();
+    const auto deleted = journal.commit(op("track.delete", {{"id", 900}}));
+    check(!deleted.ok && deleted.error.find("Main track cannot be deleted") != std::string::npos,
+          "SC-01: deleting a track of kind master is refused");
+    check(digestProject(store).text == before && journal.headSeq() == head,
+          "SC-01: the refused delete changes neither project data nor history");
+
+    store.db().exec("UPDATE tracks SET parent_id=100 WHERE id=900");
+    const auto grouped = digestProject(store).text;
+    const auto group = journal.commit(op("track.delete", {{"id", 100}}));
+    check(!group.ok && group.error.find("Main track cannot be deleted") != std::string::npos &&
+              digestProject(store).text == grouped && journal.headSeq() == head,
+          "SC-01: Main is protected as a descendant in an existing project's track tree");
+}
 void batchAndConflicts() {
     Project project;auto& store=*project.store;const auto before=digestProject(store).text;
     std::array<OpRequest,2> batch={op("track.delete",{{"id",100}}),op("track.rename",{{"id",200},{"name","Kept"}})};
@@ -135,4 +154,4 @@ void legacyAndReplay() {
     {SQLite::Transaction transaction(first->db());check(OpRegistry::instance().find("track.create")->apply(context,{{"id",3},{"kind","audio"},{"name","Legacy"},{"parent",nullptr},{"index",4}},why),"old four-field captured inverse remains playable");transaction.commit();}
 }
 }
-int main(){try{fullInverse();batchAndConflicts();ungroupAndGuards();legacyAndReplay();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{fullInverse();mainCannotBeDeleted();batchAndConflicts();ungroupAndGuards();legacyAndReplay();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

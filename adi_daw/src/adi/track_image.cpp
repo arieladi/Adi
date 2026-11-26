@@ -296,6 +296,9 @@ void deleteTrack(SQLite::Database& db,std::int64_t root) {
     const Catalog catalog(db);
     Image image(db, catalog);
     image.collect("tracks", root);
+    for (const auto& [key, row] : image.rows)
+        if (key.first == "tracks" && row.after.is_null() && row.before.at("kind") == "master")
+            throw std::runtime_error("The Main track cannot be deleted.");
     removeImage(db, catalog, image);
 }
 void restoreTrack(SQLite::Database& db,std::int64_t root,const Payload& packet) {
