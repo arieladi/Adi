@@ -181,7 +181,7 @@ long double trackRenderLength(Store &store, const engine::TrackNode &track, doub
         const auto position = ends.getColumn(absolute ? 3 : 1).getInt64();
         const auto length = ends.getColumn(absolute ? 4 : 2).getInt64();
         const auto last = edit::addTime(position, length);
-        const long double seconds = absolute ? last / 1000000000.0L : time.seconds(last);
+        const long double seconds = absolute ? static_cast<long double>(last) / 1000000000.0L : time.seconds(last);
         end = std::max(end, seconds);
     }
     return end > 0 ? end + tailSeconds : 0;
