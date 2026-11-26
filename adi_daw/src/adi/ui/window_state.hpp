@@ -97,6 +97,7 @@ struct WindowState {
     // (Ctrl/Cmd+Alt+I) and sends (Hide/Show Sends, Ctrl/Cmd+Alt+S): Live 12's Arrangement Track
     // Controls submenu.
     bool overview = true, inOut = true, sends = true;
+    bool trackMixer = true; // Arrangement Track Controls' volume, pan and meters
     // Live 12's Mixer Controls submenu (and the Mixer View Control's options menu): the Mixer View's
     // own In/Out section, hidden until shown, and its own Sends, apart from the track controls'.
     bool mixerInOut = false, mixerSends = true;

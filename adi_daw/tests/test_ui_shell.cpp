@@ -2241,6 +2241,32 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
               a.getTitle() == "Send A" && b.getTitle() == "Send B",
           "Live's two -inf boxes on the row under volume and pan, as its capture");
     {
+        auto &m = root.namesBar.mixer;
+        const bool clickable = m.isVisible() && m.isEnabled() && takesClicks(m) && static_cast<bool>(m.onClick);
+        check(clickable && m.getToggleState() && audio->volume.isVisible() && audio->pan.isVisible(),
+              "SC-270: the lit M is clickable while track levels show");
+        if (clickable) {
+            const auto sendBefore = a.getBounds();
+            m.onClick();
+            root.frame();
+            check(!m.getToggleState() && !persistence.load("sends").trackMixer && root.mixer.isVisible() &&
+                      !audio->volume.isVisible() && !audio->pan.isVisible() &&
+                      audio->active.isVisible() && audio->showsInOut() && a.isVisible() &&
+                      a.getBounds() == sendBefore.translated(0, -17),
+                  "M hides the level controls and moves sends up while keeping the track switches and routing");
+            commands.activate(root);
+            const auto menu = root.trackControlsMenu();
+            juce::PopupMenu::MenuItemIterator item(menu);
+            bool volumeUnchecked = false;
+            while (item.next())
+                if (item.getItem().itemID == AppCommands::ToggleTrackMixer)
+                    volumeUnchecked = item.getItem().isEnabled && !item.getItem().isTicked;
+            check(volumeUnchecked && root.command(AppCommands::ToggleTrackMixer) && m.getToggleState() &&
+                      audio->volume.isVisible() && audio->pan.isVisible() && a.getBounds() == sendBefore,
+                  "the Volume menu and M share the same visibility and restore the row");
+        }
+    }
+    {
         // No row has a button of its own for a Mix View function (ADR-0243).
         bool none = audio->switches().size() == 3;
         for (auto *child : audio->getChildren())
@@ -2680,7 +2706,7 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
     // still "10.00" and still the 441st sample, so the checks read the box on its hundredth grid,
     // never bit-exactly.
     auto boxAt = [](const juce::Slider &box, double ms) { return std::abs(box.getValue() - ms) < 1e-9; };
-    check(trackControls().endsWith("Volume * -, Track Options"), "the Arrangement Track Controls' Track Options, off");
+    check(trackControls().endsWith("Volume *, Track Options"), "the Arrangement Track Controls' Track Options, off");
     // The selection was set on the geometry alone; published, as a click publishes it, so each
     // delay step's undo puts it back (ADR-0021) rather than the session's older empty one.
     root.publishSelection();
@@ -3192,7 +3218,7 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
         check(false, "3 Audio's Mixer View strip");
     check(root.command(AppCommands::ToggleMixerView), "the Mixer View closes");
     // The sections on the bar over the names repeat the View menu, as Live's selectors do: R hides the
-    // returns, I-O the In/Out, S the sends; each is lit while its part shows.
+    // returns, I-O the In/Out, S the sends, M the level controls; each is lit while its part shows.
     check(root.namesBar.returns.getToggleState() && root.namesBar.inOut.getToggleState() &&
               root.namesBar.sends.getToggleState() == root.state().sends &&
               root.namesBar.mixer.getToggleState() && !root.namesBar.delay.getToggleState(),
@@ -19071,6 +19097,8 @@ int main(int argc, char **argv) {
             commands.getCommandInfo(C::Copy, copyInfo);
             commands.getCommandInfo(C::Paste, paste);
             commands.getCommandInfo(C::Duplicate, duplicate);
+            juce::ApplicationCommandInfo trackMixer(C::ToggleTrackMixer);
+            commands.getCommandInfo(C::ToggleTrackMixer, trackMixer);
             const auto keyed = [](const juce::ApplicationCommandInfo &info, char key) {
                 return info.defaultKeypresses.contains(juce::KeyPress(key, juce::ModifierKeys::commandModifier, 0));
             };
@@ -19090,12 +19118,12 @@ int main(int argc, char **argv) {
                       C::CueSwitches == C::SoloSwitches + 1 && C::HelpManual == C::CueSwitches + 1 &&
                       C::KeyboardReference == C::HelpManual + 1 && C::AutomationMode == C::KeyboardReference + 1 &&
                       C::DeleteAutomation == C::AutomationMode + 1 && C::ArmSelected == C::DeleteAutomation + 1 &&
-                      C::LastId == C::ArmSelected,
+                      C::ToggleTrackMixer == C::ArmSelected + 1 && trackMixer.shortName == "Volume, Pan and Meters",
                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
                   "Select Loop, Save a Copy, Collect All and Save, Collect and Export, Cut, Copy, Paste, Duplicate, "
                   "Show/Hide Plug-In Windows, Split, Clip View, Insert Empty MIDI Clip(s), the …Time commands and "
                   "Insert Silence, then Create Fade In/Out and Delete Fades/Crossfades, then the Note Editor's nine, "
-                  "Arrangement Record, Delay Compensation, Delete Automation and Arm Selected Tracks, each named");
+                  "Arrangement Record, Delay Compensation, Delete Automation, Arm Selected Tracks and Volume, Pan and Meters");
             // The Note Editor's commands, the last ids: named in the table's order, each on the editor's key.
             {
                 const auto named = [&](int id) {
@@ -19257,7 +19285,7 @@ int main(int argc, char **argv) {
             // Live 12's groups (manual 6.1, the Mixer Controls submenu's figure): In/Out, Sends,
             // Volume | Track Options, Crossfader, Performance Impact | Return Tracks.
             check(submenus == juce::StringArray{"Arrangement Track Controls", "Mixer Controls"} &&
-                      trackControls == "Hide/Show Track Controls | In/Out, Sends, Volume -, Track Options" &&
+                      trackControls == "Hide/Show Track Controls | In/Out, Sends, Volume, Track Options" &&
                       mixerControls ==
                           "In/Out, Sends, Volume - | Track Options, Crossfader -, Performance Impact - | Return Tracks" &&
                       !has(C::ToggleInOut) && !has(C::ToggleSends) && !has(C::ToggleReturnTracks) && !has(C::ToggleMixer),

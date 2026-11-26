@@ -1001,7 +1001,7 @@ NamesBar::NamesBar()
       inOut(juce::String::fromUTF8("I\xc2\xb7O"), "In/Out: show or hide the track controls' In/Out (Ctrl/Cmd+Alt+I).", true),
       sends("S", "Sends: show or hide the track controls' sends (Ctrl/Cmd+Alt+S).", true),
       returns("R", "Return Tracks: show or hide the return tracks (Ctrl/Cmd+Alt+R).", true),
-      mixer("M", "Mixer: the track controls' mixer.", true),
+      mixer("M", "Mixer: show or hide volume, pan and meters in the track controls.", true),
       delay("D", "Track Delay: show or hide the track controls' Track Delay (Live's Track Options).", true),
       height("H", "Optimize Arrangement Height (H).", true), width("W", "Optimize Arrangement Width (W).", true),
       automation("Automation Mode", "Automation Mode", false, automationGlyph),
@@ -1012,7 +1012,6 @@ NamesBar::NamesBar()
         addAndMakeVisible(c);
     for (auto *b : {&inOut, &sends, &returns, &mixer})
         b->setToggleState(true, juce::dontSendNotification);
-    mixer.setInterceptsMouseClicks(false, false);
 }
 void NamesBar::resized() {
     // The sheet's buttons (arrangement.png; its source, arrangement.html), 20 high and level in the

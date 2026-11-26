@@ -482,7 +482,6 @@ class NamesBar final : public juce::Component {
     void resized() override;
     BarButton flip;
     ProjectViewButton show;
-    // Mixer only shows its state: the track controls' mixer has no toggle to switch.
     BarButton inOut, sends, returns, mixer, delay;
     BarButton height, width;
     BarButton automation, lock;

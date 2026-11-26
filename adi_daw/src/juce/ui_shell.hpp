@@ -174,7 +174,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         AutomationMode,    // the View menu's Automation Mode, A (Live 12 manual 25.2, 41.7)
         DeleteAutomation,
         ArmSelected,
-        LastId = ArmSelected
+        ToggleTrackMixer,
+        LastId = ToggleTrackMixer
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();

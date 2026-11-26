@@ -310,6 +310,7 @@ const StableEntry *stableEntry(int id) noexcept {
         {"view.automation-mode", "View"}, // AutomationMode
         {"edit.delete-automation", "Edit"}, // DeleteAutomation
         {"mixer.arm-selected", "Mixer"}, // ArmSelected
+        {"arrangement.track-mixer", "View"}, // ToggleTrackMixer
     }};
     const auto at = id - AppCommands::PlayStop;
     return at >= 0 && at < static_cast<int>(table.size()) ? &table[static_cast<std::size_t>(at)] : nullptr;
@@ -535,7 +536,7 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Arrange Clip View Panels Vertically", "Clip View", "Fit to Time Range",
                                   "Arrangement Record", "Export Audio/Video...", "Delay Compensation", "Solo Switches", "Cue Switches",
                                   "Live 12 Manual", "Keyboard Shortcuts", "Automation Mode", "Delete Automation",
-                                  "Arm Selected Tracks"};
+                                  "Arm Selected Tracks", "Volume, Pan and Meters"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], category(id), 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -753,6 +754,9 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
     case ToggleSends: // §42.1: Hide/Show Sends, Ctrl/Cmd+Alt+S
         info.addDefaultKeypress('s', cmd | juce::ModifierKeys::altModifier);
         info.setTicked(active_ != nullptr && active_->state().sends);
+        break;
+    case ToggleTrackMixer:
+        info.setTicked(active_ != nullptr && active_->state().trackMixer);
         break;
     case ToggleMixerInOut: // Live 12's Mixer Controls In/Out: the Mixer View's own; no key of its own
         info.setTicked(active_ != nullptr && active_->state().mixerInOut);
@@ -1354,6 +1358,7 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
     namesBar.inOut.onClick = [this] { command(AppCommands::ToggleInOut); };
     namesBar.sends.onClick = [this] { command(AppCommands::ToggleSends); };
     namesBar.returns.onClick = [this] { command(AppCommands::ToggleReturnTracks); };
+    namesBar.mixer.onClick = [this] { command(AppCommands::ToggleTrackMixer); };
     namesBar.delay.onClick = [this] { command(AppCommands::ToggleTrackOptions); };
     namesBar.height.onClick = [this] { command(AppCommands::OptimizeHeight); };
     namesBar.width.onClick = [this] { command(AppCommands::OptimizeWidth); };
@@ -1850,6 +1855,7 @@ void AdiRootComponent::resized() {
     strip.tracks.setToggleState(state_.largeTracks, juce::dontSendNotification);
     namesBar.inOut.setToggleState(state_.inOut, juce::dontSendNotification);
     namesBar.sends.setToggleState(state_.sends, juce::dontSendNotification);
+    namesBar.mixer.setToggleState(state_.trackMixer, juce::dontSendNotification);
     namesBar.returns.setToggleState(!state_.hideReturns, juce::dontSendNotification);
     namesBar.delay.setToggleState(state_.trackOptions, juce::dontSendNotification);
     arrangement.setBounds(centreX, top, centreW, mid - mixerViewArea_.getHeight());
@@ -2076,7 +2082,7 @@ juce::PopupMenu AdiRootComponent::mixerOptionsMenu(bool viewMenu) {
 juce::PopupMenu AdiRootComponent::trackControlsMenu() {
     // Live 12's Arrangement Track Controls submenu (the View menu; manual 6.1: "You can customize
     // which controls are shown"; 18.7: Track Options holds Track Delay): the track controls' In/Out
-    // and Sends, with their keys. Volume always shows in ADI; Track Options is the rows' Track Delay
+    // and Sends, with their keys. Volume is also the M selector; Track Options is the rows' Track Delay
     // box, the D selector's (Live 11's). Live 12's full list is to be measured: its 6.1 says track
     // delays are the mixer's only. First, ADI's side panel of track controls, shown or hidden whole,
     // which the View menu held as "Arrangement Track Controls" before the submenu.
@@ -2086,7 +2092,7 @@ juce::PopupMenu AdiRootComponent::trackControlsMenu() {
     menu.addSeparator();
     menu.addCommandItem(&commands_.manager, AppCommands::ToggleInOut);
     menu.addCommandItem(&commands_.manager, AppCommands::ToggleSends);
-    menu.addItem(juce::PopupMenu::Item("Volume").setTicked(true).setEnabled(false));
+    menu.addCommandItem(&commands_.manager, AppCommands::ToggleTrackMixer, "Volume");
     menu.addCommandItem(&commands_.manager, AppCommands::ToggleTrackOptions);
     return menu;
 }
@@ -4836,6 +4842,7 @@ bool AdiRootComponent::command(int id) {
     case AppCommands::ToggleOverview:
     case AppCommands::ToggleInOut:
     case AppCommands::ToggleSends:
+    case AppCommands::ToggleTrackMixer:
     case AppCommands::ToggleMixerInOut:
     case AppCommands::ToggleMixerSends:
     case AppCommands::ToggleTrackOptions:
@@ -4843,6 +4850,7 @@ bool AdiRootComponent::command(int id) {
         auto &shown = id == AppCommands::ToggleOverview  ? state_.overview
                       : id == AppCommands::ToggleInOut   ? state_.inOut
                       : id == AppCommands::ToggleSends   ? state_.sends
+                      : id == AppCommands::ToggleTrackMixer ? state_.trackMixer
                       : id == AppCommands::ToggleMixerSends ? state_.mixerSends
                       : id == AppCommands::ToggleTrackOptions ? state_.trackOptions
                       : id == AppCommands::ToggleMixerTrackOptions ? state_.mixerTrackOptions

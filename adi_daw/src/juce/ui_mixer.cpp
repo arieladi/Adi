@@ -828,16 +828,17 @@ void MixerStrip::resized() {
     // shows only when the track is tall enough for it.
     const int x = showsInOut() ? MixerPanel::kInOutWidth : 0;
     const int rows = std::max(1, (getHeight() - 1) / 17);
-    auto place = [rows](juce::Component &c, int row, juce::Rectangle<int> r) {
-        c.setVisible(row < rows);
+    const bool levels = audio_ && panel_.root.state().trackMixer;
+    auto place = [rows](juce::Component &c, int row, juce::Rectangle<int> r, bool shown = true) {
+        c.setVisible(shown && row < rows);
         c.setBounds(r);
     };
     if (kind_ == "master") {
         // Live's Main row: no activator, Solo or Arm; its volume where a track has its activator.
         for (juce::Component *c : std::initializer_list<juce::Component *>{&active, &solo, &arm, &prePost})
             c->setVisible(false);
-        place(volume, 0, {x + 4, 3, 45, 13});
-        place(pan, 1, {x + 54, 20, 45, 13});
+        place(volume, 0, {x + 4, 3, 45, 13}, levels);
+        place(pan, 1, {x + 54, 20, 45, 13}, levels);
     } else {
         place(active, 0, {x + 4, 3, 45, 13});
         place(solo, 0, {x + 54, 3, 20, 13});
@@ -853,28 +854,20 @@ void MixerStrip::resized() {
             prePost.setVisible(false);
             place(arm, 0, {x + 78, 3, 21, 13});
         }
-        place(volume, 1, {x + 4, 20, 35, 13});
-        place(pan, 1, {x + 54, 20, 45, 13});
-        // A MIDI track with no instrument: no volume or pan, as Live's.
-        if (!audio_) {
-            volume.setVisible(false);
-            pan.setVisible(false);
-        }
+        place(volume, 1, {x + 4, 20, 35, 13}, levels);
+        place(pan, 1, {x + 54, 20, 45, 13}, levels);
     }
-    // Live's sends on the rows under volume and pan, its 29 pt boxes three to a row.
+    // Live's sends follow the mixer controls, three per row.
     const bool sends = showsSends();
+    const int sendsStart = levels ? 2 : 1;
     for (std::size_t i = 0; i < sends_.size(); ++i) {
-        const int row = 2 + static_cast<int>(i / 3), column = static_cast<int>(i % 3);
-        place(*sends_[i], row, {x + 4 + 33 * column, 3 + 17 * row, 29, 13});
-        if (!sends)
-            sends_[i]->setVisible(false);
+        const int row = sendsStart + static_cast<int>(i / 3), column = static_cast<int>(i % 3);
+        place(*sends_[i], row, {x + 4 + 33 * column, 3 + 17 * row, 29, 13}, sends);
     }
     // Live's Track Delay on the row after the sends, with its "ms" box (paintDelayUnit), while the
     // track controls' Track Options shows it (the D selector).
-    const int after = (audio_ ? 2 : 1) + (sends ? sendRows() : 0);
-    place(delay, after, {x + 4, 3 + 17 * after, 45, 13});
-    if (!panel_.root.state().trackOptions)
-        delay.setVisible(false);
+    const int after = sendsStart + (sends ? sendRows() : 0);
+    place(delay, after, {x + 4, 3 + 17 * after, 45, 13}, panel_.root.state().trackOptions);
 }
 juce::Rectangle<int> MixerStrip::sendBounds(std::size_t index) const noexcept {
     // Live's Mixer View sends: A on the left, B to its right and lower, C under A, each 22 pt under
@@ -982,6 +975,8 @@ void MixerStrip::paint(juce::Graphics &g) {
     }
     if (delay.isVisible())
         paintDelayUnit(g);
+    if (!panel_.root.state().trackMixer)
+        return;
     const auto meter = meterArea();
     if (audio_)
         paintMeter(g, meter);
