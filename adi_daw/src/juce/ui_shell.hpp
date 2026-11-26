@@ -6,6 +6,7 @@
 #include "adi/gesture_producers.hpp"
 #include "adi/ui/audio_drop.hpp"
 #include "adi/ui/export_choices.hpp"
+#include "adi/ui/external_input_meter.hpp"
 #include "adi/ui/automation_mode.hpp"
 #include "adi/ui/import_choices.hpp"
 #include "adi/ui/live_midi_take.hpp"
@@ -14,6 +15,7 @@
 #include "adi/ui/op_submitter.hpp"
 #include "adi/ui/momentary_latch.hpp"
 #include "adi/ui/reference_audition.hpp"
+#include "adi/ui/recording_edits.hpp"
 #include "adi/ui/tap_tempo.hpp"
 #include "ui_input_clock.hpp"
 #include "adi/ui/snapshot_reader.hpp"
@@ -331,6 +333,9 @@ class StatusBar final : public juce::Component {
     void paint(juce::Graphics &) override;
     void resized() override;
     juce::TextButton infoToggle{""}, detailToggle{""}, mixerToggle{"Mixer"};
+    juce::TextButton audioSettings{"Audio Settings"};
+    void setAudioDeviceProblem(juce::String problem);
+    const juce::String &audioDeviceProblem() const noexcept { return audioDeviceProblem_; }
     // Live 12's Clip View Selector, in the second field: the shown clip in miniature; a click shows
     // or hides the Clip View (manual 8).
     juce::TextButton clipToggle{""};
@@ -347,6 +352,7 @@ class StatusBar final : public juce::Component {
 
   private:
     AdiRootComponent &root_;
+    juce::String audioDeviceProblem_;
     juce::Point<int> selectorLast_;
     bool selectorDragged_ = false;
 };
@@ -414,6 +420,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // The application's commands (New, Open, Take Snapshot, Save As, Settings) and
     // the engine refresh after an edit belong to whoever owns the document.
     std::function<bool(int)> applicationCommand;
+    std::function<void()> openAudioSettings;
     std::function<void()> afterEdit;
     std::function<std::int64_t()> retainedDeviceId;
     // Commits the parameter edits the document still holds before Undo, Redo or a restored step acts
@@ -472,6 +479,12 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // How many outputs the audio device has open (the highest open channel's number), for Cue Out's
     // stereo pairs (MX-08). Unset or 0: none known, and Cue Out offers only 1/2.
     std::function<int()> outputChannels;
+    std::function<std::span<const ExternalAudioInput>()> externalAudioInputs;
+    std::shared_ptr<ExternalInputMeter> externalInputMeter;
+    std::function<void()> configureExternalInputs;
+    std::span<const ExternalAudioInput> audioInputs() const {
+        return externalAudioInputs ? externalAudioInputs() : std::span<const ExternalAudioInput>{};
+    }
     // Live's per-parameter Re-Enable Automation (manual 25.4; AU-04): one overridden lane follows its
     // envelope again; false with the reason said. Session state, no undo step, as the global switch.
     std::function<bool(std::int64_t)> reenableLane;
@@ -722,6 +735,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // one batch.
     bool armTrack(std::int64_t id, bool add);
     bool setMonitor(std::int64_t id, Monitor mode);
+    bool setExternalAudioInput(std::int64_t id, std::string_view ref);
     // Arrangement Record (F9, the Control Bar's Record): records every armed audio track; again,
     // stops recording and the transport plays on.
     bool toggleRecord();
@@ -821,6 +835,8 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // outside undo and saved with the project (#383, N19); the switch lights from the snapshot.
     bool setMetronome(bool on);
     bool toggleMetronome();
+    bool setCountIn(int bars);
+    bool togglePunch(bool start);
     // Live's Arrangement Loop (manual 6.6), `transport.setLoop` outside undo and saved with the
     // project (#383, N19), from the CURRENT cell (ADR-0201). The control bar's switch; the brace over
     // `range`, the switch as it is; Loop Selection (Ctrl/Cmd+L): the brace to the time selection or

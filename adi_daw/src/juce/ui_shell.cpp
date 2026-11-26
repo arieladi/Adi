@@ -1166,6 +1166,17 @@ StatusBar::StatusBar(AdiRootComponent &root) : root_(root) {
     mixerOptions.onClick = [this] {
         root_.mixerOptionsMenu().showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(&mixerOptions));
     };
+    addChildComponent(audioSettings);
+    audioSettings.onClick = [this] {
+        if (root_.openAudioSettings)
+            root_.openAudioSettings();
+    };
+}
+void StatusBar::setAudioDeviceProblem(juce::String problem) {
+    audioDeviceProblem_ = std::move(problem);
+    audioSettings.setVisible(audioDeviceProblem_.isNotEmpty());
+    audioSettings.setTooltip(audioDeviceProblem_);
+    repaint();
 }
 void StatusBar::resized() {
     // Live's Status Bar at 100 %: round corner buttons, the message field, a second
@@ -1176,6 +1187,9 @@ void StatusBar::resized() {
     clipToggle.setBounds(secondField());
     mixerToggle.setBounds(w - 86, 11, 36, 16);
     mixerOptions.setBounds(w - 49, 11, 8, 16);
+    const int messageWidth = std::max(0, w - 419);
+    const int actionWidth = std::min(98, std::max(0, messageWidth - 8));
+    audioSettings.setBounds(35 + messageWidth - actionWidth - 4, 11, actionWidth, 16);
 }
 void StatusBar::clipClicked() {
     // The end of a drag in the selector is not a click.
@@ -1279,8 +1293,12 @@ void StatusBar::paint(juce::Graphics &g) {
     const bool error = !root_.error().empty();
     g.setColour(look::text);
     g.setFont(look::font(look::fontHeading));
-    g.drawText(error ? juce::String(root_.error()) : root_.selectionText(), message.reduced(8, 0),
-               juce::Justification::centredLeft);
+    const bool audioProblem = audioDeviceProblem_.isNotEmpty();
+    auto text = audioProblem ? audioDeviceProblem_ : error ? juce::String(root_.error()) : root_.selectionText();
+    if (audioProblem && error)
+        text << "  " << juce::String(root_.error());
+    const auto actionWidth = audioSettings.isVisible() ? audioSettings.getWidth() + 4 : 0;
+    g.drawText(text, message.reduced(8, 0).withTrimmedRight(actionWidth), juce::Justification::centredLeft);
     // The selected track's name, as Live shows it at the right.
     const auto rows = root_.arrangement.geometry.rows(root_.reader());
     if (const auto i = rows.find(root_.arrangement.geometry.selection.track); i < rows.size()) {
@@ -1591,6 +1609,7 @@ void AdiRootComponent::frame() noexcept {
     // In its own window the floating host drives its frame.
     if (mixViewPanel.isVisible() && mixViewPanel.getParentComponent() == this)
         mixViewPanel.frame(reader());
+    transport.position.setCountInPosition(mailbox_.countInPosition());
     if (lastDrain_ & DirtySet::Transport) {
         transport.refresh();
         transport.repaint();
@@ -3022,11 +3041,11 @@ bool AdiRootComponent::renderTrack(TrackRenderAction action, std::int64_t id) {
     if (track == nullptr || !canRenderTrack(action, *track))
         return fail("That track is no longer available for this command.");
     bool ok = false;
-    std::string progress;
+    std::string renderStatus;
     switch (action) {
     case TrackRenderAction::Freeze:
         ok = trackRenderDocument_->freezeTrack(id);
-        progress = "Freezing track...";
+        renderStatus = "Freezing track...";
         break;
     case TrackRenderAction::Unfreeze:
         ok = trackRenderDocument_->unfreezeTrack(id);
@@ -3036,17 +3055,17 @@ bool AdiRootComponent::renderTrack(TrackRenderAction action, std::int64_t id) {
         break;
     case TrackRenderAction::BounceToNewTrack:
         ok = trackRenderDocument_->bounceTrackToNewTrack(id);
-        progress = "Bouncing to a new track...";
+        renderStatus = "Bouncing to a new track...";
         break;
     case TrackRenderAction::BounceInPlace:
         ok = trackRenderDocument_->bounceTrackInPlace(id);
         if (!track->frozen)
-            progress = "Bouncing track in place...";
+            renderStatus = "Bouncing track in place...";
         break;
     }
     if (!ok)
         return fail(trackRenderDocument_->error());
-    say(std::move(progress));
+    say(std::move(renderStatus));
     return true;
 }
 void AdiRootComponent::sayStaleAddMenu() {
@@ -3600,6 +3619,18 @@ bool AdiRootComponent::setMonitor(std::int64_t id, Monitor mode) {
         return fail(std::move(edit.refusal));
     return edit.ops.empty() || submitEdits(std::move(edit.ops));
 }
+bool AdiRootComponent::setExternalAudioInput(std::int64_t id, std::string_view ref) {
+    const auto current = view_.current();
+    const auto *track = current ? current->findTrack(id) : nullptr;
+    if (!track || track->kind != "audio")
+        return fail("External audio inputs are available on audio tracks.");
+    const auto choices = audioInputs();
+    if (std::none_of(choices.begin(), choices.end(), [&](const auto &input) { return input.ref == ref; }))
+        return fail("That external input is unavailable. Open Audio Settings to configure inputs.");
+    if (track->inputRef && *track->inputRef == ref)
+        return true;
+    return submitEdit("track.setInput", {{"id", id}, {"input", std::string(ref)}}, "Audio From");
+}
 bool AdiRootComponent::toggleRecord() {
     if (!startRecording || !stopRecording || !recording)
         return fail("Recording runs in the application, with an audio device.");
@@ -4025,6 +4056,19 @@ bool AdiRootComponent::setMetronome(bool on) {
 bool AdiRootComponent::toggleMetronome() {
     const auto current = view_.current();
     return setMetronome(!(current && current->transport.metronome));
+}
+bool AdiRootComponent::setCountIn(int bars) {
+    const auto current = view_.current();
+    if (!current)
+        return fail("Count-in needs an open project.");
+    return submitTransport(::adi::ui::setCountIn(current->transport, bars));
+}
+bool AdiRootComponent::togglePunch(bool start) {
+    const auto current = view_.current();
+    if (!current)
+        return fail("Punch-In and Punch-Out need an open project.");
+    const auto &t = current->transport;
+    return submitTransport(setPunch(t, start ? !t.punchIn : t.punchIn, start ? t.punchOut : !t.punchOut));
 }
 bool AdiRootComponent::toggleLoop() {
     const auto current = view_.current();

@@ -28,7 +28,19 @@
 
 #include <juce_audio_devices/juce_audio_devices.h>
 
+#include <algorithm>
+#include <mutex>
+#include <optional>
+#include <utility>
+
 namespace adi::device {
+
+// A driver may return a nonpositive latency when an endpoint has no report.
+inline std::int64_t reportedRoundTripLatency(juce::AudioIODevice& device) {
+    const auto input = (std::max)(0, device.getInputLatencyInSamples());
+    const auto output = (std::max)(0, device.getOutputLatencyInSamples());
+    return static_cast<std::int64_t>(input) + output;
+}
 
 class DeviceBridge final : public juce::AudioIODeviceCallback {
 public:
@@ -68,6 +80,11 @@ public:
         // or a transport following it jumps backwards mid-session.
         last_ = core_.isOpen() ? core_.changeBlockSize(rate, requested_, granted)
                                : core_.open(*proc_, rate, requested_, granted);
+        if (last_.opened) {
+            currentDevice_ = {device->getTypeName(), device->getName()};
+            if (stoppedDevice_ && *stoppedDevice_ == currentDevice_)
+                stoppedDevice_.reset();
+        }
     }
 
     void audioDeviceIOCallbackWithContext(const float* const* in, int numIn,
@@ -77,21 +94,56 @@ public:
         core_.process(out, numOut, in, numIn, numSamples);
     }
 
-    void audioDeviceStopped() override { core_.close(); }
+    void audioDeviceStopped() override {
+        if (core_.isOpen() && !stoppedDevice_)
+            stoppedDevice_ = currentDevice_;
+        core_.close();
+    }
 
     void audioDeviceError(const juce::String& message) override {
-        lastError_ = message;
+        // Some drivers report errors from a worker. The sample callback
+        // never takes this lock.
+        const std::lock_guard lock(errorMutex_);
+        pendingError_ = message;
+    }
+
+    // The owner's explicit Settings change may replace a device or turn audio off.
+    void acknowledgeDeviceSetup() { stoppedDevice_.reset(); }
+
+    [[nodiscard]] juce::String takeDeviceProblem() {
+        const auto stopped = std::exchange(stoppedDevice_, std::nullopt);
+        std::optional<juce::String> error;
+        {
+            const std::lock_guard lock(errorMutex_);
+            error = std::exchange(pendingError_, std::nullopt);
+        }
+        if (stopped) {
+            auto problem = stopped->name.isEmpty() ? juce::String("Audio device stopped.")
+                                                   : "Audio device stopped: " + stopped->name + ".";
+            if (error && error->isNotEmpty())
+                problem << " " << *error;
+            return problem;
+        }
+        if (!error)
+            return {};
+        return error->isEmpty() ? juce::String("Audio device reported an error.") : "Audio device error: " + *error;
     }
 
     [[nodiscard]] const OpenResult& lastOpen() const { return last_; }
-    [[nodiscard]] const juce::String& lastError() const { return lastError_; }
 
 private:
+    struct DeviceName {
+        juce::String type, name;
+        bool operator==(const DeviceName&) const = default;
+    };
     engine::BlockProcessor* proc_ = nullptr;
     DeviceCore core_;
     std::int32_t requested_ = 0;
     OpenResult last_;
-    juce::String lastError_;
+    DeviceName currentDevice_;
+    std::optional<DeviceName> stoppedDevice_; // owner thread, like open/close
+    std::mutex errorMutex_;
+    std::optional<juce::String> pendingError_;
 };
 
 /// The timer that ticks `DeviceHost`, and the only JUCE-shaped part of it.

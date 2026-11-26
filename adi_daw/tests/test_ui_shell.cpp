@@ -2877,7 +2877,7 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
 
             // SC-262: inspect the actual popup request without opening a native window.
             const auto savedSelection = selection;
-            auto &lanesView = root.arrangement;
+            auto &arrangement = root.arrangement;
             juce::PopupMenu shown;
             root.mixerView.contextMenuPresenter = [&](juce::PopupMenu menu) { shown = std::move(menu); };
             const auto menuItem = [&](const char *name) -> std::optional<juce::PopupMenu::Item> {
@@ -2892,14 +2892,14 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
             selection.start = 10;
             selection.end = 20;
             selection.insert = 30;
-            lanesView.selectedLocator = 42;
-            lanesView.selectedMeter = 10;
-            lanesView.loopSelected = true;
+            arrangement.selectedLocator = 42;
+            arrangement.selectedMeter = 10;
+            arrangement.loopSelected = true;
             two->mouseDown(pressAt(*two, {20.f, 8.f}, right));
             const auto colour = menuItem("Colour");
             check(selection.track == 2 && selection.clip == 0 && selection.pickedClips.empty() &&
-                      selection.start == 30 && selection.end == 30 && !lanesView.loopSelected &&
-                      lanesView.selectedLocator == 0 && lanesView.selectedMeter == -1 && menuItem("Rename") &&
+                      selection.start == 30 && selection.end == 30 && !arrangement.loopSelected &&
+                      arrangement.selectedLocator == 0 && arrangement.selectedMeter == -1 && menuItem("Rename") &&
                       (menuItem("Delete Track") || menuItem("Delete")) && menuItem("Group Tracks") &&
                       colour && colour->customComponent && !menuItem("Auto Gain Stage: gated RMS, -18 dBFS"),
                   "a channel-name popup selects that track, clears the old edit target and offers its track menu");
@@ -5391,8 +5391,9 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
         const auto drag = BrowserPanel::dragDescription({browser.shown()[1]});
         const auto bar5 = 4 * textproj::kWhole;
         const juce::Point<int> at{static_cast<int>(geometry.x(bar5)) + 3, laneTop(root, 1) + 10};
-        const auto carriedFiles = BrowserPanel::droppedFiles(drag);
-        check(carriedFiles.size() == 1 && juce::File::createFileWithoutCheckingPath(carriedFiles[0]).getFileName() == "Clap.wav",
+        const auto samplePaths = BrowserPanel::droppedFiles(drag);
+        check(samplePaths.size() == 1 &&
+                  juce::File::createFileWithoutCheckingPath(samplePaths[0]).getFileName() == "Clap.wav",
               "the drag carries the sample's native path, its file name Clap.wav on every system");
         juce::DragAndDropTarget::SourceDetails details(drag, nullptr, at);
         check(canvas.isInterestedInDragSource(details) &&
@@ -11129,6 +11130,89 @@ void loopMetronome(AppCommands &commands, settings::AppSettings &settings, const
     check(!stored().metronome && !bar.metronome.getToggleState() && root.undoTitle(false) == undoTitle,
           "the switch clicked: off again, no undo step");
 
+    check(!bar.punchIn.getToggleState() && !bar.punchOut.getToggleState(), "a new project has both punch switches off");
+    bar.punchIn.onClick();
+    root.frame();
+    check(stored().punchIn && !stored().punchOut && !stored().loopEnabled &&
+              bar.punchIn.getToggleState() && !bar.punchOut.getToggleState(),
+          "Punch-In persists and lights independently of Punch-Out and Loop");
+    bar.punchOut.onClick();
+    bar.punchIn.onClick();
+    root.frame();
+    check(!stored().punchIn && stored().punchOut && !stored().loopEnabled &&
+              !bar.punchIn.getToggleState() && bar.punchOut.getToggleState() && root.undoTitle(false) == undoTitle,
+          "Punch-Out stays on when Punch-In is switched off and does not add an Undo step");
+    bar.punchOut.onClick();
+    root.frame();
+
+    // SC-21, SC-246: use the real menu and its actions with no popup or audio device.
+    int menuPresses = 0;
+    auto openMenu = std::move(bar.metronome.onDropdown);
+    bar.metronome.onDropdown = [&] { ++menuPresses; };
+    auto &metronome = bar.metronome;
+    const juce::Point<float> arrow{static_cast<float>(metronome.getWidth() - 3), 6.f};
+    metronome.mouseDown(pressAt(metronome, arrow, juce::ModifierKeys::leftButtonModifier));
+    metronome.mouseUp(pressAt(metronome, arrow));
+    const juce::Point<float> glyph{3.f, 6.f};
+    metronome.mouseDown(pressAt(metronome, glyph, juce::ModifierKeys::rightButtonModifier));
+    metronome.mouseUp(pressAt(metronome, glyph));
+    check(menuPresses == 2 && !stored().metronome, "SC-21: arrow and context presses open the menu without toggling");
+    metronome.onDropdown = std::move(openMenu);
+    const auto menuItem = [](const juce::PopupMenu &menu, const char *label) {
+        for (juce::PopupMenu::MenuItemIterator it(menu, true); it.next();)
+            if (it.getItem().text == label)
+                return it.getItem();
+        return juce::PopupMenu::Item{};
+    };
+    constexpr std::pair<const char *, int> countIns[]{{"1 Bar", 1}, {"2 Bars", 2}, {"4 Bars", 4}, {"None", 0}};
+    const auto freshMenu = bar.metronomeMenu();
+    check(menuItem(freshMenu, "None").isTicked, "SC-21: a new project selects no count-in");
+    for (const auto &[label, bars] : countIns) {
+        const auto item = menuItem(bar.metronomeMenu(), label);
+        check(item.isEnabled && item.action, "SC-21: the count-in choice can be invoked");
+        if (!item.action)
+            continue;
+        item.action();
+        root.frame();
+        const auto updated = bar.metronomeMenu();
+        bool ticksMatch = true;
+        for (const auto &[other, expected] : countIns)
+            ticksMatch = ticksMatch && menuItem(updated, other).isTicked == (bars == expected);
+        check(stored().countInBars == bars && root.reader().transport().countInBars == bars && ticksMatch,
+              "SC-21: the count-in is saved, presented, and ticked on reopening the menu");
+    }
+    check(!stored().metronome && !document->mailbox().desiredPlaying() && root.undoTitle(false) == undoTitle,
+          "SC-21: count-in choices stay outside undo and leave the click and transport stopped");
+    allocations = 0;
+    audit = true;
+    bar.position.setCountInPosition({-2, 1, 1});
+    bar.position.setCountInPosition({-2, 1, 2});
+    bar.position.setCountInPosition({});
+    audit = false;
+    check(allocations == 0, "SC-21: changing the displayed count-in allocates nothing before paint");
+
+    const auto volumeSlider = [](const juce::PopupMenu &menu) -> juce::Slider * {
+        for (juce::PopupMenu::MenuItemIterator it(menu, true); it.next();)
+            if (const auto *row = it.getItem().customComponent.get())
+                for (auto *child : row->getChildren())
+                    if (auto *slider = dynamic_cast<juce::Slider *>(child))
+                        return slider;
+        return nullptr;
+    };
+    const auto volumeMenu = bar.metronomeMenu();
+    auto *slider = volumeSlider(volumeMenu);
+    check(slider && slider->getValue() == readCueSettings(document->store()).volumeDb,
+          "SC-246: the menu slider shows the project's Cue Volume");
+    if (slider) {
+        slider->setValue(-12.0, juce::sendNotificationSync);
+        root.frame();
+        const auto updated = bar.metronomeMenu();
+        const auto *updatedSlider = volumeSlider(updated);
+        check(readCueSettings(document->store()).volumeDb == -12.0 && root.reader().get()->cue.volumeDb == -12.0 &&
+                  updatedSlider && updatedSlider->getValue() == -12.0 && root.undoTitle(false) == undoTitle,
+              "SC-246: the slider changes shared Cue Volume and reopening reads it back without an undo step");
+    }
+
     // Loop Selection (Ctrl/Cmd+L, manual 6.6) over a time selection from bar 3 to bar 5.
     sel.track = 2;
     sel.toTrack = 3;
@@ -12502,6 +12586,75 @@ void armFollowsSelection(AppCommands &commands, const std::filesystem::path &dir
               !states().at(3).armed && !states().at(4).armed,
           "a focused text editor keeps plain C [SC-264]");
 }
+void externalAudioInputMenus(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "input-menu.adi", true, {}, error);
+    check(document != nullptr, "SC-23: a project for the external input menus");
+    if (!document)
+        return;
+    document->prepare(48000, 64);
+    document->setExternalAudioInputs({{"ext:mono:2", "Spoken word", {0}}, {"ext:stereo:5", "Keys", {1, 2}}});
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "inputs");
+    root.setSize(1440, 900);
+    root.afterEdit = [&] { document->synchronise(); };
+    root.externalAudioInputs = [&] { return document->externalAudioInputs(); };
+    root.externalInputMeter = document->externalInputMeter();
+    int configured = 0;
+    root.configureExternalInputs = [&] { ++configured; };
+    if (!root.state().inOut)
+        root.command(AppCommands::ToggleInOut);
+    if (!root.state().mixerInOut)
+        root.command(AppCommands::ToggleMixerInOut);
+    root.frame();
+
+    const auto findAudio = [](MixerPanel &panel) -> MixerStrip * {
+        for (const auto &strip : panel.strips())
+            if (strip->track() == 4)
+                return strip.get();
+        return nullptr;
+    };
+    const auto choose = [&](MixerStrip &strip, juce::Point<float> at, const char *label, const char *ref,
+                            const char *currentLabel) {
+        int requests = 0;
+        strip.onAudioInputMenu = [&](juce::PopupMenu menu) {
+            ++requests;
+            bool picked = false, marked = false;
+            for (juce::PopupMenu::MenuItemIterator it(menu, true); it.next();) {
+                const auto &item = it.getItem();
+                if (item.text == currentLabel)
+                    marked = item.isTicked;
+                if (item.text == label && item.action) {
+                    item.action();
+                    picked = true;
+                }
+                if (item.text == "Configure..." && item.action)
+                    item.action();
+            }
+            check(marked && picked, "SC-23: the chooser marks its saved input and selects by the configured name");
+        };
+        strip.mouseDown(pressAt(strip, at, juce::ModifierKeys::leftButtonModifier));
+        strip.onAudioInputMenu = {};
+        const auto *track = root.current()->findTrack(4);
+        check(requests == 1 && track && track->inputRef && *track->inputRef == ref,
+              "SC-23: clicking the chooser writes the selected physical input");
+    };
+    auto *horizontal = findAudio(root.mixer);
+    check(horizontal != nullptr, "SC-23: the Arrangement exposes 3 Audio's input");
+    if (horizontal)
+        choose(*horizontal, {12.f, 8.f}, "Keys", "ext:stereo:5", "Spoken word");
+
+    if (!root.state().mixerView)
+        root.command(AppCommands::ToggleMixerView);
+    root.resizeMixerView(360);
+    root.frame();
+    auto *vertical = findAudio(root.mixerView);
+    check(vertical != nullptr, "SC-23: the Mixer View exposes the same track input");
+    if (vertical)
+        choose(*vertical, {12.f, 54.f}, "Spoken word", "ext:mono:2", "Keys");
+    check(configured == 2, "SC-23: both input menus reach Audio Settings");
+    document->release();
+}
 // Arm, monitoring and Arrangement Record (MX-09; Live 12 manual 21.1, 21.4): the strips' Arm and the
 // monitoring switch, and the Control Bar's Record and F9, wired as ui_main.cpp wires them, over a
 // document whose callback the test drives with an input.
@@ -12527,14 +12680,23 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
             root.say(document->error());
         return ok;
     };
-    root.stopRecording = [&] { document->stopRecording(); };
+    const auto refreshRecordingPreview = [&] {
+        const auto &recorder = document->session().recording();
+        root.arrangement.setRecordingPreview(recorder.preview(), recorder.acceptedFrames(), document->landingTake());
+    };
+    root.stopRecording = [&] {
+        document->stopRecording();
+        refreshRecordingPreview();
+    };
     root.recording = [&] { return document->recording(); };
+    root.arrangement.waveforms = &document->waveforms();
     root.setSize(1440, 900);
     // The application's frame: the timer's tick, the rows handed over, the window's frame.
     std::int64_t now = 0;
     const auto frame = [&] {
         document->tick(++now);
         root.setRecordStates(document->recordStates());
+        refreshRecordingPreview();
         root.frame();
     };
     frame();
@@ -12630,30 +12792,44 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     };
     for (int b = 0; b < 16; ++b)
         block();
-    // walk-B B4: while it records, the take is drawn on each recording track's lane, from where it began
-    // to the playhead, in the record colour; it goes once recording stops (the landed clip replaces it).
-    const auto recordPixels = [&] {
-        auto &canvas = root.arrangement.canvas;
-        const auto image = canvas.createComponentSnapshot(canvas.getLocalBounds(), true, 1.f);
-        int count = 0;
-        for (int y = 0; y < image.getHeight(); ++y)
-            for (int x = 0; x < image.getWidth(); ++x)
-                if (image.getPixelAt(x, y).withAlpha(1.f) == look::record.withAlpha(1.f))
-                    ++count;
-        return count;
-    };
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!document->session().recording().preview() && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     frame();
     {
         const auto &live = root.arrangement.liveTake();
         check(live && live->tracks == std::vector<std::int64_t>{4, 5} &&
                   live->start == root.arrangement.geometry.selection.insert,
               "Record from stopped: the take begins at the insert marker on both armed audio tracks");
-        if (live && root.timelineTick() > live->start && root.arrangement.geometry.inView(4)) {
-            // 21 ms recorded is 2 px at the default zoom, all outline: zoomed in, its body shows.
+        check(live && live->preview && live->preview->peaks.frames > 0,
+              "SC-20: the Arrangement reads live peaks from the writer during recording");
+        if (live && live->preview && root.arrangement.geometry.inView(4)) {
+            const auto preview = live->preview;
+            const auto capturedFrames = live->capturedFrames;
+            // The first written block can be shorter than a pixel at the default zoom.
             const double scale = root.arrangement.geometry.scale;
-            root.arrangement.geometry.scale = scale * 40;
-            check(recordPixels() > 0, "and is drawn, red, while the playhead moves on");
+            root.arrangement.geometry.scale = scale * 120;
+            auto &canvas = root.arrangement.canvas;
+            const auto drawn = canvas.createComponentSnapshot(canvas.getLocalBounds(), true, 1.f);
+            auto blank = std::make_shared<engine::AudioRecordingPreview>(*preview);
+            blank->peaks.bins.clear();
+            root.arrangement.setRecordingPreview(std::move(blank), capturedFrames, false);
+            const auto redOnly = canvas.createComponentSnapshot(canvas.getLocalBounds(), true, 1.f);
+            int waveformPixels = 0;
+            for (int y = 0; y < drawn.getHeight(); ++y)
+                for (int x = 0; x < drawn.getWidth(); ++x) {
+                    const auto colour = redOnly.getPixelAt(x, y).withAlpha(1.f);
+                    if (colour == look::record.withAlpha(1.f) && drawn.getPixelAt(x, y).withAlpha(1.f) != colour)
+                        ++waveformPixels;
+                }
+            check(waveformPixels > 0, "SC-20: captured PCM draws waveforms inside the recording clips");
             root.arrangement.geometry.scale = scale;
+            allocations = 0;
+            audit = true;
+            root.arrangement.setRecordingPreview(preview, capturedFrames, false);
+            root.frame();
+            audit = false;
+            check(allocations == 0, "SC-20: replacing the live waveform snapshot allocates nothing in a frame");
         }
     }
     auto &lanes = root.arrangement;
@@ -12683,7 +12859,8 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     lanes.onContextMenu = nullptr;
     check(root.command(AppCommands::ArrangementRecord), "F9's command again");
     frame();
-    check(!root.arrangement.liveTake(), "stopped, the growing take goes");
+    check(root.arrangement.liveTake() && root.arrangement.liveTake()->landing,
+          "SC-20: the waveform stays visible while the writer finishes");
     check(!document->recording() && !record.getToggleState() && document->mailbox().desiredPlaying(),
           "stops the recording; the transport plays on, as Live's [P:recording#21]");
     for (int i = 0; i < 5000 && document->landingTake(); ++i) {
@@ -12696,6 +12873,7 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     check(landed && landed->ok && landed->clips.size() == 3,
           "both audio takes and the MIDI take land together [P:recording#19]");
     frame();
+    check(!root.arrangement.liveTake(), "SC-20: the recorded clip replaces the live preview after landing");
     check(root.reader().findTrack(3)->clips.size() == 1 && root.reader().findTrack(4)->clips.size() == 1 &&
               root.reader().findTrack(5)->clips.size() == 1,
           "a clip on each armed track");
@@ -16159,9 +16337,6 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
         menuPanel.present(menuDevice);
         check(menuPanel.controls.front()->menu.getSelectedId() == 5, "a refused pick shows the value playing again");
     }
-    std::fputs("[shell] mix fixture seek checks start\n", stderr);
-    adi::uitest::mixSeekChecks(commands, dir, check);
-    std::fputs("[shell] mix fixture seek checks returned\n", stderr);
     const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {});
     if (!headlessOnly && folder.isNotEmpty()) {
         root.command(AppCommands::ToggleMixView);
@@ -16913,6 +17088,8 @@ int main(int argc, char **argv) {
         mixChannelToolSearch(commands, temp.path());
         mixStackViewReopen(commands, temp.path());
         mixViewShell(commands, temp.path(), true);
+        // The seek checks own their projects and run after the Mix View fixture has unwound.
+        trace("mixSeekChecks", [&] { adi::uitest::mixSeekChecks(commands, temp.path(), check); });
         pluginWindows(commands, settings, temp.path());
         std::printf("%d checks, %d failures (Mix View fake-peer components)\n", checks, failures);
         return failures ? 1 : 0;
@@ -20129,6 +20306,20 @@ int main(int argc, char **argv) {
             const auto bits = channelBits(channelConfigFor(settings, "Interface", 4, 2).activeInputs(), 4);
             check(bits[0] && bits[1] && bits[2] && !bits[3] && channelBits({1, 2, 5}, 4).countNumberOfSetBits() == 2,
                   "the record's channels in use are the device's channel bits, none beyond the device");
+
+            ChannelConfig sparse;
+            sparse.monoInputs = {{1, false, {}}, {3, true, "Voice"}, {7, true, {}}, {9, true, {}}};
+            sparse.stereoInputs = {{1, true, {}}, {3, false, {}}, {5, true, {}}, {7, true, "Room"}, {8, true, {}}};
+            const auto sources = externalAudioInputsFor(sparse, channelBits({1, 2, 3, 4, 6, 7, 8}, 8), 8);
+            const auto matches = [&](std::size_t i, std::string_view ref, std::string_view label,
+                                     const std::vector<std::uint32_t> &channels) {
+                return sources[i].ref == ref && sources[i].label == label && sources[i].channels == channels;
+            };
+            check(sources.size() == 4 && matches(0, "ext:mono:3", "Voice", {2}) &&
+                      matches(1, "ext:mono:7", "7 (mono)", {5}) &&
+                      matches(2, "ext:stereo:1", "1/2 (stereo)", {0, 1}) &&
+                      matches(3, "ext:stereo:7", "Room", {5, 6}),
+                  "SC-23: enabled mono and stereo sources retain physical IDs and use packed active buffers");
         }
         auto rowFor = [&panel](const settings::Setting *s) -> SettingRow * {
             if (s == nullptr)
@@ -20345,6 +20536,7 @@ int main(int argc, char **argv) {
     trace("pluginWindows", [&] { pluginWindows(commands, settings, temp.path()); });
     trace("automationArm", [&] { automationArm(commands, temp.path()); });
     trace("armFollowsSelection", [&] { armFollowsSelection(commands, temp.path()); });
+    trace("externalAudioInputMenus", [&] { externalAudioInputMenus(commands, temp.path()); });
     trace("armAndRecord", [&] { armAndRecord(commands, temp.path()); });
     trace("midiTakePreview", [&] { midiTakePreview(commands, temp.path()); });
     trace("exportPage", [&] { exportPage(commands, temp.path()); });
@@ -20376,6 +20568,7 @@ int main(int argc, char **argv) {
     trace("clipViewClipTime", [&] { clipViewClipTime(commands, temp.path()); });
     trace("clipViewMulti", [&] { clipViewMulti(commands, temp.path()); });
     trace("mixViewShell", [&] { mixViewShell(commands, temp.path()); });
+    trace("mixSeekChecks", [&] { adi::uitest::mixSeekChecks(commands, temp.path(), check); });
     trace("recordingOptions", [&] { recordingOptions(commands, settings, temp.path()); });
     trace("undoHistoryWindow", [&] { undoHistoryWindow(commands, temp.path()); });
     trace("clipWaveforms", [&] { clipWaveforms(commands, temp.path()); });

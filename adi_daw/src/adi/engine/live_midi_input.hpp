@@ -15,6 +15,8 @@ namespace adi::engine {
 
 class MidiInputCapture;
 class Transport;
+enum class RecordingPunch : std::uint8_t;
+struct RecordingPunchWindow;
 
 /// Typed Track input. The producer and the audio driver share only the
 /// fixed queue; per-device voice ownership stays on the audio driver.
@@ -45,7 +47,7 @@ public:
     bool push(std::int64_t sample, const Event&, std::int64_t inputSample) noexcept;
     void reset() noexcept;
     void render(const GraphHost::RenderBlock&, const AudioIo&, std::span<const Route>,
-                const Transport&, MidiInputCapture*) noexcept;
+                const Transport&, MidiInputCapture*, RecordingPunch, const RecordingPunchWindow&) noexcept;
 
 private:
     struct Timed {
