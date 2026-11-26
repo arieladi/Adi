@@ -13,6 +13,7 @@
 #include <array>
 #include <atomic>
 #include <filesystem>
+#include <fstream>
 #include <map>
 #include <chrono>
 #include <cmath>
@@ -821,7 +822,7 @@ void arrangementRecord(const std::filesystem::path &dir) {
     }
     check(std::distance(std::filesystem::directory_iterator(dir), std::filesystem::directory_iterator{}) == before,
           "and leaves no private take in the project's folder");
-    // The device stopped while a take lands: settled when the document is told the driver is gone.
+    // A driver may stop delivering callbacks without a user pressing Stop.
     check(doc->startRecording(0, 1, true), "Record again");
     for (int b = 0; b < 4; ++b) {
         io.streamTimeSamples = stream;
@@ -829,10 +830,83 @@ void arrangementRecord(const std::filesystem::path &dir) {
         stream += 64;
     }
     doc->release();
-    doc->settleRecording();
-    const auto settled = doc->takeLanded();
+    std::optional<ui::ProjectDocument::TakeLanded> settled;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    for (int i = 0; !settled && std::chrono::steady_clock::now() < deadline; ++i) {
+        doc->tick(i);
+        settled = doc->takeLanded();
+        if (!settled)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
     check(settled && settled->ok && !doc->recording() && !doc->landingTake(),
-          "a take whose device stopped is settled into the project, not lost");
+          "the document timer lands the take after device loss without another audio callback");
+}
+void refusedRecordingKeepsAudio(const std::filesystem::path &dir) {
+    std::string error;
+    auto doc = ui::ProjectDocument::open(dir / "record.adi", true, {}, error);
+    check(doc != nullptr, "a project for testing refused recording publication");
+    if (!doc)
+        return;
+    constexpr int blockFrames = 64, blocks = 4;
+    doc->prepare(48000, blockFrames);
+    OpRequest arm;
+    arm.opType = "track.setArm";
+    arm.payload = {{"id", 4}, {"armed", true}};
+    if (!doc->ops().submit(arm).ok || !doc->synchronise())
+        throw std::runtime_error("could not arm the audio track");
+
+    // The recorder can write its private directory, but placing the take needs an audio directory.
+    const auto project = media::projectFolder(doc->store());
+    const auto obstruction = project / "audio";
+    {
+        std::ofstream file(obstruction);
+        if (!(file << "not a directory"))
+            throw std::runtime_error("could not obstruct recording publication");
+    }
+    if (!doc->startRecording(0, 1, false))
+        throw std::runtime_error(doc->error());
+    std::filesystem::path capture;
+    for (const auto &entry : std::filesystem::directory_iterator(project))
+        if (entry.is_directory() && media::pathUtf8(entry.path().filename()).starts_with(".adi-record-"))
+            capture = entry.path();
+    if (capture.empty())
+        throw std::runtime_error("recording did not make a private directory");
+
+    std::array<float, blockFrames> samples{}, left{}, right{};
+    for (std::size_t i = 0; i < samples.size(); ++i)
+        samples[i] = static_cast<float>(i % 17) / 32.f - .25f;
+    const float *inputs[]{samples.data()};
+    float *outputs[]{left.data(), right.data()};
+    engine::AudioIo io;
+    io.in = inputs;
+    io.numIn = 1;
+    io.out = outputs;
+    io.numOut = 2;
+    io.frames = blockFrames;
+    for (int block = 0; block < blocks; ++block) {
+        io.streamTimeSamples = static_cast<std::int64_t>(block) * blockFrames;
+        doc->process(io);
+    }
+    doc->release();
+    const bool settled = doc->settleRecording();
+    const auto landed = doc->takeLanded();
+    check(settled && landed && !landed->ok && landed->clips.empty() &&
+              landed->message.find(media::pathUtf8(capture)) != std::string::npos,
+          "a take that cannot attach reports the full location of its retained capture");
+    check(doc->store().db().execAndGet("SELECT count(*) FROM media_files").getInt() == 0,
+          "refused publication adds no media row");
+    const auto file = capture / "take-0.wav";
+    const bool retained = std::filesystem::is_regular_file(file);
+    check(retained, "refused publication leaves the original WAV on disk");
+    if (retained) {
+        audio::WavReader reader(file);
+        std::array<float, blockFrames * blocks> saved{};
+        bool exact = reader.frames() == saved.size() && reader.channels() == 1 &&
+                     reader.read(saved.data(), static_cast<std::uint32_t>(saved.size())) == saved.size();
+        for (std::size_t i = 0; i < saved.size(); ++i)
+            exact = exact && saved[i] == samples[i % samples.size()];
+        check(exact, "the saved but unplaced WAV still holds all captured PCM");
+    }
 }
 // MX-23 and SRF-02: a fader dragged is heard while it moves, writes nothing until the mouse lets go, then
 // lands as one undo step; Esc puts it back (Live 12 manual 18.1).
@@ -1274,6 +1348,8 @@ int main(int argc, char **argv) {
     {
         test::TempDirectory recordDir("ui_document", "record");
         arrangementRecord(recordDir.path());
+        test::TempDirectory refusedPublicationDir{"ui_document", "recording_publication_refused"};
+        refusedRecordingKeepsAudio(refusedPublicationDir.path());
         test::TempDirectory guardDir("ui_document", "guard");
         saveAsKeepsTheTake(guardDir.path());
         test::TempDirectory afterDir("ui_document", "after-save-as");
