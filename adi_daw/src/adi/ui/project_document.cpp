@@ -853,6 +853,44 @@ bool ProjectDocument::pasteDevice(const DeviceCopy &copy, std::int64_t track, st
     feed_.publish(session_, realisedGeneration_);
     return true;
 }
+std::optional<ProjectDocument::ClipRelinkTarget> ProjectDocument::clipRelinkTarget(std::int64_t clip) {
+    SQLite::Statement file(store_->db(), "SELECT m.id,m.hash_blake3,m.orig_name FROM audio_clips a "
+                                        "JOIN media_files m ON m.id=a.media_id WHERE a.clip_id=? AND m.embedded=0");
+    file.bind(1, clip);
+    if (!file.executeStep()) return std::nullopt;
+    return ClipRelinkTarget{clip, file.getColumn(0).getInt64(), file.getColumn(1).getString(),
+                                file.getColumn(2).getString()};
+}
+bool ProjectDocument::relinkClipMedia(const ClipRelinkTarget &target, const std::filesystem::path &path) {
+    const auto current = clipRelinkTarget(target.clipId);
+    if (!current || current->mediaId != target.mediaId || current->hash != target.hash) {
+        error_ = "The clip's sample changed while the file chooser was open. Choose it again.";
+        return false;
+    }
+    return relinkMediaFile(target.mediaId, path);
+}
+bool ProjectDocument::relinkMediaFile(std::int64_t mediaId, const std::filesystem::path &path) {
+    const auto result = media::relinkMedia(*store_, mediaId, path);
+    if (!result.ok) {
+        error_ = result.error.starts_with("hash mismatch or unreadable file:")
+            ? "That file could not be read or does not match the original sample."
+            : "Sample relink failed: " + result.error;
+        return false;
+    }
+    try {
+        {
+            SQLite::Statement hash(store_->db(), "SELECT hash_blake3 FROM media_files WHERE id=?");
+            hash.bind(1, mediaId);
+            if (hash.executeStep()) waveforms_.retry(hash.getColumn(0).getString());
+        }
+        view_.refresh(*store_, session_.overriddenLanes());
+        if (synchronise()) return true;
+    } catch (const std::exception &e) {
+        error_ = e.what();
+    }
+    error_ = "Sample relinked. Playback could not refresh: " + error_;
+    return false;
+}
 bool ProjectDocument::prepareImport(const std::string &utf8Path, std::int64_t nowUtc, AudioImport &out) {
     // A new pool row takes the next id; a file already in the pool keeps its own (the capture
     // reuses it by content).

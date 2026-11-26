@@ -63,6 +63,14 @@ class WaveformCache {
         }
         return nullptr;
     }
+    // A verified relink preserves valid peaks; a failed build may try the new path.
+    void retry(const std::string &hash) {
+        std::lock_guard lock(mutex_);
+        if (kept_.contains(hash))
+            return;
+        asked_.erase(hash);
+        std::erase_if(queue_, [&hash](const Request &request) { return request.hash == hash; });
+    }
     // A new generation of the document: the files none of its clips use are dropped, and any
     // request or result for them with it.
     void follow(const engine::Snapshot &snapshot, std::uint64_t generation) {

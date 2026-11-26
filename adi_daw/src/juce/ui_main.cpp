@@ -4,6 +4,7 @@
 #include "adi/media/publish_file.hpp"
 #include "adi/render/queue.hpp"
 #include "adi/render/host_dispatch.hpp"
+#include "adi/media/media_ops.hpp"
 #include "adi/settings/device_grant.hpp"
 #include "adi/ui/audio_test_tone.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -1183,6 +1184,11 @@ class AdiApplication final : public juce::JUCEApplication,
         };
         // The audio clips' waveforms, from the document's own worker (N40).
         root->arrangement.waveforms = &document_->waveforms();
+        root->unavailableClipMedia = [this](std::int64_t clip) {
+            const auto *playback = document_->session().clips();
+            return playback && playback->mediaUnavailable(clip);
+        };
+        root->locateClipMedia = [this](std::int64_t clip) { locateMissingSample(clip); };
         root->applicationCommand = [this](int id) { return applicationCommand(id); };
         root->openRecentProject = [this](const juce::File &chosen) {
             if (chosen.existsAsFile())
@@ -1508,6 +1514,32 @@ class AdiApplication final : public juce::JUCEApplication,
         options.useNativeTitleBar = true;
         options.resizable = true;
         options.launchAsync();
+    }
+    void locateMissingSample(std::int64_t clip) {
+        if (chooser_ || !document_ || !root_)
+            return;
+        auto target = document_->clipRelinkTarget(clip);
+        if (!target) {
+            root_->say("The clip no longer has a sample to locate.");
+            return;
+        }
+        const auto owner = juce::Component::SafePointer<AdiRootComponent>(root_);
+        const auto folder = juce::File(juce::String(media::pathUtf8(media::projectFolder(document_->store()))));
+        const auto title = target->originalName.empty() ? juce::String("Locate Missing Sample")
+            : "Locate " + juce::String::fromUTF8(target->originalName.c_str());
+        chooser_ = std::make_unique<juce::FileChooser>(title, folder, "*");
+        chooser_->launchAsync(juce::FileBrowserComponent::canSelectFiles | juce::FileBrowserComponent::openMode,
+                              [this, owner, target = std::move(*target)](const juce::FileChooser &chooser) {
+            const auto file = chooser.getResult();
+            if (owner && root_ == owner.getComponent() && file != juce::File{}) {
+                const bool ok = document_->relinkClipMedia(target, media::pathFromUtf8(file.getFullPathName().toStdString()));
+                owner->say(ok ? "Sample relinked." : document_->error());
+            }
+            juce::MessageManager::callAsync([this] {
+                if (juce::JUCEApplicationBase::getInstance() == this)
+                    chooser_.reset();
+            });
+        });
     }
     bool applicationCommand(int id) {
         if (id == AppCommands::Quit) {

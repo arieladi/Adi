@@ -25,6 +25,7 @@
 #include <type_traits>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace adi::engine {
 namespace fs = std::filesystem;
@@ -488,6 +489,7 @@ struct ClipPlayback::Impl {
     std::vector<ClipMediaSource> externalSources;
     std::vector<std::unique_ptr<TrackSource>> tracks;
     std::vector<std::string> problems;
+    std::unordered_set<std::int64_t> unavailableMedia;
     std::atomic<bool> stalled{false};
     std::atomic<const ClipPlayback::RequestSnapshotProbeForTest*> requestProbe{nullptr};
     std::jthread worker;
@@ -511,6 +513,7 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
         // Muted clips do not need a reader or a playable media source.
         if(row.kind!="audio" || row.muted) continue;
         const auto label="clips#"+std::to_string(row.id)+": ";
+        bool openingMedia = false;
         try {
             const auto a=std::find_if(project->rows.audioClips.begin(),project->rows.audioClips.end(),[&](const auto& x){return x.clipId==row.id;});
             if(a==project->rows.audioClips.end()) throw std::runtime_error("no audio row; silent");
@@ -519,6 +522,7 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             if(row.aliasOf) throw std::runtime_error("alias resolution unsupported; silent");
             if(row.fadeInCurve<0 || row.fadeInCurve>5 || row.fadeOutCurve<0 || row.fadeOutCurve>5) throw std::runtime_error("fade curve unsupported; silent");
             if(a->channelMode<0 || a->channelMode>3) throw std::runtime_error("unknown channel mode; silent");
+            openingMedia = true;
             const auto source=std::find_if(project->rows.media.begin(),project->rows.media.end(),[&](const auto& m){return m.id==a->mediaId;});
             if(source==project->rows.media.end() || source->embedded) throw std::runtime_error("missing or embedded media; extract first; silent");
             auto clip=std::make_unique<Clip>();
@@ -568,6 +572,7 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             clip->rate=static_cast<std::uint32_t>(rate);
             if(clip->channels>64 || clip->sourceRate<1 || clip->sourceRate>768000)throw std::runtime_error("source format outside supported bounds; silent");
             if(a->srcStartFrames<0 || a->srcLenFrames<=0 || static_cast<std::uint64_t>(a->srcStartFrames)>sourceFrames || static_cast<std::uint64_t>(a->srcLenFrames)>sourceFrames-static_cast<std::uint64_t>(a->srcStartFrames))throw std::runtime_error("source window outside audio; silent");
+            openingMedia = false;
             clip->pageFrames=static_cast<std::int64_t>(std::ceil(8192.0*rate/48000.0));
             clip->sourceStart=static_cast<std::uint64_t>(a->srcStartFrames); clip->sourceLength=static_cast<std::uint64_t>(a->srcLenFrames);
             clip->length=samples(static_cast<double>(clip->sourceLength)/clip->sourceRate,rate);
@@ -687,7 +692,10 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             auto track=std::find_if(impl_->tracks.begin(),impl_->tracks.end(),[&](const auto& x){return x->track==row.trackId;});
             if(track==impl_->tracks.end()) { impl_->tracks.push_back(std::make_unique<TrackSource>(transport,maxFrames,channels,row.trackId)); track=impl_->tracks.end()-1; }
             (*track)->clips.push_back(clip.get()); impl_->clips.push_back(std::move(clip));
-        } catch(const std::exception& e) { impl_->problems.push_back(label+e.what()+"; silent"); }
+        } catch(const std::exception& e) {
+            if (openingMedia) impl_->unavailableMedia.insert(row.id);
+            impl_->problems.push_back(label+e.what()+"; silent");
+        }
     }
     impl_->externalSources.reserve(impl_->clips.size());
     for(auto& clip:impl_->clips)
@@ -721,6 +729,7 @@ void ClipPlayback::useMonitoredInput(std::int64_t id) noexcept {
         if (clip->track == id) clip->monitorInputOnly = true;
 }
 const std::vector<std::string>& ClipPlayback::problems() const noexcept { return impl_->problems; }
+bool ClipPlayback::mediaUnavailable(std::int64_t clipId) const noexcept { return impl_->unavailableMedia.contains(clipId); }
 std::span<const ClipMediaSource> ClipPlayback::externalSources() const noexcept {
     if(audio::onAudioThread)return {};
     return impl_->externalSources;

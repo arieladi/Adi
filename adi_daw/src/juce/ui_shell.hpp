@@ -521,6 +521,12 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // not known).
     TrackRecordState recordState(std::int64_t track) const;
     bool isRecording() const { return recording && recording(); }
+    bool clipMediaOffline(const engine::ClipNode &clip) const {
+        return clip.audio && (!clip.audio->mediaInfo || clip.audio->mediaInfo->missing ||
+                              (unavailableClipMedia && unavailableClipMedia(clip.id)));
+    }
+    std::function<bool(std::int64_t)> unavailableClipMedia;
+    std::function<void(std::int64_t)> locateClipMedia;
     // Live's file drop (manual 6.1): an audio file onto the audio track `track` at `pos`, or onto
     // the drop area below the tracks (`track` 0), which makes a new audio track. One undo step;
     // the new clip and its track are selected. A refusal goes to the Status Bar.

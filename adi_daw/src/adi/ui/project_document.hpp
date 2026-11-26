@@ -255,6 +255,13 @@ class ProjectDocument final : public engine::BlockProcessor {
     // batch as one undo step. `nowUtc` in microseconds, as the history's own times. False with
     // `error()` saying why, a file that is not audio included.
     bool prepareImport(const std::string &utf8Path, std::int64_t nowUtc, AudioImport &out);
+    struct ClipRelinkTarget {
+        std::int64_t clipId{}, mediaId{};
+        std::string hash, originalName;
+    };
+    std::optional<ClipRelinkTarget> clipRelinkTarget(std::int64_t clip);
+    bool relinkClipMedia(const ClipRelinkTarget &, const std::filesystem::path &);
+    bool relinkMediaFile(std::int64_t mediaId, const std::filesystem::path &);
     // An audio file imported with the prompt's choices (E5; Live 12 manual 9.2; ADR-0132 d6): Warp,
     // Create Fades on Clip Edges, the file copied into the project. The engine's material import
     // (`clip_edit::prepareImportAudio`, #393) reads, hashes and analyses the file and stages its copy

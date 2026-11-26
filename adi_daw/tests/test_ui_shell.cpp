@@ -10360,6 +10360,110 @@ void clipWaveforms(AppCommands &commands, const std::filesystem::path &dir) {
     root.afterEdit = nullptr;
     document->release();
 }
+void relinkMissingSample(AppCommands &commands, const std::filesystem::path &dir) {
+    const auto project = dir / "relink-sample.adi";
+    const auto original = dir / "before-relink.wav";
+    const auto relocated = dir / "moved-relink.wav";
+    const auto wrong = dir / "other-relink.wav";
+    const auto wave = [](const std::filesystem::path &file, float value) {
+        const std::vector<float> samples(48000, value);
+        audio::WavWriter writer(file, 48000, 1, audio::WavFormat::Float32);
+        writer.write(samples.data(), 48000);
+    };
+    wave(original, 0.25f);
+    wave(wrong, 0.5f);
+    std::string error;
+    auto document = ProjectDocument::open(project, true, {}, error);
+    if (!document) { check(false, "create a project to relink missing audio"); return; }
+    AudioImport import;
+    if (!document->prepareImport(media::pathUtf8(original), 1, import)) {
+        check(false, "capture the initial audio file");
+        return;
+    }
+    auto edit = dropAudio(*document->view().current(), 4, 0, "Moved audio", import);
+    check(edit.refusal.empty() && document->ops().submit(std::move(edit.ops)).ok, "drop audio linked to its original file");
+    document.reset();
+    std::filesystem::rename(original, relocated);
+
+    document = ProjectDocument::open(project, false, {}, error);
+    if (!document) { check(false, "open a project with the audio file moved"); return; }
+    document->prepare(48000., 64);
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "relink-sample");
+    root.unavailableClipMedia = [&](std::int64_t id) {
+        const auto *playback = document->session().clips();
+        return playback && playback->mediaUnavailable(id);
+    };
+    auto selectedFile = wrong;
+    bool relinked = false;
+    root.locateClipMedia = [&](std::int64_t id) {
+        const auto target = document->clipRelinkTarget(id);
+        relinked = target && document->relinkClipMedia(*target, selectedFile);
+    };
+    root.setSize(1200, 800);
+    root.frame();
+    auto &geometry = root.arrangement.geometry;
+    geometry.scale = 40;
+    geometry.left = 0;
+    const auto *track = root.reader().findTrack(4);
+    if (!track || track->clips.empty()) { check(false, "the clip survives its missing file"); return; }
+    const auto clip = track->clips.front();
+    if (!clip->audio || !clip->audio->mediaInfo) { check(false, "the missing clip retains its media identity"); return; }
+    check(root.clipMediaOffline(*clip), "the reopened clip is offline");
+    auto &waveforms = document->waveforms();
+    const auto &hash = clip->audio->mediaInfo->contentHash;
+    waveforms.peaks(*clip->audio);
+    for (int retry = 0; retry < 1000 && !waveforms.idle(); ++retry)
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    check(waveforms.idle() && (waveforms.holds(hash) || !waveforms.problem().empty()),
+          "a peaks request settles before relink with cached data or a missing-file failure");
+    auto &canvas = root.arrangement.canvas;
+    juce::Image image(juce::Image::RGB, canvas.getWidth(), canvas.getHeight(), true, juce::SoftwareImageType{});
+    juce::Graphics g(image);
+    canvas.paintEntireComponent(g, true);
+    const int y = laneTop(root, 4) + 1 + ArrangementCanvas::kClipBarHeight;
+    check(image.getBounds().contains(5, y) && image.getPixelAt(5, y) == look::error,
+          "the offline sample is marked on its clip");
+
+    root.selectClip(clip->id);
+    const auto locateAction = [&] {
+        auto menu = root.arrangement.contextMenuItems(false, nullptr);
+        for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+            if (it.getItem().text == "Locate Missing Sample…")
+                return it.getItem().action;
+        return std::function<void()>{};
+    };
+    const auto action = locateAction();
+    check(static_cast<bool>(action), "the offline clip's menu offers Locate Missing Sample");
+    if (action) {
+        const auto head = OpJournal(document->store()).headSeq();
+        action();
+        check(!relinked && document->error().find("does not match") != std::string::npos &&
+                  OpJournal(document->store()).headSeq() == head, "a file with different content leaves the project unchanged");
+        selectedFile = relocated;
+        action();
+        check(relinked && !root.clipMediaOffline(*clip) && !locateAction(),
+              "the same file at its new path relinks and clears the offline mark and menu action");
+        waveforms.peaks(*clip->audio);
+        for (int retry = 0; retry < 1000 && !waveforms.idle(); ++retry)
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        check(waveforms.holds(hash), "the waveform is available through the new link");
+        auto &session = document->session();
+        session.graph().setFadeFrames(0);
+        session.transport().play();
+        std::array<float, 64> left{}, right{};
+        float *outs[]{left.data(), right.data()};
+        engine::AudioIo io; io.out = outs; io.numOut = 2; io.frames = 64;
+        const bool ready = session.clips() && session.clips()->prime();
+        if (ready) session.process(io);
+        check(ready && left == right && std::all_of(left.begin(), left.end(), [](float value) { return value == 0.25f; }),
+              "the relinked clip sends the original PCM into the playback graph");
+        check(document->ops().undo().ok && document->synchronise() && root.clipMediaOffline(*clip),
+              "one Undo restores the original missing link");
+    }
+    commands.detach(root);
+    document->release();
+}
 // Live's metronome and Arrangement Loop (C2, N19; Live 12 manual 6.6, 19.4.1, §42.8, §42.16,
 // §42.20): O and the control bar's switches, Loop Selection, the brace dragged and moved by its keys,
 // the Loop Start and Loop Length fields, and editing.linkLoopToSelection. Each writes the transport's
@@ -19241,6 +19345,7 @@ int main(int argc, char **argv) {
     trace("undoHistoryWindow", [&] { undoHistoryWindow(commands, temp.path()); });
     trace("clipWaveforms", [&] { clipWaveforms(commands, temp.path()); });
     trace("clipFades", [&] { clipFades(commands, temp.path()); });
+    trace("relinkMissingSample", [&] { relinkMissingSample(commands, temp.path()); });
     trace("showcase", [&] { showcase(commands, temp.path()); });
     trace("returnInGroup", [&] { returnInGroup(commands, temp.path()); });
     trace("loopMetronome", [&] { loopMetronome(commands, settings, temp.path()); });

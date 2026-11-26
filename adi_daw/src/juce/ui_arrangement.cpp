@@ -1657,6 +1657,24 @@ juce::PopupMenu ArrangementView::contextMenuItems(bool header, const engine::Aut
             // Rename, the clip's (walk-B B14): the same command as Ctrl/Cmd+R, which acts on the
             // selected clip.
             menu.addCommandItem(&commands.manager, AppCommands::RenameTrack);
+            if (const auto snapshot = root.current(); snapshot && root.locateClipMedia) {
+                const auto clipId = geometry.selection.clip;
+                for (const auto &track : snapshot->tracks) {
+                    if (!track) continue;
+                    const auto found = std::find_if(track->clips.begin(), track->clips.end(), [clipId](const auto &clip) {
+                        return clip->id == clipId;
+                    });
+                    if (found == track->clips.end()) continue;
+                    const auto &clip = **found;
+                    if (root.clipMediaOffline(clip) && clip.audio->mediaInfo) {
+                        const auto safe = juce::Component::SafePointer<ArrangementView>(this);
+                        menu.addItem("Locate Missing Sample…", [safe, clipId] {
+                            if (safe && safe->root.locateClipMedia) safe->root.locateClipMedia(clipId);
+                        });
+                    }
+                    break;
+                }
+            }
             menu.addSeparator();
         } else if (!commands.clipClipboard().empty()) {
             menu.addCommandItem(&commands.manager, AppCommands::Paste);
@@ -2403,8 +2421,10 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
             g.fillRect(left, static_cast<float>(y + 1), std::max(1.f, right - left), static_cast<float>(h - 4));
             g.setColour(clipColour);
             g.fillRect(left, static_cast<float>(y + 1), std::max(1.f, right - left), static_cast<float>(kClipBarHeight));
-            paintWaveform(g, *c, pos, left, right, static_cast<float>(y + 1 + kClipBarHeight),
-                          static_cast<float>(y + h - 3));
+            const bool offline = view.root.clipMediaOffline(*c);
+            if (!offline)
+                paintWaveform(g, *c, pos, left, right, static_cast<float>(y + 1 + kClipBarHeight),
+                              static_cast<float>(y + h - 3));
             if (!c->audio)
                 paintNotes(g, *c, pos, left, right, static_cast<float>(y + 1 + kClipBarHeight),
                            static_cast<float>(y + h - 3));
@@ -2437,6 +2457,15 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
             if (c->audio && (home || (c->id != moving_ && !along)) && c->id != resizing_)
                 paintFades(g, *c, static_cast<float>(x), static_cast<float>(end), static_cast<float>(y + 1 + kClipBarHeight),
                            static_cast<float>(y + h - 3));
+            if (offline) {
+                const auto banner = juce::Rectangle<float>(left + 1.f, static_cast<float>(y + 1 + kClipBarHeight),
+                    std::max(0.f, right - left - 2.f), static_cast<float>(std::min(13, std::max(0, h - kClipBarHeight - 4))));
+                g.setColour(look::error);
+                g.fillRect(banner);
+                g.setColour(look::ink);
+                g.setFont(look::font(look::fontSmall));
+                g.drawText("Sample Offline", banner.reduced(3.f, 0.f), juce::Justification::centredLeft, true);
+            }
         };
         // A clip dragged onto another track is drawn on that track's lane, in its colour; so is
         // each of several selected clips dragged across tracks.
