@@ -4,6 +4,31 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-26 — Item 5 (Standing Queue Item 12): TSan across all 38 threaded suites on `origin/main` (`559c528a`)
+
+Tested all **38** threaded suites (graph workers, host, gesture, recording, decode, playback, scanner, Link, shared analysis, limiter owner, render queue, control/MCP, project replace/files) on `origin/main` (`559c528a`) with `TSAN_OPTIONS=halt_on_error=1:second_deadlock_stack=1`.
+
+| Compiler / Tool | Suites | Result |
+|---|---|---|
+| **Clang 14.0.6 + libstdc++ 12 (`-O1 -g1 -fsanitize=thread`)** | 21 / 38 linked (`adi_graph_tests`, `adi_device_host_tests`, `adi_session_tests`, `adi_realize_tests`, `adi_gesture_tests`, `adi_gesture_playback_tests`, `adi_quiet_gesture_tests`, `adi_mix_limiter_owner_tests`, `adi_render_queue_tests`, `adi_control_mcp_tests`, `adi_project_replace_tests`, `adi_project_files_tests`, `adi_recording_commands_tests`, `adi_track_recording_tests`, `adi_audio_memory_capture_tests`, `adi_decode_tests`, `adi_decode_cache_consistency_tests`, `adi_scan_self_test_tests`, `adi_scan_cache_tests`, `adi_scan_catalogue_tests`, `adi_scan_prune_tests`) | **21 / 21 PASS** (0 races, 0 deadlocks). Remaining 17 failed at link time (see Finding below). |
+| **GCC 12.4.0 (`-O1 -g1 -fsanitize=thread`, dynamic `libtsan`)** | All 17 Clang-link-blocked suites (`adi_graph_workers_tests`, `adi_host_tests`, `adi_gesture_graph_tests`, `adi_link_session_tests`, `adi_link_playback_tests`, `adi_external_tempo_tests`, `adi_ui_shared_analysis_tests`, `adi_audio_recording_tests`, `adi_midi_capture_tests`, `adi_midi_capture_input_tests`, `adi_progressive_decode_tests`, `adi_pcm_stream_tests`, `adi_clip_playback_tests`, `adi_warp_playback_tests`, `adi_plugin_scanner_tests`, `adi_scan_process_tests`, `adi_scan_quarantine_tests`) | **17 / 17 PASS** (0 races, 0 deadlocks). |
+| **Combined total** | **38 / 38 threaded suites** | **38 / 38 PASS — ZERO data races, ZERO deadlocks.** |
+
+### Finding on Clang 14 TSan link (`origin/main` `559c528a`)
+
+- **17 test binaries fail to link under Clang 14.0.6 `-fsanitize=thread` due to `multiple definition of operator new / operator delete` vs static `libclang_rt.tsan_cxx-x86_64.a(tsan_new_delete.cpp.o)`:**
+  - **Locations:** `adi_daw/tests/replace_operator_new.hpp:102` (used by `adi_midi_capture_tests`, `adi_warp_playback_tests`), plus 15 individual test files with local global `operator new`/`delete` replacements (`test_graph_workers.cpp:30`, `test_host.cpp:42`, `test_gesture_graph.cpp:65`, `test_link_session.cpp:27`, `test_link_playback.cpp:62`, `test_external_tempo.cpp:34`, `test_shared_analysis.cpp:3058`, `test_audio_recording.cpp:28`, `test_midi_capture_input.cpp:17`, `test_progressive_decode.cpp:37`, `test_pcm_stream.cpp:37`, `test_clip_playback.cpp:47`, `test_plugin_scanner.cpp:32`, `test_scan_process.cpp:39`, `test_scan_quarantine.cpp:18`).
+  - **Owner:** `engine` / `engine-win` / `mixview` (`replace_operator_new.hpp` + test allocation-counting harnesses).
+  - **Smallest repro:**
+    ```sh
+    cmake -S adi_daw -B build-tsan -G Ninja -DCMAKE_CXX_COMPILER=clang++-14 \
+      -DCMAKE_CXX_FLAGS_DEBUG="-O1 -g1 -fsanitize=thread" -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread" \
+      -DADI_WERROR=OFF -DADI_WITH_JUCE=OFF
+    cmake --build build-tsan --target adi_graph_workers_tests
+    ```
+
+---
+
 ## 2026-11-26 — Item 5 (Standing Queue Item 11): Full ASan + LSan + UBSan sweep on `origin/main` (`dd80444a`)
 
 Built and ran all **277** headless CTest suites (`-LE performance`, `-DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF`) on `origin/main` (`dd80444a`) under GCC 12.4.0 (`-O1 -g1 -fsanitize=address,undefined -fno-omit-frame-pointer`) with `ASAN_OPTIONS=detect_leaks=1:alloc_dealloc_mismatch=1:halt_on_error=1` and `UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1`.
