@@ -29,6 +29,7 @@
 #include <limits>
 #include <span>
 #include <thread>
+#include <vector>
 using namespace adi;
 using namespace adi::engine;
 namespace { std::atomic<unsigned> allocations{0}; }
@@ -1605,6 +1606,71 @@ void sessionPitchBend() {
           "direct host translation also delivers a channel wheel with no note identity");
 }
 
+void livePitchBendOwnership() {
+    constexpr auto pitch = static_cast<std::uint16_t>(ExpressionDim::Pitch);
+    const auto rawBend = [](Fixture& fixture, std::int64_t sample, std::uint8_t channel, double value) {
+        return fixture.session.enqueueMidiInput(sample, {0, EventType::Controller, channel, 0, 0, kCtrlPitchBend, value});
+    };
+    const auto expressionBend = [](Fixture& fixture, std::int64_t sample, std::uint8_t channel, double value) {
+        return fixture.session.enqueueMidiInput(sample, {0, EventType::NoteExpression, channel, pitch, 0, 0, value});
+    };
+    const auto bendsAt = [](const Instrument& instrument, std::int64_t at, std::uint8_t channel) {
+        std::vector<double> values;
+        for (const auto& [event, clock] : std::span(instrument.heard).first(instrument.count)) {
+            if (clock == at && event.channel == channel &&
+                ((event.type == EventType::Controller && event.paramId == kCtrlPitchBend) ||
+                 (event.type == EventType::NoteExpression && event.noteId == 0 && event.dim == pitch)))
+                values.push_back(event.value);
+        }
+        return values;
+    };
+
+    {
+        Fixture f(48000, 64);
+        f.store->db().exec("UPDATE tracks SET monitor_mode=1 WHERE id=1");
+        f.load();
+        check(rawBend(f, 10, 3, .75) && expressionBend(f, 11, 4, 1.) &&
+                  rawBend(f, 12, 5, .25) && rawBend(f, 13, 5, .5),
+              "accept both channel wheel representations, including a physical return to center");
+        f.render();
+        check(bendsAt(*f.instrument, 10, 3) == std::vector{.75} && bendsAt(*f.instrument, 11, 4) == std::vector{1.},
+              "live wheels reach the instrument at their input clocks");
+        f.session.resetMidiInput();
+        f.render();
+        check(bendsAt(*f.instrument, 64, 3) == std::vector{.5} && bendsAt(*f.instrument, 64, 4) == std::vector{0.} &&
+                  bendsAt(*f.instrument, 64, 5).empty(),
+              "a quiet reset centers only still-deflected live channels in their own representation");
+        f.render();
+        check(bendsAt(*f.instrument, 128, 3).empty() && bendsAt(*f.instrument, 128, 4).empty(),
+              "centering clears live wheel ownership after delivery");
+    }
+
+    {
+        Fixture f(48000, 64);
+        f.clip(1, 0, 12012, 24024);
+        f.clip(2, 0, 12012, 24024);
+        f.store->db().exec("UPDATE tracks SET record_armed=1,monitor_mode=2 WHERE id=1;"
+                           "UPDATE clips SET pos_ticks=24024 WHERE id=1;"
+                           "UPDATE clips SET pos_ticks=30030 WHERE id=2;"); // [100,200) and [125,225)
+        const auto setBend = [&](int clip, double value) {
+            const std::array points{controllers::Point{0, 0, value}};
+            const auto prepared = controllers::prepareWrite(*f.store, clip, 3, kCtrlPitchBend, points);
+            return prepared.ok && controllers::commitPrepared(*f.store, prepared).ok;
+        };
+        check(setBend(1, .25) && setBend(2, .625), "write two overlapping authored wheels");
+        f.load();
+        check(rawBend(f, 17, 3, .75) && expressionBend(f, 19, 4, 1.), "deflect two wheels before Auto blocks input");
+        f.render();
+        f.render();
+        check(bendsAt(*f.instrument, 100, 3) == std::vector{.5, .25} &&
+                  bendsAt(*f.instrument, 100, 4) == std::vector{0.},
+              "Auto centers live wheels at the clip boundary and the authored chase wins there");
+        check(bendsAt(*f.instrument, 125, 3) == std::vector{.5, .625} &&
+                  bendsAt(*f.instrument, 125, 4).empty(),
+              "a second native clip takes over the authored wheel without a repeated live reset");
+    }
+}
+
 const ClipNode& projected(const Snapshot& frame, std::int64_t track, std::int64_t clip) {
     const auto* node = frame.findTrack(track);
     if (node) {
@@ -1785,6 +1851,8 @@ int main(int argc,char** argv){
     try { if (only == "all" || only == "driver-capture") driverMidiCapture(); }
     catch (const std::exception& e) { check(false, e.what()); }
     try { if (only == "all" || only == "pitch-bend") sessionPitchBend(); }
+    catch (const std::exception& e) { check(false, e.what()); }
+    try { if (only == "all" || only == "pitch-bend") livePitchBendOwnership(); }
     catch (const std::exception& e) { check(false, e.what()); }
     try{if(only=="all"||only=="split")twoPointSplits();if(only=="all"||only=="controllers")sessionControllers();if(only=="all"||only=="active")activeFlag();if(only=="all"||only=="markers")sourceMarkers();if(only=="all"||only=="placement")placement();if(only=="all"||only=="cleanup")cleanup();if(only=="all"||only=="musical")musical();if(only=="all"||only=="pending")pendingRelease();if(only=="all"||only=="concurrent")concurrentPublication();if(only=="all"||only=="capacity")capacity();if(only=="all"||only=="overflow")overflowRelease();if(only=="all"||only=="ns"){nanosecondEnd();trimSourcePrefix();}if(only=="all"||only=="maximum")maximumLocate();if(only=="all"||only=="entry")loopEntry();if(only=="all"||only=="held")heldNote();}catch(const std::exception& e){check(false,e.what());}
     try { if (only == "all" || only == "knot-clock") expressionKnotFollowsNoteClock(); }

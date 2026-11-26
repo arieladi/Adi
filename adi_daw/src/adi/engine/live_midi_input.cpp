@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/engine/live_midi_input.hpp"
+#include "adi/blob.hpp"
 #include "adi/controller_data.hpp"
 #include "adi/engine/midi_input_capture.hpp"
 #include "adi/engine/transport.hpp"
@@ -11,6 +12,7 @@
 namespace adi::engine {
 namespace {
 constexpr std::array<std::uint32_t, 3> pedals{64, 66, 69};
+constexpr auto pitch = static_cast<std::uint16_t>(ExpressionDim::Pitch);
 
 std::int64_t playDelay(const LiveMidiInput::Route& route, const LiveMidiInput::PlayClock& clock,
                        const Transport& transport, std::int32_t frame) noexcept {
@@ -75,12 +77,40 @@ void LiveMidiInput::release(const GraphHost::RenderBlock& block, const Route& ro
                 state.pedals[ch][p] = false;
             else state.retry = true;
         }
+    for (std::size_t ch = 0; ch < state.bends.size(); ++ch) {
+        auto& bend = state.bends[ch];
+        if (bend == Voices::Bend::None) continue;
+        const bool controller = bend == Voices::Bend::Controller;
+        // Use the same event representation as the live wheel.
+        const Event center{frame, controller ? EventType::Controller : EventType::NoteExpression,
+                           static_cast<std::uint8_t>(ch), controller ? std::uint16_t{0} : pitch,
+                           0, controller ? controllers::kPitchBend : 0u, controller ? .5 : 0.};
+        if (block.pushInputEvent(route.slot, center))
+            bend = Voices::Bend::None;
+        else
+            state.retry = true;
+    }
     state.flush = state.retry;
 }
 
 void LiveMidiInput::deliver(const GraphHost::RenderBlock& block, const Route& route, const Event& event,
                             std::int64_t streamStart, const Transport& transport, const PlayClock& clock) noexcept {
     auto& state = *route.voices;
+    const bool controllerBend = event.type == EventType::Controller && event.paramId == controllers::kPitchBend;
+    const bool channelPitch = event.type == EventType::NoteExpression && event.noteId == 0 && event.dim == pitch;
+    if (controllerBend || channelPitch) {
+        auto wheel = event;
+        wheel.noteId = 0;
+        auto& bend = state.bends[event.channel];
+        const bool centered = event.value == (controllerBend ? .5 : 0.);
+        if (block.pushInputEvent(route.slot, wheel)) {
+            const auto form = controllerBend ? Voices::Bend::Controller : Voices::Bend::Expression;
+            bend = centered ? Voices::Bend::None : form;
+        } else if (centered && bend != Voices::Bend::None) {
+            state.flush = true;
+        }
+        return;
+    }
     if (event.type == EventType::Controller) {
         auto controller = event;
         controller.noteId = 0;

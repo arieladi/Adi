@@ -28,6 +28,7 @@ public:
         std::uint32_t sampleRate = 0;
     };
     struct Voices {
+        enum class Bend : std::uint8_t { None, Controller, Expression };
         struct Voice {
             std::uint64_t sourceId = 0;
             Event off;
@@ -46,6 +47,7 @@ public:
         std::uint64_t transportRevision = 0;
         std::int64_t playGrid = 0, playForgiveness = 0;
         std::array<std::array<bool, 3>, 16> pedals{};
+        std::array<Bend, 16> bends{};
         std::int64_t track = 0;
         bool flush = false;
         bool retry = false;
