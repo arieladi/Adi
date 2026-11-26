@@ -2378,7 +2378,20 @@ void saveAsKeepsTheTake(const std::filesystem::path &dir) {
         }
     });
     const auto first = dir / "guard-as.adi";
-    const bool saved = doc->saveAs(first);
+    using SaveKind = ui::ProjectDocument::SaveKind;
+    using SavePhase = ui::ProjectDocument::SaveProgress::Phase;
+    const bool requested = doc->startSave(first, SaveKind::as);
+    auto progress = doc->saveProgress();
+    check(requested && progress && progress->phase == SavePhase::waitingForRecording &&
+              !doc->recording() && doc->landingTake(),
+          "Save As returns while the take is still landing");
+    for (int tick = 0; progress && tick < 5000 && progress->phase < SavePhase::succeeded; ++tick) {
+        doc->tick(tick);
+        progress = doc->saveProgress();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    const bool saved = progress && progress->phase == SavePhase::succeeded && progress->switched;
+    doc->clearSave();
     running = false;
     callback.join();
     const auto landed = doc->takeLanded();
