@@ -212,7 +212,7 @@ void testSyncedProjectCopies() {
     fs::copy_file(path, published);
     auto copy = Store::open(published, err, true);
     check(copy && err == StoreError::Ok &&
-              copy->db().execAndGet("SELECT name FROM project WHERE id=1").getString() ==
+              copy->db().execAndGet("SELECT coalesce((SELECT name FROM project WHERE id=1), '')").getString() ==
                   "Latest committed name",
           "copying just the main file while the original is still open includes the edit");
 
