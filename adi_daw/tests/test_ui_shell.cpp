@@ -2294,10 +2294,22 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
         check(mainStrip != nullptr && mainStrip->cueVolume.isVisible() && mainStrip->cueVolume.getTitle() == "Cue Volume",
               "Main has its Cue Volume");
         if (mainStrip != nullptr) {
-            mainStrip->cueVolume.setValue(-12, juce::sendNotificationSync);
+            auto &cueVolume = mainStrip->cueVolume;
+            cueVolume.setValue(-12, juce::sendNotificationSync);
             root.frame();
             check(std::abs(root.current()->cue.volumeDb + 12) < 1e-9 && root.undoTitle(false) == title,
                   "a typed Cue Volume is the project's at once, no undo step");
+            check(cueVolume.keyPressed(juce::KeyPress(juce::KeyPress::upKey)) &&
+                      std::abs(root.current()->cue.volumeDb + 11.9) < 1e-9 &&
+                      cueVolume.keyPressed(juce::KeyPress(juce::KeyPress::downKey)) &&
+                      std::abs(root.current()->cue.volumeDb + 12) < 1e-9 && root.undoTitle(false) == title,
+                  "SC-289: Cue Volume arrows nudge one tenth of a dB without an undo step");
+            check(cueVolume.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)) &&
+                      std::abs(root.current()->cue.volumeDb) < 1e-9 && root.undoTitle(false) == title,
+                  "SC-289: Delete on Cue Volume returns to 0 dB");
+            cueVolume.setValue(cueVolume.getValueFromText("-inf"), juce::sendNotificationSync);
+            check(root.current()->cue.volumeDb == kCueSilenceDb, "Cue Volume reads -inf as silence");
+            cueVolume.setValue(cueVolume.getValueFromText("-12 dB"), juce::sendNotificationSync);
         }
         check(root.setCueOutput(2) && root.current()->cue.firstOutputChannel == 2 && !root.setCueOutput(3) &&
                   root.current()->cue.firstOutputChannel == 2,
@@ -2427,6 +2439,9 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
                       !column->delay.isEnabled() && boxAt(column->delay, 10.) &&
                       (submitter.nextUndo() ? submitter.nextUndo()->txnId : 0) == delayStepBefore,
                   "off: the session told, Track Delay unavailable and still 10.00 ms, no undo step");
+            check(column != nullptr && !column->delay.keyPressed(juce::KeyPress(juce::KeyPress::upKey)) &&
+                      boxAt(column->delay, 10.) && (submitter.nextUndo() ? submitter.nextUndo()->txnId : 0) == delayStepBefore,
+                  "SC-289: the disabled Track Delay box does not nudge its value");
             check(root.command(AppCommands::DelayCompensation), "chosen again");
             root.frame();
             column = rowOf(root.mixerView, 3);
@@ -2489,6 +2504,21 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
             check(column != nullptr && submitter.nextUndo()->txnId == stepTen && root.reader().findTrack(3) != nullptr &&
                       root.reader().findTrack(3)->delaySamples == 441,
                   "undone, 3 Audio is at its 441 samples again");
+        }
+        if (column != nullptr) {
+            auto &delay = column->delay;
+            const auto samples = [&] { return root.reader().findTrack(3)->delaySamples; };
+            check(delay.keyPressed(juce::KeyPress(juce::KeyPress::upKey)) && samples() == 445 &&
+                      submitter.nextUndo()->label == "Change Track Delay" && submitter.nextUndo()->opCount == 1,
+                  "SC-289: Track Delay Up nudges a tenth of a millisecond in one edit on the sample grid");
+            root.frame();
+            check(delay.keyPressed(juce::KeyPress(juce::KeyPress::downKey)) && samples() == 441,
+                  "SC-289: Track Delay Down nudges back to the original delay");
+            check(delay.getValueFromText("invalid") == delay.getValue(), "invalid Track Delay text leaves the delay alone");
+            check(delay.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)) && samples() == 0 &&
+                      root.command(AppCommands::Undo) && samples() == 441,
+                  "SC-289: Track Delay resets to zero and Undo restores the delay");
+            root.frame();
         }
     }
     check(root.command(AppCommands::ToggleMixerTrackOptions) && !root.state().mixerTrackOptions, "Track Options off again");
@@ -6043,6 +6073,55 @@ void clipViewFields(AppCommands &commands, const std::filesystem::path &dir) {
     check(root.command(AppCommands::Undo) && root.command(AppCommands::Undo), "two undos");
     root.frame();
     check(!details().signature.local && panel.readings().signature == "4 / 4", "take the clip back to the song's 4/4");
+
+    // SC-289. Up and Down change the part clicked and leave the same editor open.
+    const juce::KeyPress up(juce::KeyPress::upKey), down(juce::KeyPress::downKey);
+    const auto clickField = [&](juce::Point<float> at) {
+        panel.mouseDown(pressAt(panel, at));
+        panel.mouseUp(pressAt(panel, at));
+    };
+    auto &editor = panel.fieldEditor();
+    const auto positionBeforeArrows = details().loopStartTicks;
+    const auto oldHead = submitter.nextUndo()->txnId;
+    clickField(centreOf(panel.fieldBox(Field::Position)));
+    check(panel.editing() == Field::Position && editor.keyPressed(up) &&
+              details().loopStartTicks == positionBeforeArrows + beat && editor.getText() == "3.2.1" &&
+              editor.isVisible() && undoIs("Set Loop Position"),
+          "Up in Position's beat part advances one beat and refreshes the open editor");
+    const auto nudgedHead = submitter.nextUndo()->txnId;
+    check(nudgedHead != oldHead && editor.keyPressed(down) && details().loopStartTicks == positionBeforeArrows &&
+              submitter.nextUndo()->txnId != nudgedHead && undoIs("Set Loop Position"),
+          "Down returns one beat and commits its own undo step");
+    editor.setText("4.1.1", false);
+    const auto dirtyHead = submitter.nextUndo()->txnId;
+    editor.keyPressed(up);
+    check(editor.getText() == "4.1.1" && panel.editing() == Field::Position &&
+              details().loopStartTicks == positionBeforeArrows && submitter.nextUndo()->txnId == dirtyHead,
+          "an arrow leaves an unsubmitted typed value and the project intact");
+    editor.onEscapeKey();
+    check(root.command(AppCommands::Undo), "undo the Down key");
+    root.frame();
+    check(details().loopStartTicks == positionBeforeArrows + beat && root.command(AppCommands::Undo), "undo the Up key");
+    root.frame();
+    check(details().loopStartTicks == positionBeforeArrows && submitter.nextUndo()->txnId == oldHead,
+          "the two keyboard moves can be undone separately");
+
+    const auto lengthBeforeArrows = loopLengthOf(details());
+    clickField(sixteenths);
+    check(panel.editing() == Field::Length && editor.keyPressed(down) &&
+              loopLengthOf(details()) == lengthBeforeArrows - beat / 4 && undoIs("Set Loop Length"),
+          "Down in Length's sixteenth part shortens the loop by one sixteenth");
+    editor.onEscapeKey();
+    panel.setToolsTab(1);
+    const auto amountBeforeArrows = panel.velocityAmount;
+    const auto beforeToolChange = submitter.nextUndo()->txnId;
+    clickField(centreOf(panel.fieldBox(Field::VelocityAmount)));
+    check(panel.editing() == Field::VelocityAmount && editor.keyPressed(up) &&
+              panel.velocityAmount == amountBeforeArrows + 1 &&
+              editor.getText() == juce::String(amountBeforeArrows + 1) &&
+              submitter.nextUndo()->txnId == beforeToolChange,
+          "Up steps a tool's numeric field by one without applying the tool to notes");
+    editor.onEscapeKey();
 }
 // The Clip View's Pitch and Time panel and its Scale chooser (STEP-7-PLAN 7.7 step 4; manual 8.5, 8.2.5):
 // a MIDI clip has the panel beside the Main panel; Fit to Scale, Invert, Reverse, x2, /2 and Legato act on
@@ -12045,11 +12124,8 @@ void stripParamUndo(AppCommands &commands, const std::filesystem::path &dir) {
                 return p.normalized;
         return -1.0;
     };
-    check(root.devices.panels[0]->controls[0]->getWantsKeyboardFocus() && !cutoff.getWantsKeyboardFocus() &&
-              root.devices.panels[0]->controls[0]->getNumChildComponents() > 0,
-          "a click on the knob lands the focus on its control: the slider declines it (manual 41.6's keys need it)");
     // Live 12 manual 41.6: Delete on a control is Return to Default, where the device's Delete is
-    // Delete (row 6). Through the peer, as the key arrives: the focused control takes it.
+    // Delete (row 6). Send the mouse and keys through the peer to exercise focus and click counts.
     {
         UiPeerRoot host;
         host.setSize(root.getWidth(), root.getHeight());
@@ -12062,31 +12138,82 @@ void stripParamUndo(AppCommands &commands, const std::filesystem::path &dir) {
             return true;
         };
         auto &control = *root.devices.panels[0]->controls[0];
-        control.grabKeyboardFocus();
         auto *peer = host.getPeer();
         const auto knobValue = [&] { return knobs->getParam("cutoff").normalized; };
+        check(peer != nullptr && knobs != nullptr, "the device knob has a runtime and a software peer");
         if (peer != nullptr && knobs != nullptr) {
-            const auto previous = knobValue();
-            const auto hit = peer->handleKeyPress(juce::KeyPress(juce::KeyPress::upKey));
-            document->tick(0);
-            root.frame();
-            check(hit && knobValue() > previous, "SC-82: Up changes a focused device knob");
-            if (knobValue() != previous)
-                check(root.command(AppCommands::Undo), "undo the knob nudge");
-            control.grabKeyboardFocus();
-            peer->handleKeyPress(juce::KeyPress(juce::KeyPress::returnKey));
-            auto *editor = dynamic_cast<juce::TextEditor *>(juce::Component::getCurrentlyFocusedComponent());
-            if (editor) {
-                editor->setText("0.7");
-                peer->handleKeyPress(juce::KeyPress(juce::KeyPress::returnKey));
+            const auto update = [&] {
                 document->tick(0);
                 root.frame();
+            };
+            const auto at = host.getLocalPoint(&cutoff, cutoff.getLocalBounds().getCentre()).toFloat();
+            auto time = juce::Time::currentTimeMillis();
+            const auto mouse = [&](juce::ModifierKeys mods, juce::int64 wait) {
+                time += wait;
+                juce::ModifierKeys::currentModifiers = mods;
+                peer->handleMouseEvent(juce::MouseInputSource::InputSourceType::mouse, at, mods, 1.f, 0.f, time);
+            };
+            const auto click = [&](juce::int64 wait) {
+                mouse(juce::ModifierKeys::leftButtonModifier, wait);
+                mouse({}, 20);
+            };
+            const auto previous = knobValue();
+            const auto previousHead = OpJournal(document->store()).headSeq();
+            mouse({}, 0);
+            click(1000);
+            update();
+            check(control.hasKeyboardFocus(false) && knobValue() == previous &&
+                      OpJournal(document->store()).headSeq() == previousHead,
+                  "SC-289: clicking the knob gives its control focus and writes no edit");
+            const bool up = peer->handleKeyPress(juce::KeyPress(juce::KeyPress::upKey));
+            update();
+            const auto raised = knobValue();
+            check(up && raised > previous, "Up changes the clicked device knob");
+            const bool down = peer->handleKeyPress(juce::KeyPress(juce::KeyPress::downKey));
+            update();
+            check(down && std::abs(knobValue() - previous) < 1e-9, "Down changes the same device knob back");
+            if (up && down && raised > previous) {
+                const bool undoneDown = root.command(AppCommands::Undo);
+                update();
+                check(undoneDown && std::abs(knobValue() - raised) < 1e-9, "one Undo takes back the Down nudge");
+                const bool undoneUp = root.command(AppCommands::Undo);
+                update();
+                check(undoneUp && std::abs(knobValue() - previous) < 1e-9, "another Undo takes back the Up nudge");
             }
-            check(editor != nullptr && std::abs(knobValue() - .7) < 1e-9,
-                  "SC-82: typing commits the focused device knob");
-            if (knobValue() != previous)
-                check(root.command(AppCommands::Undo), "undo the typed knob value");
-            control.grabKeyboardFocus();
+
+            const auto type = [&](char ch) {
+                return peer->handleKeyPress(juce::KeyPress(ch, 0, static_cast<juce::juce_wchar>(ch)));
+            };
+            const bool first = type('0');
+            auto *editor = dynamic_cast<juce::TextEditor *>(juce::Component::getCurrentlyFocusedComponent());
+            const bool started = first && editor && control.isParentOf(editor) && editor->getText() == "0";
+            check(started, "the first digit opens knob entry and is retained as text");
+            if (started) {
+                const bool typed = type('.') && type('7') &&
+                                   peer->handleKeyPress(juce::KeyPress(juce::KeyPress::returnKey));
+                update();
+                check(typed && control.hasKeyboardFocus(false) && std::abs(knobValue() - .7) < 1e-9,
+                      "typing 0.7 and Return commits the knob and restores its keyboard focus");
+                if (knobValue() != previous) {
+                    const bool undone = root.command(AppCommands::Undo);
+                    update();
+                    check(undone && std::abs(knobValue() - previous) < 1e-9, "one Undo restores the value before typing");
+                }
+            }
+
+            click(1000);
+            click(80);
+            update();
+            check(std::abs(knobValue() - .5) < 1e-9 && std::abs(rowValue() - .5) < 1e-9 &&
+                      root.undoTitle(false) == "Undo UI knobs: Cutoff" && submitted.empty(),
+                  "a double-click on the knob resets it to the plug-in default");
+            if (std::abs(knobValue() - .5) < 1e-9) {
+                const bool undone = root.command(AppCommands::Undo);
+                update();
+                check(undone && std::abs(knobValue() - previous) < 1e-9 &&
+                          OpJournal(document->store()).headSeq() == previousHead,
+                      "one Undo restores the original knob value after the double-click");
+            }
         }
         const juce::KeyPress del(juce::KeyPress::deleteKey);
         check(peer != nullptr && control.hasKeyboardFocus(false) && peer->handleKeyPress(del) && submitted.empty() &&

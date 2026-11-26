@@ -3550,13 +3550,13 @@ ClipViewPanel::Readings ClipViewPanel::readings() const {
         if (pressed_ == Field::Transpose) {
             out.transpose = (dragSteps_ > 0 ? juce::String("+") : juce::String()) + juce::String(dragSteps_) + " st";
         } else if (pressed_ == Field::Signature) {
-            const auto s = draggedSignature();
+            const auto s = adjustedSignature(pressPart_, dragSteps_);
             out.signature = juce::String(s.first) + " / " + juce::String(s.second);
         } else if (pressed_ == Field::Length) {
-            out.length = lengthText(draggedTicks(), meter_);
+            out.length = lengthText(adjustedTicks(pressed_, pressPart_, dragSteps_), meter_);
         } else {
             auto &shown = pressed_ == Field::Start ? out.start : pressed_ == Field::End ? out.end : out.position;
-            shown = positionText(draggedTicks(), clipMeters_);
+            shown = positionText(adjustedTicks(pressed_, pressPart_, dragSteps_), clipMeters_);
         }
     }
     const auto &time = midi() ? notes.time : sample.time;
@@ -4292,7 +4292,29 @@ bool ClipViewPanel::toggleLoop() {
     const bool on = !details_->loopEnabled;
     return commitForAll([on](const engine::ClipDetails &clip) { return clip.loopEnabled == on ? TrackEdit{} : toggleClipLoop(clip); });
 }
-void ClipViewPanel::openEditor(Field field) {
+juce::String ClipViewPanel::fieldText(Field field) {
+    if (field == Field::Name)
+        return juce::String(details_->name);
+    if (const auto *value = plainField(field))
+        return juce::String(*value);
+    switch (field) {
+    case Field::Start:
+    case Field::End:
+    case Field::Position:
+        return positionText(fieldTicks(field), clipMeters_).removeCharacters(" ");
+    case Field::Length:
+        return lengthText(fieldTicks(field), meter_).removeCharacters(" ");
+    case Field::Signature:
+        return juce::String(meter_.numerator) + "/" + juce::String(meter_.denominator);
+    case Field::Transpose:
+        return "0";
+    case Field::Stretch:
+        return "100";
+    default:
+        return {};
+    }
+}
+void ClipViewPanel::openEditor(Field field, int part) {
     // A field of a scrolled column comes whole into view before it opens.
     if (const auto view = columnArea(), box = fieldBox(field); !view.isEmpty() && field != Field::Name && !box.isEmpty() && box.getRight() <= view.getRight()) {
         if (box.getY() < view.getY() + 2)
@@ -4301,19 +4323,11 @@ void ClipViewPanel::openEditor(Field field) {
             scrollColumn(columnScroll() + box.getBottom() - (view.getBottom() - 2));
     }
     editing_ = field;
-    const auto r = readings();
-    const auto value = field == Field::Start       ? r.start
-                       : field == Field::End       ? r.end
-                       : field == Field::Position  ? r.position
-                       : field == Field::Length    ? r.length
-                       : field == Field::Transpose ? juce::String("0")
-                       : field == Field::Stretch   ? juce::String("100")
-                       : plainField(field) != nullptr ? juce::String(*plainField(field))
-                                                   : r.signature;
+    editPart_ = part;
+    editorReading_ = fieldText(field);
     editor_.setBounds(fieldBox(field));
     editor_.setJustification(field == Field::Name ? juce::Justification::centredLeft : juce::Justification::centredRight);
-    // A name keeps its spaces; the other fields are read without them.
-    editor_.setText(field == Field::Name ? juce::String(details_->name) : value.removeCharacters(" "), false);
+    editor_.setText(editorReading_, false);
     editor_.setVisible(true);
     editor_.selectAll();
     focusIfShowing(editor_);
@@ -4321,6 +4335,25 @@ void ClipViewPanel::openEditor(Field field) {
 void ClipViewPanel::closeEditor() {
     editing_ = Field::None;
     editor_.setVisible(false);
+}
+bool ClipViewPanel::FieldEditor::keyPressed(const juce::KeyPress &key) {
+    return owner_.stepEditedField(key) || juce::TextEditor::keyPressed(key);
+}
+bool ClipViewPanel::stepEditedField(const juce::KeyPress &key) {
+    if (key != juce::KeyPress::upKey && key != juce::KeyPress::downKey)
+        return false;
+    const auto field = editing_;
+    if (key.getModifiers().isAnyModifierKeyDown() || !details_ || field == Field::None || field == Field::Name ||
+        editor_.getText() != editorReading_)
+        return false;
+    adjustField(field, editPart_, key == juce::KeyPress::upKey ? 1 : -1);
+    // Leave the editor on the same part for repeated keys or subsequent typing.
+    if (editing_ == field && details_) {
+        editorReading_ = fieldText(field);
+        editor_.setText(editorReading_, false);
+        editor_.selectAll();
+    }
+    return true;
 }
 void ClipViewPanel::mouseDown(const juce::MouseEvent &e) {
     pressed_ = Field::None;
@@ -4543,63 +4576,60 @@ void ClipViewPanel::mouseDrag(const juce::MouseEvent &e) {
         repaint();
     }
 }
-std::int64_t ClipViewPanel::draggedTicks() const noexcept {
+std::int64_t ClipViewPanel::adjustedTicks(Field field, int part, int steps) const noexcept {
     const std::int64_t beat = meter_.denominator == 0 ? 0 : textproj::kWhole / meter_.denominator;
-    const std::int64_t unit = pressPart_ == 0 ? meter_.barTicks() : pressPart_ == 1 ? beat : textproj::kPPQ / 4;
-    return fieldTicks(pressed_) + dragSteps_ * unit;
+    const std::int64_t unit = part == 0 ? meter_.barTicks() : part == 1 ? beat : textproj::kPPQ / 4;
+    const auto tick = fieldTicks(field), delta = steps * unit;
+    if (delta > 0 && tick > std::numeric_limits<std::int64_t>::max() - delta)
+        return std::numeric_limits<std::int64_t>::max();
+    if (delta < 0 && tick < std::numeric_limits<std::int64_t>::min() - delta)
+        return std::numeric_limits<std::int64_t>::min();
+    return tick + delta;
 }
-std::pair<std::int64_t, std::int64_t> ClipViewPanel::draggedSignature() const noexcept {
+std::pair<std::int64_t, std::int64_t> ClipViewPanel::adjustedSignature(int part, int steps) const noexcept {
     std::int64_t numerator = meter_.numerator, denominator = meter_.denominator;
-    if (pressPart_ == 0)
-        numerator = std::clamp<std::int64_t>(numerator + dragSteps_, 1, 99);
+    if (part == 0)
+        numerator = std::clamp<std::int64_t>(numerator + steps, 1, 99);
     else {
         int at = 2;
         for (int i = 0; i < 5; ++i)
             if (kDenominators[i] == denominator)
                 at = i;
-        denominator = kDenominators[std::clamp(at + dragSteps_, 0, 4)];
+        denominator = kDenominators[std::clamp(at + steps, 0, 4)];
     }
     return {numerator, denominator};
+}
+void ClipViewPanel::adjustField(Field field, int part, int steps) {
+    if (int low = 0, high = 0; auto *value = plainField(field, &low, &high)) {
+        *value = std::clamp(*value + steps, low, high);
+        repaint();
+        numberChanged(field, false);
+    } else if (field == Field::Transpose) {
+        transpose(steps);
+    } else if (field == Field::Stretch) {
+        stretch(std::clamp(100 + 5 * steps, 10, 1000));
+    } else if (field == Field::Signature) {
+        const auto signature = adjustedSignature(part, steps);
+        commitForAll([&](const engine::ClipDetails &clip) { return setClipSignature(clip, signature.first, signature.second); });
+    } else {
+        setField(field, adjustedTicks(field, part, steps));
+    }
 }
 void ClipViewPanel::mouseUp(const juce::MouseEvent &) {
     if (std::exchange(edgeDrag_, false) || std::exchange(thumbDrag_, false))
         return;
-    // The drag's value, read before the state is cleared; one op, one undo step.
-    const auto field = pressed_;
-    const bool dragged = dragged_;
-    const auto ticks = draggedTicks();
-    const auto signature = draggedSignature();
-    const int steps = dragSteps_;
-    pressed_ = Field::None;
-    dragged_ = false;
-    dragSteps_ = 0;
+    const auto field = std::exchange(pressed_, Field::None);
+    const bool dragged = std::exchange(dragged_, false);
+    const int steps = std::exchange(dragSteps_, 0);
     if (field == Field::None || !details_)
         return;
-    if (int low = 0, high = 0; plainField(field, &low, &high) != nullptr) {
-        // A field of the Functions tab holds a number: a drag changes it, a click opens it for typing.
-        if (dragged) {
-            auto *value = plainField(field);
-            *value = std::clamp(*value + steps, low, high);
-            repaint();
-            numberChanged(field, false);
-        } else {
-            openEditor(field);
-        }
-        return;
-    }
     if (field == Field::Scale)
         // The root's part of the field opens the root notes; the rest, the scales.
         showScaleMenu(pressPart_ == 0);
     else if (!dragged)
-        openEditor(field);
-    else if (field == Field::Transpose)
-        transpose(steps);
-    else if (field == Field::Stretch)
-        stretch(std::clamp(100 + 5 * steps, 10, 1000));
-    else if (field == Field::Signature)
-        commitForAll([&](const engine::ClipDetails &clip) { return setClipSignature(clip, signature.first, signature.second); });
+        openEditor(field, pressPart_);
     else
-        setField(field, ticks);
+        adjustField(field, pressPart_, steps);
 }
 std::vector<juce::Rectangle<int>> ClipViewPanel::textAreas() const {
     auto out = labels_;

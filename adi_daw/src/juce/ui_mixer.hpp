@@ -129,12 +129,12 @@ class MixerStrip final : public juce::Component,
     // negative value pre-delaying; its "ms" unit box beside it. Shown by Live's Track Options: on
     // the row after the sends in the track controls, and as the section under the mixer in the
     // Mixer View.
-    juce::Slider delay;
+    PrimaryButtonSlider delay;
     void setDelayTooltip(const juce::String &tip);
     // Live's Cue Volume on Main (manual 18.6; MX-08): how loud the cued tracks play to Cue Out. Main's
     // only, in the Mixer View, where a track has its Activator. One transport op at release or when
     // typed, outside undo.
-    juce::Slider cueVolume;
+    PrimaryButtonSlider cueVolume;
     // Cue Out's chooser on Main (painted in the In/Out section): its stereo pairs; the pick is written.
     void cueOutMenu();
     // Whether `at` is on Main's Cue Out chooser, where `paintMixerInOut` draws it.
