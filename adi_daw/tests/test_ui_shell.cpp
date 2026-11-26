@@ -12240,6 +12240,28 @@ void sampleEditorMouse(AppCommands &commands, const std::filesystem::path &dir) 
     check(edit.time.tick(0) == 0 && edit.time.tick(edit.getWidth()) >= 8 * beat,
           "the editor still shows the whole source around both markers");
     const auto x = [&](std::int64_t at) { return static_cast<float>(std::ceil(edit.time.x(at))); };
+    auto &mailbox = document->mailbox();
+    mailbox.setSampleRate(48000);
+    engine::Transport driver;
+    const auto scrub = [&](std::int64_t at) {
+        const juce::Point<float> point{x(at), static_cast<float>(SampleEditor::kRulerHeight + 2)};
+        edit.mouseDown(pressAt(edit, point, juce::ModifierKeys::leftButtonModifier));
+        edit.mouseUp(pressAt(edit, point));
+        mailbox.drain(driver);
+    };
+    scrub(beat);
+    check(!driver.playing() && driver.position() == 0, "the clip scrub strip skips source material before the placed Start");
+    scrub(4 * beat);
+    const auto clicked = edit.time.tick(x(4 * beat));
+    const auto *tempo = root.reader().tempo();
+    const auto wanted = static_cast<std::int64_t>(tempo->ticksToSeconds(2 * beat + clicked) * 48000.);
+    check(driver.playing() && std::llabs(driver.position() - wanted) <= 1,
+          "the Sample Editor scrub strip starts the arrangement at the clicked source point after applying Start");
+    const auto heard = driver.position();
+    scrub(7 * beat);
+    check(driver.position() == heard, "a source point after the placed End does not seek the arrangement");
+    mailbox.post(TransportMailbox::Command::Stop);
+    mailbox.drain(driver);
     const auto y = edit.waveArea().getY();
     const auto drag = [&](std::int64_t from, std::int64_t to, int atY) {
         const juce::Point<float> down{x(from), static_cast<float>(atY)}, up{x(to), static_cast<float>(atY)};
