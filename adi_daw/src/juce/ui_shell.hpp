@@ -510,6 +510,8 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
                          std::int64_t pos, bool separate, const ImportChoices &);
     bool dropAudioFiles(const std::vector<std::pair<std::string, std::string>> &files, std::int64_t track,
                         std::int64_t pos, bool separate);
+    bool sampleInstrumentTarget(std::int64_t track) const;
+    bool loadSampleAsInstrument(std::int64_t track, const std::filesystem::path &);
     // The window's own interface zoom (ADR-0203 d6, A5-01): each window keeps its
     // own, and the ZoomHost around the root applies it as a transform.
     float interfaceZoom() const noexcept { return interfaceZoom_; }
@@ -584,6 +586,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // A built-in device loaded from the browser (D4): the app wires the load (`insertBuiltin`, one
     // undo step); `insertDevice` checks there is a track and says why it cannot.
     std::function<bool(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before)> loadBuiltin;
+    std::function<bool(std::int64_t track, const std::filesystem::path &, std::string &error)> loadSampleInstrument;
     // A VST3 or CLAP plug-in from the Browser onto `track`, in front of `before` or where Live places its
     // kind (N57, `ProjectDocument::insertPlugin`): one undo step, and the Status Bar says how it went in.
     // `kindGuessed`: the reference's subtype is the Browser's guess (a VST3 before N58), which a kind the

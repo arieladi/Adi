@@ -1880,7 +1880,23 @@ bool DeviceChainStrip::isInterestedInDragSource(const SourceDetails &details) {
         return source && source->functionDragTarget() && &source->strip.root == &root &&
                source->functionDragTarget()->track == selectedTrack;
     }
-    return isMovingDevice(details) || (selectedTrack != 0 && root.browser.acceptsDeviceDrop(details));
+    return isMovingDevice(details) || (selectedTrack != 0 && root.browser.acceptsDeviceDrop(details)) ||
+           isInterestedInFileDrag(BrowserPanel::droppedFiles(details.description));
+}
+bool DeviceChainStrip::acceptsSample() const {
+    return panels.empty() && root.sampleInstrumentTarget(selectedTrack);
+}
+bool DeviceChainStrip::isInterestedInFileDrag(const juce::StringArray &files) {
+    return !files.isEmpty() && acceptsSample();
+}
+void DeviceChainStrip::filesDropped(const juce::StringArray &files, int, int) {
+    if (!isInterestedInFileDrag(files))
+        return;
+    if (files.size() != 1) {
+        root.say("Drop one sample at a time to make an instrument.");
+        return;
+    }
+    root.loadSampleAsInstrument(selectedTrack, media::pathFromUtf8(files[0].toStdString()));
 }
 std::optional<std::int64_t> DeviceChainStrip::dropBefore(int x) const {
     const int at = x + scroll.getViewPositionX();
@@ -1899,8 +1915,11 @@ void DeviceChainStrip::itemDropped(const SourceDetails &details) {
         moveDroppedDevice(details, selectedTrack, dropBefore(details.localPosition.x));
         return;
     }
-    if (selectedTrack != 0)
+    if (selectedTrack != 0 && root.browser.acceptsDeviceDrop(details)) {
         root.browser.loadDroppedDevice(details, selectedTrack, dropBefore(details.localPosition.x));
+        return;
+    }
+    filesDropped(BrowserPanel::droppedFiles(details.description), details.localPosition.x, details.localPosition.y);
 }
 DevicePanelView *DeviceChainStrip::moveSource(const SourceDetails &details) const {
     if (details.description.toString() != DevicePanelView::kDeviceMoveDrag)
@@ -2232,7 +2251,8 @@ void DeviceChainStrip::paint(juce::Graphics &g) {
     const int from = std::max(0, end_ + (addTab.isVisible() ? 36 : 0) - scroll.getViewPositionX());
     g.setColour(look::text);
     g.setFont(look::font(11.5f));
-    g.drawText("Drop Audio Effects Here", from, 0, std::max(0, getWidth() - from), getHeight(),
+    g.drawText(acceptsSample() ? "Drop an Instrument or Sample Here" : "Drop Audio Effects Here",
+               from, 0, std::max(0, getWidth() - from), getHeight(),
                juce::Justification::centred);
     // The chosen end: where a paste goes, marked as Live marks an insert point.
     if (endChosen()) {

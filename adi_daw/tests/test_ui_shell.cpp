@@ -4573,8 +4573,43 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
           "Select All with one clip selects that clip");
     canvas.filesDropped(juce::StringArray{path}, x, laneTop(root, 2) + 10);
     root.frame();
-    check(root.reader().findTrack(2)->clips.empty() && root.error().find("audio track") != std::string::npos,
-          "on the MIDI track: refused, and the Status Bar says where it goes");
+    check(root.reader().findTrack(2)->clips.empty() && root.error().find("needs the application") != std::string::npos,
+          "outside the application a sample drop on MIDI explains how it loads");
+    std::vector<std::pair<std::int64_t, std::filesystem::path>> instruments;
+    root.loadSampleInstrument = [&](std::int64_t track, const std::filesystem::path &file, std::string &) {
+        instruments.emplace_back(track, file);
+        return true;
+    };
+    const auto midiY = laneTop(root, 2) + 10;
+    canvas.filesDropped(juce::StringArray{path}, x, midiY);
+    check(instruments.size() == 1 && instruments.back() == std::pair<std::int64_t, std::filesystem::path>{2, wav} &&
+              root.reader().findTrack(2)->clips.empty() && root.error().empty(),
+          "SC-283: dropping on a MIDI lane loads the sample as an instrument rather than a clip");
+    canvas.filesDropped(juce::StringArray{path, path}, x, midiY);
+    check(instruments.size() == 1 && root.error().find("one sample at a time") != std::string::npos,
+          "dropping multiple samples on MIDI is refused with an explanation");
+    geometry.selection.track = 2;
+    root.frame();
+    auto &devices = root.devices;
+    check(devices.panels.empty() && devices.isInterestedInFileDrag({path}),
+          "an empty MIDI Device View accepts a sample file");
+    devices.filesDropped({path}, 10, 10);
+    check(instruments.size() == 2 && instruments.back().first == 2 && instruments.back().second == wav,
+          "dropping a file in the empty Device View loads an instrument on that track");
+    const LibraryFile kick{"Kick 808.wav", wav, {}};
+    const auto carried = BrowserPanel::dragDescription({&kick});
+    const juce::DragAndDropTarget::SourceDetails onDevices(carried, &root.browser.list, {10, 10});
+    check(devices.isInterestedInDragSource(onDevices), "the empty MIDI Device View accepts a Browser sample");
+    devices.itemDropped(onDevices);
+    check(instruments.size() == 3 && instruments.back().first == 2 && instruments.back().second == wav,
+          "a Browser sample uses the same Device View path");
+    devices.filesDropped({path, path}, 10, 10);
+    check(instruments.size() == 3 && root.error().find("one sample at a time") != std::string::npos,
+          "the Device View reports a multiple-sample drop");
+    geometry.selection.track = 1;
+    root.frame();
+    check(!devices.isInterestedInFileDrag({path}) && !devices.isInterestedInDragSource(onDevices),
+          "the empty Device View on audio leaves samples to the arrangement");
     // Below the tracks, the drop area: a new audio track holding the clip; the pool row is reused.
     const int below = laneTop(root, 2) + geometry.heightFor(2) + 20;
     check(geometry.trackAt(root.reader(), below) == nullptr, "below the tracks is the drop area");
@@ -4739,6 +4774,14 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
         check(browser.shown().size() == 3 && browser.shown()[0]->name == "Bass Hit.wav" && root.error().empty() &&
                   browser.list.getNumRowsOnScreen() > 0,
               "Samples lists all three, and says nothing");
+        geometry.selection.track = 2;
+        browser.list.getListBoxModel()->listBoxItemDoubleClicked(0, pressAt(browser.list, {10, 10}));
+        check(instruments.size() == 4 && instruments.back().first == 2 &&
+                  instruments.back().second == browser.shown()[0]->path,
+              "SC-283: a Browser sample double-click loads an instrument on the selected MIDI track");
+        geometry.selection.track = 1;
+        check(!browser.load(0) && instruments.size() == 4,
+              "a Browser sample double-click without MIDI leaves the audio track alone");
         browser.choose(user);
         check(browser.shown().size() == 2, "the User Library place lists its two, its Drums folder's included");
         browser.choose(addedSamples);

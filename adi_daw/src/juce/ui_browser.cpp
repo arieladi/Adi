@@ -461,9 +461,11 @@ bool BrowserPanel::load(int row) {
     if (row < 0 || row >= static_cast<int>(rows_.size()))
         return false;
     const auto &entry = rows_[static_cast<std::size_t>(row)];
+    auto track = root_.arrangement.geometry.selection.track;
+    if (entry.file)
+        return root_.sampleInstrumentTarget(track) && root_.loadSampleAsInstrument(track, entry.file->path);
     const bool instrument = entry.plugin ? entry.plugin->kind == PluginEntry::Kind::Instrument
                                          : entry.device && entry.device->instrument;
-    auto track = root_.arrangement.geometry.selection.track;
     // R50 decides whether a double-click on a known instrument with an audio track chosen creates a MIDI track.
     constexpr bool kNewMidiTrackWhenAudioSelected = false;
     if constexpr (kNewMidiTrackWhenAudioSelected) {

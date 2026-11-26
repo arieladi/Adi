@@ -809,6 +809,14 @@ class AdiApplication final : public juce::JUCEApplication,
                 root_->say(document_->error());
             return ok;
         };
+        root->loadSampleInstrument = [this](std::int64_t track, const std::filesystem::path &file,
+                                            std::string &why) {
+            const auto now = juce::Time::currentTimeMillis() * 1000;
+            if (document_->loadSampleInstrument(track, file, now))
+                return true;
+            why = document_->error();
+            return false;
+        };
         // The Browser's Plug-Ins (DF-W9): the catalogue of the app's one loader, kept by its discovery
         // service (DF-W34, N58); the projects load from the same loader. A smoke run scans nothing.
         if (catalogue_) {

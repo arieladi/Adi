@@ -13,6 +13,7 @@
 #include "adi/ui/fade_edits.hpp"
 #include "adi/ui/meter_edits.hpp"
 #include "adi/ui/meters.hpp"
+#include "adi/ui/midi_tracks.hpp"
 #include "adi/ui/recording_edits.hpp"
 #include "adi/ui/send_edits.hpp"
 #include "adi/ui/tempo_edits.hpp"
@@ -3078,12 +3079,36 @@ bool AdiRootComponent::dropAudioPaths(const juce::StringArray &paths, std::int64
                            juce::File::createFileWithoutCheckingPath(path).getFileNameWithoutExtension().toStdString());
     return dropAudioFiles(files, track, pos, separate);
 }
+bool AdiRootComponent::sampleInstrumentTarget(std::int64_t track) const {
+    const auto current = view_.current();
+    const auto *target = current ? current->findTrack(track) : nullptr;
+    return target && isMidiTrack(*target);
+}
+bool AdiRootComponent::loadSampleAsInstrument(std::int64_t track, const std::filesystem::path &path) {
+    if (!sampleInstrumentTarget(track))
+        return fail("Choose a MIDI track to load the sample as an instrument.");
+    if (importing_ || importPrompt_)
+        return fail("Finish the current import before loading another sample.");
+    if (!loadSampleInstrument)
+        return fail("Loading a sample as an instrument needs the application.");
+    std::string why;
+    if (!loadSampleInstrument(track, path, why))
+        return fail(why.empty() ? "The sample could not be loaded as an instrument." : std::move(why));
+    say({});
+    return true;
+}
 bool AdiRootComponent::dropAudioFiles(const std::vector<std::pair<std::string, std::string>> &files,
                                       std::int64_t track, std::int64_t pos, bool separate) {
     // Where it lands is checked before anything is asked or read.
-    if (!view_.current())
+    const auto current = view_.current();
+    if (!current)
         return fail("Dropping audio needs an open project.");
-    if (auto refusal = audioDropRefusal(*view_.current(), track); !refusal.empty())
+    if (const auto *target = current->findTrack(track); target && isMidiTrack(*target)) {
+        if (files.size() != 1)
+            return fail("Drop one sample at a time to make an instrument.");
+        return loadSampleAsInstrument(track, media::pathFromUtf8(files.front().first));
+    }
+    if (auto refusal = audioDropRefusal(*current, track); !refusal.empty())
         return fail(std::move(refusal));
     if (importing_)
         return fail("The last drop is still being imported.");

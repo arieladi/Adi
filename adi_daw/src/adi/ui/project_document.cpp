@@ -851,6 +851,25 @@ std::vector<Payload> loadStates(const PreparedSampleAssignment &prepared) {
     return out;
 }
 } // namespace
+bool ProjectDocument::loadSampleInstrument(std::int64_t track, const std::filesystem::path &file,
+                                           std::int64_t nowUtc) {
+    auto prepared = prepareSampleInstrument(*store_, track, file, engineRate_, nowUtc, &audio::defaultDecodeCache(),
+                                            retainedDeviceId());
+    if (!prepared.ok) {
+        error_ = prepared.error.empty() ? "The sample instrument could not be loaded." : prepared.error;
+        return false;
+    }
+    const auto result = ops_.commitPrepared(std::move(prepared), [](Store &store, PreparedSampleAssignment &sample, Actor actor) {
+        return commitSampleAssignment(store, sample, actor);
+    });
+    error_ = result.error;
+    // The first graph build for the new instrument reads the committed sample
+    // state when it creates the runtime, before that runtime can play a note.
+    if (!result.ok || !synchronise())
+        return false;
+    feed_.publish(session_, realisedGeneration_);
+    return true;
+}
 bool ProjectDocument::assignSample(std::int64_t device, std::int32_t slot, const std::filesystem::path &file,
                                    std::int64_t nowUtc) {
     // The decode cache takes every format the browser lists (AIFF, FLAC, MP3...), not WAV alone.
