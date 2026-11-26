@@ -11058,6 +11058,28 @@ void pluginWindows(AppCommands &commands, settings::AppSettings &settings, const
               host.content(key3)->getWidth() == 320 && host.content(key3)->getHeight() == 200 &&
               !host.zoom(key3, true) && host.alwaysOnTop(key3) && panels[0]->wrench.getToggleState(),
           "a click opens the editor at the plug-in's own size, never scaled, on top, the wrench lit [P:7.5-floating#1]");
+#if JUCE_WINDOWS
+    {
+        // SC-313: "on top" keeps a plug-in's window above ADI's own window, never above the other programs.
+        // Two real windows on the desktop: JUCE's always-on-top made the plug-in's topmost over everything;
+        // made the main window's native owned window instead, it stays above that one only, and back off.
+        juce::DocumentWindow mainWindow("ADI main", juce::Colours::black, 0, true);
+        // Never shown: a native window's owner and topmost flag hold whether it is visible or not, and a
+        // test takes no one's desktop.
+        mainWindow.setBounds(100, 100, 400, 300);
+        juce::DocumentWindow pluginWindow("plug-in", juce::Colours::black, 0, true);
+        pluginWindow.setBounds(150, 150, 200, 150);
+        pluginWindow.setAlwaysOnTop(true);
+        check(FloatingHost::nativelyTopmost(pluginWindow),
+              "JUCE's always-on-top makes a window topmost over every program: what plug-in windows were");
+        check(FloatingHost::floatAboveOwner(pluginWindow, &mainWindow, true) &&
+                  FloatingHost::nativelyOwnedBy(pluginWindow, mainWindow) && !FloatingHost::nativelyTopmost(pluginWindow),
+              "on top: the plug-in's window is owned by ADI's, above it only, not topmost on the desktop");
+        check(FloatingHost::floatAboveOwner(pluginWindow, &mainWindow, false) &&
+                  !FloatingHost::nativelyOwnedBy(pluginWindow, mainWindow) && !FloatingHost::nativelyTopmost(pluginWindow),
+              "off: neither owned nor topmost");
+    }
+#endif
     {
         auto *window = dynamic_cast<juce::DocumentWindow *>(host.window(key3));
         const auto *track = root.reader().findTrack(2);
