@@ -26,7 +26,7 @@ The large-song branch stacks both playback branches. Compound edits, Undo/Redo, 
 
 SC-416 adds an upfront note preview read to full projections. In a matched Release control on the earlier large-song fixture, steady fader move and tick took **2.87 → 3.33 ms** with zero unrelated scan steps. Cold begin took **138.34 → 227.86 ms** and durable release **102.91 → 245.61 ms** in that pair. Track rename, clip movement, note insertion and transport still performed zero unrelated scan steps.
 
-The completed items were consolidated oldest first on `basics/speed-chain`. SC-407 and SC-408 were already in the ancestry of `origin/main`. The resolved source and test tree matches the previously measured SC-421 tree. The original item branches remain available for comparison. On the consolidated head, the JUCE/Pd Debug app and all window targets built with warnings as errors. With `DISPLAY` unset, all 18 window tests and all three acceptance targets passed. The additional Release rerun is in progress.
+The completed items were consolidated oldest first on `basics/speed-chain`. SC-407 and SC-408 were already in the ancestry of `origin/main`. The resolved source and test tree matches the previously measured SC-421 tree. The original item branches remain available for comparison. On the consolidated head, the JUCE/Pd Debug app and all window targets built with warnings as errors. With `DISPLAY` unset, all 18 window tests and all three acceptance targets passed. All 18 selected Release engine and document tests also passed on that head.
 
 ## SC-194 ownership
 
