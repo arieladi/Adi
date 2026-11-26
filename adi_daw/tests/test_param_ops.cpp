@@ -976,12 +976,18 @@ void testSnapshotWithMissingDevice() {
     const auto committed = journal.commit(requests);
     check(committed.ok && session.refresh(*store), "insert and realise a missing plug-in with saved parameters");
     ops.attachSession(session);
+    OpRequest rename;
+    rename.opType = "track.rename";
+    rename.payload = {{"id", 1}, {"name", "After the placeholder"}};
+    check(journal.commit(rename).ok && session.refresh(*store),
+          "realise a second edit before pumping the earlier receipt");
+    ops.attachSession(session);
     const auto captured = ops.snapshotAll(1000);
     const auto *entry = session.entryFor(100);
     check(entry && entry->placeholder && !ops.isAttached(100) && captured.ok() && captured.journalOps == 0 &&
               ops.appliedDeliveryStatus().state == AppliedDeliveryState::Idle &&
               near(store->db().execAndGet("SELECT normalized_value FROM plugin_params").getDouble(), 0.75),
-          "save completes without waiting for the placeholder to attach or changing its stored values");
+          "save acknowledges the older stored-only receipt without waiting for a plug-in or changing its values");
 }
 
 void testSnapshotAll() {

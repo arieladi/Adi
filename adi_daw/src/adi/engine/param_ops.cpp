@@ -394,6 +394,7 @@ struct ParamOps::Runtime::Replay {
             std::size_t firstOperation = 0;
             bool hasState = false;
             bool retainsInstance = false;
+            bool storedOnly = false;
         };
         std::shared_ptr<const AppliedBatch> batch;
         std::map<std::int64_t,Target> targets;
@@ -469,7 +470,7 @@ struct ParamOps::Runtime::Replay {
                 !found->second.sessionLife.expired()) {
                 delivery.anchor = found->second.inst;
             } else if (entry && entry->placeholder && delivery.retainsInstance) {
-                delivery.anchor = session->instanceFor(target.deviceId);
+                delivery.storedOnly = true;
             }
         }
         const auto operations = receipt.batch->operations();
@@ -1048,6 +1049,19 @@ std::size_t ParamOps::Runtime::attachSession(Session& s) {
             if (pp.deviceId == e.deviceId) rec.paramIds.insert(pp.paramId);
         if (attachImpl(e.deviceId, *inst, &rec, &s)) ++added;
     }
+    // A new placeholder is only available after the Session realises a commit.
+    // Record that exact stored-only delivery before subsequent edits advance
+    // the Session. It will never refer to a live instance in another commit.
+    for (auto& receipt : replay_->pending) {
+        if (receipt.batch->sequence() != s.realisedAppliedSequence()) continue;
+        for (const auto& target : receipt.batch->deviceTargets()) {
+            auto& delivery = receipt.targets.at(target.deviceId);
+            const auto* entry = s.entryFor(target.deviceId);
+            if (!delivery.anchor && entry && !entry->retired && entry->placeholder &&
+                Replay::matchesReference(entry, target))
+                delivery.storedOnly = true;
+        }
+    }
     return added;
 }
 
@@ -1087,6 +1101,7 @@ AppliedDeliveryStatus ParamOps::Runtime::retryApplied(std::int64_t nowMs) {
                 if(facts==batch.deviceTargets().end())throw std::runtime_error("applied parameter batch has no target identity");
                 if(!facts->device)return Target::Retired;
                 auto& delivery = receipt.targets.at(id);
+                if(delivery.storedOnly)return Target::Stored;
                 auto attached=devices_.find(id);
                 const bool active=attached!=devices_.end() && attached->second.active &&
                     attached->second.session==replay.session && !attached->second.sessionLife.expired() && attached->second.inst;
