@@ -207,8 +207,9 @@ bool FloatingHost::install(std::unique_ptr<Entry> e) {
     if (raw->owned && raw->scaled)
         raw->zoomed = std::make_unique<Zoomed>(*raw->component);
     if (raw->owned && !raw->scaled) {
-        // A plug-in's own window takes the plug-in's size, which only the plug-in changes: the
-        // window fits it and is not resized from outside; a kept place moves it, never sizes it.
+        // A plug-in's own window takes the plug-in's size: the window fits it; it is resized from
+        // outside only when the plug-in can be (setUserResizable, SC-328), each size then asked of the
+        // plug-in. A kept place moves it, never sizes it.
         raw->window->setContentNonOwned(raw->component.getComponent(), true);
         raw->window->setResizable(false, false);
         if (const auto kept = states_.loadFloating(key); !kept.monitor.empty())
@@ -395,6 +396,12 @@ bool FloatingHost::nativelyTopmost(juce::Component &window) {
     juce::ignoreUnused(window);
     return false;
 #endif
+}
+void FloatingHost::setUserResizable(const std::string &key, bool resizable) {
+    const auto it = entries_.find(key);
+    if (it == entries_.end() || !it->second->owned || it->second->scaled || !it->second->window)
+        return;
+    it->second->window->setResizable(resizable, false);
 }
 bool FloatingHost::alwaysOnTop(const std::string &key) const {
     const auto it = entries_.find(key);

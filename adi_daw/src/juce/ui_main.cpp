@@ -1121,6 +1121,7 @@ class AdiApplication final : public juce::JUCEApplication,
                 return raw->error();
             };
             out.gone = [raw] { return !raw->editor() || !raw->editor()->valid(); };
+            out.resizable = raw->editor() && raw->editor()->resizable(); // SC-328
             out.view = std::move(editor);
             return out;
         };

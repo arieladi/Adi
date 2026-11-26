@@ -1408,6 +1408,7 @@ bool AdiRootComponent::togglePluginWindow(std::int64_t device, bool several) {
             }
     auto frameEditor = std::move(editor.frame);
     auto gone = std::move(editor.gone);
+    const bool resizable = editor.resizable;
     const auto safe = juce::Component::SafePointer<AdiRootComponent>(this);
     // The window's own clock runs the editor's; an error it reports goes to the Status Bar once;
     // an editor the plug-in has dropped takes its window with it, at the next collect.
@@ -1429,6 +1430,7 @@ bool AdiRootComponent::togglePluginWindow(std::int64_t device, bool several) {
     if (!pluginHost->openView(key, device, std::move(editor.view), std::move(onFrame), false, title))
         return fail("The plug-in window could not open.");
     pluginHost->setAlwaysOnTop(key, commands_.pluginWindowsOnTop());
+    pluginHost->setUserResizable(key, resizable);
     // A window opened on purpose shows, and with it the others Show/Hide had hidden.
     if (!pluginWindowsShown_) {
         pluginWindowsShown_ = true;

@@ -11019,6 +11019,7 @@ void pluginWindows(AppCommands &commands, settings::AppSettings &settings, const
     std::function<void()> editorClosing;
     bool editorDestroyed = false;
     int framesAfterDestroy = 0;
+    bool editorResizable = false; // SC-328
     check(!root.togglePluginWindow(3, false) && root.error().find("in the application") != std::string::npos,
           "with no opener wired, the wrench says plug-in windows open in the application");
     root.pluginHost = &host;
@@ -11041,6 +11042,7 @@ void pluginWindows(AppCommands &commands, settings::AppSettings &settings, const
             if (editorDestroyed) ++framesAfterDestroy;
             return editorError;
         };
+        view.resizable = editorResizable;
         view.gone = [&] { return editorGone; };
         return view;
     };
@@ -11139,6 +11141,22 @@ void pluginWindows(AppCommands &commands, settings::AppSettings &settings, const
     check(!host.contains(key3) && !panels[0]->wrench.getToggleState(), "a second click closes it");
     check(editorDestroyed && framesAfterDestroy == 0,
           "a frame that fires while the editor is destroyed never calls into it (SC-321)");
+    // SC-328: a plug-in that can be resized has a window resized from its edges, the plug-in following.
+    editorResizable = true;
+    check(root.togglePluginWindow(3, false) && host.contains(key3), "a resizable plug-in's window opens");
+    if (auto *window = dynamic_cast<juce::ResizableWindow *>(host.window(key3))) {
+        check(window->isResizable(), "and it can be resized from its edges (SC-328)");
+        const auto border = window->getContentComponentBorder();
+        window->setSize(border.getLeftAndRight() + 480, border.getTopAndBottom() + 360);
+        check(host.content(key3) != nullptr && host.content(key3)->getWidth() == 480 &&
+                  host.content(key3)->getHeight() == 360,
+              "a size dragged to is the plug-in's view's size");
+    } else {
+        check(false, "a resizable plug-in's window is a window");
+    }
+    root.togglePluginWindow(3, false);
+    editorResizable = false;
+    check(!host.contains(key3), "and it closes again");
     // One at a time; Ctrl/Cmd keeps the others open.
     check(root.togglePluginWindow(3, false) && root.togglePluginWindow(5, false) && !host.contains(key3) &&
               host.contains(key5),
