@@ -20212,3 +20212,44 @@ the build of 22 November.
 | `docs/DEFERRED.md` | DF-E17 (a), DF-E29 (e), DF-E43, DF-M3, DF-M28, DF-M47 answered; DF-W45 added (d8) |
 | `collab/README.md` | ADR 0255 used |
 | `collab/RESERVATIONS.md` | the next free ADR is 0256; the next free Window row is DF-W46 |
+
+## ADR-0256 — After the walk: three missing features go first when the hold ends; OneShot in the Browser now — `DECIDED` (2026-11-26) — **DIRECTOR'S ANSWERS OF 26 NOVEMBER TO THE WALK'S TWO QUESTIONS (F AND G); ORDERS WORK AFTER ADR-0255 d1; WIN'S PLACEMENTS NAMED BELOW, THE DIRECTOR MAY STRIKE THEM**
+
+**What this records.** The walk in the real window (ADR-0255 d2) found 24 faults, fixed and on main (#773,
+#779), and three things a musician reaches for that are not built. The walker asked whether those three are
+part of the session owed, and whether OneShot belongs in the Browser now. Win put both to the director as
+two choices, F and G, with a recommendation. His words: "yes to F and G". The same morning he gave the
+walker one finding that was another seat's (d3).
+
+### Decisions
+
+1. **Three features wait for the hold's end, then go first (his F).** They are not part of the proof of
+   ADR-0255 d1: the walk played notes through a virtual MIDI port and drew its automation.
+   - **Playing notes from the computer keyboard** (Live's Computer MIDI Keyboard, the M key; in WIN-05's
+     card). Today it is a placeholder, so a user with no MIDI keyboard cannot play an instrument live.
+   - **Recording MIDI into the Arrangement.** Only audio tracks record today. No row owns the plain take:
+     CT-03 is its loop takes.
+   - **Recording automation by moving a control** (AU-03, the write pass). Automation is drawn today; an
+     armed control writes nothing.
+   - **Win's placement.** On the day the hold ends these three come before the open gaps of ADR-0254 d24
+     and before Track S's first wave. Win names the row for the plain MIDI take, writes the seats' prompts
+     and reserves what they need that day. Fix before new (ADR-0248 d1) stands.
+2. **OneShot is listed in the Browser's Instruments now (his G; DF-W48).** Live's way to an instrument is
+   the Browser, and today OneShot is reached only from a picker on a Mix View Stack row. It is a walk fix
+   and lands while the hold lasts.
+3. **The two wall-clock checks of the shell suite (DF-M76) go to the walker, by his word.** The fixture is
+   the Mix View seat's; the seat reads the change when it next runs.
+4. **Recording from a physical input is deferred, by his word of 25 November (DF-W46).** Neither walk
+   machine has an input connected. The walk recorded through a virtual audio cable, and a pass counts with
+   that (ADR-0255 d1).
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0255 d1 | what opens when the hold ends has an order: these three first (d1) |
+| ADR-0254 d1, d25 | the open gaps and Track S's first wave come after these three (d1) |
+| `docs/PLAN.md` WIN-05, AU-03 | notes: the Computer MIDI Keyboard and the write pass go first when the hold ends (d1) |
+| `docs/DEFERRED.md` | DF-W48 answered: now; DF-M76's fix is the walker's (d2, d3) |
+| `collab/README.md` | ADR 0256 used |
+| `collab/RESERVATIONS.md` | the next free ADR is 0257 |
