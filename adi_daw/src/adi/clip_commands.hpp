@@ -37,6 +37,11 @@ struct ClipCut {ClipCopy copy;PreparedEdit edit;};
     std::int64_t track,TimePoint,const edit_plan::Options&);
 [[nodiscard]] PreparedEdit prepareDuplicate(Store&,std::int64_t sourceId,std::int64_t newId,
     std::int64_t track,TimePoint,const edit_plan::Options&);
+/// Several clips copied at once, each to its own track and point (a clip drag
+/// with the copy modifier): one captured batch, one Undo. newIds must be
+/// distinct unused clip identities.
+struct ClipPlacement {std::int64_t sourceId=0,newId=0,track=0;TimePoint point;};
+[[nodiscard]] PreparedEdit prepareDuplicates(Store&,std::span<const ClipPlacement>,const edit_plan::Options&);
 [[nodiscard]] PreparedEdit prepareSplit(Store&,std::int64_t sourceId,std::int64_t rightId,
                                         TimePoint,double referenceRate);
 /// Two ordered cuts strictly inside one clip, in one explicit input clock.

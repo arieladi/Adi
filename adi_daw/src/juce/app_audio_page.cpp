@@ -46,6 +46,18 @@ juce::String useChannelConfig(juce::AudioDeviceManager &manager, const settings:
         return {};
     return manager.setAudioDeviceSetup(setup, true);
 }
+juce::String openAudioDevice(juce::AudioDeviceManager &manager, const juce::AudioDeviceManager::AudioDeviceSetup &setup,
+                             const settings::AppSettings &store) {
+    // JUCE names the type's default device for an empty name only on a side asked for channels:
+    // asked for none, a first run opened no input and F9 had nothing to record (A16).
+    auto error = manager.initialise(2, 2, nullptr, true, {}, &setup);
+    // A default input that cannot open beside the output leaves the output to open alone, as before.
+    if (error.isNotEmpty() && setup.inputDeviceName.isEmpty())
+        error = manager.initialise(0, 2, nullptr, true, {}, &setup);
+    if (error.isEmpty())
+        error = useChannelConfig(manager, store);
+    return error;
+}
 AudioDevicePage::ChannelButtons::ChannelButtons() {
     setTitle("Channel Configuration");
     addAndMakeVisible(input);

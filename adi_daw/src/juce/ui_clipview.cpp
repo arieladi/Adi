@@ -3465,12 +3465,23 @@ void ClipViewPanel::frame(const SnapshotReader &reader) {
     notes.time.meters = &reader.meters();
     sample.time.meters = &reader.meters();
     node_ = nullptr;
-    trackName_ = {};
+    bool named = false;
     colour_ = look::trackColour(0);
     if (details_) {
         const auto rows = root.arrangement.geometry.rows(reader);
         if (const auto at = rows.find(details_->trackId); at < rows.size()) {
-            trackName_ = rows[at].track->name;
+            // The name as the header shows it: a stored "# Audio" shows its number (walk-B B3). It is
+            // made again only when the stored name or the number changes: a string made on every frame
+            // allocates under MSVC's debug containers, and a frame allocates nothing.
+            const auto &stored = rows[at].track->name;
+            const auto number = rows[at].number();
+            if (!trackNamed_ || trackNumber_ != number || trackStored_ != stored) {
+                trackStored_ = stored;
+                trackNumber_ = number;
+                trackName_ = displayName(stored, number);
+                trackNamed_ = true;
+            }
+            named = true;
             colour_ = details_->color ? look::paletteColour(*details_->color)
                                       : root.arrangement.colourFor(rows[at].position);
             for (const auto &c : rows[at].track->clips)
@@ -3481,6 +3492,11 @@ void ClipViewPanel::frame(const SnapshotReader &reader) {
             if (const auto at = rows.find(layer.details.trackId); at < rows.size())
                 layer.colour = layer.details.color ? look::paletteColour(*layer.details.color)
                                                    : root.arrangement.colourFor(rows[at].position);
+    }
+    if (!named && trackNamed_) { // no clip, or its track is gone: no name, and nothing kept of the last
+        trackName_.clear();
+        trackStored_.clear();
+        trackNamed_ = false;
     }
 }
 ClipViewPanel::Readings ClipViewPanel::readings() const {

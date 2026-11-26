@@ -3,6 +3,8 @@
 #include "ui_shell.hpp"
 #include "ui_browser.hpp"
 #include "adi/ui/automation_override.hpp"
+#include "adi/builtin_catalog.hpp"
+#include "juce/pd_declarations.hpp"
 #include "mix_eq_host.hpp"
 #include "adi/mix/eq/Preview.hpp"
 #include <algorithm>
@@ -1277,12 +1279,22 @@ void DevicePanelView::present(const DevicePanelData &d) {
         title.setButtonText(caption);
     }
     enabled.setToggleState(d.enabled, juce::dontSendNotification);
-    // Color Cab's Impulse slot, its one declared sample slot (ENGINE-SAMPLE-SLOTS.md).
-    if (!sample && d.uid == "org.adidaw.builtin.color-cab") {
-        sample = std::make_unique<SampleTile>(strip, id, 1, "Impulse");
-        sample->targetValid = [this] { return validTarget(); };
-        addAndMakeVisible(*sample);
-        resized();
+    // The first sample slot the built-in declares (ENGINE-SAMPLE-SLOTS.md), named by its [adi.sample]:
+    // the same declarations ProjectDocument::assignSample checks, so OneShot and the Sampler take a drop
+    // as Color Cab does (walk-A A5). Read once per panel. With Pd off no patch is embedded, and Color
+    // Cab keeps its Impulse tile so a drop still says why it cannot load.
+    if (!sample && !sampleSlotsRead_ && d.format == "internal" && !d.uid.empty()) {
+        sampleSlotsRead_ = true;
+        const auto slots = device::parsePdDeclarations(builtinDeclarations(d.uid)).samples;
+        if (!slots.empty())
+            sample = std::make_unique<SampleTile>(strip, id, slots.front().id, juce::String(slots.front().name));
+        else if (d.uid == "org.adidaw.builtin.color-cab")
+            sample = std::make_unique<SampleTile>(strip, id, 1, "Impulse");
+        if (sample) {
+            sample->targetValid = [this] { return validTarget(); };
+            addAndMakeVisible(*sample);
+            resized();
+        }
     }
     // Only a plug-in has a window of its own (parity-7.5 row 1).
     if (wrench.isVisible() != (d.plugin && !strip.folded(id))) {

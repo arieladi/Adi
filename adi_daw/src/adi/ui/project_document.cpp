@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "project_document.hpp"
+#include "arrangement_geometry.hpp"
 #include "adi/audio/decode.hpp"
 #include "adi/gesture_navigation_detail.hpp"
 #include "adi/media/collect_export.hpp"
@@ -1290,17 +1291,17 @@ void ProjectDocument::landTake(engine::AudioRecordingResult &result) {
         landed_ = std::move(outcome);
         return;
     }
-    // The clips and their media take the next free ids, named after their tracks (Live names a take by
-    // its track).
+    // The clips and their media take the next free ids, named after their tracks as their headers show
+    // them (Live names a take by its track, "5 Audio"; a stored "# Audio" shows its number, walk-B B3).
     // One `RowIds` for the take's rows (DF-E16): past every clip and media row, and past a clip id a
     // remark still holds.
     RowIds rows(store_->db());
     std::vector<recording::ClipIds> ids;
-    const auto current = view_.current();
+    const SnapshotReader current(view_.current());
     for (const auto &track : result.tracks) {
-        const auto *t = current ? current->findTrack(track.trackId) : nullptr;
+        auto name = shownTrackName(current, track.trackId);
         const auto clip = rows.next("clips");
-        ids.push_back({clip, rows.next("media_files"), t != nullptr ? t->name : std::string("Take")});
+        ids.push_back({clip, rows.next("media_files"), name.empty() ? std::string("Take") : std::move(name)});
         outcome.clips.push_back(ids.back().clip);
     }
     auto edit = recording::prepareCommit(*store_, result, ids);

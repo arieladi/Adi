@@ -236,6 +236,8 @@ class ArrangementCanvas final : public juce::Component,
         std::uint64_t point = 0;
     };
     std::optional<AutomationPick> automationPointAt(juce::Point<float>) const;
+    // The lane whose envelope line, as drawn, passes within a few pixels of a point (A14).
+    std::optional<LaneBody> automationLineAt(juce::Point<float>) const;
     std::optional<AutomationPick> chosenAutomationPoint() const noexcept { return chosenPoint_; }
     void mouseMagnify(const juce::MouseEvent &, float) override;
     bool isInterestedInFileDrag(const juce::StringArray &) override;
@@ -311,7 +313,7 @@ class ArrangementCanvas final : public juce::Component,
     bool automationDown(const juce::MouseEvent &);
     std::optional<AutomationPick> pointDrag_, chosenPoint_;
     std::int64_t pointTick_ = 0;
-    bool pointAdded_ = false; // the press added a breakpoint: its drag moves nothing
+    bool pointAdded_ = false; // the press added a breakpoint: its drag moves that one or nothing
     double pointValue_ = 0;
     std::int64_t fadeTicks_ = 0, hoverClip_ = 0;
     double fadeTension_ = 0, fadeTensionFrom_ = 0;
@@ -336,6 +338,10 @@ class ArrangementCanvas final : public juce::Component,
     // without one, it selects that clip alone, from where it was pressed.
     bool selectOnUp_ = false;
     juce::Point<int> pressedAt_;
+    // Ctrl/Cmd+press on a picked clip's bar: let go on release only if no drag came of it.
+    std::int64_t toggleOnUp_ = 0;
+    // The drag holds Ctrl (Option on the Mac): released, it copies the clips instead of moving them.
+    bool copying_ = false;
     // The offset the drag gives every selected clip: the dragged clip's, stopped where the earliest
     // of them reaches the arrangement's start.
     std::int64_t movingDelta() const noexcept { return movingTo_ - movingFrom_; }
@@ -449,6 +455,15 @@ class ArrangementView final : public juce::Component {
     // (ADR-0211), else the colour of its place, as Live's auto-assigned colours.
     juce::Colour colourFor(std::size_t position) const;
     void frame(bool changed) noexcept;
+    // The take being recorded (Live 12 manual 21.1): drawn on each recording track's lane from where it
+    // began to the playhead, in the record colour, until the take lands as a clip (walk-B B4). Begun by
+    // Arrangement Record; ended by the frame once recording has stopped.
+    struct LiveTake {
+        std::int64_t start = 0;
+        std::vector<std::int64_t> tracks;
+    };
+    void beginLiveTake(std::int64_t start, std::vector<std::int64_t> tracks);
+    const std::optional<LiveTake> &liveTake() const noexcept { return liveTake_; }
     void changed();
     bool command(int);
     void fit(bool selection);
@@ -502,6 +517,8 @@ class ArrangementView final : public juce::Component {
     // Paused by an edit, a sideways scroll or a click on the ruler; a click in the lanes or
     // the scrub area, or playback starting or stopping, starts it again.
     bool followPaused = false;
+    // A track to scroll into sight once the next frame's rows hold it (a newly inserted one), or 0.
+    std::int64_t revealTrack = 0;
     // The selected time signature marker's position (Live 12 manual 6.5), or -1. A click in the
     // lanes or on a track's title lets it go; Delete and Ctrl/Cmd+R act on it while it is selected.
     std::int64_t selectedMeter = -1;
@@ -582,6 +599,7 @@ class ArrangementView final : public juce::Component {
     void firstShownIfHidden();
 
   private:
+    std::optional<LiveTake> liveTake_;
     void refreshTree();
     TrackRows trackRows_;
     // What the chosen view and the folded groups leave out, from the tree as it is.

@@ -1307,6 +1307,13 @@ void ArrangementView::frame(bool modelChanged) noexcept {
             canvas.repaint();
         }
     }
+    // A take being recorded grows with the playhead; once recording has stopped it goes, and the
+    // landed clip takes its place.
+    if (liveTake_) {
+        if (!root.isRecording())
+            liveTake_.reset();
+        canvas.repaint();
+    }
     if (modelChanged) {
         canvas.realiseAccessible();
         overview.repaint();
@@ -1314,6 +1321,13 @@ void ArrangementView::frame(bool modelChanged) noexcept {
         headers.repaint();
         ruler.repaint();
     }
+}
+void ArrangementView::beginLiveTake(std::int64_t start, std::vector<std::int64_t> tracks) {
+    if (tracks.empty())
+        liveTake_.reset();
+    else
+        liveTake_ = LiveTake{start, std::move(tracks)};
+    canvas.repaint();
 }
 bool ArrangementView::follow(std::int64_t tick, bool page) noexcept {
     const double width = canvas.getWidth();
@@ -2337,11 +2351,11 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
         const auto colour = view.colourFor(row.position);
         if (row.place.group)
             paintGroupLane(g, i, y, h, colour);
-        auto drawClip = [&](const engine::ClipNode &clip) {
+        auto drawClip = [&](const engine::ClipNode &clip, bool home = false) {
             const auto *c = &clip;
-            // A clip being moved by its bar is drawn where it would land.
-            const bool along = moving_ != 0 && !geo.selection.pickedClips.empty() && geo.clipSelected(c->id);
-            const auto pos = c->id == moving_ ? movingTo_ : along ? c->posTicks + movingDelta() : c->posTicks;
+            // A clip being moved by its bar is drawn where it would land; `home`, where it is.
+            const bool along = !home && moving_ != 0 && !geo.selection.pickedClips.empty() && geo.clipSelected(c->id);
+            const auto pos = home ? c->posTicks : c->id == moving_ ? movingTo_ : along ? c->posTicks + movingDelta() : c->posTicks;
             const auto length = c->id == resizing_ ? resizeLength_ : c->lengthTicks;
             const double x = geo.x(pos), end = geo.x(pos + length);
             if (end < 0 || x > getWidth())
@@ -2388,21 +2402,53 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
             }
             // Its fades, and their handles (manual 6.8), over the waveform and any selection tint;
             // not while it moves.
-            if (c->audio && c->id != moving_ && !along && c->id != resizing_)
+            if (c->audio && (home || (c->id != moving_ && !along)) && c->id != resizing_)
                 paintFades(g, *c, static_cast<float>(x), static_cast<float>(end), static_cast<float>(y + 1 + kClipBarHeight),
                            static_cast<float>(y + h - 3));
         };
         // A clip dragged onto another track is drawn on that track's lane, in its colour; so is
         // each of several selected clips dragged across tracks.
-        for (const auto &c : t->clips)
+        for (const auto &c : t->clips) {
+            // A copy being dragged leaves its original drawn where it is.
+            if (copying_ && moving_ != 0 &&
+                (c->id == moving_ || (!geo.selection.pickedClips.empty() && geo.clipSelected(c->id))))
+                drawClip(*c, true);
             if (const auto to = movingTargetOf(c->id); to == 0 || to == t->id)
                 drawClip(*c);
+        }
         if (moving_ != 0)
             for (const auto &other : view.reader().tracks())
                 if (other->id != t->id)
                     for (const auto &c : other->clips)
                         if (movingTargetOf(c->id) == t->id)
                             drawClip(*c);
+        // The take being recorded on this track (Live 12 manual 21.1; walk-B B4): a clip in the record
+        // colour from where it began to the playhead, named as the take will be, over what it covers.
+        if (const auto &live = view.liveTake();
+            live && std::find(live->tracks.begin(), live->tracks.end(), t->id) != live->tracks.end()) {
+            if (const auto now = view.root.timelineTick(); now > live->start) {
+                const double x0 = geo.x(live->start), x1 = geo.x(now);
+                if (x1 >= 0 && x0 <= getWidth()) {
+                    const float left = static_cast<float>(std::max(-1., x0)),
+                                right = static_cast<float>(std::min(x1, static_cast<double>(getWidth() + 1)));
+                    const float top = static_cast<float>(y + 1), width = std::max(1.f, right - left);
+                    g.setColour(look::record);
+                    g.fillRect(left, top, width, static_cast<float>(h - 4));
+                    g.setColour(look::record.darker(0.3f));
+                    g.fillRect(left, top, width, static_cast<float>(kClipBarHeight));
+                    if (right - left > 6.f) {
+                        g.setColour(look::ink);
+                        g.setFont(look::font(look::fontSmall));
+                        g.drawText(juce::String::fromUTF8(displayName(t->name, row.number()).c_str()),
+                                   juce::Rectangle<float>(left + 3.f, top, right - left - 5.f,
+                                                          static_cast<float>(kClipBarHeight)),
+                                   juce::Justification::centredLeft, false);
+                    }
+                    g.setColour(look::record.darker(0.5f));
+                    g.drawRect(left, top, width, static_cast<float>(h - 4), 1.f);
+                }
+            }
+        }
         y += h;
     }
     if (foot == rows.size())
@@ -2532,8 +2578,8 @@ void ArrangementCanvas::paintAutomation(juce::Graphics &g) const {
     }
 }
 bool ArrangementCanvas::automationDown(const juce::MouseEvent &e) {
-    // In Automation Mode a click on a lane is the envelope's: on a breakpoint it chooses it and a drag
-    // moves it; elsewhere it adds one there, on the grid as the view snaps (Live 12 manual 25.3).
+    // In Automation Mode a click on a breakpoint chooses it and a drag moves it; on the envelope's line
+    // it adds one, on the grid as the view snaps (Live 12 manual 25.3, 25.5.2).
     if (!view.root.automationMode() || e.mods.isPopupMenu())
         return false;
     const auto at = e.position;
@@ -2554,21 +2600,63 @@ bool ArrangementCanvas::automationDown(const juce::MouseEvent &e) {
     // Shift extends and Ctrl/Cmd picks, as without the mode.
     if (e.mods.isShiftDown() || e.mods.isCommandDown())
         return false;
-    for (const auto &body : laneBodies())
-        if (at.y >= body.top && at.y <= body.bottom) {
-            // A double-click's second press adds nothing more.
-            if (e.getNumberOfClicks() > 1)
-                return true;
-            const auto raw = std::max<std::int64_t>(0, view.geometry.tick(at.x));
-            const auto tick = view.snaps(e.mods) ? view.geometry.snap(raw, false) : raw;
-            view.root.addAutomationPoint(body.track->id, tick,
-                                         automationValue(at.y, automationRange(view.root.automationTarget(body.track->id)),
-                                                         body.top, body.scaleBottom));
-            pointAdded_ = true;
-            repaint();
-            return true;
-        }
-    return false;
+    // On the line a click adds a breakpoint there, on the line, and its drag moves it on; off the line
+    // the lane selects as without the mode (Live 12 manual 25.5.2).
+    const auto line = automationLineAt(at);
+    if (!line)
+        return false;
+    // A double-click's second press adds nothing more.
+    if (e.getNumberOfClicks() > 1)
+        return true;
+    const auto track = line->track->id;
+    const auto target = view.root.automationTarget(track);
+    const auto raw = std::max<std::int64_t>(0, view.geometry.tick(at.x));
+    const auto tick = view.snaps(e.mods) ? view.geometry.snap(raw, false) : raw;
+    auto value = view.root.automationCurrent(target);
+    if (const auto current = view.root.current())
+        if (const auto env = envelopeOf(*current, target); env.data != nullptr)
+            value = envelopeValue(*env.data, tick).value_or(value);
+    pointAdded_ = true;
+    if (view.root.addAutomationPoint(track, tick, value))
+        if (const auto current = view.root.current())
+            if (const auto env = envelopeOf(*current, target); env.data != nullptr)
+                for (const auto &p : env.data->points)
+                    if (p.time == tick && (!pointDrag_ || p.id > pointDrag_->point)) {
+                        // The newest point at the tick is the one added: chosen, and dragged.
+                        pointDrag_ = chosenPoint_ = AutomationPick{track, p.id};
+                        pointTick_ = p.time;
+                        pointValue_ = p.value;
+                    }
+    repaint();
+    return true;
+}
+std::optional<ArrangementCanvas::LaneBody> ArrangementCanvas::automationLineAt(juce::Point<float> at) const {
+    // The lane whose envelope, as paintAutomation draws it, passes within a few pixels of `at`.
+    const auto current = view.root.current();
+    if (!current)
+        return std::nullopt;
+    constexpr float kLineHit = 4.f;
+    for (const auto &body : laneBodies()) {
+        if (at.y < body.top - kLineHit || at.y > body.bottom + kLineHit)
+            continue;
+        const auto target = view.root.automationTarget(body.track->id);
+        const auto range = automationRange(target);
+        const auto env = envelopeOf(*current, target);
+        std::vector<juce::Point<float>> points;
+        if (env.data != nullptr)
+            for (const auto &p : env.data->points)
+                points.push_back({static_cast<float>(view.geometry.x(p.time)), automationY(p.value, range, body.top, body.scaleBottom)});
+        std::sort(points.begin(), points.end(), [](auto a, auto b) { return a.x < b.x; });
+        if (points.empty())
+            points.push_back({0, automationY(view.root.automationCurrent(target), range, body.top, body.scaleBottom)});
+        points.insert(points.begin(), {0, points.front().y});
+        points.push_back({static_cast<float>(getWidth()), points.back().y});
+        juce::Point<float> nearest;
+        for (std::size_t i = 1; i < points.size(); ++i)
+            if (juce::Line<float>(points[i - 1], points[i]).getDistanceFromPoint(at, nearest) <= kLineHit)
+                return body;
+    }
+    return std::nullopt;
 }
 std::vector<ArrangementCanvas::ClipBody> ArrangementCanvas::clipBodies() const {
     // Every clip drawn, where it is drawn: the same walk as the paint, the foot over the tracks
@@ -2904,6 +2992,7 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
     view.followPaused = false; // a click in the Arrangement starts Follow again (§6.2)
     last = e.position;
     moving_ = resizing_ = 0;
+    copying_ = false;
     keyResize_ = false; // a click ends a resize begun from the keyboard, as Esc does
     selectedFade_.reset(); // a click chooses a fade handle again, or nothing
     focusLost(focusChangedDirectly);
@@ -2961,22 +3050,37 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
             return;
         }
         // Ctrl/Cmd+click on another clip picks it besides the selected one, or lets it go again
-        // (Live's "Select Multiple Items", §42.5); it moves nothing. A plain click lets them all go.
+        // (Live's "Select Multiple Items", §42.5). A plain click lets them all go. On its bar the
+        // press also begins a drag of every selected clip, which Ctrl copies (mouseUp); a picked
+        // clip is let go only when released without one.
+        selectOnUp_ = false;
+        toggleOnUp_ = 0;
         if (e.mods.isCommandDown() && view.geometry.selection.clip != 0)
             if (const auto *t = view.geometry.trackAt(view.reader(), e.y))
                 if (const auto *c = view.geometry.hit(*t, view.geometry.tick(e.x));
                     c != nullptr && c->id != view.geometry.selection.clip) {
+                    const auto *bar = barAt(e.x, e.y, track, edge);
+                    const bool onBar = bar != nullptr && bar->id == c->id;
                     auto &picked = view.geometry.selection.pickedClips;
-                    if (const auto at = std::find(picked.begin(), picked.end(), c->id); at != picked.end())
-                        picked.erase(at);
-                    else
+                    if (const auto at = std::find(picked.begin(), picked.end(), c->id); at == picked.end())
                         picked.push_back(c->id);
+                    else if (onBar)
+                        toggleOnUp_ = c->id;
+                    else
+                        picked.erase(at);
+                    if (onBar) {
+                        moving_ = c->id;
+                        movingFrom_ = movingTo_ = c->posTicks;
+                        movingSource_ = movingTrack_ = track;
+                        movingAcross_.clear();
+                        grabTicks_ = view.geometry.tick(e.x) - c->posTicks;
+                        pressedAt_ = e.getPosition();
+                    }
                     view.changed();
                     return;
                 }
         // A plain press on the bar of one of several selected clips keeps them all for the drag,
         // which moves them together; released without a drag, it selects that clip alone.
-        selectOnUp_ = false;
         if (!e.mods.isShiftDown() && !view.geometry.selection.pickedClips.empty())
             if (const auto *c = barAt(e.x, e.y, track, edge); c != nullptr && view.geometry.clipSelected(c->id)) {
                 moving_ = c->id;
@@ -3079,7 +3183,7 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
         return;
     }
     if (pointAdded_)
-        return; // the press added a breakpoint; its drag edits nothing else
+        return; // the press added a breakpoint it could not take up; its drag edits nothing else
     if (fadeDrag_) {
         // A peak's square follows the mouse along the clip; a curve's diamond, up and down.
         if (fadeDrag_->curve) {
@@ -3115,8 +3219,17 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
         // track follows the lane under it when that track can take it (Live 12 manual 6.7);
         // over one that cannot, it stays on the last that could. At the lanes' edge they scroll.
         const bool scrolled = e.mouseWasDraggedSinceMouseDown() && view.edgeScroll(e.x, e.y, true);
-        if (e.mouseWasDraggedSinceMouseDown())
+        if (e.mouseWasDraggedSinceMouseDown()) {
             selectOnUp_ = false;
+            toggleOnUp_ = 0;
+        }
+        // Ctrl held (Option on the Mac) makes the drag a copy, the originals staying, as Live's and
+        // the Note Editor's; it can be pressed or let go during the drag.
+#if JUCE_MAC
+        copying_ = e.mods.isAltDown();
+#else
+        copying_ = e.mods.isCtrlDown();
+#endif
         // Several selected clips move together: in time, and across tracks each by the same rows
         // when every one lands on a track that can take it; else they stay on the last rows that
         // could.
@@ -3243,9 +3356,27 @@ void ArrangementCanvas::mouseUp(const juce::MouseEvent &e) {
                 for (const auto &op : edit.ops)
                     places.push_back({op.payload.at("id").get<std::int64_t>(), op.payload.at("track").get<std::int64_t>(),
                                       op.payload.at("to").get<std::int64_t>()});
-                if (!edit.refusal.empty())
+                if (!edit.refusal.empty()) {
                     view.root.say(edit.refusal);
-                else if (!places.empty() && view.root.placeClips(places, edit.ops.front().label.c_str())) {
+                } else if (copying_ && !places.empty()) {
+                    // Copied: the originals stay, and the copies are what is selected after.
+                    if (const auto copies = view.root.copyClips(places, places.size() == 1 ? "Copy Clip" : "Copy Clips");
+                        !copies.empty()) {
+                        sel.clip = 0;
+                        sel.pickedClips.clear();
+                        for (std::size_t i = 0; i < places.size(); ++i) {
+                            if (places[i].clip == clip) {
+                                sel.clip = copies[i];
+                                sel.track = places[i].track;
+                                sel.toTrack = 0;
+                            } else {
+                                sel.pickedClips.push_back(copies[i]);
+                            }
+                        }
+                        sel.start += delta;
+                        sel.end += delta;
+                    }
+                } else if (!places.empty() && view.root.placeClips(places, edit.ops.front().label.c_str())) {
                     sel.start += delta;
                     sel.end += delta;
                     // The selection follows the clip dragged, onto its new track.
@@ -3256,21 +3387,36 @@ void ArrangementCanvas::mouseUp(const juce::MouseEvent &e) {
                         }
                 }
             }
-        } else if (selectOnUp_)
+        } else if (selectOnUp_) {
             view.select(pressedAt_.x, pressedAt_.y, view.snaps(juce::ModifierKeys::currentModifiers));
+        } else if (toggleOnUp_ != 0) {
+            // Ctrl/Cmd+click on a picked clip's bar, without a drag: it is let go.
+            auto &picked = sel.pickedClips;
+            picked.erase(std::remove(picked.begin(), picked.end(), toggleOnUp_), picked.end());
+        }
         selectOnUp_ = false;
+        toggleOnUp_ = 0;
+        copying_ = false;
         repaint();
     }
     if (moving_ != 0) {
         const auto clip = moving_, to = movingTo_, from = movingFrom_, track = movingTrack_;
         const bool across = movingTrack_ != movingSource_;
+        const bool copy = std::exchange(copying_, false);
         moving_ = 0;
         // One drag, one undo step (§6.7), in time and to another track at once; the selection
-        // follows the clip.
+        // follows the clip, or its copy when Ctrl copied it (the original staying).
         if (to != from || across) {
             auto &sel = view.geometry.selection;
             const auto length = sel.end - sel.start;
-            if (view.root.placeClips({{clip, track, to}}, "Move Clip")) {
+            bool landed = false;
+            if (!copy) {
+                landed = view.root.placeClips({{clip, track, to}}, "Move Clip");
+            } else if (const auto copies = view.root.copyClips({{clip, track, to}}, "Copy Clip"); !copies.empty()) {
+                sel.clip = copies.front();
+                landed = true;
+            }
+            if (landed) {
                 sel.start = to;
                 sel.end = to + length;
                 sel.track = track;
@@ -3393,10 +3539,19 @@ void ArrangementCanvas::mouseDoubleClick(const juce::MouseEvent &e) {
             repaint();
             return;
         }
-        // Elsewhere on a lane a double-click is the envelope's too: it neither makes a clip nor opens one.
+        // Elsewhere on a lane a double-click is the envelope's too: off the line it adds a breakpoint
+        // there (manual 25.5.2; on the line the first press added it); it neither makes a clip nor opens one.
         for (const auto &body : laneBodies())
-            if (e.position.y >= body.top && e.position.y <= body.bottom && !e.mods.isShiftDown() && !e.mods.isCommandDown())
+            if (e.position.y >= body.top && e.position.y <= body.bottom && !e.mods.isShiftDown() && !e.mods.isCommandDown()) {
+                if (!automationLineAt(e.position)) {
+                    const auto raw = std::max<std::int64_t>(0, view.geometry.tick(e.position.x));
+                    view.root.addAutomationPoint(body.track->id, view.snaps(e.mods) ? view.geometry.snap(raw, false) : raw,
+                                                 automationValue(e.position.y, automationRange(view.root.automationTarget(body.track->id)),
+                                                                 body.top, body.scaleBottom));
+                    repaint();
+                }
                 return;
+            }
     }
     const auto *t = view.geometry.trackAt(view.reader(), e.y);
     const auto *c = t != nullptr ? view.geometry.hit(*t, view.geometry.tick(e.x)) : nullptr;

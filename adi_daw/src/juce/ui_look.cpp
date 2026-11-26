@@ -179,15 +179,18 @@ void LiveLook::drawLinearSlider(juce::Graphics &g, int x, int y, int w, int h, f
         if (!s.getProperties()["live.valueField"]) {
             g.setColour(value.withAlpha(0.28f));
             const auto inner = r.reduced(1.f);
-            if (style == juce::Slider::LinearBarVertical)
-                g.fillRect(inner.withTop(pos));
-            else if (s.getProperties()["live.bipolar"]) {
+            // Filled across whichever way it drags: a vertical bar (the mixer's boxes, on Live's drag
+            // axis) fills the same share of the width as a horizontal one.
+            const float across = style == juce::Slider::LinearBarVertical && r.getHeight() > 0
+                                     ? r.getX() + r.getWidth() * (r.getBottom() - pos) / r.getHeight()
+                                     : pos;
+            if (s.getProperties()["live.bipolar"]) {
                 // A two-sided value, as pan: filled from the middle to the value.
                 const float mid = inner.getCentreX();
-                g.fillRect(juce::Rectangle<float>::leftTopRightBottom(std::min(mid, pos), inner.getY(),
-                                                                      std::max(mid, pos), inner.getBottom()));
+                g.fillRect(juce::Rectangle<float>::leftTopRightBottom(std::min(mid, across), inner.getY(),
+                                                                      std::max(mid, across), inner.getBottom()));
             } else
-                g.fillRect(inner.withWidth(std::max(0.f, pos - r.getX() - 1)));
+                g.fillRect(inner.withWidth(std::max(0.f, across - r.getX() - 1)));
         }
         g.setColour(boxEdge);
         g.drawRoundedRectangle(r.reduced(hairline / 2), radiusBox, hairline);

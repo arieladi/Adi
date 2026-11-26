@@ -178,7 +178,7 @@ struct StableEntry {
     const char *category;
 };
 const StableEntry *stableEntry(int id) noexcept {
-    static const std::array<StableEntry, 127> table{{
+    static const std::array<StableEntry, 128> table{{
         {"transport.play-stop", "Transport"}, // PlayStop
         {"transport.stop", "Transport"}, // Stop
         {"edit.undo", "Edit"}, // Undo
@@ -306,6 +306,7 @@ const StableEntry *stableEntry(int id) noexcept {
         {"options.cue-switches", "Options"}, // CueSwitches
         {"help.manual", "Help"}, // HelpManual
         {"help.keyboard-shortcuts", "Help"}, // KeyboardReference
+        {"view.automation-mode", "View"}, // AutomationMode
     }};
     const auto at = id - AppCommands::PlayStop;
     return at >= 0 && at < static_cast<int>(table.size()) ? &table[static_cast<std::size_t>(at)] : nullptr;
@@ -530,7 +531,7 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Draw Mode", "Arrange Clip View Panels Automatically", "Arrange Clip View Panels Horizontally",
                                   "Arrange Clip View Panels Vertically", "Clip View", "Fit to Time Range",
                                   "Arrangement Record", "Export Audio/Video...", "Delay Compensation", "Solo Switches", "Cue Switches",
-                                  "Live 12 Manual", "Keyboard Shortcuts"};
+                                  "Live 12 Manual", "Keyboard Shortcuts", "Automation Mode"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], category(id), 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -827,6 +828,11 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         info.addDefaultKeypress('0', 0);
         info.setActive(active_ != nullptr);
         break;
+    case AutomationMode: // manual 25.2, 41.7: A, the View menu's; the names bar's switch too
+        info.addDefaultKeypress('a', 0);
+        info.setTicked(active_ != nullptr && active_->automationMode());
+        info.setActive(active_ != nullptr);
+        break;
     case SelectAll: // §42.5: Ctrl/Cmd+A; a text field with the focus selects its own text first
         info.addDefaultKeypress('a', cmd);
         info.setActive(active_ != nullptr);
@@ -1056,6 +1062,9 @@ bool AppCommands::key(const juce::KeyPress &key, AdiRootComponent &root) {
     // F, G, K and B are the Note Editor's own keys: it takes them itself while it has the keyboard.
     // A key that comes here was pressed elsewhere, where they are no command's.
     if (const auto id = manager.getKeyMappings()->findCommandForKeyPress(key); id >= FoldToNotes && id <= DrawMode)
+        return false;
+    // A with the Note Editor's keyboard stays the editor's: Automation Mode is the Arrangement's.
+    if (manager.getKeyMappings()->findCommandForKeyPress(key) == AutomationMode && root.clipView.notes.hasContext())
         return false;
     // A latching key runs its command once while it is held (Live 42.25): the root times it. One let
     // go where the window could not see it (the focus elsewhere) goes down anew, and nothing goes back.
@@ -1461,6 +1470,11 @@ void AdiRootComponent::frame() noexcept {
         generation_ = generation;
         // The project view's tree follows the project: tracks come and go, groups with them.
         arrangement.applyView();
+        // A newly inserted track brought into sight above the foot, now that the rows hold it.
+        if (arrangement.revealTrack != 0) {
+            arrangement.geometry.reveal(reader(), arrangement.revealTrack);
+            arrangement.revealTrack = 0;
+        }
         // An open Undo History lists the step every edit, undo or redo made.
         if (undoHistory.isShowing())
             undoHistory.refresh();
@@ -2139,6 +2153,27 @@ bool AdiRootComponent::placeClips(const std::vector<ClipPlace> &places, const ch
         prepared.requests.front().label = label;
     return commitEdit(std::move(prepared));
 }
+std::vector<std::int64_t> AdiRootComponent::copyClips(const std::vector<ClipPlace> &places, const char *label) {
+    const auto current = view_.current();
+    if (!current || places.empty()) {
+        fail("Select a clip to copy.");
+        return {};
+    }
+    std::vector<clip_edit::ClipPlacement> copies;
+    std::vector<std::int64_t> ids;
+    auto id = audio_drop_detail::newClipId(*current);
+    for (const auto &place : places) {
+        copies.push_back({place.clip, id, place.track, {0, place.position}});
+        ids.push_back(id++);
+    }
+    auto prepared = clip_edit::prepareDuplicates(submitter_.store(), copies,
+                                                 {editRate(), edit_plan::capturePolicy(commands_.settings())});
+    if (prepared.ok && !prepared.requests.empty())
+        prepared.requests.front().label = label;
+    if (!commitEdit(std::move(prepared)))
+        return {};
+    return ids;
+}
 bool AdiRootComponent::commitEdit(clip_edit::PreparedEdit prepared, std::optional<OpRequest> appended) {
     if (!prepared.ok)
         return fail(prepared.error.empty() ? "The edit could not be prepared." : prepared.error);
@@ -2787,6 +2822,7 @@ bool AdiRootComponent::insertTrack(bool midi) {
     if (!result)
         return fail(result.error);
     arrangement.followPaused = true;
+    arrangement.revealTrack = edit.select; // in sight on the next frame, not under the foot
     arrangement.geometry.selection.track = edit.select;
     arrangement.geometry.selection.toTrack = 0;
     arrangement.geometry.selection.picked.clear();
@@ -3212,8 +3248,14 @@ bool AdiRootComponent::toggleRecord() {
     const bool rolling = mailbox_.desiredPlaying();
     if (!rolling && !mailbox_.hasRoom(1))
         return fail("Transport command queue is full");
+    // Where the take begins: the playhead when playing (punch-in), else the insert marker.
+    const auto takeStart = rolling ? timelineTick() : arrangement.geometry.selection.insert;
     if (!startRecording(arrangement.geometry.selection.insert, rolling))
         return false; // the application said why
+    // The armed audio tracks record (MX-09; MIDI does not record yet), and their lanes show the take as
+    // it grows (walk-B B4).
+    if (const auto *current = reader().get())
+        arrangement.beginLiveTake(takeStart, armedTracks(current->tracks, freshRecordStates()).audio);
     // A recording start plays the transport: the same op Play writes, so the history's transport state
     // agrees.
     if (!rolling) {
@@ -3265,7 +3307,7 @@ void AdiRootComponent::setAutomationMode(bool on) {
     demandAutomationDevices(on);
     namesBar.automation.setToggleState(on, juce::dontSendNotification);
     say(on ? "Automation Mode: each track shows its chosen envelope, its Volume until Show Automation chooses "
-             "another; click a lane to add a breakpoint, drag one to move it, double-click one to delete it."
+             "another; click its line to add a breakpoint, drag one to move it, double-click one to delete it."
            : "");
     arrangement.repaint();
 }
@@ -4053,6 +4095,9 @@ bool AdiRootComponent::command(int id) {
         if (!toggleRecord())
             return false;
         break;
+    case AppCommands::AutomationMode:
+        setAutomationMode(!automationMode_);
+        return true;
     case AppCommands::HelpManual:
     case AppCommands::KeyboardReference: {
         const auto target = id == AppCommands::HelpManual ? juce::URL(kManualAddress)
@@ -4459,12 +4504,13 @@ const std::vector<MenuEntries> &menuBar() {
         {"Create", {C::InsertAudioTrack, C::InsertMidiTrack, C::InsertReturnTrack, 0, C::InsertMidiClip, 0,
                     C::InsertTimeSignatureChange, 0,
                     C::AddLocator, C::DeleteLocator, 0, C::CreateFade, C::DeleteFades}},
-        // The show and hide toggles in §42.1's order, ADI's Channel EQ after the Mixer.
+        // The show and hide toggles in §42.1's order, ADI's Channel EQ after the Mixer. Automation Mode
+        // (manual 25.2) after them; its place in Live 12's menu is to be read on Live (PROVISIONAL).
         {"View",
          {C::FullScreen, 0, C::ToggleBrowser, C::ToggleOverview, kTrackControlsMenu, kMixerControlsMenu,
           C::ToggleMixerView, C::ShowChannelEq, C::ToggleMixView, C::DetachMixView, C::ToggleReferenceTrack,
           C::PlayReference, C::ToggleClipView, C::ExpandClipView, C::ToggleDeviceView, C::TogglePluginWindows,
-          C::ToggleInfoView, C::UndoHistory, 0, C::ZoomIn, C::ZoomOut, 0,
+          C::ToggleInfoView, C::UndoHistory, 0, C::AutomationMode, 0, C::ZoomIn, C::ZoomOut, 0,
           C::ZoomToSelection, C::ZoomBack, C::OptimizeWidth, C::OptimizeHeight, C::LargeTracks, 0,
           C::ArrangePanelsAutomatically, C::ArrangePanelsHorizontally, C::ArrangePanelsVertically, 0,
           C::FoldToNotes, C::FoldToScale, C::HighlightScales, 0,
@@ -4557,11 +4603,32 @@ std::string displayId(const juce::Displays::Display &d) {
     return std::to_string(a.getX()) + ":" + std::to_string(a.getY()) + ":" + std::to_string(a.getWidth()) + ":" +
            std::to_string(a.getHeight()) + ":" + std::to_string(static_cast<int>(d.dpi));
 }
-bool isTestLaunch(const juce::String &commandLine) {
+juce::StringArray launchArguments(const juce::String &commandLine) {
+    juce::StringArray arguments;
     for (const auto &token : juce::StringArray::fromTokens(commandLine, true))
-        if (const auto t = token.unquoted(); t == "--smoke-output" || t == "--control-test")
+        if (const auto argument = token.unquoted().trim(); argument.isNotEmpty())
+            arguments.add(argument);
+    return arguments;
+}
+bool isTestLaunch(const juce::String &commandLine) {
+    for (const auto &t : launchArguments(commandLine))
+        if (t == "--smoke-output" || t == "--control-test")
             return true;
     return false;
+}
+juce::File projectsFolder(const settings::AppSettings &settings) {
+    const auto chosen = settings.get("files.projectsFolder");
+    auto directory =
+        chosen.is_string() && !chosen.get<std::string>().empty()
+            ? juce::File(juce::String::fromUTF8(chosen.get<std::string>().c_str()))
+            : juce::File(juce::String::fromUTF8(
+                             reinterpret_cast<const char *>(settings.file().parent_path().u8string().c_str())))
+                  .getChildFile("projects");
+    directory.createDirectory();
+    return directory;
+}
+juce::File nextUntitledProject(const settings::AppSettings &settings) {
+    return projectsFolder(settings).getNonexistentChildFile("Untitled", ".adi");
 }
 std::string displayAt(juce::Point<int> screen) {
     const auto *d = juce::Desktop::getInstance().getDisplays().getDisplayForPoint(screen.toFloat());
