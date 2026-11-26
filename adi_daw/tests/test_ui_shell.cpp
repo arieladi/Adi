@@ -10663,7 +10663,6 @@ void deviceClipboard(AppCommands &commands, const std::filesystem::path &dir) {
     if (order.size() != 2)
         return;
     const auto duplicateId = order[1];
-    juce::int64 when = 200000;
     // SC-83: the ordinary plug-in's title drag captures its identity. The strip, lanes and
     // headers deliver the drop through the same device move as the application.
     const auto move = [&](juce::DragAndDropTarget &target, juce::Point<int> at) {
@@ -10682,26 +10681,7 @@ void deviceClipboard(AppCommands &commands, const std::filesystem::path &dir) {
         refresh();
         return undone && chain() == order;
     };
-    const auto dragInChain = [&] {
-        if (!peer || root.devices.panels.size() != 2)
-            return false;
-        auto &title = root.devices.panels[1]->title;
-        const auto from = host.getLocalPoint(&title, title.getLocalBounds().getCentre()).toFloat();
-        const auto to = host.getLocalPoint(&root.devices, juce::Point<int>{2, root.devices.getHeight() / 2}).toFloat();
-        const auto mouse = [&](juce::Point<float> at, int buttons) {
-            peer->handleMouseEvent(juce::MouseInputSource::InputSourceType::mouse, at, juce::ModifierKeys(buttons),
-                                   1.f, 0.f, when += 1000);
-        };
-        const auto left = juce::ModifierKeys::leftButtonModifier;
-        mouse(from, 0);
-        mouse(from, left);
-        mouse(from.translated(0.f, 8.f), left);
-        const bool started = root.getCurrentDragDescription().toString() == DevicePanelView::kDeviceMoveDrag;
-        mouse(to, left);
-        mouse(to, 0);
-        return started;
-    };
-    check(dragInChain() &&
+    check(move(root.devices, {0, root.devices.getHeight() / 2}) &&
               chain() == std::vector<std::int64_t>{duplicateId, 3} && undoMove(),
           "dropping a plug-in before another device reorders their IDs in one undo step");
     const auto deviceTrack = [&] {
@@ -10724,6 +10704,7 @@ void deviceClipboard(AppCommands &commands, const std::filesystem::path &dir) {
     const auto past = host.getLocalPoint(&root.devices, juce::Point<int>{root.devices.panels.back()->getRight() + 40,
                                                                           root.devices.getHeight() / 2})
                           .toFloat();
+    juce::int64 when = 200000;
     peer->handleMouseEvent(juce::MouseInputSource::InputSourceType::mouse, past, juce::ModifierKeys(), 1.f, 0.f,
                            when += 100);
     peer->handleMouseEvent(juce::MouseInputSource::InputSourceType::mouse, past,
