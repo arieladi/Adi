@@ -558,6 +558,9 @@ void ProjectDocument::persistReportedLatencies() {
 void ProjectDocument::setParameterDemand(const void *consumer, const std::vector<std::int64_t> &devices) {
     if (feed_.setDemand(consumer, devices)) feed_.publish(session_, realisedGeneration_);
 }
+std::shared_ptr<const ParameterPublication> ProjectDocument::automationParameters(std::int64_t track) {
+    return ParameterFeed::describeForAutomation(session_, track);
+}
 device::DeviceInstance* ProjectDocument::limiterReductionTarget(
     std::int64_t id, const engine::DeviceRuntimeToken& expected) {
     const auto* entry = session_.entryFor(id);

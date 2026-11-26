@@ -12489,6 +12489,172 @@ void firstSendDragHeard(AppCommands &commands, const std::filesystem::path &dir)
 // AU-01: Automation Mode in the Arrangement (Live 12 manual 25.2, 25.3): a track's Volume envelope on its
 // lane; a click adds a breakpoint (the lane made in the same step), a drag moves one, a double-click or
 // Delete removes one; each one undo step.
+void automationParameterDemand(AppCommands &commands, const std::filesystem::path &dir) {
+    constexpr int firstTrack = 20, firstDevice = 100, count = 20;
+    constexpr int lastTrack = firstTrack + count - 1;
+    std::string error;
+    auto doc = ProjectDocument::open(dir / "automation-parameter-demand.adi", true, {}, error);
+    check(doc != nullptr, "automation demand: create project");
+    if (!doc)
+        return;
+    doc->store().db().exec("INSERT INTO plugin_refs(id,format,uid,name) VALUES(20,'vst3','test-automation-demand','Test instrument')");
+    std::vector<OpRequest> edits;
+    for (int id = firstTrack; id <= lastTrack; ++id) {
+        auto &add = edits.emplace_back();
+        add.opType = "track.create";
+        add.payload = {{"id", id}, {"kind", "midi"}, {"name", "Instrument track"}};
+        const int device = firstDevice + id - firstTrack;
+        auto &chain = edits.emplace_back();
+        chain.opType = "chain.create";
+        chain.payload = {{"id", device}, {"track", id}, {"ord", 0}, {"name", "Devices"}};
+        auto &insert = edits.emplace_back();
+        insert.opType = "device.insert";
+        insert.payload = {{"id", device}, {"chain", device}, {"ord", 0}, {"ref", 20},
+                          {"name", "Test instrument"}, {"latency", 0}};
+    }
+    const bool made = doc->ops().submit(std::move(edits)).ok && doc->synchronise();
+    check(made, "automation demand: create 20 instrument tracks");
+    if (!made)
+        return;
+
+    auto publication = std::make_shared<ParameterPublication>();
+    ParameterPublication catalog;
+    for (int i = 0; i < count; ++i) {
+        auto &device = publication->emplace_back();
+        device.id = firstDevice + i;
+        device.track = firstTrack + i;
+        device.instance = 1;
+        device.available = true;
+        device.plugin = true;
+        device.name = "Test instrument";
+        device.format = "vst3";
+        auto &metadata = catalog.emplace_back(device);
+        metadata.declared.push_back({"7", "Cutoff", true, true});
+        metadata.declared.push_back({"8", "Meter", false, false});
+        metadata.defaults.emplace("7", .25);
+        if (i == 0) {
+            device = metadata;
+            device.resolved.entries.push_back({"7"});
+            auto &parameter = device.records.emplace_back();
+            parameter.id = "7";
+            parameter.name = "Cutoff";
+            parameter.playing = .73;
+        }
+    }
+    const auto lastDevice = publication->back().id;
+    std::map<const void *, std::vector<std::int64_t>> demands;
+    std::vector<std::int64_t> catalogRequests;
+    std::size_t largestAutomationRequest = 0;
+    AdiRootComponent root(doc->view(), doc->ops(), doc->mailbox(), commands, doc->views(), doc->sessionState(),
+                          "automation-demand");
+    UiPeerRoot peer;
+    peer.setSize(1440, 900);
+    peer.addAndMakeVisible(root);
+    root.setBounds(peer.getLocalBounds());
+    peer.setVisible(true);
+    peer.addToDesktop(0);
+    root.devices.publication = [&] { return publication; };
+    root.automationParameters = [&](std::int64_t track) {
+        catalogRequests.push_back(track);
+        auto parameters = std::make_shared<ParameterPublication>();
+        for (const auto &device : catalog)
+            if (device.track == track)
+                parameters->push_back(device);
+        return parameters;
+    };
+    const void *stripOwner = &root.devices;
+    root.devices.parameterDemand = [&demands, &largestAutomationRequest, stripOwner](
+                                       const void *owner, const std::vector<std::int64_t> &ids) {
+        if (owner != stripOwner)
+            largestAutomationRequest = std::max(largestAutomationRequest, ids.size());
+        if (ids.empty())
+            demands.erase(owner);
+        else
+            demands[owner] = ids;
+    };
+    root.arrangement.geometry.selection.track = firstTrack;
+    root.frame();
+    const auto stripDemand = [&] {
+        const auto found = demands.find(&root.devices);
+        return found != demands.end() && found->second == std::vector<std::int64_t>{firstDevice};
+    };
+    const auto automationDemand = [&] {
+        std::set<std::int64_t> ids;
+        for (const auto &[owner, demanded] : demands)
+            if (owner != &root.devices)
+                ids.insert(demanded.begin(), demanded.end());
+        return ids;
+    };
+    check(stripDemand() && automationDemand().empty() && catalogRequests.empty(),
+          "automation demand: the visible Device View owns only its device and does not discover hidden parameters");
+    check(laneTop(root, lastTrack) > root.arrangement.geometry.footTop(root.reader()),
+          "automation demand: the last instrument track is outside the viewport");
+    root.arrangement.geometry.selection.track = lastTrack;
+    const auto menu = root.arrangement.headerMenu();
+    root.arrangement.geometry.selection.track = firstTrack;
+    std::function<void()> chooseCutoff;
+    bool offersVolume = false, offersPan = false, offersMeter = false;
+    for (juce::PopupMenu::MenuItemIterator item(menu, true); item.next();) {
+        const auto &entry = item.getItem();
+        if (entry.text == "Cutoff")
+            chooseCutoff = entry.action;
+        offersVolume |= entry.text == "Volume";
+        offersPan |= entry.text == "Pan";
+        offersMeter |= entry.text == "Meter";
+    }
+    const std::vector<std::int64_t> menuTracks{lastTrack};
+    std::printf("Automation chooser: peak live request %zu devices\n", largestAutomationRequest);
+    check(chooseCutoff && offersVolume && offersPan && !offersMeter && catalogRequests == menuTracks &&
+              largestAutomationRequest == 0 && automationDemand().empty(),
+          "automation demand: the chooser reads only its track's descriptors and offers Cutoff without live values");
+    root.namesBar.automation.onClick();
+    root.frame();
+    const auto defaultDemand = automationDemand();
+    std::printf("Automation Mode on default Volume lanes: %zu live device demands, visible strip %d\n",
+                defaultDemand.size(), stripDemand() ? 1 : 0);
+    check(root.automationMode() && root.automationTarget(firstTrack) == volumeTarget(firstTrack) &&
+              root.automationTarget(lastTrack) == volumeTarget(lastTrack) && defaultDemand.empty() &&
+              catalogRequests == menuTracks,
+          "automation demand: default Volume lanes request neither descriptors nor live device parameters");
+    check(stripDemand(), "automation demand: Automation Mode preserves the visible control's independent demand");
+
+    if (!chooseCutoff)
+        return;
+    chooseCutoff();
+    root.frame();
+    const auto cutoff = root.automationTarget(lastTrack);
+    const auto targetDemand = automationDemand();
+    std::printf("Automation Mode on one device lane: %zu live device demands\n", targetDemand.size());
+    check(cutoff.ownerKind == "device" && cutoff.ownerId == lastDevice && cutoff.paramRef == "7" &&
+              cutoff.paramName == "Cutoff" && catalogRequests == menuTracks && targetDemand.empty() &&
+              std::abs(root.automationCurrent(cutoff) - .25) < 1e-9,
+          "automation demand: the hidden lane retains the menu's default without further reads or live demand");
+    check(root.showDeviceAutomation(firstDevice, "7") &&
+              std::abs(root.automationCurrent(root.automationTarget(firstTrack)) - .73) < 1e-9 &&
+              catalogRequests == menuTracks && stripDemand(),
+          "automation demand: a visible control's playing value takes precedence over its default");
+    root.showAutomation(firstTrack, volumeTarget(firstTrack));
+    check(root.addAutomationPoint(lastTrack, 0, .4), "automation demand: add a point on the chosen device lane");
+    root.frame();
+    root.setAutomationMode(false);
+    root.frame();
+    check(stripDemand() && automationDemand().empty(), "automation demand: closing Automation Mode leaves the strip subscribed");
+    root.setAutomationMode(true);
+    root.frame();
+    const auto retained = root.automationTarget(lastTrack);
+    const auto envelope = envelopeOf(*root.current(), retained);
+    check(retained == cutoff && envelope.data != nullptr && envelope.data->points.size() == 1 &&
+              std::abs(envelope.data->points.front().value - .4) < 1e-9 && catalogRequests == menuTracks,
+          "automation demand: reopening the mode restores the chosen device envelope");
+    publication->back().available = false;
+    root.frame();
+    check(root.automationTarget(lastTrack) == cutoff && automationDemand().empty(),
+          "automation demand: a placeholder retains its selected automation lane");
+    root.showAutomation(lastTrack, volumeTarget(lastTrack));
+    root.frame();
+    check(stripDemand() && automationDemand().empty(),
+          "automation demand: switching the last device lane back to Volume retires its live demand");
+}
 void automationMode(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto document = ProjectDocument::open(dir / "automation-mode.adi", true, {}, error);
@@ -15638,6 +15804,11 @@ int main(int argc, char **argv) {
     if (argc == 2 && std::string(argv[1]) == "--arrangement-midi-speed-only") {
         arrangementMidiRedraw(commands, temp.path());
         std::printf("%d checks, %d failures (Arrangement MIDI redraw)\n", checks, failures);
+        return failures ? 1 : 0;
+    }
+    if (argc == 2 && std::string(argv[1]) == "--automation-demand-only") {
+        automationParameterDemand(commands, temp.path());
+        std::printf("%d checks, %d failures (Automation Mode demand)\n", checks, failures);
         return failures ? 1 : 0;
     }
     if (argc == 2 && std::string(argv[1]) == "--mixview-only") {

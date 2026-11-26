@@ -49,6 +49,10 @@ struct AutomationTarget {
     double minimum = -70, maximum = 6;
     bool footIsSilence = true; // the foot written as silence (-150 dB), as the fader's and a send's
     std::string device = "Mixer";
+    // Keep the descriptor's native id and default when the device panel does
+    // not publish parameters for the selected lane.
+    std::string nativeParamId{};
+    double defaultValue = 0;
     friend bool operator==(const AutomationTarget &a, const AutomationTarget &b) {
         return a.ownerKind == b.ownerKind && a.ownerId == b.ownerId && a.paramRef == b.paramRef;
     }
@@ -99,6 +103,10 @@ inline std::optional<AutomationTarget> deviceTarget(const DevicePanelData &d, co
     t.maximum = 1;
     t.footIsSilence = false;
     t.device = d.name;
+    t.nativeParamId = p.id;
+    const auto value = d.defaultValues().find(p.id);
+    if (value != d.defaultValues().end())
+        t.defaultValue = value->second;
     return t;
 }
 // A target's travel, and a value as written: inside it, the foot as silence where it is one.
