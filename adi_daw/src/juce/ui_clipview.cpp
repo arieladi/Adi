@@ -11,6 +11,9 @@
 #include <utility>
 namespace adi::ui {
 namespace {
+// Pending the direct Live reading (R20): an editor click places its local cursor.
+constexpr bool kNoteEditorClickMovesArrangementInsertMarker = false;
+
 // Live's position fields read bar. beat. sixteenth from 1 (manual 8.2).
 juce::String positionText(std::int64_t tick, const std::vector<textproj::Meter> &meters) {
     const bool before = tick < 0;
@@ -194,17 +197,18 @@ void NoteEditor::frame() {
     }
     // Live draws the playhead only while it plays; here over the key tracks and the Velocity lane.
     const auto area = notesArea();
-    if (panel.details() != nullptr && panel.root.playing() && panel.root.state().follow && !panel.root.arrangement.followPaused &&
-        area.getWidth() > 0) {
+    const auto songTick = panel.root.timelineTick();
+    const auto tick = clip != nullptr ? noteEditorPlayheadTick(*clip, songTick) : songTick;
+    const bool playing = clip != nullptr && panel.root.playing();
+    if (playing && panel.root.state().follow && !panel.root.arrangement.followPaused && area.getWidth() > 0) {
         // Follow (manual 8.7, 10.2.2): a page at a time, as the playhead leaves the editor.
-        const auto tick = panel.root.timelineTick();
         if (const double at = time.x(tick); at < 0 || at >= area.getWidth()) {
             time.left = std::max(0., static_cast<double>(tick) / textproj::kPPQ);
             repaint();
         }
     }
-    const int x = static_cast<int>(std::clamp(time.x(panel.root.timelineTick()), -1e7, 1e7));
-    playhead.setVisible(panel.details() != nullptr && panel.root.playing() && x >= 0 && x < area.getWidth());
+    const int x = static_cast<int>(std::clamp(time.x(tick), -1e7, 1e7));
+    playhead.setVisible(playing && x >= 0 && x < area.getWidth());
     playhead.setBounds(area.getX() + x, area.getY(), 1, getHeight() - area.getY());
 }
 void NoteEditor::setLaneShape(LaneShape shape) {
@@ -2101,6 +2105,11 @@ void NoteEditor::mouseDown(const juce::MouseEvent &e) {
             // The insert marker goes where the click is, on the grid (manual 10.5.2).
             const auto at = time.tick(static_cast<double>(from_.x - notesArea().getX()));
             insert_ = snapping(e.mods) ? time.snap(at, false) : at;
+            if constexpr (kNoteEditorClickMovesArrangementInsertMarker) {
+                panel.root.arrangement.geometry.selection.insert = *insert_;
+                panel.root.publishSelection();
+                panel.root.arrangement.changed();
+            }
             head_.reset();
         }
         bandBase_ = selected_;
@@ -2390,6 +2399,11 @@ bool NoteEditor::keyPressed(const juce::KeyPress &key) {
             commit(across([&](const engine::ClipDetails &of, const std::vector<std::uint64_t> &ids) { return changeVelocities(of, ids, by); }));
             return true;
         }
+    }
+    if (code == juce::KeyPress::spaceKey && !mods.isAnyModifierKeyDown() && insert_) {
+        const auto range = timeSelection();
+        panel.root.playOrStopFrom(range ? range->first : *insert_);
+        return true;
     }
     // The Main panel's Set buttons from the keyboard (manual 41.8): Ctrl/Cmd with F9 sets the Start
     // marker, F10 the loop's start, F11 the loop's end, F12 the End marker.

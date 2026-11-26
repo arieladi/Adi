@@ -2,6 +2,7 @@
 #pragma once
 
 #include "adi/engine/host.hpp"
+#include "adi/engine/midi_memory.hpp"
 #include "adi/engine/midi_monitoring.hpp"
 
 #include <array>
@@ -41,6 +42,14 @@ public:
         std::vector<MidiMonitorRange> blockedRanges; // merged, in ascending timeline order
         mutable NodeId slot = kInvalidNode;
     };
+    struct History {
+        History(std::int64_t track, std::uint32_t rate)
+            : memory(track, track, rate, NoteChannelBase::Zero, 16384), sampleRate(rate) {}
+        MidiMemory memory;
+        const std::uint32_t sampleRate;
+        std::uint64_t inputEpoch = 0; // audio driver only
+        std::uint64_t consumed = 0; // owner only, first uncaptured serial
+    };
     struct PreviewVoice {
         Event off;
         std::int64_t track = 0;
@@ -56,7 +65,8 @@ public:
     bool push(std::int64_t sample, const Event&, std::int64_t inputSample) noexcept;
     void reset() noexcept;
     void render(const GraphHost::RenderBlock&, const AudioIo&, std::span<const Route>,
-                const Transport&, MidiInputCapture*) noexcept;
+                std::span<const std::shared_ptr<History>>, const Transport&, MidiInputCapture*) noexcept;
+    [[nodiscard]] std::uint64_t historyRevision() const noexcept { return historyRevision_.load(); }
     // A separate owner-to-driver queue keeps audition out of Track input and recording.
     bool preview(const PreviewRoute&, int key, int velocity, bool held) noexcept;
     void stopPreview() noexcept;
@@ -75,7 +85,9 @@ private:
     std::array<Timed, capacity> ring_{};
     std::atomic<std::size_t> read_{0}, written_{0};
     std::atomic<std::uint64_t> epoch_{1};
+    std::atomic<std::uint64_t> historyRevision_{0};
     std::uint64_t renderedEpoch_ = 1;
+    std::uint64_t renderedHistoryEpoch_ = 0;
     std::uint64_t generation_ = 0;
     std::uint64_t voiceSerial_ = 0;
 
