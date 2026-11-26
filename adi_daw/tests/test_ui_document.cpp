@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/audio/wav_file.hpp"
 #include "adi/automation_lanes.hpp"
+#include "adi/clip_commands.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/settings/store.hpp"
 #include "adi/ui/project_document.hpp"
@@ -1098,6 +1099,65 @@ void peakSpans() {
     check(is(ui::peakSpan(p, 0., 256., 1), 9.f, 9.f), "peak span: the second channel reads its own bins");
 }
 
+void waveformSourceOffsets(const std::filesystem::path &dir) {
+    constexpr auto quarter = textproj::kPPQ;
+    StoreError error{};
+    auto store = Store::create(dir / "offsets.adi", error);
+    check(store != nullptr, "a project for clip waveform source offsets");
+    if (!store)
+        return;
+    auto &db = store->db();
+    db.exec("INSERT INTO tracks(id,kind,name) VALUES(21,'audio','Waveforms');"
+            "INSERT INTO media_files(id,hash_blake3,rel_path,format,sample_rate,channels,frames) "
+            "VALUES(1,'waveform-source','source.wav','wav',48000,1,96100);"
+            "INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks) "
+            "VALUES(7,21,'audio',0,23063040),(8,21,'audio',34594560,23063040);"
+            "INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames) "
+            "VALUES(7,1,100,96000),(8,1,100,96000);");
+    const std::array markers{WarpMarker{0, 0}, WarpMarker{12000, quarter}, WarpMarker{96000, 4 * quarter}};
+    const auto warp = audio::writeWarpMap(markers, 96000);
+    SQLite::Statement attachWarp(db, "UPDATE audio_clips SET warp_enabled=1,warp_mode='beats',warp_markers=? WHERE clip_id=8");
+    attachWarp.bind(1, warp.bytes.data(), static_cast<int>(warp.bytes.size()));
+    attachWarp.exec();
+
+    auto snapshot = engine::SnapshotBuilder::fromStore(*store, {}, false);
+    const auto refresh = [&] { snapshot = engine::SnapshotBuilder::fromStore(*store, *snapshot, {}, false); };
+    const auto firstFrameIs = [&](std::int64_t id, double expected) {
+        const auto *track = snapshot->findTrack(21);
+        if (!track)
+            return false;
+        const auto it = std::find_if(track->clips.begin(), track->clips.end(),
+                                     [id](const auto &clip) { return clip->id == id; });
+        if (it == track->clips.end() || !(*it)->audio)
+            return false;
+        const auto &clip = **it;
+        const auto frame = ui::ClipSourceMap(clip, snapshot->tempo.get(), 48000).frameAt(clip.posTicks);
+        return frame && std::abs(*frame - expected) < .01;
+    };
+    const auto split = [&](std::int64_t id, std::int64_t right, std::int64_t at) {
+        const auto edit = clip_edit::prepareSplit(*store, id, right, {0, at}, 48000);
+        return edit.ok && clip_edit::commitPrepared(*store, edit).ok;
+    };
+    const auto changeStart = [&](std::int64_t id) {
+        OpRequest r;
+        r.opType = "clip.setStartMarker";
+        r.payload = {{"id", id}, {"ticks", quarter / 2}};
+        return OpJournal(*store).commit(r).ok;
+    };
+
+    check(split(7, 9, quarter) && split(8, 10, 7 * quarter), "split an unwarped clip and a warped clip");
+    refresh();
+    check(firstFrameIs(7, 100) && firstFrameIs(9, 24100), "unwarped split draws the source at each piece's own start");
+    check(firstFrameIs(8, 100) && firstFrameIs(10, 12100), "warped split goes through the source warp markers");
+    db.exec("UPDATE tempo_map SET bpm=240 WHERE pos_ticks=0;");
+    refresh();
+    check(firstFrameIs(9, 24100), "an unwarped split's pinned source offset survives a tempo change");
+    check(changeStart(7) && changeStart(8), "move Start on the two left pieces in place");
+    refresh();
+    check(firstFrameIs(7, 6100), "unwarped Start updates the waveform from the new tick offset");
+    check(firstFrameIs(8, 6100), "warped Start updates the waveform within a marker interval");
+}
+
 // PD06-SAVEAS-GUARD: Save As during Record, or while a take's placement is pending, lands the take in
 // the file it was recorded in first, as one undo step, and then switches; the saved file holds it.
 void saveAsKeepsTheTake(const std::filesystem::path &dir) {
@@ -1271,6 +1331,10 @@ int main(int argc, char **argv) {
         return 0;
     }
     peakSpans();
+    {
+        test::TempDirectory offsetDir("ui_document", "wave-offsets");
+        waveformSourceOffsets(offsetDir.path());
+    }
     {
         test::TempDirectory recordDir("ui_document", "record");
         arrangementRecord(recordDir.path());
