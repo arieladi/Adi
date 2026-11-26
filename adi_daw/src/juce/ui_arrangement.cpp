@@ -1893,6 +1893,79 @@ int TrackHeaderList::nameLeft(std::uint32_t depth) const noexcept {
 juce::Rectangle<float> TrackHeaderList::foldSwitch(std::uint32_t depth, int top) const noexcept {
     return {static_cast<float>(nameLeft(depth) + 3), static_cast<float>(top) + 3, 13, 13};
 }
+namespace {
+bool sameAutomationDevice(const AutomationTarget &a, const AutomationTarget &b) noexcept {
+    const bool device = a.ownerKind == "device";
+    return device == (b.ownerKind == "device") && (!device || a.ownerId == b.ownerId);
+}
+juce::String automationChooserLabel(const AutomationTarget &target, bool device) {
+    if (device)
+        return target.ownerKind == "device" ? juce::String::fromUTF8(target.device.c_str()) : juce::String("Mixer");
+    if (target.ownerKind == "track") {
+        if (target.paramRef == "volume")
+            return "Track Volume";
+        if (target.paramRef == "pan")
+            return "Track Panning";
+    }
+    return juce::String::fromUTF8(target.paramName.c_str());
+}
+bool hasAutomationPoints(const engine::Snapshot &snapshot, const AutomationTarget &target) {
+    const auto envelope = envelopeOf(snapshot, target);
+    return envelope.data != nullptr && !envelope.data->points.empty();
+}
+struct HeaderChooserBoxes {
+    juce::Rectangle<int> device, parameter, recordQuantize, playQuantize;
+};
+HeaderChooserBoxes headerChooserBoxes(int x, int width, int top, int height, bool midi, bool automation) noexcept {
+    HeaderChooserBoxes boxes;
+    const bool quantizeFits = midi && height >= 56 && width >= 50;
+    if (quantizeFits) {
+        boxes.recordQuantize = {x, top + 21, width, 14};
+        boxes.playQuantize = {x, top + 37, width, 14};
+    }
+    if (!automation || width < 38)
+        return boxes;
+
+    const int split = TrackHeaderList::kSplitLine;
+    const int standardHeight = 16;
+    const int standardEnd = 46 + standardHeight;
+    const int standardWithQuantizeEnd = 81 + 14;
+    const int compactWithQuantizeEnd = 67 + 14;
+    const int chooserWidth = std::min(width, 116);
+    if (quantizeFits && height < compactWithQuantizeEnd + split) {
+        // Keep quantize beside automation when the row cannot hold four fields.
+        constexpr int quantizeWidth = 36, gap = 3, minimumChooserWidth = 38;
+        const int automationWidth = width - quantizeWidth - gap;
+        if (automationWidth >= minimumChooserWidth) {
+            boxes.device = {x, top + 21, automationWidth, 14};
+            boxes.parameter = {x, top + 37, automationWidth, 14};
+            boxes.recordQuantize = {x + automationWidth + gap, top + 21, quantizeWidth, 14};
+            boxes.playQuantize = {x + automationWidth + gap, top + 37, quantizeWidth, 14};
+        }
+    } else if (height >= (quantizeFits ? standardWithQuantizeEnd : standardEnd) + split) {
+        boxes.device = {x, top + 26, chooserWidth, standardHeight};
+        boxes.parameter = {x, top + 46, chooserWidth, standardHeight};
+        if (quantizeFits) {
+            boxes.recordQuantize.setY(top + 65);
+            boxes.playQuantize.setY(top + 81);
+        }
+    } else {
+        // Fit both or leave the collapsed header to its title, fold and menu.
+        constexpr int compactTop = 19, gap = 2;
+        const int field = std::min(14, (height - split - compactTop - gap) / 2);
+        if (field >= 9) {
+            boxes.device = {x, top + compactTop, chooserWidth, field};
+            boxes.parameter = {x, top + compactTop + field + gap, chooserWidth, field};
+            if (quantizeFits) {
+                boxes.recordQuantize.setY(top + 51);
+                boxes.playQuantize.setY(top + 67);
+            }
+        }
+    }
+    return boxes;
+}
+} // namespace
+
 void TrackHeaderList::paint(juce::Graphics &g) {
     // Live's track header's first column: the track's colour, its fold switch and its name;
     // the panel's grey under the last track. A track in a group sits past a band in the group's
@@ -1903,6 +1976,7 @@ void TrackHeaderList::paint(juce::Graphics &g) {
     // are its own groups'.
     std::array<juce::Colour, kMaxBands> groups{};
     const auto &folded = view.root.state().foldedGroups;
+    const auto automationSnapshot = view.root.automationMode() ? view.root.current() : nullptr;
     const auto rows = view.geometry.rows(view.reader());
     const auto foot = view.geometry.footStart(rows);
     for (const auto row : rows) {
@@ -1953,6 +2027,22 @@ void TrackHeaderList::paint(juce::Graphics &g) {
             g.setFont(look::font(look::fontBody, true));
             g.drawText(juce::String::fromUTF8(displayName(t->name, row.number()).c_str()), x + 23, y + 2,
                        getWidth() - x - 25, 15, juce::Justification::centredLeft);
+        }
+        if (automationSnapshot) {
+            const bool midi = isMidiTrack(*t);
+            const auto device = automationChooserBox(row.place.depth, y, h, true, midi);
+            const auto parameter = automationChooserBox(row.place.depth, y, h, false, midi);
+            if (!device.isEmpty()) {
+                const auto target = view.root.automationTarget(t->id);
+                const float font = std::min(static_cast<float>(look::fontSmall), static_cast<float>(device.getHeight() - 1));
+                controls::chooser(g, device.toFloat(), automationChooserLabel(target, true), font);
+                controls::chooser(g, parameter.toFloat(), automationChooserLabel(target, false), font);
+                if (hasAutomationPoints(*automationSnapshot, target)) {
+                    g.setColour(look::record);
+                    g.fillEllipse(static_cast<float>(parameter.getX() + 2),
+                                  static_cast<float>(parameter.getCentreY()) - 1.5f, 3.f, 3.f);
+                }
+            }
         }
         // ADI's Rec-Q and Play-Q (MR V.2 §9) on a MIDI track's header: what new recordings are
         // quantized to ([1/16] or [Free]) and the live quantization (a grid or Off).
@@ -2043,13 +2133,63 @@ void TrackHeaderList::endRename() {
     repaint();
 }
 juce::Rectangle<int> TrackHeaderList::quantizeBox(std::uint32_t depth, int top, int height, bool record) const noexcept {
-    // One under the other, the header's width each, in a row tall enough for both.
-    if (height < 56)
-        return {};
-    const int x = nameLeft(depth) + 4, w = getWidth() - x - 6;
-    if (w < 50)
-        return {};
-    return {x, top + (record ? 21 : 37), w, 14};
+    const int x = nameLeft(depth) + 4;
+    const auto boxes = headerChooserBoxes(x, getWidth() - x - 6, top, height, true, view.root.automationMode());
+    return record ? boxes.recordQuantize : boxes.playQuantize;
+}
+juce::Rectangle<int> TrackHeaderList::automationChooserBox(std::uint32_t depth, int top, int height,
+                                                           bool device, bool midi) const noexcept {
+    const int x = nameLeft(depth) + 4;
+    const auto boxes = headerChooserBoxes(x, getWidth() - x - 6, top, height, midi, view.root.automationMode());
+    return device ? boxes.device : boxes.parameter;
+}
+juce::PopupMenu TrackHeaderList::automationChooserMenu(std::int64_t track, bool device) {
+    juce::PopupMenu menu;
+    const auto current = view.root.current();
+    if (!current || current->findTrack(track) == nullptr)
+        return menu;
+    const auto shown = view.root.automationTarget(track);
+    const auto choices = view.root.automationChoices(track);
+    const juce::Component::SafePointer<TrackHeaderList> safe(this);
+    for (auto it = choices.begin(); it != choices.end(); ++it) {
+        const auto &target = *it;
+        const auto inDevice = [&target](const auto &other) { return sameAutomationDevice(target, other); };
+        if (device ? std::any_of(choices.begin(), it, inDevice) : !inDevice(shown))
+            continue;
+
+        juce::PopupMenu::Item item(automationChooserLabel(target, device));
+        item.itemID = menu.getNumItems() + 1;
+        item.isTicked = device ? inDevice(shown) : target == shown;
+        const bool authored = device
+            ? std::any_of(choices.begin(), choices.end(), [&](const auto &parameter) {
+                return inDevice(parameter) && hasAutomationPoints(*current, parameter);
+            })
+            : hasAutomationPoints(*current, target);
+        if (authored) {
+            auto dot = std::make_unique<juce::DrawablePath>();
+            juce::Path circle;
+            circle.addEllipse(0.f, 0.f, 6.f, 6.f);
+            dot->setPath(circle);
+            dot->setFill(static_cast<juce::Colour>(look::record));
+            item.image = std::move(dot);
+        }
+        item.action = [safe, track, device, target] {
+            if (!safe)
+                return;
+            auto &root = safe->view.root;
+            const auto shownNow = root.automationTarget(track);
+            if (device && sameAutomationDevice(target, shownNow))
+                return;
+            const auto available = root.automationChoices(track);
+            const auto chosen = std::find_if(available.begin(), available.end(), [&](const auto &candidate) {
+                return device ? sameAutomationDevice(target, candidate) : target == candidate;
+            });
+            if (chosen != available.end())
+                root.showAutomation(track, *chosen);
+        };
+        menu.addItem(std::move(item));
+    }
+    return menu;
 }
 juce::PopupMenu TrackHeaderList::quantizeMenu(std::int64_t track, bool record) {
     juce::PopupMenu menu;
@@ -2094,6 +2234,22 @@ void TrackHeaderList::mouseDown(const juce::MouseEvent &e) {
         else
             view.root.say(ArrangementView::kUnfoldWaits);
         return;
+    }
+    if (const auto at = view.geometry.rowAt(view.reader(), e.y, &top);
+        !e.mods.isPopupMenu() && at < rows.size()) {
+        const auto &row = rows[at];
+        const int height = view.geometry.heightFor(row.track->id);
+        const bool midi = isMidiTrack(*row.track);
+        for (const bool device : {true, false})
+            if (const auto box = automationChooserBox(row.place.depth, top, height, device, midi);
+                box.contains(e.getPosition())) {
+                resizeId = moveId_ = 0;
+                moving_ = selectOnUp_ = false;
+                automationChooserMenu(row.track->id, device)
+                    .showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(this)
+                                       .withTargetScreenArea(localAreaToGlobal(box)));
+                return;
+            }
     }
     // Rec-Q and Play-Q open their menus, and select nothing.
     if (const auto at = view.geometry.rowAt(view.reader(), e.y, &top); at < rows.size() && isMidiTrack(*rows[at].track))
@@ -2310,6 +2466,12 @@ void TrackHeaderList::mouseDoubleClick(const juce::MouseEvent &e) {
     const auto at = view.geometry.rowAt(view.reader(), e.y, &top);
     if (at >= rows.size() || foldSwitch(rows[at].place.depth, top).expanded(2.f).contains(e.position))
         return;
+    const auto &row = rows[at];
+    const int height = view.geometry.heightFor(row.track->id);
+    const bool midi = isMidiTrack(*row.track);
+    for (const bool device : {true, false})
+        if (automationChooserBox(row.place.depth, top, height, device, midi).contains(e.getPosition()))
+            return;
     view.root.showDeviceView();
 }
 void TrackHeaderList::mouseDrag(const juce::MouseEvent &e) {

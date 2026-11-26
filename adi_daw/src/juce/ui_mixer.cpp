@@ -1032,6 +1032,8 @@ void MixerStrip::mouseDown(const juce::MouseEvent &e) {
         dragging_ = true;
         return;
     }
+    auto &root = panel_.root;
+    const bool chooseEnvelope = root.automationMode() && e.mods.isLeftButtonDown() && !e.mods.isPopupMenu();
     // A send's own clicks, and an off send's, which reach the strip: its menu, or what it waits for.
     for (std::size_t i = 0; i < sends_.size(); ++i) {
         auto &knob = *sends_[i];
@@ -1041,7 +1043,11 @@ void MixerStrip::mouseDown(const juce::MouseEvent &e) {
         if (e.mods.isPopupMenu())
             sendMenu(i);
         else if (!own)
-            panel_.root.say("This send is off. Right-click it for Enable Send.");
+            root.say("This send is off. Right-click it for Enable Send.");
+        else if (chooseEnvelope && i < returns_.size())
+            if (const auto snapshot = root.current())
+                if (const auto *send = findSend(snapshot->sends, track_, returns_[i]))
+                    root.showAutomation(track_, sendTarget(send->id, {}));
         return;
     }
     // Main's Cue Out chooser opens on any click, as Live's choosers do (MX-08).
@@ -1073,6 +1079,12 @@ void MixerStrip::mouseDown(const juce::MouseEvent &e) {
         panel_.root.publishSelection();
         panel_.root.arrangement.changed();
         return;
+    }
+    if (chooseEnvelope) {
+        if (e.eventComponent == &pan)
+            root.showAutomation(track_, panTarget(track_));
+        else if (e.eventComponent == &volume)
+            root.showAutomation(track_, volumeTarget(track_));
     }
     if (!e.mods.isPopupMenu()) {
         // A click on In, Auto or Off sets the track's monitoring (manual 21.4), the selected tracks

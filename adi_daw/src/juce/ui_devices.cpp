@@ -33,7 +33,9 @@ ParameterControl::ParameterControl(DeviceChainStrip &s, std::int64_t d, const pa
     slider.onDragEnd = [this] { gesture(engine::ParamEventKind::End, slider.getValue()); };
     // The wheel only scrolls, as Live (lookfeel.wheelChangesParameters, ADR-0203 d11).
     slider.setScrollWheelEnabled(false);
-    slider.addMouseListener(this, false); // its right-click opens the parameter's menu (showMenu)
+    slider.addMouseListener(this, false);
+    toggle.addMouseListener(this, false);
+    menu.addMouseListener(this, true);
     // Shift while dragging is Live's finer resolution (manual 41.6). JUCE's way is its
     // velocity mode under the swap key: slow movement under Shift moves the value by a
     // fraction of the plain drag's pixel, speeding up as the mouse does; the plain drag stays
@@ -130,8 +132,13 @@ void ParameterControl::present(const panel::Record &r, double defaultNormalized)
     }
 }
 void ParameterControl::mouseDown(const juce::MouseEvent &e) {
-    if (e.mods.isPopupMenu() && (e.eventComponent == this || e.eventComponent == &slider))
-        showMenu();
+    if (e.mods.isPopupMenu()) {
+        if (e.eventComponent == this || e.eventComponent == &slider)
+            showMenu();
+    } else if (e.mods.isLeftButtonDown() && strip.root.automationMode() && record && !record->missing) {
+        if (const auto target = strip.root.deviceAutomationTarget(device, parameter))
+            strip.root.showAutomation(target->first, target->second);
+    }
 }
 void ParameterControl::showMenu() {
     const auto current = strip.root.current();

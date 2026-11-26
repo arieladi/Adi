@@ -177,6 +177,9 @@ class TrackHeaderList final : public juce::Component, public juce::SettableToolt
     juce::Rectangle<int> quantizeBox(std::uint32_t depth, int top, int height, bool record) const noexcept;
     // The box's menu: Free (Rec-Q) or Off (Play-Q), then the four grids, the track's ticked.
     juce::PopupMenu quantizeMenu(std::int64_t track, bool record);
+    juce::Rectangle<int> automationChooserBox(std::uint32_t depth, int top, int height,
+                                              bool device, bool midi = false) const noexcept;
+    juce::PopupMenu automationChooserMenu(std::int64_t track, bool device);
     // The bands drawn at most: deeper groups share the last one's place.
     static constexpr std::uint32_t kMaxBands = 16;
 

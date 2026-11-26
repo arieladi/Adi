@@ -907,7 +907,6 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     RecordStates freshRecordStates() const { return readRecordStates ? readRecordStates() : recordStates_; }
     bool midiIn_ = false;
     bool automationMode_ = false;
-    std::map<std::int64_t, AutomationTarget> automationTargets_;
     std::vector<std::int64_t> automationDemand_;
     bool infoShown_ = true;
     std::int64_t position_ = 0;

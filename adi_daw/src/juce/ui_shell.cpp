@@ -3346,7 +3346,7 @@ void AdiRootComponent::demandAutomationDevices(bool on) {
     if (ids == automationDemand_)
         return;
     automationDemand_ = ids;
-    devices.parameterDemand(&automationTargets_, ids);
+    devices.parameterDemand(&automationDemand_, ids);
 }
 void AdiRootComponent::setAutomationMode(bool on) {
     automationMode_ = on;
@@ -3356,8 +3356,8 @@ void AdiRootComponent::setAutomationMode(bool on) {
     }
     demandAutomationDevices(on);
     namesBar.automation.setToggleState(on, juce::dontSendNotification);
-    say(on ? "Automation Mode: each track shows its chosen envelope, its Volume until Show Automation chooses "
-             "another; click its line to add a breakpoint, drag one to move it, double-click one to delete it."
+    say(on ? "Choose an automation device and parameter on the track header, or click the control itself. "
+             "Click the line to add a breakpoint, drag one to move it, or double-click one to delete it."
            : "");
     arrangement.repaint();
 }
@@ -3369,22 +3369,44 @@ std::vector<AutomationTarget> AdiRootComponent::automationChoices(std::int64_t t
     return ::adi::ui::automationChoices(*current, track, published.get());
 }
 AutomationTarget AdiRootComponent::automationTarget(std::int64_t track) const {
-    const auto chosen = automationTargets_.find(track);
-    if (chosen == automationTargets_.end())
-        return volumeTarget(track);
-    // The choice holds while the track still offers it (its device or send can go).
-    for (const auto &t : automationChoices(track))
-        if (t == chosen->second)
-            return t;
+    const auto chosen = state_.automationChoices.find(track);
+    if (chosen != state_.automationChoices.end()) {
+        // Resolve current names and ranges after the device feed arrives. Keep the address if the
+        // owner is temporarily absent, so undo or the next publication can restore the choice.
+        const auto &choice = chosen->second;
+        for (const auto &t : automationChoices(track))
+            if (t.ownerKind == choice.ownerKind && t.ownerId == choice.ownerId && t.paramRef == choice.paramRef)
+                return t;
+    }
     return volumeTarget(track);
 }
 void AdiRootComponent::showAutomation(std::int64_t track, const AutomationTarget &target) {
-    if(automationTarget(track)!=target)
+    const auto choices = automationChoices(track);
+    const auto selected = std::find(choices.begin(), choices.end(), target);
+    if (selected == choices.end())
+        return;
+    if (automationTarget(track) != *selected)
         arrangement.canvas.resetAutomationValueInput();
-    automationTargets_[track] = target;
     if (!automationMode_)
         setAutomationMode(true);
-    say("Automation Mode shows " + (target.device == "Mixer" ? std::string() : target.device + ": ") + target.paramName + ".");
+
+    bool changed = false;
+    auto &saved = state_.automationChoices;
+    if (*selected == volumeTarget(track))
+        changed = saved.erase(track) != 0;
+    else {
+        const WindowState::AutomationChoice choice{selected->ownerKind, selected->ownerId, selected->paramRef};
+        const auto before = saved.find(track);
+        if (before == saved.end() || before->second != choice) {
+            saved.insert_or_assign(track, choice);
+            changed = true;
+        }
+    }
+    if (changed && !persist())
+        say("Automation choice could not be saved. " + error_);
+    else
+        say("Automation Mode shows " + (selected->device == "Mixer" ? std::string() : selected->device + ": ") +
+            selected->paramName + ".");
     arrangement.repaint();
 }
 std::optional<std::pair<std::int64_t, AutomationTarget>> AdiRootComponent::deviceAutomationTarget(

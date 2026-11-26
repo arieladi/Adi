@@ -60,6 +60,14 @@ struct WindowState {
     double timelineLeft = 0, pixelsPerQuarter = 48;
     int laneHeight = 88; // Live 11's default track: five rows of its controls
     std::map<std::int64_t, int> laneHeights;
+    struct AutomationChoice {
+        std::string ownerKind;
+        std::int64_t ownerId;
+        std::string paramRef;
+        bool operator==(const AutomationChoice &) const = default;
+    };
+    // Per-track arrangement chooser, identified by its saved envelope address.
+    std::map<std::int64_t, AutomationChoice> automationChoices;
     std::set<std::int64_t> foldedDevices; // devices folded in the strip, per window
     bool mixerView = false;               // Live's Mixer View, hidden until asked for
     int mixerViewHeight = 220;
