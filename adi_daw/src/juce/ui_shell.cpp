@@ -1584,6 +1584,7 @@ void AdiRootComponent::frame() noexcept {
     // In its own window the floating host drives its frame.
     if (mixViewPanel.isVisible() && mixViewPanel.getParentComponent() == this)
         mixViewPanel.frame(reader());
+    transport.position.setCountInPosition(mailbox_.countInPosition());
     if (lastDrain_ & DirtySet::Transport) {
         transport.refresh();
         transport.repaint();
@@ -3644,6 +3645,12 @@ bool AdiRootComponent::setMetronome(bool on) {
 bool AdiRootComponent::toggleMetronome() {
     const auto current = view_.current();
     return setMetronome(!(current && current->transport.metronome));
+}
+bool AdiRootComponent::setCountIn(int bars) {
+    const auto current = view_.current();
+    if (!current)
+        return fail("Count-in needs an open project.");
+    return submitTransport(::adi::ui::setCountIn(current->transport, bars));
 }
 bool AdiRootComponent::toggleLoop() {
     const auto current = view_.current();

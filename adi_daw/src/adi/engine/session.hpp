@@ -312,6 +312,7 @@ public:
         /// the recorder on its owner first. Explicit locate/play bypasses this
         /// default start policy. Offline sessions ignore saved performance state.
         bool startPlayback(std::int64_t insertMarkerTick, bool recording = false) noexcept;
+        [[nodiscard]] CountInPosition countInPosition() const noexcept;
         bool process(const AudioIo&, bool captureRecording = true) noexcept;
     private:
         friend class Session;
@@ -524,6 +525,9 @@ private:
     std::map<std::size_t, std::shared_ptr<LiveMidiInput::Voices>> midiInputVoices_;
     std::map<std::int64_t, std::array<std::int32_t, 2>> monitorInputs_;
     std::unique_ptr<AudioInputRecorder> recording_;
+    // Borrowed from the recorder for one rendered slice. Graph workers join
+    // before the driver clears it or acquires the next recorder snapshot.
+    std::span<const std::int64_t> recordingAudioTracks_;
     std::string recordingProject_;
     // Message-thread construction/publication; audio reads one immutable view
     // per block. No model_ or spec_ access from process while refresh rebuilds.
@@ -589,6 +593,7 @@ private:
     double clickPhase_=0,clickEnvelope_=0,clickFrequency_=880;
     double countInBeatSamples_ = 24000;
     std::int64_t countInBeatsPerBar_ = 4;
+    std::int32_t countInBars_ = 0, countInDivisionsPerBeat_ = 4;
     // DF-E6 (a): a count-in delayed by the render latency still owes its last
     // clicks (at most one beat) when the roll starts. They play on, on the
     // count-in grid, until the compensated program is heard; the transport

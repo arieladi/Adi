@@ -10438,6 +10438,74 @@ void loopMetronome(AppCommands &commands, settings::AppSettings &settings, const
     check(!stored().metronome && !bar.metronome.getToggleState() && root.undoTitle(false) == undoTitle,
           "the switch clicked: off again, no undo step");
 
+    // SC-21, SC-246: use the real menu and its actions with no popup or audio device.
+    int menuPresses = 0;
+    auto openMenu = std::move(bar.metronome.onDropdown);
+    bar.metronome.onDropdown = [&] { ++menuPresses; };
+    auto &metronome = bar.metronome;
+    const juce::Point<float> arrow{static_cast<float>(metronome.getWidth() - 3), 6.f};
+    metronome.mouseDown(pressAt(metronome, arrow, juce::ModifierKeys::leftButtonModifier));
+    metronome.mouseUp(pressAt(metronome, arrow));
+    const juce::Point<float> glyph{3.f, 6.f};
+    metronome.mouseDown(pressAt(metronome, glyph, juce::ModifierKeys::rightButtonModifier));
+    metronome.mouseUp(pressAt(metronome, glyph));
+    check(menuPresses == 2 && !stored().metronome, "SC-21: arrow and context presses open the menu without toggling");
+    metronome.onDropdown = std::move(openMenu);
+    const auto menuItem = [](const juce::PopupMenu &menu, const char *label) {
+        for (juce::PopupMenu::MenuItemIterator it(menu, true); it.next();)
+            if (it.getItem().text == label)
+                return it.getItem();
+        return juce::PopupMenu::Item{};
+    };
+    constexpr std::pair<const char *, int> countIns[]{{"1 Bar", 1}, {"2 Bars", 2}, {"4 Bars", 4}, {"None", 0}};
+    const auto freshMenu = bar.metronomeMenu();
+    check(menuItem(freshMenu, "None").isTicked, "SC-21: a new project selects no count-in");
+    for (const auto &[label, bars] : countIns) {
+        const auto item = menuItem(bar.metronomeMenu(), label);
+        check(item.isEnabled && item.action, "SC-21: the count-in choice can be invoked");
+        if (!item.action)
+            continue;
+        item.action();
+        root.frame();
+        const auto updated = bar.metronomeMenu();
+        bool ticksMatch = true;
+        for (const auto &[other, expected] : countIns)
+            ticksMatch = ticksMatch && menuItem(updated, other).isTicked == (bars == expected);
+        check(stored().countInBars == bars && root.reader().transport().countInBars == bars && ticksMatch,
+              "SC-21: the count-in is saved, presented, and ticked on reopening the menu");
+    }
+    check(!stored().metronome && !document->mailbox().desiredPlaying() && root.undoTitle(false) == undoTitle,
+          "SC-21: count-in choices stay outside undo and leave the click and transport stopped");
+    allocations = 0;
+    audit = true;
+    bar.position.setCountInPosition({-2, 1, 1});
+    bar.position.setCountInPosition({-2, 1, 2});
+    bar.position.setCountInPosition({});
+    audit = false;
+    check(allocations == 0, "SC-21: changing the displayed count-in allocates nothing before paint");
+
+    const auto volumeSlider = [](const juce::PopupMenu &menu) -> juce::Slider * {
+        for (juce::PopupMenu::MenuItemIterator it(menu, true); it.next();)
+            if (const auto *row = it.getItem().customComponent.get())
+                for (auto *child : row->getChildren())
+                    if (auto *slider = dynamic_cast<juce::Slider *>(child))
+                        return slider;
+        return nullptr;
+    };
+    const auto volumeMenu = bar.metronomeMenu();
+    auto *slider = volumeSlider(volumeMenu);
+    check(slider && slider->getValue() == readCueSettings(document->store()).volumeDb,
+          "SC-246: the menu slider shows the project's Cue Volume");
+    if (slider) {
+        slider->setValue(-12.0, juce::sendNotificationSync);
+        root.frame();
+        const auto updated = bar.metronomeMenu();
+        const auto *updatedSlider = volumeSlider(updated);
+        check(readCueSettings(document->store()).volumeDb == -12.0 && root.reader().get()->cue.volumeDb == -12.0 &&
+                  updatedSlider && updatedSlider->getValue() == -12.0 && root.undoTitle(false) == undoTitle,
+              "SC-246: the slider changes shared Cue Volume and reopening reads it back without an undo step");
+    }
+
     // Loop Selection (Ctrl/Cmd+L, manual 6.6) over a time selection from bar 3 to bar 5.
     sel.track = 2;
     sel.toTrack = 3;
@@ -11563,14 +11631,23 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
             root.say(document->error());
         return ok;
     };
-    root.stopRecording = [&] { document->stopRecording(); };
+    const auto refreshRecordingPreview = [&] {
+        const auto &recorder = document->session().recording();
+        root.arrangement.setRecordingPreview(recorder.preview(), recorder.acceptedFrames(), document->landingTake());
+    };
+    root.stopRecording = [&] {
+        document->stopRecording();
+        refreshRecordingPreview();
+    };
     root.recording = [&] { return document->recording(); };
+    root.arrangement.waveforms = &document->waveforms();
     root.setSize(1440, 900);
     // The application's frame: the timer's tick, the rows handed over, the window's frame.
     std::int64_t now = 0;
     const auto frame = [&] {
         document->tick(++now);
         root.setRecordStates(document->recordStates());
+        refreshRecordingPreview();
         root.frame();
     };
     frame();
@@ -11666,30 +11743,44 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     };
     for (int b = 0; b < 16; ++b)
         block();
-    // walk-B B4: while it records, the take is drawn on each recording track's lane, from where it began
-    // to the playhead, in the record colour; it goes once recording stops (the landed clip replaces it).
-    const auto recordPixels = [&] {
-        auto &canvas = root.arrangement.canvas;
-        const auto image = canvas.createComponentSnapshot(canvas.getLocalBounds(), true, 1.f);
-        int count = 0;
-        for (int y = 0; y < image.getHeight(); ++y)
-            for (int x = 0; x < image.getWidth(); ++x)
-                if (image.getPixelAt(x, y).withAlpha(1.f) == look::record.withAlpha(1.f))
-                    ++count;
-        return count;
-    };
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!document->session().recording().preview() && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     frame();
     {
         const auto &live = root.arrangement.liveTake();
         check(live && live->tracks == std::vector<std::int64_t>{4, 5} &&
                   live->start == root.arrangement.geometry.selection.insert,
               "Record from stopped: the take begins at the insert marker on both armed audio tracks");
-        if (live && root.timelineTick() > live->start && root.arrangement.geometry.inView(4)) {
-            // 21 ms recorded is 2 px at the default zoom, all outline: zoomed in, its body shows.
+        check(live && live->preview && live->preview->peaks.frames > 0,
+              "SC-20: the Arrangement reads live peaks from the writer during recording");
+        if (live && live->preview && root.arrangement.geometry.inView(4)) {
+            const auto preview = live->preview;
+            const auto capturedFrames = live->capturedFrames;
+            // The first written block can be shorter than a pixel at the default zoom.
             const double scale = root.arrangement.geometry.scale;
-            root.arrangement.geometry.scale = scale * 40;
-            check(recordPixels() > 0, "and is drawn, red, while the playhead moves on");
+            root.arrangement.geometry.scale = scale * 120;
+            auto &canvas = root.arrangement.canvas;
+            const auto drawn = canvas.createComponentSnapshot(canvas.getLocalBounds(), true, 1.f);
+            auto blank = std::make_shared<engine::AudioRecordingPreview>(*preview);
+            blank->peaks.bins.clear();
+            root.arrangement.setRecordingPreview(std::move(blank), capturedFrames, false);
+            const auto redOnly = canvas.createComponentSnapshot(canvas.getLocalBounds(), true, 1.f);
+            int waveformPixels = 0;
+            for (int y = 0; y < drawn.getHeight(); ++y)
+                for (int x = 0; x < drawn.getWidth(); ++x) {
+                    const auto colour = redOnly.getPixelAt(x, y).withAlpha(1.f);
+                    if (colour == look::record.withAlpha(1.f) && drawn.getPixelAt(x, y).withAlpha(1.f) != colour)
+                        ++waveformPixels;
+                }
+            check(waveformPixels > 0, "SC-20: captured PCM draws waveforms inside the recording clips");
             root.arrangement.geometry.scale = scale;
+            allocations = 0;
+            audit = true;
+            root.arrangement.setRecordingPreview(preview, capturedFrames, false);
+            root.frame();
+            audit = false;
+            check(allocations == 0, "SC-20: replacing the live waveform snapshot allocates nothing in a frame");
         }
     }
     auto &lanes = root.arrangement;
@@ -11719,7 +11810,8 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     lanes.onContextMenu = nullptr;
     check(root.command(AppCommands::ArrangementRecord), "F9's command again");
     frame();
-    check(!root.arrangement.liveTake(), "stopped, the growing take goes");
+    check(root.arrangement.liveTake() && root.arrangement.liveTake()->landing,
+          "SC-20: the waveform stays visible while the writer finishes");
     check(!document->recording() && !record.getToggleState() && document->mailbox().desiredPlaying(),
           "stops the recording; the transport plays on, as Live's [P:recording#21]");
     for (int i = 0; i < 5000 && document->landingTake(); ++i) {
@@ -11732,6 +11824,7 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     check(landed && landed->ok && landed->clips.size() == 3,
           "both audio takes and the MIDI take land together [P:recording#19]");
     frame();
+    check(!root.arrangement.liveTake(), "SC-20: the recorded clip replaces the live preview after landing");
     check(root.reader().findTrack(3)->clips.size() == 1 && root.reader().findTrack(4)->clips.size() == 1 &&
               root.reader().findTrack(5)->clips.size() == 1,
           "a clip on each armed track");

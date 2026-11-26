@@ -903,20 +903,24 @@ class AdiApplication final : public juce::JUCEApplication,
         root->readRecordStates = [this] { return document_->recordStates(); };
         root->setRecordStates(document_->recordStates());
         root->startRecording = [this](std::int64_t insertTick, bool playing) {
-            const auto *device = manager_.getCurrentAudioDevice();
-            const int inputs = device != nullptr ? device->getActiveInputChannels().countNumberOfSetBits() : 0;
-            if (device == nullptr) {
+            auto *audioDevice = manager_.getCurrentAudioDevice();
+            if (audioDevice == nullptr) {
                 root_->say("Recording needs an audio device. Choose one in the Settings' Audio page.");
                 return false;
             }
-            if (!document_->startRecording(insertTick, inputs, playing)) {
+            const int inputs = audioDevice->getActiveInputChannels().countNumberOfSetBits();
+            const auto latency = device::reportedRoundTripLatency(*audioDevice);
+            if (!document_->startRecording(insertTick, inputs, playing, latency)) {
                 root_->say(document_->error());
                 return false;
             }
             root_->say(playing ? "Recording from the playhead." : "Recording.");
             return true;
         };
-        root->stopRecording = [this] { document_->stopRecording(); };
+        root->stopRecording = [this] {
+            document_->stopRecording();
+            refreshRecordingPreview();
+        };
         root->recording = [this] { return document_->recording(); };
         root->liveMidiTakes = [this] { return document_->liveMidiTakes(); };
         // Export Audio/Video (EX-11): the Export page, then a file, then a render on a worker.
@@ -1444,6 +1448,11 @@ class AdiApplication final : public juce::JUCEApplication,
         if (settingsWindow_)
             settingsWindow_->panel().refreshValues();
     }
+    void refreshRecordingPreview() {
+        const auto &recorder = document_->session().recording();
+        root_->arrangement.setRecordingPreview(recorder.preview(), recorder.acceptedFrames(),
+                                               document_->landingTake());
+    }
     void timerCallback() override {
         // The plug-in catalogue's running discovery: its progress, and its result once it has finished.
         if (catalogue_)
@@ -1453,6 +1462,7 @@ class AdiApplication final : public juce::JUCEApplication,
         document_->tick(static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
         if (root_) {
             root_->setRecordStates(document_->recordStates());
+            refreshRecordingPreview();
             // A take landed (MX-09): its outcome in the Status Bar, its clips selected.
             if (auto landed = document_->takeLanded()) {
                 root_->say(landed->message);

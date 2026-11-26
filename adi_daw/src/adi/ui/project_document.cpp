@@ -1265,6 +1265,7 @@ void ProjectDocument::prepare(double rate, std::int32_t frames) {
 }
 void ProjectDocument::release() {
     session_.release(); // stops a running capture; the timer lands what it holds
+    mailbox_.publish(session_.transport(), {});
     deviceStopped_.store(true, std::memory_order_release);
 }
 bool ProjectDocument::landTakeHere() {
@@ -1374,7 +1375,7 @@ void ProjectDocument::process(const engine::AudioIo &io) noexcept {
         return block.sourcesReadyAt(sample, io.frames, true);
     });
     (void)block.process(io, captureReady_.load(std::memory_order_acquire));
-    mailbox_.publish(session_.transport());
+    mailbox_.publish(session_.transport(), block.countInPosition());
 }
 RecordStates ProjectDocument::recordStates() const {
     RecordStates out;
@@ -1382,7 +1383,8 @@ RecordStates ProjectDocument::recordStates() const {
         out[t.id] = {t.recordArmed, t.monitorMode == 1 ? Monitor::In : t.monitorMode == 2 ? Monitor::Auto : Monitor::Off};
     return out;
 }
-bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t inputs, bool playing) {
+bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t inputs, bool playing,
+                                     std::int64_t deviceLatencySamples) {
     if (recording_ || landing_) {
         error_ = recording_ ? "Recording is already running." : "The last take is still being saved.";
         return false;
@@ -1441,6 +1443,7 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
     }
     engine::AudioRecordingSpec spec;
     spec.workFolder = media::projectFolder(*store_);
+    spec.placementOffsetSamples = deviceLatencySamples;
     spec.sampleRate = static_cast<std::uint32_t>(std::lround(engineRate_));
     spec.maxFrames = static_cast<std::uint32_t>(std::max<std::int32_t>(1, engineFrames_));
     // Two seconds of input between the callback and the writer, at least eight blocks.
@@ -1537,9 +1540,11 @@ std::string recordingFailure(const engine::AudioRecordingResult &r) {
     }
     return r.error;
 }
+std::string retainedCaptureLocation(const engine::AudioRecordingResult &result) {
+    return " Look for the recorded WAV files in " + media::pathUtf8(result.directory()) + ".";
+}
 } // namespace
-// A take that is not kept goes with its private files (DF-E44): a folder the system would not remove stays
-// in the project's folder, and the Status Bar says so, with the system's words, rather than nothing.
+// For an empty or cancelled capture, report if the system refuses to remove its private directory.
 std::string ProjectDocument::discardTake(engine::AudioRecordingResult &result) {
     const auto refused = result.discard();
     if (!refused)
@@ -1575,10 +1580,15 @@ void ProjectDocument::landTake() {
     }
     const bool hasAudio = audio && audio->hasAttachableAudio();
     const bool hasMidi = midi && midi->started;
-    const auto discarded = audio && !hasAudio ? discardTake(*audio) : std::string{};
+    using Failure = engine::RecordingFailure;
+    const bool discardAudio = audio && (audio->failure == Failure::Cancelled || audio->failure == Failure::NoFrames);
+    const bool retainAudio = audio && !discardAudio && !audio->directory().empty();
+    const auto audioLocation = discardAudio ? discardTake(*audio) :
+                               retainAudio ? retainedCaptureLocation(*audio) : std::string{};
     if (!hasAudio && !hasMidi) {
         const std::string reason = !audioProblem.empty() ? audioProblem : !midiProblem.empty() ? midiProblem : "nothing was recorded";
-        outcome.message = "The take was not kept: " + reason + "." + discarded;
+        outcome.message = (retainAudio ? "Recording stopped because " : "The take was not kept: ") +
+                          reason + "." + audioLocation;
         landed_ = std::move(outcome);
         return;
     }
@@ -1586,44 +1596,48 @@ void ProjectDocument::landTake() {
     // them (Live names a take by its track, "5 Audio"; a stored "# Audio" shows its number, walk-B B3).
     // One `RowIds` for the take's rows (DF-E16): past every clip and media row, and past a clip id a
     // remark still holds.
-    RowIds rows(store_->db());
-    std::vector<recording::ClipIds> ids;
-    const SnapshotReader current(view_.current());
-    if (hasAudio) {
-        for (const auto &track : audio->tracks) {
-            auto name = shownTrackName(current, track.trackId);
-            const auto clip = rows.next("clips");
-            ids.push_back({clip, rows.next("media_files"), name.empty() ? std::string("Take") : std::move(name)});
-            outcome.clips.push_back(clip);
-        }
-    }
-    std::vector<recording::MidiLinearTake> takes;
-    std::vector<std::vector<recording::MidiExpressionLane>> expressions;
-    if (hasMidi) {
-        expressions.resize(midi->tracks.size());
-        takes.reserve(midi->tracks.size());
-        for (std::size_t i = 0; i < midi->tracks.size(); ++i) {
-            auto &track = midi->tracks[i];
-            const auto &span = midi->preview[i];
-            for (auto &[key, points] : track.expression) {
-                const auto &note = track.notes[static_cast<std::size_t>(key.first - 1)];
-                std::erase_if(points, [&note](const auto &point) { return point.time_ticks > note.duration; });
-                if (!points.empty())
-                    expressions[i].push_back({key.first, key.second, points});
+    recording::RecordingEdit edit;
+    try {
+        RowIds rows(store_->db());
+        std::vector<recording::ClipIds> ids;
+        const SnapshotReader current(view_.current());
+        if (hasAudio) {
+            for (const auto &track : audio->tracks) {
+                auto name = shownTrackName(current, track.trackId);
+                const auto clip = rows.next("clips");
+                ids.push_back({clip, rows.next("media_files"), name.empty() ? std::string("Take") : std::move(name)});
+                outcome.clips.push_back(clip);
             }
-            const auto clip = rows.next("clips");
-            auto name = shownTrackName(current, span.track);
-            takes.push_back({span.track, clip, span.start, span.end - span.start,
-                             name.empty() ? std::string("Take") : std::move(name), track.notes, expressions[i]});
-            outcome.clips.push_back(clip);
         }
+        std::vector<recording::MidiLinearTake> takes;
+        std::vector<std::vector<recording::MidiExpressionLane>> expressions;
+        if (hasMidi) {
+            expressions.resize(midi->tracks.size());
+            takes.reserve(midi->tracks.size());
+            for (std::size_t i = 0; i < midi->tracks.size(); ++i) {
+                auto &track = midi->tracks[i];
+                const auto &span = midi->preview[i];
+                for (auto &[key, points] : track.expression) {
+                    const auto &note = track.notes[static_cast<std::size_t>(key.first - 1)];
+                    std::erase_if(points, [&note](const auto &point) { return point.time_ticks > note.duration; });
+                    if (!points.empty())
+                        expressions[i].push_back({key.first, key.second, points});
+                }
+                const auto clip = rows.next("clips");
+                auto name = shownTrackName(current, span.track);
+                takes.push_back({span.track, clip, span.start, span.end - span.start,
+                                 name.empty() ? std::string("Take") : std::move(name), track.notes, expressions[i]});
+                outcome.clips.push_back(clip);
+            }
+        }
+        edit = hasAudio ? recording::prepareCommit(*store_, *audio, ids, takes, audio->placementOffsetSamples)
+                        : recording::prepareMidiLinearCommit(*store_, takes, midi->sampleRate);
+    } catch (const std::exception &error) {
+        edit.error = error.what();
     }
-    auto edit = hasAudio ? recording::prepareCommit(*store_, *audio, ids, takes)
-                         : recording::prepareMidiLinearCommit(*store_, takes, midi->sampleRate);
     if (!edit.ok) {
         outcome.clips.clear();
-        outcome.message = "The take was recorded but could not be added: " + edit.error + "." +
-                          (hasAudio ? discardTake(*audio) : discarded);
+        outcome.message = "Could not add the recorded take. " + edit.error + "." + audioLocation;
         landed_ = std::move(outcome);
         return;
     }
@@ -1631,16 +1645,23 @@ void ProjectDocument::landTake() {
         ops_.commitPrepared(edit.requests, [&](Store &s, Actor actor) { return recording::commit(s, edit, actor); });
     if (!committed) {
         outcome.clips.clear();
-        outcome.message = "The take was recorded but could not be added: " + committed.error + ".";
+        outcome.message = "Could not add the recorded take. " + committed.error + "." + audioLocation;
         landed_ = std::move(outcome);
         return;
     }
     synchronise();
+    if (const auto snapshot = view_.current(); snapshot && hasAudio && audio->preview) {
+        try {
+            waveforms_.seedRecording(*snapshot, outcome.clips, *audio->preview);
+        } catch (const std::exception &) {
+            // The clip is already saved. Its waveform can be read from the file.
+        }
+    }
     outcome.ok = true;
     outcome.message = outcome.clips.size() == 1 ? "Recorded one take." : "Recorded " + std::to_string(outcome.clips.size()) + " takes.";
     if (!audioProblem.empty())
         outcome.message = hasAudio ? "Kept the audio recorded before the interruption: " + audioProblem + "."
-                                   : outcome.message + " Audio was not kept: " + audioProblem + "." + discarded;
+                                   : outcome.message + " Audio recording ended: " + audioProblem + "." + audioLocation;
     if (!midiProblem.empty())
         outcome.message += (hasMidi ? " MIDI recording ended: " : " MIDI was not kept: ") + midiProblem + ".";
     landed_ = std::move(outcome);
