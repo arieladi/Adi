@@ -4,6 +4,18 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-26 — `basics/*` Round 11 (`basics/speed-chain` `c17e5904` — PASS)
+
+Verified updated `origin/basics/speed-chain` head `c17e5904` (entire speed queue through `SC-423`, including `c71d2e7f` fixing the Round 9 `adi_midi_clips_tests` failure; 80 files vs `origin/main`) under **GCC 12.4.0** and **Clang 14.0.6 + libstdc++ 12** (`-DADI_WERROR=ON`, headless Pd on, JUCE off, `-DADI_ACCEPTANCE=ON`), all 8 touched JUCE TUs (`-DADI_WITH_JUCE=ON -DADI_WERROR=ON`), and **Clang 14 ASan + LSan + UBSan**.
+
+| Branch | SHA | GCC 12.4.0 (`-DADI_WERROR=ON`) | Clang 14.0.6 + libstdc++ 12 (`-DADI_WERROR=ON`) | JUCE TUs (`-DADI_WITH_JUCE=ON -DADI_WERROR=ON`, 8 TUs) | Clang 14 ASan + LSan + UBSan | Verdict |
+|---|---|---|---|---|---|---|
+| `basics/speed-chain` | `c17e5904` | **PASS** (0 warnings; 17/17 touched `adi_automation_edits_tests`, `adi_automation_range_undo_tests`, `adi_clip_playback_tests`, `adi_gesture_playback_tests`, `adi_history_list_tests`, `adi_midi_capture_input_tests`, `adi_midi_clips_tests`, `adi_param_edits_tests`, `adi_project_files_tests`, `adi_project_view_tests`, `adi_recording_commands_tests`, `adi_render_queue_tests`, `adi_retap_tests`, `adi_ui_document_tests`, `adi_ui_note_edits_tests`, `adi_ui_seams_tests`, `adi_warp_playback_tests` + `adi_acceptance_wts01`, 200.52 s) | **PASS** (0 warnings; 17/17 touched + `adi_acceptance_wts01`, 187.64 s) | **PASS** (8/8 both compilers, 0 warnings: `ui_main.cpp.o`, `device_host.cpp.o`, `play.cpp.o`, `ui_arrangement.cpp.o`, `ui_browser.cpp.o`, `ui_clipview.cpp.o`, `ui_shell.cpp.o`, `test_ui_shell.cpp.o`) | **PASS** (17/17 touched, 179.83 s; 0 errors, 0 leaks) | **PASS** |
+
+No findings on `basics/speed-chain` (`c17e5904`; Round 9 `adi_midi_clips_tests` failure fixed by `c71d2e7f`).
+
+---
+
 ## 2026-11-26 — `basics/*` Round 10 (clips chain `sc-32-clip-warp-switch` `a6f21e46` — PASS)
 
 Verified `origin/basics/sc-32-clip-warp-switch` at `a6f21e46` (5-branch clips chain covering `sc-11-unwarped-tempo`, `sc-191-waveform-source-offset`, `sc-30-left-trim`, `sc-31-clip-gain`, `sc-32-clip-warp-switch`; 16 files vs `origin/main`) under **GCC 12.4.0** and **Clang 14.0.6 + libstdc++ 12** (`-DADI_WERROR=ON`, headless Pd on, JUCE off, `-DADI_ACCEPTANCE=ON`), all 4 touched JUCE TUs (`-DADI_WITH_JUCE=ON -DADI_WERROR=ON`), and **Clang 14 ASan + LSan + UBSan**.
