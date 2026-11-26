@@ -312,6 +312,7 @@ const StableEntry *stableEntry(int id) noexcept {
         {"mixer.arm-selected", "Mixer"}, // ArmSelected
         {"arrangement.track-mixer", "View"}, // ToggleTrackMixer
         {"view.switch-detail-view", "View"}, // SwitchDetailView
+        {"arrangement.reverse-audio", "Arrangement"}, // ReverseAudio
     }};
     const auto at = id - AppCommands::PlayStop;
     return at >= 0 && at < static_cast<int>(table.size()) ? &table[static_cast<std::size_t>(at)] : nullptr;
@@ -537,7 +538,8 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Arrange Clip View Panels Vertically", "Clip View", "Fit to Time Range",
                                   "Arrangement Record", "Export Audio/Video...", "Delay Compensation", "Solo Switches", "Cue Switches",
                                   "Live 12 Manual", "Keyboard Shortcuts", "Automation Mode", "Delete Automation",
-                                  "Arm Selected Tracks", "Volume, Pan and Meters", "Switch Clip and Device Views"};
+                                  "Arm Selected Tracks", "Volume, Pan and Meters", "Switch Clip and Device Views",
+                                  "Reverse Clip(s)"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], category(id), 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -826,6 +828,10 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
     case Split: // manual 6.12, 41.5: Edit > Split, Ctrl/Cmd+E
         info.addDefaultKeypress('e', cmd);
         info.setActive(active_ != nullptr);
+        break;
+    case ReverseAudio:
+        info.addDefaultKeypress('r', 0);
+        info.setActive(active_ != nullptr && !active_->noteEditorHasContext() && active_->canReverseAudio());
         break;
     case TogglePluginWindows: // manual 23.3, 41.4: View > Show/Hide Plug-In Windows, Ctrl/Cmd+Alt+P
         info.addDefaultKeypress('p', cmd | alt);
@@ -2387,6 +2393,34 @@ ChosenClip chosenClip(const engine::Snapshot &current, const Selection &sel) {
                     return {t.get(), c.get()};
     return {};
 }
+struct ReverseTargets {
+    std::vector<std::int64_t> clips;
+    std::optional<std::pair<std::int64_t, std::int64_t>> range;
+};
+ReverseTargets reverseTargets(const engine::Snapshot &current, const ArrangementGeometry &geometry,
+                              const SnapshotReader &reader) {
+    ReverseTargets result;
+    const auto &sel = geometry.selection;
+    const auto [from, to] = std::minmax(sel.start, sel.end);
+    if (from != to && !chosenClip(current, sel).clip && sel.pickedClips.empty())
+        result.range.emplace(from, to);
+    for (const auto &track : current.tracks) {
+        if (!track || (result.range && !geometry.inSelection(reader, track->id)))
+            continue;
+        for (const auto &clip : track->clips) {
+            if (!clip)
+                continue;
+            const bool chosen = result.range ? clip->posTicks < to && clip->posTicks + clip->lengthTicks > from
+                                             : geometry.clipSelected(clip->id);
+            if (!chosen)
+                continue;
+            if (!clip->audio)
+                return {};
+            result.clips.push_back(clip->id);
+        }
+    }
+    return result;
+}
 bool holdsClips(const engine::TrackNode &t) { return t.kind == "audio" || t.kind == "midi"; }
 // A copied clip's kind, as its image holds it ("audio" or "midi").
 std::string imageKind(const Payload &image) {
@@ -2914,6 +2948,17 @@ bool AdiRootComponent::timeCommand(int id) {
     default:
         return false;
     }
+}
+bool AdiRootComponent::canReverseAudio() const {
+    const auto current = view_.current();
+    return current && !reverseTargets(*current, arrangement.geometry, reader()).clips.empty();
+}
+bool AdiRootComponent::reverseAudio() {
+    const auto current = view_.current();
+    if (!current)
+        return fail("Reverse needs an open project.");
+    const auto targets = reverseTargets(*current, arrangement.geometry, reader());
+    return commitEdit(clip_edit::prepareReverse(submitter_.store(), targets.clips, targets.range, editRate()));
 }
 bool AdiRootComponent::splitAtMarker() {
     const auto current = view_.current();
@@ -5028,6 +5073,8 @@ bool AdiRootComponent::command(int id) {
         return deleteFades();
     case AppCommands::Split:
         return splitAtMarker();
+    case AppCommands::ReverseAudio:
+        return reverseAudio();
     case AppCommands::CutTime:
     case AppCommands::CopyTime:
     case AppCommands::PasteTime:

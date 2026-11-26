@@ -12392,6 +12392,49 @@ void clipWaveforms(AppCommands &commands, const std::filesystem::path &dir) {
     root.afterEdit = nullptr;
     document->release();
 }
+void reverseAudioSelection(AppCommands &commands, const std::filesystem::path &dir) {
+    constexpr auto quarter = textproj::kPPQ;
+    StoreError error{};
+    auto store = Store::createEmpty(dir / "reverse-selection.adi", error);
+    check(store != nullptr, "an arrangement for Reverse Clip(s)");
+    if (!store)
+        return;
+    auto &db = store->db();
+    db.exec("INSERT INTO project(id,name) VALUES(1,'Reverse');"
+            "INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(1,'audio','Audio',0),(2,'midi','MIDI',1);"
+            "INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks) VALUES(1,1,'audio',0,23063040),(2,2,'midi',0,23063040);"
+            "INSERT INTO media_files(id,hash_blake3,rel_path,format,sample_rate,channels,frames) "
+            "VALUES(1,'reverse-test','source.wav','wav',48000,1,96000);"
+            "INSERT INTO audio_clips(clip_id,media_id,src_len_frames) VALUES(1,1,96000);");
+    engine::ProjectView view;
+    view.refresh(*store);
+    OpSubmitter submitter(*store, view);
+    TransportMailbox mailbox;
+    ViewStateStore persistence(*store);
+    SessionState session(*store);
+    AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "reverse-selection");
+    root.setSize(1200, 700);
+    root.frame();
+    auto &selection = root.arrangement.geometry.selection;
+    selection.track = 1;
+    selection.start = quarter;
+    selection.end = 2 * quarter;
+    selection.toTrack = 2;
+    check(!root.canReverseAudio(), "a time range containing MIDI cannot be reversed as audio");
+    selection.toTrack = 0;
+    const auto menu = root.arrangement.contextMenuItems(false);
+    bool shown = false;
+    for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+        shown = shown || (it.getItem().text == "Reverse Clip(s)" && it.getItem().isEnabled);
+    check(shown, "the Arrangement's audio time range offers Reverse Clip(s)");
+    check(commands.key(juce::KeyPress('r'), root) &&
+              db.execAndGet("SELECT count(*) FROM clips WHERE track_id=1").getInt() == 3 &&
+              db.execAndGet("SELECT count(*) FROM audio_clips WHERE reverse=1").getInt() == 1,
+          "R reverses only the selected middle and leaves its neighbours in place");
+    check(root.command(AppCommands::Undo) && db.execAndGet("SELECT count(*) FROM clips WHERE track_id=1").getInt() == 1,
+          "one Undo removes both cuts and the reversed section");
+    commands.detach(root);
+}
 // Live's metronome and Arrangement Loop (C2, N19; Live 12 manual 6.6, 19.4.1, §42.8, §42.16,
 // §42.20): O and the control bar's switches, Loop Selection, the brace dragged and moved by its keys,
 // the Loop Start and Loop Length fields, and editing.linkLoopToSelection. Each writes the transport's
@@ -19644,12 +19687,15 @@ int main(int argc, char **argv) {
                       C::CueSwitches == C::SoloSwitches + 1 && C::HelpManual == C::CueSwitches + 1 &&
                       C::KeyboardReference == C::HelpManual + 1 && C::AutomationMode == C::KeyboardReference + 1 &&
                       C::DeleteAutomation == C::AutomationMode + 1 && C::ArmSelected == C::DeleteAutomation + 1 &&
-                      C::ToggleTrackMixer == C::ArmSelected + 1 && trackMixer.shortName == "Volume, Pan and Meters",
+                      C::ToggleTrackMixer == C::ArmSelected + 1 && trackMixer.shortName == "Volume, Pan and Meters" &&
+                      C::SwitchDetailView == C::ToggleTrackMixer + 1 && C::ReverseAudio == C::SwitchDetailView + 1 &&
+                      C::LastId == C::ReverseAudio,
                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
                   "Select Loop, Save a Copy, Collect All and Save, Collect and Export, Cut, Copy, Paste, Duplicate, "
                   "Show/Hide Plug-In Windows, Split, Clip View, Insert Empty MIDI Clip(s), the …Time commands and "
                   "Insert Silence, then Create Fade In/Out and Delete Fades/Crossfades, then the Note Editor's nine, "
-                  "Arrangement Record, Delay Compensation, Delete Automation, Arm Selected Tracks and Volume, Pan and Meters");
+                  "Arrangement Record, Delay Compensation, Delete Automation, Arm Selected Tracks, Volume, Pan and Meters, "
+                  "Switch Clip and Device Views and Reverse Clip(s)");
             // The Note Editor's commands, the last ids: named in the table's order, each on the editor's key.
             {
                 const auto named = [&](int id) {
@@ -22260,6 +22306,7 @@ int main(int argc, char **argv) {
     trace("clipWaveforms", [&] { clipWaveforms(commands, temp.path()); });
     trace("clipWarpSwitch", [&] { clipWarpSwitch(commands, temp.path()); });
     trace("sampleEditorMouse", [&] { sampleEditorMouse(commands, temp.path()); });
+    trace("reverseAudioSelection", [&] { reverseAudioSelection(commands, temp.path()); });
     trace("clipFades", [&] { clipFades(commands, temp.path()); });
     trace("showcase", [&] { showcase(commands, temp.path()); });
     trace("returnInGroup", [&] { returnInGroup(commands, temp.path()); });

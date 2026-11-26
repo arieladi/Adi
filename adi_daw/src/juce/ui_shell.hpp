@@ -176,7 +176,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         ArmSelected,
         ToggleTrackMixer,
         SwitchDetailView,
-        LastId = SwitchDetailView
+        ReverseAudio,      // Reverse Clip(s) in the Arrangement, R (manual 6.9)
+        LastId = ReverseAudio
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -708,6 +709,8 @@ class AdiRootComponent final : public juce::Component,
     // the insert marker; else the clips under the marker on the selected tracks, or on every track
     // when editing.splitAllWithNoSelection is on. Each clip is one undo step.
     bool splitAtMarker();
+    bool canReverseAudio() const;
+    bool reverseAudio();
     // Live's Create Fade In/Out and Create Crossfade (manual 6.8; Ctrl/Cmd+Alt+F, the Create menu):
     // over the time selection's audio clip starts, ends and boundaries, one undo step. And Delete
     // Fades/Crossfades (Ctrl/Cmd+Alt+Backspace) on the chosen clips, or the audio clips the time

@@ -365,6 +365,33 @@ void reversedSource() {
     }
     check(resampled,"reverse seeks and resampling match a physically reversed source window");
 }
+void reverseSelectedRange() {
+    constexpr int source=37, block=512;
+    constexpr auto quarter=textproj::kPPQ;
+    Fixture f(48000,2,40000);
+    f.add(1,0,24000,source,30000);
+    const std::array clips{std::int64_t{1}};
+    const auto edit=clip_edit::prepareReverse(*f.store,clips,std::pair{quarter/4,quarter/2},48000);
+    check(edit.ok && edit.requests.size()==1 && clip_edit::commitPrepared(*f.store,edit).ok,
+          "Reverse captures both cuts and the selected audio in one edit");
+    f.load(block);
+    const auto matches=[&](bool reversed) {
+        bool exact=true;
+        f.session.transport().locate(0);
+        for(int at=0;at<24000;at+=block) {
+            const auto out=f.render(block);
+            for(int i=0;i<block && at+i<24000;++i) {
+                const auto t=at+i;
+                const auto material=reversed && t>=6000 && t<12000?17999-t:t;
+                exact=exact && out[static_cast<std::size_t>(i)]==f.media[static_cast<std::size_t>(2*(source+material))];
+            }
+        }
+        return exact;
+    };
+    check(matches(true),"the reversed middle plays only the selected audio with forward material on both sides");
+    check(History(*f.store).undo().ok && f.session.refresh(*f.store) && matches(false),
+          "one undo restores the original uninterrupted playback");
+}
 void takeLanePlayback() {
     Fixture f;
     f.add(1, 0, 500, 11, 1000);
@@ -1737,7 +1764,7 @@ int main(int argc,char** argv) {
     try {
         if(only=="all" || only=="placement")placement();
         if(only=="all" || only=="unwarped-tempo")unwarpedTempoChanges();
-        if(only=="all" || only=="reverse")reversedSource();
+        if(only=="all" || only=="reverse"){reversedSource();reverseSelectedRange();}
         if(only=="all" || only=="monitor-input")liveInputMonitoring();
         if(only=="all" || only=="take-lanes")takeLanePlayback();
         if(only=="all" || only=="properties")properties();

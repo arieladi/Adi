@@ -2,6 +2,7 @@
 #pragma once
 #include "adi/ops.hpp"
 #include <memory>
+#include <utility>
 
 namespace adi::edit_plan {struct CapturedDescription;struct Options;}
 
@@ -64,6 +65,10 @@ struct PreparedSplits {
 /// Allocate all new clip and child identities against one snapshot. Each clip
 /// can supply one or two cuts. Commit edit once for one Undo of all valid cuts.
 [[nodiscard]] PreparedSplits prepareSplits(Store&,std::span<const ClipSplit>,double referenceRate);
+/// Reverse the selected audio, splitting at the optional timeline range edges.
+/// All selected clips and new pieces commit as one undoable arrangement edit.
+[[nodiscard]] PreparedEdit prepareReverse(Store&,std::span<const std::int64_t> clipIds,
+    std::optional<std::pair<std::int64_t,std::int64_t>> range,double referenceRate);
 /// Shift the Set and its global envelopes, splitting material at the boundary.
 /// Musical length; linear objects move by the held tempo immediately before it.
 [[nodiscard]] PreparedEdit prepareInsertSilence(Store&,std::int64_t atTicks,

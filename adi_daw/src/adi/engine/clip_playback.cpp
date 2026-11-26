@@ -626,11 +626,23 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             auto sourceDuration=[&](std::int64_t ticks){return a->warpEnabled?warpSourceSamples(tempo,sourceOrigin,ticks,rate):duration(ticks);};
             if(a->warpEnabled) {
                 if(row.contentOffsetTicks<0 || !a->warpMarkers)throw std::runtime_error("warp needs valid source offsets and a stored marker map");
-                const auto map=audio::readWarpMap(*a->warpMarkers,clip->sourceLength);
+                auto map=audio::readWarpMap(*a->warpMarkers,clip->sourceLength);
                 if(!map)throw std::runtime_error("warp marker map is not readable or canonical");
                 audio::WarpRenderPlan spec;spec.source=clip->reader->file.path;spec.workFolder=fs::temp_directory_path()/"adi-warp";
                 spec.sourceStart=clip->sourceStart;spec.sourceFrames=clip->sourceLength;spec.outputRate=clip->rate;
+                if(clip->reverse) {
+                    // Reflect the markers before integrating the song's tempo. After the
+                    // page reader reverses the result, tempo changes occur at their usual ticks.
+                    const auto last=map.markers.back();
+                    std::reverse(map.markers.begin(),map.markers.end());
+                    for(auto& marker:map.markers)marker={last.sourceFrame-marker.sourceFrame,last.tick-marker.tick};
+                }
                 spec.anchors=projectWarpAnchors(map.markers,tempo,sourceOrigin,rate);
+                if(clip->reverse) {
+                    const auto last=spec.anchors.back();
+                    std::reverse(spec.anchors.begin(),spec.anchors.end());
+                    for(auto& anchor:spec.anchors)anchor={last.sourceFrame-anchor.sourceFrame,last.outputFrame-anchor.outputFrame};
+                }
                 const auto mode=audio::parseWarpMode(a->warpMode);if(!mode)throw std::runtime_error("warp mode is not available");
                 spec.mode=*mode;
                 if(spec.mode==audio::WarpMode::Tones)spec.grainSeconds=0.03;
