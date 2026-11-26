@@ -4,6 +4,25 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-26 — Item 5 (Standing Queue Item 13): Full `-D_GLIBCXX_DEBUG` headless sweep on `origin/main` (`946db965`)
+
+Built and ran all **277** headless CTest suites (`-LE performance`, `-DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF -DADI_WERROR=OFF`) on `origin/main` (`946db965`) under **GCC 12.4.0** with `-O1 -g0 -D_GLIBCXX_DEBUG`.
+
+| Outcome | Count | Details |
+|---|---|---|
+| **PASS (`-D_GLIBCXX_DEBUG`, 0 aborts)** | **275 / 277** | Every non-skipped suite except `adi_link_playback_tests` (includes `adi_history_retention_fuzz_tests` 130.26 s, `adi_clip_playback_tests` 62.17 s, `adi_migrate_tests` 57.29 s, all Pd/DSP/Mix/Engine/Scanner/UI-model suites). |
+| **SKIP** | **1 / 277** | `adi_loudness_ffmpeg_tests` (no `ffmpeg` binary installed in VM). |
+| **FAIL (audit-hook interaction only; 0 `_GLIBCXX_DEBUG` aborts)** | **1 / 277** | `adi_link_playback_tests` (139 checks, 16 failures — see note below). |
+| **`_GLIBCXX_DEBUG` container / iterator / bounds / comparator aborts** | **0 / 276** | **ZERO libstdc++ debug-mode aborts across all 276 executed headless suites.** |
+
+### Note on `adi_link_playback_tests` under `-D_GLIBCXX_DEBUG`
+
+- `adi_daw/tests/test_link_playback.cpp:36-43` wraps `pthread_mutex_lock`/`pthread_mutex_trylock` (`-Wl,--wrap=pthread_mutex_lock`) and counts any lock taken while `adi::audio::onAudioThread` is true (`Audit::clean()` at `:80-87`).
+- Under `-D_GLIBCXX_DEBUG`, libstdc++'s `__gnu_debug::_Safe_iterator` takes its internal `_Safe_sequence_base::_M_get_mutex()` lock whenever safe iterators are attached/detached during `std::__debug::*` container traversal inside the audio callback, causing 16 realtime-audit check failures without any `_GLIBCXX_DEBUG` error or abort. (Not a production lock bug; `adi_link_playback_tests` passes 139/139 in standard Debug, ASan+LSan+UBSan, and TSan builds.)
+- Also noted during `-O1 -D_GLIBCXX_DEBUG` compilation (pre-existing GCC 12 `-Wmaybe-uninitialized` false positives on `std::optional<int64_t>` at `-O1` with `_GLIBCXX_DEBUG`, non-fatal here since `-DADI_WERROR=OFF`): `src/adi/return_send_tap.cpp:64`, `src/adi/history.cpp:252`, `src/adi/engine/automation_clips.cpp:209`.
+
+---
+
 ## 2026-11-26 — Item 1 (`walk/*` Round 15): `walk/a24-mixview-test-clock` (`91ead564`), `walk/a25-scan-fixture-optimised` (`dff01c74`)
 
 Both heads built under **GCC 12.4.0** and **Clang 14.0.6 + libstdc++ 12** with `-DADI_WERROR=ON -DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF -DADI_ACCEPTANCE=ON`, plus targeted JUCE `-DADI_WERROR=ON` (A24) and optimised `-O2 -DNDEBUG -Werror` checks (A25).
