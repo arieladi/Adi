@@ -349,7 +349,11 @@ class WaveformCache {
 };
 // The file-relative frame on a canonical warp map. Its last marker denotes
 // the boundary after the last sample, so endpoints are valid for peak spans.
-inline double warpedWaveformFrame(std::span<const WarpMarker> markers, std::int64_t tick) noexcept {
+inline double warpedWaveformFrame(std::span<const WarpMarker> markers, std::int64_t tick, bool reverse) noexcept {
+    if (reverse && !markers.empty()) {
+        const auto end = markers.back().tick;
+        tick = end - std::clamp(tick, std::int64_t{0}, end);
+    }
     const auto right = std::upper_bound(markers.begin(), markers.end(), tick,
                                         [](std::int64_t at, const WarpMarker &marker) { return at < marker.tick; });
     if (right == markers.begin())
@@ -396,7 +400,7 @@ class ClipSourceMap {
             if (offsetTicks_ < 0 || offsetTicks_ >= end - into)
                 return std::nullopt;
             const auto sourceTick = into + offsetTicks_;
-            frame = warpedWaveformFrame(markers_, audio_.reverse ? end - sourceTick : sourceTick);
+            frame = warpedWaveformFrame(markers_, sourceTick, audio_.reverse);
             if (audio_.reverse)
                 frame = std::max(0., frame - 1.);
         } else {

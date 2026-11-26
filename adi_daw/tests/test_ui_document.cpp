@@ -2919,10 +2919,16 @@ void reversedWaveform() {
         return frame && std::abs(*frame - expected) < .01;
     };
     check(frameIs(0, 96009.) && frameIs(quarter, 72009.), "unwarped reverse draws the source window tail first");
+    clip.contentOffsetNs = 500'000'000;
+    check(frameIs(0, 72009.), "unwarped reverse reflects the physical clip offset as well as its position");
+    clip.contentOffsetNs.reset();
     const std::array markers{WarpMarker{0, 0}, WarpMarker{12000, quarter}, WarpMarker{96000, 4 * quarter}};
     clip.audio->warpEnabled = true;
     clip.audio->warpMarkers = audio::writeWarpMap(markers, 96000).bytes;
     check(frameIs(0, 96009.) && frameIs(quarter, 68009.), "warped reverse mirrors time before interpolating the map");
+    clip.contentOffsetTicks = quarter;
+    check(frameIs(0, 68009.) && ui::warpedWaveformFrame(markers, quarter, true) == 68000.,
+          "arrangement offsets and the Sample Editor's source ruler agree on reverse Warp position");
 }
 
 // PD06-SAVEAS-GUARD: Save As during Record, or while a take's placement is pending, lands the take in

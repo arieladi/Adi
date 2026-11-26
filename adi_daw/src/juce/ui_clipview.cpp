@@ -2898,18 +2898,12 @@ std::int64_t SampleEditor::endMarker() const noexcept {
         return sourceSecondsToTicks(static_cast<double>(*node->sourceEndNs) * 1e-9);
     return clip ? endMarkerOf(*clip) : 0;
 }
-double SampleEditor::frameAt(std::int64_t tick, double rate) const noexcept {
-    if (markers_.empty())
-        return sourceTicksToSeconds(tick) * rate;
-    const auto right = std::upper_bound(markers_.begin(), markers_.end(), tick,
-                                        [](std::int64_t at, const WarpMarker &marker) { return at < marker.tick; });
-    if (right == markers_.begin())
-        return 0.;
-    const auto &a = *(right - 1);
-    if (right == markers_.end())
-        return static_cast<double>(a.sourceFrame);
-    return static_cast<double>(a.sourceFrame) + static_cast<double>(tick - a.tick) *
-           static_cast<double>(right->sourceFrame - a.sourceFrame) / static_cast<double>(right->tick - a.tick);
+double SampleEditor::frameAt(std::int64_t tick, double rate, const engine::AudioClipSource &audio) const noexcept {
+    if (!markers_.empty())
+        return warpedWaveformFrame(markers_, tick, audio.reverse);
+    const auto length = static_cast<double>(audio.sourceLengthFrames);
+    const auto frame = std::clamp(sourceTicksToSeconds(tick) * rate, 0., length);
+    return audio.reverse ? length - frame : frame;
 }
 std::int64_t SampleEditor::tickAt(int x, const juce::ModifierKeys &mods) const noexcept {
     const auto raw = time.tick(x);
@@ -3037,7 +3031,7 @@ void SampleEditor::paint(juce::Graphics &g) {
     }
     const auto *node = panel.node();
     auto *waveforms = panel.root.arrangement.waveforms;
-    if (node == nullptr || !node->audio || waveforms == nullptr)
+    if (node == nullptr || !node->audio || node->audio->sourceLengthFrames <= 0 || waveforms == nullptr)
         return;
     const auto peaks = waveforms->peaks(*node->audio);
     if (!peaks)
@@ -3051,13 +3045,17 @@ void SampleEditor::paint(juce::Graphics &g) {
     const float band = (bottom - top) / static_cast<float>(finest.channels);
     const int from = std::max(0, static_cast<int>(std::floor(time.x(0)))),
               to = std::min(getWidth(), static_cast<int>(std::ceil(time.x(sourceEnd_))));
-    const auto origin = static_cast<double>(node->audio->sourceStartFrames);
+    const auto &audio = *node->audio;
+    const auto origin = static_cast<double>(audio.sourceStartFrames);
+    const auto endFrame = origin + static_cast<double>(audio.sourceLengthFrames);
     const auto rate = static_cast<double>(finest.sampleRate);
     g.setColour(look::ink.withAlpha(node->muted ? 0.35f : 0.7f));
     for (int x = from; x < to; ++x) {
-        const auto f0 = origin + frameAt(time.tick(x), rate), f1 = origin + frameAt(time.tick(x + 1), rate);
+        const auto f0 = origin + frameAt(time.tick(x), rate, audio), f1 = origin + frameAt(time.tick(x + 1), rate, audio);
+        const auto low = std::min(f0, f1);
+        const auto high = std::min(endFrame, std::max({low + 1., f0, f1}));
         for (std::uint32_t ch = 0; ch < finest.channels; ++ch) {
-            const auto span = peakSpan(*peaks, f0, std::max(f0 + 1., f1), ch);
+            const auto span = peakSpan(*peaks, low, high, ch);
             if (!span)
                 continue;
             const float mid = top + band * (static_cast<float>(ch) + .5f), half = band * .5f;
