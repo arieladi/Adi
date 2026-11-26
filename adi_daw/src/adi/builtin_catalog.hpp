@@ -47,7 +47,17 @@ struct PluginInsertOptions {
 std::span<const OpDescriptor> builtinReferenceOps();
 
 namespace detail {
+enum class DeviceRole { MidiEffect, Instrument, AudioEffect };
+struct ChainDevice {
+    std::int64_t id, ord;
+    DeviceRole role;
+    bool rack;
+};
+DeviceRole deviceRole(std::string_view subtype) noexcept;
+std::vector<ChainDevice> deviceChainOrder(const SQLite::Database&, std::int64_t chain);
+std::size_t deviceInsertPosition(std::span<const ChainDevice>, DeviceRole, std::size_t requested);
 std::int64_t deviceChainOwner(const SQLite::Database&, std::int64_t chain);
-void requireDeviceInsertTrack(const SQLite::Database&, std::int64_t track);
+void requireDeviceInsertTrack(const SQLite::Database&, std::int64_t track,
+                              DeviceRole = DeviceRole::AudioEffect, std::string_view deviceName = {});
 }
 }
