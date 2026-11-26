@@ -9,11 +9,19 @@
 | SC-51 | `basics/sc-51-computer-midi` `40c2a7d3` | M, Options, and the Control Bar toggle the computer keyboard. The Live key rows share the driver input path and clock with hardware MIDI. Windows physical key positions are resolved from the active keyboard layout. Released keys keep their original note identity across octave changes. Touched window, input feed, and keymap fixtures. | Debug `/WX` app build, window state 184/184, MIDI clips 576/576, shell 3,334/3,334 and acceptance 3/3 passed. Substituting callback time for the key timestamp failed the shared ordering test. | PR requested |
 | SC-53 | `basics/sc-53-note-preview` `581b3d70` | The Note Editor's Preview switch, on by default, auditions clicked, drawn and moved notes and the piano ruler through the clip's instrument. It works with the track unarmed. The sounding-note mask lights piano keys during audition and playback. Touched engine graph and routing, Clip View, the window glue and its MIDI clip fixture. | Debug `/WX` app build, graph 210/210, MIDI clips 592/592, shell 3,336/3,336. Refusing valid preview pitches failed ten checks. Private-desktop acceptance passed 3/3. | PR requested |
 
-The six published MIDI branches now form a chain under the revised howto. The SC-53 stack built with Debug warnings as errors. The graph, recording command, MIDI clip, document, and private-desktop shell suites passed, including 3,373 shell checks and 602 MIDI clip checks. Individual acceptance results above are from the original heads.
+| SC-55 | `basics/sc-55-midi-controllers` `7c5eb2c4` | OneShot and Sampler receive channel pitch, sustain and mod wheel through the built-in host. Channel pitch combines with per-note MPE. Sustain holds Classic and Gate voices across note-off. CC1 scales the authored LFO depth. Touched DSP, the native Pd and built-in hosts, and plugin MIDI routing. | VS 2022 Debug /WX app build. OneShot 387/387, Sampler 126/126, native built-ins 260/260, Pd OneShot 38/38, MPE output 135/135, CLAP 615/615, and acceptance 3/3. Probed a real Win32 virtual input and two installed Surge XT formats on a private desktop. | PR requested |
+
+The first six published MIDI branches now form a chain under the revised howto. The SC-53 stack built with Debug warnings as errors. The graph, recording command, MIDI clip, document, and private-desktop shell suites passed, including 3,373 shell checks and 602 MIDI clip checks. Acceptance for those six items ran on the original heads.
 
 In the integrated SC-50 and SC-10 behavior, MIDI recording chooses the timestamp basis from the monitor mode at take start. Auto can suppress live sound over an existing clip, but that transient suppression still uses the monitored timestamp. Mid-take mode changes have the same timing gap.
 
 The automation queue already has its own report at `origin/basics/automation-log` (`f6bbbd05`). This session proceeds with MIDI wave 2 as directed by the current howto.
+
+## SC-55 virtual MIDI
+
+- **Surge XT CLAP.** ADI parsed all 16 virtual-port messages across both plugin runs without port overflow or a refused enqueue. At the CLAP input ABI, the trace showed CC1 93 and 0, CC64 127 and 0, and pitch wheel 12288 and 8192. Surge XT rendered the note using its default patch.
+- **Surge XT VST3.** The same note rendered. ADI parsed all six controller changes and reported each as unsupported because the current VST3 host had no controller mapping. The ordinary pitch wheel took the same channel-controller path as CC1 and CC64. Surge XT VST3 controller delivery remains part of SC-312.
+- The wheel uses the engine's ordinary ±2-semitone range. The mod wheel is audible when the patch has an LFO depth assigned.
 
 ## For the director
 
