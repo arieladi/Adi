@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "../src/juce/app_audio_page.hpp"
 #include "../src/juce/app_midi_ports.hpp"
+#include "../src/juce/ui_diagnostic_log.hpp"
 #include "../src/juce/ui_export.hpp"
 #include "../src/juce/ui_controls.hpp"
 #include "../src/juce/ui_floating.hpp"
@@ -39,6 +40,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <functional>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <mutex>
@@ -15375,6 +15377,76 @@ void windowTeardownRunsTimers() {
     check(app.ticks > 0 && app.rootReads == 0 && app.window == nullptr && app.root == nullptr,
           "a timer run inside the main window's teardown finds the root pointer already null");
 }
+void diagnosticLogFollowsPrivacy(const std::filesystem::path &dir) {
+    const auto data = dir / "diagnostic-data";
+    const auto logs = data / "diagnostic-logs";
+    settings::AppSettings settings(appdata::App::Daw, dir / "diagnostic-settings.json");
+    std::string why;
+    StoreError error{};
+    auto store = Store::createEmpty(dir / "log-song.adi", error);
+    check(store != nullptr, "diagnostic log test project opens");
+    if (!store)
+        return;
+    store->db().exec("INSERT INTO project(id,name) VALUES(1,'Log song')");
+    engine::ProjectView view;
+    view.refresh(*store);
+    OpSubmitter submitter(*store, view);
+    TransportMailbox mailbox;
+    AppCommands commands(settings);
+    ViewStateStore persistence(*store);
+    SessionState session(*store);
+    {
+        DiagnosticLog run(data, "test-version");
+        AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "main");
+        root.onStatusMessage = [&run](const std::string &message) { run.write("Status Bar", message); };
+        check(!run.refresh(settings), "diagnostic log starts disabled");
+        root.say("Before opt-in");
+        check(!std::filesystem::exists(logs), "no diagnostic directory is made without opt-in");
+
+        check(settings.set("privacy.diagnosticLog", true, {}, why) && run.refresh(settings),
+              "the Privacy setting starts this run's diagnostic log immediately");
+        run.write("Opened project", "log-song.adi");
+        check(!root.command(AppCommands::DeleteTrack) && root.error() == "Select a track to delete.",
+              "a refusing command puts a notice in the Status Bar");
+        run.write("Alert", "Alert line one\nAlert line two");
+
+        check(settings.set("privacy.diagnosticLog", false, {}, why) && !run.refresh(settings),
+              "disabling the Privacy setting stops logging immediately");
+        root.say("While paused");
+        check(settings.set("privacy.diagnosticLog", true, {}, why) && run.refresh(settings),
+              "diagnostic logging can resume during the same run");
+        root.say("After resuming");
+    }
+    if (!std::filesystem::is_directory(logs)) {
+        check(false, "the enabled diagnostic logger created its directory");
+        return;
+    }
+    auto files = std::filesystem::directory_iterator(logs);
+    const std::filesystem::directory_iterator end;
+    check(files != end, "the enabled logger wrote a file");
+    if (files == end)
+        return;
+    const auto first = files->path();
+    check(++files == end, "pausing and resuming produces exactly one log per run");
+    {
+        std::ifstream input(first);
+        const std::string text{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+        check(text.find("ADI version\ttest-version") != std::string::npos &&
+                  text.find("Opened project\tlog-song.adi") != std::string::npos &&
+                  text.find("Status Bar\tSelect a track to delete.") != std::string::npos &&
+                  text.find("Alert\tAlert line one\\nAlert line two") != std::string::npos &&
+                  text.find("Status Bar\tAfter resuming") != std::string::npos,
+              "the readable log has the version, opened file and shown messages");
+        check(text.find("Before opt-in") == std::string::npos && text.find("While paused") == std::string::npos,
+              "diagnostics omit every message while the setting was off");
+    }
+    {
+        DiagnosticLog nextRun(data, "next-version");
+        check(nextRun.refresh(settings), "another enabled run starts its own log");
+    }
+    check(std::distance(std::filesystem::directory_iterator(logs), end) == 2,
+          "a subsequent run never appends to the previous run's log");
+}
 // Live's New Live Set (manual 5.4.1; walk-A A3): New opens the next untitled project in the projects folder
 // at once, as launch does, with no chooser; Save As names and places it.
 void untitledProjects(const std::filesystem::path &dir) {
@@ -18905,6 +18977,7 @@ int main(int argc, char **argv) {
     trace("keymapGolden", [&] { keymapGolden(commands, settings, temp.path(), write); });
     trace("userShortcuts", [&] { userShortcuts(commands, settings); });
     trace("launchIsolation", [&] { launchIsolation(commands); });
+    trace("diagnosticLogFollowsPrivacy", [&] { diagnosticLogFollowsPrivacy(temp.path()); });
     trace("untitledProjects", [&] { untitledProjects(temp.path()); });
     trace("discardUneditedUntitled", [&] { discardUneditedUntitled(temp.path()); });
     trace("windowTeardownRunsTimers", [&] { windowTeardownRunsTimers(); });

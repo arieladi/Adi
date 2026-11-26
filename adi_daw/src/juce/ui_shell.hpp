@@ -391,6 +391,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     ViewStateStore &viewStateStore() noexcept { return persistence_; }
     // A message for the Status Bar from outside the root (the application's commands).
     void say(std::string message);
+    std::function<void(const std::string &)> onStatusMessage;
     void sayStaleAddMenu();
     // What the Status Bar says when there is no message: Live's line for the insert
     // marker or the time selection.

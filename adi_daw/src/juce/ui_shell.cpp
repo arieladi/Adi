@@ -1956,7 +1956,14 @@ void AdiRootComponent::resizeDevices(int height) {
     state_.setDeviceHeight(std::min(height, ceiling));
     resized();
 }
-bool AdiRootComponent::persist() { return persistence_.save(window_, state_, error_); }
+bool AdiRootComponent::persist() {
+    if (persistence_.save(window_, state_, error_))
+        return true;
+    if (onStatusMessage && !error_.empty())
+        onStatusMessage(error_);
+    dirty_.mark(DirtySet::Status);
+    return false;
+}
 juce::PopupMenu AdiRootComponent::mixerOptionsMenu(bool viewMenu) {
     // Live 12's order (manual 18.1, the Mixer View Control's options menu). Volume always shows in
     // ADI; Track Options is the Mixer View's Track Delay section (manual 18.7); the crossfader and
@@ -2796,6 +2803,8 @@ bool AdiRootComponent::edited(const SubmitResult &result) {
     return true;
 }
 void AdiRootComponent::say(std::string message) {
+    if (onStatusMessage && !message.empty() && message != error_)
+        onStatusMessage(message);
     error_ = std::move(message);
     dirty_.mark(DirtySet::Status);
 }
@@ -2841,8 +2850,7 @@ std::string AdiRootComponent::undoTitle(bool redo) const {
     return verb + (step && !step->label.empty() ? " " + step->label : "");
 }
 bool AdiRootComponent::fail(std::string message) {
-    error_ = std::move(message);
-    dirty_.mark(DirtySet::Status);
+    say(std::move(message));
     return false;
 }
 bool AdiRootComponent::toggle(Panel p) {

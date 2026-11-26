@@ -12,6 +12,7 @@
 #include "juce/plugin_search_settings.hpp"
 #include "app_audio_page.hpp"
 #include "app_midi_ports.hpp"
+#include "ui_diagnostic_log.hpp"
 #include "ui_export.hpp"
 #include "ui_floating.hpp"
 #include "ui_settings.hpp"
@@ -132,7 +133,8 @@ class AdiApplication final : public juce::JUCEApplication,
         // WTS-01: a test launch keeps everything under ADI_HOME, never the user's folders. --control-test
         // refuses to start without it; a smoke run says so and keeps its settings beside its project
         // until CI's smoke step sets ADI_HOME, when it refuses too.
-        if (const auto home = juce::SystemStats::getEnvironmentVariable("ADI_HOME", {}); home.isEmpty()) {
+        const auto home = juce::SystemStats::getEnvironmentVariable("ADI_HOME", {});
+        if (home.isEmpty()) {
             if (controlTest_) {
                 std::fprintf(stderr, "ADI: --control-test needs ADI_HOME, a folder of its own for this instance\n");
                 setApplicationReturnValue(2);
@@ -151,6 +153,10 @@ class AdiApplication final : public juce::JUCEApplication,
         else
             settings_ = std::make_unique<settings::AppSettings>(
                 settings::AppSettings::forApp(appdata::App::Daw));
+        if (!testLaunch() || !home.isEmpty()) {
+            diagnosticLog_.emplace(appdata::pathsFor(appdata::App::Daw).data, ADI_VERSION_STRING);
+            refreshDiagnosticLog();
+        }
         commands_ = std::make_unique<AppCommands>(*settings_);
         configurePluginSources();
         pluginSourcesKey_ = pluginSourcesKey();
@@ -644,7 +650,13 @@ class AdiApplication final : public juce::JUCEApplication,
         std::string error;
         if(!device::configurePluginSearchPaths(loader_,*settings_,error))report(error);
     }
+    void refreshDiagnosticLog() {
+        if (diagnosticLog_ && diagnosticLog_->refresh(*settings_) && document_)
+            diagnosticLog_->write("Open project", media::pathUtf8(document_->store().path().filename()));
+    }
     void report(const std::string &text) {
+        if (diagnosticLog_)
+            diagnosticLog_->write("Alert", text);
         // A test launch reports to stderr, never in a window (WTS-01).
         if (testLaunch()) {
             std::fprintf(stderr, "ADI: %s\n", text.c_str());
@@ -696,6 +708,9 @@ class AdiApplication final : public juce::JUCEApplication,
         auto next = ProjectDocument::open(pathFromUtf8(file.getFullPathName().toStdString()), create, loader_.fn(), error,
                                           &commands_->recordingDefaults());
         if (!next) {
+            if (diagnosticLog_)
+                diagnosticLog_->write(create ? "Project creation failed" : "Project open failed",
+                                      file.getFileName().toStdString());
             report(error);
             return false;
         }
@@ -741,12 +756,16 @@ class AdiApplication final : public juce::JUCEApplication,
         } else if (!testLaunch()) {
             commands_->rememberProject(file);
         }
+        if (diagnosticLog_)
+            diagnosticLog_->write(create ? "Created project" : "Opened project", file.getFileName().toStdString());
         auto root = std::make_unique<AdiRootComponent>(document_->view(), document_->ops(),
                                                        document_->mailbox(), *commands_,
                                                        document_->views(),
                                                        document_->sessionState(), "main");
         root_ = root.get();
         root->needsFirstSave = create;
+        if (diagnosticLog_)
+            root->onStatusMessage = [this](const std::string &message) { diagnosticLog_->write("Status Bar", message); };
         root->browser.setListing(library_, libraryReady_); // the library listed so far, if anything
         root->devices.publication = [this] { return document_->parameterFeed().current(); };
         root->devices.parameterDemand = [this](const void *consumer, const std::vector<std::int64_t> &ids) {
@@ -1285,6 +1304,8 @@ class AdiApplication final : public juce::JUCEApplication,
         window_->setName("ADI - " + file.getFileNameWithoutExtension());
         root_->needsFirstSave = false;
         commands_->manager.commandStatusChanged();
+        if (diagnosticLog_)
+            diagnosticLog_->write("Saved project as", file.getFileName().toStdString());
         root_->say(landedFirst + document_->warning());
     }
     // Save a Copy, once the chooser has a file. The Status Bar says where it went, since nothing
@@ -1452,6 +1473,7 @@ class AdiApplication final : public juce::JUCEApplication,
                     return std::make_unique<ShortcutsPage>(*commands_);
                 };
                 settingsWindow_->panel().onChange = [this] {
+                    refreshDiagnosticLog();
                     commands_->reload();
                     // The Audio page's Delay Compensation row is the Options menu's switch.
                     if (root_ && root_->applyDelayCompensation)
@@ -1589,6 +1611,7 @@ class AdiApplication final : public juce::JUCEApplication,
     bool controlTest_ = false;
     bool testLaunch() const { return smokeOutput_ != juce::File{} || controlTest_; }
     std::unique_ptr<settings::AppSettings> settings_;
+    std::optional<DiagnosticLog> diagnosticLog_;
     std::unique_ptr<AppCommands> commands_;
     device::JuceDeviceLoader loader_;
     // The plug-in catalogue's service (DF-W34, N58), declared after the loader it drives so it goes

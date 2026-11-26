@@ -696,7 +696,8 @@ void catalogueSettings(std::vector<Setting>& r) {
     r.push_back(choice("updates.channel", "Licenses & Updates", "Release channel", "Stable, or beta releases too (Bitwig).",
                        {"stable", "beta"}, "stable"));
     r.push_back(make("privacy.diagnosticLog", Type::Bool, "Licenses & Updates", "Write a diagnostic log",
-                     "A local log for support; nothing is sent (R-20).", false));
+                     "Record the ADI version, project names and window messages in a local log for support. "
+                     "Nothing is sent (R-20).", false));
     r.push_back(make("settings.logChanges", Type::Bool, "Licenses & Updates", "Log settings changes",
                      "Settings changes are logged, with the time and the old and new value "
                      "(A6-20, ADR-0203). Off: a person's changes are not logged; the agent's "
