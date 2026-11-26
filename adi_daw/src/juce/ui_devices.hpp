@@ -23,23 +23,27 @@ class DeviceChainStrip;
 class SharedAnalysis;
 // One parameter of the DAW-drawn panel (ADR-0150, ADR-0198): its name, a control
 // shaped as the plug-in declares it, and the plug-in's own text for the value.
+class ValueEntry;
 class ParameterControl final : public juce::Component, public juce::SettableTooltipClient {
   public:
     // `defaultNormalized` is the plug-in's default for the parameter, where Delete returns it
     // (Live 12 manual 41.6, Return to Default).
     ParameterControl(DeviceChainStrip &, std::int64_t, const panel::Record &,
                      double defaultNormalized);
+    ~ParameterControl() override;
     void present(const panel::Record &, double defaultNormalized);
     void resized() override;
     void paint(juce::Graphics &) override;
     // A clicked control takes the focus, so Live's value keys reach it (manual 41.6): Delete
     // or Backspace is Return to Default, one gesture to the plug-in's default, one undo step.
-    // Other keys go on to the device, so the left and right arrows still move between devices.
+    // Up/Down nudge a knob; Enter or a numeric key edits its normalized value.
+    // Left and right still move between devices.
     bool keyPressed(const juce::KeyPress &) override;
     bool returnToDefault();
     // Live's parameter context menu (manual 25.4; AU-04): Re-Enable Automation while the parameter's
     // lane is overridden. A right-click on the knob or the control's labels opens it.
     void mouseDown(const juce::MouseEvent &) override;
+    void mouseDoubleClick(const juce::MouseEvent &) override;
     void showMenu();
     // The device's plug-in format, which names its parameters' lanes (`engine::automationParamRef`).
     std::string format;
@@ -54,10 +58,12 @@ class ParameterControl final : public juce::Component, public juce::SettableTool
 
   private:
     bool gesture(engine::ParamEventKind, double);
+    bool setOnce(double);
     DeviceChainStrip &strip;
     const panel::Record *record = nullptr;
     double defaultValue = 0;
     juce::Label name, value;
+    std::unique_ptr<ValueEntry> valueEntry_;
     int presentedMenuId_ = 0;
     std::int32_t menuSteps_ = 0;
     std::vector<std::string> menuLabels_;
