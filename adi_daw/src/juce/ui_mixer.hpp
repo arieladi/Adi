@@ -4,6 +4,8 @@
 #include "adi/ops.hpp"
 #include "adi/return_send_tap.hpp"
 #include "adi/ui/arm_edits.hpp"
+#include "adi/ui/track_edits.hpp"
+#include "ui_controls.hpp"
 #include <array>
 #include <functional>
 #include <juce_gui_basics/juce_gui_basics.h>
@@ -24,16 +26,13 @@ class ArmButton final : public juce::TextButton {
   public:
     void paintButton(juce::Graphics &, bool over, bool down) override;
 };
-// Live's Solo switch: a right-click opens its menu (Solo in Place, manual 18.6) and solos nothing.
-class SoloButton final : public juce::TextButton {
+// A right-click opens a mixer switch's menu without switching it.
+class MixerMenuButton final : public controls::PrimaryMouseControl<juce::TextButton> {
   public:
-    using juce::TextButton::TextButton;
+    using PrimaryMouseControl::PrimaryMouseControl;
     std::function<void()> onMenu;
     void mouseDown(const juce::MouseEvent &) override;
-    void mouseUp(const juce::MouseEvent &) override;
 };
-// Live's peak level (manual 18.1): the highest peak since the last click, in dB, red once
-// it has clipped. A click resets it.
 class ValueEntry;
 // A mixer control the left button moves; the right one opens the strip's menu for it and moves nothing (AU-04):
 // JUCE's Slider starts a drag on any button when its own menu is off.
@@ -63,6 +62,8 @@ class PrimaryButtonSlider final : public juce::Slider {
     double step_ = 0;
     std::unique_ptr<ValueEntry> valueEntry_;
 };
+// Live's peak level (manual 18.1): the highest peak since the last click, in dB, red once
+// it has clipped. A click resets it.
 class PeakHold final : public juce::Button {
   public:
     PeakHold();
@@ -145,8 +146,7 @@ class MixerStrip final : public juce::Component,
     // The drag's travel: the box's 2000 ms over this many pixels, 0.1 ms a pixel (PROVISIONAL,
     // Live's step is M1-06).
     static constexpr int kDelayDragPixels = 20000;
-    juce::TextButton active;
-    SoloButton solo{"S"};
+    MixerMenuButton active, solo{"S"};
     bool cueMode_ = false; // the Solo button is the Cue button (Options > Cue Switches)
     bool cueDragging_ = false;
     ArmButton arm;
@@ -221,6 +221,10 @@ class MixerStrip final : public juce::Component,
     juce::PopupMenu soloMenu();
 
   private:
+    friend class MixerPanel;
+    void trackTitleMenu(juce::Point<int> where);
+    void selectTitle(std::int64_t track);
+    bool cancelTitleDrag();
     void paintInOut(juce::Graphics &, int x) const;
     const char *audioInputLabel() const;
     void showAudioInputMenu();
@@ -237,6 +241,9 @@ class MixerStrip final : public juce::Component,
   public:
     // The volume fader's menu as its right-click shows it: empty when the track has no Volume lane.
     juce::PopupMenu volumeMenuItems();
+    juce::PopupMenu panMenuItems();
+    juce::PopupMenu sendMenuItems(std::size_t index);
+    juce::PopupMenu activatorMenuItems();
 
   private:
     void sendMenu(std::size_t index);
@@ -306,6 +313,15 @@ class MixerStrip final : public juce::Component,
     void beginLive(gesture::ScalarKind, std::int64_t id, gesture::ScalarControlDomain, const std::string &label);
     bool endLive();
     int resizeFrom_ = -1; // the track's height when its split line was pressed; -1 while not resizing
+    struct TitleDrag {
+        std::int64_t source;
+        std::uint64_t generation;
+        int startX;
+        bool movingReturn;
+        bool selectOnRelease;
+        bool moving = false;
+    };
+    std::optional<TitleDrag> titleDrag_;
     bool onSplitLine(const juce::MouseEvent &) const noexcept;
     // The engine's scalar meter for the track (UI-ARCHITECTURE §9; `StripNode::meter()`, #381),
     // written per callback by the audio thread and read here with relaxed loads; null until the
@@ -337,8 +353,12 @@ class MixerPanel final : public juce::Component {
     // The frame above and below the lanes stands in front of a row scrolled past either edge.
     void paintOverChildren(juce::Graphics &) override;
     void mouseDown(const juce::MouseEvent &) override;
+    bool keyPressed(const juce::KeyPress &) override;
     void mouseWheelMove(const juce::MouseEvent &, const juce::MouseWheelDetails &) override;
     void contextMenu(juce::Point<int>);
+    void showContextMenu(juce::PopupMenu, juce::Point<int>);
+    // A presenter can inspect the requested menu without opening a native popup.
+    std::function<void(juce::PopupMenu)> contextMenuPresenter;
     // Where the track controls' rows show, level with the arrangement's lanes, in this panel's
     // coordinates; the whole height for the Mixer View.
     juce::Range<int> rowsBand() const noexcept;
@@ -373,12 +393,21 @@ class MixerPanel final : public juce::Component {
     const std::vector<std::unique_ptr<MixerStrip>> &strips() const noexcept { return strips_; }
 
   private:
+    friend class MixerStrip;
+    struct TitleDrop {
+        TrackDrop target;
+        int x;
+        bool intoGroup = false;
+    };
+    TitleDrop trackDropAt(int x, bool movingReturn) const;
+    void previewTrackDrop(std::optional<TitleDrop> drop);
     void place();
     void placeColumns();
     // Live's frame above the rows: the band, and H and W beside the Overview's end.
     void paintTop(juce::Graphics &) const;
     bool vertical_;
     int scrollX_ = 0;
+    std::optional<TitleDrop> trackDrop_;
     std::vector<std::unique_ptr<MixerStrip>> strips_;
 };
 // Bitwig's Use Large Track Height (Master Reference 10, Figure 33; the director, 28 October

@@ -264,7 +264,7 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
         {&punchOut, "Punch-Out", "Records only before the loop's end."},
         {&loopLength, "Loop Length", "How long the arrangement loop is, in bars, beats and sixteenths. Click to "
                                      "type another, such as 8.0.0."},
-        {&draw, "Draw Mode", "Draws notes and automation with the mouse."},
+        {&draw, "Draw Mode", "Draws notes and automation with the mouse. B."},
         {&keyboard, "Computer MIDI Keyboard", "Plays notes from the computer keyboard."},
         {&key, "Key Map Mode", "Assigns computer keys to controls."},
         {&midi, "MIDI Map Mode", "Assigns MIDI controllers to controls."},
@@ -341,6 +341,7 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
     };
     // Live 12 manual 21.1: Arrangement Record records every armed track; F9 is the same command.
     record.onClick = [this] { root_.command(AppCommands::ArrangementRecord); };
+    draw.onClick = [this] { root_.command(AppCommands::DrawMode); };
     // Manual 21.2: MIDI Arrangement Overdub, the window's own switch; it decides what a MIDI recording
     // does to the notes already there, once MIDI records (SRF-05).
     overdub.onClick = [this] {
@@ -355,7 +356,7 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
             item != &signature && item != &tempo &&
             item != &tap && item != &position && item != &automationArm && item != &reEnable && item != &metronome &&
             item != &loop && item != &loopStart && item != &loopLength && item != &record && item != &overdub &&
-            item != &indicators)
+            item != &indicators && item != &draw)
             item->onClick = [this, item] {
                 root_.say(item->getTitle().toStdString() + " is not built yet.");
             };

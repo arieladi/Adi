@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_shell.hpp"
+#include "adi/automation_splice_store.hpp"
 #include "adi/track_image.hpp"
-#include "adi/edit_plan.hpp"
 #include "adi/media/media_ops.hpp"
 #include "ui_controls.hpp"
 #include "ui_floating.hpp"
@@ -13,6 +13,8 @@
 #include "adi/ui/fade_edits.hpp"
 #include "adi/ui/meter_edits.hpp"
 #include "adi/ui/meters.hpp"
+#include "adi/ui/midi_tracks.hpp"
+#include "adi/ui/project_document.hpp"
 #include "adi/ui/recording_edits.hpp"
 #include "adi/ui/send_edits.hpp"
 #include "adi/ui/tempo_edits.hpp"
@@ -180,7 +182,7 @@ struct StableEntry {
     const char *category;
 };
 const StableEntry *stableEntry(int id) noexcept {
-    static const std::array<StableEntry, 128> table{{
+    static const std::array<StableEntry, AppCommands::LastId - AppCommands::PlayStop + 1> table{{
         {"transport.play-stop", "Transport"}, // PlayStop
         {"transport.stop", "Transport"}, // Stop
         {"edit.undo", "Edit"}, // Undo
@@ -309,6 +311,8 @@ const StableEntry *stableEntry(int id) noexcept {
         {"help.manual", "Help"}, // HelpManual
         {"help.keyboard-shortcuts", "Help"}, // KeyboardReference
         {"view.automation-mode", "View"}, // AutomationMode
+        {"edit.delete-automation", "Edit"}, // DeleteAutomation
+        {"mixer.arm-selected", "Mixer"}, // ArmSelected
     }};
     const auto at = id - AppCommands::PlayStop;
     return at >= 0 && at < static_cast<int>(table.size()) ? &table[static_cast<std::size_t>(at)] : nullptr;
@@ -533,7 +537,8 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Draw Mode", "Arrange Clip View Panels Automatically", "Arrange Clip View Panels Horizontally",
                                   "Arrange Clip View Panels Vertically", "Clip View", "Fit to Time Range",
                                   "Arrangement Record", "Export Audio/Video...", "Delay Compensation", "Solo Switches", "Cue Switches",
-                                  "Live 12 Manual", "Keyboard Shortcuts", "Automation Mode"};
+                                  "Live 12 Manual", "Keyboard Shortcuts", "Automation Mode", "Delete Automation",
+                                  "Arm Selected Tracks"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], category(id), 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -842,6 +847,10 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         info.addDefaultKeypress('s', 0);
         info.setActive(active_ != nullptr);
         break;
+    case ArmSelected:
+        info.addDefaultKeypress('c', 0);
+        info.setActive(active_ != nullptr);
+        break;
     case SoloInPlace: // manual 18.6: the Options menu's entry, ticked from the project's field (#412)
         info.setTicked(active_ != nullptr && active_->reader().soloInPlace());
         info.setActive(active_ != nullptr);
@@ -855,6 +864,10 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         info.setTicked(active_ != nullptr && active_->automationMode());
         info.setActive(active_ != nullptr);
         break;
+    case DeleteAutomation:
+        info.addDefaultKeypress(juce::KeyPress::backspaceKey, cmd);
+        info.setActive(active_ != nullptr && active_->canDeleteShownAutomation());
+        break;
     case SelectAll: // §42.5: Ctrl/Cmd+A; a text field with the focus selects its own text first
         info.addDefaultKeypress('a', cmd);
         info.setActive(active_ != nullptr);
@@ -864,8 +877,8 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         info.addDefaultKeypress('g', id == GroupTracks ? cmd : cmd | shift);
         const auto snapshot = active_ != nullptr ? active_->current() : nullptr;
         const auto track = active_ != nullptr ? active_->arrangement.geometry.selection.track : 0;
-        info.setActive(snapshot != nullptr && (id == GroupTracks ? canGroup(snapshot->tracks, track)
-                                                                 : canUngroup(snapshot->tracks, track)));
+        info.setActive(snapshot != nullptr && active_->trackGroupingContext() &&
+                       (id == GroupTracks ? canGroup(snapshot->tracks, track) : canUngroup(snapshot->tracks, track)));
         break;
     }
     // Live 12's Navigate menu (online manual §41.4.1, §42.2): Alt, or Option, and the view's
@@ -1026,22 +1039,22 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         info.setTicked(active_ != nullptr && static_cast<int>(active_->clipView.arrangement()) == id - ArrangePanelsAutomatically);
         info.setActive(active_ != nullptr && active_->state().clipView);
         break;
-    // The editor's switches (manual 10.4.1, 10.6): F, G, K and B are the editor's own keys, shown
-    // here beside their entries; from a menu they are thrown whenever the editor is on screen.
+    case DrawMode:
+        info.addDefaultKeypress('b', 0);
+        info.setActive(active_ != nullptr);
+        info.setTicked(active_ != nullptr && active_->drawMode());
+        break;
+    // The editor's switches (manual 10.4.1, 10.6): F, G and K are the editor's own keys.
+    // From a menu they are thrown whenever the editor is on screen.
     case FoldToNotes:
     case FoldToScale:
-    case HighlightScales:
-    case DrawMode: {
-        info.addDefaultKeypress(id == FoldToNotes ? 'f' : id == FoldToScale ? 'g' : id == HighlightScales ? 'k' : 'b', 0);
+    case HighlightScales: {
+        info.addDefaultKeypress(id == FoldToNotes ? 'f' : id == FoldToScale ? 'g' : 'k', 0);
         const bool shown = active_ != nullptr && active_->noteEditorShown();
         info.setActive(shown);
         if (!shown)
             break;
         const auto &notes = active_->clipView.notes;
-        if (id == DrawMode) {
-            info.setTicked(notes.drawMode());
-            break;
-        }
         const auto entry = notes.contextEntry(id == FoldToNotes   ? NoteEditor::kFoldToNotes
                                               : id == FoldToScale ? NoteEditor::kFoldToScale
                                                                   : NoteEditor::kHighlightScale);
@@ -1081,16 +1094,27 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
 }
 bool AppCommands::key(const juce::KeyPress &key, AdiRootComponent &root) {
     activate(root);
-    // F, G, K and B are the Note Editor's own keys: it takes them itself while it has the keyboard.
+    const auto id = manager.getKeyMappings()->findCommandForKeyPress(key);
+    // F, G and K are the Note Editor's own keys: it takes them itself while it has the keyboard.
     // A key that comes here was pressed elsewhere, where they are no command's.
-    if (const auto id = manager.getKeyMappings()->findCommandForKeyPress(key); id >= FoldToNotes && id <= DrawMode)
+    if (id >= FoldToNotes && id <= HighlightScales)
         return false;
+    if ((id == GroupTracks || id == UngroupTracks) && !root.trackGroupingContext())
+        return false;
+    if (id == DrawMode || id == ArmSelected) {
+        const auto *focus = juce::Component::getCurrentlyFocusedComponent();
+        if (focus && root.isParentOf(focus) && dynamic_cast<const juce::TextEditor *>(focus))
+            return false;
+        if (root.transport.keyboard.getToggleState() &&
+            key == juce::KeyPress(id == DrawMode ? 'b' : 'c'))
+            return false;
+    }
     // A with the Note Editor's keyboard stays the editor's: Automation Mode is the Arrangement's.
-    if (manager.getKeyMappings()->findCommandForKeyPress(key) == AutomationMode && root.clipView.notes.hasContext())
+    if (id == AutomationMode && root.clipView.notes.hasContext())
         return false;
     // A latching key runs its command once while it is held (Live 42.25): the root times it. One let
     // go where the window could not see it (the focus elsewhere) goes down anew, and nothing goes back.
-    if (const auto id = manager.getKeyMappings()->findCommandForKeyPress(key); AdiRootComponent::latches(id)) {
+    if (AdiRootComponent::latches(id)) {
         if (root.latch().held() && !root.input.down(root.latch().key()))
             root.letGoUnseen();
         return root.latchKey(id, key.getKeyCode(), true, root.input.ms());
@@ -2027,7 +2051,7 @@ bool AdiRootComponent::keyStateChanged(bool isKeyDown) {
     return handled || juce::Component::keyStateChanged(isKeyDown);
 }
 bool AdiRootComponent::latches(int command) noexcept {
-    return command == AppCommands::SoloSelected || command == AppCommands::ZoomToSelection ||
+    return command == AppCommands::SoloSelected || command == AppCommands::ZoomToSelection || command == AppCommands::DrawMode ||
            (command >= AppCommands::ActivateTrack1 && command <= AppCommands::ActivateTrack8);
 }
 bool AdiRootComponent::latchKey(int id, int keyCode, bool down, std::int64_t nowMs) {
@@ -2035,6 +2059,11 @@ bool AdiRootComponent::latchKey(int id, int keyCode, bool down, std::int64_t now
         // The first press acts; a repeat while the key is held does nothing.
         if (!latch_.press(keyCode, id, nowMs))
             return true;
+        if (id == AppCommands::DrawMode) {
+            drawBeforeLatch_ = drawMode();
+            trimBeforeDrawLatch_ = clipView.notes.trimMode();
+            return command(id);
+        }
         const auto before = submitter_.nextUndo();
         const bool done = command(id);
         if (const auto after = submitter_.nextUndo(); after && (!before || after->txnId != before->txnId))
@@ -2046,6 +2075,12 @@ bool AdiRootComponent::latchKey(int id, int keyCode, bool down, std::int64_t now
         return false;
     if (back->command == AppCommands::ZoomToSelection)
         return command(AppCommands::ZoomBack);
+    if (back->command == AppCommands::DrawMode) {
+        clipView.notes.setDrawMode(drawBeforeLatch_);
+        if (trimBeforeDrawLatch_)
+            clipView.notes.setTrimMode(true);
+        return true;
+    }
     // Only the step the press made, while it is still the latest: an edit since then stays, and so
     // does what the press made under it. Going back pauses no Follow, as an undo from the menu does.
     // A knob edit still held commits first (DF-W29), so the check sees the step that is latest.
@@ -2330,6 +2365,11 @@ bool AdiRootComponent::trackClipboardContext() const {
     const auto *focus = juce::Component::getCurrentlyFocusedComponent();
     return focus == &arrangement.headers ||
            (dynamic_cast<const MixerStrip *>(focus) != nullptr && mixerView.isParentOf(focus));
+}
+bool AdiRootComponent::trackGroupingContext() const {
+    return !noteEditorHasContext() && !devices.hasKeyboardFocus(true) && !mixViewPanel.stack.hasKeyboardFocus(true) &&
+           !mixViewPanel.hasAnalyzerControlFocus() && !mixViewPanel.hasChannelControlFocus() &&
+           dynamic_cast<const juce::TextEditor *>(juce::Component::getCurrentlyFocusedComponent()) == nullptr;
 }
 bool AdiRootComponent::trackClipboard(ClipCommand command) {
     using track_edits_detail::children;
@@ -2905,6 +2945,109 @@ void AdiRootComponent::say(std::string message) {
     error_ = std::move(message);
     dirty_.mark(DirtySet::Status);
 }
+bool AdiRootComponent::canRenderTrack(TrackRenderAction action, const engine::TrackNode &track) const {
+    if (!trackRenderDocument_ || trackRenderDocument_->store().readOnly() || track.frozenByGroup != 0)
+        return false;
+    const bool regular = track.kind == "audio" || isMidiTrack(track);
+    const bool cached = track.frozen && track.freezeMediaId &&
+                        (track.freezeMode == "wet" || track.freezeMode == "group");
+    const bool running = trackRenderDocument_->trackRenderRunning();
+    switch (action) {
+    case TrackRenderAction::Freeze:
+        if (!regular || track.frozen || running)
+            return false;
+        break;
+    case TrackRenderAction::Unfreeze:
+        if (!regular || !track.frozen)
+            return false;
+        break;
+    case TrackRenderAction::Flatten:
+        if (!regular || !cached)
+            return false;
+        break;
+    case TrackRenderAction::BounceToNewTrack:
+        if ((!regular && track.kind != "group") || (track.frozen && !cached) || running)
+            return false;
+        break;
+    case TrackRenderAction::BounceInPlace:
+        if (!regular || (track.frozen && !cached) || running)
+            return false;
+        break;
+    }
+    SQLite::Statement state(trackRenderDocument_->store().db(),
+                            "SELECT locked FROM tracks WHERE id=?");
+    state.bind(1, track.id);
+    if (!state.executeStep() || state.getColumn(0).getInt() != 0)
+        return false;
+    if (action == TrackRenderAction::BounceInPlace && !track.frozen) {
+        SQLite::Statement incoming(trackRenderDocument_->store().db(),
+                                   "SELECT 1 FROM routing WHERE dst_kind='track' AND dst_id=? "
+                                   "AND kind IN ('main','send') LIMIT 1");
+        incoming.bind(1, track.id);
+        return !incoming.executeStep();
+    }
+    return true;
+}
+void AdiRootComponent::addTrackRenderItems(juce::PopupMenu &menu, std::int64_t id) {
+    const auto current = view_.current();
+    const auto *track = current ? current->findTrack(id) : nullptr;
+    if (track == nullptr)
+        return;
+    const bool regular = track->kind == "audio" || isMidiTrack(*track);
+    if (!regular && track->kind != "group")
+        return;
+    menu.addSeparator();
+    const juce::Component::SafePointer<AdiRootComponent> safe(this);
+    const auto add = [&](const char *name, TrackRenderAction action) {
+        menu.addItem(name, canRenderTrack(action, *track), false, [safe, action, id] {
+            if (safe)
+                safe->renderTrack(action, id);
+        });
+    };
+    if (regular) {
+        if (track->frozen)
+            add("Unfreeze Track", TrackRenderAction::Unfreeze);
+        else
+            add("Freeze Track", TrackRenderAction::Freeze);
+        add("Flatten Track", TrackRenderAction::Flatten);
+    }
+    add("Bounce to New Track", TrackRenderAction::BounceToNewTrack);
+    if (regular)
+        add("Bounce Track in Place", TrackRenderAction::BounceInPlace);
+}
+bool AdiRootComponent::renderTrack(TrackRenderAction action, std::int64_t id) {
+    const auto current = view_.current();
+    const auto *track = current ? current->findTrack(id) : nullptr;
+    if (track == nullptr || !canRenderTrack(action, *track))
+        return fail("That track is no longer available for this command.");
+    bool ok = false;
+    std::string status;
+    switch (action) {
+    case TrackRenderAction::Freeze:
+        ok = trackRenderDocument_->freezeTrack(id);
+        status = "Freezing track...";
+        break;
+    case TrackRenderAction::Unfreeze:
+        ok = trackRenderDocument_->unfreezeTrack(id);
+        break;
+    case TrackRenderAction::Flatten:
+        ok = trackRenderDocument_->flattenTrack(id);
+        break;
+    case TrackRenderAction::BounceToNewTrack:
+        ok = trackRenderDocument_->bounceTrackToNewTrack(id);
+        status = "Bouncing to a new track...";
+        break;
+    case TrackRenderAction::BounceInPlace:
+        ok = trackRenderDocument_->bounceTrackInPlace(id);
+        if (!track->frozen)
+            status = "Bouncing track in place...";
+        break;
+    }
+    if (!ok)
+        return fail(trackRenderDocument_->error());
+    say(std::move(status));
+    return true;
+}
 void AdiRootComponent::sayStaleAddMenu() {
     say("This Add menu is out of date. Reopen it and try again.");
 }
@@ -3097,12 +3240,36 @@ bool AdiRootComponent::dropAudioPaths(const juce::StringArray &paths, std::int64
                            juce::File::createFileWithoutCheckingPath(path).getFileNameWithoutExtension().toStdString());
     return dropAudioFiles(files, track, pos, separate);
 }
+bool AdiRootComponent::sampleInstrumentTarget(std::int64_t track) const {
+    const auto current = view_.current();
+    const auto *target = current ? current->findTrack(track) : nullptr;
+    return target && isMidiTrack(*target);
+}
+bool AdiRootComponent::loadSampleAsInstrument(std::int64_t track, const std::filesystem::path &path) {
+    if (!sampleInstrumentTarget(track))
+        return fail("Choose a MIDI track to load the sample as an instrument.");
+    if (importing_ || importPrompt_)
+        return fail("Finish the current import before loading another sample.");
+    if (!loadSampleInstrument)
+        return fail("Loading a sample as an instrument needs the application.");
+    std::string why;
+    if (!loadSampleInstrument(track, path, why))
+        return fail(why.empty() ? "The sample could not be loaded as an instrument." : std::move(why));
+    say({});
+    return true;
+}
 bool AdiRootComponent::dropAudioFiles(const std::vector<std::pair<std::string, std::string>> &files,
                                       std::int64_t track, std::int64_t pos, bool separate) {
     // Where it lands is checked before anything is asked or read.
-    if (!view_.current())
+    const auto current = view_.current();
+    if (!current)
         return fail("Dropping audio needs an open project.");
-    if (auto refusal = audioDropRefusal(*view_.current(), track); !refusal.empty())
+    if (const auto *target = current->findTrack(track); target && isMidiTrack(*target)) {
+        if (files.size() != 1)
+            return fail("Drop one sample at a time to make an instrument.");
+        return loadSampleAsInstrument(track, media::pathFromUtf8(files.front().first));
+    }
+    if (auto refusal = audioDropRefusal(*current, track); !refusal.empty())
         return fail(std::move(refusal));
     if (importing_)
         return fail("The last drop is still being imported.");
@@ -3314,13 +3481,13 @@ bool AdiRootComponent::dropPlain(const std::vector<std::pair<std::string, std::s
     publishSelection();
     return true;
 }
-bool AdiRootComponent::groupTracks(bool ungroup) {
+bool AdiRootComponent::groupTracks(bool ungroup, std::int64_t group) {
     // From the CURRENT cell, as every action is; the batch is one undo step, labelled as Live's
     // Edit menu names it.
     const auto current = view_.current();
     // Group Tracks takes every selected track (Shift+click on the headers, or a selection across
     // tracks); Ungroup the selected group.
-    const auto id = arrangement.geometry.selection.track;
+    const auto id = group != 0 ? group : arrangement.geometry.selection.track;
     auto edit = ungroup ? ungroupTrack(current->tracks, id)
                         : ::adi::ui::groupTracks(current->tracks, arrangement.geometry.selectedTracks(reader()),
                                                  RowIds(submitter_.store().db()).next("tracks"));
@@ -3376,15 +3543,52 @@ TrackRecordState AdiRootComponent::recordState(std::int64_t track) const {
     return ::adi::ui::recordState(recordStates_, track);
 }
 bool AdiRootComponent::armTrack(std::int64_t id, bool add) {
-    // From the CURRENT cell (ADR-0201) and the rows the application hands over; one batch.
+    return toggleArm(id, add);
+}
+bool AdiRootComponent::toggleArm(std::optional<std::int64_t> clicked, bool add) {
     const auto current = view_.current();
     if (!current)
         return fail("Arming needs an open project.");
-    auto edit = armTracks(current->tracks, freshRecordStates(), id, arrangement.geometry.selectedTracks(reader()),
-                          commands_.exclusiveArm(), add);
+    const SnapshotReader snapshot(current);
+    auto &selection = arrangement.geometry.selection;
+    auto selected = arrangement.geometry.selectedTracks(snapshot);
+    auto anchor = clicked.value_or(selection.track);
+    if (!clicked) {
+        const auto eligible = [&](std::int64_t id) {
+            const auto *track = snapshot.findTrack(id);
+            return track && armable(*track);
+        };
+        if (std::find(selected.begin(), selected.end(), anchor) == selected.end() || !eligible(anchor)) {
+            const auto first = std::find_if(selected.begin(), selected.end(), eligible);
+            if (first == selected.end())
+                return false;
+            anchor = *first;
+        }
+    }
+    const auto states = freshRecordStates();
+    auto edit = armTracks(current->tracks, states, anchor, selected, commands_.exclusiveArm(), add);
     if (!edit.refusal.empty())
         return fail(std::move(edit.refusal));
-    return edit.ops.empty() || submitEdits(std::move(edit.ops));
+    if (!submitEdits(std::move(edit.ops)))
+        return false;
+    // Publish after submission so Undo restores the selection from before the Arm click.
+    if (clicked && !::adi::ui::recordState(states, anchor).armed && selection.track != anchor) {
+        if (const auto found = std::find(selected.begin(), selected.end(), anchor); found != selected.end())
+            selected.erase(found);
+        else
+            selected.clear();
+        selection.track = anchor;
+        selection.toTrack = 0;
+        selection.picked = std::move(selected);
+        selection.clip = 0;
+        selection.pickedClips.clear();
+        selection.start = selection.end = selection.insert;
+        arrangement.selectedLocator = 0;
+        arrangement.selectedMeter = -1;
+        arrangement.loopSelected = false;
+        publishSelection();
+    }
+    return true;
 }
 bool AdiRootComponent::setMonitor(std::int64_t id, Monitor mode) {
     const auto current = view_.current();
@@ -3533,7 +3737,11 @@ double AdiRootComponent::automationCurrent(const AutomationTarget &target) const
         return target.minimum;
     if (target.ownerKind == "track") {
         const auto *t = current->findTrack(target.ownerId);
-        return t == nullptr ? target.minimum : target.paramRef == "pan" ? t->pan : t->volumeDb;
+        if (!t)
+            return target.minimum;
+        if (target.paramRef == "mute")
+            return t->muted ? 1.0 : 0.0;
+        return target.paramRef == "pan" ? t->pan : t->volumeDb;
     }
     if (target.ownerKind == "routing") {
         for (const auto &s : current->sends)
@@ -3583,6 +3791,159 @@ bool AdiRootComponent::deleteAutomationPoint(std::int64_t track, std::uint64_t p
     auto ops = ::adi::ui::deleteAutomationPoint(envelopeOf(*current, automationTarget(track)), point);
     return !ops.empty() && submitEdits(std::move(ops));
 }
+
+bool AdiRootComponent::drawAutomationStroke(std::int64_t track, const AutomationTarget &target,
+                                           std::int64_t begin, std::int64_t end,
+                                           const std::map<std::int64_t, double> &points, bool stepped,
+                                           std::uint64_t generation) {
+    const auto current = view_.committed();
+    if (!automationMode_ || !current || !current->tempo || !current->findTrack(track) ||
+        generation != view_.committedGeneration() || automationTarget(track) != target)
+        return fail("The automation target changed during the stroke.");
+    if (points.empty() || begin < 0 || points.begin()->first != begin || points.rbegin()->first >= end)
+        return false;
+    const auto env = envelopeOf(*current, target);
+    if (!editableEnvelope(env))
+        return fail("This envelope uses absolute time.");
+    const std::uint8_t curve = stepped || target.stepped ? 0 : 1;
+    const auto valueAt = [&](double value) { return writtenAutomationValue(target, value); };
+    constexpr const char *label = "Draw Automation";
+    if (env.lane) {
+        // A mouse click at a close zoom can span less than one rendered
+        // sample. Give the stroke at least one sample before splicing.
+        const auto rate = editRate();
+        const auto at = current->tempo->ticksToSeconds(begin) * rate;
+        const auto until = current->tempo->ticksToSeconds(end) * rate;
+        if (!std::isfinite(at) || !std::isfinite(until) || until > (std::int64_t{1} << 50))
+            return fail("The automation stroke is beyond the timeline range.");
+        if (std::llround(until) <= std::llround(at))
+            end = std::max(end, current->tempo->secondsToTicks(static_cast<double>(std::llround(at) + 1) / rate));
+        std::vector<automation::NativeSpliceKnot> knots;
+        knots.reserve(points.size() + 1);
+        for (const auto &[tick, value] : points)
+            knots.push_back({{tick, valueAt(value), 0.f, curve, 0, 0, 0}, {}});
+        knots.push_back({{end, knots.back().point.value, 0.f, curve, 0, 0, 0}, {}});
+        auto edit = automation::prepareEnvelopeSplice(submitter_.store(), env.lane->id, begin, end, knots, rate,
+                                                       automation::kSplicePointBudget, label, session_.advisory());
+        if (!edit.ok)
+            return fail(edit.error);
+        return edited(submitter_.submit(std::move(edit.requests)));
+    }
+
+    RowIds rows(submitter_.store().db());
+    const auto lane = rows.next("automation_lanes");
+    const auto base = valueAt(automationCurrent(target));
+    auto knots = Payload::array();
+    std::uint64_t pointId = 1;
+    auto addPoint = [&](std::int64_t tick, double value, std::uint8_t kind) {
+        knots.push_back({{"id", pointId++}, {"time", tick}, {"value", value}, {"curve", kind}, {"tension", 0.0}});
+    };
+    if (begin > 0)
+        addPoint(0, base, 0);
+    for (const auto &[tick, value] : points)
+        addPoint(tick, valueAt(value), curve);
+    if (curve != 0 && points.rbegin()->first < end - 1)
+        addPoint(end - 1, valueAt(points.rbegin()->second), 0);
+    addPoint(end, base, 0);
+    auto create = automation::createLane(automationLaneSpec(target, base, lane));
+    auto write = automation::writePoints(rows.next("automation_data"), lane, nullptr, std::move(knots));
+    create.label = write.label = label;
+    return submitEdits({std::move(create), std::move(write)});
+}
+
+namespace {
+std::vector<std::int64_t> matchingAutomation(const engine::Snapshot &snapshot, std::string_view kind,
+                                             std::int64_t owner, std::string_view param = {}) {
+    std::vector<std::int64_t> ids;
+    for (const auto &lane : snapshot.automationLanes)
+        if (lane && lane->ownerKind == kind && lane->ownerId == owner &&
+            (param.empty() || automation_override_detail::sameParam(kind, lane->paramRef, param)))
+            ids.push_back(lane->id);
+    return ids;
+}
+}
+
+bool AdiRootComponent::canDeleteShownAutomation() const {
+    const auto current = view_.current();
+    const auto track = arrangement.geometry.selection.track;
+    if (!automationMode_ || !current || !current->findTrack(track) || clipView.notes.hasContext() ||
+        submitter_.store().readOnly())
+        return false;
+    const auto target = automationTarget(track);
+    return !matchingAutomation(*current, target.ownerKind, target.ownerId, target.paramRef).empty();
+}
+
+bool AdiRootComponent::deleteAutomationLanes(const std::vector<std::int64_t> &ids, const char *label) {
+    if (ids.empty())
+        return false;
+    std::vector<OpRequest> requests;
+    requests.reserve(ids.size());
+    for (const auto id : ids) {
+        auto op = automation::deleteLane(id);
+        op.label = label;
+        requests.push_back(std::move(op));
+    }
+    return submitEdits(std::move(requests));
+}
+
+void AdiRootComponent::addAutomationDeleteItem(juce::PopupMenu &menu, const AutomationTarget &target) {
+    const auto current = view_.current();
+    if (!current || submitter_.store().readOnly() ||
+        matchingAutomation(*current, target.ownerKind, target.ownerId, target.paramRef).empty())
+        return;
+    menu.addItem("Delete Automation", [safe = SafePointer<AdiRootComponent>(this), target] {
+        if (safe)
+            if (const auto snapshot = safe->view_.current())
+                safe->deleteAutomationLanes(matchingAutomation(*snapshot, target.ownerKind, target.ownerId,
+                                                                target.paramRef), "Delete Automation");
+    });
+}
+
+std::vector<std::int64_t> AdiRootComponent::trackAutomationLanes(std::int64_t track) {
+    std::vector<std::int64_t> ids;
+    const auto current = view_.current();
+    if (!current || !current->findTrack(track) || current->automationLanes.empty())
+        return ids;
+    SQLite::Statement query(submitter_.store().db(), R"sql(
+        WITH RECURSIVE track_devices(id) AS (
+            SELECT d.id FROM devices d JOIN device_chains c ON c.id=d.chain_id WHERE c.track_id=?1
+            UNION
+            SELECT d.id FROM devices d JOIN device_chains c ON c.id=d.chain_id
+                JOIN track_devices parent ON parent.id=c.parent_device_id
+        )
+        SELECT id FROM automation_lanes
+        WHERE (owner_kind='track' AND owner_id=?1)
+           OR (owner_kind='device' AND owner_id IN track_devices)
+           OR (owner_kind='routing' AND owner_id IN (SELECT id FROM routing
+                                                    WHERE src_kind='track' AND src_id=?1))
+        ORDER BY id
+    )sql");
+    query.bind(1, track);
+    while (query.executeStep())
+        ids.push_back(query.getColumn(0).getInt64());
+    return ids;
+}
+
+void AdiRootComponent::addTrackAutomationDeleteItem(juce::PopupMenu &menu, std::int64_t track) {
+    if (submitter_.store().readOnly() || trackAutomationLanes(track).empty())
+        return;
+    menu.addItem("Delete All Automation", [safe = SafePointer<AdiRootComponent>(this), track] {
+        if (safe)
+            safe->deleteAutomationLanes(safe->trackAutomationLanes(track), "Delete All Automation");
+    });
+}
+
+void AdiRootComponent::addDeviceAutomationDeleteItem(juce::PopupMenu &menu, std::int64_t device) {
+    const auto current = view_.current();
+    if (!current || submitter_.store().readOnly() || matchingAutomation(*current, "device", device).empty())
+        return;
+    menu.addItem("Delete All Automation", [safe = SafePointer<AdiRootComponent>(this), device] {
+        if (safe)
+            if (const auto snapshot = safe->view_.current())
+                safe->deleteAutomationLanes(matchingAutomation(*snapshot, "device", device), "Delete All Automation");
+    });
+}
+
 bool AdiRootComponent::setSoloInPlace(bool on) {
     // Live's Solo in Place (manual 18.6): one project field for the Solo button's menu and the
     // Options menu's entry (#412, N23), from the CURRENT cell (ADR-0201). The op is outside undo, as
@@ -4191,13 +4552,9 @@ bool AdiRootComponent::command(int id) {
     }
     // The editor's switches, from a menu, whenever it is on screen; the Clip View's full height
     // whenever it is open (manual 10.2).
-    if (id >= AppCommands::FoldToNotes && id <= AppCommands::DrawMode) {
+    if (id >= AppCommands::FoldToNotes && id <= AppCommands::HighlightScales) {
         if (!noteEditorShown())
             return false;
-        if (id == AppCommands::DrawMode) {
-            clipView.notes.setDrawMode(!clipView.notes.drawMode());
-            return true;
-        }
         return clipView.notes.chooseContextItem(id == AppCommands::FoldToNotes   ? NoteEditor::kFoldToNotes
                                                 : id == AppCommands::FoldToScale ? NoteEditor::kFoldToScale
                                                                                  : NoteEditor::kHighlightScale);
@@ -4275,6 +4632,16 @@ bool AdiRootComponent::command(int id) {
         break;
     case AppCommands::AutomationMode:
         setAutomationMode(!automationMode_);
+        return true;
+    case AppCommands::DeleteAutomation: {
+        if (!canDeleteShownAutomation())
+            return false;
+        const auto target = automationTarget(arrangement.geometry.selection.track);
+        return deleteAutomationLanes(matchingAutomation(*view_.current(), target.ownerKind, target.ownerId,
+                                                        target.paramRef), "Delete Automation");
+    }
+    case AppCommands::DrawMode:
+        clipView.notes.setDrawMode(!drawMode());
         return true;
     case AppCommands::HelpManual:
     case AppCommands::KeyboardReference: {
@@ -4471,8 +4838,8 @@ bool AdiRootComponent::command(int id) {
             return false;
         break;
     case AppCommands::DeleteTrack:
-        if (const auto device = devices.focusedDevice())
-            return devices.action("device.remove", {{"id", *device}});
+        if (devices.focusedDevice())
+            return devices.deleteDevices();
         if (arrangement.selectedLocator != 0)
             return deleteLocator(arrangement.selectedLocator);
         if (arrangement.selectedMeter >= 0)
@@ -4500,7 +4867,7 @@ bool AdiRootComponent::command(int id) {
     }
     case AppCommands::GroupTracks:
     case AppCommands::UngroupTracks:
-        if (!groupTracks(id == AppCommands::UngroupTracks))
+        if (!trackGroupingContext() || !groupTracks(id == AppCommands::UngroupTracks))
             return false;
         break;
     case AppCommands::SelectAll:
@@ -4514,6 +4881,8 @@ bool AdiRootComponent::command(int id) {
         if (!soloTrack(arrangement.geometry.selection.track, false))
             return false;
         break;
+    case AppCommands::ArmSelected:
+        return toggleArm(std::nullopt, false);
     case AppCommands::SoloSwitches:
     case AppCommands::CueSwitches:
         // Complete on its own, as Solo in Place: setCueMode re-reads the session and says why it refuses.
@@ -4684,7 +5053,7 @@ const std::vector<MenuEntries> &menuBar() {
         // Invert Selection follows Select All, as measured on Live 12; Quantize and its settings
         // (10.5.8) have a group of their own, with Fit to Time Range (10.5.5); the group's place in
         // Live's menu is to be read on Live.
-        {"Edit", {C::Undo, C::Redo, 0, C::Cut, C::Copy, C::Paste, C::Duplicate, C::DeleteTrack, 0, C::CutTime, C::CopyTime,
+        {"Edit", {C::Undo, C::Redo, 0, C::Cut, C::Copy, C::Paste, C::Duplicate, C::DeleteTrack, C::DeleteAutomation, 0, C::CutTime, C::CopyTime,
                   C::PasteTime, C::DuplicateTime, C::DeleteTime, C::InsertSilence, 0, C::RenameTrack, C::EditInfoText, C::SelectAll,
                   C::InvertSelection, 0, C::LoopSelection, C::SelectLoop, 0, C::Split, C::CropClip, 0, C::Quantize, C::QuantizeSettings, C::FitToTimeRange, 0,
                   C::GroupTracks, C::UngroupTracks}},

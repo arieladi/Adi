@@ -7,6 +7,7 @@
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <limits>
 #include <stdexcept>
@@ -83,6 +84,46 @@ void pasteAndUndo() {
     const auto append=prepareDevicePaste(*f.store,copy,71,20);
     check(append.ok && commitDevicePaste(*f.store,append).ok &&
           db.execAndGet("SELECT id FROM devices WHERE chain_id=20 ORDER BY ord DESC,id DESC LIMIT 1").getInt64()==71,"null selection appends to the chosen chain");
+}
+void deviceRolePlacement() {
+    Fixture fixture;
+    auto &store = *fixture.store;
+    auto &db = store.db();
+    db.exec("UPDATE tracks SET kind='midi';"
+            "INSERT INTO tracks(id,kind,name) VALUES(3,'audio','Audio'),(4,'midi','MIDI');"
+            "INSERT INTO device_chains(id,track_id,name) VALUES(21,3,'Audio chain');"
+            "INSERT INTO plugin_refs(id,format,uid,subtype) VALUES"
+            "(31,'clap','test.instrument','instrument'),(32,'clap','test.midi','midi_effect');"
+            "INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name) VALUES"
+            "(41,10,0,31,'Instrument'),(42,10,-1,32,'MIDI effect');"
+            "UPDATE devices SET plugin_ref_id=32 WHERE id=51;"
+            "UPDATE devices SET plugin_ref_id=31 WHERE id=52;");
+    const auto ids = [&] {
+        return db.execAndGet("SELECT group_concat(id,',') FROM "
+                             "(SELECT id FROM devices WHERE chain_id=20 ORDER BY ord,id)").getString();
+    };
+    const auto audioEffect = readDeviceCopy(store, 40);
+    const auto midiEffect = readDeviceCopy(store, 42);
+    const auto instrument = readDeviceCopy(store, 41);
+    const auto audioPaste = prepareDevicePaste(store, audioEffect, 70, 20, 52);
+    check(audioPaste.ok && commitDevicePaste(store, audioPaste).ok && ids() == "51,52,70,53",
+          "SC-284: pasting an audio effect at an instrument lands after it");
+    const auto midiPaste = prepareDevicePaste(store, midiEffect, 71, 20, 53);
+    check(midiPaste.ok && commitDevicePaste(store, midiPaste).ok && ids() == "51,71,52,70,53",
+          "SC-284: pasting a MIDI effect at an audio effect lands before the instrument");
+    const auto head = OpJournal(store).headSeq();
+    const auto duplicate = prepareDevicePaste(store, readDeviceCopy(store, 52), 72, 20, 70);
+    check(!duplicate.ok && duplicate.error.find("already has an instrument") != std::string::npos &&
+              !prepareDevicePaste(store, instrument, 72, 21).ok &&
+              !prepareDevicePasteForTrack(store, midiEffect, 72, 3).ok && OpJournal(store).headSeq() == head,
+          "SC-284: an instrument cannot be duplicated in its chain or pasted onto audio; MIDI effects also need MIDI tracks");
+    const auto synthPaste = prepareDevicePasteForTrack(store, instrument, 72, 4);
+    check(synthPaste.ok && commitDevicePaste(store, synthPaste).ok &&
+              db.execAndGet("SELECT track_id FROM device_chains JOIN devices ON devices.chain_id=device_chains.id "
+                           "WHERE devices.id=72").getInt64() == 4 &&
+              History(store).undo().ok && OpJournal(store).headSeq() == head &&
+              db.execAndGet("SELECT count(*) FROM device_chains WHERE track_id=4").getInt() == 0,
+          "SC-284: a copied instrument can still be pasted onto an empty MIDI track and undone in one step");
 }
 void refusals() {
     Fixture f;auto& db=f.store->db();const auto copy=readDeviceCopy(*f.store,40);
@@ -377,11 +418,118 @@ void trackPasteAtomicRefusals() {
               "track paste keeps the same-project clipboard identity check");
     }
 }
+
+void rangePaste() {
+    Fixture f;
+    auto &store = *f.store;
+    auto &db = store.db();
+    const std::array copies{readDeviceCopy(store, 40), readDeviceCopy(store, 51)};
+    // IDs need not be adjacent or ascending. The clipboard decides the order.
+    const std::array<std::int64_t, 2> newIds{90, 70};
+    const auto before = digestProject(store).text;
+    const auto paste = prepareDevicePaste(store, copies, newIds, 20, 52);
+    check(paste.ok && digestProject(store).text == before, "SC-288: preparing an anchored range writes nothing");
+    if (!paste.ok)
+        return;
+    auto incomplete = paste;
+    incomplete.requests.pop_back();
+    check(!OpJournal(store).commit(incomplete.requests).ok && digestProject(store).text == before,
+          "an incomplete range cannot reach the ordinary journal");
+    const auto applied = commitDevicePaste(store, paste);
+    check(applied.ok && db.execAndGet("SELECT group_concat(id,',') FROM "
+                                    "(SELECT id FROM devices WHERE chain_id=20 ORDER BY ord,id)").getString() ==
+                            "51,90,70,52,53" &&
+              db.execAndGet("SELECT count(DISTINCT txn_id) FROM ops").getInt() == 1,
+          "the range lands in its original order before the anchor as one transaction");
+    const auto pasted = readDeviceCopy(store, 90);
+    check(pasted.ok && pasted.insert.at("params") == copies[0].insert.at("params") &&
+              pasted.insert.at("state") == copies[0].insert.at("state"),
+          "the pasted range keeps stored parameter and state images");
+    const auto landed = digestProject(store).text;
+    check(History(store).undo().ok && digestProject(store).text == before,
+          "one undo removes the whole range and restores old ordinal ties");
+    check(History(store).redo().ok && digestProject(store).text == landed,
+          "one redo restores both pasted devices and their identities");
+}
+
+void rangePasteRoles() {
+    Fixture f;
+    auto &store = *f.store;
+    auto &db = store.db();
+    db.exec("UPDATE tracks SET kind='midi';"
+            "INSERT INTO tracks(id,kind,name) VALUES(3,'audio','Empty Audio'),(4,'midi','Empty MIDI');"
+            "INSERT INTO plugin_refs(id,format,uid,subtype) VALUES"
+            "(31,'clap','test.instrument','instrument'),(32,'clap','test.midi','midi_effect');"
+            "INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name) VALUES"
+            "(41,10,0,31,'Instrument'),(42,10,-1,32,'MIDI effect');"
+            "UPDATE devices SET plugin_ref_id=32 WHERE id=51;"
+            "UPDATE devices SET plugin_ref_id=31 WHERE id=52;");
+    const std::array copies{readDeviceCopy(store, 42), readDeviceCopy(store, 41), readDeviceCopy(store, 40)};
+    const std::array<std::int64_t, 3> newIds{73, 90, 70};
+    const std::array<std::int64_t, 2> twoIds{73, 90};
+    const auto before = digestProject(store).text;
+    const auto duplicateInstrument = prepareDevicePaste(store, copies, newIds, 20, 52);
+    const std::array twoInstruments{copies[1], readDeviceCopy(store, 52)};
+    const std::array separatedByInstrument{copies[0], copies[2]};
+    const std::array reversed{copies[2], copies[0]};
+    check(!duplicateInstrument.ok && duplicateInstrument.error.find("already has an instrument") != std::string::npos &&
+              !prepareDevicePasteForTrack(store, twoInstruments, twoIds, 4).ok &&
+              !prepareDevicePasteForTrack(store, copies, newIds, 3).ok &&
+              !prepareDevicePaste(store, separatedByInstrument, twoIds, 20, 52).ok &&
+              !prepareDevicePasteForTrack(store, reversed, twoIds, 4).ok && digestProject(store).text == before,
+          "incompatible roles or source order refuse the whole range before creating anything");
+    const auto paste = prepareDevicePasteForTrack(store, copies, newIds, 4);
+    check(paste.ok && paste.requests.size() == 4 && paste.requests.front().opType == "chain.create" &&
+              commitDevicePaste(store, paste).ok &&
+              db.execAndGet("SELECT group_concat(id,',') FROM (SELECT d.id FROM devices d JOIN device_chains c "
+                            "ON c.id=d.chain_id WHERE c.track_id=4 ORDER BY d.ord,d.id)").getString() == "73,90,70" &&
+              db.execAndGet("SELECT count(DISTINCT txn_id) FROM ops").getInt() == 1,
+          "one paste stages a new MIDI chain and keeps MIDI effect, instrument and audio effect together");
+    check(History(store).undo().ok && digestProject(store).text == before,
+          "one undo also removes the chain staged for a pasted range");
+}
+
+void rangePasteAtomicRefusals() {
+    Fixture f;
+    emptyTrack(f);
+    auto &store = *f.store;
+    auto &db = store.db();
+    db.exec("INSERT INTO plugin_refs(id,format,uid,subtype) VALUES(31,'internal','org.adidaw.mix.eq','effect');"
+            "INSERT INTO device_chains(id,track_id,name) VALUES(25,2,'Sibling chain');"
+            "INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name) VALUES"
+            "(41,10,0,31,'EQ'),(55,25,0,31,'Already on destination');");
+    const auto effect = readDeviceCopy(store, 40);
+    const auto function = readDeviceCopy(store, 41);
+    const std::array<std::int64_t, 2> newIds{90, 70};
+    const std::array nativeConflict{effect, function};
+    const std::array nativeTwice{function, readDeviceCopy(store, 55)};
+    check(!prepareDevicePaste(store, nativeConflict, newIds, 20, 52).ok &&
+              !prepareDevicePasteForTrack(store, nativeTwice, newIds, 3).ok,
+          "a native mix function cannot be pasted twice or duplicated elsewhere on the destination channel");
+
+    const std::array copies{effect, readDeviceCopy(store, 51)};
+    const std::array<std::int64_t, 2> repeatedId{90, 90};
+    check(!prepareDevicePasteForTrack(store, copies, repeatedId, 3).ok,
+          "every pasted member needs its own fresh identity");
+    const auto prepared = prepareDevicePaste(store, copies, newIds, 20, 52);
+    check(prepared.ok, "range anchor packet prepared before destination changes");
+    db.exec("UPDATE devices SET ord=19 WHERE id=52");
+    staleTrackPacket(f, prepared, "same-head destination reorder refuses the whole anchored range");
+
+    auto invalid = std::array{effect, effect};
+    invalid[1].insert["params"][0]["flags"] = std::numeric_limits<std::uint64_t>::max();
+    const auto before = digestProject(store).text;
+    const auto failed = prepareDevicePasteForTrack(store, invalid, newIds, 3);
+    check(!commitDevicePaste(store, failed).ok && digestProject(store).text == before &&
+              db.execAndGet("SELECT count(*) FROM ops").getInt() == 0,
+          "failure of a later insertion rolls back the earlier device, chain, and journal rows");
+}
 }
 int main() {
     try {
         reads();
         pasteAndUndo();
+        deviceRolePlacement();
         refusals();
         reusedReferenceIds();
         pasteToEmptyTrack();
@@ -390,6 +538,9 @@ int main() {
         fullWidthTrackChainIdentity();
         trackPasteGuards();
         trackPasteAtomicRefusals();
+        rangePaste();
+        rangePasteRoles();
+        rangePasteAtomicRefusals();
     } catch (const std::exception &e) {
         check(false, e.what());
     }

@@ -2,6 +2,7 @@
 #pragma once
 #include "adi/builtin_catalog.hpp"
 #include "adi/device_copy.hpp"
+#include "adi/device_presets.hpp"
 #include "adi/sample_slots.hpp"
 #include "adi/engine/audio_recording.hpp"
 #include "adi/engine/param_ops.hpp"
@@ -211,6 +212,17 @@ class ProjectDocument final : public engine::BlockProcessor {
     bool mixerDragging() const noexcept { return mixerDrag_ != nullptr; }
     // Auto Gain Stage (ADR-0195 d4): one offline command, one undo step.
     bool autoGainStage(bool lufs);
+    // One track render at a time. The window thread owns plug-in life cycles
+    // and the final edit, while the worker reads and renders its own snapshot.
+    void configureFreezeTail(double seconds) noexcept;
+    void configureTrackRenderDispatch(std::function<void(std::function<void()>)> post);
+    bool freezeTrack(std::int64_t track);
+    bool unfreezeTrack(std::int64_t track);
+    bool flattenTrack(std::int64_t track);
+    bool bounceTrackToNewTrack(std::int64_t track);
+    bool bounceTrackInPlace(std::int64_t track);
+    bool trackRenderRunning() const noexcept { return trackRender_ != nullptr; }
+    std::optional<std::string> takeTrackRenderStatus();
     // A device edit from the strip (enable, remove, panel), as one op.
     bool deviceAction(const std::string &op, Payload payload);
     // Live's device clipboard (manual 23.2.1; N18, #394). Copy reads the device's stored state only,
@@ -221,6 +233,9 @@ class ProjectDocument final : public engine::BlockProcessor {
     // `error()`.
     bool copyDevice(std::int64_t id, DeviceCopy &out);
     bool pasteDevice(const DeviceCopy &copy, std::int64_t track, std::optional<std::int64_t> before);
+    bool copyDevices(std::span<const DevicePanelData>, std::vector<DeviceCopy> &out, bool cut = false);
+    bool removeDevices(std::span<const DevicePanelData>);
+    bool pasteDevices(std::span<const DeviceCopy>, std::int64_t track, std::optional<std::int64_t> before);
     // The file the engine names a device copy's project by (`DeviceCopy::sourceFile`): after Save As
     // the app moves a held copy over to the new file, the same project under a new name.
     std::string deviceCopyIdentity() const;
@@ -239,6 +254,21 @@ class ProjectDocument final : public engine::BlockProcessor {
     // An effect loads as `insertPlugin` places it.
     bool loadPlugin(const rows::PluginRef &, std::int64_t track, std::optional<std::int64_t> before = {},
                     const RecordingDefaults *defaults = nullptr);
+    bool saveDevicePreset(const DevicePanelData &, const std::filesystem::path &library,
+                          const std::string &name, std::filesystem::path &saved);
+    std::int64_t loadDevicePreset(preset::Preset, std::int64_t track, std::optional<std::int64_t> before,
+                                  const std::optional<rows::PluginRef> &installed = {});
+    struct HotSwapTargetInfo {
+        preset::Identity device;
+        std::string subtype;
+    };
+    std::optional<HotSwapTargetInfo> hotSwapTarget(const DevicePanelData &);
+    std::int64_t hotSwapBuiltin(const DevicePanelData &, const std::string &uid);
+    std::int64_t hotSwapPlugin(const DevicePanelData &, const rows::PluginRef &);
+    std::int64_t hotSwapPreset(const DevicePanelData &, preset::Preset,
+                               const std::optional<rows::PluginRef> &installed = {});
+    bool hotSwapSample(const DevicePanelData &, std::int32_t slot, const std::filesystem::path &,
+                       std::int64_t nowUtc);
     bool addMixFunction(mix::Function, std::int64_t track);
     std::vector<DeviceKeyChoice> deviceKeyChoices(const DevicePanelData&);
     bool setDeviceKeyChoice(const DevicePanelData&,const DeviceKeyChoice&);
@@ -247,11 +277,14 @@ class ProjectDocument final : public engine::BlockProcessor {
                          std::optional<std::int64_t> before);
     bool moveDevice(const DevicePanelData &expected, std::int64_t track,
                     std::optional<std::int64_t> before);
+    bool moveDevices(std::span<const DevicePanelData>, std::int64_t track, std::optional<std::int64_t> before);
     // A built-in device's sample slot (D5; N28, #414; ENGINE-SAMPLE-SLOTS.md): `file` imported by its
     // content and prepared for the engine's rate, then the slot replaced, in one undo step; Clear
     // empties it. The live device takes the new state at once (`ParamOps::appliedState`). The
     // engine's refusals (a device this build cannot run, an undeclared slot, a file that is not
     // audio) come back in `error()`. Preparation decodes on the calling thread.
+    // Drop a sample on a MIDI track: OneShot and its filled sample slot are one Undo step.
+    bool loadSampleInstrument(std::int64_t track, const std::filesystem::path &file, std::int64_t nowUtc);
     bool assignSample(std::int64_t device, std::int32_t slot, const std::filesystem::path &file, std::int64_t nowUtc);
     bool clearSample(std::int64_t device, std::int32_t slot);
     // The parameter glue's counters (for the tests: a sample's state reached the live device).
@@ -287,7 +320,15 @@ class ProjectDocument final : public engine::BlockProcessor {
     WaveformCache &waveforms() noexcept { return waveforms_; }
 
   private:
+    enum class TrackRenderKind { Freeze, BounceToNew, BounceInPlace };
+    struct TrackRenderWork;
+    bool startTrackRender(TrackRenderKind, std::int64_t track);
+    void pollTrackRender();
+    void stopTrackRender();
     bool finishInsert(PreparedBuiltinInsert);
+    std::int64_t finishDevicePreset(PreparedBuiltinInsert, preset::Preset, bool inPlace = false);
+    std::vector<DeviceMoveSource> deviceRange(std::span<const DevicePanelData>, bool mutation);
+    bool editDeviceRange(std::span<const DevicePanelData>, std::vector<DeviceCopy> *clipboard, bool remove);
     ProjectDocument(std::unique_ptr<Store>, std::string name);
     // The clock the capture's timers run on: steady milliseconds, the same for the timer's drain
     // and for a gesture, so a gesture's quiet timer and its End agree.
@@ -325,6 +366,11 @@ class ProjectDocument final : public engine::BlockProcessor {
     ViewStateStore views_;
     SessionState sessionState_;
     engine::Session session_;
+    engine::DeviceLoader renderLoader_;
+    std::unique_ptr<TrackRenderWork> trackRender_;
+    std::optional<std::string> trackRenderStatus_;
+    std::function<void(std::function<void()>)> postTrackRenderHost_;
+    double freezeTailSeconds_ = 4.0;
     engine::ParamOps parameterOps_; // destroyed before Session and its instances
     struct SurfaceGesture {
         std::uint64_t instance = 0;
