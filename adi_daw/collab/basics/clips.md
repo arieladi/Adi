@@ -10,3 +10,5 @@ Queue claimed. SC-191 is first, per the round 2 ordering.
 
 ## For the director
 
+- **SC-196 / N53.** Where does Live place its crossfade when only one side has hidden source material, or when neither does? I recommend keeping the visible seam and limiting a linked crossfade to valid source on both sides. A PCM regression for the full-handles case is prepared.
+- **SC-198.** Does Live audition audio outside a clip's placed Start and End when the Sample Editor scrub strip is clicked there? I recommend limiting the existing Arrangement playback action to the placed clip until that routing is measured.
