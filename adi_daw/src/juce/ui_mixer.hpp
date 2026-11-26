@@ -16,6 +16,7 @@
 #include <vector>
 namespace adi::engine {
 struct StripMeter; // adi/engine/mixer.hpp: the engine's {peak, rms} per strip (#381)
+struct MidiNoteActivity;
 }
 namespace adi::ui {
 class AdiRootComponent;
@@ -335,6 +336,9 @@ class MixerStrip final : public juce::Component,
     // session has a strip for the track. The strips live as long as the session (ADR-0122's
     // rule), and the session as long as the root that holds this panel.
     const engine::StripMeter *meter_ = nullptr;
+    std::uint32_t midiOnsets_ = 0;
+    double midiPulseUntil_ = 0;
+    bool midiLit_ = false;
     // What the meter draws after the window's ballistics: the level, falling once the engine's
     // value drops, and the peak line, held and then falling; the clock readings they need.
     float peak_ = 0, rms_ = 0;
@@ -390,6 +394,7 @@ class MixerPanel final : public juce::Component {
     // `Session::strips().stripFor(track)->meter()`, #381), written by the audio thread and read
     // with relaxed loads, never a tap. Null for a track the session has no strip for yet.
     std::function<const engine::StripMeter *(std::int64_t)> meter;
+    std::function<engine::MidiNoteActivity(std::int64_t)> midiActivity;
     // The ballistics' clock, in seconds; JUCE's while unset (the tests set their own).
     std::function<double()> clock;
     // Each track's Peak Level (manual 18.1), linear, by track id: the strips are reused for other

@@ -3,6 +3,7 @@
 #include "ui_controls.hpp"
 #include "ui_shell.hpp"
 #include "ui_value_entry.hpp"
+#include "adi/engine/midi_clips.hpp"
 #include "adi/engine/mixer.hpp"
 #include "adi/ui/automation_mode.hpp"
 #include "adi/ui/automation_override.hpp"
@@ -22,6 +23,8 @@ namespace {
 // kPeakHoldSeconds and then falls at the same rate. win's placement until Live 12's are read
 // (Readings M1-02 to M1-04).
 constexpr double kFallDbPerSecond = 24, kPeakHoldSeconds = 1;
+// A note shorter than a window frame still needs a visible flash.
+constexpr double kMidiPulseSeconds = .10;
 // `shown` after `seconds` of falling at the rate, never under `now`, the engine's value; silence
 // once under the meter's floor.
 float fallen(float shown, float now, double seconds) noexcept {
@@ -501,6 +504,9 @@ void MixerStrip::bind(std::int64_t id) {
     position_ = number_ = 0;
     peak_ = rms_ = 0;
     lastFrame_ = -1;
+    midiOnsets_ = 0;
+    midiPulseUntil_ = 0;
+    midiLit_ = false;
     // The Peak Level is the track's: what it held on the strip that showed it before, else -Inf.
     const auto held = panel_.peakLevels.find(id);
     peakHold.held = held != panel_.peakLevels.end() ? held->second : 0.f;
@@ -647,11 +653,24 @@ void MixerStrip::frame(bool changed) noexcept {
     // bound before the session had a strip for its track finds the meter on a refresh.
     if (changed)
         resolveMeter();
+    const double now = panel_.clock ? panel_.clock() : juce::Time::getMillisecondCounterHiRes() / 1000.;
+    const bool firstFrame = lastFrame_ < 0;
+    const double seconds = firstFrame ? 0 : std::max(0., now - lastFrame_);
+    lastFrame_ = now;
+    if (!audio_) {
+        const auto notes = panel_.midiActivity ? panel_.midiActivity(track_) : engine::MidiNoteActivity{};
+        if (!firstFrame && notes.onsets != midiOnsets_)
+            midiPulseUntil_ = now + kMidiPulseSeconds;
+        midiOnsets_ = notes.onsets;
+        const bool lit = notes.held || now < midiPulseUntil_;
+        if (lit != midiLit_) {
+            midiLit_ = lit;
+            repaint(meterArea().expanded(1));
+        }
+        return;
+    }
     const float peakNow = meter_ != nullptr ? meter_->peak.load(std::memory_order_relaxed) : 0.f;
     const float rmsNow = meter_ != nullptr ? meter_->rms.load(std::memory_order_relaxed) : 0.f;
-    const double now = panel_.clock ? panel_.clock() : juce::Time::getMillisecondCounterHiRes() / 1000.;
-    const double seconds = lastFrame_ < 0 ? 0 : std::max(0., now - lastFrame_);
-    lastFrame_ = now;
     // Live's peak level holds the highest peak it is shown (manual 18.1); the engine holds nothing
     // between reads, so a callback no frame read is not in it (the held peak is N9's open half).
     if (panel_.vertical() && peakNow > peakHold.held) {
@@ -864,6 +883,8 @@ juce::Rectangle<int> MixerStrip::sendBounds(std::size_t index) const noexcept {
     return {(i % 2 == 0) ? 10 : 51, sendsTop() + 6 + 22 * i, 32, 32};
 }
 juce::Rectangle<int> MixerStrip::meterArea() const noexcept {
+    if (!panel_.vertical())
+        return {(showsInOut() ? MixerPanel::kInOutWidth : 0) + 105, 1, 8, std::max(0, getHeight() - 4)};
     // Under a tall strip's numeric field, the meter stops short of the foot.
     const bool tall = getHeight() >= MixerPanel::kTallHeight;
     return {53, mixerTop() + 6, 11, std::max(0, mixerBottom() - mixerTop() - 10 - (tall ? 15 : 0))};
@@ -958,9 +979,9 @@ void MixerStrip::paint(juce::Graphics &g) {
     if (delay.isVisible())
         paintDelayUnit(g);
     if (audio_)
-        paintMeter(g, {x + 105, 1, 8, std::max(0, getHeight() - 4)});
+        paintMeter(g, meterArea());
     else
-        paintMidiMeter(g, {x + 105, 1, 8, std::max(0, getHeight() - 4)});
+        paintMidiMeter(g, meterArea());
 }
 void MixerStrip::paintDelayUnit(juce::Graphics &g) const {
     // Live's "ms" box right of the Track Delay's value box, lit as its figure shows it (manual 18.7).
@@ -986,12 +1007,10 @@ void MixerStrip::commitDelay() {
     panel_.root.submitEdits(std::move(edit.ops));
 }
 void MixerStrip::paintMidiMeter(juce::Graphics &g, juce::Rectangle<int> area) const {
-    // Live's MIDI meter: a column of dots down the meter's place that light while notes play (Live 12
-    // manual, the Mixer in Arrangement View: 2 MIDI). ADI has no note activity to show yet, so they
-    // stay dark.
+    // Live's MIDI meter: a column of dots down the meter's place that light while notes play.
     const float d = std::min(5.5f, static_cast<float>(area.getWidth())), pitch = d + 2.5f;
     const float x = static_cast<float>(area.getCentreX()) - d / 2;
-    g.setColour(look::display);
+    g.setColour(midiLit_ ? look::accent : look::display);
     for (float y = static_cast<float>(area.getY()); y + d <= static_cast<float>(area.getBottom()); y += pitch)
         g.fillEllipse(x, y, d, d);
 }

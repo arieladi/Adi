@@ -1115,6 +1115,10 @@ class AdiApplication final : public juce::JUCEApplication,
                 const auto *strip = document_->session().strips().stripFor(track);
                 return strip != nullptr ? &strip->meter() : nullptr;
             };
+            panel->midiActivity = [this](std::int64_t track) {
+                const auto *clips = document_->session().midiClips();
+                return clips != nullptr ? clips->noteActivity(track) : engine::MidiNoteActivity{};
+            };
             panel->autoGain = [this](bool lufs) {
                 const bool ok = document_->autoGainStage(lufs);
                 if (root_)

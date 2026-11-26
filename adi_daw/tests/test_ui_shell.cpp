@@ -10,6 +10,7 @@
 #include "../src/juce/window_release.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/automation_lanes.hpp"
+#include "adi/blob.hpp"
 #include "adi/cue_settings.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/store.hpp"
@@ -13845,6 +13846,88 @@ void exportPage(AppCommands &commands, const std::filesystem::path &dir) {
           "the renderer writes the chosen file, the whole range [P:export#3]");
     document->release();
 }
+void midiNoteMeter(AppCommands &commands, const std::filesystem::path &dir) {
+    const auto path = dir / "midi-meter.adi";
+    StoreError storeError{};
+    auto store = Store::createNewProject(path, storeError);
+    check(store != nullptr, "SC-63: create a set with two MIDI tracks");
+    if (!store) return;
+    store->db().exec("INSERT INTO clips(id,track_id,kind,time_base,pos_ticks,length_ticks) "
+                     "VALUES(1,2,'midi',0,0,5765760)");
+    NoteRecord shortNote{};
+    shortNote.dur_ticks = 1000;
+    shortNote.note_id = 1;
+    shortNote.key = 60;
+    shortNote.vel_on = 96;
+    shortNote.probability = 10000;
+    auto longNote = shortNote;
+    longNote.start_ticks = 240240;
+    longNote.dur_ticks = 2402400;
+    longNote.note_id = 2;
+    const auto notes = writeStream<NoteRecord>(FourCC::Notes, std::vector<NoteRecord>{shortNote, longNote});
+    check(store->putEventStream(1, "notes", notes), "the first MIDI track has a short and a long note");
+    store.reset();
+    std::string error;
+    auto document = ProjectDocument::open(path, false, {}, error);
+    check(document != nullptr, "open the set on the software render path");
+    if (!document) return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "midi-meter");
+    root.setSize(1440, 1080); // Keep both MIDI tracks above the fixed return and Main rows when Mixer View is open.
+    root.state().mixerSends = false;
+    double now = 0;
+    for (auto *panel : {&root.mixer, &root.mixerView}) {
+        panel->clock = [&now] { return now; };
+        panel->midiActivity = [&](std::int64_t track) { return document->session().midiClips()->noteActivity(track); };
+    }
+    check(root.command(AppCommands::ToggleMixerView), "show the instrumentless track in both meter layouts");
+    root.frame();
+    const auto dot = [](const MixerPanel &panel, std::int64_t track) {
+        for (const auto &strip : panel.strips()) {
+            if (!strip->isVisible() || strip->track() != track || strip->hasAudio())
+                continue;
+            juce::Image image(juce::Image::ARGB, strip->getWidth(), strip->getHeight(), true,
+                              juce::SoftwareImageType{});
+            juce::Graphics g(image);
+            strip->paint(g);
+            const int x = panel.vertical() ? 58 : (strip->showsInOut() ? MixerPanel::kInOutWidth : 0) + 109;
+            return image.getPixelAt(x, panel.vertical() ? 27 : 3);
+        }
+        return juce::Colour{};
+    };
+    const auto shows = [&](juce::Colour active) {
+        return dot(root.mixer, 2) == active && dot(root.mixerView, 2) == active &&
+               dot(root.mixer, 3) == look::display && dot(root.mixerView, 3) == look::display;
+    };
+    check(shows(look::display), "both tracks start with dark MIDI dots");
+    auto &session = document->session();
+    session.transport().play();
+    engine::AudioIo block;
+    block.frames = 512;
+    const auto render = [&] {
+        session.process(block);
+        block.streamTimeSamples += block.frames;
+    };
+    render();
+    now = .02;
+    root.frame();
+    check(shows(look::accent), "an entire short note between frames lights only its track in both layouts");
+    now = .20;
+    root.frame();
+    check(shows(look::display), "the short note flash expires");
+    render();
+    now = .30;
+    root.frame();
+    render();
+    now = .50;
+    root.frame();
+    check(shows(look::accent), "a held note stays lit beyond the flash interval");
+    session.transport().play(false);
+    render();
+    now = .51;
+    root.frame();
+    check(shows(look::display), "stopping playback clears the held note indication");
+}
 // MX-23 and SRF-02 from the strip: the fader's own drag is the document's live gesture, one undo step at
 // the release, the selected tracks moving together by the same move, Esc putting them back.
 void mixerDragLive(AppCommands &commands, const std::filesystem::path &dir) {
@@ -21422,6 +21505,7 @@ int main(int argc, char **argv) {
     trace("armAndRecord", [&] { armAndRecord(commands, temp.path()); });
     trace("midiTakePreview", [&] { midiTakePreview(commands, temp.path()); });
     trace("exportPage", [&] { exportPage(commands, temp.path()); });
+    trace("midiNoteMeter", [&] { midiNoteMeter(commands, temp.path()); });
     trace("mixerDragLive", [&] { mixerDragLive(commands, temp.path()); });
     trace("mixerShowsAutomation", [&] { mixerShowsAutomation(commands, temp.path()); });
     trace("mixerViewFaderHandle", [&] { mixerViewFaderHandle(commands, temp.path()); });
