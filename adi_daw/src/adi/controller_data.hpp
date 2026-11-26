@@ -20,6 +20,9 @@ constexpr bool validController(std::int64_t controller) noexcept {
 constexpr double pitchBendWordExact(double value) noexcept {
     return 8192.0 + (value - .5) * (value < .5 ? 16384.0 : 16382.0);
 }
+constexpr double pitchBendFromWord(std::uint16_t word) noexcept {
+    return .5 + (static_cast<double>(word) - 8192.0) / (word < 8192 ? 16384.0 : 16382.0);
+}
 
 struct Point {
     std::uint64_t id = 0;

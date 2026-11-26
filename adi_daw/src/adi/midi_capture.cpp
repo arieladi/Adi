@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/midi_capture.hpp"
+#include "adi/controller_data.hpp"
+#include "adi/engine/mpe_input.hpp"
 #include "adi/row_ids.hpp"
 #include "adi/engine/snapshot.hpp"
 #include "adi/audio/io_audit.hpp"
@@ -115,8 +117,10 @@ template<class Record> StreamReader<Record> stream(std::span<const std::byte> by
 void insertStream(OpContext& context,std::int64_t clip,std::int64_t id,std::span<const std::byte> bytes,
     std::optional<std::pair<int,int>> control) {
     SQLite::Statement q(context.db,"INSERT INTO event_streams(id,clip_id,stream_kind,channel,controller,data) VALUES(?,?,?,?,?,?)");
-    q.bind(1,id);q.bind(2,clip);q.bind(3,control?"cc":"notes");
-    if(control){q.bind(4,control->first);q.bind(5,control->second);}else{q.bind(4);q.bind(5);}
+    const bool pitch = control && control->second == controllers::kPitchBend;
+    q.bind(1,id);q.bind(2,clip);q.bind(3,pitch ? "pitchbend" : control ? "cc" : "notes");
+    if (control) q.bind(4, control->first); else q.bind(4);
+    if (control && !pitch) q.bind(5, control->second); else q.bind(5);
     q.bind(6,bytes.data(),static_cast<int>(bytes.size()));q.exec();
 }
 bool applyCapture(OpContext& context,const Payload& payload,std::string& error) {
@@ -132,7 +136,8 @@ bool applyCapture(OpContext& context,const Payload& payload,std::string& error) 
         const auto kind = track.getColumn(0).getString();
         if(kind!="midi" && kind!="audio" && kind!="instrument")throw std::runtime_error("Capture target is not a regular track");
         const auto& controls=payload.at("controllers");
-        if(!controls.is_array() || controls.size()>2048 || (controls.empty() && !payload.contains("notes")))throw std::runtime_error("invalid Capture stream collection");
+        constexpr std::size_t maxControllerAddresses = 16 * (128 + 1);
+        if(!controls.is_array() || controls.size()>maxControllerAddresses || (controls.empty() && !payload.contains("notes")))throw std::runtime_error("invalid Capture stream collection");
         if(!create->apply(context,clip,error))return false;
         if (payload.value("loop", false)) {
             SQLite::Statement loop(context.db, "UPDATE clips SET loop_enabled=1,loop_start_ticks=0,loop_len_ticks=? WHERE id=?");
@@ -141,8 +146,9 @@ bool applyCapture(OpContext& context,const Payload& payload,std::string& error) 
         std::set<std::int64_t> ids;std::set<std::pair<int,int>> addresses;std::size_t count=0;
         for(const auto& lane:controls) {
             if(!lane.is_object() || lane.size()!=4)throw std::runtime_error("invalid captured controller packet");
-            const auto streamId=positive(lane.at("id"));const auto chan=addressPart(lane.at("channel"),15),cc=addressPart(lane.at("controller"),127);
-            if(chan<0 || chan>15 || cc<0 || cc>127 || !ids.insert(streamId).second || !addresses.insert({chan,cc}).second)
+            const auto streamId=positive(lane.at("id"));
+            const auto chan=addressPart(lane.at("channel"),15),cc=addressPart(lane.at("controller"),controllers::kPitchBend);
+            if(!controllers::validController(cc) || !ids.insert(streamId).second || !addresses.insert({chan,cc}).second)
                 throw std::runtime_error("duplicate or invalid Capture stream address");
             const auto bytes=binary(lane);const auto reader=stream<AutomationPoint>(bytes,FourCC::Controller);
             if(reader.count()>(1u<<20)-count)throw std::runtime_error("Capture point budget exceeded");
@@ -216,6 +222,11 @@ bool inverseCapture(OpContext&,const Payload& payload,Payload& inverse,std::stri
     catch(const std::exception& exception){error=exception.what();return false;}
 }
 }
+bool isChannelPitchWheel(const engine::Event& event) noexcept {
+    return event.type == engine::EventType::NoteExpression && event.noteId == 0 && event.paramId == 0 &&
+           event.dim == static_cast<std::uint16_t>(ExpressionDim::Pitch);
+}
+
 std::optional<PreparedMidi> prepareMidi(Store& store,const engine::MidiMemorySnapshot& source,const MidiSpec& spec,std::string& error) {
     if(audio::onAudioThread){error="callback";return std::nullopt;}
     try {
@@ -241,6 +252,14 @@ std::optional<PreparedMidi> prepareMidi(Store& store,const engine::MidiMemorySna
         std::vector<Note> notes;std::map<std::uint64_t,std::size_t> active;std::set<std::uint64_t> seen;
         std::map<std::pair<int,int>,std::vector<AutomationPoint>> controls;
         std::map<std::pair<std::uint64_t, int>, std::vector<ExpressionPoint>> expressions;
+        const auto controllerPoint = [&controls](int chan, int address, std::uint64_t serial,
+                                                 std::int64_t time, double value) {
+            AutomationPoint point{};
+            point.point_id = serial + 1;
+            point.time = time;
+            point.value = value;
+            controls[{chan, address}].push_back(point);
+        };
         std::int64_t previous=spec.firstSample;std::optional<std::uint64_t> priorSerial;
         for(const auto& remembered:source.events) {
             const auto& e=remembered.event;
@@ -250,9 +269,16 @@ std::optional<PreparedMidi> prepareMidi(Store& store,const engine::MidiMemorySna
             previous=remembered.sample;priorSerial=remembered.serial;
             const auto time=clock.at(remembered.sample-spec.firstSample);
             if(e.type==engine::EventType::Controller) {
-                if(e.channel>15 || e.paramId>127 || e.value<0 || e.value>1)throw std::runtime_error("invalid captured controller");
-                AutomationPoint point{};point.point_id=remembered.serial+1;point.time=time;point.value=e.value;
-                controls[{e.channel,static_cast<int>(e.paramId)}].push_back(point);
+                if(e.channel>15 || !controllers::validController(e.paramId) || e.value<0 || e.value>1)
+                    throw std::runtime_error("invalid captured controller");
+                controllerPoint(e.channel, static_cast<int>(e.paramId), remembered.serial, time, e.value);
+                continue;
+            }
+            if (isChannelPitchWheel(e)) {
+                // Match the channel range of the physical parser and live pitch output.
+                constexpr auto range = engine::MpeZone{}.masterBendSemitones;
+                const auto value = .5 + .5 * std::clamp(e.value / range, -1., 1.);
+                controllerPoint(channel(e, source.noteChannels), controllers::kPitchBend, remembered.serial, time, value);
                 continue;
             }
             if (e.type == engine::EventType::NoteExpression && e.dim <= 255 && e.paramId == 0) {
