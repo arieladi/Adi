@@ -167,7 +167,7 @@ class AdiApplication final : public juce::JUCEApplication,
         // what was installed or removed since, in the background (engine-win's N58 handoff).
         if (catalogue_) {
             catalogue_->showCatalogue();
-            catalogue_->request(DiscoveryMode::Incremental);
+            discover(DiscoveryMode::Incremental);
         }
         // The MIDI ports (SRF-05): listed and opened by the Settings' MIDI Ports; never in a smoke run.
         if (smokeOutput_ == juce::File{}) {
@@ -513,8 +513,7 @@ class AdiApplication final : public juce::JUCEApplication,
         if (key == pluginSourcesKey_)
             return;
         pluginSourcesKey_ = key;
-        if (catalogue_)
-            catalogue_->request(DiscoveryMode::Incremental);
+        discover(DiscoveryMode::Incremental);
     }
     // The folders the Settings name for both formats, as one string to compare.
     std::string pluginSourcesKey() const {
@@ -541,6 +540,21 @@ class AdiApplication final : public juce::JUCEApplication,
             // A refused open leaves the project as it was; its alert says why, and the waiting line goes.
             if (!install(file, create) && root_)
                 root_->say({});
+        });
+    }
+    // A discovery asked for (Rescan, a folder change, the Browser's scan, the startup's): once it has been
+    // adopted, a device the open kept as a placeholder whose plug-in is now installed wakes in its place,
+    // its stored state restored, without reopening the project (SC-318).
+    void discover(DiscoveryMode mode) {
+        if (!catalogue_)
+            return;
+        catalogue_->request(mode);
+        catalogue_->settleThen([this] {
+            if (!document_)
+                return;
+            if (const auto woke = document_->wakeMissingPlugins(); woke != 0 && root_)
+                root_->say(woke == 1 ? std::string("A missing plug-in is installed now and loaded in its place.")
+                                     : std::to_string(woke) + " missing plug-ins are installed now and loaded in their places.");
         });
     }
     void stopPluginCatalogue() {
@@ -802,8 +816,7 @@ class AdiApplication final : public juce::JUCEApplication,
         // service (DF-W34, N58); the projects load from the same loader. A smoke run scans nothing.
         if (catalogue_) {
             root->browser.scanPlugins = [this] {
-                if (catalogue_)
-                    catalogue_->request(DiscoveryMode::Incremental);
+                discover(DiscoveryMode::Incremental);
             };
             root->browser.setPluginScan(catalogue_->state());
         }
@@ -1323,7 +1336,7 @@ class AdiApplication final : public juce::JUCEApplication,
                     settingsWindow_->panel().onRescanPlugins = [this] {
                         if (!catalogue_)
                             return std::string();
-                        catalogue_->request(DiscoveryMode::Refresh);
+                        discover(DiscoveryMode::Refresh);
                         // Started, queued behind the running job, or refused (said, with why).
                         return catalogue_->state().phase == PluginScan::Phase::Scanning
                                    ? std::string()

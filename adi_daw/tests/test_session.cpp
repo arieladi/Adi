@@ -126,6 +126,7 @@ private:
 struct Loader {
     int calls = 0;
     bool acceptRoutes = true;   ///< ADR-0149: false makes a device that cannot take a route
+    bool ghostInstalled = false;  ///< SC-318: the absent plug-in installed since the open
     std::vector<HalfDevice*> made;
     std::vector<std::string> asked;
 
@@ -134,7 +135,8 @@ struct Loader {
                    -> std::unique_ptr<device::DeviceInstance> {
             ++calls;
             asked.push_back(rq.ref != nullptr ? rq.ref->uid : "<no ref>");
-            if (rq.ref != nullptr && rq.ref->uid == "adi.test.half") {
+            if (rq.ref != nullptr && (rq.ref->uid == "adi.test.half" ||
+                                      (ghostInstalled && rq.ref->uid == "adi.test.absent"))) {
                 device::DeviceIdentity id;
                 id.format = rq.ref->format;
                 id.uid = rq.ref->uid;
@@ -684,6 +686,69 @@ void testARouteADeviceCannotTake() {
 
 }  // namespace
 
+void testAPlaceholderWakesOnceInstalled() {
+    const adi::test::TempDirectory scratch("session", "wakes");
+    section("SC-318 -- a missing plug-in wakes once it is installed and a scan has run");
+    auto store = makeProject(scratch.path() / "p.adi");
+    if (!store) return;
+
+    Loader loader;
+    Session s;
+    ToneNode tone(0.5f);
+    s.setSourcesFor([&](std::int64_t id) {
+        return id == 1 ? std::vector<Node*>{&tone} : std::vector<Node*>{};
+    });
+    SessionSpec spec;
+    spec.sampleRate = 48000.0;
+    spec.maxFrames = 512;
+    check(s.load(*store, loader.fn(), spec), "load: " + s.error());
+    check(s.entryFor(101) != nullptr && s.entryFor(101)->placeholder, "Ghost opens as a placeholder");
+
+    // Still not installed: the retry asks, nothing changes, nothing is rebuilt.
+    const auto rebuildsBefore = s.stats().rebuilds;
+    const int callsBefore = loader.calls;
+    eqi(static_cast<long long>(s.retryPlaceholders(*store)), 0, "nothing wakes while it is missing");
+    eqi(loader.calls - callsBefore, 1, "the loader was asked for Ghost alone, not the loaded ones");
+    eqi(s.stats().rebuilds - rebuildsBefore, 0, "and no graph was rebuilt");
+    check(s.entryFor(101) != nullptr && s.entryFor(101)->placeholder, "Ghost is still a placeholder");
+
+    // Installed: the next scan's retry brings it in, in its place, with its stored state.
+    loader.ghostInstalled = true;
+    eqi(static_cast<long long>(s.retryPlaceholders(*store)), 1, "Ghost wakes");
+    const Session::Entry* ge = s.entryFor(101);
+    check(ge != nullptr && !ge->placeholder && !ge->retired && ge->trackId == 1,
+          "its entry is a loaded device on Keys");
+    device::DeviceInstance* ghost = s.instanceFor(101);
+    check(ghost != nullptr && ghost->loaded(), "its instance is the plug-in, not a stand-in");
+    HalfDevice* woke = loader.made.empty() ? nullptr : loader.made.back();
+    check(woke != nullptr && woke == ghost, "the instance the loader made");
+    if (woke != nullptr) {
+        check(woke->lastState == std::vector<std::uint8_t>{1, 2, 3, 4},
+              "the state the placeholder kept reached the plug-in byte for byte");
+        check(woke->prepared && woke->lastRate == 48000.0 && woke->lastFrames == 512,
+              "prepared at the session's format");
+    }
+    const std::vector<device::DeviceNode*> keys = s.chainFor(1);
+    check(keys.size() == 2 && keys[1] == s.nodeFor(101) && !keys[1]->bypassed(),
+          "Keys plays Warm then Ghost, Ghost no longer bypassed");
+    eqi(s.stats().placeholders, 0, "no placeholder is counted");
+    check(!mentions(s.problems(), "devices#101 (Ghost): kept as a placeholder"),
+          "the open's placeholder line is gone");
+
+    Out o(512);
+    AudioIo io = makeIo(o, 512);
+    s.process(io);
+    check(o.first() == 0.125f && o.last() == 0.125f,
+          "the tone now passes through Warm AND Ghost (halved twice): got " + std::to_string(o.first()));
+
+    // A later edit keeps the woken instance: refresh finds it compatible, not new.
+    const int made = static_cast<int>(loader.made.size());
+    check(s.refresh(*store), "refresh: " + s.error());
+    check(s.instanceFor(101) == ghost, "a refresh keeps the woken Ghost");
+    eqi(static_cast<long long>(loader.made.size()) - made, 0, "and loads nothing again");
+    eqi(static_cast<long long>(s.retryPlaceholders(*store)), 0, "a second retry finds nothing to wake");
+}
+
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     std::printf("adi_session_tests -- a project, live (ADR-0122)\n\n");
@@ -695,6 +760,7 @@ int main() {
     testNothingLoadedIsSilence();
     testTheExpressionRoute();
     testARouteADeviceCannotTake();
+    testAPlaceholderWakesOnceInstalled();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

@@ -209,6 +209,13 @@ public:
 
     /// Plan, realise, prepare and publish a new graph from the current model.
     bool rebuild();
+
+    /// SC-318: asks the loader again for every placeholder's plug-in, as a
+    /// plug-in scan ends. One that now loads takes the placeholder's place --
+    /// its stored state and parameter rows restored, as at open -- and the
+    /// placeholder is retired; one still missing stays as it is, its reason
+    /// updated. Rebuilds when any woke. Returns how many woke.
+    std::size_t retryPlaceholders(const Store& store);
     // nullopt means the latest transaction needs ordinary full synchronisation.
     std::optional<bool> refreshDeviceKeys(const Store&, const std::shared_ptr<const std::vector<std::uint8_t>>& image);
 
@@ -502,7 +509,8 @@ private:
     [[nodiscard]] DeviceChainFn eventPathFor(const rows::Model&);
     bool parkedDevice(const rows::Device &) const;
     void resolveNewRows(const Store& store);
-    void resolveOne(const Store& store, const rows::Device& row);
+    void resolveOne(const Store& store, const rows::Device& row,
+                    std::unique_ptr<device::DeviceInstance> preloaded = nullptr);
     void retireDepartedRows();
     void syncFlags();
     void syncRoute(Entry& e, device::DeviceInstance& inst);

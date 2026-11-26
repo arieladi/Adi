@@ -285,6 +285,17 @@ bool ProjectDocument::synchronise() {
     syncMonitorInputs(); // a track added or removed is fed or let go (N65)
     return true;
 }
+std::size_t ProjectDocument::wakeMissingPlugins() {
+    if (!store_)
+        return 0;
+    const std::size_t woke = session_.retryPlaceholders(*store_);
+    if (woke == 0)
+        return 0;
+    refreshLimiterReductionSources();
+    parameterOps_.attachSession(session_); // the woken plug-in's own edits become undo steps
+    analysis_->refreshSources();
+    return woke;
+}
 void ProjectDocument::setInputChannels(std::int32_t inputs) {
     inputChannels_ = std::max(0, inputs);
     syncMonitorInputs();
