@@ -419,8 +419,10 @@ FreezeAudioCapture captureFreezeAudio(Store &store, FreezeCaptureSpec spec, engi
         };
         for (std::int64_t at = 0; at < lastFrame;) {
             service();
-            if (!session.clips()->prime())
+            if (!session.clips()->prime(std::chrono::seconds(10), control.stop)) {
+                cancellation(control);
                 throw std::runtime_error("freeze clip read timed out");
+            }
             const auto frames =
                 static_cast<std::int32_t>((std::min)(static_cast<std::int64_t>(block), lastFrame - at));
             engine::AudioIo io;

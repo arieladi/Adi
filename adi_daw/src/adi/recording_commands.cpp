@@ -205,7 +205,8 @@ std::optional<std::pair<fs::path, FileStamp>> verifiedOwnedRecording(
         const auto proof = media::readFileRevision(path, error);
         if (!proof) return {};
         const auto actual = media::blake3File(path, stop);
-        if (actual && actual.hex == previous.at("hash_blake3") && media::readFileRevision(path, error) == proof)
+        if (actual && actual.hex == previous.at("hash_blake3").get_ref<const std::string &>() &&
+            media::readFileRevision(path, error) == proof)
             return std::pair{path, *proof};
         return {};
     }
