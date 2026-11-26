@@ -149,6 +149,8 @@ class DevicePanelView final : public juce::Component, public juce::FileDragAndDr
     // Capture the displayed authored identity separately from native drag presentation.
     bool beginFunctionDrag();
     const DevicePanelData *functionDragTarget() const noexcept;
+    static constexpr const char *kDeviceMoveDrag = "adi-device-move";
+    bool beginDeviceDrag();
     // The device the keyboard chose, itself or one of its controls: where a load goes (D4).
     void focusGained(FocusChangeType) override;
     void focusOfChildComponentChanged(FocusChangeType) override;
@@ -306,9 +308,11 @@ class DeviceChainStrip final : public juce::Component, public juce::DragAndDropT
     // past the last device, or when none is chosen.
     std::optional<std::int64_t> insertPoint() const;
     void chose(std::int64_t device) { chosen_ = device; }
-    // A device dragged from the browser drops into the chain, in front of the device it lands on.
+    // A browser device loads here. An existing device moves to this position in the chain.
     bool isInterestedInDragSource(const SourceDetails &) override;
     void itemDropped(const SourceDetails &) override;
+    bool isMovingDevice(const SourceDetails &) const;
+    bool moveDroppedDevice(const SourceDetails &, std::int64_t track, std::optional<std::int64_t> before = {});
     // The device a drop at `x` (the strip's coordinates) goes in front of; none past the last.
     std::optional<std::int64_t> dropBefore(int x) const;
     void mouseDown(const juce::MouseEvent &) override;
@@ -331,6 +335,8 @@ class DeviceChainStrip final : public juce::Component, public juce::DragAndDropT
     std::function<bool(mix::Function, std::int64_t track)> addFunction;
     std::function<bool(const DevicePanelData &, std::int64_t track,
                        std::optional<std::int64_t> before)> moveFunction;
+    std::function<bool(const DevicePanelData &, std::int64_t track,
+                       std::optional<std::int64_t> before)> moveDevice;
     // The app's clipboard: `copy` keeps a device's copy (and removes it, for Cut); `paste` puts the
     // kept copy on `track`, in front of `before` or at the chain's end; `duplicate` copies and
     // pastes at once, the clipboard untouched; `holdsCopy` says whether there is one to paste.
@@ -345,6 +351,7 @@ class DeviceChainStrip final : public juce::Component, public juce::DragAndDropT
     std::vector<std::unique_ptr<DevicePanelView>> panels;
 
   private:
+    DevicePanelView *moveSource(const SourceDetails &) const;
     const DevicePanelData *dataOf(std::int64_t device) const;
     void showSamples();
     void updateParameterDemand(std::vector<std::int64_t>);

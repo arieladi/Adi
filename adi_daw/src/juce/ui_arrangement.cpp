@@ -2339,6 +2339,12 @@ bool TrackHeaderList::keyPressed(const juce::KeyPress &key) {
         return view.root.keyPressed(key);
     return view.canvas.keyPressed(key);
 }
+bool TrackHeaderList::isInterestedInDragSource(const SourceDetails &details) {
+    return view.root.devices.isMovingDevice(details);
+}
+void TrackHeaderList::itemDropped(const SourceDetails &details) {
+    view.dropMovedDevice(details);
+}
 void ArrangementCanvas::paint(juce::Graphics &g) {
     // Live's lanes: grey, every other group of bars a shade lighter, the selected
     // track's lanes lighter still, the bar grid, a dark rule between tracks.
@@ -4044,10 +4050,21 @@ bool ArrangementCanvas::isInterestedInFileDrag(const juce::StringArray &files) {
     return !files.isEmpty();
 }
 bool ArrangementCanvas::isInterestedInDragSource(const SourceDetails &details) {
-    return !BrowserPanel::droppedFiles(details.description).isEmpty() ||
+    return view.root.devices.isMovingDevice(details) ||
+           !BrowserPanel::droppedFiles(details.description).isEmpty() ||
            !BrowserPanel::droppedDevice(details.description).empty();
 }
+void ArrangementView::dropMovedDevice(const juce::DragAndDropTarget::SourceDetails &details) {
+    if (const auto *track = geometry.trackAt(reader(), details.localPosition.y))
+        root.devices.moveDroppedDevice(details, track->id);
+    else
+        root.say("Drop the device on a track to move it there.");
+}
 void ArrangementCanvas::itemDropped(const SourceDetails &details) {
+    if (details.description.toString() == DevicePanelView::kDeviceMoveDrag) {
+        view.dropMovedDevice(details);
+        return;
+    }
     // A device dropped on a lane loads onto that track, at its chain's end; never a clip in the
     // lane (the director, 28 October; audit row 101).
     if (const auto uid = BrowserPanel::droppedDevice(details.description); !uid.empty()) {

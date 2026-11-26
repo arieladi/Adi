@@ -235,6 +235,8 @@ class ProjectDocument final : public engine::BlockProcessor {
     bool setDeviceKey(const DevicePanelData&,std::optional<std::int64_t> source,const std::string& tap);
     bool moveMixFunction(const DevicePanelData &expected, std::int64_t track,
                          std::optional<std::int64_t> before);
+    bool moveDevice(const DevicePanelData &expected, std::int64_t track,
+                    std::optional<std::int64_t> before);
     // A built-in device's sample slot (D5; N28, #414; ENGINE-SAMPLE-SLOTS.md): `file` imported by its
     // content and prepared for the engine's rate, then the slot replaced, in one undo step; Clear
     // empties it. The live device takes the new state at once (`ParamOps::appliedState`). The

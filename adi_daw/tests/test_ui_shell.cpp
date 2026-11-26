@@ -10686,6 +10686,12 @@ void deviceClipboard(AppCommands &commands, const std::filesystem::path &dir) {
     root.devices.parameterDemand = [&](const void *owner, const std::vector<std::int64_t> &ids) {
         document->setParameterDemand(owner, ids);
     };
+    root.devices.moveDevice = [&](const DevicePanelData &expected, std::int64_t track,
+                                  std::optional<std::int64_t> before) {
+        const bool ok = document->moveDevice(expected, track, before);
+        root.say(ok ? std::string{} : document->error());
+        return ok;
+    };
     root.devices.submit = [&](const std::string &op, Payload p) {
         const bool ok = document->deviceAction(op, std::move(p));
         if (!ok)
@@ -10780,7 +10786,41 @@ void deviceClipboard(AppCommands &commands, const std::filesystem::path &dir) {
     order = chain();
     check(order.size() == 2 && order[0] == 3 && order[1] > 3 && clipboard->insert.dump() == held,
           "the duplicate goes after it, at the chain's end, and the clipboard keeps what it held");
+    if (order.size() != 2)
+        return;
     const auto duplicateId = order[1];
+    // SC-83: the ordinary plug-in's title drag captures its identity. The strip, lanes and
+    // headers deliver the drop through the same device move as the application.
+    const auto move = [&](juce::DragAndDropTarget &target, juce::Point<int> at) {
+        if (root.devices.panels.size() != 2)
+            return false;
+        auto *source = root.devices.panels[1].get();
+        const juce::DragAndDropTarget::SourceDetails details(DevicePanelView::kDeviceMoveDrag, source, at);
+        if (target.isInterestedInDragSource(details) || !source->beginDeviceDrag() ||
+            !target.isInterestedInDragSource(details))
+            return false;
+        target.itemDropped(details);
+        return root.error().empty() && !target.isInterestedInDragSource(details);
+    };
+    const auto undoMove = [&] {
+        const bool undone = root.command(AppCommands::Undo);
+        refresh();
+        return undone && chain() == order;
+    };
+    check(move(root.devices, {0, root.devices.getHeight() / 2}) &&
+              chain() == std::vector<std::int64_t>{duplicateId, 3} && undoMove(),
+          "dropping a plug-in before another device reorders their IDs in one undo step");
+    const auto deviceTrack = [&] {
+        return document->store().db().execAndGet("SELECT c.track_id FROM device_chains c JOIN devices d ON "
+                                                "d.chain_id = c.id WHERE d.id = " + std::to_string(duplicateId))
+            .getInt64();
+    };
+    check(move(root.arrangement.canvas, {40, laneTop(root, 3) + 10}) && deviceTrack() == 3 &&
+              chain() == std::vector<std::int64_t>{3} && undoMove(),
+          "dropping the plug-in on a lane moves the same device to that track and Undo brings it back");
+    check(move(root.arrangement.headers, {40, laneTop(root, 4) + 10}) && deviceTrack() == 4 &&
+              chain() == std::vector<std::int64_t>{3} && undoMove(),
+          "dropping the plug-in on a track header moves it to that track in one undo step");
     check(focus(1) && key('x'), "Ctrl/Cmd+X on the duplicate cuts it");
     refresh();
     check(chain() == std::vector<std::int64_t>{3} && clipboard->insert.value("name", "") == "UI knobs" &&
