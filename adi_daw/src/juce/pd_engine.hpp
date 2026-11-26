@@ -522,6 +522,7 @@ private:
     /// Sized in `prepare`. One segment's worth, never grown on the audio
     /// thread; overflow is counted.
     std::vector<engine::MpeOut> midiScratch_;
+    std::vector<engine::Event> nativeMidiScratch_;
     std::int64_t midiDropped_ = 0;
 
     /// Declared parameter id -> its receive `t_symbol*`, resolved once on the
