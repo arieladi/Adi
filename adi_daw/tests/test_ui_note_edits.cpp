@@ -82,6 +82,13 @@ void deleting() {
     const auto two = deleteNotes(c, {3, 9, 555});
     check(two.ops.size() == 2 && two.ops[0].label == "Delete Notes", "several: one op each, a note the clip does not hold is left out");
     check(deleteNotes(c, {}).ops.empty() && deleteNotes(c, {}).refusal.empty(), "none selected: nothing to do");
+    auto wide = c;
+    constexpr std::uint64_t highId = (std::uint64_t{1} << 63) + 7;
+    wide.notes.front().id = highId;
+    const auto ordered = deleteNotes(wide, {9, highId, 9, 555});
+    check(ordered.ops.size() == 2 && ordered.ops[0].payload.at("note") == highId &&
+              ordered.ops[1].payload.at("note") == std::uint64_t{9},
+          "indexed selection keeps clip order and full note IDs, ignoring duplicates and unknown IDs");
 }
 
 void moving() {

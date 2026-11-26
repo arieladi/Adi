@@ -8121,6 +8121,123 @@ void clipViewClipTime(AppCommands &commands, const std::filesystem::path &dir) {
     }
 }
 
+void noteSelectionSpeed(AppCommands &commands, const std::filesystem::path &dir) {
+    using Clock = std::chrono::steady_clock;
+    using Milliseconds = std::chrono::duration<double, std::milli>;
+    constexpr auto beat = textproj::kPPQ;
+    // Opt-in performance witness. Leave the wall-clock gate out of the regular suite.
+    const auto measure = [&](std::size_t count) -> double {
+        StoreError error{};
+        auto store = Store::createEmpty(dir / ("note-selection-" + std::to_string(count) + ".adi"), error);
+        if (!store) {
+            check(false, "SC-423: create the note selection project");
+            return 0.;
+        }
+        store->db().exec("INSERT INTO project(id,name) VALUES(1,'Long MIDI Part');"
+                         "INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(1,'midi','Keys',0)");
+        SQLite::Statement insert(store->db(), "INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks) VALUES(11,1,'midi',0,?)");
+        insert.bind(1, static_cast<std::int64_t>(count) * beat);
+        insert.exec();
+        std::vector<NoteRecord> source(count);
+        for (std::size_t i = 0; i < count; ++i) {
+            auto &note = source[i];
+            note.start_ticks = static_cast<std::int64_t>(i) * beat;
+            note.dur_ticks = 3 * beat / 4;
+            note.note_id = 1000000u + 17u * static_cast<std::uint64_t>(count - i);
+            note.key = 60;
+            note.vel_on = 100;
+            note.probability = 10000;
+        }
+        const auto bytes = writeStream<NoteRecord>(FourCC::Notes, source, 1, StreamFlags::SortedByTime);
+        if (!store->putEventStream(11, "notes", bytes)) {
+            check(false, "SC-423: write the long note stream");
+            return 0.;
+        }
+        engine::ProjectView view;
+        view.refresh(*store);
+        OpSubmitter submitter(*store, view);
+        TransportMailbox mailbox;
+        ViewStateStore persistence(*store);
+        SessionState session(*store);
+        AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "long-midi-selection");
+        commands.activate(root);
+        root.setSize(1400, 900);
+        root.arrangement.geometry.resizeTrack(1, 48);
+        root.mark(DirtySet::All);
+        root.frame();
+        auto &canvas = root.arrangement.canvas;
+        const auto x = static_cast<float>(root.arrangement.geometry.x(0)) + 20.f;
+        canvas.mouseDoubleClick(pressAt(canvas, {x, static_cast<float>(laneTop(root, 1) + 30)}));
+        root.frame();
+        auto &panel = root.clipView;
+        auto &editor = panel.notes;
+        const auto *clip = panel.details();
+        if (!clip || clip->id != 11 || clip->notes.size() != count || editor.getLocalBounds().isEmpty()) {
+            check(false, "SC-423: open every note in the real Clip View editor");
+            return 0.;
+        }
+        const auto selectedAt = Clock::now();
+        const bool selectAll = editor.keyPressed(juce::KeyPress('a', juce::ModifierKeys::commandModifier, 0));
+        const double selectMs = Milliseconds(Clock::now() - selectedAt).count();
+        check(selectAll && std::equal(editor.selected().begin(), editor.selected().end(), clip->notes.begin(), clip->notes.end(),
+                                     [](auto id, const auto &note) { return id == note.id; }) && !editor.isSelected(1),
+              "SC-423: Select All keeps exactly the stable IDs in clip order");
+
+        const auto countSelected = [&] {
+            std::size_t found = 0;
+            for (const auto &note : clip->notes)
+                if (editor.isSelected(note.id))
+                    ++found;
+            return found;
+        };
+        check(countSelected() == count, "SC-423: every note is selected on the warm-up pass");
+        std::array<double, 5> passes{};
+        bool exact = true;
+        for (auto &elapsed : passes) {
+            const auto start = Clock::now();
+            const auto found = countSelected();
+            elapsed = Milliseconds(Clock::now() - start).count();
+            exact = exact && found == count;
+        }
+        check(exact, "SC-423: all timed membership passes find every selected note");
+        std::sort(passes.begin(), passes.end());
+        const double membership = passes[passes.size() / 2];
+
+        editor.time.left = 0.;
+        editor.time.scale = 96.;
+        editor.time.grid.snap = false;
+        editor.keys.show(59, 61, editor.notesArea().getHeight());
+        juce::Image image(juce::Image::ARGB, editor.getWidth(), editor.getHeight(), true, juce::SoftwareImageType{});
+        juce::Graphics graphics(image);
+        const auto paintAt = Clock::now();
+        editor.paintEntireComponent(graphics, true);
+        const double paintMs = Milliseconds(Clock::now() - paintAt).count();
+        const auto box = editor.boxOf(clip->notes.front());
+        if (!box) {
+            check(false, "SC-423: the first selected note is visible for a body drag");
+            return 0.;
+        }
+        const juce::Point<float> grab(static_cast<float>(box->x + box->width / 2), static_cast<float>(box->y + box->height / 2));
+        editor.mouseDown(pressAt(editor, grab));
+        const auto dragAtTime = Clock::now();
+        editor.mouseDrag(dragAt(editor, grab, {grab.x + 24.f, grab.y}));
+        const double dragMs = Milliseconds(Clock::now() - dragAtTime).count();
+        check(editor.shown(clip->notes.front()).startTicks == clip->notes.front().startTicks + beat / 4 &&
+                  editor.shown(clip->notes.back()).startTicks == clip->notes.back().startTicks + beat / 4 &&
+                  editor.selected().size() == count && !submitter.nextUndo(),
+              "SC-423: the held drag previews both ends of the selection without an edit");
+        std::printf("SC-423 %zu notes: Select All %.3f ms, membership median %.3f ms, peerless paint %.3f ms, held drag %.3f ms\n",
+                    count, selectMs, membership, paintMs, dragMs);
+        return membership;
+    };
+    const auto small = measure(5000);
+    const auto large = measure(20000);
+    if (small > 0. && large > 0.) {
+        std::printf("SC-423 membership growth for 4x notes: %.2fx\n", large / small);
+        check(large < 8. * small, "SC-423: membership scales below eightfold at four times the notes");
+    }
+}
+
 void clipViewMulti(AppCommands &commands, const std::filesystem::path &dir) {
     StoreError err{};
     auto store = Store::createEmpty(dir / "clip-view-multi.adi", err);
@@ -16340,6 +16457,11 @@ int main(int argc, char **argv) {
     if (argc == 2 && std::string(argv[1]) == "--arrangement-midi-speed-only") {
         arrangementMidiRedraw(commands, temp.path());
         std::printf("%d checks, %d failures (Arrangement MIDI redraw)\n", checks, failures);
+        return failures ? 1 : 0;
+    }
+    if (argc == 2 && std::string(argv[1]) == "--note-selection-speed-only") {
+        noteSelectionSpeed(commands, temp.path());
+        std::printf("%d checks, %d failures (Note Editor selection)\n", checks, failures);
         return failures ? 1 : 0;
     }
     if (argc == 2 && std::string(argv[1]) == "--browser-search-speed-only") {
