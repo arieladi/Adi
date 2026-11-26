@@ -160,7 +160,8 @@ Payload mediaRow(SQLite::Database& db, std::int64_t id) {
     }
     return row;
 }
-fs::path resolveMedia(const fs::path& folder, const Payload& row, std::string& error) {
+namespace {
+fs::path storedMediaPath(const fs::path& folder, const Payload& row, std::string& error) {
     std::vector<fs::path> candidates;
     if (!row.at("rel_path").is_null()) {
         const auto relative = pathFromUtf8(row.at("rel_path").get<std::string>());
@@ -177,12 +178,34 @@ fs::path resolveMedia(const fs::path& folder, const Payload& row, std::string& e
         if (path.empty()) { error = "abs_path_hint is not absolute"; return {}; }
         std::error_code ec;
         if (!fs::exists(path, ec)) { if (ec) { error = "cannot inspect " + pathUtf8(path); return {}; } continue; }
-        const auto hash = blake3File(path);
-        if (!hash) { error = "cannot hash " + pathUtf8(path); return {}; }
-        if (hash.hex != row.at("hash_blake3").get<std::string>()) { error = "hash mismatch: " + pathUtf8(path); return {}; }
         return path;
     }
     error = "missing media: " + row.at("orig_name").get<std::string>();
+    return {};
+}
+} // namespace
+fs::path resolveMedia(const fs::path& folder, const Payload& row, std::string& error) {
+    const auto path = storedMediaPath(folder, row, error);
+    if (path.empty()) return {};
+    const auto hash = blake3File(path);
+    if (!hash) { error = "cannot hash " + pathUtf8(path); return {}; }
+    if (hash.hex != row.at("hash_blake3").get<std::string>()) { error = "hash mismatch: " + pathUtf8(path); return {}; }
+    return path;
+}
+fs::path mediaPathForBrowser(const Store& store, std::int64_t id, std::string& error) {
+    try {
+        SQLite::Statement query(store.db(), "SELECT orig_name,rel_path,abs_path_hint FROM media_files WHERE id=?");
+        query.bind(1, id);
+        if (!query.executeStep()) { error = "no such media"; return {}; }
+        Payload row = {{"orig_name", query.getColumn(0).getString()}, {"rel_path", nullptr}, {"abs_path_hint", nullptr}};
+        if (!query.getColumn(1).isNull()) row["rel_path"] = query.getColumn(1).getString();
+        if (!query.getColumn(2).isNull()) row["abs_path_hint"] = query.getColumn(2).getString();
+        const auto path = storedMediaPath(projectFolder(store), row, error);
+        if (path.empty()) return {};
+        std::error_code ec;
+        if (fs::is_regular_file(path, ec)) return fs::weakly_canonical(path);
+        error = "not a sample file: " + pathUtf8(path);
+    } catch (const std::exception& e) { error = e.what(); }
     return {};
 }
 bool importApply(OpContext& c, const Payload& p, std::string& error) {

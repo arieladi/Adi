@@ -77,6 +77,8 @@ struct AudioMediaIdentity {
     std::string contentHash;
     std::optional<std::int64_t> sampleRate,channels,frames;
     bool missing=false; // stored pool flag, not a fresh filesystem probe
+    std::string originalName{};
+    std::optional<std::int64_t> bitDepth{};
     friend bool operator==(const AudioMediaIdentity&,const AudioMediaIdentity&)=default;
 };
 struct AudioClipSource {
