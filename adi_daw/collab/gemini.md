@@ -4,6 +4,51 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-26 — `DF-E89` on loan (`gemini/df-e89-release-warnings` `f944ae68`) + Item 4 (CI GCC Release leg)
+
+### Item 3: `DF-E89` — GCC 12 Release (`-O3 -DNDEBUG -DADI_WERROR=ON`) warnings fixed across all 55 units
+
+Branch **`gemini/df-e89-release-warnings`** at **`f944ae68`** (commit `8b50d1c3` + clean merge of `origin/main` `302b3239` `#795`). Strict warning-only fixes across 51 files (5 `src/` files, `tests/replace_operator_new.hpp`, and 45 `tests/test_*.cpp` files), behaviour unchanged:
+
+1. **`-Werror=mismatched-new-delete` (46 test TUs: `tests/replace_operator_new.hpp` + 39 individual test files including `test_reverb.cpp` at `-O2` and `test_plugin_scanner.cpp`):** guarded replacement allocator helpers/operators with `#if defined(__GNUC__) && !defined(__clang__)` `__attribute__((noinline))` so GCC cannot inline `std::free`/`std::malloc` into `operator new`/`delete` callers, leaving `-Wmismatched-new-delete` active everywhere in `src/` and `tests/` and keeping Clang and MSVC `/W4 /WX` completely untouched.
+2. **`-Werror=array-bounds` (7 TUs: `src/juce/pd_amxd.cpp:319`, `src/adi/ui/note_edits.hpp:95`, `tests/test_auto_warp.cpp:73`, `test_edit_placement.cpp:322`, `test_freeze_commands.cpp:464`, `test_gesture_playback.cpp:432`, `test_sampler.cpp:190`):** replaced single-element `std::vector` initializer-list assignment with `push_back`/`assign`.
+3. **`-Werror=maybe-uninitialized` (2 `src/` TUs: `src/adi/clip_commands.cpp:506`, `src/adi/return_send_tap.cpp:52-68`):** avoided GCC 12 `-O3` false positives on conditional/reused `std::optional<std::int64_t>`.
+4. **`-Werror=stringop-overflow=` (`src/adi/audio/mp4_aac.cpp:43-45`):** replaced `b.resize(b.size() + n, 0)` in `zeros()` with `reserve` + `push_back` loop.
+5. **`-Werror=unused-result` (`tests/test_project_replace.cpp:289,292`):** checked POSIX pipe `read`/`write` return values under `_FORTIFY_SOURCE`.
+
+| Compiler & Build Type | `-DADI_WERROR=ON` Full Tree | Full Headless `ctest -LE performance` (278 suites) | Acceptance (`adi_acceptance_wts01`) | JUCE TUs (`note_edits.hpp`) |
+|---|---|---|---|---|
+| **GCC 12.4.0 Release (`-O3 -DNDEBUG`)** | **PASS** (0 warnings, all 759+ targets; also `test_reverb.cpp` `-O2` PASS; also `test_stack_model.cpp` + `mp4_aac`/`clip_commands`/`return_send_tap` with `-D_GLIBCXX_ASSERTIONS` PASS) | **277 / 278 PASS**, 1 SKIP (`adi_loudness_ffmpeg_tests`), **0 FAIL** (225.28 s + 288.41 s) | **PASS** (10.68 s) | — |
+| **GCC 12.4.0 Debug (`-g0`)** | **PASS** (0 warnings, all targets) | **277 / 278 PASS**, 1 SKIP (`adi_loudness_ffmpeg_tests`), **0 FAIL** (316.65 s + half 2 + 119.96 s) | **PASS** (44.89 s) | **PASS** (3/3, 0 warnings: `ui_shell.cpp.o`, `ui_arrangement.cpp.o`, `test_ui_shell.cpp.o`) |
+| **Clang 14.0.6 + libstdc++ 12 Debug (`-g0`)** | **PASS** (0 warnings, all targets) | **277 / 278 PASS**, 1 SKIP (`adi_loudness_ffmpeg_tests`), **0 FAIL** (306.49 s + 356.39 s + 285.81 s) | **PASS** (37.87 s) | **PASS** (3/3, 0 warnings: `ui_shell.cpp.o`, `ui_arrangement.cpp.o`, `test_ui_shell.cpp.o`) |
+| **Clang 14.0.6 + libstdc++ 12 Release (`-O3 -DNDEBUG`)** | **PASS** (0 warnings, all targets) | **276 / 278 PASS**, 1 SKIP (`adi_loudness_ffmpeg_tests`), **1 pre-existing `DF-M79`** (`adi_mix_compressor_tests`, `mixview`) (172.56 s + 248.96 s) | **PASS** (10.68 s) | — |
+
+**PR requested** for `gemini/df-e89-release-warnings` at `f944ae68`.
+
+### Item 4: Exact configure line for a GCC Release `-Werror` CI leg
+
+In `.github/workflows/ci.yml` (`strict` job, lines 194–202 and 636–648), add a `build_type` field (default `"Debug"`) to the `strict` matrix with a new GCC Release entry:
+```json
+{"name": "zero warnings + Release + hardened libstdc++ (gcc)", "os": "ubuntu-latest",
+ "cxx": "g++", "harden": "-D_GLIBCXX_ASSERTIONS", "build_type": "Release"}
+```
+with the configure / build / test lines:
+```sh
+cmake -S adi_daw -B build-strict \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_C_COMPILER=gcc \
+      -DCMAKE_CXX_COMPILER=g++ \
+      -DCMAKE_CXX_FLAGS="-D_GLIBCXX_ASSERTIONS" \
+      -DADI_WERROR=ON \
+      -DADI_ACCEPTANCE=ON
+cmake --build build-strict --parallel "$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)"
+ctest --test-dir build-strict -LE performance --output-on-failure \
+      --parallel "$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)" --timeout 600
+```
+Note: `-LE performance` keeps `adi_acceptance_wts01` (~10.7 s in Release) in the run while excluding `adi_builtin_realtime_tests` (labelled `performance;acceptance`, which runs its 10× `kLength=1.0` Release workload and needs a >600 s per-test timeout on 2-vCPU runners).
+
+---
+
 ## 2026-11-26 — `walk/*` Round 20 (`walk/b13-default-track-numbers` `ad05c4bf`)
 
 Verified updated `origin/walk/b13-default-track-numbers` head `ad05c4bf` (merged `origin/main` `bdd8926c` + 4-line `tests/test_stack_model.cpp` Debug allocation-check fix; JUCE UI files unchanged from `deb41b55` where all 7 JUCE TUs passed with 0 warnings on both compilers) under **GCC 12.4.0** and **Clang 14.0.6 + libstdc++ 12** with `-DADI_WERROR=ON` (headless Pd on, JUCE off, `-DADI_ACCEPTANCE=ON`).
