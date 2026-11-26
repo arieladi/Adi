@@ -2506,19 +2506,31 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
                   "undone, 3 Audio is at its 441 samples again");
         }
         if (column != nullptr) {
-            auto &delay = column->delay;
             const auto samples = [&] { return root.reader().findTrack(3)->delaySamples; };
-            check(delay.keyPressed(juce::KeyPress(juce::KeyPress::upKey)) && samples() == 445 &&
+            const auto pressDelay = [&](int key) {
+                auto *shown = rowOf(root.mixerView, 3);
+                const bool handled = shown && shown->delay.keyPressed(juce::KeyPress(key));
+                root.frame();
+                return handled;
+            };
+            const auto undoDelay = [&] {
+                const bool handled = root.command(AppCommands::Undo);
+                root.frame();
+                return handled;
+            };
+            check(pressDelay(juce::KeyPress::upKey) && samples() == 445 &&
                       submitter.nextUndo()->label == "Change Track Delay" && submitter.nextUndo()->opCount == 1,
                   "SC-289: Track Delay Up nudges a tenth of a millisecond in one edit on the sample grid");
-            root.frame();
-            check(delay.keyPressed(juce::KeyPress(juce::KeyPress::downKey)) && samples() == 441,
+            check(pressDelay(juce::KeyPress::downKey) && samples() == 441,
                   "SC-289: Track Delay Down nudges back to the original delay");
-            check(delay.getValueFromText("invalid") == delay.getValue(), "invalid Track Delay text leaves the delay alone");
-            check(delay.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)) && samples() == 0 &&
-                      root.command(AppCommands::Undo) && samples() == 441,
+            if (auto *shown = rowOf(root.mixerView, 3))
+                check(shown->delay.getValueFromText("invalid") == shown->delay.getValue(),
+                      "invalid Track Delay text leaves the delay alone");
+            check(pressDelay(juce::KeyPress::deleteKey) && samples() == 0 && undoDelay() && samples() == 441,
                   "SC-289: Track Delay resets to zero and Undo restores the delay");
-            root.frame();
+            check(undoDelay() && samples() == 445 && undoDelay() && samples() == 441 &&
+                      submitter.nextUndo()->txnId == stepTen,
+                  "SC-289: each Track Delay nudge has its own Undo");
         }
     }
     check(root.command(AppCommands::ToggleMixerTrackOptions) && !root.state().mixerTrackOptions, "Track Options off again");
