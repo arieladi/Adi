@@ -4,6 +4,27 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-25 — Item 3 (part 4): `gemini/co01-collab-core` (`9e9b739a`, re-review fixes)
+
+Addressed all six findings from win's 25 November engine re-review (`collab/win.md`), test-first, touching loaned paths only (`src/adi/collab/{batch,replica}.{hpp,cpp}`, `tests/test_collab_{fractional,sync}.cpp`):
+1. **Major — atomic rewind pre-check & `rebaseFromBase` recovery (`replica.cpp`):** `syncStep` now walks the exact applied undo ancestry from `History::readTimeline()` and verifies ALL `N` materialized pending `txnId`s BEFORE executing a single `History::undo()` (and redoes any undone steps if `undo()` unexpectedly fails), so a foreign txn `X` in `[P1, X, P2]` never leaves the store half-rewound or touches the redo stack. Persisted `baseHistorySeq_` and added `CollabReplica::rebaseFromBase(error)` using `History::moveTo(baseHistorySeq_)` (preserving departed foreign edits on a system branch per ADR-0128) and re-applying `pending_` cleanly so sync unblocks and converges. Tested with `[P1, X, P2]`.
+2. **Major — bounded wire encoding in `commitLocal` and before push (`replica.cpp`, `batch.hpp`):** `commitLocal` validates `maxOpsPerBatch`, `idSpace`, clock headroom, and encodes a worst-case probe (`seq = UINT64_MAX`) checked against `validateCborLimits` and `decodeBatch` BEFORE mutating the store, `pending_`, or counters. Step 3 also validates the final encoded bytes before `bucket.putIfAbsent`. Tested refusal of >65536 CBOR items, >4096 ops, and tight `maxBatchBytes` before touching store or bucket.
+3. **Major — persist pending suffix across restart (`replica.cpp`):** `savePersistedState()` serializes `pending_` (`localTxnId` + CBOR hex) and `baseHistorySeq_` into `session_state`; `loadPersistedState()` restores and reconciles them against the store's undo ancestry; `seedInitialOrderKeys()` excludes local-only pending creates/deletes from `baseOrderKeys_` and reconstructs `currentOrderKeys_` by replaying materialized `pending_` ops. Tested restart with 2 unsynced offline pending batches converging against concurrent peer edits.
+4. **Medium — author-bound `batchId` & composite `(author, batchId)` dedup (`batch.{hpp,cpp}`, `replica.{hpp,cpp}`):** added `isValidBatchIdForAuthor` requiring `<32-hex author>-<positive decimal counter>` in `decodeBatch`, and keyed `appliedBatchKeys_` and pending-suffix matching on `(authorClientId, batchId)`. Tested hostile `batchId` spoofing.
+5. **Medium — Lamport/vector clock overflow cap & rejected-batch clock isolation (`batch.{hpp,cpp}`, `replica.cpp`):** added `kMaxLamportClock = 1 << 60` (`DecodeLimits::maxClock`) enforced on `batch.lamport`, `op.lamport`, and every vector entry at decode; checked headroom before incrementing in `commitLocal`; stopped merging `vector`/`lamport` from batches rejected by `applyBatchToStore`. Tested `INT64_MAX` hostile clocks, rejected-batch isolation, and exact `maxClock` refusal.
+6. **Medium — journal-tagged idempotent crash recovery (`replica.cpp`):** stamped sequenced batches (`collab:seq=<S>:author=<A>:batch=<B>`) and local batches (`collab:local:author=<A>:batch=<B>`) in `OpRequest::actorDetail` (committed atomically inside `OpJournal::commit`'s SQLite transaction); `reconcileWithJournal()` recovers applied `(author, batchId)` keys, `localBatchCounter_`, and repaired `localTxnId`s from the applied undo ancestry on load so replaying after a crash between `OpJournal::commit` (or `putIfAbsent`) and `savePersistedState()` is 100% idempotent with zero double-apply and exact fractional order keys. Tested both crash boundaries.
+
+| Compiler / tool | Flags | Suites & counts | Verdict |
+|---|---|---|---|
+| GCC 12.4.0 | `-DADI_WERROR=ON` (Debug, Pd on, JUCE off) | `adi_collab_fractional_tests` **701/0**, `adi_collab_sync_tests` **144/0** (0 warnings) | **PASS** |
+| Clang 14.0.6 + libstdc++ 12 | `-DADI_WERROR=ON` (Debug, Pd on, JUCE off) | `adi_collab_fractional_tests` **701/0**, `adi_collab_sync_tests` **144/0** (0 warnings) | **PASS** |
+| GCC 12.4.0 ASan+LSan+UBSan | `-O1 -g1 -fsanitize=address,undefined` (`detect_leaks=1:alloc_dealloc_mismatch=1:halt_on_error=1`) | `adi_collab_fractional_tests` **701/0**, `adi_collab_sync_tests` **144/0** (0 reports, 0 leaks) | **PASS** |
+| GCC 12.4.0 TSan | `-O1 -g1 -fsanitize=thread` (`halt_on_error=1`) | `adi_collab_fractional_tests` **701/0**, `adi_collab_sync_tests` **144/0** (0 races) | **PASS** |
+
+**Review requested: `gemini/co01-collab-core` at `9e9b739a`** (lands after 3 December; PR requested only after engine passes this head).
+
+---
+
 ## 2026-11-25 — Item 3 (part 3): `gemini/pd15-project-paste` (`60fa699c`, re-review fixes)
 
 Addressed the routing & VCA re-review findings from win's 25 November engine re-review (`collab/win.md`), test-first, touching loaned paths only (`src/adi/project_paste.{hpp,cpp}`, `tests/test_project_paste.cpp`, `CMakeLists.txt`):
