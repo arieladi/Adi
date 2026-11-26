@@ -1,85 +1,103 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-name: Recording seek Linux sanitizer check
+name: Step 7 UI
 on:
+  pull_request:
+    # GitHub's default three, plus ready_for_review: a draft runs nothing (the
+    # `if` on `changes`), so marking it ready is what builds it.
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths: ['adi_daw/**', '!adi_daw/collab/**', '.github/workflows/ui.yml', '.github/scripts/markdown_only.sh']
+  push:
+    branches: [main]
+    paths: ['adi_daw/**', '!adi_daw/collab/**', '.github/workflows/ui.yml', '.github/scripts/markdown_only.sh']
   workflow_dispatch:
 permissions:
   contents: read
+# A pull request's run is cancelled by its next push; main's never is, so every
+# merge burst still ends in a finished run on main. The reasoning is in ci.yml.
+concurrency:
+  group: ui-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
-  sanitize:
+  # Whether the shell builds at all: not on a draft, and not for a pull request
+  # that changes only Markdown no build reads (the rule is ci.yml's, in
+  # .github/scripts/markdown_only.sh). Three runners, one of them macOS, cost
+  # more than this one Linux job does. Its name must not begin "GUI shell /",
+  # which is how land_top.sh finds the three shell checks. land_checks.py reads
+  # this job's name, the workflow's and the matrix's size (a Markdown-only
+  # skip counts only beside this job's SUCCESS); test_land_checks.py fails if
+  # they drift from what is written here.
+  changes:
+    name: 'ui: which jobs run'
     runs-on: ubuntu-latest
-    timeout-minutes: 120
-    env:
-      ASAN_OPTIONS: detect_leaks=0:alloc_dealloc_mismatch=1
-      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+    if: ${{ !github.event.pull_request.draft }}
+    outputs:
+      code: ${{ steps.changes.outputs.code }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 45f0a9b0deafbfa5b444b02929e1a231586a65b8
-          persist-credentials: false
-      - name: Reconstruct and verify the candidate tree
+          fetch-depth: 2
+      - name: Only Markdown no build reads?
+        id: changes
+        env:
+          # code=false only when the base is main: a stack's top lands with no
+          # new run, so a stacked pull request always builds (the script says why).
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: bash .github/scripts/markdown_only.sh >> "$GITHUB_OUTPUT"
+  shell:
+    name: GUI shell / ${{ matrix.os }}
+    needs: changes
+    if: needs.changes.outputs.code != 'false'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    defaults:
+      run:
         shell: bash
-        run: |
-          sed 's/^|//; s/|$//' > "$RUNNER_TEMP/recording-seek.patch" <<'PATCH'
-          |diff --git a/adi_daw/tests/mix_seek_fixture.hpp b/adi_daw/tests/mix_seek_fixture.hpp|
-          |index e88df1ab..a04f21c7 100644|
-          |--- a/adi_daw/tests/mix_seek_fixture.hpp|
-          |+++ b/adi_daw/tests/mix_seek_fixture.hpp|
-          |@@ -215,9 +215,11 @@ inline void run(ui::AppCommands &commands,const std::filesystem::path &directory|
-          |     if(!analysis){broker->shutdown();engineLease.reset();document->release();return;}|
-          | |
-          |     {|
-          |-        ui::AdiRootComponent root(document->view(),document->ops(),document->mailbox(),commands,|
-          |-                                  document->views(),document->sessionState(),name);|
-          |-        root.sharedAnalysis=broker; // The real Locate path must not force a UI-intent epoch.|
-          |+        // Keep the full root off the Windows Debug shell test thread's stack.|
-          |+        auto root=std::make_unique<ui::AdiRootComponent>(|
-          |+            document->view(),document->ops(),document->mailbox(),commands,|
-          |+            document->views(),document->sessionState(),name);|
-          |+        root->sharedAnalysis=broker; // The real Locate path must not force a UI-intent epoch.|
-          |         auto &transport=document->session().transport();|
-          |         transport.play(seek!=Seek::Parked);|
-          |         // Default tempo120 and PPQ divisible by3/4 represent8000/30000|
-          |@@ -251,7 +253,7 @@ inline void run(ui::AppCommands &commands,const std::filesystem::path &directory|
-          |             const auto current=document->view().current();|
-          |             const auto target=static_cast<std::int64_t>(current->tempo->ticksToSeconds(targetTick)*48000.);|
-          |             expect(target==(seek==Seek::Distant?30000:8000),"seek fixture's authored tick maps to its exact heard sample");|
-          |-            expect(root.locate(targetTick),"actual root Locate posts while the old callback is blocked");|
-          |+            expect(root->locate(targetTick),"actual root Locate posts while the old callback is blocked");|
-          |             gate->oldSignal.store(false,std::memory_order_release);|
-          |             blocked.finish();|
-          |             broker->pump();|
-          |@@ -294,7 +296,7 @@ inline void run(ui::AppCommands &commands,const std::filesystem::path &directory|
-          |             expect(suspend?after==targetCalls:after>targetCalls,|
-          |                    "the selected active/suspended graph tap path is actually exercised");|
-          |         }|
-          |-        analysis.reset();broker->shutdown();root.sharedAnalysis.reset();|
-          |+        analysis.reset();broker->shutdown();root->sharedAnalysis.reset();|
-          |     }|
-          |     engineLease.reset();document->session().collectScopeTaps();document->release();|
-          | }|
-          PATCH
-          git apply --index "$RUNNER_TEMP/recording-seek.patch"
-          test "$(git write-tree)" = e866e1ea34ed5956193a9acf836f41e971807836
-          echo "Verified source tree for d91d4388f285e500d4eae27861243a352d9745d2"
-      - name: Install the Linux JUCE development headers
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+      - name: Linux build headers (no display server)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libasound2-dev libfreetype-dev libfontconfig1-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libxi-dev libglu1-mesa-dev mesa-common-dev libegl-dev
-      - name: Fetch the pinned ADI dependencies
+      - name: Fetch pinned sources
         run: bash adi_daw/tools/fetch_external.sh --with-juce
-      - name: Build Debug UI tests with ASan and UBSan
-        shell: bash
+      - name: Select a short build path
         run: |
-          flags='-fsanitize=address,undefined -fno-omit-frame-pointer'
-          cmake -S adi_daw -B "$RUNNER_TEMP/adi" -G Ninja -DCMAKE_BUILD_TYPE=Debug \
-            -DADI_WITH_JUCE=ON -DADI_WITH_PD=OFF -DADI_WERROR=ON \
-            "-DCMAKE_C_FLAGS=$flags" "-DCMAKE_CXX_FLAGS=$flags" \
-            "-DCMAKE_C_FLAGS_DEBUG=-O0 -g1" "-DCMAKE_CXX_FLAGS_DEBUG=-O0 -g1 -fno-var-tracking-assignments" \
-            "-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address,undefined -no-pie" \
-            "-DCMAKE_SHARED_LINKER_FLAGS=-fsanitize=address,undefined" \
-            "-DCMAKE_MODULE_LINKER_FLAGS=-fsanitize=address,undefined"
-          mapfile -t suites < <(ctest --test-dir "$RUNNER_TEMP/adi" -N -R '^adi_ui_' --show-only=json-v1 | python3 -c 'import json,sys; print("\n".join(t["name"] for t in json.load(sys.stdin)["tests"]))')
-          test "${#suites[@]}" -ge 15
-          cmake --build "$RUNNER_TEMP/adi" --parallel 2 --target "${suites[@]}"
-      - name: Run the UI suites with DISPLAY unset
-        run: env -u DISPLAY -u WAYLAND_DISPLAY ADI_HOME="$RUNNER_TEMP/adi-test-home" ctest --test-dir "$RUNNER_TEMP/adi" -R '^adi_ui_' --output-on-failure --timeout 1800
+          if [ "$RUNNER_OS" = Windows ]; then
+            echo "ADI_UI_BUILD=C:/b/adi-ui-${GITHUB_RUN_ID}" >> "$GITHUB_ENV"
+          else
+            echo "ADI_UI_BUILD=$RUNNER_TEMP/adi-ui" >> "$GITHUB_ENV"
+          fi
+      - name: Build root window and UI test tiers
+        run: |
+          cmake -S adi_daw -B "$ADI_UI_BUILD" -G Ninja -DCMAKE_BUILD_TYPE=Debug -DADI_WITH_JUCE=ON -DADI_WITH_PD=OFF -DADI_WERROR=ON
+          cmake --build "$ADI_UI_BUILD" --target adi_app adi_ui_shell_tests adi_ui_window_state_tests adi_ui_document_tests adi_ui_stack_model_tests adi_ui_shared_analysis_tests adi_ui_shared_spectrum_tests adi_ui_mix_functions_tests adi_ui_eq_pages_tests adi_ui_param_capture_tests adi_mix_document_tests adi_mix_pipeline_document_tests adi_mix_limiter_tests adi_mix_limiter_owner_tests adi_mix_clip_tests adi_mix_limit_chain_tests adi_mix_functions_tests adi_mix_render_intent_tests adi_mix_pdc_pin_tests adi_mix_eq_tests adi_mix_eq_host_tests adi_mix_eq_pipeline_tests adi_mix_parameter_feed_tests adi_analyser_taps_tests adi_ui_analysis_comparison_tests adi_ui_spectrum_slope_tests adi_ui_spectrum_average_tests adi_ui_triggered_scope_tests --parallel 2
+      - name: Peerless software renders and synthesised keyboard events
+        run: |
+          # An unset DISPLAY deliberately proves the Linux offscreen path.
+          env -u DISPLAY ctest --test-dir "$ADI_UI_BUILD" -C Debug -R '^adi_(ui_(shell|window_state|document|stack_model|shared_analysis|shared_spectrum|mix_functions|eq_pages|param_capture|analysis_comparison|spectrum_slope|spectrum_average|triggered_scope)|mix_(document|pipeline_document|limiter|limiter_owner|clip|limit_chain|functions|render_intent|pdc_pin|eq|eq_host|eq_pipeline|parameter_feed)|analyser_taps)_tests$' --output-on-failure
+      - name: Windows native window smoke (no audio device)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & "$env:ADI_UI_BUILD/adi_ui_document_tests.exe" --fixture "$env:ADI_UI_BUILD/native.adi"
+          if ($LASTEXITCODE -ne 0) { throw 'Fixture failed' }
+          # WTS-01: the smoke run keeps its settings and logs in a home of its own, never the runner's.
+          $env:ADI_HOME = "$env:ADI_UI_BUILD/home"
+          New-Item -ItemType Directory -Force -Path $env:ADI_HOME | Out-Null
+          $process = Start-Process -FilePath "$env:ADI_UI_BUILD/adi_app_artefacts/Debug/ADI.exe" -ArgumentList "$env:ADI_UI_BUILD/native.adi",'--no-audio','--smoke-output',"$env:ADI_UI_BUILD/native-actual.png" -WindowStyle Hidden -PassThru
+          if (-not $process.WaitForExit(30000)) { Stop-Process -Id $process.Id; throw 'Native window timed out' }
+          $process.Refresh()
+          if ($process.ExitCode -ne 0 -or -not (Test-Path "$env:ADI_UI_BUILD/native-actual.png")) { throw 'Native window smoke failed' }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ui-renders-${{ matrix.os }}
+          path: ${{ env.ADI_UI_BUILD }}/*-actual.png
+          if-no-files-found: ignore

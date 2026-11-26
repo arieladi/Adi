@@ -27,6 +27,20 @@ unrelated SC-82 test assertions.
 Routing has its own claimed log. Under the current handoff, this session continues with recording
 wave 2 once the first recording queue is finished.
 
+## Windows landing check
+
+The reported `[shell] mix fixture seek checks start` line comes from the old nested call in `1127d`.
+The Windows Debug reproduction logged exception `0xC00000FD`, and the three nested test frames
+accounted for 997,080 bytes of the 1 MiB reserve. Recording items increased the shared window
+fixture size. SC-21 added state to each Control Bar item, SC-23 added input UI and test state, and
+SC-20 and SC-28 also enlarged the root. The reproduction establishes fixture stack exhaustion.
+The seek fixture did not arm a track, route audio input, or start capture.
+
+The published chain `45f0a9b0` already contains `40ab091e`, which runs the seek checks after the
+Mix View fixture unwinds. Both Windows entry points then passed. The follow-up puts the seek
+fixture's 100,080-byte root on the heap. The Windows Debug rebuild and the Linux ASan/UBSan UI
+suites are running on that candidate. [Linux sanitizer run](https://github.com/arieladi/Adi/actions/runs/45898619384)
+
 ## For the director
 
 - SC-22. The shared WASAPI cable reported a 20 ms round trip. After that correction the clicks remained about 100–110 ms late. I recommend taking the reported-offset fix and keeping Driver Error Compensation and a repeat cable measurement under SC-255.
