@@ -617,7 +617,12 @@ RecordingEdit prepareLoopCommit(Store& store,const engine::AudioRecordingResult&
                 reusable[track].push_back(inspectReusableLane(store.db(),id,trackId));
             }
         }
-        const auto tempo=tempoOf(store);
+        // Legacy direct recorder callers use the playback convention even
+        // when the first authored tempo event occurs after song start.
+        const auto authoredTempo=tempoOf(store, false);
+        if(loop->tempo && loop->tempo->events!=authoredTempo.events)
+            throw std::runtime_error("the project tempo changed after the loop recording started");
+        const auto& tempo=loop->tempo ? *loop->tempo : authoredTempo;
         for(const auto& pass:passes) {
             (void)tickAt(tempo,pass.timelineStartSample,recorded.sampleRate);
             (void)tickAt(tempo,pass.timelineEndSample,recorded.sampleRate);

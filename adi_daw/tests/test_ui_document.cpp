@@ -1562,7 +1562,178 @@ void arrangementRecord(const std::filesystem::path &dir) {
     check(settled && settled->ok && !doc->recording() && !doc->landingTake(),
           "the document timer lands the take after device loss without another audio callback");
 }
-void refusedRecordingKeepsAudio(const std::filesystem::path &dir) {
+void loopClockAdmission(const std::filesystem::path &dir) {
+    std::string error;
+    auto doc = ui::ProjectDocument::open(dir / "loop-clock.adi", true, {}, error);
+    if (!doc)
+        throw std::runtime_error(error);
+    OpRequest brace;
+    brace.opType = "transport.setLoop";
+    const auto setBrace = [&](std::int64_t end) {
+        brace.payload = {{"on", true}, {"start", 0}, {"end", end}};
+        if (!doc->ops().submit(brace).ok || !doc->synchronise())
+            throw std::runtime_error("could not set the recording brace");
+    };
+    doc->prepare(48000, 64);
+    setBrace(1);
+    engine::AudioRecordingSpec request;
+    check(!doc->session().configureArrangementLoopRecording(request, error),
+          "SC-27: the one-frame playback extension does not create a recordable musical brace");
+
+    setBrace(textproj::kPPQ);
+    if (!doc->session().setExternalTempo(doc->store(), 60.0))
+        throw std::runtime_error(doc->session().error());
+    check(!doc->session().configureArrangementLoopRecording(request, error) &&
+              error.find("authored tempo") != std::string::npos,
+          "SC-27: a performed clock different from the authored clock refuses loop recording");
+    if (!doc->session().setExternalTempo(doc->store(), std::nullopt))
+        throw std::runtime_error(doc->session().error());
+    check(doc->session().configureArrangementLoopRecording(request, error) && request.loop &&
+              request.loop->beginSample == 0 && request.loop->endSample == 24000 && request.loop->tempo,
+          "SC-27: the restored authored clock provides the published loop bounds and immutable map");
+    doc->release();
+}
+void loopRecord(const std::filesystem::path &dir, bool retimeBeforeLanding = false) {
+    std::string error;
+    auto doc = ui::ProjectDocument::open(dir / "loop.adi", true, {}, error);
+    check(doc != nullptr, "SC-27: a project to record its loop");
+    if (!doc)
+        return;
+    constexpr int blockFrames = 64, loopFrames = 16000, partialFrames = 640;
+    constexpr auto loopEnd = textproj::kPPQ / 2;
+    // The playback clock uses 90 BPM before the first stored tempo event too.
+    std::vector<OpRequest> setup(4);
+    setup[0].opType = "project.removeTempoEvent";
+    setup[0].payload = {{"pos", 0}};
+    setup[1].opType = "project.insertTempoEvent";
+    setup[1].payload = {{"pos", 2 * textproj::kPPQ}, {"bpm", 90.0}};
+    setup[2].opType = "track.setArm";
+    setup[2].payload = {{"id", 4}, {"armed", true}};
+    setup[3].opType = "transport.setLoop";
+    setup[3].payload = {{"on", true}, {"start", 0}, {"end", loopEnd}};
+    if (!doc->ops().submit(setup).ok || !doc->synchronise())
+        throw std::runtime_error("could not prepare loop recording");
+    const auto workFolder = dir / "capture";
+    std::filesystem::create_directory(workFolder);
+    doc->prepare(48000, blockFrames);
+    const bool started = doc->startRecording(0, 1, false, 0, media::pathUtf8(workFolder), audio::WavFormat::Pcm24);
+    check(started && doc->recording(), "SC-27: Record starts an audio take with the loop on");
+    if (!started) {
+        doc->release();
+        return;
+    }
+
+    std::array<float, blockFrames> input{}, left{}, right{};
+    const float *inputs[]{input.data()};
+    float *outputs[]{left.data(), right.data()};
+    engine::AudioIo io;
+    io.in = inputs;
+    io.numIn = 1;
+    io.out = outputs;
+    io.numOut = 2;
+    io.frames = blockFrames;
+    for (int frame = 0; frame < 2 * loopFrames + partialFrames; frame += blockFrames) {
+        input.fill(static_cast<float>(1 + frame / loopFrames) / 8.0f);
+        io.streamTimeSamples = frame;
+        doc->process(io);
+    }
+    doc->release();
+    if (retimeBeforeLanding)
+        doc->store().db().exec("UPDATE tempo_map SET bpm=120.0");
+    const bool settled = doc->settleRecording();
+    const auto landed = doc->takeLanded();
+    if (retimeBeforeLanding) {
+        check(settled && landed && !landed->ok && landed->message.find("tempo changed") != std::string::npos &&
+                  landed->message.find(media::pathUtf8(workFolder)) != std::string::npos &&
+                  doc->store().db().execAndGet("SELECT count(*) FROM media_files").getInt() == 0,
+              "SC-27: a changed authored clock refuses attachment and reports the recovery folder");
+        bool retained = false;
+        for (const auto &entry : std::filesystem::directory_iterator(workFolder)) {
+            if (!entry.is_directory())
+                continue;
+            const auto wavPath = entry.path() / "take-0.wav";
+            if (std::filesystem::is_regular_file(wavPath)) {
+                audio::WavReader wav(wavPath);
+                retained = wav.frames() == 2 * loopFrames + partialFrames;
+            }
+        }
+        check(retained, "SC-27: the complete raw loop WAV survives a clock refusal");
+        return;
+    }
+    if (landed && !landed->ok)
+        std::printf("loop take: %s\n", landed->message.c_str());
+    check(settled && landed && landed->ok && landed->message.find("3 passes") != std::string::npos &&
+              landed->clips.size() == 1,
+          "SC-27: two full passes and a final partial pass land");
+
+    auto &db = doc->store().db();
+    const auto takeLanes = [&] {
+        return db.execAndGet("SELECT count(*) FROM lanes WHERE track_id=4 AND kind='take'").getInt();
+    };
+    check(takeLanes() == 3, "SC-27: three separate take lanes");
+    {
+        SQLite::Statement takes(db, "SELECT a.src_start_frames, a.src_len_frames, c.length_ticks "
+                                    "FROM clips c JOIN audio_clips a ON a.clip_id=c.id "
+                                    "WHERE c.track_id=4 AND c.lane_id IS NOT NULL ORDER BY a.src_start_frames");
+        bool allPasses = true;
+        for (int pass = 0; pass < 3; ++pass) {
+            if (!takes.executeStep()) {
+                allPasses = false;
+                break;
+            }
+            allPasses = allPasses && takes.getColumn(0).getInt() == pass * loopFrames &&
+                        takes.getColumn(1).getInt() == (pass < 2 ? loopFrames : partialFrames) &&
+                        (pass == 2 || takes.getColumn(2).getInt64() == loopEnd);
+        }
+        check(allPasses && !takes.executeStep(), "SC-27: each lane references exactly its source interval");
+    }
+    if (landed && landed->ok && landed->clips.size() == 1) {
+        SQLite::Statement selected(db, "SELECT a.src_start_frames, a.src_len_frames, m.rel_path "
+                                       "FROM clips c JOIN audio_clips a ON a.clip_id=c.id "
+                                       "JOIN media_files m ON m.id=a.media_id WHERE c.id=? AND c.lane_id IS NULL");
+        selected.bind(1, landed->clips.front());
+        const bool hasMain = selected.executeStep();
+        check(hasMain && selected.getColumn(0).getInt() == 2 * loopFrames &&
+                  selected.getColumn(1).getInt() == partialFrames,
+              "SC-27: the visible main clip selected is the final pass");
+        if (hasMain) {
+            const auto relative = selected.getColumn(2).getString();
+            check(relative == "Samples/Recorded/3 Audio 0001.wav" && std::filesystem::is_empty(workFolder),
+                  "SC-27: the shared WAV uses the displayed track name and the private capture is cleaned");
+            audio::WavReader wav(media::projectFolder(doc->store()) / media::pathFromUtf8(relative));
+            std::array<float, 1> sample{};
+            bool exact = wav.frames() == 2 * loopFrames + partialFrames && wav.channels() == 1 &&
+                         wav.format() == audio::WavFormat::Pcm24;
+            for (int pass = 0; pass < 3 && exact; ++pass) {
+                wav.seek(static_cast<std::uint64_t>(pass * loopFrames));
+                exact = wav.read(sample.data(), 1) == 1 && sample.front() == static_cast<float>(pass + 1) / 8.0f;
+            }
+            check(exact, "SC-27: the shared WAV holds all three passes in capture order");
+        }
+    }
+    for (int remaining = 2; remaining >= 0; --remaining) {
+        const auto next = doc->ops().nextUndo();
+        if (!next || next->label != "Record" || !doc->ops().undo().ok) {
+            check(false, "SC-27: each pass is a separate Record undo step");
+            break;
+        }
+        check(takeLanes() == remaining, "SC-27: one Undo removes exactly one pass");
+    }
+    const auto undo = doc->ops().nextUndo();
+    check(takeLanes() == 0 && db.execAndGet("SELECT count(*) FROM clips WHERE track_id=4").getInt() == 0 &&
+              (!undo || undo->label != "Record"),
+          "SC-27: exactly three recording undo steps restore the original track");
+
+    engine::AudioRecordingPreview preview;
+    preview.startSample = 108;
+    preview.loop = engine::AudioRecordingLoop{100, 132};
+    const auto completed = preview.latestPass(88);
+    const auto partial = preview.latestPass(112);
+    check(completed.startSample == 100 && completed.sourceStartFrame == 56 && completed.frames == 32 &&
+              partial.startSample == 100 && partial.sourceStartFrame == 88 && partial.frames == 24,
+          "SC-27: the live waveform uses wrapped pass bounds and cumulative file offsets");
+}
+void refusedRecordingKeepsAudio(const std::filesystem::path &dir, bool loop = false) {
     std::string error;
     auto doc = ui::ProjectDocument::open(dir / "record.adi", true, {}, error);
     check(doc != nullptr, "a project for testing refused recording publication");
@@ -1575,6 +1746,14 @@ void refusedRecordingKeepsAudio(const std::filesystem::path &dir) {
     arm.payload = {{"id", 4}, {"armed", true}};
     if (!doc->ops().submit(arm).ok || !doc->synchronise())
         throw std::runtime_error("could not arm the audio track");
+    if (loop) {
+        OpRequest brace;
+        brace.opType = "transport.setLoop";
+        const auto end = doc->view().current()->tempo->secondsToTicks(2.0 * blockFrames / 48000.0);
+        brace.payload = {{"on", true}, {"start", 0}, {"end", end}};
+        if (!doc->ops().submit(brace).ok || !doc->synchronise())
+            throw std::runtime_error("could not set the loop brace");
+    }
 
     // The recorder can write its private directory, but placing the take needs Samples/Recorded.
     const auto project = media::projectFolder(doc->store());
@@ -2625,6 +2804,14 @@ int main(int argc, char **argv) {
         recordWithDeviceLatency(latencyDir.path());
         test::TempDirectory refusedPublicationDir{"ui_document", "recording_publication_refused"};
         refusedRecordingKeepsAudio(refusedPublicationDir.path());
+        test::TempDirectory loopClockDir("ui_document", "loop-clock-admission");
+        loopClockAdmission(loopClockDir.path());
+        test::TempDirectory loopDir("ui_document", "loop");
+        loopRecord(loopDir.path());
+        test::TempDirectory changedLoopClockDir("ui_document", "changed-loop-clock");
+        loopRecord(changedLoopClockDir.path(), true);
+        test::TempDirectory refusedLoopDir("ui_document", "loop-publication-refused");
+        refusedRecordingKeepsAudio(refusedLoopDir.path(), true);
         test::TempDirectory countInDir("ui_document", "count-in");
         countInPositionFeedback(countInDir.path());
         test::TempDirectory guardDir("ui_document", "guard");

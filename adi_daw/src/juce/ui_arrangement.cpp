@@ -2618,13 +2618,13 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
             auto end = live->landing ? start : view.root.timelineTick();
             const auto *preview = live->preview.get();
             const auto *snapshot = view.reader().get();
-            const auto *tempo = snapshot ? snapshot->tempo.get() : nullptr;
+            const auto *tempo = preview && preview->loop && preview->loop->tempo
+                ? preview->loop->tempo.get() : snapshot ? snapshot->tempo.get() : nullptr;
             const bool havePreview = preview && tempo && preview->peaks.sampleRate > 0;
             double startSeconds = 0., sourceStartFrame = 0., sourceEndFrame = 0.;
             if (havePreview) {
-                const auto frames = std::max(preview->peaks.frames, live->capturedFrames);
-                sourceEndFrame = static_cast<double>(preview->peaks.frames);
-                if (const auto &punch = preview->punchedPlacement) {
+                if (const auto &punch = preview->punchedPlacement; !preview->loop && punch) {
+                    const auto frames = std::max(preview->peaks.frames, live->capturedFrames);
                     const auto range = punchedPreviewRange(*punch, frames, preview->peaks.sampleRate, *tempo);
                     if (range) {
                         start = range->startTicks;
@@ -2637,15 +2637,20 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
                     }
                 } else {
                     const auto rate = static_cast<double>(preview->peaks.sampleRate);
-                    startSeconds = static_cast<double>(preview->startSample) / rate;
+                    const auto pass = preview->latestPass(live->capturedFrames);
+                    startSeconds = static_cast<double>(pass.startSample) / rate;
+                    sourceStartFrame = static_cast<double>(pass.sourceStartFrame);
+                    sourceEndFrame = static_cast<double>(std::min(preview->peaks.frames, pass.sourceStartFrame + pass.frames));
                     start = tempo->secondsToTicks(startSeconds);
-                    end = tempo->secondsToTicks(startSeconds + static_cast<double>(frames) / rate);
+                    end = tempo->secondsToTicks(startSeconds + static_cast<double>(pass.frames) / rate);
                 }
-            } else if (snapshot && !snapshot->transport.loopEnabled) {
+                if (preview->loop && snapshot && snapshot->transport.loopEnabled)
+                    end = std::min(end, snapshot->transport.loopEndTicks);
+            } else if (snapshot) {
                 const auto &transport = snapshot->transport;
                 if (transport.punchIn)
                     start = std::max(start, transport.loopStartTicks);
-                if (transport.punchOut)
+                if (transport.punchOut && !transport.loopEnabled)
                     end = std::min(end, transport.loopEndTicks);
             }
             if (end > start) {

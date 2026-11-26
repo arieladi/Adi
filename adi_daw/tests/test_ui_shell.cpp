@@ -12877,7 +12877,7 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
         }
         (void)document->takeLanded();
     }
-    // With the loop on, Record says it waits for take lanes.
+    // CT-02: loop audio can record, while armed MIDI still needs pass placement.
     {
         OpRequest loop;
         loop.opType = "transport.setLoop";
@@ -12885,8 +12885,20 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
         check(document->ops().submit(loop).ok && document->synchronise(), "the loop on");
         frame();
         check(!root.command(AppCommands::ArrangementRecord) && !document->recording() &&
-                  root.error().find("loop") != std::string::npos,
-              "Record with the loop on is refused, saying why");
+                  root.error().find("MIDI") != std::string::npos,
+              "SC-27: loop recording explains why it cannot start with an armed MIDI track");
+        OpRequest disarm;
+        disarm.opType = "track.setArm";
+        disarm.payload = {{"id", 3}, {"armed", false}};
+        check(document->ops().submit(disarm).ok && document->synchronise(), "disarm MIDI for the loop take");
+        frame();
+        check(root.command(AppCommands::ArrangementRecord) && document->recording(),
+              "SC-27: the Record command starts audio recording with Loop on");
+        check(root.command(AppCommands::Stop), "stop the loop take");
+        block();
+        check(document->settleRecording() && !document->recording() && !document->landingTake(),
+              "SC-27: the Record command's loop take stops and settles");
+        (void)document->takeLanded();
     }
     // Without the application's hooks Record says where it runs.
     root.startRecording = nullptr;

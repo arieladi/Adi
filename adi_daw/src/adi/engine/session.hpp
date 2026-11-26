@@ -459,6 +459,8 @@ public:
     [[nodiscard]] Transport& transport() noexcept { return transport_; }
     /// Owner-thread recording control. Channels address the driver's current
     /// AudioIo inputs; per-device channel configuration remains the adapter's.
+    // Owner only: copy a publishable Arrangement loop and its clock into the recorder request.
+    bool configureArrangementLoopRecording(AudioRecordingSpec&, std::string& error) const;
     bool startRecording(const AudioRecordingSpec&,std::string& error);
     [[nodiscard]] AudioInputRecorder& recording() noexcept;
     // Message/offline driver inspection. Pointer valid until the next rebuild.

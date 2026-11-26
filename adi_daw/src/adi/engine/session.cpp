@@ -304,6 +304,40 @@ void Session::retainRuntimeClient(std::shared_ptr<SessionRuntimeClient> client) 
 }
 
 AudioInputRecorder& Session::recording() noexcept{return *recording_;}
+bool Session::configureArrangementLoopRecording(AudioRecordingSpec& options, std::string& error) const {
+    const auto* timing = dynamic_cast<const TimingView*>(graph_.currentTransportState());
+    if (!timing || !timing->settings.loopEnabled || !timing->settings.hasLoop) {
+        error = "The loop brace is not ready for recording.";
+        return false;
+    }
+
+    TempoMap authored;
+    for (const auto& point : model_.tempo)
+        authored.events.push_back({point.posTicks, point.bpm, static_cast<int>(point.curve)});
+    if (authored.events.empty())
+        authored.events.push_back({0, 120.0, 0});
+    if (timing->spec.externalTempoBpm || timing->tempo.events != authored.events) {
+        error = "Loop recording needs playback to follow the project's authored tempo.";
+        return false;
+    }
+
+    const auto begin = timing->loopBegin;
+    const auto end = timing->loopEnd;
+    const auto representable = [&](std::int64_t sample) {
+        const auto tick = timing->tempo.secondsToTicks(static_cast<double>(sample) / timing->sampleRate);
+        return timing->sampleForTick(tick) == sample;
+    };
+    if (begin < 0 || end <= begin || end > (std::int64_t{1} << 50) ||
+        end != timing->punchOutSample || !representable(begin) || !representable(end)) {
+        error = "Set a loop brace with a duration that can be recorded at this sample rate.";
+        return false;
+    }
+
+    AudioRecordingLoop loop{begin, end};
+    loop.tempo = std::make_shared<const TempoMap>(std::move(authored));
+    options.loop = std::move(loop);
+    return true;
+}
 bool Session::startRecording(const AudioRecordingSpec& options,std::string& error) {
     if(!live_){error="No active audio session for recording";return false;}
     if(options.sampleRate!=spec_.sampleRate || options.maxFrames!=static_cast<std::uint32_t>(spec_.maxFrames)) {
@@ -2484,13 +2518,18 @@ bool Session::RenderBlock::process(const AudioIo& io, bool captureRecording) noe
     RecordingPunchWindow punchWindow;
     if (remaining > 0 && remaining < prefix && timing)
         prefix = static_cast<std::int32_t>(remaining);
-    if (timing && captureRecording && !session_.transport_.looping() && !timing->settings.loopEnabled) {
-        if (timing->settings.punchIn)
-            punchWindow.in = RecordingPunchWindow::Boundary{timing->loopBegin, timing->settings.loopStartTicks};
-        if (timing->settings.punchOut)
+    const auto &transport = session_.transport_;
+    if (timing && captureRecording) {
+        const bool looping = transport.looping();
+        if (timing->settings.punchIn) {
+            const auto begin = looping ? transport.loopBegin() : timing->loopBegin;
+            punchWindow.in = RecordingPunchWindow::Boundary{begin, timing->settings.loopStartTicks};
+        }
+        // Loop already wraps at this end. Let the recorder keep every pass.
+        if (timing->settings.punchOut && !looping)
             punchWindow.out = RecordingPunchWindow::Boundary{timing->punchOutSample, timing->settings.loopEndTicks};
-        if (session_.transport_.playing() && punchWindow.active()) {
-            const auto position = session_.transport_.position();
+        if (transport.playing() && punchWindow.active()) {
+            const auto position = transport.sampleAt(0);
             if (punchWindow.out && position >= punchWindow.out->sample)
                 punch = RecordingPunch::After;
             else if (punchWindow.in && position < punchWindow.in->sample)
@@ -2499,6 +2538,8 @@ bool Session::RenderBlock::process(const AudioIo& io, bool captureRecording) noe
             if (boundary && boundary->sample > position && boundary->sample - position < prefix)
                 prefix = static_cast<std::int32_t>(boundary->sample - position);
         }
+        if (looping || timing->settings.loopEnabled)
+            punchWindow = {}; // only linear takes use these bounds for placement
     }
     if ((remaining > 0 || prefix < io.frames) && timing &&
         (static_cast<std::size_t>(io.numIn) > timing->inputSlice.size() ||
@@ -2534,7 +2575,8 @@ bool Session::RenderBlock::process(const AudioIo& io, bool captureRecording) noe
         return process(tail, captureRecording);
     }
     session_.recordingAudioTracks_ = captureRecording
-        ? session_.recording_->capture(io, session_.transport_, punch, punchWindow)
+        ? session_.recording_->capture(io, session_.transport_, punch, punchWindow,
+                                       timing ? &timing->tempo : nullptr, graph_.generation())
         : std::span<const std::int64_t>{};
     session_.playbackRunning_.store(session_.transport_.playing(), std::memory_order_release);
     AudioIo block = io;
