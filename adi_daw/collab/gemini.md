@@ -4,6 +4,28 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-26 — `basics/*` Round 1 (`basics/sc-02-lane-transport` `ac621acb`)
+
+Verified `origin/basics/sc-02-lane-transport` at `ac621acb` (`basics/recording`, SC-02 / SC-03) under **GCC 12.4.0** and **Clang 14.0.6 + libstdc++ 12** with `-DADI_WERROR=ON` (headless Pd on, JUCE off, `-DADI_ACCEPTANCE=ON`), plus all 3 touched JUCE translation units with `-DADI_WITH_JUCE=ON -DADI_WERROR=ON`.
+
+| Branch | SHA | Compiler | Headless `-DADI_WERROR=ON` | Touched Headless Suites (`ctest`, 3/3) | Acceptance (`ctest -L acceptance`) | JUCE TUs (`-DADI_WITH_JUCE=ON -DADI_WERROR=ON`) | Verdict |
+|---|---|---|---|---|---|---|---|
+| `basics/sc-02-lane-transport` | `ac621acb` | GCC 12.4.0 | 0 warnings | **PASS** (3/3, 28.15 s: `adi_ui_seams_tests` 10.47 s, `adi_ui_document_tests` 17.43 s, `adi_ui_window_state_tests` 0.23 s) | **PASS** (2/2, 297.63 s: `adi_builtin_realtime_tests` 255.80 s, `adi_acceptance_wts01` 41.82 s) | **FAIL** (`ui_arrangement.cpp.o` & `ui_shell.cpp.o` 0 warnings; **`tests/test_ui_shell.cpp:11447,11448` hard compile error**) | **FAIL (do not land)** |
+| `basics/sc-02-lane-transport` | `ac621acb` | Clang 14.0.6 + libstdc++ 12 | 0 warnings | **PASS** (3/3, 24.96 s: `adi_ui_seams_tests` 9.62 s, `adi_ui_document_tests` 15.12 s, `adi_ui_window_state_tests` 0.20 s) | **PASS** (2/2, 270.91 s: `adi_builtin_realtime_tests` 232.98 s, `adi_acceptance_wts01` 37.91 s) | **FAIL** (`ui_arrangement.cpp.o` & `ui_shell.cpp.o` 0 warnings; **`tests/test_ui_shell.cpp:11447,11448` hard compile error**) | **FAIL (do not land)** |
+
+### Finding on `basics/sc-02-lane-transport` (`ac621acb`)
+
+- **Hard compile error in `tests/test_ui_shell.cpp:11447,11448` on both GCC 12.4.0 and Clang 14.0.6 (`-DADI_WITH_JUCE=ON`):**
+  - Line 11446 declares `const juce::Point<int> at{x, laneTop(root, 4) + 12};`, then lines 11447–11448 pass `at` to `pressAt(juce::Component&, juce::Point<float>, juce::ModifierKeys)` (`tests/test_ui_shell.cpp:557`). `juce::Point<int>` does not implicitly convert to `juce::Point<float>` (`at.toFloat()` is required).
+  - **GCC 12.4.0:** `tests/test_ui_shell.cpp:11447:42: error: could not convert 'at' from 'Point<int>' to 'Point<float>'` (same at `:11448:40`).
+  - **Clang 14.0.6:** `tests/test_ui_shell.cpp:11447:26: error: no matching function for call to 'pressAt'` (same at `:11448:24`).
+  - **Owner:** `basics/recording` (`basics/sc-02-lane-transport` `ac621acb`).
+  - **Smallest repro:** `cmake -S adi_daw -B build-juce -G Ninja -DADI_WITH_JUCE=ON -DADI_WERROR=ON && cmake --build build-juce --target CMakeFiles/adi_ui_shell_tests.dir/tests/test_ui_shell.cpp.o`.
+
+(Skipped ASan+UBSan on `ac621acb` while blocked on the `test_ui_shell.cpp` compile error; will run ASan+UBSan on the fixed head as soon as `basics/recording` pushes it.)
+
+---
+
 ## 2026-11-26 — `DF-E89` on loan (`gemini/df-e89-release-warnings` `f944ae68`) + Item 4 (CI GCC Release leg)
 
 ### Item 3: `DF-E89` — GCC 12 Release (`-O3 -DNDEBUG -DADI_WERROR=ON`) warnings fixed across all 55 units
