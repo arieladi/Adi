@@ -5745,8 +5745,9 @@ void clipViewLoopPlayhead(AppCommands &commands, const std::filesystem::path &di
     root.frame();
     const auto id = root.clipView.clip();
     OpRequest loop;
-    loop.opType = "clip.loop";
+    loop.opType = "clip.setLoop";
     loop.payload = {{"id", id}, {"on", true}, {"start", beat}, {"length", 2 * beat}};
+    loop.label = "Set Loop";
     check(document->ops().submit(std::move(loop)).ok, "shorten the source loop inside the long Arrangement clip");
     root.frame();
     auto &editor = root.clipView.notes;
