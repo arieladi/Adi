@@ -2242,7 +2242,10 @@ void NoteEditor::mouseDoubleClick(const juce::MouseEvent &e) {
     if (commit(addNote(*clip, ClipWindow::of(*clip).toSource(start), gridTicks(), *key)))
         audition(track, *key);
 }
-bool NoteEditor::keyPressed(const juce::KeyPress &k) {
+bool NoteEditor::keyPressed(const juce::KeyPress &key) {
+    if (panel.root.playComputerMidiKey(key))
+        return true;
+    const auto k = panel.root.computerMidiShortcut(key);
     const auto *clip = panel.details();
     if (clip == nullptr)
         return false;

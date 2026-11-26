@@ -2,12 +2,14 @@
 #pragma once
 
 #include "adi/engine/host.hpp"
+#include "adi/engine/midi_monitoring.hpp"
 
 #include <array>
 #include <atomic>
 #include <cstdint>
 #include <memory>
 #include <span>
+#include <vector>
 
 namespace adi::engine {
 
@@ -29,12 +31,14 @@ public:
         std::int64_t track = 0;
         bool flush = false;
         bool retry = false;
+        bool blocked = false;
     };
     struct Route {
         Node* node = nullptr;
         std::shared_ptr<Voices> voices;
-        std::int64_t armedTrack = 0;
+        std::int64_t monitorTrack = 0;
         bool processes = false;
+        std::vector<MidiMonitorRange> blockedRanges; // merged, in ascending timeline order
         mutable NodeId slot = kInvalidNode;
     };
     struct PreviewVoice {
@@ -49,7 +53,7 @@ public:
         mutable NodeId slot = kInvalidNode;
     };
 
-    bool push(std::int64_t sample, const Event&) noexcept;
+    bool push(std::int64_t sample, const Event&, std::int64_t inputSample) noexcept;
     void reset() noexcept;
     void render(const GraphHost::RenderBlock&, const AudioIo&, std::span<const Route>,
                 const Transport&, MidiInputCapture*) noexcept;
@@ -63,6 +67,7 @@ public:
 private:
     struct Timed {
         std::int64_t sample = 0;
+        std::int64_t inputSample = 0;
         std::uint64_t epoch = 0;
         Event event;
     };
@@ -90,7 +95,7 @@ private:
     PreviewVoice* activePreview_ = nullptr;
 
     void deliver(const GraphHost::RenderBlock&, const Route&, const Event&) noexcept;
-    static void release(const GraphHost::RenderBlock&, const Route&) noexcept;
+    static void release(const GraphHost::RenderBlock&, const Route&, std::int32_t frame) noexcept;
 };
 
 }  // namespace adi::engine

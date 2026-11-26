@@ -129,8 +129,8 @@ bool MidiInputCapture::nextSpan() noexcept {
     return append({MidiCapturePacket::Kind::Span, driverEpoch_, pass_, sliceStream_ + spanBegin_,
                    spanTimeline_, 0, static_cast<std::int32_t>(frames), {}});
 }
-void MidiInputCapture::record(std::int64_t inputSample, const Event& event) noexcept {
-    if (!transport_ || inputSample < epochStart_) return;
+void MidiInputCapture::record(std::int64_t scheduledSample, std::int64_t inputSample, const Event& event) noexcept {
+    if (!transport_ || scheduledSample < epochStart_) return;
     if (event.frame < lastEventFrame_ || event.frame >= sliceFrames_) {
         finish(MidiCaptureState::Discontinuity);
         return;

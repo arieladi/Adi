@@ -44,6 +44,18 @@ Role role(std::string_view subtype) {
     if (subtype == "instrument") return Role::Instrument;
     return Role::AudioEffect;
 }
+// Live 12 Mixing §18.1 describes first-instrument arming under Exclusive Arm. The R16 observation
+// will confirm what happens to the previously armed track in the same gesture.
+constexpr bool kAutoArmFirstInstrumentWithExclusiveArm = true;
+
+bool midiTrackNeedsFirstInstrument(SQLite::Database& db, std::int64_t track) {
+    SQLite::Statement eligible(db, "SELECT 1 FROM tracks t WHERE t.id=? AND t.kind IN ('midi','instrument') "
+        "AND NOT EXISTS (SELECT 1 FROM device_chains c JOIN devices d ON d.chain_id=c.id "
+        "LEFT JOIN plugin_refs p ON p.id=d.plugin_ref_id WHERE c.track_id=t.id "
+        "AND COALESCE(NULLIF(p.subtype,''),d.rack_kind,'')='instrument')");
+    eligible.bind(1, track);
+    return eligible.executeStep();
+}
 struct ChainDevice {
     std::int64_t id;
     std::int64_t ord;
@@ -109,7 +121,8 @@ const std::array<OpDescriptor,2> ops={{
 }
 std::span<const OpDescriptor> builtinReferenceOps(){return ops;}
 static PreparedBuiltinInsert prepareInsert(Store& store,const rows::PluginRef& ref,std::int64_t track,
-    std::optional<std::int64_t> before,std::int64_t retainedDeviceId,const PluginInsertOptions* plugin = nullptr) {
+    std::optional<std::int64_t> before,std::int64_t retainedDeviceId,bool exclusiveArm,
+    const PluginInsertOptions* plugin = nullptr) {
     PreparedBuiltinInsert result;
     try {
         if(store.readOnly())throw std::runtime_error("project is read-only");
@@ -204,12 +217,24 @@ static PreparedBuiltinInsert prepareInsert(Store& store,const rows::PluginRef& r
         if (plugin && plugin->expressionRoute && *plugin->expressionRoute != engine::RouteChoice::Auto)
             append("device.setExpressionRoute",{{"dev",result.deviceId},{"route",engine::routeChoiceName(*plugin->expressionRoute)}},
                    "device",result.deviceId);
+        if (kAutoArmFirstInstrumentWithExclusiveArm && exclusiveArm && role(ref.subtype) == Role::Instrument &&
+            midiTrackNeedsFirstInstrument(db, track)) {
+            SQLite::Statement arms(db, "SELECT id,record_armed FROM tracks WHERE kind IN ('audio','midi','instrument') "
+                "AND (id=? OR record_armed<>0) ORDER BY id");
+            arms.bind(1, track);
+            while (arms.executeStep()) {
+                const auto id = arms.getColumn(0).getInt64();
+                const bool arm = id == track;
+                if (arm != (arms.getColumn(1).getInt() != 0))
+                    append("track.setArm", {{"id", id}, {"armed", arm}}, "track", id);
+            }
+        }
         result.ok=true;
     }catch(const std::exception& exception){result.error=exception.what();}
     return result;
 }
 PreparedBuiltinInsert prepareBuiltinInsert(Store& store,std::string_view uid,std::int64_t track,std::optional<std::int64_t> before,
-    std::int64_t retainedDeviceId) {
+    std::int64_t retainedDeviceId,bool exclusiveArm) {
     const auto* info=findBuiltin(uid);
     if(!info || !info->available) {
         PreparedBuiltinInsert result;
@@ -219,7 +244,7 @@ PreparedBuiltinInsert prepareBuiltinInsert(Store& store,std::string_view uid,std
     rows::PluginRef ref;
     ref.format="internal";ref.uid=uid;ref.name=info->name;ref.vendor="ADI";ref.version="1";
     ref.subtype=info->instrument?"instrument":"effect";
-    return prepareInsert(store,ref,track,before,retainedDeviceId);
+    return prepareInsert(store,ref,track,before,retainedDeviceId,exclusiveArm);
 }
 PreparedBuiltinInsert preparePluginInsert(Store& store,const rows::PluginRef& ref,std::int64_t track,
     std::optional<std::int64_t> before,const PluginInsertOptions& options,std::int64_t retainedDeviceId) {
@@ -233,7 +258,7 @@ PreparedBuiltinInsert preparePluginInsert(Store& store,const rows::PluginRef& re
         *engine::routeChoiceName(*options.expressionRoute) == '\0') {
         PreparedBuiltinInsert result;result.error="unknown plug-in expression route";return result;
     }
-    return prepareInsert(store,ref,track,before,retainedDeviceId,&options);
+    return prepareInsert(store,ref,track,before,retainedDeviceId,options.exclusiveArm,&options);
 }
 CommitResult commitBuiltinInsert(Store& store,const PreparedBuiltinInsert& prepared,Actor actor) {
     CommitResult result;if(!prepared.ok){result.error=prepared.error;return result;}

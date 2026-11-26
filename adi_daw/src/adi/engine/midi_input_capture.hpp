@@ -52,7 +52,7 @@ private:
     bool start(std::vector<std::int64_t> targets, double sampleRate);
     void deviceStopped() noexcept; ///< owner, with the driver already quiescent
     void beginSlice(const AudioIo&, const Transport&, std::uint64_t inputEpoch) noexcept;
-    void record(std::int64_t inputSample, const Event&) noexcept;
+    void record(std::int64_t scheduledSample, std::int64_t inputSample, const Event&) noexcept;
     void endSlice() noexcept;
 
     void finish(MidiCaptureState) noexcept;

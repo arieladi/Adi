@@ -200,7 +200,7 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
         {&loopLength, "Loop Length", "How long the arrangement loop is, in bars, beats and sixteenths. Click to "
                                      "type another, such as 8.0.0."},
         {&draw, "Draw Mode", "Draws notes and automation with the mouse."},
-        {&keyboard, "Computer MIDI Keyboard", "Plays notes from the computer keyboard."},
+        {&keyboard, "Computer MIDI Keyboard", "Plays MIDI notes from the computer keyboard (M). Z and X change the octave. C and V change velocity."},
         {&key, "Key Map Mode", "Assigns computer keys to controls."},
         {&midi, "MIDI Map Mode", "Assigns MIDI controllers to controls."},
         {&cpu, "CPU Load Meter", "How much of the audio thread's time is used."},
@@ -273,6 +273,7 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
     };
     // Live 12 manual 21.1: Arrangement Record records every armed track; F9 is the same command.
     record.onClick = [this] { root_.command(AppCommands::ArrangementRecord); };
+    keyboard.onClick = [this] { root_.command(AppCommands::ComputerMidiKeyboard); };
     // Manual 21.2: MIDI Arrangement Overdub, the window's own switch; it decides what a MIDI recording
     // does to the notes already there, once MIDI records (SRF-05).
     overdub.onClick = [this] {
@@ -287,7 +288,7 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
             item != &signature && item != &tempo &&
             item != &tap && item != &position && item != &automationArm && item != &reEnable && item != &metronome &&
             item != &loop && item != &loopStart && item != &loopLength && item != &record && item != &overdub &&
-            item != &indicators)
+            item != &indicators && item != &keyboard)
             item->onClick = [this, item] {
                 root_.say(item->getTitle().toStdString() + " is not built yet.");
             };
@@ -394,6 +395,7 @@ void TransportBar::refresh() {
     play.setToggleState(root_.playing(), juce::dontSendNotification);
     record.setToggleState(root_.isRecording(), juce::dontSendNotification);
     overdub.setToggleState(root_.midiOverdub(), juce::dontSendNotification);
+    keyboard.setToggleState(root_.computerMidiEnabled(), juce::dontSendNotification);
     indicators.setToggleState(root_.midiIn(), juce::dontSendNotification);
     follow.setToggleState(root_.state().follow, juce::dontSendNotification);
     // Re-Enable Automation lights from the frame's snapshot (manual 25.4); Automation Arm from the
