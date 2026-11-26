@@ -179,11 +179,9 @@ void reference(AdiRootComponent &root, const char *name, bool write) {
         const auto devices = root.deviceArea();
         if (!devices.isEmpty())
             g.fillRect(devices.getX(), devices.getY() + 10, devices.getWidth(), 30);
-        // The Status Bar's message and button, the AI tab's label and the Info
-        // View's text are typography too; their geometry is checked by bounds.
+        // The Status Bar's message and button and the Info View's text are
+        // typography too; their geometry is checked by bounds.
         g.fillRect(root.status.getBounds().withTrimmedTop(1));
-        if (root.aiTab.isVisible())
-            g.fillRect(root.aiTab.getBounds());
         if (!root.infoArea().isEmpty())
             g.fillRect(root.infoArea().reduced(4));
         for (const auto &strip : root.mixerView.strips()) {
@@ -1909,6 +1907,115 @@ void groupCommandContext(AppCommands &commands, const std::filesystem::path &dir
     } else {
         check(false, "the same track has a visible Mixer title and a Device View panel");
     }
+}
+// SC-73: exercise the real field handlers on a peerless root.
+void controlBarAdjustments(AppCommands &commands, const std::filesystem::path &dir) {
+    StoreError error{};
+    auto store = Store::createEmpty(dir / "control-bar-adjustments.adi", error);
+    check(store != nullptr, "the Control Bar's project opens");
+    if (!store)
+        return;
+    store->db().exec("INSERT INTO project(id,name) VALUES(1,'Control Bar Adjustments')");
+    engine::ProjectView view;
+    view.refresh(*store);
+    OpSubmitter submitter(*store, view);
+    TransportMailbox mailbox;
+    ViewStateStore persistence(*store);
+    SessionState session(*store);
+    AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "control-bar-adjustments");
+    root.setSize(1440, 900);
+    root.frame();
+    auto &bar = root.transport;
+    const auto up = juce::KeyPress(juce::KeyPress::upKey);
+    const auto down = juce::KeyPress(juce::KeyPress::downKey);
+    const auto left = juce::KeyPress(juce::KeyPress::leftKey);
+    const auto right = juce::KeyPress(juce::KeyPress::rightKey);
+    const auto at = [](juce::Component &field, int part) -> juce::Point<float> {
+        const int x = part == 0 ? 4 : part == 1 ? field.getWidth() / 2 : field.getWidth() - 4;
+        return {static_cast<float>(x), static_cast<float>(field.getHeight() / 2)};
+    };
+    const auto wheel = [&](juce::Component &field, int part, bool increase) {
+        field.mouseWheelMove(pressAt(field, at(field, part)), {0, increase ? 1.f : -1.f, false, false, false});
+    };
+    const auto press = [&](juce::Component &field, int part) {
+        field.mouseDown(pressAt(field, at(field, part)));
+    };
+    const auto drag = [&](juce::Component &field, int part, float distance) {
+        const auto from = at(field, part);
+        field.mouseDrag(dragAt(field, from, from.translated(0, -distance)));
+    };
+    const auto release = [&](juce::Component &field, int part, float distance) {
+        field.mouseUp(pressAt(field, at(field, part).translated(0, -distance)));
+    };
+    const auto bpm = [&] { return view.current()->tempo->bpmAt(0); };
+    const auto meter = [&] { return meterAt(0, view.current()->meters); };
+    const auto loopRange = [&] { return loopOf(view.current()->transport); };
+    const auto insert = [&] { return root.arrangement.geometry.selection.insert; };
+    const auto q = textproj::kPPQ;
+    const auto near = [](double a, double b) { return std::abs(a - b) < 1.e-9; };
+
+    // One drag can move through several steps without writing intermediate undo transactions.
+    press(bar.tempo, 0);
+    drag(bar.tempo, 0, 4.f);
+    drag(bar.tempo, 0, 8.f);
+    check(near(bpm(), 120) && !submitter.canUndo(), "dragging tempo has not written an undo step");
+    release(bar.tempo, 0, 8.f);
+    check(near(bpm(), 122) && bar.editing() == nullptr && submitter.nextUndo() &&
+              submitter.nextUndo()->label == "Change Tempo",
+          "an eight-point coarse drag adds 2 BPM and leaves no text editor");
+    root.command(AppCommands::Undo);
+    check(near(bpm(), 120) && !submitter.canUndo(), "one undo restores the whole tempo drag");
+    wheel(bar.tempo, 2, true);
+    wheel(bar.tempo, 2, true);
+    check(near(bpm(), 120.02), "wheel events in the same frame both step the fine tempo");
+    check(bar.tempo.keyPressed(down) && near(bpm(), 120.01), "the arrow steps the selected fine tempo");
+    root.frame();
+
+    press(bar.signature, 2);
+    drag(bar.signature, 2, 4.f);
+    release(bar.signature, 2, 4.f);
+    check(meter().numerator == 4 && meter().denominator == 8, "signature drag steps the denominator");
+    check(bar.signature.keyPressed(left) && bar.signature.keyPressed(up) && meter().numerator == 5,
+          "left selects the numerator and up adds one");
+    wheel(bar.signature, 2, false);
+    check(meter().numerator == 5 && meter().denominator == 4, "signature wheel steps the power-of-two denominator");
+
+    // Click still opens typing, and up/down after that click work on the selected number.
+    root.frame();
+    press(bar.position, 1);
+    release(bar.position, 1, 0.f);
+    check(bar.editing() == &bar.position && bar.fieldEditor.getText() == "1.1.1",
+          "a plain click opens the existing position editor");
+    check(bar.fieldEditor.keyPressed(up) && bar.editing() == nullptr && insert() == q,
+          "up from the fresh editor steps the position's beats");
+    const auto undoHead = [&] {
+        const auto head = submitter.nextUndo();
+        return head ? head->txnId : 0;
+    };
+    const auto beforePosition = undoHead();
+    wheel(bar.position, 2, true);
+    press(bar.position, 0);
+    drag(bar.position, 0, 4.f);
+    release(bar.position, 0, 4.f);
+    check(insert() == 6 * q + q / 4 && undoHead() == beforePosition,
+          "position wheel and drag step sixteenths and bars with no undo entry");
+
+    const auto originalLength = loopRange().length();
+    press(bar.loopStart, 0);
+    drag(bar.loopStart, 0, 4.f);
+    release(bar.loopStart, 0, 4.f);
+    check(bar.loopStart.keyPressed(right) && bar.loopStart.keyPressed(up), "the loop start steps its beats");
+    wheel(bar.loopStart, 2, true);
+    check(loopRange().start == 6 * q + q / 4 && loopRange().length() == originalLength,
+          "loop start drag, arrows and wheel preserve the brace's length");
+    const auto start = loopRange().start;
+    press(bar.loopLength, 0);
+    drag(bar.loopLength, 0, 4.f);
+    release(bar.loopLength, 0, 4.f);
+    check(bar.loopLength.keyPressed(right) && bar.loopLength.keyPressed(down), "the loop length steps its beats");
+    wheel(bar.loopLength, 2, false);
+    check(loopRange().start == start && loopRange().length() == originalLength + 4 * q - q / 4,
+          "loop length drag, arrows and wheel preserve the brace's start");
 }
 // The sends (ADR-0203 d3) on Live's default set: one per return on every track's controls, Live's
 // value boxes on the row under volume and pan, and its knobs under "Sends" in the Mixer View.
@@ -9947,6 +10054,57 @@ void undoHistoryWindow(AppCommands &commands, const std::filesystem::path &dir) 
     root.afterEdit = nullptr;
     document->release();
 }
+void insertMarkerRevealsPosition(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "insert-marker-view.adi", true, {}, error);
+    check(document != nullptr, "a new project for insert marker navigation");
+    if (!document)
+        return;
+    constexpr auto bar = 4 * textproj::kPPQ;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "insert-marker-view");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.setSize(1440, 900);
+    root.state().follow = false; // Explicit navigation works independently of playback Follow.
+    auto &arrangement = root.arrangement;
+    auto &lanes = arrangement.geometry;
+    auto &selection = lanes.selection;
+    lanes.scale = 30;
+    lanes.left = 0;
+    root.frame();
+    check(root.addLocatorAt(16 * bar), "add the offscreen locator at bar 17");
+    selection.track = 2;
+
+    auto typePosition = [&](const char *position) {
+        root.transport.position.onClick();
+        root.transport.fieldEditor.setText(position, false);
+        root.transport.fieldEditor.onReturnKey();
+        root.frame();
+    };
+    check(lanes.x(32 * bar) >= arrangement.canvas.getWidth(), "bar 33 starts to the right of the lanes");
+    typePosition("33.1.1");
+    check(selection.insert == 32 * bar && lanes.x(selection.insert) == 0 && root.state().timelineLeft == 128,
+          "typing an offscreen position places the marker at the left edge and saves the new view");
+    typePosition("34.1.1");
+    check(selection.insert == 33 * bar && lanes.x(selection.insert) == 120 && lanes.left == 128,
+          "typing a visible position moves the marker without scrolling");
+
+    selection.end = selection.start + bar;
+    check(lanes.x(0) < 0, "the song start is to the left of the lanes");
+    check(arrangement.canvas.keyPressed(juce::KeyPress(juce::KeyPress::homeKey)),
+          "Home invokes Go to Start from the Arrangement");
+    root.frame();
+    check(selection.insert == 0 && selection.start == selection.end && selection.track == 2 &&
+              lanes.x(selection.insert) == 0 && root.state().timelineLeft == 0,
+          "Home reveals the insert marker at the start and keeps the selected track");
+
+    check(lanes.x(16 * bar) >= arrangement.canvas.getWidth(), "the locator is to the right of the lanes");
+    arrangement.mouseDown(pressAt(arrangement, arrangement.topButton(ArrangementView::TopButton::Next).getCentre()));
+    root.frame();
+    check(selection.insert == 16 * bar && lanes.x(selection.insert) == 0 && root.state().timelineLeft == 64 &&
+              lanes.scale == 30 && !root.state().follow,
+          "Next Locator reveals the marker without changing zoom or enabling Follow");
+}
 // Live's locators (C3, N25; Live 12 manual 6.4, 6.9; MR 3.3): Set, which reads Del on a selected
 // locator; Previous and Next, to the arrangement's start or end past the first or the last; a click
 // jumps, a double-click while stopped plays; Ctrl/Cmd+R renames, Edit Info Text, the arrows move it,
@@ -17212,6 +17370,7 @@ int main(int argc, char **argv) {
         // These fixtures render components in software and do not create a native peer.
         trace("arrangementRulerAndGrid", [&] { arrangementRulerAndGrid(commands, temp.path()); });
         trace("liveParity", [&] { liveParity(commands, temp.path(), false); });
+        trace("controlBarAdjustments", [&] { controlBarAdjustments(commands, temp.path()); });
         trace("groupTracks", [&] { groupTracks(commands, temp.path()); });
         trace("sendKnobs", [&] { sendKnobs(commands, temp.path()); });
         std::printf("%d checks, %d failures (Arrangement components)\n", checks, failures);
@@ -17714,7 +17873,7 @@ int main(int argc, char **argv) {
     audit = false;
     check(allocations == 0, "an unchanged selection costs a frame nothing");
     // The rulings since 29 September (ADR-0203 d6, d7, d12): Live's view keys,
-    // the strip's floor, the Info View and Status Bar, the AI tab, tooltips.
+    // the strip's floor, the Info View and Status Bar, tooltips.
     const auto cmd = juce::ModifierKeys::commandModifier;
     const auto alt = juce::ModifierKeys::altModifier;
     a.setSize(1200, 720);
@@ -17735,7 +17894,7 @@ int main(int argc, char **argv) {
           "Ctrl/Cmd+Alt+B hides the browser");
     check(persistence.load("main").panels.find(Panel::Browser)->collapsed,
           "browser visibility persists in ui_view");
-    check(!a.aiTab.isVisible() && a.browserArea().isEmpty(), "the AI tab goes with the browser");
+    check(!a.browser.isVisible() && a.browserArea().isEmpty(), "the browser has no visible area when hidden");
     check(a.keyPressed(juce::KeyPress('5', cmd | alt, 0)) &&
               !a.state().panels.find(Panel::Browser)->collapsed,
           "Ctrl/Cmd+Alt+5 shows it again");
@@ -17748,15 +17907,21 @@ int main(int argc, char **argv) {
     check(a.keyPressed(juce::KeyPress('4', cmd | alt, 0)) && a.state().docked &&
               a.deviceArea().getHeight() == 300,
           "and shows it at its own height");
-    check(!a.state().aiChatOpen && a.aiTab.isVisible() && a.chatArea().getHeight() == 20 &&
-              a.chatArea().getBottom() ==
-                  a.browserArea().getBottom() - BrowserPanel::kBarHeight - look::border,
-          "the AI chat is a collapsed tab at the foot of the browser's panes");
-    a.aiTab.onClick();
-    check(a.state().aiChatOpen && a.chatArea().getHeight() > 20 &&
-              persistence.load("main").aiChatOpen,
-          "the tab opens and is remembered per window");
-    a.aiTab.onClick();
+    {
+        // SC-110: a project saved with the old chat open still makes the full Browser available.
+        auto legacyState = persistence.load("main");
+        legacyState.aiChatOpen = true;
+        std::string error;
+        check(persistence.save("legacy-ai-chat", legacyState, error), "save the legacy chat flag");
+        AdiRootComponent legacy(view, submitter, mailbox, commands, persistence, session, "legacy-ai-chat");
+        check(legacy.state().aiChatOpen && legacy.browser.isVisible() &&
+                  legacy.browser.list.getBottom() == legacy.browser.contentArea().getBottom(),
+              "the old chat flag is readable and the Browser list reaches the preview strip");
+        bool hasAiTab = false;
+        for (auto *child : legacy.getChildren())
+            hasAiTab |= child->isVisible() && child->getTitle() == "AI";
+        check(!hasAiTab, "the Browser has no AI tab");
+    }
     check(commands.infoView() && a.infoArea().getX() == look::gap &&
               a.infoArea().getBottom() == a.status.getY() &&
               a.infoArea().getRight() + look::gap == a.deviceArea().getX(),
@@ -19121,6 +19286,8 @@ int main(int argc, char **argv) {
                   "jumps there and keeps playing");
             // Live's Follow (§6.2): the arrangement keeps the playhead on screen while it plays.
             const auto viewBefore = arrangement.geometry;
+            if (integrated.state().follow)
+                integrated.command(AppCommands::Follow);
             check(!integrated.state().follow && integrated.command(AppCommands::Follow) &&
                       integrated.state().follow && document->views().load("main").follow,
                   "Follow switches on, kept with the window");
@@ -20704,6 +20871,7 @@ int main(int argc, char **argv) {
     trace("arrangementRulerAndGrid", [&] { arrangementRulerAndGrid(commands, temp.path()); });
     trace("heldOutputKeepsInput", [&] { heldOutputKeepsInput(temp.path()); });
     trace("liveParity", [&] { liveParity(commands, temp.path(), write); });
+    trace("controlBarAdjustments", [&] { controlBarAdjustments(commands, temp.path()); });
     trace("groupTracks", [&] { groupTracks(commands, temp.path()); });
     trace("groupCommandContext", [&] { groupCommandContext(commands, temp.path()); });
     trace("trackRenderMenu", [&] { trackRenderMenu(commands, temp.path()); });
@@ -20756,6 +20924,7 @@ int main(int argc, char **argv) {
     trace("showcase", [&] { showcase(commands, temp.path()); });
     trace("returnInGroup", [&] { returnInGroup(commands, temp.path()); });
     trace("loopMetronome", [&] { loopMetronome(commands, settings, temp.path()); });
+    trace("insertMarkerRevealsPosition", [&] { insertMarkerRevealsPosition(commands, temp.path()); });
     trace("locators", [&] { locators(commands, temp.path()); });
     trace("windowPlaces", [&] { windowPlaces(temp.path()); });
     trace("keymapGolden", [&] { keymapGolden(commands, settings, temp.path(), write); });

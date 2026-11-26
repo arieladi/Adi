@@ -3,8 +3,10 @@
 #include "adi/ui/cue_edits.hpp"
 #include "ui_look.hpp"
 #include "ui_shell.hpp"
+#include "adi/ui/tempo_edits.hpp"
 #include <array>
 #include <cstdio>
+#include <utility>
 namespace adi::ui {
 namespace {
 using G = BarItem::Glyph;
@@ -136,6 +138,35 @@ void paintGlyph(juce::Graphics &g, G kind, juce::Rectangle<float> r, juce::Colou
         break;
     }
 }
+juce::String formatPosition(BarPosition at, const char *separator) {
+    return juce::String(at.bar) + separator + juce::String(at.beat) + separator + juce::String(at.sixteenth);
+}
+std::int64_t adjustedPosition(std::int64_t tick, const std::vector<textproj::Meter> &meters, int part, int steps) {
+    if (part == 0) {
+        auto at = barPosition(tick, meters);
+        at.bar = std::max<std::int64_t>(1, at.bar + steps);
+        if (const auto to = tickOf(at, meters))
+            return *to;
+        // A shorter or fragmentary bar might not contain the original beat.
+        return tickOf({at.bar, 1, 1}, meters).value_or(tick);
+    }
+    if (part == 2)
+        return std::max<std::int64_t>(0, tick + steps * (textproj::kWhole / 16));
+
+    const bool forward = steps > 0;
+    for (int i = 0; i < std::abs(steps); ++i) {
+        const auto &meter = meterAt(forward ? tick : std::max<std::int64_t>(0, tick - 1), meters);
+        const auto beat = textproj::kWhole / meter.denominator;
+        if (forward) {
+            const auto next = std::upper_bound(meters.begin(), meters.end(), tick,
+                                               [](auto at, const auto &m) { return at < m.start_ticks; });
+            tick = next == meters.end() ? tick + beat : std::min(tick + beat, next->start_ticks);
+        } else {
+            tick = std::max(meter.start_ticks, tick - beat);
+        }
+    }
+    return tick;
+}
 } // namespace
 BarItem::BarItem(const juce::String &t, Glyph gl, bool b, bool d)
     : juce::Button(t), text(t), glyph(gl), boxed(b), dropdown(d) {}
@@ -194,10 +225,10 @@ void BarItem::paintButton(juce::Graphics &g, bool over, bool down) {
         g.setColour(look::value);
         g.setFont(look::font(look::fontBody));
         g.drawText(juce::String(position), content, juce::Justification::centred);
-    } else if (text.isNotEmpty()) {
+    } else if (const auto &value = displayText(); value.isNotEmpty()) {
         g.setColour(boxed && getToggleState() ? look::ink : look::text);
         g.setFont(look::font(look::fontBody));
-        g.drawText(text, content, juce::Justification::centred);
+        g.drawText(value, content, juce::Justification::centred);
     }
     if (automationLed) {
         // Live 12's figure: a red dot with a dark rim in the corner (its size to be measured).
@@ -212,11 +243,6 @@ void BarItem::paintButton(juce::Graphics &g, bool over, bool down) {
         g.drawRect(getLocalBounds(), 1);
     }
 }
-bool BarItem::keyPressed(const juce::KeyPress &key) {
-    if (onKey && onKey(key))
-        return true;
-    return juce::Button::keyPressed(key);
-}
 void BarItem::focusGained(FocusChangeType cause) {
     ring_ = cause != focusChangedByMouseClick;
     if (onFocus)
@@ -227,6 +253,127 @@ void BarItem::focusLost(FocusChangeType cause) {
     ring_ = false;
     juce::Button::focusLost(cause);
 }
+BarValue::BarValue(const juce::String &value, char separator, int parts)
+    : BarItem(value), separator_(separator), parts_(parts) {}
+float BarValue::partBoundary(int part) const {
+    if (part <= 0)
+        return 0.f;
+    if (part >= parts_)
+        return static_cast<float>(getWidth());
+    const auto &value = displayText();
+    const auto delimiter = static_cast<juce::juce_wchar>(separator_);
+    int split = value.indexOfChar(delimiter);
+    if (part == 2 && split >= 0)
+        split = value.indexOfChar(split + 1, delimiter);
+    if (split < 0)
+        return static_cast<float>(getWidth()) * static_cast<float>(part) / static_cast<float>(parts_);
+    const auto font = look::font(look::fontBody);
+    const auto width = [&font](const juce::String &s) { return juce::GlyphArrangement::getStringWidth(font, s); };
+    return (static_cast<float>(getWidth()) - width(value) + width(value.substring(0, split)) +
+            width(value.substring(0, split + 1))) * .5f;
+}
+int BarValue::partAt(float x) const {
+    int part = 0;
+    while (part + 1 < parts_ && x >= partBoundary(part + 1))
+        ++part;
+    return part;
+}
+void BarValue::paintButton(juce::Graphics &g, bool over, bool down) {
+    BarItem::paintButton(g, over, down);
+    if (focusRing()) {
+        g.setColour(look::accent);
+        const float left = partBoundary(part_) + 2.f, right = partBoundary(part_ + 1) - 2.f;
+        g.fillRect(left, static_cast<float>(getHeight() - 3), std::max(0.f, right - left), 1.f);
+    }
+}
+bool BarValue::stepKey(const juce::KeyPress &key) {
+    if (!isEnabled() || !adjust || pressed_ || key.getModifiers().isAnyModifierKeyDown())
+        return false;
+    if (key == juce::KeyPress::upKey || key == juce::KeyPress::downKey) {
+        adjust(part_, key == juce::KeyPress::upKey ? 1 : -1, true);
+        return true;
+    }
+    return false;
+}
+bool BarValue::keyPressed(const juce::KeyPress &key) {
+    if (!key.getModifiers().isAnyModifierKeyDown() &&
+        (key == juce::KeyPress::leftKey || key == juce::KeyPress::rightKey)) {
+        part_ = std::clamp(part_ + (key == juce::KeyPress::rightKey ? 1 : -1), 0, parts_ - 1);
+        repaint();
+        return true;
+    }
+    return stepKey(key) || juce::Button::keyPressed(key);
+}
+void BarValue::mouseDown(const juce::MouseEvent &e) {
+    if (!isEnabled() || e.mods.isPopupMenu())
+        return;
+    part_ = partAt(e.position.x);
+    pressed_ = true;
+    setState(buttonDown);
+}
+void BarValue::mouseDrag(const juce::MouseEvent &e) {
+    if (!pressed_ || !adjust)
+        return;
+    const int steps = -e.getDistanceFromDragStartY() / 4;
+    if (steps == dragSteps_)
+        return;
+    dragSteps_ = steps;
+    dragged_ = true;
+    preview_ = steps != 0 ? adjust(part_, steps, false) : juce::String{};
+    repaint();
+}
+void BarValue::mouseUp(const juce::MouseEvent &e) {
+    if (!std::exchange(pressed_, false))
+        return;
+    const bool inside = getLocalBounds().contains(e.getPosition());
+    const bool dragged = std::exchange(dragged_, false);
+    const int steps = std::exchange(dragSteps_, 0);
+    preview_.clear();
+    setState(inside ? buttonOver : buttonNormal);
+    repaint();
+    if (!isEnabled())
+        return;
+    if (dragged) {
+        if (steps != 0 && adjust)
+            adjust(part_, steps, true);
+    } else if (inside) {
+        internalClickCallback(e.mods);
+    }
+}
+bool BarValue::wheelAt(float x, const juce::MouseWheelDetails &wheel) {
+    if (!isEnabled() || !adjust || pressed_ || wheel.deltaY == 0 || wheel.isInertial)
+        return false;
+    part_ = partAt(x);
+    adjust(part_, wheel.deltaY > 0 ? 1 : -1, true);
+    repaint();
+    return true;
+}
+void BarValue::mouseWheelMove(const juce::MouseEvent &e, const juce::MouseWheelDetails &wheel) {
+    if (!wheelAt(e.position.x, wheel))
+        juce::Component::mouseWheelMove(e, wheel);
+}
+void TransportBar::FieldEditor::bind(BarValue &field, const juce::String &value) {
+    field_ = &field;
+    initial_ = value;
+    setText(value, false);
+}
+void TransportBar::FieldEditor::finishAdjustment() {
+    setVisible(false);
+    focusIfShowing(*field_);
+}
+bool TransportBar::FieldEditor::keyPressed(const juce::KeyPress &key) {
+    if (field_ && getText() == initial_ && field_->stepKey(key)) {
+        finishAdjustment();
+        return true;
+    }
+    return juce::TextEditor::keyPressed(key);
+}
+void TransportBar::FieldEditor::mouseWheelMove(const juce::MouseEvent &e, const juce::MouseWheelDetails &wheel) {
+    if (field_ && getText() == initial_ && field_->wheelAt(e.position.x, wheel))
+        finishAdjustment();
+    else
+        juce::TextEditor::mouseWheelMove(e, wheel);
+}
 TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
     struct Info {
         BarItem *item;
@@ -236,18 +383,19 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
     const Info infos[] = {
         {&link, "Link", "Ableton Link: tempo and phase with other applications (P1)."},
         {&tap, "Tap Tempo", "Click once every beat: the tempo follows your clicking."},
-        {&tempo, "Tempo", "The tempo at the play location, in BPM. Click to type another, from 20 to 999."},
+        {&tempo, "Tempo", "The tempo at the play location, from 20 to 999 BPM. Drag, scroll or use Up and Down "
+                          "to adjust whole BPM or hundredths. Click to type."},
         {&nudgeDown, "Nudge Down", "Slows playback for as long as it is held."},
         {&nudgeUp, "Nudge Up", "Speeds playback up for as long as it is held."},
-        {&signature, "Time Signature", "The time signature at the play location. Click to type another, "
-                                       "such as 3/4."},
+        {&signature, "Time Signature", "Drag, scroll or use Up and Down to adjust the numerator or denominator "
+                                       "at the play location. Click to type a signature such as 3/4."},
         {&metronome, "Metronome", "O toggles the metronome. Its menu sets count-in and the shared Cue Volume."},
         {&quantize, "Quantization Menu", "The global launch quantization (with Session View)."},
         {&follow, "Follow", "The arrangement follows the playhead while it plays. An edit, a "
                             "sideways scroll or a click on the ruler pauses it. Ctrl+Shift+F "
                             "(Option+Shift+F on the Mac)."},
-        {&position, "Arrangement Position", "Where the playhead is, in bars, beats and sixteenths. Click to type "
-                                            "another, such as 5.2.3; up and down step a bar. It moves the insert marker."},
+        {&position, "Arrangement Position", "Drag, scroll or use Up and Down on a number to move the insert marker "
+                                            "by bars, beats or sixteenths. Click to type a position such as 5.2.3."},
         {&play, "Play", "Starts playback from the insert marker, or stops it. Space."},
         {&stop, "Stop", "Stops playback."},
         {&record, "Arrangement Record", "Records into the arrangement. F9."},
@@ -258,12 +406,13 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
                                             "Click to follow every envelope again."},
         {&capture, "Capture MIDI", "Turns what you just played into a clip."},
         {&sessionRecord, "Session Record", "Records into Session View (P2)."},
-        {&loopStart, "Loop Start", "Where the arrangement loop starts. Click to type another, such as 5.1.1."},
+        {&loopStart, "Loop Start", "Drag, scroll or use Up and Down on a number to move the loop without changing "
+                                   "its length. Click to type a start such as 5.1.1."},
         {&punchIn, "Punch-In", "Records from the loop brace's start."},
         {&loop, "Loop Switch", "Loops the arrangement between the loop brace's ends. Ctrl/Cmd+L loops the selection."},
         {&punchOut, "Punch-Out", "Ends the recording at the loop brace's end."},
-        {&loopLength, "Loop Length", "How long the arrangement loop is, in bars, beats and sixteenths. Click to "
-                                     "type another, such as 8.0.0."},
+        {&loopLength, "Loop Length", "Drag, scroll or use Up and Down on a number to move the loop's end. "
+                                     "Click to type a length such as 8.0.0."},
         {&draw, "Draw Mode", "Draws notes and automation with the mouse. B."},
         {&keyboard, "Computer MIDI Keyboard", "Plays notes from the computer keyboard."},
         {&key, "Key Map Mode", "Assigns computer keys to controls."},
@@ -286,10 +435,36 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
     arrangementPage.onClick = [this] { if (root_.state().mixView) root_.command(AppCommands::ToggleMixView); };
     mix.onClick = [this] { if (!root_.state().mixView) root_.command(AppCommands::ToggleMixView); };
     tempo.onClick = [this] { beginTempoEdit(); };
+    tempo.adjust = [this](int part, int steps, bool commit) -> juce::String {
+        const auto current = root_.current();
+        if (!current || !current->tempo)
+            return {};
+        const auto bpm = current->tempo->bpmAt(root_.timelineTick());
+        const auto value = std::clamp(bpm + steps * (part == 0 ? 1. : .01), kMinTempo, kMaxTempo);
+        const juce::String text(value, 2);
+        if (commit && value != bpm)
+            root_.setTempoAtPlay(text.toStdString());
+        return text;
+    };
     // On the press, so each tap is timed when it lands.
     tap.setTriggeredOnMouseDown(true);
     tap.onClick = [this] { root_.tapTempo(root_.input.ms()); };
     signature.onClick = [this] { beginSignatureEdit(); };
+    signature.adjust = [this](int part, int steps, bool commit) -> juce::String {
+        const auto current = root_.current();
+        if (!current)
+            return {};
+        const auto &meter = meterAt(root_.timelineTick(), current->meters);
+        constexpr std::array<int, 5> denominators{1, 2, 4, 8, 16};
+        const int at = static_cast<int>(std::distance(denominators.begin(),
+                                                     std::find(denominators.begin(), denominators.end(), meter.denominator)));
+        const int num = part == 0 ? std::clamp(static_cast<int>(meter.numerator) + steps, 1, 99) : meter.numerator;
+        const int den = part == 1 ? denominators[static_cast<std::size_t>(std::clamp(at + steps, 0, 4))]
+                                  : meter.denominator;
+        if (commit && (num != meter.numerator || den != meter.denominator))
+            root_.setMeterAtPlay((juce::String(num) + "/" + juce::String(den)).toStdString());
+        return juce::String(num) + " / " + juce::String(den);
+    };
     // The metronome and the Arrangement Loop (manual 19.4.1, 6.6; #383, N19): outside undo, saved
     // with the project, lit from the snapshot.
     metronome.onClick = [this] { root_.command(AppCommands::Metronome); };
@@ -302,15 +477,9 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
     loopStart.onClick = [this] { beginLoopStartEdit(); };
     loopLength.onClick = [this] { beginLoopLengthEdit(); };
     position.onClick = [this] { beginPositionEdit(); };
-    position.onKey = [this](const juce::KeyPress &k) {
-        if (k.getModifiers().isAnyModifierKeyDown())
-            return false;
-        if (k.getKeyCode() == juce::KeyPress::upKey || k.getKeyCode() == juce::KeyPress::downKey) {
-            root_.stepPosition(k.getKeyCode() == juce::KeyPress::upKey ? 1 : -1);
-            return true;
-        }
-        return false;
-    };
+    position.adjust = [this](int part, int steps, bool commit) { return adjustTime(TimeField::Position, part, steps, commit); };
+    loopStart.adjust = [this](int part, int steps, bool commit) { return adjustTime(TimeField::LoopStart, part, steps, commit); };
+    loopLength.adjust = [this](int part, int steps, bool commit) { return adjustTime(TimeField::LoopLength, part, steps, commit); };
     addChildComponent(fieldEditor);
     fieldEditor.setJustification(juce::Justification::centred);
     fieldEditor.onReturnKey = [this] {
@@ -503,13 +672,40 @@ void TransportBar::paint(juce::Graphics &g) {
     g.fillRoundedRectangle(group.expanded(look::hairline), look::radiusGroup);
 }
 void TransportBar::focus() { focusIfShowing(*lastFocused_); }
-void TransportBar::beginFieldEdit(BarItem &item, const juce::String &text,
+juce::String TransportBar::adjustTime(TimeField field, int part, int steps, bool commit) {
+    const auto current = root_.current();
+    if (!current)
+        return {};
+    const auto &meters = current->meters;
+    const auto range = loopOf(current->transport);
+    if (field == TimeField::LoopLength) {
+        const auto &meter = meterAt(range.start, meters);
+        const auto sixteenth = textproj::kWhole / 16;
+        const auto unit = part == 0 ? meter.barTicks() : part == 1 ? textproj::kWhole / meter.denominator : sixteenth;
+        const auto length = std::max(std::min(range.length(), sixteenth), range.length() + steps * unit);
+        if (commit && length != range.length())
+            root_.setLoopRange({range.start, range.start + length});
+        return formatPosition(barSpan(range.start, length, meters), ".  ");
+    }
+    const auto tick = field == TimeField::LoopStart ? range.start
+                                                   : root_.playing() ? root_.timelineTick()
+                                                                     : root_.arrangement.geometry.selection.insert;
+    const auto value = adjustedPosition(tick, meters, part, steps);
+    if (commit && value != tick) {
+        if (field == TimeField::Position)
+            root_.arrangement.placeInsertMarker(value);
+        else
+            root_.setLoopRange({value, value + range.length()});
+    }
+    return formatPosition(barPosition(value, meters), ".  ");
+}
+void TransportBar::beginFieldEdit(BarValue &item, const juce::String &text,
                                   std::function<bool(const std::string &)> commit) {
     editing_ = &item;
     commit_ = std::move(commit);
     fieldEditor.setTitle(item.getTitle());
     fieldEditor.setBounds(item.getBounds());
-    fieldEditor.setText(text, false);
+    fieldEditor.bind(item, text);
     fieldEditor.setVisible(true);
     fieldEditor.selectAll();
     if (fieldEditor.isShowing())
@@ -520,18 +716,18 @@ void TransportBar::beginTempoEdit() {
 }
 void TransportBar::beginPositionEdit() {
     const auto at = barPosition(root_.timelineTick(), root_.reader().meters());
-    beginFieldEdit(position, juce::String(at.bar) + "." + juce::String(at.beat) + "." + juce::String(at.sixteenth),
+    beginFieldEdit(position, formatPosition(at, "."),
                    [this](const std::string &t) { return root_.setPositionAt(t); });
 }
 void TransportBar::beginLoopStartEdit() {
     const auto at = barPosition(root_.reader().transport().loopStartTicks, root_.reader().meters());
-    beginFieldEdit(loopStart, juce::String(at.bar) + "." + juce::String(at.beat) + "." + juce::String(at.sixteenth),
+    beginFieldEdit(loopStart, formatPosition(at, "."),
                    [this](const std::string &t) { return root_.setLoopStartAt(t); });
 }
 void TransportBar::beginLoopLengthEdit() {
     const auto &t = root_.reader().transport();
     const auto length = barSpan(t.loopStartTicks, t.loopEndTicks - t.loopStartTicks, root_.reader().meters());
-    beginFieldEdit(loopLength, juce::String(length.bar) + "." + juce::String(length.beat) + "." + juce::String(length.sixteenth),
+    beginFieldEdit(loopLength, formatPosition(length, "."),
                    [this](const std::string &text) { return root_.setLoopLengthAt(text); });
 }
 void TransportBar::beginSignatureEdit() {

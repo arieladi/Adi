@@ -1466,10 +1466,8 @@ bool ArrangementView::command(int id) {
         break;
     }
     case AppCommands::GoStart:
-        geometry.selection.insert = 0;
-        geometry.selection.marked = true;
-        root.locate(geometry.selection.insert);
-        break;
+        placeInsertMarker(0);
+        return true;
     case AppCommands::InsertMarkerToPlayhead: {
         // Ctrl/Cmd+Shift+Space (§42.16): the insert marker, a point, where the playhead is;
         // Space then plays from there.
@@ -1522,6 +1520,15 @@ bool ArrangementView::command(int id) {
     }
     changed();
     return true;
+}
+void ArrangementView::placeInsertMarker(std::int64_t tick, bool fromInsertMarker) {
+    auto &selection = geometry.selection;
+    selection.insert = tick;
+    selection.clearMaterial();
+    selection.marked = true;
+    root.locate(tick, fromInsertMarker);
+    follow(tick, true); // Reveal an explicit jump even when playback Follow is off.
+    changed();
 }
 void ArrangementView::locate() { root.locate(geometry.selection.insert, true); }
 void ArrangementView::select(int x, int y, bool snapToGrid) {
