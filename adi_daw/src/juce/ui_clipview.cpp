@@ -2795,28 +2795,184 @@ SampleEditor::SampleEditor(ClipViewPanel &p) : panel(p) {
     setOpaque(true);
     addChildComponent(playhead);
 }
+std::int64_t SampleEditor::sourceSecondsToTicks(double seconds) const noexcept {
+    const auto *node = panel.node();
+    const auto *snapshot = panel.root.reader().get();
+    if (node && snapshot && snapshot->tempo) {
+        const auto &tempo = *snapshot->tempo;
+        return tempo.secondsToTicks(tempo.ticksToSeconds(node->posTicks) + seconds) - node->posTicks;
+    }
+    return std::llround(seconds * (2. * textproj::kPPQ));
+}
+double SampleEditor::sourceTicksToSeconds(std::int64_t ticks) const noexcept {
+    const auto *node = panel.node();
+    const auto *snapshot = panel.root.reader().get();
+    if (node && snapshot && snapshot->tempo) {
+        const auto &tempo = *snapshot->tempo;
+        return tempo.ticksToSeconds(node->posTicks + ticks) - tempo.ticksToSeconds(node->posTicks);
+    }
+    return static_cast<double>(ticks) / (2. * textproj::kPPQ);
+}
+std::int64_t SampleEditor::sourceTick(std::int64_t arrangementTick) const noexcept {
+    const auto *clip = panel.details();
+    if (!clip)
+        return 0;
+    const auto window = ClipWindow::of(*clip);
+    const auto *node = panel.node();
+    if (node && node->audio && !node->audio->warpEnabled && node->contentOffsetNs)
+        return sourceSecondsToTicks(static_cast<double>(*node->contentOffsetNs) * 1e-9 +
+                                    sourceTicksToSeconds(arrangementTick - window.pos));
+    return window.toSource(arrangementTick);
+}
 void SampleEditor::frame() {
     const auto area = waveArea();
-    const int x = static_cast<int>(std::clamp(time.x(panel.root.timelineTick()), -1e7, 1e7));
-    playhead.setVisible(panel.details() != nullptr && panel.root.playing() && x >= 0 && x < area.getWidth());
+    const int x = static_cast<int>(std::clamp(time.x(sourceTick(panel.root.timelineTick())), -1e7, 1e7));
+    playhead.setVisible(panel.audio() && panel.root.playing() && x >= 0 && x < area.getWidth());
     playhead.setBounds(area.getX() + x, area.getY(), 1, area.getHeight());
 }
 juce::Rectangle<int> SampleEditor::waveArea() const noexcept {
-    return {0, kRulerHeight, getWidth(), std::max(0, getHeight() - kRulerHeight)};
+    constexpr auto top = kRulerHeight + 2 * kMarkerHeight;
+    return {0, top, getWidth(), std::max(0, getHeight() - top)};
 }
 void SampleEditor::showClip() {
     fitPending_ = true;
+    insert_.reset();
+    drag_ = Drag::None;
+}
+void SampleEditor::updateSource() {
+    markers_.clear();
+    const auto *clip = panel.details();
+    const auto *node = panel.node();
+    sourceEnd_ = clip ? std::max<std::int64_t>(1, endMarkerOf(*clip)) : 0;
+    if (node && node->audio) {
+        const auto &audio = *node->audio;
+        if (audio.warpEnabled && audio.warpMarkers && audio.sourceLengthFrames > 0)
+            if (auto map = adi::audio::readWarpMap(*audio.warpMarkers, static_cast<std::uint64_t>(audio.sourceLengthFrames)))
+                markers_ = std::move(map.markers);
+        if (!markers_.empty()) {
+            sourceEnd_ = markers_.back().tick;
+        } else if (audio.mediaInfo && audio.mediaInfo->sampleRate.value_or(0) > 0) {
+            const auto seconds = static_cast<double>(audio.sourceLengthFrames) / static_cast<double>(*audio.mediaInfo->sampleRate);
+            sourceEnd_ = std::max<std::int64_t>(1, sourceSecondsToTicks(seconds));
+        }
+    }
     resized();
+    repaint();
 }
 void SampleEditor::resized() {
-    if (!fitPending_ || getWidth() <= 0)
-        return;
-    if (const auto *clip = panel.details()) {
+    if (fitPending_ && getWidth() > 0 && sourceEnd_ > 0) {
         fitPending_ = false;
-        const auto window = ClipWindow::of(*clip);
-        const auto length = std::max<std::int64_t>(textproj::kPPQ, window.length);
-        time.fit(window.pos, window.pos + length + length / 24, getWidth(), false);
+        const auto margin = std::max<std::int64_t>(textproj::kPPQ / 24, sourceEnd_ / 24);
+        time.fit(0, sourceEnd_ + margin, getWidth(), false);
     }
+}
+std::int64_t SampleEditor::endMarker() const noexcept {
+    const auto *node = panel.node();
+    const auto *clip = panel.details();
+    if (node && node->audio && !node->audio->warpEnabled && node->sourceEndNs && clip && clip->endMarkerTicks)
+        return sourceSecondsToTicks(static_cast<double>(*node->sourceEndNs) * 1e-9);
+    return clip ? endMarkerOf(*clip) : 0;
+}
+double SampleEditor::frameAt(std::int64_t tick, double rate) const noexcept {
+    if (markers_.empty())
+        return sourceTicksToSeconds(tick) * rate;
+    const auto right = std::upper_bound(markers_.begin(), markers_.end(), tick,
+                                        [](std::int64_t at, const WarpMarker &marker) { return at < marker.tick; });
+    if (right == markers_.begin())
+        return 0.;
+    const auto &a = *(right - 1);
+    if (right == markers_.end())
+        return static_cast<double>(a.sourceFrame);
+    return static_cast<double>(a.sourceFrame) + static_cast<double>(tick - a.tick) *
+           static_cast<double>(right->sourceFrame - a.sourceFrame) / static_cast<double>(right->tick - a.tick);
+}
+std::int64_t SampleEditor::tickAt(int x, const juce::ModifierKeys &mods) const noexcept {
+    const auto raw = time.tick(x);
+#if JUCE_MAC
+    const bool bypass = mods.isCommandDown();
+#else
+    const bool bypass = mods.isAltDown();
+#endif
+    if (time.grid.snap == bypass)
+        return std::clamp(raw, std::int64_t{0}, sourceEnd_);
+    const auto lo = time.snap(raw, false), hi = time.snap(raw, true);
+    return std::clamp(raw - lo <= hi - raw ? lo : hi, std::int64_t{0}, sourceEnd_);
+}
+void SampleEditor::mouseDown(const juce::MouseEvent &e) {
+    const auto *clip = panel.details();
+    if (!clip || !e.mods.isLeftButtonDown() || e.mods.isPopupMenu())
+        return;
+    gestureClip_ = clip->id;
+    drag_ = Drag::None;
+    last_ = e.getPosition();
+    downTick_ = tickAt(last_.x, e.mods);
+    const auto near = [&](std::int64_t tick) { return std::abs(time.x(tick) - last_.x) <= 5.; };
+    if (last_.y < kRulerHeight) {
+        drag_ = Drag::Ruler;
+    } else if (last_.y < kRulerHeight + kMarkerHeight && clip->loopEnabled) {
+        const auto first = clip->loopStartTicks, end = first + loopLengthOf(*clip);
+        if (near(first)) {
+            drag_ = Drag::LoopStart;
+            original_ = first;
+        } else if (near(end)) {
+            drag_ = Drag::LoopEnd;
+            original_ = end;
+        } else if (last_.x > time.x(first) && last_.x < time.x(end)) {
+            drag_ = Drag::Loop;
+            original_ = first;
+        }
+    } else if (last_.y < waveArea().getY()) {
+        const auto start = sourceTick(ClipWindow::of(*clip).pos), end = endMarker();
+        if (near(start) || near(end)) {
+            const bool left = std::abs(time.x(start) - last_.x) <= std::abs(time.x(end) - last_.x);
+            drag_ = left ? Drag::Start : Drag::End;
+            original_ = left ? start : end;
+        }
+    } else {
+        insert_ = downTick_;
+        repaint();
+    }
+    preview_ = original_;
+}
+void SampleEditor::mouseDrag(const juce::MouseEvent &e) {
+    const auto *clip = panel.details();
+    if (drag_ == Drag::None || !clip || clip->id != gestureClip_)
+        return;
+    if (drag_ == Drag::Ruler) {
+        time.pan(static_cast<double>(last_.x - e.x));
+        time.zoom(std::pow(1.012, static_cast<double>(e.y - last_.y)), static_cast<double>(e.x));
+        last_ = e.getPosition();
+    } else {
+        auto low = std::int64_t{0}, high = sourceEnd_;
+        const auto first = clip->loopStartTicks, length = loopLengthOf(*clip);
+        switch (drag_) {
+        case Drag::Start: high = std::min(high, endMarker() - 1); break;
+        case Drag::End: low = sourceTick(ClipWindow::of(*clip).pos) + 1; break;
+        case Drag::LoopStart: high = std::min(high, first + length - 1); break;
+        case Drag::LoopEnd: low = first + 1; break;
+        case Drag::Loop: high = std::max<std::int64_t>(0, high - length); break;
+        default: break;
+        }
+        preview_ = std::clamp(original_ + tickAt(e.x, e.mods) - downTick_, low, std::max(low, high));
+    }
+    repaint();
+}
+void SampleEditor::mouseUp(const juce::MouseEvent &) {
+    const auto drag = std::exchange(drag_, Drag::None);
+    const auto *clip = panel.details();
+    if (!clip || clip->id != gestureClip_ || preview_ == original_)
+        return;
+    const auto first = clip->loopStartTicks, length = loopLengthOf(*clip);
+    using Field = ClipViewPanel::Field;
+    switch (drag) {
+    case Drag::Start: panel.setField(Field::Start, preview_); break;
+    case Drag::End: panel.setField(Field::End, preview_); break;
+    case Drag::LoopStart: panel.commit(setClipLoop(*clip, preview_, first + length - preview_)); break;
+    case Drag::LoopEnd: panel.setField(Field::Length, preview_ - first); break;
+    case Drag::Loop: panel.setField(Field::Position, preview_); break;
+    default: break;
+    }
+    repaint();
 }
 void SampleEditor::mouseWheelMove(const juce::MouseEvent &e, const juce::MouseWheelDetails &w) {
     if (timeWheel(time, e, w, 0))
@@ -2834,13 +2990,24 @@ void SampleEditor::paint(juce::Graphics &g) {
     const auto &meters = *time.meters;
     paintRuler(g, ruler, time, meters);
     const auto area = waveArea();
-    juce::Graphics::ScopedSaveState state(g);
-    g.reduceClipRegion(area);
     paintGrid(g, area, time, meters);
-    const auto window = ClipWindow::of(*clip);
-    shadeOutside(g, area, time, window);
-    // The clip's audio inside its source window, a band for each channel, as the arrangement
-    // draws it (N40): the peaks land from their worker and the next frame draws them.
+    const auto start = drag_ == Drag::Start ? preview_ : sourceTick(ClipWindow::of(*clip).pos);
+    const auto end = drag_ == Drag::End ? preview_ : endMarker();
+    shadeOutside(g, area, time, {start, std::max<std::int64_t>(1, end - start), 0});
+    if (clip->loopEnabled) {
+        const auto first = drag_ == Drag::Loop || drag_ == Drag::LoopStart ? preview_ : clip->loopStartTicks;
+        const auto base = drag_ == Drag::Loop ? preview_ : clip->loopStartTicks;
+        const auto last = drag_ == Drag::LoopEnd ? preview_ : base + loopLengthOf(*clip);
+        const auto x = static_cast<float>(time.x(first)), right = static_cast<float>(time.x(last));
+        g.setColour(look::accent.withAlpha(.55f));
+        g.fillRect(x, static_cast<float>(kRulerHeight + 2), right - x, static_cast<float>(kMarkerHeight - 3));
+    }
+    for (const auto tick : {start, end}) {
+        const auto x = static_cast<float>(time.x(tick));
+        g.setColour(look::textBright.withAlpha(.55f));
+        g.fillRect(x - 3.f, static_cast<float>(area.getY() - kMarkerHeight + 1), 7.f, static_cast<float>(kMarkerHeight - 2));
+        g.fillRect(x, static_cast<float>(area.getY()), 1.f, static_cast<float>(area.getHeight()));
+    }
     const auto *node = panel.node();
     auto *waveforms = panel.root.arrangement.waveforms;
     if (node == nullptr || !node->audio || waveforms == nullptr)
@@ -2851,21 +3018,19 @@ void SampleEditor::paint(juce::Graphics &g) {
     const auto &finest = peaks->finest();
     if (finest.channels == 0 || finest.sampleRate == 0)
         return;
-    const auto *snapshot = panel.root.reader().get();
-    const ClipSourceMap source(*node, snapshot != nullptr ? snapshot->tempo.get() : nullptr,
-                               static_cast<double>(finest.sampleRate));
+    juce::Graphics::ScopedSaveState state(g);
+    g.reduceClipRegion(area);
     const float top = static_cast<float>(area.getY()) + 4.f, bottom = static_cast<float>(area.getBottom()) - 4.f;
     const float band = (bottom - top) / static_cast<float>(finest.channels);
-    const int from = std::max(0, static_cast<int>(std::floor(time.x(window.pos)))),
-              to = std::min(getWidth(), static_cast<int>(std::ceil(time.x(window.end()))));
+    const int from = std::max(0, static_cast<int>(std::floor(time.x(0)))),
+              to = std::min(getWidth(), static_cast<int>(std::ceil(time.x(sourceEnd_))));
+    const auto origin = static_cast<double>(node->audio->sourceStartFrames);
+    const auto rate = static_cast<double>(finest.sampleRate);
     g.setColour(look::ink.withAlpha(node->muted ? 0.35f : 0.7f));
     for (int x = from; x < to; ++x) {
-        const auto f0 = source.frameAt(time.tick(x)), f1 = source.frameAt(time.tick(x + 1));
-        if (!f0)
-            continue;
-        const double end = f1 ? *f1 : *f0 + 1.;
+        const auto f0 = origin + frameAt(time.tick(x), rate), f1 = origin + frameAt(time.tick(x + 1), rate);
         for (std::uint32_t ch = 0; ch < finest.channels; ++ch) {
-            const auto span = peakSpan(*peaks, std::min(*f0, end), std::max(*f0 + 1., end), ch);
+            const auto span = peakSpan(*peaks, f0, std::max(f0 + 1., f1), ch);
             if (!span)
                 continue;
             const float mid = top + band * (static_cast<float>(ch) + .5f), half = band * .5f;
@@ -2873,6 +3038,11 @@ void SampleEditor::paint(juce::Graphics &g) {
                         y1 = mid - std::clamp(span->minimum, -1.f, 1.f) * half;
             g.fillRect(static_cast<float>(x), y0, 1.f, std::max(1.f, y1 - y0));
         }
+    }
+    if (insert_) {
+        g.setColour(look::accent);
+        g.fillRect(static_cast<float>(time.x(*insert_)), static_cast<float>(area.getY()), 1.f,
+                   static_cast<float>(area.getHeight()));
     }
 }
 
@@ -3440,7 +3610,8 @@ void ClipViewPanel::frame(const SnapshotReader &reader) {
     // Asked once for each clip and each generation: a selected clip that is gone is not read again
     // until the project moves (an Undo may bring it back).
     const bool other = wanted != wanted_ || !read_ || (!none && !sameAsShown());
-    if (other || generation != generation_) {
+    const bool refresh = other || generation != generation_;
+    if (refresh) {
         wanted_ = wanted;
         clip_ = wanted;
         if (!none) {
@@ -3471,7 +3642,6 @@ void ClipViewPanel::frame(const SnapshotReader &reader) {
         repaint();
     }
     notes.frame();
-    sample.frame();
     // The Status Bar reads the selected notes: it is drawn again when what it would read changes.
     if (const auto stamp = midi() ? notes.statusStamp() : 0; stamp != statusStamp_) {
         statusStamp_ = stamp;
@@ -3480,7 +3650,7 @@ void ClipViewPanel::frame(const SnapshotReader &reader) {
     // The frame's own snapshot: the clip's node and its track's colour, and the song's meters for
     // the rulers. They live until the next frame.
     notes.time.meters = &reader.meters();
-    sample.time.meters = &reader.meters();
+    sample.time.meters = &clipMeters_;
     node_ = nullptr;
     bool named = false;
     colour_ = look::trackColour(0);
@@ -3515,6 +3685,9 @@ void ClipViewPanel::frame(const SnapshotReader &reader) {
         trackStored_.clear();
         trackNamed_ = false;
     }
+    if (refresh)
+        sample.updateSource();
+    sample.frame();
 }
 ClipViewPanel::Readings ClipViewPanel::readings() const {
     Readings out;
@@ -4264,7 +4437,8 @@ bool ClipViewPanel::setFieldHere(Field field) {
         return false;
     const auto &d = *details_;
     const auto at = root.playing() ? root.timelineTick() : root.arrangement.geometry.selection.insert;
-    const auto here = ClipWindow::of(d).toSource(at);
+    const auto here = audio() ? (!root.playing() && sample.insert() ? *sample.insert() : sample.sourceTick(at))
+                              : ClipWindow::of(d).toSource(at);
     if (field == Field::Position)
         return commit(setClipLoop(d, here, loopLengthOf(d), true));
     if (field == Field::Length)

@@ -7,6 +7,7 @@
 // the selection or the project's generation moves; it keeps that value until the next move and
 // nothing else. Every change it makes is an op through the root's submitter.
 #pragma once
+#include "adi/audio/warp_map.hpp"
 #include "adi/engine/clip_details.hpp"
 #include "adi/ui/arrangement_geometry.hpp"
 #include "adi/ui/clip_edits.hpp"
@@ -371,17 +372,35 @@ class SampleEditor final : public juce::Component {
     explicit SampleEditor(ClipViewPanel &);
     void paint(juce::Graphics &) override;
     void resized() override;
+    void mouseDown(const juce::MouseEvent &) override;
+    void mouseDrag(const juce::MouseEvent &) override;
+    void mouseUp(const juce::MouseEvent &) override;
     void mouseWheelMove(const juce::MouseEvent &, const juce::MouseWheelDetails &) override;
-    static constexpr int kRulerHeight = 18;
+    static constexpr int kRulerHeight = 18, kMarkerHeight = 9;
     ArrangementGeometry time;
     juce::Rectangle<int> waveArea() const noexcept;
     void showClip();
+    void updateSource();
     void frame();
+    std::optional<std::int64_t> insert() const noexcept { return insert_; }
+    std::int64_t sourceTick(std::int64_t arrangementTick) const noexcept;
     ArrangementPlayhead playhead;
 
   private:
+    enum class Drag { None, Ruler, Start, End, LoopStart, LoopEnd, Loop };
     ClipViewPanel &panel;
     bool fitPending_ = false;
+    std::int64_t sourceEnd_ = 0, downTick_ = 0, original_ = 0, preview_ = 0;
+    std::int64_t gestureClip_ = 0;
+    Drag drag_ = Drag::None;
+    juce::Point<int> last_;
+    std::optional<std::int64_t> insert_;
+    std::vector<WarpMarker> markers_;
+    std::int64_t sourceSecondsToTicks(double seconds) const noexcept;
+    double sourceTicksToSeconds(std::int64_t ticks) const noexcept;
+    std::int64_t endMarker() const noexcept;
+    double frameAt(std::int64_t source, double rate) const noexcept;
+    std::int64_t tickAt(int x, const juce::ModifierKeys &) const noexcept;
 };
 
 // The Clip View: the clip's title bar with its activator, name and colour; the Main panel with the
@@ -690,6 +709,7 @@ class ClipViewPanel final : public juce::Component {
   private:
     void read(const SnapshotReader &);
     friend class NoteEditor;
+    friend class SampleEditor;
     bool commit(TrackEdit);
     bool setGain(double db);
     double draggedGain() const noexcept;
