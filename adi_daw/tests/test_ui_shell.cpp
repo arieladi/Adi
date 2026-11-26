@@ -11756,14 +11756,26 @@ void exportPage(AppCommands &commands, const std::filesystem::path &dir) {
           "outside the application it says where it runs");
     std::optional<ExportChoices> asked;
     root.exportAudio = [&](const ExportChoices &c) { asked = c; };
-    // With nothing selected: the loop brace, whether the loop is on or not (New's brace: four bars), Main,
-    // at the project's rate.
-    const auto &transport = root.reader().transport();
+    // R36: leave the loop off and place the insert marker beyond a song longer than its brace.
+    const auto songLength = 11 * textproj::kWhole;
+    OpRequest clip;
+    clip.opType = "clip.create";
+    clip.payload = {{"id", 20}, {"track", 2}, {"kind", "midi"}, {"pos", 0}, {"length", songLength}};
+    check(document->ops().submit(std::move(clip)).ok && document->synchronise(), "SC-394 fixture creates an eleven-bar song");
+    root.frame();
+    auto &selection = root.arrangement.geometry.selection;
+    selection.insert = selection.start = selection.end = 19 * textproj::kWhole;
+    selection.marked = true;
+    const auto transport = root.reader().transport();
     check(root.command(AppCommands::ExportAudio) && asked && !transport.loopEnabled &&
-              asked->startTicks == transport.loopStartTicks &&
-              asked->lengthTicks == transport.loopEndTicks - transport.loopStartTicks && asked->lengthTicks == 4 * textproj::kWhole &&
+              asked->startTicks == 0 && asked->lengthTicks == songLength &&
               asked->track == 0 && asked->sampleRate == root.reader().sampleRate(),
-          "the loop brace with the loop off, Main, at the project's rate");
+          "SC-394: with no range and looping off, export defaults to the whole song");
+    check(root.toggleLoop() && root.command(AppCommands::ExportAudio) &&
+              asked->startTicks == transport.loopStartTicks &&
+              asked->lengthTicks == transport.loopEndTicks - transport.loopStartTicks,
+          "SC-394: with looping on, export still defaults to the brace");
+    check(root.toggleLoop(), "SC-394 fixture turns looping off again");
     auto &sel = root.arrangement.geometry.selection;
     sel.start = 3840;
     sel.end = 3840 * 5;

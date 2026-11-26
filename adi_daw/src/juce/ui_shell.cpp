@@ -3250,8 +3250,7 @@ bool AdiRootComponent::toggleRecord() {
     return true;
 }
 ExportChoices AdiRootComponent::exportDefaults() const {
-    // Live renders the time selection, else the loop brace (manual 5.2.1); a project has a brace from New,
-    // so the whole song (its start to the end of its last clip or locator) is for a project without one.
+    // R36: without a time selection or an active loop, export covers the Arrangement.
     ExportChoices c;
     const auto &sel = arrangement.geometry.selection;
     const auto current = view_.current();
@@ -3259,8 +3258,8 @@ ExportChoices AdiRootComponent::exportDefaults() const {
         // A selection made right to left is the same range.
         c.startTicks = std::min(sel.start, sel.end);
         c.lengthTicks = std::max(sel.start, sel.end) - c.startTicks;
-    } else if (current && current->transport.loopEndTicks > current->transport.loopStartTicks) {
-        // The loop brace, whether the loop is switched on or not, as Live's.
+    } else if (current && current->transport.loopEnabled &&
+               current->transport.loopEndTicks > current->transport.loopStartTicks) {
         c.startTicks = current->transport.loopStartTicks;
         c.lengthTicks = current->transport.loopEndTicks - current->transport.loopStartTicks;
     } else {
