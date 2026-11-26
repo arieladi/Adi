@@ -8,7 +8,7 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ## 2026-11-27 — the Jam (ADR-0260); two basics stacks on main; one chain per queue
 
-**The Jam.** The director's outside panel proposed a guitar-first way of working. Most of it is decided already; four pieces are new. His words on win's five choices: "all as recommended". Three templates, not a screen of its own; a Mark command and a riff list with Keep, Maybe and Skip, built right after the recording basics; rule-made drum grooves; Make Session after the Foundry; backing to the Cue output, with a notice where the interface has none. DF-W60 holds the work.
+**The Jam.** The director's outside panel proposed a guitar-first way of working. Most of it is decided already; four pieces are new. His words on win's five choices: "all as recommended". Three templates, not a screen of its own; a Mark command and a riff list with Keep, Maybe and Skip, built right after the recording basics; rule-made drum grooves; Make Session after the Foundry; backing to the Cue output, with a notice where the interface has none. DF-W60 holds the work. The same day he took three refinements from the panel into that row: a template never reroutes by itself on another interface; recovery of a take after a crash, past 4 GB too, joins the gate of long takes (PD-06 moves up); and a sixth acceptance test, a 60-minute take.
 
 **The basics, landed so far.**
 - #797: SC-02 and SC-03 (a lane press moves only the insert marker) and DF-E89 (the gemini seat's Release warnings).
