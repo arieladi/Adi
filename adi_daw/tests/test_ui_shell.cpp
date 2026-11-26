@@ -4374,8 +4374,47 @@ void midiFileDrop(AppCommands &commands, const std::filesystem::path &dir) {
           "Export MIDI Clip dispatches the selected MIDI clip to the application");
     check(root.command(AppCommands::ImportMidiFile) && command == AppCommands::ImportMidiFile,
           "Import MIDI File dispatches the chooser command");
+    const auto drop = juce::StringArray{juce::String::fromUTF8(reinterpret_cast<const char *>(pathUtf8.c_str()))};
+    const auto count = [&] {
+        return document->store().db().execAndGet("SELECT count(*) FROM clips WHERE track_id=2").getInt();
+    };
+    arrangement.canvas.filesDropped(drop, x, laneTop(root, 2) + 10);
+    root.frame();
+    const auto replacement = root.midiClipForExport();
+    check(replacement > 0 && replacement != selected && count() == 1 &&
+              !engine::readClipDetails(document->store(), selected).clip,
+          "repeated MIDI drop replaces the old span instead of leaving an overlapping clip");
+    check(root.command(AppCommands::Undo) && count() == 1 &&
+              engine::readClipDetails(document->store(), selected).clip &&
+              !engine::readClipDetails(document->store(), replacement).clip,
+          "one Undo removes the replacement and restores the previous import");
     check(root.command(AppCommands::Undo) && !engine::readClipDetails(document->store(), selected).clip,
           "undo removes the file import in one step");
+
+    if (!root.insertMidiClips({2}, 0, 4 * beat)) {
+        check(false, "set up a clip that extends on both sides of the MIDI drop");
+        return;
+    }
+    const auto original = arrangement.geometry.selection.clip;
+    check(root.dropMidiFiles({{drop[0].toStdString(), "Scale"}}, 2, beat, false),
+          "import into the middle of an existing clip");
+    const auto snapshot = document->view().current();
+    const auto *track = snapshot ? snapshot->findTrack(2) : nullptr;
+    const auto placed = root.midiClipForExport();
+    const auto hasSpan = [&](std::int64_t start, std::int64_t length) {
+        return track != nullptr && std::any_of(track->clips.begin(), track->clips.end(), [&](const auto &clip) {
+            return clip != nullptr && clip->posTicks == start && clip->lengthTicks == length;
+        });
+    };
+    check(count() == 3 && hasSpan(0, beat) && hasSpan(beat, beat) && hasSpan(2 * beat, 2 * beat) &&
+              placed != 0 && placed != original,
+          "only the landed interval is replaced, with the before and after fragments retained");
+    check(root.command(AppCommands::Undo) && count() == 1 &&
+              !engine::readClipDetails(document->store(), placed).clip,
+          "one Undo removes the import and recombines both fragments");
+    const auto restored = engine::readClipDetails(document->store(), original);
+    check(restored.clip && restored.clip->posTicks == 0 && restored.clip->lengthTicks == 4 * beat,
+          "Undo restores the exact original MIDI clip interval");
 }
 void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
     StoreError err{};

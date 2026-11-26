@@ -12,7 +12,8 @@
 #include <utility>
 #include <vector>
 
-namespace adi { class RowIds; class Store; }
+namespace adi { class Store; }
+namespace adi::clip_edit { class CopyIds; }
 
 namespace adi::interchange {
 
@@ -28,7 +29,7 @@ struct MidiFileTracks {
 };
 
 [[nodiscard]] MidiFileTracks readMidiClipFile(const std::filesystem::path&);
-[[nodiscard]] OpRequest createImportedMidiClip(RowIds&, const MidiFileTrack&, std::int64_t track,
+[[nodiscard]] OpRequest createImportedMidiClip(clip_edit::CopyIds&, const MidiFileTrack&, std::int64_t track,
     std::int64_t clip, std::int64_t position, const std::string& name);
 [[nodiscard]] smf::Bytes encodeMidiClipFile(const Store&, std::int64_t clip, std::string& error);
 

@@ -3,7 +3,7 @@
 
 #include "adi/controller_lanes.hpp"
 #include "adi/engine/clip_details.hpp"
-#include "adi/row_ids.hpp"
+#include "adi/clip_image.hpp"
 #include "adi/textproj.hpp"
 
 #include <algorithm>
@@ -140,7 +140,7 @@ MidiFileTracks readMidiClipFile(const std::filesystem::path& path) {
     }
 }
 
-OpRequest createImportedMidiClip(RowIds& ids, const MidiFileTrack& source, std::int64_t track,
+OpRequest createImportedMidiClip(clip_edit::CopyIds& ids, const MidiFileTrack& source, std::int64_t track,
                                  std::int64_t clip, std::int64_t position, const std::string& name) {
     OpRequest request;
     request.opType = "capture.createMidi";
