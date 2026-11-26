@@ -17,7 +17,12 @@ bool audio = false;
 int failAfter = -1;
 std::size_t allocations = 0, frees = 0;
 } // namespace
-void *operator new(std::size_t n) {
+#if defined(__GNUC__) && !defined(__clang__)
+#define ADI_TEST_NOINLINE __attribute__((noinline))
+#else
+#define ADI_TEST_NOINLINE
+#endif
+ADI_TEST_NOINLINE void *operator new(std::size_t n) {
     if (audio)
         ++allocations;
     if (failAfter == 0)
@@ -28,15 +33,16 @@ void *operator new(std::size_t n) {
         return p;
     throw std::bad_alloc();
 }
-void *operator new[](std::size_t n) { return ::operator new(n); }
-void operator delete(void *p) noexcept {
+ADI_TEST_NOINLINE void *operator new[](std::size_t n) { return ::operator new(n); }
+ADI_TEST_NOINLINE void operator delete(void *p) noexcept {
     if (audio && p)
         ++frees;
     std::free(p);
 }
-void operator delete[](void *p) noexcept { ::operator delete(p); }
-void operator delete(void *p, std::size_t) noexcept { ::operator delete(p); }
-void operator delete[](void *p, std::size_t) noexcept { ::operator delete(p); }
+ADI_TEST_NOINLINE void operator delete[](void *p) noexcept { ::operator delete(p); }
+ADI_TEST_NOINLINE void operator delete(void *p, std::size_t) noexcept { ::operator delete(p); }
+ADI_TEST_NOINLINE void operator delete[](void *p, std::size_t) noexcept { ::operator delete(p); }
+#undef ADI_TEST_NOINLINE
 
 namespace {
 namespace d = adi::mix::deesser;

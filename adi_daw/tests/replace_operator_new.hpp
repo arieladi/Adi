@@ -32,18 +32,24 @@ void countReplacedNew() noexcept;
 void countReplacedDelete(void* p) noexcept;
 #endif
 
+#if defined(__GNUC__) && !defined(__clang__)
+#define ADI_TEST_NOINLINE __attribute__((noinline))
+#else
+#define ADI_TEST_NOINLINE
+#endif
+
 namespace replaced_new {
 inline void counted([[maybe_unused]] void* p) noexcept {
 #if defined(ADI_TEST_COUNT_REPLACED_DELETE)
     countReplacedDelete(p);
 #endif
 }
-inline void release(void* p) noexcept {
+ADI_TEST_NOINLINE inline void release(void* p) noexcept {
     counted(p);
     std::free(p);
 }
-inline void* plain(std::size_t n) noexcept { return std::malloc(n == 0 ? 1 : n); }
-inline void* aligned(std::size_t n, std::align_val_t alignment) noexcept {
+ADI_TEST_NOINLINE inline void* plain(std::size_t n) noexcept { return std::malloc(n == 0 ? 1 : n); }
+ADI_TEST_NOINLINE inline void* aligned(std::size_t n, std::align_val_t alignment) noexcept {
     const std::size_t size = n == 0 ? 1 : n;
     std::size_t a = static_cast<std::size_t>(alignment);
     if (a < sizeof(void*)) a = sizeof(void*);
@@ -54,7 +60,7 @@ inline void* aligned(std::size_t n, std::align_val_t alignment) noexcept {
     return posix_memalign(&p, a, size) == 0 ? p : nullptr;
 #endif
 }
-inline void releaseAligned(void* p) noexcept {
+ADI_TEST_NOINLINE inline void releaseAligned(void* p) noexcept {
     counted(p);
 #if defined(_WIN32)
     _aligned_free(p);
@@ -63,6 +69,7 @@ inline void releaseAligned(void* p) noexcept {
 #endif
 }
 } // namespace replaced_new
+#undef ADI_TEST_NOINLINE
 } // namespace adi::test
 
 void* operator new(std::size_t n) {

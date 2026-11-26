@@ -23,10 +23,16 @@
 #include <windows.h>
 #endif
 namespace {std::atomic<unsigned> callbackAllocations{0};}
-void* operator new(std::size_t size){if(adi::audio::onAudioThread)++callbackAllocations;if(void* p=std::malloc(size?size:1))return p;throw std::bad_alloc();}
-void* operator new[](std::size_t size){return operator new(size);}
-void operator delete(void* p)noexcept{std::free(p);}void operator delete[](void* p)noexcept{std::free(p);}
-void operator delete(void* p,std::size_t)noexcept{std::free(p);}void operator delete[](void* p,std::size_t)noexcept{std::free(p);}
+#if defined(__GNUC__) && !defined(__clang__)
+#define ADI_TEST_NOINLINE __attribute__((noinline))
+#else
+#define ADI_TEST_NOINLINE
+#endif
+ADI_TEST_NOINLINE void* operator new(std::size_t size){if(adi::audio::onAudioThread)++callbackAllocations;if(void* p=std::malloc(size?size:1))return p;throw std::bad_alloc();}
+ADI_TEST_NOINLINE void* operator new[](std::size_t size){return operator new(size);}
+ADI_TEST_NOINLINE void operator delete(void* p)noexcept{std::free(p);}ADI_TEST_NOINLINE void operator delete[](void* p)noexcept{std::free(p);}
+ADI_TEST_NOINLINE void operator delete(void* p,std::size_t)noexcept{std::free(p);}ADI_TEST_NOINLINE void operator delete[](void* p,std::size_t)noexcept{std::free(p);}
+#undef ADI_TEST_NOINLINE
 namespace {
 using namespace adi;using namespace adi::engine;
 int checks=0,failures=0;
