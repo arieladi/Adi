@@ -8657,10 +8657,16 @@ void rangeSelection(AppCommands &commands, const std::filesystem::path &dir) {
           "a plain click on 2 selects it alone");
 
     // SC-174: opening a menu on selected material keeps the target of its commands.
+    int laneMenus = 0, headerMenus = 0;
+    root.arrangement.onContextMenu = [&](bool header) {
+        if (header)
+            ++headerMenus;
+        else
+            ++laneMenus;
+    };
     const auto popup = [](juce::Component &component, juce::Point<float> at) {
         component.mouseDown(pressAt(component, at, juce::ModifierKeys::rightButtonModifier));
         component.mouseUp(pressAt(component, at));
-        juce::PopupMenu::dismissAllActiveMenus();
     };
     const juce::Point<float> rangeFrom{x(0) + 1, lane(1)}, rangeTo{x(2 * bar) - 1, lane(3)};
     canvas.mouseDown(pressAt(canvas, rangeFrom));
@@ -8718,6 +8724,7 @@ void rangeSelection(AppCommands &commands, const std::filesystem::path &dir) {
           "SC-174: a right-click outside the selection chooses the clicked clip and sets the insert marker");
     check(driver.playing() && driver.position() == position && driver.revision() == revision,
           "SC-174: opening the menu outside the selection does not seek during playback");
+    check(laneMenus == 4 && headerMenus == 1, "SC-174: each right-click requests the matching menu");
 
     const auto pickClip = [&](std::int64_t track) {
         canvas.mouseDown(pressAt(canvas, clipTitle(track)));
