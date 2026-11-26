@@ -1415,7 +1415,7 @@ bool ArrangementView::command(int id) {
     case AppCommands::GoStart:
         geometry.selection.insert = 0;
         geometry.selection.marked = true;
-        locate();
+        root.locate(geometry.selection.insert);
         break;
     case AppCommands::InsertMarkerToPlayhead: {
         // Ctrl/Cmd+Shift+Space (§42.16): the insert marker, a point, where the playhead is;
@@ -1470,7 +1470,7 @@ bool ArrangementView::command(int id) {
     changed();
     return true;
 }
-void ArrangementView::locate() { root.locate(geometry.selection.insert); }
+void ArrangementView::locate() { root.locate(geometry.selection.insert, true); }
 void ArrangementView::select(int x, int y, bool snapToGrid, SelectionPurpose purpose) {
     if (const auto *t = geometry.trackAt(reader(), y)) {
         const auto at = geometry.tick(x);
@@ -1645,7 +1645,7 @@ juce::PopupMenu ArrangementView::headerMenu() {
 }
 void ArrangementView::contextMenu(juce::Point<int> where, bool header, const engine::AutomationLaneNode *lane) {
     if (onContextMenu) {
-        onContextMenu(header);
+        onContextMenu(where, header, lane);
         return;
     }
     contextMenuItems(header, lane).showMenuAsync(juce::PopupMenu::Options{}.withTargetScreenArea(

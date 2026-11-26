@@ -157,7 +157,7 @@ class TransportMailbox {
   public:
     // Record (MX-09) starts playback as a recording start: the saved song start or the insert marker
     // (`sample` holds the insert marker's tick), after the saved Count-In.
-    enum class Command { Play, Stop, Locate, Record };
+    enum class Command { Play, Continue, Stop, Locate, LocateMarker, Record };
     bool hasRoom(std::size_t count = 1) const noexcept {
         return count <= queue_.size() &&
                write_.load(std::memory_order_relaxed) - read_.load(std::memory_order_acquire) <=
@@ -183,20 +183,30 @@ class TransportMailbox {
         auto r = read_.load(std::memory_order_relaxed);
         const auto w = write_.load(std::memory_order_acquire);
         bool pending = playPending_.load(std::memory_order_relaxed);
+        const auto locate = [&](std::int64_t sample) noexcept {
+            transport.locate(sample);
+            locateRevision_.store(transport.revision(), std::memory_order_relaxed);
+        };
         while (r != w) {
             const auto item = queue_[r % queue_.size()];
             if (item.command == Command::Locate) {
-                transport.locate(item.sample);
-                locateRevision_.store(transport.revision(), std::memory_order_relaxed);
+                locate(item.sample);
+            } else if (item.command == Command::LocateMarker) {
+                if (!pending && !transport.playing() && transport.countInRemaining() == 0)
+                    locate(item.sample);
             } else if (item.command == Command::Record) {
                 pending = false;
                 record(item.sample);
             } else if (item.command == Command::Stop) {
                 pending = false;
+                if (transport.playing())
+                    stoppedAt_ = transport.position();
                 transport.play(false);
             } else if (!transport.playing()) {
                 // A later Locate in this drain moves the pending Play target.
                 transport.play(false);
+                if (item.command == Command::Continue && stoppedAt_ && transport.position() != *stoppedAt_)
+                    locate(*stoppedAt_);
                 pending = true;
             }
             ++r;
@@ -227,8 +237,8 @@ class TransportMailbox {
         const auto r = read_.load(std::memory_order_acquire);
         for (auto i = w; i != r;) {
             const auto c = queue_[--i % queue_.size()].command;
-            if (c != Command::Locate)
-                return c == Command::Play || c == Command::Record;
+            if (c != Command::Locate && c != Command::LocateMarker)
+                return c == Command::Play || c == Command::Continue || c == Command::Record;
         }
         return playPending_.load(std::memory_order_acquire) || playing();
     }
@@ -238,6 +248,8 @@ class TransportMailbox {
     std::int64_t position() const noexcept { return position_.load(std::memory_order_relaxed); }
 
   private:
+    // Driver-owned. Idle selections can move the displayed position after a real Stop.
+    std::optional<std::int64_t> stoppedAt_;
     std::atomic<bool> playPending_{false};
     struct Item {
         Command command = Command::Stop;

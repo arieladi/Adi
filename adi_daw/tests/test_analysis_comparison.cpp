@@ -17,7 +17,12 @@ bool failNextAllocation = false;
 std::size_t failAllocationSize = 0;
 int matchingAllocations = 0;
 } // namespace
-void *operator new(std::size_t size) {
+#if defined(__GNUC__) && !defined(__clang__)
+#define ADI_TEST_NOINLINE __attribute__((noinline))
+#else
+#define ADI_TEST_NOINLINE
+#endif
+ADI_TEST_NOINLINE void *operator new(std::size_t size) {
     if (failNextAllocation) {
         failNextAllocation = false;
         throw std::bad_alloc();
@@ -28,11 +33,12 @@ void *operator new(std::size_t size) {
         return p;
     throw std::bad_alloc();
 }
-void *operator new[](std::size_t size) { return ::operator new(size); }
-void operator delete(void *p) noexcept { std::free(p); }
-void operator delete[](void *p) noexcept { std::free(p); }
-void operator delete(void *p, std::size_t) noexcept { std::free(p); }
-void operator delete[](void *p, std::size_t) noexcept { std::free(p); }
+ADI_TEST_NOINLINE void *operator new[](std::size_t size) { return ::operator new(size); }
+ADI_TEST_NOINLINE void operator delete(void *p) noexcept { std::free(p); }
+ADI_TEST_NOINLINE void operator delete[](void *p) noexcept { std::free(p); }
+ADI_TEST_NOINLINE void operator delete(void *p, std::size_t) noexcept { std::free(p); }
+ADI_TEST_NOINLINE void operator delete[](void *p, std::size_t) noexcept { std::free(p); }
+#undef ADI_TEST_NOINLINE
 
 using adi::engine::ScopePoint;
 using adi::engine::ScopeSource;
