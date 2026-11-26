@@ -70,3 +70,11 @@ answer goes under "For the director" in the same file, with your recommendation;
 Your queue file names your second queue. After both, take the wave 2 rows of your queues in `docs/SANITY-CHECK.md`
 (round 2 added rows SC-120 onward, each with its queue), in their order. Stop only at your usage
 limit or a broken environment, and say which in your report.
+
+**One session per queue.** The director starts more sessions as he can, and a queue named as someone's
+second may by then have a session of its own.
+- When you start any queue, push its log branch (`basics/<queue>-log`) first, before the first item.
+- Before you start a second queue, fetch and look for that queue's log branch. If it exists, another
+  session has the queue: leave it, and take the wave 2 rows of your own first queue instead.
+- A queue with no file of its own (device, export) is every row of `docs/SANITY-CHECK.md` whose Queue
+  cell names it: wave 1 first, then 2, then 3.
