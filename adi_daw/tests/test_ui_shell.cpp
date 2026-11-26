@@ -2629,6 +2629,56 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
 // Live's file drop (manual 6.1): an audio file on an audio track's lane makes a clip there, named
 // after the file, on the nearest grid line; on a MIDI track it is refused; below the tracks it
 // makes a new audio track. Each drop is one undo step (#308).
+
+void browserEdgeResize(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string why;
+    const auto document = ProjectDocument::open(dir / "browser-width.adi", true, {}, why);
+    check(document != nullptr, "a project for resizing the Browser");
+    if (!document) return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands,
+                          document->views(), document->sessionState(), "browser-width");
+    root.setSize(1200, 720);
+    root.setVisible(true);
+    auto &edge = root.browserResizer;
+    const auto width = [&] { return root.state().panels.find(Panel::Browser)->width; };
+    const auto savedWidth = [&] { return document->views().load("browser-width").panels.find(Panel::Browser)->width; };
+    const auto drag = [&](int offset) {
+        const auto start = edge.getLocalBounds().getCentre().toFloat();
+        const auto down = juce::ModifierKeys(juce::ModifierKeys::leftButtonModifier);
+        edge.mouseDown(pressAt(edge, start, down));
+        edge.mouseDrag(dragAt(edge, start, start.translated(static_cast<float>(offset), 0), down));
+    };
+    const auto release = [&] { edge.mouseUp(pressAt(edge, edge.getLocalBounds().getCentre().toFloat())); };
+    const auto startWidth = width();
+    const auto mixerWidth = root.state().panels.find(Panel::Mixer)->width;
+    check(edge.isVisible() && edge.getBounds().getCentreX() == root.browserArea().getRight() &&
+              root.getComponentAt(edge.getBounds().getCentre()) == &edge,
+          "the Browser's arrangement-facing edge receives the drag on the left");
+    drag(64);
+    check(width() == startWidth + 64 && root.browserArea().getWidth() == width() - look::gap &&
+              savedWidth() == startWidth,
+          "dragging the Browser's edge updates the layout while saving waits for release");
+    release();
+    check(savedWidth() == startWidth + 64 && root.command(AppCommands::SwapPanels) &&
+              width() == startWidth + 64 && edge.getBounds().getCentreX() == root.browserArea().getX(),
+          "the saved Browser width follows it to the right, along with its inner edge");
+    drag(-32);
+    release();
+    check(width() == startWidth + 96 && savedWidth() == width(), "on the right an inward drag widens the Browser");
+    drag(-2000);
+    release();
+    check(root.arrangement.getWidth() >= root.state().panels.arrangementMinWidth() &&
+              root.state().panels.find(Panel::Mixer)->width == mixerWidth,
+          "widening the Browser preserves the other side panel and room for the Arrangement");
+    drag(2000);
+    release();
+    check(width() == root.state().panels.find(Panel::Browser)->minWidth && savedWidth() == width(),
+          "the Browser stops at its minimum width");
+    check(root.command(AppCommands::ToggleBrowser) && !edge.isVisible() &&
+              root.command(AppCommands::ToggleBrowser) && edge.isVisible() && savedWidth() == width() &&
+              !History(document->store()).head(),
+          "the edge follows Browser visibility and width changes do not enter Undo History");
+}
 // D4: the browser's devices (Live 12 manual 4.1, 4.10, 41.4; N15's catalogue part, #395). Audio
 // Effects lists Live's seven folders with ADI's built-in effects, Pd Devices ADI's own; an entry this
 // build cannot load is dimmed and says why; double-click or Enter loads onto the selected track in
@@ -19168,6 +19218,7 @@ int main(int argc, char **argv) {
     trace("audioDrop", [&] { audioDrop(commands, temp.path()); });
     trace("importPrompt", [&] { importPrompt(commands, settings, temp.path()); });
     trace("browserDevices", [&] { browserDevices(commands, temp.path()); });
+    trace("browserEdgeResize", [&] { browserEdgeResize(commands, temp.path()); });
     trace("splitAndRangeEdits", [&] { splitAndRangeEdits(commands, settings, temp.path()); });
     trace("clipClipboard", [&] { clipClipboard(commands, temp.path()); });
     trace("timeCommands", [&] { timeCommands(commands, temp.path()); });

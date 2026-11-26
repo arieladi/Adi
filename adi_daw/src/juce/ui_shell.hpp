@@ -350,6 +350,22 @@ class StatusBar final : public juce::Component {
     juce::Point<int> selectorLast_;
     bool selectorDragged_ = false;
 };
+// The browser's inner edge follows it from one side of the window to the other.
+class BrowserResizer final : public juce::Component {
+  public:
+    explicit BrowserResizer(AdiRootComponent &);
+    void mouseDown(const juce::MouseEvent &) override;
+    void mouseDrag(const juce::MouseEvent &) override;
+    void mouseUp(const juce::MouseEvent &) override;
+
+  private:
+    AdiRootComponent &root_;
+    struct Drag {
+        int visibleWidth, storedWidth, direction;
+    };
+    std::optional<Drag> drag_;
+};
+
 // The window is JUCE's drag container, so a browser row can be dragged onto the lanes (D1).
 class AdiRootComponent final : public juce::Component, public juce::DragAndDropContainer {
   public:
@@ -547,6 +563,8 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     StatusBar status;
     juce::TextButton aiTab{"AI"};
     BrowserPanel browser{*this};
+    BrowserResizer browserResizer{*this};
+    void resizeBrowser(int width);
     // The bar over the track names and their controls (the Arrangement sheet; DF-W25): made before the
     // arrangement, which keeps its Show in step with the view chosen.
     NamesBar namesBar;
@@ -926,6 +944,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     juce::Rectangle<int> clipArea_, deviceArea_, infoArea_, browserArea_, chatArea_, mixerArea_,
         mixerViewArea_, stripArea_, mixViewArea_, mixViewDock_;
     int leftWidth_ = 0, rightWidth_ = 0;
+    int shownPanelWidth(const PanelGeometry &) const noexcept;
     std::string error_;
     // E5: the prompt while open, and a drop with choices landing one file at a time.
     std::unique_ptr<ImportPrompt> importPrompt_;

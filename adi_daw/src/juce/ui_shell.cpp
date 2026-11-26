@@ -1298,6 +1298,26 @@ void StatusBar::paint(juce::Graphics &g) {
                    track.reduced(6, 0).withWidth(44), juce::Justification::centredLeft);
     }
 }
+BrowserResizer::BrowserResizer(AdiRootComponent &root) : root_(root) {
+    setTitle("Browser width");
+    setMouseCursor(juce::MouseCursor::LeftRightResizeCursor);
+}
+void BrowserResizer::mouseDown(const juce::MouseEvent &event) {
+    if (!event.mods.isLeftButtonDown() || root_.browserArea().isEmpty()) return;
+    const auto &panels = root_.state().panels;
+    const int direction = panels.slotOf(Panel::Browser) == 0 ? 1 : -1;
+    drag_ = Drag{root_.browserArea().getWidth() + look::gap, panels.find(Panel::Browser)->width, direction};
+}
+void BrowserResizer::mouseDrag(const juce::MouseEvent &event) {
+    if (drag_)
+        root_.resizeBrowser(drag_->visibleWidth + drag_->direction * event.getDistanceFromDragStartX());
+}
+void BrowserResizer::mouseUp(const juce::MouseEvent &) {
+    if (drag_ && root_.state().panels.find(Panel::Browser)->width != drag_->storedWidth)
+        (void)root_.persist();
+    drag_.reset();
+}
+
 AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submitter,
                                    TransportMailbox &mailbox, AppCommands &commands,
                                    ViewStateStore &persistence, SessionState &session,
@@ -1320,6 +1340,7 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
     addAndMakeVisible(transport);
     addAndMakeVisible(status);
     addAndMakeVisible(browser);
+    addChildComponent(browserResizer);
     addAndMakeVisible(aiTab);
     addAndMakeVisible(arrangement);
     addAndMakeVisible(devices);
@@ -1680,6 +1701,11 @@ double AdiRootComponent::bpm() const noexcept {
                        tempo->secondsToTicks(rate > 0 ? static_cast<double>(position_) / rate : 0))
                  : 120.;
 }
+int AdiRootComponent::shownPanelWidth(const PanelGeometry &panel) const noexcept {
+    const int width = state_.panels.occupied(panel);
+    const bool roomForInOut = width >= MixerPanel::kInOutWidth + MixerPanel::kControlsWidth + MixerPanel::kRightStrip;
+    return panel.panel == Panel::Mixer && !state_.inOut && roomForInOut ? width - MixerPanel::kInOutWidth : width;
+}
 void AdiRootComponent::resized() {
     const int w = getWidth(), h = getHeight(), gap = look::gap;
     transport.setBounds(0, 0, w, look::controlBarHeight);
@@ -1695,7 +1721,7 @@ void AdiRootComponent::resized() {
     transport.arrangementPage.setToggleState(!state_.mixView, juce::dontSendNotification);
     if (fullMix) {
         for (auto *child : std::initializer_list<juce::Component*>{
-                 &arrangement, &arrangement.overview, &namesBar, &mixer, &strip, &browser, &aiTab,
+                 &arrangement, &arrangement.overview, &namesBar, &mixer, &strip, &browser, &browserResizer, &aiTab,
                  &mixerView, &mixerViewResizer, &clipView, &clipResizer, &devices, &dockResizer, &infoSpectrum})
             child->setVisible(false);
         browserArea_ = chatArea_ = mixerArea_ = mixerViewArea_ = stripArea_ = {};
@@ -1741,14 +1767,8 @@ void AdiRootComponent::resized() {
     const auto &slots = state_.panels.slots();
     // Without In/Out, the track controls are narrower by its column, as Live's (§42.1); the
     // stored width is kept for when it comes back.
-    auto shownWidth = [this](const PanelGeometry &slot, int width) {
-        const bool roomForInOut =
-            width >= MixerPanel::kInOutWidth + MixerPanel::kControlsWidth + MixerPanel::kRightStrip;
-        return slot.panel == Panel::Mixer && !state_.inOut && roomForInOut ? width - MixerPanel::kInOutWidth
-                                                                           : width;
-    };
-    int left = shownWidth(slots[0], state_.panels.occupied(slots[0]));
-    int right = shownWidth(slots[1], state_.panels.occupied(slots[1]));
+    int left = shownPanelWidth(slots[0]);
+    int right = shownPanelWidth(slots[1]);
     const int leftMin = slots[0].collapsed ? 0 : slots[0].minWidth;
     const int rightMin = slots[1].collapsed ? 0 : slots[1].minWidth;
     const int available = std::max(0, w - state_.panels.arrangementMinWidth());
@@ -1789,6 +1809,9 @@ void AdiRootComponent::resized() {
                           : juce::Rectangle<int>();
     browser.setVisible(!browserArea_.isEmpty());
     browser.setBounds(browserArea_);
+    const int browserEdge = browserLeft ? browserArea_.getRight() : browserArea_.getX();
+    browserResizer.setBounds(browserEdge - gap / 2, top, gap, mid);
+    browserResizer.setVisible(!browserArea_.isEmpty());
     // The AI chat is a tab at the browser's foot, collapsed by default, so the
     // column looks as Live's (ADR-0203 d6). Open, it takes the lower part.
     if (browserArea_.isEmpty()) {
@@ -1963,6 +1986,20 @@ void AdiRootComponent::resizeDevices(int height) {
                         arrangement.topHeight() - state_.laneHeight;
     state_.setDeviceHeight(std::min(height, ceiling));
     resized();
+}
+void AdiRootComponent::resizeBrowser(int width) {
+    auto &panels = state_.panels;
+    const auto &browserPanel = *panels.find(Panel::Browser);
+    const auto &mixerPanel = *panels.find(Panel::Mixer);
+    // The mixer keeps its own preference. Account for the hidden In/Out column
+    // and the two gutters when enforcing the arrangement's minimum.
+    const int hiddenMixerWidth = panels.occupied(mixerPanel) - shownPanelWidth(mixerPanel);
+    const int available = getWidth() - 2 * look::gap + hiddenMixerWidth;
+    const int maximum = available - panels.arrangementMinWidth() - panels.occupied(mixerPanel);
+    if (browserPanel.collapsed || maximum < browserPanel.minWidth) return;
+    width = std::clamp(width, browserPanel.minWidth, maximum);
+    if (width != browserPanel.width && !panels.setWidth(Panel::Browser, width, available))
+        resized();
 }
 bool AdiRootComponent::persist() {
     if (persistence_.save(window_, state_, error_))
