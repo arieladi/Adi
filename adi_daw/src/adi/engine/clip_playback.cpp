@@ -19,6 +19,7 @@
 #include <atomic>
 #include <cmath>
 #include <limits>
+#include <mutex>
 #include <numeric>
 #include <optional>
 #include <thread>
@@ -80,6 +81,36 @@ struct Page {
     std::vector<float> data;
 };
 struct PrefixPending {};
+struct WavSource {
+    struct File {
+        fs::path path;
+        bool pinned;
+        File(const fs::path& input, bool decode)
+            : path(decode ? audio::playableFile(input) : input), pinned(path != input) {}
+        ~File() {
+            if (pinned) try { audio::defaultDecodeCache().release(path); } catch (...) {}
+        }
+    };
+    // Destroy the stream before releasing the decode cache pin. Windows
+    // cannot evict the file while the stream is open.
+    File file;
+    audio::WavReader wav;
+    std::mutex mutex;
+
+    explicit WavSource(const fs::path& path, bool decode = false) : file(path, decode), wav(file.path) {}
+    void read(std::uint64_t first, float* out, std::uint32_t count) {
+        // Page workers can read different offsets from this file. Seek and
+        // read share a cursor and must run together, off the audio thread.
+        const std::lock_guard lock(mutex);
+        wav.seek(first);
+        if (wav.read(out, count) != count) throw std::runtime_error("short WAV source read");
+    }
+};
+struct SourceReaders {
+    std::weak_ptr<WavSource> native;
+    std::weak_ptr<WavSource> decoded;
+    bool refusedNative = false;
+};
 struct Clip {
     std::int64_t clipId = 0, mediaId = 0;
     std::string storedBlake3;
@@ -96,24 +127,15 @@ struct Clip {
     float gain = 1;
     double gainWide = 1;   ///< the same gain unrounded, for a graph at 64
     fs::path path;
-    fs::path pinned; // the decoded copy this clip holds in ADI's cache, if any (ADR-0156)
     std::shared_ptr<const audio::PreparedWarp> warped;
     std::shared_ptr<audio::ProgressiveFile> progressive;
     bool monitorInputOnly = false;
     bool failed = false; // page worker only
-    std::unique_ptr<audio::WavReader> reader; // touched ONLY by worker after construction
-    // The pin goes back with the clip. Every rebuild builds new clips and pins
-    // the decoded copy again, so without this a session's decoded files stayed
-    // pinned, and unevictable, until the process exited. The reader closes
-    // first: eviction deletes the file, and Windows cannot delete an open one.
-    // Never on the audio thread: a clip dies with its generation (ADR-0151).
+    // Open streams and cache pins die with the generation off the callback.
+    // Keep this after warped so the rendered stream closes before its file.
+    std::shared_ptr<WavSource> reader;
     Clip(const Clip&) = delete;
     Clip& operator=(const Clip&) = delete;
-    ~Clip() {
-        reader.reset();
-        if (pinned.empty()) return;
-        try { audio::defaultDecodeCache().release(pinned); } catch (...) {}
-    }
     std::array<Page, slots> pages;
     // Single request producer/renderer only. Admission is a real lease: a
     // worker must not even temporarily claim a page until rendering releases
@@ -245,10 +267,7 @@ struct Clip {
             const auto result=progressive->read(first,std::span(out,static_cast<std::size_t>(count)*channels));
             if(result==audio::ProgressiveRead::Pending)throw PrefixPending{};
             if(result!=audio::ProgressiveRead::Frames)throw std::runtime_error("progressive source failed: "+progressive->error());
-        }else {
-            reader->seek(first);
-            if(reader->read(out,count)!=count)throw std::runtime_error("short WAV source read");
-        }
+        } else reader->read(first, out, count);
     }
     std::vector<float> renderRange(std::int64_t first, std::int64_t count, std::uint32_t currentRate) {
         if (currentRate == sourceRate) {
@@ -520,6 +539,7 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
     if(tempo.events.empty()) tempo.events.push_back({0,120,0});
     if(!project->rows.audioClips.empty() && std::any_of(tempo.events.begin(),tempo.events.end(),[](const auto& e){return e.curve!=0;}))
         impl_->problems.push_back("tempo_map: TempoMap does not implement ramps; clip timing uses step tempos");
+    std::unordered_map<fs::path, SourceReaders> readers;
     for(const auto& row:timelineClips(project->rows)) {
         // Muted clips do not need a reader or a playable media source.
         if(row.kind!="audio" || row.muted) continue;
@@ -539,12 +559,18 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             if(media->relPath) clip->path=project->folder/utf8Path(*media->relPath);
             else if(auto h=project->hints.find(media->id);h!=project->hints.end()) clip->path=h->second;
             else throw std::runtime_error("no media path; silent");
-            // Direct WAV remains unchanged. Plain compressed clips consume a
-            // shared worker's flushed prefixes; Warp still needs its complete
-            // offline render and unknown-length sources retain the full path.
-            fs::path file=clip->path;
+            // Reuse the open stream for each source within this generation.
+            // Plain compressed clips still consume progressive prefixes, and
+            // Warp and unknown-length sources still need complete PCM.
+            auto& opened = readers[clip->path];
             std::uint64_t sourceFrames=0;
-            try {clip->reader=std::make_unique<audio::WavReader>(file);}catch(const std::exception&){}
+            clip->reader = opened.native.lock();
+            if (!clip->reader && !opened.refusedNative) {
+                try {
+                    clip->reader = std::make_shared<WavSource>(clip->path);
+                    opened.native = clip->reader;
+                } catch (const std::exception&) { opened.refusedNative = true; }
+            }
             if(!clip->reader && !a->warpEnabled) {
                 const auto info=audio::inspectPcm(clip->path);
                 if(info.frames && *info.frames) {
@@ -556,12 +582,15 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                 }
             }
             if(!clip->reader && !clip->progressive) {
-                file=audio::playableFile(clip->path);
-                if(file!=clip->path)clip->pinned=file;
-                clip->reader=std::make_unique<audio::WavReader>(file);
+                clip->reader = opened.decoded.lock();
+                if (!clip->reader) {
+                    clip->reader = std::make_shared<WavSource>(clip->path, true);
+                    opened.decoded = clip->reader;
+                }
             }
             if(clip->reader) {
-                clip->channels=clip->reader->channels();clip->sourceRate=clip->reader->sampleRate();sourceFrames=clip->reader->frames();
+                const auto& wav = clip->reader->wav;
+                clip->channels=wav.channels();clip->sourceRate=wav.sampleRate();sourceFrames=wav.frames();
             }
             clip->rate=static_cast<std::uint32_t>(rate);
             if(clip->channels>64 || clip->sourceRate<1 || clip->sourceRate>768000)throw std::runtime_error("source format outside supported bounds; silent");
@@ -587,7 +616,7 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                 if(row.contentOffsetTicks<0 || !a->warpMarkers)throw std::runtime_error("warp needs valid source offsets and a stored marker map");
                 const auto map=audio::readWarpMap(*a->warpMarkers,clip->sourceLength);
                 if(!map)throw std::runtime_error("warp marker map is not readable or canonical");
-                audio::WarpRenderPlan spec;spec.source=file;spec.workFolder=fs::temp_directory_path()/"adi-warp";
+                audio::WarpRenderPlan spec;spec.source=clip->reader->file.path;spec.workFolder=fs::temp_directory_path()/"adi-warp";
                 spec.sourceStart=clip->sourceStart;spec.sourceFrames=clip->sourceLength;spec.outputRate=clip->rate;
                 spec.anchors=projectWarpAnchors(map.markers,tempo,sourceOrigin,rate);
                 const auto mode=audio::parseWarpMode(a->warpMode);if(!mode)throw std::runtime_error("warp mode is not available");
@@ -597,8 +626,8 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                 spec.transposeSemis=a->transposeSemis;spec.formantScale=std::exp2(a->formantShift/12);
                 auto prepared=audio::prepareWarp(spec);
                 if(!prepared)throw std::runtime_error(prepared.detail.empty()?"warp preparation failed":prepared.detail);
-                clip->reader.reset();
-                clip->warped=std::move(prepared.prepared);clip->reader=std::make_unique<audio::WavReader>(clip->warped->file);
+                clip->warped=std::move(prepared.prepared);
+                clip->reader=std::make_shared<WavSource>(clip->warped->file);
                 clip->sourceStart=0;clip->sourceLength=clip->warped->frames;clip->sourceRate=clip->rate;
                 clip->length=static_cast<std::int64_t>(clip->warped->frames);
             }
