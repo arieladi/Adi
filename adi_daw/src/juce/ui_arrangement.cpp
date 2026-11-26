@@ -1141,14 +1141,24 @@ void ArrangementView::chooseView(std::int64_t group) {
     geometry.scrollY = 0;
     changed();
 }
-void ArrangementView::toggleFold(std::int64_t group) {
+void ArrangementView::toggleFold(std::int64_t track) {
+    if (!tree_.isGroup(track)) {
+        if (reader().findTrack(track) == nullptr)
+            return;
+        auto &folded = geometry.foldedTracks;
+        if (folded.erase(track) == 0)
+            folded.insert(track);
+        geometry.scrollY = std::min(geometry.scrollY, geometry.maxScroll(reader()));
+        changed();
+        return;
+    }
     auto &folded = root.state().foldedGroups;
-    if (folded.erase(group) == 0)
-        folded.insert(group);
+    if (folded.erase(track) == 0)
+        folded.insert(track);
     leaveOut();
     // Live keeps the selection in sight: a track folded away gives it to its group.
-    if (!geometry.shown(geometry.selection.track) && geometry.shown(group)) {
-        geometry.selection.track = group;
+    if (!geometry.shown(geometry.selection.track) && geometry.shown(track)) {
+        geometry.selection.track = track;
         geometry.selection.clip = 0;
         geometry.selection.pickedClips.clear();
     }
@@ -1157,6 +1167,7 @@ void ArrangementView::toggleFold(std::int64_t group) {
 }
 void ArrangementView::unfoldAll() {
     root.state().foldedGroups.clear();
+    geometry.foldedTracks.clear();
     leaveOut();
     changed();
 }
@@ -1369,6 +1380,7 @@ void ArrangementView::changed() {
     state.pixelsPerQuarter = geometry.scale;
     state.laneHeight = geometry.height;
     state.laneHeights = geometry.heights;
+    state.foldedTracks = geometry.foldedTracks;
     state.largeTracks = geometry.largeTracks;
     state.gridSnap = geometry.grid.snap;
     state.gridFixed = geometry.grid.fixed;
@@ -1643,7 +1655,8 @@ const engine::AutomationLaneNode *ArrangementView::automationLaneAt(int y) const
         return nullptr;
     const auto *current = root.current().get(); // the root holds it: the pointer outlives this call
     const auto *t = current != nullptr ? geometry.trackAt(reader(), y) : nullptr;
-    return t != nullptr ? laneOf(*current, "track", t->id, "volume") : nullptr;
+    return t != nullptr && !geometry.foldedTracks.contains(t->id) ? laneOf(*current, "track", t->id, "volume")
+                                                               : nullptr;
 }
 juce::PopupMenu ArrangementView::contextMenuItems(bool header, const engine::AutomationLaneNode *lane) {
     auto menu = header ? headerMenu() : juce::PopupMenu();
@@ -1930,8 +1943,10 @@ void TrackHeaderList::paint(juce::Graphics &g) {
                 g.fillRect(fold.getCentreX() - 3.f + shift, fold.getCentreY() - 3.6f + 3.f * static_cast<float>(line),
                            6.f, 1.2f);
             }
-        } else
-            look::triangle(g, fold.reduced(3.5f), juce::MathConstants<float>::halfPi, ink);
+        } else {
+            const float angle = view.geometry.foldedTracks.contains(t->id) ? 0.f : juce::MathConstants<float>::halfPi;
+            look::triangle(g, fold.reduced(3.5f), angle, ink);
+        }
         if (t->id != renaming_) {
             g.setColour(look::ink);
             g.setFont(look::font(look::fontBody, true));
@@ -2061,9 +2076,7 @@ void TrackHeaderList::mouseDown(const juce::MouseEvent &e) {
         view.selectedMeter = -1; // a click on a title lets a selected marker go
         view.scrub.repaint();
     }
-    // A group's fold switch folds or unfolds it (Live 12 manual 18.3), and selects nothing. Any other
-    // track's Unfold Track button shows its automation lanes (manual 6.9), which wait for the engine:
-    // a click says so.
+    // The fold switch acts on the row under the pointer without choosing it.
     int top = 0;
     const auto rows = view.geometry.rows(view.reader());
     foldPressed_ = false;
@@ -2072,10 +2085,7 @@ void TrackHeaderList::mouseDown(const juce::MouseEvent &e) {
         foldSwitch(rows[at].place.depth, top).expanded(2.f).contains(e.position)) {
         resizeId = moveId_ = 0;
         foldPressed_ = true;
-        if (rows[at].place.group)
-            view.toggleFold(rows[at].track->id);
-        else
-            view.root.say(ArrangementView::kUnfoldWaits);
+        view.toggleFold(rows[at].track->id);
         return;
     }
     // Rec-Q and Play-Q open their menus, and select nothing.
@@ -2555,7 +2565,7 @@ std::vector<ArrangementCanvas::LaneBody> ArrangementCanvas::laneBodies() const {
         const int h = geo.heightFor(row.track->id);
         const float bottom = static_cast<float>(row.position < foot && foot < rows.size() ? std::min(top + h - 3, footY) : top + h - 3);
         const float bodyTop = static_cast<float>(top + 1 + kClipBarHeight);
-        if (h > 0 && bottom > bodyTop + 4 && row.track->kind != "group")
+        if (h > 0 && bottom > bodyTop + 4 && row.track->kind != "group" && !geo.foldedTracks.contains(row.track->id))
             out.push_back({row.track, bodyTop, bottom, static_cast<float>(top + h - 3)});
         top += h;
     }
@@ -3418,7 +3428,7 @@ void ArrangementCanvas::mouseUp(const juce::MouseEvent &e) {
         // One drag, one undo step; a click that did not move writes nothing.
         const auto drag = *pointDrag_;
         pointDrag_.reset();
-        if (e.mouseWasDraggedSinceMouseDown())
+        if (e.mouseWasDraggedSinceMouseDown() && !view.geometry.foldedTracks.contains(drag.track))
             view.root.moveAutomationPoint(drag.track, drag.point, pointTick_, pointValue_);
         repaint();
         return;
@@ -3730,7 +3740,8 @@ bool ArrangementCanvas::keyPressed(const juce::KeyPress &k) {
     const auto code = k.getKeyCode();
     const auto mods = k.getModifiers();
     // Delete or Backspace takes the chosen breakpoint away (Automation Mode).
-    if (chosenPoint_ && view.root.automationMode() && !view.loopSelected && view.selectedLocator == 0 &&
+    if (chosenPoint_ && !view.geometry.foldedTracks.contains(chosenPoint_->track) && view.root.automationMode() &&
+        !view.loopSelected && view.selectedLocator == 0 &&
         view.selectedMeter < 0 && (code == juce::KeyPress::deleteKey || code == juce::KeyPress::backspaceKey) &&
         !mods.isAnyModifierKeyDown()) {
         const auto chosen = *chosenPoint_;
@@ -3803,13 +3814,9 @@ bool ArrangementCanvas::keyPressed(const juce::KeyPress &k) {
             return true;
         }
     }
-    // U folds or unfolds the selected group; Alt+U unfolds them all (§42.16, §42.19). The other
-    // tracks' fold, which shows their automation, waits for the lanes, and says so.
+    // U folds or unfolds the selected track; Alt+U unfolds every track.
     if (k == juce::KeyPress('u')) {
-        if (view.tree().isGroup(sel.track))
-            view.toggleFold(sel.track);
-        else if (sel.track != 0)
-            view.root.say(ArrangementView::kUnfoldWaits);
+        view.toggleFold(sel.track);
         return true;
     }
     if (k == juce::KeyPress('u', juce::ModifierKeys::altModifier, 0)) {
