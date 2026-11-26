@@ -163,6 +163,7 @@ public:
         std::int64_t failed = 0;     ///< matched, and did not instantiate
         std::int64_t scans = 0;
         std::int64_t catalogueReads = 0; ///< persistent metadata reads, never discovery
+        std::int64_t scanBlocksLifted = 0; ///< blocked plug-ins a Rescan tried again (SC-319)
         std::int64_t needsDiscovery = 0; ///< unresolved catalogue misses requiring discovery
     };
     [[nodiscard]] const Stats& stats() const noexcept { return stats_; }

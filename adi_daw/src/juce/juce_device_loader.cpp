@@ -269,6 +269,18 @@ std::shared_ptr<const DiscoveryResult> JuceDeviceLoader::discoverOwned(Discovery
             ++stats_.scans;
             auto config=scanConfig_;
             config.cacheMode=mode==DiscoveryMode::Refresh?ScanCacheMode::Refresh:ScanCacheMode::Reuse;
+            // SC-319: the user's Rescan tries again every plug-in a scan blocked -- two crashes, two
+            // timeouts (a licence box waiting on its user) -- as Live's rescan does; an Incremental
+            // discovery keeps the blocks. A registry that cannot be read is named in the report and
+            // the scan goes on: the blocked stay blocked.
+            std::string liftError;
+            if(mode==DiscoveryMode::Refresh) {
+                const auto file=config.registry.empty()?appdata::pluginRegistryFile():config.registry;
+                if(auto registry=PluginRegistry::open(file,liftError)) {
+                    if(const auto lifted=registry->unblockBlockedScans(liftError))
+                        stats_.scanBlocksLifted+=static_cast<std::int64_t>(*lifted);
+                }
+            }
             if(scanConfig_.process.cancel && scanConfig_.process.cancel->load(std::memory_order_relaxed)) {
                 result->report.cancelled=true;failed("discovery cancelled",scan::State::Cancelled);return result;
             }
@@ -288,6 +300,8 @@ std::shared_ptr<const DiscoveryResult> JuceDeviceLoader::discoverOwned(Discovery
                 job->phase.store(DiscoveryPhase::Vst3,std::memory_order_relaxed);
             }
             result->report=vst3_.scan(searchPaths->vst3,*stagedVst3,config);
+            if(!liftError.empty())
+                result->report.failures.push_back({"","the blocked plug-ins could not be tried again: "+liftError,scan::State::Unavailable});
             if(result->report.complete && !result->report.cancelled) {
                 if(job) {
                     config.progress=&job->clapProgress;
