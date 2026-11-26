@@ -193,6 +193,45 @@ void sparseVisibility() {
               recovered->front().sidechainChannels == 2,
           "losing the auxiliary input republishes zero without mutating the previous width");
 }
+// Walk-A A31: a demanded plug-in with hundreds of parameters (the VST3 Surge XT) had its declarations,
+// defaults and groups rebuilt every 20 ms tick, which took the whole message thread; the window stopped
+// answering. Unchanged descriptors keep one shared table; a changed one rebuilds it.
+void pluginTablesShared() {
+    test::TempDirectory temp("mix_parameter_feed", "tables");
+    std::string error;
+    SparsePlugin *plugin = nullptr;
+    auto doc = ui::ProjectDocument::open(
+        temp.path() / "tables.adi", true,
+        [&](const engine::DeviceRequest &, std::string &) {
+            auto result = std::make_unique<SparsePlugin>();
+            plugin = result.get();
+            return result;
+        },
+        error);
+    auto &db = doc->store().db();
+    db.exec("INSERT INTO plugin_refs(id,format,uid,name) VALUES(77,'vst3','owned.sparse','Sparse');"
+            "INSERT INTO device_chains(id,track_id) VALUES(77,2);"
+            "INSERT INTO devices(id,chain_id,plugin_ref_id,name) VALUES(77,77,77,'Sparse');");
+    doc->view().refresh(doc->store());
+    check(doc->synchronise() && plugin, "a 4096-parameter plug-in loads");
+    if (!plugin)
+        return;
+    ui::ParameterFeed feed;
+    feed.setDemand(&feed, {77});
+    const auto publish = [&] { feed.publish(doc->session(), doc->view().generation()); };
+    publish();
+    const auto first = feed.current()->front().metadata;
+    publish();
+    const auto second = feed.current()->front().metadata;
+    check(first && first == second && second->declared.size() == 4096 && second->defaults.size() == 4096,
+          "an unchanged demanded plug-in keeps one shared table of its 4096 parameters between ticks");
+    plugin->descriptors[5].name = "Renamed";
+    publish();
+    const auto renamed = feed.current()->front().metadata;
+    check(renamed && renamed != second && renamed->declared[5].name == "Renamed" &&
+              second->declared[5].name == "Control 5",
+          "a plug-in that renames a parameter gets a new table; the one held before is unchanged");
+}
 
 }
 int main() {
@@ -206,6 +245,7 @@ int main() {
 #endif
     try {
         sparseVisibility();
+        pluginTablesShared();
         test::TempDirectory temporary("mix_parameter_feed", "demand-cache");
         std::map<std::int64_t, std::shared_ptr<Probe>> probes;
         engine::DeviceLoader loader = [&](const engine::DeviceRequest &request, std::string &error)

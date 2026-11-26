@@ -692,7 +692,8 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
             info.setActive(true);
             break;
         }
-        info.setActive(active_ != nullptr && active_->arrangement.geometry.selection.track != 0);
+        info.setActive(active_ != nullptr && (active_->arrangement.geometry.selection.track != 0 ||
+                                              active_->arrangement.geometry.selection.clip != 0));
         break;
     case InsertTimeSignatureChange: // manual 6.5: at the insert marker
         info.setActive(active_ != nullptr);
@@ -1459,6 +1460,11 @@ void AdiRootComponent::followPluginWindows() {
             pluginHost->setAlwaysOnTop(key, commands_.pluginWindowsOnTop());
     }
 }
+void AdiRootComponent::vblankFrame() noexcept {
+    vblankFrame_ = true;
+    frame();
+    vblankFrame_ = false;
+}
 void AdiRootComponent::frame() noexcept {
     // Root owns exactly one reader for the presented frame; descendants borrow it.
     // JUCE may paint after this callback, so it remains alive until the next frame.
@@ -1545,7 +1551,10 @@ void AdiRootComponent::frame() noexcept {
         if (shown != clipView.clip() || (lastDrain_ & DirtySet::Content) != 0)
             status.repaint();
     }
-    followPluginWindows();
+    if (vblankFrame_)
+        windowFollower_.triggerAsyncUpdate(); // not inside JUCE's vblank listener walk (A28)
+    else
+        followPluginWindows();
     mixer.frame((lastDrain_ & (DirtySet::Layout | DirtySet::Content)) != 0);
     if (mixerView.isVisible())
         mixerView.frame((lastDrain_ & (DirtySet::Layout | DirtySet::Content)) != 0);
@@ -4398,6 +4407,11 @@ bool AdiRootComponent::command(int id) {
         for (auto &panel : devices.panels)
             if (panel->hasKeyboardFocus(true))
                 return panel->beginRename() || fail("Unfold the device to rename it.");
+        // A selected clip is renamed in its title bar, as Live (walk-B B14); a click on a track's
+        // header lets the clip go, so Rename then acts on the track.
+        if (arrangement.geometry.selection.clip != 0)
+            return arrangement.canvas.beginClipRename(arrangement.geometry.selection.clip) ||
+                   fail("Scroll the clip into view to rename it.");
         return arrangement.headers.beginRename(arrangement.geometry.selection.track) ||
                fail("Select a track to rename.");
     case AppCommands::FocusControlBar:
@@ -4634,7 +4648,7 @@ AdiWindow::AdiWindow(std::unique_ptr<AdiRootComponent> root, AppCommands &comman
     : DocumentWindow("ADI", look::windowBack, DocumentWindow::allButtons, onDesktop),
       root_(root.get()), commands_(commands), clock_(this, [this](double) {
           followSettings();
-          root_->frame();
+          root_->vblankFrame();
       }) {
     setContentOwned(new ZoomHost(std::move(root)), true);
     setResizable(true, false);

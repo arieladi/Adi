@@ -996,6 +996,76 @@ void commitKeepsClipSounding(const std::filesystem::path &dir) {
     check(doc->mailbox().playing(), "and the transport plays on");
     doc->release();
 }
+// walk-B B12: Space commits `transport.play` and then posts Play, and that commit builds a new
+// generation while the transport is stopped. In the window it could be published just after the
+// driver started, cold, and the second 480-frame block of playback was silent (14 of 22 Plays).
+// A generation built while stopped now holds the pages at the playhead, where Play starts: right
+// after such a commit, Play's first block sounds, and every block after it.
+void playRightAfterAStoppedCommit(const std::filesystem::path &dir) {
+    std::string error;
+    auto doc = ui::ProjectDocument::open(dir / "stopped.adi", true, {}, error);
+    check(doc != nullptr, "a project to play right after a commit");
+    if (!doc)
+        return;
+    const auto wav = dir / "tone.wav";
+    {
+        std::vector<float> samples(48000 * 8);
+        for (std::size_t i = 0; i < samples.size(); ++i)
+            samples[i] = static_cast<float>(.2 * std::sin(2 * 3.141592653589793 * 750 * static_cast<double>(i) / 48000));
+        audio::WavWriter writer(wav, 48000, 1, audio::WavFormat::Pcm16);
+        writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
+    }
+    ui::AudioImport import;
+    check(doc->prepareImport(wav.string(), 1'700'000'000'000'000, import), "the clip's file imports");
+    auto dropped = ui::dropAudio(*doc->view().current(), 4, 0, "tone", import);
+    check(dropped.refusal.empty() && doc->ops().submit(std::move(dropped.ops)).ok && doc->synchronise(),
+          "an 8 s clip on 3 Audio from 1.1.1");
+    constexpr int frames = 480;
+    doc->prepare(48000, frames);
+    std::array<float, frames> l{}, r{};
+    float *channels[]{l.data(), r.data()};
+    engine::AudioIo io;
+    io.out = channels;
+    io.numOut = 2;
+    io.frames = frames;
+    std::int64_t stream = 0;
+    const auto block = [&] {
+        io.streamTimeSamples = stream;
+        doc->process(io);
+        stream += frames;
+        doc->tick(stream);
+        float peak = 0;
+        for (const float v : l)
+            peak = std::max(peak, std::abs(v));
+        return peak;
+    };
+    for (int b = 0; b < 8; ++b) // the device runs, stopped at 1.1.1
+        (void)block();
+    for (int pass = 0; pass < 3; ++pass) {
+        // Space: the transport.play commit, then Play, back to back.
+        OpRequest play;
+        play.opType = "transport.play";
+        play.payload = Payload::object();
+        check(doc->ops().submit(play).ok && doc->synchronise(), "Space's transport.play commit, stopped");
+        doc->mailbox().post(ui::TransportMailbox::Command::Play);
+        const float first = block();
+        int silent = 0;
+        for (int b = 0; b < 20; ++b)
+            silent += block() == 0;
+        std::printf("Play right after a stopped commit %d: first block peak %.3f, silent blocks after it %d\n", pass + 1,
+                    static_cast<double>(first), silent);
+        check(first > .05f && silent == 0, "Play right after a commit made while stopped sounds from its first block");
+        OpRequest stop;
+        stop.opType = "transport.stop";
+        stop.payload = Payload::object();
+        check(doc->ops().submit(stop).ok && doc->synchronise(), "Stop's transport.stop commit");
+        doc->mailbox().post(ui::TransportMailbox::Command::Stop);
+        doc->mailbox().post(ui::TransportMailbox::Command::Locate, 0);
+        for (int b = 0; b < 4; ++b)
+            (void)block();
+    }
+    doc->release();
+}
 void peakSpans() {
     media::MediaPeaks p;
     p.channels = 2;
@@ -1212,6 +1282,8 @@ int main(int argc, char **argv) {
         mixerDragHeard(dragDir.path());
         test::TempDirectory commitDir("ui_document", "commit");
         commitKeepsClipSounding(commitDir.path());
+        test::TempDirectory stoppedDir("ui_document", "stopped-commit");
+        playRightAfterAStoppedCommit(stoppedDir.path());
     }
     test::TempDirectory temp("ui_document", "lifetime");
     std::string error;
@@ -1859,8 +1931,9 @@ int main(int argc, char **argv) {
             check(panel != nullptr && panel->track == 2 && panel->records.size() == 2 &&
                       panel->records[0].id == "cutoff" && std::abs(panel->records[0].playing - .5) < 1e-9 &&
                       panel->records[0].text == "10.0 kHz" && panel->records[1].text == "-24.0 dB" &&
-                      panel->defaults.size() == 2 && std::abs(panel->defaults.at("cutoff") - .5) < 1e-9 &&
-                      std::abs(panel->defaults.at("gain") - .25) < 1e-9,
+                      panel->defaultValues().size() == 2 &&
+                      std::abs(panel->defaultValues().at("cutoff") - .5) < 1e-9 &&
+                      std::abs(panel->defaultValues().at("gain") - .25) < 1e-9,
                   "the strip's feed lists the device on its track, its parameters by the plug-in's ids, in the "
                   "plug-in's own words, with their defaults (manual 41.6's Return to Default)");
             const auto opsBeforeDrag = strip->store().db().execAndGet("SELECT count(*) FROM ops").getInt();
