@@ -2906,6 +2906,25 @@ void recordedWaveformHandoff() {
           "landing another reference preserves the decoded waveform");
 }
 
+void reversedWaveform() {
+    constexpr auto quarter = textproj::kPPQ;
+    engine::ClipNode clip;
+    clip.posTicks = 4 * quarter;
+    clip.audio.emplace();
+    clip.audio->sourceStartFrames = 10;
+    clip.audio->sourceLengthFrames = 96000;
+    clip.audio->reverse = true;
+    const auto frameIs = [&](std::int64_t tick, double expected) {
+        const auto frame = ui::ClipSourceMap(clip, nullptr, 48000).frameAt(clip.posTicks + tick);
+        return frame && std::abs(*frame - expected) < .01;
+    };
+    check(frameIs(0, 96009.) && frameIs(quarter, 72009.), "unwarped reverse draws the source window tail first");
+    const std::array markers{WarpMarker{0, 0}, WarpMarker{12000, quarter}, WarpMarker{96000, 4 * quarter}};
+    clip.audio->warpEnabled = true;
+    clip.audio->warpMarkers = audio::writeWarpMap(markers, 96000).bytes;
+    check(frameIs(0, 96009.) && frameIs(quarter, 68009.), "warped reverse mirrors time before interpolating the map");
+}
+
 // PD06-SAVEAS-GUARD: Save As during Record, or while a take's placement is pending, lands the take in
 // the file it was recorded in first, as one undo step, and then switches; the saved file holds it.
 void saveAsKeepsTheTake(const std::filesystem::path &dir) {
@@ -3085,6 +3104,7 @@ int main(int argc, char **argv) {
     peakSpans();
     punchedWaveformBounds();
     recordedWaveformHandoff();
+    reversedWaveform();
     {
         test::TempDirectory offsetDir("ui_document", "wave-offsets");
         waveformSourceOffsets(offsetDir.path());
