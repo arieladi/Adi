@@ -6,6 +6,34 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-26, noon — the confirming passes: two crashes and a hang found on main, fixed and landed (#787, #788); a clean eighth pass; the session suite in CI (#785)
+
+**The confirming passes were worth asking for.** Walk-A walked a clean build of main four more times and walk-B once.
+
+| Pass | What it met |
+|---|---|
+| A, 5 | **a crash** at step 1: New or Open in a maximised window closed ADI (A27). Pass 4 had seen it and put it down to the build |
+| A, 6 | **a crash** at step 3: loading a VST3 from the Browser closed ADI as its window opened (A28) |
+| A, 7 | **a hang** at step 3: with a VST3 shown in the Device View the main window stopped answering (A31) |
+| B, 2 | every step passed but for a silent block at the start of most Plays (B12), duplicate track names (B13) and no clip rename (B14) |
+| A, 8 | **clean: all nine steps pass**, on main with walk-A's four fixes merged |
+
+**Landed.** #787: A27 and A7 (the director's G: OneShot and Sampler in the Browser's Instruments). #788: A28, A31, B12 and B14 (clip rename, by the director's word). Each stack was built and run on MSVC before it was pushed: the headless suites and the session suite, and the window suites in Debug on a desktop that is never shown. The gemini seat ran each on Linux.
+
+**Where the proof stands.** Pass 8's tree was main with A7, A27, A28 and A31; main now also has walk-B's B12 and B14. Win asked walk-A for a ninth pass on a clean build of main. **The hold ends when that pass is clean.**
+
+**The session suite is in CI (#785, ADR-0255 d1).** Every leg of the main matrix builds and runs `adi_acceptance_wts01`, and the Windows JUCE leg runs the VST3 half. Read in the logs: it passed on Windows (MSVC), on Linux arm64 at its first run there, and the VST3 half on Windows. The Mac's run of the VST3 half is owed.
+
+**Handed to win by the walk, registered:** DF-W52 (A26), DF-W53 (A29), DF-W54 (A30), DF-W55 (A32), DF-W57 (A34). DF-W56 (B13, A33) is walk-B's. Win takes DF-W52 and DF-W57 first.
+- **Engine seat:** #787 touched `src/adi/builtin_insert.cpp`, and #788 touched `src/adi/engine/session.*` (B12: a generation built while stopped is primed at the driver's playhead). Read both when you next run.
+- **Mix View seat:** #788 touched `src/adi/ui/parameter_feed.*` (A31: a device's declarations, defaults and groups are built once into shared metadata). Read it when you next run.
+
+**The gemini seat's sweep of the waiting branches, since the morning.** The engine's `au08`, `mi04`, `tm-wt02` and `tm-wt03` branches pass; the window lane's `key-conflicts`, `text-goldens` and `command-palette` pass; engine-win's `source-hash-flac-proof` passes. Its finding on `engine-win/export-profile-validation` (two test functions never called, refused on Linux as unused) is DF-E78, already fixed on `window-fn/df-e78`, which lands with that stack.
+
+**Next free:** DF-W58. The others are unchanged.
+
+---
+
 ## 2026-11-26, later in the morning — the walk's two build fixes on main (#784); the gemini seat's sanitizer sweeps of main; the session suite going into CI
 
 - **#784 (`land/walk-1126c`).** Walk-A's A24 and A25, both about optimised builds, which the walk uses and CI's Debug legs do not.
