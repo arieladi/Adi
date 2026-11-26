@@ -5,6 +5,7 @@
 #include "adi/media/media_ops.hpp"
 #include "adi/settings/store.hpp"
 #include "adi/ui/project_document.hpp"
+#include "adi/ui/recording_edits.hpp"
 #include "adi/ui/arrangement_geometry.hpp"
 #include "knobs_device.hpp"
 #include "temp_directory.hpp"
@@ -1339,6 +1340,94 @@ void externalInputRecording(const std::filesystem::path &dir) {
           "SC-23: losing an input keeps the track's authored source");
     doc->release();
 }
+
+void recordingBitDepth(const std::filesystem::path &dir) {
+    std::string error;
+    const auto settingsFile = dir / "settings.json";
+    settings::AppSettings store(appdata::App::Daw, settingsFile);
+    check(store.get("record.bitDepth") == 32 && store.get("export.bitDepth") == 24,
+          "SC-25: old settings default to 32-bit float for recording independently of export");
+    check(!store.set("record.bitDepth", 20, {}, error) && store.get("record.bitDepth") == 32,
+          "SC-25: unsupported depths leave the recording preference unchanged");
+
+    auto doc = ui::ProjectDocument::open(dir / "record-bit-depth.adi", true, {}, error);
+    check(doc != nullptr, "SC-25: a project to record each allowed depth");
+    if (!doc)
+        return;
+    OpRequest arm;
+    arm.opType = "track.setArm";
+    arm.payload = {{"id", 4}, {"armed", true}};
+    if (!doc->ops().submit(arm).ok || !doc->synchronise())
+        throw std::runtime_error("could not arm the audio track");
+
+    using Format = audio::WavFormat;
+    constexpr std::array<float, 4> input{.25f + 0x1p-20f, -.5f - 0x1p-24f, 1.25f, -1.25f};
+    struct Case {
+        int depth;
+        Format format;
+        std::array<float, 4> samples;
+    };
+    const std::array cases{
+        Case{16, Format::Pcm16, {.25f, -.5f, 1.f - 0x1p-15f, -1.f}},
+        Case{24, Format::Pcm24, {input[0], -.5f - 0x1p-23f, 1.f - 0x1p-23f, -1.f}},
+        Case{32, Format::Float32, input},
+    };
+    constexpr int frames = 64;
+    std::array<float, frames> in{}, left{}, right{};
+    for (std::size_t i = 0; i < in.size(); ++i)
+        in[i] = input[i % input.size()];
+    const float *inputs[]{in.data()};
+    float *outputs[]{left.data(), right.data()};
+    std::int64_t tick = 0;
+    for (const auto &example : cases) {
+        if (!store.set("record.bitDepth", example.depth, {}, error) || !store.save(error))
+            throw std::runtime_error(error);
+        settings::AppSettings reopened(appdata::App::Daw, settingsFile);
+        const auto depth = reopened.get("record.bitDepth").get<int>();
+        check(depth == example.depth && reopened.get("export.bitDepth") == 24,
+              "SC-25: the saved recording depth reloads and leaves the export depth alone");
+        doc->prepare(48000, frames);
+        if (!doc->startRecording(tick, 1, false, 0, {}, ui::recordingWavFormat(depth)))
+            throw std::runtime_error(doc->error());
+        // Editing the preference during recording affects the next job only.
+        if (!store.set("record.bitDepth", example.depth == 16 ? 24 : 16, {}, error))
+            throw std::runtime_error(error);
+        doc->process({outputs, inputs, 2, 1, frames, 0});
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        auto preview = doc->session().recording().preview();
+        while (!preview && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            preview = doc->session().recording().preview();
+        }
+        check(preview && !preview->peaks.bins.empty() &&
+                  preview->peaks.bins.front() == media::PeakBin{example.samples[3], example.samples[2]},
+              "SC-25: the recording preview uses the stored PCM or floating-point extrema");
+        doc->release();
+        check(doc->settleRecording(), "SC-25: settle the take in the selected encoding");
+        const auto landed = doc->takeLanded();
+        check(landed && landed->ok && landed->clips.size() == 1, "SC-25: the take lands");
+        if (!landed || !landed->ok || landed->clips.size() != 1)
+            return;
+        SQLite::Statement row(doc->store().db(),
+                              "SELECT m.rel_path,m.format,m.bit_depth FROM media_files m JOIN audio_clips a "
+                              "ON m.id=a.media_id WHERE a.clip_id=?");
+        row.bind(1, landed->clips.front());
+        if (!row.executeStep())
+            throw std::runtime_error("the recording has no media row");
+        const auto path = media::projectFolder(doc->store()) / media::pathFromUtf8(row.getColumn(0).getString());
+        audio::WavReader file(path);
+        std::array<float, frames> actual{};
+        bool exact = file.format() == example.format && file.frames() == frames && file.channels() == 1 &&
+                     file.read(actual.data(), frames) == frames;
+        for (std::size_t i = 0; i < actual.size(); ++i)
+            exact = exact && actual[i] == example.samples[i % example.samples.size()];
+        check(exact && path.extension() == ".wav" && row.getColumn(1).getString() == "wav" &&
+                  row.getColumn(2).getInt() == example.depth,
+              "SC-25: the WAV header, exact samples and media pool use the selected depth");
+        tick += textproj::kPPQ;
+    }
+}
+
 void arrangementRecord(const std::filesystem::path &dir) {
     std::string error;
     auto doc = ui::ProjectDocument::open(dir / "record.adi", true, {}, error);
@@ -2403,6 +2492,8 @@ int main(int argc, char **argv) {
     peakSpans();
     recordedWaveformHandoff();
     {
+        test::TempDirectory bitDepthDir("ui_document", "record-bit-depth");
+        recordingBitDepth(bitDepthDir.path());
         test::TempDirectory recordDir("ui_document", "record");
         test::TempDirectory externalInputDir("ui_document", "external-input");
         externalInputRecording(externalInputDir.path());

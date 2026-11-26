@@ -2102,7 +2102,8 @@ RecordStates ProjectDocument::recordStates() const {
     return out;
 }
 bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t inputs, bool playing,
-                                     std::int64_t deviceLatencySamples, const std::string &recordFolder) {
+                                     std::int64_t deviceLatencySamples, const std::string &recordFolder,
+                                     audio::WavFormat format) {
     if (recording_ || landing_) {
         error_ = recording_ ? "Recording is already running." : "The last take is still being saved.";
         return false;
@@ -2177,6 +2178,7 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
     spec.placementOffsetSamples = deviceLatencySamples;
     spec.sampleRate = static_cast<std::uint32_t>(std::lround(engineRate_));
     spec.maxFrames = static_cast<std::uint32_t>(std::max<std::int32_t>(1, engineFrames_));
+    spec.format = format;
     // Two seconds of input between the callback and the writer, at least eight blocks.
     spec.ringFrames = std::max<std::uint32_t>(spec.sampleRate * 2, spec.maxFrames * 8);
     for (const auto id : armed.audio) {

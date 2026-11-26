@@ -130,7 +130,14 @@ struct Job {
             return;
         nextPreview = now + previewInterval;
         try {
-            auto snapshot = std::make_shared<const AudioRecordingPreview>(accumulatingPreview);
+            auto prepared = std::make_shared<AudioRecordingPreview>(accumulatingPreview);
+            // Undithered PCM conversion is monotonic, so encode extrema once per published bin.
+            if (spec.format != audio::WavFormat::Float32)
+                for (auto &bin : prepared->peaks.bins) {
+                    bin.minimum = audio::wavSampleAtDepth(bin.minimum, spec.format);
+                    bin.maximum = audio::wavSampleAtDepth(bin.maximum, spec.format);
+                }
+            std::shared_ptr<const AudioRecordingPreview> snapshot = std::move(prepared);
             {
                 const std::lock_guard lock(previewMutex);
                 publishedPreview.swap(snapshot);

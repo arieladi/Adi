@@ -6,6 +6,7 @@
 #include <SQLiteCpp/SQLiteCpp.h>
 #include "adi/ui/plugin_scan.hpp"
 #include "adi/ui/project_document.hpp"
+#include "adi/ui/recording_edits.hpp"
 #include "juce/device_bridge.hpp"
 #include "juce/editor_host_component.hpp"
 #include "juce/juce_device_loader.hpp"
@@ -987,7 +988,8 @@ class AdiApplication final : public juce::JUCEApplication,
             const int inputs = audioDevice->getActiveInputChannels().countNumberOfSetBits();
             const auto latency = device::reportedRoundTripLatency(*audioDevice);
             const auto recordFolder = settings_->get("files.recordFolder").get<std::string>();
-            if (!document_->startRecording(insertTick, inputs, playing, latency, recordFolder)) {
+            const auto format = recordingWavFormat(settings_->get("record.bitDepth").get<int>());
+            if (!document_->startRecording(insertTick, inputs, playing, latency, recordFolder, format)) {
                 root_->say(document_->error());
                 return false;
             }
