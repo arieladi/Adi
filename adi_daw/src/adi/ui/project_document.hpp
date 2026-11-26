@@ -33,9 +33,8 @@ inline constexpr const char *kNewProjectLabel = "New project";
 // Message-thread project lifetime. The callback is detached before destruction.
 // Only process() accesses Transport while the driver is running.
 //
-// There is no Save: every op is committed as it happens (ADR-0003, ADR-0203 d13),
-// and the store is closed into one file when the document goes. Ctrl/Cmd+S takes
-// a named snapshot instead, a point in the history that copies nothing.
+// Every op is committed as it happens (ADR-0003, ADR-0203 d13), and the store
+// closes into one file. Ctrl/Cmd+S names the project once and then takes snapshots.
 struct WaveformSource; // project_document.cpp
 class ProjectDocument final : public engine::BlockProcessor {
   public:
@@ -59,7 +58,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     // where Live asks first and then replaces. False means nothing moved; once the store has
     // switched the save stands and is true, a warning the store reports, or a session that
     // failed to re-read the new file, in `warning()`.
-    bool saveAs(const std::filesystem::path &);
+    bool saveAs(const std::filesystem::path &, bool firstSave = false);
     const std::string &warning() const noexcept { return warning_; }
     // Live's Save a Copy (manual 5.4.1): the project as it stands into a new `.adi`, the open one
     // left as it is (`Store::saveCopy`, #380, N30). An existing file is refused, as for Save As.

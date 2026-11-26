@@ -533,6 +533,8 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Arrangement Record", "Export Audio/Video...", "Delay Compensation", "Solo Switches", "Cue Switches",
                                   "Live 12 Manual", "Keyboard Shortcuts", "Automation Mode"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], category(id), 0);
+    if (id == TakeSnapshot && active_ && active_->needsFirstSave)
+        info.setInfo("Save Project...", "Name this project", category(id), 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
         info.setInfo(active_ ? juce::String(active_->undoTitle(redo))
@@ -604,8 +606,8 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
     case ZoomOut:
         info.addDefaultKeypress('-', cmd);
         break;
-    // §41.3. Ctrl/Cmd+S takes a named snapshot rather than saving, a deviation the
-    // director ruled (ADR-0203 d6, d12); Save As is Live's, a true one.
+    // Ctrl/Cmd+S names an unnamed project once, then takes named snapshots
+    // (ADR-0258 d3 and ADR-0203 d6, d12).
     case NewProject:
         info.addDefaultKeypress('n', cmd);
         break;

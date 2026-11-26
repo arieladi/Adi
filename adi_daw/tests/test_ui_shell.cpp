@@ -16594,6 +16594,16 @@ int main(int argc, char **argv) {
               "engine stop reaches bar");
         const auto opsBeforeSnapshot =
             document->store().db().execAndGet("SELECT count(*) FROM ops").getInt();
+        integrated.needsFirstSave = true;
+        juce::ApplicationCommandInfo firstSaveInfo(AppCommands::TakeSnapshot);
+        commands.getCommandInfo(AppCommands::TakeSnapshot, firstSaveInfo);
+        check(firstSaveInfo.shortName == "Save Project...",
+              "File names the first-save command while the project is unnamed");
+        integrated.needsFirstSave = false;
+        juce::ApplicationCommandInfo snapshotInfo(AppCommands::TakeSnapshot);
+        commands.getCommandInfo(AppCommands::TakeSnapshot, snapshotInfo);
+        check(snapshotInfo.shortName == "Take Snapshot...",
+              "File offers snapshots once the project has a name");
         check(integrated.keyPressed(juce::KeyPress('s', juce::ModifierKeys::commandModifier, 0)) &&
                   snapshots == 1,
               "Ctrl/Cmd+S takes a snapshot (ADR-0203 d6), not a save");

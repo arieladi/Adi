@@ -253,6 +253,7 @@ Store::~Store() {
         gesture::detail::invalidateSource(*this);
         detail::invalidateAppliedDomain(*this, AppliedSourceInvalidation::Closed);
         closeFinalized();
+        finishUntitledSave();
     } catch (...) {
     }
 }

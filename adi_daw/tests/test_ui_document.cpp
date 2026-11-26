@@ -1252,6 +1252,85 @@ void recordAfterSaveAs(const std::filesystem::path &dir) {
           "as one Record Audio step in the saved file, the file it was saved from untouched");
     doc->release();
 }
+void firstSaveMovesTheTake(const std::filesystem::path &dir) {
+    namespace fs = std::filesystem;
+    const auto staging = dir / "Untitled";
+    fs::create_directory(staging);
+    const auto source = staging / "Untitled.adi";
+    std::string error;
+    auto doc = ui::ProjectDocument::open(source, true, {}, error);
+    check(doc != nullptr, "first save starts with an unnamed project");
+    if (!doc)
+        return;
+
+    doc->prepare(48000, 64);
+    OpRequest arm;
+    arm.opType = "track.setArm";
+    arm.payload = {{"id", 4}, {"armed", true}};
+    check(doc->ops().submit(arm).ok && doc->synchronise(), "first-save fixture arms its audio track");
+    if (!doc->startRecording(0, 1, false)) {
+        check(false, "first-save fixture records");
+        return;
+    }
+    std::array<float, 64> in{}, left{}, right{};
+    in.fill(0.25f);
+    const float *inputs[]{in.data()};
+    float *outputs[]{left.data(), right.data()};
+    engine::AudioIo io;
+    io.in = inputs;
+    io.numIn = 1;
+    io.out = outputs;
+    io.numOut = 2;
+    io.frames = 64;
+    for (int block = 0; block < 16; ++block) {
+        io.streamTimeSamples = block * 64;
+        doc->process(io);
+    }
+    doc->release();
+    check(doc->settleRecording(), "the unnamed project's recording lands");
+    const auto take = doc->takeLanded();
+    check(take && take->ok, "the unnamed project has a recorded clip");
+    if (!take || !take->ok)
+        return;
+    const auto id = doc->store().db().execAndGet("SELECT id FROM media_files").getInt64();
+    const auto mediaPath = [&] {
+        return media::resolveMedia(media::projectFolder(doc->store()), media::mediaRow(doc->store().db(), id), error);
+    };
+    const auto originalAudio = mediaPath();
+    check(!originalAudio.empty(), "the take resolves in unnamed staging");
+
+    const auto occupied = dir / "Occupied.adi";
+    fs::create_directory(occupied);
+    check(!doc->saveAs(occupied, true) && doc->store().path() == source && fs::exists(source) &&
+              !originalAudio.empty() && fs::is_regular_file(originalAudio),
+          "a refused first save retains the original project and its recording");
+
+    const auto destination = dir / "Song";
+    fs::create_directory(destination);
+    const auto named = destination / "Song.adi";
+    const bool saved = doc->saveAs(named, true);
+    check(saved && doc->name() == "Song" && doc->store().path() == named,
+          "first save names the active project");
+    if (!saved) {
+        std::printf("first save: %s\n", doc->error().c_str());
+        return;
+    }
+    const auto newAudio = mediaPath();
+    check(!newAudio.empty() && newAudio != originalAudio &&
+              newAudio == media::projectFolder(doc->store()) /
+                              originalAudio.lexically_relative(fs::canonical(staging.parent_path()) / staging.filename()),
+          "first save keeps the take in the destination's media folder");
+    check(doc->ops().nextUndo() && doc->ops().nextUndo()->label == "Record Audio" &&
+              doc->ops().undo().ok && doc->synchronise() &&
+              doc->ops().redo().ok && doc->synchronise() && mediaPath() == newAudio &&
+              doc->session().problems().empty(),
+          "undo and redo keep the recording playable after relocation");
+    check(doc->takeSnapshot("First snapshot", 1, 0).ok,
+          "after naming, the project can take a snapshot");
+    doc.reset();
+    check(!fs::exists(source) && !fs::exists(staging) && fs::is_regular_file(newAudio),
+          "the closed named project retains the take and leaves no unnamed copy");
+}
 int main(int argc, char **argv) {
 #if defined(_MSC_VER) && defined(_DEBUG)
     _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
@@ -1278,6 +1357,8 @@ int main(int argc, char **argv) {
         saveAsKeepsTheTake(guardDir.path());
         test::TempDirectory afterDir("ui_document", "after-save-as");
         recordAfterSaveAs(afterDir.path());
+        test::TempDirectory firstSaveDir("ui_document", "first-save");
+        firstSaveMovesTheTake(firstSaveDir.path());
         test::TempDirectory refusedDir("ui_document", "refused");
         discardRefusalSaid(refusedDir.path());
         test::TempDirectory dragDir("ui_document", "drag");
