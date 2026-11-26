@@ -2,6 +2,13 @@
 #pragma once
 #include <cstdint>
 namespace adi::engine {
+// Driver feedback for the recording lead-in. The bar is negative during
+// count-in, with one-based beat and sixteenth fields. Zero means inactive.
+struct CountInPosition {
+    int bar = 0, beat = 0, sixteenth = 0;
+    bool operator==(const CountInPosition&) const = default;
+};
+
 // Single driver-thread state. Commands execute BETWEEN callbacks (or with the
 // driver stopped). A UI must marshal commands to that driver, never mutate this
 // concurrently. Nodes read the same block origin; Session advances it once.

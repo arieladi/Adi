@@ -1608,6 +1608,7 @@ void AdiRootComponent::frame() noexcept {
     // In its own window the floating host drives its frame.
     if (mixViewPanel.isVisible() && mixViewPanel.getParentComponent() == this)
         mixViewPanel.frame(reader());
+    transport.position.setCountInPosition(mailbox_.countInPosition());
     if (lastDrain_ & DirtySet::Transport) {
         transport.refresh();
         transport.repaint();
@@ -3580,6 +3581,18 @@ bool AdiRootComponent::setMonitor(std::int64_t id, Monitor mode) {
         return fail(std::move(edit.refusal));
     return edit.ops.empty() || submitEdits(std::move(edit.ops));
 }
+bool AdiRootComponent::setExternalAudioInput(std::int64_t id, std::string_view ref) {
+    const auto current = view_.current();
+    const auto *track = current ? current->findTrack(id) : nullptr;
+    if (!track || track->kind != "audio")
+        return fail("External audio inputs are available on audio tracks.");
+    const auto choices = audioInputs();
+    if (std::none_of(choices.begin(), choices.end(), [&](const auto &input) { return input.ref == ref; }))
+        return fail("That external input is unavailable. Open Audio Settings to configure inputs.");
+    if (track->inputRef && *track->inputRef == ref)
+        return true;
+    return submitEdit("track.setInput", {{"id", id}, {"input", std::string(ref)}}, "Audio From");
+}
 bool AdiRootComponent::toggleRecord() {
     if (!startRecording || !stopRecording || !recording)
         return fail("Recording runs in the application, with an audio device.");
@@ -4005,6 +4018,12 @@ bool AdiRootComponent::setMetronome(bool on) {
 bool AdiRootComponent::toggleMetronome() {
     const auto current = view_.current();
     return setMetronome(!(current && current->transport.metronome));
+}
+bool AdiRootComponent::setCountIn(int bars) {
+    const auto current = view_.current();
+    if (!current)
+        return fail("Count-in needs an open project.");
+    return submitTransport(::adi::ui::setCountIn(current->transport, bars));
 }
 bool AdiRootComponent::toggleLoop() {
     const auto current = view_.current();

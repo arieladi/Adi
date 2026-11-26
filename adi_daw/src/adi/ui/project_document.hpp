@@ -16,10 +16,12 @@
 #include "adi/material_commands.hpp"
 #include "adi/ui/arm_edits.hpp"
 #include "adi/ui/audio_drop.hpp"
+#include "adi/ui/external_input_meter.hpp"
 #include "adi/ui/import_choices.hpp"
 #include "adi/ui/live_midi_take.hpp"
 #include "adi/ui/op_submitter.hpp"
 #include "adi/ui/parameter_feed.hpp"
+#include "adi/ui/recording_edits.hpp"
 #include "adi/ui/session_state.hpp"
 #include "adi/ui/shared_analysis.hpp"
 #include "adi/ui/track_edits.hpp"
@@ -156,19 +158,22 @@ class ProjectDocument final : public engine::BlockProcessor {
     bool automationArmed() const noexcept { return session_.automationArmed(); }
     // Arm and monitoring as the session's rows hold them (MX-09): the snapshot carries neither yet.
     RecordStates recordStates() const;
-    // Arrangement Record: every armed MIDI track records the Track MIDI input; armed audio tracks record from the audio
-    // device's inputs 1/2 (1 on a device with one input; the window's In/Out column shows "1/2", and
-    // `tracks.input_ref` has no grammar yet, MX-25). The recorder is prepared here, on the message
-    // thread, before the driver is told; stopped, the driver starts at the song start or the insert
-    // marker after the saved Count-In (`RenderBlock::startPlayback`). Playing, it records from the
-    // playhead on, as Live's punch in. False with `error()` saying why.
+    // Arrangement Record (MX-09; Live 12 manual 21.1): armed audio tracks record their selected input.
+    // Armed MIDI tracks record the Track MIDI input.
+    // The message thread prepares the recorder before notifying the driver. From stopped, the driver
+    // starts at the song start or the insert marker after the saved Count-In. While playing, it records
+    // from the playhead. False with `error()` saying why.
     // `inputs` is the device's input channel count, `insertTick` where a stopped transport starts.
-    bool startRecording(std::int64_t insertTick, std::int32_t inputs, bool playing);
-    // How many inputs the audio device has open (N65's window half): every audio track is fed by inputs
-    // 1/2 (input 1 alone on a one-input device) until a track's input has its grammar (MX-25), as
-    // recording takes them, and the session hears them as each track's Arm and monitoring say (In
-    // always; Auto while armed and no clip plays; Off never). Set by the application when the device
-    // opens or changes; 0 disconnects monitoring.
+    // The driver's round-trip latency is captured in samples at the recording's rate.
+    // A nonempty `recordFolder` keeps the recoverable capture there until publication into the song.
+    bool startRecording(std::int64_t insertTick, std::int32_t inputs, bool playing,
+                        std::int64_t deviceLatencySamples = 0, const std::string &recordFolder = {});
+    // The application replaces these routes when the device or its channel config changes.
+    // An empty list means the device has no enabled inputs. The view lasts until the next set.
+    void setExternalAudioInputs(std::vector<ExternalAudioInput> inputs);
+    std::span<const ExternalAudioInput> externalAudioInputs() const noexcept;
+    std::shared_ptr<ExternalInputMeter> externalInputMeter() const noexcept { return externalInputMeter_; }
+    // Hosts without a route list can still provide a contiguous input count for monitoring.
     void setInputChannels(std::int32_t inputs);
     // Stops the recorder (the transport is the caller's); the takes land on a later `tick()`.
     void stopRecording();
@@ -346,6 +351,10 @@ class ProjectDocument final : public engine::BlockProcessor {
     void refreshLimiterReductionSources();
     // The session's monitoring inputs for the tracks as they stand, given when they changed.
     void syncMonitorInputs();
+    std::span<const std::uint32_t> channelsForInput(const std::optional<std::string> &ref,
+                                                   std::int32_t legacyCount) const noexcept;
+    std::optional<std::vector<ExternalAudioInput>> externalAudioInputs_;
+    std::shared_ptr<ExternalInputMeter> externalInputMeter_ = std::make_shared<ExternalInputMeter>();
     std::int32_t inputChannels_ = 0;
     std::vector<std::pair<std::int64_t, std::vector<std::uint32_t>>> monitorInputs_;
     void persistReportedLatencies();

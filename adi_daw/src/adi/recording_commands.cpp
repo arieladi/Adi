@@ -7,6 +7,7 @@
 #include "adi/media/media_ops.hpp"
 #include "adi/media/publish_file.hpp"
 #include "adi/media/published_rollback.hpp"
+#include "adi/render/queue.hpp"
 #include "adi/store.hpp"
 #include "adi/clip_image.hpp"
 #include "adi/edit_plan.hpp"
@@ -16,14 +17,18 @@
 #include <algorithm>
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <sqlite3.h>
+#include <utf8proc.h>
+#include <charconv>
 #include <cmath>
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <iterator>
 #include <map>
 #include <set>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 namespace adi::recording {
 namespace fs=std::filesystem;
 struct RecordingEdit::Files {
@@ -48,6 +53,80 @@ struct Read {
     std::optional<SQLite::Transaction> transaction;
     explicit Read(SQLite::Database& db){if(sqlite3_get_autocommit(db.getHandle())!=0)transaction.emplace(db,SQLite::TransactionBehavior::DEFERRED);}
 };
+std::string recordingStem(std::string name) {
+    // Leave room before the 200-byte portable limit for a device-name prefix,
+    // a space, all digits of a uint64_t ordinal, and ".wav".
+    constexpr std::size_t maxStemBytes = 174;
+    if (name.size() > maxStemBytes) {
+        auto end = maxStemBytes;
+        while (end > 0 && (static_cast<unsigned char>(name[end]) & 0xc0U) == 0x80U)
+            --end;
+        name.resize(end);
+    }
+    render::NameContext context;
+    context.track = std::move(name);
+    try {
+        return render::resolveName("{track}", context);
+    } catch (const std::invalid_argument &) {
+        return "Recording";
+    }
+}
+std::string foldedRecordingName(const std::string &name) {
+    utf8proc_uint8_t *data = nullptr;
+    const auto flags = static_cast<utf8proc_option_t>(UTF8PROC_STABLE | UTF8PROC_COMPOSE | UTF8PROC_CASEFOLD);
+    const auto size = utf8proc_map(reinterpret_cast<const utf8proc_uint8_t *>(name.data()),
+                                  static_cast<utf8proc_ssize_t>(name.size()), &data, flags);
+    const std::unique_ptr<utf8proc_uint8_t, decltype(&std::free)> owned(data, &std::free);
+    if (size < 0)
+        return name; // an unrelated directory entry may have an opaque, non-UTF-8 name
+    return {reinterpret_cast<const char *>(data), static_cast<std::size_t>(size)};
+}
+class RecordingFileNames {
+    const fs::path &folder_;
+    std::map<std::string, std::uint64_t> last_;
+public:
+    explicit RecordingFileNames(const fs::path &folder) : folder_(folder) {
+        for (const auto &entry : fs::directory_iterator(folder_)) {
+            const auto name = foldedRecordingName(media::pathUtf8(entry.path().filename()));
+            if (!name.ends_with(".wav"))
+                continue;
+            const auto separator = name.rfind(' ');
+            if (separator == std::string::npos || name.size() - separator < 9)
+                continue; // a space, at least four digits, and ".wav"
+            std::uint64_t ordinal = 0;
+            const auto *end = name.data() + name.size() - 4;
+            const auto parsed = std::from_chars(name.data() + separator + 1, end, ordinal);
+            if (parsed.ec == std::errc{} && parsed.ptr == end) {
+                auto &last = last_[name.substr(0, separator)];
+                last = std::max(last, ordinal);
+            }
+        }
+    }
+    fs::path next(const std::string &trackName) {
+        const auto stem = recordingStem(trackName);
+        auto &last = last_[foldedRecordingName(stem)];
+        while (last < std::numeric_limits<std::uint64_t>::max()) {
+            auto digits = std::to_string(++last);
+            if (digits.size() < 4)
+                digits.insert(0, 4 - digits.size(), '0');
+            const auto path = folder_ / media::pathFromUtf8(stem + " " + digits + ".wav");
+            // Catch native aliases and entries created after the directory scan.
+            std::error_code error;
+            const auto status = fs::symlink_status(path, error);
+            if (error == std::errc::no_such_file_or_directory || (!error && status.type() == fs::file_type::not_found))
+                return path;
+            if (error)
+                throw fs::filesystem_error("inspect recording destination", path, error);
+        }
+        throw std::runtime_error("recording file numbers are exhausted");
+    }
+};
+bool recordingFileMatches(const fs::path &path, const std::string &hash) {
+    if (!fs::is_regular_file(fs::symlink_status(path)))
+        return false;
+    const auto existing = media::blake3File(path);
+    return existing && existing.hex == hash;
+}
 fs::path reservePublication(const fs::path& parent) {
     static std::atomic<std::uint64_t> serial{0};
     for(unsigned attempt=0;attempt<128;++attempt) {
@@ -214,12 +293,15 @@ std::vector<RecordingEdit::PreparedSource> RecordingEdit::prepareSources(Store& 
        recorded.startSample<0 || recorded.frames>static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()-recorded.startSample) ||
        ids.size()!=recorded.tracks.size() || ids.empty() || recorded.directory().empty())throw std::runtime_error("recording is not a completed attachable take");
     result.options.expectHead.emplace(OpJournal(store).headSeq());
-    const auto samples=media::projectFolder(store)/"Samples";
+    const auto project=media::projectFolder(store);
+    const auto samples=project/"Samples";
     const auto folder=samples/"Recorded";
     if(fs::is_symlink(fs::symlink_status(samples)) || fs::is_symlink(fs::symlink_status(folder)))
         throw std::runtime_error("recording audio directories must not be symlinks");
     fs::create_directories(folder);
-    auto files=std::make_shared<RecordingEdit::Files>();files->source=recorded;result.files_=files;files->publicationDirectory=reservePublication(folder);
+    const auto ownedFolder=fs::weakly_canonical(folder);
+    RecordingFileNames names(folder);
+    auto files=std::make_shared<RecordingEdit::Files>();files->source=recorded;result.files_=files;
     std::set<std::int64_t> clipIds,mediaIds;std::map<std::string,std::int64_t> capturedMedia;
     std::vector<PreparedSource> sources;
     sources.reserve(ids.size());
@@ -229,7 +311,7 @@ std::vector<RecordingEdit::PreparedSource> RecordingEdit::prepareSources(Store& 
             throw std::runtime_error("recording needs distinct positive clip and media allocation ids");
         const auto expected=recorded.directory()/("take-"+std::to_string(index)+".wav");
         if(target.file!=expected || !fs::is_regular_file(fs::symlink_status(expected)))throw std::runtime_error("recording file is not its owned regular take");
-        SQLite::Statement track(store.db(),"SELECT kind,locked FROM tracks WHERE id=?");track.bind(1,target.trackId);
+        SQLite::Statement track(store.db(),"SELECT kind,locked,name FROM tracks WHERE id=?");track.bind(1,target.trackId);
         if(!track.executeStep() || (track.getColumn(0).getString()!="audio" && track.getColumn(0).getString()!="midi") || track.getColumn(1).getInt()!=0)
             throw std::runtime_error("recording target is gone, locked or not a regular track");
         {audio::WavReader source(expected);if(source.frames()!=recorded.frames || source.sampleRate()!=recorded.sampleRate || source.channels()!=target.channels)
@@ -246,18 +328,34 @@ std::vector<RecordingEdit::PreparedSource> RecordingEdit::prepareSources(Store& 
             if(imported.audio->frames!=static_cast<std::int64_t>(recorded.frames) || imported.audio->sampleRate!=recorded.sampleRate || imported.audio->channels!=target.channels)
                 throw std::runtime_error("recording dimensions changed during media capture");
             mediaId=imported.mediaId;
-            const auto capturedHash=request.opType=="media.import"?request.payload.at("row").at("hash_blake3"):media::mediaRow(store.db(),mediaId).at("hash_blake3");
+            const auto existing=imported.existing?media::mediaRow(store.db(),mediaId):Payload{};
+            const auto& capturedHash=imported.existing?existing.at("hash_blake3"):request.payload.at("row").at("hash_blake3");
             if(capturedHash!=hash.hex)throw std::runtime_error("recorded file changed during media capture");
-            if(imported.existing) {
-                std::string pathError;const auto oldPath=media::resolveMedia(media::projectFolder(store),media::mediaRow(store.db(),mediaId),pathError);
-                if(!oldPath.empty() && fs::weakly_canonical(oldPath.parent_path())==fs::weakly_canonical(recorded.directory()))files->keepPrivate=true;
-            }
             capturedMedia.emplace(hash.hex,mediaId);
-            const auto targetFile=folder/("recording-"+std::to_string(mediaId)+"-"+hash.hex.substr(0,16)+".wav");
-            const auto relative=media::pathUtf8(fs::relative(targetFile,media::projectFolder(store)));
+            if(imported.existing) {
+                std::string pathError;
+                const auto oldPath=media::resolveMedia(project,existing,pathError);
+                if(!oldPath.empty()) {
+                    const auto oldFolder=fs::weakly_canonical(oldPath.parent_path());
+                    if(oldFolder==fs::weakly_canonical(recorded.directory()))files->keepPrivate=true;
+                    if(request.opType.empty() && oldFolder==ownedFolder &&
+                       fs::is_regular_file(fs::symlink_status(oldPath))) {
+                        // The pool already has this content on the project volume.
+                        // Revalidate the file at commit without moving or duplicating it.
+                        files->assets.push_back({expected,{},oldPath,hash.hex});
+                        sources.push_back({mediaId,{}});
+                        continue;
+                    }
+                }
+            }
+            const auto targetFile=names.next(wanted.trackName.empty()?track.getColumn(2).getString():wanted.trackName);
+            const auto relative=media::pathUtf8(targetFile.lexically_relative(project));
             Payload paths={{"rel_path",relative},{"abs_path_hint",nullptr},{"missing",0}};
-            if(request.opType=="media.import")request.payload["row"].update(paths);
-            else {request.opType="media.relink";request.payload={{"id",mediaId},{"hash",hash.hex},{"paths",paths}};}
+            if(request.opType=="media.import") {
+                request.payload["row"].update(paths);
+                request.payload["row"]["orig_name"]=media::pathUtf8(targetFile.filename());
+            } else {request.opType="media.relink";request.payload={{"id",mediaId},{"hash",hash.hex},{"paths",paths}};}
+            if(files->publicationDirectory.empty())files->publicationDirectory=reservePublication(folder);
             const auto staged=files->publicationDirectory/("asset-"+std::to_string(index)+".wav");fs::copy_file(expected,staged,fs::copy_options::none);
             const auto stagedHash=media::blake3File(staged);if(!stagedHash || stagedHash.hex!=hash.hex)throw std::runtime_error("recording changed while staging publication");
             files->assets.push_back({expected,staged,targetFile,hash.hex});
@@ -317,9 +415,10 @@ RecordingEdit RecordingEdit::prepareLinear(Store& store, const engine::AudioReco
                 recorded.frames > static_cast<std::uint64_t>(ceiling - recorded.startSample) ||
                 recorded.sampleRate < 8000 || recorded.sampleRate > 768000)
                 throw std::runtime_error("recording is not a completed attachable take");
-            if (placementOffsetSamples < 0 && recorded.startSample > ceiling + placementOffsetSamples)
+            const auto placed = engine::recordingPlacementStart(recorded.startSample, placementOffsetSamples);
+            if (!placed)
                 throw std::runtime_error("recording latency placement overflows the song clock");
-            const auto start = placementOffsetSamples > recorded.startSample ? 0 : recorded.startSample - placementOffsetSamples;
+            const auto start = *placed;
             if (recorded.frames > static_cast<std::uint64_t>(ceiling - start))
                 throw std::runtime_error("recording latency placement overflows the song clock");
             const auto end = start + static_cast<std::int64_t>(recorded.frames);
@@ -486,7 +585,7 @@ RecordingEdit prepareLoopCommit(Store& store,const engine::AudioRecordingResult&
                     throw std::runtime_error("loop materialization needs unoccupied distinct positive lane and clip ids");
                 allocated.reserve("clips",pass.clip);
             }
-            sources.push_back({wanted.passes.front().clip,wanted.media,{}});trackIds.push_back(trackId);
+            sources.push_back({wanted.passes.front().clip,wanted.media,{},wanted.trackName});trackIds.push_back(trackId);
             SQLite::Statement existing(store.db(),"SELECT id FROM lanes WHERE track_id=? AND kind='take' ORDER BY ord,id");
             existing.bind(1,trackId);
             while(existing.executeStep()) {
@@ -687,6 +786,11 @@ CommitResult commit(Store& store,RecordingEdit& edit,Actor actor) {
             if(!fs::is_regular_file(fs::symlink_status(asset.source))){error="recorded take is no longer a regular file";return false;}
             const auto hash=media::blake3File(asset.source);if(!hash || hash.hex!=asset.hash){error="recorded file changed after capture";return false;}
             if(asset.target.empty())continue;
+            if(asset.staged.empty()) {
+                if(recordingFileMatches(asset.target,asset.hash))continue;
+                error="Existing recorded audio changed after capture: "+media::pathUtf8(asset.target);
+                return false;
+            }
             const auto stagedHash=media::blake3File(asset.staged);
             if(!stagedHash || stagedHash.hex!=asset.hash){error="recording publication staging changed after capture";return false;}
             rollback->files.push_back({asset.target,{}});
@@ -697,9 +801,7 @@ CommitResult commit(Store& store,RecordingEdit& edit,Actor actor) {
                 continue;
             }
             rollback->files.pop_back();
-            if(published.status==media::PublishStatus::exists && fs::is_regular_file(fs::symlink_status(asset.target))) {
-                const auto existing=media::blake3File(asset.target);if(existing && existing.hex==asset.hash)continue;
-            }
+            if(published.status==media::PublishStatus::exists && recordingFileMatches(asset.target,asset.hash))continue;
             error="Cannot publish recorded audio "+media::pathUtf8(asset.target)+": "+(published.status==media::PublishStatus::exists?"destination contains different content":published.error);
             return false;
         }

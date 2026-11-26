@@ -20,6 +20,7 @@
 #include <cstdio>
 #include <fstream>
 #include <limits>
+#include <string_view>
 #include <thread>
 namespace {
 using namespace adi;using namespace adi::engine;
@@ -125,7 +126,7 @@ void midiLinearTakes() {
           "linear take rejects expression with no captured note without writing project rows");
     auto prepared = recording::prepareMidiLinearCommit(store, takes, 48000);
     check(prepared.ok && digestProject(store).text == before &&
-              !std::filesystem::exists(media::projectFolder(store) / "audio"),
+              !std::filesystem::exists(media::projectFolder(store) / "Samples" / "Recorded"),
           "MIDI-only preparation changes no rows and creates no audio files");
     const auto committed = recording::commit(store, prepared);
     check(committed.ok && committed.seqs.size() == 1, "both armed MIDI takes land in one placement");
@@ -168,13 +169,13 @@ void mixedLinearTake() {
     db.exec("INSERT INTO tracks(id,kind,name) VALUES(23,'midi','Keys');"
             "INSERT INTO clips(id,track_id,kind,name,pos_ticks,length_ticks) VALUES(8,23,'midi','Earlier MIDI',0,1000)");
     auto firstAudio = fixture.capture(false, Precision::Float32, false, 300, {}, 512);
-    const std::array<recording::ClipIds, 1> firstIds{{{7, 8, "Earlier Audio"}}};
+    const std::array<recording::ClipIds, 1> firstIds{{{7, 8, "Earlier Audio", "Input Guitar"}}};
     auto first = recording::prepareCommit(store, firstAudio, firstIds);
     if (!first.ok || !recording::commit(store, first).ok)
         throw std::runtime_error("could not seed the earlier audio take");
     const auto before = digestProject(store).text;
     auto audio = fixture.capture(false, Precision::Float32, false, 100, {}, 600);
-    const std::array<recording::ClipIds, 1> audioIds{{{9, 10, "New Audio"}}};
+    const std::array<recording::ClipIds, 1> audioIds{{{9, 10, "New Audio", "Input Guitar"}}};
     const std::array<notes::NoteValues, 1> notes{{{.start=10, .duration=25, .id=17, .key=64, .velocity=80}}};
     const std::array<recording::MidiLinearTake, 1> midi{{{23, 10, 400, 200, "New MIDI", notes, {}}}};
     auto invalid = midi;
@@ -189,9 +190,12 @@ void mixedLinearTake() {
     const auto count = [&](const char* sql) { return db.execAndGet(sql).getInt(); };
     check(count("SELECT count(*) FROM clips WHERE track_id=21") == 3 &&
               count("SELECT count(*) FROM clips WHERE track_id=23") == 3 &&
-              count("SELECT count(*) FROM clips WHERE id=9 AND kind='audio'") == 1 &&
+              count("SELECT count(*) FROM clips WHERE id=9 AND kind='audio' AND name='New Audio'") == 1 &&
               count("SELECT count(*) FROM clips WHERE id=10 AND kind='midi'") == 1,
           "one mixed splice splits both covered clips and reserves both incoming IDs before allocating the fragments");
+    check(media::mediaRow(db, 8).at("rel_path") == "Samples/Recorded/Input Guitar 0001.wav" &&
+              media::mediaRow(db, 10).at("rel_path") == "Samples/Recorded/Input Guitar 0002.wav",
+          "audio-only and mixed takes use the same track-based file sequence and keep their clip labels");
     History history(store);
     check(history.nextUndo() && history.nextUndo()->label == "Record" && history.undo().ok &&
               digestProject(store).text == before,
@@ -414,6 +418,9 @@ void heardPlacementAndHistory() {
         const auto committed=recording::commit(*f.store,prepared);if(!committed.ok)std::printf("commit: %s\n",committed.error.c_str());
         check(committed.ok && committed.seqs.size()==2,"recorded media and the take's placement commit as one native undo group");
         auto& db=f.store->db();const auto owned=media::projectFolder(*f.store)/media::pathFromUtf8(db.execAndGet("SELECT rel_path FROM media_files").getString());
+        check(owned.filename()=="One 0001.wav" &&
+              db.execAndGet("SELECT orig_name FROM media_files").getString()=="One 0001.wav",
+              "the recorded WAV and media name use the track name rather than the clip label");
         check(std::filesystem::exists(owned) && !std::filesystem::exists(recorded.directory()),"successful recording publication retains owned audio and removes only private take staging");
         const auto heard=f.play(precision);bool exact=true;
         for(std::size_t frame=0;frame<heard.size();++frame)exact=exact && heard[frame]==(frame>=512 && frame<812?Fixture::sample(frame-512):0);
@@ -425,6 +432,58 @@ void heardPlacementAndHistory() {
         f.store.reset();StoreError opened{};f.store=Store::open(f.temporary.path()/"song.adi",opened);
         check(f.store && digestProject(*f.store).text==after && f.play(precision)==heard,"reopened recording history and owned media restore the same project and heard PCM");
     }
+}
+void numberedRecordingFiles() {
+    namespace fs=std::filesystem;
+    Fixture f;
+    const auto folder=media::projectFolder(*f.store)/"Samples"/"Recorded";
+    const auto land=[&](int frames,std::int64_t clip,std::int64_t mediaId,const std::string& trackName) {
+        auto capture=f.capture(false,Precision::Float32,false,frames);
+        const auto hash=media::blake3File(capture.tracks.front().file);
+        const std::array<recording::ClipIds,1> ids={{{clip,mediaId,"Clip title",trackName}}};
+        auto edit=recording::prepareCommit(*f.store,capture,ids);
+        const auto committed=edit.ok?recording::commit(*f.store,edit):CommitResult{};
+        check(committed.ok,"a track-named recording publishes through the normal commit path");
+        if(!committed.ok)return fs::path{};
+        const auto row=media::mediaRow(f.store->db(),mediaId);
+        const auto path=media::projectFolder(*f.store)/media::pathFromUtf8(row.at("rel_path").get<std::string>());
+        check(path.parent_path()==folder && row.at("orig_name")==media::pathUtf8(path.filename()) &&
+              hash && media::blake3File(path).hex==hash.hex,
+              "the media row has the published WAV's name, relative path and exact content");
+        return path;
+    };
+    const auto first=land(300,7,8,"Guitar");
+    const auto second=land(256,17,18,"Guitar");
+    check(first.filename()=="Guitar 0001.wav" && second.filename()=="Guitar 0002.wav",
+          "the displayed track name overrides the stored name and takes count upward");
+    const auto occupant=folder/"gUiTaR 0003.WAV";
+    {std::ofstream file(occupant);file<<"unrelated file";}
+    const auto occupantHash=media::blake3File(occupant);
+    const auto next=land(128,27,28,"Guitar");
+    check(next.filename()=="Guitar 0004.wav" && occupantHash &&
+          media::blake3File(occupant).hex==occupantHash.hex,
+          "numbering skips a case-insensitive occupied name without modifying its file");
+
+    const auto portable=land(192,37,38,"AUX .desk/Left");
+    check(portable.filename()=="_AUX .desk_Left 0001.wav",
+          "track names cannot make a device filename or escape Samples/Recorded");
+    std::string longTrack="x";
+    for(int i=0;i<110;++i)longTrack+="\xc3\xa9";
+    const auto longPath=land(224,47,48,longTrack);
+    const auto longName=media::pathUtf8(longPath.filename());
+    constexpr std::string_view suffix=" 0001.wav";
+    check(longName.size()<=200 && longName.ends_with(suffix) && longName.size()>suffix.size()+1 &&
+          (longName.size()-suffix.size())%2==1 && longTrack.starts_with(longName.substr(0,longName.size()-suffix.size())),
+          "a long Unicode track name keeps complete characters and room for the WAV suffix");
+
+    if(first.empty())return;
+    auto duplicate=f.capture();
+    const std::array<recording::ClipIds,1> duplicateIds={{{57,58,"Another clip","Another Track"}}};
+    auto reuse=recording::prepareCommit(*f.store,duplicate,duplicateIds);
+    check(reuse.ok && recording::commit(*f.store,reuse).ok &&
+          media::mediaRow(f.store->db(),8).at("rel_path")=="Samples/Recorded/Guitar 0001.wav" &&
+          !fs::exists(folder/"Another Track 0001.wav"),
+          "identical recorded content keeps the existing owned WAV and its first name");
 }
 // walk-B B6: a take recorded over a clip replaces what it covers in the main lane, as Live does, in the
 // take's one Undo step; nothing is left under it to play.
@@ -557,9 +616,16 @@ void rollbackNeverDeletesLaterWriter() {
 
 void lateSqlAndOwnedReuse() {
     Fixture f;auto recorded=f.capture();const std::array<recording::ClipIds,1> ids={{{7,8,"One"}}};auto& db=f.store->db();
+    const auto publicationTarget=[&](const recording::RecordingEdit& prepared) {
+        for(const auto& request:prepared.requests)
+            if(request.opType=="media.import")
+                return media::projectFolder(*f.store)/
+                       media::pathFromUtf8(request.payload.at("row").at("rel_path").get<std::string>());
+        throw std::runtime_error("recording fixture has no captured publication path");
+    };
     db.exec("CREATE TABLE late_parent(id INTEGER PRIMARY KEY);CREATE TABLE late_child(id INTEGER PRIMARY KEY,parent INTEGER REFERENCES late_parent(id) DEFERRABLE INITIALLY DEFERRED);CREATE TRIGGER reject_recording AFTER INSERT ON audio_clips BEGIN INSERT INTO late_child(id,parent) VALUES(NEW.clip_id,999);END");
-    const auto before=digestProject(*f.store).text;auto prepared=recording::prepareCommit(*f.store,recorded,ids);auto published=std::filesystem::path{};
-    for(const auto& request:prepared.requests)if(request.opType=="media.import")published=media::projectFolder(*f.store)/media::pathFromUtf8(request.payload.at("row").at("rel_path").get<std::string>());
+    const auto before=digestProject(*f.store).text;auto prepared=recording::prepareCommit(*f.store,recorded,ids);
+    auto published=publicationTarget(prepared);
     const auto failed=recording::commit(*f.store,prepared);
     const bool retained=std::filesystem::exists(published);
 #if defined(_WIN32)
@@ -571,15 +637,26 @@ void lateSqlAndOwnedReuse() {
 #endif
     check(prepared.ok && !failed.ok && digestProject(*f.store).text==before && cleanupAccepted && std::filesystem::exists(recorded.tracks[0].file),"late SQL failure rolls back rows, safely cleans or reports retained owned publication, and preserves the private take");
     db.exec("DROP TRIGGER reject_recording;DROP TABLE late_child;DROP TABLE late_parent");
-    prepared=recording::prepareCommit(*f.store,recorded,ids);const auto retried=recording::commit(*f.store,prepared);check(retried.ok,"retry the same completed take after fixing the SQL failure");
+    prepared=recording::prepareCommit(*f.store,recorded,ids);published=publicationTarget(prepared);
+    const auto retried=recording::commit(*f.store,prepared);check(retried.ok,"retry the same completed take after fixing the SQL failure");
     const auto originalHash=media::blake3File(published);check(History(*f.store).undo().ok && std::filesystem::exists(published),"undo keeps the owned recording available to a later recording branch");
     auto repeated=f.capture();db.exec("CREATE TABLE late_parent(id INTEGER PRIMARY KEY);CREATE TABLE late_child(id INTEGER PRIMARY KEY,parent INTEGER REFERENCES late_parent(id) DEFERRABLE INITIALLY DEFERRED);CREATE TRIGGER reject_recording AFTER INSERT ON audio_clips BEGIN INSERT INTO late_child(id,parent) VALUES(NEW.clip_id,999);END");
     const auto reusedBefore=digestProject(*f.store).text;auto reuse=recording::prepareCommit(*f.store,repeated,ids);
-    check(reuse.ok && !recording::commit(*f.store,reuse).ok && digestProject(*f.store).text==reusedBefore && media::blake3File(published).hex==originalHash.hex && std::filesystem::exists(repeated.tracks[0].file),"failed SQL after identical owned-file reuse never deletes the old asset or the new private take");
+    const auto reusedPath=publicationTarget(reuse);
+    std::filesystem::copy_file(repeated.tracks[0].file,reusedPath);
+    check(reuse.ok && !recording::commit(*f.store,reuse).ok && digestProject(*f.store).text==reusedBefore &&
+          media::blake3File(reusedPath).hex==originalHash.hex && media::blake3File(published).hex==originalHash.hex &&
+          std::filesystem::exists(repeated.tracks[0].file),
+          "failed SQL after reusing an identical late arrival keeps both old WAVs and the private take");
     db.exec("DROP TRIGGER reject_recording;DROP TABLE late_child;DROP TABLE late_parent");
-    {std::ofstream foreign(published,std::ios::binary|std::ios::trunc);foreign<<"different content";}
-    const auto foreignHash=media::blake3File(published);auto collision=recording::prepareCommit(*f.store,repeated,ids);
-    check(collision.ok && !recording::commit(*f.store,collision).ok && media::blake3File(published).hex==foreignHash.hex && std::filesystem::exists(repeated.tracks[0].file),"recording publication never overwrites a different existing file");repeated.discard();
+    auto collision=recording::prepareCommit(*f.store,repeated,ids);
+    const auto occupied=publicationTarget(collision);
+    {std::ofstream foreign(occupied,std::ios::binary);foreign<<"different content";}
+    const auto foreignHash=media::blake3File(occupied);
+    check(collision.ok && !recording::commit(*f.store,collision).ok && media::blake3File(occupied).hex==foreignHash.hex &&
+          std::filesystem::exists(repeated.tracks[0].file),
+          "recording publication never overwrites a different file that arrives after preparation");
+    repeated.discard();
 }
 void groupDedupAndGuards() {
     Fixture f;auto recorded=f.capture(true);const std::array<recording::ClipIds,2> ids={{{7,8,"One"},{9,10,"Two"}}};auto prepared=recording::prepareCommit(*f.store,recorded,ids);
@@ -857,7 +934,7 @@ int main(int argc,char** argv){try{
     midiLinearTakes();mixedLinearTake();
     midiLoopTakes();
     if(argc!=1 && (argc!=3 || std::string(argv[1])!="--cross-volume-work-folder"))throw std::runtime_error("usage: recording tests [--cross-volume-work-folder PATH]");
-    publicationStagingOwnership();forcedCrossDevicePublication();heardPlacementAndHistory();linearTakeReplacesWhatItCovers();rollbackNeverDeletesLaterWriter();lateSqlAndOwnedReuse();existingMediaAndHistoryPaths();groupDedupAndGuards();loopPublicationRefusesFlattening();
+    publicationStagingOwnership();forcedCrossDevicePublication();heardPlacementAndHistory();numberedRecordingFiles();linearTakeReplacesWhatItCovers();rollbackNeverDeletesLaterWriter();lateSqlAndOwnedReuse();existingMediaAndHistoryPaths();groupDedupAndGuards();loopPublicationRefusesFlattening();
     loopPassesAndHistory();loopPartialEdgesAndPriorComp();loopSinglePassBoundaries();loopAtomicRefusalAndDedup();
     loopReusesOrderedLanes();loopMixedReuseAndFallback();loopReuseRefusesUnprovedExtents();
     if(argc==3) {

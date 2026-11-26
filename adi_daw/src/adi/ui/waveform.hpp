@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include "adi/audio/warp_map.hpp"
+#include "adi/engine/audio_recording.hpp"
 #include "adi/engine/snapshot.hpp"
 #include "adi/media/peaks.hpp"
 #include <algorithm>
@@ -55,13 +56,59 @@ class WaveformCache {
         std::lock_guard lock(mutex_);
         if (const auto found = kept_.find(hash); found != kept_.end())
             return found->second;
-        wanted_.insert(hash);
-        if (asked_.insert(hash).second) {
-            queue_.push_back({audio.mediaId, hash});
-            start();
-            wake_.notify_one();
-        }
+        if (const auto found = provisional_.find(hash); found != provisional_.end())
+            return found->second;
+        requestLocked(audio);
         return nullptr;
+    }
+    // Carry the finalized recording preview into its newly landed clips while the worker reads
+    // the file's own peaks. A recording can share media with an earlier clip that already has them.
+    void seedRecording(const engine::Snapshot &snapshot, std::span<const std::int64_t> clips,
+                       const engine::AudioRecordingPreview &preview) {
+        const auto &source = preview.peaks;
+        if (clips.empty() || source.channels == 0 || source.frames == 0 || source.framesPerBin == 0 ||
+            source.sampleRate == 0 || source.bins.size() > media::kMaxPeakValues)
+            return;
+        const auto binCount = source.bins.size() / source.channels;
+        if (source.bins.size() % source.channels != 0 ||
+            binCount != source.frames / source.framesPerBin + (source.frames % source.framesPerBin != 0))
+            return;
+        const std::set<std::int64_t> landed(clips.begin(), clips.end());
+        for (const auto &mapping : preview.tracks) {
+            const auto *track = snapshot.findTrack(mapping.trackId);
+            if (!track || mapping.channels.empty() || mapping.channels.size() > source.channels ||
+                std::any_of(mapping.channels.begin(), mapping.channels.end(),
+                            [&](std::uint32_t channel) { return channel >= source.channels; }))
+                continue;
+            const auto channels = static_cast<std::uint32_t>(mapping.channels.size());
+            for (const auto &clip : track->clips) {
+                if (!landed.contains(clip->id) || !clip->audio || !clip->audio->mediaInfo)
+                    continue;
+                const auto &audio = *clip->audio;
+                const auto &identity = *audio.mediaInfo;
+                if (identity.missing || identity.contentHash.empty() ||
+                    (identity.sampleRate && *identity.sampleRate != source.sampleRate) ||
+                    (identity.channels && *identity.channels != channels) ||
+                    (identity.frames && static_cast<std::uint64_t>(*identity.frames) != source.frames))
+                    continue;
+                auto peaks = std::make_shared<media::MediaPeaks>();
+                peaks->contentHash = identity.contentHash;
+                peaks->sampleRate = source.sampleRate;
+                peaks->channels = channels;
+                peaks->frames = source.frames;
+                peaks->framesPerBin = source.framesPerBin;
+                peaks->bins.reserve(binCount * channels);
+                for (std::size_t bin = 0; bin < binCount; ++bin)
+                    for (const auto channel : mapping.channels)
+                        peaks->bins.push_back(source.bins[bin * source.channels + channel]);
+                std::lock_guard lock(mutex_);
+                if (kept_.contains(identity.contentHash) || provisional_.contains(identity.contentHash))
+                    continue;
+                requestLocked(audio);
+                provisional_.emplace(identity.contentHash, std::move(peaks));
+                delivered_.fetch_add(1, std::memory_order_acq_rel);
+            }
+        }
     }
     // A new generation of the document: the files none of its clips use are dropped, and any
     // request or result for them with it.
@@ -76,6 +123,7 @@ class WaveformCache {
                     used.insert(c->audio->mediaInfo->contentHash);
         std::lock_guard lock(mutex_);
         std::erase_if(kept_, [&used](const auto &entry) { return !used.contains(entry.first); });
+        std::erase_if(provisional_, [&used](const auto &entry) { return !used.contains(entry.first); });
         std::erase_if(asked_, [&used](const std::string &hash) { return !used.contains(hash); });
         std::erase_if(queue_, [&used](const Request &r) { return !used.contains(r.hash); });
         wanted_ = std::move(used);
@@ -103,6 +151,15 @@ class WaveformCache {
         std::int64_t mediaId = 0;
         std::string hash;
     };
+    void requestLocked(const engine::AudioClipSource &audio) {
+        const auto &hash = audio.mediaInfo->contentHash;
+        wanted_.insert(hash);
+        if (asked_.insert(hash).second) {
+            queue_.push_back({audio.mediaId, hash});
+            start();
+            wake_.notify_one();
+        }
+    }
     void start() {
         if (!worker_.joinable())
             worker_ = std::jthread([this](std::stop_token stop) { run(stop); });
@@ -129,8 +186,10 @@ class WaveformCache {
                     continue; // asked_ keeps it: a file that fails is not tried again this session
                 }
                 // Kept under the hash the worker read; dropped when the document let the file go.
-                if (wanted_.contains(next.hash))
+                if (wanted_.contains(next.hash)) {
                     kept_[next.hash] = std::make_shared<const media::MediaPeaks>(std::move(*result.data));
+                    provisional_.erase(next.hash);
+                }
             }
             delivered_.fetch_add(1, std::memory_order_acq_rel);
         }
@@ -140,6 +199,7 @@ class WaveformCache {
     std::condition_variable_any wake_;
     std::deque<Request> queue_;
     std::map<std::string, std::shared_ptr<const media::MediaPeaks>> kept_;
+    std::map<std::string, std::shared_ptr<const media::MediaPeaks>> provisional_;
     std::set<std::string> asked_, wanted_;
     std::string problem_;
     bool busy_ = false;

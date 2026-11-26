@@ -6,6 +6,7 @@
 #include "adi/store.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include "adi/audio/io_audit.hpp"
+#include <algorithm>
 #include <atomic>
 #include <array>
 #include <bit>
@@ -151,6 +152,95 @@ void actualQueueWraps() {
     {audio::WavReader reader(result.tracks[0].file);reader.read(heard.data(),static_cast<std::uint32_t>(heard.size()));}
     check(result.failure==RecordingFailure::None && result.frames==expected.size() && heard==expected,"many queue wraps retain exact source order and final partial-block samples in an actual WAV");result.discard();
 }
+void waveformPreviewUsesCapturedFrames() {
+    test::TempDirectory directory{"audio_recording","waveform_preview"};
+    AudioInputRecorder recorder;
+    auto request=spec(directory.path());
+    request.sampleRate=48000;
+    request.targets={{21,{2,0}},{22,{0}}}; // shared input, different track channel order
+    std::string error;
+    if(!recorder.start(request,error))throw std::runtime_error(error);
+    const auto beforeInput=recorder.preview();
+    check(!beforeInput || beforeInput->peaks.frames==0,"no waveform exists before any input is written");
+
+    constexpr std::uint32_t firstFrames=79, secondFrames=37, lastFrames=13;
+    constexpr std::uint32_t totalFrames=firstFrames+secondFrames+lastFrames;
+    constexpr std::int64_t startSample=512;
+    std::array<float,totalFrames> channel0{},channel2{};
+    for(std::size_t i=0;i<totalFrames;++i) {
+        channel0[i]=-0.25f-static_cast<float>(i%11)/16.f;
+        channel2[i]=0.25f+static_cast<float>(i%13)/16.f;
+    }
+    channel0.back()=-1.25f;
+    channel2.back()=1.125f; // an extreme in the last partial block cannot be dropped
+
+    Transport transport;
+    transport.locate(startSample);
+    transport.play();
+    const auto capture=[&](std::uint32_t from,std::uint32_t frames) {
+        const float* inputs[]{channel0.data()+from,nullptr,channel2.data()+from};
+        AudioIo io;
+        io.in=inputs;
+        io.numIn=3;
+        io.frames=static_cast<std::int32_t>(frames);
+        io.streamTimeSamples=from;
+        input(recorder,transport,io);
+    };
+    const auto exact=[&](const AudioRecordingPreview& preview,std::uint64_t frames) {
+        const auto& peaks=preview.peaks;
+        if(preview.startSample!=startSample || peaks.frames!=frames || peaks.channels!=2 ||
+           peaks.sampleRate!=request.sampleRate || peaks.framesPerBin==0 || preview.tracks.size()!=2)
+            return false;
+        const auto track=[&](std::int64_t id) {
+            return std::find_if(preview.tracks.begin(),preview.tracks.end(),
+                                [id](const auto& entry){return entry.trackId==id;});
+        };
+        const auto first=track(21), second=track(22);
+        if(first==preview.tracks.end() || second==preview.tracks.end() ||
+           first->channels.size()!=2 || second->channels.size()!=1)
+            return false;
+        const auto index2=first->channels[0], index0=first->channels[1];
+        if(index2>=peaks.channels || index0>=peaks.channels || index2==index0 ||
+           second->channels.front()!=index0)
+            return false;
+        const auto count=1+(frames-1)/peaks.framesPerBin;
+        if(peaks.bins.size()!=count*peaks.channels)
+            return false;
+        const auto hasExtrema=[&](const auto& source,std::uint32_t channel,std::uint64_t bin) {
+            const auto from=bin*peaks.framesPerBin;
+            const auto to=from+std::min(peaks.framesPerBin,frames-from);
+            const auto [minimum,maximum]=std::minmax_element(source.data()+from,source.data()+to);
+            const auto& extrema=peaks.bins[static_cast<std::size_t>(bin*peaks.channels+channel)];
+            return extrema.minimum==*minimum && extrema.maximum==*maximum;
+        };
+        for(std::uint64_t bin=0;bin<count;++bin)
+            if(!hasExtrema(channel0,index0,bin) || !hasExtrema(channel2,index2,bin))
+                return false;
+        return true;
+    };
+    capture(0,firstFrames);
+    std::shared_ptr<const AudioRecordingPreview> first;
+    const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+    do {
+        first=recorder.preview();
+        if(first && first->peaks.frames!=0)break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    } while(std::chrono::steady_clock::now()<deadline);
+    check(first && exact(*first,firstFrames),
+          "the first writer batch publishes exact per-input extrema, shared channel mapping and the real song start");
+
+    capture(firstFrames,secondFrames);
+    capture(firstFrames+secondFrames,lastFrames);
+    recorder.stop();
+    AudioIo idle;
+    input(recorder,transport,idle);
+    auto result=finish(recorder);
+    check(result.failure==RecordingFailure::None && result.frames==totalFrames && result.preview &&
+          exact(*result.preview,totalFrames),
+          "the final preview covers every accepted sample, including extrema in the final partial block");
+    check(first && exact(*first,firstFrames),"holding the first publication keeps its original frames and peaks");
+    result.discard();
+}
 class FailingSink final:public AudioRecordingSink {
 public:
     void write(std::span<const float>,std::uint32_t)override{throw std::runtime_error("injected disk write failure");}
@@ -242,6 +332,49 @@ public:
         writer_.close();
     }
 };
+void keepPrefixAfterPartialDiskFailure() {
+    test::TempDirectory directory{"audio_recording","disk_error_keep"};
+    DiskFailure disk;
+    AudioInputRecorder recorder;
+    auto request=spec(directory.path());
+    request.targets={{21,{0}}};
+    std::string error;
+    if(!recorder.start(request,error,[&](const auto& file,auto rate,auto channels,auto format) {
+        return std::make_unique<PartialWaveSink>(file,rate,channels,format,disk,true);
+    }))throw std::runtime_error(error);
+    Transport transport;
+    transport.play();
+    const std::array<float,8> samples{.25f,-.5f,0.f,.5f,-.125f,0.f,0.f,.125f};
+    const std::array<float,8> unwritten{1.f,1.f,1.f,1.f,1.f,1.f,1.f,1.f};
+    const float* channels[]={samples.data()};
+    AudioIo io;
+    io.in=channels;
+    io.numIn=1;
+    io.frames=static_cast<int>(samples.size());
+    input(recorder,transport,io);
+    // Allow the first WAV write to finish before offering a block that will fail.
+    const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+    while(!disk.firstWrites.load(std::memory_order_acquire) && std::chrono::steady_clock::now()<deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    if(!disk.firstWrites.load(std::memory_order_acquire))
+        throw std::runtime_error("the first WAV block was not written");
+    channels[0]=unwritten.data();
+    io.streamTimeSamples=io.frames;
+    input(recorder,transport,io);
+    const auto result=finish(recorder,true);
+    check(result.failure==RecordingFailure::Io && result.error=="injected disk failure after the first write" &&
+          !recorder.pending(),"a non-cancelled disk failure finishes with its original writer error");
+    const auto file=result.directory()/"take-0.wav";
+    const bool retained=!result.directory().empty() && std::filesystem::is_regular_file(file);
+    check(retained,"a failed recording keeps its WAV even when closing the sink fails");
+    if(retained) {
+        audio::WavReader reader(file);
+        std::array<float,8> saved{};
+        check(reader.frames()==saved.size() &&
+              reader.read(saved.data(),static_cast<std::uint32_t>(saved.size()))==saved.size() && saved==samples,
+              "the first completed block survives and the failed block is absent");
+    }
+}
 void cancelAfterPartialDiskFailure() {
     for(const bool deviceStopped:{false,true}) {
         test::TempDirectory directory{"audio_recording","disk_error_cancel"};
@@ -500,8 +633,9 @@ void loopDiscontinuities() {
 int main() {
     try {
         actualFilesAndAcknowledgment();stopDrainsLastShortBlock();formatAndInputFailures();
-        boundedOverflow();actualQueueWraps();discontinuityAndWriterFailures();closeFailureAfterDiscontinuity();
-        cancelAfterPartialDiskFailure();
+        boundedOverflow();actualQueueWraps();waveformPreviewUsesCapturedFrames();
+        discontinuityAndWriterFailures();closeFailureAfterDiscontinuity();
+        keepPrefixAfterPartialDiskFailure();cancelAfterPartialDiskFailure();
 #if defined(_WIN32)
         cancelReportsCleanupDenial();
 #endif

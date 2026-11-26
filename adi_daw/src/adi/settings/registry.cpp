@@ -408,8 +408,8 @@ void catalogueSettings(std::vector<Setting>& r) {
     r.push_back(make("files.renderFolder", Type::Path, ff, "Default render folder",
                      "Where exports are written.", ""));
     r.push_back(make("files.recordFolder", Type::Path, ff, "Default record folder",
-                     "Where a new project records audio. Empty: the project's own folder, as "
-                     "Live (ADR-0203).",
+                     "Folder for in-progress audio and takes kept for recovery. Leave it empty to record "
+                     "in the song folder. Finished takes go into the song's Samples/Recorded folder.",
                      ""));
     r.push_back(choice("files.copyImportedMedia", ff, "Copy imported media into the project",
                        "Always, ask, or never, in Live's Collect Files wording. Default: never, "
