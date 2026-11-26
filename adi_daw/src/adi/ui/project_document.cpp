@@ -191,6 +191,8 @@ struct ProjectDocument::SaveJob {
     Phase phase = Phase::waitingForRecording;
     bool wasRecording;
     bool keptTake = false;
+    bool switched = false;
+    std::string adoptionWarning;
     std::chrono::steady_clock::time_point recordingDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
     std::stop_source stop;
     StoreFileSave file;
@@ -210,7 +212,7 @@ struct ProjectDocument::SaveJob {
         auto display = phase;
         if (phase == Phase::copying && progress.phase != StoreSavePhase::copying)
             display = progress.phase == StoreSavePhase::relocating ? Phase::relocating : Phase::finishing;
-        return {display, progress.pagesCopied, progress.totalPages};
+        return {display, progress.pagesCopied, progress.totalPages, switched};
     }
 };
 namespace {
@@ -528,6 +530,7 @@ void ProjectDocument::advanceSave() {
         job.phase = Phase::succeeded;
     };
     const auto finishRetirement = [&](std::string warning) {
+        warning_ = std::move(job.adoptionWarning);
         if (!warning.empty()) {
             if (!warning_.empty()) warning_ += ' ';
             warning_ += warning;
@@ -600,10 +603,12 @@ void ProjectDocument::advanceSave() {
             fail(adopted.error, adopted.warning);
             return;
         }
+        job.switched = true;
+        job.phase = Phase::finishing;
         followSaveAs(adopted, job.keptTake);
+        job.adoptionWarning = std::move(warning_);
         try {
             job.retirement = std::async(std::launch::async, [job = &job] { return job->file.closeReplacedProject(); });
-            job.phase = Phase::finishing;
         } catch (const std::system_error &) {
             finishRetirement(job.file.closeReplacedProject());
         }

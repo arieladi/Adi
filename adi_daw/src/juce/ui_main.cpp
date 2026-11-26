@@ -98,6 +98,7 @@ class ProjectProgressWindow final : public juce::DocumentWindow {
         body_->progress = progress;
     }
     bool cancelled() const noexcept { return body_->cancelled; }
+    void disableCancel() { body_->cancel.setEnabled(false); }
     void closeButtonPressed() override { body_->requestCancel(); }
 
   private:
@@ -1389,7 +1390,8 @@ class AdiApplication final : public juce::JUCEApplication,
         }
     }
     void requestProjectSaveCancellation() {
-        if (!projectSave_ || !saveProgress_ || !saveProgress_->cancelled() || projectSave_->cancelling)
+        if (!projectSave_ || !saveProgress_ || !saveProgress_->cancelled() ||
+            projectSave_->cancelling || projectSave_->switched)
             return;
         projectSave_->cancelling = true;
         document_->cancelSave();
@@ -1404,6 +1406,16 @@ class AdiApplication final : public juce::JUCEApplication,
         const auto progress = document_->saveProgress();
         if (!progress)
             return;
+        if (progress->switched && !projectSave_->switched) {
+            projectSave_->switched = true;
+            const auto after = document_->deviceCopyIdentity();
+            if (deviceClipboard_ && deviceClipboard_->sourceFile == projectSave_->sourceIdentity)
+                deviceClipboard_->sourceFile = after;
+            commands_->clipClipboard().rebase(projectSave_->sourceIdentity, after);
+            window_->setName("ADI - " + projectSave_->file.getFileNameWithoutExtension());
+            if (saveProgress_)
+                saveProgress_->disableCancel();
+        }
         if (saveFinished(progress->phase)) {
             finishProjectSave(progress->phase, true);
             return;
@@ -1438,13 +1450,6 @@ class AdiApplication final : public juce::JUCEApplication,
         if (!saved && save.createdFolder)
             removeEmptySaveFolder(pathFromUtf8(save.file.getParentDirectory().getFullPathName().toStdString()));
         if (showOutcome && root_) {
-            if (saved && save.kind == SaveKind::as) {
-                const auto after = document_->deviceCopyIdentity();
-                if (deviceClipboard_ && deviceClipboard_->sourceFile == save.sourceIdentity)
-                    deviceClipboard_->sourceFile = after;
-                commands_->clipClipboard().rebase(save.sourceIdentity, after);
-                window_->setName("ADI - " + save.file.getFileNameWithoutExtension());
-            }
             auto message = document_->warning();
             if (phase == SavePhase::failed)
                 message = document_->error() + (message.empty() ? "" : " " + message);
@@ -1793,7 +1798,7 @@ class AdiApplication final : public juce::JUCEApplication,
         juce::File file;
         SaveKind kind;
         std::string sourceIdentity, takeWarning;
-        bool createdFolder = false, cancelling = false;
+        bool createdFolder = false, cancelling = false, switched = false;
     };
     std::optional<PendingProjectSave> projectSave_;
     std::unique_ptr<ProjectProgressWindow> saveProgress_;

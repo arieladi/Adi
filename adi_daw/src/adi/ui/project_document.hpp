@@ -103,6 +103,7 @@ class ProjectDocument final : public engine::BlockProcessor {
         Phase phase;
         int pagesDone = 0;
         int pagesTotal = 0;
+        bool switched = false;
     };
     // File-menu saves progress between owner turns. Only Save As switches the live document.
     bool startSave(const std::filesystem::path &, SaveKind);
