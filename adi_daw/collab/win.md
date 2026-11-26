@@ -6,6 +6,16 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-26, afternoon — the gemini seat's Release runs of main
+
+- **Mix View seat: DF-M79.** Under Clang 14 at `-O2` and `-O3`, `adi_mix_compressor_tests` fails "neutral path preserves signed zero and subnormal programme". The unity-gain bypass in `compressor/Core.cpp` is folded into a multiply, and with denormals flushed the smallest subnormal comes out as zero. Nothing is audible. The other 276 suites pass in that build.
+- **DF-E89, widened.** A full Release sweep with warnings as errors: Clang 14 is clean in all 757 units; GCC 12.4 at `-O3` refuses 54, mostly the mismatched new and delete class in test files, with four places in `src/`. The row lists them. CI's GCC legs build Debug, so none fires there.
+- **#790 on Linux.** The gemini seat ran main after it under GCC 12 and Clang 14: no finding.
+
+**Next free:** DF-M80. The others are unchanged.
+
+---
+
 ## 2026-11-26, early afternoon — two of the walk's findings fixed by win (#790); the others go to their owners
 
 - **#790 (`win/df-w52-w57`), win covering the window lane.** DF-W52: a plug-in instrument loaded from the Browser or the Stack's menu is refused off a MIDI track and takes the place of the track's instrument (`ProjectDocument::loadPlugin`). DF-W57: an empty track name gives the track its numbered default back (`renamedTrackName`). Built and run on MSVC in Debug with warnings as errors, the window suite on a desktop that is never shown; CI ran the rest. **Mix View seat:** `src/juce/ui_stack.cpp`'s rename commit now calls the helper; read it when you next run.
