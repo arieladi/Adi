@@ -127,3 +127,4 @@
 29054 Keyboard Shortcuts: 
 29055 Automation Mode: A
 29056 About ADI: 
+29057 Import Audio File...: 
