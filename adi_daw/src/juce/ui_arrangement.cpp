@@ -3106,7 +3106,6 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
     last = e.position;
     moving_ = resizing_ = 0;
     copying_ = false;
-    bodySelectionOnDrag_ = false;
     keyResize_ = false; // a click ends a resize begun from the keyboard, as Esc does
     selectedFade_.reset(); // a click chooses a fade handle again, or nothing
     focusLost(focusChangedDirectly);
@@ -3217,15 +3216,13 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
         }
         const auto *bar = barAt(e.x, e.y, track, edge);
         using Purpose = ArrangementView::SelectionPurpose;
-        const auto purpose = bar != nullptr || kSelectClipFromBodyClick ? Purpose::Edit : Purpose::InsertMarker;
+        const auto purpose = bar != nullptr ? Purpose::Edit : Purpose::InsertMarker;
         view.select(e.x, e.y, view.snaps(e.mods), purpose);
         if (bar != nullptr && bar->id == view.geometry.selection.clip) {
             moving_ = bar->id;
             movingFrom_ = movingTo_ = bar->posTicks;
             movingSource_ = movingTrack_ = track;
             grabTicks_ = view.geometry.tick(e.x) - bar->posTicks;
-        } else {
-            bodySelectionOnDrag_ = view.geometry.selection.clip != 0;
         }
     }
 }
@@ -3403,14 +3400,6 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
         last = e.position;
     } else {
         auto &sel = view.geometry.selection;
-        if (bodySelectionOnDrag_) {
-            if (!e.mouseWasDraggedSinceMouseDown())
-                return;
-            // The body drag selects time from the press, leaving the clip itself unselected.
-            bodySelectionOnDrag_ = false;
-            sel.clip = 0;
-            sel.start = sel.insert;
-        }
         // Dragged across lanes, the selection reaches every track between (Live 12 manual 6.9); at
         // the lanes' edge they scroll, and it reaches on.
         if (e.mouseWasDraggedSinceMouseDown())
