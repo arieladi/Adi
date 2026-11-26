@@ -22,6 +22,7 @@ Baseline `00f1f369f3566c0c833390f8af5f0df9ed50f1cf`.
 | `origin/basics/recording-chain` | `45f0a9b0deafbfa5b444b02929e1a231586a65b8` | No | Apple Clang at `src/adi/ui/project_document.cpp:184:48` reported `implicit conversion from 'const std::int64_t' (aka 'const long long') to 'long double' may lose precision [-Werror,-Wimplicit-int-float-conversion]`. The build stopped before suites could start. `90f4091d` has the explicit conversion on the newer landing head. |
 | `origin/basics/tracks-chain` | `35b782d6858d4f0a7bb3cfef6103e4a4208ea6d9` | No | Apple Clang at `src/adi/ui/project_document.cpp:184:48` reported `implicit conversion from 'const std::int64_t' (aka 'const long long') to 'long double' may lose precision [-Werror,-Wimplicit-int-float-conversion]`. The build stopped before suites could start. `90f4091d` has the explicit conversion on the newer landing head. |
 | `origin/land/basics-1127d` | `90f4091d241d1ae4b8690e74fafd1124d4611f0c` | Yes | Passed 46/46. The explicit conversion clears the Apple Clang build failure. Affected suites 12/12, window and mixer 31/31, acceptance 3/3. |
+| `origin/basics/mac-chain` | `c5d82c47e1a11200d49c359eaabe0a2f05943903` | App only | SC-392 bundle regression passed after failing on the old bundle. Acceptance 3/3, window and mixer 31/32. The existing SC-246 Cue Volume checks failed at `tests/test_ui_shell.cpp:11207` and `:11215`. The full build was blocked by missing `DeviceBridge::lastError` at `src/juce/play.cpp:832`, `:852` and `:853` in the merged landing. |
 
 ## Nine-step window walk
 
