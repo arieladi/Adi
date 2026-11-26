@@ -367,25 +367,31 @@ StoreFileResult ProjectDocument::runCollectAndExport(const ExportJob &job) {
         return {false, e.what(), {}};
     }
 }
+void ProjectDocument::refreshSessionSources() {
+    refreshLimiterReductionSources();
+    realisedGeneration_ = view_.generation();
+    // A retained retiree can share its row ID with a newer instance.
+    // Detach by ID only while the retiree still owns the session's binding.
+    for (std::size_t i = 0; i < session_.entryCount(); ++i) {
+        const auto &entry = session_.entryAt(i);
+        if (entry.retired && session_.entryFor(entry.deviceId) == &entry)
+            parameterOps_.detach(entry.deviceId);
+    }
+    parameterOps_.attachSession(session_);
+    analysis_->refreshSources();
+}
 bool ProjectDocument::synchronise() {
     if (realisedGeneration_ != view_.generation()) {
-        const auto keyed = session_.refreshDeviceKeys(*store_, view_.committedImage());
+        const auto &edit = view_.localEdit();
+        const auto local = edit && edit->fromGeneration == realisedGeneration_ ? session_.refreshLocalEdit(*store_, view_) : std::nullopt;
+        const auto keyed = local ? local : session_.refreshDeviceKeys(*store_, view_.committedImage());
         const bool refreshed = keyed ? *keyed : session_.refresh(*store_);
-        refreshLimiterReductionSources();
         if (!refreshed) {
+            refreshLimiterReductionSources();
             error_ = session_.error();
             return false;
         }
-        realisedGeneration_ = view_.generation();
-        // A retained retiree can share its row ID with a newer instance.
-        // Detach by ID only while the retiree still owns the session's binding.
-        for (std::size_t i = 0; i < session_.entryCount(); ++i) {
-            const auto &entry = session_.entryAt(i);
-            if (entry.retired && session_.entryFor(entry.deviceId) == &entry)
-                parameterOps_.detach(entry.deviceId);
-        }
-        parameterOps_.attachSession(session_);
-        analysis_->refreshSources();
+        refreshSessionSources();
         error_.clear();
     }
     // The session re-read the rows after the submitter's refresh, so an override it found there,
@@ -419,6 +425,10 @@ void ProjectDocument::syncMonitorInputs() {
 void ProjectDocument::followOverrides() {
     const auto snapshot = view_.current();
     if (!snapshot)
+        return;
+    // A held preview publishes its own temporarily suspended lanes. Only the
+    // committed view follows the Session's durable override set.
+    if (mixerDrag_ && snapshot != view_.committed())
         return;
     const auto &lanes = session_.overriddenLanes();
     bool agree = snapshot->automationOverridden == !lanes.empty();
@@ -553,11 +563,13 @@ void ProjectDocument::persistReportedLatencies() {
                                {"format", entry->resolvedFormat}, {"uid", entry->resolvedUid},
                                {"latency_samples", device.latency}});
         }
-        SQLite::Statement write(store_->db(), "INSERT INTO session_state(key,value) "
+        SQLite::Statement write(store_->db(), "INSERT INTO main.session_state(key,value) "
             "VALUES('devices.reported_latency',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value "
             "WHERE session_state.value<>excluded.value");
         write.bind(1, report.dump());
+        const bool viewWasCurrent = view_.storeCurrent(*store_);
         write.exec();
+        if (viewWasCurrent) view_.acknowledgeAdvisoryWrite(*store_);
         reportedLatencyFeed_ = current;
         reportedLatencySequence_ = sequence;
         reportedLatencyRate_ = rate;
@@ -1297,6 +1309,8 @@ bool ProjectDocument::beginMixerDrag(const gesture::RelativeScalarSelection &sel
                                      const std::string &label) {
     if (mixerDrag_)
         endMixerDrag();
+    const bool realised = realisedGeneration_ == view_.generation() && view_.storeCurrent(*store_);
+    const auto sequence = session_.realisedAppliedSequence();
     // The live values are the session's and the view's. Attached on every drag: Save As replaces the
     // store's gesture domain, and a coordinator kept from before would refuse.
     auto attached = gesture::Coordinator::attach(*store_, std::make_shared<gesture::EnginePresentation>(view_, session_));
@@ -1314,6 +1328,13 @@ bool ProjectDocument::beginMixerDrag(const gesture::RelativeScalarSelection &sel
         return false;
     }
     mixerDrag_ = std::move(begun.session);
+    if (realised && realisedGeneration_ != view_.generation() && session_.realisedAppliedSequence() == sequence &&
+        appliedSource(*store_).sequence() == sequence) {
+        // Beginning may have adopted a newer committed image for the preview.
+        // Its graph has already been realized; reconnect the document feeds.
+        refreshSessionSources();
+        syncMonitorInputs();
+    }
     if (!coordinate) {
         error_.clear();
         return true;
@@ -1329,11 +1350,15 @@ bool ProjectDocument::beginMixerDrag(const gesture::RelativeScalarSelection &sel
 bool ProjectDocument::mixerDrag(double coordinate) {
     if (!mixerDrag_)
         return false;
+    const bool realised = realisedGeneration_ == view_.generation();
+    const auto committed = view_.committedGeneration();
     const auto updated = mixerDrag_->update(std::make_unique<gesture::RelativeScalarInput>(coordinate));
     if (!updated.status.ok()) {
         error_ = updated.status.message;
         return false;
     }
+    if (realised && committed == view_.committedGeneration())
+        realisedGeneration_ = view_.generation();
     error_.clear();
     return true;
 }
@@ -1341,6 +1366,9 @@ bool ProjectDocument::endMixerDrag() {
     if (!mixerDrag_)
         return false;
     auto drag = std::move(mixerDrag_);
+    const bool realised = realisedGeneration_ == view_.generation();
+    const auto sequence = session_.realisedAppliedSequence();
+    const auto graph = session_.graph().stats().published;
     const auto outcome = drag->commit();
     if (!outcome.status.ok()) {
         error_ = outcome.status.message;
@@ -1348,9 +1376,16 @@ bool ProjectDocument::endMixerDrag() {
         synchronise();
         return false;
     }
-    // The committed rows reach the view and the session as any commit does.
-    view_.refresh(*store_, session_.overriddenLanes());
-    synchronise();
+    const auto currentSequence = session_.realisedAppliedSequence();
+    const bool direct = outcome.semanticNoOp ? currentSequence == sequence : currentSequence == sequence + 1;
+    if (realised && direct && outcome.presentation.state == gesture::PresentationState::Current &&
+        currentSequence == appliedSource(*store_).sequence() && session_.graph().stats().published == graph) {
+        // Native promotion already installed the committed rows and view.
+        realisedGeneration_ = view_.generation();
+    } else {
+        view_.refresh(*store_, session_.overriddenLanes());
+        synchronise();
+    }
     error_.clear();
     return true;
 }

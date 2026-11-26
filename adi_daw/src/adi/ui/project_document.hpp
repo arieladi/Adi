@@ -299,6 +299,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     // so a frame that changes nothing builds nothing; the rows did not move, so the session has
     // nothing to re-read after it.
     void followOverrides();
+    void refreshSessionSources();
     [[nodiscard]] device::DeviceInstance* limiterReductionTarget(
         std::int64_t id, const engine::DeviceRuntimeToken& expected);
     void refreshLimiterReductionSources();
