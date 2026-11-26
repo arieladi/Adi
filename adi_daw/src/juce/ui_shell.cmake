@@ -101,6 +101,14 @@ if(ADI_WITH_JUCE)
     # WTS-02: JUCE's assertions logged, so the suite's AssertionWatch counts them. On test targets only:
     # never on adi_app, where it would keep jassert live in the release ADI.exe.
     target_compile_definitions(adi_ui_shell_tests PRIVATE JUCE_LOG_ASSERTIONS=1)
+    # The suite's fixtures keep whole root windows on the stack. Windows gives a program 1 MB of stack
+    # where Linux and macOS give 8 MB, and a Debug build's frames are large: on 27 November the root grew
+    # (the Info box's own analyser, the recording fixtures) and the suite overflowed on Windows only. The
+    # program itself keeps its root on the heap; this is the test executable's stack, made as large as
+    # the other platforms'.
+    if (MSVC)
+        target_link_options(adi_ui_shell_tests PRIVATE /STACK:8388608)
+    endif()
     # Apply our warning policy to our code, not JUCE's module translation units.
     set_source_files_properties(src/juce/ui_shell.cpp src/juce/ui_arrangement.cpp src/juce/ui_browser.cpp src/juce/ui_controlbar.cpp src/juce/ui_devices.cpp src/juce/ui_floating.cpp src/juce/ui_look.cpp src/juce/ui_controls.cpp src/juce/ui_mixer.cpp src/juce/ui_mixview.cpp src/juce/ui_mix_channels.cpp src/juce/ui_mix_meter.cpp src/juce/ui_mix_analysers.cpp src/juce/ui_mix_focus.cpp src/juce/ui_settings.cpp src/juce/ui_stack.cpp src/juce/ui_analysis.cpp src/juce/ui_channel_config.cpp src/juce/ui_history.cpp src/juce/ui_clipview.cpp src/juce/ui_export.cpp src/juce/app_audio_page.cpp src/juce/app_midi_ports.cpp tests/test_ui_shell.cpp PROPERTIES
         COMPILE_OPTIONS "$<TARGET_PROPERTY:adi_warnings,INTERFACE_COMPILE_OPTIONS>")
