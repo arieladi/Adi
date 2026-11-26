@@ -11444,8 +11444,8 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     const auto lanePress = [&](int x, int button) {
         auto &canvas = lanes.canvas;
         const juce::Point<int> at{x, laneTop(root, 4) + 12};
-        canvas.mouseDown(pressAt(canvas, at, juce::ModifierKeys(button)));
-        canvas.mouseUp(pressAt(canvas, at));
+        canvas.mouseDown(pressAt(canvas, at.toFloat(), juce::ModifierKeys(button)));
+        canvas.mouseUp(pressAt(canvas, at.toFloat()));
         if (button == juce::ModifierKeys::rightButtonModifier)
             juce::PopupMenu::dismissAllActiveMenus();
     };
