@@ -11699,9 +11699,11 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
         const juce::Point<int> at{x, laneTop(root, 4) + 12};
         canvas.mouseDown(pressAt(canvas, at.toFloat(), juce::ModifierKeys(button)));
         canvas.mouseUp(pressAt(canvas, at.toFloat()));
-        if (button == juce::ModifierKeys::rightButtonModifier)
-            juce::PopupMenu::dismissAllActiveMenus();
     };
+    // The right press asks for the lanes' menu. It is counted here and not shown: a menu placed on the
+    // screen makes a window of its own, which a run with no display cannot have.
+    int laneMenus = 0;
+    lanes.onContextMenu = [&laneMenus](juce::Point<int>, bool, const engine::AutomationLaneNode *) { ++laneMenus; };
     for (const int button : {juce::ModifierKeys::leftButtonModifier, juce::ModifierKeys::rightButtonModifier}) {
         const auto insert = lanes.geometry.selection.insert;
         const auto sample = transport.position();
@@ -11713,6 +11715,8 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
                   transport.revision() == revision && document->recording(),
               "SC-02: a lane press moves the insert marker without seeking or interrupting the take");
     }
+    check(laneMenus == 1, "SC-02: the right press asks for the lanes' menu once");
+    lanes.onContextMenu = nullptr;
     check(root.command(AppCommands::ArrangementRecord), "F9's command again");
     frame();
     check(!root.arrangement.liveTake(), "stopped, the growing take goes");
