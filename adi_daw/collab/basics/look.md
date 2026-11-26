@@ -6,6 +6,7 @@ The Linux session owns `basics/look-chain`, started from `origin/main`. The queu
 |---|---|---|---|---|
 | SC-70 | `basics/look-chain` at `f8f32f63` | Plain ruler ticks, darker bar lines, a grid badge above the elapsed ruler and a whole-bar opening zoom. Window seat. | Four regression checks failed on the baseline. Debug Werror passed, as did 17 UI suites without DISPLAY and all 3 acceptance suites. The subsequent upstream conversion yielded the same GCC object with debug sections stripped. | Pushed |
 | SC-112 | `basics/look-chain` at `3ddd7c56` | Independent persistent Info analyser with Spectrogram as its initial mode. Right click chooses a renderer and left click opens Analysers. Window and Mix View seats. | Peerless menu, render and persistence checks passed. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
+| SC-111 | `basics/look-chain` at `587573d1` | Info uses the Browser column width through the dock layout. Window seat. | Peerless width, swap and narrow layout assertions passed. Reviewed and refreshed the structural software fixtures. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 
 ## Measurements
 
@@ -37,5 +38,11 @@ Notes for the Mix View seat (DF-W22).
 | Filled Spectrum | The existing Extended spectrum paints a tinted fill on its 10 Hz–30 kHz and 0 to −100 dB grid. SPAN's green default, labels and peak overlays are absent. |
 | Line Spectrum | The existing Device scale paints a thin unfilled 10 Hz–24 kHz, 0 to −120 dB plot with frequency labels above and dB labels at left. Live's Spectrum parameter strip is absent. |
 | Classic Scope | The original face fits a `192 × 69.82` region at `(12, 549.09)` in this box. It uses the triggered capture. Its controls are read-only here so the click and alternate-click can address the Info box. |
+
+### SC-111
+
+At 1200 × 720 Compact the Browser is `(8, 35, 308, 443)`. The Info panel goes from `(8, 486, 200, 196)` to `(8, 486, 308, 196)` and its inset analyser goes from `(12, 490, 192, 188)` to `(12, 490, 300, 188)`. The Device View moves from `(216, 486, 976, 196)` to `(324, 486, 868, 196)`. These are root-relative logical pixels. At 480 px with both side panels open the Info width decreases from 200 to 112, the actual width available to the Browser. When the Browser is collapsed its saved width supplies the Info width, bounded to half the window.
+
+Both columns in the 1920 × 1080 approved sheet are 326 px wide. The Browser is `(6, 74, 326, 702)` and the Info box is `(6, 782, 326, 266)`.
 
 ## For the director
