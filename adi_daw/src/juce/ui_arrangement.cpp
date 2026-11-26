@@ -1535,11 +1535,14 @@ bool ArrangementView::command(int id) {
     return true;
 }
 void ArrangementView::placeInsertMarker(std::int64_t tick, bool fromInsertMarker) {
+    root.locate(tick, fromInsertMarker);
+    showInsertMarkerAt(tick);
+}
+void ArrangementView::showInsertMarkerAt(std::int64_t tick) {
     auto &selection = geometry.selection;
     selection.insert = tick;
     selection.clearMaterial();
     selection.marked = true;
-    root.locate(tick, fromInsertMarker);
     follow(tick, true); // Reveal an explicit jump even when playback Follow is off.
     changed();
 }

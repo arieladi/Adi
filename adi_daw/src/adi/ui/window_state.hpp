@@ -205,9 +205,14 @@ class TransportMailbox {
                 pending = false;
                 record(item.sample);
             } else if (item.command == Command::Stop) {
-                pending = false;
                 if (transport.playing())
                     stoppedAt_ = transport.position();
+                else if (!pending && transport.countInRemaining() == 0) {
+                    // Stop while idle returns to the beginning for Continue as well as Play.
+                    stoppedAt_ = 0;
+                    locate(0);
+                }
+                pending = false;
                 transport.play(false);
             } else if (!transport.playing()) {
                 // A later Locate in this drain moves the pending Play target.

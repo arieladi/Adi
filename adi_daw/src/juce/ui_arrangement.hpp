@@ -557,6 +557,8 @@ class ArrangementView final : public juce::Component {
     bool selectAll();
     // Explicit positioning reveals the insert marker and locates the transport.
     void placeInsertMarker(std::int64_t tick, bool fromInsertMarker = false);
+    // Update the selection and viewport for a command that already sends its own transport seek.
+    void showInsertMarkerAt(std::int64_t tick);
     void locate();
     // Live's right-click menu for the track area and the headers.
     // The lanes' or a header's menu at `where`. `lane`: in Automation Mode, the envelope under the click, whose

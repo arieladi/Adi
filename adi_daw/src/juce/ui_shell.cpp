@@ -4641,7 +4641,9 @@ bool AdiRootComponent::command(int id) {
     case AppCommands::Stop:
     case AppCommands::ContinuePlay: {
         // Space plays from the insert marker, Shift+Space from where it stopped.
-        const bool play = id != AppCommands::Stop && !mailbox_.desiredPlaying();
+        const bool wasPlaying = mailbox_.desiredPlaying();
+        const bool rewind = id == AppCommands::Stop && !wasPlaying;
+        const bool play = id != AppCommands::Stop && !wasPlaying;
         const bool fromMarker = play && id == AppCommands::PlayStop;
         // Stopping the transport ends a recording (manual 21.1); its take lands on the next frames.
         if (!play && recording && recording() && stopRecording)
@@ -4658,6 +4660,8 @@ bool AdiRootComponent::command(int id) {
             locate(arrangement.geometry.selection.insert);
         using Command = TransportMailbox::Command;
         mailbox_.post(!play ? Command::Stop : fromMarker ? Command::Play : Command::Continue);
+        if (rewind)
+            arrangement.showInsertMarkerAt(0);
         break;
     }
     case AppCommands::ArrangementRecord:

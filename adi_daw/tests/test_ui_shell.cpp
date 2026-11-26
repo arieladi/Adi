@@ -10372,6 +10372,32 @@ void insertMarkerRevealsPosition(AppCommands &commands, const std::filesystem::p
     check(selection.insert == 16 * bar && lanes.x(selection.insert) == 0 && root.state().timelineLeft == 64 &&
               lanes.scale == 30 && !root.state().follow,
           "Next Locator reveals the marker without changing zoom or enabling Follow");
+
+    engine::Transport driver;
+    auto &mailbox = document->mailbox();
+    mailbox.setSampleRate(48000);
+    mailbox.drain(driver);
+    check(root.command(AppCommands::PlayStop), "start at the locator");
+    mailbox.drain(driver);
+    driver.advance(96);
+    mailbox.publish(driver);
+    const auto playingPosition = driver.position();
+    root.frame();
+    root.transport.stop.onClick();
+    mailbox.drain(driver);
+    root.frame();
+    check(!root.playing() && driver.position() == playingPosition && selection.insert == 16 * bar &&
+              lanes.left == 64,
+          "the first Stop preserves the stopped playhead, insert marker and viewport");
+    check(root.transport.stop.getBounds() == juce::Rectangle<int>(566, 9, 18, 17),
+          "the Stop button keeps its place in the 1440-point Compact Control Bar");
+    root.transport.stop.onClick();
+    mailbox.drain(driver);
+    root.frame();
+    check(!root.playing() && root.timelineTick() == 0 && root.transport.position.text == "1.  1.  1" &&
+              driver.position() == 0 && selection.insert == 0 && selection.start == selection.end &&
+              selection.track == 2 && lanes.x(selection.insert) == 0 && root.state().timelineLeft == 0,
+          "SC-75: pressing Stop while stopped returns both the transport and the visible marker to 1.1.1");
 }
 // Live's locators (C3, N25; Live 12 manual 6.4, 6.9; MR 3.3): Set, which reads Del on a selected
 // locator; Previous and Next, to the arrangement's start or end past the first or the last; a click

@@ -401,7 +401,7 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
         {&position, "Arrangement Position", "Drag, scroll or use Up and Down on a number to move the insert marker "
                                             "by bars, beats or sixteenths. Click to type a position such as 5.2.3."},
         {&play, "Play", "Starts playback from the insert marker, or stops it. Space."},
-        {&stop, "Stop", "Stops playback."},
+        {&stop, "Stop", "Stops playback. Press while stopped to return to the start."},
         {&record, "Arrangement Record", "Records into the arrangement. F9."},
         {&overdub, "MIDI Arrangement Overdub", "Unavailable until Arrangement Record can overdub MIDI clips.", false},
         {&automationArm, "Automation Arm", "Unavailable until Arrangement Record can write automation.", false},
