@@ -655,7 +655,9 @@ void samplerSession() {
     check(std::abs(layered-2*one)<4e-3,"two dropped samples layer (slots 10 and 2: the snapshot lists them 2, 10)");
     check(samplerPeak({},false)==0,"an empty Sampler is silent");
     Project project;auto& store=*project.store;
-    const auto inserted=prepareBuiltinInsert(store,std::string(device::samplerUid),1);
+    // On a MIDI track: an instrument is refused on the helper's audio track 1 (walk-A A7).
+    store.db().exec("INSERT INTO tracks(id,kind,name) VALUES(2,'midi','Keys')");
+    const auto inserted=prepareBuiltinInsert(store,std::string(device::samplerUid),2);
     check(inserted.ok && commitBuiltinInsert(store,inserted).ok,"a Sampler for the slot checks");
     check(prepareSampleClear(store,inserted.deviceId,1).ok && prepareSampleClear(store,inserted.deviceId,32).ok &&
           !prepareSampleClear(store,inserted.deviceId,0).ok && !prepareSampleClear(store,inserted.deviceId,33).ok,
@@ -721,4 +723,34 @@ void instrumentSession() {
     hybridSession();  // DEV-22
     samplerSession();  // DEV-21
 }
-int main(){try{catalogueAndHost();paramsAndState();insertionAndHistory();thirdPartyPlacement();playingSession();instrumentSession();duplicatePrepareKeepsBuiltinState();}catch(const std::exception& exception){counting=false;check(false,exception.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+// Walk-A A7 (DF-W48): a built-in instrument loaded from the Browser (or the Mix View's menu, or a
+// drop) goes where Live puts an instrument: onto a MIDI track only, in front of the audio effects,
+// and in place of the track's instrument, each one undo step.
+void builtinInstrumentPlacement() {
+#if ADI_WITH_PD
+    Project project;auto& store=*project.store;auto& db=store.db();
+    db.exec("INSERT INTO tracks(id,kind,name) VALUES(2,'midi','Keys'),(4,'audio','Voice')");
+    const auto onAudio=prepareBuiltinInsert(store,"org.adidaw.builtin.oneshot",4);
+    check(!onAudio.ok && onAudio.error.find("load it onto a MIDI track")!=std::string::npos &&
+              db.execAndGet("SELECT count(*) FROM devices").getInt()==0,
+          "OneShot is refused on an audio track, which it would silence, and says to use a MIDI track");
+    const auto reverb=prepareBuiltinInsert(store,"org.adidaw.builtin.reverb",2);
+    check(reverb.ok && commitBuiltinInsert(store,reverb).ok,"Reverb on the MIDI track first");
+    const auto oneShot=prepareBuiltinInsert(store,"org.adidaw.builtin.oneshot",2);
+    check(oneShot.ok && commitBuiltinInsert(store,oneShot).ok,"then OneShot, with nothing chosen in the strip");
+    const auto at=[&db](std::int64_t id){
+        SQLite::Statement q(db,"SELECT ord FROM devices WHERE id=?");q.bind(1,id);
+        return q.executeStep()?q.getColumn(0).getInt64():std::int64_t{-1};
+    };
+    check(at(oneShot.deviceId)==0 && at(reverb.deviceId)==1,
+          "the instrument goes in front of the audio effect, as a plug-in instrument does, not after it");
+    const auto sampler=prepareBuiltinInsert(store,"org.adidaw.builtin.sampler",2);
+    check(sampler.ok && commitBuiltinInsert(store,sampler).ok && at(oneShot.deviceId)==-1 &&
+              at(sampler.deviceId)==0 && at(reverb.deviceId)==1 &&
+              db.execAndGet("SELECT count(*) FROM devices").getInt()==2,
+          "a second instrument replaces the first in its place instead of stacking after it");
+    check(History(store).undo().ok && at(oneShot.deviceId)==0 && at(sampler.deviceId)==-1 && at(reverb.deviceId)==1,
+          "one Undo brings the replaced instrument back where it was");
+#endif
+}
+int main(){try{catalogueAndHost();paramsAndState();insertionAndHistory();thirdPartyPlacement();playingSession();instrumentSession();duplicatePrepareKeepsBuiltinState();builtinInstrumentPlacement();}catch(const std::exception& exception){counting=false;check(false,exception.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
