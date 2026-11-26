@@ -2662,9 +2662,11 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
     root.arrangement.geometry.selection.track = 4;
     refresh();
     auto &browser = root.browser;
-    int audioEffects = -1, pdDevices = -1, plugIns = -1;
+    int instruments = -1, audioEffects = -1, pdDevices = -1, plugIns = -1;
     for (std::size_t i = 0; i < browser.sidebar().size(); ++i) {
         const auto &e = browser.sidebar()[i];
+        if (e.name == "Instruments")
+            instruments = static_cast<int>(i);
         if (e.name == "Audio Effects")
             audioEffects = static_cast<int>(i);
         if (e.name == "Pd Devices")
@@ -2716,6 +2718,33 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
     check(browser.rows().size() == 3 && browser.rows()[0].device != nullptr && browser.rows()[1].device != nullptr &&
               browser.rows()[2].device != nullptr,
           "Pd Devices lists ADI's own: ADI-Shaper, Chord Comb and Color Cab");
+    // Instruments (walk-A A7, DF-W48): ADI's own instruments, by name, where Live lists its instruments;
+    // OneShot loads onto a MIDI track from there, one step, and says why where this build cannot load it.
+    root.say({});
+    browser.choose(instruments);
+    check(browser.rows().size() == 2 && browser.rows()[0].device != nullptr &&
+              browser.rows()[0].device->name == "OneShot" && browser.rows()[1].device != nullptr &&
+              browser.rows()[1].device->name == "Sampler" &&
+              root.error().find("wait for the devices lane") == std::string::npos,
+          "Instruments lists ADI's own instruments, OneShot and Sampler, by name");
+#if ADI_WITH_PD
+    check(!browser.load(0) && root.error().find("load it onto a MIDI track") != std::string::npos,
+          "OneShot onto the selected 3 Audio is refused, and the Status Bar says to use a MIDI track");
+#endif
+    root.arrangement.geometry.selection.track = 2; // 1 MIDI
+#if ADI_WITH_PD
+    check(browser.load(0) && document->ops().nextUndo() && document->ops().nextUndo()->label == "Insert OneShot" &&
+              value(document->store(), "SELECT count(*) FROM devices d JOIN device_chains c ON c.id=d.chain_id "
+                                       "WHERE c.track_id=2 AND d.name='OneShot'") == "1",
+          "OneShot loads from the Browser's Instruments onto 1 MIDI, one step");
+    check(root.command(AppCommands::Undo), "undo the OneShot load");
+    refresh();
+#else
+    check(!browser.load(0) && root.error().find("Pd devices") != std::string::npos,
+          "without Pd, OneShot is dimmed in Instruments, and a double-click says why");
+#endif
+    root.arrangement.geometry.selection.track = 4;
+    root.say({});
     // Plug-Ins (DF-W9): outside the app nothing scans, and it says where they list.
     browser.choose(plugIns);
     check(root.error().find("list in the application") != std::string::npos && browser.rows().empty(),

@@ -27,9 +27,11 @@ class BrowserList final : public juce::ListBox {
 // Categories and Places, and the content pane. Samples and the Places list what the library index
 // holds (D1, N15's index part): Samples every audio file of the folders the settings name, a Place
 // that folder's; the search narrows the list as it is typed. A row dragged onto the lanes is the
-// audio drop. Audio Effects lists Live's folders with ADI's built-in effects, and Pd Devices ADI's
-// own (D4, N15's catalogue part): double-click or Enter loads one onto the selected track, in front
-// of the device chosen in the strip; a drag drops it onto a lane's track or into the chain. An entry
+// audio drop. Instruments lists ADI's own instruments (OneShot, Sampler; DF-W48), Audio Effects Live's
+// folders with ADI's built-in effects, and Pd Devices ADI's own (D4, N15's catalogue part):
+// double-click or Enter loads one onto the selected track, in front of the device chosen in the strip
+// (an instrument onto a MIDI track only, in place of its instrument); a drag drops it onto a lane's
+// track or into the chain. An entry
 // this build cannot load is dimmed and says why. Plug-Ins lists the VST3 and CLAP plug-ins the app's
 // loader found, in folders by format and vendor (DF-W9), from the app's scan off the message thread
 // (DF-W34); double-click or Enter loads one onto the selected track through the engine's insert (N57). The other categories say what they wait for.

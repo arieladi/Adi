@@ -117,6 +117,17 @@ static PreparedBuiltinInsert prepareInsert(Store& store,const rows::PluginRef& r
         if(sqlite3_get_autocommit(db.getHandle())!=0)read.emplace(db,SQLite::TransactionBehavior::DEFERRED);
         result.sourceFile=identity(db);result.options.expectHead.emplace(OpJournal(store).headSeq());
         detail::requireDeviceInsertTrack(db, track);
+        // A built-in instrument (OneShot, Sampler) goes where Live puts an instrument it loads: on a MIDI
+        // track only (it takes notes and no audio, so it would silence any other track), between the MIDI
+        // and the audio effects, in place of the track's instrument (walk-A A7, DF-W48).
+        const bool builtinInstrument = plugin == nullptr && role(ref.subtype) == Role::Instrument;
+        if (builtinInstrument) {
+            SQLite::Statement kind(db, "SELECT kind FROM tracks WHERE id=?");
+            kind.bind(1, track);
+            if (kind.executeStep() && kind.getColumn(0).getString() != "midi" &&
+                kind.getColumn(0).getString() != "instrument")
+                throw std::runtime_error(ref.name + " is an instrument: load it onto a MIDI track");
+        }
         const std::string label="Insert "+ref.name;
         auto append=[&](const char* type,Payload payload,const char* kind,std::int64_t id) {
             OpRequest request;request.opType=type;request.payload=std::move(payload);request.label=label;
@@ -158,9 +169,9 @@ static PreparedBuiltinInsert prepareInsert(Store& store,const rows::PluginRef& r
         if(!std::in_range<std::int64_t>(order.size()))throw std::runtime_error("device order is exhausted");
         auto position=order.size();
         if(before)for(std::size_t i=0;i<order.size();++i)if(order[i].id==*before){position=i;break;}
-        if (plugin) {
+        if (plugin || builtinInstrument) {
             auto replacement = order.end();
-            if (plugin->replaceInstrument) {
+            if (builtinInstrument || plugin->replaceInstrument) {
                 if (position < order.size() && order[position].role == Role::Instrument) {
                     replacement = order.begin() + static_cast<std::ptrdiff_t>(position);
                 } else {
