@@ -12263,6 +12263,19 @@ void sampleEditorMouse(AppCommands &commands, const std::filesystem::path &dir) 
     mailbox.post(TransportMailbox::Command::Stop);
     mailbox.drain(driver);
     const auto y = edit.waveArea().getY();
+    const juce::Point<float> insertPoint{x(5 * beat), static_cast<float>(y + 5)};
+    edit.mouseDown(pressAt(edit, insertPoint, juce::ModifierKeys::leftButtonModifier));
+    edit.mouseUp(pressAt(edit, insertPoint));
+    mailbox.drain(driver);
+    check(!driver.playing() && edit.insert(), "a waveform click sets a local start while the transport stays stopped");
+    const auto chosen = edit.insert().value_or(0);
+    check(edit.playFromInsert(), "the Sample Editor can play from the chosen waveform point");
+    mailbox.drain(driver);
+    const auto fromInsert = static_cast<std::int64_t>(tempo->ticksToSeconds(2 * beat + chosen) * 48000.);
+    check(driver.playing() && std::llabs(driver.position() - fromInsert) <= 1,
+          "playing from the selected point honours the same placement and source offset");
+    mailbox.post(TransportMailbox::Command::Stop);
+    mailbox.drain(driver);
     const auto drag = [&](std::int64_t from, std::int64_t to, int atY) {
         const juce::Point<float> down{x(from), static_cast<float>(atY)}, up{x(to), static_cast<float>(atY)};
         edit.mouseDown(pressAt(edit, down, juce::ModifierKeys::leftButtonModifier));

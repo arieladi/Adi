@@ -378,7 +378,7 @@ class SampleEditor final : public juce::Component {
     void mouseDrag(const juce::MouseEvent &) override;
     void mouseUp(const juce::MouseEvent &) override;
     void mouseWheelMove(const juce::MouseEvent &, const juce::MouseWheelDetails &) override;
-    static constexpr int kRulerHeight = 18, kMarkerHeight = 9;
+    static constexpr int kRulerHeight = 18, kScrubHeight = 9, kMarkerHeight = 9;
     ArrangementGeometry time;
     juce::Rectangle<int> waveArea() const noexcept;
     void showClip();
@@ -386,6 +386,7 @@ class SampleEditor final : public juce::Component {
     double sourceBpm() const noexcept;
     void frame();
     std::optional<std::int64_t> insert() const noexcept { return insert_; }
+    bool playFromInsert();
     std::int64_t sourceTick(std::int64_t arrangementTick) const noexcept;
     ArrangementPlayhead playhead;
 
@@ -399,8 +400,11 @@ class SampleEditor final : public juce::Component {
     juce::Point<int> last_;
     std::optional<std::int64_t> insert_;
     std::vector<WarpMarker> markers_;
+    juce::Rectangle<int> scrubArea() const noexcept;
+    bool playFromSource(std::int64_t tick);
     std::int64_t sourceSecondsToTicks(double seconds) const noexcept;
     double sourceTicksToSeconds(std::int64_t ticks) const noexcept;
+    std::int64_t startMarker() const noexcept;
     std::int64_t endMarker() const noexcept;
     double frameAt(std::int64_t source, double rate, const engine::AudioClipSource &) const noexcept;
     std::int64_t tickAt(int x, const juce::ModifierKeys &) const noexcept;

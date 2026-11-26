@@ -2837,12 +2837,72 @@ std::int64_t SampleEditor::sourceTick(std::int64_t arrangementTick) const noexce
     const auto *clip = panel.details();
     if (!clip)
         return 0;
-    const auto window = ClipWindow::of(*clip);
+    auto window = ClipWindow::of(*clip);
     const auto *node = panel.node();
+    if (node)
+        window.pos = node->posTicks;
     if (node && node->audio && !node->audio->warpEnabled && node->contentOffsetNs)
         return sourceSecondsToTicks(static_cast<double>(*node->contentOffsetNs) * 1e-9 +
                                     sourceTicksToSeconds(arrangementTick - window.pos));
     return window.toSource(arrangementTick);
+}
+bool SampleEditor::playFromInsert() {
+    return insert_ && playFromSource(*insert_);
+}
+bool SampleEditor::playFromSource(std::int64_t tick) {
+    const auto *clip = panel.details();
+    const auto *node = panel.node();
+    const auto refuse = [&] {
+        panel.root.say("Choose a point in this clip's placed playback range.");
+        return false;
+    };
+    if (!clip || !node || !node->audio || node->posTicks < 0 || tick < 0 || tick >= sourceEnd_)
+        return refuse();
+
+    const auto start = startMarker();
+    auto targetSource = tick;
+    if (clip->loopEnabled) {
+        const auto first = clip->loopStartTicks;
+        const auto length = loopLengthOf(*clip);
+        if (first < 0 || length <= 0 || first > std::numeric_limits<std::int64_t>::max() - length || tick >= first + length)
+            return refuse();
+        if (tick < start && tick >= first && node->audio->warpEnabled) {
+            // Find the first arranged occurrence of a point before the Start
+            // marker but inside a repeating warped loop.
+            const auto earlier = start - tick;
+            const auto wraps = earlier / length + (earlier % length != 0 ? 1 : 0);
+            if (wraps > (std::numeric_limits<std::int64_t>::max() - tick) / length)
+                return refuse();
+            targetSource += wraps * length;
+        }
+    } else if (tick >= endMarker()) {
+        return refuse();
+    }
+    if (targetSource < start)
+        return refuse();
+
+    auto target = node->posTicks;
+    const auto *tempo = panel.root.reader().tempo();
+    if (!node->audio->warpEnabled && node->contentOffsetNs && tempo && targetSource != start) {
+        if (targetSource > std::numeric_limits<std::int64_t>::max() - node->posTicks)
+            return refuse();
+        const auto seconds = tempo->ticksToSeconds(node->posTicks + targetSource) -
+                             static_cast<double>(*node->contentOffsetNs) * 1e-9;
+        target = tempo->secondsToTicks(seconds);
+    } else {
+        if (start < 0 && targetSource > std::numeric_limits<std::int64_t>::max() + start)
+            return refuse();
+        const auto elapsed = targetSource - start;
+        if (elapsed > std::numeric_limits<std::int64_t>::max() - target)
+            return refuse();
+        target += elapsed;
+    }
+    if (target < node->posTicks || target - node->posTicks >= node->lengthTicks)
+        return refuse();
+    if (!panel.root.playFrom(target))
+        return false;
+    panel.root.arrangement.followPaused = false;
+    return true;
 }
 void SampleEditor::frame() {
     const auto area = waveArea();
@@ -2851,8 +2911,11 @@ void SampleEditor::frame() {
     playhead.setBounds(area.getX() + x, area.getY(), 1, area.getHeight());
 }
 juce::Rectangle<int> SampleEditor::waveArea() const noexcept {
-    constexpr auto top = kRulerHeight + 2 * kMarkerHeight;
+    constexpr auto top = kRulerHeight + kScrubHeight + 2 * kMarkerHeight;
     return {0, top, getWidth(), std::max(0, getHeight() - top)};
+}
+juce::Rectangle<int> SampleEditor::scrubArea() const noexcept {
+    return {0, kRulerHeight, getWidth(), kScrubHeight};
 }
 void SampleEditor::showClip() {
     fitPending_ = true;
@@ -2892,6 +2955,12 @@ void SampleEditor::resized() {
         time.fit(0, sourceEnd_ + margin, getWidth(), false);
     }
 }
+std::int64_t SampleEditor::startMarker() const noexcept {
+    if (const auto *node = panel.node())
+        return sourceTick(node->posTicks);
+    const auto *clip = panel.details();
+    return clip ? clip->startMarkerTicks : 0;
+}
 std::int64_t SampleEditor::endMarker() const noexcept {
     const auto *node = panel.node();
     const auto *clip = panel.details();
@@ -2926,11 +2995,20 @@ void SampleEditor::mouseDown(const juce::MouseEvent &e) {
     gestureClip_ = clip->id;
     drag_ = Drag::None;
     last_ = e.getPosition();
+    if (scrubArea().contains(last_) || (last_.y < kRulerHeight && e.mods.isShiftDown())) {
+        // Match the Arrangement scrub strip's unquantized transport position.
+        const auto point = time.tick(last_.x);
+        if (playFromSource(point)) {
+            insert_ = point;
+            repaint();
+        }
+        return;
+    }
     downTick_ = tickAt(last_.x, e.mods);
     const auto near = [&](std::int64_t tick) { return std::abs(time.x(tick) - last_.x) <= 5.; };
     if (last_.y < kRulerHeight) {
         drag_ = Drag::Ruler;
-    } else if (last_.y < kRulerHeight + kMarkerHeight && clip->loopEnabled && panel.loopAvailable()) {
+    } else if (last_.y < scrubArea().getBottom() + kMarkerHeight && clip->loopEnabled && panel.loopAvailable()) {
         const auto first = clip->loopStartTicks, end = first + loopLengthOf(*clip);
         if (near(first)) {
             drag_ = Drag::LoopStart;
@@ -2943,7 +3021,7 @@ void SampleEditor::mouseDown(const juce::MouseEvent &e) {
             original_ = first;
         }
     } else if (last_.y < waveArea().getY()) {
-        const auto start = sourceTick(ClipWindow::of(*clip).pos), end = endMarker();
+        const auto start = startMarker(), end = endMarker();
         if (near(start) || near(end)) {
             const bool left = std::abs(time.x(start) - last_.x) <= std::abs(time.x(end) - last_.x);
             drag_ = left ? Drag::Start : Drag::End;
@@ -2968,7 +3046,7 @@ void SampleEditor::mouseDrag(const juce::MouseEvent &e) {
         const auto first = clip->loopStartTicks, length = loopLengthOf(*clip);
         switch (drag_) {
         case Drag::Start: high = std::min(high, endMarker() - 1); break;
-        case Drag::End: low = sourceTick(ClipWindow::of(*clip).pos) + 1; break;
+        case Drag::End: low = startMarker() + 1; break;
         case Drag::LoopStart: high = std::min(high, first + length - 1); break;
         case Drag::LoopEnd: low = first + 1; break;
         case Drag::Loop: high = std::max<std::int64_t>(0, high - length); break;
@@ -3011,7 +3089,7 @@ bool SampleEditor::command(int id) {
         break;
     }
     case AppCommands::ZoomToSelection: {
-        const auto start = std::max<std::int64_t>(0, sourceTick(ClipWindow::of(*clip).pos));
+        const auto start = std::max<std::int64_t>(0, startMarker());
         const auto end = std::max(start + 1, endMarker());
         time.fit(start, end + std::max<std::int64_t>(1, (end - start) / 24), getWidth());
         break;
@@ -3057,9 +3135,11 @@ void SampleEditor::paint(juce::Graphics &g) {
     }
     const auto &meters = *time.meters;
     paintRuler(g, ruler, time, meters);
+    g.setColour(look::field);
+    g.fillRect(scrubArea());
     const auto area = waveArea();
     paintGrid(g, area, time, meters);
-    const auto start = drag_ == Drag::Start ? preview_ : sourceTick(ClipWindow::of(*clip).pos);
+    const auto start = drag_ == Drag::Start ? preview_ : startMarker();
     const auto end = drag_ == Drag::End ? preview_ : endMarker();
     shadeOutside(g, area, time, {start, std::max<std::int64_t>(1, end - start), 0});
     if (clip->loopEnabled && panel.loopAvailable()) {
@@ -3068,7 +3148,7 @@ void SampleEditor::paint(juce::Graphics &g) {
         const auto last = drag_ == Drag::LoopEnd ? preview_ : base + loopLengthOf(*clip);
         const auto x = static_cast<float>(time.x(first)), right = static_cast<float>(time.x(last));
         g.setColour(look::accent.withAlpha(.55f));
-        g.fillRect(x, static_cast<float>(kRulerHeight + 2), right - x, static_cast<float>(kMarkerHeight - 3));
+        g.fillRect(x, static_cast<float>(scrubArea().getBottom() + 2), right - x, static_cast<float>(kMarkerHeight - 3));
     }
     for (const auto tick : {start, end}) {
         const auto x = static_cast<float>(time.x(tick));
