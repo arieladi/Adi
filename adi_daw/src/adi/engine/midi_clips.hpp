@@ -29,6 +29,8 @@ public:
     // Owned by this generation. Includes empty clips and uses the same sample
     // boundaries as the note scheduler. Overlapping or touching spans merge.
     [[nodiscard]] std::span<const MidiMonitorRange> monitorRanges(std::int64_t track) const noexcept;
+    // Driver-only request, one bit per channel at the start of the current slice.
+    [[nodiscard]] std::shared_ptr<std::uint16_t> pitchChaseFor(std::int64_t track) const noexcept;
     const std::vector<std::string>& problems() const noexcept;
     std::uint32_t droppedNotes() const noexcept;
     std::uint64_t droppedControllers() const noexcept;

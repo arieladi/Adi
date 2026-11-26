@@ -1048,8 +1048,10 @@ void Session::prepareMidiInput(TimingView& timing, const rows::Model& model, con
             route.playGrid = target->second.playGrid;
             route.playForgiveness = target->second.playForgiveness;
             const auto ranges = target->second.blockedRanges;
-            if (!ranges.empty())
+            if (!ranges.empty()) {
                 route.blockedRanges.assign(ranges.begin(), ranges.end());
+                route.authoredPitchChase = clips.pitchChaseFor(route.monitorTrack);
+            }
         }
         timing.midiInputRoutes.push_back(std::move(route));
     }

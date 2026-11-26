@@ -85,10 +85,13 @@ void LiveMidiInput::release(const GraphHost::RenderBlock& block, const Route& ro
         const Event center{frame, controller ? EventType::Controller : EventType::NoteExpression,
                            static_cast<std::uint8_t>(ch), controller ? std::uint16_t{0} : pitch,
                            0, controller ? controllers::kPitchBend : 0u, controller ? .5 : 0.};
-        if (block.pushInputEvent(route.slot, center))
+        if (block.pushInputEvent(route.slot, center)) {
             bend = Voices::Bend::None;
-        else
+            if (frame == 0)
+                state.pitchCenteredAtStart |= static_cast<std::uint16_t>(1u << ch);
+        } else {
             state.retry = true;
+        }
     }
     state.flush = state.retry;
 }
@@ -227,6 +230,7 @@ void LiveMidiInput::render(const GraphHost::RenderBlock& block, const AudioIo& i
         if (generation != generation_)
             route.slot = route.processes ? block.find(*route.node) : kInvalidNode;
         auto& state = *route.voices;
+        state.pitchCenteredAtStart = 0;
         const bool playChanged = state.playGrid != 0 && (state.playGrid != route.playGrid ||
             state.playForgiveness != route.playForgiveness || state.transportRevision != transport.revision());
         if (state.track != route.monitorTrack || epoch != renderedEpoch_ || playChanged) state.flush = true;
@@ -300,6 +304,10 @@ void LiveMidiInput::render(const GraphHost::RenderBlock& block, const AudioIo& i
                 release(block, route, frame);
             }
             state.blocked = blocked;
+            // Ending overdub inside a clip can hand back to an authored wheel
+            // whose value the clip scheduler already sent earlier.
+            if (blocked && frame == 0 && route.authoredPitchChase)
+                *route.authoredPitchChase |= state.pitchCenteredAtStart;
             for (; input != next; ++input) {
                 const auto& item = ring_[input % capacity];
                 if (item.epoch < epoch) continue;

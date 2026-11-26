@@ -1675,6 +1675,43 @@ void livePitchBendOwnership() {
                   bendsAt(*f.instrument, 125, 4).empty(),
               "a second native clip takes over the authored wheel without a repeated live reset");
     }
+
+    for (const auto latency : {0, 512}) {
+        Fixture f(48000, 64);
+        f.clip(1, 0, 12012);
+        f.store->db().exec("UPDATE tracks SET record_armed=1,monitor_mode=2 WHERE id=1");
+        if (latency != 0)
+            f.store->db().exec("UPDATE devices SET ord=1;"
+                               "INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name) VALUES(2,1,0,1,'Delay')");
+        const std::array points{controllers::Point{0, 0, .25}};
+        const auto prepared = controllers::prepareWrite(*f.store, 1, 3, kCtrlPitchBend, points);
+        if (!prepared.ok || !controllers::commitPrepared(*f.store, prepared).ok)
+            throw std::runtime_error("commit the overdub's constant authored wheel");
+        f.load();
+        while (f.clock <= latency)
+            f.render();
+        check(bendsAt(*f.instrument, latency, 3) == std::vector{.25},
+              "the clip has already sent its constant wheel through the device chain");
+
+        const std::array<std::int64_t, 1> tracks{1};
+        std::string error;
+        const auto liveAt = f.clock + 9;
+        check(f.session.startMidiInputCapture(tracks, error, true) && rawBend(f, liveAt, 3, .75),
+              "an Auto overdub lets a live wheel temporarily override the constant clip value");
+        f.render(13);
+        check(bendsAt(*f.instrument, liveAt, 3) == std::vector{.75}, "the live wheel sounds immediately");
+
+        const auto stop = f.clock; // deliberately between the normal 64-sample controller ticks
+        f.session.midiInputCapture().stop();
+        while (f.clock <= stop + latency)
+            f.render();
+        const auto handoff = bendsAt(*f.instrument, stop, 3);
+        if (latency == 0)
+            check(handoff == std::vector{.5, .25}, "ending Auto overdub chases the stored wheel on the handoff sample");
+        else
+            check(handoff == std::vector{.5} && bendsAt(*f.instrument, stop + latency, 3) == std::vector{.25},
+                  "the live reset is immediate and the authored re-chase follows the native MIDI/PDC path");
+    }
 }
 
 const ClipNode& projected(const Snapshot& frame, std::int64_t track, std::int64_t clip) {

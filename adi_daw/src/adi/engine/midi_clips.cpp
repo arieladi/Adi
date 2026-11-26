@@ -15,6 +15,7 @@
 #include <map>
 #include <stdexcept>
 #include <tuple>
+#include <utility>
 namespace adi::engine {
 namespace {
 constexpr std::size_t maxActive = 128;
@@ -121,6 +122,7 @@ public:
     std::vector<MidiMonitorRange> monitorRanges;
     bool monitorInputOnly = false;
     std::shared_ptr<const MidiControllerProgram> controls;
+    std::uint16_t pitchChase = 0;
     bool retainsQueuedSourceEvents()const noexcept override{return true;}
     const Occurrence* replacement(const Active& active)const noexcept {
         if(!active.note.identity.note || byIdentity.empty())return nullptr;
@@ -283,14 +285,16 @@ public:
             for (std::size_t i = 0; i < controls->size(); ++i)
                 state->controls[controls->address(i)].requestedValid = false;
     }
+    static std::int32_t controllerReserve(const EventList& out) noexcept {
+        // Keep room for note-ons and all owned note-offs.
+        return std::min(out.capacity(),
+                        std::max(3, std::min(out.capacity() / 2, static_cast<std::int32_t>(maxActive * 2))));
+    }
     void evaluateControls(EventList &out, std::int32_t frame, std::int64_t time) noexcept {
         if (!controls || !controls->size())
             return;
-        // Keep room for note-ons and all owned note-offs. Rotate the first
-        // address so a small output list cannot starve later controllers.
-        const auto reserve =
-            std::min(out.capacity(),
-                     std::max(3, std::min(out.capacity() / 2, static_cast<std::int32_t>(maxActive * 2))));
+        // Rotate the first address so a small output list cannot starve later controllers.
+        const auto reserve = controllerReserve(out);
         const auto size = controls->size();
         const auto start = static_cast<std::size_t>(state->controlCursor) % size;
         for (std::size_t j = 0; j < size; ++j) {
@@ -310,6 +314,26 @@ public:
             control(out, frame, address, value);
         }
         state->controlCursor = static_cast<std::uint16_t>((start + 1) % size);
+    }
+    void chasePitchAtStart(EventList& out, std::int64_t sample, bool regularChase) noexcept {
+        const auto channels = std::exchange(pitchChase, std::uint16_t{0});
+        if (!channels || !controls) return;
+        const auto reserve = controllerReserve(out);
+        // Addresses are sorted. The last sixteen possible lanes are pitch wheels.
+        for (auto i = controls->size(); i > 0;) {
+            const auto address = controls->address(--i);
+            if (address < kCcAddressCount) break;
+            if (!(channels & (1u << controllerChannel(address))) || controls->changesOwnerAt(i, sample))
+                continue; // An owner change already performs its own release and chase.
+            double value = 0;
+            if (!controls->valueAt(i, sample, value)) continue;
+            state->controls[address].requestedValid = false;
+            if (regularChase) continue;
+            if (out.capacity() - out.size() > reserve)
+                control(out, 0, address, value);
+            else
+                ++state->droppedControls; // Retry on the normal controller cadence.
+        }
     }
     std::weak_ptr<void> owner;
     Source(Transport& t,std::shared_ptr<TrackState> s,std::uint64_t g):transport(t),state(std::move(s)),generation(g){}
@@ -462,6 +486,7 @@ public:
         bool controlChase=false;
         bool expressionBlocked=false;
         if(!transport.playing()) {
+            pitchChase = 0;
             if (releaseControls(out, 0, newGeneration) && flush(out, 0, newGeneration))
                 state->generation = generation;
             state->expected=-1;return;
@@ -490,6 +515,7 @@ public:
             if (a.used && ((a.releasing && !a.pending) || a.note.off <= first))
                 if (!stop(a, out, 0))
                     return;
+        chasePitchAtStart(out, first, controlChase);
         for(auto& active:state->active)if(active.used && !active.sounding && active.retryOn && !active.releasing) {
             std::size_t owned=0;for(const auto& note:state->active)owned+=note.used?1u:0u;
             if(out.capacity()-out.size()<static_cast<std::int32_t>(owned)+3)return;
@@ -887,6 +913,11 @@ std::uint64_t MidiClips::droppedControllers() const noexcept {
     return count;
 }
 std::vector<Node*> MidiClips::sourcesFor(std::int64_t id){const auto i=impl_->tracks.find(id);return i==impl_->tracks.end()?std::vector<Node*>{}:std::vector<Node*>{i->second.get()};}
+std::shared_ptr<std::uint16_t> MidiClips::pitchChaseFor(std::int64_t track) const noexcept {
+    if (const auto source = impl_->tracks.find(track); source != impl_->tracks.end())
+        return {impl_, &source->second->pitchChase};
+    return {};
+}
 std::span<const MidiMonitorRange> MidiClips::monitorRanges(std::int64_t track) const noexcept {
     if (const auto source = impl_->tracks.find(track); source != impl_->tracks.end())
         return source->second->monitorRanges;

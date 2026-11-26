@@ -48,6 +48,7 @@ public:
         std::int64_t playGrid = 0, playForgiveness = 0;
         std::array<std::array<bool, 3>, 16> pedals{};
         std::array<Bend, 16> bends{};
+        std::uint16_t pitchCenteredAtStart = 0;
         std::int64_t track = 0;
         bool flush = false;
         bool retry = false;
@@ -61,6 +62,7 @@ public:
         std::vector<MidiMonitorRange> blockedRanges; // merged, in ascending timeline order
         std::int64_t playGrid = 0, playForgiveness = 0; // in 960-PPQ ticks and samples
         mutable NodeId slot = kInvalidNode;
+        std::shared_ptr<std::uint16_t> authoredPitchChase;
     };
     struct History {
         History(std::int64_t identity, std::int64_t track, std::uint32_t rate)
