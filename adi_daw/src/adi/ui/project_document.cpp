@@ -1408,7 +1408,7 @@ RecordStates ProjectDocument::recordStates() const {
     return out;
 }
 bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t inputs, bool playing,
-                                     std::int64_t deviceLatencySamples) {
+                                     std::int64_t deviceLatencySamples, const std::string &recordFolder) {
     if (recording_ || landing_) {
         error_ = recording_ ? "Recording is already running." : "The last take is still being saved.";
         return false;
@@ -1468,6 +1468,18 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
     }
     engine::AudioRecordingSpec spec;
     spec.workFolder = media::projectFolder(*store_);
+    if (!armed.audio.empty() && !recordFolder.empty()) {
+        if (recordFolder.find('\0') != std::string::npos) {
+            error_ = "Choose a valid recording folder in Settings.";
+            return false;
+        }
+        try {
+            spec.workFolder = pathFromUtf8(recordFolder);
+        } catch (const std::filesystem::filesystem_error &error) {
+            error_ = std::string("Could not read the recording folder. ") + error.what();
+            return false;
+        }
+    }
     spec.placementOffsetSamples = deviceLatencySamples;
     spec.sampleRate = static_cast<std::uint32_t>(std::lround(engineRate_));
     spec.maxFrames = static_cast<std::uint32_t>(std::max<std::int32_t>(1, engineFrames_));
@@ -1585,7 +1597,7 @@ std::string ProjectDocument::discardTake(engine::AudioRecordingResult &result) {
     if (!refused)
         return {};
     return " Its recorded files could not be removed (" + refused.message() + "); they stay in " +
-           media::pathUtf8(result.directory().filename()) + " in the project's folder.";
+           media::pathUtf8(result.directory()) + ".";
 }
 void ProjectDocument::landTake() {
     auto audio = std::move(audioTake_);
@@ -1640,7 +1652,7 @@ void ProjectDocument::landTake() {
             for (const auto &track : audio->tracks) {
                 auto name = shownTrackName(current, track.trackId);
                 const auto clip = rows.next("clips");
-                ids.push_back({clip, rows.next("media_files"), name.empty() ? std::string("Take") : std::move(name)});
+                ids.push_back({clip, rows.next("media_files"), name.empty() ? std::string("Take") : name, std::move(name)});
                 outcome.clips.push_back(clip);
             }
         }

@@ -848,7 +848,7 @@ void discardRefusalSaid(const std::filesystem::path &dir) {
     (void)::chmod(work.c_str(), 0755);
     check(landed && said && !said->ok && said->message.find("The take was not kept") != std::string::npos &&
               said->message.find("could not be removed") != std::string::npos &&
-              said->message.find("in the project's folder") != std::string::npos,
+              said->message.find(media::pathUtf8(work)) != std::string::npos,
           "the Status Bar says the take's files stay, and where");
     if (said)
         std::printf("discard refused: %s\n", said->message.c_str());
@@ -1103,14 +1103,15 @@ void refusedRecordingKeepsAudio(const std::filesystem::path &dir) {
         if (!(file << "not a directory"))
             throw std::runtime_error("could not obstruct recording publication");
     }
-    if (!doc->startRecording(0, 1, false))
+    const auto recovery = dir / media::pathFromUtf8("Recover\xc3\xa9");
+    if (!doc->startRecording(0, 1, false, 0, media::pathUtf8(recovery)))
         throw std::runtime_error(doc->error());
     std::filesystem::path capture;
-    for (const auto &entry : std::filesystem::directory_iterator(project))
+    for (const auto &entry : std::filesystem::directory_iterator(recovery))
         if (entry.is_directory() && media::pathUtf8(entry.path().filename()).starts_with(".adi-record-"))
             capture = entry.path();
     if (capture.empty())
-        throw std::runtime_error("recording did not make a private directory");
+        throw std::runtime_error("recording did not make a private directory in the configured recovery folder");
 
     std::array<float, blockFrames> samples{}, left{}, right{};
     for (std::size_t i = 0; i < samples.size(); ++i)
@@ -1335,12 +1336,14 @@ void arrangementMidiRecord(const std::filesystem::path &path, bool mixed) {
               set("track.setMonitorMode", {{"id", 2}, {"mode", 1}}) &&
               (!mixed || (set("track.setArm", {{"id", 3}, {"armed", true}}) &&
                           set("track.setMonitorMode", {{"id", 3}, {"mode", 0}}) &&
-                          set("track.setArm", {{"id", 4}, {"armed", true}}))) && doc->synchronise(),
+                          set("track.setArm", {{"id", 4}, {"armed", true}}) &&
+                          set("track.rename", {{"id", 4}, {"name", "# Audio"}}))) && doc->synchronise(),
           "armed monitored MIDI, optionally with unmonitored MIDI and audio");
     doc->prepare(48000, 64);
     const auto clipCount = [&] { return doc->store().db().execAndGet("SELECT count(*) FROM clips").getInt(); };
     const auto before = clipCount();
-    if (!doc->startRecording(0, mixed ? 1 : 0, false)) {
+    const auto workFolder = path.parent_path() / (mixed ? "mixed-capture" : "midi-capture");
+    if (!doc->startRecording(0, mixed ? 1 : 0, false, 0, media::pathUtf8(workFolder))) {
         check(false, "MIDI-only Record works without audio input, mixed Record with one input");
         return;
     }
@@ -1384,6 +1387,15 @@ void arrangementMidiRecord(const std::filesystem::path &path, bool mixed) {
           "one committed clip per armed track replaces the growing take");
     if (!landed || !landed->ok)
         return;
+    if (mixed) {
+        const auto relative = doc->store().db().execAndGet("SELECT rel_path FROM media_files").getString();
+        check(relative == "Samples/Recorded/3 Audio 0001.wav" &&
+                  std::filesystem::is_regular_file(media::projectFolder(doc->store()) / media::pathFromUtf8(relative)) &&
+                  std::filesystem::is_directory(workFolder) && std::filesystem::is_empty(workFolder),
+              "the mixed take publishes under the displayed audio track name and removes its private capture");
+    } else {
+        check(!std::filesystem::exists(workFolder), "MIDI-only recording does not create an audio work folder");
+    }
     for (const auto id : landed->clips) {
         const auto read = engine::readClipDetails(doc->store(), id, true, true);
         if (!read.clip || read.clip->kind != "midi")

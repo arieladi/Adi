@@ -164,8 +164,9 @@ class ProjectDocument final : public engine::BlockProcessor {
     // from the playhead. False with `error()` saying why.
     // `inputs` is the device's input channel count, `insertTick` where a stopped transport starts.
     // The driver's round-trip latency is captured in samples at the recording's rate.
+    // A nonempty `recordFolder` keeps the recoverable capture there until publication into the song.
     bool startRecording(std::int64_t insertTick, std::int32_t inputs, bool playing,
-                        std::int64_t deviceLatencySamples = 0);
+                        std::int64_t deviceLatencySamples = 0, const std::string &recordFolder = {});
     // The application replaces these routes when the device or its channel config changes.
     // An empty list means the device has no enabled inputs. The view lasts until the next set.
     void setExternalAudioInputs(std::vector<ExternalAudioInput> inputs);

@@ -917,7 +917,8 @@ class AdiApplication final : public juce::JUCEApplication,
             applyInputChannels();
             const int inputs = audioDevice->getActiveInputChannels().countNumberOfSetBits();
             const auto latency = device::reportedRoundTripLatency(*audioDevice);
-            if (!document_->startRecording(insertTick, inputs, playing, latency)) {
+            const auto recordFolder = settings_->get("files.recordFolder").get<std::string>();
+            if (!document_->startRecording(insertTick, inputs, playing, latency, recordFolder)) {
                 root_->say(document_->error());
                 return false;
             }
