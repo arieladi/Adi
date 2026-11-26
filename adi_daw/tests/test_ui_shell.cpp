@@ -3164,6 +3164,31 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
         late.poll();
         check(!late.running() && started.size() == startedBefore + 1, "and nothing runs twice");
         late.stop();
+        // SC-327: Alt held as ADI starts skips the startup scan; the stored list shows and says why.
+        {
+            PluginCatalogueService skipping(port);
+            const auto before = started.size();
+            skipping.startup(true);
+            check(!skipping.running() && started.size() == before && skipping.state().skipped &&
+                      skipping.state().listing.plugins.size() == 2 &&
+                      pluginScanStatus(skipping.state()).find("Alt was held") != std::string::npos,
+                  "Alt at start: no scan runs, the stored list is shown, and the line says why (SC-327)");
+            skipping.request(DiscoveryMode::Refresh);
+            check(skipping.running() && started.size() == before + 1 && !skipping.state().skipped &&
+                      pluginScanStatus(skipping.state()).find("Alt") == std::string::npos,
+                  "a Rescan asked for later scans as usual");
+            finish(Outcome::Published);
+            skipping.poll();
+            skipping.stop();
+            PluginCatalogueService ordinary(port);
+            const auto startedFirst = started.size();
+            ordinary.startup(false);
+            check(ordinary.running() && started.size() == startedFirst + 1 && started.back() == DiscoveryMode::Incremental,
+                  "without Alt the startup lists the catalogue, then runs an Incremental discovery");
+            finish(Outcome::Published);
+            ordinary.poll();
+            ordinary.stop();
+        }
         // A count during a job changes no list: the Browser keeps its rows and selection.
         service.request(DiscoveryMode::Incremental);
         const auto listedDuring = service.state().listed;

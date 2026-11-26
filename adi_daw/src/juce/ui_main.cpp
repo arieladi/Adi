@@ -168,8 +168,13 @@ class AdiApplication final : public juce::JUCEApplication,
         // The catalogue the first project read is listed at once; an Incremental discovery then finds
         // what was installed or removed since, in the background (engine-win's N58 handoff).
         if (catalogue_) {
-            catalogue_->showCatalogue();
-            discover(DiscoveryMode::Incremental);
+            // SC-327: Alt held as ADI starts skips the scan, to get past a plug-in that takes it down.
+            const bool skip = juce::ModifierKeys::getCurrentModifiersRealtime().isAltDown();
+            catalogue_->startup(skip);
+            if (!skip)
+                discoverAfter();
+            else if (root_)
+                root_->say(pluginScanStatus(catalogue_->state()));
         }
         // The MIDI ports (SRF-05): listed and opened by the Settings' MIDI Ports; never in a smoke run.
         if (smokeOutput_ == juce::File{}) {
@@ -551,6 +556,12 @@ class AdiApplication final : public juce::JUCEApplication,
         if (!catalogue_)
             return;
         catalogue_->request(mode);
+        discoverAfter();
+    }
+    // Once the discovery asked for has been adopted: the placeholders whose plug-ins it found wake (SC-318).
+    void discoverAfter() {
+        if (!catalogue_)
+            return;
         catalogue_->settleThen([this] {
             if (!document_)
                 return;

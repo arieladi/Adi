@@ -39,6 +39,7 @@ struct PluginScan {
     std::size_t completed = 0;  // of those, the ones probed so far
     std::uint64_t listed = 0;   // counts each change of `listing`: a state with the same count lists the same
     PluginListing listing;      // what is listed: the last scan's, the previous list while one runs
+    bool skipped = false;       // SC-327: Alt was held as ADI started, so the startup scan did not run
 };
 // The Status Bar's line for the scan's state (DF-W34 a and b). A scan that stopped early is named with
 // why, and never worded as "the rest are listed".
@@ -52,6 +53,9 @@ inline std::string pluginScanStatus(const PluginScan &scan) {
                    ? "Scanning plug-ins: " + std::to_string(std::min(scan.completed, scan.candidates)) + " of " +
                          std::to_string(scan.candidates) + (scan.candidates == 1 ? " file…" : " files…")
                    : "Scanning plug-ins: " + std::to_string(scan.candidates) + (scan.candidates == 1 ? " file…" : " files…");
+    if (scan.skipped)
+        return "The plug-in scan was skipped: Alt was held as ADI started. The stored list is shown; Rescan "
+               "from the Settings' Plug-Ins page scans.";
     if (!l.complete)
         return "The plug-in scan stopped early: " + l.stopped + ". " +
                (l.plugins.empty() ? std::string("Nothing could be listed.") : std::string("The list may be incomplete.")) +
@@ -117,6 +121,20 @@ class PluginCatalogueService {
         if (state_.phase == PluginScan::Phase::NotStarted)
             state_.phase = PluginScan::Phase::Done;
         changed();
+    }
+    // The startup's: the stored catalogue listed, then an Incremental discovery for what was installed or
+    // removed since -- unless `skipScan` (Alt held as ADI started, SC-327), which leaves the stored list
+    // and runs nothing, to get past a plug-in that takes the scan down. A later request scans as usual.
+    void startup(bool skipScan) {
+        showCatalogue();
+        if (skipScan) {
+            state_.skipped = true;
+            if (state_.phase == PluginScan::Phase::NotStarted)
+                state_.phase = PluginScan::Phase::Done;
+            changed();
+            return;
+        }
+        request(DiscoveryMode::Incremental);
     }
     // Asks for a job: now when none runs, else after the running one. A Refresh asked for during an
     // Incremental or a CacheOnly stops that one first.
@@ -208,6 +226,7 @@ class PluginCatalogueService {
         job_ = admission.job;
         mode_ = mode;
         quietCancel_ = false;
+        state_.skipped = false; // a scan asked for later runs, and the line says so
         state_.phase = PluginScan::Phase::Scanning;
         state_.candidates = state_.completed = 0;
         changed();
