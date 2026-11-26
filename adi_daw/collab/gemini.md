@@ -4,21 +4,24 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
-## 2026-11-26 — `land/*` Round 4 (`land/basics-1127e` `9a9c3f38` & `land/basics-1127d` `569c921e` — FAIL on Clang 14 JUCE)
+## 2026-11-26 — `land/*` Round 4 (`land/basics-1127e` `9a9c3f38` & `land/basics-1127d` `569c921e` — FAIL: 2 Clang 14 JUCE errors + 1 headless test failure)
 
-Verified `origin/land/basics-1127e` at `9a9c3f38` (merging `land/basics-1127d` `569c921e` + `basics/look-chain` + `basics/recording-chain`) on all 16 touched JUCE TUs (`-DADI_WITH_JUCE=ON -DADI_WERROR=ON`) under **GCC 12.4.0** and **Clang 14.0.6 + libstdc++ 12**.
+Verified `origin/land/basics-1127e` at `9a9c3f38` (merging `land/basics-1127d` `569c921e` + `basics/look-chain` + `basics/recording-chain`) on all 21 touched headless suites (`GCC 12.4.0 -DADI_WERROR=ON`) and all 16 touched JUCE TUs (`-DADI_WITH_JUCE=ON -DADI_WERROR=ON`) under **GCC 12.4.0** and **Clang 14.0.6 + libstdc++ 12**.
 
-| Branch | SHA | Compiler / Tool | JUCE TUs (`-DADI_WITH_JUCE=ON -DADI_WERROR=ON`, 16 TUs) | Verdict |
-|---|---|---|---|---|
-| `land/basics-1127e` | `9a9c3f38` | GCC 12.4.0 | **PASS** (16/16, 0 warnings, 443.54 s: `ui_main.cpp.o`, `ui_analysis.cpp.o`, `ui_arrangement.cpp.o`, `ui_browser.cpp.o`, `ui_clipview.cpp.o`, `ui_controlbar.cpp.o`, `ui_devices.cpp.o`, `ui_floating.cpp.o`, `ui_mixer.cpp.o`, `ui_settings.cpp.o`, `ui_shell.cpp.o`, `app_audio_page.cpp.o`, `test_ui_shell.cpp.o`, `test_vst3_key.cpp.o`, `vst3_host.cpp.o`, `vst3_probe.cpp.o`) | — |
-| `land/basics-1127e` | `9a9c3f38` | Clang 14.0.6 + libstdc++ 12 | **FAIL** (14/16 0 warnings; **2 hard compile errors**: `src/juce/ui_shell.cpp:1966:74` and `src/juce/ui_arrangement.cpp:2892:42`) | **FAIL (do not land)** |
-| `land/basics-1127d` | `569c921e` | Clang 14.0.6 + libstdc++ 12 | **FAIL** (`src/juce/ui_arrangement.cpp:2800:42` unchanged from `90f4091d`) | **FAIL (do not land)** |
+| Branch | SHA | Compiler / Tool | Headless `-DADI_WERROR=ON` (20 touched + `adi_acceptance_wts01`) | JUCE TUs (`-DADI_WITH_JUCE=ON -DADI_WERROR=ON`, 16 TUs) | Verdict |
+|---|---|---|---|---|---|
+| `land/basics-1127e` | `9a9c3f38` | GCC 12.4.0 | **TEST_FAIL** (0 warnings; 20/21 PASS, 252.95 s; **`adi_settings_tests` FAILs**: `339 checks, 1 failure(s)`, `SETTINGS-CATALOGUE.md:183`) | **PASS** (16/16, 0 warnings, 443.54 s) | **FAIL (do not land)** |
+| `land/basics-1127e` | `9a9c3f38` | Clang 14.0.6 + libstdc++ 12 | — | **FAIL** (14/16 0 warnings; **2 hard compile errors**: `src/juce/ui_shell.cpp:1966:74` and `src/juce/ui_arrangement.cpp:2892:42`) | **FAIL (do not land)** |
+| `land/basics-1127d` | `569c921e` | Clang 14.0.6 + libstdc++ 12 | — | **FAIL** (`src/juce/ui_arrangement.cpp:2800:42` unchanged from `90f4091d`) | **FAIL (do not land)** |
 
 ### Findings on `land/basics-1127e` (`9a9c3f38`)
 
 1. **`src/juce/ui_shell.cpp:1966:74` (Clang 14.0.6, `SC-112` `3ddd7c56`, owner `basics/look`):** `error: 'mode' in capture list does not name a variable` (`[safe, mode]` capturing structured binding `const auto &[mode, name]`; fix: `[safe, mode = mode]` or plain pair reference).
 2. **`src/juce/ui_arrangement.cpp:2892:42` (Clang 14.0.6, `SC-87` `002f0b1b`, owner `basics/tracks`; also `:2800:42` on `land/basics-1127d` `569c921e`):** `error: no matching member function for call to 'emplace'` (`automationStroke_.emplace()`; fix: move `AutomationStroke` to namespace scope or assign `automationStroke_ = AutomationStroke{};`).
-- All other 14 JUCE TUs compiled with 0 warnings on Clang 14.0.6. Running headless GCC 12 / Clang 14 on `9a9c3f38` now to catch any headless defects ahead of the fix.
+3. **`adi_settings_tests` FAIL on `adi_daw/docs/SETTINGS-CATALOGUE.md:183` (GCC 12.4.0, `SC-25` `769f3ea4`, owner `basics/recording`; also present on `basics/recording-chain` `2c16932d`):**
+   - `FAIL REJECTED, NOTE, BACKLOG and WISH rows are absent with their kind; only decided rows are 'not a setting'; every absence has a reason: answered but SC-25 adds the depth setting to ADR-0132 d1, d5: 9. Record, Warp & Launch / Bit Depth` (`339 checks, 1 failure(s)`).
+   - `docs/SETTINGS-CATALOGUE.md:183` sets the third column of the now-answered `Bit Depth` (`record.bitDepth`) row to `SC-25 adds the depth setting to ADR-0132 d1, d5` instead of clearing it / matching the catalogue schema.
+   - **Smallest repro:** `ctest --test-dir build-gcc12 -R '^adi_settings_tests$' --output-on-failure`.
 
 ---
 
