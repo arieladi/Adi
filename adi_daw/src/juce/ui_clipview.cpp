@@ -2179,7 +2179,10 @@ void NoteEditor::mouseDoubleClick(const juce::MouseEvent &e) {
     const auto start = snapping(e.mods) ? time.snap(tick, false) : tick;
     commit(addNote(*clip, ClipWindow::of(*clip).toSource(start), gridTicks(), *key));
 }
-bool NoteEditor::keyPressed(const juce::KeyPress &k) {
+bool NoteEditor::keyPressed(const juce::KeyPress &key) {
+    if (panel.root.playComputerMidiKey(key))
+        return true;
+    const auto k = panel.root.computerMidiShortcut(key);
     const auto *clip = panel.details();
     if (clip == nullptr)
         return false;

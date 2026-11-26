@@ -3,6 +3,7 @@
 #include "adi/engine/project_view.hpp"
 #include "adi/settings/store.hpp"
 #include "adi/ui/arm_edits.hpp"
+#include "adi/ui/computer_midi_keyboard.hpp"
 #include "adi/gesture_producers.hpp"
 #include "adi/ui/audio_drop.hpp"
 #include "adi/ui/export_choices.hpp"
@@ -168,7 +169,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         HelpManual,        // the Help menu's manual (WIN-09)
         KeyboardReference, // the Help menu's keyboard reference, written from the keys in force (WIN-09)
         AutomationMode,    // the View menu's Automation Mode, A (Live 12 manual 25.2, 41.7)
-        LastId = AutomationMode
+        ComputerMidiKeyboard, // the Control Bar and Options menu's Computer MIDI Keyboard, M
+        LastId = ComputerMidiKeyboard
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -186,7 +188,7 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     // they differ from what it holds (false with why when the write fails).
     settings::Value userKeys() const;
     bool storeUserKeys(std::string &why);
-    bool key(const juce::KeyPress &, AdiRootComponent &);
+    bool key(const juce::KeyPress &, AdiRootComponent &, bool allowComputerMidi = true);
     void activate(AdiRootComponent &);
     void detach(AdiRootComponent &);
     juce::ApplicationCommandTarget *getNextCommandTarget() override { return nullptr; }
@@ -342,7 +344,8 @@ class StatusBar final : public juce::Component {
     bool selectorDragged_ = false;
 };
 // The window is JUCE's drag container, so a browser row can be dragged onto the lanes (D1).
-class AdiRootComponent final : public juce::Component, public juce::DragAndDropContainer {
+class AdiRootComponent final : public juce::Component, public juce::DragAndDropContainer,
+                               private juce::FocusChangeListener {
   public:
     AdiRootComponent(engine::ProjectView &, OpSubmitter &, TransportMailbox &, AppCommands &,
                      ViewStateStore &, SessionState &, std::string window,
@@ -374,6 +377,12 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
         }
     }
     bool midiIn() const noexcept { return midiIn_; }
+    bool computerMidiEnabled() const noexcept { return computerMidiEnabled_; }
+    bool playComputerMidiKey(const juce::KeyPress &);
+    juce::KeyPress computerMidiShortcut(const juce::KeyPress &) const;
+    bool pressComputerMidiToggle(int key);
+    void releaseComputerMidiKeys();
+    std::function<void(const engine::Event &)> sendComputerMidi;
     double bpm() const noexcept;
     std::uint64_t generation() const noexcept { return generation_; }
     std::uint64_t projectViewGeneration() const noexcept { return view_.generation(); }
@@ -897,6 +906,10 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     RecordStates recordStates_; // the arm and monitoring the application last handed over (MX-09)
     RecordStates freshRecordStates() const { return readRecordStates ? readRecordStates() : recordStates_; }
     bool midiIn_ = false;
+    bool computerMidiEnabled_ = false;
+    ComputerMidiKeyboard computerMidi_;
+    std::optional<int> computerMidiToggleKey_;
+    void globalFocusChanged(juce::Component *) override;
     bool automationMode_ = false;
     std::map<std::int64_t, AutomationTarget> automationTargets_;
     std::vector<std::int64_t> automationDemand_;
@@ -1006,6 +1019,7 @@ class AdiWindow final : public juce::DocumentWindow, private juce::KeyListener {
     // The displays changed (a monitor gone, another resolution or scale): the title bar kept on one.
     void parentSizeChanged() override;
     void minimisationStateChanged(bool) override;
+    void activeWindowStatusChanged() override;
     void broughtToFront() override;
     // Where the window stands, saved after each move or size once it stands still (WIN-02).
     PlaceWatch place;

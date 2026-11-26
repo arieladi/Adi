@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_shell.hpp"
+#include "ui_computer_midi_keys.hpp"
 #include "adi/edit_plan.hpp"
 #include "ui_controls.hpp"
 #include "ui_floating.hpp"
@@ -307,6 +308,7 @@ const StableEntry *stableEntry(int id) noexcept {
         {"help.manual", "Help"}, // HelpManual
         {"help.keyboard-shortcuts", "Help"}, // KeyboardReference
         {"view.automation-mode", "View"}, // AutomationMode
+        {"options.computer-midi-keyboard", "Options"}, // ComputerMidiKeyboard
     }};
     const auto at = id - AppCommands::PlayStop;
     return at >= 0 && at < static_cast<int>(table.size()) ? &table[static_cast<std::size_t>(at)] : nullptr;
@@ -531,7 +533,7 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Draw Mode", "Arrange Clip View Panels Automatically", "Arrange Clip View Panels Horizontally",
                                   "Arrange Clip View Panels Vertically", "Clip View", "Fit to Time Range",
                                   "Arrangement Record", "Export Audio/Video...", "Delay Compensation", "Solo Switches", "Cue Switches",
-                                  "Live 12 Manual", "Keyboard Shortcuts", "Automation Mode"};
+                                  "Live 12 Manual", "Keyboard Shortcuts", "Automation Mode", "Computer MIDI Keyboard"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], category(id), 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -834,6 +836,12 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         info.setTicked(active_ != nullptr && active_->automationMode());
         info.setActive(active_ != nullptr);
         break;
+    case ComputerMidiKeyboard:
+        info.setInfo("Computer MIDI Keyboard", "Play MIDI notes from the computer keyboard.", "Options", 0);
+        info.addDefaultKeypress('m', 0);
+        info.setTicked(active_ != nullptr && active_->computerMidiEnabled());
+        info.setActive(active_ != nullptr);
+        break;
     case SelectAll: // §42.5: Ctrl/Cmd+A; a text field with the focus selects its own text first
         info.addDefaultKeypress('a', cmd);
         info.setActive(active_ != nullptr);
@@ -1058,18 +1066,29 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                     active_->mixViewPanel.hasChannelControlFocus()) && deviceOrTrackEditCommand(id))
         info.setActive(false);
 }
-bool AppCommands::key(const juce::KeyPress &key, AdiRootComponent &root) {
+bool AppCommands::key(const juce::KeyPress &pressed, AdiRootComponent &root, bool allowComputerMidi) {
     activate(root);
+    if (allowComputerMidi && root.playComputerMidiKey(pressed))
+        return true;
+    const auto key = allowComputerMidi ? root.computerMidiShortcut(pressed) : pressed;
+    const auto *mappings = manager.getKeyMappings();
+    auto id = mappings->findCommandForKeyPress(key);
+    const int physical = computerMidiKeyCode(pressed);
+    if (allowComputerMidi && id == 0 && (physical == 'm' || physical == 'M') &&
+        mappings->findCommandForKeyPress(juce::KeyPress('m', pressed.getModifiers(), 0)) == ComputerMidiKeyboard)
+        id = ComputerMidiKeyboard;
+    if (id == ComputerMidiKeyboard)
+        return allowComputerMidi && root.pressComputerMidiToggle(physical);
     // F, G, K and B are the Note Editor's own keys: it takes them itself while it has the keyboard.
     // A key that comes here was pressed elsewhere, where they are no command's.
-    if (const auto id = manager.getKeyMappings()->findCommandForKeyPress(key); id >= FoldToNotes && id <= DrawMode)
+    if (id >= FoldToNotes && id <= DrawMode)
         return false;
     // A with the Note Editor's keyboard stays the editor's: Automation Mode is the Arrangement's.
-    if (manager.getKeyMappings()->findCommandForKeyPress(key) == AutomationMode && root.clipView.notes.hasContext())
+    if (id == AutomationMode && root.clipView.notes.hasContext())
         return false;
     // A latching key runs its command once while it is held (Live 42.25): the root times it. One let
     // go where the window could not see it (the focus elsewhere) goes down anew, and nothing goes back.
-    if (const auto id = manager.getKeyMappings()->findCommandForKeyPress(key); AdiRootComponent::latches(id)) {
+    if (AdiRootComponent::latches(id)) {
         if (root.latch().held() && !root.input.down(root.latch().key()))
             root.letGoUnseen();
         return root.latchKey(id, key.getKeyCode(), true, root.input.ms());
@@ -1321,8 +1340,11 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
     reader_.emplace(view_.current());
     setSize(1200, 720);
     frame();
+    juce::Desktop::getInstance().addFocusChangeListener(this);
 }
 AdiRootComponent::~AdiRootComponent() {
+    juce::Desktop::getInstance().removeFocusChangeListener(this);
+    releaseComputerMidiKeys();
     mixViewPanel.stack.persistWindowControls();
     commands_.detach(*this);
     setLookAndFeel(nullptr);
@@ -1884,6 +1906,51 @@ bool AdiRootComponent::keyPressed(const juce::KeyPress &key) {
                     return true;
     return commands_.key(key, *this);
 }
+namespace {
+bool wantsTextInput(juce::Component *focused) {
+    const auto *target = dynamic_cast<juce::TextInputTarget *>(focused);
+    return target != nullptr && target->isTextInputActive();
+}
+bool canUseComputerMidiKeys() {
+    return !wantsTextInput(juce::Component::getCurrentlyFocusedComponent()) &&
+           juce::Component::getCurrentlyModalComponent() == nullptr;
+}
+} // namespace
+bool AdiRootComponent::playComputerMidiKey(const juce::KeyPress &key) {
+    if (!computerMidiEnabled_ || key.getModifiers().isAnyModifierKeyDown() || !canUseComputerMidiKeys())
+        return false;
+    return computerMidi_.press(computerMidiKeyCode(key), [this](const engine::Event &event) {
+        if (sendComputerMidi)
+            sendComputerMidi(event);
+    });
+}
+juce::KeyPress AdiRootComponent::computerMidiShortcut(const juce::KeyPress &key) const {
+    if (computerMidiEnabled_ && key.getModifiers().getRawFlags() == juce::ModifierKeys::shiftModifier &&
+        ComputerMidiKeyboard::recognizes(computerMidiKeyCode(key)) &&
+        commands_.manager.getKeyMappings()->findCommandForKeyPress(key) == 0 && canUseComputerMidiKeys())
+        return juce::KeyPress(key.getKeyCode());
+    return key;
+}
+bool AdiRootComponent::pressComputerMidiToggle(int key) {
+    if (!canUseComputerMidiKeys())
+        return false;
+    if (computerMidiToggleKey_ && computerMidiKeyDown(input, *computerMidiToggleKey_))
+        return true;
+    computerMidiToggleKey_ = key;
+    return command(AppCommands::ComputerMidiKeyboard);
+}
+void AdiRootComponent::releaseComputerMidiKeys() {
+    computerMidi_.releaseAll([this](const engine::Event &event) {
+        if (sendComputerMidi)
+            sendComputerMidi(event);
+    });
+}
+void AdiRootComponent::globalFocusChanged(juce::Component *focused) {
+    if (focused != nullptr && (focused == this || isParentOf(focused)) && !wantsTextInput(focused))
+        return;
+    releaseComputerMidiKeys();
+    computerMidiToggleKey_.reset();
+}
 void AdiRootComponent::resizeMixerView(int height) {
     const int body = getHeight() - look::controlBarHeight - look::statusBarHeight - deviceArea_.getHeight();
     state_.mixerViewHeight =
@@ -1975,10 +2042,15 @@ bool AdiRootComponent::referenceKey(bool down, std::int64_t nowMs) {
 }
 bool AdiRootComponent::keyStateChanged(bool isKeyDown) {
     const auto now = input.ms();
+    if (computerMidiToggleKey_ && !computerMidiKeyDown(input, *computerMidiToggleKey_))
+        computerMidiToggleKey_.reset();
+    const bool releasedMidi = computerMidiEnabled_ && computerMidi_.releaseUp(
+        [this](int key) { return computerMidiKeyDown(input, key); },
+        [this](const engine::Event &event) { if (sendComputerMidi) sendComputerMidi(event); });
     // A latching key let go: after a hold, the window goes back (Live 42.25).
-    bool handled = false;
+    bool handled = releasedMidi;
     if (latch_.held() && !input.down(latch_.key()))
-        handled = latchKey(0, latch_.key(), false, now);
+        handled = latchKey(0, latch_.key(), false, now) || handled;
     // Shift+R let go: a hold of the ★ Reference ends, a tap latches it (ADR-0209 d9).
     if (reference_.held() && !input.down('r'))
         return referenceKey(false, now) || handled;
@@ -4080,6 +4152,14 @@ bool AdiRootComponent::command(int id) {
     case AppCommands::AutomationMode:
         setAutomationMode(!automationMode_);
         return true;
+    case AppCommands::ComputerMidiKeyboard:
+        computerMidiEnabled_ = !computerMidiEnabled_;
+        if (!computerMidiEnabled_)
+            releaseComputerMidiKeys();
+        transport.keyboard.setToggleState(computerMidiEnabled_, juce::dontSendNotification);
+        commands_.manager.commandStatusChanged();
+        mark(DirtySet::Transport);
+        return true;
     case AppCommands::HelpManual:
     case AppCommands::KeyboardReference: {
         const auto target = id == AppCommands::HelpManual ? juce::URL(kManualAddress)
@@ -4510,11 +4590,11 @@ const std::vector<MenuEntries> &menuBar() {
         // other Options entries is to be read on Live 12 (PROVISIONAL).
 #if JUCE_MAC
         {"Options",
-         {C::Follow, 0, C::DrawMode, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid, C::SnapToGrid, C::FixedGrid, 0,
+         {C::Follow, 0, C::DrawMode, C::ComputerMidiKeyboard, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid, C::SnapToGrid, C::FixedGrid, 0,
           C::DelayCompensation, 0, C::SoloSwitches, C::CueSwitches, C::SoloInPlace}},
 #else
         {"Options",
-         {C::Follow, 0, C::DrawMode, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid, C::SnapToGrid, C::FixedGrid, 0,
+         {C::Follow, 0, C::DrawMode, C::ComputerMidiKeyboard, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid, C::SnapToGrid, C::FixedGrid, 0,
           C::DelayCompensation, 0, C::SoloSwitches, C::CueSwitches, C::SoloInPlace, 0, C::Settings}},
 #endif
         // The views ADI has, in Live's order (§41.4.1): Session View, the Groove Pool and the
@@ -4674,6 +4754,11 @@ AdiWindow::AdiWindow(std::unique_ptr<AdiRootComponent> root, AppCommands &comman
 void AdiWindow::visibilityChanged() {
     if (!quiet)
         DocumentWindow::visibilityChanged();
+}
+void AdiWindow::activeWindowStatusChanged() {
+    DocumentWindow::activeWindowStatusChanged();
+    if (root_ != nullptr && !isActiveWindow())
+        root_->releaseComputerMidiKeys();
 }
 void AdiWindow::moved() {
     DocumentWindow::moved();

@@ -50,7 +50,7 @@ class LiveMidiProcessor final : public engine::BlockProcessor {
         feed_.pump(io.streamTimeSamples, io.frames, rate_, juce::Time::getMillisecondCounterHiRes(),
                    [&session](std::int64_t sample, const engine::Event &event) noexcept {
                        return session.enqueueMidiInput(sample, event);
-                   });
+                   }, [&session]() noexcept { session.resetMidiInput(); });
         document_.process(io);
     }
     void release() override { document_.release(); }
@@ -675,6 +675,9 @@ class AdiApplication final : public juce::JUCEApplication,
                                                        document_->views(),
                                                        document_->sessionState(), "main");
         root_ = root.get();
+        root->sendComputerMidi = [this](const engine::Event &event) {
+            (void)midiFeed_.pushComputerMidi(juce::Time::getMillisecondCounterHiRes(), event);
+        };
         root->browser.setListing(library_, libraryReady_); // the library listed so far, if anything
         root->devices.publication = [this] { return document_->parameterFeed().current(); };
         root->devices.parameterDemand = [this](const void *consumer, const std::vector<std::int64_t> &ids) {

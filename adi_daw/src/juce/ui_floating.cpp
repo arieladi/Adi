@@ -136,7 +136,7 @@ struct FloatingHost::Entry {
             }
             if (e.key == "Mix View" && (id == AppCommands::FocusBrowser || id == AppCommands::SearchBrowser))
                 return h.root_.mixViewPanel.focusChannelSearch();
-            return h.commands_.key(k, h.root_);
+            return h.commands_.key(k, h.root_, !e.ownedKind);
         }
         // A key held from here comes up here: the main window lets it go.
         bool keyStateChanged(bool isKeyDown, juce::Component *) override { return h.root_.keyStateChanged(isKeyDown); }

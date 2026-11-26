@@ -3666,7 +3666,10 @@ void ArrangementCanvas::mouseMagnify(const juce::MouseEvent &e, float factor) {
         view.geometry.zoom(factor, e.position.x);
     view.changed();
 }
-bool ArrangementCanvas::keyPressed(const juce::KeyPress &k) {
+bool ArrangementCanvas::keyPressed(const juce::KeyPress &pressed) {
+    if (view.root.playComputerMidiKey(pressed))
+        return true;
+    const auto k = view.root.computerMidiShortcut(pressed);
     const auto code = k.getKeyCode();
     const auto mods = k.getModifiers();
     // Delete or Backspace takes the chosen breakpoint away (Automation Mode).

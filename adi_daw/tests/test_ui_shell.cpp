@@ -11526,6 +11526,102 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     check(!root.midiOverdub() && !overdub.getToggleState(), "and off");
     document->release();
 }
+void computerMidiKeyboard(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "computer-midi.adi", true, {}, error);
+    check(document != nullptr, "a project for the computer MIDI keyboard");
+    if (!document)
+        return;
+    std::vector<engine::Event> events;
+    std::array<bool, 26> held{};
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "computer-midi");
+    UiPeerRoot surface;
+    surface.setSize(1200, 800);
+    surface.addAndMakeVisible(root);
+    surface.setVisible(true);
+    surface.addToDesktop(0);
+    root.setSize(1200, 800);
+    root.sendComputerMidi = [&](const engine::Event &event) { events.push_back(event); };
+    root.input.keyDown = [&](int key) {
+        if (key >= 'A' && key <= 'Z')
+            key += 'a' - 'A';
+        return key >= 'a' && key <= 'z' && held[static_cast<std::size_t>(key - 'a')];
+    };
+    const auto down = [&](char key) {
+        held[static_cast<std::size_t>(key - 'a')] = true;
+        return root.keyPressed(juce::KeyPress(key, 0, key));
+    };
+    const auto up = [&](char key) {
+        held[static_cast<std::size_t>(key - 'a')] = false;
+        root.keyStateChanged(false);
+    };
+    const auto head = OpJournal(document->store()).headSeq();
+    check(!root.computerMidiEnabled() && !root.transport.keyboard.getToggleState(), "the computer MIDI keyboard starts off");
+    check(down('m') && down('m') && root.computerMidiEnabled() && root.transport.keyboard.getToggleState(),
+          "M lights the keyboard switch once even if the OS repeats it");
+    up('m');
+    juce::ApplicationCommandInfo command(AppCommands::ComputerMidiKeyboard);
+    commands.getCommandInfo(AppCommands::ComputerMidiKeyboard, command);
+    check(command.defaultKeypresses.contains(juce::KeyPress('m')) &&
+              (command.flags & juce::ApplicationCommandInfo::isTicked) != 0,
+          "the Options command shows the M shortcut and the same active state");
+    check(down('a') && down('a') && down('w') && down('k') && events.size() == 3 &&
+              events[0].type == engine::EventType::NoteOn && events[0].dim == 60 && events[1].dim == 61 && events[2].dim == 72 &&
+              events[0].noteId != events[1].noteId && events[1].noteId != events[2].noteId,
+          "white and black keys play the Live layout and a held key sends one note-on");
+    check(down('x') && down('v'), "X raises the octave and V raises velocity");
+    up('x');
+    up('v');
+    check(down('a') && down('s') && events.size() == 4 && events[3].dim == 74 && events[3].value == 120.0 / 127.0,
+          "the octave and velocity affect new notes only");
+    up('a');
+    check(events.size() == 5 && events[4].type == engine::EventType::NoteOff &&
+              events[4].dim == 60 && events[4].noteId == events[0].noteId,
+          "releasing after an octave change preserves the held note's pitch and identity");
+    up('w');
+    up('k');
+    up('s');
+
+    auto &canvas = root.arrangement.canvas;
+    held['f' - 'a'] = true;
+    check(canvas.keyPressed(juce::KeyPress('f')) && !canvas.showFades && events.size() == 9 && events.back().dim == 77,
+          "the keyboard claims F before the Arrangement's fade shortcut");
+    up('f');
+    check(canvas.keyPressed(juce::KeyPress('f', juce::ModifierKeys::shiftModifier, 0)) && canvas.showFades &&
+              root.computerMidiShortcut(juce::KeyPress('s', juce::ModifierKeys::shiftModifier, 0)) == juce::KeyPress('s') &&
+              events.size() == 10,
+          "Shift keeps the Arrangement and application shortcuts available without playing notes");
+    check(!commands.key(juce::KeyPress('m'), root, false) && root.computerMidiEnabled() &&
+              !commands.key(juce::KeyPress('w'), root, false),
+          "forwarded plug-in window keys cannot toggle the keyboard or sound a note");
+
+    {
+        juce::TextEditor field;
+        root.addAndMakeVisible(field);
+        field.setBounds(10, 10, 140, 22);
+        field.grabKeyboardFocus();
+        auto *peer = surface.getPeer();
+        check(field.hasKeyboardFocus(false) && peer != nullptr &&
+                  peer->handleKeyPress(juce::KeyPress('a', 0, 'a')) && peer->handleKeyPress(juce::KeyPress('m', 0, 'm')) &&
+                  field.getText() == "am" && root.computerMidiEnabled() && events.size() == 10,
+              "a focused text field owns the typing keys even when MIDI keyboard mode is on");
+    }
+    root.grabKeyboardFocus();
+    check(down('j'), "a note plays after returning focus to the Arrangement");
+    root.releaseComputerMidiKeys();
+    check(root.computerMidiEnabled() && events.size() == 12 && events.back().type == engine::EventType::NoteOff &&
+              events.back().noteId == events[10].noteId,
+          "the focus-loss release path silences held notes and leaves the mode enabled");
+    up('j');
+    check(down('k'), "hold another note before turning the keyboard off");
+    root.transport.keyboard.onClick();
+    check(!root.computerMidiEnabled() && !root.transport.keyboard.getToggleState() && events.size() == 14 &&
+              events.back().type == engine::EventType::NoteOff && events.back().noteId == events[12].noteId &&
+              OpJournal(document->store()).headSeq() == head,
+          "turning the Control Bar switch off releases the held note without an Undo item");
+    up('k');
+}
 // EX-11, the Export page (Live 12 manual 5.2.1): the choices in Live's order, what the renderer cannot do
 // yet refused with its reason, the range from the selection, the loop or the song, and the job the choices
 // make, rendered to a WAV by the engine's renderer.
@@ -18752,6 +18848,7 @@ int main(int argc, char **argv) {
     trace("pluginWindows", [&] { pluginWindows(commands, settings, temp.path()); });
     trace("automationArm", [&] { automationArm(commands, temp.path()); });
     trace("armAndRecord", [&] { armAndRecord(commands, temp.path()); });
+    trace("computerMidiKeyboard", [&] { computerMidiKeyboard(commands, temp.path()); });
     trace("exportPage", [&] { exportPage(commands, temp.path()); });
     trace("mixerDragLive", [&] { mixerDragLive(commands, temp.path()); });
     trace("mixerShowsAutomation", [&] { mixerShowsAutomation(commands, temp.path()); });
