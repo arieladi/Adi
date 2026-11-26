@@ -34,7 +34,7 @@ The reservation table stays in `collab/README.md` ("Reserved ADR numbers"), wher
 `tools/validate_schema.py` reads it. #210, win's earlier fix that makes check 8 catch stray and missing
 rows, is kept open and folded into this work.
 
-Next free: **ADR-0257**.
+Next free: **ADR-0258**.
 
 ## Register ids (`docs/DEFERRED.md`)
 
@@ -42,9 +42,9 @@ Next free: **ADR-0257**.
 |---|---|---|---|---|
 | DF-C | Control | the control seat, through win | DF-C7 | DF-C8 |
 | DF-M | Mix View | the Mix View seat, through win | DF-M79 | DF-M80 |
-| DF-W | Window | the window lane and win | DF-W58 | DF-W59 |
+| DF-W | Window | the window lane and win | DF-W59 | DF-W60 |
 | DF-E | Engine | the engine seat, engine-win and the devices lane; the row's owner column says which | DF-E90 | DF-E91 |
-| DF-R | Repository | win | DF-R1 | DF-R2 |
+| DF-R | Repository | win | DF-R2 | DF-R3 |
 
 Three seats share DF-E, so each DF-E id is reserved here first.
 
@@ -72,6 +72,8 @@ are in the seat's queue (`collab/prompts/2026-11-22-gemini-queue.md` for gemini)
 | SRF-10, OSCQuery v1: the core | engine | gemini | `src/adi/oscquery.*`, its tests and `tests/fuzz_oscquery.cpp`, their lines in `CMakeLists.txt`; stacked on SRF-09 | after 3 December | reserved |
 | PD-15, paste between projects: the engine half | engine | gemini | `src/adi/project_paste.*`, `tests/test_project_paste.cpp`, its lines in `CMakeLists.txt` | after 3 December | reserved |
 | CO-01, the collaboration core | engine | gemini | `src/adi/collab/**` (new), `tests/test_collab_*.cpp`, their lines in `CMakeLists.txt`; its schema minor, if a slice needs one, reserved in the table above first | after 3 December | reserved |
+| the rows of `docs/SANITY-CHECK.md` (fixes; ADR-0257 d2) | each row's owner seat | the six basics sessions (`collab/prompts/2026-11-27-basics-*.md`) | the files each queue names, for its own rows only | now, in win's stacks | lent 27 November, until the owner seat next runs |
+| DF-E89, the Release warnings (a fix) | engine, engine-win and devices | gemini | the 54 units its sweep named, for those warnings only (`collab/prompts/2026-11-27-gemini-basics.md`) | now | lent 27 November |
 
 | DF-M34, a device told each skipped segment's length (a fix, not a PLAN row) | engine | mixview | the device backend's interface in `src/juce/device_model.hpp` (one hook taking each skipped segment's exact frame count, beside `didSuspend`) and the graph's skip site that already calls `Node::silenceTaps` (`src/adi/engine/graph.*`), with a test in the engine's graph suite | before 3 December | lent by win 25 November, the engine seat being out; the engine reviews it when back |
 | DF-E76, a symlinked VST3 bundle resolves to its module (a fix) | engine-win | window-fn | `src/juce/juce_device_loader.cpp` (the canonical module identity) and `tests/test_play_render.cpp` | when proved | lent by win 25 November (first to the Codex work seat, which is out until 29 November) |
