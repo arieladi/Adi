@@ -631,6 +631,10 @@ class AdiApplication final : public juce::JUCEApplication,
         live_.reset();
     }
     bool install(const juce::File &file, bool create) {
+        if (file == juce::File{}) {
+            report("Cannot create an Untitled project folder in " + projectsFolder(*settings_).getFullPathName().toStdString());
+            return false;
+        }
         std::string error;
         std::string catalogueError;
         (void)loader_.hydrateCatalogue(catalogueError); // no scanner child or root enumeration
@@ -1164,11 +1168,23 @@ class AdiApplication final : public juce::JUCEApplication,
     // only a warning the store or the session reports goes there. The store never overwrites,
     // so an existing file is refused and the Status Bar says why, where Live asks first and
     // then replaces.
-    void saveAs(const juce::File &file) {
+    void saveAs(const juce::File &chosenFile) {
         if (!document_ || !root_ || !window_)
             return;
+        const auto file = songProjectFile(chosenFile);
+        if (file == juce::File{}) {
+            root_->say("Choose a name for the project.");
+            return;
+        }
+        const auto path = pathFromUtf8(file.getFullPathName().toStdString());
+        std::error_code folderError;
+        const bool created = std::filesystem::create_directory(path.parent_path(), folderError);
+        if (folderError) {
+            root_->say("Cannot create the project folder: " + folderError.message());
+            return;
+        }
         const auto before = document_->deviceCopyIdentity();
-        const bool saved = document_->saveAs(pathFromUtf8(file.getFullPathName().toStdString()));
+        const bool saved = document_->saveAs(path);
         // A take landed before the switch (PD06-SAVEAS-GUARD) is told here with Save As's own words, so the
         // timer finds nothing to say over them; a kept take is chosen, as when it lands on its own.
         std::string landedFirst;
@@ -1179,6 +1195,8 @@ class AdiApplication final : public juce::JUCEApplication,
                 root_->selectClip(landed->clips.front());
         }
         if (!saved) {
+            if (created && std::filesystem::is_empty(path.parent_path(), folderError) && !folderError)
+                std::filesystem::remove(path.parent_path(), folderError);
             root_->say(landedFirst + document_->error());
             return;
         }
@@ -1242,13 +1260,16 @@ class AdiApplication final : public juce::JUCEApplication,
         }
         if (id == AppCommands::SaveAs) {
             // Live's Save Live Set As (manual 5.4.1, 41.3; ADR-0203 d6): a new file the project
-            // carries on in. A save chooser for `.adi`, opened beside the current file; the
-            // document copies and switches (`Store::saveAs`, #380, N3).
+            // carries on in. The chooser opens beside the current song's folder so two saved
+            // variations get their own folders. The document copies and switches (`Store::saveAs`).
             if (chooser_)
                 return false;
             const auto current = juce::File(juce::String::fromUTF8(reinterpret_cast<const char *>(
                 document_->store().path().u8string().c_str())));
-            chooser_ = std::make_unique<juce::FileChooser>("Save ADI project as", current, "*.adi");
+            const auto suggested = songProjectFile(current) == current
+                                       ? current.getParentDirectory().getSiblingFile(current.getFileName())
+                                       : current;
+            chooser_ = std::make_unique<juce::FileChooser>("Save ADI project as", suggested, "*.adi");
             chooser_->launchAsync(juce::FileBrowserComponent::saveMode |
                                       juce::FileBrowserComponent::canSelectFiles,
                                   [this](const juce::FileChooser &chooser) {

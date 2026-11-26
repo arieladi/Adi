@@ -279,7 +279,7 @@ void midiLoopTakes() {
 void publicationStagingOwnership() {
     namespace fs=std::filesystem;
     Fixture f;auto recorded=f.capture();const auto before=digestProject(*f.store).text;
-    const auto audioFolder=media::projectFolder(*f.store)/"audio";
+    const auto audioFolder=media::projectFolder(*f.store)/"Samples"/"Recorded";
     const auto unrelated=audioFolder/".adi-media-unrelated";fs::create_directories(unrelated);
     const auto sentinel=unrelated/"keep.txt";{std::ofstream out(sentinel);out<<"unowned staging";}
     const auto sentinelHash=media::blake3File(sentinel),takeHash=media::blake3File(recorded.tracks[0].file);
@@ -337,7 +337,7 @@ void crossVolumePublication(const std::filesystem::path& workFolder) {
     check(committed.ok && committed.seqs.size()==2,"cross-volume capture commits through project-side AtomicOnly publication as one group (media, placement)");
     if(committed.ok) {
         const auto owned=media::projectFolder(*f.store)/media::pathFromUtf8(f.store->db().execAndGet("SELECT rel_path FROM media_files").getString());
-        check(owned.parent_path()==media::projectFolder(*f.store)/"audio" && media::blake3File(owned).hex==hash.hex && !fs::exists(recorded.directory()),
+        check(owned.parent_path()==media::projectFolder(*f.store)/"Samples"/"Recorded" && media::blake3File(owned).hex==hash.hex && !fs::exists(recorded.directory()),
             "cross-volume commit preserves exact captured bytes in project audio and discards its private take");
         const auto heard=f.play(Precision::Float32);bool exact=true;
         for(std::size_t frame=0;frame<heard.size();++frame)exact=exact && heard[frame]==(frame>=512 && frame<812?Fixture::sample(frame-512):0);
@@ -370,7 +370,7 @@ void forcedCrossDevicePublication() {
     namespace fs=std::filesystem;
     Fixture f;auto recorded=f.capture();const auto before=digestProject(*f.store).text;
     const auto take=recorded.tracks[0].file;const auto takeHash=media::blake3File(take);
-    const auto audioFolder=media::projectFolder(*f.store)/"audio";
+    const auto audioFolder=media::projectFolder(*f.store)/"Samples"/"Recorded";
     const std::array<recording::ClipIds,1> ids={{{7,8,"Other device"}}};
     fs::path published,staged;
     {
@@ -472,7 +472,7 @@ void existingMediaAndHistoryPaths() {
         const auto before=digestProject(*f.store).text;const std::array<recording::ClipIds,1> ids={{{7,18,"Reuse"}}};auto prepared=recording::prepareCommit(*f.store,recorded,ids);
         check(prepared.ok && recording::commit(*f.store,prepared).ok && f.store->db().execAndGet("SELECT count(*) FROM media_files").getInt()==1,"recording reuses existing media identity while ensuring an owned playable asset");
         std::string error;const auto owned=media::resolveMedia(media::projectFolder(*f.store),media::mediaRow(f.store->db(),8),error);
-        check(!owned.empty() && owned.parent_path().filename()=="audio" && std::filesystem::exists(owned),"existing external content is attached through a verified owned recording file");
+        check(!owned.empty() && owned.parent_path()==media::projectFolder(*f.store)/"Samples"/"Recorded" && std::filesystem::exists(owned),"existing external content is attached through a verified owned recording file");
         check(History(*f.store).undo().ok && digestProject(*f.store).text==before && std::filesystem::exists(priorPath),"undo restores exact prior media paths with their original files still available");
         recorded.discard();
     }
