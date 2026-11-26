@@ -4876,7 +4876,23 @@ void browserSearchSpeed(AppCommands &commands, const std::filesystem::path &dir)
         // A nested file can keep the outer volume ID after the library deduplicates it.
         listing.samples.push_back({std::move(name), std::move(path), archived ? "archive" : "library"});
     }
-    browser.setListing(std::move(listing));
+    const auto indexStart = std::chrono::steady_clock::now();
+    auto publication = std::make_shared<const BrowserLibrarySnapshot>(std::move(listing));
+    const auto indexed = std::chrono::steady_clock::now();
+    browser.setLibrarySnapshot(publication);
+    const auto handedOver = std::chrono::steady_clock::now();
+    {
+        BrowserPanel secondBrowser(root);
+        secondBrowser.setLibrarySnapshot(publication);
+        check(&browser.listing() == &publication->listing() && &secondBrowser.listing() == &browser.listing(),
+              "Browser search: two windows use the same owning library listing");
+        publication.reset();
+        check(&secondBrowser.listing() == &browser.listing() && browser.listing().samples.size() == sampleCount,
+              "Browser search: the windows retain the listing after the producer releases it");
+    }
+    std::printf("Browser library: %.2f ms to build the search index, %.2f ms to hand it to the first window\n",
+                std::chrono::duration<double, std::milli>(indexed - indexStart).count(),
+                std::chrono::duration<double, std::milli>(handedOver - indexed).count());
     int user = -1, nested = -1, samples = -1;
     for (std::size_t i = 0; i < browser.sidebar().size(); ++i) {
         const auto &entry = browser.sidebar()[i];
@@ -4947,6 +4963,9 @@ void browserSearchSpeed(AppCommands &commands, const std::filesystem::path &dir)
     check(browser.shown().size() == sampleCount && matches(0, "Take 1000000.wav") &&
               matches(sampleCount - 1, "Take 1199999 QxyOutside.wav"),
           "Browser search: clearing the query restores every sample in order");
+    const auto broad = edit("Take");
+    check(browser.shown().size() == sampleCount, "Browser search: a common query returns the entire listing");
+    std::printf("Browser search with %d matches: %.3f ms for the common query\n", sampleCount, broad);
 }
 void arrangementMidiRedraw(AppCommands &commands, const std::filesystem::path &dir) {
     constexpr int firstTrack = 20, tracks = 42, clipsPerTrack = 100, firstClip = 100;

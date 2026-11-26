@@ -312,7 +312,7 @@ class AdiApplication final : public juce::JUCEApplication,
         if (file.empty() || smokeOutput_ != juce::File{} || folders.empty()) {
             libraryReady_ = true;
             if (root_)
-                root_->browser.setListing(library_, true);
+                root_->browser.setLibrarySnapshot(library_, true);
             return;
         }
         const auto background = settings_->get("library.backgroundIndexing");
@@ -333,17 +333,27 @@ class AdiApplication final : public juce::JUCEApplication,
             } catch (const std::exception &e) {
                 listing.error = std::string("The library could not be indexed: ") + e.what();
             }
+            std::shared_ptr<const BrowserLibrarySnapshot> snapshot;
+            std::string searchError;
+            if (!owner->stop.load()) {
+                try {
+                    snapshot = std::make_shared<const BrowserLibrarySnapshot>(std::move(listing));
+                } catch (const std::exception &e) {
+                    searchError = std::string("The library search index could not be built: ") + e.what();
+                }
+            }
             owner->scanned = true;
             if (!owner->stop.load())
-                juce::MessageManager::callAsync([this, owner, found = std::move(listing)] {
+                juce::MessageManager::callAsync([this, owner, found = std::move(snapshot), error = std::move(searchError)] {
                     if (owner->stop.load() || juce::JUCEApplicationBase::getInstance() != this)
                         return;
                     library_ = found;
                     libraryReady_ = true;
                     if (root_) {
-                        root_->browser.setListing(library_, true);
-                        if (!library_.error.empty())
-                            root_->say(library_.error);
+                        root_->browser.setLibrarySnapshot(library_, true);
+                        const auto &problem = found ? found->listing().error : error;
+                        if (!problem.empty())
+                            root_->say(problem);
                     }
                 });
             // The index stays open, hashing in the background, until Quit.
@@ -757,8 +767,8 @@ class AdiApplication final : public juce::JUCEApplication,
             libraryOwner_->stop = true;
         }
         libraryOwner_->wake.notify_all();
-        // An owner still walking a folder is left to finish on its own; one waiting only stops its
-        // hashing and ends.
+        // An owner still walking a folder or building its search index can
+        // finish on its own. A waiting owner stops its hashing and ends.
         if (libraryOwner_->scanned.load())
             libraryThread_.join();
         else
@@ -897,7 +907,7 @@ class AdiApplication final : public juce::JUCEApplication,
                                                        document_->views(),
                                                        document_->sessionState(), "main");
         root_ = root.get();
-        root->browser.setListing(library_, libraryReady_); // the library listed so far, if anything
+        root->browser.setLibrarySnapshot(library_, libraryReady_);
         root->devices.publication = [this] { return document_->parameterFeed().current(); };
         root->devices.parameterDemand = [this](const void *consumer, const std::vector<std::int64_t> &ids) {
             document_->setParameterDemand(consumer, ids);
@@ -1929,7 +1939,7 @@ class AdiApplication final : public juce::JUCEApplication,
     // The library index's owner and what it last listed (D1).
     std::thread libraryThread_;
     std::shared_ptr<LibraryOwner> libraryOwner_;
-    LibraryListing library_;
+    std::shared_ptr<const BrowserLibrarySnapshot> library_;
     bool libraryReady_ = false;
     // Collect and Export's worker. Completion becomes visible at thread exit.
     std::thread export_;
