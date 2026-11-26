@@ -15,6 +15,10 @@ Baseline `00f1f369f3566c0c833390f8af5f0df9ed50f1cf`. Pending build and test.
 
 Pending baseline and initial landing checks.
 
+## Accessibility permission
+
+macOS initially denied Accessibility and event posting to the shell session. After approval in System Settings, both system preflight checks returned true.
+
 ## For the director
 
-The shell session's macOS Accessibility check and event-posting check both returned false. Screen capture is available. The walk will use the available app and system entry points. If scripted gestures still need Accessibility approval, those rows will record the missing permission.
+No outstanding permission request.
