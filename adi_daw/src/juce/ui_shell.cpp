@@ -3021,11 +3021,11 @@ bool AdiRootComponent::renderTrack(TrackRenderAction action, std::int64_t id) {
     if (track == nullptr || !canRenderTrack(action, *track))
         return fail("That track is no longer available for this command.");
     bool ok = false;
-    std::string status;
+    std::string renderStatus;
     switch (action) {
     case TrackRenderAction::Freeze:
         ok = trackRenderDocument_->freezeTrack(id);
-        status = "Freezing track...";
+        renderStatus = "Freezing track...";
         break;
     case TrackRenderAction::Unfreeze:
         ok = trackRenderDocument_->unfreezeTrack(id);
@@ -3035,17 +3035,17 @@ bool AdiRootComponent::renderTrack(TrackRenderAction action, std::int64_t id) {
         break;
     case TrackRenderAction::BounceToNewTrack:
         ok = trackRenderDocument_->bounceTrackToNewTrack(id);
-        status = "Bouncing to a new track...";
+        renderStatus = "Bouncing to a new track...";
         break;
     case TrackRenderAction::BounceInPlace:
         ok = trackRenderDocument_->bounceTrackInPlace(id);
         if (!track->frozen)
-            status = "Bouncing track in place...";
+            renderStatus = "Bouncing track in place...";
         break;
     }
     if (!ok)
         return fail(trackRenderDocument_->error());
-    say(std::move(status));
+    say(std::move(renderStatus));
     return true;
 }
 void AdiRootComponent::sayStaleAddMenu() {
