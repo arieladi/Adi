@@ -1320,16 +1320,43 @@ void firstSaveMovesTheTake(const std::filesystem::path &dir) {
               newAudio == media::projectFolder(doc->store()) /
                               originalAudio.lexically_relative(fs::canonical(staging.parent_path()) / staging.filename()),
           "first save keeps the take in the destination's media folder");
-    check(doc->ops().nextUndo() && doc->ops().nextUndo()->label == "Record Audio" &&
-              doc->ops().undo().ok && doc->synchronise() &&
-              doc->ops().redo().ok && doc->synchronise() && mediaPath() == newAudio &&
-              doc->session().problems().empty(),
-          "undo and redo keep the recording playable after relocation");
+    const auto undoStep = doc->ops().nextUndo();
+    check(undoStep && undoStep->label == "Record Audio", "first save preserves the recording's undo step");
+    const bool undone = doc->ops().undo().ok && doc->synchronise();
+    check(undone, "the relocated project's recording can be undone");
+    const bool redone = undone && doc->ops().redo().ok && doc->synchronise();
+    check(redone && mediaPath() == newAudio, "redo restores the recording at its relocated path");
     check(doc->takeSnapshot("First snapshot", 1, 0).ok,
           "after naming, the project can take a snapshot");
     doc.reset();
     check(!fs::exists(source) && !fs::exists(staging) && fs::is_regular_file(newAudio),
           "the closed named project retains the take and leaves no unnamed copy");
+    if (!redone)
+        return;
+
+    StoreError openError{};
+    const auto reopened = Store::open(named, openError, true);
+    engine::Session playback;
+    engine::SessionSpec spec;
+    spec.sampleRate = 48000;
+    spec.maxFrames = 64;
+    const bool loaded = reopened && playback.load(*reopened, {}, spec);
+    check(loaded, "the named project reopens for playback");
+    if (!loaded)
+        return;
+    playback.transport().locate(0);
+    playback.transport().play();
+    auto *clips = playback.clips();
+    check(clips && clips->prime(), "the relocated take's audio is ready");
+    io.in = nullptr;
+    io.numIn = 0;
+    io.streamTimeSamples = 0;
+    left.fill(0);
+    right.fill(0);
+    playback.process(io);
+    const auto renderedTake = [](float sample) { return std::abs(sample - 0.25f) < 0.01f; };
+    check(std::all_of(left.begin(), left.end(), renderedTake) && std::all_of(right.begin(), right.end(), renderedTake),
+          "the reopened, redone clip plays the recorded PCM with no audio input");
 }
 void firstSavePreservesLaterSourceEdits(const std::filesystem::path &dir) {
     namespace fs = std::filesystem;
