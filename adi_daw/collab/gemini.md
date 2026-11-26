@@ -4,6 +4,20 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-26 — Closing Rule (After-3-December `PR requested` sweep, `engine` seat): 5 stack heads (`au08`, `mi04`, `tm-wt02`, `tm-wt03`)
+
+All five branches predate `DF-M62` (`FloatRealTransform.h:61`) and `DF-E69` (Clang 14 structured-binding / `std::ranges` fixes since landed on `main`); `FloatRealTransform.h:61` was patched transiently locally only to compile past it and reverted after each branch.
+
+| Branch | Head | Touched files | GCC 12.4.0 `-DADI_WERROR=ON` | Clang 14.0.6 + libstdc++ 12 `-DADI_WERROR=ON` | Findings |
+|---|---|---|---|---|---|
+| `engine/au08-simplify-envelope` (stacked on `au03-write-guards`) | `be846d1b` | `automation_shapes.{hpp,cpp}`, `automation_splice_store.{hpp,cpp}`, `automation_recording.{hpp,cpp}`, 3 test files (+872/-43) | **PASS (3/3)** — 0 warnings (`adi_automation_splice_store_tests` 6.07 s, `adi_automation_shapes_tests` 2.35 s, `adi_automation_recording_tests` 1.20 s) | **PASS (0 warnings on all touched TUs)** (pre-DF-E69 base only) | None (rebase onto `main` before landing). |
+| `engine/au08-envelope-clipboard` (stacked on `au02`) | `9ad32e5e` | `automation_shapes.{hpp,cpp}`, `automation_splice.{hpp,cpp}`, `automation_splice_store.{hpp,cpp}`, 2 test files (+479/-61) | **PASS (3/3)** — 0 warnings (`adi_automation_splice_store_tests` 7.70 s, `adi_automation_splice_tests` 0.05 s, `adi_automation_shapes_tests` 2.61 s) | **PASS (0 warnings on all touched TUs)** (pre-DF-E69 base only) | None (rebase onto `main` before landing). |
+| `engine/mi04-step-scale-degrees` (includes `mi04-invert-selected-pitches`, `mi06-fit-to-scale`) | `c3b86647` | `scale_context.{hpp,cpp}`, `note_transforms.{hpp,cpp}`, `test_note_diff.cpp`, `test_scale_context.cpp` (+367/-4) | **PASS (3/3)** — 0 warnings (`adi_scale_context_tests` 0.63 s, `adi_note_transforms_tests` 2.39 s, `adi_note_diff_tests` 13.35 s) | **PASS (0 warnings on all touched TUs)** (pre-DF-E69 base only) | None (rebase onto `main` before landing). |
+| `engine/tm-wt02-interior-warp-markers` | `6fa013a5` | `warp_map.{hpp,cpp}`, `test_warp.cpp`, `test_warp_playback.cpp` (+155/-3) | **PASS (2/2)** — 0 warnings (`adi_warp_playback_tests` 25.25 s, `adi_warp_tests` 6.90 s) | **PASS (0 warnings on all 3 touched TUs)** (`warp_map.cpp.o`, `test_warp.cpp.o`, `test_warp_playback.cpp.o`) | None (rebase onto `main` before landing). |
+| `engine/tm-wt03-beats-zero-crossing` (includes `tm-wt03-native-warp-interpolation`) | `c52e6ccd` | `warp.cpp`, `test_warp.cpp` (+197/-16) | **PASS (2/2)** — 0 warnings (`adi_warp_playback_tests` 24.54 s, `adi_warp_tests` 6.93 s) | **PASS (0 warnings on both touched TUs)** (`warp.cpp.o`, `test_warp.cpp.o`) | None (rebase onto `main` before landing). |
+
+---
+
 ## 2026-11-26 — Closing Rule (After-3-December `PR requested` sweep, `window` seat): `window/key-conflicts` (`cc7174a1`), `window/text-goldens` (`b88bd09a`), `window/command-palette` (`051ec6c0`)
 
 Built all touched JUCE TUs and headless tests under **GCC 12.4.0** and **Clang 14.0.6 + libstdc++ 12** with `-DADI_WITH_JUCE=ON -DADI_WERROR=ON`.
