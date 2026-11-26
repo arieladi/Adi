@@ -1362,11 +1362,10 @@ class AdiApplication final : public juce::JUCEApplication,
         juce::String notices;
         for (int index = 0; index < AdiAppResources::namedResourceListSize; ++index) {
             const auto *name = AdiAppResources::namedResourceList[index];
-            const auto *filename = AdiAppResources::getNamedResourceOriginalFilename(name);
-            if (juce::StringRef(filename) == "program.png")
-                continue;
             int length = 0;
             const auto *contents = AdiAppResources::getNamedResource(name, length);
+            if (contents == nullptr || contents == AdiAppResources::program_png)
+                continue;
             notices << juce::String::fromUTF8(contents, length).trimEnd() << "\n\n";
         }
         auto text = std::make_unique<juce::TextEditor>();
