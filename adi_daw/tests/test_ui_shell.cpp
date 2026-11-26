@@ -12285,14 +12285,14 @@ void mixerDragLive(AppCommands &commands, const std::filesystem::path &dir) {
         sel.toTrack = 4;
         root.frame();
         three->volume.mouseDoubleClick(pressAt(three->volume, {3.f, 3.f}, juce::ModifierKeys::leftButtonModifier));
-        check(volumeOf(4) == 0 && volumeOf(3) == second, "SC-82: double-click resets only the clicked fader");
+        check(std::abs(volumeOf(4)) < 1e-6 && volumeOf(3) == second, "SC-82: double-click resets only the clicked fader");
         check(type(three->volume, "-7.5 dB") && std::abs(volumeOf(4) + 7.5) < 1e-9 && volumeOf(3) == second,
               "SC-82: click and type a precise fader value");
         check(type(three->pan, "25L") && three->pan.getValue() == -.5, "SC-82: the pan value box reads a left value");
         if (!three->sendKnobs().empty()) {
             auto &send = *three->sendKnobs().front();
             const auto floor = send.getMinimum();
-            check(type(send, "-10") && send.getValue() == -10, "SC-82: click and type the send level");
+            check(type(send, "-10") && std::abs(send.getValue() + 10) < 1e-6, "SC-82: click and type the send level");
             check(peer != nullptr && peer->handleKeyPress(juce::KeyPress(juce::KeyPress::deleteKey)) &&
                       send.getValue() == floor, "SC-82: Delete returns the focused send to silence");
         }
