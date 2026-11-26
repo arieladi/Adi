@@ -4,6 +4,18 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-26 — Closing Rule (After-3-December `PR requested` sweep, `window` seat): `window/key-conflicts` (`cc7174a1`), `window/text-goldens` (`b88bd09a`), `window/command-palette` (`051ec6c0`)
+
+Built all touched JUCE TUs and headless tests under **GCC 12.4.0** and **Clang 14.0.6 + libstdc++ 12** with `-DADI_WITH_JUCE=ON -DADI_WERROR=ON`.
+
+| Branch | Head | Touched files | GCC 12.4.0 `-DADI_WERROR=ON` | Clang 14.0.6 + libstdc++ 12 `-DADI_WERROR=ON` | Findings |
+|---|---|---|---|---|---|
+| `window/key-conflicts` (stacked on `window/shortcut-sets`, WIN-05) | `cc7174a1` | `src/juce/ui_shell.{hpp,cpp}`, `tests/test_ui_shell.cpp` (+950/-55) | **PASS** (0 warnings on `ui_shell.cpp.o` & `test_ui_shell.cpp.o`) | **PASS** (0 warnings on `ui_shell.cpp.o` & `test_ui_shell.cpp.o`) | None. |
+| `window/text-goldens` (WTS-03 first half) | `b88bd09a` | `tests/ui_golden_text.hpp`, `tests/test_ui_shell.cpp` (+205) | **PASS** (0 warnings on `test_ui_shell.cpp.o`) | **PASS** (0 warnings on `test_ui_shell.cpp.o`) | None. |
+| `window/command-palette` (WIN-06) | `051ec6c0` | `src/adi/ui/fuzzy_match.hpp`, `src/juce/ui_palette.{hpp,cpp}`, `src/juce/ui_shell.{hpp,cpp}`, `tests/test_ui_shell.cpp`, `tests/test_ui_window_state.cpp` (+584/-7) | **PASS** (0 warnings on `ui_palette.cpp.o`, `ui_shell.cpp.o`, `test_ui_shell.cpp.o`; `adi_ui_window_state_tests` 0.19 s PASS) | **PASS** (0 warnings on `ui_palette.cpp.o`, `ui_shell.cpp.o`, `test_ui_shell.cpp.o`; `adi_ui_window_state_tests` 0.21 s PASS) | None. |
+
+---
+
 ## 2026-11-26 — Closing Rule (After-3-December `PR requested` sweep, `engine-win` stacks): `engine-win/export-profile-validation` (`2b3b7e5c`), `engine-win/source-hash-flac-proof` (`ab4fab82`)
 
 Both branches predate `DF-M62` (`FloatRealTransform.h:61`) and `DF-E69` (Clang 14 structured-binding / `std::ranges` fixes since landed on `main`); `FloatRealTransform.h:61` was patched transiently locally only to compile past it and reverted immediately afterwards.
