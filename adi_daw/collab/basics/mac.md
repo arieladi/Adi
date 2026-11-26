@@ -24,7 +24,7 @@ Baseline `00f1f369f3566c0c833390f8af5f0df9ed50f1cf`.
 
 ## Nine-step window walk
 
-Pending baseline and initial landing checks.
+Step 1 recorded in [the walk report](https://github.com/arieladi/Adi/blob/walk/macos/adi_daw/collab/walk/2026-11-27-macos.md).
 
 ## Accessibility permission
 
