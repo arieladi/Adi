@@ -1069,6 +1069,63 @@ void playRightAfterAStoppedCommit(const std::filesystem::path &dir) {
     }
     doc->release();
 }
+void waveformDetail(const std::filesystem::path &dir) {
+    constexpr std::uint32_t frames = 131072;
+    std::string error;
+    auto doc = ui::ProjectDocument::open(dir / "waveform-detail.adi", true, {}, error);
+    check(doc != nullptr, "a project for waveform detail");
+    if (!doc)
+        return;
+    const auto wav = dir / "transients.wav";
+    {
+        std::vector<float> samples(2 * frames);
+        samples[2 * 13] = .75f;
+        samples.back() = -.5f;
+        audio::WavWriter writer(wav, 48000, 2, audio::WavFormat::Float32);
+        writer.write(samples.data(), frames);
+        writer.close();
+    }
+    ui::AudioImport import;
+    const bool imported = doc->prepareImport(wav.string(), 1'700'000'000'000'000, import);
+    check(imported, "import the sparse stereo wave");
+    if (!imported)
+        return;
+    auto drop = ui::dropAudio(*doc->view().current(), 4, 0, "transients", import);
+    const bool placed = drop.refusal.empty() && doc->ops().submit(std::move(drop.ops)).ok;
+    check(placed, "place the waveform for both editors");
+    if (!placed)
+        return;
+    const auto snapshot = doc->view().current();
+    const auto &clip = *snapshot->findTrack(4)->clips[0];
+    if (!clip.audio || !clip.audio->mediaInfo) {
+        check(false, "the placed source has its media identity");
+        return;
+    }
+    // An older pool cache puts the first transient and its quiet neighbours in one bin.
+    media::MediaPeaks coarse{clip.audio->mediaInfo->contentHash, 48000, 2, frames, 32,
+                            std::vector<media::PeakBin>(2 * (frames / 32))};
+    coarse.bins.front().maximum = .75f;
+    coarse.bins.back().minimum = -.5f;
+    const auto encoded = media::encodePeaks(coarse);
+    SQLite::Statement cache(doc->store().db(), "UPDATE media_files SET peaks=? WHERE id=?");
+    cache.bind(1, encoded.data(), static_cast<int>(encoded.size()));
+    cache.bind(2, clip.audio->mediaId);
+    cache.exec();
+
+    auto &waves = doc->waveforms();
+    check(!waves.peaks(*clip.audio), "the peak work starts off the window thread");
+    for (int i = 0; i < 2000 && !waves.idle(); ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    const auto peaks = waves.peaks(*clip.audio);
+    check(peaks != nullptr, "the waveform detail lands from the worker");
+    if (!peaks)
+        return;
+    check(ui::peakSpan(*peaks, 0., 4., 0) == media::PeakBin{}, "deep zoom isolates quiet samples beside the transient");
+    check(ui::peakSpan(*peaks, 12., 16., 0) == media::PeakBin{0, .75f}, "deep zoom retains the transient itself");
+    check(ui::peakSpan(*peaks, 0., frames, 0) == media::PeakBin{0, .75f} &&
+              ui::peakSpan(*peaks, 0., frames, 1) == media::PeakBin{-.5f, 0},
+          "zoomed out, both channels retain the full sample, including its last bin");
+}
 void peakSpans() {
     media::MediaPeaks p;
     p.channels = 2;
@@ -1329,6 +1386,10 @@ int main(int argc, char **argv) {
             return 1;
         }
         return 0;
+    }
+    {
+        test::TempDirectory waveDir("ui_document", "wave-detail");
+        waveformDetail(waveDir.path());
     }
     peakSpans();
     {
