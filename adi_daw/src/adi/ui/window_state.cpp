@@ -179,6 +179,11 @@ WindowState ViewStateStore::load(const std::string &window, DesktopDefaults defa
         state.mixAnalyzerSource = std::clamp(j.value("mixAnalyzerSource", 0), 0, 1);
         state.mixAnalyzerPoint = std::clamp(j.value("mixAnalyzerPoint", 0), 0, 2);
         state.mixAnalyzerChannel = std::clamp(j.value("mixAnalyzerChannel", 0), 0, 4);
+        if (const auto saved = j.find("infoAnalyserMode"); saved != j.end()) {
+            const auto mode = integerOr(*saved, -1);
+            if (mode >= 0 && mode <= static_cast<int>(InfoAnalyserMode::ClassicScope))
+                state.infoAnalyserMode = static_cast<InfoAnalyserMode>(mode);
+        }
         const auto palette = j.value("analysisPalette", std::string("adi"));
         const bool knownPalette = palettes::id(palettes::find(palette)) == palette;
         state.analysisPalette = knownPalette ? palette : "adi";
@@ -270,6 +275,7 @@ bool ViewStateStore::save(const std::string &window, const WindowState &state, s
                             {"mixViewDetached", state.mixViewDetached},
                             {"mixview.stack.search", state.mixStackSearch},
                             {"mixAnalyzerDock", state.mixAnalyzerDock},
+                            {"infoAnalyserMode", static_cast<int>(state.infoAnalyserMode)},
                             {"clipView", state.clipView},
                             {"clipViewHeight", state.clipViewHeight},
                             {"noteGridSnap", state.noteGridSnap},

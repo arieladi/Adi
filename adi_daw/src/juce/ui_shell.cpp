@@ -1318,6 +1318,7 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
     addAndMakeVisible(arrangement);
     addAndMakeVisible(devices);
     addChildComponent(infoSpectrum);
+    applyInfoAnalyserMode();
     addAndMakeVisible(dockResizer);
     addChildComponent(clipView);
     addChildComponent(clipResizer);
@@ -1572,8 +1573,6 @@ void AdiRootComponent::frame() noexcept {
     if (infoSpectrum.isVisible()) {
         const auto &analysis = mixViewPanel.analysis;
         const auto &settings = analysis.detail;
-        using AnalysisMode = SharedSpectrumView::Mode;
-        infoSpectrum.setMode(settings.mode() == AnalysisMode::ClassicScope ? AnalysisMode::Scope : settings.mode());
         infoSpectrum.setSource(settings.point());
         infoSpectrum.setChannel(settings.view.channel());
         infoSpectrum.setPalette(settings.view.palette(), settings.view.paletteReversed());
@@ -1911,6 +1910,61 @@ void AdiRootComponent::paint(juce::Graphics &g) {
         g.setColour(look::panel);
         g.fillRect(chatArea_);
     }
+}
+void AdiRootComponent::applyInfoAnalyserMode() {
+    using Mode = SharedSpectrumView::Mode;
+    using Scale = SharedSpectrumView::SpectrumScale;
+    switch (state_.infoAnalyserMode) {
+    case InfoAnalyserMode::Spectrogram:
+        infoSpectrum.setMode(Mode::Spectrogram);
+        break;
+    case InfoAnalyserMode::FilledSpectrum:
+        infoSpectrum.setSpectrumScale(Scale::Extended);
+        infoSpectrum.setMode(Mode::Spectrum);
+        break;
+    case InfoAnalyserMode::LineSpectrum:
+        infoSpectrum.setSpectrumScale(Scale::Device);
+        infoSpectrum.setMode(Mode::Spectrum);
+        break;
+    case InfoAnalyserMode::ClassicScope:
+        infoSpectrum.setMode(Mode::ClassicScope);
+        break;
+    }
+}
+void AdiRootComponent::mouseDown(const juce::MouseEvent &e) {
+    const bool inInfo = infoArea_.contains(e.getPosition());
+    infoPressed_ = inInfo && e.mods.isLeftButtonDown() && !e.mods.isPopupMenu();
+    if (!inInfo || !e.mods.isPopupMenu()) return;
+    juce::PopupMenu menu;
+    constexpr std::array choices{
+        std::pair{InfoAnalyserMode::Spectrogram, "Spectrogram"},
+        std::pair{InfoAnalyserMode::FilledSpectrum, "Filled Spectrum"},
+        std::pair{InfoAnalyserMode::LineSpectrum, "Line Spectrum"},
+        std::pair{InfoAnalyserMode::ClassicScope, "Classic Scope"}};
+    const SafePointer<AdiRootComponent> safe(this);
+    for (const auto &[mode, name] : choices)
+        menu.addItem(name, true, state_.infoAnalyserMode == mode, [safe, mode] {
+            if (!safe || safe->state_.infoAnalyserMode == mode) return;
+            const auto previous = std::exchange(safe->state_.infoAnalyserMode, mode);
+            if (!safe->persist()) {
+                safe->state_.infoAnalyserMode = previous;
+                safe->fail(safe->error_);
+                return;
+            }
+            safe->applyInfoAnalyserMode();
+        });
+    if (onInfoMenu) {
+        onInfoMenu(menu);
+        return;
+    }
+    const auto where = e.getScreenPosition();
+    menu.showMenuAsync(juce::PopupMenu::Options{}.withTargetScreenArea(
+        juce::Rectangle<int>(where.x, where.y, 1, 1)));
+}
+void AdiRootComponent::mouseUp(const juce::MouseEvent &e) {
+    if (std::exchange(infoPressed_, false) && infoArea_.contains(e.getPosition()) &&
+        !e.mouseWasDraggedSinceMouseDown() && (state_.mixView || setMixView(true, state_.mixViewDetached)))
+        chooseMixViewTab(static_cast<int>(MixViewPanel::Tab::Analysis));
 }
 bool AdiRootComponent::keyPressed(const juce::KeyPress &key) {
     // With Use Tab Key to Move Focus off, Live's default (§41.1.1), Tab and Shift+Tab move

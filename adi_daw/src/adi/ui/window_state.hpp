@@ -28,6 +28,8 @@ struct DesktopDefaults {
     // handed in by the shell, never a constant in a component (ADR-0200 d5).
     int deviceFloor = 196;
 };
+enum class InfoAnalyserMode { Spectrogram, FilledSpectrum, LineSpectrum, ClassicScope };
+
 struct WindowState {
     explicit WindowState(DesktopDefaults d = {})
         : panels({Panel::Browser, d.browser, 120, false}, {Panel::Mixer, d.mixer, 120, false}, 240),
@@ -78,6 +80,7 @@ struct WindowState {
     // Optional right-side shared analyzer presentation; never audio parameters.
     bool mixAnalyzerDock = false;
     int mixAnalyzerWidth = 300, mixAnalyzerSource = 0, mixAnalyzerPoint = 0, mixAnalyzerChannel = 0;
+    InfoAnalyserMode infoAnalyserMode = InfoAnalyserMode::Spectrogram;
     std::string analysisPalette = "adi";
     bool analysisPaletteReverse = false;
     std::string analysisSpectrumSlope = "flat";

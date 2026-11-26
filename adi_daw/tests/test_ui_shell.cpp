@@ -17450,6 +17450,71 @@ int main(int argc, char **argv) {
               a.infoArea().getBottom() == a.status.getY() &&
               a.infoArea().getRight() + look::gap == a.deviceArea().getX(),
           "the Info View is on, bottom-left, beside the Device View");
+    a.frame();
+    check(a.infoSpectrum.mode() == SharedSpectrumView::Mode::Spectrogram,
+          "SC-112: a window with no saved choice starts on the spectrogram");
+    {
+        using Mode = SharedSpectrumView::Mode;
+        using Scale = SharedSpectrumView::SpectrumScale;
+        using Choice = InfoAnalyserMode;
+        auto &infoView = a.infoSpectrum;
+        juce::Image empty(juce::Image::RGB, infoView.getWidth(), infoView.getHeight(), true,
+                          juce::SoftwareImageType{});
+        juce::Graphics graphics(empty);
+        infoView.paintEntireComponent(graphics, true);
+        bool blankPlot = true;
+        for (int y = 22; y < empty.getHeight(); ++y)
+            for (int x = 0; x < empty.getWidth(); ++x)
+                blankPlot = blankPlot && empty.getPixelAt(x, y) == juce::Colour(look::display);
+        check(blankPlot, "the idle spectrogram has an empty plot without spectrum grid or status prose");
+
+        const auto centre = a.infoArea().getCentre().toFloat();
+        auto pick = [&](int choice, const juce::String &ticked) {
+            int requested = 0;
+            a.onInfoMenu = [&](const juce::PopupMenu &menu) {
+                ++requested;
+                check(menu.getNumItems() == 4 && menuLine(menu).contains(ticked + " *"),
+                      "the Info menu offers four renderers and ticks the current one");
+                int index = 0;
+                for (juce::PopupMenu::MenuItemIterator item(menu); item.next(); ++index)
+                    if (index == choice) item.getItem().action();
+            };
+            a.mouseDown(pressAt(a, centre, juce::ModifierKeys::rightButtonModifier));
+            a.mouseUp(pressAt(a, centre));
+            a.onInfoMenu = {};
+            check(requested == 1 && !a.state().mixView, "a context press requests the menu without opening Analysers");
+        };
+
+        pick(1, "Spectrogram");
+        check(infoView.mode() == Mode::Spectrum && infoView.spectrumScale() == Scale::Extended,
+              "the filled spectrum uses the existing filled display");
+        pick(2, "Filled Spectrum");
+        check(infoView.mode() == Mode::Spectrum && infoView.spectrumScale() == Scale::Device,
+              "the line spectrum uses the existing line display");
+        pick(3, "Line Spectrum");
+        a.mixViewPanel.analysis.setMode(Mode::Phase);
+        a.frame();
+        check(infoView.mode() == Mode::ClassicScope && b.infoSpectrum.mode() == Mode::Spectrogram &&
+                  persistence.load("main").infoAnalyserMode == Choice::ClassicScope,
+              "the Classic Scope survives other analyser changes and saves only in its own window");
+        {
+            AdiRootComponent reopened(view, submitter, mailbox, commands, persistence, session, "main");
+            check(reopened.infoSpectrum.mode() == Mode::ClassicScope,
+                  "reopening the window restores its saved analyser");
+        }
+        pick(0, "Classic Scope");
+        a.mixViewPanel.analysis.setMode(Mode::Spectrum);
+        a.mouseDown(pressAt(a, centre, juce::ModifierKeys::leftButtonModifier));
+        a.mouseUp(dragAt(a, centre, centre));
+        check(!a.state().mixView, "dragging across the Info box does not open Analysers");
+        a.mouseDown(pressAt(a, centre, juce::ModifierKeys::leftButtonModifier));
+        a.mouseUp(pressAt(a, centre));
+        a.frame();
+        check(a.state().mixView && a.mixViewPanel.tab() == MixViewPanel::Tab::Analysis && !infoView.isVisible(),
+              "a left click opens the Analysers page");
+        check(a.setMixView(false, false), "return to Arrangement after checking the Info click");
+        a.frame();
+    }
     a.hover(&a.transport.play);
     check(a.infoText().contains("Play") && a.infoText().contains("Space"),
           "the Info View describes the element under the mouse");
