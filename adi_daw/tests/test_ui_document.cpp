@@ -1275,106 +1275,6 @@ void arrangementRecord(const std::filesystem::path &dir) {
     check(settled && settled->ok && !doc->recording() && !doc->landingTake(),
           "a take whose device stopped is settled into the project, not lost");
 }
-void arrangementMidiRecord(const std::filesystem::path &path, bool mixed) {
-    std::string error;
-    constexpr std::int32_t upstreamLatency = 16;
-    auto doc = ui::ProjectDocument::open(path, true,
-        [](const engine::DeviceRequest &request, std::string &) -> std::unique_ptr<device::DeviceInstance> {
-            if (request.ref->uid == "record.test.delay")
-                return std::make_unique<SurfaceKnobs>(16);
-            if (request.ref->uid == "record.test.keys")
-                return std::make_unique<SurfaceKnobs>(0, engine::EventFlow::Consume);
-            return nullptr;
-        }, error);
-    check(doc != nullptr, "a project for Arrangement MIDI recording");
-    if (!doc)
-        return;
-    const auto set = [&](const char *type, Payload payload) {
-        OpRequest request;
-        request.opType = type;
-        request.payload = std::move(payload);
-        return doc->ops().submit(request).ok;
-    };
-    if (mixed) {
-        doc->store().db().exec("INSERT INTO plugin_refs(id,format,uid,name,subtype) VALUES"
-                              "(30,'clap','record.test.delay','Delay','effect'),"
-                              "(31,'clap','record.test.keys','Keys','instrument')");
-        check(set("chain.create", {{"id", 30}, {"track", 2}, {"ord", 0}, {"name", "Devices"}}) &&
-                  set("device.insert", {{"id", 30}, {"chain", 30}, {"ord", 0}, {"ref", 30}, {"name", "Delay"}, {"latency", 0}}) &&
-                  set("device.insert", {{"id", 31}, {"chain", 30}, {"ord", 1}, {"ref", 31}, {"name", "Keys"}, {"latency", 0}}),
-              "the monitored track has an instrument after a device with latency");
-    }
-    check(set("track.setArm", {{"id", 2}, {"armed", true}}) &&
-              set("track.setMonitorMode", {{"id", 2}, {"mode", 1}}) &&
-              (!mixed || (set("track.setArm", {{"id", 3}, {"armed", true}}) &&
-                          set("track.setMonitorMode", {{"id", 3}, {"mode", 0}}) &&
-                          set("track.setArm", {{"id", 4}, {"armed", true}}))) && doc->synchronise(),
-          "armed monitored MIDI, optionally with unmonitored MIDI and audio");
-    doc->prepare(48000, 64);
-    const auto clipCount = [&] { return doc->store().db().execAndGet("SELECT count(*) FROM clips").getInt(); };
-    const auto before = clipCount();
-    if (!doc->startRecording(0, mixed ? 1 : 0, false)) {
-        check(false, "MIDI-only Record works without audio input, mixed Record with one input");
-        return;
-    }
-    std::array<float, 64> input{}, left{}, right{};
-    const float *channels[]{input.data()};
-    float *outputs[]{left.data(), right.data()};
-    engine::AudioIo io;
-    io.in = mixed ? channels : nullptr;
-    io.numIn = mixed ? 1 : 0;
-    io.out = outputs;
-    io.numOut = 2;
-    io.frames = 64;
-    const auto block = [&] {
-        doc->process(io);
-        io.streamTimeSamples += io.frames;
-        doc->tick(io.streamTimeSamples);
-    };
-    block();
-    check(doc->session().enqueueMidiInput(112, {0, engine::EventType::NoteOn, 1, 64, 9, 0, 1.0}, 80) &&
-              doc->session().enqueueMidiInput(120, {0, engine::EventType::NoteExpression, 1,
-                   static_cast<std::uint16_t>(ExpressionDim::Pitch), 9, 0, 3.0}, 88) &&
-              doc->session().enqueueMidiInput(120, {0, engine::EventType::NoteExpression, 1,
-                   static_cast<std::uint16_t>(ExpressionDim::Timbre), 9, 0, 0.25}, 88) &&
-              doc->session().enqueueMidiInput(120, {0, engine::EventType::NoteExpression, 1,
-                   static_cast<std::uint16_t>(ExpressionDim::Pressure), 9, 0, 0.5}, 88),
-          "one held note with bend, slide and pressure and separate played and heard timestamps");
-    block();
-    const auto live = doc->liveMidiTakes();
-    check(!live.empty() && live.front().notes.size() == 1 && live.front().notes.front().end == live.front().end &&
-              clipCount() == before, "the held note appears before any clip row is committed");
-    check(doc->session().enqueueMidiInput(160, {0, engine::EventType::NoteOff, 1, 64, 9, 0, 0.5}, 128),
-          "the held note releases");
-    block();
-    doc->stopRecording();
-    block();
-    doc->release();
-    check(doc->settleRecording(), "the audio and MIDI takes settle together");
-    const auto landed = doc->takeLanded();
-    const auto expected = mixed ? 3 : 1;
-    check(landed && landed->ok && clipCount() == before + expected && doc->liveMidiTakes().empty(),
-          "one committed clip per armed track replaces the growing take");
-    if (!landed || !landed->ok)
-        return;
-    for (const auto id : landed->clips) {
-        const auto read = engine::readClipDetails(doc->store(), id, true, true);
-        if (!read.clip || read.clip->kind != "midi")
-            continue;
-        const auto &clip = *read.clip;
-        const double samples = clip.trackId == 2 ? 112.0 - (mixed ? upstreamLatency : 0) : 80.0;
-        const auto ticks = static_cast<std::int64_t>(std::lround(samples * textproj::kPPQ / 24000.0));
-        check(clip.notes.size() == 1 && clip.notes.front().startTicks == ticks && clip.notes.front().key == 64,
-              "monitored notes land where heard and unmonitored notes where played");
-        const auto &curves = clip.noteExpressions.curves;
-        check(clip.noteExpressions.problems.empty() && curves.size() == 3 && !clip.notes.empty() &&
-                  std::all_of(curves.begin(), curves.end(), [&](const auto &curve) {
-                      return curve.noteId == clip.notes.front().id && curve.points.size() == 1 && curve.points.front().time_ticks > 0;
-                  }), "the clip preserves bend, slide and pressure as note-relative curves");
-    }
-    check(doc->ops().undo().ok && clipCount() == before && doc->ops().redo().ok && clipCount() == before + expected,
-          "one Undo and one Redo for the whole take");
-}
 std::optional<std::uint64_t> ownerReadBytes() {
 #if defined(__linux__)
     std::ifstream stats("/proc/thread-self/io");
@@ -1553,6 +1453,106 @@ void longTakeStopResponse(const std::filesystem::path &dir) {
           "long take: one Undo removes all four clips");
     doc->release();
 }
+void arrangementMidiRecord(const std::filesystem::path &path, bool mixed) {
+    std::string error;
+    constexpr std::int32_t upstreamLatency = 16;
+    auto doc = ui::ProjectDocument::open(path, true,
+        [](const engine::DeviceRequest &request, std::string &) -> std::unique_ptr<device::DeviceInstance> {
+            if (request.ref->uid == "record.test.delay")
+                return std::make_unique<SurfaceKnobs>(16);
+            if (request.ref->uid == "record.test.keys")
+                return std::make_unique<SurfaceKnobs>(0, engine::EventFlow::Consume);
+            return nullptr;
+        }, error);
+    check(doc != nullptr, "a project for Arrangement MIDI recording");
+    if (!doc)
+        return;
+    const auto set = [&](const char *type, Payload payload) {
+        OpRequest request;
+        request.opType = type;
+        request.payload = std::move(payload);
+        return doc->ops().submit(request).ok;
+    };
+    if (mixed) {
+        doc->store().db().exec("INSERT INTO plugin_refs(id,format,uid,name,subtype) VALUES"
+                              "(30,'clap','record.test.delay','Delay','effect'),"
+                              "(31,'clap','record.test.keys','Keys','instrument')");
+        check(set("chain.create", {{"id", 30}, {"track", 2}, {"ord", 0}, {"name", "Devices"}}) &&
+                  set("device.insert", {{"id", 30}, {"chain", 30}, {"ord", 0}, {"ref", 30}, {"name", "Delay"}, {"latency", 0}}) &&
+                  set("device.insert", {{"id", 31}, {"chain", 30}, {"ord", 1}, {"ref", 31}, {"name", "Keys"}, {"latency", 0}}),
+              "the monitored track has an instrument after a device with latency");
+    }
+    check(set("track.setArm", {{"id", 2}, {"armed", true}}) &&
+              set("track.setMonitorMode", {{"id", 2}, {"mode", 1}}) &&
+              (!mixed || (set("track.setArm", {{"id", 3}, {"armed", true}}) &&
+                          set("track.setMonitorMode", {{"id", 3}, {"mode", 0}}) &&
+                          set("track.setArm", {{"id", 4}, {"armed", true}}))) && doc->synchronise(),
+          "armed monitored MIDI, optionally with unmonitored MIDI and audio");
+    doc->prepare(48000, 64);
+    const auto clipCount = [&] { return doc->store().db().execAndGet("SELECT count(*) FROM clips").getInt(); };
+    const auto before = clipCount();
+    if (!doc->startRecording(0, mixed ? 1 : 0, false)) {
+        check(false, "MIDI-only Record works without audio input, mixed Record with one input");
+        return;
+    }
+    std::array<float, 64> input{}, left{}, right{};
+    const float *channels[]{input.data()};
+    float *outputs[]{left.data(), right.data()};
+    engine::AudioIo io;
+    io.in = mixed ? channels : nullptr;
+    io.numIn = mixed ? 1 : 0;
+    io.out = outputs;
+    io.numOut = 2;
+    io.frames = 64;
+    const auto block = [&] {
+        doc->process(io);
+        io.streamTimeSamples += io.frames;
+        doc->tick(io.streamTimeSamples);
+    };
+    block();
+    check(doc->session().enqueueMidiInput(112, {0, engine::EventType::NoteOn, 1, 64, 9, 0, 1.0}, 80) &&
+              doc->session().enqueueMidiInput(120, {0, engine::EventType::NoteExpression, 1,
+                   static_cast<std::uint16_t>(ExpressionDim::Pitch), 9, 0, 3.0}, 88) &&
+              doc->session().enqueueMidiInput(120, {0, engine::EventType::NoteExpression, 1,
+                   static_cast<std::uint16_t>(ExpressionDim::Timbre), 9, 0, 0.25}, 88) &&
+              doc->session().enqueueMidiInput(120, {0, engine::EventType::NoteExpression, 1,
+                   static_cast<std::uint16_t>(ExpressionDim::Pressure), 9, 0, 0.5}, 88),
+          "one held note with bend, slide and pressure and separate played and heard timestamps");
+    block();
+    const auto live = doc->liveMidiTakes();
+    check(!live.empty() && live.front().notes.size() == 1 && live.front().notes.front().end == live.front().end &&
+              clipCount() == before, "the held note appears before any clip row is committed");
+    check(doc->session().enqueueMidiInput(160, {0, engine::EventType::NoteOff, 1, 64, 9, 0, 0.5}, 128),
+          "the held note releases");
+    block();
+    doc->stopRecording();
+    block();
+    doc->release();
+    check(doc->settleRecording(), "the audio and MIDI takes settle together");
+    const auto landed = doc->takeLanded();
+    const auto expected = mixed ? 3 : 1;
+    check(landed && landed->ok && clipCount() == before + expected && doc->liveMidiTakes().empty(),
+          "one committed clip per armed track replaces the growing take");
+    if (!landed || !landed->ok)
+        return;
+    for (const auto id : landed->clips) {
+        const auto read = engine::readClipDetails(doc->store(), id, true, true);
+        if (!read.clip || read.clip->kind != "midi")
+            continue;
+        const auto &clip = *read.clip;
+        const double samples = clip.trackId == 2 ? 112.0 - (mixed ? upstreamLatency : 0) : 80.0;
+        const auto ticks = static_cast<std::int64_t>(std::lround(samples * textproj::kPPQ / 24000.0));
+        check(clip.notes.size() == 1 && clip.notes.front().startTicks == ticks && clip.notes.front().key == 64,
+              "monitored notes land where heard and unmonitored notes where played");
+        const auto &curves = clip.noteExpressions.curves;
+        check(clip.noteExpressions.problems.empty() && curves.size() == 3 && !clip.notes.empty() &&
+                  std::all_of(curves.begin(), curves.end(), [&](const auto &curve) {
+                      return curve.noteId == clip.notes.front().id && curve.points.size() == 1 && curve.points.front().time_ticks > 0;
+                  }), "the clip preserves bend, slide and pressure as note-relative curves");
+    }
+    check(doc->ops().undo().ok && clipCount() == before && doc->ops().redo().ok && clipCount() == before + expected,
+          "one Undo and one Redo for the whole take");
+}
 // MX-23 and SRF-02: a fader dragged is heard while it moves, writes nothing until the mouse lets go, then
 // lands as one undo step; Esc puts it back (Live 12 manual 18.1).
 void mixerDragHeard(const std::filesystem::path &dir) {
@@ -1631,6 +1631,154 @@ void mixerDragHeard(const std::filesystem::path &dir) {
               doc->ops().nextUndo()->label == "Change Track Panning",
           "a pan drag lands as one step too");
     doc->release();
+}
+struct ProcessMemory {
+    std::uint64_t residentKiB = 0, peakKiB = 0;
+};
+ProcessMemory processMemory() {
+    ProcessMemory memory;
+#if defined(__linux__)
+    std::ifstream status("/proc/self/status");
+    std::string field;
+    while (std::getline(status, field)) {
+        if (field.starts_with("VmRSS:") || field.starts_with("VmHWM:")) {
+            const auto value = field.find_first_of("0123456789");
+            if (value == std::string::npos)
+                continue;
+            const auto kib = std::strtoull(field.c_str() + value, nullptr, 10);
+            if (field.starts_with("VmRSS:"))
+                memory.residentKiB = kib;
+            else
+                memory.peakKiB = kib;
+        }
+    }
+#endif
+    return memory;
+}
+void manyTrackMemory(const std::filesystem::path &dir) {
+    constexpr std::int64_t trackCount = 256, firstAddedTrack = 8, faderTrack = 4;
+    const auto file = dir / "many-track-memory.adi";
+    {
+        StoreError error{};
+        auto store = Store::createNewProject(file, error);
+        check(store != nullptr, "many-track memory: create the project fixture");
+        if (!store)
+            return;
+        std::vector<OpRequest> tracks;
+        // A new Set already has four arrangement tracks, two returns and Main.
+        for (std::int64_t i = 0; i < trackCount - 4; ++i) {
+            auto &add = tracks.emplace_back();
+            add.opType = "track.create";
+            add.payload = {{"id", firstAddedTrack + i}, {"kind", "audio"}, {"name", "Empty track"}};
+        }
+        const auto seeded = OpJournal(*store).commit(tracks);
+        check(seeded.ok, "many-track memory: seed 256 empty arrangement tracks");
+        if (!seeded.ok)
+            return;
+    }
+    const auto report = [](const char *phase, ui::ProjectDocument *doc, ProcessMemory memory) {
+        std::printf("256 tracks %s: RSS %llu KiB, HWM %llu KiB", phase,
+                    static_cast<unsigned long long>(memory.residentKiB), static_cast<unsigned long long>(memory.peakKiB));
+        if (doc != nullptr) {
+            auto &host = doc->session().graph();
+            const auto graph = host.currentGraph();
+            const auto stats = host.stats();
+            std::printf(", PDC %zu bytes, graphs %lld published / %lld swapped / %lld reclaimed",
+                        graph != nullptr ? graph->compensationBytes() : 0,
+                        static_cast<long long>(stats.published), static_cast<long long>(stats.swaps),
+                        static_cast<long long>(stats.reclaimed));
+        }
+        std::printf("\n");
+    };
+    report("before open", nullptr, processMemory());
+    Tone tone;
+    std::string error;
+    auto doc = ui::ProjectDocument::open(file, false, {}, error);
+    check(doc && doc->session().model().tracks.size() == trackCount + 3, "many-track memory: open all 256 tracks");
+    if (!doc)
+        return;
+    report("open", doc.get(), processMemory());
+    const auto openPdc = doc->session().graph().currentGraph()->compensationBytes();
+
+    // A test signal on one otherwise empty track makes the same real callback
+    // path prove the fader still sounds right. It adds no media or plugin.
+    doc->session().setSourcesFor([&](std::int64_t id) {
+        return id == faderTrack ? std::vector<engine::Node *>{&tone} : std::vector<engine::Node *>{};
+    });
+    constexpr int frames = 512;
+    doc->prepare(48000, frames);
+    report("prepare", doc.get(), processMemory());
+    const auto preparedPdc = doc->session().graph().currentGraph()->compensationBytes();
+    std::array<float, frames> l{}, r{};
+    float *outputs[]{l.data(), r.data()};
+    engine::AudioIo io;
+    io.out = outputs;
+    io.numOut = 2;
+    io.frames = frames;
+    std::int64_t stream = 0;
+    const auto block = [&] {
+        io.streamTimeSamples = stream;
+        doc->process(io);
+        stream += frames;
+        doc->tick(stream / 48);
+        return std::max(*std::max_element(l.begin(), l.end()), *std::max_element(r.begin(), r.end()));
+    };
+    doc->mailbox().post(ui::TransportMailbox::Command::Play);
+    for (int i = 0; i < 8; ++i)
+        (void)block();
+    const double base = block();
+    check(base > .05, "many-track memory: the graph is actually playing the test signal");
+    report("callbacks and ticks", doc.get(), processMemory());
+
+    const auto storedDb = [&] {
+        return doc->store().db().execAndGet("SELECT volume_db FROM mixer_strip WHERE track_id = 4").getDouble();
+    };
+    const auto ops = OpJournal(doc->store()).count();
+    const gesture::RelativeScalarSelection fader{gesture::ScalarKind::TrackVolume, faderTrack, {}, {-70, 6, -150}};
+    const bool started = doc->beginMixerDrag(fader, std::nullopt, "Change Track Volume");
+    check(started, "many-track memory: start a real live fader gesture");
+    report("fader begin", doc.get(), processMemory());
+    if (!started) {
+        doc->release();
+        return;
+    }
+    const auto afterBegin = doc->session().graph().stats();
+    ProcessMemory duringDrag;
+    bool moved = true;
+    for (int i = 1; i <= 20; ++i) {
+        moved = doc->mixerDrag(-i) && moved;
+        (void)block();
+        const auto memory = processMemory();
+        duringDrag.residentKiB = std::max(duringDrag.residentKiB, memory.residentKiB);
+        duringDrag.peakKiB = std::max(duringDrag.peakKiB, memory.peakKiB);
+    }
+    const double dragged = block();
+    report("20 fader updates (peak)", doc.get(), duringDrag);
+    check(moved && storedDb() == 0 && OpJournal(doc->store()).count() == ops &&
+              std::abs(dragged / base - .1) < .025,
+          "many-track memory: the gesture changes the sound without writing history");
+    check(doc->session().graph().stats().published == afterBegin.published,
+          "many-track memory: live fader updates do not publish another graph");
+    check(doc->endMixerDrag() && std::abs(storedDb() + 20) < 1e-6 &&
+              OpJournal(doc->store()).count() == ops + 1 && doc->ops().nextUndo() &&
+              doc->ops().nextUndo()->label == "Change Track Volume",
+          "many-track memory: fader release writes one Undo step at the final level");
+    report("fader release", doc.get(), processMemory());
+    for (int i = 0; i < 8; ++i)
+        (void)block();
+    check(doc->ops().undo().ok && doc->synchronise(), "many-track memory: undo the fader edit");
+    for (int i = 0; i < 8; ++i)
+        (void)block();
+    check(storedDb() == 0 && std::abs(block() / base - 1.) < .025,
+          "many-track memory: one Undo restores the level and the sound");
+    report("Undo, callbacks and collection", doc.get(), processMemory());
+    // Leave room for real summing inputs and Track Delay history. Most edges
+    // on the empty strips do not need an 8K-sample reserve of their own.
+    check(std::max(openPdc, preparedPdc) < 36U * 1024U * 1024U,
+          "many-track memory: empty-track PDC rings stay below 36 MiB");
+    doc->release();
+    doc.reset();
+    report("close", nullptr, processMemory());
 }
 // walk-A A21: an edit committed during playback never interrupts it (Live). A clip plays; a fader drag
 // let go and a plain fader commit each rebuild the graph, and no block after either is silent while the
@@ -2169,6 +2317,11 @@ int main(int argc, char **argv) {
     if (argc == 2 && std::string_view(argv[1]) == "--many-device-speed-only") {
         test::TempDirectory speedDir("ui_document", "many-device-tick");
         manyDeviceTickSpeed(speedDir.path());
+        return failures != 0;
+    }
+    if (argc == 2 && std::string_view(argv[1]) == "--many-track-memory-only") {
+        test::TempDirectory memoryDir("ui_document", "many-track-memory");
+        manyTrackMemory(memoryDir.path());
         return failures != 0;
     }
     if (argc == 2 && std::string_view(argv[1]) == "--long-take-speed-only") {

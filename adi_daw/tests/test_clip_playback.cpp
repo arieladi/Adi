@@ -29,6 +29,9 @@
 #if !defined(_WIN32)
 #include <sys/resource.h>
 #endif
+#if defined(__linux__)
+#include <unistd.h>
+#endif
 using namespace adi;
 using namespace adi::engine;
 namespace fs = std::filesystem;
@@ -1315,6 +1318,92 @@ void externalSourceSnapshots() {
     {audio::CallbackScope callback;refused=f.session.clips()->externalSources().empty();}
     check(refused,"source descriptor copy refuses callback use without allocation or I/O");
 }
+
+#if defined(__linux__)
+struct ResidentMemory {
+    double currentMiB = 0, peakMiB = 0;
+};
+ResidentMemory residentMemory() {
+    constexpr double bytesPerMiB = 1024.0 * 1024.0;
+    std::ifstream stat("/proc/self/statm");
+    std::uint64_t totalPages = 0, residentPages = 0;
+    const auto pageSize = sysconf(_SC_PAGESIZE);
+    struct rusage usage{};
+    if (!(stat >> totalPages >> residentPages) || pageSize <= 0 || getrusage(RUSAGE_SELF, &usage) != 0)
+        throw std::runtime_error("read clip benchmark resident memory");
+    return {static_cast<double>(residentPages) * static_cast<double>(pageSize) / bytesPerMiB,
+            static_cast<double>(usage.ru_maxrss) / 1024.0};
+}
+#endif
+
+void largeClipMemory() {
+    constexpr int clipCount = 1200, sampleRate = 48000, block = 64;
+    constexpr int clipFrames = 2 * 8192 + 128, pageBoundaryOffset = 8192 - block / 2;
+    const auto sourceStart = [](int index) { return (index % 23) * 37; };
+    const auto placement = [](int index) { return std::int64_t{index} * sampleRate; };
+    Fixture f(sampleRate, 2, clipFrames + 1024);
+    {
+        SQLite::Transaction addClips(f.store->db());
+        for (int index = 0; index < clipCount; ++index)
+            f.add(index + 1, placement(index), clipFrames, sourceStart(index), clipFrames);
+        addClips.commit();
+    }
+#if defined(__linux__)
+    const auto beforeOpen = residentMemory();
+#endif
+    const auto beforeAllocations = callbackAllocations.load();
+    const auto beforeFileIo = audio::callbackFileIo.load();
+    f.load(block, sampleRate);
+    auto *clips = f.session.clips();
+    check(clips && clips->externalSources().size() == clipCount, "the open generation admits every unmuted WAV clip");
+    if (!clips) return;
+#if defined(__linux__)
+    const auto opened = residentMemory();
+#endif
+    const auto visit = [&](int index) {
+        f.session.transport().locate(placement(index) + pageBoundaryOffset);
+        const auto output = f.render(block, true, std::chrono::seconds(3));
+        const auto first = static_cast<std::size_t>(sourceStart(index) + pageBoundaryOffset);
+        for (std::size_t frame = 0; frame < block; ++frame) {
+            if (output[frame] != f.media[(first + frame) * 2] || output[block + frame] != f.media[(first + frame) * 2 + 1])
+                return false;
+        }
+        return true;
+    };
+    check(visit(0), "the first primed callback matches stereo PCM across a page boundary");
+#if defined(__linux__)
+    const auto started = residentMemory();
+#endif
+    // Consecutive placements are a second apart, beyond the worker's lookahead.
+    bool allExact = true;
+    for (int index = 1; index < clipCount; ++index) allExact = visit(index) && allExact;
+    check(allExact && clips->underrunSamples() == 0 && clips->readErrors() == 0,
+          "all 1,200 cold seeks reproduce exact PCM without underruns or source failures");
+#if defined(__linux__)
+    const auto visited = residentMemory();
+#endif
+    f.session.transport().locate(placement(clipCount + 1));
+    const auto silence = f.render(block, true, std::chrono::seconds(3));
+    check(std::all_of(silence.begin(), silence.end(), [](float sample) { return sample == 0; }),
+          "moving outside the placements plays silence");
+#if defined(__linux__)
+    const auto movedAway = residentMemory();
+#endif
+    check(visit(0), "revisiting the first clip after the sweep reproduces exact stereo PCM");
+    check(callbackAllocations.load() == beforeAllocations && audio::callbackFileIo.load() == beforeFileIo,
+          "the large song's callbacks do not allocate or perform file I/O");
+#if defined(__linux__)
+    const auto finish = residentMemory();
+    std::printf("SC-418 %d stereo clips, RSS / peak MiB: before %.1f / %.1f, open %.1f / %.1f, playback %.1f / %.1f, "
+                "after all cold seeks %.1f / %.1f, outside clips %.1f / %.1f, revisit %.1f / %.1f\n",
+                clipCount, beforeOpen.currentMiB, beforeOpen.peakMiB, opened.currentMiB, opened.peakMiB,
+                started.currentMiB, started.peakMiB, visited.currentMiB, visited.peakMiB,
+                movedAway.currentMiB, movedAway.peakMiB, finish.currentMiB, finish.peakMiB);
+    check(opened.currentMiB - beforeOpen.currentMiB < 120.0, "opening the large song keeps resident growth below 120 MiB");
+    check(finish.peakMiB - beforeOpen.currentMiB < 160.0, "visiting all clips keeps peak resident growth below 160 MiB");
+#endif
+}
+
 // Reproduce the descriptor budget of the Windows CRT on hosts that normally
 // run the suite with a higher limit. Leave any lower host limit in effect.
 struct ClipFileLimit {
@@ -1615,6 +1704,7 @@ int main(int argc,char** argv) {
         if(only=="all" || only=="endpoint"){fractionalEndpoint();anchoredTrimPlayback();trimAcrossTempoWithSourceEnd();signedPhysicalAudioOffset();pinnedMarkerOrderWitness();}
         if(only=="all" || only=="highRates")highRates();
         if(only=="all" || only=="shared-wav")sharedWavReaders();
+        if(only=="--large-clip-memory-only")largeClipMemory();
         if(only=="all" || only=="pins")decodedPins();
         if(only=="all" || only=="inputs")externalSourceSnapshots();
     }

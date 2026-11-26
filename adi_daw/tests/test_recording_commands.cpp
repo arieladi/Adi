@@ -604,7 +604,7 @@ void stagedPublicationAndRefresh() {
     check(staged.ok, "staging worker verifies the closed native WAVs");
     if (!staged.ok) return;
     std::size_t stagedCopies = 0;
-    for (const auto& stage : std::filesystem::directory_iterator(folder / "audio"))
+    for (const auto& stage : std::filesystem::directory_iterator(folder / "Samples" / "Recorded"))
         if (stage.is_directory())
             for (const auto& file : std::filesystem::directory_iterator(stage.path())) stagedCopies += file.is_regular_file();
     check(stagedCopies == 1, "equal tracks make one verified project-side staging copy");
@@ -658,7 +658,7 @@ void stagedPublicationRefusesChangedContent() {
                   std::filesystem::is_regular_file(recorded.tracks.front().file),
                   "a changed media binding requests restaging and retains the original take");
         } else {
-            const auto target = folder / "audio" / ("recording-8-" + hash.hex.substr(0,16) + ".wav");
+            const auto target = folder / "Samples" / "Recorded" / ("recording-8-" + hash.hex.substr(0,16) + ".wav");
             const auto modified = std::filesystem::last_write_time(target);
             const auto before = digestProject(*f.store).text;
             std::this_thread::sleep_for(std::chrono::milliseconds(2));

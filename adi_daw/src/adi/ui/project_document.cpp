@@ -1643,9 +1643,12 @@ void ProjectDocument::stopRecording() {
     landing_ = true;
 }
 std::span<const LiveMidiTake> ProjectDocument::liveMidiTakes() const noexcept {
-    if (!midiRecording_ || !midiRecording_->started || cancelTake_)
+    const auto *midi = midiRecording_.get();
+    if (!midi && takePublication_ && !takePublication_->outcome.ok)
+        midi = takePublication_->midi.get();
+    if (!midi || !midi->started || cancelTake_)
         return {};
-    return midiRecording_->preview;
+    return midi->preview;
 }
 void ProjectDocument::pollRecording(bool deviceStopped) {
     if (!recording_ && !landing_)
