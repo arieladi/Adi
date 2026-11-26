@@ -33,6 +33,7 @@ Baseline `00f1f369f3566c0c833390f8af5f0df9ed50f1cf`.
 | `origin/basics/speed-chain` | `859d65b5ffc9cca992eab8d3ad7ec879e10db36f` | No | Apple libc++ rejected `std::atomic<std::shared_ptr<const WarpResult>>` at `src/adi/audio/warp.hpp:74`. It instantiated the primary template and reported that the atomic value type must be trivially copyable. The build stopped before suites could start. |
 | `origin/basics/speed-chain` | `607e34fe20ee20edb7a95dbc0539226e990878a2` | No | Apple libc++ hit the same trivially-copyable assertion from `std::atomic<std::shared_ptr<const WarpResult>>` at `src/adi/audio/warp.hpp:74`. The build stopped before suites could start. |
 | `origin/basics/speed-chain` | `c17e59046d2c17c650ac5912f2a6f682d4ccc984` | No | Apple libc++ hit the same trivially-copyable assertion from `std::atomic<std::shared_ptr<const WarpResult>>` at `src/adi/audio/warp.hpp:74`. The build stopped before suites could start. |
+| `origin/basics/mac-chain` | `f308acf2852abaa4967780ce7bf95524e467e060` | App only | SC-194 `4679066f` publishes each immutable Warp result once with a release/acquire ready flag. The fixed speed head passed all 59 selected suites after a default-settings disk-headroom retry. The Mac integration preserved the MIDI reuse and monitoring behavior and passed all 40 app, window, session and affected checks. |
 
 ## Nine-step window walk
 
