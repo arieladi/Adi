@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "temp_directory.hpp"
 #include "adi/warp_commands.hpp"
+#include "adi/clip_image.hpp"
 #include "adi/material_commands.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/digest.hpp"
@@ -208,6 +209,33 @@ void disableWarpOnLoop() {
               db.execAndGet("SELECT loop_len_ticks FROM clips WHERE id=7").getInt64() == 2 * q,
           "re-enabling Warp leaves the saved loop brace valid and the switch off");
 }
+void changePlacedWarpMode() {
+    Fixture f;
+    if(!apply(f,clip_edit::prepareSetWarp(*f.store,7,f.options(),48000),"warp the placed clip before changing mode"))return;
+    OpRequest loop;
+    loop.opType="clip.setLoop";
+    loop.payload={{"id",7},{"on",true},{"start",q},{"length",q}};
+    if(!OpJournal(*f.store).commit(loop).ok ||
+       !apply(f,clip_edit::prepareSplit(*f.store,7,11,{0,2*q},48000),"split the looped clip before changing mode"))return;
+    OpContext context{*f.store,f.store->db()};
+    const auto before=clip_edit::captureImage(context,11);
+    const auto project=digestProject(*f.store).text;
+    // A different rendering algorithm has no need to decode or reanalyse the sample.
+    std::filesystem::remove(f.temporary.path()/"source.wav");
+    auto options=f.options();
+    options.mode=audio::WarpMode::Texture;
+    const auto mode=clip_edit::prepareSetWarp(*f.store,11,options,48000);
+    check(mode.ok && mode.requests.size()==1 && digestProject(*f.store).text==project,
+          "a placed warped clip can prepare a mode-only edit with the source offline");
+    if(!apply(f,mode,"change the Warp mode in one captured edit"))return;
+    auto expected=before;
+    expected["children"]["audio_clips"][0]["warp_mode"]="texture";
+    check(clip_edit::captureImage(context,11)==expected,
+          "changing the algorithm preserves the marker bytes, placement, trim and loop clocks");
+    History history(*f.store);
+    check(history.undo().ok && digestProject(*f.store).text==project && history.redo().ok &&
+          clip_edit::captureImage(context,11)==expected,"Undo and Redo restore the two algorithms without reanalysis");
+}
 void modesAndGuards() {
     Fixture f;auto& db=f.store->db();
     for(const auto mode:{audio::WarpMode::Beats,audio::WarpMode::Tones,audio::WarpMode::Texture,audio::WarpMode::RePitch,audio::WarpMode::Complex,audio::WarpMode::ComplexPro}) {
@@ -237,4 +265,4 @@ void cancellationAndCaptureGuards() {
     check(pending.ok && !clip_edit::commitPrepared(*f.store,pending).ok && digestProject(*f.store).text==before,"a changed source file after analysis rolls back the entire edit");
 }
 }
-int main(){try{actionAndHistory();editedSourceWindow();explicitSourceTempo();correctWarpedSourceTempo();disableWarpOnLoop();modesAndGuards();futureMapRefusesRewrite();cancellationAndCaptureGuards();}catch(const std::exception& e){check(false,e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{actionAndHistory();editedSourceWindow();explicitSourceTempo();correctWarpedSourceTempo();disableWarpOnLoop();changePlacedWarpMode();modesAndGuards();futureMapRefusesRewrite();cancellationAndCaptureGuards();}catch(const std::exception& e){check(false,e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
