@@ -16655,7 +16655,52 @@ int main(int argc, char **argv) {
                         {"pos", 0},        {"length", 4 * textproj::kPPQ}};
         check(document->ops().submit(clip).ok, "arrangement clip created through op");
         integrated.frame();
-        const auto *hitTrack = arrangement.geometry.trackAt(integrated.reader(), 4);
+        {
+            // walk-B B14: Rename on a selected clip, as Live (manual 6.9): Ctrl/Cmd+R and the clip's menu
+            // edit the clip's name in its title bar, one "Rename Clip" step; with a track's header
+            // selected (no clip), Ctrl/Cmd+R renames the track as before.
+            auto &canvas = arrangement.canvas;
+            const auto clipName = [&] { return value(document->store(), "SELECT name FROM clips WHERE id=1"); };
+            arrangement.geometry.selection.track = 2;
+            arrangement.geometry.selection.clip = 1;
+            bool menuRename = false;
+            const auto lanesMenu = arrangement.contextMenuItems(false);
+            for (juce::PopupMenu::MenuItemIterator it(lanesMenu); it.next();)
+                menuRename = menuRename || (it.getItem().itemID == AppCommands::RenameTrack && it.getItem().isEnabled);
+            check(menuRename, "a selected clip's menu has Rename");
+            check(integrated.keyPressed(juce::KeyPress('r', cmdKey, 0)) && canvas.renamingClip() == 1 &&
+                      canvas.clipEditor.isVisible() && canvas.clipEditor.getText() == "Rendered clip" &&
+                      headers.renaming() == 0,
+                  "Ctrl/Cmd+R with a clip selected edits the clip's name in its title bar, not the track's");
+            canvas.clipEditor.setText("Take A", false);
+            check(canvas.clipEditor.keyPressed(juce::KeyPress(juce::KeyPress::returnKey)) && clipName() == "Take A" &&
+                      canvas.renamingClip() == 0 && !canvas.clipEditor.isVisible() &&
+                      integrated.undoTitle(false) == "Undo Rename Clip",
+                  "Enter commits it: one Rename Clip step");
+            check(integrated.command(AppCommands::Undo) && clipName() == "Rendered clip", "and undo restores the name");
+            check(integrated.command(AppCommands::RenameTrack) && canvas.renamingClip() == 1, "Rename again");
+            canvas.clipEditor.setText("Gone", false);
+            check(canvas.clipEditor.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey)) && clipName() == "Rendered clip" &&
+                      !canvas.clipEditor.isVisible(),
+                  "Esc cancels and leaves the name as it was");
+            check(integrated.command(AppCommands::RenameTrack), "Rename once more");
+            canvas.clipEditor.setText("", false);
+            check(canvas.clipEditor.keyPressed(juce::KeyPress(juce::KeyPress::returnKey)) && clipName().empty(),
+                  "an empty name leaves the clip unnamed (it then shows its track's)");
+            check(integrated.command(AppCommands::Undo) && clipName() == "Rendered clip", "undone");
+            // A plain click on the track's header selects the track and lets the clip go (Live).
+            const juce::Point<float> title(40.f, static_cast<float>(arrangement.geometry.rowTop(integrated.reader(), 2) + 8));
+            headers.mouseDown(pressAt(headers, title));
+            headers.mouseUp(pressAt(headers, title));
+            check(arrangement.geometry.selection.track == 2 && arrangement.geometry.selection.clip == 0,
+                  "a click on the track's header selects the track, not the clip");
+            check(integrated.keyPressed(juce::KeyPress('r', cmdKey, 0)) && headers.renaming() == 2 &&
+                      canvas.renamingClip() == 0,
+                  "with the track's header selected, Ctrl/Cmd+R renames the track");
+            check(headers.editor.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey)), "and Esc leaves it");
+            integrated.frame();
+        }
+        const auto *hitTrack =arrangement.geometry.trackAt(integrated.reader(), 4);
         const auto *mainRow = arrangement.geometry.trackAt(integrated.reader(), laneTop(integrated, 1) + 4);
         const auto rowsInOrder = laneOrder(integrated);
         check(mainRow && mainRow->id == 1 && hitTrack && hitTrack->id == 2 && !rowsInOrder.empty() &&

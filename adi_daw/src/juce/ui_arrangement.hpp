@@ -291,8 +291,17 @@ class ArrangementCanvas final : public juce::Component,
     bool keyStateChanged(bool isKeyDown) override;
     void focusLost(FocusChangeType) override;
     void mouseExit(const juce::MouseEvent &) override;
+    // Rename on a selected clip (Ctrl/Cmd+R, the clip's menu; Live 12 manual 6.9, walk-B B14): a field
+    // over its title bar holding its name; Enter (or Tab, or leaving it) commits one "Rename Clip"
+    // step, Esc cancels. An empty name is a clip with no name, which shows its track's.
+    bool beginClipRename(std::int64_t clip);
+    std::int64_t renamingClip() const noexcept { return renamingClip_; }
+    RenameEditor clipEditor;
 
   private:
+    bool commitClipRename();
+    void endClipRename();
+    std::int64_t renamingClip_ = 0;
     // A clip's body on screen (under its title strip), and the clip and track: every clip drawn.
     struct ClipBody {
         const engine::TrackNode *track = nullptr;
