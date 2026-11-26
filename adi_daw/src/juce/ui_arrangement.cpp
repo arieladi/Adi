@@ -2943,6 +2943,7 @@ void ArrangementCanvas::paintWaveform(juce::Graphics &g, const engine::ClipNode 
     const ClipSourceMap source(moved, snapshot != nullptr ? snapshot->tempo.get() : nullptr,
                                static_cast<double>(peaks->sampleRate));
     const float band = (bottom - top) / static_cast<float>(peaks->channels);
+    const auto gain = std::abs(clip.gainDb) <= 120.f ? std::pow(10.f, clip.gainDb / 20.f) : 0.f;
     g.setColour(look::ink.withAlpha(clip.muted ? 0.4f : 0.85f));
     const int from = std::max(0, static_cast<int>(std::floor(left))),
               to = std::min(getWidth(), static_cast<int>(std::ceil(right)));
@@ -2956,8 +2957,8 @@ void ArrangementCanvas::paintWaveform(juce::Graphics &g, const engine::ClipNode 
             if (!span)
                 continue;
             const float mid = top + band * (static_cast<float>(ch) + .5f), half = band * .5f;
-            const float y0 = mid - std::clamp(span->maximum, -1.f, 1.f) * half,
-                        y1 = mid - std::clamp(span->minimum, -1.f, 1.f) * half;
+            const float y0 = mid - std::clamp(span->maximum * gain, -1.f, 1.f) * half,
+                        y1 = mid - std::clamp(span->minimum * gain, -1.f, 1.f) * half;
             g.fillRect(static_cast<float>(x), y0, 1.f, std::max(1.f, y1 - y0));
         }
     }

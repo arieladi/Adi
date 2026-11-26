@@ -6,11 +6,17 @@
 #include "adi/ui/meters.hpp"
 #include "adi/ui/waveform.hpp"
 #include <algorithm>
+#include <charconv>
 #include <cmath>
 #include <limits>
 #include <utility>
 namespace adi::ui {
 namespace {
+// The playback reader accepts clip gain within this finite dB range.
+constexpr double kClipGainLimitDb = 120.;
+const juce::String kGainLabel{"Gain"};
+juce::String clipGainText(double db) { return juce::String(db, 2) + " dB"; }
+
 // Live's position fields read bar. beat. sixteenth from 1 (manual 8.2).
 juce::String positionText(std::int64_t tick, const std::vector<textproj::Meter> &meters) {
     const bool before = tick < 0;
@@ -2870,6 +2876,7 @@ void SampleEditor::paint(juce::Graphics &g) {
 ClipViewPanel::ClipViewPanel(AdiRootComponent &r) : root(r), notes(*this), sample(*this) {
     setTitle("Clip View");
     setOpaque(true);
+    labels_.reserve(24); // Holds the audio panel's labels through its first paint.
     addChildComponent(notes);
     addChildComponent(sample);
     // One editor for whichever field is typed into: Enter keeps the value, Esc and a click
@@ -3314,6 +3321,8 @@ void ClipViewPanel::read(const SnapshotReader &reader) {
         return;
     }
     details_ = std::move(*result.clip);
+    if (audio())
+        gainText_ = clipGainText(details_->gainDb);
     if (!details_->notesProblem.empty())
         problem_ = "This clip's notes cannot be shown: " + details_->notesProblem;
     else if (!details_->propertiesProblem.empty())
@@ -3447,6 +3456,10 @@ void ClipViewPanel::frame(const SnapshotReader &reader) {
         resized();
         if (other) {
             closeEditor();
+            if (pressed_ == Field::Gain) {
+                pressed_ = Field::None;
+                dragged_ = false;
+            }
             notes.select({});
             notes.showClip();
             sample.showClip();
@@ -3551,7 +3564,7 @@ ClipViewPanel::Readings ClipViewPanel::readings() const {
             out.signature = juce::String(s.first) + " / " + juce::String(s.second);
         } else if (pressed_ == Field::Length) {
             out.length = lengthText(draggedTicks(), meter_);
-        } else {
+        } else if (pressed_ != Field::Gain) {
             auto &shown = pressed_ == Field::Start ? out.start : pressed_ == Field::End ? out.end : out.position;
             shown = positionText(draggedTicks(), clipMeters_);
         }
@@ -3571,8 +3584,10 @@ juce::Rectangle<int> ClipViewPanel::fieldBox(Field field) const noexcept {
     const int row = field == Field::Start || field == Field::End          ? 0
                     : field == Field::Position || field == Field::Length ? 58
                                                                          : 95;
-    const int column = field == Field::End || field == Field::Length || field == Field::Scale ? 1 : 0;
+    const int column = field == Field::End || field == Field::Length || field == Field::Scale || field == Field::Gain ? 1 : 0;
     if (field == Field::None)
+        return {};
+    if (field == Field::Gain && (!audio() || panelsFolded_))
         return {};
     if (panelsFolded_ && (field == Field::Start || field == Field::End || field == Field::Position || field == Field::Length ||
                           field == Field::Signature || field == Field::Scale))
@@ -4098,7 +4113,7 @@ ClipViewPanel::Field ClipViewPanel::fieldAt(juce::Point<int> at) const noexcept 
                              Field::Transpose, Field::VelocityAmount, Field::VelocityPercent, Field::VelocityLow,
                              Field::VelocityHigh, Field::Voices, Field::RandomAmount, Field::RampStart, Field::RampEnd,
                              Field::FilterA, Field::FilterB, Field::FilterC, Field::QuantizeAmount, Field::QuantizeSwing,
-                             Field::Interval, Field::Stretch})
+                             Field::Interval, Field::Stretch, Field::Gain})
         if (fieldBox(field).contains(at) && (midi() || (field != Field::Scale && field != Field::Transpose)))
             return field;
     return Field::None;
@@ -4133,11 +4148,43 @@ bool ClipViewPanel::setField(Field field, std::int64_t ticks) {
         return false;
     }
 }
+bool ClipViewPanel::setGain(double db) {
+    if (!audio())
+        return false;
+    repaint(fieldBox(Field::Gain));
+    db = std::clamp(db, -kClipGainLimitDb, kClipGainLimitDb);
+    if (db == details_->gainDb)
+        return true;
+    if (!root.submitEdit("clip.setGain", {{"id", clip_}, {"gain", db}}, "Set Clip Gain"))
+        return false;
+    reread();
+    return true;
+}
+double ClipViewPanel::draggedGain() const noexcept {
+    return std::clamp(details_->gainDb + dragSteps_, -kClipGainLimitDb, kClipGainLimitDb);
+}
 bool ClipViewPanel::typeField(Field field, const juce::String &typed) {
     if (!details_)
         return false;
     if (field == Field::Name)
         return rename(typed);
+    if (field == Field::Gain) {
+        auto raw = typed.trim();
+        if (raw.endsWithIgnoreCase("dB"))
+            raw = raw.dropLastCharacters(2).trimEnd();
+        const auto value = raw.toStdString();
+        std::string_view number(value);
+        if (number.starts_with('+') && !number.starts_with("+-"))
+            number.remove_prefix(1);
+        double db = 0.;
+        const auto end = number.data() + number.size();
+        const auto parsed = std::from_chars(number.data(), end, db);
+        if (parsed.ec != std::errc{} || parsed.ptr != end || !std::isfinite(db)) {
+            root.say("Type a gain in dB, for example -6.5.");
+            return false;
+        }
+        return setGain(db);
+    }
     const auto text = typed.toStdString();
     {
         int low = 0, high = 0;
@@ -4303,6 +4350,7 @@ void ClipViewPanel::openEditor(Field field) {
                        : field == Field::End       ? r.end
                        : field == Field::Position  ? r.position
                        : field == Field::Length    ? r.length
+                       : field == Field::Gain      ? juce::String(details_->gainDb, 2)
                        : field == Field::Transpose ? juce::String("0")
                        : field == Field::Stretch   ? juce::String("100")
                        : plainField(field) != nullptr ? juce::String(*plainField(field))
@@ -4532,11 +4580,14 @@ void ClipViewPanel::mouseDrag(const juce::MouseEvent &e) {
         return;
     if (pressed_ == Field::Scale)
         return;
-    const int steps = (pressAt_.y - e.y) / 4;
+    const int along = pressed_ == Field::Gain ? e.x - pressAt_.x : 0;
+    const int steps = (pressAt_.y - e.y + along) / 4;
     if (steps != 0)
         dragged_ = true;
     if (steps != dragSteps_) {
         dragSteps_ = steps;
+        if (pressed_ == Field::Gain && audio())
+            draggedGainText_ = clipGainText(draggedGain());
         repaint();
     }
 }
@@ -4591,6 +4642,8 @@ void ClipViewPanel::mouseUp(const juce::MouseEvent &) {
         openEditor(field);
     else if (field == Field::Transpose)
         transpose(steps);
+    else if (field == Field::Gain)
+        setGain(details_->gainDb + steps);
     else if (field == Field::Stretch)
         stretch(std::clamp(100 + 5 * steps, 10, 1000));
     else if (field == Field::Signature)
@@ -4703,6 +4756,19 @@ void ClipViewPanel::paint(juce::Graphics &g) {
     field(Field::Position, "Position", r.position);
     field(Field::Length, "Length", r.length);
     field(Field::Signature, "Signature", r.signature);
+    if (const auto gain = fieldBox(Field::Gain); !gain.isEmpty()) {
+        const bool dragging = pressed_ == Field::Gain && dragged_;
+        field(Field::Gain, kGainLabel, dragging ? draggedGainText_ : gainText_);
+        const auto scale = gain.toFloat().reduced(3.f, 1.f);
+        const auto centre = scale.getCentreX();
+        const double db = dragging ? draggedGain() : d.gainDb;
+        const auto amount = static_cast<float>(std::clamp(db / kClipGainLimitDb, -1., 1.));
+        const auto handle = centre + scale.getWidth() * .5f * amount;
+        g.setColour(look::accent);
+        g.fillRect(std::min(centre, handle), scale.getBottom() - 2.f, std::abs(handle - centre), 2.f);
+        g.setColour(look::textDim);
+        g.fillRect(centre - .5f, scale.getBottom() - 2.f, 1.f, 2.f);
+    }
     if (midi() && !panelsFolded_) {
         field(Field::Scale, "Scale", r.scale);
         // Scale Mode's switch (manual 8.2.4): the shared button, lit while the clip holds a scale of its own.
