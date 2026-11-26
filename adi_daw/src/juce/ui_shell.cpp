@@ -692,7 +692,8 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
             info.setActive(true);
             break;
         }
-        info.setActive(active_ != nullptr && active_->arrangement.geometry.selection.track != 0);
+        info.setActive(active_ != nullptr && (active_->arrangement.geometry.selection.track != 0 ||
+                                              active_->arrangement.geometry.selection.clip != 0));
         break;
     case InsertTimeSignatureChange: // manual 6.5: at the insert marker
         info.setActive(active_ != nullptr);
@@ -4398,6 +4399,11 @@ bool AdiRootComponent::command(int id) {
         for (auto &panel : devices.panels)
             if (panel->hasKeyboardFocus(true))
                 return panel->beginRename() || fail("Unfold the device to rename it.");
+        // A selected clip is renamed in its title bar, as Live (walk-B B14); a click on a track's
+        // header lets the clip go, so Rename then acts on the track.
+        if (arrangement.geometry.selection.clip != 0)
+            return arrangement.canvas.beginClipRename(arrangement.geometry.selection.clip) ||
+                   fail("Scroll the clip into view to rename it.");
         return arrangement.headers.beginRename(arrangement.geometry.selection.track) ||
                fail("Select a track to rename.");
     case AppCommands::FocusControlBar:

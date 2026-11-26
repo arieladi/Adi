@@ -608,6 +608,23 @@ TrackHeaderList::TrackHeaderList(ArrangementView &v) : view(v) {
                "all. Right-click for the track's commands.");
 }
 ArrangementCanvas::ArrangementCanvas(ArrangementView &v) : view(v) {
+    addChildComponent(clipEditor);
+    clipEditor.setTitle("Clip name");
+    clipEditor.onCommit = [this] {
+        commitClipRename();
+        endClipRename();
+    };
+    clipEditor.onCancel = [this] { endClipRename(); };
+    clipEditor.onTab = [this](bool) {
+        commitClipRename();
+        endClipRename();
+    };
+    clipEditor.onFocusLost = [this] {
+        if (renamingClip_ != 0) {
+            commitClipRename();
+            endClipRename();
+        }
+    };
     setWantsKeyboardFocus(true);
     setTitle("Arrangement");
     setDescription("Clips on a timeline. Up and down move between tracks; left and right move the "
@@ -1633,6 +1650,10 @@ juce::PopupMenu ArrangementView::contextMenuItems(bool header, const engine::Aut
             menu.addSeparator();
             menu.addCommandItem(&commands.manager, AppCommands::Split);
             menu.addSeparator();
+            // Rename, the clip's (walk-B B14): the same command as Ctrl/Cmd+R, which acts on the
+            // selected clip.
+            menu.addCommandItem(&commands.manager, AppCommands::RenameTrack);
+            menu.addSeparator();
         } else if (!commands.clipClipboard().empty()) {
             menu.addCommandItem(&commands.manager, AppCommands::Paste);
             menu.addSeparator();
@@ -2083,6 +2104,10 @@ void TrackHeaderList::mouseDown(const juce::MouseEvent &e) {
             view.geometry.selection.track = t->id;
             view.geometry.selection.toTrack = 0;
             view.geometry.selection.picked.clear();
+            // The track is what is selected now, not a clip (Live): Rename then acts on the track
+            // (walk-B B14).
+            view.geometry.selection.clip = 0;
+            view.geometry.selection.pickedClips.clear();
         }
         if (split)
             resizeId = t->id;
@@ -2824,6 +2849,61 @@ void ArrangementCanvas::mouseExit(const juce::MouseEvent &) {
         hoverClip_ = 0;
         repaint();
     }
+}
+bool ArrangementCanvas::beginClipRename(std::int64_t clip) {
+    // The clip and its track as they are now, not as this window last drew them.
+    const auto now = view.root.current();
+    if (!now || clip == 0)
+        return false;
+    const engine::TrackNode *track = nullptr;
+    const engine::ClipNode *node = nullptr;
+    for (const auto &t : now->tracks)
+        for (const auto &c : t->clips)
+            if (c->id == clip) {
+                track = t.get();
+                node = c.get();
+            }
+    if (track == nullptr || node == nullptr)
+        return false;
+    // Its title bar where this window draws it, scrolled into sight first.
+    auto &geo = view.geometry;
+    if (geo.reveal(view.reader(), track->id))
+        view.applyView();
+    const int top = geo.rowTop(view.reader(), track->id);
+    if (top < -kClipBarHeight || top >= getHeight())
+        return false;
+    const int left = std::max(0, static_cast<int>(geo.x(node->posTicks)));
+    const int right = std::min(getWidth(), static_cast<int>(geo.x(node->posTicks + node->lengthTicks)));
+    renamingClip_ = clip;
+    clipEditor.setBounds(left, top + 1, std::max(120, right - left), 20);
+    clipEditor.setText(juce::String::fromUTF8(node->name.c_str()), false);
+    clipEditor.selectAll();
+    clipEditor.setVisible(true);
+    if (clipEditor.isShowing())
+        focusIfShowing(clipEditor);
+    repaint();
+    return true;
+}
+bool ArrangementCanvas::commitClipRename() {
+    const auto id = renamingClip_;
+    if (id == 0)
+        return false;
+    const auto text = clipEditor.getText().trim().toStdString();
+    const auto now = view.root.current();
+    if (!now)
+        return false;
+    for (const auto &t : now->tracks)
+        for (const auto &c : t->clips)
+            if (c->id == id)
+                return c->name == text || view.root.submitEdit("clip.setName", {{"id", id}, {"name", text}}, "Rename Clip");
+    return false; // gone while it was being renamed
+}
+void ArrangementCanvas::endClipRename() {
+    renamingClip_ = 0;
+    clipEditor.setVisible(false);
+    if (isShowing())
+        focusIfShowing(*this);
+    repaint();
 }
 void ArrangementCanvas::focusLost(FocusChangeType) {
     // F released where the canvas cannot hear it: the handles go back.
