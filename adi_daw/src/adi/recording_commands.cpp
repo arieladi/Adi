@@ -111,8 +111,10 @@ std::vector<RecordingEdit::PreparedSource> RecordingEdit::prepareSources(Store& 
        recorded.startSample<0 || recorded.frames>static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()-recorded.startSample) ||
        ids.size()!=recorded.tracks.size() || ids.empty() || recorded.directory().empty())throw std::runtime_error("recording is not a completed attachable take");
     result.options.expectHead.emplace(OpJournal(store).headSeq());
-    const auto folder=media::projectFolder(store)/"audio";
-    if(fs::is_symlink(fs::symlink_status(folder)))throw std::runtime_error("recording audio directory must not be a symlink");
+    const auto samples=media::projectFolder(store)/"Samples";
+    const auto folder=samples/"Recorded";
+    if(fs::is_symlink(fs::symlink_status(samples)) || fs::is_symlink(fs::symlink_status(folder)))
+        throw std::runtime_error("recording audio directories must not be symlinks");
     fs::create_directories(folder);
     auto files=std::make_shared<RecordingEdit::Files>();files->source=recorded;result.files_=files;files->publicationDirectory=reservePublication(folder);
     std::set<std::int64_t> clipIds,mediaIds;std::map<std::string,std::int64_t> capturedMedia;

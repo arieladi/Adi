@@ -958,8 +958,10 @@ bool isTestLaunch(const juce::String &commandLine);
 // when missing.
 juce::File projectsFolder(const settings::AppSettings &settings);
 // Live's New Live Set (manual 5.4.1): a new project is untitled and asks nothing; Save As names and
-// places it. The next free Untitled.adi, Untitled(2).adi, ... in the projects folder, for launch and New.
+// places it. Reserve an exclusive Untitled, Untitled(2), ... directory for launch or New.
 juce::File nextUntitledProject(const settings::AppSettings &settings);
+// Map the save chooser's file to the song file inside its own same-named folder.
+juce::File songProjectFile(const juce::File &file);
 // Holds a root at its window's interface zoom: the root lays out in logical
 // units and the transform scales it, so nothing below knows the zoom exists.
 class ZoomHost final : public juce::Component {
