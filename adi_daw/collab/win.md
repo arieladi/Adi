@@ -6,6 +6,21 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-26, evening — the sanity check; "the basics come first" (ADR-0257); the weekend's queues
+
+The director asked how a waveform while recording went unplanned, and ordered a check of the whole program for other missing basics. His words approve every choice win had open with him.
+
+- **The check.** Six audits of main at `5ebc7453f`, each writing its own list of basics before reading ADI's documents. About eighty rows in `docs/SANITY-CHECK.md`, SC-01 to SC-112, each with a queue and a wave. Twelve are defects (the Main track can be deleted; a click in the lanes moves a running transport; Save As leaves the recordings behind; about 160 Settings controls do nothing).
+- **Why they slipped.** FEATURES ticks a row when the format can store it. The parity sheets hold open rows nobody owns. Every list was a list of commands; none said what the screen shows.
+- **ADR-0257.** The basics are fixes worked now, hold or no hold (d1). His choices P, Q, R and S on his note and H, J, L, M and N of `docs/DREAM-INTAKE.md` stand as recommended (d3 to d11). Four remarks from the window (d12): the ruler and grid; no AI tab, the search bar is the place; a larger Info box; its analyser is the spectrogram with a switch of four.
+- **The weekend, 27 to 29 November.** Six sessions outside the seats, by his order: recording, midi, tracks, project, look, clips. Each has a queue in `collab/prompts/2026-11-27-basics-*.md` and works as `2026-11-27-basics-howto.md` says: one branch per row, `basics/<sc id>-<name>`, no pull request, a report on `basics/<queue>-log`. The gemini seat reads each branch on the older compilers first. Win lands them in stacks.
+- **Seats, when you next run:** rows of the list in your paths were lent for the weekend (RESERVATIONS, ADR-0257 d2). Read what landed in your files before your next item.
+- **Owed by win:** the plan rows of d4, d5, d8 and the Dream's track, and SC-P1 to SC-P3 (DF-R2). Two choices go to the director: T (a MIDI track that sounds before an instrument is loaded) and U (the form of a device preset).
+
+**Next free:** ADR-0258, DF-W60, DF-R3. The others are unchanged.
+
+---
+
 ## 2026-11-26, afternoon — the director's note: a waveform while recording; view filters; the ninth pass asked
 
 The director brought a note of three items, drafted with an outside model. Win audited each against main, the decision log and the plan.

@@ -130,6 +130,7 @@ cut out of something that already shipped or was ruled.
 | DF-W55 | Walk-A A32, minor: **Save As right after a take says "old project is still in use; its WAL could not be folded"** in the Status Bar, and the old project keeps an empty `-wal` and its `-shm` beside it. Nothing is lost. A connection to the old file, a reader or worker that outlives the switch, is still open when `Store::saveAs` closes it (`project_files.cpp:262`); which one is not traced | engine-win (project files) | any time |
 | DF-W56 | Walk-B B13, walk-A A33: **the default set stores its tracks' names literally** ("1 MIDI", "2 MIDI", "3 Audio", "4 Audio"; `store.cpp:310-312`), so they keep their numbers when a track is inserted before them or they are moved: two tracks then show "3 Audio". Live's default tracks are numbered by position, the "#" names ADI already supports | walk-B | now (a fix) |
 | DF-W58 | The window's half of DF-E90: **the take drawn while it records (#773, walk-B B4) shows the waveform as it grows,** from the recorder's published peaks, and hands over to the file's peaks when the take lands, with no jump | window lane (win covers) | with DF-E90 |
+| DF-W59 | **The sanity check's rows** (ADR-0257 d1): `docs/SANITY-CHECK.md` is the register of its own rows, SC-01 to SC-112. Each stays open there until its fix is on main; win marks it done in that paper with the pull request. This row closes when none is open | win; each row's queue names who builds it | the release gate (ADR-0239); wave 1 on 27 to 29 November |
 
 ### Engine (win's log of 12 November)
 
@@ -177,6 +178,7 @@ cut out of something that already shipped or was ruled.
 | Id | What | Owner | Trigger / before |
 |---|---|---|---|
 | DF-R1 | Clean the repository's text and history of the private research-tool references the director named on 13 November (his option 3: back up, rewrite history clean, he recreates the GitHub repository, win pushes, reopens the open PRs, restores the site and re-points every worktree) | win, with the director for the GitHub steps | after the Mix View seat's current run, when he says go |
+| DF-R2 | **Plan rows owed by ADR-0257:** the view filters with View Selected, the banner and Clear Filter (d4), a filter that matches clips (d5), the agent's view ops (d6), the Dream's track with the Foundry, the small Dream and scale (d7), its ground moved up (d8), and a row for each list row that no plan row owns and that is not a small fix (a plain MIDI take, punch, duplicating a track, device presets). Also SC-P1 to SC-P3 (d13) | win | before the weekend's branches land; by 30 November |
 
 ## Done
 
