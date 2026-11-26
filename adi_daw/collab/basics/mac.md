@@ -25,7 +25,7 @@ Baseline `00f1f369f3566c0c833390f8af5f0df9ed50f1cf`.
 
 ## Nine-step window walk
 
-Step 2 recorded in [the walk report](https://github.com/arieladi/Adi/blob/walk/macos/adi_daw/collab/walk/2026-11-27-macos.md).
+Step 3 recorded in [the walk report](https://github.com/arieladi/Adi/blob/walk/macos/adi_daw/collab/walk/2026-11-27-macos.md).
 
 ## Accessibility permission
 
