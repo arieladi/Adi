@@ -11592,8 +11592,9 @@ void computerMidiKeyboard(AppCommands &commands, const std::filesystem::path &di
               root.computerMidiShortcut(juce::KeyPress('s', juce::ModifierKeys::shiftModifier, 0)) == juce::KeyPress('s') &&
               events.size() == 10,
           "Shift keeps the Arrangement and application shortcuts available without playing notes");
-    check(!commands.key(juce::KeyPress('m'), root, false) && root.computerMidiEnabled() &&
-              !commands.key(juce::KeyPress('w'), root, false),
+    const bool pluginToggle = commands.key(juce::KeyPress('m'), root, false);
+    (void)commands.key(juce::KeyPress('w'), root, false);
+    check(!pluginToggle && root.computerMidiEnabled() && events.size() == 10,
           "forwarded plug-in window keys cannot toggle the keyboard or sound a note");
 
     {
@@ -16339,10 +16340,10 @@ int main(int argc, char **argv) {
 #if JUCE_MAC
         check(names == juce::StringArray{"File", "Edit", "Create", "View", "Options", "Navigate", "Help"},
               "the Mac's menu bar: File, Edit, Create, View, Options, Navigate, Help");
-        check(items("Options") == std::vector<int>{C::Follow, 0, C::DrawMode, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid,
+        check(items("Options") == std::vector<int>{C::Follow, 0, C::DrawMode, C::ComputerMidiKeyboard, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid,
                                                    C::SnapToGrid, C::FixedGrid, 0, C::DelayCompensation, 0, C::SoloSwitches,
                                                    C::CueSwitches, C::SoloInPlace},
-              "the Options menu: Follow (§6.2), Draw Mode (§10.4.1), the grid (§6.10), Delay Compensation (§18.7), then "
+              "the Options menu: Follow, Draw Mode, Computer MIDI Keyboard, the grid, Delay Compensation, then "
               "Solo in Place (§18.6)");
         check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0, C::TakeSnapshot, C::SaveAs,
                                                 C::SaveCopy, C::CollectAllAndSave, C::CollectAndExport, 0, C::ExportAudio},
@@ -16356,11 +16357,11 @@ int main(int argc, char **argv) {
                                                 C::Quit},
               "the File menu: Save As, then Save a Copy and Collect All and Save (5.4.1, 5.7), ADI's "
               "Collect and Export after them, then Export Audio/Video (5.2.1); it ends with Quit and no longer holds Settings [P:export#1]");
-        check(items("Options") == std::vector<int>{C::Follow, 0, C::DrawMode, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid,
+        check(items("Options") == std::vector<int>{C::Follow, 0, C::DrawMode, C::ComputerMidiKeyboard, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid,
                                                    C::SnapToGrid, C::FixedGrid, 0, C::DelayCompensation, 0, C::SoloSwitches,
                                                    C::CueSwitches, C::SoloInPlace, 0,
                                                    C::Settings},
-              "the Options menu: Follow (§6.2), Draw Mode (§10.4.1), the grid (§6.10), Delay Compensation (§18.7), Solo in "
+              "the Options menu: Follow, Draw Mode, Computer MIDI Keyboard, the grid, Delay Compensation, Solo in "
               "Place (§18.6), then Settings off the Mac "
               "(§2.3)");
 #endif
@@ -16404,12 +16405,12 @@ int main(int argc, char **argv) {
                       C::DelayCompensation == C::ExportAudio + 1 && C::SoloSwitches == C::DelayCompensation + 1 &&
                       C::CueSwitches == C::SoloSwitches + 1 && C::HelpManual == C::CueSwitches + 1 &&
                       C::KeyboardReference == C::HelpManual + 1 && C::AutomationMode == C::KeyboardReference + 1 &&
-                      C::LastId == C::AutomationMode,
+                      C::ComputerMidiKeyboard == C::AutomationMode + 1 && C::LastId == C::ComputerMidiKeyboard,
                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
                   "Select Loop, Save a Copy, Collect All and Save, Collect and Export, Cut, Copy, Paste, Duplicate, "
                   "Show/Hide Plug-In Windows, Split, Clip View, Insert Empty MIDI Clip(s), the …Time commands and "
                   "Insert Silence, then Create Fade In/Out and Delete Fades/Crossfades, then the Note Editor's nine, "
-                  "Arrangement Record and Delay Compensation, each named");
+                  "Arrangement Record, Delay Compensation and Computer MIDI Keyboard, each named");
             // The Note Editor's commands, the last ids: named in the table's order, each on the editor's key.
             {
                 const auto named = [&](int id) {
