@@ -3529,6 +3529,83 @@ void splitAndRangeEdits(AppCommands &commands, settings::AppSettings &settings, 
     commands.detach(root);
     document->release();
 }
+void trimClipStart(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "trim-start.adi", true, {}, error);
+    check(document != nullptr, "a project for trimming an audio clip's start");
+    if (!document)
+        return;
+    const auto wav = dir / "trim-start.wav";
+    {
+        std::vector<float> frames(96000, .25f);
+        audio::WavWriter writer(wav, 48000, 1, audio::WavFormat::Pcm16);
+        writer.write(frames.data(), static_cast<std::uint32_t>(frames.size()));
+    }
+    AudioImport import;
+    check(document->prepareImport(wav.string(), 1'700'000'000'000'000, import), "read the two-second file");
+    constexpr std::int64_t track = 4, beat = textproj::kPPQ, start = 4 * beat, end = 8 * beat;
+    auto drop = dropAudio(*document->view().current(), track, start, "Trim", import);
+    check(drop.refusal.empty() && document->ops().submit(std::move(drop.ops)).ok && document->synchronise(),
+          "place the audio clip at bar two");
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "trim-start");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.setSize(1440, 900);
+    auto &geo = root.arrangement.geometry;
+    geo.scale = 80;
+    geo.left = 0;
+    root.frame();
+    commands.activate(root);
+    auto &canvas = root.arrangement.canvas;
+    const auto audioClip = [&]() -> const engine::ClipNode * {
+        const auto *row = root.reader().findTrack(track);
+        return row && row->clips.size() == 1 ? row->clips.front().get() : nullptr;
+    };
+    const auto checkSpan = [&](std::int64_t pos, const char *message) {
+        const auto *clip = audioClip();
+        const auto offset = (pos - start) * 500'000'000 / beat;
+        check(clip && clip->posTicks == pos && clip->posTicks + clip->lengthTicks == end &&
+                  clip->contentOffsetNs.value_or(0) == offset,
+              message);
+    };
+    const auto x = [&](std::int64_t tick) { return static_cast<float>(std::ceil(geo.x(tick))); };
+    const auto y = static_cast<float>(laneTop(root, track) + 5);
+    auto dragEdge = [&](std::int64_t from, std::int64_t to) {
+        const juce::Point<float> down{x(from) + 1.f, y}, up{x(to), y};
+        canvas.mouseMove(pressAt(canvas, down));
+        const bool resizeCursor = canvas.getMouseCursor() == juce::MouseCursor::LeftRightResizeCursor;
+        canvas.mouseDown(pressAt(canvas, down, juce::ModifierKeys::leftButtonModifier));
+        canvas.mouseDrag(dragAt(canvas, down, up, juce::ModifierKeys::leftButtonModifier));
+        const bool resizing = canvas.resizingClip() != 0;
+        canvas.mouseUp(dragAt(canvas, down, up));
+        root.frame();
+        check(resizeCursor && resizing, "the left title edge enters a resize gesture");
+    };
+    dragEdge(start, start + beat);
+    checkSpan(start + beat, "dragging the start cuts audio from the beginning and keeps the end fixed");
+    check(root.undoTitle(false) == "Undo Resize Clip", "a left-edge drag makes one Resize Clip edit");
+    dragEdge(start + beat, start - beat);
+    checkSpan(start, "extending the start stops at the beginning of the sample");
+    check(geo.selection.start == start, "the selection uses the clamped start");
+
+    auto &sel = geo.selection;
+    sel = {};
+    sel.track = track;
+    sel.insert = sel.start = sel.end = start;
+    sel.marked = true;
+    const auto press = [&](int key) { return canvas.keyPressed(juce::KeyPress(key)); };
+    const auto step = geo.nextGridLine(start, true) - start;
+    check(press(juce::KeyPress::returnKey) && canvas.keyResizing() &&
+              press(juce::KeyPress::rightKey) && press(juce::KeyPress::returnKey),
+          "Enter at the left edge also lets the arrow keys trim the start");
+    root.frame();
+    checkSpan(start + step, "keyboard trim advances the sample offset and anchors the end");
+    check(sel.insert == start + step && root.command(AppCommands::Undo), "the marker follows the trim and Undo is available");
+    root.frame();
+    checkSpan(start, "Undo restores the clip start and sample offset");
+    commands.detach(root);
+}
+
 // D5: Color Cab's Impulse tile (MR 9.8; N28, #414). The tile is drawn on Color Cab's panel
 // beside its controls, with no wrench (a built-in has no plug-in window). A file dropped assigns the
 // slot and Clear empties it, each one undo step, with Pd; with Pd off the drop says the device does
@@ -18763,6 +18840,7 @@ int main(int argc, char **argv) {
     trace("importPrompt", [&] { importPrompt(commands, settings, temp.path()); });
     trace("browserDevices", [&] { browserDevices(commands, temp.path()); });
     trace("splitAndRangeEdits", [&] { splitAndRangeEdits(commands, settings, temp.path()); });
+    trace("trimClipStart", [&] { trimClipStart(commands, temp.path()); });
     trace("clipClipboard", [&] { clipClipboard(commands, temp.path()); });
     trace("timeCommands", [&] { timeCommands(commands, temp.path()); });
     trace("colorCabTile", [&] { colorCabTile(commands, temp.path()); });
