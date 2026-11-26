@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <future>
 #include <mutex>
 #include <thread>
 namespace adi::ui {
@@ -24,6 +25,25 @@ struct WaveformSource {
     explicit WaveformSource(std::filesystem::path file) : path(std::move(file)) {}
     std::mutex mutex;
     std::filesystem::path path;
+};
+struct ProjectDocument::TakePublication {
+    engine::AudioRecordingResult recorded;
+    std::stop_source stop;
+    std::future<recording::StagedTake> staging;
+    recording::StagedTake staged;
+    std::future<recording::RecordingEdit> publication;
+    std::future<std::string> cleanup;
+    TakeLanded outcome;
+    std::vector<recording::ClipIds> ids;
+    bool retried = false;
+
+    ~TakePublication() { stop.request_stop(); }
+    void startStaging(const std::filesystem::path &folder) {
+        staged = {};
+        staging = std::async(std::launch::async, [recorded = recorded, folder, stop = stop.get_token()] {
+            return recording::stageTake(recorded, folder, stop);
+        });
+    }
 };
 namespace {
 // The waveform worker's build: its own read-only store on the project's file, opened on the worker
@@ -404,16 +424,8 @@ void ProjectDocument::tick(std::int64_t milliseconds) {
     if (!limiterReductionSources_.empty() &&
         limiterReductionPublication_ != session_.graph().stats().published)
         refreshLimiterReductionSources();
-    // A take, once the driver has moved past it and its worker has finished: a stopped one, or one that
-    // ended on its own while recording (a locate, an overflow, a device change), which lands at once and
-    // turns Record off. A healthy capture returns nothing. With the device stopped, nothing moves the
-    // callback on, so the take is settled as the driver's is.
     if (recording_ || landing_)
-        if (auto result = session_.recording().poll(deviceStopped_.load(std::memory_order_acquire) && landing_)) {
-            recording_ = false;
-            landing_ = false;
-            landTake(*result);
-        }
+        pollTake(deviceStopped_.load(std::memory_order_acquire));
     std::vector<OpRequest> requests;
     parameterOps_.drain(captureNowMs(), requests);
     commitCaptured(requests);
@@ -1106,36 +1118,26 @@ void ProjectDocument::release() {
     deviceStopped_.store(true, std::memory_order_release);
 }
 bool ProjectDocument::landTakeHere() {
-    if (!recording_ && !landing_)
-        return true;
-    if (recording_)
-        stopRecording();
-    // The device's callback moves the capture past its end while it runs; a stopped device settles it
-    // here, as `settleRecording` does. Up to ten seconds for the recorder's worker.
-    for (int waited = 0; landing_ && waited < 5000; ++waited) {
-        if (auto result = session_.recording().poll(deviceStopped_.load(std::memory_order_acquire))) {
-            landing_ = false;
-            landTake(*result);
-            break;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(2));
-    }
-    return !landing_;
+    return waitForTake(false);
 }
 bool ProjectDocument::settleRecording() {
-    // The driver is detached: nothing will move the callback past the capture, so it is settled here.
+    return waitForTake(true);
+}
+bool ProjectDocument::waitForTake(bool forceDetached) {
     if (recording_)
         stopRecording();
-    // The recorder's worker finishes writing on its own thread: wait for it, up to ten seconds.
-    for (int waited = 0; landing_ && waited < 5000; ++waited) {
-        if (auto result = session_.recording().poll(true)) {
-            landing_ = false;
-            landTake(*result);
-            return true;
-        }
+    // Allow ten seconds for the callback and recorder to finish. A completed capture
+    // belongs to this Store, so wait for its publication before switching or closing it.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (landing_) {
+        pollTake(forceDetached || deviceStopped_.load(std::memory_order_acquire));
+        if (!landing_)
+            break;
+        if (!takePublication_ && std::chrono::steady_clock::now() >= deadline)
+            return false;
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
-    return !landing_;
+    return true;
 }
 bool ProjectDocument::beginMixerDrag(const gesture::RelativeScalarSelection &selection, std::optional<double> coordinate,
                                      const std::string &label) {
@@ -1332,6 +1334,19 @@ std::string recordingFailure(const engine::AudioRecordingResult &r) {
     }
     return r.error;
 }
+std::vector<recording::ClipIds> takeClipIds(Store &store, const SnapshotReader &current,
+                                           const engine::AudioRecordingResult &take) {
+    // The new clip takes its track's displayed name. Allocate past the ids
+    // still held by remarks as well as the existing clip and media rows (DF-E16).
+    RowIds rows(store.db());
+    std::vector<recording::ClipIds> ids;
+    ids.reserve(take.tracks.size());
+    for (const auto &track : take.tracks) {
+        auto name = shownTrackName(current, track.trackId);
+        ids.push_back({rows.next("clips"), rows.next("media_files"), name.empty() ? "Take" : std::move(name)});
+    }
+    return ids;
+}
 } // namespace
 // A take that is not kept goes with its private files (DF-E44): a folder the system would not remove stays
 // in the project's folder, and the Status Bar says so, with the system's words, rather than nothing.
@@ -1342,48 +1357,118 @@ std::string ProjectDocument::discardTake(engine::AudioRecordingResult &result) {
     return " Its recorded files could not be removed (" + refused.message() + "); they stay in " +
            media::pathUtf8(result.directory().filename()) + " in the project's folder.";
 }
-void ProjectDocument::landTake(engine::AudioRecordingResult &result) {
-    TakeLanded outcome;
-    const auto interruption = recordingFailure(result);
-    if (!result.hasAttachableAudio()) {
-        outcome.message = "The take was not kept: " + interruption + "." + discardTake(result);
+void ProjectDocument::pollTake(bool deviceStopped) {
+    const auto finish = [&](TakeLanded outcome) {
         landed_ = std::move(outcome);
+        takePublication_.reset();
+        landing_ = false;
+    };
+    const auto refused = [&](const engine::AudioRecordingResult &recorded, const std::string &error) {
+        const auto folder = media::pathUtf8(recorded.directory().filename());
+        finish({false, {}, "The take was recorded but could not be added: " + error +
+                                ". The recorded files stay in " + folder + " in the project's folder."});
+    };
+    if (!takePublication_) {
+        // The capture can end itself on a locate, overflow or device change.
+        auto result = session_.recording().poll(deviceStopped);
+        if (!result)
+            return;
+        recording_ = false;
+        if (!result->hasAttachableAudio()) {
+            finish({false, {}, "The take was not kept: " + recordingFailure(*result) + "." + discardTake(*result)});
+            return;
+        }
+        landing_ = true;
+        try {
+            takePublication_ = std::make_unique<TakePublication>();
+            auto &take = *takePublication_;
+            take.recorded = std::move(*result);
+            take.startStaging(media::projectFolder(*store_));
+        } catch (const std::exception &error) {
+            refused(takePublication_ ? takePublication_->recorded : *result, error.what());
+        }
         return;
     }
-    // The clips and their media take the next free ids, named after their tracks as their headers show
-    // them (Live names a take by its track, "5 Audio"; a stored "# Audio" shows its number, walk-B B3).
-    // One `RowIds` for the take's rows (DF-E16): past every clip and media row, and past a clip id a
-    // remark still holds.
-    RowIds rows(store_->db());
-    std::vector<recording::ClipIds> ids;
-    const SnapshotReader current(view_.current());
-    for (const auto &track : result.tracks) {
-        auto name = shownTrackName(current, track.trackId);
-        const auto clip = rows.next("clips");
-        ids.push_back({clip, rows.next("media_files"), name.empty() ? std::string("Take") : std::move(name)});
-        outcome.clips.push_back(ids.back().clip);
-    }
-    auto edit = recording::prepareCommit(*store_, result, ids);
-    if (!edit.ok) {
-        outcome.clips.clear();
-        outcome.message = "The take was recorded but could not be added: " + edit.error + "." + discardTake(result);
-        landed_ = std::move(outcome);
-        return;
-    }
-    const auto committed =
-        ops_.commitPrepared(edit.requests, [&](Store &s, Actor actor) { return recording::commit(s, edit, actor); });
-    if (!committed) {
-        outcome.clips.clear();
-        outcome.message = "The take was recorded but could not be added: " + committed.error + ".";
-        landed_ = std::move(outcome);
-        return;
+
+    auto &take = *takePublication_;
+    const auto ready = [](auto &task) { return task.wait_for(std::chrono::seconds(0)) == std::future_status::ready; };
+    try {
+        if (take.cleanup.valid()) {
+            if (!ready(take.cleanup))
+                return;
+            const auto warning = take.cleanup.get();
+            if (!warning.empty())
+                take.outcome.message += " " + warning;
+            finish(std::move(take.outcome));
+            return;
+        }
+        if (take.staging.valid()) {
+            if (!ready(take.staging))
+                return;
+            take.staged = take.staging.get();
+            if (!take.staged.ok) {
+                refused(take.recorded, take.staged.error);
+                return;
+            }
+            take.ids = takeClipIds(*store_, SnapshotReader(view_.current()), take.recorded);
+            auto edit = recording::prepareStagedCommit(*store_, take.staged, take.ids);
+            if (!edit.ok) {
+                refused(take.recorded, edit.error);
+                return;
+            }
+            take.publication = std::async(std::launch::async, [edit = std::move(edit), stop = take.stop.get_token()]() mutable {
+                edit.ok = recording::publishStagedTake(edit, stop);
+                return std::move(edit);
+            });
+            return;
+        }
+        if (!ready(take.publication))
+            return;
+        auto edit = take.publication.get();
+        if (edit.ok && edit.options.expectHead && *edit.options.expectHead != OpJournal(*store_).headSeq()) {
+            take.ids = takeClipIds(*store_, SnapshotReader(view_.current()), take.recorded);
+            const auto refreshed = recording::refreshStagedCommit(*store_, take.staged, edit, take.ids);
+            if (refreshed == recording::StagedRefresh::restage && !take.retried) {
+                take.retried = true;
+                take.startStaging(media::projectFolder(*store_));
+                return;
+            }
+            edit.ok = refreshed == recording::StagedRefresh::ready;
+        }
+        if (!edit.ok) {
+            refused(take.recorded, edit.error);
+            return;
+        }
+        take.outcome.clips.reserve(take.ids.size());
+        for (const auto &ids : take.ids)
+            take.outcome.clips.push_back(ids.clip);
+        const auto interruption = recordingFailure(take.recorded);
+        if (!interruption.empty())
+            take.outcome.message = "Kept the audio recorded before the interruption: " + interruption + ".";
+        else
+            take.outcome.message = take.ids.size() == 1 ? "Recorded one take." : "Recorded " + std::to_string(take.ids.size()) + " takes.";
+        const auto committed =
+            ops_.commitPrepared(edit.requests, [&](Store &store, Actor actor) { return recording::commit(store, edit, actor); });
+        if (!committed) {
+            refused(take.recorded, committed.error);
+            return;
+        }
+        take.outcome.ok = true;
+        take.staged = {}; // The edit still owns staging until the cleanup worker releases it.
+        take.cleanup = std::async(std::launch::async, [edit = std::move(edit)]() mutable {
+            auto warning = recording::cleanupStagedTake(edit);
+            edit = {};
+            return warning;
+        });
+    } catch (const std::exception &error) {
+        if (!take.outcome.ok) {
+            refused(take.recorded, error.what());
+            return;
+        }
+        take.outcome.message += " The private recording files may still be in " +
+            media::pathUtf8(take.recorded.directory().filename()) + " in the project's folder.";
+        finish(std::move(take.outcome));
     }
     synchronise();
-    outcome.ok = true;
-    if (!interruption.empty())
-        outcome.message = "Kept the audio recorded before the interruption: " + interruption + ".";
-    else
-        outcome.message = result.tracks.size() == 1 ? "Recorded one take." : "Recorded " + std::to_string(result.tracks.size()) + " takes.";
-    landed_ = std::move(outcome);
 }
 } // namespace adi::ui
