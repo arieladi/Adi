@@ -3526,6 +3526,35 @@ void splitAndRangeEdits(AppCommands &commands, settings::AppSettings &settings, 
     check(root.command(AppCommands::Undo), "undo");
     root.frame();
     check(clipsOf(3).size() == 1, "one undo puts the whole clip back");
+
+    auto &geo = root.arrangement.geometry;
+    geo.hidden.clear();
+    geo.grid.fixed = true;
+    geo.grid.fixedQuarters = 1.;
+    geo.grid.snap = true;
+    const auto dragInsideClip = [&](std::int64_t track, std::int64_t from, std::int64_t to) {
+        const auto y = static_cast<float>(laneTop(root, track) + 20);
+        const juce::Point<float> press(static_cast<float>(geo.x(from)) + 1.f, y);
+        const juce::Point<float> release(static_cast<float>(geo.x(to)) + (to > from ? -1.f : 1.f), y);
+        canvas.mouseDown(pressAt(canvas, press));
+        canvas.mouseDrag(dragAt(canvas, press, release));
+        canvas.mouseUp(dragAt(canvas, press, release));
+        check(sel.track == track && sel.start == from && sel.end == to && sel.insert == from &&
+                  sel.clip == 0 && sel.pickedClips.empty(),
+              "SC-175: a clip body drag keeps its press point as the anchor and selects only time");
+    };
+    dragInsideClip(2, bar / 2, bar);
+    check(canvas.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)), "SC-175: Delete the dragged range");
+    root.frame();
+    check(clipsOf(2) == std::vector<std::pair<std::int64_t, std::int64_t>>{
+                            {0, bar / 2}, {bar, bar}, {3 * bar, bar / 2}},
+          "SC-175: Delete keeps both fragments and the later clip");
+
+    dragInsideClip(3, bar, bar / 2);
+    check(canvas.keyPressed(split), "SC-175: Ctrl/Cmd+E after dragging backwards inside a clip");
+    root.frame();
+    check(clipsOf(3) == std::vector<std::pair<std::int64_t, std::int64_t>>{{0, bar / 2}, {bar / 2, bar / 2}, {bar, bar}},
+          "SC-175: Ctrl/Cmd+E splits at both ends of a backwards drag");
     commands.detach(root);
     document->release();
 }

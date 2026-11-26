@@ -353,6 +353,9 @@ class ArrangementCanvas final : public juce::Component,
     // The drag holds Ctrl (Option on the Mac): released, it copies the clips instead of moving them.
     bool copying_ = false;
     bool contextMenuPress_ = false;
+    // ADR-0258 d12 switches a body click to the insert marker when reading R37 confirms it.
+    static constexpr bool kSelectClipFromBodyClick = true;
+    bool bodySelectionOnDrag_ = false;
     // The offset the drag gives every selected clip: the dragged clip's, stopped where the earliest
     // of them reaches the arrangement's start.
     std::int64_t movingDelta() const noexcept { return movingTo_ - movingFrom_; }
@@ -486,7 +489,7 @@ class ArrangementView final : public juce::Component {
     // view moved; a held mouse repeats the drag (beginDragAutoRepeat), so it keeps going.
     bool edgeScroll(int x, int y, bool sideways, bool upAndDown = true);
     static constexpr int kScrollEdge = 16, kAutoRepeatMs = 40;
-    enum class SelectionPurpose { Edit, ContextMenu };
+    enum class SelectionPurpose { Edit, InsertMarker, ContextMenu };
     // Selects the clip or point. A context menu keeps an existing selection under the pointer.
     void select(int x, int y, bool snapToGrid = true, SelectionPurpose purpose = SelectionPurpose::Edit);
     // Whether a gesture with these keys snaps to the grid.
