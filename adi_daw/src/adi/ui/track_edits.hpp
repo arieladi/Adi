@@ -3,6 +3,7 @@
 #include "adi/engine/snapshot.hpp"
 #include "adi/ops.hpp"
 #include "adi/track_recording.hpp"
+#include "adi/ui/track_order.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -161,6 +162,33 @@ inline TrackEdit colourTracks(const SnapshotTracks &tracks, const std::vector<st
             edit.ops.push_back(track_edits_detail::op("track.setColor", {{"id", id}, {"color", index}}, label));
     return edit;
 }
+// Live's auto-colour for a new track (ADR-0211 d2; manual 2.3.2): the previous track's palette index
+// plus one, stored by the batch whose first op creates it, so no track's colour moves as others are
+// inserted or grouped. The previous track is the one before its place in its parent (Main aside; a
+// track before the returns), else the group that holds it: its own colour in `tracks`, else
+// `colourOf`'s, the index the window shows for it by place.
+template <class ColourOf>
+inline void colourNewTrack(const SnapshotTracks &tracks, std::vector<OpRequest> &ops, ColourOf &&colourOf) {
+    using namespace track_edits_detail;
+    if (ops.empty() || ops.front().opType != "track.create")
+        return;
+    const auto &made = ops.front();
+    const auto &p = made.payload;
+    const auto parent = p.contains("parent") && p["parent"].is_number_integer() ? p["parent"].get<std::int64_t>() : 0;
+    const bool ret = p.value("kind", std::string()) == "return";
+    auto order = children(tracks, parent);
+    order.erase(std::remove_if(order.begin(), order.end(), [ret](const auto *k) { return rank(*k) > (ret ? 1 : 0); }),
+                order.end());
+    const auto index = std::clamp<std::int64_t>(p.value("index", std::int64_t{0}), 0, static_cast<std::int64_t>(order.size()));
+    const auto previous = index > 0 ? order[static_cast<std::size_t>(index - 1)]->id : parent;
+    const auto *before = find(tracks, previous);
+    const auto colour = before == nullptr ? -1
+                        : before->color && *before->color >= 0 && *before->color < kPaletteColours
+                            ? *before->color
+                            : std::max<std::int64_t>(colourOf(previous), -1);
+    auto set = op("track.setColor", {{"id", p.at("id")}, {"color", (colour + 1) % kPaletteColours}}, made.label.c_str());
+    ops.insert(ops.begin() + 1, std::move(set));
+}
 namespace track_edits_detail {
 // Whether group `id` holds `t` at any depth. A parent that loops back, which the project should never
 // hold, ends the walk after as many steps as there are tracks, as `TrackTree::within` does (DF-W35 (c)),
@@ -263,10 +291,11 @@ inline TrackEdit groupTracks(const SnapshotTracks &tracks, const std::vector<std
         if (inside[i]->indexInParent != place)
             edit.ops.push_back(op("track.reorder", {{"id", inside[i]->id}, {"index", place}}, label));
     }
-    // The group stands at `at`; the tracks after it move up one place.
+    // The group stands at `at`; the tracks after it move up one place, the returns and Main too: a
+    // Main left behind shared the index the last return moved up to (walk-A A23).
     for (std::size_t i = 0; i < rest.size(); ++i) {
         const auto place = static_cast<std::int64_t>(i < at ? i : i + 1);
-        if (rest[i]->kind != "master" && rest[i]->indexInParent != place)
+        if (rest[i]->indexInParent != place)
             edit.ops.push_back(op("track.reorder", {{"id", rest[i]->id}, {"index", place}}, label));
     }
     edit.select = group;
@@ -518,6 +547,54 @@ inline TrackEdit ungroupTrack(const SnapshotTracks &tracks, std::int64_t id) {
     renumber(edit.ops, order, label);
     edit.ops.push_back(op("track.delete", {{"id", id}}, label));
     edit.select = inner.empty() ? 0 : inner.front()->id;
+    return edit;
+}
+// Live's Insert Return Track (Ctrl/Cmd+Alt+T; manual 18.2): a new return after the others, lettered
+// as Live letters them, selected. Inside a group (Insert Return Track in Group, ADR-0247 d2), after
+// what the group holds, playing into it; its letter is the group's initial and its place among the
+// group's returns ("DA"). At the top it takes Main's place and Main moves down one, in the same
+// batch: they share index_in_parent, and a return given the index past every track stood after
+// Main by index, or shared one with it after Group Tracks (walk-A A23). The rest of the parent is
+// renumbered to its order too, so a file that already shares an index is put right. `id` is the new
+// track's, from the caller's `RowIds` (DF-E16).
+inline TrackEdit insertReturnTrack(const SnapshotTracks &tracks, std::int64_t group, std::int64_t id) {
+    using namespace track_edits_detail;
+    TrackEdit edit;
+    const auto *into = group != 0 ? find(tracks, group) : nullptr;
+    if (group != 0 && (into == nullptr || into->kind != "group")) {
+        edit.refusal = "Choose a group to put the return in.";
+        return edit;
+    }
+    const char *label = into != nullptr ? "Insert Return Track in Group" : "Insert Return Track";
+    std::int64_t returns = 0;
+    for (const auto &t : tracks)
+        if (t && t->kind == "return" && t->parent == group)
+            ++returns;
+    // What the parent holds in TrackOrder's order: its tracks, its returns, then Main; the new
+    // return comes before Main.
+    const auto order = children(tracks, group);
+    const auto at = static_cast<std::size_t>(
+        std::count_if(order.begin(), order.end(), [](const auto *k) { return rank(*k) < 2; }));
+    std::string letter(1, static_cast<char>('A' + returns % 26));
+    if (into != nullptr) {
+        char initial = 'G';
+        for (const char c : into->name)
+            if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) {
+                initial = static_cast<char>(c >= 'a' ? c - 'a' + 'A' : c);
+                break;
+            }
+        letter.insert(letter.begin(), initial);
+    }
+    Payload create = {{"id", id}, {"kind", "return"}, {"name", letter + " Return"}, {"index", static_cast<std::int64_t>(at)}};
+    if (into != nullptr)
+        create["parent"] = group;
+    edit.ops.push_back(op("track.create", std::move(create), label));
+    for (std::size_t i = 0; i < order.size(); ++i) {
+        const auto place = static_cast<std::int64_t>(i < at ? i : i + 1);
+        if (order[i]->indexInParent != place)
+            edit.ops.push_back(op("track.reorder", {{"id", order[i]->id}, {"index", place}}, label));
+    }
+    edit.select = id;
     return edit;
 }
 } // namespace adi::ui

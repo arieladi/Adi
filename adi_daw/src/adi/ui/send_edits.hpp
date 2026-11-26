@@ -326,4 +326,42 @@ inline TrackEdit enableAllSends(const engine::Snapshot &snapshot, std::int64_t s
         edit.refusal = "Every send of this return is on already.";
     return edit;
 }
+// Live's sends to a new return (manual 18.4; ADR-0203 d3: a knob per return on every track, fully down
+// until turned up): a row from each track with a knob for `ret`, at the silence floor, for the batch that
+// makes the return, as the default Set's A and B have theirs. A knob with a row is dragged live, heard
+// while it moves; one without is written only at the release (walk-A A10). Not from Main, a VCA or a
+// return (a return's sends are off until Enable Send); for a group's return (`group`), only from the
+// tracks inside it. Ids consecutive from the snapshot's highest; none when they do not all fit, and a
+// knob then makes its row when turned up, as before.
+inline std::vector<OpRequest> newReturnSends(const engine::Snapshot &snapshot, std::int64_t ret, std::int64_t group,
+                                             const char *label) {
+    using namespace send_edits_detail;
+    const auto &tracks = snapshot.tracks;
+    const auto inside = [&tracks, group](const engine::TrackNode &t) {
+        if (group == 0)
+            return true;
+        const auto *at = &t;
+        for (std::size_t steps = 0; at != nullptr && at->parent != 0 && steps < tracks.size(); ++steps) {
+            if (at->parent == group)
+                return true;
+            at = track_edits_detail::find(tracks, at->parent);
+        }
+        return false;
+    };
+    std::vector<std::int64_t> sources;
+    for (const auto &t : tracks)
+        if (t && t->id != ret && t->kind != "master" && t->kind != "vca" && t->kind != "return" && inside(*t))
+            sources.push_back(t->id);
+    std::vector<OpRequest> ops;
+    auto id = sources.empty() ? 0 : newIds(snapshot, static_cast<std::int64_t>(sources.size()));
+    if (id == 0)
+        return ops;
+    for (std::size_t i = 0; i < sources.size(); ++i) {
+        ops.push_back(connect(id, sources[i], ret, label));
+        ops.push_back(track_edits_detail::op("routing.setGain", {{"id", id}, {"db", kSendSilenceDb}}, label));
+        if (i + 1 < sources.size()) // none past the last, whose id may be INT64_MAX itself
+            ++id;
+    }
+    return ops;
+}
 } // namespace adi::ui

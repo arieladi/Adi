@@ -1944,7 +1944,7 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
         check(ka == juce::Rectangle<int>(10, 25, 32, 32) && kb == juce::Rectangle<int>(51, 47, 32, 32) &&
                   column->sendKnobs()[0]->getSliderStyle() == juce::Slider::RotaryHorizontalVerticalDrag,
               "knob A on the left, B to its right and 22 pt lower, as Live's");
-        check(column->volume.getY() == 19 + 72 + 6 && column->peakHold.getY() == 19 + 72 + 5,
+        check(column->volume.getY() + MixerStrip::kFaderReach == 19 + 72 + 6 && column->peakHold.getY() == 19 + 72 + 5,
               "the mixer begins under the sends");
         check(std::abs(column->sendKnobs()[0]->getValue() + 12.0) < 1.e-9,
               "and send A reads the same row as the track controls");
@@ -2036,7 +2036,7 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
     column = rowOf(root.mixerView, 3);
     mainStrip = rowOf(root.mixerView, 7);
     check(column != nullptr && column->sendsShown() == 0 && !column->sendKnobs()[0]->isVisible() &&
-              column->volume.getY() == 19 + 6 && mainStrip != nullptr && mainStrip->returnSwitches().size() == 2 &&
+              column->volume.getY() + MixerStrip::kFaderReach == 19 + 6 && mainStrip != nullptr && mainStrip->returnSwitches().size() == 2 &&
               !mainStrip->returnSwitches()[0]->isVisible(),
           "the Mixer View strips lose their Sends section, Main's Pre/Post switches with it");
     render("adi-sends-hidden.png");
@@ -2118,7 +2118,7 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
     column = rowOf(root.mixerView, 3);
     mainStrip = rowOf(root.mixerView, 7);
     check(column != nullptr && column->showsMixerInOut() && column->sendsShown() == 2 &&
-              column->volume.getY() == 19 + MixerStrip::kInOutHeight + 72 + 6 && mainStrip != nullptr &&
+              column->volume.getY() + MixerStrip::kFaderReach == 19 + MixerStrip::kInOutHeight + 72 + 6 && mainStrip != nullptr &&
               mainStrip->showsMixerInOut() && mainStrip->returnSwitches()[0]->isVisible(),
           "taller, both sends come back under it, Main's Pre/Post switches with them");
     render("adi-mixer-inout.png");
@@ -8729,6 +8729,91 @@ void newProject(AppCommands &commands, const std::filesystem::path &dir) {
     }
     document->release();
 }
+// A track's colour is fixed when it is made (ADR-0211 d2; Live 12 manual 2.3.2): Insert Audio and MIDI
+// Track, Insert Return Track and Group Tracks recolour no other track, in the Arrangement or the Mixer
+// View, the returns and Main included; the new track stores its own (walk-A A2b).
+void trackColoursStay(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "colours.adi", true, {}, error);
+    check(document != nullptr, "New opens a project to colour");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "colours");
+    root.setSize(1600, 900);
+    root.frame();
+    check(root.command(AppCommands::ToggleMixerView), "the Mixer View opens");
+    root.resizeMixerView(220);
+    // Each track's colour as its title shows it, and as its strip's name bar in the Mixer View does.
+    using Shown = std::map<std::int64_t, std::pair<juce::Colour, juce::Colour>>;
+    auto shown = [&root] {
+        root.arrangement.changed();
+        root.mark(DirtySet::All);
+        root.frame();
+        Shown out;
+        for (const auto row : root.arrangement.geometry.rows(root.reader()))
+            out[row.track->id].first = root.arrangement.colourFor(row.position);
+        for (const auto &strip : root.mixerView.strips()) {
+            if (!strip->isVisible() || strip->getWidth() < 8)
+                continue;
+            juce::Image image(juce::Image::ARGB, strip->getWidth(), strip->getHeight(), true, juce::SoftwareImageType{});
+            {
+                juce::Graphics g(image);
+                strip->paintEntireComponent(g, true);
+            }
+            out[strip->track()].second = image.getPixelAt(strip->getWidth() - 6, 10);
+        }
+        return out;
+    };
+    const auto before = shown();
+    bool asToday = before.size() == 7;
+    for (const auto &[id, colours] : before)
+        asToday = asToday && colours.second == colours.first;
+    check(asToday && before.at(2).first == look::trackColour(0) && before.at(7).first == look::trackColour(5) &&
+              before.at(1).first == look::trackColour(6),
+          "New: 1 MIDI .. B Delay and Main in the palette's first seven, titles and strips alike");
+    auto unchanged = [&before](const Shown &now) {
+        for (const auto &[id, colours] : before)
+            if (now.count(id) == 0 || now.at(id) != colours)
+                return false;
+        return true;
+    };
+    auto own = [&root](std::int64_t id) {
+        root.frame(); // the window's reader catches up with the edit
+        const auto *t = root.reader().findTrack(id);
+        return t != nullptr && t->color ? *t->color : std::int64_t{-1};
+    };
+    auto select = [&root](std::int64_t from, std::int64_t to) {
+        root.arrangement.geometry.selection.track = from;
+        root.arrangement.geometry.selection.toTrack = to;
+        root.arrangement.geometry.selection.picked.clear();
+        root.publishSelection();
+    };
+    select(4, 0);
+    check(root.command(AppCommands::InsertAudioTrack), "Insert Audio Track after 3 Audio");
+    const auto audio = root.arrangement.geometry.selection.track;
+    auto now = shown();
+    check(unchanged(now), "every track keeps its colour, 4 Audio, A Reverb, B Delay and Main included");
+    check(own(audio) == 3 && now.count(audio) == 1 && now.at(audio).first == look::paletteColour(3) &&
+              now.at(audio).second == look::paletteColour(3),
+          "the new track stores its own: 3 Audio's plus one, on its title and its strip");
+    check(root.command(AppCommands::InsertMidiTrack) && own(root.arrangement.geometry.selection.track) == 4 &&
+              unchanged(shown()),
+          "Insert MIDI Track after it: the next colour; no other track recoloured");
+    check(root.command(AppCommands::InsertReturnTrack) && own(root.arrangement.geometry.selection.track) == 6 &&
+              unchanged(shown()),
+          "Insert Return Track: B Delay's colour plus one; no other track recoloured");
+    select(3, 4);
+    check(root.command(AppCommands::GroupTracks) && own(root.arrangement.geometry.selection.track) == 1 &&
+              unchanged(shown()),
+          "Group Tracks on 2 MIDI and 3 Audio: the group 1 MIDI's colour plus one; every track keeps its own");
+    check(root.command(AppCommands::Undo) && root.command(AppCommands::Undo) && root.command(AppCommands::Undo) &&
+              root.command(AppCommands::Undo) && unchanged(shown()) && shown().size() == 7,
+          "four undos: the default Set as it was, colours and all");
+    check(root.command(AppCommands::Redo) && own(audio) == 3 && unchanged(shown()),
+          "a redo brings the new track back in its own colour");
+    document->release();
+}
 // Live's Undo History (A5; Live 12 manual 5.4.2): Ctrl/Cmd+Alt+Z lists the history newest first, the
 // undone steps greyed; Enter on a selected step restores it; a step on another branch is shown with
 // its branch, and a Take Snapshot name beside its step.
@@ -9579,19 +9664,20 @@ void returnInGroup(AppCommands &commands, const std::filesystem::path &dir) {
             check(back.ops.size() == 1 && back.ops[0].payload.find("tap") == back.ops[0].payload.end(),
                   "choosing the switch's own tap again clears the send's own, so it follows the switch");
         }
-        check(!adi::ui::setSendTap(*root.current(), 3, made->id, IndividualSendTap::PreFx).refusal.empty(),
-              "a send still fully down has no tap to choose, and says so");
+        // Drums itself has no row to A (New's Set gives its four tracks theirs): no tap to choose.
+        check(!adi::ui::setSendTap(*root.current(), 40, topBefore.front(), IndividualSendTap::PreFx).refusal.empty(),
+              "a send with no row has no tap to choose, and says so");
         root.frame();
         juce::TextButton *returnSwitch = nullptr;
         for (const auto &strip : root.mixer.strips())
             if (strip->track() == made->id)
                 returnSwitch = &strip->prePost;
-        // One send with a tap of its own is no mixed switch: the sends don't differ (ADR-0247 d2); its
-        // knob carries no mark, its menu says it.
-        check(returnSwitch != nullptr && !adi::ui::returnTapMixed(*root.current(), made->id) &&
-                  returnSwitch->getButtonText() == "Post" && !static_cast<bool>(returnSwitch->getProperties()["live.mixed"]),
-              "one send tapping on its own leaves DA's switch at Post, unmixed");
-        // A second send, following the switch (Post Mixer): now DA's sends differ.
+        // The other Drums track's send came with DA, fully down and following the switch (Post Mixer), as
+        // every track's to A and B: so one send with a tap of its own makes DA's sends differ (ADR-0247 d2).
+        check(returnSwitch != nullptr && adi::ui::returnTapMixed(*root.current(), made->id) &&
+                  static_cast<bool>(returnSwitch->getProperties()["live.mixed"]),
+              "one send tapping on its own beside a fully-down one following the switch: DA's switch is mixed");
+        // The other send turned up, following the switch (Post Mixer): DA's sends still differ.
         check(root.submitEdits(adi::ui::setSend(*root.current(), 3, made->id, -6).ops), "DA turned up on the other Drums track");
         document->synchronise();
         root.frame();
@@ -11868,6 +11954,229 @@ void mixerShowsAutomation(AppCommands &commands, const std::filesystem::path &di
     now = shown();
     check(about(now.rowVolume, -18, .05) && about(now.columnVolume, -18, .05) && now.rowVolumeLed == Led::Followed,
           "re-enabled, they read the envelope again, the LED lit");
+    document->release();
+}
+// Walk-A A22: a Mixer View fader is grabbed by its ◁ wherever it is drawn, at 0 dB (every new track's) and at
+// +6 dB (the top of its travel), as Live's: the press goes through the window's own dispatch to the fader.
+void mixerViewFaderHandle(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "fader-handle.adi", true, {}, error);
+    check(document != nullptr, "a project for the Mixer View's faders");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "handle");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.beginMixerDrag = [&](const gesture::RelativeScalarSelection &selection, std::optional<double> value,
+                              const std::string &label) {
+        return document->beginMixerDrag(selection, value, label);
+    };
+    root.mixerDrag = [&](double value) { return document->mixerDrag(value); };
+    root.endMixerDrag = [&] { return document->endMixerDrag(); };
+    root.cancelMixerDrag = [&] { document->cancelMixerDrag(); };
+    UiPeerRoot surfacePeer;
+    surfacePeer.setSize(1600, 1000);
+    surfacePeer.addAndMakeVisible(root);
+    surfacePeer.setVisible(true);
+    surfacePeer.addToDesktop(0);
+    root.setSize(1440, 900);
+    root.frame();
+    check(root.command(AppCommands::ToggleMixerView), "the Mixer View opens");
+    root.mark(DirtySet::All);
+    root.frame();
+    MixerStrip *three = nullptr;
+    for (const auto &strip : root.mixerView.strips())
+        if (strip->isVisible() && strip->track() == 4)
+            three = strip.get();
+    auto *peer = surfacePeer.getPeer();
+    check(three != nullptr && peer != nullptr, "3 Audio's strip in the Mixer View");
+    if (three == nullptr || peer == nullptr) {
+        document->release();
+        return;
+    }
+    const auto opCount = [&] { return document->store().db().execAndGet("SELECT count(*) FROM ops").getInt(); };
+    juce::int64 when = 400000;
+    const auto mouse = [&](juce::Point<float> at, juce::ModifierKeys mods) {
+        juce::ModifierKeys::currentModifiers = mods;
+        peer->handleMouseEvent(juce::MouseInputSource::InputSourceType::mouse, at, mods, 1.f, 0.f, when += 1000);
+    };
+    const auto &fader = three->volume;
+    check(std::abs(fader.getPositionOfValue(6) - MixerStrip::kFaderReach) < .5f &&
+              std::abs(fader.getPositionOfValue(-70) - static_cast<float>(fader.getHeight() - MixerStrip::kFaderReach)) < .5f,
+          "the fader's travel stops short of its edges: the ◁ lies inside it at +6 dB and at -inf");
+    for (const double db : {0.0, 6.0})
+        // The ◁ as LiveLook draws it: its tip at `live.faderX` on the level, its back 8 px right, 5 px over
+        // and under the level. Pressed in its middle, and near its back over and under the level.
+        for (const auto &[dx, dy] : std::initializer_list<std::pair<float, float>>{{4.f, 0.f}, {7.f, -4.f}, {7.f, 4.f}}) {
+            OpRequest set;
+            set.opType = "mixer.setVolume";
+            set.payload = {{"id", 4}, {"db", db}};
+            check(document->ops().submit(set).ok && document->synchronise(), "3 Audio's volume set");
+            root.frame();
+            const juce::Point<float> handle(static_cast<float>(fader.getX() + 15) + dx,
+                                            static_cast<float>(fader.getY()) + fader.getPositionOfValue(db) + dy);
+            const auto at = surfacePeer.getLocalPoint(three, handle);
+            const auto below = at.translated(0, 30);
+            const auto ops = opCount();
+            mouse(at, {});
+            mouse(at, juce::ModifierKeys(juce::ModifierKeys::leftButtonModifier));
+            const bool pressed = fader.isMouseButtonDown();
+            mouse(at.translated(0, 10), juce::ModifierKeys(juce::ModifierKeys::leftButtonModifier));
+            mouse(below, juce::ModifierKeys(juce::ModifierKeys::leftButtonModifier));
+            mouse(below, {});
+            root.frame();
+            const auto step = document->ops().nextUndo();
+            const bool moved = pressed && fader.getValue() < db - 1 && opCount() == ops + 1 && step.has_value() &&
+                               step->label == "Change Track Volume";
+            if (!moved)
+                std::fprintf(stderr, "  the press at %+g dB, %g px from the level, missed the fader\n", db, dy);
+            check(moved, db == 0 ? "at 0 dB, a press on the fader's drawn handle and a drag down lower it: one "
+                                   "Change Track Volume"
+                                 : "at +6 dB, the top of its travel, a press on the fader's drawn handle and a drag "
+                                   "down lower it: one Change Track Volume");
+        }
+    juce::ModifierKeys::currentModifiers = juce::ModifierKeys();
+    document->release();
+}
+// A steady tone on one track while the transport plays.
+class SendTone final : public engine::Node {
+  public:
+    void process(const engine::NodeIo &io) noexcept override {
+        for (int i = 0; i < io.frames; ++i) {
+            const auto sample = io.transport ? io.transport->timelineSample + io.blockOffset + i : 0;
+            const float value = io.transport && io.transport->playing
+                                    ? static_cast<float>(.2 * std::sin(2 * 3.141592653589793 * 750 * static_cast<double>(sample) / 48000))
+                                    : 0;
+            for (int c = 0; c < io.channels; ++c)
+                io.out[c][io.blockOffset + i] = value;
+        }
+    }
+    const char *name() const noexcept override { return "send tone"; }
+};
+// walk-A A10 (Live 12 manual 18.4): a return made with Insert Return Track has a send from every track,
+// fully down, in the same step, as New's A and B have; so the first drag of one, during playback, is
+// live and heard while it moves, lands as one undo step, and one Undo puts it back.
+void firstSendDragHeard(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "first-send.adi", true, {}, error);
+    check(document != nullptr, "a project for a new return's first send");
+    if (!document)
+        return;
+    SendTone tone;
+    document->session().setSourcesFor([&](std::int64_t id) {
+        return id == 4 ? std::vector<engine::Node *>{&tone} : std::vector<engine::Node *>{};
+    });
+    check(document->session().rebuild(), "the tone on 3 Audio");
+    document->prepare(48000, 64);
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "first-send");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.beginMixerDrag = [&](const gesture::RelativeScalarSelection &selection, std::optional<double> value,
+                              const std::string &label) {
+        return document->beginMixerDrag(selection, value, label);
+    };
+    root.mixerDrag = [&](double value) { return document->mixerDrag(value); };
+    root.endMixerDrag = [&] { return document->endMixerDrag(); };
+    root.cancelMixerDrag = [&] { document->cancelMixerDrag(); };
+    UiPeerRoot surfacePeer;
+    surfacePeer.setSize(1600, 1000);
+    surfacePeer.addAndMakeVisible(root);
+    surfacePeer.setVisible(true);
+    surfacePeer.addToDesktop(0);
+    root.setSize(1440, 900);
+    root.frame();
+    const auto routes = [&] { return document->store().db().execAndGet("SELECT count(*) FROM routing").getInt(); };
+    const auto routesBefore = routes();
+    check(root.insertReturnTrack(), "Insert Return Track");
+    document->synchronise();
+    root.frame();
+    std::int64_t made = 0;
+    for (const auto &t : root.reader().tracks())
+        if (t->kind == "return" && t->name == "C Return")
+            made = t->id;
+    // Its sends: one from each of the four tracks, at the floor; none from Main or from A and B.
+    const auto current = root.current();
+    int floor = 0;
+    for (const std::int64_t source : {2, 3, 4, 5})
+        if (const auto *s = current ? findSend(current->sends, source, made) : nullptr; s && s->gainDb == kSendSilenceDb && s->enabled)
+            ++floor;
+    check(made != 0 && floor == 4 && current && findSend(current->sends, 6, made) == nullptr &&
+              findSend(current->sends, 7, made) == nullptr && routes() == routesBefore + 4 &&
+              document->ops().nextUndo() && document->ops().nextUndo()->label == "Insert Return Track",
+          "C Return comes with a send from every track, fully down, in its one step");
+    // In the Mixer View, where every strip is realised.
+    check(root.command(AppCommands::ToggleMixerView), "the Mixer View opens");
+    root.resizeMixerView(420);
+    root.mark(DirtySet::All);
+    root.frame();
+    MixerStrip *three = nullptr;
+    for (const auto &strip : root.mixerView.strips())
+        if (strip->track() == 4)
+            three = strip.get();
+    juce::Slider *knob = nullptr;
+    for (std::size_t i = 0; three != nullptr && i < three->sendKnobs().size(); ++i)
+        if (three->sendsTo(i) == made)
+            knob = three->sendKnobs()[i].get();
+    check(knob != nullptr, "3 Audio's Send C");
+    if (knob == nullptr) {
+        document->release();
+        return;
+    }
+    // Playing: the level heard, the peak of L over a few blocks once a frame has settled.
+    std::array<float, 64> l{}, r{};
+    float *channels[]{l.data(), r.data()};
+    engine::AudioIo io;
+    io.out = channels;
+    io.numOut = 2;
+    io.frames = 64;
+    std::int64_t stream = 0;
+    document->mailbox().post(TransportMailbox::Command::Play);
+    const auto heard = [&] {
+        float peak = 0;
+        for (int b = 0; b < 24; ++b) {
+            io.streamTimeSamples = stream;
+            document->process(io);
+            stream += 64;
+            document->tick(stream);
+            if (b >= 12)
+                for (const float v : l)
+                    peak = std::max(peak, std::abs(v));
+        }
+        return static_cast<double>(peak);
+    };
+    const auto gainDb = [&] {
+        SQLite::Statement q(document->store().db(),
+                            "SELECT gain_db FROM routing WHERE kind = 'send' AND src_id = 4 AND dst_id = ?");
+        q.bind(1, made);
+        return q.executeStep() ? q.getColumn(0).getDouble() : 999.0;
+    };
+    const double base = heard();
+    check(base > .05, "3 Audio's tone is heard");
+    const auto opCount = [&] { return document->store().db().execAndGet("SELECT count(*) FROM ops").getInt(); };
+    const auto before = opCount();
+    // The first drag of the send, the mouse held: live, heard while it moves, nothing written.
+    juce::ModifierKeys::currentModifiers = juce::ModifierKeys(juce::ModifierKeys::leftButtonModifier);
+    knob->onDragStart();
+    knob->setValue(0.0, juce::dontSendNotification);
+    knob->onValueChange();
+    const double during = heard();
+    check(document->mixerDragging() && during > base * 1.5 && opCount() == before && gainDb() == kSendSilenceDb,
+          "the first drag of C Return's send is live: heard at 0 dB while it moves, nothing written");
+    juce::ModifierKeys::currentModifiers = juce::ModifierKeys();
+    knob->onDragEnd();
+    root.frame();
+    check(!document->mixerDragging() && opCount() == before + 1 && std::abs(gainDb()) < 1e-6 &&
+              root.undoTitle(false) == "Undo Change Send Level",
+          "released: one op, one undo step, at the level let go");
+    check(heard() > base * 1.5, "and heard where it was let go");
+    check(root.command(AppCommands::Undo) && document->synchronise() && gainDb() == kSendSilenceDb &&
+              root.undoTitle(false) == "Undo Insert Return Track",
+          "one Undo puts the send back fully down");
+    check(heard() < base * 1.2, "and the return is silent again");
+    check(root.command(AppCommands::Undo) && document->synchronise(), "Undo again");
+    root.frame();
+    check(routes() == routesBefore && root.reader().findTrack(made) == nullptr,
+          "the next Undo takes the return and its sends away together");
     document->release();
 }
 // AU-01: Automation Mode in the Arrangement (Live 12 manual 25.2, 25.3): a track's Volume envelope on its
@@ -18249,6 +18558,7 @@ int main(int argc, char **argv) {
     trace("groupTracks", [&] { groupTracks(commands, temp.path()); });
     trace("footRows", [&] { footRows(commands, temp.path()); });
     trace("newProject", [&] { newProject(commands, temp.path()); });
+    trace("trackColoursStay", [&] { trackColoursStay(commands, temp.path()); });
     trace("stripParamUndo", [&] { stripParamUndo(commands, temp.path()); });
     trace("deviceClipboard", [&] { deviceClipboard(commands, temp.path()); });
     trace("pluginWindows", [&] { pluginWindows(commands, settings, temp.path()); });
@@ -18257,6 +18567,8 @@ int main(int argc, char **argv) {
     trace("exportPage", [&] { exportPage(commands, temp.path()); });
     trace("mixerDragLive", [&] { mixerDragLive(commands, temp.path()); });
     trace("mixerShowsAutomation", [&] { mixerShowsAutomation(commands, temp.path()); });
+    trace("mixerViewFaderHandle", [&] { mixerViewFaderHandle(commands, temp.path()); });
+    trace("firstSendDragHeard", [&] { firstSendDragHeard(commands, temp.path()); });
     trace("automationMode", [&] { automationMode(commands, temp.path()); });
     trace("sendKnobs", [&] { sendKnobs(commands, temp.path()); });
     trace("audioDrop", [&] { audioDrop(commands, temp.path()); });

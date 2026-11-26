@@ -911,6 +911,91 @@ void mixerDragHeard(const std::filesystem::path &dir) {
           "a pan drag lands as one step too");
     doc->release();
 }
+// walk-A A21: an edit committed during playback never interrupts it (Live). A clip plays; a fader drag
+// let go and a plain fader commit each rebuild the graph, and no block after either is silent while the
+// clip sounds. Blocks run back to back, as a callback does, with no time for a cold reader to catch up.
+void commitKeepsClipSounding(const std::filesystem::path &dir) {
+    std::string error;
+    auto doc = ui::ProjectDocument::open(dir / "commit.adi", true, {}, error);
+    check(doc != nullptr, "a project to commit in while playing");
+    if (!doc)
+        return;
+    const auto wav = dir / "tone.wav";
+    {
+        std::vector<float> samples(48000 * 8);
+        for (std::size_t i = 0; i < samples.size(); ++i)
+            samples[i] = static_cast<float>(.2 * std::sin(2 * 3.141592653589793 * 750 * static_cast<double>(i) / 48000));
+        audio::WavWriter writer(wav, 48000, 1, audio::WavFormat::Pcm16);
+        writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
+    }
+    ui::AudioImport import;
+    check(doc->prepareImport(wav.string(), 1'700'000'000'000'000, import), "the clip's file imports");
+    auto dropped = ui::dropAudio(*doc->view().current(), 4, 0, "tone", import);
+    check(dropped.refusal.empty() && doc->ops().submit(std::move(dropped.ops)).ok && doc->synchronise(),
+          "an 8 s clip on 3 Audio");
+    constexpr int frames = 480; // the block the window's device ran at 48 kHz
+    doc->prepare(48000, frames);
+    std::array<float, frames> l{}, r{};
+    float *channels[]{l.data(), r.data()};
+    engine::AudioIo io;
+    io.out = channels;
+    io.numOut = 2;
+    io.frames = frames;
+    std::int64_t stream = 0;
+    const auto block = [&] {
+        io.streamTimeSamples = stream;
+        doc->process(io);
+        stream += frames;
+        doc->tick(stream);
+        float peak = 0;
+        for (const float v : l)
+            peak = std::max(peak, std::abs(v));
+        return peak;
+    };
+    doc->mailbox().post(ui::TransportMailbox::Command::Play);
+    // Play waits for the clip's first pages; then it sounds.
+    int waited = 0;
+    while (block() == 0 && waited++ < 500)
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    int sounding = 0;
+    for (int b = 0; b < 20; ++b)
+        sounding += block() > .05f;
+    check(doc->mailbox().playing() && sounding == 20, "Play: the clip sounds in every block");
+    // The silent blocks right after a commit, back to back.
+    const auto silentAfter = [&] {
+        int silent = 0;
+        for (int b = 0; b < 20; ++b)
+            silent += block() == 0;
+        return silent;
+    };
+    gesture::RelativeScalarSelection fader{gesture::ScalarKind::TrackVolume, 4, {}, {-70, 6, -150}};
+    check(doc->beginMixerDrag(fader, -3, "Change Track Volume") && doc->mixerDrag(-6), "a fader drag while playing");
+    check(silentAfter() == 0, "the drag itself is heard without a gap");
+    check(doc->endMixerDrag(), "let go: 'Change Track Volume' commits");
+    const int released = silentAfter();
+    std::printf("silent blocks after the fader is let go: %d\n", released);
+    check(released == 0, "no block after the fader is let go is silent");
+    OpRequest volume;
+    volume.opType = "mixer.setVolume";
+    volume.payload = {{"id", 4}, {"db", -12}};
+    check(doc->ops().submit(volume).ok && doc->synchronise(), "a plain fader commit while playing");
+    const int committed = silentAfter();
+    std::printf("silent blocks after a plain commit: %d\n", committed);
+    check(committed == 0, "no block after a plain commit is silent");
+    // A commit while another control is still held stages its generation in the gesture runtime.
+    check(doc->beginMixerDrag(fader, -9, "Change Track Volume"), "a fader held while playing");
+    OpRequest pan;
+    pan.opType = "mixer.setPan";
+    pan.payload = {{"id", 4}, {"pan", .25}};
+    check(doc->ops().submit(pan).ok && doc->synchronise(), "a pan commit while the fader is held");
+    const int held = silentAfter();
+    std::printf("silent blocks after a commit under a held fader: %d\n", held);
+    check(held == 0, "no block after a commit under a held fader is silent");
+    check(doc->endMixerDrag(), "the held fader let go");
+    check(silentAfter() == 0, "and none after it is let go");
+    check(doc->mailbox().playing(), "and the transport plays on");
+    doc->release();
+}
 void peakSpans() {
     media::MediaPeaks p;
     p.channels = 2;
@@ -1125,6 +1210,8 @@ int main(int argc, char **argv) {
         discardRefusalSaid(refusedDir.path());
         test::TempDirectory dragDir("ui_document", "drag");
         mixerDragHeard(dragDir.path());
+        test::TempDirectory commitDir("ui_document", "commit");
+        commitKeepsClipSounding(commitDir.path());
     }
     test::TempDirectory temp("ui_document", "lifetime");
     std::string error;

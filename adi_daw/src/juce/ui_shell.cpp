@@ -12,6 +12,7 @@
 #include "adi/ui/meter_edits.hpp"
 #include "adi/ui/meters.hpp"
 #include "adi/ui/recording_edits.hpp"
+#include "adi/ui/send_edits.hpp"
 #include "adi/ui/tempo_edits.hpp"
 #include "adi/ui/track_edits.hpp"
 #include "adi/store.hpp"
@@ -2816,6 +2817,8 @@ bool AdiRootComponent::insertTrack(bool midi) {
                                        &commands_.recordingDefaults(), ids.next("tracks"));
     if (!edit.refusal.empty())
         return fail(std::move(edit.refusal));
+    // Its own colour in the same step (ADR-0211 d2): the others keep theirs.
+    colourNewTrack(current->tracks, edit.ops, [this](std::int64_t t) { return arrangement.colourIndex(t); });
     edit.ops.front().selBefore = session_.advisory();
     const auto result = submitter_.submit(std::move(edit.ops));
     if (!result)
@@ -2850,50 +2853,23 @@ bool AdiRootComponent::insertMidiClips(const std::vector<std::int64_t> &tracks, 
     return true;
 }
 bool AdiRootComponent::insertReturnTrack(std::int64_t group) {
-    // From the CURRENT cell (ADR-0201). The new return comes after the others, as every return
-    // stands after the tracks (TrackOrder), and takes the next letter, as Live names it. Inside a
-    // group (Insert Return Track in Group, ADR-0247 d2), after what the group holds, and plays into
-    // it; its letter is the group's initial and its place among the group's returns ("DA").
+    // From the CURRENT cell (ADR-0201); the ops, the place and the letter are
+    // `adi::ui::insertReturnTrack`'s, one undo step.
     const auto current = view_.current();
     if (!current)
         return fail("Inserting a return needs an open project.");
-    const auto &tracks = current->tracks;
-    const engine::TrackNode *into = nullptr;
-    for (const auto &t : tracks)
-        if (group != 0 && t->id == group && t->kind == "group")
-            into = t.get();
-    if (group != 0 && into == nullptr)
-        return fail("Choose a group to put the return in.");
-    std::int64_t returns = 0, held = 0;
-    for (const auto &t : tracks) {
-        if (t->kind == "return" && t->parent == group)
-            ++returns;
-        if (t->parent == group)
-            ++held;
-    }
     RowIds ids(submitter_.store().db()); // DF-E16: never an id a remark still holds
-    const auto id = ids.next("tracks");
-    std::string letter(1, static_cast<char>('A' + returns % 26));
-    if (into != nullptr) {
-        char initial = 'G';
-        for (const char c : into->name)
-            if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) {
-                initial = static_cast<char>(c >= 'a' ? c - 'a' + 'A' : c);
-                break;
-            }
-        letter.insert(letter.begin(), initial);
-    }
-    OpRequest request;
-    request.opType = "track.create";
-    request.payload = {{"id", id},
-                       {"kind", "return"},
-                       {"name", letter + " Return"},
-                       {"index", static_cast<std::int64_t>(into != nullptr ? held : static_cast<std::int64_t>(tracks.size()))}};
-    if (into != nullptr)
-        request.payload["parent"] = group;
-    request.label = into != nullptr ? "Insert Return Track in Group" : "Insert Return Track";
-    request.selBefore = session_.advisory();
-    const auto result = submitter_.submit(std::move(request));
+    auto edit = ::adi::ui::insertReturnTrack(current->tracks, group, ids.next("tracks"));
+    if (!edit.refusal.empty())
+        return fail(std::move(edit.refusal));
+    const auto id = edit.select;
+    edit.ops.front().selBefore = session_.advisory();
+    colourNewTrack(current->tracks, edit.ops, [this](std::int64_t t) { return arrangement.colourIndex(t); }); // ADR-0211 d2
+    // The tracks' sends to it, fully down, in the same step, so a first drag is heard (walk-A A10).
+    const std::string stepLabel = edit.ops.front().label;
+    for (auto &send : newReturnSends(*current, id, group, stepLabel.c_str()))
+        edit.ops.push_back(std::move(send));
+    const auto result = submitter_.submit(std::move(edit.ops));
     if (!result)
         return fail(result.error);
     arrangement.followPaused = true;
@@ -3163,6 +3139,8 @@ bool AdiRootComponent::groupTracks(bool ungroup) {
                                                  RowIds(submitter_.store().db()).next("tracks"));
     if (!edit.refusal.empty())
         return fail(std::move(edit.refusal));
+    // A new group's own colour in the same step (ADR-0211 d2); ungrouping creates none.
+    colourNewTrack(current->tracks, edit.ops, [this](std::int64_t t) { return arrangement.colourIndex(t); });
     edit.ops.front().selBefore = session_.advisory();
     const auto result = submitter_.submit(std::move(edit.ops));
     if (!result)
