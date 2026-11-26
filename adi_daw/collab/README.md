@@ -343,6 +343,7 @@ subject, say so in your log instead of writing it twice.
 | 0254 | win | `win/adr-0254` | the mix suite intake: four outside proposals taken into the plan's rows (22 rows, Track S); the director's rulings on the Throw, a Duck inside Reverb and Delay, two more optional stem models, the drop that lands as previewed and a REAPER key preset | used |
 | 0255 | win | `win/adr-0255` | the seats' parked questions answered (25 November); the hold of ADR-0248 d2 ends on the proof in the real window; a walk in the real window by his order; Live's Backup folder on by default; Paste refuses across kinds; the Gate before the EQ | used |
 | 0256 | win | `win/adr-0256` | after the walk: playing from the computer keyboard, recording MIDI and recording automation go first when the hold ends; OneShot in the Browser now; the walker takes DF-M76 | used |
+| 0257 | win | `win/sanity-1126` | the basics come first: the sanity check's rows are fixes worked now; the Dream's shape and ground; view filters placed; no AI tab, a larger Info box and its analyser's switch | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a

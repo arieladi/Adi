@@ -20253,3 +20253,90 @@ walker one finding that was another seat's (d3).
 | `docs/DEFERRED.md` | DF-W48 answered: now; DF-M76's fix is the walker's (d2, d3) |
 | `collab/README.md` | ADR 0256 used |
 | `collab/RESERVATIONS.md` | the next free ADR is 0257 |
+
+## ADR-0257 — The basics come first: the sanity check's gaps are fixes worked now; the Dream's shape; view filters move up; four remarks from the window — `DECIDED` (2026-11-26) — **DIRECTOR'S WORDS OF 26 NOVEMBER; AMENDS ADR-0248 d2, ADR-0255 d1, ADR-0256 d1, ADR-0112, ADR-0203 d6 AND ADR-0244 d7; WIN'S READINGS AND PLACEMENTS ARE NAMED, THE DIRECTOR MAY STRIKE THEM**
+
+**What this records.** On 26 November the director saw that ADI draws no waveform while audio records and
+that no plan row owned it. His words: "lets plan the fix and ran a daw sanity check on our program to make
+sure we are not leaving and not planning any other crucial obviously most basic stuff. approve all my new
+request please fix all what you suggested take in all our notes and make sure our daw make sense." Win had
+ten choices open with him that day, each with a recommendation: H, J, L, M and N of
+`docs/DREAM-INTAKE.md`, and P, Q, R and S on his note of three items. Win read his words as all ten
+approved as recommended and told him so the same day. The same day he gave four remarks on what he saw in
+the real window (d12).
+
+### Decisions
+
+1. **The basics come first.** `docs/SANITY-CHECK.md` lists about eighty things every DAW does that ADI
+   lacks, shows nowhere, or had placed late. Each row there is a fix under ADR-0248 d1 and is worked now.
+   The hold of ADR-0248 d2 does not stop them, and the three features of ADR-0256 d1 (SC-50, SC-51 and
+   recording automation) no longer wait for its end. The hold stands for everything else: the Dream,
+   Track S, and every addition. It still ends as ADR-0255 d1 says.
+2. **The weekend of 27 to 29 November.** By his order, six sessions outside the seats work the list, each
+   on a queue of `collab/prompts/2026-11-27-basics-*.md`, and the gemini seat reads their branches first.
+   Path ownership (ADR-0248 d3) is lent to each session for its own rows of the list until its owner
+   seat next runs; the owner reads the change then. Win lands the branches.
+3. **A take shows its waveform as it records (his P).** DF-E90 and DF-W58, now.
+4. **View filters move up (his Q).** ADR-0112 d2 stands: named filters over tracks, on the timeline and
+   the mixer, that never change routing. It had no plan row. Win writes the rows; they are built after
+   the list's second wave and before Track S. New from his note: a View Selected command, a banner while
+   a filter is on, and Clear Filter.
+5. **A filter may match clips (his R).** An addition: matching clips are highlighted and the rest
+   dimmed. Nothing in the project changes.
+6. **The agent's view ops (his S).** The `view.*` family of ADR-0112 d3 changes what the window shows,
+   not the project: no changeset and no undo step. It is allowed from the Propose tier up, each call is
+   written in the agent's log, the banner says who set the filter, and one command clears it.
+7. **The Dream's shape (his J).** As `docs/DREAM-INTAKE.md` §4. The agent works in a copy of the
+   project, never in the original; notes, instruments and settings first; one part per track; ADI's own
+   instruments. The Foundry (D1, no AI model) comes first, then the small Dream (D2), then scale (D3).
+   A phase opens when the one before it has been heard. D4 is a direction, not a plan.
+8. **The Dream's ground moves up (his L).** Paste between projects (PD-15), the agent's process
+   (AGT-06), the consent ledger (AGT-03) and jobs (AGT-04) come right after the basics, and the Dream
+   gets a track of its own in the plan. Win writes the rows.
+9. **One consent for a session (his M).** A session the user starts writes its files into its own
+   folder after one consent at the start. A discarded session goes to the Recycle Bin with its files.
+10. **No neural audio generation in D1 to D3 (his N).** Decided again after the twelve-part test is
+    heard.
+11. **The real-window script starts the day the hold ends (his H):** WTS-05, WTS-06 and CTL-09, on a
+    seat of their own.
+12. **Four remarks from the window.**
+    - **The ruler and grid** read as seconds, with "r1" for "1" and the grid's spacing in an odd place.
+      They follow the approved sheet and Live: plain ticks, darker bar lines, the spacing above the
+      time ruler at the lower right, and a new project opened on whole bars (SC-70).
+    - **No AI tab.** "the ai button\label in the browser area is not needed i want the prompts and
+      quarries in the same browser search bar". The tab at the Browser's foot goes now (SC-110). The
+      search bar is the one place to search and to ask. *Win's reading:* typing filters the list as
+      today, and the first row offers to send the text to the agent; that row appears when an agent is
+      connected inside the program (AGT-06), and until then the bar only searches.
+    - **The Info box is larger.** *Win's reading of his drawing:* as wide as the Browser's column
+      (SC-111).
+    - **The Info box's analyser.** The spectrogram is its default, as ADR-0244 d7 ruled on 18 November
+      and main never did (DF-W22). His words: "i want to be able to swich it to span style or spectrum
+      style (ablton device) or smexoscope small version". The box carries its own switch with four
+      choices: the spectrogram, the spectrum in SPAN's look, the spectrum in the look of Live's
+      Spectrum, and the Classic Scope (ADR-0251) small. The choice is the box's own, kept per window;
+      today it follows the Analysers page. The wiring is now (SC-112). Each look "as its source"
+      (ADR-0244 d4) stays the Mix View seat's under DF-W22.
+13. **So it cannot recur.** The five changes SC-P1 to SC-P5 of the list are win's to carry out: FEATURES
+    says "built" apart from "the format can store it"; every open row of a parity sheet is owned or
+    struck; each sheet lists what the screen shows; the dead-control sweep (WTS-07) moves up.
+
+**What is not settled here.** Two choices win found in the check and puts to him: T, whether a new MIDI
+track sounds before an instrument is loaded (ADR-0169 d4 and d5 say no), and U, the file form of a
+device preset. Six readings of Live 12 are owed and named in the list.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0248 d2, ADR-0255 d1 | the hold does not stop a row of `docs/SANITY-CHECK.md` (d1); its end is unchanged |
+| ADR-0256 d1 | its three features are worked now (d1) |
+| ADR-0248 d3 | lent for the list's rows to the weekend's sessions (d2) |
+| ADR-0112 d2, d3 | placed (d4); a filter may match clips (d5); the agent's view ops need no changeset (d6) |
+| ADR-0203 d6 | the AI chat is not a tab at the Browser's foot: the search bar is the place (d12) |
+| ADR-0244 d7 | the Info box's switch has four choices and is the box's own (d12) |
+| AGT-03 | a session the user starts takes one consent at its start (d9) |
+| `docs/PLAN.md` | rows owed by win for d4, d5, d8 and the Dream's track (DF-R2) |
+| `docs/DEFERRED.md` | DF-W59 (the list is the register of its rows), DF-R2 |
+| `collab/README.md` | ADR 0257 used |
+| `collab/RESERVATIONS.md` | the next free ADR is 0258 |
