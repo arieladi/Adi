@@ -2876,7 +2876,7 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
               "SC-287: loading an instrument without a track creates a MIDI track");
         juce::SparseSet<int> rowsToDrag;
         rowsToDrag.addRange(juce::Range<int>(glass, glass + 1));
-        const auto drag = browser.list.getModel()->getDragSourceDescription(rowsToDrag);
+        const auto drag = browser.list.getListBoxModel()->getDragSourceDescription(rowsToDrag);
         auto &canvas = root.arrangement.canvas;
         const juce::Point<int> midiLane{40, laneTop(root, midiTrack) + 10};
         const juce::DragAndDropTarget::SourceDetails onMidi(drag, &browser.list, midiLane);
