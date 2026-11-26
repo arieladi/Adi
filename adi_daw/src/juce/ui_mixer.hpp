@@ -182,6 +182,7 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     juce::PopupMenu soloMenu();
 
   private:
+    void trackTitleMenu(juce::Point<int> where);
     void paintInOut(juce::Graphics &, int x) const;
 
     // The Mixer View strip's In/Out section, as Live 12's Mixer draws it.
@@ -301,6 +302,9 @@ class MixerPanel final : public juce::Component {
     void mouseDown(const juce::MouseEvent &) override;
     void mouseWheelMove(const juce::MouseEvent &, const juce::MouseWheelDetails &) override;
     void contextMenu(juce::Point<int>);
+    void showContextMenu(juce::PopupMenu, juce::Point<int>);
+    // A presenter can inspect the requested menu without opening a native popup.
+    std::function<void(juce::PopupMenu)> contextMenuPresenter;
     // Where the track controls' rows show, level with the arrangement's lanes, in this panel's
     // coordinates; the whole height for the Mixer View.
     juce::Range<int> rowsBand() const noexcept;

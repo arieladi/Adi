@@ -847,6 +847,8 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // Live's track drag (the Arrangement View; manual 18.3): the selected tracks when `dragged` is
     // among them, else that track alone, to `to`; one undo step, "Move Track" or "Move Tracks".
     bool moveTracks(std::int64_t dragged, TrackDrop to);
+    // Group the selected tracks, or ungroup an explicit group from its title menu.
+    bool groupTracks(bool ungroup, std::int64_t group = 0);
     // Live: "Double-clicking a track's title bar brings up the Device View" (Live 12 manual, Live
     // Concepts): shown if it is hidden, the selected track's devices in it.
     bool showDeviceView();
@@ -881,8 +883,6 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     ProjectDocument *trackRenderDocument_ = nullptr;
     bool insertTrack(bool midi);
     bool deleteTrack();
-    // Live's Group Tracks and Ungroup Tracks (manual 18.3), each one undo step.
-    bool groupTracks(bool ungroup);
     // A transport edit (the metronome, the loop): outside undo, so no step and no Follow paused; the
     // session re-reads the project after it (afterEdit), so the engine clicks and loops as it says.
     bool submitTransport(LoopEdit edit);

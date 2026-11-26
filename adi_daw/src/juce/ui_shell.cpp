@@ -3291,13 +3291,13 @@ bool AdiRootComponent::dropPlain(const std::vector<std::pair<std::string, std::s
     publishSelection();
     return true;
 }
-bool AdiRootComponent::groupTracks(bool ungroup) {
+bool AdiRootComponent::groupTracks(bool ungroup, std::int64_t group) {
     // From the CURRENT cell, as every action is; the batch is one undo step, labelled as Live's
     // Edit menu names it.
     const auto current = view_.current();
     // Group Tracks takes every selected track (Shift+click on the headers, or a selection across
     // tracks); Ungroup the selected group.
-    const auto id = arrangement.geometry.selection.track;
+    const auto id = group != 0 ? group : arrangement.geometry.selection.track;
     auto edit = ungroup ? ungroupTrack(current->tracks, id)
                         : ::adi::ui::groupTracks(current->tracks, arrangement.geometry.selectedTracks(reader()),
                                                  RowIds(submitter_.store().db()).next("tracks"));

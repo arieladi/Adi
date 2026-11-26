@@ -1054,7 +1054,7 @@ void ArrangementView::applyView() {
     leaveOut();
     // A title being renamed stays on its track, wherever the new rows put it.
     if (headers.renaming() != 0)
-        headers.beginRename(headers.renaming());
+        headers.beginRename(headers.renaming(), false);
 }
 void ArrangementView::leaveOut() {
     auto &group = root.state().viewGroup;
@@ -1575,7 +1575,7 @@ bool ArrangementView::selectLoop() {
     changed();
     return true;
 }
-juce::PopupMenu ArrangementView::headerMenu() {
+juce::PopupMenu ArrangementView::headerMenu(std::int64_t contextTrack) {
     auto &commands = root.commands();
     commands.activate(root);
     juce::PopupMenu menu;
@@ -1583,15 +1583,59 @@ juce::PopupMenu ArrangementView::headerMenu() {
     menu.addCommandItem(&commands.manager, AppCommands::InsertMidiTrack);
     if (geometry.selection.track == 0)
         return menu;
+    const auto track = contextTrack != 0 ? contextTrack : geometry.selection.track;
+    const auto addTrackAction = [&](int command, const char *name, bool enabled, std::function<void()> action) {
+        juce::PopupMenu::Item item(name);
+        const auto keys = commands.manager.getKeyMappings()->getKeyPressesAssignedToCommand(command);
+        if (!keys.isEmpty())
+            item.shortcutKeyDescription = keys[0].getTextDescriptionWithIcons();
+        item.isEnabled = enabled;
+        item.action = std::move(action);
+        menu.addItem(std::move(item));
+    };
     menu.addSeparator();
-    menu.addCommandItem(&commands.manager, AppCommands::RenameTrack);
-    menu.addCommandItem(&commands.manager, AppCommands::DeleteTrack);
-    root.addTrackAutomationDeleteItem(menu, geometry.selection.track);
-    root.addTrackRenderItems(menu, geometry.selection.track);
+    if (contextTrack == 0) {
+        menu.addCommandItem(&commands.manager, AppCommands::RenameTrack);
+    } else {
+        // The chosen mixer channel can be outside the visible Arrangement rows or be picked
+        // alongside the primary track. Reveal its existing editor without replacing that choice.
+        addTrackAction(AppCommands::RenameTrack, "Rename", true, [safe = SafePointer<ArrangementView>(this), track] {
+            if (!safe)
+                return;
+            const auto current = safe->root.current();
+            const auto *target = current ? current->findTrack(track) : nullptr;
+            if (!target) {
+                safe->root.say("That track is gone.");
+                return;
+            }
+            // The Mixer includes folded groups' children. Open only this track's ancestors.
+            auto &folded = safe->root.state().foldedGroups;
+            bool unfolded = false;
+            for (std::size_t depth = 0; target && target->parent != 0 && depth < current->tracks.size(); ++depth) {
+                unfolded |= folded.erase(target->parent) != 0;
+                target = current->findTrack(target->parent);
+            }
+            if (unfolded)
+                safe->applyView();
+            if (safe->geometry.reveal(safe->reader(), track) || unfolded)
+                safe->changed();
+            if (safe && !safe->headers.beginRename(track, false))
+                safe->root.say("That track is gone.");
+        });
+    }
+    const auto *selected = reader().findTrack(geometry.selection.track);
+    if (contextTrack != 0 && selected && selected->kind == "master") {
+        juce::PopupMenu::Item remove("Delete Track");
+        remove.isEnabled = false;
+        menu.addItem(std::move(remove));
+    } else {
+        menu.addCommandItem(&commands.manager, AppCommands::DeleteTrack);
+    }
+    root.addTrackAutomationDeleteItem(menu, track);
+    root.addTrackRenderItems(menu, track);
     // Live's lane chooser (DF-W37; manual 25.2): the track's mixer, then each device's parameters; the
     // one chosen shows on the track's lane in Automation Mode.
     {
-        const auto track = geometry.selection.track;
         root.demandAutomationDevices(true); // the parameters of a device the Device View does not show
         const auto shown = root.automationTarget(track);
         juce::PopupMenu show;
@@ -1615,17 +1659,31 @@ juce::PopupMenu ArrangementView::headerMenu() {
     }
     menu.addSeparator();
     menu.addCommandItem(&commands.manager, AppCommands::GroupTracks);
-    menu.addCommandItem(&commands.manager, AppCommands::UngroupTracks);
+    const auto *target = reader().findTrack(track);
+    const bool isGroup = target && target->kind == "group";
+    if (contextTrack == 0)
+        menu.addCommandItem(&commands.manager, AppCommands::UngroupTracks);
+    else
+        addTrackAction(AppCommands::UngroupTracks, "Ungroup Tracks", isGroup, [safe = SafePointer<ArrangementView>(this), track] {
+            if (safe)
+                safe->root.groupTracks(true, track);
+        });
     // Live's colour chooser at the menu's foot (Live 12 manual 2.3.2); on a group, the command that
     // gives what it holds its colour (manual 18.3).
     menu.addSeparator();
-    if (const auto *t = reader().findTrack(geometry.selection.track); t != nullptr && t->kind == "group") {
-        menu.addItem("Assign Track Color to Grouped Tracks and Clips", [this] { assignGroupColour(); });
+    if (isGroup) {
+        menu.addItem("Assign Track Color to Grouped Tracks and Clips", [safe = SafePointer<ArrangementView>(this), track] {
+            if (safe)
+                safe->assignGroupColour(track);
+        });
         // The way into a group for a return (ADR-0247 d2): a new return inside it, after what it
         // holds, lettered with the group's initial ("DA"). The Create menu's keeps Live's foot.
-        menu.addItem("Insert Return Track in Group", [this, group = t->id] { root.insertReturnTrack(group); });
+        menu.addItem("Insert Return Track in Group", [safe = SafePointer<ArrangementView>(this), track] {
+            if (safe)
+                safe->root.insertReturnTrack(track);
+        });
     }
-    menu.addCustomItem(1, std::make_unique<ColourChooser>(*this, colourIndex(geometry.selection.track)), nullptr,
+    menu.addCustomItem(1, std::make_unique<ColourChooser>(*this, colourIndex(track)), nullptr,
                        "Colour");
     return menu;
 }
@@ -1698,17 +1756,16 @@ bool ArrangementView::recolour(std::int64_t index) {
     }
     return edit.ops.empty() || root.submitEdits(std::move(edit.ops));
 }
-bool ArrangementView::assignGroupColour() {
+bool ArrangementView::assignGroupColour(std::int64_t groupId) {
     const auto current = root.current();
-    const auto *group = reader().findTrack(geometry.selection.track);
-    if (!current || group == nullptr || group->kind != "group") {
+    const auto *group = current ? current->findTrack(groupId != 0 ? groupId : geometry.selection.track) : nullptr;
+    if (group == nullptr || group->kind != "group") {
         root.say("Select a group track to give what it holds its colour.");
         return false;
     }
     // Its colour from the CURRENT cell (ADR-0201), so a colour picked a moment ago counts; the one its
     // place gives it otherwise.
-    const auto *now = track_edits_detail::find(current->tracks, group->id);
-    const auto &own = now != nullptr ? now->color : group->color;
+    const auto &own = group->color;
     const auto index = own && *own >= 0 && *own < kPaletteColours ? *own : colourIndex(group->id);
     auto edit = colourTracks(current->tracks, heldBy(current->tracks, group->id), index,
                              "Assign Track Color to Grouped Tracks and Clips");
@@ -1970,9 +2027,9 @@ void TrackHeaderList::paint(juce::Graphics &g) {
 }
 void TrackHeaderList::resized() {
     if (renaming_ != 0)
-        beginRename(renaming_);
+        beginRename(renaming_, false);
 }
-bool TrackHeaderList::beginRename(std::int64_t track) {
+bool TrackHeaderList::beginRename(std::int64_t track, bool selectTrack) {
     // The name as it is now, not as this window last drew it.
     const auto now = view.root.current();
     const auto *t = now->findTrack(track);
@@ -1988,8 +2045,10 @@ bool TrackHeaderList::beginRename(std::int64_t track) {
     if (at < rows.size())
         depth = rows[at].place.depth;
     renaming_ = track;
-    view.geometry.selection.track = track;
-    view.root.publishSelection();
+    if (selectTrack) {
+        view.geometry.selection.track = track;
+        view.root.publishSelection();
+    }
     const int x = nameLeft(depth) + 2;
     editor.setBounds(x, y + 3, std::max(0, getWidth() - x - 4), 24);
     if (!editor.isVisible() || editor.getName() != juce::String(track)) {

@@ -708,6 +708,42 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
         const auto columns = shownStrips(root.mixerView);
         check(std::find(columns.begin(), columns.end(), 17) != columns.end(),
               "the Mixer View still shows them: folding is the timeline's (UI-ARCHITECTURE §4)");
+        // A Mixer menu is addressed to its clicked column, even when the primary selection is
+        // the folded parent. Rename reveals the child in the Arrangement's existing editor.
+        const auto child = std::find_if(root.mixerView.strips().begin(), root.mixerView.strips().end(),
+                                        [](const auto &strip) { return strip->isVisible() && strip->track() == 17; });
+        if (child != root.mixerView.strips().end()) {
+            const auto savedSelection = lanes.selection;
+            const int savedScroll = lanes.scrollY;
+            lanes.selection.track = 16;
+            lanes.selection.toTrack = 0;
+            lanes.selection.picked = {17};
+            lanes.selection.clip = 0;
+            lanes.selection.pickedClips.clear();
+            lanes.selection.start = lanes.selection.end = lanes.selection.insert;
+            juce::PopupMenu menu;
+            root.mixerView.contextMenuPresenter = [&](juce::PopupMenu shown) { menu = std::move(shown); };
+            (*child)->mouseDown(pressAt(**child, {20.f, 8.f}, juce::ModifierKeys::rightButtonModifier));
+            std::function<void()> rename;
+            bool groupActions = false;
+            for (juce::PopupMenu::MenuItemIterator it(menu); it.next();) {
+                const auto &item = it.getItem();
+                if (item.text == "Rename") rename = item.action;
+                if (item.text == "Insert Return Track in Group" || (item.text == "Ungroup Tracks" && item.isEnabled))
+                    groupActions = true;
+            }
+            check(rename && !groupActions, "the selected child opens its menu instead of its parent group's");
+            if (rename) rename();
+            check(lanes.shown(17) && headers.renaming() == 17 && lanes.selection.track == 16 &&
+                      lanes.selection.picked == std::vector<std::int64_t>{17},
+                  "Rename reveals the folded-away Mixer channel, keeping the selected tracks");
+            if (headers.renaming() != 0) headers.editor.onCancel();
+            if (!root.state().foldedGroups.contains(16)) root.arrangement.toggleFold(16);
+            lanes.selection = savedSelection;
+            lanes.scrollY = savedScroll;
+            root.arrangement.changed();
+            root.mixerView.contextMenuPresenter = {};
+        }
         check(root.command(AppCommands::ToggleMixerView), "the Mixer View closes");
         lanes.selection.track = 16;
         check(root.arrangement.canvas.keyPressed(juce::KeyPress(juce::KeyPress::downKey)) && lanes.selection.track == 1,
@@ -2552,6 +2588,57 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
                   "a click on 3 Audio's, then Ctrl/Cmd+click on 4 Audio's: the two picked");
             four->mouseDown(pressAt(*four, {20.f, 8.f}, juce::ModifierKeys::commandModifier));
             check(selection.track == 3 && selection.picked.empty(), "Ctrl/Cmd+click again lets 4 Audio go");
+
+            // SC-262: inspect the actual popup request without opening a native window.
+            const auto savedSelection = selection;
+            auto &view = root.arrangement;
+            juce::PopupMenu shown;
+            root.mixerView.contextMenuPresenter = [&](juce::PopupMenu menu) { shown = std::move(menu); };
+            const auto menuItem = [&](const char *name) -> std::optional<juce::PopupMenu::Item> {
+                for (juce::PopupMenu::MenuItemIterator it(shown); it.next();)
+                    if (it.getItem().text == name)
+                        return it.getItem();
+                return std::nullopt;
+            };
+            const auto right = juce::ModifierKeys::rightButtonModifier;
+            selection.clip = 11;
+            selection.pickedClips = {12};
+            selection.start = 10;
+            selection.end = 20;
+            selection.insert = 30;
+            view.selectedLocator = 42;
+            view.selectedMeter = 10;
+            view.loopSelected = true;
+            two->mouseDown(pressAt(*two, {20.f, 8.f}, right));
+            const auto colour = menuItem("Colour");
+            check(selection.track == 2 && selection.clip == 0 && selection.pickedClips.empty() &&
+                      selection.start == 30 && selection.end == 30 && !view.loopSelected &&
+                      view.selectedLocator == 0 && view.selectedMeter == -1 && menuItem("Rename") &&
+                      (menuItem("Delete Track") || menuItem("Delete")) && menuItem("Group Tracks") &&
+                      colour && colour->customComponent && !menuItem("Auto Gain Stage: gated RMS, -18 dBFS"),
+                  "a channel-name popup selects that track, clears the old edit target and offers its track menu");
+            four->mouseDown(pressAt(*four, {20.f, 8.f}, juce::ModifierKeys::commandModifier));
+            four->mouseDown(pressAt(*four, {20.f, 8.f}, right));
+            const auto rename = menuItem("Rename");
+            check(selection.track == 2 && selection.picked == std::vector<std::int64_t>{4} && rename && rename->action,
+                  "a popup on a picked channel preserves the selected tracks");
+            if (rename && rename->action)
+                rename->action();
+            check(headers.renaming() == 4 && headers.editor.isVisible() && selection.track == 2 &&
+                      selection.picked == std::vector<std::int64_t>{4},
+                  "Rename opens the clicked channel's editor without changing the selected tracks");
+            if (headers.renaming() != 0)
+                headers.editor.onCancel();
+
+            const auto selectedBeforeBackground = selection;
+            strip->mouseDown(pressAt(*strip, {2.f, 23.f}, right));
+            check(selection == selectedBeforeBackground && shown.getNumItems() == 2 &&
+                      menuItem("Auto Gain Stage: gated RMS, -18 dBFS") &&
+                      menuItem("Auto Gain Stage: integrated loudness, -18 LUFS"),
+                  "a popup below the channel name leaves the selection and Auto Gain Stage menu alone");
+            root.mixerView.contextMenuPresenter = {};
+            selection = savedSelection;
+            root.publishSelection();
         } else
             check(false, "2 MIDI's and 4 Audio's Mixer View strips");
     } else

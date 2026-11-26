@@ -114,7 +114,7 @@ void PeakHold::paintButton(juce::Graphics &g, bool over, bool down) {
                      held <= 1.e-6f ? juce::String("-Inf") : juce::String(20 * std::log10(held), 1));
 }
 MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
-    // The strip takes the keys only during a live drag, for Esc (MX-23); a click does not focus it.
+    // Focus is explicit for the channel's title menu and for Esc during a live drag (MX-23).
     setWantsKeyboardFocus(true);
     setMouseClickGrabsKeyboardFocus(false);
     if (panel.vertical()) {
@@ -1031,6 +1031,32 @@ void MixerStrip::mouseUp(const juce::MouseEvent &) {
     dragging_ = false;
     panel_.root.arrangement.changed();
 }
+void MixerStrip::trackTitleMenu(juce::Point<int> where) {
+    const auto track = track_;
+    const auto current = panel_.root.current();
+    if (!current || !current->findTrack(track))
+        return;
+    auto &view = panel_.root.arrangement;
+    auto &selection = view.geometry.selection;
+    const bool tracksSelected = current->findTrack(selection.track) && selection.clip == 0 &&
+                                selection.pickedClips.empty() && selection.start == selection.end &&
+                                view.selectedLocator == 0 && view.selectedMeter < 0 && !view.loopSelected;
+    if (!tracksSelected || !view.geometry.inSelection(view.reader(), track)) {
+        selection.track = track;
+        selection.toTrack = 0;
+        selection.picked.clear();
+    }
+    selection.clip = 0;
+    selection.pickedClips.clear();
+    selection.start = selection.end = selection.insert;
+    view.selectedLocator = 0;
+    view.selectedMeter = -1;
+    view.loopSelected = false;
+    view.scrub.repaint();
+    focusIfShowing(*this);
+    view.changed();
+    panel_.showContextMenu(view.headerMenu(track), where);
+}
 void MixerStrip::mouseDown(const juce::MouseEvent &e) {
     if (onSplitLine(e) && !e.mods.isPopupMenu()) {
         // Kept bound to its track while the drag resizes the rows (MixerPanel::place).
@@ -1058,8 +1084,11 @@ void MixerStrip::mouseDown(const juce::MouseEvent &e) {
     // A click on a Mixer View strip's title bar selects its track, as a click on its header does
     // (Live 12 manual 18.1): Ctrl/Cmd+click picks it apart or lets it go, Shift+click reaches across
     // the tracks between. So Ctrl+G after picking strips groups them (walk-B B10).
-    if (panel_.vertical() && e.eventComponent == this && e.y < kTitleHeight && track_ != 0 &&
-        !e.mods.isPopupMenu()) {
+    if (panel_.vertical() && e.eventComponent == this && e.y < kTitleHeight && track_ != 0) {
+        if (e.mods.isPopupMenu()) {
+            trackTitleMenu(e.getScreenPosition());
+            return;
+        }
         auto &selection = panel_.root.arrangement.geometry.selection;
         if (e.mods.isCommandDown() && selection.track != 0) {
             auto &picked = selection.picked;
@@ -1748,7 +1777,14 @@ void MixerPanel::contextMenu(juce::Point<int> where) {
                   if (safe && safe->autoGain)
                       safe->autoGain(true);
               });
-    m.showMenuAsync(juce::PopupMenu::Options{}.withTargetScreenArea({where.x, where.y, 1, 1}));
+    showContextMenu(std::move(m), where);
+}
+void MixerPanel::showContextMenu(juce::PopupMenu menu, juce::Point<int> where) {
+    if (contextMenuPresenter) {
+        contextMenuPresenter(std::move(menu));
+        return;
+    }
+    menu.showMenuAsync(juce::PopupMenu::Options{}.withTargetScreenArea({where.x, where.y, 1, 1}));
 }
 void MixerPanel::mouseWheelMove(const juce::MouseEvent &e, const juce::MouseWheelDetails &w) {
     if (vertical_) {
