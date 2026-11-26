@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/recording_commands.hpp"
+#include "adi/controller_lanes.hpp"
 #include "adi/engine/audio_memory.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/engine/snapshot.hpp"
@@ -187,6 +188,36 @@ Payload recordedMidiImage(Store& store, const MidiLinearTake& take, clip_edit::C
         })});
     }
 
+    std::set<std::pair<int, int>> controllerAddresses;
+    for (const auto& lane : take.controllers) {
+        if (lane.channel < 0 || lane.channel >= 16 || !controllers::validController(lane.controller) ||
+            lane.points.empty() || lane.points.size() > StreamReader<AutomationPoint>::kMaxRecordsAtOnce ||
+            !controllerAddresses.emplace(lane.channel, lane.controller).second)
+            throw std::runtime_error("invalid recorded MIDI controller lane");
+        std::vector<AutomationPoint> points;
+        std::set<std::uint64_t> pointIds;
+        points.reserve(lane.points.size());
+        std::int64_t previous = -1;
+        for (const auto& point : lane.points) {
+            if (!point.id || !pointIds.insert(point.id).second || point.timeTicks < 0 ||
+                point.timeTicks < previous || point.timeTicks >= take.length || !std::isfinite(point.value) ||
+                point.value < 0. || point.value > 1. || !std::isfinite(point.tension) ||
+                point.tension < -1.f || point.tension > 1.f || point.curve > static_cast<std::uint8_t>(Curve::Bezier))
+                throw std::runtime_error("invalid recorded MIDI controller point");
+            previous = point.timeTicks;
+            points.push_back({.time = point.timeTicks, .value = point.value, .tension = point.tension,
+                              .curve = point.curve, .flags = point.flags, .reserved = 0, .point_id = point.id});
+        }
+        if (!children.contains("event_streams"))
+            children["event_streams"] = Payload::array();
+        const bool pitch = lane.controller == controllers::kPitchBend;
+        children["event_streams"].push_back(edit::defaultRow(store.db(), "event_streams", {
+            {"id", allocated.next("event_streams")}, {"clip_id", take.clip}, {"channel", lane.channel},
+            {"stream_kind", pitch ? "pitchbend" : "cc"}, {"controller", pitch ? Payload(nullptr) : Payload(lane.controller)},
+            {"data", binary(writeStream<AutomationPoint>(FourCC::Controller, points, 1, StreamFlags::SortedByTime))},
+        }));
+    }
+
     auto row = edit::defaultRow(store.db(), "clips", {
         {"id", take.clip}, {"track_id", take.track}, {"kind", "midi"}, {"time_base", 0},
         {"name", take.name.empty() ? std::string("MIDI Recording") : take.name},
@@ -205,6 +236,44 @@ OpRequest recordingRows(const edit::RowEdits& rows, std::int64_t clip, const cha
     request.targetKind = "clip";
     request.targetId = clip;
     return request;
+}
+
+std::optional<std::vector<OpRequest>> prepareControllerOverdub(Store& store, const MidiLinearTake& take,
+    std::int64_t clip, std::int64_t offset, clip_edit::CopyIds& ids, const char* label) {
+    std::vector<OpRequest> requests;
+    if (take.controllers.empty())
+        return requests;
+    const auto existing = controllers::readLanes(store, clip);
+    if (!existing.ok)
+        return std::nullopt;
+    for (const auto& lane : take.controllers) {
+        const auto found = std::find_if(existing.lanes.begin(), existing.lanes.end(), [&](const auto& entry) {
+            return entry.channel == lane.channel && entry.controller == lane.controller;
+        });
+        auto points = std::vector<controllers::Point>(lane.points.begin(), lane.points.end());
+        for (auto& point : points)
+            point.timeTicks += offset;
+        OpRequest request;
+        if (found == existing.lanes.end()) {
+            request = controllers::writeRequest({ids.next("event_streams"), clip, lane.channel, lane.controller}, points);
+        } else {
+            if (!found->error.empty() ||
+                found->points.size() > StreamReader<AutomationPoint>::kMaxRecordsAtOnce - points.size())
+                return std::nullopt;
+            // The owner-side writer allocates point IDs without rewriting any existing records.
+            for (auto& point : points)
+                point.id = 0;
+            auto prepared = controllers::prepareWrite(store, clip, lane.channel, lane.controller, points);
+            if (!prepared.ok || prepared.address.id != found->id)
+                return std::nullopt;
+            request = std::move(prepared.request);
+        }
+        request.label = label;
+        request.targetKind = "clip";
+        request.targetId = clip;
+        requests.push_back(std::move(request));
+    }
+    return requests;
 }
 
 // An in-place overdub needs the recorded span to map to one unique source interval. On a
@@ -248,8 +317,16 @@ bool prepareOverdub(Store& store, const MidiLinearTake& take, Payload& image, cl
                 clip->loopStartTicks >= 0 && clip->loopStartTicks <= tickLimit &&
                 clip->contentOffsetTicks + *clip->lengthTicks <= clip->loopStartTicks + *clip->loopLengthTicks :
             !clip->endMarkerTicks || sourceEnd <= *clip->endMarkerTicks;
-        if (visible && (clip->notesRecordSize == 0 || clip->notesRecordSize == sizeof(NoteRecord))) {
+        const bool editable = visible &&
+            (take.notes.empty() || clip->notesRecordSize == 0 || clip->notesRecordSize == sizeof(NoteRecord));
+        auto controllerOps = editable ? prepareControllerOverdub(store, take, clipId, sourceStart, ids, label) : std::nullopt;
+        if (controllerOps) {
+            const auto appendControllers = [&] {
+                result.requests.insert(result.requests.end(), std::make_move_iterator(controllerOps->begin()),
+                                       std::make_move_iterator(controllerOps->end()));
+            };
             if (take.notes.empty()) {
+                appendControllers();
                 landing = {clipId, sourceStart, {}, false};
                 return true;
             }
@@ -306,12 +383,13 @@ bool prepareOverdub(Store& store, const MidiLinearTake& take, Payload& image, cl
                     }
                     result.requests.push_back(recordingRows(expressions, clipId, label));
                 }
+                appendControllers();
                 landing = {clipId, sourceStart, std::move(newIds), false};
                 return true;
             }
         }
     }
-    if (take.notes.empty()) {
+    if (take.notes.empty() && take.controllers.empty()) {
         landing = {clipId, 0, {}, false};
         return true;
     }

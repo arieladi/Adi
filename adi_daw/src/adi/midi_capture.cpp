@@ -226,6 +226,11 @@ bool isChannelPitchWheel(const engine::Event& event) noexcept {
     return event.type == engine::EventType::NoteExpression && event.noteId == 0 && event.paramId == 0 &&
            event.dim == static_cast<std::uint16_t>(ExpressionDim::Pitch);
 }
+double channelPitchWheelValue(double semitones) noexcept {
+    // Match the channel range of the physical parser and live pitch output.
+    constexpr auto range = engine::MpeZone{}.masterBendSemitones;
+    return .5 + .5 * std::clamp(semitones / range, -1., 1.);
+}
 
 std::optional<PreparedMidi> prepareMidi(Store& store,const engine::MidiMemorySnapshot& source,const MidiSpec& spec,std::string& error) {
     if(audio::onAudioThread){error="callback";return std::nullopt;}
@@ -275,10 +280,8 @@ std::optional<PreparedMidi> prepareMidi(Store& store,const engine::MidiMemorySna
                 continue;
             }
             if (isChannelPitchWheel(e)) {
-                // Match the channel range of the physical parser and live pitch output.
-                constexpr auto range = engine::MpeZone{}.masterBendSemitones;
-                const auto value = .5 + .5 * std::clamp(e.value / range, -1., 1.);
-                controllerPoint(channel(e, source.noteChannels), controllers::kPitchBend, remembered.serial, time, value);
+                controllerPoint(channel(e, source.noteChannels), controllers::kPitchBend, remembered.serial,
+                                time, channelPitchWheelValue(e.value));
                 continue;
             }
             if (e.type == engine::EventType::NoteExpression && e.dim <= 255 && e.paramId == 0) {
