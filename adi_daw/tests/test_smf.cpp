@@ -3,7 +3,7 @@
 #include "adi/controller_lanes.hpp"
 #include "adi/engine/clip_details.hpp"
 #include "adi/history.hpp"
-#include "adi/row_ids.hpp"
+#include "adi/clip_image.hpp"
 #include "adi/store.hpp"
 #include "adi/textproj.hpp"
 #include "temp_directory.hpp"
@@ -167,7 +167,7 @@ void clipInterchange() {
     check(store != nullptr, "create the import destination");
     if (!store)
         return;
-    adi::RowIds ids(store->db());
+    adi::clip_edit::CopyIds ids(store->db());
     const auto first = ids.next("clips"), second = ids.next("clips");
     constexpr auto beat = adi::textproj::kPPQ;
     const std::array requests{

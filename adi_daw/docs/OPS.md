@@ -907,6 +907,13 @@ rows (`stream_kind='cc'`, ACTL), with channel 0..15 and controller 0..127:
   removes its row. Existing streams restore exact bytes, including future
   record tails/header flags/trailer. The same ID/address collision checks apply.
 
+Controller address 129 identifies the channel pitch wheel for these three ops.
+Its ACTL row uses `stream_kind='pitchbend'`, the same channel, and a NULL SQL
+controller. The normalized extremes are 0 and 1, with .5 for neutral. Losing an
+envelope's playback owner returns the channel wheel to neutral. Notes retain their
+separate per-note pitch expression. The MIDI file and Capture MIDI producers still
+use 0..127 controller addresses.
+
 Streams are sorted stably by time. Updating an existing future record preserves
 its full tail, while insertion of a new record into an unknown wider layout
 refuses. Values retain full normalized precision; MIDI byte quantization belongs

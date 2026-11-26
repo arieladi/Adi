@@ -32,11 +32,14 @@ struct WaveformSource {
 
 struct ProjectDocument::MidiRecording {
     struct Track {
-        bool monitored = false;
-        std::int32_t instrumentArrival = 0;
+        struct Held {
+            std::size_t index = 0;
+            bool monitored = false;
+        };
+        std::optional<engine::Session::MidiRecordMonitor> monitor;
         std::int64_t quantizeGrid = 0;
         std::vector<notes::NoteValues> notes;
-        std::map<std::uint64_t, std::size_t> held;
+        std::map<std::uint64_t, Held> held;
         std::map<std::pair<std::uint64_t, ExpressionDim>, std::vector<ExpressionPoint>> expression;
     };
     std::shared_ptr<const engine::TempoMap> tempo;
@@ -77,22 +80,29 @@ struct ProjectDocument::MidiRecording {
         for (std::size_t i = 0; i < tracks.size(); ++i) {
             auto &track = tracks[i];
             auto &take = preview[i];
-            // Live input goes directly to the instrument. A replayed clip passes through the
-            // upstream nodes first, so place it on the clock at the instrument's input.
-            const auto heard = tickAt(packet.timelineSample - track.instrumentArrival);
-            const auto at = std::clamp(track.monitored ? heard : played, take.start, take.end - 1);
             const auto held = track.held.find(event.noteId);
+            // Latch the onset's clock for its release and expression, even if the note spans a clip edge.
+            bool monitored = held != track.held.end() && held->second.monitored;
+            if (event.type == engine::EventType::NoteOn && track.monitor) {
+                const auto& ranges = track.monitor->blockedRanges;
+                const auto range = std::upper_bound(ranges.begin(), ranges.end(), packet.timelineSample,
+                    [](std::int64_t at, const engine::MidiMonitorRange& span) { return at < span.end; });
+                monitored = overdub || range == ranges.end() || packet.timelineSample < range->start;
+            }
+            // Live input goes directly to the instrument. A replayed clip passes through the upstream nodes first.
+            const auto tick = monitored ? tickAt(packet.timelineSample - track.monitor->instrumentArrival) : played;
+            const auto at = std::clamp(tick, take.start, take.end - 1);
             if (event.type == engine::EventType::NoteOn) {
-                if (held != track.held.end() || (!track.monitored && packet.inputSample < firstStreamSample))
+                if (held != track.held.end() || (!monitored && packet.inputSample < firstStreamSample))
                     continue;
                 const auto index = track.notes.size();
                 const auto velocity = static_cast<int>(std::lround(std::clamp(event.value, 0.0, 1.0) * 127.0));
-                track.held.emplace(event.noteId, index);
+                track.held.emplace(event.noteId, Track::Held{index, monitored});
                 track.notes.push_back({at - take.start, 1, index + 1, event.dim, std::max(1, velocity), 0, event.channel});
                 take.notes.push_back({at, take.end, event.dim});
             } else if (held != track.held.end()) {
-                auto &note = track.notes[held->second];
-                auto &shown = take.notes[held->second];
+                auto &note = track.notes[held->second.index];
+                auto &shown = take.notes[held->second.index];
                 if (event.type == engine::EventType::NoteOff) {
                     shown.end = std::max(shown.start + 1, at);
                     note.duration = shown.end - shown.start;
@@ -128,9 +138,9 @@ struct ProjectDocument::MidiRecording {
                 ingest(packet);
         for (std::size_t i = 0; i < tracks.size(); ++i)
             for (const auto &item : tracks[i].held) {
-                auto &shown = preview[i].notes[item.second];
+                auto &shown = preview[i].notes[item.second.index];
                 shown.end = preview[i].end;
-                tracks[i].notes[item.second].duration = shown.end - shown.start;
+                tracks[i].notes[item.second.index].duration = shown.end - shown.start;
             }
     }
 
@@ -1361,7 +1371,6 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
         midi->sampleRate = engineRate_;
         midi->tracks.resize(armed.midi.size());
         midi->preview.resize(armed.midi.size());
-        const auto *graph = session_.graph().currentGraph();
         const SnapshotReader source(current);
         for (std::size_t i = 0; i < armed.midi.size(); ++i) {
             const auto track = armed.midi[i];
@@ -1369,15 +1378,7 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
             auto &timing = midi->tracks[i];
             if (const auto *node = source.findTrack(track); node && node->recording.recordEnabled)
                 timing.quantizeGrid = trackRecordingGridTicks(node->recording.recordGrid);
-            timing.monitored = recordState(states, track).monitor != Monitor::Off;
-            if (timing.monitored && graph) {
-                const auto chain = session_.chainFor(track);
-                const auto instrument = std::find_if(chain.begin(), chain.end(), [](const auto *node) {
-                    return node->eventFlow() == engine::EventFlow::Consume;
-                });
-                if (instrument != chain.end())
-                    timing.instrumentArrival = std::max(0, graph->arrivalOf(graph->find(**instrument)));
-            }
+            timing.monitor = session_.midiRecordMonitor(track);
         }
     }
     engine::AudioRecordingSpec spec;

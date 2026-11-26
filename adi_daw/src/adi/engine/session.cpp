@@ -24,6 +24,7 @@
 #include <limits>
 #include <cmath>
 #include <cstddef>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <functional>
@@ -984,8 +985,14 @@ void Session::prepareMidiInput(TimingView& timing, const rows::Model& model, con
             (armed || track.monitorMode == 1) && timing.sampleRate >= 8000 && timing.sampleRate <= 768000) {
             const auto rate = static_cast<std::uint32_t>(std::lround(timing.sampleRate));
             const auto found = midiHistories_.find(track.id);
-            auto history = found != midiHistories_.end() && found->second->sampleRate == rate
-                ? found->second : std::make_shared<LiveMidiInput::History>(track.id, rate);
+            std::shared_ptr<LiveMidiInput::History> history;
+            if (found != midiHistories_.end() && found->second->sampleRate == rate) {
+                history = found->second;
+            } else {
+                if (lastMidiHistoryId_ == std::numeric_limits<std::int64_t>::max())
+                    throw std::overflow_error("MIDI history identifiers exhausted");
+                history = std::make_shared<LiveMidiInput::History>(++lastMidiHistoryId_, track.id, rate);
+            }
             timing.midiHistories.push_back(history);
             histories.emplace(track.id, std::move(history));
         }
@@ -2599,6 +2606,19 @@ void Session::resetMidiInput() noexcept {
     midiInput_->reset();
 }
 
+std::optional<Session::MidiRecordMonitor> Session::midiRecordMonitor(std::int64_t track) const {
+    const auto* timing = dynamic_cast<const TimingView*>(graph_.currentTransportState());
+    const auto* graph = graph_.currentGraph();
+    if (!live_ || !timing || !graph || track <= 0) return std::nullopt;
+    for (const auto& route : timing->midiInputRoutes) {
+        if (route.monitorTrack != track || !route.processes) continue;
+        const auto instrument = graph->find(*route.node);
+        if (instrument != kInvalidNode)
+            return MidiRecordMonitor{std::max(0, graph->arrivalOf(instrument)), route.blockedRanges};
+    }
+    return std::nullopt;
+}
+
 bool Session::midiHistoryAvailable() const noexcept {
     const auto* timing = dynamic_cast<const TimingView*>(graph_.currentTransportState());
     if (!live_ || !timing) return false;
@@ -2638,10 +2658,15 @@ bool Session::readMidiHistories(std::vector<MidiMemorySnapshot>& output, std::st
 }
 
 void Session::consumeMidiHistories(std::span<const MidiMemorySnapshot> snapshots) noexcept {
+    const auto* timing = dynamic_cast<const TimingView*>(graph_.currentTransportState());
+    if (!timing) return;
     for (const auto& snapshot : snapshots) {
-        const auto found = midiHistories_.find(snapshot.trackId);
-        if (found != midiHistories_.end() && !snapshot.events.empty())
-            found->second->consumed = snapshot.events.back().serial + 1;
+        if (snapshot.events.empty()) continue;
+        const auto found = std::find_if(timing->midiHistories.begin(), timing->midiHistories.end(), [&](const auto& history) {
+            return history->inputId == snapshot.inputId;
+        });
+        if (found != timing->midiHistories.end())
+            (*found)->consumed = std::max((*found)->consumed, snapshot.events.back().serial + 1);
     }
 }
 

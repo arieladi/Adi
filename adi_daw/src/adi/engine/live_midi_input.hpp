@@ -61,9 +61,10 @@ public:
         mutable NodeId slot = kInvalidNode;
     };
     struct History {
-        History(std::int64_t track, std::uint32_t rate)
-            : memory(track, track, rate, NoteChannelBase::Zero, 16384), sampleRate(rate) {}
+        History(std::int64_t identity, std::int64_t track, std::uint32_t rate)
+            : memory(identity, track, rate, NoteChannelBase::Zero, 16384), inputId(identity), sampleRate(rate) {}
         MidiMemory memory;
+        const std::int64_t inputId;
         const std::uint32_t sampleRate;
         std::uint64_t inputEpoch = 0; // audio driver only
         std::uint64_t consumed = 0; // owner only, first uncaptured serial

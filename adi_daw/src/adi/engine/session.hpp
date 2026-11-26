@@ -354,6 +354,12 @@ public:
     void resetMidiInput() noexcept;
     /// Owner only. Start a new capture with the listed armed MIDI tracks.
     bool startMidiInputCapture(std::span<const std::int64_t> tracks, std::string& error, bool overdub = false);
+    struct MidiRecordMonitor {
+        std::int32_t instrumentArrival = 0;
+        std::vector<MidiMonitorRange> blockedRanges;
+    };
+    /// Owner only. Timing and Auto suppression from the published live input route.
+    [[nodiscard]] std::optional<MidiRecordMonitor> midiRecordMonitor(std::int64_t track) const;
     [[nodiscard]] MidiInputCapture& midiInputCapture() noexcept { return *midiInputCapture_; }
     // With the audio callback detached, finish without waiting for another slice.
     void finishMidiInputCapture() noexcept;
@@ -537,6 +543,7 @@ private:
     std::unique_ptr<MidiInputCapture> midiInputCapture_;
     std::map<std::size_t, std::shared_ptr<LiveMidiInput::Voices>> midiInputVoices_;
     std::map<std::int64_t, std::shared_ptr<LiveMidiInput::History>> midiHistories_;
+    std::int64_t lastMidiHistoryId_ = 0; // owner only
     // Device nodes persist across graph swaps and Undo. Their audition voices
     // retain any pending releases even if the device temporarily leaves the graph.
     std::map<const Node*, LiveMidiInput::PreviewVoice> midiPreviewVoices_;

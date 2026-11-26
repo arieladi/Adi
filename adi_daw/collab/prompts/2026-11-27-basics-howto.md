@@ -28,6 +28,12 @@ fix, not a new feature, so it is worked now.
    - `adi_ui_shell_tests` in a **Debug** build if you touched the window. MSVC's Debug containers
      allocate for every string and vector made, and a frame of the window must allocate nothing. An
      optimised build does not show this, and it failed CI on 26 November;
+   - **on Linux, the window suites with no display, as CI runs them:** `env -u DISPLAY ctest -R '^adi_ui_'`
+     (`.github/workflows/ui.yml` unsets DISPLAY on purpose; an earlier line of these queues said "a virtual
+     display", which was wrong). A test that opens a real menu or window passes under a virtual display
+     and crashes there: it happened on 27 November. Do not show a menu in a test: use the view's seam
+     (`ArrangementView::onContextMenu` for the lanes and names, `onMenu` on a header's Solo) or add one
+     like them, and count the request;
    - the session suite: `ctest -L acceptance`;
    - if your session can drive the real window, do the gesture there, with `ADI_HOME` set to a folder
      of its own.

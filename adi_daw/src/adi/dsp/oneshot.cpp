@@ -2,6 +2,8 @@
 #include "oneshot.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/blob.hpp"
+#include "adi/controller_data.hpp"
+#include "adi/engine/mpe_input.hpp"
 #include <algorithm>
 #include <bit>
 #include <cmath>
@@ -451,6 +453,8 @@ void OneShot::rememberMidiControl(MidiChannels &channels, const engine::Event &e
             channel.sustain = e.value >= .5;
         else if (e.paramId == 1)
             channel.modulation = std::clamp(e.value, 0., 1.);
+        else if (e.paramId == controllers::kPitchBend)
+            channel.bend = (std::clamp(e.value, 0., 1.) * 2. - 1.) * engine::MpeZone{}.masterBendSemitones;
     } else if (e.type == engine::EventType::NoteExpression && e.noteId == 0 &&
                e.dim == static_cast<std::uint16_t>(ExpressionDim::Pitch)) {
         channel.bend = std::clamp(e.value, -96., 96.);

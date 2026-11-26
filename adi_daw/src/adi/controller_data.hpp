@@ -6,6 +6,21 @@
 #include <string>
 #include <vector>
 namespace adi::controllers {
+// Runtime and op address for the per-channel 'pitchbend' ACTL stream.
+// Standard CC numbers retain their ordinary 0..127 addresses.
+inline constexpr std::uint16_t kPitchBend = 129;
+constexpr bool validCc(std::int64_t controller) noexcept {
+    return controller >= 0 && controller < 128;
+}
+constexpr bool validController(std::int64_t controller) noexcept {
+    return validCc(controller) || controller == kPitchBend;
+}
+// Normalized lane values put the center at .5 on both sides of the
+// asymmetric 14-bit MIDI wire range.
+constexpr double pitchBendWordExact(double value) noexcept {
+    return 8192.0 + (value - .5) * (value < .5 ? 16384.0 : 16382.0);
+}
+
 struct Point {
     std::uint64_t id = 0;
     std::int64_t timeTicks = 0;

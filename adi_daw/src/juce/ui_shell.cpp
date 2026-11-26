@@ -8,6 +8,7 @@
 #include "adi/ui/audio_drop.hpp"
 #include "adi/row_ids.hpp"
 #include "adi/interchange/midi_clip_file.hpp"
+#include "adi/clip_image.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/ui/clip_edits.hpp"
 #include "adi/ui/cue_edits.hpp"
@@ -19,12 +20,14 @@
 #include "adi/ui/tempo_edits.hpp"
 #include "adi/ui/track_edits.hpp"
 #include "adi/store.hpp"
+#include "adi/controller_lanes.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
 #include <array>
 #include <cctype>
 #include <cmath>
 #include <initializer_list>
+#include <iterator>
 #include <vector>
 namespace adi::ui {
 namespace {
@@ -1661,6 +1664,9 @@ bool AdiRootComponent::playFrom(std::int64_t tick) {
     dirty_.mark(DirtySet::Transport | DirtySet::Status);
     return true;
 }
+bool AdiRootComponent::playOrStopFrom(std::int64_t tick) {
+    return mailbox_.desiredPlaying() ? command(AppCommands::Stop) : playFrom(tick);
+}
 double AdiRootComponent::bpm() const noexcept {
     const auto *tempo = reader_->tempo();
     const double rate = sampleRate_ > 0 ? sampleRate_ : reader_->sampleRate();
@@ -1979,7 +1985,7 @@ void AdiRootComponent::resizeClipView(int height) {
     state_.clipViewHeight = std::clamp(height, kClipViewFloor, 4000);
     resized();
 }
-bool AdiRootComponent::noteEditorShown() const { return state_.clipView && clipView.midi() && clipView.details() != nullptr; }
+bool AdiRootComponent::noteEditorShown() const { return state_.clipView && clipView.midi() && !clipView.envelopesShown() && clipView.details() != nullptr; }
 bool AdiRootComponent::noteEditorHasContext() const { return noteEditorShown() && clipView.notes.hasContext(); }
 void AdiRootComponent::toggleClipViewFull() {
     if (!state_.clipView)
@@ -2214,6 +2220,29 @@ bool AdiRootComponent::submitEdits(std::vector<OpRequest> ops) {
         return true;
     ops.front().selBefore = session_.advisory();
     return edited(submitter_.submit(std::move(ops)));
+}
+bool AdiRootComponent::writeControllerPoint(const controllers::Address &address, const controllers::Point &point,
+                                            const std::optional<std::int64_t> &expectedHead) {
+    const std::array points{point};
+    auto prepared = controllers::prepareWrite(editStore(), address.clipId, address.channel, address.controller,
+                                              points);
+    if (!prepared.ok)
+        return fail(prepared.error);
+    if ((address.id != 0 && prepared.address.id != address.id) || prepared.expectedHead != expectedHead)
+        return fail("The MIDI controller envelope changed during the edit.");
+    std::vector requests{std::move(prepared.request)};
+    requests.front().selBefore = session_.advisory();
+    return edited(submitter_.commitPrepared(requests, [&](Store &store, Actor) {
+        prepared.request = std::move(requests.front());
+        return controllers::commitPrepared(store, prepared);
+    }));
+}
+bool AdiRootComponent::deleteControllerPoints(const controllers::Lane &lane, std::span<const std::uint64_t> points) {
+    if (!lane.channel || !lane.controller || points.empty())
+        return false;
+    const controllers::Address address{lane.id, lane.clipId, static_cast<int>(*lane.channel),
+                                       static_cast<int>(*lane.controller)};
+    return submitEdits({controllers::deleteRequest(address, points)});
 }
 double AdiRootComponent::editRate() const noexcept {
     return sampleRate_ > 0 ? sampleRate_ : (reader_ ? reader_->sampleRate() : 48000.0);
@@ -3040,12 +3069,20 @@ bool AdiRootComponent::dropMidiFiles(const std::vector<std::pair<std::string, st
     const char *label = "Import MIDI File";
     constexpr std::int64_t limit = std::int64_t{1} << 50;
     try {
-        RowIds ids(submitter_.store().db());
+        auto &store = submitter_.store();
+        CommitOptions options;
+        options.expectHead.emplace(OpJournal(store).headSeq());
+        // Imported clips and any split survivors share the same ID allocator.
+        clip_edit::CopyIds ids(store.db());
+        RowIds trackIds(store.db());
         std::vector<OpRequest> batch;
+        edit_plan::detail::PlacementBatch overlaps;
+        const auto existingTrack = track;
+        std::int64_t clearUntil = 0;
         auto tracks = current->tracks;
         auto insertAfter = track;
         auto newTrack = [&]() {
-            auto made = ::adi::ui::insertTrack(tracks, insertAfter, true, &commands_.recordingDefaults(), ids.next("tracks"));
+            auto made = ::adi::ui::insertTrack(tracks, insertAfter, true, &commands_.recordingDefaults(), trackIds.next("tracks"));
             for (auto &request : made.ops) {
                 if (request.opType == "track.create") {
                     auto added = std::make_shared<engine::TrackNode>();
@@ -3093,6 +3130,11 @@ bool AdiRootComponent::dropMidiFiles(const std::vector<std::pair<std::string, st
                 const auto clip = ids.next("clips");
                 const auto title = midi.tracks.size() == 1 ? name : name + " " + std::to_string(channelTrack + 1);
                 batch.push_back(interchange::createImportedMidiClip(ids, source, on, clip, first, title));
+                if (existingTrack != 0 && on == existingTrack) {
+                    const auto end = first + source.length;
+                    overlaps.clear.push_back({{on, std::nullopt}, {first, end}});
+                    clearUntil = std::max(clearUntil, end);
+                }
                 longest = std::max(longest, source.length);
                 if (firstClip == 0) {
                     firstTrack = on;
@@ -3102,7 +3144,25 @@ bool AdiRootComponent::dropMidiFiles(const std::vector<std::pair<std::string, st
             }
             at = first + longest;
         }
-        if (!submitEdits(std::move(batch)))
+        if (!overlaps.clear.empty()) {
+            // Replace only the landed spans on the existing main lane. Track
+            // automation stays where it was, as for a recording.
+            const std::array targets{existingTrack};
+            auto scope = edit_plan::materialScope(targets, edit_plan::PlacementClock::Ticks,
+                                                   {position, clearUntil});
+            scope.domains = edit_plan::Domains::Clips;
+            edit_plan::Options placement{editRate(), {}};
+            placement.policy.automationFollowsClips = false;
+            auto splice = edit_plan::detail::prepareCaptured(store, scope, std::move(overlaps), placement, ids, label);
+            if (!splice.ok)
+                return fail(splice.error);
+            batch.insert(batch.begin(), std::make_move_iterator(splice.requests.begin()),
+                         std::make_move_iterator(splice.requests.end()));
+        }
+        batch.front().selBefore = session_.advisory();
+        if (!edited(submitter_.commitPrepared(batch, [&](Store &destination, Actor) {
+                return OpJournal(destination).commit(batch, options);
+            })))
             return false;
         auto &selection = arrangement.geometry.selection;
         selection.track = firstTrack;
@@ -4134,7 +4194,8 @@ bool AdiRootComponent::focusView(int id) {
         if (clipView.details() == nullptr)
             focusIfShowing(clipView);
         else if (clipView.midi())
-            focusIfShowing(clipView.notes);
+            focusIfShowing(clipView.envelopesShown() ? static_cast<juce::Component &>(clipView.envelopes)
+                                                     : static_cast<juce::Component &>(clipView.notes));
         else
             focusIfShowing(clipView.sample);
         return true;

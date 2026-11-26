@@ -5,6 +5,7 @@
 #include "adi/engine/clip_details.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/engine/midi_input_capture.hpp"
+#include "adi/engine/mpe_output.hpp"
 #include "adi/store.hpp"
 #include "adi/ops.hpp"
 #include "adi/history.hpp"
@@ -1558,6 +1559,52 @@ void sessionControllers() {
     check(zero && off, "Session refresh retains pedal ownership after cascade-deleting the stream");
 }
 
+void sessionPitchBend() {
+    Fixture f(48000, 64);
+    constexpr auto ppq = 5765760;
+    f.clip(1, 0, ppq / 512, ppq / 256);
+    const std::array bend{controllers::Point{0, 0, .75}};
+    const auto prepared = controllers::prepareWrite(*f.store, 1, 15, kCtrlPitchBend, bend);
+    if (!prepared.ok || !controllers::commitPrepared(*f.store, prepared).ok)
+        throw std::runtime_error("create channel pitch bend envelope");
+    f.load();
+    f.render();
+    f.render();
+
+    const auto heard = std::span(f.instrument->heard).first(f.instrument->count);
+    const auto wheel = [](const Heard &item) {
+        return item.e.type == EventType::Controller && item.e.paramId == kCtrlPitchBend && item.e.channel == 15;
+    };
+    const auto first = std::find_if(heard.begin(), heard.end(), wheel);
+    check(first != heard.end() && first->clock == 0 && first->e.value == .75,
+          "a channel 16 pitch wheel is chased from stored ACTL at clip start");
+    if (first == heard.end())
+        return;
+    const auto neutral = std::find_if(first + 1, heard.end(), wheel);
+    check(neutral != heard.end() && neutral->clock == 94 && neutral->e.value == .5,
+          "losing the pitch envelope owner at clip end resets the channel wheel to center");
+    if (neutral == heard.end())
+        return;
+
+    auto caps = ExpressionCaps{};
+    caps.bendParam[15] = 4321;
+    MpeRouter router;
+    router.configure(ExpressionRoute::NoteExpression, caps);
+    const std::array input{first->e, neutral->e};
+    std::array<MpeOut, 2> storage{};
+    MpeOutList output(storage.data(), 2);
+    router.route(input.data(), 2, 0, output);
+    check(output.size() == 2 && output.at(0).kind == MpeOut::Kind::Control &&
+              output.at(0).channel == 15 && output.at(0).noteId == 0 &&
+              output.at(0).ctrl == kCtrlPitchBend && output.at(0).word == 12288 &&
+              output.at(0).paramId == 4321 && output.at(1).word == 8192,
+          "host translation preserves the 14-bit channel wheel even on a note-expression route");
+    MpeOut native{};
+    check(noteExpressionOut(neutral->e, caps, native) && native.kind == MpeOut::Kind::Control &&
+              native.channel == 15 && native.noteId == 0 && native.ctrl == kCtrlPitchBend && native.word == 8192,
+          "direct host translation also delivers a channel wheel with no note identity");
+}
+
 const ClipNode& projected(const Snapshot& frame, std::int64_t track, std::int64_t clip) {
     const auto* node = frame.findTrack(track);
     if (node) {
@@ -1736,6 +1783,8 @@ int main(int argc,char** argv){
     try { if (only == "all" || only == "note-preview") noteEditorAudition(); }
     catch (const std::exception& e) { check(false, e.what()); }
     try { if (only == "all" || only == "driver-capture") driverMidiCapture(); }
+    catch (const std::exception& e) { check(false, e.what()); }
+    try { if (only == "all" || only == "pitch-bend") sessionPitchBend(); }
     catch (const std::exception& e) { check(false, e.what()); }
     try{if(only=="all"||only=="split")twoPointSplits();if(only=="all"||only=="controllers")sessionControllers();if(only=="all"||only=="active")activeFlag();if(only=="all"||only=="markers")sourceMarkers();if(only=="all"||only=="placement")placement();if(only=="all"||only=="cleanup")cleanup();if(only=="all"||only=="musical")musical();if(only=="all"||only=="pending")pendingRelease();if(only=="all"||only=="concurrent")concurrentPublication();if(only=="all"||only=="capacity")capacity();if(only=="all"||only=="overflow")overflowRelease();if(only=="all"||only=="ns"){nanosecondEnd();trimSourcePrefix();}if(only=="all"||only=="maximum")maximumLocate();if(only=="all"||only=="entry")loopEntry();if(only=="all"||only=="held")heldNote();}catch(const std::exception& e){check(false,e.what());}
     try { if (only == "all" || only == "knot-clock") expressionKnotFollowsNoteClock(); }

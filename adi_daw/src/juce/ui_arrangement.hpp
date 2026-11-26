@@ -486,6 +486,7 @@ class ArrangementView final : public juce::Component {
     // farther in, the faster. Points are the lanes' (the canvas's and the names'). True when the
     // view moved; a held mouse repeats the drag (beginDragAutoRepeat), so it keeps going.
     bool edgeScroll(int x, int y, bool sideways, bool upAndDown = true);
+    static int edgeScrollStep(int position, int length) noexcept;
     static constexpr int kScrollEdge = 16, kAutoRepeatMs = 40;
     // Selects at a point: the clip there, or the insert marker on the grid (§6.10).
     void select(int x, int y, bool snapToGrid = true);
