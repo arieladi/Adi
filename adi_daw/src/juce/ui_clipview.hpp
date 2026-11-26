@@ -394,6 +394,7 @@ class SampleEditor final : public juce::Component {
     ArrangementPlayhead playhead;
 
   private:
+    friend class ClipViewPanel;
     enum class Drag { None, Ruler, Start, End, LoopStart, LoopEnd, Loop, WarpMarker };
     ClipViewPanel &panel;
     bool fitPending_ = false;
@@ -736,6 +737,9 @@ class ClipViewPanel final : public juce::Component {
     bool commit(TrackEdit);
     bool loopAvailable() const noexcept;
     bool fieldEnabled(Field) const noexcept;
+    bool unwarpedTimeField(Field) const noexcept;
+    std::int64_t fieldMilliseconds(Field) const noexcept;
+    std::int64_t draggedMilliseconds() const noexcept;
     juce::Rectangle<int> sampleMetadataArea() const noexcept;
     bool setGain(double db);
     int pitchPart(Field, bool preview = false) const noexcept;

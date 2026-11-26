@@ -12,6 +12,7 @@
 #include <charconv>
 #include <cmath>
 #include <limits>
+#include <string_view>
 #include <utility>
 namespace adi::ui {
 namespace {
@@ -38,6 +39,34 @@ juce::String positionText(std::int64_t tick, const std::vector<textproj::Meter> 
 juce::String lengthText(std::int64_t ticks, const textproj::Meter &meter) {
     const auto l = barsBeats(ticks, meter);
     return juce::String(l.bars) + ". " + juce::String(l.beats) + ". " + juce::String(l.sixteenths);
+}
+juce::String sourceClockText(std::int64_t milliseconds) {
+    const auto total = std::max<std::int64_t>(0, milliseconds);
+    return juce::String(static_cast<juce::int64>(total / 60000)) + ":" +
+           juce::String(static_cast<int>((total / 1000) % 60)).paddedLeft('0', 2) + "." +
+           juce::String(static_cast<int>(total % 1000)).paddedLeft('0', 3);
+}
+std::optional<std::int64_t> parseSourceClock(const juce::String &text) {
+    const std::string_view clock(text.toRawUTF8());
+    const auto colon = clock.find(':'), point = clock.find('.');
+    if (colon == clock.npos || point == clock.npos || colon == 0 || point <= colon + 1 || point + 1 >= clock.size())
+        return std::nullopt;
+    const auto fraction = clock.substr(point + 1);
+    if (fraction.size() > 3)
+        return std::nullopt;
+    const auto read = [](std::string_view part, std::int64_t &value) {
+        const auto *end = part.data() + part.size();
+        const auto result = std::from_chars(part.data(), end, value);
+        return result.ec == std::errc{} && result.ptr == end && value >= 0 && part.front() != '-';
+    };
+    std::int64_t minutes = 0, seconds = 0, milliseconds = 0;
+    constexpr auto maxSourceMs = std::numeric_limits<std::int64_t>::max() / 1000000;
+    if (!read(clock.substr(0, colon), minutes) || minutes >= maxSourceMs / 60000 ||
+        !read(clock.substr(colon + 1, point - colon - 1), seconds) || seconds >= 60 || !read(fraction, milliseconds))
+        return std::nullopt;
+    for (auto digits = fraction.size(); digits < 3; ++digits)
+        milliseconds *= 10;
+    return minutes * 60000 + seconds * 1000 + milliseconds;
 }
 // The time ruler both editors share: the song's bars along the foot of a dark band, as the
 // arrangement's beat-time ruler draws them, and beats when they have room.
@@ -4051,8 +4080,10 @@ ClipViewPanel::Readings ClipViewPanel::readings() const {
     if (!details_)
         return out;
     const auto &d = *details_;
-    out.start = positionText(d.startMarkerTicks, clipMeters_);
-    out.end = positionText(endMarkerOf(d), clipMeters_);
+    out.start = unwarpedTimeField(Field::Start) ? sourceClockText(fieldMilliseconds(Field::Start))
+                                               : positionText(d.startMarkerTicks, clipMeters_);
+    out.end = unwarpedTimeField(Field::End) ? sourceClockText(fieldMilliseconds(Field::End))
+                                           : positionText(endMarkerOf(d), clipMeters_);
     out.loop = d.loopEnabled;
     bool sameScale = true;
     for (const auto &layer : others_) {
@@ -4120,7 +4151,8 @@ ClipViewPanel::Readings ClipViewPanel::readings() const {
             out.length = lengthText(draggedTicks(), meter_);
         } else if (pressed_ != Field::Gain && pressed_ != Field::Pitch && pressed_ != Field::Detune) {
             auto &shown = pressed_ == Field::Start ? out.start : pressed_ == Field::End ? out.end : out.position;
-            shown = positionText(draggedTicks(), clipMeters_);
+            shown = unwarpedTimeField(pressed_) ? sourceClockText(draggedMilliseconds())
+                                                : positionText(draggedTicks(), clipMeters_);
         }
     }
     const auto &time = midi() ? notes.time : sample.time;
@@ -4753,6 +4785,14 @@ bool ClipViewPanel::fieldEnabled(Field field) const noexcept {
         return details_ && details_->pitchEnabled;
     return (field != Field::Position && field != Field::Length) || loopAvailable();
 }
+bool ClipViewPanel::unwarpedTimeField(Field field) const noexcept {
+    return (field == Field::Start || field == Field::End) && node_ && node_->audio && !node_->audio->warpEnabled;
+}
+std::int64_t ClipViewPanel::fieldMilliseconds(Field field) const noexcept {
+    const auto pin = field == Field::Start ? node_->contentOffsetNs : node_->sourceEndNs;
+    const auto seconds = pin ? static_cast<double>(*pin) * 1e-9 : sample.sourceTicksToSeconds(fieldTicks(field));
+    return std::llround(seconds * 1000.);
+}
 ClipViewPanel::Field ClipViewPanel::fieldAt(juce::Point<int> at) const noexcept {
     for (const auto field : {Field::Start, Field::End, Field::Position, Field::Length, Field::Signature, Field::Scale,
                              Field::Transpose, Field::VelocityAmount, Field::VelocityPercent, Field::VelocityLow,
@@ -4936,6 +4976,16 @@ bool ClipViewPanel::typeField(Field field, const juce::String &typed) {
             return false;
         }
         return setField(field, ticksOf(*length, meter_));
+    }
+    if (unwarpedTimeField(field)) {
+        const auto milliseconds = parseSourceClock(typed.trim());
+        if (!milliseconds) {
+            root.say("Type a source time in minutes, seconds and milliseconds: 0:01.250.");
+            return false;
+        }
+        if (*milliseconds == fieldMilliseconds(field))
+            return true;
+        return setField(field, sample.sourceSecondsToTicks(static_cast<double>(*milliseconds) * .001));
     }
     // A position: bar, beat and sixteenth from 1, in the clip's own time.
     const auto position = parsePosition(text);
@@ -5358,9 +5408,15 @@ void ClipViewPanel::mouseDrag(const juce::MouseEvent &e) {
     }
 }
 std::int64_t ClipViewPanel::draggedTicks() const noexcept {
+    if (unwarpedTimeField(pressed_))
+        return sample.sourceSecondsToTicks(static_cast<double>(draggedMilliseconds()) * .001);
     const std::int64_t beat = meter_.denominator == 0 ? 0 : textproj::kWhole / meter_.denominator;
     const std::int64_t unit = pressPart_ == 0 ? meter_.barTicks() : pressPart_ == 1 ? beat : textproj::kPPQ / 4;
     return fieldTicks(pressed_) + dragSteps_ * unit;
+}
+std::int64_t ClipViewPanel::draggedMilliseconds() const noexcept {
+    constexpr std::int64_t units[] = {60000, 1000, 1};
+    return std::max<std::int64_t>(0, fieldMilliseconds(pressed_) + dragSteps_ * units[pressPart_]);
 }
 std::pair<std::int64_t, std::int64_t> ClipViewPanel::draggedSignature() const noexcept {
     std::int64_t numerator = meter_.numerator, denominator = meter_.denominator;

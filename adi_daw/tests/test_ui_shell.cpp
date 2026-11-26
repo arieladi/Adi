@@ -12463,6 +12463,7 @@ void sampleEditorMouse(AppCommands &commands, const std::filesystem::path &dir) 
     check(panel.readings().start == "0:01.000" && panel.readings().end == "0:03.000",
           "unwarped audio reads Start and End in minutes, seconds and milliseconds");
     const bool typedClock = panel.typeField(Field::Start, "0:01.125");
+    root.frame();
     check(typedClock && panel.readings().start == "0:01.125", "a typed source time changes the Start marker");
     if (typedClock) {
         check(!panel.typeField(Field::End, "0:60.200"), "a source clock with 60 seconds is refused");
