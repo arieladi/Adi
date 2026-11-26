@@ -11,7 +11,8 @@ struct WarpOptions {
     std::stop_token stop;
 };
 /// Owner/worker connection, off the callback. Toggle Warp while preserving the
-/// audible source interval of a placed clip. Loops and aliases refuse explicitly.
+/// audible source interval of a placed clip. An explicit source BPM also corrects
+/// an already-warped clip, keeping its source markers and bounds.
 /// Commit with commitPrepared on the same document generation. Both directions
 /// capture actual source clocks and duration; replay never analyzes a file.
 [[nodiscard]] PreparedEdit prepareSetWarp(Store&,std::int64_t clipId,const WarpOptions&,double referenceRate);

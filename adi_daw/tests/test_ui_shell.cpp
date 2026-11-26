@@ -8,7 +8,6 @@
 #include "../src/juce/ui_shell.hpp"
 #include "../src/juce/window_release.hpp"
 #include "adi/audio/wav_file.hpp"
-#include "adi/warp_commands.hpp"
 #include "adi/automation_lanes.hpp"
 #include "adi/cue_settings.hpp"
 #include "adi/media/media_ops.hpp"
@@ -10196,9 +10195,7 @@ void clipWarpSwitch(AppCommands &commands, const std::filesystem::path &dir) {
         return;
     const auto wav = dir / "clip-warp.wav";
     {
-        std::vector<float> frames(96000);
-        for (std::size_t i = 0; i < frames.size(); i += 24000)
-            frames[i] = .8f;
+        std::vector<float> frames(96000, .3f);
         audio::WavWriter writer(wav, 48000, 1, audio::WavFormat::Pcm16);
         writer.write(frames.data(), static_cast<std::uint32_t>(frames.size()));
     }
@@ -10220,14 +10217,6 @@ void clipWarpSwitch(AppCommands &commands, const std::filesystem::path &dir) {
     commands.activate(root);
     const auto *track = root.reader().findTrack(4);
     const auto id = track && !track->clips.empty() ? track->clips.front()->id : 0;
-    clip_edit::WarpOptions options;
-    options.analysis.sourceBpm = 120;
-    if (!root.commitEdit(clip_edit::prepareSetWarp(root.editStore(), id, options, root.editRate()))) {
-        check(false, "seed a clip with a known source tempo");
-        commands.detach(root);
-        return;
-    }
-    root.frame();
     root.arrangement.selectClip(4, id);
     if (!root.state().clipView)
         root.command(AppCommands::ToggleClipView);
@@ -10238,15 +10227,32 @@ void clipWarpSwitch(AppCommands &commands, const std::filesystem::path &dir) {
         return node && node->audio && node->audio->warpEnabled;
     };
     const auto button = panel.warpBox();
-    check(!button.isEmpty() && warped(), "Warp is available and lit on the selected warped audio clip");
-    if (!button.isEmpty()) {
-        const auto click = [&] {
-            panel.mouseDown(pressAt(panel, button.getCentre().toFloat(), juce::ModifierKeys::leftButtonModifier));
+    const auto tempo = panel.fieldBox(ClipViewPanel::Field::SourceTempo);
+    const auto half = panel.sourceTempoFactorBox(false);
+    const auto twice = panel.sourceTempoFactorBox(true);
+    check(!button.isEmpty() && !tempo.isEmpty() && !half.isEmpty() && !twice.isEmpty() && !warped(),
+          "the selected audio clip shows Warp, source BPM and both correction buttons");
+    if (!button.isEmpty() && !tempo.isEmpty() && !half.isEmpty() && !twice.isEmpty()) {
+        const auto click = [&](juce::Rectangle<int> box) {
+            panel.mouseDown(pressAt(panel, box.getCentre().toFloat(), juce::ModifierKeys::leftButtonModifier));
             root.frame();
         };
-        click();
+        click(button);
+        check(!warped(), "the Warp switch cannot infer a beat from a steady sample");
+        click(tempo);
+        check(panel.editing() == ClipViewPanel::Field::SourceTempo, "clicking BPM opens its numeric editor");
+        panel.fieldEditor().setText("120");
+        panel.fieldEditor().onReturnKey();
+        root.frame();
+        check(warped() && std::abs(panel.sample.sourceBpm() - 120.) < .01, "typing BPM enables Warp with the specified source tempo");
+        click(half);
+        check(std::abs(panel.sample.sourceBpm() - 60.) < .01 && root.undoTitle(false) == "Undo Change Source Tempo",
+              "the half button recomputes the warp clock in one edit");
+        click(twice);
+        check(std::abs(panel.sample.sourceBpm() - 120.) < .01, "the double button restores the original warp tempo");
+        click(button);
         check(!warped() && root.undoTitle(false) == "Undo Disable Warp", "the switch disables Warp in one edit");
-        click();
+        click(button);
         check(warped() && root.undoTitle(false) == "Undo Enable Warp", "the switch re-enables the saved Warp map");
         check(root.command(AppCommands::Undo), "Undo the Warp switch");
         root.frame();

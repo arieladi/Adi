@@ -2859,6 +2859,12 @@ void SampleEditor::updateSource() {
     resized();
     repaint();
 }
+double SampleEditor::sourceBpm() const noexcept {
+    const auto *node = panel.node();
+    if (!node || !node->audio || !node->audio->mediaInfo)
+        return 0;
+    return audio::sourceTempoBpm(markers_, static_cast<double>(node->audio->mediaInfo->sampleRate.value_or(0)));
+}
 void SampleEditor::resized() {
     if (fitPending_ && getWidth() > 0 && sourceEnd_ > 0) {
         fitPending_ = false;
@@ -3756,6 +3762,13 @@ constexpr int kFieldLabel = 15, kFieldBox = 16;
 constexpr int kDenominators[] = {1, 2, 4, 8, 16};
 }
 juce::Rectangle<int> ClipViewPanel::fieldBox(Field field) const noexcept {
+    if (field == Field::SourceTempo) {
+        const auto header = headerArea();
+        const auto warp = warpBox();
+        if (warp.isEmpty() || header.getWidth() < 285)
+            return {};
+        return {warp.getRight() + 4, warp.getY(), 75, warp.getHeight()};
+    }
     const auto main = mainArea().reduced(6, 5);
     const int half = (main.getWidth() - 6) / 2;
     const int row = field == Field::Start || field == Field::End          ? 0
@@ -4274,6 +4287,13 @@ juce::Rectangle<int> ClipViewPanel::warpBox() const noexcept {
         return {};
     return {header.getX() + 72, header.getY() + 2, 52, 13};
 }
+juce::Rectangle<int> ClipViewPanel::sourceTempoFactorBox(bool doubleTempo) const noexcept {
+    constexpr int width = 23;
+    const auto bpm = fieldBox(Field::SourceTempo);
+    if (bpm.isEmpty() || headerArea().getWidth() < 333)
+        return {};
+    return {bpm.getRight() + 3 + (doubleTempo ? width + 2 : 0), bpm.getY(), width, bpm.getHeight()};
+}
 std::int64_t ClipViewPanel::fieldTicks(Field field) const noexcept {
     if (!details_)
         return 0;
@@ -4351,6 +4371,17 @@ bool ClipViewPanel::typeField(Field field, const juce::String &typed) {
         return false;
     if (field == Field::Name)
         return rename(typed);
+    if (field == Field::SourceTempo) {
+        const auto number = typed.trim().toStdString();
+        const auto end = number.data() + number.size();
+        double bpm = 0;
+        const auto parsed = std::from_chars(number.data(), end, bpm);
+        if (parsed.ec != std::errc{} || parsed.ptr != end || !(bpm > 0 && bpm < 1000)) {
+            root.say("Type a source BPM greater than 0 and below 1000.");
+            return false;
+        }
+        return setWarp(true, bpm);
+    }
     if (field == Field::Gain) {
         auto raw = typed.trim();
         if (raw.endsWithIgnoreCase("dB"))
@@ -4521,10 +4552,14 @@ bool ClipViewPanel::toggleLoop() {
     return commitForAll([on](const engine::ClipDetails &clip) { return clip.loopEnabled == on ? TrackEdit{} : toggleClipLoop(clip); });
 }
 bool ClipViewPanel::toggleWarp() {
+    return node_ && node_->audio && setWarp(!node_->audio->warpEnabled);
+}
+bool ClipViewPanel::setWarp(bool enabled, std::optional<double> sourceBpm) {
     if (!node_ || !node_->audio)
         return false;
     clip_edit::WarpOptions options;
-    options.enabled = !node_->audio->warpEnabled;
+    options.enabled = enabled;
+    options.analysis.sourceBpm = sourceBpm;
     options.mode = audio::parseWarpMode(node_->audio->warpMode).value_or(audio::WarpMode::Beats);
     if (const auto snapshot = root.current(); snapshot && snapshot->tempo)
         options.analysis.tempoHint = snapshot->tempo->bpmAt(node_->posTicks);
@@ -4540,10 +4575,12 @@ void ClipViewPanel::openEditor(Field field) {
     }
     editing_ = field;
     const auto r = readings();
+    const auto bpm = field == Field::SourceTempo ? sample.sourceBpm() : 0.;
     const auto value = field == Field::Start       ? r.start
                        : field == Field::End       ? r.end
                        : field == Field::Position  ? r.position
                        : field == Field::Length    ? r.length
+                       : field == Field::SourceTempo ? (bpm > 0 ? juce::String(bpm, 2) : juce::String())
                        : field == Field::Gain      ? juce::String(details_->gainDb, 2)
                        : field == Field::Transpose ? juce::String("0")
                        : field == Field::Stretch   ? juce::String("100")
@@ -4609,6 +4646,18 @@ void ClipViewPanel::mouseDown(const juce::MouseEvent &e) {
     if (warpBox().contains(at)) {
         toggleWarp();
         return;
+    }
+    if (fieldBox(Field::SourceTempo).contains(at)) {
+        openEditor(Field::SourceTempo);
+        return;
+    }
+    for (const bool doubleTempo : {false, true}) {
+        if (sourceTempoFactorBox(doubleTempo).contains(at)) {
+            const auto bpm = sample.sourceBpm() * (doubleTempo ? 2. : .5);
+            if (bpm > 0 && bpm < 1000)
+                setWarp(true, bpm);
+            return;
+        }
     }
     if (loopBox().contains(at)) {
         toggleLoop();
@@ -5170,12 +5219,30 @@ void ClipViewPanel::paint(juce::Graphics &g) {
     if (const auto warp = warpBox(); !warp.isEmpty())
         controls::button(g, warp.toFloat(), node_->audio->warpEnabled ? controls::ButtonState::On : controls::ButtonState::Rest,
                          "Warp", look::fontSmall);
+    if (const auto box = fieldBox(Field::SourceTempo); !box.isEmpty()) {
+        const auto bpm = sample.sourceBpm();
+        controls::valueBox(g, box.toFloat(), bpm > 0 ? juce::String(bpm, 2) + " BPM" : "Source BPM",
+                           std::nullopt, look::fontSmall);
+        labels_.push_back(box);
+        for (const bool doubleTempo : {false, true}) {
+            const auto factorBox = sourceTempoFactorBox(doubleTempo);
+            if (factorBox.isEmpty())
+                continue;
+            const auto canApply = bpm > 0 && bpm * (doubleTempo ? 2. : .5) < 1000;
+            controls::button(g, factorBox.toFloat(), canApply ? controls::ButtonState::Rest : controls::ButtonState::Disabled,
+                             doubleTempo ? "×2" : "/2", look::fontSmall);
+            labels_.push_back(factorBox);
+        }
+    }
     text(midi() ? "Notes" : audio() ? "Sample" : "", header.withTrimmedLeft(midi() ? coloursBox().getRight() - header.getX() + 10 : 8).withWidth(60),
          juce::Justification::centredLeft, look::text, look::fontBody, true);
     text(r.grid, header.withTrimmedRight(8).removeFromRight(70), juce::Justification::centredRight, look::text, look::fontLabel);
-    if (!problem_.empty())
-        text(juce::String(problem_), header.withTrimmedLeft(warpBox().isEmpty() ? 76 : 128).withTrimmedRight(84), juce::Justification::centredLeft,
+    if (!problem_.empty()) {
+        const auto right = std::max({header.getX() + 72, warpBox().getRight(), fieldBox(Field::SourceTempo).getRight(),
+                                     sourceTempoFactorBox(true).getRight()});
+        text(juce::String(problem_), header.withTrimmedLeft(right + 4 - header.getX()).withTrimmedRight(84), juce::Justification::centredLeft,
              look::text, look::fontLabel);
+    }
     if (!midi() && !audio()) {
         g.setColour(look::lane);
         g.fillRect(editorArea());

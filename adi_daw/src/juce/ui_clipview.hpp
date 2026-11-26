@@ -381,6 +381,7 @@ class SampleEditor final : public juce::Component {
     juce::Rectangle<int> waveArea() const noexcept;
     void showClip();
     void updateSource();
+    double sourceBpm() const noexcept;
     void frame();
     std::optional<std::int64_t> insert() const noexcept { return insert_; }
     std::int64_t sourceTick(std::int64_t arrangementTick) const noexcept;
@@ -557,7 +558,7 @@ class ClipViewPanel final : public juce::Component {
     enum class Field {
         None, Start, End, Position, Length, Signature, Scale, Transpose,
         VelocityAmount, VelocityPercent, VelocityLow, VelocityHigh, Voices,
-        RandomAmount, RampStart, RampEnd, FilterA, FilterB, FilterC, QuantizeAmount, QuantizeSwing, Interval, Stretch, Name, Gain
+        RandomAmount, RampStart, RampEnd, FilterA, FilterB, FilterC, QuantizeAmount, QuantizeSwing, Interval, Stretch, Name, Gain, SourceTempo
     };
     // The title bar's context menu (manual 8.1.1): Rename, which opens the name for typing, and the
     // colour, one of the palette's fourteen. With several clips shown both act on all of them
@@ -630,6 +631,7 @@ class ClipViewPanel final : public juce::Component {
     juce::Rectangle<int> setBox(Field) const noexcept;
     juce::Rectangle<int> loopBox() const noexcept;
     juce::Rectangle<int> warpBox() const noexcept;
+    juce::Rectangle<int> sourceTempoFactorBox(bool doubleTempo) const noexcept;
     Field fieldAt(juce::Point<int>) const noexcept;
     // A value typed into a field: a position as 1.1.1, a length as 2.0.0, a signature as 3/4.
     bool typeField(Field, const juce::String &);
@@ -712,6 +714,7 @@ class ClipViewPanel final : public juce::Component {
     friend class SampleEditor;
     bool commit(TrackEdit);
     bool setGain(double db);
+    bool setWarp(bool enabled, std::optional<double> sourceBpm = {});
     double draggedGain() const noexcept;
     std::int64_t fieldTicks(Field) const noexcept;
     std::int64_t draggedTicks() const noexcept;

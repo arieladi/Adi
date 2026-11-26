@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <stdexcept>
 namespace adi::clip_edit {
 namespace {
@@ -41,6 +42,27 @@ std::int64_t mapPosition(std::span<const WarpMarker> markers,std::int64_t value,
                         static_cast<long double>((*right).*from-(*left).*from);
     return (*left).*to+std::llround(fraction*static_cast<long double>((*right).*to-(*left).*to));
 }
+std::int64_t scaleWarpTicks(std::int64_t ticks,long double ratio) {
+    const auto value=static_cast<long double>(ticks)*ratio;
+    if(!std::isfinite(value) || value<0 ||
+       value>=static_cast<long double>(std::numeric_limits<std::int64_t>::max()))
+        throw std::runtime_error("source tempo exceeds the supported musical clock");
+    return std::llround(value);
+}
+long double correctWarpMap(std::vector<WarpMarker>& markers,double rate,double requested) {
+    const auto bpm=audio::sourceTempoBpm(markers,rate);
+    if(bpm<=0)throw std::runtime_error("Warp has no readable source tempo");
+    const auto ratio=static_cast<long double>(requested)/bpm;
+    for(auto& marker:markers)marker.tick=scaleWarpTicks(marker.tick,ratio);
+    return ratio;
+}
+Payload capturedWarpMap(std::span<const WarpMarker> markers,std::uint64_t frames) {
+    const auto blob=audio::writeWarpMap(markers,frames);
+    if(!blob)throw std::runtime_error("source tempo cannot fit the Warp markers");
+    std::vector<std::uint8_t> bytes(blob.bytes.size());
+    if(!bytes.empty())std::memcpy(bytes.data(),blob.bytes.data(),bytes.size());
+    return Payload::binary(std::move(bytes));
+}
 
 }
 PreparedEdit prepareSetWarp(Store& store,std::int64_t clipId,const WarpOptions& options,double rate) {
@@ -57,9 +79,14 @@ PreparedEdit prepareSetWarp(Store& store,std::int64_t clipId,const WarpOptions& 
         const auto& sources=image.at("children").at("audio_clips");
         if(root.at("kind")!="audio" || !root.at("alias_of").is_null() || sources.size()!=1)throw std::runtime_error("Warp needs an attached, independent audio clip");
         auto source=sources[0];
-        if((integer(source,"warp_enabled")!=0)==options.enabled)throw std::runtime_error("clip already has the requested Warp state");
-        if(integer(root,"loop_enabled")!=0 || integer(source,"reverse")!=0 ||
-           source.at("transpose_semis")!=0 || source.at("formant_shift")!=0)
+        const bool warped=integer(source,"warp_enabled")!=0;
+        const auto requested=options.enabled?options.analysis.sourceBpm:std::nullopt;
+        const bool retiming=warped && requested.has_value();
+        if(requested && (!std::isfinite(*requested) || *requested<=0 || *requested>=1000))
+            throw std::runtime_error("source BPM must be greater than zero and below 1000");
+        if(warped==options.enabled && !retiming)throw std::runtime_error("clip already has the requested Warp state");
+        if(!retiming && (integer(root,"loop_enabled")!=0 || integer(source,"reverse")!=0 ||
+           source.at("transpose_semis")!=0 || source.at("formant_shift")!=0))
             throw std::runtime_error("Warp switching requires a clip without looping, reverse or pitch edits");
         const auto& savedProperties=image.at("children").at("clip_properties");
         auto properties=savedProperties.empty()?Payload(nullptr):savedProperties.front();
@@ -97,7 +124,31 @@ PreparedEdit prepareSetWarp(Store& store,std::int64_t clipId,const WarpOptions& 
             return std::llround(static_cast<long double>(nanos)*reader.sampleRate()/1e9L);
         };
         const auto physicalToTicks=[&](std::int64_t nanos){return time.ticks(edit::addTime(beginNs,nanos))-origin;};
-        if(options.enabled) {
+        std::vector<WarpMarker> markers;
+        long double ratio=1;
+        if(retiming) {
+            markers=storedMap().markers;
+            ratio=correctWarpMap(markers,reader.sampleRate(),*requested);
+            source["warp_markers"]=capturedWarpMap(markers,frames);
+            const auto scale=[&](std::int64_t ticks){return scaleWarpTicks(ticks,ratio);};
+            const auto spanTicks=base==0?integer(root,"length_ticks"):
+                                 time.ticks(edit::addTime(beginNs,spanNs))-origin;
+            const auto startTick=scale(offsetTicks);
+            const auto length=scale(edit::addTime(offsetTicks,spanTicks))-startTick;
+            if(length<=0)throw std::runtime_error("source tempo collapses the visible clip");
+            root["content_offset_ticks"]=startTick;
+            if(base==0)root["length_ticks"]=length;
+            else root["length_ns"]=time.duration(origin,length);
+            if(hasEnd)properties["end_marker_ticks"]=scale(integer(properties,"end_marker_ticks"));
+            const auto loopStart=integer(root,"loop_start_ticks");
+            root["loop_start_ticks"]=scale(loopStart);
+            if(!root.at("loop_len_ticks").is_null()) {
+                const auto loopLength=scale(edit::addTime(loopStart,integer(root,"loop_len_ticks")))-scale(loopStart);
+                if(loopLength<=0)throw std::runtime_error("source tempo collapses the clip loop");
+                root["loop_len_ticks"]=loopLength;
+            }
+            for(const char* side:{"fade_in_ticks","fade_out_ticks"})root[side]=std::min(scale(integer(root,side)),length);
+        } else if(options.enabled) {
             const auto offsetNs=details.at("content_offset_ns").is_null()?time.duration(origin,offsetTicks):
                                 integer(details,"content_offset_ns");
             const auto sourceEndNs=details.at("source_end_ns").is_null()?
@@ -108,43 +159,42 @@ PreparedEdit prepareSetWarp(Store& store,std::int64_t clipId,const WarpOptions& 
             if(firstFrame<0 || lastFrame<=firstFrame)
                 throw std::runtime_error("Warp needs a nonempty source interval");
 
-            std::vector<WarpMarker> markers;
             std::int64_t trimmed=0;
             if(source.at("warp_markers").is_null()) {
-                const auto onsets=audio::detectTransients(reader,static_cast<std::uint64_t>(start),frames,50,options.stop);
-                cancelled(options.stop);
-                if(!onsets)throw std::runtime_error("cannot analyze Warp source transients");
+                std::vector<std::uint64_t> onsets;
+                if(!requested) {
+                    auto detected=audio::detectTransients(reader,static_cast<std::uint64_t>(start),frames,50,options.stop);
+                    cancelled(options.stop);
+                    if(!detected)throw std::runtime_error("cannot analyze Warp source transients");
+                    onsets=std::move(detected.frames);
+                }
                 auto analysisOptions=options.analysis;
-                // Only a whole clip can adopt the detected first beat as the
-                // source origin. Edited spans keep the original source material.
-                if(firstFrame!=0 || lastFrame!=static_cast<std::int64_t>(frames) || hasEnd)
+                // A manual tempo pins frame zero. Only a whole Auto-Warped
+                // clip may adopt its detected first beat as the origin.
+                if(requested || firstFrame!=0 || lastFrame!=static_cast<std::int64_t>(frames) || hasEnd)
                     analysisOptions.fromFirstBeat=false;
-                auto analysis=audio::autoWarpFromOnsets(onsets.frames,frames,reader.sampleRate(),analysisOptions,options.stop);
+                auto analysis=audio::autoWarpFromOnsets(onsets,frames,reader.sampleRate(),analysisOptions,options.stop);
                 cancelled(options.stop);
                 if(!analysis)throw std::runtime_error(analysis.error==audio::AutoWarpError::NoTempo?
-                    "Warp needs a detected beat or an explicit source tempo":"source timing cannot be analyzed with these Warp options");
-                const auto blob=audio::writeWarpMap(analysis.markers,frames-analysis.trimFrames);
-                if(!blob)throw std::runtime_error("cannot capture Warp markers");
-                std::vector<std::uint8_t> bytes(blob.bytes.size());
-                if(!bytes.empty())std::memcpy(bytes.data(),blob.bytes.data(),bytes.size());
-                source["warp_markers"]=Payload::binary(std::move(bytes));
+                    "Warp needs a detected beat. Enter the source BPM in the Clip View.":"source timing cannot be analyzed with these Warp options");
+                source["warp_markers"]=capturedWarpMap(analysis.markers,frames-analysis.trimFrames);
                 trimmed=static_cast<std::int64_t>(analysis.trimFrames);
                 source["src_start_frames"]=edit::addTime(start,trimmed);
                 source["src_len_frames"]=static_cast<std::int64_t>(frames-analysis.trimFrames);
                 markers=std::move(analysis.markers);
             } else {
                 markers=storedMap().markers;
+                if(requested) {
+                    correctWarpMap(markers,reader.sampleRate(),*requested);
+                    source["warp_markers"]=capturedWarpMap(markers,frames);
+                }
             }
             const auto tickAt=[&](std::int64_t frame) {
                 return mapPosition(markers,frame-trimmed,&WarpMarker::sourceFrame,&WarpMarker::tick);
             };
             const auto first=tickAt(firstFrame),last=tickAt(lastFrame);
             if(last<=first)throw std::runtime_error("Warp source interval is shorter than one tick");
-            engine::TempoMap tempo;SQLite::Statement points(store.db(),"SELECT pos_ticks,bpm,curve FROM tempo_map ORDER BY pos_ticks,id");
-            while(points.executeStep())tempo.events.push_back({points.getColumn(0).getInt64(),points.getColumn(1).getDouble(),points.getColumn(2).getInt()});
-            if(tempo.events.empty())tempo.events.push_back({0,120,0});
-            if(engine::projectWarpAnchors(markers,tempo,origin-first,rate).back().outputFrame>0x7fffffffULL)
-                throw std::runtime_error("warped clip exceeds supported duration");
+
             root["content_offset_ticks"]=first;
             root["length_ticks"]=last-first;
             if(hasEnd || sourceEndNs<physicalNs) {
@@ -171,18 +221,29 @@ PreparedEdit prepareSetWarp(Store& store,std::int64_t clipId,const WarpOptions& 
             details["content_offset_ns"]=offsetNs;
             details["source_end_ns"]=endNs;
         }
-        root["time_base"]=0;root["pos_ticks"]=origin;root["pos_ns"]=nullptr;root["length_ns"]=nullptr;
-        for(const char* side:{"fade_in_ticks","fade_out_ticks"})root[side]=std::min(integer(root,side),integer(root,"length_ticks"));
-        for(const char* column:{"loop_begin_ns","loop_end_ns","in_begin_ns","in_end_ns","out_begin_ns","out_end_ns"})details[column]=nullptr;
+        if(options.enabled) {
+            engine::TempoMap tempo;SQLite::Statement points(store.db(),"SELECT pos_ticks,bpm,curve FROM tempo_map ORDER BY pos_ticks,id");
+            while(points.executeStep())tempo.events.push_back({points.getColumn(0).getInt64(),points.getColumn(1).getDouble(),points.getColumn(2).getInt()});
+            if(tempo.events.empty())tempo.events.push_back({0,120,0});
+            if(engine::projectWarpAnchors(markers,tempo,origin-integer(root,"content_offset_ticks"),rate).back().outputFrame>0x7fffffffULL)
+                throw std::runtime_error("warped clip exceeds supported duration");
+        }
+        if(!retiming) {
+            root["time_base"]=0;root["pos_ticks"]=origin;root["pos_ns"]=nullptr;root["length_ns"]=nullptr;
+            for(const char* side:{"fade_in_ticks","fade_out_ticks"})root[side]=std::min(integer(root,side),integer(root,"length_ticks"));
+            for(const char* column:{"loop_begin_ns","loop_end_ns","in_begin_ns","in_end_ns","out_begin_ns","out_end_ns"})details[column]=nullptr;
+        }
         source["warp_enabled"]=options.enabled?1:0;
         edit::RowEdits plan(store.db());plan.set("clips",clipId,root);plan.set("audio_clips",clipId,source);plan.set("clip_playback_details",clipId,details);
         if(!properties.is_null())plan.set("clip_properties",clipId,properties);
         for(auto domain:image.at("children").at("clip_warp_fade_domains")) {
-            for(const char* column:{"in_begin_ticks","in_end_ticks","out_begin_ticks","out_end_ticks"})domain[column]=nullptr;
+            for(const char* column:{"in_begin_ticks","in_end_ticks","out_begin_ticks","out_end_ticks"})
+                if(!retiming)domain[column]=nullptr;
+                else if(!domain.at(column).is_null())domain[column]=scaleWarpTicks(integer(domain,column),ratio);
             plan.set("clip_warp_fade_domains",clipId,domain);
         }
         OpRequest request;request.opType="arranger.splice";request.payload={{"id",clipId},{"changes",plan.changes()}};
-        request.targetKind="clip";request.targetId=clipId;request.label=options.enabled?"Enable Warp":"Disable Warp";
+        request.targetKind="clip";request.targetId=clipId;request.label=retiming?"Change Source Tempo":options.enabled?"Enable Warp":"Disable Warp";
         result.requests.push_back(std::move(request));
         result.options.beforeCommit=[file,expected=hash.hex,stop=options.stop](SQLite::Database&,std::int64_t,std::string& error) {
             if(stop.stop_requested()){error="Warp edit cancelled";return false;}
