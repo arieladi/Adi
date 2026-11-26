@@ -219,7 +219,7 @@ struct StableEntry {
     const char *category;
 };
 const StableEntry *stableEntry(int id) noexcept {
-    static const std::array<StableEntry, 128> table{{
+    static constexpr auto table = std::to_array<StableEntry>({
         {"transport.play-stop", "Transport"}, // PlayStop
         {"transport.stop", "Transport"}, // Stop
         {"edit.undo", "Edit"}, // Undo
@@ -349,7 +349,8 @@ const StableEntry *stableEntry(int id) noexcept {
         {"help.keyboard-shortcuts", "Help"}, // KeyboardReference
         {"view.automation-mode", "View"}, // AutomationMode
         {"help.about", "Help"}, // About
-    }};
+    });
+    static_assert(table.size() == AppCommands::LastId - AppCommands::PlayStop + 1);
     const auto at = id - AppCommands::PlayStop;
     return at >= 0 && at < static_cast<int>(table.size()) ? &table[static_cast<std::size_t>(at)] : nullptr;
 }
@@ -523,7 +524,7 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         info.setActive(false);
         return;
     }
-    static const char *names[] = {"Play / stop",         "Stop",
+    static constexpr const char *names[] = {"Play / stop",         "Stop",
                                   "Undo",                "Redo",
                                   "Flip Sides",          "Hide/Show Browser",
                                   "Arrangement Track Controls", "Hide/Show Device View",
@@ -574,6 +575,7 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Arrange Clip View Panels Vertically", "Clip View", "Fit to Time Range",
                                   "Arrangement Record", "Export Audio/Video...", "Delay Compensation", "Solo Switches", "Cue Switches",
                                   "Live 12 Manual", "Keyboard Shortcuts", "Automation Mode", "About ADI"};
+    static_assert(std::size(names) == LastId - PlayStop + 1);
     info.setInfo(names[id - PlayStop], names[id - PlayStop], category(id), 0);
     if (id == TakeSnapshot && active_ && active_->needsFirstSave)
         info.setInfo("Save Project...", "Name this project", category(id), 0);
