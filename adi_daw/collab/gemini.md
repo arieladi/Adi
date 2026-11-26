@@ -4,6 +4,28 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-26 — `basics/*` Round 5 (`basics/tracks-chain` `8ff3358f` — FAIL on Clang 14 JUCE)
+
+Verified `origin/basics/tracks-chain` at `8ff3358f` (tracks queue consolidated chain on `land/basics-1127b`, covering `SC-282`, `SC-283`, `SC-86`, `SC-87`, `SC-85`, `SC-262`, `SC-263`, `SC-264`, `SC-265`; 56 files vs `origin/land/basics-1127b`) under **GCC 12.4.0** and **Clang 14.0.6 + libstdc++ 12** (`-DADI_WERROR=ON`, headless Pd on, JUCE off, `-DADI_ACCEPTANCE=ON`) and all 9 touched JUCE TUs (`-DADI_WITH_JUCE=ON -DADI_WERROR=ON`).
+
+| Branch | SHA | GCC 12.4.0 (`-DADI_WERROR=ON`) | Clang 14.0.6 + libstdc++ 12 (`-DADI_WERROR=ON`) | JUCE TUs (`-DADI_WITH_JUCE=ON -DADI_WERROR=ON`, 9 TUs) | Clang 14 ASan + LSan + UBSan | Verdict |
+|---|---|---|---|---|---|---|
+| `basics/tracks-chain` | `8ff3358f` | **PASS** (0 warnings; 11/11 touched `adi_builtin_devices_tests`, `adi_device_copy_tests`, `adi_device_presets_tests`, `adi_freeze_commands_tests`, `adi_group_summing_tests`, `adi_master_summing_tests`, `adi_mixer_tests`, `adi_param_ops_tests`, `adi_track_bounce_tests`, `adi_ui_document_tests`, `adi_ui_seams_tests` + `adi_acceptance_wts01`, 141.07 s) | **PASS** (0 warnings; 11/11 touched + `adi_acceptance_wts01`, 140.70 s) | **GCC 12:** **PASS** (9/9, 0 warnings); **Clang 14:** **FAIL** (8/9 0 warnings; **`src/juce/ui_arrangement.cpp:2800:42` hard compile error**) | (deferred until Clang 14 fix) | **FAIL (do not land)** |
+
+### Finding on `basics/tracks-chain` (`8ff3358f`, also present on `basics/sc-87-automation-controls` / `basics/sc-263-mixer-track-reorder`)
+
+- **Hard compile error in `src/juce/ui_arrangement.cpp:2800:42` under Clang 14.0.6 + libstdc++ 12 (`-DADI_WITH_JUCE=ON`):**
+  - Introduced in commit `002f0b1b` (`Draw and clear Arrangement automation and automate the Track Activator`, `SC-87`).
+  - `src/juce/ui_arrangement.hpp:336–345` defines nested `struct ArrangementCanvas::AutomationStroke` with default member initializers (`= 0`, `= false`) and immediately declares `std::optional<AutomationStroke> automationStroke_;` inside `ArrangementCanvas`. Because `ArrangementCanvas` is still incomplete when `std::optional<AutomationStroke>` checks `is_constructible_v<AutomationStroke>` under Clang 14 (CWG 1397), Clang 14 rejects `automationStroke_.emplace()` at `src/juce/ui_arrangement.cpp:2800:42`:
+    - `src/juce/ui_arrangement.cpp:2800:42: error: no matching member function for call to 'emplace'`
+    - `note: candidate template ignored: requirement 'is_constructible_v<adi::ui::ArrangementCanvas::AutomationStroke>' was not satisfied [with _Args = <>]`
+  - All other 8 touched JUCE TUs (`ui_main.cpp.o`, `ui_browser.cpp.o`, `ui_clipview.cpp.o`, `ui_controlbar.cpp.o`, `ui_devices.cpp.o`, `ui_mixer.cpp.o`, `ui_shell.cpp.o`, `test_ui_shell.cpp.o`) compiled with 0 warnings on Clang 14.0.6.
+  - **Fix direction (for owner):** move `struct AutomationStroke` out of `ArrangementCanvas` (namespace scope), or assign `automationStroke_ = AutomationStroke{};` instead of `automationStroke_.emplace()`.
+  - **Owner:** `basics/tracks` (`basics/tracks-chain` `8ff3358f` / `SC-87` `002f0b1b`).
+  - **Smallest repro:** `cmake -S adi_daw -B build-juce -G Ninja -DCMAKE_CXX_COMPILER=clang++-14 -DADI_WITH_JUCE=ON -DADI_WERROR=ON && cmake --build build-juce --target CMakeFiles/adi_ui_shell.dir/src/juce/ui_arrangement.cpp.o`.
+
+---
+
 ## 2026-11-26 — `basics/*` Round 4 (plugins chain `sc-375-device-chosen-later` `f73df1dd` — PASS)
 
 Verified `origin/basics/sc-375-device-chosen-later` at `f73df1dd` (5-branch plugins chain covering `sc-310-vst3-param-to-processor`, `sc-311-vst3-editor-and-automation-follow`, `sc-312-vst3-controllers`, `sc-313-plugin-window-owned`, `sc-375-device-chosen-later`) under **GCC 12.4.0** and **Clang 14.0.6 + libstdc++ 12** (`-DADI_WERROR=ON`, headless Pd on, JUCE off, `-DADI_ACCEPTANCE=ON`), all 9 touched JUCE TUs (`-DADI_WITH_JUCE=ON -DADI_WERROR=ON`), and **Clang 14 ASan + LSan + UBSan**.
