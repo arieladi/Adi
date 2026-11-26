@@ -208,6 +208,35 @@ bool isValidClientId(std::string_view clientId) noexcept {
     return true;
 }
 
+bool isValidBatchIdForAuthor(std::string_view batchId,
+                             std::string_view authorClientId) noexcept {
+    if (!isValidClientId(authorClientId)) {
+        return false;
+    }
+    if (batchId.size() <= authorClientId.size() + 1U) {
+        return false;
+    }
+    if (!batchId.starts_with(authorClientId) || batchId[authorClientId.size()] != '-') {
+        return false;
+    }
+    const std::string_view digits = batchId.substr(authorClientId.size() + 1U);
+    if (digits.empty() || digits[0] < '1' || digits[0] > '9') {
+        return false;
+    }
+    std::uint64_t val = 0ULL;
+    for (char c : digits) {
+        if (c < '0' || c > '9') {
+            return false;
+        }
+        const auto d = static_cast<std::uint64_t>(c - '0');
+        if (val > ((std::numeric_limits<std::uint64_t>::max)() - d) / 10ULL) {
+            return false;
+        }
+        val = val * 10ULL + d;
+    }
+    return val > 0ULL;
+}
+
 std::string formatSeqKey(std::uint64_t seq) {
     return "seq_" + zeroPad20(seq) + ".cbor";
 }
@@ -510,9 +539,14 @@ std::optional<Batch> decodeBatch(std::span<const std::byte> cbor,
         b.batchId = doc->at("batchId").get<std::string>();
         b.authorClientId = doc->at("author").get<std::string>();
 
+        const std::int64_t effectiveMaxClock =
+            limits.maxClock < 0 ? 0 : (std::min)(limits.maxClock, kMaxLamportClock);
+
         if (b.batchId.empty() || b.batchId.size() > limits.maxBatchIdBytes ||
-            !isValidClientId(b.authorClientId) || b.idSpace == 0U || b.idSpace > kMaxIdSpace ||
-            b.lamport < 0) {
+            !isValidClientId(b.authorClientId) ||
+            !isValidBatchIdForAuthor(b.batchId, b.authorClientId) ||
+            b.idSpace == 0U || b.idSpace > kMaxIdSpace ||
+            b.lamport < 0 || b.lamport > effectiveMaxClock) {
             error = "invalid collaboration batch header fields";
             return std::nullopt;
         }
@@ -524,7 +558,8 @@ std::optional<Batch> decodeBatch(std::span<const std::byte> cbor,
         }
         for (auto it = vec.begin(); it != vec.end(); ++it) {
             std::int64_t clk = 0;
-            if (!isValidClientId(it.key()) || !readStrictInt64(it.value(), clk) || clk < 0) {
+            if (!isValidClientId(it.key()) || !readStrictInt64(it.value(), clk) ||
+                clk < 0 || clk > effectiveMaxClock) {
                 error = "invalid version vector entry";
                 return std::nullopt;
             }
@@ -561,7 +596,8 @@ std::optional<Batch> decodeBatch(std::span<const std::byte> cbor,
                 error = "collaboration op lamport must be an int64";
                 return std::nullopt;
             }
-            if (op.opType.empty() || !op.payload.is_object() || op.lamport < 0) {
+            if (op.opType.empty() || !op.payload.is_object() ||
+                op.lamport < 0 || op.lamport > effectiveMaxClock) {
                 error = "invalid collaboration op fields";
                 return std::nullopt;
             }

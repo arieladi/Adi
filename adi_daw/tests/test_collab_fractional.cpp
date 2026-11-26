@@ -7,6 +7,7 @@
 #include "adi/collab/fractional_key.hpp"
 
 #include <cstdio>
+#include <limits>
 #include <optional>
 #include <set>
 #include <string>
@@ -184,7 +185,7 @@ void testIdSpaceVersionVectorAndBatchCbor() {
 
     // Reject a batch carrying an inverse field (PLAN CO-01: never inverses).
     Payload bad = {
-        {"seq", 1}, {"batchId", "x"}, {"author", clientA}, {"idSpace", 1}, {"baseSeq", 0},
+        {"seq", 1}, {"batchId", clientA + "-1"}, {"author", clientA}, {"idSpace", 1}, {"baseSeq", 0},
         {"lamport", 1}, {"vector", Payload::object()},
         {"ops", Payload::array({Payload{{"opType", "track.rename"},
                                         {"payload", Payload::object()},
@@ -193,6 +194,43 @@ void testIdSpaceVersionVectorAndBatchCbor() {
     };
     const auto badRes = decodeBatch(encodePayload(bad), err);
     check(!badRes.has_value(), "batch carrying inverse refused");
+
+    // Author-bound batchId validation.
+    check(isValidBatchIdForAuthor(clientA + "-1", clientA), "valid author-1 batchId accepted");
+    check(isValidBatchIdForAuthor(clientA + "-42", clientA), "valid author-42 batchId accepted");
+    check(!isValidBatchIdForAuthor(clientB + "-1", clientA),
+          "batchId carrying another author's clientId rejected");
+    check(!isValidBatchIdForAuthor(clientA + "-0", clientA), "zero counter batchId rejected");
+    check(!isValidBatchIdForAuthor(clientA + "-01", clientA), "leading-zero counter rejected");
+    check(!isValidBatchIdForAuthor(clientA + "-abc", clientA), "non-decimal counter rejected");
+
+    // Hostile INT64_MAX clock values refused at decode.
+    const std::int64_t kHugeClock = (std::numeric_limits<std::int64_t>::max)();
+    Payload badLamport = {
+        {"seq", 1}, {"batchId", clientA + "-1"}, {"author", clientA}, {"idSpace", 1},
+        {"baseSeq", 0}, {"lamport", kHugeClock}, {"vector", Payload::object()},
+        {"ops", Payload::array()},
+    };
+    check(!decodeBatch(encodePayload(badLamport), err).has_value(),
+          "INT64_MAX batch lamport refused at decode");
+
+    Payload badVec = {
+        {"seq", 1}, {"batchId", clientA + "-1"}, {"author", clientA}, {"idSpace", 1},
+        {"baseSeq", 0}, {"lamport", 1}, {"vector", Payload{{clientB, kHugeClock}}},
+        {"ops", Payload::array()},
+    };
+    check(!decodeBatch(encodePayload(badVec), err).has_value(),
+          "INT64_MAX vector clock entry refused at decode");
+
+    Payload badOpClock = {
+        {"seq", 1}, {"batchId", clientA + "-1"}, {"author", clientA}, {"idSpace", 1},
+        {"baseSeq", 0}, {"lamport", 1}, {"vector", Payload::object()},
+        {"ops", Payload::array({Payload{{"opType", "track.rename"},
+                                        {"payload", Payload::object()},
+                                        {"lamport", kHugeClock}}})},
+    };
+    check(!decodeBatch(encodePayload(badOpClock), err).has_value(),
+          "INT64_MAX op lamport refused at decode");
 }
 
 }  // namespace

@@ -87,6 +87,11 @@ struct Batch {
     friend bool operator==(const Batch&, const Batch&) = default;
 };
 
+/// Upper bound on accepted Lamport and version-vector clocks, leaving ample
+/// headroom below INT64_MAX so incrementing across a full batch can never
+/// overflow signed 64-bit arithmetic.
+inline constexpr std::int64_t kMaxLamportClock = (std::int64_t{1} << 60);
+
 /// Explicit wire-decoding caps protecting replicas against hostile bucket data.
 struct DecodeLimits {
     std::size_t maxBatchBytes = 4U * 1024U * 1024U;  ///< 4 MiB
@@ -94,10 +99,16 @@ struct DecodeLimits {
     std::size_t maxCborItems = 65536U;
     std::size_t maxOpsPerBatch = 4096U;
     std::size_t maxBatchIdBytes = 128U;
+    std::int64_t maxClock = kMaxLamportClock;
 };
 
 /// Return true if `clientId` is 32 lowercase hexadecimal characters (ADR-0188 d5).
 [[nodiscard]] bool isValidClientId(std::string_view clientId) noexcept;
+
+/// Return true if `batchId` is bound to `authorClientId` in the canonical form
+/// `<32-hex author>-<positive decimal counter>` (no leading zeros, fits uint64).
+[[nodiscard]] bool isValidBatchIdForAuthor(std::string_view batchId,
+                                           std::string_view authorClientId) noexcept;
 
 /// Sequencer claim key on the object store: `seq_<20-digit zero-padded seq>.cbor`.
 [[nodiscard]] std::string formatSeqKey(std::uint64_t seq);

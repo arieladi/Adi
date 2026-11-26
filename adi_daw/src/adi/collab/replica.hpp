@@ -65,12 +65,16 @@ class CollabReplica {
 public:
     /// Attach a collaboration replica to `store` with a unique 32-hex clientId
     /// and unique positive 31-bit idSpace. Loads persisted order keys, version
-    /// vector, appliedSeq, batch counter, and allocator counters from
-    /// `session_state` if present, then seeds any unkeyed tracks/devices.
+    /// vector, appliedSeq, pending suffix, baseHistorySeq, batch counter, and
+    /// allocator counters from `session_state` if present, reconciles any
+    /// already-committed journal seq markers (idempotent crash recovery), and
+    /// seeds any unkeyed base tracks/devices without polluting base keys with
+    /// local-only pending rows.
     CollabReplica(Store& store,
                   std::string clientId,
                   std::uint32_t idSpace,
-                  RemoteCommitHook remoteCommit = {});
+                  RemoteCommitHook remoteCommit = {},
+                  DecodeLimits limits = {});
 
     [[nodiscard]] Store& store() noexcept { return store_; }
     [[nodiscard]] const Store& store() const noexcept { return store_; }
@@ -96,33 +100,47 @@ public:
     [[nodiscard]] std::vector<std::int64_t> topLevelTrackOrder() const;
 
     /// Commit a local batch optimistically onto `store_` and enqueue it in the
-    /// pending suffix awaiting sequencing. Persists the monotonic batch counter
-    /// and allocator counters immediately so a restart never repeats a batchId.
+    /// pending suffix awaiting sequencing. Validates the encoded wire size and
+    /// CBOR/clock/id-space limits BEFORE applying locally so a replica never
+    /// creates or pushes a batch that peers would reject. Persists pending
+    /// batches, monotonic batch counter, and allocator counters immediately.
     [[nodiscard]] bool commitLocal(std::vector<BatchOp> ops, std::string& error);
+
+    /// Recover from a history divergence (e.g., an unrelated Store transaction
+    /// committed between pending batches or a manual Ctrl-Z). Moves history
+    /// atomically back to the last converged base point (`baseHistorySeq_`,
+    /// preserving the departed tip on a system branch per ADR-0128) and
+    /// re-applies the persisted pending suffix cleanly so sync can resume.
+    [[nodiscard]] bool rebaseFromBase(std::string& error) noexcept;
 
     /// Perform one sync step against `bucket`:
     ///   1. Pull contiguous sequenced slots above `appliedSeq_` (never throws;
     ///      hostile/corrupt CBOR or invalid-id-space slots are rejected
     ///      deterministically and skipped so sync never wedges).
-    ///   2. If any arrived: rewind pending suffix (verifying every localTxnId),
-    ///      apply valid remote batches in seq order, and re-commit remaining
-    ///      pending batches.
-    ///   3. Otherwise, if pending batches exist: try put-if-absent for the
-    ///      oldest pending batch at `appliedSeq_ + 1`.
+    ///   2. If any arrived: pre-check the ENTIRE pending suffix before undoing
+    ///      anything (atomic on mismatch), rewind, apply valid remote batches
+    ///      in seq order (idempotent against crash-recovered journal tags),
+    ///      and re-commit remaining pending batches.
+    ///   3. Otherwise, if pending batches exist: validate wire limits and try
+    ///      put-if-absent for the oldest pending batch at `appliedSeq_ + 1`.
     [[nodiscard]] SyncStepResult syncStep(FakeObjectStore& bucket) noexcept;
 
 private:
     struct PendingEntry {
         Batch batch;
-        std::int64_t localTxnId = 0;
+        std::int64_t localTxnId = 0;  ///< 0 if rewound/unmaterialized, >0 if committed in store
     };
 
+    using BatchKey = std::pair<std::string, std::string>;  ///< (authorClientId, batchId)
     using OrderState = std::map<std::string, std::map<std::int64_t, std::string>, std::less<>>;
 
     [[nodiscard]] std::string stateKey() const;
     void loadPersistedState();
+    void reconcileWithJournal();
     void savePersistedState();
     void seedInitialOrderKeys();
+    [[nodiscard]] bool validateEncodedBatchLimits(const Batch& batch,
+                                                  std::string& error) const noexcept;
     [[nodiscard]] bool applyBatchToStore(const Batch& batch,
                                          Actor actor,
                                          std::int64_t& txnIdOut,
@@ -138,20 +156,22 @@ private:
                                  Actor actor,
                                  const std::string& actorDetail,
                                  std::vector<OpRequest>& requests) const;
-    [[nodiscard]] std::string nextBatchId();
 
     Store& store_;
     std::string clientId_;
     IdSpaceAllocator alloc_;
     RemoteCommitHook remoteCommit_;
+    DecodeLimits limits_;
     std::uint64_t appliedSeq_ = 0;
+    std::optional<std::int64_t> baseHistorySeq_;
+    bool hasPersistedState_ = false;
     std::int64_t localLamport_ = 0;
     std::uint64_t localBatchCounter_ = 0;
     VersionVector vector_;
     OrderState baseOrderKeys_;     ///< Persisted order keys at appliedSeq_
-    OrderState currentOrderKeys_;  ///< Order keys including pending_
+    OrderState currentOrderKeys_;  ///< Order keys including materialized pending_
     std::vector<PendingEntry> pending_;
-    std::set<std::string> appliedBatchIds_;
+    std::set<BatchKey> appliedBatchKeys_;
 };
 
 }  // namespace adi::collab
