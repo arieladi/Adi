@@ -19,6 +19,13 @@ The basics-edit session has claimed the Arrangement edit queue. The item branche
 | SC-185 | — | Arrangement Crop under ED-04. | The engine report lists the open DF-E38(b) questions. The Note Editor command only crops notes in source time. | blocked on the Arrangement Crop contract |
 | SC-186 | `basics/sc-186-fragmentary-bar-repair` `f885e45f` (local) | The scrub menu repairs a fragmentary bar using global time edits. Completing a fragment retains its opening meter at the insertion boundary. Engine, window and window-fn. | Shell regressions invoke both menu actions and check the meter, locator and Undo. | blocked pending Linux verification |
 | SC-187 | — | Insert Silence with an insert marker alone. | R41 is still pending. | blocked on the Live 12 observation |
+| SC-188 | `basics/sc-188-latest-clipboard` `b80c4119` (local) | Arrangement, note and device paste use the latest clipboard write. Window and window-fn. | Shell regressions switch between real note and Arrangement copy paths. | blocked pending Linux verification |
+| SC-189 | — | Dropping below the last track needs a new track with the source device chain. | The existing new-track drop path imports media, and the track clipboard branch is still separate. | blocked on an atomic new-track and device-chain copy path |
+| SC-190 | — | Cross-project clip Paste under PD-15. | The clipboard and placement planner still require the source project to match. | blocked on cross-project media and identity remapping |
+| SC-354 | `basics/sc-354-add-locator` `3814ae85` (local) | Add Locator always adds at the current position. Set adds at the advancing playhead while playing. Window and window-fn. | Shell regressions check repeated adds, duplicate-position refusal, and stopped Set/Del. | blocked pending Linux verification |
+| SC-363 | `basics/sc-363-song-start-menu` `d3022a42` (local) | Locator and brace menus set or clear song start. Space honors it. Window and window-fn. | Shell regressions drive the locator action and check Space, Continue, and scrub positions. | blocked pending Linux verification |
+| SC-365 | `basics/sc-365-locator-colour` `e37f5832` (local) | The locator menu uses the existing palette and the scrub area draws the saved colour. Window and window-fn. | A peerless swatch selection checks the marker value and Undo. | blocked pending Linux verification |
+| SC-371 | `basics/sc-371-keyboard-locators` `8f65cd9e` (local) | Alt+Page Up and Alt+Page Down reach and select locators. Window and window-fn. | The shell regression exercises both keys, Delete and Undo. | blocked pending Linux verification |
 
 ## Coordination
 
