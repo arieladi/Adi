@@ -526,7 +526,8 @@ PreparedSplits prepareSplits(Store& store,std::span<const ClipSplit> splits,doub
             try {
                 if(!seen.insert(split.clipId).second)throw std::runtime_error("clip appears twice in the split selection");
                 const auto firstId=ids->next("clips");
-                const auto secondId=split.second?std::optional{ids->next("clips")}:std::nullopt;
+                std::optional<std::int64_t> secondId;
+                if(split.second)secondId=ids->next("clips");
                 auto request=captureSplit(store,split,firstId,secondId,time,referenceRate,*ids);
                 result.edit.requests.push_back(std::move(request));
             } catch(const std::exception& exception){

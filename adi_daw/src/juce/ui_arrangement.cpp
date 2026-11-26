@@ -1427,7 +1427,7 @@ bool ArrangementView::command(int id) {
     case AppCommands::GoStart:
         geometry.selection.insert = 0;
         geometry.selection.marked = true;
-        locate();
+        root.locate(geometry.selection.insert);
         break;
     case AppCommands::InsertMarkerToPlayhead: {
         // Ctrl/Cmd+Shift+Space (§42.16): the insert marker, a point, where the playhead is;
@@ -1482,7 +1482,7 @@ bool ArrangementView::command(int id) {
     changed();
     return true;
 }
-void ArrangementView::locate() { root.locate(geometry.selection.insert); }
+void ArrangementView::locate() { root.locate(geometry.selection.insert, true); }
 void ArrangementView::select(int x, int y, bool snapToGrid) {
     canvas.clearAutomationSelection();
     if (const auto *t = geometry.trackAt(reader(), y)) {
@@ -1644,12 +1644,12 @@ juce::PopupMenu ArrangementView::headerMenu() {
 }
 void ArrangementView::contextMenu(juce::Point<int> where, bool header, const engine::AutomationLaneNode *lane,
                                   const std::function<void(juce::PopupMenu &)> &configure) {
-    auto menu = contextMenuItems(header, lane);
+    auto menu=contextMenuItems(header,lane);
     if(configure)configure(menu);
-    if (onContextMenu)
-        onContextMenu(menu);
+    if(onContextMenu)
+        onContextMenu(where,header,lane,menu);
     else
-        menu.showMenuAsync(juce::PopupMenu::Options{}.withTargetScreenArea(juce::Rectangle<int>(where.x, where.y, 1, 1)));
+        menu.showMenuAsync(juce::PopupMenu::Options{}.withTargetScreenArea(juce::Rectangle<int>(where.x,where.y,1,1)));
 }
 const engine::AutomationLaneNode *ArrangementView::automationLaneAt(int y) const {
     if (!root.automationMode())

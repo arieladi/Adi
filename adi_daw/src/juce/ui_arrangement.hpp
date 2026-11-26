@@ -535,8 +535,8 @@ class ArrangementView final : public juce::Component {
     void contextMenu(juce::Point<int> where, bool header, const engine::AutomationLaneNode *lane = nullptr,
                      const std::function<void(juce::PopupMenu &)> &configure = {});
     juce::PopupMenu contextMenuItems(bool header, const engine::AutomationLaneNode *lane = nullptr);
-    // Optional menu presenter for the headless shell.
-    std::function<void(const juce::PopupMenu &)> onContextMenu;
+    // Headless tests receive the menu and its hit context without opening a native popup.
+    std::function<void(juce::Point<int>,bool,const engine::AutomationLaneNode *,const juce::PopupMenu &)> onContextMenu;
     // In Automation Mode, the Volume lane of the track at `y` that the engine plays, else null; a pointer into
     // the root's current snapshot, for use at once.
     const engine::AutomationLaneNode *automationLaneAt(int y) const;
