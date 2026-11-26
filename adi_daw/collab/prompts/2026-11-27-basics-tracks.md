@@ -33,3 +33,21 @@ headless suites build and run there (the window suites under a virtual display, 
 SC-86 (Freeze, Flatten and Bounce as commands in the window: the engine is built), SC-87 (the Track
 Activator in the automation chooser; Draw Mode for automation; clearing an envelope), SC-85 (device
 presets: wait for win's note, the file's form is the director's to rule).
+
+## Added by round 2 (26 November)
+
+- **With SC-05, SC-260: the Delete key deletes the selected tracks.** No key reaches Delete Track today.
+- **SC-259: the triangle beside a track's name, and the U key, fold and unfold the track.** Dead on
+  every track that is not a group, with a stale message about a need that merged.
+- **SC-282: an effect added while the instrument is selected comes after the instrument.** Today a
+  built-in audio effect is stored in front of it, where no sound reaches it
+  (`src/adi/builtin_insert.cpp`, about 172); a plug-in effect in the same place is moved after it.
+  Paste and Duplicate ignore the same rules (`src/adi/device_copy.cpp`, about 85): the round's next row.
+- **SC-283: a sample dragged onto a MIDI track, or into its empty Device View, makes an instrument that
+  plays it** (DEV-34 moves up). The empty Device View of a MIDI track also reads "Drop Audio Effects
+  Here".
+- **U is answered (ADR-0258 d18):** SC-85's presets are one file each in the User Library, listed in
+  the Browser under their device, as Live. The file is ADI's own readable form: propose it in your
+  report before you build it.
+
+Your second queue, when this one is empty: `2026-11-27-basics-edit.md`.

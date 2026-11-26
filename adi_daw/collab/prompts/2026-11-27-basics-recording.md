@@ -44,3 +44,21 @@ Another session shares this machine: build with 2 jobs.
 SC-25 (the recording's file type and bit depth as a setting), SC-26 (punch in and out: the engine half
 and the two Control Bar switches), SC-27 (recording with the loop on: the window's half is on
 `window-fn/loop-record`).
+
+## Added by round 2 (26 November): do these right after items 1 and 2
+
+- **SC-245: recording over an earlier take, the player hears himself.** Measured: on an armed track
+  that monitors Auto the input is silenced across every existing clip and the old clip plays
+  (`src/adi/engine/session.cpp`, about 145). Reading R45 of Live confirms the rule before it is built.
+- **SC-247 and SC-254: a take is never deleted.** A take that cannot be placed, or whose writing failed
+  part-way (a full disk, a lost drive), is deleted with its audio today
+  (`src/adi/ui/project_document.cpp`, about 1326). Keep what was recorded and say where it is.
+- **SC-246: the metronome's level** can be found: with SC-21's menu, not only on Main's strip in the
+  Mixer View.
+- **SC-24 is answered (ADR-0258 d2):** recordings go to a Recorded folder under Samples inside the
+  song's own folder, each named after its track. The song's folder is SC-148 of the project queue:
+  build the naming now and the place when SC-148 is on main.
+- **A recorded take follows the tempo (ADR-0258 d11; SC-248),** as Live's. With SC-11 of the clips
+  queue, which fixes the cut tail either way.
+
+Your second queue, when this one is empty: `2026-11-27-basics-routing.md`.

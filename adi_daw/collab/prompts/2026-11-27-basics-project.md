@@ -44,3 +44,22 @@ edit is already in the file, and Ctrl+S takes a named snapshot.
 SC-106 (Save As over an existing name asks and replaces), SC-108 (the Browser's edge dragged to resize
 it), SC-40 (a missing file marked on its clip, and relinked), SC-107 (an installer and the `.adi` file
 association; say what it needs from a Windows machine).
+
+## Added by round 2 (26 November): the director's answers change this queue's order
+
+- **First of all, SC-148 (ADR-0258 d1): each song has a folder of its own.** Saving makes a folder named
+  after the song with the song file and its media inside, as a Live Project; recordings under Samples
+  in a Recorded folder (d2). A song that has an `audio` folder is still read.
+- **Then SC-149 (d3): the first Ctrl+S on a song with no name asks its name and place,** once. That
+  first save takes the Untitled file and its recordings along and leaves no second copy (d4, SC-152).
+  This settles SC-07 for a new song; for a song already saved, Save As behaves as Live's (run and
+  confirmed by round 2: today the takes stay behind and the song plays silence when the old place goes).
+- **SC-150: a song file moved by hand still finds samples that never moved.** A same-drive sample is
+  stored only as a path relative to the song's folder.
+- **SC-100's last part waits:** the default projects folder moves under the user's documents only after
+  the safety queue's first item (a project whole in a synced folder; d7). Open Recent, the chooser's
+  start and the untouched Untitled file do not wait.
+- **Collected samples keep their own names (d5, SC-154),** and a User Library exists from the first
+  launch (d6, SC-135).
+
+Your second queue, when this one is empty: `2026-11-27-basics-safety.md`.
