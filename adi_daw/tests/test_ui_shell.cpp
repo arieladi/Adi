@@ -11837,6 +11837,8 @@ void clipFades(AppCommands &commands, const std::filesystem::path &dir) {
     root.frame();
     const Handle fadeIn{first, 4, true, false};
     check(!canvas.fadeHandlePoint(fadeIn), "Automation Mode hides fade handles while F is up");
+    auto keys = std::move(root.input.keyDown);
+    root.input.keyDown = [](int key) { return key == 'f'; };
     check(canvas.keyPressed(juce::KeyPress('f')), "F is handled in Automation Mode");
     const auto automationPeak = canvas.fadeHandlePoint(fadeIn);
     check(automationPeak.has_value(), "holding F reveals the fade while Automation Mode stays on");
@@ -11852,7 +11854,9 @@ void clipFades(AppCommands &commands, const std::filesystem::path &dir) {
         check(root.command(AppCommands::Undo), "Undo the fade changed while F was held");
         root.frame();
     }
+    root.input.keyDown = [](int) { return false; };
     canvas.keyStateChanged(false);
+    root.input.keyDown = std::move(keys);
     check(!canvas.fadeHandlePoint(fadeIn), "releasing F hides the handles in Automation Mode again");
     root.setAutomationMode(false);
     root.frame();

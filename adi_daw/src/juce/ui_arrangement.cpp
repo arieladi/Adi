@@ -3197,8 +3197,8 @@ std::vector<ArrangementCanvas::ClipBody> ArrangementCanvas::clipBodies() const {
     return out;
 }
 bool ArrangementCanvas::fadeHandlesShown(const engine::ClipNode &c) const {
-    return c.audio && !view.root.automationMode() && (showFades || c.id == hoverClip_ || view.geometry.clipSelected(c.id) ||
-                       (fadeDrag_ && fadeDrag_->clip == c.id));
+    return c.audio && (showFades || (fadeDrag_ && fadeDrag_->clip == c.id) ||
+                       (!view.root.automationMode() && (c.id == hoverClip_ || view.geometry.clipSelected(c.id))));
 }
 void ArrangementCanvas::fadesOf(const engine::ClipNode &c, engine::ClipFadeHandles &in, engine::ClipFadeHandles &out,
                                 std::optional<double> &inTension, std::optional<double> &outTension) const {
@@ -3664,7 +3664,9 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
     pointDrag_.reset();
     chosenPoint_.reset(); // chosen again below when the press is on a breakpoint
     pointAdded_ = false;
-    if (!panning && automationDown(e))
+    // With F held, a visible fade handle wins a hit on the envelope beneath it.
+    const auto fade = !panning && !e.mods.isPopupMenu() ? fadeHandleAt(e.x, e.y) : std::nullopt;
+    if (!panning && !fade && automationDown(e))
         return;
     if (e.mods.isPopupMenu()) {
         view.select(e.x, e.y, view.snaps(e.mods));
@@ -3674,7 +3676,7 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
         // Held still at the lanes' edge, a drag repeats, so they keep scrolling.
         beginDragAutoRepeat(ArrangementView::kAutoRepeatMs);
         // A fade's handle (manual 6.8): its length or its curve, the clip chosen with it.
-        if (const auto h = fadeHandleAt(e.x, e.y)) {
+        if (const auto &h = fade) {
             for (const auto &b : clipBodies())
                 if (b.clip->id == h->clip) {
                     auto &sel = view.geometry.selection;
