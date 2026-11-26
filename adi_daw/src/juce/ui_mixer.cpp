@@ -735,6 +735,12 @@ void MixerStrip::paintOverChildren(juce::Graphics &g) {
         const auto b = control->getBounds();
         g.fillEllipse(static_cast<float>(b.getRight() - 6), static_cast<float>(b.getY() + 1), 5.f, 5.f);
     }
+    if (dropPreview_) {
+        const auto band = panel_.rowsBand() - getY();
+        const auto area = getLocalBounds().getIntersection({0, band.getStart(), getWidth(), band.getLength()});
+        g.setColour(look::dropTarget);
+        g.drawRect(area, 2);
+    }
 }
 void MixerStrip::resized() {
     if (panel_.vertical()) {
@@ -1225,7 +1231,21 @@ bool MixerStrip::isInterestedInDragSource(const SourceDetails &details) {
     return track_ != 0 && (panel_.root.browser.acceptsDeviceDrop(details) ||
                            !BrowserPanel::droppedFiles(details.description).isEmpty());
 }
+void MixerStrip::setDropPreview(bool on) {
+    if (dropPreview_ == on)
+        return;
+    dropPreview_ = on;
+    repaint();
+}
+void MixerStrip::itemDragMove(const SourceDetails &details) {
+    if (track_ != 0 && panel_.root.browser.acceptsDeviceDrop(details))
+        setDropPreview(true);
+    else
+        fileDragEnter(BrowserPanel::droppedFiles(details.description), details.localPosition.x, details.localPosition.y);
+}
+void MixerStrip::itemDragExit(const SourceDetails &) { setDropPreview(false); }
 void MixerStrip::itemDropped(const SourceDetails &details) {
+    setDropPreview(false);
     if (track_ == 0)
         return;
     if (panel_.root.browser.acceptsDeviceDrop(details)) {
@@ -1237,7 +1257,14 @@ void MixerStrip::itemDropped(const SourceDetails &details) {
 bool MixerStrip::isInterestedInFileDrag(const juce::StringArray &files) {
     return track_ != 0 && !files.isEmpty();
 }
+void MixerStrip::fileDragEnter(const juce::StringArray &files, int, int) {
+    const bool instrument = files.size() == 1 && panel_.root.loadSampleInstrument &&
+                            panel_.root.sampleInstrumentTarget(track_);
+    setDropPreview(track_ != 0 && !files.isEmpty() && (kind_ == "audio" || instrument));
+}
+void MixerStrip::fileDragExit(const juce::StringArray &) { setDropPreview(false); }
 void MixerStrip::filesDropped(const juce::StringArray &files, int, int) {
+    setDropPreview(false);
     if (track_ != 0)
         panel_.root.dropAudioPaths(files, track_, panel_.root.arrangement.geometry.selection.insert);
 }

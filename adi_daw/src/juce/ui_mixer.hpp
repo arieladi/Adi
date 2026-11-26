@@ -104,8 +104,13 @@ class MixerStrip final : public juce::Component,
     // A double-click on a Mixer View strip's title selects its track and brings up the Device View.
     void mouseDoubleClick(const juce::MouseEvent &) override;
     bool isInterestedInDragSource(const SourceDetails &) override;
+    void itemDragEnter(const SourceDetails &details) override { itemDragMove(details); }
+    void itemDragMove(const SourceDetails &) override;
+    void itemDragExit(const SourceDetails &) override;
     void itemDropped(const SourceDetails &) override;
     bool isInterestedInFileDrag(const juce::StringArray &) override;
+    void fileDragEnter(const juce::StringArray &, int, int) override;
+    void fileDragExit(const juce::StringArray &) override;
     void filesDropped(const juce::StringArray &, int, int) override;
     // A row takes clicks only level with the lanes (MixerPanel::rowsBand).
     bool hitTest(int x, int y) override;
@@ -225,6 +230,7 @@ class MixerStrip final : public juce::Component,
     void trackTitleMenu(juce::Point<int> where);
     void selectTitle(std::int64_t track);
     bool cancelTitleDrag();
+    void setDropPreview(bool);
     void paintInOut(juce::Graphics &, int x) const;
     const char *audioInputLabel() const;
     void showAudioInputMenu();
@@ -307,6 +313,7 @@ class MixerStrip final : public juce::Component,
     std::size_t number_ = 0;   // Live's track number, which skips the returns: what the activator shows
     std::size_t group_ = 0;    // its group's place, 1-based; 0 at the top
     bool dragging_ = false, selected_ = false;
+    bool dropPreview_ = false;
     TrackRecordState record_; // the arm and monitoring last shown (MX-09)
     // A drag heard while it moves (MX-23): begun on the control's drag start, ended on its release.
     bool live_ = false, cancelled_ = false; // cancelled: Esc came before the release, which commits nothing

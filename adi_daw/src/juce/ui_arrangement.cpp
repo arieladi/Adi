@@ -2478,7 +2478,16 @@ bool TrackHeaderList::isInterestedInDragSource(const SourceDetails &details) {
     return view.root.devices.isMovingDevice(details) || view.root.browser.acceptsDeviceDrop(details) ||
            !BrowserPanel::droppedFiles(details.description).isEmpty();
 }
+void TrackHeaderList::itemDragMove(const SourceDetails &details) {
+    if (view.root.devices.isMovingDevice(details) || view.root.browser.acceptsDeviceDrop(details)) {
+        view.canvas.previewDeviceDrop(details.localPosition.y, true);
+        return;
+    }
+    fileDragMove(BrowserPanel::droppedFiles(details.description), details.localPosition.x, details.localPosition.y);
+}
+void TrackHeaderList::itemDragExit(const SourceDetails &) { view.canvas.clearDropPreview(); }
 void TrackHeaderList::itemDropped(const SourceDetails &details) {
+    view.canvas.clearDropPreview();
     if (view.root.devices.isMovingDevice(details)) {
         view.dropMovedDevice(details);
         return;
@@ -2493,7 +2502,12 @@ void TrackHeaderList::itemDropped(const SourceDetails &details) {
 bool TrackHeaderList::isInterestedInFileDrag(const juce::StringArray &files) {
     return !files.isEmpty();
 }
+void TrackHeaderList::fileDragMove(const juce::StringArray &files, int, int y) {
+    view.canvas.previewSampleDrop(y, view.geometry.selection.insert, files.size(), true);
+}
+void TrackHeaderList::fileDragExit(const juce::StringArray &) { view.canvas.clearDropPreview(); }
 void TrackHeaderList::filesDropped(const juce::StringArray &files, int, int y) {
+    view.canvas.clearDropPreview();
     if (const auto *target = view.geometry.trackAt(view.reader(), y))
         view.root.dropAudioPaths(files, target->id, view.geometry.selection.insert);
 }
@@ -2735,6 +2749,13 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
     }
     if (view.root.automationMode())
         paintAutomation(g);
+    if (!dropPreview_.bounds.isEmpty()) {
+        g.setColour(look::dropTarget);
+        if (dropPreview_.device)
+            g.drawRect(dropPreview_.bounds, 2);
+        else
+            g.fillRect(dropPreview_.bounds);
+    }
     // The grid spacing sits inside the lower right of the lanes, above the time ruler.
     auto corner = getLocalBounds().reduced(2);
     const auto spacing = corner.removeFromBottom(14).removeFromRight(46);
@@ -4458,6 +4479,72 @@ bool ArrangementCanvas::isInterestedInDragSource(const SourceDetails &details) {
            !BrowserPanel::droppedFiles(details.description).isEmpty() ||
            view.root.browser.acceptsDeviceDrop(details);
 }
+void ArrangementCanvas::setDropPreview(DropPreview next) {
+    if (next == dropPreview_)
+        return;
+    repaint(dropPreview_.bounds);
+    dropPreview_ = next;
+    repaint(dropPreview_.bounds);
+}
+std::pair<const engine::TrackNode *, juce::Rectangle<int>> ArrangementCanvas::dropLane(int y) const {
+    const auto &geo = view.geometry;
+    const auto &reader = view.reader();
+    const auto rows = geo.rows(reader);
+    const auto foot = geo.footStart(rows);
+    const int footTop = foot < rows.size() ? geo.footTop(reader) : getHeight();
+    int top = 0;
+    const auto row = geo.rowAt(reader, y, &top);
+    const auto *track = row < rows.size() ? rows[row].track : nullptr;
+    if (!track)
+        top = std::max(0, geo.tracksHeight(reader) - geo.scrollY);
+    const int height = track ? geo.heightFor(track->id) : geo.height;
+    const int bottom = std::min(top + height, row >= foot && track ? getHeight() : footTop);
+    top = std::max(0, top);
+    return {track, {0, top, getWidth(), std::max(0, bottom - top)}};
+}
+std::int64_t ArrangementCanvas::audioDropTick(int x) const {
+    const auto raw = std::max<std::int64_t>(0, view.geometry.tick(x));
+    if (!view.snaps(juce::ModifierKeys::currentModifiers))
+        return raw;
+    const auto down = view.geometry.snap(raw, false), up = view.geometry.snap(raw, true);
+    return raw - down <= up - raw ? down : up;
+}
+void ArrangementCanvas::fileDragEnter(const juce::StringArray &files, int x, int y) { fileDragMove(files, x, y); }
+void ArrangementCanvas::fileDragMove(const juce::StringArray &files, int x, int y) {
+    previewSampleDrop(y, audioDropTick(x), files.size(), false);
+}
+void ArrangementCanvas::previewSampleDrop(int y, std::int64_t tick, int files, bool existingTrackOnly) {
+    const auto [track, lane] = dropLane(y);
+    if (files <= 0 || !view.reader().get() || (existingTrackOnly && !track)) {
+        clearDropPreview();
+        return;
+    }
+    if (track && track->kind != "audio") {
+        if (files == 1 && view.root.loadSampleInstrument && view.root.sampleInstrumentTarget(track->id))
+            setDropPreview({lane, true});
+        else
+            clearDropPreview();
+        return;
+    }
+    const int left = static_cast<int>(view.geometry.x(tick));
+    setDropPreview({lane.withX(left).withWidth(2).getIntersection(getLocalBounds())});
+}
+void ArrangementCanvas::previewDeviceDrop(int y, bool existingTrackOnly) {
+    const auto [track, lane] = dropLane(y);
+    setDropPreview({!existingTrackOnly || track ? lane : juce::Rectangle<int>{}, true});
+}
+void ArrangementCanvas::clearDropPreview() { setDropPreview({}); }
+void ArrangementCanvas::fileDragExit(const juce::StringArray &) { clearDropPreview(); }
+void ArrangementCanvas::itemDragEnter(const SourceDetails &details) { itemDragMove(details); }
+void ArrangementCanvas::itemDragMove(const SourceDetails &details) {
+    const bool moving = view.root.devices.isMovingDevice(details);
+    if (moving || view.root.browser.acceptsDeviceDrop(details)) {
+        previewDeviceDrop(details.localPosition.y, moving);
+        return;
+    }
+    fileDragMove(BrowserPanel::droppedFiles(details.description), details.localPosition.x, details.localPosition.y);
+}
+void ArrangementCanvas::itemDragExit(const SourceDetails &) { clearDropPreview(); }
 void ArrangementView::dropMovedDevice(const juce::DragAndDropTarget::SourceDetails &details) {
     if (const auto *track = geometry.trackAt(reader(), details.localPosition.y))
         root.devices.moveDroppedDevice(details, track->id);
@@ -4465,6 +4552,7 @@ void ArrangementView::dropMovedDevice(const juce::DragAndDropTarget::SourceDetai
         root.say("Drop the device on a track to move it there.");
 }
 void ArrangementCanvas::itemDropped(const SourceDetails &details) {
+    clearDropPreview();
     if (details.description.toString() == DevicePanelView::kDeviceMoveDrag) {
         view.dropMovedDevice(details);
         return;
@@ -4481,15 +4569,13 @@ void ArrangementCanvas::filesDropped(const juce::StringArray &files, int x, int 
     // Live's drop (manual 6.1): the clip starts where the file was dropped, on the nearest grid
     // line while snapping; on a track's lane, that track; below the tracks, a new one. The clip is
     // named after the file, as Live names it.
+    clearDropPreview();
     if (files.isEmpty())
         return;
-    const auto raw = std::max<std::int64_t>(0, view.geometry.tick(x));
-    const auto down = view.geometry.snap(raw, false), up = view.geometry.snap(raw, true);
-    const auto at = !view.snaps(juce::ModifierKeys::currentModifiers) ? raw : (raw - down <= up - raw ? down : up);
     const auto *track = view.geometry.trackAt(view.reader(), y);
     // Several files go one after another on that track, or each on a track of its own with Ctrl/Cmd
     // held, as Live places them; one undo step for them all.
-    view.root.dropAudioPaths(files, track != nullptr ? track->id : 0, at,
+    view.root.dropAudioPaths(files, track != nullptr ? track->id : 0, audioDropTick(x),
                             juce::ModifierKeys::currentModifiers.isCommandDown());
 }
 } // namespace adi::ui

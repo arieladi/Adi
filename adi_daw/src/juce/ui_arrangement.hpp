@@ -153,8 +153,14 @@ class TrackHeaderList final : public juce::Component,
     void mouseMove(const juce::MouseEvent &) override;
     void mouseWheelMove(const juce::MouseEvent &, const juce::MouseWheelDetails &) override;
     bool isInterestedInDragSource(const SourceDetails &) override;
+    void itemDragEnter(const SourceDetails &details) override { itemDragMove(details); }
+    void itemDragMove(const SourceDetails &) override;
+    void itemDragExit(const SourceDetails &) override;
     void itemDropped(const SourceDetails &) override;
     bool isInterestedInFileDrag(const juce::StringArray &) override;
+    void fileDragEnter(const juce::StringArray &files, int x, int y) override { fileDragMove(files, x, y); }
+    void fileDragMove(const juce::StringArray &, int, int) override;
+    void fileDragExit(const juce::StringArray &) override;
     void filesDropped(const juce::StringArray &, int, int) override;
 
     bool keyPressed(const juce::KeyPress &) override;
@@ -253,10 +259,20 @@ class ArrangementCanvas final : public juce::Component,
     std::optional<AutomationPick> chosenAutomationPoint() const noexcept { return chosenPoint_; }
     void mouseMagnify(const juce::MouseEvent &, float) override;
     bool isInterestedInFileDrag(const juce::StringArray &) override;
+    void fileDragEnter(const juce::StringArray &, int, int) override;
+    void fileDragMove(const juce::StringArray &, int, int) override;
+    void fileDragExit(const juce::StringArray &) override;
     // A sample dragged from the browser (D1) lands as a file dropped from the desktop does.
     bool isInterestedInDragSource(const SourceDetails &) override;
+    void itemDragEnter(const SourceDetails &) override;
+    void itemDragMove(const SourceDetails &) override;
+    void itemDragExit(const SourceDetails &) override;
     void itemDropped(const SourceDetails &) override;
     void filesDropped(const juce::StringArray &, int, int) override;
+    // The names drop goes to the same lane, at the insert marker for a sample.
+    void previewSampleDrop(int y, std::int64_t tick, int files, bool existingTrackOnly);
+    void previewDeviceDrop(int y, bool existingTrackOnly);
+    void clearDropPreview();
     std::unique_ptr<juce::AccessibilityHandler> createAccessibilityHandler() override;
     // One accessible child per clip on screen; on a model or view change only.
     void realiseAccessible();
@@ -311,6 +327,15 @@ class ArrangementCanvas final : public juce::Component,
     RenameEditor clipEditor;
 
   private:
+    struct DropPreview {
+        juce::Rectangle<int> bounds;
+        bool device = false;
+        friend bool operator==(const DropPreview &, const DropPreview &) = default;
+    };
+    void setDropPreview(DropPreview);
+    std::pair<const engine::TrackNode *, juce::Rectangle<int>> dropLane(int y) const;
+    std::int64_t audioDropTick(int x) const;
+    DropPreview dropPreview_;
     bool commitClipRename();
     void endClipRename();
     std::int64_t renamingClip_ = 0;

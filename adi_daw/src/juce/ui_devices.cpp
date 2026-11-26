@@ -344,7 +344,10 @@ void SampleTile::paint(juce::Graphics &g) {
     const float dash[] = {4.f, 3.f};
     juce::Path edge;
     edge.addRoundedRectangle(r.reduced(0.5f), 3.f);
-    if (state_ == State::Empty) {
+    if (dropPreview_) {
+        g.setColour(look::dropTarget);
+        g.strokePath(edge, juce::PathStrokeType(2.f));
+    } else if (state_ == State::Empty) {
         juce::Path dashed;
         juce::PathStrokeType(1.f).createDashedStroke(dashed, edge, dash, 2);
         g.fillPath(dashed);
@@ -364,6 +367,7 @@ void SampleTile::paint(juce::Graphics &g) {
     g.drawFittedText(what, 6, 18, getWidth() - 12, std::max(14, getHeight() - 38), juce::Justification::centred, 2);
 }
 bool SampleTile::drop(const juce::String &path) {
+    setDropPreview(false);
     if (targetValid && !targetValid()) return false;
     if (path.isEmpty())
         return false;
@@ -373,16 +377,30 @@ bool SampleTile::drop(const juce::String &path) {
     }
     return strip_.assignSample(device, slot, path.toStdString());
 }
+void SampleTile::setDropPreview(bool on) {
+    if (dropPreview_ == on)
+        return;
+    dropPreview_ = on;
+    repaint();
+}
+void SampleTile::fileDragEnter(const juce::StringArray &files, int, int) {
+    setDropPreview(!files.isEmpty() && strip_.assignSample && (!targetValid || targetValid()));
+}
+void SampleTile::fileDragExit(const juce::StringArray &) { setDropPreview(false); }
 void SampleTile::filesDropped(const juce::StringArray &files, int, int) {
+    setDropPreview(false);
     if (!files.isEmpty())
         drop(files[0]);
 }
 bool SampleTile::isInterestedInDragSource(const SourceDetails &details) {
     return !BrowserPanel::droppedFiles(details.description).isEmpty();
 }
+void SampleTile::itemDragEnter(const SourceDetails &details) {
+    fileDragEnter(BrowserPanel::droppedFiles(details.description), 0, 0);
+}
+void SampleTile::itemDragExit(const SourceDetails &) { setDropPreview(false); }
 void SampleTile::itemDropped(const SourceDetails &details) {
-    if (const auto files = BrowserPanel::droppedFiles(details.description); !files.isEmpty())
-        drop(files[0]);
+    filesDropped(BrowserPanel::droppedFiles(details.description), 0, 0);
 }
 namespace {
 using NodeAxis = device::EqNodeAxis;
@@ -2147,7 +2165,12 @@ bool DeviceChainStrip::acceptsSample() const {
 bool DeviceChainStrip::isInterestedInFileDrag(const juce::StringArray &files) {
     return !files.isEmpty() && acceptsSample();
 }
+void DeviceChainStrip::fileDragEnter(const juce::StringArray &files, int x, int) {
+    setDropPreview(files.size() == 1 && acceptsSample() && root.loadSampleInstrument ? std::optional{x} : std::nullopt);
+}
+void DeviceChainStrip::fileDragExit(const juce::StringArray &) { setDropPreview({}); }
 void DeviceChainStrip::filesDropped(const juce::StringArray &files, int, int) {
+    setDropPreview({});
     if (!isInterestedInFileDrag(files))
         return;
     if (files.size() != 1) {
@@ -2163,7 +2186,23 @@ std::optional<std::int64_t> DeviceChainStrip::dropBefore(int x) const {
             return p->id;
     return std::nullopt;
 }
+void DeviceChainStrip::setDropPreview(std::optional<int> x) {
+    if (dropPreviewX_ == x)
+        return;
+    dropPreviewX_ = x;
+    repaint();
+}
+void DeviceChainStrip::itemDragEnter(const SourceDetails &details) { itemDragMove(details); }
+void DeviceChainStrip::itemDragMove(const SourceDetails &details) {
+    if (const auto files = BrowserPanel::droppedFiles(details.description); !files.isEmpty()) {
+        fileDragEnter(files, details.localPosition.x, details.localPosition.y);
+        return;
+    }
+    setDropPreview(isInterestedInDragSource(details) ? std::optional{details.localPosition.x} : std::nullopt);
+}
+void DeviceChainStrip::itemDragExit(const SourceDetails &) { setDropPreview({}); }
 void DeviceChainStrip::itemDropped(const SourceDetails &details) {
+    setDropPreview({});
     if (details.description.toString() == "adi-mix-function") {
         if (auto *source = dynamic_cast<DevicePanelView *>(details.sourceComponent.get()))
             dropFunction(*source, dropBefore(details.localPosition.x));
@@ -2595,6 +2634,21 @@ void DeviceChainStrip::paint(juce::Graphics &g) {
         g.setColour(look::accent);
         g.fillRect(std::max(0, end_ - scroll.getViewPositionX() - 7), 4, 2, std::max(0, getHeight() - 8));
     }
+}
+void DeviceChainStrip::paintOverChildren(juce::Graphics &g) {
+    if (!dropPreviewX_)
+        return;
+    const auto before = dropBefore(*dropPreviewX_);
+    int insertX = end_ - 7;
+    if (before)
+        for (const auto &device : panels)
+            if (device->id == *before) {
+                insertX = device->getX() - 7;
+                break;
+            }
+    const int x = std::clamp(insertX - scroll.getViewPositionX(), 0, std::max(0, getWidth() - 2));
+    g.setColour(look::dropTarget);
+    g.fillRect(x, 4, 2, std::max(0, getHeight() - 8));
 }
 void DeviceChainStrip::fold(std::int64_t id) {
     for (auto &panel : panels)

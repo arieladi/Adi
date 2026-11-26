@@ -114,6 +114,12 @@ std::vector<std::int64_t> laneOrder(AdiRootComponent &root) {
 int laneTop(AdiRootComponent &root, std::int64_t id) {
     return root.arrangement.geometry.rowTop(root.reader(), id);
 }
+juce::Colour renderedPixel(juce::Component &component, juce::Point<int> at) {
+    juce::Image image(juce::Image::RGB, component.getWidth(), component.getHeight(), true, juce::SoftwareImageType{});
+    juce::Graphics g(image);
+    component.paintEntireComponent(g, true);
+    return image.getPixelAt(at.x, at.y);
+}
 void reference(AdiRootComponent &root, const char *name, bool write) {
     // Explicit software rasterisation, no peer, OpenGL, display, or audio device.
     juce::Image image(juce::Image::ARGB, root.getWidth(), root.getHeight(), true,
@@ -3994,6 +4000,16 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
         BrowserPanel::deviceDescription(*findBuiltin("org.adidaw.builtin.reverb")), nullptr,
         {root.devices.getWidth() - 20, root.devices.getHeight() / 2});
     check(root.devices.isInterestedInDragSource(reverb), "the strip takes a dragged device");
+    if (!root.devices.panels.empty()) {
+        const auto &tail = *root.devices.panels.back();
+        const auto mark = root.devices.getLocalPoint(&tail, juce::Point<int>{tail.getWidth() + 4, root.devices.getHeight() / 2});
+        check(renderedPixel(root.devices, mark) != look::dropTarget, "SC-38: the device insertion point starts unmarked");
+        root.devices.itemDragEnter(reverb);
+        check(!root.devices.dropBefore(reverb.localPosition.x) && renderedPixel(root.devices, mark) == look::dropTarget,
+              "SC-38: the device insertion line appears at the end of the chain");
+        root.devices.itemDragExit(reverb);
+        check(renderedPixel(root.devices, mark) != look::dropTarget, "SC-38: leaving the strip clears its insertion line");
+    }
     root.devices.itemDropped(reverb);
     refresh();
     check(chainOf(4) == std::vector<std::string>{"EQ Eight", "Utility", "Reverb"}, "dropped past the last device: at the end");
@@ -4002,11 +4018,16 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
         BrowserPanel::deviceDescription(*findBuiltin("org.adidaw.builtin.delay")), nullptr,
         {40, laneTop(root, 3) + 10});
     check(canvas.isInterestedInDragSource(onLane), "the lanes take a dragged device");
+    const juce::Point<int> laneMark{40, laneTop(root, 3)};
+    canvas.itemDragEnter(onLane);
+    check(renderedPixel(canvas, laneMark) == look::dropTarget,
+          "SC-38: the device outlines the lane of the track that will receive it");
     const auto clipsBefore = document->store().db().execAndGet("SELECT count(*) FROM clips").getInt();
     canvas.itemDropped(onLane);
     refresh();
     check(chainOf(3) == std::vector<std::string>{"Delay"} &&
-              document->store().db().execAndGet("SELECT count(*) FROM clips").getInt() == clipsBefore,
+              document->store().db().execAndGet("SELECT count(*) FROM clips").getInt() == clipsBefore &&
+              renderedPixel(canvas, laneMark) != look::dropTarget,
           "dropped on 2 MIDI's lane: onto that track, never a clip in the lane");
 #else
     check(!browser.load(find("Auto Filter")) && root.error().find("leaves out") != std::string::npos &&
@@ -4522,6 +4543,12 @@ void oneShotTile(AppCommands &commands, const std::filesystem::path &dir) {
     // Off the tile: a file dropped on the controls loads the slot too, as Live's Simpler takes one.
     auto &panel = *panels[0];
     check(panel.isInterestedInFileDrag(juce::StringArray(path)), "OneShot's whole panel takes a file from the desktop");
+    const juce::Point<int> slotMark{tile.getWidth() / 2, 1};
+    const auto noPreview = renderedPixel(tile, slotMark);
+    panel.fileDragEnter(juce::StringArray(path), 20, 40);
+    check(renderedPixel(tile, slotMark) != noPreview, "SC-38: hovering over OneShot's controls outlines the receiving slot");
+    panel.fileDragExit(juce::StringArray(path));
+    check(renderedPixel(tile, slotMark) == noPreview, "SC-38: leaving OneShot clears its slot preview");
     panel.filesDropped(juce::StringArray(path), 20, 40);
     refresh();
     check(tile.state() == SampleTile::State::Loaded, "a file dropped on OneShot's controls loads its slot");
@@ -5325,11 +5352,44 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
     auto &geometry = root.arrangement.geometry;
     auto &canvas = root.arrangement.canvas;
     const auto path = juce::String(wav.string());
+    geometry.scale = 48;
     // A little past bar 2: the clip starts on its line.
     const auto bar2 = textproj::kWhole;
     const int x = static_cast<int>(geometry.x(bar2) + 3);
-    canvas.filesDropped(juce::StringArray{path}, x, laneTop(root, 1) + 10);
+    const int audioY = laneTop(root, 1) + 10, midiY = laneTop(root, 2) + 10;
+    const juce::Point<int> sampleMark{x - 3, audioY};
+    const juce::StringArray files{path};
+    geometry.selection.insert = textproj::kPPQ + textproj::kPPQ / 2;
+    const juce::Point<int> headerMark{static_cast<int>(geometry.x(geometry.selection.insert)), audioY};
+    root.arrangement.headers.fileDragEnter(files, 15, audioY);
+    check(renderedPixel(canvas, headerMark) == look::dropTarget,
+          "SC-38: the track header previews the sample at the insert marker");
+    root.arrangement.headers.fileDragExit(files);
+    check(renderedPixel(canvas, headerMark) != look::dropTarget, "SC-38: leaving the header clears the lane preview");
+    geometry.selection.insert = 0;
+    const auto &strips = root.mixer.strips();
+    const auto row = std::ranges::find_if(strips, [](const auto &strip) { return strip->track() == 1 && strip->isVisible(); });
+    check(row != strips.end(), "SC-38: an audio mixer strip to accept the file");
+    if (row != strips.end()) {
+        auto &strip = **row;
+        const juce::Point<int> mixerMark{1, 10};
+        strip.fileDragEnter(files, 15, audioY);
+        check(renderedPixel(strip, mixerMark) == look::dropTarget, "SC-38: the mixer outlines the receiving strip");
+        strip.fileDragExit(files);
+        check(renderedPixel(strip, mixerMark) != look::dropTarget, "SC-38: leaving the mixer clears its outline");
+    }
+    check(renderedPixel(canvas, sampleMark) != look::dropTarget, "SC-38: the sample landing point starts unmarked");
+    canvas.fileDragEnter(files, x, audioY);
+    check(renderedPixel(canvas, sampleMark) == look::dropTarget && renderedPixel(canvas, {x, audioY}) != look::dropTarget,
+          "SC-38: the sample landing line snaps to bar 2, ahead of the pointer");
+    canvas.fileDragMove(files, x, midiY);
+    check(renderedPixel(canvas, sampleMark) != look::dropTarget &&
+              renderedPixel(canvas, {sampleMark.x, midiY}) != look::dropTarget,
+          "SC-38: an audio sample has no landing line over a MIDI track");
+    canvas.fileDragMove(files, x, audioY);
+    canvas.filesDropped(files, x, audioY);
     root.frame();
+    check(renderedPixel(canvas, sampleMark) != look::dropTarget, "SC-38: dropping the file clears its preview");
     const auto *drums = root.reader().findTrack(1);
     check(drums != nullptr && drums->clips.size() == 1 && drums->clips[0]->name == "Kick 808" &&
               drums->clips[0]->posTicks == bar2 && std::abs(drums->clips[0]->lengthTicks - 2 * textproj::kPPQ) <= 1,
@@ -5351,7 +5411,11 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
         instruments.emplace_back(track, file);
         return true;
     };
-    const auto midiY = laneTop(root, 2) + 10;
+    const juce::Point<int> instrumentLaneMark{40, laneTop(root, 2)};
+    canvas.fileDragEnter(files, x, midiY);
+    check(renderedPixel(canvas, instrumentLaneMark) == look::dropTarget &&
+              renderedPixel(canvas, {sampleMark.x, midiY}) != look::dropTarget,
+          "SC-38: on MIDI a sample that can load as an instrument outlines the receiving track");
     canvas.filesDropped(juce::StringArray{path}, x, midiY);
     check(instruments.size() == 1 && instruments.back() == std::pair<std::int64_t, std::filesystem::path>{2, wav} &&
               root.reader().findTrack(2)->clips.empty() && root.error().empty(),
@@ -5364,8 +5428,13 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
     auto &devices = root.devices;
     check(devices.panels.empty() && devices.isInterestedInFileDrag({path}),
           "an empty MIDI Device View accepts a sample file");
+    const juce::Point<int> instrumentStartMark{3, devices.getHeight() / 2};
+    devices.fileDragEnter(files, 10, 10);
+    check(renderedPixel(devices, instrumentStartMark) == look::dropTarget,
+          "SC-38: hovering over the empty MIDI Device View marks the instrument's insertion point");
     devices.filesDropped({path}, 10, 10);
-    check(instruments.size() == 2 && instruments.back().first == 2 && instruments.back().second == wav,
+    check(instruments.size() == 2 && instruments.back().first == 2 && instruments.back().second == wav &&
+              renderedPixel(devices, instrumentStartMark) != look::dropTarget,
           "dropping a file in the empty Device View loads an instrument on that track");
     const LibraryFile kick{"Kick 808.wav", wav, {}};
     const auto carried = BrowserPanel::dragDescription({&kick});
