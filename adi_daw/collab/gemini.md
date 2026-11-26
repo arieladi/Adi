@@ -4,6 +4,28 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-26 — `basics/*` Round 8 (`basics/look-chain` `26569ddf` — FAIL on Clang 14 JUCE)
+
+Verified `origin/basics/look-chain` at `26569ddf` (`SC-70`, `SC-112`, `SC-111`, `SC-110` on top of `land/basics-1127d` `90f4091d`) under **GCC 12.4.0** and **Clang 14.0.6 + libstdc++ 12** (`-DADI_WERROR=ON`, headless Pd on, JUCE off, `-DADI_ACCEPTANCE=ON`), all 5 delta JUCE TUs (`-DADI_WITH_JUCE=ON -DADI_WERROR=ON`), and **Clang 14 ASan + LSan + UBSan**.
+
+| Branch | SHA | GCC 12.4.0 (`-DADI_WERROR=ON`) | Clang 14.0.6 + libstdc++ 12 (`-DADI_WERROR=ON`) | JUCE TUs (`-DADI_WITH_JUCE=ON -DADI_WERROR=ON`, 5 delta TUs) | Clang 14 ASan + LSan + UBSan | Verdict |
+|---|---|---|---|---|---|---|
+| `basics/look-chain` | `26569ddf` | **PASS** (0 warnings; 16/16 suites incl. `adi_ui_window_state_tests`, `adi_ui_seams_tests`, `adi_acceptance_wts01`, 167.90 s) | **PASS** (0 warnings; 3/3 delta `adi_ui_window_state_tests`, `adi_ui_seams_tests`, `adi_acceptance_wts01`, 44.63 s) | **GCC 12:** **PASS** (5/5, 0 warnings); **Clang 14:** **FAIL** (3/5 0 warnings: `ui_analysis.cpp.o`, `ui_browser.cpp.o`, `test_ui_shell.cpp.o`; **NEW error `src/juce/ui_shell.cpp:1912:74`** + inherited `src/juce/ui_arrangement.cpp:2806:42`) | **PASS** (2/2 delta `adi_ui_seams_tests`, `adi_ui_window_state_tests`, 10.83 s; 0 errors, 0 leaks) | **FAIL (do not land)** |
+
+### Finding on `basics/look-chain` (`26569ddf`)
+
+- **NEW hard compile error in `src/juce/ui_shell.cpp:1912:74` under Clang 14.0.6 (`-DADI_WITH_JUCE=ON`):**
+  - Introduced in commit `3ddd7c56` (`adi_daw: SC-112 give the Info box its own analyser`).
+  - Lines 1911–1912 capture the structured binding `mode` directly in a lambda: `for (const auto &[mode, name] : choices) menu.addItem(..., [safe, mode] { ... });`. Clang 14 does not implement C++20 P1091R3 lambda capture of structured bindings:
+    - `src/juce/ui_shell.cpp:1912:74: error: 'mode' in capture list does not name a variable`
+    - `src/juce/ui_shell.cpp:1913:59: error: reference to local binding 'mode' declared in enclosing function 'adi::ui::AdiRootComponent::mouseDown'` (same at `:1914:80`)
+  - **Fix direction (for owner):** use an init-capture `[safe, mode = mode]` (or `const auto chosenMode = mode;` / `for (const auto &choice : choices)`).
+  - **Owner:** `basics/look` (`basics/look-chain` `26569ddf` / `SC-112` `3ddd7c56`).
+  - **Smallest repro:** `cmake -S adi_daw -B build-juce -G Ninja -DCMAKE_CXX_COMPILER=clang++-14 -DADI_WITH_JUCE=ON -DADI_WERROR=ON && cmake --build build-juce --target CMakeFiles/adi_ui_shell.dir/src/juce/ui_shell.cpp.o`.
+- Also inherits the `SC-87` `automationStroke_.emplace()` Clang 14 error at `src/juce/ui_arrangement.cpp:2806:42` from `land/basics-1127d` (`90f4091d`, owner `basics/tracks`).
+
+---
+
 ## 2026-11-26 — `basics/*` Round 7 (automation chain `sc-337-breakpoint-values` `3d810714` — PASS)
 
 Verified `origin/basics/sc-337-breakpoint-values` at `3d810714` (4-branch automation chain covering `sc-334-automation-follows-clips`, `sc-335-write-arrangement-automation`, `sc-336-automation-range-edits`, `sc-337-breakpoint-values`; 29 files vs `origin/main`) under **GCC 12.4.0** and **Clang 14.0.6 + libstdc++ 12** (`-DADI_WERROR=ON`, headless Pd on, JUCE off, `-DADI_ACCEPTANCE=ON`), all 4 touched JUCE TUs (`-DADI_WITH_JUCE=ON -DADI_WERROR=ON`), and **Clang 14 ASan + LSan + UBSan**.
