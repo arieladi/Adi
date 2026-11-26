@@ -6,6 +6,21 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-26, night — surfaces, phones and the agent's stop (ADR-0259)
+
+The director's outside panel proposed a design for controllers, a Stream Deck and phones. Win read it against SRF-01 to SRF-16, AGT-01 to AGT-12, the log and the code: most of it is decided already. Five choices went to him (H1 to H5); the panel amended them and win corrected three points. His words: "as the panel, with win's corrections".
+
+- **Stop Agent,** an addition: writes refused at once, jobs cancelled (a running one ends at its next safe point), pending proposals rejected, read-only until re-armed, nothing resumes. A fixed key in the window and on ADI's Stream Deck profile. It exists before any agent job runs.
+- **Captures:** a Browser place for what is made outside a song. Not for takes, not for the agent's renders.
+- **A phone page:** the direction only; its trust flow is tried first, with the surface host.
+- **Bias controls** parked with the Dream. **OSC and learned mappings** stay as decided; OSC's trust boundary gets written down.
+- **A lost device** cancels a gesture, and ends an automation pass keeping what was written. A hand on a controller is `user`; OSC and the phone page are `remote`, an actor the journal has and nothing uses yet.
+- **Control seat, when you next run:** DF-C8 lists the work; none of it before the basics.
+
+**Next free:** ADR-0260, DF-C9. The others are unchanged.
+
+---
+
 ## 2026-11-26, night — the director's answers to round 2 (ADR-0258); fourteen queues, seven sessions
 
 His words: "yes to all, T a, U a, go".
