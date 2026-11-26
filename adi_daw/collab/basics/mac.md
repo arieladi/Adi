@@ -26,7 +26,8 @@ Baseline `00f1f369f3566c0c833390f8af5f0df9ed50f1cf`.
 | `origin/land/basics-1127e` | `9a9c3f380d147f0cae4998c297c4802f7b8e6f00` | No | The player calls the removed `DeviceBridge::lastError` member at `src/juce/play.cpp:832`, `:852` and `:853`. These unconditional C++ calls also fail with the other compilers. The independently built shell suite failed both SC-246 Cue Volume checks at `tests/test_ui_shell.cpp:11207` and `:11215` on Apple Clang. |
 | `origin/basics/mac-chain` | `78dac0fdac2758c600fd3ebb2b20252e11161eb8` | App only | SC-246 now accepts sub-step rounding from Apple arm64 fused arithmetic. The exact landing had failed both slider checks. This app build passed 32/32 window and mixer suites and 3/3 acceptance tests. The separate player member error remains in the landing. |
 | `origin/land/basics-1127d` | `569c921edbef1797524b9b43a69e51eee63828bf` | Yes | Passed 37/37, including affected suites 3/3, window and mixer 31/31, acceptance 3/3. |
-| `origin/basics/look-chain` | `f8f32f63673086ee31a66cd246fc6e8cb9e6a15f` | Yes | Passed 34/34. window and mixer 31/31, acceptance 3/3. |
+| `origin/basics/look-chain` | `f8f32f63673086ee31a66cd246fc6e8cb9e6a15f` | Yes | Passed 34/34, including window and mixer 31/31, acceptance 3/3. |
+| `origin/basics/look-chain` | `3ddd7c56f6bc79080eca4c84295f8a09be1f6002` | Yes | Passed 34/34, including window and mixer 31/31, acceptance 3/3. |
 
 ## Nine-step window walk
 
