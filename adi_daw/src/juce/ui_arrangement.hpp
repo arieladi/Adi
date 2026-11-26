@@ -147,6 +147,7 @@ class TrackHeaderList final : public juce::Component, public juce::SettableToolt
     void mouseMove(const juce::MouseEvent &) override;
     void mouseWheelMove(const juce::MouseEvent &, const juce::MouseWheelDetails &) override;
 
+    bool keyPressed(const juce::KeyPress &) override;
     // Live's split line at a track's foot (manual 6.9: "dragging the split line"): a press this
     // close to a row's foot resizes the track; anywhere else on its title, a drag moves it.
     static constexpr int kSplitLine = 5;
@@ -455,9 +456,6 @@ class ArrangementView final : public juce::Component {
     // Under the bar over the track names, Live's Set Locator, Previous and Next Locator buttons (Live 12
     // manual 6.4): where paint draws each, and where a click finds it.
     enum class TopButton { Set, Previous, Next };
-    // What a track's Unfold Track button and U say on a track that is not a group.
-    static constexpr const char *kUnfoldWaits =
-        "Unfolding a track shows its automation lanes, which wait for the engine's automation (window log, N26).";
     juce::Rectangle<float> topButton(TopButton) const noexcept;
     void mouseDown(const juce::MouseEvent &) override;
     // The colour of the track at `position` down the rows: its own, an index into Live's palette
@@ -588,11 +586,9 @@ class ArrangementView final : public juce::Component {
     // folded groups leave out; a group that is gone gives way to the whole project. A new
     // generation with the same rows allocates nothing.
     void applyView();
-    // Live's group tracks (manual 18.3): folds or unfolds a group in this window. What it holds
-    // leaves the lanes, the names and the track controls; a selected track inside it gives the
-    // selection to the group.
-    void toggleFold(std::int64_t group);
-    // Alt+U (§42.16): every group unfolded.
+    // Folding a group hides its children. Folding an ordinary track collapses its row.
+    void toggleFold(std::int64_t track);
+    // Alt+U (§42.16): every track unfolded.
     void unfoldAll();
     // Where a row's name column begins: past a line in its group's colour for each group it sits
     // in, as Live's; the Arrangement sheet's lines, 4 wide at a step of 5, the row itself as wide as

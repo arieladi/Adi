@@ -717,15 +717,29 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
         headers.mouseDown(pressAt(headers, at));
         root.frame();
         check(root.state().foldedGroups.empty() && lanes.heightFor(17) > 0, "a second click unfolds it");
-        // A plain track's Unfold Track button shows its automation lanes, which wait for the engine.
+        // The same switch on a plain track keeps its row and selection while folding its height.
         lanes.selection.track = 16;
-        const auto bassUnfold = headers.foldSwitch(1, topOf(14)).getCentre();
-        headers.mouseDown(pressAt(headers, bassUnfold));
-        headers.mouseUp(pressAt(headers, bassUnfold));
+        const auto bassSwitch = headers.foldSwitch(1, topOf(14)).getCentre();
+        const auto bassHeight = lanes.heightFor(14);
+        const auto undo = root.undoTitle(false);
+        headers.mouseDown(pressAt(headers, bassSwitch));
+        headers.mouseUp(pressAt(headers, bassSwitch));
         root.frame();
         check(root.state().foldedGroups.empty() && lanes.selection.track == 16 &&
-                  root.error() == ArrangementView::kUnfoldWaits,
-              "Bass's Unfold Track button folds nothing, selects nothing and says it waits for automation (N26)");
+                  lanes.heightFor(14) == ArrangementGeometry::kMinTrackHeight && root.undoTitle(false) == undo,
+              "SC-259: Bass folds without hiding its row, changing selection or adding an undo step");
+        {
+            AdiRootComponent reopened(view, submitter, mailbox, commands, persistence, session, "groups");
+            reopened.setSize(1440, 900);
+            reopened.frame();
+            check(reopened.arrangement.geometry.heightFor(14) == ArrangementGeometry::kMinTrackHeight,
+                  "Bass reopens folded in the same window");
+        }
+        headers.mouseDown(pressAt(headers, bassSwitch));
+        headers.mouseUp(pressAt(headers, bassSwitch));
+        root.frame();
+        check(lanes.heightFor(14) == bassHeight && lanes.selection.track == 16 && root.undoTitle(false) == undo,
+              "clicking Bass's triangle again restores its previous height");
     }
     // The keys: U folds the selected group, Alt+U unfolds them all (§42.16, §42.19); a selected
     // track folded away gives the selection to its group.
@@ -742,18 +756,18 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
         check(canvas.keyPressed(juce::KeyPress('u')) && root.state().foldedGroups == std::set<std::int64_t>{13},
               "and unfolds it");
         lanes.selection.track = 1;
-        root.say({});
+        const auto mainHeight = lanes.heightFor(1);
         check(canvas.keyPressed(juce::KeyPress('u')) && root.state().foldedGroups == std::set<std::int64_t>{13} &&
-                  root.error() == ArrangementView::kUnfoldWaits,
-              "U on a track that is not a group folds nothing, and says its lanes wait (N26)");
+                  lanes.heightFor(1) == ArrangementGeometry::kMinTrackHeight,
+              "SC-259: U folds Main without affecting the folded group");
         // A view of a group inside a folded one shows it: the folded group is left out.
         root.arrangement.chooseView(16);
         check(lanes.heightFor(16) > 0 && lanes.heightFor(17) > 0 && lanes.heightFor(13) == 0 && lanes.heightFor(1) > 0,
               "Fx And Hits viewed alone inside folded Body: it shows, with its tracks and Main");
         root.arrangement.chooseView(0);
         check(canvas.keyPressed(juce::KeyPress('u', juce::ModifierKeys::altModifier, 0)) &&
-                  root.state().foldedGroups.empty() && lanes.heightFor(14) > 0,
-              "Alt+U unfolds every group");
+                  root.state().foldedGroups.empty() && lanes.heightFor(14) > 0 && lanes.heightFor(1) == mainHeight,
+              "Alt+U unfolds Main as well as every group");
     }
     // On the bar over the names: Automation Mode switches on and off (AU-01, its own test below); Lock
     // Envelopes still waits for the engine, and a click says what for (the director's R6, 2 November).
@@ -12341,6 +12355,26 @@ void automationMode(AppCommands &commands, const std::filesystem::path &dir) {
     const auto pointAt = juce::Point<float>(barX, lineY);
     const auto hit = canvas.automationPointAt(pointAt);
     check(hit && hit->track == 4, "the breakpoint is found where it is drawn");
+    canvas.grabKeyboardFocus();
+    root.arrangement.geometry.selection.track = 2;
+    auto &headers = root.arrangement.headers;
+    const juce::Point<float> title{42.f, static_cast<float>(laneTop(root, 4) + 9)};
+    headers.mouseDown(pressAt(headers, title, juce::ModifierKeys::leftButtonModifier));
+    headers.mouseUp(pressAt(headers, title));
+    const auto pressU = [&] {
+        auto *peer = surfacePeer.getPeer();
+        return peer != nullptr && headers.hasKeyboardFocus(false) && peer->handleKeyPress(juce::KeyPress('u'));
+    };
+    check(root.arrangement.geometry.selection.track == 4 && pressU(),
+          "SC-259: pressing U after selecting the track title folds the track");
+    const auto foldedBodies = canvas.laneBodies();
+    check(std::none_of(foldedBodies.begin(), foldedBodies.end(), [](const auto &body) { return body.track->id == 4; }) &&
+              !canvas.automationPointAt(pointAt) &&
+              root.arrangement.automationLaneAt(static_cast<int>(audio->top)) == nullptr,
+          "SC-259: the folded envelope is absent from rendering and hit-testing");
+    check(pressU() && canvas.automationPointAt(pointAt) &&
+              root.undoTitle(false) == "Undo Add Automation Point",
+          "unfold restores the same envelope and breakpoint without editing the project");
     const float twoBars = static_cast<float>(root.arrangement.geometry.x(2 * textproj::kWhole));
     const float upper = audio->top + (audio->bottom - audio->top) * .25f;
     canvas.mouseDown(pressAt(canvas, pointAt));

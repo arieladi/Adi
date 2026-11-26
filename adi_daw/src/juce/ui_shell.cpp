@@ -1302,6 +1302,7 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
     arrangement.geometry.scale = state_.pixelsPerQuarter;
     arrangement.geometry.height = state_.laneHeight;
     arrangement.geometry.heights = state_.laneHeights;
+    arrangement.geometry.foldedTracks = state_.foldedTracks;
     arrangement.geometry.largeTracks = state_.largeTracks;
     arrangement.geometry.grid = {state_.gridSnap, state_.gridFixed, state_.gridTriplet, state_.gridNarrow,
                                  state_.gridFixedQuarters};
