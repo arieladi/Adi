@@ -35,4 +35,4 @@ macOS initially denied Accessibility and event posting to the shell session. Aft
 
 ## For the director
 
-SC-392's rebuilt bundle reached the macOS Microphone approval prompt with BlackHole selected for both input and output. Approval is needed to complete the live recording retest.
+macOS granted the rebuilt app audio-input authorization. The live retest recorded and played the BlackHole tone at 440 Hz and about −29.03 dBFS RMS per channel.
