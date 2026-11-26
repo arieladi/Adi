@@ -330,6 +330,9 @@ class StatusBar final : public juce::Component {
     void paint(juce::Graphics &) override;
     void resized() override;
     juce::TextButton infoToggle{""}, detailToggle{""}, mixerToggle{"Mixer"};
+    juce::TextButton audioSettings{"Audio Settings"};
+    void setAudioDeviceProblem(juce::String problem);
+    const juce::String &audioDeviceProblem() const noexcept { return audioDeviceProblem_; }
     // Live 12's Clip View Selector, in the second field: the shown clip in miniature; a click shows
     // or hides the Clip View (manual 8).
     juce::TextButton clipToggle{""};
@@ -346,6 +349,7 @@ class StatusBar final : public juce::Component {
 
   private:
     AdiRootComponent &root_;
+    juce::String audioDeviceProblem_;
     juce::Point<int> selectorLast_;
     bool selectorDragged_ = false;
 };
@@ -408,6 +412,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // The application's commands (New, Open, Take Snapshot, Save As, Settings) and
     // the engine refresh after an edit belong to whoever owns the document.
     std::function<bool(int)> applicationCommand;
+    std::function<void()> openAudioSettings;
     std::function<void()> afterEdit;
     std::function<std::int64_t()> retainedDeviceId;
     // Commits the parameter edits the document still holds before Undo, Redo or a restored step acts

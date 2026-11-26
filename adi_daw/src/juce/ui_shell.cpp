@@ -1145,6 +1145,17 @@ StatusBar::StatusBar(AdiRootComponent &root) : root_(root) {
     mixerOptions.onClick = [this] {
         root_.mixerOptionsMenu().showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(&mixerOptions));
     };
+    addChildComponent(audioSettings);
+    audioSettings.onClick = [this] {
+        if (root_.openAudioSettings)
+            root_.openAudioSettings();
+    };
+}
+void StatusBar::setAudioDeviceProblem(juce::String problem) {
+    audioDeviceProblem_ = std::move(problem);
+    audioSettings.setVisible(audioDeviceProblem_.isNotEmpty());
+    audioSettings.setTooltip(audioDeviceProblem_);
+    repaint();
 }
 void StatusBar::resized() {
     // Live's Status Bar at 100 %: round corner buttons, the message field, a second
@@ -1155,6 +1166,9 @@ void StatusBar::resized() {
     clipToggle.setBounds(secondField());
     mixerToggle.setBounds(w - 86, 11, 36, 16);
     mixerOptions.setBounds(w - 49, 11, 8, 16);
+    const int messageWidth = std::max(0, w - 419);
+    const int actionWidth = std::min(98, std::max(0, messageWidth - 8));
+    audioSettings.setBounds(35 + messageWidth - actionWidth - 4, 11, actionWidth, 16);
 }
 void StatusBar::clipClicked() {
     // The end of a drag in the selector is not a click.
@@ -1258,8 +1272,12 @@ void StatusBar::paint(juce::Graphics &g) {
     const bool error = !root_.error().empty();
     g.setColour(look::text);
     g.setFont(look::font(look::fontHeading));
-    g.drawText(error ? juce::String(root_.error()) : root_.selectionText(), message.reduced(8, 0),
-               juce::Justification::centredLeft);
+    const bool audioProblem = audioDeviceProblem_.isNotEmpty();
+    auto text = audioProblem ? audioDeviceProblem_ : error ? juce::String(root_.error()) : root_.selectionText();
+    if (audioProblem && error)
+        text << "  " << juce::String(root_.error());
+    const auto actionWidth = audioSettings.isVisible() ? audioSettings.getWidth() + 4 : 0;
+    g.drawText(text, message.reduced(8, 0).withTrimmedRight(actionWidth), juce::Justification::centredLeft);
     // The selected track's name, as Live shows it at the right.
     const auto rows = root_.arrangement.geometry.rows(root_.reader());
     if (const auto i = rows.find(root_.arrangement.geometry.selection.track); i < rows.size()) {

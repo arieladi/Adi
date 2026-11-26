@@ -130,7 +130,7 @@ AudioDevicePage::AudioDevicePage(juce::AudioDeviceManager &manager, settings::Ap
     driver_.onChange = [this] {
         manager_.setCurrentAudioDeviceType(driver_.getText(), true);
         error_ = useChannelConfig(manager_, settings_);
-        refresh();
+        finishSetupChange();
     };
     input_.onChange = [this] {
         apply([this](auto &setup) {
@@ -263,9 +263,10 @@ void AudioDevicePage::openConfig(bool inputs) {
         const bool saved = keepChannelConfig(page->settings_, name.toStdString(), inputs, edited, why);
         page->error_ = saved ? useChannelConfig(page->manager_, page->settings_) : juce::String::fromUTF8(why.c_str());
         page->closeConfig();
-        page->refresh();
-        if (saved && page->onChannelConfigChanged)
-            page->onChannelConfigChanged();
+        if (saved)
+            page->finishSetupChange();
+        else
+            page->refresh();
     };
     panel->onCancel = [self] {
         if (self != nullptr)
@@ -295,6 +296,11 @@ void AudioDevicePage::apply(const std::function<void(juce::AudioDeviceManager::A
     // Another device opens with the channels its own record keeps in use (N20).
     if (error_.isEmpty())
         error_ = useChannelConfig(manager_, settings_);
+    finishSetupChange();
+}
+void AudioDevicePage::finishSetupChange() {
+    if (onSetupChanged)
+        onSetupChanged(error_.isEmpty());
     refresh();
 }
 void AudioDevicePage::changeListenerCallback(juce::ChangeBroadcaster *) { refresh(); }

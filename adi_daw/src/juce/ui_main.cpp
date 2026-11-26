@@ -908,6 +908,10 @@ class AdiApplication final : public juce::JUCEApplication,
         // Arm, monitoring and Arrangement Record (MX-09): the session's rows, and the recorder.
         root->readRecordStates = [this] { return document_->recordStates(); };
         root->setRecordStates(document_->recordStates());
+        root->openAudioSettings = [this] {
+            if (applicationCommand(AppCommands::Settings))
+                settingsWindow_->panel().showPage("Audio");
+        };
         root->startRecording = [this](std::int64_t insertTick, bool playing) {
             auto *audioDevice = manager_.getCurrentAudioDevice();
             if (audioDevice == nullptr) {
@@ -1356,7 +1360,15 @@ class AdiApplication final : public juce::JUCEApplication,
                 if (!noAudio_ || smokeSettings_)
                     devices = [this]() -> std::unique_ptr<juce::Component> {
                         auto page = std::make_unique<AudioDevicePage>(manager_, *settings_);
-                        page->onChannelConfigChanged = [this] { applyInputChannels(); };
+                        page->onSetupChanged = [this](bool applied) {
+                            if (applied) {
+                                if (bridge_)
+                                    bridge_->acknowledgeDeviceSetup();
+                                if (root_)
+                                    root_->status.setAudioDeviceProblem({});
+                            }
+                            applyInputChannels();
+                        };
                         return page;
                     };
                 settingsWindow_ = std::make_unique<SettingsWindow>(*settings_, std::move(devices));
@@ -1473,6 +1485,9 @@ class AdiApplication final : public juce::JUCEApplication,
             return;
         document_->tick(static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
         if (root_) {
+            if (bridge_)
+                if (auto problem = bridge_->takeDeviceProblem(); problem.isNotEmpty())
+                    root_->status.setAudioDeviceProblem(std::move(problem));
             root_->setRecordStates(document_->recordStates());
             refreshRecordingPreview();
             // A take landed (MX-09): its outcome in the Status Bar, its clips selected.
