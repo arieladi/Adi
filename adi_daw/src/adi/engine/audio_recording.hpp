@@ -33,6 +33,10 @@ struct RecordedPass {
     std::uint64_t sourceStartFrame=0,frames=0;
     std::int64_t timelineStartSample=0,timelineEndSample=0; // half-open
 };
+// Subtract the signed correction from the captured timeline position and clamp
+// at song zero. An unrepresentable sample position cannot be placed.
+[[nodiscard]] std::optional<std::int64_t> recordingPlacementStart(std::int64_t startSample,
+                                                                 std::int64_t offsetSamples) noexcept;
 struct AudioRecordingSpec {
     std::filesystem::path workFolder;
     std::string sourceProject; // Session supplies its resolved project identity
@@ -40,6 +44,7 @@ struct AudioRecordingSpec {
     audio::WavFormat format=audio::WavFormat::Float32;
     std::vector<RecordingTarget> targets;
     std::optional<AudioRecordingLoop> loop; // absent retains linear capture
+    std::int64_t placementOffsetSamples = 0; // captured with the device settings for a linear take
 };
 enum class RecordingFailure : std::uint8_t {None,Overflow,MissingInput,BlockSize,Discontinuity,Cancelled,Io,NoFrames,InvalidCapture,PassLimit};
 struct RecordedTrack {
@@ -52,7 +57,7 @@ struct AudioRecordingPreview {
         std::int64_t trackId=0;
         std::vector<std::uint32_t> channels; // indices into the preview's unique input channels
     };
-    std::int64_t startSample=0; // actual unadjusted position of the first captured frame
+    std::int64_t startSample=0; // clip position on the timeline after the placement correction
     media::MediaPeaks peaks; // in file-frame order, shared by tracks with the same input
     std::vector<Track> tracks;
 };
@@ -65,6 +70,7 @@ public:
     std::uint32_t sampleRate=0;
     std::uint64_t frames=0;
     std::int64_t startSample=0;
+    std::int64_t placementOffsetSamples=0;
     std::vector<RecordedTrack> tracks;
     std::shared_ptr<const AudioRecordingPreview> preview;
     [[nodiscard]] const std::filesystem::path& directory()const noexcept;

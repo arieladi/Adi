@@ -1243,6 +1243,7 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
     }
     engine::AudioRecordingSpec spec;
     spec.workFolder = media::projectFolder(*store_);
+    spec.placementOffsetSamples = deviceLatencySamples;
     spec.sampleRate = static_cast<std::uint32_t>(std::lround(engineRate_));
     spec.maxFrames = static_cast<std::uint32_t>(std::max<std::int32_t>(1, engineFrames_));
     // Two seconds of input between the callback and the writer, at least eight blocks.
@@ -1265,7 +1266,6 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
         error_ = "Transport command queue is full" + (kept.empty() ? std::string() : "." + kept);
         return false;
     }
-    takeLatencySamples_ = deviceLatencySamples;
     recording_ = true;
     error_.clear();
     return true;
@@ -1340,7 +1340,7 @@ void ProjectDocument::landTake(engine::AudioRecordingResult &result) {
             ids.push_back({clip, rows.next("media_files"), name.empty() ? std::string("Take") : std::move(name)});
             outcome.clips.push_back(ids.back().clip);
         }
-        edit = recording::prepareCommit(*store_, result, ids, takeLatencySamples_);
+        edit = recording::prepareCommit(*store_, result, ids, result.placementOffsetSamples);
     } catch (const std::exception &error) {
         edit.error = error.what();
     }

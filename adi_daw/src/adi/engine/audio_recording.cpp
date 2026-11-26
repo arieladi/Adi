@@ -16,6 +16,14 @@
 #include <thread>
 namespace adi::engine {
 namespace fs=std::filesystem;
+std::optional<std::int64_t> recordingPlacementStart(std::int64_t startSample,
+                                                   std::int64_t offsetSamples) noexcept {
+    constexpr auto ceiling = std::numeric_limits<std::int64_t>::max();
+    if (startSample < 0 || (offsetSamples < 0 && startSample > ceiling + offsetSamples))
+        return std::nullopt;
+    return offsetSamples > startSample ? 0 : startSample - offsetSamples;
+}
+
 struct AudioRecordingResult::Files {fs::path directory;};
 bool AudioRecordingResult::hasAttachableAudio()const noexcept {
     if(frames==0)return false;
@@ -138,7 +146,9 @@ struct Job {
         const auto width = inputChannels.size();
         if (peaks.frames == 0) {
             try {
-                accumulatingPreview.startSample = firstSample.load(std::memory_order_relaxed);
+                const auto start = firstSample.load(std::memory_order_relaxed);
+                const auto offset = spec.loop ? 0 : spec.placementOffsetSamples;
+                accumulatingPreview.startSample = recordingPlacementStart(start, offset).value_or(start);
                 peaks.channels = static_cast<std::uint32_t>(width);
                 peaks.sampleRate = spec.sampleRate;
                 peaks.framesPerBin = firstPreviewBinFrames;
@@ -369,6 +379,7 @@ std::optional<AudioRecordingResult> AudioInputRecorder::poll(bool deviceStopped)
     if(job->worker.joinable())job->worker.join();
     AudioRecordingResult result;result.failure=job->failure.load(std::memory_order_acquire);result.sampleRate=job->spec.sampleRate;
     result.frames=job->written.load(std::memory_order_acquire);result.startSample=job->firstSample.load(std::memory_order_acquire);result.tracks=job->tracks;
+    result.placementOffsetSamples=job->spec.placementOffsetSamples;
     result.finalizedPrefix_=job->finalized;
     result.sourceProject_=job->spec.sourceProject;
     result.loop_=job->spec.loop;

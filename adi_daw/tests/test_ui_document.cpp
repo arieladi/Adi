@@ -948,6 +948,13 @@ void recordWithDeviceLatency(const std::filesystem::path &dir) {
         io.streamTimeSamples = blockStart;
         doc->process(io);
     }
+    const auto previewDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    std::shared_ptr<const engine::AudioRecordingPreview> preview;
+    do {
+        preview = doc->session().recording().preview();
+        if (!preview)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    } while (!preview && std::chrono::steady_clock::now() < previewDeadline);
     doc->release();
     check(doc->settleRecording(), "SC-22: settle the overdub after the device closes");
     const auto landed = doc->takeLanded();
@@ -966,6 +973,8 @@ void recordWithDeviceLatency(const std::filesystem::path &dir) {
     audio::WavReader saved(mediaPath);
     std::array<float, captureFrames> audio{};
     const auto clipStart = std::llround(tempo->ticksToSeconds(take.getColumn(0).getInt64()) * rate);
+    check(preview && preview->startSample == clipStart,
+          "SC-20, SC-22: live peaks and the placed clip share the compensated start");
     check(saved.frames() == audio.size() && saved.read(audio.data(), captureFrames) == audio.size() &&
               audio[delayedClick] == 0.75f && clipStart + delayedClick == startSample + referenceClick,
           "SC-22: the saved impulse is unmodified and lines up with the reference click on the timeline");

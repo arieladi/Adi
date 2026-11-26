@@ -326,7 +326,6 @@ class ProjectDocument final : public engine::BlockProcessor {
     // Discards a take that is not kept; what the Status Bar adds when its files stay (DF-E44), else empty.
     std::string discardTake(engine::AudioRecordingResult &);
     bool recording_ = false, landing_ = false;
-    std::int64_t takeLatencySamples_ = 0;
     std::atomic<bool> deviceStopped_{true}; // `release` without a `prepare` since
     std::optional<TakeLanded> landed_;
     // The mixer drag's gesture (MX-23): the coordinator of this store's gestures, and the open session.

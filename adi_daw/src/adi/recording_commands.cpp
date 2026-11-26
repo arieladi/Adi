@@ -177,9 +177,10 @@ RecordingEdit prepareCommit(Store& store,const engine::AudioRecordingResult& rec
            recorded.sampleRate<8000 || recorded.sampleRate>768000)
             throw std::runtime_error("recording is not a completed attachable take");
         constexpr auto ceiling=std::numeric_limits<std::int64_t>::max();
-        if(placementOffsetSamples<0 && recorded.startSample>ceiling+placementOffsetSamples)
+        const auto placed=engine::recordingPlacementStart(recorded.startSample,placementOffsetSamples);
+        if(!placed)
             throw std::runtime_error("recording latency placement overflows the song clock");
-        const auto start=placementOffsetSamples>recorded.startSample ? 0 : recorded.startSample-placementOffsetSamples;
+        const auto start=*placed;
         if(recorded.frames>static_cast<std::uint64_t>(ceiling-start))
             throw std::runtime_error("recording latency placement overflows the song clock");
         const auto first=tickAt(tempo,start,recorded.sampleRate);
