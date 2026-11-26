@@ -2067,12 +2067,30 @@ void NoteEditor::mouseDrag(const juce::MouseEvent &e) {
 #endif
     const auto area = notesArea();
     const auto previousTicks = dragTicks_;
-    if (drag_ == Drag::Move || drag_ == Drag::Start || drag_ == Drag::End) {
-        // Notes keep their offset from the grid: the drag moves by whole grid steps (manual 10.2.1).
-        const double raw = static_cast<double>(to_.x - from_.x) / time.scale * static_cast<double>(textproj::kPPQ);
-        const auto step = static_cast<double>(gridTicks());
-        dragTicks_ = snapping(e.mods) ? static_cast<std::int64_t>(std::llround(raw / step) * static_cast<long long>(step))
-                                      : static_cast<std::int64_t>(std::llround(raw));
+    const bool draggingNotes = drag_ == Drag::Move || drag_ == Drag::Start || drag_ == Drag::End;
+    const auto *anchor = draggingNotes ? note_edits_detail::find(*clip, anchor_) : nullptr;
+    if (draggingNotes) {
+        const int dx = to_.x - from_.x;
+        dragTicks_ = std::llround(static_cast<double>(dx) / time.scale * textproj::kPPQ);
+        if (dx != 0 && anchor != nullptr && snapping(e.mods)) {
+            // Follow the pointer until the first grid line approaches. Snap the grabbed note's moving
+            // edge from then on, and apply its delta to the whole selection (manual 10.2.1).
+            const auto origin = ClipWindow::of(*clip).toArrangement(
+                anchor->startTicks + (drag_ == Drag::End ? anchor->durationTicks : 0));
+            const auto target = origin + dragTicks_;
+            const auto firstLine = time.snap(origin, dx > 0);
+            constexpr double magneticPixels = 4.;
+            const auto remaining = dx > 0 ? firstLine - target : target - firstLine;
+            const auto distance = static_cast<double>(remaining) / textproj::kPPQ * time.scale;
+            if (distance <= std::min(magneticPixels, time.gridQuarters() * time.scale / 2.)) {
+                const auto below = time.snap(target, false), above = time.snap(target, true);
+                const auto distanceBelow = target - below, distanceAbove = above - target;
+                const bool nearerBelow = distanceBelow < distanceAbove || (distanceBelow == distanceAbove && dx < 0);
+                const auto nearest = nearerBelow ? below : above;
+                const auto line = dx > 0 ? std::max(nearest, firstLine) : std::min(nearest, firstLine);
+                dragTicks_ = line - origin;
+            }
+        }
     }
     if (drag_ == Drag::Move) {
         const auto a = keys.keyAt(from_.y - area.getY());
@@ -2091,9 +2109,8 @@ void NoteEditor::mouseDrag(const juce::MouseEvent &e) {
                         high = std::max(high, static_cast<int>(n->key));
                     }
         const int keyDelta = a && b && low <= high ? std::clamp(*b - *a, -low, kNoteKeys - 1 - high) : 0;
-        if (keyDelta != dragKeys_ || previousTicks != dragTicks_)
-            if (const auto *anchor = note_edits_detail::find(*clip, anchor_))
-                audition(clip->trackId, anchor->key + keyDelta, anchor->velocity);
+        if (anchor != nullptr && (keyDelta != dragKeys_ || previousTicks != dragTicks_))
+            audition(clip->trackId, anchor->key + keyDelta, anchor->velocity);
         dragKeys_ = keyDelta;
     } else if (drag_ == Drag::Velocity) {
         velocityDrag();

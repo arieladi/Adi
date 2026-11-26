@@ -5344,6 +5344,62 @@ void clipViewNoteGrid(AppCommands &commands, const std::filesystem::path &dir) {
           "Ctrl/Cmd+U quantizes to the sixteenth while keeping the note's length");
     check(ed.keyPressed(key('e')) && ed.selected().size() == 4 && note(20).durationTicks == step,
           "Chop divides the beat-long note into four pieces at the same grid");
+
+    constexpr auto offGrid = 2 * beat + beat / 8;
+    check(add(30, offGrid, beat, 62) && add(31, offGrid + step / 2, beat, 64),
+          "two notes at different offsets from the grid");
+    const auto box = ed.boxOf(note(30));
+    if (!box)
+        return;
+    const auto grab = juce::Point<float>{static_cast<float>(box->x + box->width / 2),
+                                         static_cast<float>(box->y + box->height / 2)};
+    ed.select({30, 31});
+    ed.mouseDown(pressAt(ed, grab));
+    ed.mouseDrag(dragAt(ed, grab, grab.translated(2.f, 0.f)));
+    check(ed.shown(note(30)).startTicks == window.toSource(offGrid + beat / 32),
+          "before the first grid line is near, an off-grid note follows the mouse");
+    const auto near = grab.translated(6.f, 0.f);
+    ed.mouseDrag(dragAt(ed, grab, near));
+    check(ed.shown(note(30)).startTicks == window.toSource(2 * beat + step) &&
+              ed.shown(note(31)).startTicks - ed.shown(note(30)).startTicks == step / 2,
+          "the grabbed start snaps and the other note keeps its timing relative to it");
+    ed.mouseUp(pressAt(ed, near));
+    check(note(30).startTicks == window.toSource(2 * beat + step) &&
+              note(31).startTicks - note(30).startTicks == step / 2,
+          "release commits the previewed move for both notes");
+
+    const auto end = ed.boxOf(note(31));
+    if (!end)
+        return;
+    const auto edge = juce::Point<float>{static_cast<float>(end->x + end->width - 2.),
+                                         static_cast<float>(end->y + end->height / 2)};
+    const auto before = note(31);
+    ed.select({31});
+    ed.mouseDown(pressAt(ed, edge));
+    ed.mouseDrag(dragAt(ed, edge, edge.translated(-6.f, 0.f)));
+    const auto expectedEnd = window.toSource(3 * beat + step);
+    check(ed.shown(before).startTicks + ed.shown(before).durationTicks == expectedEnd,
+          "a leftward resize snaps the off-grid end to the line");
+    ed.mouseUp(pressAt(ed, edge.translated(-6.f, 0.f)));
+    check(note(31).startTicks == before.startTicks && note(31).startTicks + note(31).durationTicks == expectedEnd,
+          "resizing commits the snapped end and preserves the start");
+
+    const auto boxAfter = ed.boxOf(note(31));
+    if (!boxAfter)
+        return;
+    const auto startEdge = juce::Point<float>{static_cast<float>(boxAfter->x + 1.),
+                                              static_cast<float>(boxAfter->y + boxAfter->height / 2)};
+#if JUCE_MAC
+    const juce::ModifierKeys bypass(juce::ModifierKeys::commandModifier);
+#else
+    const juce::ModifierKeys bypass(juce::ModifierKeys::altModifier);
+#endif
+    ed.mouseDown(pressAt(ed, startEdge));
+    ed.mouseDrag(dragAt(ed, startEdge, startEdge.translated(6.f, 0.f), bypass));
+    ed.mouseUp(pressAt(ed, startEdge.translated(6.f, 0.f), bypass));
+    check(note(31).startTicks == before.startTicks + 3 * beat / 32 &&
+              note(31).startTicks + note(31).durationTicks == expectedEnd,
+          "the temporary bypass keeps a resized start off the grid and preserves the end");
 }
 
 // The Clip View's Main panel (worklist G2; manual 8.2): Start, End, the Loop switch, the loop's Position
