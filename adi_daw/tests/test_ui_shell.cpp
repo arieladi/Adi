@@ -12814,8 +12814,8 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
         return;
     }
     const auto states = [&] { return document->recordStates(); };
-    check(states().at(4).monitor == Monitor::Auto && states().at(3).monitor == Monitor::Auto,
-          "New's audio and MIDI tracks monitor on Auto, as Live's (N67) [P:recording#11]");
+    check(states().at(4).monitor == Monitor::Off && states().at(3).monitor == Monitor::Auto,
+          "SC-249: New shows Monitor Off for audio and Auto for MIDI [P:recording#11]");
     three->arm.onClick();
     frame();
     check(states().at(4).armed && three->arm.getToggleState() && root.error().empty(),
@@ -12849,14 +12849,14 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     root.command(AppCommands::ToggleMixerView);
     check(root.setMonitor(4, Monitor::In), "3 Audio's monitoring to In");
     frame();
-    check(states().at(4).monitor == Monitor::In && states().at(5).monitor == Monitor::Auto &&
+    check(states().at(4).monitor == Monitor::In && states().at(5).monitor == Monitor::Off &&
               root.recordState(4).monitor == Monitor::In,
           "track.setMonitorMode In on 3 Audio alone [P:recording#9]");
     check(root.setMonitor(4, Monitor::In) && root.error().empty(), "the same choice again is accepted");
     frame();
     check(root.command(AppCommands::Undo), "undo");
     frame();
-    check(states().at(4).monitor == Monitor::Auto, "the same choice again changed nothing: one Undo puts 3 Audio back on Auto [P:recording#9]");
+    check(states().at(4).monitor == Monitor::Off, "the same choice again changed nothing: one Undo puts 3 Audio back on Off [P:recording#9]");
     check(root.command(AppCommands::Redo), "redo");
     frame();
     check(!root.setMonitor(1, Monitor::In) && root.error().find("no input") != std::string::npos, "Main has no monitoring [P:recording#9]");
@@ -13047,7 +13047,7 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
         }
         (void)document->takeLanded();
     }
-    // With the loop on, Record says it waits for take lanes.
+    // CT-02: loop audio can record, while armed MIDI still needs pass placement.
     {
         OpRequest loop;
         loop.opType = "transport.setLoop";
@@ -13055,8 +13055,20 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
         check(document->ops().submit(loop).ok && document->synchronise(), "the loop on");
         frame();
         check(!root.command(AppCommands::ArrangementRecord) && !document->recording() &&
-                  root.error().find("loop") != std::string::npos,
-              "Record with the loop on is refused, saying why");
+                  root.error().find("MIDI") != std::string::npos,
+              "SC-27: loop recording explains why it cannot start with an armed MIDI track");
+        OpRequest disarm;
+        disarm.opType = "track.setArm";
+        disarm.payload = {{"id", 3}, {"armed", false}};
+        check(document->ops().submit(disarm).ok && document->synchronise(), "disarm MIDI for the loop take");
+        frame();
+        check(root.command(AppCommands::ArrangementRecord) && document->recording(),
+              "SC-27: the Record command starts audio recording with Loop on");
+        check(root.command(AppCommands::Stop), "stop the loop take");
+        block();
+        check(document->settleRecording() && !document->recording() && !document->landingTake(),
+              "SC-27: the Record command's loop take stops and settles");
+        (void)document->takeLanded();
     }
     // Without the application's hooks Record says where it runs.
     root.startRecording = nullptr;

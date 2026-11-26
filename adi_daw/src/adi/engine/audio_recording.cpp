@@ -2,6 +2,7 @@
 #include "adi/engine/audio_recording.hpp"
 #include "adi/engine/audio_memory.hpp"
 #include "adi/engine/publisher.hpp"
+#include "adi/engine/snapshot.hpp"
 #include "adi/engine/transport.hpp"
 #include "adi/audio/io_audit.hpp"
 #include <algorithm>
@@ -43,6 +44,21 @@ std::optional<RecordedPass> recordingPlacementRange(std::int64_t startSample,std
         return {};
     return RecordedPass{static_cast<std::uint64_t>(keptStart-start),static_cast<std::uint64_t>(keptEnd-keptStart),
                         keptStart,keptEnd};
+}
+
+AudioRecordingPreview::Range AudioRecordingPreview::latestPass(std::uint64_t acceptedFrames) const noexcept {
+    const auto frames = std::max(peaks.frames, acceptedFrames);
+    if (!loop || loop->beginSample < 0 || loop->endSample <= loop->beginSample ||
+        startSample < 0 || startSample >= loop->endSample)
+        return {startSample, 0, frames};
+    const auto firstFrames = static_cast<std::uint64_t>(loop->endSample - startSample);
+    if (frames <= firstFrames)
+        return {startSample, 0, frames};
+    const auto loopFrames = static_cast<std::uint64_t>(loop->endSample - loop->beginSample);
+    // An exact wrap still shows the last complete pass until the next one
+    // has audio. Source offsets include a partial first pass.
+    const auto passFrames = (frames - firstFrames - 1) % loopFrames + 1;
+    return {loop->beginSample, frames - passFrames, passFrames};
 }
 
 struct AudioRecordingResult::Files {fs::path directory;};
@@ -120,6 +136,7 @@ struct Job {
     bool begun=false;
     std::int64_t nextTimeline=0,nextStream=0;
     std::uint64_t transportRevision=0;
+    std::optional<std::uint64_t> verifiedClockGeneration;
     std::vector<RecordedPass> passes; // sized before publication, never grown here
     std::size_t passCount=0;
     void fail(RecordingFailure value)noexcept{auto expected=RecordingFailure::None;failure.compare_exchange_strong(expected,value,std::memory_order_relaxed);}
@@ -180,6 +197,7 @@ struct Job {
                 accumulatingPreview.startSample = recordingPlacementStart(start, offset).value_or(start);
                 if (punchWindow.active())
                     accumulatingPreview.punchedPlacement = AudioRecordingPreview::PunchedPlacement{start, offset, punchWindow};
+                accumulatingPreview.loop = spec.loop;
                 peaks.channels = static_cast<std::uint32_t>(width);
                 peaks.sampleRate = spec.sampleRate;
                 peaks.framesPerBin = firstPreviewBinFrames;
@@ -273,14 +291,17 @@ struct Job {
         done.store(true,std::memory_order_release);
     }
     bool capture(const AudioIo& io,const Transport& transport,RecordingPunch punch,
-                 const RecordingPunchWindow& window)noexcept {
+                 const RecordingPunchWindow& window,const TempoMap* clock,std::uint64_t clockGeneration)noexcept {
         if(failure.load(std::memory_order_relaxed)!=RecordingFailure::None || transportEnded.load(std::memory_order_relaxed))return false;
         if(begun && !spec.loop && window!=punchWindow){fail(RecordingFailure::Discontinuity);return false;}
         if(!transport.playing() || punch==RecordingPunch::After) {
             if(begun)transportEnded.store(true,std::memory_order_release);
             return false;
         }
-        if(punch==RecordingPunch::Before)return false;
+        if(punch==RecordingPunch::Before) {
+            if(begun && spec.loop)fail(RecordingFailure::Discontinuity);
+            return false;
+        }
         if(io.frames==0)return false;
         if(io.frames<0 || static_cast<std::uint32_t>(io.frames)>spec.maxFrames){fail(RecordingFailure::BlockSize);return false;}
         const auto frames=static_cast<std::uint32_t>(io.frames);
@@ -291,6 +312,15 @@ struct Job {
         if(spec.loop) {
             if(!transport.looping() || transport.loopBegin()!=spec.loop->beginSample || transport.loopEnd()!=spec.loop->endSample ||
                (begun && transport.revision()!=transportRevision)){fail(RecordingFailure::Discontinuity);return false;}
+            // Equal loop endpoints can hide a different tempo inside the brace.
+            // Check the immutable map once per graph publication.
+            if(spec.loop->tempo && verifiedClockGeneration!=clockGeneration) {
+                if(!clock || clock->events!=spec.loop->tempo->events) {
+                    fail(RecordingFailure::Discontinuity);
+                    return false;
+                }
+                verifiedClockGeneration=clockGeneration;
+            }
             // Preflight the entire callback before modifying either log or ring.
             // A callback can span many short loops; callback boundaries do not
             // create passes, and ending exactly at loop end creates no empty row.
@@ -462,9 +492,10 @@ std::optional<AudioRecordingResult> AudioInputRecorder::poll(bool deviceStopped)
     return result;
 }
 std::span<const std::int64_t> AudioInputRecorder::capture(const AudioIo& io,const Transport& transport,
-                                                        RecordingPunch punch,const RecordingPunchWindow& window)noexcept {
+                                                        RecordingPunch punch,const RecordingPunchWindow& window,
+                                                        const TempoMap* clock,std::uint64_t clockGeneration)noexcept {
     SnapshotPublisher<State>::AudioRead state(*impl_->published);
-    if(state.valid() && state->job && state->job->capture(io,transport,punch,window))
+    if(state.valid() && state->job && state->job->capture(io,transport,punch,window,clock,clockGeneration))
         return state->job->trackIds;
     return {};
 }
