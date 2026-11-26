@@ -4,6 +4,20 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-26 — `land/*` Round 1 (`land/basics-1127a` `b55b698d` — PASS)
+
+Verified `origin/land/basics-1127a` at `b55b698d` (win's stack merging `gemini/df-e89-release-warnings` + `basics/sc-02-lane-transport`) under **GCC 12.4.0** and **Clang 14.0.6 + libstdc++ 12** with `-DADI_WERROR=ON` (headless Pd on, JUCE off, `-DADI_ACCEPTANCE=ON`), all 3 touched JUCE TUs (`-DADI_WITH_JUCE=ON -DADI_WERROR=ON`), and **Clang 14 ASan + LSan + UBSan** (`-O1 -g1 -fsanitize=address,undefined -fno-sanitize-recover=undefined`).
+
+| Branch | SHA | Compiler / Tool | Warnings | Touched Headless Suites (`ctest`, 8/8) | Acceptance (`ctest -L acceptance`) | JUCE TUs (`-DADI_WITH_JUCE=ON -DADI_WERROR=ON`) | Verdict |
+|---|---|---|---|---|---|---|---|
+| `land/basics-1127a` | `b55b698d` | GCC 12.4.0 | 0 | **PASS** (8/8, 37.03 s: `adi_project_replace_tests`, `adi_pd_amxd_tests`, `adi_return_send_tap_tests`, `adi_ui_seams_tests`, `adi_ui_document_tests`, `adi_ui_window_state_tests`, `adi_ui_note_edits_tests`, `adi_replace_operator_new_tests`) | **PASS** (2/2, 296.84 s: `adi_builtin_realtime_tests`, `adi_acceptance_wts01`) | **PASS** (3/3, 0 warnings: `ui_arrangement.cpp.o`, `ui_shell.cpp.o`, `test_ui_shell.cpp.o`) | **PASS** |
+| `land/basics-1127a` | `b55b698d` | Clang 14.0.6 + libstdc++ 12 | 0 | **PASS** (8/8, 33.14 s) | **PASS** (2/2, 277.71 s: `adi_builtin_realtime_tests` 238.33 s, `adi_acceptance_wts01` 39.37 s) | **PASS** (3/3, 0 warnings: `ui_arrangement.cpp.o`, `ui_shell.cpp.o`, `test_ui_shell.cpp.o`) | **PASS** |
+| `land/basics-1127a` | `b55b698d` | Clang 14 ASan + LSan + UBSan | 0 | **PASS** (8/8, 44.49 s; 0 sanitizer reports, 0 leaks) | — | — | **PASS** |
+
+No findings on `land/basics-1127a` (`b55b698d`).
+
+---
+
 ## 2026-11-26 — `basics/*` Round 2 (`basics/sc-02-lane-transport` `4eb6353c` — PASS)
 
 Verified updated `origin/basics/sc-02-lane-transport` head `4eb6353c` (`tests/test_ui_shell.cpp` float coordinates fix over `ac621acb`) under **GCC 12.4.0** and **Clang 14.0.6 + libstdc++ 12** with `-DADI_WERROR=ON` (headless Pd on, JUCE off, `-DADI_ACCEPTANCE=ON`), all 3 touched JUCE TUs (`-DADI_WITH_JUCE=ON -DADI_WERROR=ON`), and **Clang 14 ASan + LSan + UBSan** (`-O1 -g1 -fsanitize=address,undefined -fno-sanitize-recover=undefined`).
