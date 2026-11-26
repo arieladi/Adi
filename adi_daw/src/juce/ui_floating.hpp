@@ -71,6 +71,16 @@ class FloatingHost {
     bool shown(const std::string &key) const;
     void setAlwaysOnTop(const std::string &key, bool onTop);
     bool alwaysOnTop(const std::string &key) const;
+    // SC-313: "on top" for an owned window (a plug-in's, a device's view) means above ADI's own window,
+    // never above the other programs. On Windows the owner is made the window's native owner, which keeps
+    // it above that window, minimises it with it, and lets another program's window come in front of
+    // both; JUCE's always-on-top is topmost on the whole desktop. True when it was done natively; false
+    // elsewhere (no native window here, or not Windows), where the caller keeps JUCE's own.
+    static bool floatAboveOwner(juce::Component &window, juce::Component *owner, bool on);
+    // What the desktop says of a window, for tests: its native owner is `owner`'s window; it is topmost
+    // on the whole desktop. False where there is no native window or the platform is not Windows.
+    static bool nativelyOwnedBy(juce::Component &window, juce::Component &owner);
+    static bool nativelyTopmost(juce::Component &window);
     // The keys open under `prefix`, in key order.
     std::vector<std::string> keys(const std::string &prefix) const;
     void frame(const std::string &key); // per-window attachment; public for deterministic tests

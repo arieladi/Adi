@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
+#include "adi/engine/midi_monitoring.hpp"
 #include "adi/engine/realize.hpp"
 #include "adi/engine/transport.hpp"
 #include "adi/store_rows.hpp"
 #include <memory>
 #include <set>
+#include <span>
 namespace adi::engine {
 // Message-thread registry; its per-track note state is used ONLY by the audio
 // consumer. Shared by successive immutable source generations, never copied
@@ -21,19 +23,28 @@ public:
     // first consumer/stop. Audio effects after a consumer do not own its notes.
     MidiClips(const rows::Model&, Transport&, double rate, std::shared_ptr<MidiClipState>,
               const DeviceChainFn& eventPathFor = {});
-    // A clip edit can retain sources from the same session and format. The
+    MidiClips(const rows::Model&,Transport&,double rate,std::shared_ptr<MidiClipState>,
+              const DeviceChainFn& eventPathFor,const NoteExpressionsRead&,bool honorMonitoring=false);
+    // A clip edit can retain sources from the same session, format and
+    // monitoring policy. The previous generation supplies that policy. The
     // caller supplies the complete playback model and all affected tracks,
     // including the old track if the last clip moves away from it.
     MidiClips(const rows::Model&,Transport&,double rate,std::shared_ptr<MidiClipState>,
               const DeviceChainFn& eventPathFor,const NoteExpressionsRead&,
-              const MidiClips* previous = nullptr, const std::set<std::int64_t>& changedTracks = {});
+              const MidiClips* previous, const std::set<std::int64_t>& changedTracks);
     ~MidiClips();
     std::vector<Node*> sourcesFor(std::int64_t track);
+    // Owned by this generation. Includes empty clips and uses the same sample
+    // boundaries as the note scheduler. Overlapping or touching spans merge.
+    [[nodiscard]] std::span<const MidiMonitorRange> monitorRanges(std::int64_t track) const noexcept;
     const std::vector<std::string>& problems() const noexcept;
     std::uint32_t droppedNotes() const noexcept;
     std::uint64_t droppedControllers() const noexcept;
 
   private:
+    MidiClips(const rows::Model&,Transport&,double rate,std::shared_ptr<MidiClipState>,
+              const DeviceChainFn&,const NoteExpressionsRead&,bool honorMonitoring,
+              const MidiClips* previous,const std::set<std::int64_t>& changedTracks);
     struct Impl;
     std::shared_ptr<Impl> impl_;
 };

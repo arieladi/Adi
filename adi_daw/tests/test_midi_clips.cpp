@@ -3,6 +3,7 @@
 #include "adi/controller_lanes.hpp"
 #include "adi/clip_commands.hpp"
 #include "adi/engine/clip_details.hpp"
+#include "adi/engine/project_view.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/engine/midi_input_capture.hpp"
 #include "adi/store.hpp"
@@ -218,19 +219,124 @@ void liveInput() {
               other.heard[12].e.noteId == other.heard[10].e.noteId && other.balance() == 0,
               "channel-wide expression reaches the instrument with its unaddressed identity");
     }
-    Fixture overlap;
-    overlap.store->db().exec("UPDATE tracks SET record_armed=1,monitor_mode=2 WHERE id=1");
-    overlap.clip();
-    overlap.load();
-    check(overlap.session.enqueueMidiInput(100, {0,EventType::NoteOn,3,60,42,0,0.5}) &&
-          overlap.session.enqueueMidiInput(110, {0,EventType::NoteOff,3,60,42,0,0}),
-          "enqueue a live voice on the Arrangement note's channel and key");
-    overlap.render();
-    const auto& inst = *overlap.instrument;
-    check(inst.count == 4 && inst.heard[0].clock == 100 && inst.heard[1].clock == 100 &&
-          inst.heard[0].e.noteId != inst.heard[1].e.noteId && inst.heard[3].clock == 110 &&
-          inst.heard[3].e.noteId == inst.heard[0].e.noteId && inst.balance() == 1,
-          "releasing the live same-pitch note leaves the Arrangement voice active");
+}
+void midiMonitoring() {
+    const auto played = [](const Instrument& instrument, EventType type, std::int64_t frame,
+                           std::uint16_t key) {
+        return std::any_of(instrument.heard.begin(), instrument.heard.begin() + instrument.count,
+                           [=](const Heard& event) {
+                               return event.clock == frame && event.e.type == type && event.e.dim == key;
+                           });
+    };
+    const auto controller = [](const Instrument& instrument, std::int64_t frame, std::uint32_t cc,
+                               double value) {
+        return std::any_of(instrument.heard.begin(), instrument.heard.begin() + instrument.count,
+                           [=](const Heard& event) {
+                               return event.clock == frame && event.e.type == EventType::Controller &&
+                                      event.e.paramId == cc && event.e.value == value;
+                           });
+    };
+    const auto key = [](Fixture& f, std::int64_t frame, EventType type, std::uint64_t id, std::uint16_t pitch) {
+        return f.session.enqueueMidiInput(frame, {0, type, 3, pitch, id, 0, 0.5});
+    };
+    const auto cc = [](Fixture& f, std::int64_t frame, std::uint32_t number, double value) {
+        return f.session.enqueueMidiInput(frame, {0, EventType::Controller, 3, 0, 0, number, value});
+    };
+    struct Mode {
+        int value;
+        bool armed, live, arrange;
+        const char* checkLabel;
+    };
+    constexpr std::array modes{
+        Mode{0, true, false, true, "Off keeps Arrangement notes and controllers, with no input even armed"},
+        Mode{1, false, true, false, "In hears input unarmed and suppresses Arrangement notes and controllers"},
+        Mode{2, false, false, true, "Auto unarmed plays the Arrangement and ignores input"},
+    };
+    for (const auto& mode : modes) {
+        Fixture f;
+        f.clip();
+        const std::array<controllers::Point, 1> values{{{0, 0, 0.25, 0, 0, 0}}};
+        const auto prepared = controllers::prepareWrite(*f.store, 1, 3, 1, values);
+        if (!prepared.ok || !controllers::commitPrepared(*f.store, prepared).ok)
+            throw std::runtime_error("controller prepare/commit");
+        SQLite::Statement set(f.store->db(), "UPDATE tracks SET monitor_mode=?,record_armed=? WHERE id=1");
+        set.bind(1, mode.value);
+        set.bind(2, static_cast<int>(mode.armed));
+        set.exec();
+        f.load();
+        check(key(f, 50, EventType::NoteOn, 90, 61) && cc(f, 51, 7, 0.75) &&
+              key(f, 70, EventType::NoteOff, 90, 61), "enqueue typed input during a playing clip");
+        f.render();
+        const auto& instrument = *f.instrument;
+        check(played(instrument, EventType::NoteOn, 50, 61) == mode.live &&
+              played(instrument, EventType::NoteOff, 70, 61) == mode.live &&
+              controller(instrument, 51, 7, 0.75) == mode.live &&
+              played(instrument, EventType::NoteOn, 100, 60) == mode.arrange &&
+              controller(instrument, 0, 1, 0.25) == mode.arrange, mode.checkLabel);
+    }
+
+    Fixture f(48000, 64);
+    f.clip(1, 0, 12012, 24024);
+    f.store->db().exec("UPDATE tracks SET record_armed=1,monitor_mode=2 WHERE id=1;"
+                       "UPDATE clips SET pos_ticks=24024 WHERE id=1"); // occupies samples [100,200)
+    f.load();
+    const auto& instrument = *f.instrument;
+    check(key(f, 30, EventType::NoteOn, 91, 61) && cc(f, 31, 64, 1), "hold a live note and sustain before the clip");
+    f.render();
+    f.render(); // the next block has no live input but the clip starts inside it
+    check(played(instrument, EventType::NoteOn, 30, 61) && controller(instrument, 31, 64, 1) &&
+          played(instrument, EventType::NoteOff, 100, 61) && controller(instrument, 100, 64, 0) &&
+          played(instrument, EventType::NoteOn, 100, 60),
+          "Auto releases the live voice and pedal precisely when the Arrangement clip starts");
+    check(key(f, 131, EventType::NoteOn, 92, 62) && cc(f, 132, 7, 0.25) &&
+          key(f, 133, EventType::NoteOff, 92, 62) && key(f, 199, EventType::NoteOn, 93, 63) &&
+          key(f, 200, EventType::NoteOn, 94, 64) && key(f, 215, EventType::NoteOff, 94, 64),
+          "queue input inside the clip and at its outgoing boundary");
+    f.render();
+    f.render();
+    check(!played(instrument, EventType::NoteOn, 131, 62) && !controller(instrument, 132, 7, 0.25) &&
+          !played(instrument, EventType::NoteOn, 199, 63) && played(instrument, EventType::NoteOn, 200, 64) &&
+          played(instrument, EventType::NoteOff, 215, 64) && instrument.balance() == 0,
+          "Auto suppresses input throughout the clip, including silence, and reopens at the exact end");
+
+    f.session.transport().loop(80, 205);
+    f.session.transport().locate(195);
+    const auto loopStart = f.clock;
+    check(key(f, loopStart + 4, EventType::NoteOn, 95, 65) &&
+          key(f, loopStart + 5, EventType::NoteOn, 96, 66) &&
+          key(f, loopStart + 12, EventType::NoteOn, 97, 67), "queue input on either side of a loop wrap");
+    f.render();
+    check(!played(instrument, EventType::NoteOn, loopStart + 4, 65) &&
+          played(instrument, EventType::NoteOn, loopStart + 5, 66) &&
+          played(instrument, EventType::NoteOn, loopStart + 12, 67) &&
+          played(instrument, EventType::NoteOff, loopStart + 30, 66) &&
+          played(instrument, EventType::NoteOff, loopStart + 30, 67),
+          "Auto follows the wrapped playhead and closes again where the clip restarts");
+
+    Fixture moved(48000, 64);
+    moved.clip(1, 0, 12012, 24024);
+    moved.store->db().exec("UPDATE tracks SET record_armed=1,monitor_mode=2 WHERE id=1;"
+                           "UPDATE clips SET pos_ticks=24024 WHERE id=1");
+    moved.load();
+    ProjectView view;
+    view.refresh(*moved.store);
+    OpRequest request;
+    request.opType = "clip.move";
+    request.payload = {{"id", 1}, {"to", 72072}, {"track", 1}}; // move [100,200) to [300,400)
+    const auto edit = view.prepareLocalEdit(*moved.store, request);
+    if (!edit || !OpJournal(*moved.store).commit(request).ok || !view.applyLocalEdit(*moved.store, *edit))
+        throw std::runtime_error("move was not admitted by the scoped Arrangement view");
+    const auto scoped = moved.session.refreshLocalEdit(*moved.store, view);
+    check(!scoped, "moving a clip on an armed Auto track refreshes its monitoring ranges");
+    if (!scoped) moved.refresh();
+    check(key(moved, 131, EventType::NoteOn, 98, 61) && key(moved, 135, EventType::NoteOff, 98, 61) &&
+          key(moved, 311, EventType::NoteOn, 99, 62), "queue notes inside the old and new clip ranges");
+    for (int block = 0; block < 5; ++block) moved.render();
+    check(played(*moved.instrument, EventType::NoteOn, 131, 61) &&
+          played(*moved.instrument, EventType::NoteOff, 135, 61) &&
+          played(*moved.instrument, EventType::NoteOn, 300, 60) &&
+          !played(*moved.instrument, EventType::NoteOn, 311, 62),
+          "the moved clip allows MIDI input at its old range and blocks it at its new range");
 }
 void driverMidiCapture() {
     Fixture f(48000, 64);
@@ -298,8 +404,8 @@ void driverMidiCapture() {
           "input IDs carry held-note ownership across multiple wraps independently of the audible voice");
     check(event(7,2,80,28,79,0,EventType::NoteOn,502) &&
           event(8,2,80,28,80,0,EventType::NoteOff,502) &&
-          f.instrument->heard[0].e.noteId != 500,
-          "capture excludes the pre-epoch key and preserves the order and raw stamp of late input");
+          f.instrument->count == 0,
+          "capture preserves the raw stamp and order of late input while Monitor Off silences the instrument");
     transport.locate(12);
     check(start() && capture.epoch() == epoch + 1, "draining permits a new independent recording epoch");
     f.render(12);
@@ -1410,6 +1516,8 @@ int main(int argc,char** argv){
     catch(const std::exception& e) {check(false,e.what());}
     try { if (only == "all" || only == "live-input") liveInput(); }
     catch (const std::exception& e) { check(false, e.what()); }
+    try { if (only == "all" || only == "monitor") midiMonitoring(); }
+    catch (const std::exception& e) { check(false,e.what()); }
     try { if (only == "all" || only == "driver-capture") driverMidiCapture(); }
     catch (const std::exception& e) { check(false, e.what()); }
     try{if(only=="all"||only=="split")twoPointSplits();if(only=="all"||only=="controllers")sessionControllers();if(only=="all"||only=="active")activeFlag();if(only=="all"||only=="markers")sourceMarkers();if(only=="all"||only=="placement")placement();if(only=="all"||only=="cleanup")cleanup();if(only=="all"||only=="musical")musical();if(only=="all"||only=="pending")pendingRelease();if(only=="all"||only=="concurrent")concurrentPublication();if(only=="all"||only=="capacity")capacity();if(only=="all"||only=="overflow")overflowRelease();if(only=="all"||only=="ns"){nanosecondEnd();trimSourcePrefix();}if(only=="all"||only=="maximum")maximumLocate();if(only=="all"||only=="entry")loopEntry();if(only=="all"||only=="held")heldNote();}catch(const std::exception& e){check(false,e.what());}

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
+#include "adi/engine/transport.hpp"
 #include "adi/ui/meters.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
@@ -33,15 +34,19 @@ class BarItem final : public juce::Button {
     BarItem(const juce::String &text, Glyph glyph = Glyph::None, bool boxed = true,
             bool dropdown = false);
     void paintButton(juce::Graphics &, bool over, bool down) override;
+    void mouseDown(const juce::MouseEvent &) override;
+    void mouseUp(const juce::MouseEvent &) override;
     void focusGained(FocusChangeType) override;
     // A key on the focused field, for the field's own keys (the position's up and down) first.
     bool keyPressed(const juce::KeyPress &) override;
     std::function<bool(const juce::KeyPress &)> onKey;
     void focusLost(FocusChangeType) override;
     void setText(const juce::String &t);
+    void setCountInPosition(engine::CountInPosition) noexcept;
     // Live 12's focus ring: shown where the keyboard put the focus, never after a click.
     bool focusRing() const noexcept { return ring_; }
     std::function<void()> onFocus;
+    std::function<void()> onDropdown;
     juce::String text;
     Glyph glyph;
     bool boxed, dropdown;
@@ -52,6 +57,8 @@ class BarItem final : public juce::Button {
 
   private:
     bool ring_ = false;
+    bool dropdownPress_ = false;
+    engine::CountInPosition countIn_;
 };
 // Live's control bar (manual 3.1): tempo and the metronome on the left, the
 // transport and the loop in the middle, the global switches on the right. What the
@@ -64,6 +71,7 @@ class TransportBar final : public juce::Component {
     void resized() override;
     // Refreshes the live fields: the tempo, the position, the transport's state.
     void refresh();
+    juce::PopupMenu metronomeMenu() const;
     // Navigate's Control Bar (§41.4.1.1): the focus returns to the control that last had it.
     void focus();
     // Live's Tempo and Time Signature fields (manual 9.1.1, 6.5): a click opens a field over one,

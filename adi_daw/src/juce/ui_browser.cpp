@@ -219,6 +219,7 @@ BrowserPanel::BrowserPanel(AdiRootComponent &root) : root_(root) {
     list.setColour(juce::ListBox::backgroundColourId, juce::Colours::transparentBlack);
     list.setMultipleSelectionEnabled(true);
     list.onLeft = [this] { focusIfShowing(*this); };
+    list.onEscape = [this] { return cancelHotSwap(); };
     addAndMakeVisible(list);
 }
 void BrowserPanel::enterList() {
@@ -254,6 +255,8 @@ void BrowserPanel::selectedRowsChanged(int row) {
     list.deselectAllRows();
 }
 bool BrowserPanel::SearchKeys::keyPressed(const juce::KeyPress &k, juce::Component *) {
+    if (k == juce::KeyPress::escapeKey)
+        return panel.cancelHotSwap();
     if (k != juce::KeyPress::downKey)
         return false;
     panel.enterList();
@@ -320,13 +323,55 @@ void BrowserPanel::setLibrarySnapshot(std::shared_ptr<const BrowserLibrarySnapsh
     refill();
     repaint();
 }
+void BrowserPanel::setDevicePresets(std::vector<preset::Entry> entries) {
+    devicePresets_.clear();
+    for (auto &entry : entries)
+        devicePresets_[entry.deviceKey].push_back(std::move(entry));
+    for (auto &[key, children] : devicePresets_) {
+        (void)key;
+        std::sort(children.begin(), children.end(), [](const preset::Entry &a, const preset::Entry &b) {
+            const int order = juce::String::fromUTF8(a.name.c_str()).compareIgnoreCase(juce::String::fromUTF8(b.name.c_str()));
+            return order != 0 ? order < 0 : a.path < b.path;
+        });
+    }
+    refill();
+}
+void BrowserPanel::setHotSwap(std::optional<HotSwapFilter> filter) {
+    if (!hotSwap_ && !filter)
+        return;
+    if (!hotSwap_) {
+        idleSearch_ = search.getText();
+        search.setText({}, false);
+    } else if (!filter) {
+        search.setText(std::exchange(idleSearch_, {}), false);
+    }
+    hotSwap_ = std::move(filter);
+    list.setMultipleSelectionEnabled(!hotSwap_);
+    refill();
+    repaint();
+    if (hotSwap_ && !hotSwap_->samples && scanPlugins && pluginScan_.phase == PluginScan::Phase::NotStarted)
+        scanPlugins();
+}
+bool BrowserPanel::cancelHotSwap() {
+    if (!hotSwap_)
+        return false;
+    if (leaveHotSwap)
+        leaveHotSwap();
+    else
+        setHotSwap(std::nullopt);
+    return true;
+}
 void BrowserPanel::refill() {
     shown_.clear();
     const Entry none{};
-    const auto &chosen = selected_ >= 0 ? sidebar_[static_cast<std::size_t>(selected_)] : none;
+    const auto &chosen = !hotSwap_ && selected_ >= 0 ? sidebar_[static_cast<std::size_t>(selected_)] : none;
+    const bool swappingDevices = hotSwap_ && !hotSwap_->samples;
+    using Role = ::adi::detail::DeviceRole;
+    const auto swapRole = swappingDevices ? ::adi::detail::deviceRole(hotSwap_->subtype) : Role::AudioEffect;
     const auto text = search.getText();
     // Samples, or a Place the listing holds, by its volume; the search alone looks through Samples.
-    const bool samples = chosen.samples || (selected_ < 0 && text.isNotEmpty());
+    const bool samples = hotSwap_ ? hotSwap_->samples
+                                  : chosen.samples || (selected_ < 0 && text.isNotEmpty());
     const auto query = text.trim().toLowerCase();
     if (library_ && (samples || !chosen.place.empty()))
         library_->appendSamples(query.toRawUTF8(), samples ? nullptr : &chosen.place, shown_);
@@ -334,53 +379,105 @@ void BrowserPanel::refill() {
     rows_.reserve(shown_.size());
     for (const auto *f : shown_)
         rows_.push_back({f, nullptr, {}});
+    if (swappingDevices && pluginScan_.phase == PluginScan::Phase::Scanning)
+        rows_.push_back({nullptr, nullptr, juce::String::fromUTF8(pluginScanStatus(pluginScan_).c_str())});
     // Audio Effects in Live's folders (manual 4.10), Pd Devices ADI's own, from the catalogue.
-    const auto matches = [&query](const BuiltinInfo &d) {
-        return query.isEmpty() || juce::String(std::string(d.name)).toLowerCase().contains(query);
+    const auto matches = [&query](std::string_view name) {
+        return query.isEmpty() || juce::String::fromUTF8(name.data(), static_cast<int>(name.size())).containsIgnoreCase(query);
     };
-    if (!chosen.heading && chosen.name == "Audio Effects") {
+    const auto visiblePresets = [&](std::string_view format, std::string_view uid,
+                                    std::optional<std::int64_t> shellId, bool entireDevice) {
+        std::vector<const preset::Entry *> out;
+        if (!devicePresets_.empty()) {
+            const auto found = devicePresets_.find(preset::deviceKey({std::string(format), std::string(uid), shellId}));
+            if (found != devicePresets_.end())
+                for (const auto &entry : found->second)
+                    if (entireDevice || matches(entry.name))
+                        out.push_back(&entry);
+        }
+        return out;
+    };
+    const auto addPresets = [&](const std::vector<const preset::Entry *> &presets, int depth) {
+        for (const auto *entry : presets)
+            rows_.push_back({nullptr, nullptr, {}, nullptr, depth, entry});
+    };
+    const auto addBuiltin = [&](const BuiltinInfo &d, int depth, const char *heading = nullptr) {
+        if (swappingDevices && (!d.available || swapRole != (d.instrument ? Role::Instrument : Role::AudioEffect)))
+            return false;
+        const bool ownMatch = matches(d.name);
+        const auto presets = visiblePresets("internal", d.uid, std::nullopt, ownMatch);
+        if (!ownMatch && presets.empty())
+            return false;
+        if (heading != nullptr)
+            rows_.push_back({nullptr, nullptr, heading});
+        rows_.push_back({nullptr, &d, {}, nullptr, depth});
+        addPresets(presets, depth + 1);
+        return true;
+    };
+    if (swappingDevices || (!chosen.heading && chosen.name == "Audio Effects")) {
         for (const char *folder : {"EQ & Filters", "Delay & Loop", "Dynamics", "Drive & Color", "Pitch & Modulation",
                                    "Reverb & Resonance", "Utilities"}) {
             std::vector<const BuiltinInfo *> in;
             for (const auto &d : builtinCatalog())
-                if (d.category == "Audio Effects" && d.group == folder && matches(d))
+                if (d.category == "Audio Effects" && d.group == folder)
                     in.push_back(&d);
-            if (in.empty())
-                continue;
-            rows_.push_back({nullptr, nullptr, folder});
             std::sort(in.begin(), in.end(), [](const BuiltinInfo *a, const BuiltinInfo *b) { return a->name < b->name; });
+            const char *heading = folder;
             for (const auto *d : in)
-                rows_.push_back({nullptr, d, {}});
+                if (addBuiltin(*d, 1, heading))
+                    heading = nullptr;
         }
-    } else if (!chosen.heading && chosen.name == "Instruments") {
+    }
+    if (swappingDevices || (!chosen.heading && chosen.name == "Instruments")) {
         // ADI's own instruments, by name, where Live lists its instruments (walk-A A7, DF-W48).
         std::vector<const BuiltinInfo *> in;
         for (const auto &d : builtinCatalog())
-            if (d.category == "Instruments" && matches(d))
+            if (d.category == "Instruments")
                 in.push_back(&d);
         std::sort(in.begin(), in.end(), [](const BuiltinInfo *a, const BuiltinInfo *b) { return a->name < b->name; });
         for (const auto *d : in)
-            rows_.push_back({nullptr, d, {}});
-    } else if (!chosen.heading && chosen.name == "Pd Devices") {
+            addBuiltin(*d, 0);
+    }
+    if (swappingDevices || (!chosen.heading && chosen.name == "Pd Devices")) {
         for (const auto &d : builtinCatalog())
-            if (d.category == "ADI" && matches(d))
-                rows_.push_back({nullptr, &d, {}});
-    } else if (!chosen.heading && chosen.name == "Plug-Ins") {
+            if (d.category == "ADI")
+                addBuiltin(d, 0);
+    }
+    if (swappingDevices || (!chosen.heading && chosen.name == "Plug-Ins")) {
         // Live's Plug-Ins: a folder per format, in it a folder per vendor, in that its plug-ins by name.
         std::string format;
         // While a scan runs its line heads the list, above what was listed before it.
-        if (pluginScan_.phase == PluginScan::Phase::Scanning)
+        if (!swappingDevices && pluginScan_.phase == PluginScan::Phase::Scanning)
             rows_.push_back({nullptr, nullptr, juce::String::fromUTF8(pluginScanStatus(pluginScan_).c_str()), nullptr, 0});
-        for (const auto &group : pluginGroups(pluginScan_.listing, query.toStdString())) {
-            if (group.format != format) {
-                format = group.format;
-                rows_.push_back({nullptr, nullptr, juce::String(formatFolder(format)), nullptr, 0});
-            }
-            rows_.push_back({nullptr, nullptr, juce::String::fromUTF8(group.vendor.c_str()), nullptr, 1});
-            for (const auto *p : group.entries)
+        for (const auto &group : pluginGroups(pluginScan_.listing, {})) {
+            bool showVendor = true;
+            for (const auto *p : group.entries) {
+                if (swappingDevices) {
+                    using K = PluginEntry::Kind;
+                    if (!((p->kind == K::Instrument && swapRole == Role::Instrument) ||
+                          (p->kind == K::MidiEffect && swapRole == Role::MidiEffect) ||
+                          (p->kind == K::Effect && swapRole == Role::AudioEffect)))
+                        continue;
+                }
+                const bool ownMatch = matches(p->name) || matches(p->vendor);
+                const auto presets = visiblePresets(p->format, p->uid, p->shellId, ownMatch);
+                if (!ownMatch && presets.empty())
+                    continue;
+                if (showVendor) {
+                    if (group.format != format) {
+                        format = group.format;
+                        rows_.push_back({nullptr, nullptr, juce::String(formatFolder(format)), nullptr, 0});
+                    }
+                    rows_.push_back({nullptr, nullptr, juce::String::fromUTF8(group.vendor.c_str()), nullptr, 1});
+                    showVendor = false;
+                }
                 rows_.push_back({nullptr, nullptr, {}, p, 2});
+                addPresets(presets, 3);
+            }
         }
     }
+    if (hotSwap_ && rows_.empty())
+        rows_.push_back({nullptr, nullptr, samples ? "No matching samples" : "No matching devices or presets"});
     list.updateContent();
     list.deselectAllRows();
     lastSelected_ = -1;
@@ -401,6 +498,16 @@ void BrowserPanel::paintListBoxItem(int row, juce::Graphics &g, int width, int h
         g.drawText(r.heading, in, 0, width - in - 4, height, juce::Justification::centredLeft, true);
         return;
     }
+    if (r.savedPreset != nullptr) {
+        const int in = 12 * r.depth;
+        icon(g, Templates, {6.f + static_cast<float>(in), (static_cast<float>(height) - 13.f) / 2.f, 13.f, 13.f});
+        const bool canLoad = hotSwap_ ? bool(swapChoice) : bool(loadDevicePreset);
+        g.setColour(canLoad ? look::text : look::textDim);
+        g.setFont(look::font(look::fontHeading));
+        g.drawText(juce::String::fromUTF8(r.savedPreset->name.c_str()), 24 + in, 0, width - 28 - in, height,
+                   juce::Justification::centredLeft, true);
+        return;
+    }
     if (r.plugin != nullptr) {
         // A plug-in, under its vendor: its kind's icon (a VST3's is not known yet: the plug-in icon), its
         // name dimmed where nothing can load it (outside the application).
@@ -409,14 +516,15 @@ void BrowserPanel::paintListBoxItem(int row, juce::Graphics &g, int width, int h
         const auto kind = r.plugin->kind;
         icon(g, kind == K::Instrument ? Instruments : kind == K::Effect ? AudioFx : kind == K::MidiEffect ? MidiFx : PlugIns,
              juce::Rectangle<float>(6.f + static_cast<float>(in), (static_cast<float>(height) - 13.f) / 2.f, 13.f, 13.f));
-        g.setColour(root_.loadPlugin ? look::text : look::textDim);
+        const bool canLoad = hotSwap_ ? bool(swapChoice) : bool(root_.loadPlugin);
+        g.setColour(canLoad ? look::text : look::textDim);
         g.setFont(look::font(look::fontHeading));
         g.drawText(juce::String::fromUTF8(r.plugin->name.c_str()), 24 + in, 0, width - 28 - in, height,
                    juce::Justification::centredLeft, true);
         return;
     }
     const bool device = r.device != nullptr;
-    const int indent = device && r.device->category == "Audio Effects" ? 12 : 0;
+    const int indent = 12 * r.depth;
     icon(g, device ? (r.device->category == "Instruments" ? Instruments : AudioFx) : Samples,
          juce::Rectangle<float>(6.f + static_cast<float>(indent), (static_cast<float>(height) - 13.f) / 2.f, 13.f, 13.f));
     // An entry this build cannot load is dimmed (its reason is said when it is chosen).
@@ -426,10 +534,14 @@ void BrowserPanel::paintListBoxItem(int row, juce::Graphics &g, int width, int h
     g.drawText(name, 24 + indent, 0, width - 28 - indent, height, juce::Justification::centredLeft, true);
 }
 juce::var BrowserPanel::getDragSourceDescription(const juce::SparseSet<int> &rows) {
+    if (hotSwap_)
+        return {};
     std::vector<const LibraryFile *> files;
     for (int i = 0; i < rows.size(); ++i)
         if (const int r = rows[i]; r >= 0 && r < static_cast<int>(rows_.size())) {
             const auto &row = rows_[static_cast<std::size_t>(r)];
+            if (row.savedPreset != nullptr)
+                return {};
             // Carry the catalogue identity. A scan may replace the rows while the drag is running.
             if (row.plugin != nullptr) {
                 if (!root_.loadPlugin)
@@ -502,8 +614,13 @@ void BrowserPanel::setPluginScan(const PluginScan &scan) {
     // selection and the scroll stay as they are.
     const bool countOnly = !began && !ended && scan.phase == PluginScan::Phase::Scanning &&
                            pluginScan_.phase == PluginScan::Phase::Scanning && scan.listed == pluginScan_.listed;
-    pluginScan_ = scan;
-    if (!pluginsShown())
+    if (countOnly) {
+        pluginScan_.candidates = scan.candidates;
+        pluginScan_.completed = scan.completed;
+    } else {
+        pluginScan_ = scan;
+    }
+    if (!(hotSwap_ ? !hotSwap_->samples : pluginsShown()))
         return;
     if (countOnly) {
         if (!rows_.empty() && rows_.front().plugin == nullptr && rows_.front().device == nullptr) {
@@ -515,7 +632,7 @@ void BrowserPanel::setPluginScan(const PluginScan &scan) {
     refill();
     // The Status Bar says the scan's start and its end while Plug-Ins shows; a count arriving between
     // them only redraws the list's line.
-    if (began || ended)
+    if (!hotSwap_ && (began || ended))
         root_.say(pluginScanStatus(pluginScan_));
 }
 bool BrowserPanel::loadPluginEntry(const PluginEntry &p, std::int64_t track, std::optional<std::int64_t> before) {
@@ -534,13 +651,44 @@ bool BrowserPanel::loadPluginEntry(const PluginEntry &p, std::int64_t track, std
     const bool midi = target && (target->kind == "midi" || target->kind == "instrument");
     return root_.loadPlugin(pluginReference(p, midi), track, before, p.kind == PluginEntry::Kind::Unknown);
 }
+bool BrowserPanel::loadHotSwap(const Row &row) {
+    if (!row.heading.isEmpty())
+        return false;
+    if (!swapChoice) {
+        root_.say("Hot-Swap needs the application.");
+        return false;
+    }
+    // Replacing the device can refill the Browser. Pass an owning choice into the callback.
+    using Kind = HotSwapChoice::Kind;
+    if (row.device)
+        return swapChoice({Kind::Builtin, std::string(row.device->uid), {}, {}});
+    if (row.plugin)
+        return swapChoice({Kind::Plugin, {}, *row.plugin, {}});
+    if (row.savedPreset)
+        return swapChoice({Kind::Preset, {}, {}, row.savedPreset->path});
+    if (row.file)
+        return swapChoice({Kind::Sample, {}, {}, row.file->path});
+    return false;
+}
 bool BrowserPanel::load(int row) {
     if (row < 0 || row >= static_cast<int>(rows_.size()))
         return false;
     const auto &entry = rows_[static_cast<std::size_t>(row)];
+    if (hotSwap_)
+        return loadHotSwap(entry);
+    if (const auto *saved = entry.savedPreset) {
+        if (!loadDevicePreset) {
+            root_.say("Loading a device preset needs the application.");
+            return false;
+        }
+        const auto path = saved->path;
+        return loadDevicePreset(path);
+    }
+    auto track = root_.arrangement.geometry.selection.track;
+    if (entry.file)
+        return root_.sampleInstrumentTarget(track) && root_.loadSampleAsInstrument(track, entry.file->path);
     const bool instrument = entry.plugin ? entry.plugin->kind == PluginEntry::Kind::Instrument
                                          : entry.device && entry.device->instrument;
-    auto track = root_.arrangement.geometry.selection.track;
     // R50 decides whether a double-click on a known instrument with an audio track chosen creates a MIDI track.
     constexpr bool kNewMidiTrackWhenAudioSelected = false;
     if constexpr (kNewMidiTrackWhenAudioSelected) {
@@ -613,7 +761,7 @@ void BrowserPanel::paint(juce::Graphics &g) {
         for (std::size_t i = 0; i < sidebar_.size(); ++i) {
             const auto &e = sidebar_[i];
             const juce::Rectangle<int> row(sidebarArea_.getX(), y, sidebarArea_.getWidth(), kRowHeight);
-            if (static_cast<int>(i) == selected_) {
+            if (!hotSwap_ && static_cast<int>(i) == selected_) {
                 g.setColour(look::selection);
                 g.fillRect(row);
             }
@@ -623,7 +771,7 @@ void BrowserPanel::paint(juce::Graphics &g) {
                 g.drawText(e.name, row.withTrimmedLeft(5), juce::Justification::centredLeft);
             } else {
                 icon(g, e.glyph, row.withTrimmedLeft(8).withWidth(13).toFloat().withSizeKeepingCentre(13, 13));
-                g.setColour(look::text);
+                g.setColour(hotSwap_ ? look::textDim : look::text);
                 g.setFont(look::font(look::fontHeading));
                 g.drawText(e.name, row.withTrimmedLeft(25), juce::Justification::centredLeft);
             }
@@ -638,11 +786,18 @@ void BrowserPanel::paint(juce::Graphics &g) {
     const juce::Rectangle<int> header(contentArea_.getX(), contentArea_.getY(), contentArea_.getWidth(), 19);
     g.setColour(look::columnHead);
     g.fillRect(header);
-    g.setColour(look::text);
     g.setFont(look::font(look::fontField, true));
-    g.drawText("Name", header.withTrimmedLeft(4), juce::Justification::centredLeft);
-    look::triangle(g, {static_cast<float>(header.getRight()) - 13, static_cast<float>(header.getY()) + 6, 8, 7},
-                   juce::MathConstants<float>::halfPi, look::textDim);
+    if (hotSwap_) {
+        const auto target = juce::String::fromUTF8(hotSwap_->targetName.c_str());
+        g.setColour(look::accent);
+        g.drawFittedText(target.isEmpty() ? juce::String("Hot-Swap") : "Hot-Swap  " + target,
+                         header.reduced(4, 0), juce::Justification::centredLeft, 1);
+    } else {
+        g.setColour(look::text);
+        g.drawText("Name", header.withTrimmedLeft(4), juce::Justification::centredLeft);
+        look::triangle(g, {static_cast<float>(header.getRight()) - 13, static_cast<float>(header.getY()) + 6, 8, 7},
+                       juce::MathConstants<float>::halfPi, look::textDim);
+    }
     // The preview row: Live's headphones switch at its left.
     const juce::Rectangle<int> preview(kStripWidth + look::border, getHeight() - kBarHeight + 2,
                                        getWidth() - kStripWidth - 2 * look::border, 21);
@@ -660,6 +815,8 @@ void BrowserPanel::mouseDown(const juce::MouseEvent &e) {
         choose((e.y - sidebarArea_.getY() - 1) / kRowHeight);
 }
 void BrowserPanel::choose(int i) {
+    if (hotSwap_)
+        return;
     if (i >= 0 && i < static_cast<int>(sidebar_.size()) && !sidebar_[static_cast<std::size_t>(i)].heading) {
         selected_ = i;
         const auto &entry = sidebar_[static_cast<std::size_t>(i)];
@@ -697,6 +854,8 @@ void BrowserPanel::choose(int i) {
     }
 }
 bool BrowserPanel::keyPressed(const juce::KeyPress &k) {
+    if (k == juce::KeyPress::escapeKey && cancelHotSwap())
+        return true;
     // Right goes from the sidebar into the list (§41.22), its first row selected.
     if (k == juce::KeyPress::rightKey) {
         enterList();
@@ -704,6 +863,10 @@ bool BrowserPanel::keyPressed(const juce::KeyPress &k) {
     }
     if (k != juce::KeyPress::upKey && k != juce::KeyPress::downKey)
         return false;
+    if (hotSwap_) {
+        enterList();
+        return true;
+    }
     // The next label up or down, past the headings; at either end the selection stays.
     const int step = k == juce::KeyPress::downKey ? 1 : -1;
     for (int i = selected_ + step; i >= 0 && i < static_cast<int>(sidebar_.size()); i += step)

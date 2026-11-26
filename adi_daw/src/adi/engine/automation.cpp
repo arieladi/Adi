@@ -59,6 +59,13 @@ double valueAt(const AutomationLaneProgram& lane, std::int64_t sample) noexcept 
     return segmentValue(p, i, sample);
 }
 
+double heldValueAt(const AutomationLaneProgram& lane, std::int64_t sample, double fallback) noexcept {
+    if (const auto clip = clipEnvelopeValue(lane, sample, true)) return *clip;
+    if (lane.points.empty()) return fallback;
+    const auto i = after(lane.points, sample);
+    return lane.points[i == 0 ? 0 : i - 1].value;
+}
+
 std::int64_t automationBoundaryAfter(const AutomationLaneProgram& lane, std::int64_t sample) noexcept {
     if (!lane.changes.empty()) {
         const auto at = std::upper_bound(lane.changes.begin(), lane.changes.end(), sample);

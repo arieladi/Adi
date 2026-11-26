@@ -6,9 +6,11 @@
 #include "adi/mix_functions.hpp"
 #include "adi/ui/parameter_feed.hpp"
 #include "ui_arrangement.hpp"
+#include "ui_controls.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
 #include <map>
+#include <span>
 #include <string_view>
 #include <utility>
 namespace adi::ui {
@@ -40,10 +42,10 @@ class ParameterControl final : public juce::Component, public juce::SettableTool
     // Left and right still move between devices.
     bool keyPressed(const juce::KeyPress &) override;
     bool returnToDefault();
-    // Live's parameter context menu (manual 25.4; AU-04): Re-Enable Automation while the parameter's
-    // lane is overridden. A right-click on the knob or the control's labels opens it.
+    // The parameter's automation commands, from the control or its labels.
     void mouseDown(const juce::MouseEvent &) override;
     void mouseDoubleClick(const juce::MouseEvent &) override;
+    juce::PopupMenu menuItems();
     void showMenu();
     // The device's plug-in format, which names its parameters' lanes (`engine::automationParamRef`).
     std::string format;
@@ -51,8 +53,8 @@ class ParameterControl final : public juce::Component, public juce::SettableTool
     static constexpr int kWidth = 58, kHeight = 54;
     std::int64_t device;
     std::string parameter;
-    juce::Slider slider;
-    juce::ToggleButton toggle;
+    controls::PrimaryMouseControl<juce::Slider> slider;
+    controls::PrimaryMouseControl<juce::ToggleButton> toggle;
     juce::ComboBox menu;
     std::function<bool(const std::string &, engine::ParamEventKind, double)> parameterGesture;
 
@@ -81,6 +83,11 @@ class WrenchButton final : public juce::Button {
     WrenchButton() : juce::Button("Plug-In Window") {}
     void paintButton(juce::Graphics &, bool over, bool down) override;
 };
+class HotSwapButton final : public juce::Button {
+  public:
+    HotSwapButton() : juce::Button("Hot-Swap") {}
+    void paintButton(juce::Graphics &, bool over, bool down) override;
+};
 // A built-in's sample slot (MR 9.8; D5, N28, #414): a tile a sample file drops on, from the desktop
 // or from the browser's Samples; Clear empties it. It names the slot and shows whether it is empty,
 // holds a sample, or holds one whose file is missing, from the snapshot's sample slots.
@@ -89,13 +96,17 @@ class SampleTile final : public juce::Component,
                          public juce::FileDragAndDropTarget,
                          public juce::DragAndDropTarget {
   public:
-    SampleTile(DeviceChainStrip &, std::int64_t device, std::int32_t slot, juce::String slotName);
+    struct DeclaredSlot { std::int32_t id; juce::String name; };
+    SampleTile(DeviceChainStrip &, std::int64_t device, std::vector<DeclaredSlot>);
     void paint(juce::Graphics &) override;
     void resized() override;
+    void mouseDown(const juce::MouseEvent &) override;
     bool isInterestedInFileDrag(const juce::StringArray &files) override { return !files.isEmpty(); }
     void filesDropped(const juce::StringArray &files, int x, int y) override;
     bool isInterestedInDragSource(const SourceDetails &) override;
     void itemDropped(const SourceDetails &) override;
+    // Refresh the selected slot from the project snapshot.
+    void refresh();
     // The slot as the snapshot holds it; none when it was never assigned (empty).
     void show(const engine::SampleSlotNode *);
     // A file dropped: assigns the slot (one undo step), or says why not.
@@ -103,13 +114,17 @@ class SampleTile final : public juce::Component,
     enum class State { Empty, Loaded, Missing };
     State state() const noexcept { return state_; }
     juce::TextButton clear{"Clear"};
+    juce::ComboBox slotChooser;
+    HotSwapButton hotSwapButton;
     std::function<bool()> targetValid;
     const std::int64_t device;
-    const std::int32_t slot;
-    const juce::String slotName;
+    std::int32_t slot;
+    juce::String slotName;
 
   private:
+    void choose(const DeclaredSlot &);
     DeviceChainStrip &strip_;
+    std::vector<DeclaredSlot> slots_;
     State state_ = State::Empty;
     std::string problem_;
 };
@@ -171,6 +186,7 @@ class DevicePanelView final : public juce::Component, public juce::FileDragAndDr
     juce::TextButton title, configureButton{"Configure"};
     ActivatorButton enabled;
     WrenchButton wrench;
+    HotSwapButton hotSwapButton;
     juce::TextEditor search;
     std::vector<std::unique_ptr<ParameterControl>> controls;
     struct ParameterPageControl {
@@ -193,8 +209,7 @@ class DevicePanelView final : public juce::Component, public juce::FileDragAndDr
     bool chooseFunctionBand(std::int32_t);
     bool chooseFunctionSection(const std::string &);
     std::string_view parameterPageUnavailableReason() const;
-    // A built-in's first declared [adi.sample] slot as a tile, beside its controls (D5; Color Cab's
-    // and Hybrid Reverb's Impulse, OneShot's Sample, the Sampler's Sample 1); none where none is declared.
+    // A built-in's [adi.sample] slot tile beside its controls, initially on the first slot declared.
     std::unique_ptr<SampleTile> sample;
     bool sampleSlotsRead_ = false;
     static constexpr int kTileWidth = 96;
@@ -215,6 +230,8 @@ class DevicePanelView final : public juce::Component, public juce::FileDragAndDr
 
   private:
     void endRename(bool commit);
+    bool canHotSwap() const;
+    bool requestHotSwap(DevicePanelData expected, std::optional<std::int32_t> slot, std::uint64_t epoch);
     bool editFunctionParameter(const std::string &, engine::ParamEventKind, double);
     void endFunctionParameter();
     void finishEqEdit(bool cancel);
@@ -235,6 +252,9 @@ class DevicePanelView final : public juce::Component, public juce::FileDragAndDr
     DeviceChainStrip &strip;
     const DevicePanelData *data = nullptr;
     std::optional<DevicePanelData> dragTarget_;
+    std::vector<DevicePanelData> draggedDevices_;
+    bool selectOnRelease_ = false;
+    bool startedDeviceDrag_ = false;
     std::uint64_t dragEpoch_ = 0;
     std::string editingParameter_;
     double editingValue_ = 0;
@@ -262,7 +282,9 @@ class DevicePanelView final : public juce::Component, public juce::FileDragAndDr
     std::unique_ptr<LimiterPreview> limiterPreview_;
     friend class DeviceChainStrip;
 };
-class DeviceChainStrip final : public juce::Component, public juce::DragAndDropTarget {
+class DeviceChainStrip final : public juce::Component,
+                               public juce::DragAndDropTarget,
+                               public juce::FileDragAndDropTarget {
   public:
     explicit DeviceChainStrip(AdiRootComponent &);
     ~DeviceChainStrip() override;
@@ -297,9 +319,10 @@ class DeviceChainStrip final : public juce::Component, public juce::DragAndDropT
     // a click in the strip's empty space; Duplicate goes in front of the next device in its chain
     // and leaves the clipboard as it was. False when there is nothing to act on.
     enum class Clip { Cut, Copy, Paste, Duplicate };
-    bool clipboard(Clip, std::optional<std::int64_t> device = std::nullopt);
+    bool clipboard(Clip, std::optional<std::int64_t> device = std::nullopt, bool includeSelection = false);
     bool canClipboard(Clip) const;
     std::optional<std::int64_t> focusedDevice() const;
+    bool deleteDevices(std::optional<std::int64_t> device = {});
     // Whether the chain's end is chosen: the strip itself has the focus, after a click past the
     // last device.
     bool endChosen() const { return hasKeyboardFocus(false); }
@@ -313,6 +336,8 @@ class DeviceChainStrip final : public juce::Component, public juce::DragAndDropT
     void itemDropped(const SourceDetails &) override;
     bool isMovingDevice(const SourceDetails &) const;
     bool moveDroppedDevice(const SourceDetails &, std::int64_t track, std::optional<std::int64_t> before = {});
+    bool isInterestedInFileDrag(const juce::StringArray &) override;
+    void filesDropped(const juce::StringArray &, int, int) override;
     // The device a drop at `x` (the strip's coordinates) goes in front of; none past the last.
     std::optional<std::int64_t> dropBefore(int x) const;
     void mouseDown(const juce::MouseEvent &) override;
@@ -329,6 +354,10 @@ class DeviceChainStrip final : public juce::Component, public juce::DragAndDropT
                        std::shared_ptr<const gesture::OwnerToken> &)> guardedPairGesture;
     std::function<bool(std::int64_t, const engine::DeviceRuntimeToken &, std::uint64_t)> targetCurrent;
     std::function<bool(const std::string &, Payload)> submit;
+    // The application names and saves a preset for this exact loaded device.
+    std::function<void(const DevicePanelData &)> savePreset;
+    // A slot is present when the Browser should offer samples for this device slot.
+    std::function<void(const DevicePanelData &, std::optional<std::int32_t> slot)> hotSwap;
     std::function<std::vector<DeviceKeyChoice>(const DevicePanelData&)> keyChoices;
     std::function<bool(const DevicePanelData&,const DeviceKeyChoice&)> setKey;
     std::function<mix::Availability(mix::Function)> functionAvailability;
@@ -344,6 +373,11 @@ class DeviceChainStrip final : public juce::Component, public juce::DragAndDropT
     std::function<bool(std::int64_t track, std::optional<std::int64_t> before)> paste;
     std::function<bool(std::int64_t device, std::int64_t track, std::optional<std::int64_t> before)> duplicate;
     std::function<bool()> holdsCopy;
+    // A title range acts as one edit. Each item carries the identity observed by the UI.
+    std::function<bool(std::span<const DevicePanelData>)> removeSelection;
+    std::function<bool(std::span<const DevicePanelData>, bool cut)> copySelection;
+    std::function<bool(std::span<const DevicePanelData>, std::int64_t track, std::optional<std::int64_t> before)>
+        duplicateSelection, moveSelection;
     // The app's sample slot edits (D5): a file assigned to a device's slot, or the slot cleared;
     // each one undo step, its refusal said in the Status Bar.
     std::function<bool(std::int64_t device, std::int32_t slot, const std::string &path)> assignSample;
@@ -351,7 +385,19 @@ class DeviceChainStrip final : public juce::Component, public juce::DragAndDropT
     std::vector<std::unique_ptr<DevicePanelView>> panels;
 
   private:
+    struct PickedDevice {
+        std::int64_t id, track, chain;
+        std::uint64_t instance;
+        bool matches(const DevicePanelData &) const;
+    };
+    bool isSelected(std::int64_t) const;
+    bool selectionActsOn(std::int64_t) const;
+    void selectTitle(const DevicePanelView &, bool extend);
+    void clearSelection();
+    std::vector<DevicePanelData> selectedTargets() const;
+    bool clipboardSelection(Clip);
     DevicePanelView *moveSource(const SourceDetails &) const;
+    bool acceptsSample() const;
     const DevicePanelData *dataOf(std::int64_t device) const;
     void showSamples();
     void updateParameterDemand(std::vector<std::int64_t>);
@@ -359,12 +405,16 @@ class DeviceChainStrip final : public juce::Component, public juce::DragAndDropT
     bool parametersSuspended_ = false;
     std::int64_t selectedTrack = -1;
     std::optional<std::int64_t> chosen_;
+    std::vector<PickedDevice> selected_;
+    std::optional<PickedDevice> selectionAnchor_;
+    std::uint64_t selectionEpoch_ = 0;
     int end_ = 0; // where the chain ends, in the content's pixels
     juce::Viewport scroll;
     juce::Component content;
     std::shared_ptr<const ParameterPublication> presented;
     std::uint64_t addMenuEpoch_ = 0;
     std::uint64_t frameEpoch_ = 0;
+    friend class DevicePanelView;
 };
 // The strip's top edge: drag it up to grow the strip (ADR-0184), never below its floor.
 class DockResizer final : public juce::Component {

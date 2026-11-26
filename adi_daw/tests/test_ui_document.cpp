@@ -8,9 +8,11 @@
 #include "adi/media/media_ops.hpp"
 #include "adi/settings/store.hpp"
 #include "adi/ui/project_document.hpp"
+#include "adi/ui/recording_edits.hpp"
 #include "adi/ui/arrangement_geometry.hpp"
 #include "knobs_device.hpp"
 #include "temp_directory.hpp"
+#include "juce/builtin_host.hpp"
 #include "juce/device_core.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <sqlite3.h>
@@ -18,13 +20,14 @@
 #include <array>
 #include <atomic>
 #include <filesystem>
+#include <fstream>
 #include <map>
 #include <chrono>
 #include <cmath>
 #include <complex>
 #include <cstdio>
 #include <cstdlib>
-#include <fstream>
+#include <iterator>
 #include <optional>
 #include <string_view>
 #include <thread>
@@ -706,6 +709,76 @@ void moveOrdinaryDevice(const std::filesystem::path &file) {
               order(targetTrack).empty() && OpJournal(document->store()).headSeq() == reorderedHead,
           "SC-83: Undo restores the source order and removes the added chain");
 }
+void deviceRangeEdits(const std::filesystem::path &file) {
+    constexpr std::int64_t source = 2, destination = 4;
+    std::string error;
+    auto document = ui::ProjectDocument::open(file, true, test::knobsLoader(), error);
+    if (!document) {
+        check(false, "SC-288: a project for device range edits");
+        return;
+    }
+    rows::PluginRef plugin;
+    plugin.format = "clap";
+    plugin.uid = test::kKnobsUid;
+    plugin.name = "UI knobs";
+    plugin.subtype = "effect";
+    if (!document->insertPlugin(plugin, source) || !document->insertPlugin(plugin, source) ||
+        !document->insertPlugin(plugin, source) || !document->insertPlugin(plugin, destination)) {
+        check(false, "SC-288: three devices in one chain and an anchor in another");
+        return;
+    }
+    const auto panels = [&](std::int64_t track) {
+        const auto current = document->parameterFeed().current();
+        std::vector<ui::DevicePanelData> devices;
+        std::copy_if(current->begin(), current->end(), std::back_inserter(devices),
+                     [track](const auto &device) { return device.track == track; });
+        return devices;
+    };
+    const auto order = [&](std::int64_t track) {
+        std::vector<std::int64_t> ids;
+        for (const auto &device : panels(track)) ids.push_back(device.id);
+        return ids;
+    };
+    const auto undo = [&] {
+        const bool done = document->ops().undo().ok;
+        document->tick(0);
+        return done;
+    };
+    const auto original = panels(source);
+    const auto other = panels(destination);
+    if (original.size() != 3 || other.size() != 1) {
+        check(false, "SC-288: both chains are published");
+        return;
+    }
+    const auto sourceOrder = order(source), destinationOrder = order(destination);
+    const auto head = OpJournal(document->store()).headSeq();
+    std::array selected{original[1], original[0]};
+    std::vector<DeviceCopy> clipboard;
+    check(document->copyDevices(selected, clipboard) && clipboard.size() == 2 &&
+              clipboard.front().insert.at("id").get<std::int64_t>() == sourceOrder.front() &&
+              OpJournal(document->store()).headSeq() == head,
+          "SC-288: Copy stages the range in chain order without writing history");
+    std::array invalid{original[0], other[0]};
+    check(!document->copyDevices(invalid, clipboard, true) && clipboard.size() == 2 &&
+              OpJournal(document->store()).headSeq() == head && order(source) == sourceOrder,
+          "SC-288: an invalid Cut keeps all devices and the previous clipboard");
+    check(document->pasteDevices(clipboard, destination, other[0].id) && order(destination).size() == 3 &&
+              order(destination).back() == other[0].id && order(source) == sourceOrder &&
+              undo() && order(destination) == destinationOrder,
+          "SC-288: one Paste and one Undo cover both new devices");
+    check(document->moveDevices(selected, destination, other[0].id) &&
+              order(destination) == std::vector<std::int64_t>{sourceOrder[0], sourceOrder[1], other[0].id} &&
+              order(source) == std::vector<std::int64_t>{sourceOrder[2]} &&
+              !document->removeDevices(selected) && undo() && order(source) == sourceOrder,
+          "SC-288: Move retains IDs and order, rejects the previous source, and undoes once");
+    check(document->copyDevices(selected, clipboard, true) && order(source) == std::vector<std::int64_t>{sourceOrder[2]} &&
+              clipboard.size() == 2 && undo() && order(source) == sourceOrder,
+          "SC-288: one Cut removes the range and one Undo restores it");
+    const auto refreshed = panels(source);
+    check(refreshed.size() >= 2 && document->removeDevices(std::span<const ui::DevicePanelData>(refreshed).first(2)) &&
+              order(source) == std::vector<std::int64_t>{sourceOrder[2]} && undo() && order(source) == sourceOrder,
+          "SC-288: one Delete removes the range and one Undo restores it");
+}
 void dropDeviceOnNewTrack(const std::filesystem::path &dir) {
     constexpr std::int64_t existingTrack = 4;
     for (const auto *subtype : {"instrument", "midi_effect", "effect"}) {
@@ -777,6 +850,327 @@ void dropDeviceOnNewTrack(const std::filesystem::path &dir) {
         check(track != nullptr && track->kind == "audio",
               "SC-84: an ADI audio effect dropped below the tracks creates an audio track too");
     }
+}
+
+void dropSampleInstrument(const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ui::ProjectDocument::open(dir / "sample-instrument.adi", true, device::withBuiltinDevices(), error);
+    check(document != nullptr, "SC-283: a project for a sample instrument");
+    if (!document)
+        return;
+    constexpr std::int64_t midiTrack = 2, audioTrack = 4;
+    auto &db = document->store().db();
+    const auto deviceOnTrack = [&] {
+        SQLite::Statement row(db, "SELECT d.id FROM devices d JOIN device_chains c ON c.id=d.chain_id WHERE c.track_id=?");
+        row.bind(1, midiTrack);
+        return row.executeStep() ? row.getColumn(0).getInt64() : std::int64_t{0};
+    };
+    const auto file = dir / media::pathFromUtf8("drop-tone-\xc3\xa9.wav");
+    {
+        std::array<float, 1024> samples{};
+        for (std::size_t sample = 0; sample < samples.size(); ++sample)
+            samples[sample] = static_cast<float>(.5 * std::sin(static_cast<double>(sample) * .13));
+        audio::WavWriter writer(file, 48000, 1, audio::WavFormat::Float32);
+        writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
+        writer.close();
+    }
+    const auto *oneShot = findBuiltin("org.adidaw.builtin.oneshot");
+    if (oneShot == nullptr || !oneShot->available) {
+        check(!document->loadSampleInstrument(midiTrack, file, 7) && deviceOnTrack() == 0,
+              "SC-283: without the instrument backend, the drop leaves no device");
+        return;
+    }
+    document->session().graph().setFadeFrames(0);
+    document->prepare(48000, 64);
+    std::vector<OpRequest> setup(2);
+    setup[0].opType = "clip.create";
+    setup[0].payload = {{"id", 1}, {"track", midiTrack}, {"kind", "midi"}, {"pos", 0}, {"length", textproj::kWhole}};
+    setup[1].opType = "note.insert";
+    setup[1].payload = {{"clip", 1}, {"note", 1}, {"start", 0}, {"dur", textproj::kPPQ}, {"key", 60}, {"vel", 127}};
+    const bool ready = document->ops().submit(std::move(setup)).ok && document->synchronise() &&
+                       document->insertBuiltin("org.adidaw.builtin.oneshot", midiTrack, {});
+    check(ready, "SC-283: a MIDI clip and an existing empty instrument");
+    if (!ready)
+        return;
+    const auto original = deviceOnTrack();
+    const auto head = OpJournal(document->store()).headSeq();
+    const auto mediaCount = [&] { return db.execAndGet("SELECT count(*) FROM media_files").getInt(); };
+    const auto beforeMedia = mediaCount();
+    check(original != 0 && !document->loadSampleInstrument(midiTrack, dir / "missing-drop.wav", 7) &&
+              !document->loadSampleInstrument(audioTrack, file, 7) && deviceOnTrack() == original &&
+              mediaCount() == beforeMedia && OpJournal(document->store()).headSeq() == head,
+          "SC-283: an invalid source or an audio destination leaves the original instrument and history alone");
+    db.exec("CREATE TEMP TRIGGER reject_sample_state BEFORE INSERT ON main.ops WHEN NEW.op_type='device.loadState' "
+            "BEGIN SELECT RAISE(ABORT,'state rejected'); END");
+    check(!document->loadSampleInstrument(midiTrack, file, 7) && deviceOnTrack() == original &&
+              mediaCount() == beforeMedia && OpJournal(document->store()).headSeq() == head,
+          "SC-283: a late state refusal rolls back instrument replacement and media import");
+    db.exec("DROP TRIGGER reject_sample_state");
+    const bool loaded = document->loadSampleInstrument(midiTrack, file, 7);
+    const auto instrument = deviceOnTrack();
+    const auto hasSample = [&] {
+        const auto view = document->view().current();
+        return std::any_of(view->sampleSlots.begin(), view->sampleSlots.end(), [&](const auto &slot) {
+            return slot && slot->deviceId == instrument && slot->slot == 1 && !slot->empty && !slot->missing;
+        });
+    };
+    check(loaded && instrument != 0 && instrument != original && hasSample() && mediaCount() == beforeMedia + 1,
+          "SC-283: dropping one sample creates a filled OneShot on the MIDI track");
+    if (!loaded)
+        return;
+    std::int64_t stream = 0;
+    const auto play = [&] {
+        document->mailbox().post(ui::TransportMailbox::Command::Locate, 0);
+        document->mailbox().post(ui::TransportMailbox::Command::Play);
+        std::array<float, 64> left{}, right{};
+        float *out[]{left.data(), right.data()};
+        engine::AudioIo io;
+        io.out = out;
+        io.numOut = 2;
+        io.frames = 64;
+        float peak = 0.f;
+        for (int block = 0; block < 16; ++block) {
+            io.streamTimeSamples = stream;
+            document->process(io);
+            stream += io.frames;
+            for (const float value : left)
+                peak = std::max(peak, std::abs(value));
+        }
+        document->mailbox().post(ui::TransportMailbox::Command::Stop);
+        io.streamTimeSamples = stream;
+        document->process(io);
+        stream += io.frames;
+        return peak;
+    };
+    check(play() > .05f, "SC-283: the MIDI clip's note plays the dropped sample through the live document");
+    const auto step = document->ops().nextUndo();
+    check(step && step->label == "Load Sample Instrument" && document->ops().undo().ok && document->synchronise() &&
+              deviceOnTrack() == original && mediaCount() == beforeMedia && OpJournal(document->store()).headSeq() == head,
+          "SC-283: one Undo restores the previous instrument and removes the sample import");
+    check(document->ops().redo().ok && document->synchronise() && deviceOnTrack() == instrument && hasSample() && play() > .05f,
+          "SC-283: Redo restores the same loaded instrument and its sound");
+    document->release();
+}
+
+void devicePresetRoundTrip(const std::filesystem::path &dir) {
+    constexpr auto oneShot = "org.adidaw.builtin.oneshot";
+    constexpr std::int64_t track = 2;
+    std::string error;
+    auto source = ui::ProjectDocument::open(dir / "preset-source.adi", true, device::withBuiltinDevices(), error);
+    check(source != nullptr, "SC-85: a project to save a preset from");
+    if (!source)
+        return;
+    preset::Preset shell;
+    shell.device = {"vst3", "fixture.shell", 12};
+    shell.name = "Shell preset";
+    rows::PluginRef other;
+    other.format = "vst3";
+    other.uid = "fixture.shell";
+    other.shellId = 34;
+    const auto initialHead = OpJournal(source->store()).headSeq();
+    check(source->loadDevicePreset(shell, track, {}, other) == 0 &&
+              source->error().find("exact plug-in") != std::string::npos &&
+              OpJournal(source->store()).headSeq() == initialHead,
+          "SC-85: a different shell member cannot load the preset or change history");
+    const auto *builtin = findBuiltin(oneShot);
+    if (builtin == nullptr || !builtin->available)
+        return;
+
+    const auto prepareTrack = [track](ui::ProjectDocument &document) {
+        document.session().graph().setFadeFrames(0);
+        document.prepare(48000, 64);
+        std::vector<OpRequest> ops(2);
+        ops[0].opType = "clip.create";
+        ops[0].payload = {{"id", 1}, {"track", track}, {"kind", "midi"}, {"pos", 0},
+                          {"length", textproj::kWhole}};
+        ops[1].opType = "note.insert";
+        ops[1].payload = {{"clip", 1}, {"note", 1}, {"start", 0}, {"dur", textproj::kPPQ},
+                          {"key", 60}, {"vel", 127}};
+        return document.ops().submit(std::move(ops)).ok && document.synchronise();
+    };
+    const auto renderNote = [](ui::ProjectDocument &document) {
+        std::array<float, 64 * 16> rendered{};
+        std::array<float, 64> left{}, right{};
+        float *outputs[]{left.data(), right.data()};
+        engine::AudioIo io;
+        io.out = outputs;
+        io.numOut = 2;
+        io.frames = 64;
+        document.mailbox().post(ui::TransportMailbox::Command::Locate, 0);
+        document.mailbox().post(ui::TransportMailbox::Command::Play);
+        for (int block = 0; block < 16; ++block) {
+            io.streamTimeSamples = block * io.frames;
+            document.process(io);
+            std::copy(left.begin(), left.end(), rendered.begin() + block * io.frames);
+        }
+        document.mailbox().post(ui::TransportMailbox::Command::Stop);
+        io.streamTimeSamples += io.frames;
+        document.process(io);
+        return rendered;
+    };
+    const auto wave = dir / "preset-embedded-source.wav";
+    {
+        std::array<float, 1024> samples{};
+        for (std::size_t i = 0; i < samples.size(); ++i)
+            samples[i] = static_cast<float>(.5 * std::sin(static_cast<double>(i) * .13));
+        audio::WavWriter writer(wave, 48000, 1, audio::WavFormat::Float32);
+        writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
+    }
+    if (!prepareTrack(*source) || !source->loadSampleInstrument(track, wave, 17)) {
+        check(false, ("build the OneShot preset source: " + source->error()).c_str());
+        return;
+    }
+    const auto &model = source->session().model();
+    const auto original = std::find_if(model.devices.begin(), model.devices.end(),
+                                       [](const auto &row) { return row.name == "OneShot"; });
+    auto *instance = original != model.devices.end() ? source->session().instanceFor(original->id) : nullptr;
+    check(instance && instance->loaded(), "the preset source is a real OneShot");
+    if (!instance)
+        return;
+    const auto deviceId = original->id;
+    constexpr auto volume = "18";
+    constexpr double setting = .375;
+    using engine::ParamEventKind;
+    check(source->parameterGesture(deviceId, volume, ParamEventKind::Begin, instance->getParam(volume).normalized) &&
+              source->parameterGesture(deviceId, volume, ParamEventKind::Value, setting) &&
+              source->parameterGesture(deviceId, volume, ParamEventKind::End, setting) &&
+              instance->getParam(volume).normalized == setting,
+          "the source OneShot's volume was changed through its authored parameter gesture");
+    source->setParameterDemand(source.get(), {deviceId});
+    source->tick(0);
+    const auto feed = source->parameterFeed().current();
+    check(feed != nullptr, "the document published a parameter feed for preset capture");
+    if (!feed)
+        return;
+    const auto panel = std::find_if(feed->begin(), feed->end(), [&](const auto &device) { return device.id == deviceId; });
+    check(panel != feed->end(), "the Device View has the exact preset source runtime");
+    if (panel == feed->end())
+        return;
+    const auto library = dir / "Preset Test Library";
+    std::filesystem::path saved;
+    const auto sourceHead = OpJournal(source->store()).headSeq();
+    if (!source->saveDevicePreset(*panel, library, "Portable OneShot", saved)) {
+        check(false, ("save the OneShot preset: " + source->error()).c_str());
+        return;
+    }
+    check(OpJournal(source->store()).headSeq() == sourceHead,
+          "saving a library file creates no project Undo step");
+    const auto listing = preset::list(library);
+    const auto values = preset::read(saved);
+    const preset::Identity identity{"internal", oneShot, {}};
+    check(listing.size() == 1 && listing.front().path == saved && listing.front().deviceKey == preset::deviceKey(identity) &&
+              values.device == identity && values.name == "Portable OneShot" && values.parameters.contains(volume) &&
+              values.parameters.at(volume) == setting && values.state.contains("sample:1"),
+          "the library file round-trips the OneShot identity, edited parameter and sample");
+    const auto expectedAudio = renderNote(*source);
+    check(std::any_of(expectedAudio.begin(), expectedAudio.end(), [](float v) { return std::abs(v) > .05f; }),
+          "the source OneShot note is audible");
+    source->release();
+    source.reset();
+    check(std::filesystem::remove(wave), "remove the original audio before loading the independent preset");
+
+    auto target = ui::ProjectDocument::open(dir / "preset-target.adi", true, device::withBuiltinDevices(), error);
+    const bool targetReady = target && prepareTrack(*target);
+    check(targetReady, "a separate project with just the same MIDI note");
+    if (!targetReady)
+        return;
+    const auto before = OpJournal(target->store()).headSeq();
+    const auto loaded = target->loadDevicePreset(values, track, {});
+    if (loaded == 0) {
+        check(false, ("load the saved OneShot preset: " + target->error()).c_str());
+        return;
+    }
+    const auto samePreset = [&] {
+        SQLite::Statement row(target->store().db(),
+                              "SELECT d.preset_name,p.normalized_value FROM devices d JOIN plugin_params p "
+                              "ON p.device_id=d.id WHERE d.id=? AND p.param_id=?");
+        row.bind(1, loaded);
+        row.bind(2, volume);
+        const auto *runtime = target->session().instanceFor(loaded);
+        const auto snapshot = target->view().current();
+        const bool availableSample = std::any_of(snapshot->sampleSlots.begin(), snapshot->sampleSlots.end(),
+            [&](const auto &slot) { return slot && slot->deviceId == loaded && !slot->empty && !slot->missing; });
+        return row.executeStep() && row.getColumn(0).getString() == values.name && row.getColumn(1).getDouble() == setting &&
+               runtime && runtime->loaded() && runtime->getParam(volume).normalized == setting && availableSample;
+    };
+    check(samePreset() && renderNote(*target) == expectedAudio,
+          "the new project binds the authored preset and renders exactly the same note without its source file");
+    const auto pendingUndo = target->ops().nextUndo();
+    check(pendingUndo && pendingUndo->label == "Load Device Preset" && target->ops().undo().ok &&
+              target->synchronise() && OpJournal(target->store()).headSeq() == before && !samePreset(),
+          "a single Undo removes the loaded preset and its device");
+    check(target->ops().redo().ok && target->synchronise() && samePreset(),
+          "a single Redo restores the stored parameters and embedded sample on that device");
+    target->release();
+
+    auto recall = ui::ProjectDocument::open(dir / "preset-hot-swap.adi", true, device::withBuiltinDevices(), error);
+    if (!recall || !prepareTrack(*recall) || !recall->insertBuiltin(oneShot, track, {})) {
+        check(false, "SC-285: a project with a fresh OneShot and a playable MIDI note");
+        return;
+    }
+    const auto device = recall->store().db().execAndGet("SELECT MAX(id) FROM devices").getInt64();
+    auto *const originalRuntime = recall->session().instanceFor(device);
+    auto publication = recall->parameterFeed().current();
+    const auto panelForRecall = std::find_if(publication->begin(), publication->end(),
+                                            [&](const auto &entry) { return entry.id == device; });
+    if (panelForRecall == publication->end() || !originalRuntime) {
+        check(false, "SC-285: capture the fresh device's runtime and slot");
+        recall->release();
+        return;
+    }
+    const auto expected = *panelForRecall;
+    const double untouched = originalRuntime->getParam(volume).normalized;
+    automation::LaneSpec lane;
+    lane.id = 1;
+    lane.ownerKind = "device";
+    lane.ownerId = device;
+    lane.paramRef = volume;
+    lane.paramName = "Volume";
+    lane.enabled = false;
+    check(recall->ops().submit(automation::createLane(lane)).ok && recall->synchronise(),
+          "SC-285: the selected OneShot has authored automation");
+    const auto recallHead = OpJournal(recall->store()).headSeq();
+    const auto originalAudio = renderNote(*recall);
+    const auto originalAutomation = [&] {
+        const auto snapshot = recall->view().current();
+        const auto *row = snapshot->findAutomationLane(lane.id);
+        return row && row->ownerId == device && row->paramRef == lane.paramRef;
+    };
+    auto unsupported = values;
+    unsupported.parameters.emplace("no-such-control", .5);
+    check(recall->hotSwapPreset(expected, std::move(unsupported)) == 0 &&
+              OpJournal(recall->store()).headSeq() == recallHead,
+          "SC-285: incompatible preset parameters leave the live device and history unchanged");
+    auto stale = expected;
+    stale.chain = 0;
+    check(!recall->hotSwapTarget(stale) && recall->hotSwapPreset(stale, values) == 0 &&
+              OpJournal(recall->store()).headSeq() == recallHead,
+          "SC-285: a stale captured chain cannot write to the device");
+    if (recall->hotSwapPreset(expected, values) != device) {
+        check(false, ("SC-285: apply a preset to the same instance: " + recall->error()).c_str());
+        recall->release();
+        return;
+    }
+    recall->tick(0);
+    check(originalAutomation() && recall->session().instanceFor(device) == originalRuntime &&
+              originalRuntime->getParam(volume).normalized == setting && renderNote(*recall) == expectedAudio,
+          "SC-285: recall keeps the instance and its automation and plays the embedded sample");
+    check(recall->ops().undo().ok && recall->synchronise(), "SC-285: undo preset recall once");
+    recall->tick(1);
+    SQLite::Statement param(recall->store().db(), "SELECT 1 FROM plugin_params WHERE device_id=? AND param_id=?");
+    param.bind(1, device);
+    param.bind(2, volume);
+    SQLite::Statement sample(recall->store().db(), "SELECT 1 FROM plugin_state WHERE device_id=? AND stream_role='sample:1'");
+    sample.bind(1, device);
+    check(OpJournal(recall->store()).headSeq() == recallHead && originalAutomation() &&
+              recall->session().instanceFor(device) == originalRuntime && !param.executeStep() && !sample.executeStep() &&
+              originalRuntime->getParam(volume).normalized == untouched && renderNote(*recall) == originalAudio,
+          "SC-285: one Undo restores the unrecorded parameter, empty sample and previous sound");
+    check(recall->ops().redo().ok && recall->synchronise(), "SC-285: redo preset recall once");
+    recall->tick(2);
+    check(originalAutomation() && recall->session().instanceFor(device) == originalRuntime && renderNote(*recall) == expectedAudio,
+          "SC-285: Redo restores the same instrument's recalled sound");
+    recall->release();
 }
 
 void mixSurfacePublication(const std::filesystem::path &file) {
@@ -1099,8 +1493,8 @@ void importWithChoices(const std::filesystem::path &dir) {
 // The extremes a waveform column draws (`peakSpan`): always those of real bins.
 // Arrangement Record (MX-09; Live 12 manual 21.1): the armed audio track records from the device's
 // input through the document's callback; stopped, the take lands on the timer as one undo step, its
-// samples the input's, and Undo takes it back. Nothing armed, only MIDI armed and a device with no
-// inputs are refused with a reason.
+// samples the input's, and Undo takes it back. Nothing armed, or an armed audio track with no
+// input device, are refused with a reason.
 // DF-E44: a take that is not kept goes with its files; a folder the system would not remove stays, and the
 // Status Bar says so. POSIX only: a read-only work folder refuses the removal of its entries, except to root.
 void discardRefusalSaid(const std::filesystem::path &dir) {
@@ -1140,13 +1534,192 @@ void discardRefusalSaid(const std::filesystem::path &dir) {
     (void)::chmod(work.c_str(), 0755);
     check(landed && said && !said->ok && said->message.find("The take was not kept") != std::string::npos &&
               said->message.find("could not be removed") != std::string::npos &&
-              said->message.find("in the project's folder") != std::string::npos,
+              said->message.find(media::pathUtf8(work)) != std::string::npos,
           "the Status Bar says the take's files stay, and where");
     if (said)
         std::printf("discard refused: %s\n", said->message.c_str());
     check(entries() == before + 1, "the folder stays for the next attempt");
 #endif
 }
+void externalInputRecording(const std::filesystem::path &dir) {
+    std::string error;
+    auto doc = ui::ProjectDocument::open(dir / "external-input.adi", true, {}, error);
+    check(doc != nullptr, "SC-23: a project with external input tracks");
+    if (!doc)
+        return;
+    const auto edit = [&](const char *type, Payload payload) {
+        OpRequest request;
+        request.opType = type;
+        request.payload = std::move(payload);
+        return doc->ops().submit(request).ok;
+    };
+    const bool configured = edit("track.create", {{"id", 8}, {"kind", "audio"}, {"name", "Stereo"}}) &&
+                            edit("track.setInput", {{"id", 4}, {"input", "ext:mono:2"}}) &&
+                            edit("track.setInput", {{"id", 8}, {"input", "ext:stereo:5"}}) &&
+                            edit("track.setArm", {{"id", 4}, {"armed", true}}) &&
+                            edit("track.setArm", {{"id", 8}, {"armed", true}}) && doc->synchronise();
+    check(configured, "SC-23: set and arm the two authored input routes");
+    if (!configured)
+        return;
+
+    // Physical inputs 2, 5 and 6 arrive as callback channels 0, 1 and 2.
+    doc->setExternalAudioInputs({{"ext:mono:2", "Voice", {0}}, {"ext:stereo:5", "Keys", {1, 2}}});
+    constexpr int frames = 64, blocks = 8;
+    constexpr std::uint32_t capturedFrames = frames * blocks;
+    constexpr std::array<float, 3> levels{0.125f, -0.25f, 0.5f};
+    std::array<std::array<float, frames>, levels.size()> input{};
+    for (std::size_t channel = 0; channel < levels.size(); ++channel)
+        input[channel].fill(levels[channel]);
+    std::array<float, frames> left{}, right{};
+    const float *inputs[]{input[0].data(), input[1].data(), input[2].data()};
+    float *outputs[]{left.data(), right.data()};
+    engine::AudioIo io;
+    io.in = inputs;
+    io.numIn = 3;
+    io.out = outputs;
+    io.numOut = 2;
+    io.frames = frames;
+    doc->prepare(48000, frames);
+    const bool started = doc->startRecording(0, io.numIn, false);
+    check(started, "SC-23: record one mono input and one stereo pair at the same time");
+    if (!started) {
+        doc->release();
+        return;
+    }
+    const auto inputMeter = doc->externalInputMeter();
+    inputMeter->beginReading();
+    for (int block = 0; block < blocks; ++block) {
+        io.streamTimeSamples = block * frames;
+        doc->process(io);
+    }
+    inputMeter->endReading();
+    check(inputMeter->peak(0) == 0.125f && inputMeter->peak(1) == 0.25f && inputMeter->peak(2) == 0.5f,
+          "SC-23: the picker measures each packed input independently");
+    doc->release();
+    check(inputMeter->peak(0) == 0.f && inputMeter->peak(1) == 0.f && inputMeter->peak(2) == 0.f,
+          "SC-23: stopping the device clears the chooser meters");
+    check(doc->settleRecording(), "SC-23: settle the recorded inputs");
+    const auto landed = doc->takeLanded();
+    check(landed && landed->ok && landed->clips.size() == 2, "SC-23: both input takes land");
+    const auto recorded = [&](int track, std::size_t firstInput, std::uint16_t channels) {
+        SQLite::Statement path(doc->store().db(),
+                               "SELECT m.rel_path FROM clips c JOIN audio_clips a ON c.id=a.clip_id "
+                               "JOIN media_files m ON a.media_id=m.id WHERE c.track_id=?");
+        path.bind(1, track);
+        if (!path.executeStep())
+            return false;
+        audio::WavReader wav(media::projectFolder(doc->store()) / media::pathFromUtf8(path.getColumn(0).getString()));
+        std::vector<float> samples(static_cast<std::size_t>(capturedFrames) * channels);
+        if (wav.channels() != channels || wav.frames() != capturedFrames ||
+            wav.read(samples.data(), capturedFrames) != capturedFrames)
+            return false;
+        for (std::size_t i = 0; i < samples.size(); ++i)
+            if (samples[i] != levels[firstInput + i % channels])
+                return false;
+        return true;
+    };
+    check(recorded(4, 0, 1), "SC-23: the mono take contains only physical input 2");
+    check(recorded(8, 1, 2), "SC-23: the stereo take contains physical inputs 5 and 6 in order");
+
+    check(edit("track.setArm", {{"id", 8}, {"armed", false}}) && doc->synchronise(),
+          "SC-23: disarm the track whose input is still available");
+    doc->setExternalAudioInputs({{"ext:stereo:5", "Keys", {0, 1}}});
+    doc->prepare(48000, frames);
+    check(!doc->startRecording(0, 2, false) && !doc->recording() && !doc->landingTake() && !doc->error().empty(),
+          "SC-23: a missing authored input refuses recording instead of taking another channel");
+    const auto *track = doc->view().current()->findTrack(4);
+    check(track && track->inputRef && *track->inputRef == "ext:mono:2",
+          "SC-23: losing an input keeps the track's authored source");
+    doc->release();
+}
+
+void recordingBitDepth(const std::filesystem::path &dir) {
+    std::string error;
+    const auto settingsFile = dir / "settings.json";
+    settings::AppSettings store(appdata::App::Daw, settingsFile);
+    check(store.get("record.bitDepth") == 32 && store.get("export.bitDepth") == 24,
+          "SC-25: old settings default to 32-bit float for recording independently of export");
+    check(!store.set("record.bitDepth", 20, {}, error) && store.get("record.bitDepth") == 32,
+          "SC-25: unsupported depths leave the recording preference unchanged");
+
+    auto doc = ui::ProjectDocument::open(dir / "record-bit-depth.adi", true, {}, error);
+    check(doc != nullptr, "SC-25: a project to record each allowed depth");
+    if (!doc)
+        return;
+    OpRequest arm;
+    arm.opType = "track.setArm";
+    arm.payload = {{"id", 4}, {"armed", true}};
+    if (!doc->ops().submit(arm).ok || !doc->synchronise())
+        throw std::runtime_error("could not arm the audio track");
+
+    using Format = audio::WavFormat;
+    constexpr std::array<float, 4> input{.25f + 0x1p-20f, -.5f - 0x1p-24f, 1.25f, -1.25f};
+    struct Case {
+        int depth;
+        Format format;
+        std::array<float, 4> samples;
+    };
+    const std::array cases{
+        Case{16, Format::Pcm16, {.25f, -.5f, 1.f - 0x1p-15f, -1.f}},
+        Case{24, Format::Pcm24, {input[0], -.5f - 0x1p-23f, 1.f - 0x1p-23f, -1.f}},
+        Case{32, Format::Float32, input},
+    };
+    constexpr int frames = 64;
+    std::array<float, frames> in{}, left{}, right{};
+    for (std::size_t i = 0; i < in.size(); ++i)
+        in[i] = input[i % input.size()];
+    const float *inputs[]{in.data()};
+    float *outputs[]{left.data(), right.data()};
+    std::int64_t tick = 0;
+    for (const auto &example : cases) {
+        if (!store.set("record.bitDepth", example.depth, {}, error) || !store.save(error))
+            throw std::runtime_error(error);
+        settings::AppSettings reopened(appdata::App::Daw, settingsFile);
+        const auto depth = reopened.get("record.bitDepth").get<int>();
+        check(depth == example.depth && reopened.get("export.bitDepth") == 24,
+              "SC-25: the saved recording depth reloads and leaves the export depth alone");
+        doc->prepare(48000, frames);
+        if (!doc->startRecording(tick, 1, false, 0, {}, ui::recordingWavFormat(depth)))
+            throw std::runtime_error(doc->error());
+        // Editing the preference during recording affects the next job only.
+        if (!store.set("record.bitDepth", example.depth == 16 ? 24 : 16, {}, error))
+            throw std::runtime_error(error);
+        doc->process({outputs, inputs, 2, 1, frames, 0});
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        auto preview = doc->session().recording().preview();
+        while (!preview && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            preview = doc->session().recording().preview();
+        }
+        check(preview && !preview->peaks.bins.empty() &&
+                  preview->peaks.bins.front() == media::PeakBin{example.samples[3], example.samples[2]},
+              "SC-25: the recording preview uses the stored PCM or floating-point extrema");
+        doc->release();
+        check(doc->settleRecording(), "SC-25: settle the take in the selected encoding");
+        const auto landed = doc->takeLanded();
+        check(landed && landed->ok && landed->clips.size() == 1, "SC-25: the take lands");
+        if (!landed || !landed->ok || landed->clips.size() != 1)
+            return;
+        SQLite::Statement row(doc->store().db(),
+                              "SELECT m.rel_path,m.format,m.bit_depth FROM media_files m JOIN audio_clips a "
+                              "ON m.id=a.media_id WHERE a.clip_id=?");
+        row.bind(1, landed->clips.front());
+        if (!row.executeStep())
+            throw std::runtime_error("the recording has no media row");
+        const auto path = media::projectFolder(doc->store()) / media::pathFromUtf8(row.getColumn(0).getString());
+        audio::WavReader file(path);
+        std::array<float, frames> actual{};
+        bool exact = file.format() == example.format && file.frames() == frames && file.channels() == 1 &&
+                     file.read(actual.data(), frames) == frames;
+        for (std::size_t i = 0; i < actual.size(); ++i)
+            exact = exact && actual[i] == example.samples[i % example.samples.size()];
+        check(exact && path.extension() == ".wav" && row.getColumn(1).getString() == "wav" &&
+                  row.getColumn(2).getInt() == example.depth,
+              "SC-25: the WAV header, exact samples and media pool use the selected depth");
+        tick += textproj::kPPQ;
+    }
+}
+
 void arrangementRecord(const std::filesystem::path &dir) {
     std::string error;
     auto doc = ui::ProjectDocument::open(dir / "record.adi", true, {}, error);
@@ -1262,7 +1835,7 @@ void arrangementRecord(const std::filesystem::path &dir) {
     }
     check(std::distance(std::filesystem::directory_iterator(dir), std::filesystem::directory_iterator{}) == before,
           "and leaves no private take in the project's folder");
-    // The device stopped while a take lands: settled when the document is told the driver is gone.
+    // A driver may stop delivering callbacks without a user pressing Stop.
     check(doc->startRecording(0, 1, true), "Record again");
     for (int b = 0; b < 4; ++b) {
         io.streamTimeSamples = stream;
@@ -1270,10 +1843,239 @@ void arrangementRecord(const std::filesystem::path &dir) {
         stream += 64;
     }
     doc->release();
-    doc->settleRecording();
-    const auto settled = doc->takeLanded();
+    std::optional<ui::ProjectDocument::TakeLanded> settled;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    for (int i = 0; !settled && std::chrono::steady_clock::now() < deadline; ++i) {
+        doc->tick(i);
+        settled = doc->takeLanded();
+        if (!settled)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
     check(settled && settled->ok && !doc->recording() && !doc->landingTake(),
-          "a take whose device stopped is settled into the project, not lost");
+          "the document timer lands the take after device loss without another audio callback");
+}
+void refusedRecordingKeepsAudio(const std::filesystem::path &dir) {
+    std::string error;
+    auto doc = ui::ProjectDocument::open(dir / "record.adi", true, {}, error);
+    check(doc != nullptr, "a project for testing refused recording publication");
+    if (!doc)
+        return;
+    constexpr int blockFrames = 64, blocks = 4;
+    doc->prepare(48000, blockFrames);
+    OpRequest arm;
+    arm.opType = "track.setArm";
+    arm.payload = {{"id", 4}, {"armed", true}};
+    if (!doc->ops().submit(arm).ok || !doc->synchronise())
+        throw std::runtime_error("could not arm the audio track");
+
+    // The recorder can write its private directory, but placing the take needs Samples/Recorded.
+    const auto project = media::projectFolder(doc->store());
+    std::filesystem::create_directories(project / "Samples");
+    const auto obstruction = project / "Samples" / "Recorded";
+    {
+        std::ofstream file(obstruction);
+        if (!(file << "not a directory"))
+            throw std::runtime_error("could not obstruct recording publication");
+    }
+    const auto recovery = dir / media::pathFromUtf8("Recover\xc3\xa9");
+    if (!doc->startRecording(0, 1, false, 0, media::pathUtf8(recovery)))
+        throw std::runtime_error(doc->error());
+    std::filesystem::path capture;
+    for (const auto &entry : std::filesystem::directory_iterator(recovery))
+        if (entry.is_directory() && media::pathUtf8(entry.path().filename()).starts_with(".adi-record-"))
+            capture = entry.path();
+    if (capture.empty())
+        throw std::runtime_error("recording did not make a private directory in the configured recovery folder");
+
+    std::array<float, blockFrames> samples{}, left{}, right{};
+    for (std::size_t i = 0; i < samples.size(); ++i)
+        samples[i] = static_cast<float>(i % 17) / 32.f - .25f;
+    const float *inputs[]{samples.data()};
+    float *outputs[]{left.data(), right.data()};
+    engine::AudioIo io;
+    io.in = inputs;
+    io.numIn = 1;
+    io.out = outputs;
+    io.numOut = 2;
+    io.frames = blockFrames;
+    for (int block = 0; block < blocks; ++block) {
+        io.streamTimeSamples = static_cast<std::int64_t>(block) * blockFrames;
+        doc->process(io);
+    }
+    doc->release();
+    const bool settled = doc->settleRecording();
+    const auto landed = doc->takeLanded();
+    check(settled && landed && !landed->ok && landed->clips.empty() &&
+              landed->message.find(media::pathUtf8(capture)) != std::string::npos,
+          "a take that cannot attach reports the full location of its retained capture");
+    check(doc->store().db().execAndGet("SELECT count(*) FROM media_files").getInt() == 0,
+          "refused publication adds no media row");
+    const auto file = capture / "take-0.wav";
+    const bool retained = std::filesystem::is_regular_file(file);
+    check(retained, "refused publication leaves the original WAV on disk");
+    if (retained) {
+        audio::WavReader reader(file);
+        std::array<float, blockFrames * blocks> saved{};
+        bool exact = reader.frames() == saved.size() && reader.channels() == 1 &&
+                     reader.read(saved.data(), static_cast<std::uint32_t>(saved.size())) == saved.size();
+        for (std::size_t i = 0; i < saved.size(); ++i)
+            exact = exact && saved[i] == samples[i % samples.size()];
+        check(exact, "the saved but unplaced WAV still holds all captured PCM");
+    }
+}
+void recordWithDeviceLatency(const std::filesystem::path &dir) {
+    std::string error;
+    auto doc = ui::ProjectDocument::open(dir / "overdub.adi", true, {}, error);
+    check(doc != nullptr, "SC-22: a project to record an overdub");
+    if (!doc)
+        return;
+    OpRequest arm;
+    arm.opType = "track.setArm";
+    arm.payload = {{"id", 4}, {"armed", true}};
+    check(doc->ops().submit(arm).ok && doc->synchronise(), "SC-22: arm the audio track");
+
+    constexpr int rate = 48000, frames = 64;
+    constexpr int startSample = rate, referenceClick = 256;
+    constexpr int inputLatency = 64, outputLatency = 128;
+    constexpr int delayedClick = referenceClick + inputLatency + outputLatency;
+    constexpr int captureFrames = 512;
+    doc->prepare(rate, frames);
+    const auto tempo = doc->view().current()->tempo;
+    const auto insert = tempo->secondsToTicks(static_cast<double>(startSample) / rate);
+    const bool started = doc->startRecording(insert, 1, false, inputLatency + outputLatency);
+    check(started, "SC-22: start a take with the driver's reported round-trip latency");
+    if (!started)
+        return;
+
+    std::array<float, frames> input{}, left{}, right{};
+    const float *inputs[]{input.data()};
+    float *outputs[]{left.data(), right.data()};
+    engine::AudioIo io;
+    io.in = inputs;
+    io.numIn = 1;
+    io.out = outputs;
+    io.numOut = 2;
+    io.frames = frames;
+    for (int blockStart = 0; blockStart < captureFrames; blockStart += frames) {
+        input.fill(0);
+        if (delayedClick >= blockStart && delayedClick < blockStart + frames)
+            input[static_cast<std::size_t>(delayedClick - blockStart)] = 0.75f;
+        io.streamTimeSamples = blockStart;
+        doc->process(io);
+    }
+    const auto previewDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    std::shared_ptr<const engine::AudioRecordingPreview> preview;
+    do {
+        preview = doc->session().recording().preview();
+        if (!preview)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    } while (!preview && std::chrono::steady_clock::now() < previewDeadline);
+    doc->release();
+    check(doc->settleRecording(), "SC-22: settle the overdub after the device closes");
+    const auto landed = doc->takeLanded();
+    check(landed && landed->ok && landed->clips.size() == 1, "SC-22: the overdub lands");
+    if (!landed || !landed->ok || landed->clips.size() != 1)
+        return;
+    SQLite::Statement take(doc->store().db(),
+                           "SELECT c.pos_ticks, m.rel_path FROM clips c JOIN audio_clips a ON a.clip_id=c.id "
+                           "JOIN media_files m ON m.id=a.media_id WHERE c.id=?");
+    take.bind(1, landed->clips.front());
+    check(take.executeStep(), "SC-22: the overdub has a timeline position and a media file");
+    if (!take.hasRow())
+        return;
+
+    const auto mediaPath = media::projectFolder(doc->store()) / media::pathFromUtf8(take.getColumn(1).getString());
+    audio::WavReader saved(mediaPath);
+    std::array<float, captureFrames> audio{};
+    const auto clipStart = std::llround(tempo->ticksToSeconds(take.getColumn(0).getInt64()) * rate);
+    check(preview && preview->startSample == clipStart,
+          "SC-20, SC-22: live peaks and the placed clip share the compensated start");
+    check(saved.frames() == audio.size() && saved.read(audio.data(), captureFrames) == audio.size() &&
+              audio[delayedClick] == 0.75f && clipStart + delayedClick == startSample + referenceClick,
+          "SC-22: the saved impulse is unmodified and lines up with the reference click on the timeline");
+}
+void countInPositionFeedback(const std::filesystem::path &dir) {
+    std::string error;
+    auto doc = ui::ProjectDocument::open(dir / "count-in.adi", true, {}, error);
+    check(doc != nullptr, "create a document for count-in feedback");
+    if (!doc)
+        return;
+    const auto submit = [&](const char *type, Payload payload) {
+        OpRequest request;
+        request.opType = type;
+        request.payload = std::move(payload);
+        return doc->ops().submit(request).ok;
+    };
+    constexpr int maxFrames = 1024;
+    constexpr int sixteenthFrames = 6000;
+    constexpr int barFrames = 12 * sixteenthFrames; // 6/8 at 120 BPM and 48 kHz
+    constexpr auto startTick = textproj::kPPQ;
+    doc->prepare(48000, maxFrames);
+    const bool configured = submit("project.insertTimeSignature", {{"pos", startTick}, {"num", 6}, {"den", 8}}) &&
+                            submit("track.setArm", {{"id", 4}, {"armed", true}}) &&
+                            submit("transport.setCountIn", {{"bars", 2}}) && doc->synchronise();
+    check(configured, "configure two bars of 6/8 and arm 3 Audio");
+    if (!configured)
+        return;
+
+    std::array<float, maxFrames> input{}, left{}, right{};
+    const float *inputs[]{input.data()};
+    float *outputs[]{left.data(), right.data()};
+    std::int64_t stream = 0;
+    const auto advance = [&](int frames) {
+        while (frames > 0) {
+            const auto block = std::min(frames, maxFrames);
+            doc->process({outputs, inputs, 2, 1, block, stream});
+            stream += block;
+            frames -= block;
+        }
+    };
+    auto &mailbox = doc->mailbox();
+    const auto at = [&](int bar, int beat, int sixteenth) {
+        const auto where = mailbox.countInPosition();
+        return where.bar == bar && where.beat == beat && where.sixteenth == sixteenth;
+    };
+    check(at(0, 0, 0), "the count-in position is inactive while stopped");
+    if (!doc->startRecording(startTick, 1, false))
+        throw std::runtime_error(doc->error());
+    advance(sixteenthFrames - 1);
+    check(at(-2, 1, 1) && mailbox.playing() && mailbox.position() == 24000,
+          "the first count-in sixteenth holds the take position at the launch point");
+    advance(1);
+    check(at(-2, 1, 2), "the countdown advances at the first sixteenth boundary");
+    advance(sixteenthFrames);
+    check(at(-2, 2, 1), "6/8 has two sixteenths per displayed beat");
+    advance(barFrames - 2 * sixteenthFrames - 1);
+    check(at(-2, 6, 2), "the first count-in bar displays its final sixteenth");
+    advance(1);
+    check(at(-1, 1, 1), "the next callback crosses exactly into the last count-in bar");
+    advance(barFrames - 1);
+    check(at(-1, 6, 2) && doc->session().recording().acceptedFrames() == 0,
+          "the last count-in frame still shows a negative bar and has recorded nothing");
+    advance(2);
+    check(at(0, 0, 0) && mailbox.playing() && mailbox.position() == 24001 &&
+              doc->session().recording().acceptedFrames() == 1,
+          "the callback crossing the count-in end clears the display and captures only its last frame");
+
+    using Command = ui::TransportMailbox::Command;
+    doc->stopRecording();
+    check(mailbox.post(Command::Stop), "queue Stop after capture");
+    advance(1);
+    doc->release();
+    check(doc->settleRecording(), "settle the first take before restarting");
+    doc->prepare(48000, maxFrames);
+    if (!doc->startRecording(startTick, 1, false))
+        throw std::runtime_error(doc->error());
+    advance(1);
+    check(at(-2, 1, 1), "a new recording starts a fresh count-in");
+    doc->stopRecording();
+    check(mailbox.post(Command::Stop), "queue Stop during count-in");
+    advance(1);
+    check(at(0, 0, 0) && !mailbox.playing() && mailbox.position() == 24000 &&
+              doc->session().recording().acceptedFrames() == 0,
+          "Stop clears the count-in position without starting capture or advancing the timeline");
+    doc->release();
+    check(doc->settleRecording(), "settle the stopped count-in");
 }
 std::optional<std::uint64_t> ownerReadBytes() {
 #if defined(__linux__)
@@ -1691,12 +2493,14 @@ void arrangementMidiRecord(const std::filesystem::path &path, bool mixed) {
               set("track.setMonitorMode", {{"id", 2}, {"mode", 1}}) &&
               (!mixed || (set("track.setArm", {{"id", 3}, {"armed", true}}) &&
                           set("track.setMonitorMode", {{"id", 3}, {"mode", 0}}) &&
-                          set("track.setArm", {{"id", 4}, {"armed", true}}))) && doc->synchronise(),
+                          set("track.setArm", {{"id", 4}, {"armed", true}}) &&
+                          set("track.rename", {{"id", 4}, {"name", "# Audio"}}))) && doc->synchronise(),
           "armed monitored MIDI, optionally with unmonitored MIDI and audio");
     doc->prepare(48000, 64);
     const auto clipCount = [&] { return doc->store().db().execAndGet("SELECT count(*) FROM clips").getInt(); };
     const auto before = clipCount();
-    if (!doc->startRecording(0, mixed ? 1 : 0, false)) {
+    const auto workFolder = path.parent_path() / (mixed ? "mixed-capture" : "midi-capture");
+    if (!doc->startRecording(0, mixed ? 1 : 0, false, 0, media::pathUtf8(workFolder))) {
         check(false, "MIDI-only Record works without audio input, mixed Record with one input");
         return;
     }
@@ -1740,6 +2544,18 @@ void arrangementMidiRecord(const std::filesystem::path &path, bool mixed) {
           "one committed clip per armed track replaces the growing take");
     if (!landed || !landed->ok)
         return;
+    if (mixed) {
+        const auto relative = doc->store().db().execAndGet("SELECT rel_path FROM media_files").getString();
+        if (relative != "Samples/Recorded/3 Audio 0001.wav")
+            std::printf("Mixed take path: %s\n", relative.c_str());
+        check(relative == "Samples/Recorded/3 Audio 0001.wav" &&
+                  std::filesystem::is_regular_file(media::projectFolder(doc->store()) / media::pathFromUtf8(relative)),
+              "the mixed take publishes under the displayed audio track name");
+        check(std::filesystem::is_directory(workFolder) && std::filesystem::is_empty(workFolder),
+              "publication removes the private capture from the configured work folder");
+    } else {
+        check(!std::filesystem::exists(workFolder), "MIDI-only recording does not create an audio work folder");
+    }
     for (const auto id : landed->clips) {
         const auto read = engine::readClipDetails(doc->store(), id, true, true);
         if (!read.clip || read.clip->kind != "midi")
@@ -1757,6 +2573,98 @@ void arrangementMidiRecord(const std::filesystem::path &path, bool mixed) {
     }
     check(doc->ops().undo().ok && clipCount() == before && doc->ops().redo().ok && clipCount() == before + expected,
           "one Undo and one Redo for the whole take");
+}
+void mixedPunchKeepsMidi(const std::filesystem::path &dir) {
+    std::string error;
+    auto doc = ui::ProjectDocument::open(dir / "mixed-punch.adi", true, {}, error);
+    check(doc != nullptr, "SC-26: a project for a mixed punch take");
+    if (!doc)
+        return;
+    const auto set = [&](const char *type, Payload payload) {
+        OpRequest request;
+        request.opType = type;
+        request.payload = std::move(payload);
+        return doc->ops().submit(request).ok;
+    };
+    constexpr int frames = 64;
+    const auto tempo = doc->view().current()->tempo;
+    // Both authored offsets are smaller than a sample. The canonical
+    // sample-to-tick conversion falls beyond both ends of this brace.
+    const auto start = tempo->secondsToTicks(static_cast<double>(frames) / 48000) + 16;
+    const auto end = tempo->secondsToTicks(3.0 * frames / 48000) - 16;
+    if (!set("track.setArm", {{"id", 2}, {"armed", true}}) ||
+        !set("track.setArm", {{"id", 4}, {"armed", true}}) ||
+        !set("track.setMonitorMode", {{"id", 2}, {"mode", 0}}) ||
+        !set("track.setMonitorMode", {{"id", 4}, {"mode", 0}}) ||
+        !set("transport.setLoop", {{"on", false}, {"start", start}, {"end", end}}) ||
+        !set("transport.setPunch", {{"in", true}, {"out", true}}) || !doc->synchronise())
+        throw std::runtime_error("could not configure the mixed punch take");
+    doc->prepare(48000, frames);
+    const auto recovery = dir / "punch-recovery";
+    if (!doc->startRecording(0, 1, false, 4 * frames, media::pathUtf8(recovery)))
+        throw std::runtime_error(doc->error());
+
+    std::array<float, frames> in{}, left{}, right{};
+    in.fill(.25f);
+    const float *inputs[]{in.data()};
+    float *outputs[]{left.data(), right.data()};
+    engine::AudioIo io;
+    io.in = inputs;
+    io.numIn = 1;
+    io.out = outputs;
+    io.numOut = 2;
+    io.frames = frames;
+    const auto block = [&] {
+        doc->process(io);
+        io.streamTimeSamples += io.frames;
+        doc->tick(io.streamTimeSamples);
+    };
+    block();
+    check(doc->session().enqueueMidiInput(80, {0, engine::EventType::NoteOn, 1, 64, 9, 0, 1.0}, 80) &&
+              doc->session().enqueueMidiInput(112, {0, engine::EventType::NoteOff, 1, 64, 9, 0, .5}, 112),
+          "SC-26: capture one MIDI note within the brace");
+    block();
+    block();
+    const auto preview = doc->liveMidiTakes();
+    check(preview.size() == 1 && preview.front().start == start && preview.front().end == end,
+          "SC-26: the MIDI preview preserves both authored punch ticks within the captured samples");
+    doc->stopRecording();
+    block();
+    doc->release();
+    check(doc->settleRecording(), "SC-26: settle the mixed punch take");
+
+    std::filesystem::path capture;
+    for (const auto &entry : std::filesystem::directory_iterator(recovery))
+        if (entry.is_directory() && media::pathUtf8(entry.path().filename()).starts_with(".adi-record-"))
+            capture = entry.path();
+    const auto landed = doc->takeLanded();
+    check(landed && landed->ok && landed->clips.size() == 1 &&
+              landed->message.find("compensated punch range") != std::string::npos && !capture.empty() &&
+              landed->message.find(media::pathUtf8(capture)) != std::string::npos,
+          "SC-26: preserve the MIDI take and report the rejected audio's full directory");
+    check(doc->store().db().execAndGet("SELECT count(*) FROM media_files").getInt() == 0,
+          "SC-26: the retained audio is not added to the project's media pool");
+    if (landed && landed->clips.size() == 1) {
+        const auto detail = engine::readClipDetails(doc->store(), landed->clips.front(), true, true);
+        check(detail.clip && detail.clip->kind == "midi" && detail.clip->trackId == 2 &&
+                  detail.clip->posTicks == start && detail.clip->lengthTicks == end - start &&
+                  detail.clip->notes.size() == 1 && detail.clip->notes.front().key == 64,
+              "SC-26: the MIDI clip lands at the authored brace without overwriting either side");
+        check(doc->ops().undo().ok && doc->store().db().execAndGet("SELECT count(*) FROM clips").getInt() == 0 &&
+                  doc->ops().redo().ok && doc->store().db().execAndGet("SELECT count(*) FROM clips").getInt() == 1,
+              "SC-26: the MIDI take can be undone and redone as one edit");
+    }
+    const auto wav = capture / "take-0.wav";
+    const bool retained = !capture.empty() && std::filesystem::is_regular_file(wav);
+    check(retained, "SC-26: the private WAV remains available for recovery");
+    if (retained) {
+        audio::WavReader reader(wav);
+        std::array<float, 2 * frames> samples{};
+        check(reader.channels() == 1 && reader.frames() == samples.size() &&
+                  reader.read(samples.data(), static_cast<std::uint32_t>(samples.size())) == samples.size() &&
+                  std::all_of(samples.begin(), samples.end(), [](float value) { return value == .25f; }),
+              "SC-26: the retained WAV contains all the original punched PCM");
+    }
 }
 // MX-23 and SRF-02: a fader dragged is heard while it moves, writes nothing until the mouse lets go, then
 // lands as one undo step; Esc puts it back (Live 12 manual 18.1).
@@ -2301,6 +3209,113 @@ void largeSongResponse(const std::filesystem::path &dir) {
     });
     check(doc->mailbox().desiredPlaying() && undoCount() == afterDrag + 3, "large song: transport reaches mailbox and journal");
 }
+void trackRenderLifecycle(const std::filesystem::path &dir) {
+    const auto project = dir / "freeze-document.adi";
+    {
+        StoreError error{};
+        auto store = Store::create(project, error);
+        check(store != nullptr, "SC-86: create the render lifecycle project");
+        if (!store)
+            return;
+        // Use a project with no plug-in dependencies and a known clock.
+        store->db().exec("UPDATE project SET sample_rate=48000; DELETE FROM tempo_map;"
+                         "INSERT INTO tempo_map(id,pos_ticks,bpm) VALUES(1,0,120);"
+                         "INSERT INTO tracks(id,kind,name,index_in_parent) "
+                         "VALUES(1,'master','Main',1),(2,'audio','Source',0);"
+                         "INSERT INTO mixer_strip(track_id) VALUES(1),(2);");
+    }
+    std::atomic<bool> hostRequested{false};
+    std::string error;
+    auto doc = ui::ProjectDocument::open(project, false, {}, error);
+    check(doc != nullptr, "open the render lifecycle project");
+    if (!doc)
+        return;
+    doc->prepare(48000, 128);
+    doc->configureFreezeTail(0.015625); // 750 frames at 48 kHz.
+    doc->configureTrackRenderDispatch([&hostRequested](std::function<void()>) {
+        // Leave the worker's pending host call for the owner's next tick.
+        hostRequested.store(true, std::memory_order_release);
+    });
+    const auto wav = dir / "source.wav";
+    {
+        std::vector<float> samples(6000, .25f);
+        audio::WavWriter writer(wav, 48000, 1, audio::WavFormat::Float32);
+        writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
+    }
+    ui::AudioImport import;
+    if (!doc->prepareImport(media::pathUtf8(wav), 1'700'000'000'000'000, import)) {
+        check(false, "import the source file to freeze");
+        return;
+    }
+    auto drop = ui::dropAudio(*doc->view().current(), 2, 0, "Source", import);
+    const auto clip = drop.clip;
+    if (!drop.refusal.empty() || !doc->ops().submit(std::move(drop.ops)).ok || !doc->synchronise()) {
+        check(false, "place the source clip to freeze");
+        return;
+    }
+    auto &db = doc->store().db();
+    std::int64_t now = 0;
+    const auto finish = [&]() {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (doc->trackRenderRunning() && std::chrono::steady_clock::now() < deadline) {
+            doc->tick(++now);
+            if (doc->trackRenderRunning())
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        return doc->takeTrackRenderStatus();
+    };
+    if (!doc->freezeTrack(2)) {
+        check(false, ("start asynchronous Freeze: " + doc->error()).c_str());
+        return;
+    }
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!hostRequested.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    check(hostRequested.load(std::memory_order_acquire) && doc->trackRenderRunning() &&
+              !doc->takeTrackRenderStatus(),
+          "the render reaches its host handoff before it can land");
+    check(!doc->bounceTrackToNewTrack(2) && doc->error().find("already rendering") != std::string::npos,
+          "a second track render cannot replace the pending one");
+    OpRequest mute;
+    mute.opType = "clip.setMute";
+    mute.payload = {{"id", clip}, {"muted", true}};
+    mute.label = "Mute Source Clip";
+    check(doc->ops().submit(mute).ok, "an authored edit reaches the project while Freeze waits");
+    const auto stale = finish();
+    check(stale && stale->find("project changed") != std::string::npos && !doc->takeTrackRenderStatus(),
+          "Freeze reports the stale capture once");
+    check(db.execAndGet("SELECT frozen FROM tracks WHERE id=2").getInt() == 0 &&
+              db.execAndGet("SELECT count(*) FROM frozen_renders").getInt() == 0 &&
+              db.execAndGet("SELECT count(*) FROM media_files").getInt() == 1 &&
+              doc->ops().nextUndo() && doc->ops().nextUndo()->label == "Mute Source Clip",
+          "a stale Freeze publishes no cache, media row or history step");
+    const auto hasPublishedFile = std::any_of(std::filesystem::directory_iterator(dir),
+                                             std::filesystem::directory_iterator(), [](const auto &entry) {
+        const auto name = media::pathUtf8(entry.path().filename());
+        return name.starts_with("freeze-") && entry.path().extension() == ".wav";
+    });
+    check(!hasPublishedFile, "the stale render leaves no published freeze audio");
+    mute.payload["muted"] = false;
+    mute.label = "Unmute Source Clip";
+    check(doc->ops().submit(mute).ok && doc->synchronise(), "restore the sample for a fresh Freeze");
+    if (!doc->freezeTrack(2)) {
+        check(false, ("start the new Freeze: " + doc->error()).c_str());
+        return;
+    }
+    const auto frozen = finish();
+    if (!frozen || *frozen != "Freeze Track complete.")
+        std::printf("Freeze completion: %s\n", frozen ? frozen->c_str() : "timed out");
+    const auto snapshot = doc->view().current();
+    const auto *track = snapshot ? snapshot->findTrack(2) : nullptr;
+    check(frozen && *frozen == "Freeze Track complete." && track && track->frozen && track->freezeMediaId &&
+              db.execAndGet("SELECT COALESCE(MAX(frames),0) FROM frozen_renders").getInt64() == 6750 &&
+              doc->ops().nextUndo() && doc->ops().nextUndo()->label == "Freeze Tracks",
+          "a new Freeze publishes its cache and configured tail in one step");
+    if (track && track->frozen)
+        check(doc->ops().undo().ok && doc->synchronise() && !doc->view().current()->findTrack(2)->frozen,
+              "one Undo gives back the original unfrozen track");
+    doc->release();
+}
 void peakSpans() {
     media::MediaPeaks p;
     p.channels = 2;
@@ -2329,6 +3344,77 @@ void peakSpans() {
     check(!span(nan, 10.) && !span(0., nan) && !span(nan, nan), "peak span: a span that is not a number holds nothing");
     check(!ui::peakSpan(p, 0., 256., 2), "peak span: a channel the file does not have holds nothing");
     check(is(ui::peakSpan(p, 0., 256., 1), 9.f, 9.f), "peak span: the second channel reads its own bins");
+}
+
+void punchedWaveformBounds() {
+    engine::TempoMap tempo;
+    tempo.events.push_back({0, 120, 0});
+    constexpr std::uint32_t rate = 48000;
+    constexpr std::int64_t start = 64, end = 192;
+    const auto inverseFirst = tempo.secondsToTicks(static_cast<double>(start) / rate);
+    const auto inverseLast = tempo.secondsToTicks(static_cast<double>(end) / rate);
+    // The ticks intentionally differ from the sample clock's inverse but still
+    // round to the same device samples. The landed clip keeps the authored ticks.
+    using Boundary = engine::RecordingPunchWindow::Boundary;
+    engine::AudioRecordingPreview::PunchedPlacement punch{start, 32,
+        {Boundary{start, inverseFirst - 1}, Boundary{end, inverseLast + 1}}};
+    const auto early = ui::punchedPreviewRange(punch, 128, rate, tempo);
+    check(early && early->startTicks == punch.window.in->tick && early->sourceStartFrame == 32 &&
+              early->sourceEndFrame == 128,
+          "SC-26: preview uses the exact authored Punch-In tick and skips trimmed source frames");
+    punch.offsetSamples = -32;
+    const auto late = ui::punchedPreviewRange(punch, 128, rate, tempo);
+    check(late && late->endTicks == punch.window.out->tick && late->sourceStartFrame == 0 &&
+              late->sourceEndFrame == 96,
+          "SC-26: preview uses the exact authored Punch-Out tick and stops at the trimmed source end");
+    punch.offsetSamples = 256;
+    check(!ui::punchedPreviewRange(punch, 128, rate, tempo), "SC-26: a fully clipped preview draws no take");
+}
+void recordedWaveformHandoff() {
+    auto clip = std::make_shared<engine::ClipNode>();
+    clip->id = 21;
+    clip->audio.emplace();
+    auto &audio = *clip->audio;
+    audio.mediaId = 13;
+    audio.mediaInfo = engine::AudioMediaIdentity{"recorded-hash", 48000, 2, 4};
+    auto track = std::make_shared<engine::TrackNode>();
+    track->id = 4;
+    track->clips.push_back(clip);
+    engine::Snapshot snapshot;
+    snapshot.tracks.push_back(track);
+
+    engine::AudioRecordingPreview preview;
+    preview.peaks = {{}, 48000, 3, 4, 2,
+                     {{-.2f, .4f}, {-.1f, .1f}, {-.3f, .5f}, {-.4f, .6f}, {-.1f, .1f}, {-.5f, .7f}}};
+    preview.tracks.push_back({track->id, {2, 0}});
+    const std::array clips{clip->id};
+    const media::MediaPeaks filePeaks{"recorded-hash", 48000, 2, 4, 4, {{-.5f, .7f}, {-.4f, .6f}}};
+    std::atomic<bool> allowBuild{false};
+    std::atomic<std::int64_t> requestedMedia{0};
+    ui::WaveformCache waves([&](std::int64_t mediaId, std::stop_token stop) -> media::PeakResult {
+        while (!allowBuild.load() && !stop.stop_requested())
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        if (stop.stop_requested())
+            return {media::PeakProblem::cancelled, {}, {}};
+        requestedMedia.store(mediaId);
+        return {media::PeakProblem::none, {}, filePeaks};
+    });
+    waves.seedRecording(snapshot, clips, preview);
+    waves.follow(snapshot, 1);
+    const auto provisional = waves.peaks(audio);
+    const std::vector<media::PeakBin> trackBins{{-.3f, .5f}, {-.2f, .4f}, {-.5f, .7f}, {-.4f, .6f}};
+    check(provisional && provisional->channels == 2 && provisional->frames == 4 &&
+              provisional->framesPerBin == 2 && provisional->bins == trackBins,
+          "the landed clip immediately uses the recording's bins in track channel order");
+    allowBuild.store(true);
+    for (int waited = 0; waited < 5000 && !waves.idle(); ++waited)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    const auto built = waves.peaks(audio);
+    check(requestedMedia.load() == audio.mediaId && waves.builds() == 1 && built && *built == filePeaks,
+          "the file's waveform replaces the provisional recording waveform");
+    waves.seedRecording(snapshot, clips, preview);
+    check(waves.peaks(audio) == built && waves.builds() == 1,
+          "landing another reference preserves the decoded waveform");
 }
 
 // PD06-SAVEAS-GUARD: Save As during Record, or while a take's placement is pending, lands the take in
@@ -2553,11 +3639,27 @@ int main(int argc, char **argv) {
         return failures != 0;
     }
     peakSpans();
+    punchedWaveformBounds();
+    recordedWaveformHandoff();
     {
+        test::TempDirectory bitDepthDir("ui_document", "record-bit-depth");
+        recordingBitDepth(bitDepthDir.path());
         test::TempDirectory recordDir("ui_document", "record");
+        test::TempDirectory externalInputDir("ui_document", "external-input");
+        externalInputRecording(externalInputDir.path());
         arrangementRecord(recordDir.path());
-        arrangementMidiRecord(recordDir.path() / "midi.adi", false);
-        arrangementMidiRecord(recordDir.path() / "mixed.adi", true);
+        test::TempDirectory midiRecordingDir("ui_document", "record-midi");
+        arrangementMidiRecord(midiRecordingDir.path() / "midi.adi", false);
+        test::TempDirectory mixedRecordingDir("ui_document", "record-mixed");
+        arrangementMidiRecord(mixedRecordingDir.path() / "mixed.adi", true);
+        test::TempDirectory punchRecoveryDir("ui_document", "mixed-punch-recovery");
+        mixedPunchKeepsMidi(punchRecoveryDir.path());
+        test::TempDirectory latencyDir("ui_document", "latency");
+        recordWithDeviceLatency(latencyDir.path());
+        test::TempDirectory refusedPublicationDir{"ui_document", "recording_publication_refused"};
+        refusedRecordingKeepsAudio(refusedPublicationDir.path());
+        test::TempDirectory countInDir("ui_document", "count-in");
+        countInPositionFeedback(countInDir.path());
         test::TempDirectory guardDir("ui_document", "guard");
         saveAsKeepsTheTake(guardDir.path());
         test::TempDirectory afterDir("ui_document", "after-save-as");
@@ -2572,6 +3674,8 @@ int main(int argc, char **argv) {
         playRightAfterAStoppedCommit(stoppedDir.path());
         test::TempDirectory speedDir("ui_document", "large-song");
         largeSongResponse(speedDir.path());
+        test::TempDirectory renderDir("ui_document", "track-render");
+        trackRenderLifecycle(renderDir.path());
     }
     test::TempDirectory temp("ui_document", "lifetime");
     std::string error;
@@ -3554,7 +4658,10 @@ int main(int argc, char **argv) {
     refusedBeginOwnership(temp.path());
     importWithChoices(temp.path());
     moveOrdinaryDevice(temp.path() / "move-device.adi");
+    deviceRangeEdits(temp.path() / "device-range.adi");
     dropDeviceOnNewTrack(temp.path());
+    dropSampleInstrument(temp.path());
+    devicePresetRoundTrip(temp.path());
     mixSurfacePublication(temp.path() / "mix-surface.adi");
     reportedDeviceLatency(temp.path());
     slowProjectOpen(temp.path());

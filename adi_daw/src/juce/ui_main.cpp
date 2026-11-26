@@ -6,6 +6,7 @@
 #include <SQLiteCpp/SQLiteCpp.h>
 #include "adi/ui/plugin_scan.hpp"
 #include "adi/ui/project_document.hpp"
+#include "adi/ui/recording_edits.hpp"
 #include "juce/device_bridge.hpp"
 #include "juce/editor_host_component.hpp"
 #include "juce/juce_device_loader.hpp"
@@ -296,11 +297,24 @@ class AdiApplication final : public juce::JUCEApplication,
         std::condition_variable wake;
         std::atomic<bool> stop{false}, scanned{false};
     };
+    std::filesystem::path userLibraryPath() const {
+        const auto user = settings_->get("library.userLibrary");
+        return user.is_string() ? pathFromUtf8(user.get<std::string>()) : std::filesystem::path{};
+    }
+    void refreshDevicePresets() {
+        if (!root_)
+            return;
+        try {
+            root_->browser.setDevicePresets(preset::list(userLibraryPath()));
+        } catch (const std::exception &e) {
+            root_->say(e.what());
+        }
+    }
     void startLibrary() {
         const auto file = appdata::libraryIndexFile();
         std::vector<LibraryFolder> folders;
-        if (const auto user = settings_->get("library.userLibrary"); user.is_string() && !user.get<std::string>().empty())
-            folders.push_back({"User Library", pathFromUtf8(user.get<std::string>()), true});
+        if (const auto user = userLibraryPath(); !user.empty())
+            folders.push_back({"User Library", user, true});
         if (const auto added = settings_->get("library.contentFolders"); added.is_array())
             for (const auto &folder : added)
                 if (folder.is_string() && !folder.get<std::string>().empty()) {
@@ -794,6 +808,8 @@ class AdiApplication final : public juce::JUCEApplication,
         settingsWindow_.reset();
         if (snapshotPrompt_ != nullptr)
             delete snapshotPrompt_.getComponent();
+        if (presetPrompt_ != nullptr)
+            delete presetPrompt_.getComponent();
         manager_.removeChangeListener(this);
         detachAudio();
         // A take still recording or landing goes into its project before the project closes (MX-09).
@@ -874,6 +890,7 @@ class AdiApplication final : public juce::JUCEApplication,
         const juce::ScopedValueSetter<bool> installing(installingDocument_, true);
         // A worker preparing for the document going is stopped; its result is dropped.
         ++installGeneration_;
+        hotSwap_.reset();
         importStop_.request_stop();
         juce::PopupMenu::dismissAllActiveMenus();
         // An export of the old project stops, and its page goes: its tracks and range were that project's.
@@ -907,7 +924,18 @@ class AdiApplication final : public juce::JUCEApplication,
                                                        document_->views(),
                                                        document_->sessionState(), "main");
         root_ = root.get();
+        root->attachTrackRendering(*document_);
+        document_->configureTrackRenderDispatch([](std::function<void()> action) {
+            juce::MessageManager::callAsync(std::move(action));
+        });
+        document_->configureFreezeTail(settings_->get("devices.freezeTailSeconds").get<double>());
         root->browser.setLibrarySnapshot(library_, libraryReady_);
+        refreshDevicePresets();
+        root->browser.loadDevicePreset = [this](const std::filesystem::path &path) {
+            return loadDevicePreset(path);
+        };
+        root->browser.swapChoice = [this](const BrowserPanel::HotSwapChoice &choice) { return swapBrowserChoice(choice); };
+        root->browser.leaveHotSwap = [this] { leaveHotSwap(); };
         root->devices.publication = [this] { return document_->parameterFeed().current(); };
         root->devices.parameterDemand = [this](const void *consumer, const std::vector<std::int64_t> &ids) {
             document_->setParameterDemand(consumer, ids);
@@ -957,6 +985,12 @@ class AdiApplication final : public juce::JUCEApplication,
             if (root_) root_->say(ok ? std::string{} : document_->error());
             return ok;
         };
+        root->devices.moveSelection = [this](std::span<const DevicePanelData> selection, std::int64_t track,
+                                             std::optional<std::int64_t> before) {
+            const bool ok = document_->moveDevices(selection, track, before);
+            if (root_) root_->say(ok ? std::string{} : document_->error());
+            return ok;
+        };
         root->devices.gesture = [this](std::int64_t id, const std::string &param,
                                        engine::ParamEventKind kind, double value) {
             const bool ok = document_->parameterGesture(id, param, kind, value);
@@ -993,17 +1027,30 @@ class AdiApplication final : public juce::JUCEApplication,
             // Cut keeps the copy only once the device is gone, so a refused Cut leaves the
             // clipboard as it was.
             adi::DeviceCopy copy;
-            bool ok = document_->copyDevice(id, copy) && (!cut || document_->deviceAction("device.remove", {{"id", id}}));
-            if (ok)
-                deviceClipboard_ = std::move(copy);
+            const bool ok = document_->copyDevice(id, copy) && (!cut || document_->deviceAction("device.remove", {{"id", id}}));
+            if (ok) {
+                deviceClipboard_.clear();
+                deviceClipboard_.push_back(std::move(copy));
+            }
             if (root_)
                 root_->say(ok ? std::string{} : document_->error());
             return ok;
         };
+        root->devices.removeSelection = [this](std::span<const DevicePanelData> selection) {
+            const bool ok = document_->removeDevices(selection);
+            if (root_) root_->say(ok ? std::string{} : document_->error());
+            return ok;
+        };
+        root->devices.copySelection = [this](std::span<const DevicePanelData> selection, bool cut) {
+            const bool ok = document_->copyDevices(selection, deviceClipboard_, cut);
+            if (root_) root_->say(ok ? std::string{} : document_->error());
+            return ok;
+        };
         root->devices.paste = [this](std::int64_t track, std::optional<std::int64_t> before) {
-            const bool ok = deviceClipboard_ && document_->pasteDevice(*deviceClipboard_, track, before);
+            const bool copied = !deviceClipboard_.empty();
+            const bool ok = copied && document_->pasteDevices(deviceClipboard_, track, before);
             if (!ok && root_)
-                root_->say(deviceClipboard_ ? document_->error() : std::string("Copy a device first."));
+                root_->say(copied ? document_->error() : std::string("Copy a device first."));
             return ok;
         };
         root->devices.duplicate = [this](std::int64_t id, std::int64_t track, std::optional<std::int64_t> before) {
@@ -1013,8 +1060,19 @@ class AdiApplication final : public juce::JUCEApplication,
                 root_->say(ok ? std::string{} : document_->error());
             return ok;
         };
-        root->devices.holdsCopy = [this] { return deviceClipboard_.has_value(); };
+        root->devices.duplicateSelection = [this](std::span<const DevicePanelData> selection, std::int64_t track,
+                                                  std::optional<std::int64_t> before) {
+            std::vector<adi::DeviceCopy> copy;
+            const bool ok = document_->copyDevices(selection, copy) && document_->pasteDevices(copy, track, before);
+            if (root_) root_->say(ok ? std::string{} : document_->error());
+            return ok;
+        };
+        root->devices.holdsCopy = [this] { return !deviceClipboard_.empty(); };
         root->retainedDeviceId = [this] { return document_->retainedDeviceId(); };
+        root->devices.savePreset = [this](const DevicePanelData &target) { promptDevicePreset(target); };
+        root->devices.hotSwap = [this](const DevicePanelData &target, std::optional<std::int32_t> slot) {
+            beginHotSwap(target, slot);
+        };
         root->devices.keyChoices=[this](const DevicePanelData& target){return document_->deviceKeyChoices(target);};
         root->devices.setKey=[this](const DevicePanelData& target,const DeviceKeyChoice& choice){
             const bool ok=document_->setDeviceKeyChoice(target,choice);
@@ -1037,6 +1095,14 @@ class AdiApplication final : public juce::JUCEApplication,
             if (!ok && root_)
                 root_->say(document_->error());
             return ok;
+        };
+        root->loadSampleInstrument = [this](std::int64_t track, const std::filesystem::path &file,
+                                            std::string &why) {
+            const auto now = juce::Time::currentTimeMillis() * 1000;
+            if (document_->loadSampleInstrument(track, file, now))
+                return true;
+            why = document_->error();
+            return false;
         };
         // The Browser's Plug-Ins (DF-W9): the catalogue of the app's one loader, kept by its discovery
         // service (DF-W34, N58); the projects load from the same loader. A smoke run scans nothing.
@@ -1126,26 +1192,43 @@ class AdiApplication final : public juce::JUCEApplication,
             const auto *device = manager_.getCurrentAudioDevice();
             return device != nullptr ? device->getActiveOutputChannels().getHighestBit() + 1 : 0;
         };
+        root->externalAudioInputs = [this] { return document_->externalAudioInputs(); };
+        root->externalInputMeter = document_->externalInputMeter();
+        root->configureExternalInputs = [this] {
+            if (applicationCommand(AppCommands::Settings))
+                settingsWindow_->panel().showPage("Audio");
+        };
         root->automationArmed = [this] { return document_->automationArmed(); };
         root->armAutomation = [this](bool armed) { document_->setAutomationArmed(armed); };
         // Arm, monitoring and Arrangement Record (MX-09): the session's rows, and the recorder.
         root->readRecordStates = [this] { return document_->recordStates(); };
         root->setRecordStates(document_->recordStates());
+        root->openAudioSettings = [this] {
+            if (applicationCommand(AppCommands::Settings))
+                settingsWindow_->panel().showPage("Audio");
+        };
         root->startRecording = [this](std::int64_t insertTick, bool playing) {
-            const auto *device = manager_.getCurrentAudioDevice();
-            const int inputs = device != nullptr ? device->getActiveInputChannels().countNumberOfSetBits() : 0;
-            if (device == nullptr) {
+            auto *audioDevice = manager_.getCurrentAudioDevice();
+            if (audioDevice == nullptr) {
                 root_->say("Recording needs an audio device. Choose one in the Settings' Audio page.");
                 return false;
             }
-            if (!document_->startRecording(insertTick, inputs, playing)) {
+            applyInputChannels();
+            const int inputs = audioDevice->getActiveInputChannels().countNumberOfSetBits();
+            const auto latency = device::reportedRoundTripLatency(*audioDevice);
+            const auto recordFolder = settings_->get("files.recordFolder").get<std::string>();
+            const auto format = recordingWavFormat(settings_->get("record.bitDepth").get<int>());
+            if (!document_->startRecording(insertTick, inputs, playing, latency, recordFolder, format)) {
                 root_->say(document_->error());
                 return false;
             }
             root_->say(playing ? "Recording from the playhead." : "Recording.");
             return true;
         };
-        root->stopRecording = [this] { document_->stopRecording(); };
+        root->stopRecording = [this] {
+            document_->stopRecording();
+            refreshRecordingPreview();
+        };
         root->recording = [this] { return document_->recording(); };
         root->liveMidiTakes = [this] { return document_->liveMidiTakes(); };
         // Export Audio/Video (EX-11): the Export page, then a file, then a render on a worker.
@@ -1393,6 +1476,167 @@ class AdiApplication final : public juce::JUCEApplication,
             }),
             true);
     }
+    void promptDevicePreset(const DevicePanelData &target) {
+        if (!root_ || !document_)
+            return;
+        if (presetPrompt_) {
+            presetPrompt_->toFront(true);
+            return;
+        }
+        const auto library = userLibraryPath();
+        if (library.empty()) {
+            root_->say("Choose a User Library folder in Settings before saving a preset.");
+            return;
+        }
+        const auto source = appliedSource(document_->store());
+        auto *prompt = new juce::AlertWindow("Save Preset", "Name this device preset.", juce::MessageBoxIconType::NoIcon);
+        prompt->addTextEditor("name", juce::String::fromUTF8(target.name.c_str()));
+        prompt->addButton("Save Preset", 1, juce::KeyPress(juce::KeyPress::returnKey));
+        prompt->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+        presetPrompt_ = prompt;
+        prompt->enterModalState(
+            true, juce::ModalCallbackFunction::create([this, prompt, target, source, library](int chosen) {
+                if (chosen != 1 || !root_ || !document_)
+                    return;
+                if (!source.sameConnection(appliedSource(document_->store())) || library != userLibraryPath()) {
+                    root_->say("The project or User Library changed. Open Save Preset again.");
+                    return;
+                }
+                std::filesystem::path saved;
+                const auto name = prompt->getTextEditorContents("name").trim().toStdString();
+                if (!document_->saveDevicePreset(target, library, name, saved)) {
+                    root_->say(document_->error());
+                    return;
+                }
+                root_->say("Saved preset " + media::pathUtf8(saved.stem()) + ".");
+                refreshDevicePresets();
+            }),
+            true);
+    }
+    static preset::Preset readBrowserPreset(const std::filesystem::path &path) {
+        auto values = preset::read(path);
+        if (media::pathUtf8(path.parent_path().filename()) != preset::deviceKey(values.device))
+            throw std::runtime_error("This preset belongs under a different device.");
+        return values;
+    }
+
+    std::optional<rows::PluginRef> installedPresetDevice(const preset::Identity &identity, bool midiTrack) const {
+        if (identity.format != "internal")
+            for (const auto &plugin : root_->browser.plugins().plugins)
+                if (preset::Identity{plugin.format, plugin.uid, plugin.shellId} == identity)
+                    return pluginReference(plugin, midiTrack);
+        return {};
+    }
+
+    void leaveHotSwap() {
+        hotSwap_.reset();
+        if (root_)
+            root_->browser.setHotSwap(std::nullopt);
+    }
+
+    void beginHotSwap(const DevicePanelData &target, std::optional<std::int32_t> slot) {
+        if (!root_ || !document_ || root_->arrangement.geometry.selection.track != target.track)
+            return;
+        const auto info = document_->hotSwapTarget(target);
+        if (!info) {
+            root_->say(document_->error());
+            return;
+        }
+        if (hotSwap_ && hotSwap_->expected.id == target.id && hotSwap_->expected.instance == target.instance &&
+            hotSwap_->slot == slot) {
+            leaveHotSwap();
+            return;
+        }
+        if (!root_->browser.isVisible() && !root_->command(AppCommands::ToggleBrowser))
+            return;
+        if (!root_->browser.isShowing()) {
+            root_->say("Show the Browser beside Device View to use Hot-Swap.");
+            return;
+        }
+        hotSwap_ = SwapTarget{target, slot};
+        root_->browser.setHotSwap(BrowserPanel::HotSwapFilter{info->subtype, target.name, slot.has_value()});
+        root_->browser.search.grabKeyboardFocus();
+    }
+
+    bool swapBrowserChoice(const BrowserPanel::HotSwapChoice &choice) {
+        if (!root_ || !document_ || !hotSwap_)
+            return false;
+        const auto target = hotSwap_->expected;
+        if (root_->arrangement.geometry.selection.track != target.track || !document_->hotSwapTarget(target)) {
+            leaveHotSwap();
+            root_->say("Choose a current device to use Hot-Swap.");
+            return false;
+        }
+        try {
+            using Kind = BrowserPanel::HotSwapChoice::Kind;
+            std::int64_t device = 0;
+            switch (choice.kind) {
+            case Kind::Builtin:
+                device = document_->hotSwapBuiltin(target, choice.uid);
+                break;
+            case Kind::Plugin:
+                if (choice.plugin)
+                    device = document_->hotSwapPlugin(target, pluginReference(*choice.plugin, false));
+                break;
+            case Kind::Preset: {
+                auto values = readBrowserPreset(choice.path);
+                const auto installed = installedPresetDevice(values.device, false);
+                device = document_->hotSwapPreset(target, std::move(values), installed);
+                break;
+            }
+            case Kind::Sample:
+                if (hotSwap_->slot && document_->hotSwapSample(target, *hotSwap_->slot, choice.path,
+                                                               juce::Time::currentTimeMillis() * 1000))
+                    device = target.id;
+                break;
+            }
+            if (!device) {
+                root_->say(document_->error().empty() ? "Choose a compatible Hot-Swap replacement." : document_->error());
+                return false;
+            }
+            leaveHotSwap();
+            root_->devices.chose(device);
+            root_->devices.repaint();
+            if (const auto *entry = document_->session().entryFor(device); entry && entry->placeholder)
+                root_->say("The replacement device could not start. " + entry->error);
+            else
+                root_->say({});
+            return true;
+        } catch (const std::exception &e) {
+            root_->say(e.what());
+            return false;
+        }
+    }
+
+    bool loadDevicePreset(const std::filesystem::path &path) {
+        if (!root_ || !document_)
+            return false;
+        const auto track = root_->arrangement.geometry.selection.track;
+        const auto current = document_->view().current();
+        const auto *row = current ? current->findTrack(track) : nullptr;
+        if (!row) {
+            root_->say("Select a track to load the device preset.");
+            return false;
+        }
+        try {
+            auto values = readBrowserPreset(path);
+            const auto installed = installedPresetDevice(values.device, row->kind == "midi" || row->kind == "instrument");
+            const auto id = document_->loadDevicePreset(std::move(values), track, root_->devices.insertPoint(), installed);
+            if (!id) {
+                root_->say(document_->error());
+                return false;
+            }
+            if (const auto *entry = document_->session().entryFor(id); entry && entry->placeholder)
+                root_->say("The preset device could not start. " + entry->error);
+            else
+                root_->say({});
+            root_->devices.repaint();
+            return true;
+        } catch (const std::exception &e) {
+            root_->say(e.what());
+            return false;
+        }
+    }
     using SaveKind = ProjectDocument::SaveKind;
     using SavePhase = ProjectDocument::SaveProgress::Phase;
 
@@ -1460,8 +1704,9 @@ class AdiApplication final : public juce::JUCEApplication,
         if (progress->switched && !projectSave_->switched) {
             projectSave_->switched = true;
             const auto after = document_->deviceCopyIdentity();
-            if (deviceClipboard_ && deviceClipboard_->sourceFile == projectSave_->sourceIdentity)
-                deviceClipboard_->sourceFile = after;
+            for (auto &copied : deviceClipboard_)
+                if (copied.sourceFile == projectSave_->sourceIdentity)
+                    copied.sourceFile = after;
             commands_->clipClipboard().rebase(projectSave_->sourceIdentity, after);
             window_->setName("ADI - " + projectSave_->file.getFileNameWithoutExtension());
             if (saveProgress_)
@@ -1718,7 +1963,17 @@ class AdiApplication final : public juce::JUCEApplication,
                 // The smoke shows the page over an unopened device manager.
                 if (!noAudio_ || smokeSettings_)
                     devices = [this]() -> std::unique_ptr<juce::Component> {
-                        return std::make_unique<AudioDevicePage>(manager_, *settings_);
+                        auto page = std::make_unique<AudioDevicePage>(manager_, *settings_);
+                        page->onSetupChanged = [this](bool applied) {
+                            if (applied) {
+                                if (bridge_)
+                                    bridge_->acknowledgeDeviceSetup();
+                                if (root_)
+                                    root_->status.setAudioDeviceProblem({});
+                            }
+                            applyInputChannels();
+                        };
+                        return page;
                     };
                 settingsWindow_ = std::make_unique<SettingsWindow>(*settings_, std::move(devices));
                 // A change applies at once: the commands re-read what they keep of the
@@ -1748,6 +2003,9 @@ class AdiApplication final : public juce::JUCEApplication,
                     // The Audio page's Delay Compensation row is the Options menu's switch.
                     if (root_ && root_->applyDelayCompensation)
                         root_->applyDelayCompensation(commands_->delayCompensation());
+                    if (document_)
+                        document_->configureFreezeTail(settings_->get("devices.freezeTailSeconds").get<double>());
+                    refreshDevicePresets();
                     pluginSourcesChanged();
                     // The MIDI Ports' switches open or close inputs: after the row's commit has unwound.
                     juce::MessageManager::callAsync([this] {
@@ -1788,13 +2046,15 @@ class AdiApplication final : public juce::JUCEApplication,
         });
         return true;
     }
-    // The device's open inputs, for the tracks' monitoring (N65): every audio track hears inputs 1/2 as
-    // its Arm and monitoring say.
+    // The granted input bits resolve saved physical channel choices to the callback's packed order.
     void applyInputChannels() {
         if (!document_)
             return;
-        const auto *device = manager_.getCurrentAudioDevice();
-        document_->setInputChannels(device != nullptr ? device->getActiveInputChannels().countNumberOfSetBits() : 0);
+        document_->setExternalAudioInputs(readExternalAudioInputs(manager_, *settings_));
+        if (root_) {
+            root_->mixer.repaint();
+            root_->mixerView.repaint();
+        }
     }
     void changeListenerCallback(juce::ChangeBroadcaster *) override {
         if (!settings_ || noAudio_)
@@ -1819,6 +2079,11 @@ class AdiApplication final : public juce::JUCEApplication,
         if (settingsWindow_)
             settingsWindow_->panel().refreshValues();
     }
+    void refreshRecordingPreview() {
+        const auto &recorder = document_->session().recording();
+        root_->arrangement.setRecordingPreview(recorder.preview(), recorder.acceptedFrames(),
+                                               document_->landingTake());
+    }
     void timerCallback() override {
         if (ticking_)
             return;
@@ -1835,7 +2100,15 @@ class AdiApplication final : public juce::JUCEApplication,
         requestProjectSaveCancellation();
         document_->tick(static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
         if (root_) {
+            if (bridge_)
+                if (auto problem = bridge_->takeDeviceProblem(); problem.isNotEmpty())
+                    root_->status.setAudioDeviceProblem(std::move(problem));
+            if (hotSwap_ && (!root_->browser.isShowing() ||
+                             root_->arrangement.geometry.selection.track != hotSwap_->expected.track ||
+                             !root_->devices.validExpected(hotSwap_->expected)))
+                leaveHotSwap();
             root_->setRecordStates(document_->recordStates());
+            refreshRecordingPreview();
             // A take landed (MX-09): its outcome in the Status Bar, its clips selected.
             if (auto landed = document_->takeLanded()) {
                 if (projectSave_ && projectSave_->kind == SaveKind::as && !landed->ok)
@@ -1844,6 +2117,8 @@ class AdiApplication final : public juce::JUCEApplication,
                 if (landed->ok && !landed->clips.empty())
                     root_->selectClip(landed->clips.front());
             }
+            if (auto rendered = document_->takeTrackRenderStatus())
+                root_->say(std::move(*rendered));
         }
         updateProjectSave();
         if (midiPorts_ && root_) {
@@ -1954,8 +2229,14 @@ class AdiApplication final : public juce::JUCEApplication,
     std::uint64_t installGeneration_ = 0;
     // Live's device clipboard (manual 23.2.1): the app's, so a copy outlives the document it came
     // from; the engine refuses a paste into another project and says so.
-    std::optional<adi::DeviceCopy> deviceClipboard_;
+    std::vector<adi::DeviceCopy> deviceClipboard_;
+    struct SwapTarget {
+        DevicePanelData expected;
+        std::optional<std::int32_t> slot;
+    };
+    std::optional<SwapTarget> hotSwap_;
     juce::Component::SafePointer<juce::AlertWindow> snapshotPrompt_;
+    juce::Component::SafePointer<juce::AlertWindow> presetPrompt_;
     std::unique_ptr<SettingsWindow> settingsWindow_;
     // The Export page (EX-11) and its render: the worker, its stop, and the job counter the renderer
     // names files by.

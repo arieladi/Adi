@@ -37,6 +37,9 @@ public:
     [[nodiscard]] std::vector<SampleRange> arrangementRanges(std::int64_t track) const;
     /// Owner only, before priming or publishing this source generation.
     void useMonitoredInput(std::int64_t track) noexcept;
+    /// Owner only, before publishing. The span object outlives rendering of this
+    /// generation. Its sorted IDs are set by the driver before rendering each slice.
+    void muteWhileRecording(std::int64_t track, const std::span<const std::int64_t>& recordingTracks) noexcept;
     const std::vector<std::string>& problems() const noexcept;
     // Off-callback owner view of the external files successfully selected
     // by this generation, including Session's frozen-source substitutions.

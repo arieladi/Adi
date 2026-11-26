@@ -505,6 +505,7 @@ public:
     std::int32_t maxFrames;
     std::int32_t channels;
     std::int64_t track;
+    const std::span<const std::int64_t>* recordingTracks = nullptr;
     std::vector<Clip*> clips;
     std::weak_ptr<void> owner;
     // ADR-0207 d2: the clips of one track are a mix point, summed in double
@@ -525,9 +526,11 @@ public:
     template <typename T>
     void play(const NodeIo& io, T* const* out) noexcept {
         for(std::int32_t c=0;c<io.channels;++c) std::fill_n(out[c]+io.blockOffset,io.frames,T{0});
-        if(!transport.playing() || (!clips.empty() && clips.front()->monitorInputOnly)){
+        const bool recording = recordingTracks && !recordingTracks->empty() &&
+            std::binary_search(recordingTracks->data(), recordingTracks->data() + recordingTracks->size(), track);
+        if(!transport.playing() || recording || (!clips.empty() && clips.front()->monitorInputOnly)){
             if(io.blockOffset==0) {
-                // Only the live source callback looks ahead while stopped.
+                // Keep looking ahead while output is suppressed so playback can resume.
                 // Candidate preparation keeps the captured transport intact.
                 auto nextPlay=transport;
                 if(!nextPlay.playing())nextPlay.play();
@@ -883,6 +886,14 @@ std::vector<ClipPlayback::SampleRange> ClipPlayback::arrangementRanges(std::int6
 void ClipPlayback::useMonitoredInput(std::int64_t id) noexcept {
     for (auto& clip : impl_->clips)
         if (clip->track == id) clip->monitorInputOnly = true;
+}
+void ClipPlayback::muteWhileRecording(std::int64_t id, const std::span<const std::int64_t>& recordingTracks) noexcept {
+    for (auto& track : impl_->tracks) {
+        if (track->track == id) {
+            track->recordingTracks = &recordingTracks;
+            break;
+        }
+    }
 }
 const std::vector<std::string>& ClipPlayback::problems() const noexcept { return impl_->problems; }
 std::span<const ClipMediaSource> ClipPlayback::externalSources() const noexcept {

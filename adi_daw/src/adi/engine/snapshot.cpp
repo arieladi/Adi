@@ -653,7 +653,7 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
     // edits reuse its metadata and check only the small pool row and locator.
     std::map<std::pair<std::int64_t,std::int32_t>,std::shared_ptr<const SampleSlotNode>> previousSlots;
     for(const auto& slot:previous.sampleSlots)previousSlots[{slot->deviceId,slot->slot}]=slot;
-    SQLite::Statement slots(db,"SELECT s.device_id,s.stream_role,s.state_hash,p.uid FROM plugin_state s "
+    SQLite::Statement slots(db,"SELECT s.device_id,s.stream_role,s.state_hash,p.uid,s.format_hint FROM plugin_state s "
         "JOIN devices d ON d.id=s.device_id JOIN plugin_refs p ON p.id=d.plugin_ref_id "
         "WHERE p.format='internal' AND s.stream_role LIKE 'sample:%' "
         "ORDER BY s.device_id,CAST(substr(s.stream_role,8) AS INTEGER),s.stream_role");
@@ -702,8 +702,9 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
             if(node.uid!=slots.getColumn(3).getString())throw std::runtime_error("sample state device UID differs");
             node.mediaId.reset();node.missing=false;
             if(!node.empty && node.problem.empty()) {
+                const bool embedded = slots.getColumn(4).getString() == device::kPresetSampleStateHint;
                 SQLite::Statement media(db,"SELECT id,rel_path,abs_path_hint,missing FROM media_files WHERE hash_blake3=?");media.bind(1,node.mediaHash);
-                node.missing=true;
+                node.missing=!embedded;
                 if(media.executeStep()) {
                     node.mediaId=media.getColumn(0).getInt64();
                     if(media.getColumn(3).getInt()==0 && !probeMediaFiles)node.missing=false;
@@ -714,7 +715,7 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
                             if(!relative.is_absolute())present=std::filesystem::is_regular_file(media::projectFolder(store)/relative,ec);
                         }
                         if(!present && !media.getColumn(2).isNull())present=std::filesystem::is_regular_file(media::pathFromUtf8(media.getColumn(2).getString()),ec);
-                        node.missing=!present;
+                        node.missing=!present && !embedded;
                     }
                 }
             }

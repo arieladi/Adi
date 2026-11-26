@@ -69,7 +69,8 @@ Tables readTables(const Store& store) {
 std::vector<std::uint8_t> encodeTables(const Tables& rows) {return Payload::to_cbor(Payload(rows));}
 std::vector<std::uint8_t> imageBytes(const Tables& rows,const TransportSettings& transport,const CueSettings& cue) {
     Payload value=rows;
-    value["@transport"]={transport.metronome,transport.loopEnabled,transport.hasLoop,transport.loopStartTicks,transport.loopEndTicks};
+    value["@transport"]={transport.metronome,transport.loopEnabled,transport.hasLoop,
+        transport.loopStartTicks,transport.loopEndTicks,transport.punchIn,transport.punchOut};
     value["@cue"]={cue.cueMode,cue.soloInPlace,cue.referenceOn,cue.referenceFromRole,cue.firstOutputChannel,
         cue.volumeDb,cue.referenceTrack,cue.projectReferenceTrack,cue.selectedTracks};
     return Payload::to_cbor(value);
@@ -540,7 +541,8 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
             out->clips=std::make_shared<ClipPlayback>(image->clips,owner->transport_,owner->spec_.sampleRate,
                 owner->spec_.channels,owner->spec_.maxFrames,owner->spec_.progressiveDecoder);
             out->midi=std::make_shared<MidiClips>(playback,owner->transport_,owner->spec_.sampleRate,owner->midiState_,
-                                                 owner->eventPathFor(image->model),clipNoteExpressions(*image->clips));
+                                                 owner->eventPathFor(image->model),clipNoteExpressions(*image->clips),
+                                                 owner->spec_.performanceState && !owner->spec_.exporting);
         }
         const auto program=compileAutomation(playback,owner->spec_.sampleRate);
         auto excluded=committedOverrides?*committedOverrides:owner->overridden_;excluded.insert(owner->writingAutomation_.begin(),owner->writingAutomation_.end());
@@ -552,7 +554,7 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
         out->tag=owner->gestureAudio_->reserveGeneration();timing->gestureGeneration=out->tag;
         timing->sampleRate=owner->spec_.sampleRate;timing->settings=owner->spec_.performanceState?image->transport:TransportSettings{};
         timing->spec=owner->spec_;timing->stripLanes=out->controls->lanes;
-        owner->prepareMidiInput(*timing, image->model);
+        owner->prepareMidiInput(*timing, image->model, *out->midi);
         if (reusedReaders) timing->inputMonitors = previousTiming->inputMonitors;
         else owner->prepareInputMonitors(*timing,image->model,*out->clips);
         timing->sourceReadiness=out->clips->readiness();
@@ -567,8 +569,7 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
                 throw std::runtime_error("preview transport time is unrepresentable");
             return static_cast<std::int64_t>(std::llround(value));
         };
-        timing->loopBegin=sample(image->transport.loopStartTicks);timing->loopEnd=sample(image->transport.loopEndTicks);
-        if(timing->loopEnd<=timing->loopBegin && timing->loopBegin<std::numeric_limits<std::int64_t>::max())timing->loopEnd=timing->loopBegin+1;
+        timing->setBraceSamples(sample(image->transport.loopStartTicks), sample(image->transport.loopEndTicks));
         timing->signatures=image->model.signatures;
         timing->prepareDeviceClockChanges();
         if(!reusedReaders)owner->primeWhilePlaying(*out->clips,*timing); // walk-A A21: no cold swap
