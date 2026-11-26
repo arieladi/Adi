@@ -8,6 +8,7 @@
 #include "adi/ui/audio_drop.hpp"
 #include "adi/row_ids.hpp"
 #include "adi/interchange/midi_clip_file.hpp"
+#include "adi/clip_image.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/ui/clip_edits.hpp"
 #include "adi/ui/cue_edits.hpp"
@@ -25,6 +26,7 @@
 #include <cctype>
 #include <cmath>
 #include <initializer_list>
+#include <iterator>
 #include <vector>
 namespace adi::ui {
 namespace {
@@ -3040,12 +3042,20 @@ bool AdiRootComponent::dropMidiFiles(const std::vector<std::pair<std::string, st
     const char *label = "Import MIDI File";
     constexpr std::int64_t limit = std::int64_t{1} << 50;
     try {
-        RowIds ids(submitter_.store().db());
+        auto &store = submitter_.store();
+        CommitOptions options;
+        options.expectHead.emplace(OpJournal(store).headSeq());
+        // Imported clips and any split survivors share the same ID allocator.
+        clip_edit::CopyIds ids(store.db());
+        RowIds trackIds(store.db());
         std::vector<OpRequest> batch;
+        edit_plan::detail::PlacementBatch overlaps;
+        const auto existingTrack = track;
+        std::int64_t clearUntil = 0;
         auto tracks = current->tracks;
         auto insertAfter = track;
         auto newTrack = [&]() {
-            auto made = ::adi::ui::insertTrack(tracks, insertAfter, true, &commands_.recordingDefaults(), ids.next("tracks"));
+            auto made = ::adi::ui::insertTrack(tracks, insertAfter, true, &commands_.recordingDefaults(), trackIds.next("tracks"));
             for (auto &request : made.ops) {
                 if (request.opType == "track.create") {
                     auto added = std::make_shared<engine::TrackNode>();
@@ -3093,6 +3103,11 @@ bool AdiRootComponent::dropMidiFiles(const std::vector<std::pair<std::string, st
                 const auto clip = ids.next("clips");
                 const auto title = midi.tracks.size() == 1 ? name : name + " " + std::to_string(channelTrack + 1);
                 batch.push_back(interchange::createImportedMidiClip(ids, source, on, clip, first, title));
+                if (existingTrack != 0 && on == existingTrack) {
+                    const auto end = first + source.length;
+                    overlaps.clear.push_back({{on, std::nullopt}, {first, end}});
+                    clearUntil = std::max(clearUntil, end);
+                }
                 longest = std::max(longest, source.length);
                 if (firstClip == 0) {
                     firstTrack = on;
@@ -3102,7 +3117,25 @@ bool AdiRootComponent::dropMidiFiles(const std::vector<std::pair<std::string, st
             }
             at = first + longest;
         }
-        if (!submitEdits(std::move(batch)))
+        if (!overlaps.clear.empty()) {
+            // Replace only the landed spans on the existing main lane. Track
+            // automation stays where it was, as for a recording.
+            const std::array targets{existingTrack};
+            auto scope = edit_plan::materialScope(targets, edit_plan::PlacementClock::Ticks,
+                                                   {position, clearUntil});
+            scope.domains = edit_plan::Domains::Clips;
+            edit_plan::Options placement{editRate(), {}};
+            placement.policy.automationFollowsClips = false;
+            auto splice = edit_plan::detail::prepareCaptured(store, scope, std::move(overlaps), placement, ids, label);
+            if (!splice.ok)
+                return fail(splice.error);
+            batch.insert(batch.begin(), std::make_move_iterator(splice.requests.begin()),
+                         std::make_move_iterator(splice.requests.end()));
+        }
+        batch.front().selBefore = session_.advisory();
+        if (!edited(submitter_.commitPrepared(batch, [&](Store &destination, Actor) {
+                return OpJournal(destination).commit(batch, options);
+            })))
             return false;
         auto &selection = arrangement.geometry.selection;
         selection.track = firstTrack;
