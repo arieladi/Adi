@@ -562,24 +562,25 @@ bool ProjectDocument::commitCaptured(std::vector<OpRequest> &requests) {
     }
     return synchronise();
 }
-bool ProjectDocument::settleParameters() {
-    // ParamOps closes an unbracketed value after 150 ms with no input (param_ops.cpp's drain): a
-    // drain dated that far on closes every one now. Each drain offers one finished gesture.
-    constexpr std::int64_t kQuietMs = 150;
+bool ProjectDocument::drainParameterEdits(int gestureLimit, std::int64_t quietDelayMs) {
     std::vector<OpRequest> requests;
-    for (int round = 0; round < 256; ++round) {
+    for (int round = 0; round < gestureLimit; ++round) {
         requests.clear();
-        if (parameterOps_.drain(captureNowMs() + kQuietMs, requests) == 0)
+        if (parameterOps_.drain(captureNowMs() + quietDelayMs, requests) == 0)
             return true;
         if (!commitCaptured(requests))
             return false;
     }
     return true;
 }
+bool ProjectDocument::settleParameters() {
+    // ParamOps closes an unbracketed value after 150 ms with no input.
+    constexpr std::int64_t kQuietMs = 150;
+    return drainParameterEdits(256, kQuietMs);
+}
 void ProjectDocument::pollParameterEdits() {
-    std::vector<OpRequest> requests;
-    parameterOps_.drain(captureNowMs(), requests);
-    commitCaptured(requests);
+    // Configure can follow several completed native gestures from one window update.
+    drainParameterEdits(256);
     feed_.publish(session_, realisedGeneration_);
 }
 void ProjectDocument::tick(std::int64_t milliseconds) {
@@ -593,7 +594,8 @@ void ProjectDocument::tick(std::int64_t milliseconds) {
     // turns Record off. A healthy capture returns nothing. With the device stopped, nothing moves the
     // callback on, so the take is settled as the driver's is.
     pollRecording(deviceStopped_.load(std::memory_order_acquire));
-    pollParameterEdits();
+    drainParameterEdits(1);
+    feed_.publish(session_, realisedGeneration_);
     persistReportedLatencies();
     pollTrackRender();
 }

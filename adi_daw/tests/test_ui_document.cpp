@@ -356,37 +356,46 @@ void pluginTouchPublication(const std::filesystem::path &file) {
         check(false, "SC-317: two hosted plug-ins to observe in the document feed");
         return;
     }
+    const auto fixtureDevices = [](const ui::ParameterPublication &publication) {
+        std::vector<const ui::DevicePanelData *> devices;
+        for (const auto &device : publication)
+            if (device.track == 2 && device.uid == test::kKnobsUid)
+                devices.push_back(&device);
+        return devices;
+    };
     const auto untapped = document->parameterFeed().current();
-    if (untapped->size() != 2) {
+    const auto initial = fixtureDevices(*untapped);
+    if (initial.size() != 2) {
         check(false, "SC-317: two identities are published without parameter demand");
         return;
     }
-    const auto id = untapped->front().id;
+    const auto id = initial.front()->id;
     auto *knobs = dynamic_cast<test::Knobs *>(document->session().instanceFor(id));
     if (!knobs) {
         check(false, "SC-317: the editor's fixture callback producer exists");
         return;
     }
-    check(!untapped->front().pluginTouch && untapped->front().declarations().empty(),
+    check(!initial.front()->pluginTouch && initial.front()->declarations().empty(),
           "SC-317: there is no initial touch on the identity-only publication");
     knobs->windowGesture(0, .625);
     document->tick(0);
     const auto touched = document->parameterFeed().current();
-    const auto touch = touched->front().pluginTouch;
+    const auto targetsAfterTouch = fixtureDevices(*touched);
+    const auto touch = targetsAfterTouch.front()->pluginTouch;
     check(touch && touch->parameter == "0000001f" && touch->sequence != 0 &&
-              touched->front().declarations().empty() && !touched->back().pluginTouch &&
-              touched->front().runtime.sameInstance(untapped->front().runtime),
+              targetsAfterTouch.front()->declarations().empty() && !targetsAfterTouch.back()->pluginTouch &&
+              targetsAfterTouch.front()->runtime.sameInstance(initial.front()->runtime),
           "SC-317: the editor touch has the exact stable parameter ID and instance without panel demand");
     knobs->windowGesture(0, .75);
     document->tick(1);
     const auto repeated = document->parameterFeed().current();
-    const auto again = repeated->front().pluginTouch;
+    const auto again = fixtureDevices(*repeated).front()->pluginTouch;
     check(touch && again && again->parameter == touch->parameter && again->sequence > touch->sequence,
           "SC-317: another gesture on the same parameter publishes a new touch sequence");
     document->tick(2);
     check(document->parameterFeed().current() == repeated,
           "SC-317: an idle tick reuses the shared touch publication");
-    document->setParameterDemand(document.get(), {id, touched->back().id});
+    document->setParameterDemand(document.get(), {id, initial.back()->id});
     const auto available = document->parameterFeed().current();
     const auto targets = ui::automationChoices(*document->view().current(), 2, available.get());
     const auto first = std::find_if(targets.begin(), targets.end(), [&](const auto &target) {
@@ -400,14 +409,15 @@ void pluginTouchPublication(const std::filesystem::path &file) {
     knobs->windowGesture(0, .875);
     document->pollParameterEdits();
     const auto burst = document->parameterFeed().current();
-    const auto history = burst->front().recentPluginTouches;
-    check(history && history->size() >= 2 && burst->front().pluginTouch &&
+    const auto *burstDevice = fixtureDevices(*burst).front();
+    const auto history = burstDevice->recentPluginTouches;
+    check(history && history->size() >= 2 && burstDevice->pluginTouch &&
               (*history)[history->size() - 2].parameter == "gain" &&
-              history->back() == *burst->front().pluginTouch && history->back().parameter == "0000001f" &&
+              history->back() == *burstDevice->pluginTouch && history->back().parameter == "0000001f" &&
               (*history)[history->size() - 2].sequence < history->back().sequence,
           "SC-317: polling the Configure baseline publishes both editor touches in order");
     document->tick(3);
-    check(document->parameterFeed().current()->front().recentPluginTouches == history,
+    check(fixtureDevices(*document->parameterFeed().current()).front()->recentPluginTouches == history,
           "SC-317: unchanged history stays shared across publications");
 }
 

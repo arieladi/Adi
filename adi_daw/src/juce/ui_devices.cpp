@@ -2111,9 +2111,10 @@ void DevicePanelView::applyConfigureTouches() {
     auto pending = std::exchange(configureSession_->pending, {});
     const auto expected = configureSession_->expected;
     const auto safe = SafePointer<DevicePanelView>(this);
-    if (strip.folded(id) || !panelTargetCurrent(expected) || !safe || !safe->configureSession_)
+    if (const auto poll = strip.pollParameterEdits) poll();
+    if (!safe || !safe->configureSession_ || safe->strip.folded(expected.id) || !safe->panelTargetCurrent(expected) || !safe)
         return;
-    const auto feed = strip.latestPublication();
+    const auto feed = safe->strip.latestPublication();
     if (safe)
         if (const auto *current = findPanelDevice(feed, expected))
             addPanelParameters(safe->strip, *current, pending);

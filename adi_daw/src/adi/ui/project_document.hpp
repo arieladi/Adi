@@ -339,6 +339,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     // blobs first (ADR-0142), then ONE transaction, then the session follows. Nothing appended
     // is nothing done. False with `error()` set when the store refused.
     bool commitCaptured(std::vector<OpRequest> &requests);
+    bool drainParameterEdits(int gestureLimit, std::int64_t quietDelayMs = 0);
     // Why the producer refused a gesture, for the Status Bar: the device, the parameter or the
     // value, in that order.
     std::string refusalReason(std::int64_t id, const std::string &param);
