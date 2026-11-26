@@ -319,14 +319,14 @@ void seededSequence() {
             input.incoming = {{a.id, b.lane, b.span}, {b.id, a.lane, a.span}};
         } else if (step % 5 == 1 && !state.empty()) {
             const auto& original = state[pick(state.size())];
-            input.relocated = {original.id};
-            input.incoming = {{original.id, lane, {begin, begin + length}}};
+            input.relocated.push_back(original.id);
+            input.incoming.push_back({original.id, lane, {begin, begin + length}});
         } else if (step % 5 == 2) {
             input.clear = {{lane, {begin, begin + length}}, {lane, {115, 120}}};
         } else {
-            input.incoming = {{nextId++, lane, {begin, begin + length}}};
+            input.incoming.push_back({nextId++, lane, {begin, begin + length}});
             if (step % 5 == 3) {
-                input.clear = {{lane, {begin, 120}}};
+                input.clear.push_back({lane, {begin, 120}});
             }
         }
 
