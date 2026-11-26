@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/render/queue.hpp"
+#include "adi/audio/aiff_file.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/media/publish_file.hpp"
@@ -127,14 +128,24 @@ void validate(const Job& j) {
         throw std::invalid_argument("unsupported export dither");
     validateNiStems(j);
     validateNormalization(j.normalization,static_cast<std::uint32_t>(j.session.sampleRate),j.session.channels);
+    const char* suffix = pcmSuffix(j.container);
+    if (j.container != PcmContainer::Wav && j.niStems)
+        throw std::invalid_argument("NI Stems require WAV capture.");
+    if (j.exactPcmFilename) {
+        if (j.exactWavFilename || j.niStems || j.collision == Collision::Increment)
+            throw std::invalid_argument("A literal filename requires one PCM delivery.");
+        const auto& literal = *j.exactPcmFilename;
+        if (portableName(literal) != literal || !foldedFilename(media::pathFromUtf8(literal)).ends_with(suffix))
+            throw std::invalid_argument("The selected filename does not match the export format.");
+    }
     if (j.exactWavFilename) {
-        if (j.niStems || j.collision == Collision::Increment)
+        if (j.container != PcmContainer::Wav || j.niStems || j.collision == Collision::Increment)
             throw std::invalid_argument("a literal WAV filename requires a single WAV with Fail or Replace");
         const auto& literal = *j.exactWavFilename;
         if (portableName(literal) != literal ||
             !foldedFilename(media::pathFromUtf8(literal)).ends_with(".wav"))
             throw std::invalid_argument("the selected WAV filename is not a portable literal .wav name");
-    } else {
+    } else if (!j.exactPcmFilename) {
         (void)resolveName(j.nameTemplate, {"project","master","group","120",1,"region"});
     }
 }
@@ -269,6 +280,14 @@ void verifyMedia(MediaVerification& report,const Control& control) {
     report.publicationVerified=true;
 }
 } // namespace
+
+const char* pcmSuffix(PcmContainer container) {
+    switch (container) {
+    case PcmContainer::Wav: return ".wav";
+    case PcmContainer::Aiff: return ".aiff";
+    }
+    throw std::invalid_argument("Unsupported PCM export format.");
+}
 
 std::string resolveName(const std::string& pattern, const NameContext& context) {
     std::string name;
@@ -515,10 +534,14 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
                 job.session.sampleRate, job.regionId, names};
             snapshot.commit();
         }
-        const auto filename = job.exactWavFilename ? *job.exactWavFilename :
-            resolveName(job.nameTemplate, names) + ".wav";
+        const auto* suffix = pcmSuffix(job.container);
+        if (job.container == PcmContainer::Aiff)
+            audio::validateAiffSize(static_cast<std::uint64_t>(job.endSample - job.beginSample),
+                                    static_cast<std::uint16_t>(job.session.channels), job.encoding.format);
+        const auto& exactFilename = job.exactPcmFilename ? job.exactPcmFilename : job.exactWavFilename;
+        const auto filename = exactFilename ? *exactFilename : resolveName(job.nameTemplate, names) + suffix;
         result.output = job.directory / media::pathFromUtf8(filename);
-        detail::prepareOutput(result,job.collision,".wav","export destination already exists");
+        detail::prepareOutput(result,job.collision,suffix,"export destination already exists");
         if(prepared)prepared(result);
         const auto* graph = session.graph().currentGraph();
         if (!graph) throw std::runtime_error("export has no master graph");
@@ -633,7 +656,12 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
         });
         else writer->close();
         cancellation(control);
-        detail::publishVerifiedOutput(staged, result, control, "export destination already exists");
+        auto delivery = staged;
+        if (job.container == PcmContainer::Aiff) {
+            delivery = stage.path / "render.aiff";
+            audio::writeAiffFromWav(staged, delivery, [&] { cancellation(control); });
+        }
+        detail::publishVerifiedOutput(delivery, result, control, "export destination already exists");
     } catch (const Cancelled&) {
         result.state = JobState::Cancelled;
     } catch (const std::exception& e) {
@@ -758,6 +786,8 @@ std::string serializeRunManifest(const RunReport& run) {
                     {"region_id", job.regionId ? Json(*job.regionId) : Json(nullptr)}}},
                 {"requested_profile", std::move(profile)}};
             if (job.exactWavFilename) item["job"]["exact_wav_filename"] = *job.exactWavFilename;
+            if (job.container != PcmContainer::Wav) item["job"]["delivery_suffix"] = pcmSuffix(job.container);
+            if (job.exactPcmFilename) item["job"]["exact_pcm_filename"] = *job.exactPcmFilename;
         }
         if (member.result) {
             const auto& result = *member.result;

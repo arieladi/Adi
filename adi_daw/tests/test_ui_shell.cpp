@@ -14242,6 +14242,15 @@ void exportPage(AppCommands &commands, const std::filesystem::path &dir) {
               job.encoding.dither == audio::WavDither::None && job.normalization.mode == render::NormalizeMode::Peak &&
               job.source.trackId == 0,
           "the job: the chosen folder and name, the range at the chosen rate, 16-bit, no dither, Normalize [P:export#16] [P:export#3]");
+    auto aiff = one;
+    aiff.fileType = "AIFF";
+    aiff.bitDepth = 32;
+    auto aiffJobs = exportJobs(aiff, document->store().path(), dir / "Song {mix}.AIFF", *tempo);
+    check(exportRefusals(aiff).empty() && aiffJobs.size() == 1 &&
+              aiffJobs.front().container == render::PcmContainer::Aiff &&
+              aiffJobs.front().encoding.format == audio::WavFormat::Float32 &&
+              aiffJobs.front().exactPcmFilename == "Song {mix}.AIFF",
+          "the Export page allows 32-bit AIFF-C and preserves the selected filename");
     one.normalize = false; // a silent song has no peak to normalize
     // New's Set holds Reverb and Delay, which a build without Pd cannot load, and the renderer renders
     // only a project whose every device loads: an empty project here.

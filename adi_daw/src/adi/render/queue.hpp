@@ -18,6 +18,8 @@ enum class JobState { Pending, Running, Completed, Failed, Cancelled };
 // Single-delivery policies. Replace binds the requested ordinary file at
 // preflight; an absent endpoint uses atomic no-clobber publication instead.
 enum class Collision { Fail, Increment, Replace };
+enum class PcmContainer { Wav, Aiff };
+[[nodiscard]] const char* pcmSuffix(PcmContainer);
 
 // ADR-0071/0205: application job state, never project operations. This first
 // runner exports direct wet sources as WAV, or NI Stems through niStems. Noise
@@ -61,6 +63,9 @@ struct Job {
     // The complete literal WAV filename chosen by the single-export save
     // dialog. It includes .wav, bypasses templates, and uses Fail or Replace.
     std::optional<std::string> exactWavFilename;
+    PcmContainer container = PcmContainer::Wav;
+    // The complete literal filename from a single PCM delivery's save dialog.
+    std::optional<std::string> exactPcmFilename;
 };
 struct PublicationReport {
     bool durabilityConfirmed = false;

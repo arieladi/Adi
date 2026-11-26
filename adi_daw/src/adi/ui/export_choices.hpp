@@ -50,6 +50,9 @@ struct ExportChoices {
 };
 inline constexpr std::array<int, 6> kExportSampleRates{22050, 32000, 44100, 48000, 88200, 96000};
 inline constexpr std::array<const char *, 4> kExportFileTypes{"WAV", "AIFF", "FLAC", "AAC"};
+inline render::PcmContainer exportContainer(const ExportChoices &c) {
+    return c.fileType == "AIFF" ? render::PcmContainer::Aiff : render::PcmContainer::Wav;
+}
 inline constexpr std::array<int, 3> kExportBitDepths{16, 24, 32};
 inline constexpr std::array<const char *, 6> kExportDithers{"No Dither", "Rectangular", "Triangular",
                                                             "POW-r 1", "POW-r 2", "POW-r 3"};
@@ -68,8 +71,8 @@ inline std::string unsupported(const ExportChoices &c, const char *choice) {
         return "Convert to Mono waits for the engine's export (EX-07).";
     if (what == "createAnalysisFile" && c.createAnalysisFile)
         return "Analysis files wait for the engine's export (EX-07).";
-    if (what == "fileType" && c.fileType != "WAV")
-        return c.fileType + " waits for the engine's encoders (EX-08); WAV renders now.";
+    if (what == "fileType" && c.fileType != "WAV" && c.fileType != "AIFF")
+        return c.fileType + " export is unavailable. Choose WAV or AIFF.";
     if (what == "dither" && c.dither.rfind("POW-r", 0) == 0)
         return "The shaped dithers wait for the engine's noise shaping (EX-06).";
     if (what == "encodeMp3" && c.encodeMp3)
@@ -153,6 +156,7 @@ inline render::Job exportJob(const ExportChoices &c, const std::filesystem::path
     job.directory = file.parent_path();
     auto stem = file.stem().u8string();
     job.nameTemplate = literalTemplate(std::string(stem.begin(), stem.end()));
+    job.container = exportContainer(c);
     job.session.sampleRate = static_cast<double>(c.sampleRate);
     job.session.exporting = true;
     job.session.offline = true;
@@ -177,8 +181,11 @@ inline render::Job exportJob(const ExportChoices &c, const std::filesystem::path
 inline std::vector<render::Job> exportJobs(const ExportChoices &c, const std::filesystem::path &project,
                                            const std::filesystem::path &file, const engine::TempoMap &tempo) {
     auto job = exportJob(c, project, file, tempo);
-    if (c.tracks == ExportTracks::One)
+    if (c.tracks == ExportTracks::One) {
+        const auto filename = file.filename().u8string();
+        job.exactPcmFilename = std::string(filename.begin(), filename.end());
         return {std::move(job)};
+    }
     job.nameTemplate += " - {track}";
     job.collision = render::Collision::Increment;
     std::vector<render::Job> jobs;

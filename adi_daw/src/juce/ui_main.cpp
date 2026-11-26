@@ -411,12 +411,13 @@ class AdiApplication final : public juce::JUCEApplication,
         const auto folder = exportPreferences_.folder(*settings_, document_->store().path().parent_path());
         const auto destination = juce::File(juce::String::fromUTF8(media::pathUtf8(folder).c_str()));
         const bool batch = c.tracks != ExportTracks::One;
+        const auto* suffix = render::pcmSuffix(exportContainer(c));
         chooser_ = std::make_unique<juce::FileChooser>(batch ? "Name the Exported Tracks" : "Export Audio",
-                                                       destination.getChildFile(project.getFileNameWithoutExtension() + ".wav"),
-                                                       "*.wav");
+                                                       destination.getChildFile(project.getFileNameWithoutExtension() + suffix),
+                                                       juce::String("*") + suffix);
         const int flags = juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles |
                           (batch ? 0 : juce::FileBrowserComponent::warnAboutOverwriting);
-        chooser_->launchAsync(flags, [this, c, batch](const juce::FileChooser &chosen) {
+        chooser_->launchAsync(flags, [this, c, batch, suffix](const juce::FileChooser &chosen) {
             auto file = chosen.getResult();
             juce::MessageManager::callAsync([this] {
                 if (juce::JUCEApplicationBase::getInstance() == this)
@@ -424,25 +425,26 @@ class AdiApplication final : public juce::JUCEApplication,
             });
             if (file == juce::File{} || !document_)
                 return;
-            // ".wav" is added to a name without it, never swapped for another extension the name holds; a
-            // file the chooser did not ask about is never replaced.
+            // Append the selected extension when needed. A file the chooser did not ask about is never replaced.
             const auto chosenFile = file;
-            file = withExtension(file, "wav");
+            file = withExtension(file, suffix + 1);
             if (!batch && file != chosenFile && file.exists()) {
                 if (exportPage_)
                     exportPage_->showDone(file.getFileName().toStdString() + " already exists; choose it to replace it.");
                 return;
             }
-            // The renderer writes the name as given or not at all.
+            const auto output = pathFromUtf8(file.getFullPathName().toStdString());
+            // The renderer takes the exact filename, including the case of its extension.
             const auto stem = file.getFileNameWithoutExtension().toStdString();
-            std::string resolved;
+            bool validName = false;
             try {
-                resolved = render::resolveName(literalTemplate(stem), {});
+                render::validateOutputName(output);
+                validName = render::resolveName(literalTemplate(stem), {}) == stem;
             } catch (const std::exception &) {
             }
-            if (resolved != stem) {
+            if (!validName) {
                 if (exportPage_)
-                    exportPage_->showDone("A WAV cannot be named \"" + stem + "\"; choose another name.");
+                    exportPage_->showDone("The export file cannot be named \"" + stem + "\". Choose another name.");
                 return;
             }
             // The user chose to replace it: the old file goes to the trash, so a failed render loses nothing.
@@ -454,7 +456,6 @@ class AdiApplication final : public juce::JUCEApplication,
             const auto current = document_->view().current();
             if (!current || !current->tempo)
                 return;
-            const auto output = pathFromUtf8(file.getFullPathName().toStdString());
             exportPreferences_.rememberFolder(*settings_, output.parent_path());
             startRender(exportJobs(c, document_->store().path(), output, *current->tempo));
         });

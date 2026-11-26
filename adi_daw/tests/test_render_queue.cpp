@@ -3,6 +3,7 @@
 #include "adi/render/queue.hpp"
 #include "adi/render/host_dispatch.hpp"
 #include "adi/audio/wav_file.hpp"
+#include "adi/audio/decode.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/media/blake3.hpp"
@@ -632,6 +633,42 @@ void pcmExports() {
     check(renderWav(j,{}).state==JobState::Failed && f.noStage(),"unknown encoding fails before rendering or publication");
     j.encoding.format=audio::WavFormat::Pcm24;j.encoding.dither=static_cast<audio::WavDither>(99);
     check(renderWav(j,{}).state==JobState::Failed && f.noStage(),"unsupported dither has no silent fallback");
+}
+
+void aiffExports() {
+    Fixture f;
+    audio::DecodeCache cache(f.dir.path() / "aiff-readback", {1ull << 24, 0});
+    auto job = f.job("aiff-comparison");
+    for (const auto format : {audio::WavFormat::Pcm16, audio::WavFormat::Pcm24, audio::WavFormat::Float32}) {
+        job.encoding = {format, audio::WavDither::Triangular, 42};
+        job.normalization.mode = format == audio::WavFormat::Pcm24 ? NormalizeMode::Peak : NormalizeMode::Off;
+        job.normalization.truePeakCeilingDb = -1;
+        job.nameTemplate = "pcm-" + std::to_string(static_cast<int>(format));
+        const auto expected = read(renderWav(job, {}), 866, 48000, format);
+        auto aiff = job;
+        aiff.container = PcmContainer::Aiff;
+        aiff.exactPcmFilename = job.nameTemplate + ".AIFF";
+        const auto result = renderWav(aiff, {});
+        check(result.state == JobState::Completed && result.output.filename() == *aiff.exactPcmFilename &&
+                  result.framesWritten == 866 && audio::sniff(result.output) == audio::SourceFormat::Aiff && f.noStage(),
+              result.error.empty() ? "AIFF publishes the exact chosen filename and range" : result.error.c_str());
+        if (result.state != JobState::Completed)
+            continue;
+        const auto decoded = cache.playable(result.output);
+        audio::WavReader reader(decoded);
+        std::vector<float> actual(expected.size());
+        check(!expected.empty() && reader.frames() == 866 && reader.channels() == 2 && reader.sampleRate() == 48000 &&
+                  reader.read(actual.data(), 866) == 866 && actual == expected,
+              "AIFF/AIFF-C decodes to the same stereo samples as WAV, including dither and normalization");
+        cache.release(decoded);
+    }
+
+    job.container = PcmContainer::Aiff;
+    job.endSample = std::numeric_limits<std::uint32_t>::max();
+    const auto tooLarge = renderWav(job, {});
+    check(tooLarge.state == JobState::Failed && tooLarge.error.find("AIFF file would exceed") != std::string::npos &&
+              tooLarge.output.empty() && f.noStage(),
+          "AIFF ranges beyond its container limit fail before writing anything");
 }
 
 void hostOwnerLifecycle() {
@@ -1577,7 +1614,7 @@ void mediaIdentities() {
 }
 } // namespace
 int main() {
-    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); missingSources(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); hostOwnerLifecycle(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); mediaIdentities();}
+    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); missingSources(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); aiffExports(); hostOwnerLifecycle(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); mediaIdentities();}
     catch(const std::exception& e) {check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures ? "FAIL" : "PASS",checks,failures);
     return failures ? 1 : 0;
