@@ -1107,7 +1107,8 @@ void waveformSourceOffsets(const std::filesystem::path &dir) {
     if (!store)
         return;
     auto &db = store->db();
-    db.exec("INSERT INTO tracks(id,kind,name) VALUES(21,'audio','Waveforms');"
+    db.exec("INSERT INTO tempo_map(pos_ticks,bpm) SELECT 0,120 WHERE NOT EXISTS (SELECT 1 FROM tempo_map WHERE pos_ticks=0);"
+            "INSERT INTO tracks(id,kind,name) VALUES(21,'audio','Waveforms');"
             "INSERT INTO media_files(id,hash_blake3,rel_path,format,sample_rate,channels,frames) "
             "VALUES(1,'waveform-source','source.wav','wav',48000,1,96100);"
             "INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks) "
@@ -1151,7 +1152,8 @@ void waveformSourceOffsets(const std::filesystem::path &dir) {
     check(firstFrameIs(8, 100) && firstFrameIs(10, 12100), "warped split goes through the source warp markers");
     db.exec("UPDATE tempo_map SET bpm=240 WHERE pos_ticks=0;");
     refresh();
-    check(firstFrameIs(9, 24100), "an unwarped split's pinned source offset survives a tempo change");
+    check(snapshot->tempo->bpmAt(0) == 240 && firstFrameIs(9, 24100),
+          "an unwarped split's pinned source offset survives a tempo change");
     check(changeStart(7) && changeStart(8), "move Start on the two left pieces in place");
     refresh();
     check(firstFrameIs(7, 6100), "unwarped Start updates the waveform from the new tick offset");
