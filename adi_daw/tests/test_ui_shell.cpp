@@ -12252,6 +12252,32 @@ void sampleEditorMouse(AppCommands &commands, const std::filesystem::path &dir) 
     root.frame();
     auto &panel = root.clipView;
     auto &edit = panel.sample;
+    const auto sourcePath = std::filesystem::weakly_canonical(wav);
+    const auto sameName = sourcePath.parent_path() / "another-folder" / sourcePath.filename();
+    const auto revealSample = [&] {
+        const auto header = panel.headerArea();
+        panel.mouseDown(pressAt(panel, {static_cast<float>(header.getX() + 360), static_cast<float>(header.getCentreY())},
+                                juce::ModifierKeys::leftButtonModifier));
+    };
+    const auto selectedSource = [&]() -> std::filesystem::path {
+        const auto i = root.browser.list.getLastRowSelected();
+        const auto &rows = root.browser.rows();
+        if (i >= 0 && i < static_cast<int>(rows.size()) && rows[static_cast<std::size_t>(i)].file)
+            return rows[static_cast<std::size_t>(i)].file->path;
+        return {};
+    };
+    if (root.browser.isVisible())
+        root.command(AppCommands::ToggleBrowser);
+    root.browser.setListing({{}, {{"sample-gestures.wav", sameName, "other"},
+                                   {"sample-gestures.wav", sourcePath, "source"}}, {}});
+    root.browser.search.setText("exclude this sample", false);
+    revealSample();
+    check(root.browser.isVisible() && selectedSource() == sourcePath,
+          "the sample name opens the Browser on its exact indexed file, even with another sample of the same name");
+    root.browser.setListing({{}, {{"sample-gestures.wav", sameName, "other"}}, {}});
+    revealSample();
+    check(root.browser.isVisible() && selectedSource() == sourcePath,
+          "the sample name reveals the project's source even outside the indexed library");
     using Field = ClipViewPanel::Field;
     check(!panel.toggleLoop() && !panel.setField(Field::Position, beat) &&
               !panel.setField(Field::Length, 2 * beat) && !panel.setFieldHere(Field::Length),
