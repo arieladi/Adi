@@ -3984,7 +3984,37 @@ void ClipViewPanel::frame(const SnapshotReader &reader) {
             closeEditor();
         sample.updateSource();
     }
+    fitArrangementSelection(reader);
     sample.frame();
+}
+void ClipViewPanel::fitArrangementSelection(const SnapshotReader &reader) {
+    const auto &geometry = root.arrangement.geometry;
+    const auto &selection = geometry.selection;
+    const int width = audio() ? sample.waveArea().getWidth() : notes.notesArea().getWidth();
+    if (!isVisible() || width == 0 || !node_ || !details_ || selection.start == selection.end ||
+        !geometry.inSelection(reader, details_->trackId)) {
+        fittedRange_.reset();
+        return;
+    }
+    const auto clipEnd = node_->posTicks + node_->lengthTicks;
+    auto from = std::max(node_->posTicks, std::min(selection.start, selection.end));
+    auto to = std::min(clipEnd, std::max(selection.start, selection.end));
+    if (from >= to || (geometry.clipSelected(clip_) && from == node_->posTicks && to == clipEnd)) {
+        fittedRange_.reset();
+        return;
+    }
+    if (audio()) {
+        from = sample.sourceTick(from);
+        to = sample.sourceTick(to);
+    }
+    const ArrangementRange range{clip_, from, to};
+    if (from >= to || fittedRange_ == range)
+        return;
+    fittedRange_ = range;
+    auto &editor = audio() ? static_cast<juce::Component &>(sample) : static_cast<juce::Component &>(notes);
+    auto &time = audio() ? sample.time : notes.time;
+    time.fit(from, to, width, true, 1. / textproj::kPPQ);
+    editor.repaint();
 }
 ClipViewPanel::Readings ClipViewPanel::readings() const {
     Readings out;

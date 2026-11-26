@@ -730,6 +730,7 @@ class ClipViewPanel final : public juce::Component {
     void read(const SnapshotReader &);
     friend class NoteEditor;
     friend class SampleEditor;
+    void fitArrangementSelection(const SnapshotReader &);
     bool commit(TrackEdit);
     bool loopAvailable() const noexcept;
     bool fieldEnabled(Field) const noexcept;
@@ -767,6 +768,11 @@ class ClipViewPanel final : public juce::Component {
     const char *filterToggleName(int index) const noexcept;
     std::mt19937 random_{std::random_device{}()};
     std::int64_t clip_ = 0, wanted_ = 0;
+    struct ArrangementRange {
+        std::int64_t clip, from, to;
+        bool operator==(const ArrangementRange &) const = default;
+    };
+    std::optional<ArrangementRange> fittedRange_;
     std::vector<std::int64_t> shown_;
     std::vector<ClipLayer> others_;
     bool focus_ = false;
