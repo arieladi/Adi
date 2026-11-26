@@ -11946,6 +11946,92 @@ void automationArm(AppCommands &commands, const std::filesystem::path &dir) {
           "and Automation Arm says so, showing Live's default, on");
     document->release();
 }
+void armFollowsSelection(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "arm-selection.adi", true, {}, error);
+    check(document != nullptr, "a project for Arm selection and its shortcut");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "arm-selection");
+    UiPeerRoot host;
+    host.setSize(1600, 1000);
+    host.addAndMakeVisible(root);
+    host.setVisible(true);
+    host.addToDesktop(0);
+    root.setSize(1440, 900);
+    root.afterEdit = [&] { document->synchronise(); };
+    root.readRecordStates = [&] { return document->recordStates(); };
+    const auto devices = std::make_shared<ParameterPublication>();
+    DevicePanelData midi, audio;
+    midi.id = 31;
+    midi.track = 3;
+    midi.name = "MIDI device";
+    audio.id = 41;
+    audio.track = 4;
+    audio.name = "Audio device";
+    devices->push_back(midi);
+    devices->push_back(audio);
+    root.devices.publication = [devices] { return devices; };
+    auto &selection = root.arrangement.geometry.selection;
+    selection.track = 3;
+    selection.insert = selection.start = selection.end = 960;
+    root.publishSelection();
+    const auto before = document->sessionState().selection();
+    root.frame();
+    const auto strip = std::find_if(root.mixer.strips().begin(), root.mixer.strips().end(),
+                                    [](const auto &row) { return row->track() == 4; });
+    check(strip != root.mixer.strips().end() && root.devices.panels.size() == 1 &&
+              root.devices.panels.front()->id == midi.id,
+          "the Device View follows 2 MIDI before using another row's Arm");
+    if (strip == root.mixer.strips().end())
+        return;
+    auto *arm = &(*strip)->arm;
+    arm->onClick();
+    root.frame();
+    const auto states = [&] { return document->recordStates(); };
+    check(states().at(4).armed && document->sessionState().selection().track == 4 &&
+              selection.insert == before.insert && root.devices.panels.size() == 1 &&
+              root.devices.panels.front()->id == audio.id,
+          "arming 3 Audio selects it and shows its device without moving the insert marker [SC-264]");
+    check(root.command(AppCommands::Undo), "undo the Arm click");
+    root.frame();
+    check(!states().at(4).armed && document->sessionState().selection() == before &&
+              root.devices.panels.size() == 1 && root.devices.panels.front()->id == midi.id,
+          "one Undo disarms 3 Audio and restores the prior Device View selection [SC-264]");
+
+    check(root.armTrack(4, true) && root.armTrack(5, true), "seed a mixed arm state with an armed outside track");
+    selection.track = 3;
+    selection.toTrack = 4;
+    selection.picked.clear();
+    root.publishSelection();
+    const auto pair = document->sessionState().selection();
+    auto *peer = host.getPeer();
+    const juce::KeyPress c('c', 0, 'c');
+    root.arrangement.canvas.grabKeyboardFocus();
+    check(peer && peer->handleKeyPress(c) && states().at(3).armed && states().at(4).armed &&
+              !states().at(5).armed && document->sessionState().selection() == pair,
+          "C arms both selected tracks and disarms the outside track under Exclusive Arm [SC-264]");
+    check(root.command(AppCommands::Undo), "undo Arm Selected Tracks");
+    root.frame();
+    check(!states().at(3).armed && states().at(4).armed && states().at(5).armed,
+          "one Undo restores all three arm states [SC-264]");
+    check(peer && peer->handleKeyPress(c) && peer->handleKeyPress(c) &&
+              !states().at(3).armed && !states().at(4).armed && document->sessionState().selection() == pair,
+          "C toggles the selected tracks together and keeps their selection [SC-264]");
+
+    root.transport.keyboard.setToggleState(true, juce::dontSendNotification);
+    check(!root.keyPressed(c) && !states().at(3).armed && !states().at(4).armed,
+          "the Computer MIDI Keyboard keeps plain C [SC-264]");
+    root.transport.keyboard.setToggleState(false, juce::dontSendNotification);
+    juce::TextEditor field;
+    root.addAndMakeVisible(field);
+    field.setBounds(10, 10, 120, 24);
+    field.grabKeyboardFocus();
+    check(field.hasKeyboardFocus(false) && peer && peer->handleKeyPress(c) && field.getText() == "c" &&
+              !states().at(3).armed && !states().at(4).armed,
+          "a focused text editor keeps plain C [SC-264]");
+}
 // Arm, monitoring and Arrangement Record (MX-09; Live 12 manual 21.1, 21.4): the strips' Arm and the
 // monitoring switch, and the Control Bar's Record and F9, wired as ui_main.cpp wires them, over a
 // document whose callback the test drives with an input.
@@ -17232,12 +17318,13 @@ int main(int argc, char **argv) {
                       C::DelayCompensation == C::ExportAudio + 1 && C::SoloSwitches == C::DelayCompensation + 1 &&
                       C::CueSwitches == C::SoloSwitches + 1 && C::HelpManual == C::CueSwitches + 1 &&
                       C::KeyboardReference == C::HelpManual + 1 && C::AutomationMode == C::KeyboardReference + 1 &&
-                      C::DeleteAutomation == C::AutomationMode + 1 && C::LastId == C::DeleteAutomation,
+                      C::DeleteAutomation == C::AutomationMode + 1 && C::ArmSelected == C::DeleteAutomation + 1 &&
+                      C::LastId == C::ArmSelected,
                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
                   "Select Loop, Save a Copy, Collect All and Save, Collect and Export, Cut, Copy, Paste, Duplicate, "
                   "Show/Hide Plug-In Windows, Split, Clip View, Insert Empty MIDI Clip(s), the …Time commands and "
                   "Insert Silence, then Create Fade In/Out and Delete Fades/Crossfades, then the Note Editor's nine, "
-                  "Arrangement Record, Delay Compensation and Delete Automation, each named");
+                  "Arrangement Record, Delay Compensation, Delete Automation and Arm Selected Tracks, each named");
             // The Note Editor's commands, the last ids: named in the table's order, each on the editor's key.
             {
                 const auto named = [&](int id) {
@@ -19696,6 +19783,7 @@ int main(int argc, char **argv) {
     trace("deviceClipboard", [&] { deviceClipboard(commands, temp.path()); });
     trace("pluginWindows", [&] { pluginWindows(commands, settings, temp.path()); });
     trace("automationArm", [&] { automationArm(commands, temp.path()); });
+    trace("armFollowsSelection", [&] { armFollowsSelection(commands, temp.path()); });
     trace("armAndRecord", [&] { armAndRecord(commands, temp.path()); });
     trace("midiTakePreview", [&] { midiTakePreview(commands, temp.path()); });
     trace("exportPage", [&] { exportPage(commands, temp.path()); });

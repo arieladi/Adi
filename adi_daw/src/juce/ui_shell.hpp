@@ -172,7 +172,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         KeyboardReference, // the Help menu's keyboard reference, written from the keys in force (WIN-09)
         AutomationMode,    // the View menu's Automation Mode, A (Live 12 manual 25.2, 41.7)
         DeleteAutomation,
-        LastId = DeleteAutomation
+        ArmSelected,
+        LastId = ArmSelected
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -930,6 +931,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     bool midiOverdub_ = false; // Live's MIDI Arrangement Overdub, off in a new Set
     RecordStates recordStates_; // the arm and monitoring the application last handed over (MX-09)
     RecordStates freshRecordStates() const { return readRecordStates ? readRecordStates() : recordStates_; }
+    bool toggleArm(std::optional<std::int64_t> clicked, bool add);
     bool midiIn_ = false;
     bool automationMode_ = false;
     std::map<std::int64_t, AutomationTarget> automationTargets_;

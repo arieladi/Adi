@@ -312,6 +312,7 @@ const StableEntry *stableEntry(int id) noexcept {
         {"help.keyboard-shortcuts", "Help"}, // KeyboardReference
         {"view.automation-mode", "View"}, // AutomationMode
         {"edit.delete-automation", "Edit"}, // DeleteAutomation
+        {"mixer.arm-selected", "Mixer"}, // ArmSelected
     }};
     const auto at = id - AppCommands::PlayStop;
     return at >= 0 && at < static_cast<int>(table.size()) ? &table[static_cast<std::size_t>(at)] : nullptr;
@@ -536,7 +537,8 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Draw Mode", "Arrange Clip View Panels Automatically", "Arrange Clip View Panels Horizontally",
                                   "Arrange Clip View Panels Vertically", "Clip View", "Fit to Time Range",
                                   "Arrangement Record", "Export Audio/Video...", "Delay Compensation", "Solo Switches", "Cue Switches",
-                                  "Live 12 Manual", "Keyboard Shortcuts", "Automation Mode", "Delete Automation"};
+                                  "Live 12 Manual", "Keyboard Shortcuts", "Automation Mode", "Delete Automation",
+                                  "Arm Selected Tracks"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], category(id), 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -845,6 +847,10 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         info.addDefaultKeypress('s', 0);
         info.setActive(active_ != nullptr);
         break;
+    case ArmSelected:
+        info.addDefaultKeypress('c', 0);
+        info.setActive(active_ != nullptr);
+        break;
     case SoloInPlace: // manual 18.6: the Options menu's entry, ticked from the project's field (#412)
         info.setTicked(active_ != nullptr && active_->reader().soloInPlace());
         info.setActive(active_ != nullptr);
@@ -1093,11 +1099,12 @@ bool AppCommands::key(const juce::KeyPress &key, AdiRootComponent &root) {
     // A key that comes here was pressed elsewhere, where they are no command's.
     if (id >= FoldToNotes && id <= HighlightScales)
         return false;
-    if (id == DrawMode) {
+    if (id == DrawMode || id == ArmSelected) {
         const auto *focus = juce::Component::getCurrentlyFocusedComponent();
         if (focus && root.isParentOf(focus) && dynamic_cast<const juce::TextEditor *>(focus))
             return false;
-        if (key == juce::KeyPress('b') && root.transport.keyboard.getToggleState())
+        if (root.transport.keyboard.getToggleState() &&
+            key == juce::KeyPress(id == DrawMode ? 'b' : 'c'))
             return false;
     }
     // A with the Note Editor's keyboard stays the editor's: Automation Mode is the Arrangement's.
@@ -3510,15 +3517,52 @@ TrackRecordState AdiRootComponent::recordState(std::int64_t track) const {
     return ::adi::ui::recordState(recordStates_, track);
 }
 bool AdiRootComponent::armTrack(std::int64_t id, bool add) {
-    // From the CURRENT cell (ADR-0201) and the rows the application hands over; one batch.
+    return toggleArm(id, add);
+}
+bool AdiRootComponent::toggleArm(std::optional<std::int64_t> clicked, bool add) {
     const auto current = view_.current();
     if (!current)
         return fail("Arming needs an open project.");
-    auto edit = armTracks(current->tracks, freshRecordStates(), id, arrangement.geometry.selectedTracks(reader()),
-                          commands_.exclusiveArm(), add);
+    const SnapshotReader snapshot(current);
+    auto &selection = arrangement.geometry.selection;
+    auto selected = arrangement.geometry.selectedTracks(snapshot);
+    auto anchor = clicked.value_or(selection.track);
+    if (!clicked) {
+        const auto eligible = [&](std::int64_t id) {
+            const auto *track = snapshot.findTrack(id);
+            return track && armable(*track);
+        };
+        if (std::find(selected.begin(), selected.end(), anchor) == selected.end() || !eligible(anchor)) {
+            const auto first = std::find_if(selected.begin(), selected.end(), eligible);
+            if (first == selected.end())
+                return false;
+            anchor = *first;
+        }
+    }
+    const auto states = freshRecordStates();
+    auto edit = armTracks(current->tracks, states, anchor, selected, commands_.exclusiveArm(), add);
     if (!edit.refusal.empty())
         return fail(std::move(edit.refusal));
-    return edit.ops.empty() || submitEdits(std::move(edit.ops));
+    if (!submitEdits(std::move(edit.ops)))
+        return false;
+    // Publish after submission so Undo restores the selection from before the Arm click.
+    if (clicked && !::adi::ui::recordState(states, anchor).armed && selection.track != anchor) {
+        if (const auto found = std::find(selected.begin(), selected.end(), anchor); found != selected.end())
+            selected.erase(found);
+        else
+            selected.clear();
+        selection.track = anchor;
+        selection.toTrack = 0;
+        selection.picked = std::move(selected);
+        selection.clip = 0;
+        selection.pickedClips.clear();
+        selection.start = selection.end = selection.insert;
+        arrangement.selectedLocator = 0;
+        arrangement.selectedMeter = -1;
+        arrangement.loopSelected = false;
+        publishSelection();
+    }
+    return true;
 }
 bool AdiRootComponent::setMonitor(std::int64_t id, Monitor mode) {
     const auto current = view_.current();
@@ -4793,6 +4837,8 @@ bool AdiRootComponent::command(int id) {
         if (!soloTrack(arrangement.geometry.selection.track, false))
             return false;
         break;
+    case AppCommands::ArmSelected:
+        return toggleArm(std::nullopt, false);
     case AppCommands::SoloSwitches:
     case AppCommands::CueSwitches:
         // Complete on its own, as Solo in Place: setCueMode re-reads the session and says why it refuses.
