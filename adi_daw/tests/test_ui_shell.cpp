@@ -4335,6 +4335,48 @@ void timeCommands(AppCommands &commands, const std::filesystem::path &dir) {
     commands.detach(root);
     document->release();
 }
+void midiFileDrop(AppCommands &commands, const std::filesystem::path &dir) {
+    const auto path = dir / "Scale.mid";
+    constexpr std::array<unsigned char, 34> bytes{
+        'M', 'T', 'h', 'd', 0, 0, 0, 6, 0, 0, 0, 1, 0, 96,
+        'M', 'T', 'r', 'k', 0, 0, 0, 12,
+        0, 0x90, 60, 100, 96, 0x80, 60, 0, 0, 0xff, 0x2f, 0};
+    {
+        std::ofstream file(path, std::ios::binary);
+        file.write(reinterpret_cast<const char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+        check(file.good(), "make a MIDI file to drop");
+    }
+    std::string error;
+    auto document = ProjectDocument::open(dir / "midi-file-drop.adi", true, {}, error);
+    check(document != nullptr, "a project for the MIDI file drop");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "midi-file-drop");
+    root.setSize(1400, 900);
+    root.mark(DirtySet::All);
+    root.frame();
+    auto &arrangement = root.arrangement;
+    const auto pathUtf8 = path.u8string();
+    constexpr auto beat = textproj::kPPQ;
+    const auto x = static_cast<int>(std::lround(arrangement.geometry.x(beat)));
+    arrangement.canvas.filesDropped(juce::StringArray{juce::String::fromUTF8(reinterpret_cast<const char *>(pathUtf8.c_str()))},
+                                    x, laneTop(root, 2) + 10);
+    root.frame();
+    const auto selected = root.midiClipForExport();
+    const auto details = engine::readClipDetails(document->store(), selected);
+    check(selected > 0 && details.clip && details.clip->trackId == 2 && details.clip->name == "Scale" &&
+              details.clip->notes.size() == 1 && details.clip->notes.front().key == 60,
+          "the Arrangement drop imports and selects a MIDI clip on the dropped track");
+    int command = 0;
+    root.applicationCommand = [&](int id) { command = id; return true; };
+    check(root.command(AppCommands::ExportMidiClip) && command == AppCommands::ExportMidiClip,
+          "Export MIDI Clip dispatches the selected MIDI clip to the application");
+    check(root.command(AppCommands::ImportMidiFile) && command == AppCommands::ImportMidiFile,
+          "Import MIDI File dispatches the chooser command");
+    check(root.command(AppCommands::Undo) && !engine::readClipDetails(document->store(), selected).clip,
+          "undo removes the file import in one step");
+}
 void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
     StoreError err{};
     auto store = Store::createEmpty(dir / "drop.adi", err);
@@ -19089,6 +19131,7 @@ int main(int argc, char **argv) {
     trace("automationMode", [&] { automationMode(commands, temp.path()); });
     trace("sendKnobs", [&] { sendKnobs(commands, temp.path()); });
     trace("audioDrop", [&] { audioDrop(commands, temp.path()); });
+    trace("midiFileDrop", [&] { midiFileDrop(commands, temp.path()); });
     trace("importPrompt", [&] { importPrompt(commands, settings, temp.path()); });
     trace("browserDevices", [&] { browserDevices(commands, temp.path()); });
     trace("splitAndRangeEdits", [&] { splitAndRangeEdits(commands, settings, temp.path()); });

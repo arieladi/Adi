@@ -116,7 +116,7 @@ bool applyCapture(OpContext& context,const Payload& payload,std::string& error) 
         const auto position=clip.at("pos").get<std::int64_t>(),length=clip.at("length").get<std::int64_t>();
         if(position<0 || position>limit || length<=0 || length>limit-position)throw std::runtime_error("invalid Capture clip extent");
         SQLite::Statement track(context.db,"SELECT kind,locked,frozen FROM tracks WHERE id=?");track.bind(1,trackId);
-        if(!track.executeStep() || (track.getColumn(0).getString()!="midi" && track.getColumn(0).getString()!="audio") ||
+        if(!track.executeStep() || (track.getColumn(0).getString()!="midi" && track.getColumn(0).getString()!="audio" && track.getColumn(0).getString()!="instrument") ||
            track.getColumn(1).getInt()!=0 || track.getColumn(2).getInt()!=0)throw std::runtime_error("Capture target is gone, locked or frozen");
         const auto& controls=payload.at("controllers");
         if(!controls.is_array() || controls.size()>2048 || (controls.empty() && !payload.contains("notes")))throw std::runtime_error("invalid Capture stream collection");
