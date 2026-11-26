@@ -2411,6 +2411,8 @@ bool Session::RenderBlock::startPlayback(std::int64_t insertMarkerTick, bool rec
     if (recording && timing->settings.countInBars > 0) {
         session_.countInBeatSamples_ = beatSamples;
         session_.countInBeatsPerBar_ = numerator;
+        session_.countInBars_ = timing->settings.countInBars;
+        session_.countInDivisionsPerBeat_ = static_cast<std::int32_t>(std::max<std::int64_t>(1, 16 / denominator));
         session_.clickEnvelope_ = 0;
         session_.clickWasPlaying_ = false;
         session_.transport_.countIn(
@@ -2419,6 +2421,28 @@ bool Session::RenderBlock::startPlayback(std::int64_t insertMarkerTick, bool rec
         session_.transport_.play();
     session_.publishDriverClock();
     return true;
+}
+CountInPosition Session::RenderBlock::countInPosition() const noexcept {
+    if (session_.transport_.countInRemaining() == 0 || session_.countInBars_ == 0)
+        return {};
+    const auto divisions = session_.countInDivisionsPerBeat_;
+    const auto perBar = session_.countInBeatsPerBar_ * divisions;
+    const auto elapsed = session_.transport_.countInElapsed();
+    // Find the last display boundary reached on the sample clock. At a beat
+    // boundary the rounding is the same as for the click's unshifted grid.
+    std::int64_t step = 0;
+    auto end = perBar * session_.countInBars_;
+    while (step + 1 < end) {
+        const auto middle = step + (end - step) / 2;
+        const auto boundary = std::llround(static_cast<double>(middle) / divisions * session_.countInBeatSamples_);
+        if (boundary <= elapsed)
+            step = middle;
+        else
+            end = middle;
+    }
+    return {static_cast<int>(step / perBar) - session_.countInBars_,
+            static_cast<int>((step % perBar) / divisions) + 1,
+            static_cast<int>(step % divisions) + 1};
 }
 bool Session::RenderBlock::process(const AudioIo& io) noexcept {
     const auto* timing = dynamic_cast<const TimingView*>(graph_.transportState());

@@ -10252,6 +10252,74 @@ void loopMetronome(AppCommands &commands, settings::AppSettings &settings, const
     check(!stored().metronome && !bar.metronome.getToggleState() && root.undoTitle(false) == undoTitle,
           "the switch clicked: off again, no undo step");
 
+    // SC-21, SC-246: use the real menu and its actions with no popup or audio device.
+    int menuPresses = 0;
+    auto openMenu = std::move(bar.metronome.onDropdown);
+    bar.metronome.onDropdown = [&] { ++menuPresses; };
+    auto &metronome = bar.metronome;
+    const juce::Point<float> arrow{static_cast<float>(metronome.getWidth() - 3), 6.f};
+    metronome.mouseDown(pressAt(metronome, arrow, juce::ModifierKeys::leftButtonModifier));
+    metronome.mouseUp(pressAt(metronome, arrow));
+    const juce::Point<float> glyph{3.f, 6.f};
+    metronome.mouseDown(pressAt(metronome, glyph, juce::ModifierKeys::rightButtonModifier));
+    metronome.mouseUp(pressAt(metronome, glyph));
+    check(menuPresses == 2 && !stored().metronome, "SC-21: arrow and context presses open the menu without toggling");
+    metronome.onDropdown = std::move(openMenu);
+    const auto menuItem = [](const juce::PopupMenu &menu, const char *label) {
+        for (juce::PopupMenu::MenuItemIterator it(menu, true); it.next();)
+            if (it.getItem().text == label)
+                return it.getItem();
+        return juce::PopupMenu::Item{};
+    };
+    constexpr std::pair<const char *, int> countIns[]{{"1 Bar", 1}, {"2 Bars", 2}, {"4 Bars", 4}, {"None", 0}};
+    const auto freshMenu = bar.metronomeMenu();
+    check(menuItem(freshMenu, "None").isTicked, "SC-21: a new project selects no count-in");
+    for (const auto &[label, bars] : countIns) {
+        const auto item = menuItem(bar.metronomeMenu(), label);
+        check(item.isEnabled && item.action, "SC-21: the count-in choice can be invoked");
+        if (!item.action)
+            continue;
+        item.action();
+        root.frame();
+        const auto updated = bar.metronomeMenu();
+        bool ticksMatch = true;
+        for (const auto &[other, expected] : countIns)
+            ticksMatch = ticksMatch && menuItem(updated, other).isTicked == (bars == expected);
+        check(stored().countInBars == bars && root.reader().transport().countInBars == bars && ticksMatch,
+              "SC-21: the count-in is saved, presented, and ticked on reopening the menu");
+    }
+    check(!stored().metronome && !document->mailbox().desiredPlaying() && root.undoTitle(false) == undoTitle,
+          "SC-21: count-in choices stay outside undo and leave the click and transport stopped");
+    allocations = 0;
+    audit = true;
+    bar.position.setCountInPosition({-2, 1, 1});
+    bar.position.setCountInPosition({-2, 1, 2});
+    bar.position.setCountInPosition({});
+    audit = false;
+    check(allocations == 0, "SC-21: changing the displayed count-in allocates nothing before paint");
+
+    const auto volumeSlider = [](const juce::PopupMenu &menu) -> juce::Slider * {
+        for (juce::PopupMenu::MenuItemIterator it(menu, true); it.next();)
+            if (const auto *row = it.getItem().customComponent.get())
+                for (auto *child : row->getChildren())
+                    if (auto *slider = dynamic_cast<juce::Slider *>(child))
+                        return slider;
+        return nullptr;
+    };
+    const auto volumeMenu = bar.metronomeMenu();
+    auto *slider = volumeSlider(volumeMenu);
+    check(slider && slider->getValue() == readCueSettings(document->store()).volumeDb,
+          "SC-246: the menu slider shows the project's Cue Volume");
+    if (slider) {
+        slider->setValue(-12.0, juce::sendNotificationSync);
+        root.frame();
+        const auto updated = bar.metronomeMenu();
+        const auto *updatedSlider = volumeSlider(updated);
+        check(readCueSettings(document->store()).volumeDb == -12.0 && root.reader().get()->cue.volumeDb == -12.0 &&
+                  updatedSlider && updatedSlider->getValue() == -12.0 && root.undoTitle(false) == undoTitle,
+              "SC-246: the slider changes shared Cue Volume and reopening reads it back without an undo step");
+    }
+
     // Loop Selection (Ctrl/Cmd+L, manual 6.6) over a time selection from bar 3 to bar 5.
     sel.track = 2;
     sel.toTrack = 3;

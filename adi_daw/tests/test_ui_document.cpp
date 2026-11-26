@@ -979,6 +979,89 @@ void recordWithDeviceLatency(const std::filesystem::path &dir) {
               audio[delayedClick] == 0.75f && clipStart + delayedClick == startSample + referenceClick,
           "SC-22: the saved impulse is unmodified and lines up with the reference click on the timeline");
 }
+void countInPositionFeedback(const std::filesystem::path &dir) {
+    std::string error;
+    auto doc = ui::ProjectDocument::open(dir / "count-in.adi", true, {}, error);
+    check(doc != nullptr, "create a document for count-in feedback");
+    if (!doc)
+        return;
+    const auto submit = [&](const char *type, Payload payload) {
+        OpRequest request;
+        request.opType = type;
+        request.payload = std::move(payload);
+        return doc->ops().submit(request).ok;
+    };
+    constexpr int maxFrames = 1024;
+    constexpr int sixteenthFrames = 6000;
+    constexpr int barFrames = 12 * sixteenthFrames; // 6/8 at 120 BPM and 48 kHz
+    constexpr auto startTick = textproj::kPPQ;
+    doc->prepare(48000, maxFrames);
+    const bool configured = submit("project.insertTimeSignature", {{"pos", startTick}, {"num", 6}, {"den", 8}}) &&
+                            submit("track.setArm", {{"id", 4}, {"armed", true}}) &&
+                            submit("transport.setCountIn", {{"bars", 2}}) && doc->synchronise();
+    check(configured, "configure two bars of 6/8 and arm 3 Audio");
+    if (!configured)
+        return;
+
+    std::array<float, maxFrames> input{}, left{}, right{};
+    const float *inputs[]{input.data()};
+    float *outputs[]{left.data(), right.data()};
+    std::int64_t stream = 0;
+    const auto advance = [&](int frames) {
+        while (frames > 0) {
+            const auto block = std::min(frames, maxFrames);
+            doc->process({outputs, inputs, 2, 1, block, stream});
+            stream += block;
+            frames -= block;
+        }
+    };
+    auto &mailbox = doc->mailbox();
+    const auto at = [&](int bar, int beat, int sixteenth) {
+        const auto where = mailbox.countInPosition();
+        return where.bar == bar && where.beat == beat && where.sixteenth == sixteenth;
+    };
+    check(at(0, 0, 0), "the count-in position is inactive while stopped");
+    if (!doc->startRecording(startTick, 1, false))
+        throw std::runtime_error(doc->error());
+    advance(sixteenthFrames - 1);
+    check(at(-2, 1, 1) && mailbox.playing() && mailbox.position() == 24000,
+          "the first count-in sixteenth holds the take position at the launch point");
+    advance(1);
+    check(at(-2, 1, 2), "the countdown advances at the first sixteenth boundary");
+    advance(sixteenthFrames);
+    check(at(-2, 2, 1), "6/8 has two sixteenths per displayed beat");
+    advance(barFrames - 2 * sixteenthFrames - 1);
+    check(at(-2, 6, 2), "the first count-in bar displays its final sixteenth");
+    advance(1);
+    check(at(-1, 1, 1), "the next callback crosses exactly into the last count-in bar");
+    advance(barFrames - 1);
+    check(at(-1, 6, 2) && doc->session().recording().acceptedFrames() == 0,
+          "the last count-in frame still shows a negative bar and has recorded nothing");
+    advance(2);
+    check(at(0, 0, 0) && mailbox.playing() && mailbox.position() == 24001 &&
+              doc->session().recording().acceptedFrames() == 1,
+          "the callback crossing the count-in end clears the display and captures only its last frame");
+
+    using Command = ui::TransportMailbox::Command;
+    doc->stopRecording();
+    check(mailbox.post(Command::Stop), "queue Stop after capture");
+    advance(1);
+    doc->release();
+    check(doc->settleRecording(), "settle the first take before restarting");
+    doc->prepare(48000, maxFrames);
+    if (!doc->startRecording(startTick, 1, false))
+        throw std::runtime_error(doc->error());
+    advance(1);
+    check(at(-2, 1, 1), "a new recording starts a fresh count-in");
+    doc->stopRecording();
+    check(mailbox.post(Command::Stop), "queue Stop during count-in");
+    advance(1);
+    check(at(0, 0, 0) && !mailbox.playing() && mailbox.position() == 24000 &&
+              doc->session().recording().acceptedFrames() == 0,
+          "Stop clears the count-in position without starting capture or advancing the timeline");
+    doc->release();
+    check(doc->settleRecording(), "settle the stopped count-in");
+}
 // MX-23 and SRF-02: a fader dragged is heard while it moves, writes nothing until the mouse lets go, then
 // lands as one undo step; Esc puts it back (Live 12 manual 18.1).
 void mixerDragHeard(const std::filesystem::path &dir) {
@@ -1471,6 +1554,8 @@ int main(int argc, char **argv) {
         recordWithDeviceLatency(latencyDir.path());
         test::TempDirectory refusedPublicationDir{"ui_document", "recording_publication_refused"};
         refusedRecordingKeepsAudio(refusedPublicationDir.path());
+        test::TempDirectory countInDir("ui_document", "count-in");
+        countInPositionFeedback(countInDir.path());
         test::TempDirectory guardDir("ui_document", "guard");
         saveAsKeepsTheTake(guardDir.path());
         test::TempDirectory afterDir("ui_document", "after-save-as");

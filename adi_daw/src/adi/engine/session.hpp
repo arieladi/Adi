@@ -312,6 +312,7 @@ public:
         /// the recorder on its owner first. Explicit locate/play bypasses this
         /// default start policy. Offline sessions ignore saved performance state.
         bool startPlayback(std::int64_t insertMarkerTick, bool recording = false) noexcept;
+        [[nodiscard]] CountInPosition countInPosition() const noexcept;
         bool process(const AudioIo&) noexcept;
     private:
         friend class Session;
@@ -590,6 +591,7 @@ private:
     double clickPhase_=0,clickEnvelope_=0,clickFrequency_=880;
     double countInBeatSamples_ = 24000;
     std::int64_t countInBeatsPerBar_ = 4;
+    std::int32_t countInBars_ = 0, countInDivisionsPerBeat_ = 4;
     // DF-E6 (a): a count-in delayed by the render latency still owes its last
     // clicks (at most one beat) when the roll starts. They play on, on the
     // count-in grid, until the compensated program is heard; the transport

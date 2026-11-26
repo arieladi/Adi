@@ -1091,6 +1091,7 @@ void ProjectDocument::prepare(double rate, std::int32_t frames) {
 }
 void ProjectDocument::release() {
     session_.release(); // stops a running capture; the timer lands what it holds
+    mailbox_.publish(session_.transport(), {});
     deviceStopped_.store(true, std::memory_order_release);
 }
 bool ProjectDocument::landTakeHere() {
@@ -1206,7 +1207,7 @@ void ProjectDocument::process(const engine::AudioIo &io) noexcept {
         return block.sourcesReadyAt(sample, io.frames, true);
     });
     (void)block.process(io);
-    mailbox_.publish(session_.transport());
+    mailbox_.publish(session_.transport(), block.countInPosition());
 }
 RecordStates ProjectDocument::recordStates() const {
     RecordStates out;

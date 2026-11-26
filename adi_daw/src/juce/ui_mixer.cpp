@@ -269,7 +269,7 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
     };
     cueVolume.setValue(0, juce::dontSendNotification);
     cueVolume.setTitle("Cue Volume");
-    cueVolume.setTooltip("How loud the cued tracks play to Cue Out.");
+    cueVolume.setTooltip("The level of cued tracks and the metronome at Cue Out.");
     cueVolume.setScrollWheelEnabled(false);
     cueVolume.onDragStart = [this] { cueDragging_ = true; };
     cueVolume.onDragEnd = [this] {

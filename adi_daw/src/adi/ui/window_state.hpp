@@ -224,6 +224,15 @@ class TransportMailbox {
         playing_.store(t.playing() || t.countInRemaining() > 0, std::memory_order_relaxed);
         position_.store(t.position(), std::memory_order_relaxed);
     }
+    // Once after rendering, when the cursor has crossed all boundaries of this callback.
+    void publish(const engine::Transport &t, engine::CountInPosition countIn) noexcept {
+        publish(t);
+        // The settings allow four bars, and the format allows 255 beats per bar.
+        const auto packed = (static_cast<std::uint32_t>(-countIn.bar) << 16) |
+                            (static_cast<std::uint32_t>(countIn.beat) << 8) |
+                            static_cast<std::uint32_t>(countIn.sixteenth);
+        countInPosition_.store(packed, std::memory_order_relaxed);
+    }
     // Only the UI producer calls this. The read index acknowledges the
     // applied Locate, including its revision, before a capture can use it.
     [[nodiscard]] std::optional<std::uint64_t> settledLocateRevision() const noexcept {
@@ -246,6 +255,11 @@ class TransportMailbox {
     double sampleRate() const noexcept { return sampleRate_.load(std::memory_order_relaxed); }
     bool playing() const noexcept { return playing_.load(std::memory_order_relaxed); }
     std::int64_t position() const noexcept { return position_.load(std::memory_order_relaxed); }
+    [[nodiscard]] engine::CountInPosition countInPosition() const noexcept {
+        const auto packed = countInPosition_.load(std::memory_order_relaxed);
+        return {-static_cast<int>(packed >> 16), static_cast<int>((packed >> 8) & 0xff),
+                static_cast<int>(packed & 0xff)};
+    }
 
   private:
     // Driver-owned. Idle selections can move the displayed position after a real Stop.
@@ -260,6 +274,8 @@ class TransportMailbox {
     std::atomic<bool> playing_{false};
     std::atomic<double> sampleRate_{0};
     std::atomic<std::int64_t> position_{0};
+    static_assert(std::atomic<std::uint32_t>::is_always_lock_free);
+    std::atomic<std::uint32_t> countInPosition_{0};
     std::atomic<std::uint64_t> locateRevision_{0};
 };
 } // namespace adi::ui
