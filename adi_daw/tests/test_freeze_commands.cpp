@@ -461,7 +461,7 @@ void mutedMidiDoesNotForward() {
           {{"clip",3},{"note",1},{"start",0},{"dur",120120},{"key",60}})).ok)
         throw std::runtime_error("write forwarded MIDI fixture note");
     auto spec=p.spec();
-    spec.tracks={3};
+    spec.tracks.assign(1,3);
     Counts counts;
     const auto muted=render::captureFreezeAudio(*p.store,spec,p.loader(counts));
     const auto prepared=freeze::prepareFreeze(*p.store,muted,0,100);

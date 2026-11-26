@@ -504,8 +504,10 @@ class ArrangementView final : public juce::Component {
     // The lanes' or a header's menu at `where`. `lane`: in Automation Mode, the envelope under the click, whose
     // Re-Enable Automation the lanes' menu ends with (AU-04).
     void contextMenu(juce::Point<int> where, bool header, const engine::AutomationLaneNode *lane = nullptr);
+    // A test replaces the menu: one placed by screen position makes a window of its own, which a run with
+    // no display cannot have (the headers' Solo has the same seam, `onMenu`).
+    std::function<void(juce::Point<int>, bool, const engine::AutomationLaneNode *)> onContextMenu;
     juce::PopupMenu contextMenuItems(bool header, const engine::AutomationLaneNode *lane = nullptr);
-    std::function<void(bool header)> onContextMenu; // peerless tests intercept delivery of a popup
     // In Automation Mode, the Volume lane of the track at `y` that the engine plays, else null; a pointer into
     // the root's current snapshot, for use at once.
     const engine::AutomationLaneNode *automationLaneAt(int y) const;
