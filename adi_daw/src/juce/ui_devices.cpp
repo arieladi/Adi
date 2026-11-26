@@ -93,7 +93,7 @@ bool ParameterControl::keyPressed(const juce::KeyPress &k) {
     if (k != juce::KeyPress::returnKey && first == 0)
         return false;
     if (!valueEntry_)
-        valueEntry_ = std::make_unique<ValueEntry>("Normalized parameter value (0–1)", [this](const juce::String &text) {
+        valueEntry_ = std::make_unique<ValueEntry>("Normalized parameter value (0 to 1)", [this](const juce::String &text) {
             const auto normalized = valueNumber(text);
             if (normalized && *normalized >= 0 && *normalized <= 1)
                 setOnce(*normalized);
