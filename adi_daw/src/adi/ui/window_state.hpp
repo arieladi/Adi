@@ -28,6 +28,8 @@ struct DesktopDefaults {
     // handed in by the shell, never a constant in a component (ADR-0200 d5).
     int deviceFloor = 196;
 };
+enum class InfoAnalyserMode { Spectrogram, FilledSpectrum, LineSpectrum, ClassicScope };
+
 struct WindowState {
     explicit WindowState(DesktopDefaults d = {})
         : panels({Panel::Browser, d.browser, 120, false}, {Panel::Mixer, d.mixer, 120, false}, 240),
@@ -57,7 +59,9 @@ struct WindowState {
     bool quantizeStarts = true, quantizeEnds = false;
     bool aiChatOpen = false; // the AI tab at the browser's foot, collapsed as Live's column
     // The arrangement's own view: where it starts, its time zoom and its lane heights.
-    double timelineLeft = 0, pixelsPerQuarter = 48;
+    // The Arrangement sheet spans 74 points per four bars. At this zoom the adaptive grid
+    // opens on whole bars. Saved window states bring their own scale.
+    double timelineLeft = 0, pixelsPerQuarter = 74. / 16;
     int laneHeight = 88; // Live 11's default track: five rows of its controls
     std::map<std::int64_t, int> laneHeights;
     std::set<std::int64_t> foldedDevices; // devices folded in the strip, per window
@@ -76,6 +80,7 @@ struct WindowState {
     // Optional right-side shared analyzer presentation; never audio parameters.
     bool mixAnalyzerDock = false;
     int mixAnalyzerWidth = 300, mixAnalyzerSource = 0, mixAnalyzerPoint = 0, mixAnalyzerChannel = 0;
+    InfoAnalyserMode infoAnalyserMode = InfoAnalyserMode::Spectrogram;
     std::string analysisPalette = "adi";
     bool analysisPaletteReverse = false;
     std::string analysisSpectrumSlope = "flat";

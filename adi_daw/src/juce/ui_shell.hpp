@@ -366,6 +366,8 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     void frame() noexcept;
     void paint(juce::Graphics &) override;
     void resized() override;
+    void mouseDown(const juce::MouseEvent &) override;
+    void mouseUp(const juce::MouseEvent &) override;
     bool keyPressed(const juce::KeyPress &) override;
     // The ★ Reference's key comes up: a hold ends (ADR-0209 d9). A latching key comes up: a hold
     // of 500 ms or more goes back (Live 42.25).
@@ -625,7 +627,8 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     MixerPanel mixerView{*this, true};
     // The Mix View (ADR-0209): docked in place of the arrangement and its track controls.
     MixViewPanel mixViewPanel{*this};
-    SharedSpectrumView infoSpectrum;
+    SharedSpectrumView infoSpectrum{true};
+    std::function<void(const juce::PopupMenu &)> onInfoMenu;
     std::shared_ptr<SharedAnalysis> sharedAnalysis;
     std::int64_t analysisTrack(bool selected = false) const noexcept;
     std::int64_t analysisTrack(const SnapshotReader &, bool selected = false) const noexcept;
@@ -954,6 +957,8 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     std::map<std::int64_t, AutomationTarget> automationTargets_;
     std::vector<std::int64_t> automationDemand_;
     bool infoShown_ = true;
+    bool infoPressed_ = false;
+    void applyInfoAnalyserMode();
     std::int64_t position_ = 0;
     double sampleRate_ = 0; // the device's granted rate, once a driver runs
     float interfaceZoom_ = 1;
