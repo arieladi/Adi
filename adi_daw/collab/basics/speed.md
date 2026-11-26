@@ -1,0 +1,7 @@
+# Basics speed
+
+| SC | Branch and head | What changed | How it was proved | State |
+|---|---|---|---|---|
+| SC-407 | `basics/sc-407-resampled-playback` `0497a510` | Reuses the pinned sinc-best filter's phase response for stereo 44.1 kHz playback on 48 kHz devices. Up to four disk workers share conversion work and service each clip's first missing page before further read-ahead. Touched Win's standing clip engine and playback test paths. | Linux Release with Pd and warnings as errors. `adi_clip_playback_tests realtime-conversion` at 32 stereo tracks and 256 frames dropped from **480/480** callbacks with gaps to **0/480** on four runs, including the first second after Play. Missing clip frames fell from **2,852,096 to 0**. The initial two-page read-ahead fell from **657.0 ms to 110.7–127.5 ms**. The native-rate control had zero gaps before and after. Peak difference against the ordinary sinc-best converter was **5.96e-8** across source boundaries, page seams and seeks. Clip playback, clip candidate readiness, Warp playback, session and WTS-01 passed. | blocked on JUCE-enabled acceptance verification. Release `adi_builtin_realtime_tests` missed 14 checks. |
+
+The SC-407 benchmark gives a stopped device 250 ms of read-ahead at a cold position before Play and runs 480 callbacks at device cadence. The Release measurements used GCC 14. Local optimization overrides worked around pre-existing GCC diagnostics in three unrelated source files and the test allocation hooks. Warnings remained errors.
