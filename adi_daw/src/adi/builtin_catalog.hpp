@@ -44,6 +44,21 @@ struct PluginInsertOptions {
     std::optional<std::int64_t> beforeDevice={},const PluginInsertOptions& = {},
     std::int64_t retainedDeviceId=0);
 [[nodiscard]] CommitResult commitBuiltinInsert(Store&,const PreparedBuiltinInsert&,Actor=Actor::User);
+
+struct DeviceMoveSource {
+    std::int64_t device, track, chain;
+};
+struct PreparedDeviceMove {
+    bool ok = false;
+    std::string error, sourceFile;
+    std::vector<OpRequest> requests;
+    CommitOptions options;
+};
+// Move the same device and its state. A missing anchor means the destination
+// track's root chain, which is created in the same Undo step when needed.
+[[nodiscard]] PreparedDeviceMove prepareDeviceMove(Store&, DeviceMoveSource, std::int64_t track,
+                                                    std::optional<std::int64_t> before);
+[[nodiscard]] CommitResult commitDeviceMove(Store&, const PreparedDeviceMove&, Actor = Actor::User);
 std::span<const OpDescriptor> builtinReferenceOps();
 
 namespace detail {

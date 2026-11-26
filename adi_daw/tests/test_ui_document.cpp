@@ -335,6 +335,80 @@ void refusedBeginOwnership(const std::filesystem::path &dir) {
     }
 }
 
+void moveOrdinaryDevice(const std::filesystem::path &file) {
+    std::string error;
+    auto document = ui::ProjectDocument::open(file, true, test::knobsLoader(), error);
+    check(document != nullptr, "SC-83: a project to move devices in");
+    if (!document)
+        return;
+    constexpr std::int64_t sourceTrack = 2, targetTrack = 4;
+    rows::PluginRef plugin;
+    plugin.format = "clap";
+    plugin.uid = test::kKnobsUid;
+    plugin.name = "UI knobs";
+    plugin.subtype = "effect";
+    const bool inserted = document->insertPlugin(plugin, sourceTrack) && document->insertPlugin(plugin, sourceTrack);
+    check(inserted, "SC-83: two ordinary plug-ins in the source chain");
+    if (!inserted)
+        return;
+    const auto chain = [&](std::int64_t track) {
+        std::vector<ui::DevicePanelData> devices;
+        const auto publication = document->parameterFeed().current();
+        for (const auto &device : *publication)
+            if (device.track == track)
+                devices.push_back(device);
+        return devices;
+    };
+    const auto original = chain(sourceTrack);
+    const bool initial = original.size() == 2 && chain(targetTrack).empty();
+    check(initial, "SC-83: the published source chain and a destination without a chain");
+    if (!initial)
+        return;
+    const auto first = original.front().id;
+    const auto moving = original.back();
+    auto *const runtime = document->session().instanceFor(moving.id);
+    check(runtime != nullptr && document->deviceAction("device.setParam", {{"dev", moving.id}, {"param", "cutoff"}, {"norm", .75}}),
+          "SC-83: the moving device has a live instance and saved parameter");
+    auto &db = document->store().db();
+    const auto order = [&](std::int64_t track) {
+        std::vector<std::int64_t> ids;
+        for (const auto &device : chain(track))
+            ids.push_back(device.id);
+        return ids;
+    };
+    check(document->moveDevice(moving, sourceTrack, first) &&
+              order(sourceTrack) == std::vector<std::int64_t>{moving.id, first},
+          "SC-83: the document moves the second ordinary device before the first");
+    const auto reorderedHead = OpJournal(document->store()).headSeq();
+    check(document->moveDevice(moving, sourceTrack, first) && document->moveDevice(moving, sourceTrack, moving.id) &&
+              OpJournal(document->store()).headSeq() == reorderedHead,
+          "SC-83: dropping on itself or in the same place leaves history alone");
+    const auto countTargetChains = [&] {
+        SQLite::Statement count(db, "SELECT count(*) FROM device_chains WHERE track_id=?");
+        count.bind(1, targetTrack);
+        (void)count.executeStep();
+        return count.getColumn(0).getInt();
+    };
+    check(countTargetChains() == 0 && document->moveDevice(moving, targetTrack, {}) && countTargetChains() == 1 &&
+              order(sourceTrack) == std::vector<std::int64_t>{first} && order(targetTrack) == std::vector<std::int64_t>{moving.id},
+          "SC-83: a drop on an empty track creates a chain and moves the same row to it");
+    SQLite::Statement state(db, "SELECT normalized_value FROM plugin_params WHERE device_id=? AND param_id='cutoff'");
+    state.bind(1, moving.id);
+    check(state.executeStep() && state.getColumn(0).getDouble() == .75 &&
+              document->session().instanceFor(moving.id) == runtime,
+          "SC-83: the moved plug-in retains its parameter and runtime");
+    state.reset();
+    const auto crossTrackHead = OpJournal(document->store()).headSeq();
+    check(!document->moveDevice(moving, sourceTrack, first) && OpJournal(document->store()).headSeq() == crossTrackHead,
+          "SC-83: the old drag cannot move the device again from its previous track");
+    check(document->ops().nextUndo()->label == "Move Device" && document->ops().undo().ok && document->synchronise(),
+          "SC-83: the cross-track move is one Undo step");
+    document->tick(0);
+    check(countTargetChains() == 0 && order(sourceTrack) == std::vector<std::int64_t>{moving.id, first} &&
+              order(targetTrack).empty() && OpJournal(document->store()).headSeq() == reorderedHead,
+          "SC-83: Undo restores the source order and removes the added chain");
+}
+
 void mixSurfacePublication(const std::filesystem::path &file) {
     using engine::ParamEventKind;
     engine::DeviceLoader loader = [](const engine::DeviceRequest &request, std::string &error)
@@ -2267,6 +2341,7 @@ int main(int argc, char **argv) {
     deviceGraphWorkers(temp.path());
     refusedBeginOwnership(temp.path());
     importWithChoices(temp.path());
+    moveOrdinaryDevice(temp.path() / "move-device.adi");
     mixSurfacePublication(temp.path() / "mix-surface.adi");
     reportedDeviceLatency(temp.path());
     std::printf("%d checks, %d failures\n", checks, failures);

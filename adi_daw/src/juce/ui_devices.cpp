@@ -945,7 +945,12 @@ bool DevicePanelView::beginFunctionDrag() {
     return true;
 }
 const DevicePanelData *DevicePanelView::functionDragTarget() const noexcept {
-    return dragTarget_ ? &*dragTarget_ : nullptr;
+    return nativeFunction() && dragTarget_ ? &*dragTarget_ : nullptr;
+}
+bool DevicePanelView::beginDeviceDrag() {
+    if (mixCard_ || nativeFunction() || !data || !validTarget()) return false;
+    dragTarget_ = *data;
+    return true;
 }
 void DevicePanelView::endFunctionParameter() {
     if (!editingBegan_) return;
@@ -1613,11 +1618,17 @@ void DevicePanelView::mouseExit(const juce::MouseEvent &) {
 void DevicePanelView::mouseUp(const juce::MouseEvent &) { releaseEqHandle(); }
 void DevicePanelView::mouseDrag(const juce::MouseEvent &e) {
     if (eqPreview_ && eqPreview_->edit) { dragEqHandle(e.position); return; }
-    if (!nativeFunction() || dragTarget_ || e.getDistanceFromDragStart() < 4 || !e.mods.isLeftButtonDown() ||
-        !(e.eventComponent == &title || (e.eventComponent == this && e.y < kTitleHeight))) return;
+    const auto pressed = e.getMouseDownPosition();
+    const bool panelTitle = e.eventComponent == this && !foldSwitch().contains(pressed) &&
+                            (pressed.y < kTitleHeight || strip.folded(id));
+    if (dragTarget_ || e.getDistanceFromDragStart() < 4 || !e.mods.isLeftButtonDown() ||
+        !(e.eventComponent == &title || panelTitle)) return;
     auto *container = juce::DragAndDropContainer::findParentDragContainerFor(this);
-    if (container && beginFunctionDrag())
-        container->startDragging(juce::String("adi-mix-function"), this, juce::ScaledImage{}, true, nullptr, &e.source);
+    if (!container) return;
+    const bool function = nativeFunction() != nullptr;
+    if (function ? beginFunctionDrag() : beginDeviceDrag())
+        container->startDragging(juce::String(function ? "adi-mix-function" : kDeviceMoveDrag), this,
+                                 juce::ScaledImage{}, function, nullptr, &e.source);
 }
 void DevicePanelView::mouseDoubleClick(const juce::MouseEvent &e) {
     if (!validTarget()) return;
@@ -1837,7 +1848,7 @@ bool DeviceChainStrip::isInterestedInDragSource(const SourceDetails &details) {
         return source && source->functionDragTarget() && &source->strip.root == &root &&
                source->functionDragTarget()->track == selectedTrack;
     }
-    return !BrowserPanel::droppedDevice(details.description).empty();
+    return isMovingDevice(details) || !BrowserPanel::droppedDevice(details.description).empty();
 }
 std::optional<std::int64_t> DeviceChainStrip::dropBefore(int x) const {
     const int at = x + scroll.getViewPositionX();
@@ -1852,9 +1863,39 @@ void DeviceChainStrip::itemDropped(const SourceDetails &details) {
             dropFunction(*source, dropBefore(details.localPosition.x));
         return;
     }
+    if (details.description.toString() == DevicePanelView::kDeviceMoveDrag) {
+        moveDroppedDevice(details, selectedTrack, dropBefore(details.localPosition.x));
+        return;
+    }
     const auto uid = BrowserPanel::droppedDevice(details.description);
     if (!uid.empty())
         root.insertDevice(uid, selectedTrack, dropBefore(details.localPosition.x));
+}
+DevicePanelView *DeviceChainStrip::moveSource(const SourceDetails &details) const {
+    if (details.description.toString() != DevicePanelView::kDeviceMoveDrag)
+        return nullptr;
+    auto *source = dynamic_cast<DevicePanelView *>(details.sourceComponent.get());
+    if (!source || &source->strip.root != &root || source->nativeFunction() || !source->dragTarget_)
+        return nullptr;
+    return source;
+}
+bool DeviceChainStrip::isMovingDevice(const SourceDetails &details) const {
+    return moveSource(details) != nullptr;
+}
+bool DeviceChainStrip::moveDroppedDevice(const SourceDetails &details, std::int64_t track,
+                                        std::optional<std::int64_t> before) {
+    auto *source = moveSource(details);
+    if (!source) {
+        root.say("That device changed before it could be moved.");
+        return false;
+    }
+    auto expected = std::move(*source->dragTarget_);
+    source->dragTarget_.reset();
+    if (!moveDevice) {
+        root.say("Devices move in the application.");
+        return false;
+    }
+    return moveDevice(expected, track, before);
 }
 bool DeviceChainStrip::hasFunction(mix::Function kind) const {
     if (presented) for (const auto &d : *presented)

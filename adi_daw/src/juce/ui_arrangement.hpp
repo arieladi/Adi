@@ -130,7 +130,9 @@ class TimelineRuler final : public juce::Component, public juce::SettableTooltip
 };
 // One row per track, on the RIGHT of the clips as in Live's Arrangement View (on the left,
 // before the track controls, with the side panels swapped).
-class TrackHeaderList final : public juce::Component, public juce::SettableTooltipClient {
+class TrackHeaderList final : public juce::Component,
+                              public juce::DragAndDropTarget,
+                              public juce::SettableTooltipClient {
   public:
     explicit TrackHeaderList(ArrangementView &);
     void paint(juce::Graphics &) override;
@@ -146,6 +148,8 @@ class TrackHeaderList final : public juce::Component, public juce::SettableToolt
     void mouseUp(const juce::MouseEvent &) override;
     void mouseMove(const juce::MouseEvent &) override;
     void mouseWheelMove(const juce::MouseEvent &, const juce::MouseWheelDetails &) override;
+    bool isInterestedInDragSource(const SourceDetails &) override;
+    void itemDropped(const SourceDetails &) override;
 
     // Live's split line at a track's foot (manual 6.9: "dragging the split line"): a press this
     // close to a row's foot resizes the track; anywhere else on its title, a drag moves it.
@@ -490,6 +494,7 @@ class ArrangementView final : public juce::Component {
     bool snaps(const juce::ModifierKeys &) const noexcept;
     // Select one clip by identity: the accessible children's press action.
     void selectClip(std::int64_t track, std::int64_t clip);
+    void dropMovedDevice(const juce::DragAndDropTarget::SourceDetails &);
     // Live's Select All (Ctrl/Cmd+A, manual §42.5): all the material, a time selection from the
     // earliest clip's start to the latest one's end across every track that holds clips; one clip
     // alone is selected as that clip. False, saying so, when there is nothing to select.

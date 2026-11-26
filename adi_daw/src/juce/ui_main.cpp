@@ -718,6 +718,12 @@ class AdiApplication final : public juce::JUCEApplication,
             if (root_) root_->say(ok ? std::string{} : document_->error());
             return ok;
         };
+        root->devices.moveDevice = [this](const DevicePanelData &expected, std::int64_t track,
+                                         std::optional<std::int64_t> before) {
+            const bool ok = document_->moveDevice(expected, track, before);
+            if (root_) root_->say(ok ? std::string{} : document_->error());
+            return ok;
+        };
         root->devices.gesture = [this](std::int64_t id, const std::string &param,
                                        engine::ParamEventKind kind, double value) {
             const bool ok = document_->parameterGesture(id, param, kind, value);

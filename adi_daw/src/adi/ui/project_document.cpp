@@ -666,6 +666,30 @@ bool ProjectDocument::moveMixFunction(const DevicePanelData &expected, std::int6
     if (!result.ok || !synchronise()) return false;
     feed_.publish(session_, realisedGeneration_); return true;
 }
+bool ProjectDocument::moveDevice(const DevicePanelData &expected, std::int64_t track,
+                                 std::optional<std::int64_t> before) {
+    if (!deviceTargetCurrent(expected.id, expected.runtime, expected.instance)) {
+        error_ = "That device changed before it could be moved.";
+        return false;
+    }
+    auto prepared = prepareDeviceMove(*store_, {expected.id, expected.track, expected.chain}, track, before);
+    if (!prepared.ok) {
+        error_ = prepared.error;
+        return false;
+    }
+    if (prepared.requests.empty()) {
+        error_.clear();
+        return true;
+    }
+    const auto result = ops_.commitPrepared(std::move(prepared), [](Store &store, PreparedDeviceMove &move, Actor actor) {
+        return commitDeviceMove(store, move, actor);
+    });
+    error_ = result.error;
+    if (!result.ok || !synchronise())
+        return false;
+    feed_.publish(session_, realisedGeneration_);
+    return true;
+}
 namespace {
 // Commits a prepared sample batch and hands each new state to the live device, as the engine's
 // contract asks (ENGINE-SAMPLE-SLOTS.md): forward payloads after the commit.
