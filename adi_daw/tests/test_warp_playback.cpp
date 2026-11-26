@@ -22,6 +22,7 @@
 #include <cstdlib>
 #include <new>
 #include <numbers>
+#include <string_view>
 namespace {std::atomic<unsigned> callbackAllocations{0};}
 void adi::test::countReplacedNew() noexcept{if(adi::audio::onAudioThread)++callbackAllocations;}
 namespace {
@@ -69,9 +70,14 @@ void modesAndLoops() {
     for(const auto width:{Precision::Float32,Precision::Float64})for(const auto* mode:{"beats","tones","texture","re-pitch","complex","complexPro"}) {
         Fixture f;
         {SQLite::Statement row(f.store->db(),"UPDATE audio_clips SET warp_mode=?");row.bind(1,mode);row.exec();}
+        if(std::string_view(mode)=="re-pitch")
+            f.store->db().exec("UPDATE audio_clips SET transpose_semis=7 WHERE clip_id=7");
         f.load(width);const auto output=f.render(26000,width);
         if(!f.session.problems().empty())std::printf("mode %s: %s\n",mode,f.session.problems().front().c_str());
         check(f.session.problems().empty(),"actual Session loads every stored warp mode at either native precision");
+        if(std::string_view(mode)=="re-pitch")
+            check(f.store->db().execAndGet("SELECT transpose_semis FROM audio_clips WHERE clip_id=7").getDouble()==7,
+                  "Re-Pitch plays without discarding transposition stored for the other modes");
         double power=0;bool finite=true;
         for(std::size_t frame=18000;frame<22000;++frame){power+=output[frame*2]*output[frame*2];finite=finite && std::isfinite(output[frame*2]);}
         check(finite && power>1,"heard warped PCM continues beyond the old unwarped source-end pin");

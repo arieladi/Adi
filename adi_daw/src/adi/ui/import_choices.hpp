@@ -2,9 +2,18 @@
 #pragma once
 #include "adi/audio/warp.hpp"
 #include "adi/settings/store.hpp"
+#include <array>
 #include <cstdint>
 #include <string>
 namespace adi::ui {
+struct WarpModeChoice {
+    audio::WarpMode mode;
+    const char *name;
+};
+inline constexpr std::array<WarpModeChoice, 6> kWarpModeChoices{{
+    {audio::WarpMode::Beats, "Beats"}, {audio::WarpMode::Tones, "Tones"}, {audio::WarpMode::Texture, "Texture"},
+    {audio::WarpMode::RePitch, "Re-Pitch"}, {audio::WarpMode::Complex, "Complex"}, {audio::WarpMode::ComplexPro, "Complex Pro"},
+}};
 // ADI's import prompt (E5; Live 12 manual 9.2.1, 9.2.2, 5.7; ADR-0132 d6): what a dropped audio file
 // is imported with. All off by default: no Warp, no fades on the clip's edges, the file referred to
 // where it is (Live's Collect Files "never"). The choices live in the settings, so "use the last

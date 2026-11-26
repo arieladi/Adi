@@ -217,21 +217,22 @@ void changePlacedWarpMode() {
     loop.payload={{"id",7},{"on",true},{"start",q},{"length",q}};
     if(!OpJournal(*f.store).commit(loop).ok ||
        !apply(f,clip_edit::prepareSplit(*f.store,7,11,{0,2*q},48000),"split the looped clip before changing mode"))return;
+    f.store->db().exec("UPDATE audio_clips SET transpose_semis=3 WHERE clip_id=11");
     OpContext context{*f.store,f.store->db()};
     const auto before=clip_edit::captureImage(context,11);
     const auto project=digestProject(*f.store).text;
     // A different rendering algorithm has no need to decode or reanalyse the sample.
     std::filesystem::remove(f.temporary.path()/"source.wav");
     auto options=f.options();
-    options.mode=audio::WarpMode::Texture;
+    options.mode=audio::WarpMode::RePitch;
     const auto mode=clip_edit::prepareSetWarp(*f.store,11,options,48000);
     check(mode.ok && mode.requests.size()==1 && digestProject(*f.store).text==project,
           "a placed warped clip can prepare a mode-only edit with the source offline");
     if(!apply(f,mode,"change the Warp mode in one captured edit"))return;
     auto expected=before;
-    expected["children"]["audio_clips"][0]["warp_mode"]="texture";
+    expected["children"]["audio_clips"][0]["warp_mode"]="re-pitch";
     check(clip_edit::captureImage(context,11)==expected,
-          "changing the algorithm preserves the marker bytes, placement, trim and loop clocks");
+          "changing the algorithm preserves the marker bytes, placement, trim, loop and stored pitch");
     History history(*f.store);
     check(history.undo().ok && digestProject(*f.store).text==project && history.redo().ok &&
           clip_edit::captureImage(context,11)==expected,"Undo and Redo restore the two algorithms without reanalysis");

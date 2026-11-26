@@ -71,7 +71,8 @@ PreparedEdit prepareSetWarp(Store& store,std::int64_t clipId,const WarpOptions& 
         cancelled(options.stop);
         if(store.readOnly())throw std::runtime_error("project is read-only");
         if(!std::isfinite(rate) || rate<44100 || rate>768000 || rate!=std::floor(rate))throw std::runtime_error("invalid Warp session rate");
-        if(!audio::warpModeName(options.mode))throw std::runtime_error("unknown Warp mode");
+        const auto* mode=audio::warpModeName(options.mode);
+        if(!mode)throw std::runtime_error("unknown Warp mode");
         Read read(store.db());result.options.expectHead.emplace(OpJournal(store).headSeq());
         SQLite::Statement location(store.db(),"PRAGMA database_list");
         while(location.executeStep())if(location.getColumn(1).getString()=="main")result.sourceFile=location.getColumn(2).getString();
@@ -85,7 +86,23 @@ PreparedEdit prepareSetWarp(Store& store,std::int64_t clipId,const WarpOptions& 
         const bool retiming=warped && requested.has_value();
         if(requested && (!std::isfinite(*requested) || *requested<=0 || *requested>=1000))
             throw std::runtime_error("source BPM must be greater than zero and below 1000");
-        if(warped==options.enabled && !retiming)throw std::runtime_error("clip already has the requested Warp state");
+        const auto capture=[&](const edit::RowEdits& plan,const char* label) {
+            OpRequest request;request.opType="arranger.splice";request.payload={{"id",clipId},{"changes",plan.changes()}};
+            request.targetKind="clip";request.targetId=clipId;request.label=label;
+            result.requests.push_back(std::move(request));
+        };
+        if(warped==options.enabled && !retiming) {
+            if(!warped || source.at("warp_mode")==mode)
+                throw std::runtime_error("clip already has the requested Warp state");
+            source["warp_mode"]=mode;
+            edit::RowEdits plan(store.db());plan.set("audio_clips",clipId,source);
+            capture(plan,"Change Warp Mode");
+            result.options.beforeCommit=[stop=options.stop](SQLite::Database&,std::int64_t,std::string& error) {
+                if(!stop.stop_requested())return true;
+                error="Warp edit cancelled";return false;
+            };
+            cancelled(options.stop);result.ok=true;return result;
+        }
         if(!retiming && ((options.enabled && looping) || integer(source,"reverse")!=0 ||
            source.at("transpose_semis")!=0 || source.at("formant_shift")!=0))
             throw std::runtime_error("Warp switching requires a clip without looping, reverse or pitch edits");
@@ -202,7 +219,7 @@ PreparedEdit prepareSetWarp(Store& store,std::int64_t clipId,const WarpOptions& 
                 if(properties.is_null())properties=edit::defaultRow(store.db(),"clip_properties",{{"clip_id",clipId}});
                 properties["end_marker_ticks"]=tickAt(frameAtNanos(sourceEndNs));
             }
-            source["warp_mode"]=audio::warpModeName(options.mode);
+            source["warp_mode"]=mode;
             details["content_offset_ns"]=nullptr;details["source_end_ns"]=nullptr;
         } else {
             const auto map=storedMap();
@@ -261,9 +278,7 @@ PreparedEdit prepareSetWarp(Store& store,std::int64_t clipId,const WarpOptions& 
                 else if(!domain.at(column).is_null())domain[column]=scaleWarpTicks(integer(domain,column),ratio);
             plan.set("clip_warp_fade_domains",clipId,domain);
         }
-        OpRequest request;request.opType="arranger.splice";request.payload={{"id",clipId},{"changes",plan.changes()}};
-        request.targetKind="clip";request.targetId=clipId;request.label=retiming?"Change Source Tempo":options.enabled?"Enable Warp":"Disable Warp";
-        result.requests.push_back(std::move(request));
+        capture(plan,retiming?"Change Source Tempo":options.enabled?"Enable Warp":"Disable Warp");
         result.options.beforeCommit=[file,expected=hash.hex,stop=options.stop](SQLite::Database&,std::int64_t,std::string& error) {
             if(stop.stop_requested()){error="Warp edit cancelled";return false;}
             const auto actual=media::blake3File(file,stop);

@@ -647,7 +647,10 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                 spec.mode=*mode;
                 if(spec.mode==audio::WarpMode::Tones)spec.grainSeconds=0.03;
                 if(!std::isfinite(a->formantShift) || std::abs(a->formantShift)>96)throw std::runtime_error("invalid warp formant shift");
-                spec.transposeSemis=a->transposeSemis;spec.formantScale=std::exp2(a->formantShift/12);
+                // Re-Pitch derives pitch from its playback rate. Keep the stored
+                // transposition for when another mode becomes active again.
+                spec.transposeSemis=*mode==audio::WarpMode::RePitch?0.0:a->transposeSemis;
+                spec.formantScale=std::exp2(a->formantShift/12);
                 // A take with unchanged timing can play its original window directly.
                 const bool identity = spec.mode == audio::WarpMode::Beats && clip->sourceRate == clip->rate &&
                     spec.transposeSemis == 0 && spec.formantScale == 1 &&

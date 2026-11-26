@@ -637,6 +637,9 @@ class ClipViewPanel final : public juce::Component {
     juce::Rectangle<int> setBox(Field) const noexcept;
     juce::Rectangle<int> loopBox() const noexcept;
     juce::Rectangle<int> warpBox() const noexcept;
+    juce::Rectangle<int> warpModeBox() const noexcept;
+    juce::PopupMenu warpModeMenu() const;
+    bool chooseWarpMode(int item);
     juce::Rectangle<int> sourceTempoFactorBox(bool doubleTempo) const noexcept;
     Field fieldAt(juce::Point<int>) const noexcept;
     // A value typed into a field: a position as 1.1.1, a length as 2.0.0, a signature as 3/4.

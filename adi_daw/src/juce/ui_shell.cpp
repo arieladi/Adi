@@ -5540,11 +5540,9 @@ AdiRootComponent::ImportPrompt::ImportPrompt(std::size_t files, const ImportChoi
     copy.setToggleState(choices.copyIn, juce::dontSendNotification);
     // Live's Warp modes, in Live's order (manual 9.2.1); ADI's stretch is its own (ADR-0061).
     int item = 1;
-    for (const auto m : {audio::WarpMode::Beats, audio::WarpMode::Tones, audio::WarpMode::Texture, audio::WarpMode::RePitch,
-                         audio::WarpMode::Complex, audio::WarpMode::ComplexPro}) {
-        static const char *names[] = {"Beats", "Tones", "Texture", "Re-Pitch", "Complex", "Complex Pro"};
-        mode.addItem(names[item - 1], item);
-        if (m == choices.mode)
+    for (const auto &choice : kWarpModeChoices) {
+        mode.addItem(choice.name, item);
+        if (choice.mode == choices.mode)
             mode.setSelectedId(item, juce::dontSendNotification);
         ++item;
     }
@@ -5562,10 +5560,8 @@ ImportChoices AdiRootComponent::ImportPrompt::choices() const {
     out.warp = warp.getToggleState();
     out.edgeFades = fades.getToggleState();
     out.copyIn = copy.getToggleState();
-    static constexpr audio::WarpMode modes[] = {audio::WarpMode::Beats, audio::WarpMode::Tones, audio::WarpMode::Texture,
-                                                audio::WarpMode::RePitch, audio::WarpMode::Complex, audio::WarpMode::ComplexPro};
-    if (const auto id = mode.getSelectedId(); id >= 1 && id <= 6)
-        out.mode = modes[id - 1];
+    if (const auto id = mode.getSelectedId(); id >= 1 && id <= static_cast<int>(kWarpModeChoices.size()))
+        out.mode = kWarpModeChoices[static_cast<std::size_t>(id - 1)].mode;
     return out;
 }
 void AdiRootComponent::ImportPrompt::answer(bool importing) {

@@ -12089,6 +12089,27 @@ void clipWarpSwitch(AppCommands &commands, const std::filesystem::path &dir) {
         panel.fieldEditor().onReturnKey();
         root.frame();
         check(warped() && std::abs(panel.sample.sourceBpm() - 120.) < .01, "typing BPM enables Warp with the specified source tempo");
+        const auto menu = panel.warpModeMenu();
+        int texture = 0, choices = 0;
+        bool beats = false;
+        for (juce::PopupMenu::MenuItemIterator it(menu); it.next();) {
+            const auto &entry = it.getItem();
+            ++choices;
+            if (entry.text == "Texture")
+                texture = entry.itemID;
+            if (entry.text == "Beats")
+                beats = entry.isTicked;
+        }
+        check(!panel.warpModeBox().isEmpty() && choices == 6 && beats && texture > 0,
+              "a placed warped clip offers the same six modes as import and shows its current mode");
+        check(panel.chooseWarpMode(texture), "choose Texture for the already-placed clip");
+        root.frame();
+        check(warped() && panel.node()->audio->warpMode == "texture" && root.undoTitle(false) == "Undo Change Warp Mode" &&
+                  std::abs(panel.sample.sourceBpm() - 120.) < .01,
+              "mode choice changes the placed clip in one edit without changing its source BPM");
+        check(root.command(AppCommands::Undo), "undo the Warp mode choice");
+        root.frame();
+        check(warped() && panel.node()->audio->warpMode == "beats", "the chooser follows the restored mode");
         click(half);
         check(std::abs(panel.sample.sourceBpm() - 60.) < .01 && root.undoTitle(false) == "Undo Change Source Tempo",
               "the half button recomputes the warp clock in one edit");
@@ -12096,6 +12117,7 @@ void clipWarpSwitch(AppCommands &commands, const std::filesystem::path &dir) {
         check(std::abs(panel.sample.sourceBpm() - 120.) < .01, "the double button restores the original warp tempo");
         click(button);
         check(!warped() && root.undoTitle(false) == "Undo Disable Warp", "the switch disables Warp in one edit");
+        check(!panel.chooseWarpMode(texture), "the Warp mode chooser is inactive while Warp is off");
         click(button);
         check(warped() && root.undoTitle(false) == "Undo Enable Warp", "the switch re-enables the saved Warp map");
         check(root.command(AppCommands::Undo), "Undo the Warp switch");

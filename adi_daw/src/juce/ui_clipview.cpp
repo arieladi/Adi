@@ -3,6 +3,7 @@
 #include "adi/warp_commands.hpp"
 #include "ui_controls.hpp"
 #include "ui_shell.hpp"
+#include "adi/ui/import_choices.hpp"
 #include "adi/ui/loop_edits.hpp"
 #include "adi/ui/meters.hpp"
 #include "adi/ui/waveform.hpp"
@@ -17,6 +18,13 @@ namespace {
 constexpr double kClipGainLimitDb = 120.;
 const juce::String kGainLabel{"Gain"};
 juce::String clipGainText(double db) { return juce::String(db, 2) + " dB"; }
+const juce::String kUnsetWarpModeLabel{"Warp Mode"};
+const auto kWarpModeLabels = [] {
+    std::array<juce::String, kWarpModeChoices.size()> labels;
+    for (std::size_t i = 0; i < labels.size(); ++i)
+        labels[i] = kWarpModeChoices[i].name;
+    return labels;
+}();
 
 // Live's position fields read bar. beat. sixteenth from 1 (manual 8.2).
 juce::String positionText(std::int64_t tick, const std::vector<textproj::Meter> &meters) {
@@ -4436,6 +4444,45 @@ juce::Rectangle<int> ClipViewPanel::warpBox() const noexcept {
         return {};
     return {header.getX() + 72, header.getY() + 2, 52, 13};
 }
+juce::Rectangle<int> ClipViewPanel::warpModeBox() const noexcept {
+    constexpr int width = 84;
+    const auto warp = warpBox();
+    if (warp.isEmpty())
+        return {};
+    const auto left = std::max({warp.getRight(), fieldBox(Field::SourceTempo).getRight(),
+                                sourceTempoFactorBox(true).getRight()}) + 4;
+    if (headerArea().getRight() - left < width + 80) // the grid chooser keeps its right margin
+        return {};
+    return {left, warp.getY(), width, warp.getHeight()};
+}
+juce::PopupMenu ClipViewPanel::warpModeMenu() const {
+    juce::PopupMenu menu;
+    if (!node_ || !node_->audio || !node_->audio->warpEnabled)
+        return menu;
+    const auto mode = audio::parseWarpMode(node_->audio->warpMode);
+    for (std::size_t i = 0; i < kWarpModeChoices.size(); ++i) {
+        menu.addItem(static_cast<int>(i) + 1, kWarpModeLabels[i], true, mode == kWarpModeChoices[i].mode);
+    }
+    return menu;
+}
+bool ClipViewPanel::chooseWarpMode(int item) {
+    if (!details_ || item < 1 || item > static_cast<int>(kWarpModeChoices.size()))
+        return false;
+    const auto current = root.current();
+    const auto *track = current ? current->findTrack(details_->trackId) : nullptr;
+    if (!track)
+        return false;
+    const auto chosen = std::find_if(track->clips.begin(), track->clips.end(), [this](const auto &clip) {
+        return clip && clip->id == clip_;
+    });
+    if (chosen == track->clips.end() || !(*chosen)->audio || !(*chosen)->audio->warpEnabled)
+        return false;
+    clip_edit::WarpOptions options;
+    options.mode = kWarpModeChoices[static_cast<std::size_t>(item - 1)].mode;
+    if (audio::parseWarpMode((*chosen)->audio->warpMode) == options.mode)
+        return true;
+    return root.commitEdit(clip_edit::prepareSetWarp(root.editStore(), clip_, options, root.editRate()));
+}
 juce::Rectangle<int> ClipViewPanel::sourceTempoFactorBox(bool doubleTempo) const noexcept {
     constexpr int width = 23;
     const auto bpm = fieldBox(Field::SourceTempo);
@@ -4800,6 +4847,18 @@ void ClipViewPanel::mouseDown(const juce::MouseEvent &e) {
         }
     if (warpBox().contains(at)) {
         toggleWarp();
+        return;
+    }
+    if (const auto mode = warpModeBox(); mode.contains(at)) {
+        if (node_->audio->warpEnabled) {
+            juce::Component::SafePointer<ClipViewPanel> safe(this);
+            warpModeMenu().showMenuAsync(
+                juce::PopupMenu::Options().withTargetComponent(this).withTargetScreenArea(localAreaToGlobal(mode)),
+                [safe, clip = clip_](int item) {
+                    if (item > 0 && safe != nullptr && safe->clip() == clip)
+                        safe->chooseWarpMode(item);
+                });
+        }
         return;
     }
     if (fieldBox(Field::SourceTempo).contains(at)) {
@@ -5393,12 +5452,21 @@ void ClipViewPanel::paint(juce::Graphics &g) {
             labels_.push_back(factorBox);
         }
     }
+    if (const auto box = warpModeBox(); !box.isEmpty()) {
+        const auto mode = audio::parseWarpMode(node_->audio->warpMode);
+        const auto choice = std::find_if(kWarpModeChoices.begin(), kWarpModeChoices.end(),
+                                         [mode](const auto &entry) { return entry.mode == mode; });
+        const auto &label = choice == kWarpModeChoices.end() ? kUnsetWarpModeLabel
+            : kWarpModeLabels[static_cast<std::size_t>(choice - kWarpModeChoices.begin())];
+        controls::chooser(g, box.toFloat(), label, look::fontSmall, node_->audio->warpEnabled);
+        labels_.push_back(box);
+    }
     text(midi() ? "Notes" : audio() ? "Sample" : "", header.withTrimmedLeft(midi() ? coloursBox().getRight() - header.getX() + 10 : 8).withWidth(60),
          juce::Justification::centredLeft, look::text, look::fontBody, true);
     text(r.grid, header.withTrimmedRight(8).removeFromRight(70), juce::Justification::centredRight, look::text, look::fontLabel);
     if (!problem_.empty()) {
         const auto right = std::max({header.getX() + 72, warpBox().getRight(), fieldBox(Field::SourceTempo).getRight(),
-                                     sourceTempoFactorBox(true).getRight()});
+                                     sourceTempoFactorBox(true).getRight(), warpModeBox().getRight()});
         text(juce::String(problem_), header.withTrimmedLeft(right + 4 - header.getX()).withTrimmedRight(84), juce::Justification::centredLeft,
              look::text, look::fontLabel);
     }
