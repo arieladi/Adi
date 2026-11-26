@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_shell.hpp"
+#include "adi/track_image.hpp"
 #include "adi/edit_plan.hpp"
 #include "ui_controls.hpp"
 #include "ui_floating.hpp"
@@ -2283,8 +2284,14 @@ bool AdiRootComponent::canClipClipboard(ClipCommand command) const {
     if (!current)
         return false;
     const auto &sel = arrangement.geometry.selection;
-    if (command == ClipCommand::Paste)
+    if (command == ClipCommand::Paste) {
+        if (std::holds_alternative<AppCommands::TrackCopy>(commands_.clipClipboard().held))
+            return trackClipboardContext();
         return !commands_.clipClipboard().empty() && pasteOrigin() != 0;
+    }
+    if (trackClipboardContext())
+        if (const auto *track = current->findTrack(sel.track); track != nullptr && track->kind != "master")
+            return true;
     if (chosenClip(*current, sel).clip != nullptr)
         return true;
     if (sel.start == sel.end)
@@ -2294,12 +2301,113 @@ bool AdiRootComponent::canClipClipboard(ClipCommand command) const {
             return true;
     return false;
 }
+bool AdiRootComponent::trackClipboardContext() const {
+    const auto &sel = arrangement.geometry.selection;
+    if (sel.clip != 0 || !sel.pickedClips.empty() || sel.start != sel.end)
+        return false;
+    const auto *focus = juce::Component::getCurrentlyFocusedComponent();
+    return focus == &arrangement.headers ||
+           (dynamic_cast<const MixerStrip *>(focus) != nullptr && mixerView.isParentOf(focus));
+}
+bool AdiRootComponent::trackClipboard(ClipCommand command) {
+    using track_edits_detail::children;
+    using track_edits_detail::op;
+    using track_edits_detail::rank;
+    auto &board = commands_.clipClipboard();
+    auto &store = submitter_.store();
+    auto &sel = arrangement.geometry.selection;
+    const auto current = view_.current();
+    if (!current || !trackClipboardContext())
+        return fail("Select a track by its title to use the track clipboard.");
+    const auto *selected = current->findTrack(sel.track);
+    try {
+        AppCommands::TrackCopy copy;
+        if (command == ClipCommand::Paste) {
+            const auto *held = std::get_if<AppCommands::TrackCopy>(&board.held);
+            if (held == nullptr || held->sourceFile != projectFile(store))
+                return fail("Copy the track in this project before pasting it.");
+            copy = *held;
+        } else {
+            if (selected == nullptr || selected->kind == "master")
+                return fail("Select a track other than Main.");
+            copy = {projectFile(store), selected->kind, selected->name, selected->parent, selected->indexInParent,
+                    detail::captureTrackForCopy(store.db(), selected->id)};
+            for (const auto &row : copy.contents.at("rows"))
+                if (row.at("table") == "tracks" && row.at("before").at("kind") == "master")
+                    return fail("The Main track cannot be copied.");
+            if (command == ClipCommand::Cut || command == ClipCommand::Copy) {
+                if (command == ClipCommand::Cut) {
+                    if (!submitEdit("track.delete", {{"id", selected->id}}, "Cut Track"))
+                        return false;
+                    sel.track = sel.toTrack = 0;
+                    sel.picked.clear();
+                    publishSelection();
+                }
+                board.held = std::move(copy);
+                error_.clear();
+                dirty_.mark(DirtySet::Status);
+                commands_.manager.commandStatusChanged();
+                return true;
+            }
+        }
+
+        // The duplicate goes immediately under its source. Without a paste
+        // destination, reuse the copied track's original position if possible.
+        const bool hasAnchor = selected != nullptr && selected->kind != "master";
+        const auto sourceParent = current->findTrack(copy.parent) ? copy.parent : 0;
+        const auto parent = hasAnchor ? selected->parent : sourceParent;
+        const auto order = children(current->tracks, parent);
+        const int newRank = copy.kind == "return" ? 1 : 0;
+        const auto end = std::find_if(order.begin(), order.end(), [&](const auto *sibling) { return rank(*sibling) > newRank; });
+        auto place = end;
+        if (hasAnchor) {
+            if (const auto anchor = std::find(order.begin(), end, selected);
+                anchor != end && rank(*selected) == newRank)
+                place = std::next(anchor);
+        } else {
+            place = std::find_if(order.begin(), end, [&](const auto *sibling) {
+                return rank(*sibling) == newRank && sibling->indexInParent >= copy.index;
+            });
+        }
+        const auto index = static_cast<std::int64_t>(place - order.begin());
+        auto contents = detail::copyTrackContents(store.db(), copy.contents, sourceParent, index,
+                                                  retainedDeviceId ? retainedDeviceId() : 0);
+        const auto id = contents.at("root").get<std::int64_t>();
+        const auto label = command == ClipCommand::Duplicate ? "Duplicate Track" : "Paste Track";
+        std::vector<OpRequest> requests;
+        requests.push_back(op("track.create", {{"id", id}, {"kind", copy.kind}, {"name", copy.name},
+                                               {"contents", std::move(contents)}}, label));
+        // Moving a pasted track between groups follows the standard automatic
+        // Main route and grouped-send rules.
+        if (parent != sourceParent)
+            requests.push_back(op("track.setParent", {{"id", id}, {"parent", track_edits_detail::parentValue(parent)}}, label));
+        for (std::size_t i = 0; i < order.size(); ++i) {
+            const auto next = static_cast<std::int64_t>(i) + (static_cast<std::int64_t>(i) >= index ? 1 : 0);
+            if (order[i]->indexInParent != next)
+                requests.push_back(op("track.reorder", {{"id", order[i]->id}, {"index", next}}, label));
+        }
+        if (!submitEdits(std::move(requests)))
+            return false;
+        sel.track = id;
+        sel.toTrack = 0;
+        sel.picked.clear();
+        arrangement.revealTrack = id;
+        arrangement.changed();
+        return true;
+    } catch (const std::exception &e) {
+        return fail(e.what());
+    }
+}
 bool AdiRootComponent::clipClipboard(ClipCommand command) {
     const auto current = view_.current();
     if (!current)
         return fail("The clipboard needs an open project.");
     auto &sel = arrangement.geometry.selection;
     auto &board = commands_.clipClipboard();
+    if (command == ClipCommand::Paste && std::holds_alternative<AppCommands::TrackCopy>(board.held))
+        return trackClipboard(command);
+    if (command != ClipCommand::Paste && sel.track != 0 && trackClipboardContext())
+        return trackClipboard(command);
     auto &store = submitter_.store();
     const auto rate = editRate();
     const edit_plan::Options options{rate, edit_plan::capturePolicy(commandSettings())};

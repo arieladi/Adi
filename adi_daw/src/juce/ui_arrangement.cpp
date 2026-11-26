@@ -1586,6 +1586,8 @@ juce::PopupMenu ArrangementView::headerMenu() {
         return menu;
     menu.addSeparator();
     menu.addCommandItem(&commands.manager, AppCommands::RenameTrack);
+    for (const auto id : {AppCommands::Cut, AppCommands::Copy, AppCommands::Paste, AppCommands::Duplicate})
+        menu.addCommandItem(&commands.manager, id);
     menu.addCommandItem(&commands.manager, AppCommands::DeleteTrack);
     // Live's lane chooser (DF-W37; manual 25.2): the track's mixer, then each device's parameters; the
     // one chosen shows on the track's lane in Automation Mode.

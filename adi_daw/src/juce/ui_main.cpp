@@ -775,6 +775,7 @@ class AdiApplication final : public juce::JUCEApplication,
             return ok;
         };
         root->devices.holdsCopy = [this] { return deviceClipboard_.has_value(); };
+        root->retainedDeviceId = [this] { return document_->retainedDeviceId(); };
         root->devices.keyChoices=[this](const DevicePanelData& target){return document_->deviceKeyChoices(target);};
         root->devices.setKey=[this](const DevicePanelData& target,const DeviceKeyChoice& choice){
             const bool ok=document_->setDeviceKeyChoice(target,choice);
