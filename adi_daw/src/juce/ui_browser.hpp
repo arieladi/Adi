@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include "adi/builtin_catalog.hpp"
+#include "adi/device_presets.hpp"
 #include "adi/ui/library_listing.hpp"
 #include "adi/ui/plugin_scan.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
+#include <map>
 #include <string>
 #include <utility>
 #include <vector>
@@ -81,18 +83,20 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     void choose(int);
     // The files the list shows now, in its order.
     const std::vector<const LibraryFile *> &shown() const noexcept { return shown_; }
-    // A row of the list: a sample, a folder's heading, a built-in device or a plug-in; how deep in its
-    // folders it sits.
+    // A row of the list: a sample, a folder heading, a device or a saved preset.
     struct Row {
         const LibraryFile *file = nullptr;
         const BuiltinInfo *device = nullptr;
         juce::String heading;
         const PluginEntry *plugin = nullptr;
         int depth = 0;
+        const preset::Entry *savedPreset = nullptr;
     };
     const std::vector<Row> &rows() const noexcept { return rows_; }
-    // Loads the device on `row` (double-click, Enter), or says why it cannot.
+    // Loads a row (double-click, Enter), or says why it cannot.
     bool load(int row);
+    void setDevicePresets(std::vector<preset::Entry>);
+    std::function<bool(const std::filesystem::path &)> loadDevicePreset;
     // Asks the app to scan the plug-ins when Plug-Ins is chosen and no scan has begun; unset outside the
     // app. It returns at once: the scan runs on the app's worker (DF-W34).
     std::function<void()> scanPlugins;
@@ -127,6 +131,7 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     int lastSelected_ = -1;
     void returnKeyPressed(int row) override { load(row); }
     std::vector<Row> rows_;
+    std::map<std::string, std::vector<preset::Entry>> devicePresets_;
     LibraryListing listing_;
     bool ready_ = false;
     PluginScan pluginScan_;

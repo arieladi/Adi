@@ -2,6 +2,7 @@
 #pragma once
 #include "adi/builtin_catalog.hpp"
 #include "adi/device_copy.hpp"
+#include "adi/device_presets.hpp"
 #include "adi/sample_slots.hpp"
 #include "adi/engine/audio_recording.hpp"
 #include "adi/engine/param_ops.hpp"
@@ -239,6 +240,10 @@ class ProjectDocument final : public engine::BlockProcessor {
     // silence any other track) and takes the place of the track's instrument, in the same undo step.
     // An effect loads as `insertPlugin` places it.
     bool loadPlugin(const rows::PluginRef &, std::int64_t track, std::optional<std::int64_t> before = {});
+    bool saveDevicePreset(const DevicePanelData &, const std::filesystem::path &library,
+                          const std::string &name, std::filesystem::path &saved);
+    std::int64_t loadDevicePreset(preset::Preset, std::int64_t track, std::optional<std::int64_t> before,
+                                  const std::optional<rows::PluginRef> &installed = {});
     bool addMixFunction(mix::Function, std::int64_t track);
     std::vector<DeviceKeyChoice> deviceKeyChoices(const DevicePanelData&);
     bool setDeviceKeyChoice(const DevicePanelData&,const DeviceKeyChoice&);

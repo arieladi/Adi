@@ -7,12 +7,14 @@
 #include "adi/freeze_commands.hpp"
 #include "adi/gesture_navigation_detail.hpp"
 #include "adi/media/collect_export.hpp"
+#include "adi/media/blake3.hpp"
 #include "adi/mix_function_edit.hpp"
 #include "adi/row_ids.hpp"
 #include "adi/device_key_routes.hpp"
 #include "adi/recording_commands.hpp"
 #include "adi/render/host_dispatch.hpp"
 #include "adi/gesture_presentation.hpp"
+#include "juce/builtin_samples.hpp"
 #include "juce/mix_function_host.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <sqlite3.h>
@@ -847,6 +849,113 @@ bool ProjectDocument::loadPlugin(const rows::PluginRef &ref, std::int64_t track,
     }
     return insertPlugin(ref, track, before, options);
 }
+
+bool ProjectDocument::saveDevicePreset(const DevicePanelData &target, const std::filesystem::path &library,
+                                       const std::string &name, std::filesystem::path &saved) {
+    if (!deviceTargetCurrent(target.id, target.runtime, target.instance))
+        return false;
+    try {
+        preset::Preset values;
+        {
+            SQLite::Statement device(store_->db(),
+                                     "SELECT p.format,p.uid,p.shell_id,p.name FROM devices d JOIN plugin_refs p "
+                                     "ON p.id=d.plugin_ref_id WHERE d.id=? AND d.is_rack=0");
+            device.bind(1, target.id);
+            if (!device.executeStep())
+                throw std::runtime_error("This device has no portable preset identity.");
+            values.device.format = device.getColumn(0).getString();
+            values.device.uid = device.getColumn(1).getString();
+            if (!device.getColumn(2).isNull())
+                values.device.shellId = device.getColumn(2).getInt64();
+            values.deviceName = device.getColumn(3).getString();
+        }
+        auto current = parameterOps_.readDevicePresetState(target.id, error_);
+        if (!current)
+            return false;
+        values.name = name;
+        values.parameters = std::move(current->parameters);
+        values.state = std::move(current->state);
+        saved = preset::write(library, values);
+        error_.clear();
+        return true;
+    } catch (const std::exception &e) {
+        error_ = e.what();
+        return false;
+    }
+}
+
+std::int64_t ProjectDocument::loadDevicePreset(preset::Preset presetValue, std::int64_t track,
+                                              std::optional<std::int64_t> before,
+                                              const std::optional<rows::PluginRef> &installed) {
+    try {
+        PreparedBuiltinInsert prepared;
+        if (presetValue.device.format == "internal") {
+            if (presetValue.device.shellId)
+                throw std::runtime_error("This built-in preset has a plug-in shell ID.");
+            prepared = prepareBuiltinInsert(*store_, presetValue.device.uid, track, before, retainedDeviceId());
+        } else {
+            if (!installed || preset::Identity{installed->format, installed->uid, installed->shellId} != presetValue.device)
+                throw std::runtime_error("The exact plug-in for this preset is unavailable.");
+            PluginInsertOptions options;
+            options.replaceInstrument = installed->subtype == "instrument";
+            prepared = preparePluginInsert(*store_, *installed, track, before, options, retainedDeviceId());
+        }
+        if (!prepared.ok)
+            throw std::runtime_error(prepared.error);
+
+        const auto device = prepared.deviceId;
+        const auto source = appliedSource(*store_);
+        OpTransactionInputs inputs;
+        auto add = [&](const char *type, Payload value) {
+            OpRequest request;
+            request.opType = type;
+            request.payload = std::move(value);
+            request.targetKind = "device";
+            request.targetId = device;
+            prepared.requests.push_back(std::move(request));
+        };
+        std::set<std::string> hashes;
+        for (auto &[role, bytes] : presetValue.state) {
+            std::string hint = "adi.device-preset";
+            if (presetValue.device.format == "internal" && role.starts_with("sample:")) {
+                if (bytes.empty())
+                    throw std::runtime_error("The preset has an empty sample state stream.");
+                const auto *data = reinterpret_cast<const std::uint8_t *>(bytes.data());
+                const auto sample = Payload::from_cbor(data, data + bytes.size());
+                const auto info = device::inspectBuiltinSample(sample);
+                if (info.uid != presetValue.device.uid || role != "sample:" + std::to_string(info.slot))
+                    throw std::runtime_error("The preset contains a sample for a different device or slot.");
+                // Check the embedded PCM before marking the sample portable.
+                (void)device::restoreBuiltinSample(sample, engineRate_);
+                hint = device::kPresetSampleStateHint;
+            }
+            const auto hash = media::blake3Bytes(bytes);
+            if (!hash)
+                throw std::runtime_error("The preset state could not be read.");
+            add("device.loadState", {{"dev", device}, {"role", role}, {"hash", hash.hex}, {"hint", hint}});
+            if (hashes.insert(hash.hex).second)
+                inputs.stateBlobs.push_back({hash.hex, std::move(bytes)});
+        }
+        for (const auto &[param, normalized] : presetValue.parameters)
+            add("device.setParam", {{"dev", device}, {"param", param}, {"norm", normalized}});
+        add("device.setPreset", {{"dev", device}, {"preset", presetValue.name}});
+        for (auto &request : prepared.requests)
+            request.label = "Load Device Preset";
+
+        const auto result = ops_.commitPrepared(prepared.requests, [&](Store &store, Actor) {
+            return OpJournal(store).commitCaptured(prepared.requests, source, prepared.options, inputs);
+        });
+        error_ = result.error;
+        if (!result || !synchronise())
+            return 0;
+        feed_.publish(session_, realisedGeneration_);
+        return device;
+    } catch (const std::exception &e) {
+        error_ = e.what();
+        return 0;
+    }
+}
+
 bool ProjectDocument::finishInsert(PreparedBuiltinInsert prepared) {
     if (!prepared.ok) {
         error_ = prepared.error.empty() ? "The device could not be loaded." : prepared.error;

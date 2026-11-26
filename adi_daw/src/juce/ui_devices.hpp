@@ -324,6 +324,8 @@ class DeviceChainStrip final : public juce::Component,
                        std::shared_ptr<const gesture::OwnerToken> &)> guardedPairGesture;
     std::function<bool(std::int64_t, const engine::DeviceRuntimeToken &, std::uint64_t)> targetCurrent;
     std::function<bool(const std::string &, Payload)> submit;
+    // The application names and saves a preset for this exact loaded device.
+    std::function<void(const DevicePanelData &)> savePreset;
     std::function<std::vector<DeviceKeyChoice>(const DevicePanelData&)> keyChoices;
     std::function<bool(const DevicePanelData&,const DeviceKeyChoice&)> setKey;
     std::function<mix::Availability(mix::Function)> functionAvailability;

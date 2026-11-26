@@ -231,6 +231,19 @@ void BrowserPanel::setListing(LibraryListing listing, bool ready) {
     refill();
     repaint();
 }
+void BrowserPanel::setDevicePresets(std::vector<preset::Entry> entries) {
+    devicePresets_.clear();
+    for (auto &entry : entries)
+        devicePresets_[entry.deviceKey].push_back(std::move(entry));
+    for (auto &[key, children] : devicePresets_) {
+        (void)key;
+        std::sort(children.begin(), children.end(), [](const preset::Entry &a, const preset::Entry &b) {
+            const int order = juce::String::fromUTF8(a.name.c_str()).compareIgnoreCase(juce::String::fromUTF8(b.name.c_str()));
+            return order != 0 ? order < 0 : a.path < b.path;
+        });
+    }
+    refill();
+}
 void BrowserPanel::refill() {
     shown_.clear();
     const Entry none{};
@@ -256,50 +269,86 @@ void BrowserPanel::refill() {
     for (const auto *f : shown_)
         rows_.push_back({f, nullptr, {}});
     // Audio Effects in Live's folders (manual 4.10), Pd Devices ADI's own, from the catalogue.
-    const auto matches = [&query](const BuiltinInfo &d) {
-        return query.isEmpty() || juce::String(std::string(d.name)).toLowerCase().contains(query);
+    const auto matches = [&query](std::string_view name) {
+        return query.isEmpty() || juce::String::fromUTF8(name.data(), static_cast<int>(name.size())).containsIgnoreCase(query);
+    };
+    const auto visiblePresets = [&](std::string_view format, std::string_view uid,
+                                    std::optional<std::int64_t> shellId, bool entireDevice) {
+        std::vector<const preset::Entry *> out;
+        if (!devicePresets_.empty()) {
+            const auto found = devicePresets_.find(preset::deviceKey({std::string(format), std::string(uid), shellId}));
+            if (found != devicePresets_.end())
+                for (const auto &entry : found->second)
+                    if (entireDevice || matches(entry.name))
+                        out.push_back(&entry);
+        }
+        return out;
+    };
+    const auto addPresets = [&](const std::vector<const preset::Entry *> &presets, int depth) {
+        for (const auto *entry : presets)
+            rows_.push_back({nullptr, nullptr, {}, nullptr, depth, entry});
+    };
+    const auto addBuiltin = [&](const BuiltinInfo &d, int depth, const char *heading = nullptr) {
+        const bool ownMatch = matches(d.name);
+        const auto presets = visiblePresets("internal", d.uid, std::nullopt, ownMatch);
+        if (!ownMatch && presets.empty())
+            return false;
+        if (heading != nullptr)
+            rows_.push_back({nullptr, nullptr, heading});
+        rows_.push_back({nullptr, &d, {}, nullptr, depth});
+        addPresets(presets, depth + 1);
+        return true;
     };
     if (!chosen.heading && chosen.name == "Audio Effects") {
         for (const char *folder : {"EQ & Filters", "Delay & Loop", "Dynamics", "Drive & Color", "Pitch & Modulation",
                                    "Reverb & Resonance", "Utilities"}) {
             std::vector<const BuiltinInfo *> in;
             for (const auto &d : builtinCatalog())
-                if (d.category == "Audio Effects" && d.group == folder && matches(d))
+                if (d.category == "Audio Effects" && d.group == folder)
                     in.push_back(&d);
-            if (in.empty())
-                continue;
-            rows_.push_back({nullptr, nullptr, folder});
             std::sort(in.begin(), in.end(), [](const BuiltinInfo *a, const BuiltinInfo *b) { return a->name < b->name; });
+            const char *heading = folder;
             for (const auto *d : in)
-                rows_.push_back({nullptr, d, {}});
+                if (addBuiltin(*d, 1, heading))
+                    heading = nullptr;
         }
     } else if (!chosen.heading && chosen.name == "Instruments") {
         // ADI's own instruments, by name, where Live lists its instruments (walk-A A7, DF-W48).
         std::vector<const BuiltinInfo *> in;
         for (const auto &d : builtinCatalog())
-            if (d.category == "Instruments" && matches(d))
+            if (d.category == "Instruments")
                 in.push_back(&d);
         std::sort(in.begin(), in.end(), [](const BuiltinInfo *a, const BuiltinInfo *b) { return a->name < b->name; });
         for (const auto *d : in)
-            rows_.push_back({nullptr, d, {}});
+            addBuiltin(*d, 0);
     } else if (!chosen.heading && chosen.name == "Pd Devices") {
         for (const auto &d : builtinCatalog())
-            if (d.category == "ADI" && matches(d))
-                rows_.push_back({nullptr, &d, {}});
+            if (d.category == "ADI")
+                addBuiltin(d, 0);
     } else if (!chosen.heading && chosen.name == "Plug-Ins") {
         // Live's Plug-Ins: a folder per format, in it a folder per vendor, in that its plug-ins by name.
         std::string format;
         // While a scan runs its line heads the list, above what was listed before it.
         if (pluginScan_.phase == PluginScan::Phase::Scanning)
             rows_.push_back({nullptr, nullptr, juce::String::fromUTF8(pluginScanStatus(pluginScan_).c_str()), nullptr, 0});
-        for (const auto &group : pluginGroups(pluginScan_.listing, query.toStdString())) {
-            if (group.format != format) {
-                format = group.format;
-                rows_.push_back({nullptr, nullptr, juce::String(formatFolder(format)), nullptr, 0});
-            }
-            rows_.push_back({nullptr, nullptr, juce::String::fromUTF8(group.vendor.c_str()), nullptr, 1});
-            for (const auto *p : group.entries)
+        for (const auto &group : pluginGroups(pluginScan_.listing, {})) {
+            bool showVendor = true;
+            for (const auto *p : group.entries) {
+                const bool ownMatch = matches(p->name) || matches(p->vendor);
+                const auto presets = visiblePresets(p->format, p->uid, p->shellId, ownMatch);
+                if (!ownMatch && presets.empty())
+                    continue;
+                if (showVendor) {
+                    if (group.format != format) {
+                        format = group.format;
+                        rows_.push_back({nullptr, nullptr, juce::String(formatFolder(format)), nullptr, 0});
+                    }
+                    rows_.push_back({nullptr, nullptr, juce::String::fromUTF8(group.vendor.c_str()), nullptr, 1});
+                    showVendor = false;
+                }
                 rows_.push_back({nullptr, nullptr, {}, p, 2});
+                addPresets(presets, 3);
+            }
         }
     }
     list.updateContent();
@@ -322,6 +371,15 @@ void BrowserPanel::paintListBoxItem(int row, juce::Graphics &g, int width, int h
         g.drawText(r.heading, in, 0, width - in - 4, height, juce::Justification::centredLeft, true);
         return;
     }
+    if (r.savedPreset != nullptr) {
+        const int in = 12 * r.depth;
+        icon(g, Templates, {6.f + static_cast<float>(in), (static_cast<float>(height) - 13.f) / 2.f, 13.f, 13.f});
+        g.setColour(loadDevicePreset ? look::text : look::textDim);
+        g.setFont(look::font(look::fontHeading));
+        g.drawText(juce::String::fromUTF8(r.savedPreset->name.c_str()), 24 + in, 0, width - 28 - in, height,
+                   juce::Justification::centredLeft, true);
+        return;
+    }
     if (r.plugin != nullptr) {
         // A plug-in, under its vendor: its kind's icon (a VST3's is not known yet: the plug-in icon), its
         // name dimmed where nothing can load it (outside the application).
@@ -337,7 +395,7 @@ void BrowserPanel::paintListBoxItem(int row, juce::Graphics &g, int width, int h
         return;
     }
     const bool device = r.device != nullptr;
-    const int indent = device && r.device->category == "Audio Effects" ? 12 : 0;
+    const int indent = 12 * r.depth;
     icon(g, device ? (r.device->category == "Instruments" ? Instruments : AudioFx) : Samples,
          juce::Rectangle<float>(6.f + static_cast<float>(indent), (static_cast<float>(height) - 13.f) / 2.f, 13.f, 13.f));
     // An entry this build cannot load is dimmed (its reason is said when it is chosen).
@@ -351,6 +409,8 @@ juce::var BrowserPanel::getDragSourceDescription(const juce::SparseSet<int> &row
     for (int i = 0; i < rows.size(); ++i)
         if (const int r = rows[i]; r >= 0 && r < static_cast<int>(rows_.size())) {
             const auto &row = rows_[static_cast<std::size_t>(r)];
+            if (row.savedPreset != nullptr)
+                return {};
             // A plug-in loads by a double-click or Enter; a drag of one is not built yet: it drags nothing.
             if (row.plugin != nullptr)
                 return {};
@@ -409,42 +469,46 @@ void BrowserPanel::setPluginScan(const PluginScan &scan) {
         root_.say(pluginScanStatus(pluginScan_));
 }
 bool BrowserPanel::load(int row) {
-    if (row >= 0 && row < static_cast<int>(rows_.size()))
-        if (const auto *file = rows_[static_cast<std::size_t>(row)].file) {
-            const auto track = root_.arrangement.geometry.selection.track;
-            return root_.sampleInstrumentTarget(track) && root_.loadSampleAsInstrument(track, file->path);
-        }
-    if (row >= 0 && row < static_cast<int>(rows_.size()))
-        if (const auto *p = rows_[static_cast<std::size_t>(row)].plugin) {
-            if (!root_.loadPlugin) {
-                root_.say(pluginWaits(*p));
-                return false;
-            }
-            // Onto the selected track, in front of the device chosen in the strip, else where Live places
-            // its kind. A VST3 whose kind is not known yet (N58) goes onto a MIDI track as its instrument
-            // and onto an audio track as an effect, and the Status Bar says so.
-            const auto track = root_.arrangement.geometry.selection.track;
-            const auto *t = root_.reader().findTrack(track);
-            if (t == nullptr) {
-                root_.say("Select a track to load " + p->name + " onto.");
-                return false;
-            }
-            const bool midi = t->kind == "midi" || t->kind == "instrument";
-            // Copied first: the load can refill the list this row points into (a scan held and adopted).
-            const auto ref = pluginReference(*p, midi);
-            const bool guessed = p->kind == PluginEntry::Kind::Unknown;
-            return root_.loadPlugin(ref, track, root_.devices.insertPoint(), guessed);
-        }
-    if (row < 0 || row >= static_cast<int>(rows_.size()) || rows_[static_cast<std::size_t>(row)].device == nullptr)
+    if (row < 0 || row >= static_cast<int>(rows_.size()))
         return false;
-    const auto &d = *rows_[static_cast<std::size_t>(row)].device;
+    const auto &entry = rows_[static_cast<std::size_t>(row)];
+    if (const auto *saved = entry.savedPreset) {
+        if (!loadDevicePreset) {
+            root_.say("Loading a device preset needs the application.");
+            return false;
+        }
+        const auto path = saved->path;
+        return loadDevicePreset(path);
+    }
+    const auto track = root_.arrangement.geometry.selection.track;
+    if (const auto *file = entry.file)
+        return root_.sampleInstrumentTarget(track) && root_.loadSampleAsInstrument(track, file->path);
+    if (const auto *p = entry.plugin) {
+        if (!root_.loadPlugin) {
+            root_.say(pluginWaits(*p));
+            return false;
+        }
+        // A VST3 of unknown kind goes onto a MIDI track as an instrument or onto audio as an effect.
+        const auto *t = root_.reader().findTrack(track);
+        if (t == nullptr) {
+            root_.say("Select a track to load " + p->name + " onto.");
+            return false;
+        }
+        const bool midi = t->kind == "midi" || t->kind == "instrument";
+        // Copied first: the load can refill the list this row points into (a scan held and adopted).
+        const auto ref = pluginReference(*p, midi);
+        const bool guessed = p->kind == PluginEntry::Kind::Unknown;
+        return root_.loadPlugin(ref, track, root_.devices.insertPoint(), guessed);
+    }
+    if (entry.device == nullptr)
+        return false;
+    const auto &d = *entry.device;
     if (const auto why = unavailable(d); !why.empty()) {
         root_.say(why);
         return false;
     }
     // Onto the selected track, in front of the device chosen in the strip (manual 4.10, 41.4).
-    return root_.insertDevice(std::string(d.uid), root_.arrangement.geometry.selection.track,
-                              root_.devices.insertPoint());
+    return root_.insertDevice(std::string(d.uid), track, root_.devices.insertPoint());
 }
 void BrowserPanel::resized() {
     // Live's shape: the search row and the preview row start right of the round

@@ -1684,6 +1684,29 @@ juce::PopupMenu DevicePanelView::commands() {
         if (safe && safe->validTarget())
             safe->strip.fold(safe->id);
     });
+    if (strip.savePreset) {
+        const auto current = strip.root.current();
+        const auto *track = current && data ? current->findTrack(data->track) : nullptr;
+        const bool supported = data && !data->uid.empty() && !nativeFunction() &&
+                               (data->format == "internal" || data->format == "clap" || data->format == "vst3");
+        juce::PopupMenu::Item item(juce::String::fromUTF8("Save Preset\xe2\x80\xa6"));
+        item.isEnabled = supported && data->available && track && !track->frozen && !track->frozenByGroup;
+        if (item.isEnabled) {
+            item.action = [safe, epoch, expected = *data] {
+                if (!safe || safe->menuEpoch_ != epoch)
+                    return;
+                safe->endInteraction(Interaction::Menu);
+                if (!safe || safe->menuEpoch_ != epoch || !safe->validTarget())
+                    return;
+                if (!safe || safe->menuEpoch_ != epoch || !safe->strip.validExpected(expected))
+                    return;
+                if (safe && safe->menuEpoch_ == epoch && safe->strip.savePreset)
+                    safe->strip.savePreset(expected);
+            };
+        }
+        m.addSeparator();
+        m.addItem(std::move(item));
+    }
     juce::PopupMenu automation;
     strip.root.addDeviceAutomationDeleteItem(automation, id);
     if (automation.getNumItems() > 0) {

@@ -220,11 +220,24 @@ class AdiApplication final : public juce::JUCEApplication,
         std::condition_variable wake;
         std::atomic<bool> stop{false}, scanned{false};
     };
+    std::filesystem::path userLibraryPath() const {
+        const auto user = settings_->get("library.userLibrary");
+        return user.is_string() ? pathFromUtf8(user.get<std::string>()) : std::filesystem::path{};
+    }
+    void refreshDevicePresets() {
+        if (!root_)
+            return;
+        try {
+            root_->browser.setDevicePresets(preset::list(userLibraryPath()));
+        } catch (const std::exception &e) {
+            root_->say(e.what());
+        }
+    }
     void startLibrary() {
         const auto file = appdata::libraryIndexFile();
         std::vector<LibraryFolder> folders;
-        if (const auto user = settings_->get("library.userLibrary"); user.is_string() && !user.get<std::string>().empty())
-            folders.push_back({"User Library", pathFromUtf8(user.get<std::string>()), true});
+        if (const auto user = userLibraryPath(); !user.empty())
+            folders.push_back({"User Library", user, true});
         if (const auto added = settings_->get("library.contentFolders"); added.is_array())
             for (const auto &folder : added)
                 if (folder.is_string() && !folder.get<std::string>().empty()) {
@@ -579,6 +592,8 @@ class AdiApplication final : public juce::JUCEApplication,
         settingsWindow_.reset();
         if (snapshotPrompt_ != nullptr)
             delete snapshotPrompt_.getComponent();
+        if (presetPrompt_ != nullptr)
+            delete presetPrompt_.getComponent();
         manager_.removeChangeListener(this);
         detachAudio();
         // A take still recording or landing goes into its project before the project closes (MX-09).
@@ -681,6 +696,10 @@ class AdiApplication final : public juce::JUCEApplication,
         });
         document_->configureFreezeTail(settings_->get("devices.freezeTailSeconds").get<double>());
         root->browser.setListing(library_, libraryReady_); // the library listed so far, if anything
+        refreshDevicePresets();
+        root->browser.loadDevicePreset = [this](const std::filesystem::path &path) {
+            return loadDevicePreset(path);
+        };
         root->devices.publication = [this] { return document_->parameterFeed().current(); };
         root->devices.parameterDemand = [this](const void *consumer, const std::vector<std::int64_t> &ids) {
             document_->setParameterDemand(consumer, ids);
@@ -780,6 +799,7 @@ class AdiApplication final : public juce::JUCEApplication,
             return ok;
         };
         root->devices.holdsCopy = [this] { return deviceClipboard_.has_value(); };
+        root->devices.savePreset = [this](const DevicePanelData &target) { promptDevicePreset(target); };
         root->devices.keyChoices=[this](const DevicePanelData& target){return document_->deviceKeyChoices(target);};
         root->devices.setKey=[this](const DevicePanelData& target,const DeviceKeyChoice& choice){
             const bool ok=document_->setDeviceKeyChoice(target,choice);
@@ -1163,6 +1183,81 @@ class AdiApplication final : public juce::JUCEApplication,
             }),
             true);
     }
+    void promptDevicePreset(const DevicePanelData &target) {
+        if (!root_ || !document_)
+            return;
+        if (presetPrompt_) {
+            presetPrompt_->toFront(true);
+            return;
+        }
+        const auto library = userLibraryPath();
+        if (library.empty()) {
+            root_->say("Choose a User Library folder in Settings before saving a preset.");
+            return;
+        }
+        const auto source = appliedSource(document_->store());
+        auto *prompt = new juce::AlertWindow("Save Preset", "Name this device preset.", juce::MessageBoxIconType::NoIcon);
+        prompt->addTextEditor("name", juce::String::fromUTF8(target.name.c_str()));
+        prompt->addButton("Save Preset", 1, juce::KeyPress(juce::KeyPress::returnKey));
+        prompt->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+        presetPrompt_ = prompt;
+        prompt->enterModalState(
+            true, juce::ModalCallbackFunction::create([this, prompt, target, source, library](int chosen) {
+                if (chosen != 1 || !root_ || !document_)
+                    return;
+                if (!source.sameConnection(appliedSource(document_->store())) || library != userLibraryPath()) {
+                    root_->say("The project or User Library changed. Open Save Preset again.");
+                    return;
+                }
+                std::filesystem::path saved;
+                const auto name = prompt->getTextEditorContents("name").trim().toStdString();
+                if (!document_->saveDevicePreset(target, library, name, saved)) {
+                    root_->say(document_->error());
+                    return;
+                }
+                root_->say("Saved preset " + media::pathUtf8(saved.stem()) + ".");
+                refreshDevicePresets();
+            }),
+            true);
+    }
+    bool loadDevicePreset(const std::filesystem::path &path) {
+        if (!root_ || !document_)
+            return false;
+        const auto track = root_->arrangement.geometry.selection.track;
+        const auto current = document_->view().current();
+        const auto *row = current ? current->findTrack(track) : nullptr;
+        if (!row) {
+            root_->say("Select a track to load the device preset.");
+            return false;
+        }
+        try {
+            auto values = preset::read(path);
+            if (media::pathUtf8(path.parent_path().filename()) != preset::deviceKey(values.device))
+                throw std::runtime_error("This preset belongs under a different device.");
+            std::optional<rows::PluginRef> installed;
+            if (values.device.format != "internal") {
+                for (const auto &plugin : root_->browser.plugins().plugins)
+                    if (preset::Identity{plugin.format, plugin.uid, plugin.shellId} == values.device) {
+                        installed = pluginReference(plugin, row->kind == "midi" || row->kind == "instrument");
+                        break;
+                    }
+            }
+            const auto id = document_->loadDevicePreset(std::move(values), track, root_->devices.insertPoint(), installed);
+            if (!id) {
+                root_->say(document_->error());
+                return false;
+            }
+            if (const auto *entry = document_->session().entryFor(id); entry && entry->placeholder)
+                root_->say("The preset device could not start. " + entry->error);
+            else
+                root_->say({});
+            root_->devices.repaint();
+            return true;
+        } catch (const std::exception &e) {
+            root_->say(e.what());
+            return false;
+        }
+    }
     // Save As, once the chooser has a file: the document carries on in it and the window takes
     // its name, and that is all Live shows (manual 5.4.1). As after New and Open, a success says
     // nothing in the Status Bar and clears what a refusal left there (parity-7.2-shell row 4);
@@ -1359,6 +1454,7 @@ class AdiApplication final : public juce::JUCEApplication,
                         root_->applyDelayCompensation(commands_->delayCompensation());
                     if (document_)
                         document_->configureFreezeTail(settings_->get("devices.freezeTailSeconds").get<double>());
+                    refreshDevicePresets();
                     pluginSourcesChanged();
                     // The MIDI Ports' switches open or close inputs: after the row's commit has unwound.
                     juce::MessageManager::callAsync([this] {
@@ -1535,6 +1631,7 @@ class AdiApplication final : public juce::JUCEApplication,
     std::optional<adi::DeviceCopy> deviceClipboard_;
     std::shared_ptr<std::atomic<bool>> exportRunning_ = std::make_shared<std::atomic<bool>>(false);
     juce::Component::SafePointer<juce::AlertWindow> snapshotPrompt_;
+    juce::Component::SafePointer<juce::AlertWindow> presetPrompt_;
     std::unique_ptr<SettingsWindow> settingsWindow_;
     // The Export page (EX-11) and its render: the worker, its stop, and the job counter the renderer
     // names files by.

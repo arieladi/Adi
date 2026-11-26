@@ -2965,6 +2965,93 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
         browser.setPluginScan({});
     }
     {
+        const auto key = [](const std::string &format, const std::string &uid,
+                            std::optional<std::int64_t> shell = std::nullopt) {
+            return preset::deviceKey({format, uid, shell});
+        };
+        const auto utilityKey = key("internal", "org.adidaw.builtin.utility");
+        const auto clapKey = key("clap", "org.adi.fixture");
+        const auto vstFirstKey = key("vst3", "fixture.shell", 12);
+        const auto vstSecondKey = key("vst3", "fixture.shell", 34);
+        const auto alpha = dir / "Alpha.adipreset";
+        const auto ice = dir / "Ice.adipreset";
+        browser.setDevicePresets({
+            {utilityKey, "Zebra", dir / "Zebra.adipreset"},
+            {utilityKey, "Alpha", alpha},
+            {clapKey, "Clap preset", dir / "Clap.adipreset"},
+            {vstFirstKey, "Ice", ice},
+            {vstSecondKey, "Warm", dir / "Warm.adipreset"},
+        });
+        const auto presetRow = [&](std::string_view name) {
+            for (std::size_t i = 0; i < browser.rows().size(); ++i) {
+                const auto *preset = browser.rows()[i].savedPreset;
+                if (preset && preset->name == name)
+                    return static_cast<int>(i);
+            }
+            return -1;
+        };
+        browser.choose(audioEffects);
+        const int a = presetRow("Alpha"), z = presetRow("Zebra");
+        check(a > 0 && z == a + 1 && browser.rows()[static_cast<std::size_t>(a - 1)].device &&
+                  browser.rows()[static_cast<std::size_t>(a - 1)].device->name == "Utility" &&
+                  browser.rows()[static_cast<std::size_t>(a)].depth ==
+                      browser.rows()[static_cast<std::size_t>(a - 1)].depth + 1,
+              "SC-85: authored preset rows are alphabetical and inset beneath their own built-in");
+        check(a >= 0 && !browser.load(a) && root.error().find("needs the application") != std::string::npos,
+              "a preset cannot load in a Browser with no application");
+        std::vector<std::filesystem::path> loaded;
+        browser.loadDevicePreset = [&](const std::filesystem::path &path) {
+            loaded.push_back(path);
+            return true;
+        };
+        browser.search.setText("alpha", false);
+        browser.search.onTextChange();
+        const int found = presetRow("Alpha");
+        check(found == 2 && browser.rows().size() == 3 && browser.rows()[1].device &&
+                  browser.rows()[1].device->name == "Utility" && presetRow("Zebra") < 0,
+              "search by preset title keeps its device context and hides unrelated rows");
+        if (found >= 0) {
+            juce::SparseSet<int> chosen;
+            chosen.addRange(juce::Range<int>(found, found + 1));
+            check(browser.list.getListBoxModel()->getDragSourceDescription(chosen).isVoid(),
+                  "a preset is not a sample or a default device drag");
+            browser.list.getListBoxModel()->returnKeyPressed(found);
+        }
+        check(loaded.size() == 1 && loaded.front() == alpha, "Enter opens the matching preset file");
+        browser.search.setText({}, false);
+        browser.search.onTextChange();
+        browser.choose(plugIns);
+        PluginScan scan;
+        scan.phase = PluginScan::Phase::Done;
+        scan.listing.plugins = {{"clap", "org.adi.fixture", "CLAP Fixture", "Fixture", "1", {}, PluginEntry::Kind::Effect},
+                                {"vst3", "fixture.shell", "First Shell", "Fixture", "1", {}, PluginEntry::Kind::Effect, 12},
+                                {"vst3", "fixture.shell", "Second Shell", "Fixture", "1", {}, PluginEntry::Kind::Effect, 34}};
+        browser.setPluginScan(scan);
+        const auto linked = [&](std::string_view name, std::string_view parent) {
+            const int row = presetRow(name);
+            if (row <= 0)
+                return false;
+            const auto &above = browser.rows()[static_cast<std::size_t>(row - 1)];
+            return above.plugin && above.plugin->name == parent &&
+                   browser.rows()[static_cast<std::size_t>(row)].depth == above.depth + 1;
+        };
+        check(linked("Clap preset", "CLAP Fixture") && linked("Ice", "First Shell") && linked("Warm", "Second Shell"),
+              "presets stay under the exact CLAP or VST3 identity, including distinct shell IDs");
+        browser.search.setText("ice", false);
+        browser.search.onTextChange();
+        const int iceRow = presetRow("Ice");
+        check(iceRow == 3 && browser.rows().size() == 4 && linked("Ice", "First Shell"),
+              "a plug-in preset title is searchable without the plug-in's name");
+        if (iceRow >= 0)
+            browser.list.getListBoxModel()->listBoxItemDoubleClicked(iceRow, pressAt(browser.list, {10, 10}));
+        check(loaded.size() == 2 && loaded.back() == ice, "double-click opens the matched installed plug-in preset");
+        browser.loadDevicePreset = {};
+        browser.setDevicePresets({});
+        browser.search.setText({}, false);
+        browser.search.onTextChange();
+        browser.setPluginScan({});
+    }
+    {
         // The loader's report read into the listing (DF-W34 b).
         scan::Report service;
         service.complete = false;
@@ -10751,6 +10838,45 @@ void deviceClipboard(AppCommands &commands, const std::filesystem::path &dir) {
         root.frame();
     };
     refresh();
+    // SC-85: the device title's menu offers the preset action for a loaded device. The owner
+    // receives the exact displayed instance and an expired menu cannot open another dialog.
+    if (!root.devices.panels.empty()) {
+        auto &device = *root.devices.panels.front();
+        std::optional<DevicePanelData> saved;
+        root.devices.savePreset = [&](const DevicePanelData &expected) { saved = expected; };
+        const auto saveItem = [](const juce::PopupMenu &menu) -> std::optional<juce::PopupMenu::Item> {
+            for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+                if (it.getItem().text == juce::String::fromUTF8("Save Preset\xe2\x80\xa6"))
+                    return it.getItem();
+            return std::nullopt;
+        };
+        const auto stale = saveItem(device.commands());
+        check(stale && stale->isEnabled && stale->action, "a loaded CLAP device offers Save Preset with an ellipsis");
+        device.cancelInteractions();
+        if (stale && stale->action)
+            stale->action();
+        check(!saved, "an invalidated preset menu does not open a naming dialog");
+        const auto current = saveItem(device.commands());
+        root.devices.targetCurrent = [](std::int64_t, const engine::DeviceRuntimeToken &, std::uint64_t) { return false; };
+        if (current && current->action)
+            current->action();
+        check(!saved, "an instance that changed after the menu opened cannot be saved");
+        root.devices.targetCurrent = {};
+        const auto fresh = saveItem(device.commands());
+        if (fresh && fresh->action)
+            fresh->action();
+        check(saved && saved->id == 3 && saved->available && saved->instance == device.presentedInstance() &&
+                  saved->runtime.sameInstance(document->session().deviceRuntimeToken(3)),
+              "Save Preset hands the owning app the selected device and its exact runtime");
+        if (saved) {
+            auto placeholder = *saved;
+            placeholder.available = false;
+            DevicePanelView unavailable(root.devices, placeholder);
+            const auto blocked = saveItem(unavailable.commands());
+            check(blocked && !blocked->isEnabled && !blocked->action, "a missing device's Save Preset is disabled");
+        }
+        root.devices.savePreset = {};
+    }
     const auto chain = [&] {
         std::vector<std::int64_t> out;
         SQLite::Statement q(document->store().db(), "SELECT id FROM devices WHERE chain_id = 3 ORDER BY ord, id");
