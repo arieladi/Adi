@@ -16,6 +16,7 @@
 #include <atomic>
 #include <chrono>
 #include <future>
+#include <optional>
 #include <thread>
 #include <string>
 #include <utility>
@@ -427,6 +428,27 @@ std::unique_ptr<DeviceInstance> JuceDeviceLoader::make(const engine::DeviceReque
     return nullptr;
 }
 
+namespace {
+// SC-324: the catalogue's description a saved VST3 identity names once its path is set aside. The
+// identity is "<format>-<name>-<hex hash of the module's path>-<hex class ID>" (JUCE's
+// createIdentifierString); the name may hold dashes, so it is read from the end. One plug-in installed
+// in two folders gives the first in the catalogue's order.
+std::optional<juce::PluginDescription> movedVst3(const juce::KnownPluginList& catalog, const juce::String& uid) {
+    const int idAt=uid.lastIndexOfChar('-');
+    if(idAt<=0)return std::nullopt;
+    const int hashAt=uid.substring(0,idAt).lastIndexOfChar('-');
+    if(hashAt<=0)return std::nullopt;
+    const auto prefix=uid.substring(0,hashAt);const auto classId=uid.substring(idAt+1);
+    if(classId.isEmpty())return std::nullopt;
+    for(const auto& d:catalog.getTypes()) {
+        if(d.pluginFormatName+"-"+d.name!=prefix)continue;
+        const auto idToUse=d.uniqueId!=0?d.uniqueId:d.deprecatedUid;
+        if(juce::String::toHexString(idToUse)==classId)return d;
+    }
+    return std::nullopt;
+}
+} // namespace
+
 std::unique_ptr<DeviceInstance> JuceDeviceLoader::makeVst3(const engine::DeviceRequest& rq,
                                                            std::string& err) {
     const rows::PluginRef& ref = *rq.ref;
@@ -466,6 +488,20 @@ std::unique_ptr<DeviceInstance> JuceDeviceLoader::makeVst3(const engine::DeviceR
                     break;
                 }
             }
+        }
+    }
+    // SC-324: JUCE's identifier string carries a hash of the module's full path, so a project saved on
+    // another computer, or before the plug-in moved to another folder, names a path this catalogue does
+    // not have. As Live finds a plug-in by its own ID wherever it is installed, the catalogue's plug-in of
+    // the same format, name and class ID is this one: with the saved path's spelling it gives back the
+    // project's exact identity (the saved hint), and it loads from where it is now.
+    if(!found) {
+        if(const auto moved=movedVst3(*known_,uid)) {
+            auto projected=*moved;
+            if(!hint.isEmpty())projected.fileOrIdentifier=hint;
+            module=std::make_unique<juce::PluginDescription>(*moved);
+            found=std::make_unique<juce::PluginDescription>(projected.createIdentifierString()==uid?projected:*moved);
+            ++stats_.moved;
         }
     }
     // A completed discovery job owns the Browser catalogue. A project's
