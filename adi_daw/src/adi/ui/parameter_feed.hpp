@@ -100,6 +100,18 @@ class ParameterFeed {
         std::shared_ptr<const std::vector<panel::Record>> records;
     };
     std::map<std::int64_t, NativeCache> native_;
+    // Any other demanded device's declarations, defaults and groups, shared between publications and
+    // rebuilt only when its descriptors change. Rebuilt every 20 ms tick, a plug-in with hundreds of
+    // parameters (the VST3 Surge XT) took the whole message thread and the window stopped answering
+    // (walk-A A31).
+    struct TableCache {
+        std::uint64_t instance = 0;
+        bool available = false;
+        std::int32_t parameterCount = 0;
+        std::vector<device::ParamDescriptor> descriptors; // the non-null ones, in order
+        std::shared_ptr<const ParameterMetadata> metadata;
+    };
+    std::map<std::int64_t, TableCache> tables_;
     std::map<const void *, std::vector<std::int64_t>> demands_;
     std::set<std::int64_t> demanded_;
     std::map<std::pair<std::int64_t, std::string>, double> saved_;

@@ -60,6 +60,9 @@ void ParameterFeed::publish(engine::Session &session, std::uint64_t modelRevisio
     auto next = std::make_shared<ParameterPublication>();
     const auto publication = ++publication_;
     const auto &model = session.model();
+    // Room for every device first: growing would copy each record and its maps (MSVC's map does not
+    // move without a possible throw), every tick (walk-A A31).
+    next->reserve(model.devices.size());
     if (!demanded_.empty() && savedRevision_ != modelRevision) {
         saved_.clear();
         for (const auto &saved : model.pluginParams) saved_[{saved.deviceId, saved.paramId}] = saved.normalized;
@@ -176,22 +179,49 @@ void ParameterFeed::publish(engine::Session &session, std::uint64_t modelRevisio
                 next->push_back(std::move(data));
                 continue;
             }
-            if (instance)
-                for (std::int32_t i = 0; i < instance->paramCount(); ++i) {
-                    const auto *descriptor = instance->paramAt(i);
-                    if (!descriptor) continue;
-                    data.declared.push_back({descriptor->id, descriptor->name,
-                        (descriptor->automatable || descriptor->configurable) && !descriptor->missing && data.available,
-                        descriptor->automatable});
-                    data.defaults[descriptor->id] = descriptor->defaultValue.normalized;
-                    if (!descriptor->groupId.empty())
-                        data.parameterGroups[descriptor->id] = {descriptor->groupId, descriptor->groupName,
-                            descriptor->groupEnableControl, descriptor->bandIndex, descriptor->sectionId, descriptor->sectionName};
+            if (instance) {
+                // The tables are shared while every descriptor reads as before (walk-A A31): a field
+                // comparison, no allocation; a plug-in that renames or adds parameters rebuilds them.
+                const auto tableFields = [](const device::ParamDescriptor &d) {
+                    return std::tie(d.id, d.name, d.defaultValue.normalized, d.automatable, d.configurable, d.missing,
+                                    d.groupId, d.groupName, d.groupEnableControl, d.bandIndex, d.sectionId,
+                                    d.sectionName);
+                };
+                auto &tables = tables_[row.id];
+                const auto count = instance->paramCount();
+                bool same = tables.metadata && tables.instance == data.instance && tables.available == data.available &&
+                            tables.parameterCount == count;
+                std::size_t at = 0;
+                for (std::int32_t i = 0; same && i < count; ++i)
+                    if (const auto *descriptor = instance->paramAt(i))
+                        same = at < tables.descriptors.size() &&
+                               tableFields(*descriptor) == tableFields(tables.descriptors[at++]);
+                same = same && at == tables.descriptors.size();
+                if (!same) {
+                    tables = {};
+                    tables.instance = data.instance; tables.available = data.available; tables.parameterCount = count;
+                    auto metadata = std::make_shared<ParameterMetadata>();
+                    for (std::int32_t i = 0; i < count; ++i) {
+                        const auto *descriptor = instance->paramAt(i);
+                        if (!descriptor) continue;
+                        tables.descriptors.push_back(*descriptor);
+                        metadata->declared.push_back({descriptor->id, descriptor->name,
+                            (descriptor->automatable || descriptor->configurable) && !descriptor->missing && data.available,
+                            descriptor->automatable});
+                        metadata->defaults[descriptor->id] = descriptor->defaultValue.normalized;
+                        if (!descriptor->groupId.empty())
+                            metadata->groups[descriptor->id] = {descriptor->groupId, descriptor->groupName,
+                                descriptor->groupEnableControl, descriptor->bandIndex, descriptor->sectionId,
+                                descriptor->sectionName};
+                    }
+                    tables.metadata = std::move(metadata);
                 }
-            data.resolved = panel::resolve(model, row.id, data.declared);
-            if (!data.plugin && !data.parameterGroups.empty() && !data.resolved.configured) {
+                data.metadata = tables.metadata;
+            }
+            data.resolved = panel::resolve(model, row.id, data.declarations());
+            if (!data.plugin && !data.groups().empty() && !data.resolved.configured) {
                 data.resolved.entries.clear();
-                for (const auto &parameter : data.declared) data.resolved.entries.push_back({parameter.id, false});
+                for (const auto &parameter : data.declarations()) data.resolved.entries.push_back({parameter.id, false});
                 data.resolved.showsConfigureHint = false;
             }
             // Configure needs all metadata; only displayed controls need values/text.
@@ -242,6 +272,7 @@ void ParameterFeed::publish(engine::Session &session, std::uint64_t modelRevisio
     }
     std::erase_if(identities_, [publication](const auto &item) { return item.second.seen != publication; });
     std::erase_if(native_, [this](const auto &item) { return !identities_.contains(item.first); });
+    std::erase_if(tables_, [this](const auto &item) { return !identities_.contains(item.first); });
     // Consumers can keep their bindings and skip layout and painting between actual changes.
     if (!std::equal(next->begin(), next->end(), current_->begin(), current_->end(), samePanel))
         current_ = std::move(next);

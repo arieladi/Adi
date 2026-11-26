@@ -358,8 +358,8 @@ int main(){
     shown=*std::find_if(requested->begin(),requested->end(),[&](const auto& p){return p.id==shown.id;});
     check(instance&&instance->paramCount()==67,"full processing controls exist before first processing");if(!instance)return 2;
     check(instance->getParam("19").real==1&&instance->getParam("20").real==0,"Limiter starts on and Clip off");
-    check(shown.parameterGroups.at("19").groupId=="limiter"&&shown.parameterGroups.at("19").groupEnableControl&&
-          shown.parameterGroups.at("20").groupId=="clip"&&shown.parameterGroups.at("20").groupEnableControl,
+    check(shown.groups().at("19").groupId=="limiter"&&shown.groups().at("19").groupEnableControl&&
+          shown.groups().at("20").groupId=="clip"&&shown.groups().at("20").groupEnableControl,
           "real independent stage enables drive group metadata");
     Tone tone;doc->session().setSourcesFor([&](std::int64_t track){return track==2?std::vector<engine::Node*>{&tone}:std::vector<engine::Node*>{};});
     doc->prepare(48000,256);doc->tick(1);doc->session().transport().play();
