@@ -26,6 +26,13 @@ struct WaveformSource {
     std::filesystem::path path;
 };
 namespace {
+void appendSharedStorageWarning(const Store &store, std::string &warning) {
+    if (!store.usesSharedStorage())
+        return;
+    if (!warning.empty())
+        warning += ' ';
+    warning += "Project is in a synced or network folder. Close it before copying it or opening it elsewhere.";
+}
 // The waveform worker's build: its own read-only store on the project's file, opened on the worker
 // at its first build and kept for the next (the worker is the only caller).
 // The worker's reader follows the document's file: after Save As the pool rows of anything imported
@@ -122,6 +129,7 @@ std::unique_ptr<ProjectDocument> ProjectDocument::open(const std::filesystem::pa
         document->parameterOps_.attachSession(document->session_);
         document->feed_.publish(document->session_, document->realisedGeneration_);
         document->persistReportedLatencies();
+        appendSharedStorageWarning(*document->store_, document->warning_);
         error.clear();
         return document;
     } catch (const std::exception &e) {
@@ -190,6 +198,7 @@ bool ProjectDocument::saveAs(const std::filesystem::path &path) {
             warning_ += ' ';
         warning_ += "Saved, but the session did not re-read the file: " + error_;
     }
+    appendSharedStorageWarning(*store_, warning_);
     error_.clear();
     return true;
 }

@@ -1066,6 +1066,12 @@ class AdiApplication final : public juce::JUCEApplication,
         syncMixView(*floating_, *root_, true);
         if (!noAudio_)
             attachAudio();
+        if (!document_->warning().empty()) {
+            auto message = document_->warning();
+            if (!root_->error().empty())
+                message += " " + root_->error();
+            root_->say(std::move(message));
+        }
         return true;
     }
     void attachAudio() {

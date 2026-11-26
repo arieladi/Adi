@@ -5,15 +5,18 @@
 // silent — the project still opens, just missing everything since the last
 // checkpoint — so it is asserted by counting files, not by trusting a pragma.
 
+#include "scoped_environment.hpp"
 #include "temp_directory.hpp"
 
 #include "adi/blob.hpp"
 #include "adi/store.hpp"
 #include "adi/engine/snapshot.hpp"
 #include "adi/history.hpp"
+#include "adi/media/media_ops.hpp"
 #include "adi/ops.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <sqlite3.h>
 
 #include <cstdio>
 #include <filesystem>
@@ -185,6 +188,66 @@ void testWalSidecarRule() {
         const auto name = re->db().execAndGet("SELECT name FROM project WHERE id=1").getString();
         check(name == "WAL test", "data written before close survived the checkpoint");
     }
+}
+
+void testSyncedProjectCopies() {
+    section("SC-159 copied main file includes live committed edits");
+    Scratch s("synced");
+    const auto syncRoot = s.dir / fs::path(u8"Synced caf\u00e9");
+    const auto folder = syncRoot / "Songs";
+    fs::create_directories(folder);
+    adi::test::ScopedOneDrive oneDrive(syncRoot);
+
+    StoreError err{};
+    const auto path = folder / "Song.adi";
+    auto store = Store::create(path, err);
+    check(store != nullptr && err == StoreError::Ok, "create a project inside the sync root");
+    if (!store) return;
+
+    OpRequest edit;
+    edit.opType = "project.setName";
+    edit.payload = {{"name", "Latest committed name"}};
+    check(OpJournal(*store).commit(edit).ok, "commit a project edit");
+    const auto published = s / "Copied.adi";
+    fs::copy_file(path, published);
+    auto copy = Store::open(published, err, true);
+    check(copy && err == StoreError::Ok &&
+              copy->db().execAndGet("SELECT name FROM project WHERE id=1").getString() ==
+                  "Latest committed name",
+          "copying just the main file while the original is still open includes the edit");
+
+    const auto legacyPath = folder / "Legacy.adi";
+    auto established = Store::create(legacyPath, err);
+    const bool closed = established && established->close();
+    check(closed, "prepare a closed input from an older version");
+    if (!closed) return;
+    {
+        SQLite::Database legacy(media::pathUtf8(legacyPath), SQLite::OPEN_READWRITE);
+        // Simulate a process that left a committed WAL behind without its
+        // usual checkpoint on close. This leaves the main file at Untitled.
+        check(legacy.execAndGet("PRAGMA journal_mode=WAL").getString() == "wal",
+              "the old writer uses WAL");
+        const auto configured = sqlite3_db_config(legacy.getHandle(),
+            SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, 1, static_cast<int*>(nullptr));
+        check(configured == SQLITE_OK, "keep the WAL on connection close");
+        if (configured != SQLITE_OK) return;
+        legacy.exec("UPDATE project SET name='Committed in legacy WAL' WHERE id=1");
+    }
+    auto wal = legacyPath;
+    wal += "-wal";
+    check(fs::exists(wal) && fs::file_size(wal) > 32, "committed changes remain in the old WAL");
+
+    auto legacy = Store::open(legacyPath, err);
+    check(legacy != nullptr && err == StoreError::Ok, "open the synced project from an older version");
+    if (!legacy) return;
+    check(!fs::exists(wal), "the recovered project does not keep a live WAL sidecar");
+    const auto recovered = s / "Recovered.adi";
+    fs::copy_file(legacyPath, recovered);
+    copy = Store::open(recovered, err, true);
+    check(copy && err == StoreError::Ok &&
+              copy->db().execAndGet("SELECT name FROM project WHERE id=1").getString() ==
+                  "Committed in legacy WAL",
+          "the live main file includes changes recovered from the old WAL");
 }
 
 // --- SPEC 2 and 11: identity and version gates -------------------------------
@@ -412,6 +475,7 @@ int main() {
     testCreateAndOpen();
     testNewProjectDefaults();
     testWalSidecarRule();
+    testSyncedProjectCopies();
     testIdentityAndVersionGates();
     testBlobRoundTrip();
     testSchemaMatchesFile();

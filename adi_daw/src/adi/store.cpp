@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "adi/store.hpp"
+#include "adi/appdata.hpp"
 #include "adi/media/publish_file.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/gesture_navigation_detail.hpp"
@@ -11,16 +12,80 @@
 #include "adi/version.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <algorithm>
 
 #include <atomic>
 #include <chrono>
+#include <iterator>
 #include <map>
 #include <random>
 #include <stdexcept>
 #include <system_error>
 
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#elif defined(__APPLE__)
+#include <sys/mount.h>
+#elif defined(__linux__)
+#include <linux/magic.h>
+#include <sys/vfs.h>
+#endif
+
 namespace adi {
 namespace {
+
+namespace fs = std::filesystem;
+
+bool insideDirectory(const fs::path& path, const fs::path& directory) {
+    if (!directory.is_absolute()) return false;
+    std::error_code error;
+    const auto root = fs::canonical(directory, error);
+    if (error) return false;
+    const auto depth = std::distance(path.begin(), path.end()) -
+                       std::distance(root.begin(), root.end());
+    if (depth <= 0) return false;
+    auto ancestor = path;
+    for (auto remaining = depth; remaining > 0; --remaining)
+        ancestor = ancestor.parent_path();
+    return fs::equivalent(ancestor, root, error);
+}
+
+bool projectUsesSharedStorage(const fs::path& path) {
+    if (path.empty() || path == fs::path(":memory:")) return false;
+    std::error_code error;
+    const auto canonical = fs::canonical(path, error);
+    if (error) return false;
+    for (const char* root : {"OneDrive", "OneDriveConsumer", "OneDriveCommercial"})
+        if (insideDirectory(canonical, appdata::environmentPath(root))) return true;
+#if defined(_WIN32)
+    std::wstring volume((std::max)(canonical.native().size() + 2, std::size_t{MAX_PATH}), L'\0');
+    return GetVolumePathNameW(canonical.c_str(), volume.data(), static_cast<DWORD>(volume.size())) &&
+           GetDriveTypeW(volume.c_str()) == DRIVE_REMOTE;
+#elif defined(__APPLE__)
+    const auto home = appdata::environmentPath("HOME");
+    if (insideDirectory(canonical, home / "Library/Mobile Documents/com~apple~CloudDocs") ||
+        insideDirectory(canonical, home / "Library/CloudStorage")) return true;
+    struct statfs volume{};
+    return ::statfs(canonical.c_str(), &volume) == 0 && (volume.f_flags & MNT_LOCAL) == 0;
+#elif defined(__linux__)
+    struct statfs volume{};
+    if (::statfs(canonical.c_str(), &volume) != 0) return false;
+    switch (static_cast<unsigned long>(volume.f_type)) {
+        case NFS_SUPER_MAGIC:
+        case SMB_SUPER_MAGIC:
+        case CIFS_SUPER_MAGIC:
+        case SMB2_SUPER_MAGIC:
+            return true;
+        default:
+            return false;
+    }
+#else
+    return false;
+#endif
+}
 
 std::string sqlitePath(const std::filesystem::path& path) {
     const auto bytes=path.generic_u8string();
@@ -236,7 +301,8 @@ bool isClientId(const std::string& id) {
 
 Store::Store(std::unique_ptr<SQLite::Database> db, std::filesystem::path p, bool ro,
              std::shared_ptr<media::ProjectFileLease> lease)
-    : fileLease_(std::move(lease)), db_(std::move(db)), path_(std::move(p)), readOnly_(ro), clientId_(newClientId()) {
+    : fileLease_(std::move(lease)), db_(std::move(db)), path_(std::move(p)), readOnly_(ro),
+      sharedStorage_(projectUsesSharedStorage(fileLease_ ? fileLease_->path() : path_)), clientId_(newClientId()) {
     appliedDomain_ = detail::makeAppliedDomain(*this);
 }
 
@@ -258,13 +324,24 @@ Store::~Store() {
 }
 
 bool Store::applySessionPragmas() {
-    // SPEC §3.2. WAL is what makes autosave-during-playback cheap and lets the
-    // render path read a consistent snapshot while the user keeps editing.
+    // SPEC §3.2. Local projects use WAL for concurrent readers. A commit on
+    // shared storage must be in the main file before the rollback journal
+    // disappears, and EXTRA also syncs the directory after that unlink.
     try {
-        if (!readOnly_) db_->exec("PRAGMA journal_mode = WAL");
-        db_->exec("PRAGMA synchronous = NORMAL");
-        db_->exec("PRAGMA foreign_keys = ON");
         db_->exec("PRAGMA busy_timeout = 5000");
+        if (sharedStorage_) {
+            if (!readOnly_) {
+                db_->exec("PRAGMA synchronous = EXTRA");
+                const auto mode = db_->execAndGet("PRAGMA journal_mode = DELETE").getString();
+                if (mode != "delete") {
+                    lastError_ = "could not move the shared project out of WAL mode";
+                    return false;
+                }
+            }
+        } else {
+            if (!readOnly_) db_->exec("PRAGMA journal_mode = WAL");
+            db_->exec("PRAGMA synchronous = NORMAL");
+        }
         return true;
     } catch (const SQLite::Exception& e) {
         lastError_ = e.what();
@@ -380,7 +457,7 @@ std::unique_ptr<Store> Store::createEmpty(const std::filesystem::path& path, Sto
 
         // ONE transaction for the schema and its seed. Before this, each of the
         // schema's ~100 statements committed on its own, in the rollback
-        // journal with synchronous=FULL (WAL starts below), so a new project
+        // journal with synchronous=FULL (session pragmas are set below), so a new project
         // cost ~100 journal create/flush/delete cycles. On Windows that was
         // most of every store-making test suite's time: adi_mixer_tests, which
         // makes 71 stores, spent 112 of its 145 s waiting on the disk. Same
@@ -499,13 +576,21 @@ std::unique_ptr<Store> Store::open(const std::filesystem::path& path, StoreError
     // the tables it lacks get empty TEMP stand-ins on this connection -- the one
     // place readers are protected, rather than a guard in every reader.
     // A newer minor is never touched (SPEC §11): `minor < kSchemaMinor` only.
+    auto store = std::unique_ptr<Store>(new Store(std::move(db), path, effectiveReadOnly,lease));
+    const bool configureBeforeMigration = store->usesSharedStorage() && !effectiveReadOnly;
+    if (configureBeforeMigration && !store->applySessionPragmas()) {
+        err = StoreError::SqlError;
+        return nullptr;
+    }
     std::optional<int> upgradedFrom;
     int openedMinor = minor;
     if (major == kSchemaMajor && minor < kSchemaMinor) {
         if (!effectiveReadOnly) {
             std::string why;
-            if (!migrateToCurrent(*db, minor, why)) {
+            if (!migrateToCurrent(store->db(), minor, why)) {
                 err = StoreError::MigrationFailed;
+                // A failed migration should close without changing journal mode.
+                store->db_.reset();
                 return nullptr;
             }
             upgradedFrom = minor;
@@ -517,7 +602,7 @@ std::unique_ptr<Store> Store::open(const std::filesystem::path& path, StoreError
                     std::string sql = objects.at(table).sql;
                     const std::string prefix = "CREATE TABLE ";
                     if (sql.rfind(prefix, 0) != 0) throw std::runtime_error("unexpected DDL for " + table);
-                    db->exec("CREATE TEMP TABLE " + sql.substr(prefix.size()));
+                    store->db().exec("CREATE TEMP TABLE " + sql.substr(prefix.size()));
                 }
             } catch (const std::exception&) {
                 err = StoreError::SqlError;
@@ -526,11 +611,16 @@ std::unique_ptr<Store> Store::open(const std::filesystem::path& path, StoreError
         }
     }
 
-    auto store = std::unique_ptr<Store>(new Store(std::move(db), path, effectiveReadOnly,lease));
     store->major_ = major;
     store->minor_ = openedMinor;
     store->upgradedFrom_ = upgradedFrom;
-    if (!store->applySessionPragmas()) {
+    if (!configureBeforeMigration && !store->applySessionPragmas()) {
+        err = StoreError::SqlError;
+        return nullptr;
+    }
+    try {
+        store->db().exec("PRAGMA foreign_keys = ON");
+    } catch (const SQLite::Exception&) {
         err = StoreError::SqlError;
         return nullptr;
     }
@@ -557,7 +647,7 @@ bool Store::closeFinalized() {
     if (closed_ || !db_) return true;
     closed_ = true;
 
-    if (readOnly_) {
+    if (readOnly_ || sharedStorage_) {
         db_.reset();
         fileLease_.reset();
         return true;

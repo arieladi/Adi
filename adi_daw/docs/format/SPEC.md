@@ -101,20 +101,31 @@ undo/redo, history branching and reverting to a snapshot taken before any edit.
 
 ### 3.2 Required pragmas while a project is open
 
+For a project on local storage:
+
 ```sql
 PRAGMA journal_mode = WAL;
-PRAGMA synchronous  = NORMAL;          -- FULL on removable/network volumes
+PRAGMA synchronous  = NORMAL;
 PRAGMA busy_timeout = 5000;
 ```
 
 `WAL` is what makes autosave-during-playback cheap and lets the render/export
 path read a consistent snapshot while the user keeps editing.
 
+On recognized sync folders and network volumes, writable projects use
+`journal_mode=DELETE` and `synchronous=EXTRA` (ADR-0258 d7, SC-159). Each
+completed transaction lands in the main file before the rollback journal is
+removed. A writable open must fold any existing WAL and leave WAL mode
+successfully before it can write. The same busy timeout applies. The window
+warns on opening a project in one of these locations. Close the project before
+copying it or opening it elsewhere. A file sync or raw copy can race an active
+write, and network storage relies on the volume's locking and sync semantics.
+
 ### 3.3 Close policy — the WAL sidecar rule
 
 **A cleanly closed `.adi` MUST be exactly one file on disk.**
 
-While open, SQLite maintains `foo.adi-wal` and `foo.adi-shm` alongside it. A user
+While open in WAL mode, SQLite maintains `foo.adi-wal` and `foo.adi-shm` alongside it. A user
 who copies or emails only `foo.adi` from that state gets a project that opens
 *cleanly* but is silently missing everything since the last checkpoint — a worse
 failure than an error.

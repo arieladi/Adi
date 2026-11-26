@@ -8,7 +8,7 @@
 //
 //   SPEC §2    application_id is verified before any table is trusted
 //   SPEC §3.1  the pragmas a new file is created with
-//   SPEC §3.2  WAL while open
+//   SPEC §3.2  WAL locally and rollback journaling for shared storage
 //   SPEC §3.3  THE CLOSE POLICY -- a cleanly closed .adi is exactly ONE file
 //   SPEC §11   a newer major schema opens read-only, never read-write
 //   ADR-0009   one blob per editable object, never wider
@@ -142,6 +142,7 @@ public:
     [[nodiscard]] StoreFileResult collectAndExport(const std::filesystem::path&) const;
 
     [[nodiscard]] bool readOnly() const { return readOnly_; }
+    [[nodiscard]] bool usesSharedStorage() const { return sharedStorage_; }
     [[nodiscard]] const std::filesystem::path& path() const { return path_; }
     [[nodiscard]] int schemaMajor() const { return major_; }
     [[nodiscard]] int schemaMinor() const { return minor_; }
@@ -222,6 +223,7 @@ private:
     std::unique_ptr<SQLite::Database> db_;
     std::filesystem::path path_;
     bool readOnly_ = false;
+    bool sharedStorage_ = false;
     bool closed_ = false;
     int major_ = kSchemaMajor;
     int minor_ = kSchemaMinor;

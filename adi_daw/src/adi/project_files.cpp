@@ -257,6 +257,7 @@ StoreFileResult Store::saveAs(const std::filesystem::path& output,StoreFileColli
     gestureDomain_.swap(replacement->gestureDomain_);
     detail::rebindAppliedDomain(*this);
     std::swap(readOnly_,replacement->readOnly_);std::swap(major_,replacement->major_);std::swap(minor_,replacement->minor_);
+    std::swap(sharedStorage_, replacement->sharedStorage_);
     upgradedFrom_.swap(replacement->upgradedFrom_);lastError_.clear();
     const bool folded=replacement->closeFinalized();
     return {true,{},joinedWarning(copied.warning,folded?std::string{}:std::string("old project is still in use; its WAL could not be folded"))};

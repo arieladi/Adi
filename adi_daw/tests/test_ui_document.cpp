@@ -6,6 +6,7 @@
 #include "adi/ui/project_document.hpp"
 #include "adi/ui/arrangement_geometry.hpp"
 #include "knobs_device.hpp"
+#include "scoped_environment.hpp"
 #include "temp_directory.hpp"
 #include "juce/device_core.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -1191,6 +1192,30 @@ void saveAsKeepsTheTake(const std::filesystem::path &dir) {
               doc->warning().find("its take kept") == std::string::npos && clipsIn(third) == clipsBefore + 1,
           "Save As after a Record with nothing recorded: the take is not kept, says so, and Save As does not claim it");
 }
+void sharedStorageWarning(const std::filesystem::path &dir) {
+    const auto sync = dir / "sync";
+    std::filesystem::create_directory(sync);
+    const test::ScopedOneDrive oneDrive(sync);
+    const auto mentionsSharedStorage = [](const ui::ProjectDocument &doc) {
+        return doc.warning().find("synced or network folder") != std::string::npos;
+    };
+
+    std::string error;
+    const auto saved = sync / "saved.adi";
+    auto doc = ui::ProjectDocument::open(dir / "local.adi", true, {}, error);
+    check(doc != nullptr && !mentionsSharedStorage(*doc), "local project opens without a shared storage warning");
+    if (!doc) return;
+    check(doc->saveAs(saved) && mentionsSharedStorage(*doc), "Save As into a sync folder warns");
+    doc.reset();
+    doc = ui::ProjectDocument::open(saved, false, {}, error);
+    check(doc != nullptr && mentionsSharedStorage(*doc), "opening a project in a sync folder warns");
+    if (!doc) return;
+    check(doc->saveAs(dir / "moved-local.adi") && !mentionsSharedStorage(*doc),
+          "Save As to local storage clears the shared storage warning");
+
+    const auto made = ui::ProjectDocument::open(sync / "new.adi", true, {}, error);
+    check(made != nullptr && mentionsSharedStorage(*made), "creating a project in a sync folder warns");
+}
 // walk-A A18: a take recorded after Save As lands in the saved file. The session stamped every
 // capture with the file it loaded, so each take after a Save As was refused as "a different project"
 // and its audio removed.
@@ -1278,6 +1303,8 @@ int main(int argc, char **argv) {
         saveAsKeepsTheTake(guardDir.path());
         test::TempDirectory afterDir("ui_document", "after-save-as");
         recordAfterSaveAs(afterDir.path());
+        test::TempDirectory syncDir("ui_document", "shared-storage");
+        sharedStorageWarning(syncDir.path());
         test::TempDirectory refusedDir("ui_document", "refused");
         discardRefusalSaid(refusedDir.path());
         test::TempDirectory dragDir("ui_document", "drag");
