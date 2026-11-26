@@ -4,6 +4,28 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-26 — `land/*` Round 3 (`land/basics-1127c` `e73d84ce` — FAIL on Clang 14 JUCE)
+
+Verified `origin/land/basics-1127c` at `e73d84ce` (win's stack merging `land/basics-1127b` + `basics/tracks-chain` + `basics/recording-chain` + MSVC shadowing fixes `53697d9c`, `e73d84ce`) on all 14 touched JUCE TUs (`-DADI_WITH_JUCE=ON -DADI_WERROR=ON`) under **GCC 12.4.0** and **Clang 14.0.6 + libstdc++ 12**.
+
+| Branch | SHA | Compiler / Tool | JUCE TUs (`-DADI_WITH_JUCE=ON -DADI_WERROR=ON`, 14 TUs) | Verdict |
+|---|---|---|---|---|
+| `land/basics-1127c` | `e73d84ce` | GCC 12.4.0 | **PASS** (14/14, 0 warnings, 350.15 s: `ui_main.cpp.o`, `ui_arrangement.cpp.o`, `ui_browser.cpp.o`, `ui_clipview.cpp.o`, `ui_controlbar.cpp.o`, `ui_devices.cpp.o`, `ui_floating.cpp.o`, `ui_mixer.cpp.o`, `ui_shell.cpp.o`, `app_audio_page.cpp.o`, `test_ui_shell.cpp.o`, `test_vst3_key.cpp.o`, `vst3_host.cpp.o`, `vst3_probe.cpp.o`) | — |
+| `land/basics-1127c` | `e73d84ce` | Clang 14.0.6 + libstdc++ 12 | **FAIL** (13/14 0 warnings; **`src/juce/ui_arrangement.cpp:2867:42` hard compile error**) | **FAIL (do not land)** |
+
+### Finding on `land/basics-1127c` (`e73d84ce`)
+
+- **Same Clang 14.0.6 hard compile error from `basics/tracks-chain` (`SC-87` `002f0b1b`) is present on `land/basics-1127c` at `src/juce/ui_arrangement.cpp:2867:42`:**
+  - `src/juce/ui_arrangement.cpp:2867:42: error: no matching member function for call to 'emplace'` (`auto &stroke = automationStroke_.emplace();`)
+  - `note: candidate template ignored: requirement 'is_constructible_v<adi::ui::ArrangementCanvas::AutomationStroke>' was not satisfied [with _Args = <>]`
+  - Caused by nested `struct ArrangementCanvas::AutomationStroke` with default member initializers (`src/juce/ui_arrangement.hpp:336–346`) under Clang 14 (CWG 1397). Fix: move `AutomationStroke` to namespace scope, or replace `automationStroke_.emplace()` with `automationStroke_ = AutomationStroke{};` (or explicit `AutomationStroke() = default;`).
+  - **Owner:** `basics/tracks` (`SC-87` `002f0b1b`; also affects `land/basics-1127c` `e73d84ce` and `basics/tracks-chain` `35b782d6` at line 2889).
+  - **Smallest repro:** `cmake -S adi_daw -B build-juce -G Ninja -DCMAKE_CXX_COMPILER=clang++-14 -DADI_WITH_JUCE=ON -DADI_WERROR=ON && cmake --build build-juce --target CMakeFiles/adi_ui_shell.dir/src/juce/ui_arrangement.cpp.o`.
+
+(Headless GCC 12 / Clang 14 + acceptance + ASan check on `land/basics-1127c` will follow immediately once `ui_arrangement.cpp` compiles under Clang 14; running headless GCC 12/Clang 14 now to catch any other defects on `e73d84ce` ahead of the fix.)
+
+---
+
 ## 2026-11-26 — `basics/*` Round 6 (`basics/recording-chain` `27e72637` — PASS)
 
 Verified `origin/basics/recording-chain` at `27e72637` (recording queue consolidated chain on `land/basics-1127b`, covering `SC-02`, `SC-22`, `SC-245`, `SC-247`, `SC-20`, `SC-21`, `SC-246`, `SC-23`, `SC-24`; 35 files vs `origin/land/basics-1127b`) under **GCC 12.4.0** and **Clang 14.0.6 + libstdc++ 12** (`-DADI_WERROR=ON`, headless Pd on, JUCE off, `-DADI_ACCEPTANCE=ON`), all 7 touched JUCE TUs (`-DADI_WITH_JUCE=ON -DADI_WERROR=ON`), and **Clang 14 ASan + LSan + UBSan**.
