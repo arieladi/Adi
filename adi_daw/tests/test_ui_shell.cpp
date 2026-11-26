@@ -4691,13 +4691,19 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
         root.frame();
         geometry.selection.track = 1;
         geometry.selection.insert = bar5;
-        if (auto *item = browser.list.getComponentForRowNumber(1))
-            item->mouseDoubleClick(pressAt(*item, {10.f, 8.f}));
+        // These are painted JUCE rows. getComponentForRowNumber only returns a custom row component.
+        const auto click = browser.list.getRowPosition(1, true).getCentre();
+        auto *item = browser.list.getComponentAt(click);
+        const bool foundRow = item != nullptr && browser.list.getRowNumberOfComponent(item) == 1;
+        check(foundRow, "hit-testing the list finds the painted sample row");
+        if (foundRow)
+            item->mouseDoubleClick(pressAt(*item, item->getLocalPoint(&browser.list, click).toFloat()));
         root.frame();
         const auto doubled = clipsOn(1);
-        check(doubled.size() == before + 1 && doubled.back() == Clips::value_type{"Clap", bar5},
-              "double-clicking the sample uses the same clip placement");
-        check(root.command(AppCommands::Undo), "undo the browser's double-click");
+        const bool placed = doubled.size() == before + 1 && doubled.back() == Clips::value_type{"Clap", bar5};
+        check(placed, "double-clicking the sample uses the same clip placement");
+        if (placed)
+            check(root.command(AppCommands::Undo), "undo the browser's double-click");
         root.frame();
         browser.setListing({});
     }
