@@ -328,9 +328,12 @@ void unwarpedTempoChanges() {
 }
 void reversedSource() {
     constexpr int start=73, source=37, length=21001, block=317;
+    const auto addReversed = [](Fixture& fixture) {
+        fixture.add(1,start,length,source,length);
+        fixture.store->db().exec("UPDATE audio_clips SET reverse=1");
+    };
     Fixture f(48000,2,30000);
-    f.add(1,start,length,source,length);
-    f.store->db().exec("UPDATE audio_clips SET reverse=1");
+    addReversed(f);
     f.load(block);
     bool exact=true;
     for(int at=0;at<start+length+block;at+=block) {
@@ -355,13 +358,15 @@ void reversedSource() {
         writer.write(forward.media.data(),30000);
         writer.close();
     }
-    f.load(block,44100);
+    Fixture reversed(48000,2,30000);
+    addReversed(reversed);
+    reversed.load(block,44100);
     forward.load(block,44100);
     bool resampled=true;
     for(const auto at:{13000,200,7500}) {
-        f.session.transport().locate(at);
+        reversed.session.transport().locate(at);
         forward.session.transport().locate(at);
-        resampled=resampled && f.render(block)==forward.render(block);
+        resampled=resampled && reversed.render(block)==forward.render(block);
     }
     check(resampled,"reverse seeks and resampling match a physically reversed source window");
 }
