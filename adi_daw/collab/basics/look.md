@@ -8,6 +8,7 @@ The Linux session owns `basics/look-chain`, started from `origin/main`. The queu
 | SC-112 | `basics/look-chain` at `3ddd7c56` | Independent persistent Info analyser with Spectrogram as its initial mode. Right click chooses a renderer and left click opens Analysers. Window and Mix View seats. | Peerless menu, render and persistence checks passed. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 | SC-111 | `basics/look-chain` at `587573d1` | Info uses the Browser column width through the dock layout. Window seat. | Peerless width, swap and narrow layout assertions passed. Reviewed and refreshed the structural software fixtures. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 | SC-110 | `basics/look-chain` at `26569ddf` | Removed the AI tab and its chat space so the list reaches the preview. Old projects can still decode the former flag. Window seat. | Headless geometry and legacy settings checks passed. Reviewed and refreshed the structural software fixtures. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
+| SC-72 | `basics/look-chain` at `02bf4001` | Reveal the insert marker after Home, a locator jump or an entered position. Window seat. | Peerless Home, typed-position and locator tests verified the viewport and marker. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 
 ## Measurements
 
@@ -57,5 +58,17 @@ At 1440 × 900 Compact the Browser frame `(8, 35, 308, 623)`, search box `(32, 3
 | Browser content viewport | `(127, 81, 185, 526)` collapsed or `(127, 81, 185, 310)` saved open | `(127, 81, 185, 546)` in both cases |
 
 The original collapsed tab bounds were confirmed by the peerless masked regression reference. Legacy `aiChat: true` is still decoded. The approved sheet uses the full list area up to the preview and has no intervening tab.
+
+### SC-72
+
+At 1440 × 900 Compact with 30 px per quarter, the lane canvas stays `(328, 115, 788, 525)`. On the selected MIDI lane the insert marker stroke is 1 × 86 px.
+
+| Gesture | Projected marker before | Visible marker after |
+|---|---|---|
+| Typed `33.1.1` from song start | `(4168, 115)`, beyond the canvas | `(328, 115)`, visible left edge at quarter 128 |
+| Home from quarter 128 | `(-3512, 115)`, clipped on the left | `(328, 115)`, visible left edge at quarter 0 |
+| Next locator at `17.1.1` from song start | `(2248, 115)`, beyond the canvas | `(328, 115)`, visible left edge at quarter 64 |
+
+Typing the already-visible next bar from quarter 128 leaves the viewport at quarter 128 and puts the marker at `(448, 115)`.
 
 ## For the director
