@@ -8625,6 +8625,18 @@ void rangeSelection(AppCommands &commands, const std::filesystem::path &dir) {
               fourth.front()->lengthTicks == 2 * bar,
           "SC-177: Delete after a track title click leaves that track's overlapping clip intact");
 
+    const auto popupInsert = pickClip(3);
+    int headerMenus = 0;
+    root.arrangement.onContextMenu = [&](juce::Point<int>, bool header, const engine::AutomationLaneNode *) {
+        if (header)
+            ++headerMenus;
+    };
+    headers.mouseDown(pressAt(headers, title(4), juce::ModifierKeys::rightButtonModifier));
+    headers.mouseUp(pressAt(headers, title(4)));
+    root.arrangement.onContextMenu = nullptr;
+    check(headerMenus == 1 && trackOnly(4, popupInsert),
+          "SC-177: a popup on another title clears the earlier clip's time range");
+
     canvas.mouseDown(pressAt(canvas, rangeFrom));
     canvas.mouseDrag(dragAt(canvas, rangeFrom, rangeTo));
     canvas.mouseUp(dragAt(canvas, rangeFrom, rangeTo));
