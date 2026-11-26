@@ -2360,6 +2360,8 @@ bool Session::readDriverClock(DriverClock& result) const noexcept {
 // commits `transport.play` before it posts Play, and the generation that commit builds
 // while stopped could be published just after the driver started, cold, so the second
 // block of playback was silent. Only while a driver runs: with no device nothing plays.
+// An unfinished Warp render must not hold the owner here. Prime the other
+// sources and post the Warp page requests so its worker can join when ready.
 void Session::primeWhilePlaying(ClipPlayback& clips, const TimingView& timing) {
     DriverClock clock;
     if (driverClockSequence_.load() == 0 || !readDriverClock(clock)) return;
@@ -2369,12 +2371,12 @@ void Session::primeWhilePlaying(ClipPlayback& clips, const TimingView& timing) {
     requested.play();
     constexpr auto timeout = std::chrono::milliseconds(100);
     if (!timing.settings.hasLoop || !timing.settings.loopEnabled) {
-        (void)clips.primeAt(requested, timeout);
+        (void)clips.primeAt(requested, timeout, false);
         return;
     }
     Transport loopHead = requested;
     loopHead.locate(timing.loopBegin);
-    (void)clips.primeAt(requested, loopHead, timeout);
+    (void)clips.primeAt(requested, loopHead, timeout, false);
 }
 
 Session::RenderBlock::RenderBlock(Session& session) noexcept
