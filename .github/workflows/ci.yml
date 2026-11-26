@@ -327,11 +327,14 @@ jobs:
           set -euo pipefail
           [ -n "${CC:-}" ]  || unset CC
           [ -n "${CXX:-}" ] || unset CXX
+          # ADI_ACCEPTANCE (ADR-0255 d1): the one session of ADR-0248 d2, headless, runs with the
+          # suites on every leg (`adi_acceptance_wts01`, label `acceptance`). It was off in CI
+          # until 26 November, so a merge could break the session and stay green.
           if [ -n "${OSX_ARCHS:-}" ]; then
-            cmake -S adi_daw -B adi_daw/build -DCMAKE_BUILD_TYPE=Debug \
+            cmake -S adi_daw -B adi_daw/build -DCMAKE_BUILD_TYPE=Debug -DADI_ACCEPTANCE=ON \
                   -DCMAKE_OSX_ARCHITECTURES="$OSX_ARCHS"
           else
-            cmake -S adi_daw -B adi_daw/build -DCMAKE_BUILD_TYPE=Debug
+            cmake -S adi_daw -B adi_daw/build -DCMAKE_BUILD_TYPE=Debug -DADI_ACCEPTANCE=ON
           fi
 
       # --config is required by the multi-config Visual Studio generator on
@@ -1026,7 +1029,7 @@ jobs:
         run: |
           set -euo pipefail
           cmake -S adi_daw -B adi_daw/build-juce \
-                -DCMAKE_BUILD_TYPE=Debug -DADI_WITH_JUCE=ON
+                -DCMAKE_BUILD_TYPE=Debug -DADI_WITH_JUCE=ON -DADI_ACCEPTANCE=ON
           cmake --build adi_daw/build-juce --config Debug \
                 --target adi_audio_probe --parallel "$ADI_JOBS"
           cmake --build adi_daw/build-juce --config Debug \
@@ -1038,6 +1041,18 @@ jobs:
                 --target adi_play --parallel "$ADI_JOBS"
           cmake --build adi_daw/build-juce --config Debug \
                 --target adi_test_vst3 --parallel "$ADI_JOBS"
+
+      # The session's VST3 half (ADR-0255 d1): a VST3 instrument played from the app's MIDI
+      # consumer, and a project holding one exported (`adi_acceptance_wts01_vst3`). On Windows,
+      # where it is proved; the Mac's run of it is owed.
+      - name: Build and run the session suite's VST3 half
+        if: runner.os == 'Windows'
+        run: |
+          set -euo pipefail
+          cmake --build adi_daw/build-juce --config Debug \
+                --target adi_acceptance_wts01_vst3 --parallel "$ADI_JOBS"
+          ctest --test-dir adi_daw/build-juce -C Debug --output-on-failure --no-tests=error \
+                -R '^adi_acceptance_wts01_vst3$'
 
       - name: Build and check research diagnostics and transport oracle
         if: runner.os == 'Windows'
