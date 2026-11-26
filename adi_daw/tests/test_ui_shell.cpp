@@ -717,15 +717,29 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
         headers.mouseDown(pressAt(headers, at));
         root.frame();
         check(root.state().foldedGroups.empty() && lanes.heightFor(17) > 0, "a second click unfolds it");
-        // A plain track's Unfold Track button shows its automation lanes, which wait for the engine.
+        // The same switch on a plain track keeps its row and selection while folding its height.
         lanes.selection.track = 16;
-        const auto bassUnfold = headers.foldSwitch(1, topOf(14)).getCentre();
-        headers.mouseDown(pressAt(headers, bassUnfold));
-        headers.mouseUp(pressAt(headers, bassUnfold));
+        const auto bassSwitch = headers.foldSwitch(1, topOf(14)).getCentre();
+        const auto bassHeight = lanes.heightFor(14);
+        const auto undo = root.undoTitle(false);
+        headers.mouseDown(pressAt(headers, bassSwitch));
+        headers.mouseUp(pressAt(headers, bassSwitch));
         root.frame();
         check(root.state().foldedGroups.empty() && lanes.selection.track == 16 &&
-                  root.error() == ArrangementView::kUnfoldWaits,
-              "Bass's Unfold Track button folds nothing, selects nothing and says it waits for automation (N26)");
+                  lanes.heightFor(14) == ArrangementGeometry::kMinTrackHeight && root.undoTitle(false) == undo,
+              "SC-259: Bass folds without hiding its row, changing selection or adding an undo step");
+        {
+            AdiRootComponent reopened(view, submitter, mailbox, commands, persistence, session, "groups");
+            reopened.setSize(1440, 900);
+            reopened.frame();
+            check(reopened.arrangement.geometry.heightFor(14) == ArrangementGeometry::kMinTrackHeight,
+                  "Bass reopens folded in the same window");
+        }
+        headers.mouseDown(pressAt(headers, bassSwitch));
+        headers.mouseUp(pressAt(headers, bassSwitch));
+        root.frame();
+        check(lanes.heightFor(14) == bassHeight && lanes.selection.track == 16 && root.undoTitle(false) == undo,
+              "clicking Bass's triangle again restores its previous height");
     }
     // The keys: U folds the selected group, Alt+U unfolds them all (§42.16, §42.19); a selected
     // track folded away gives the selection to its group.
@@ -742,18 +756,18 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
         check(canvas.keyPressed(juce::KeyPress('u')) && root.state().foldedGroups == std::set<std::int64_t>{13},
               "and unfolds it");
         lanes.selection.track = 1;
-        root.say({});
+        const auto mainHeight = lanes.heightFor(1);
         check(canvas.keyPressed(juce::KeyPress('u')) && root.state().foldedGroups == std::set<std::int64_t>{13} &&
-                  root.error() == ArrangementView::kUnfoldWaits,
-              "U on a track that is not a group folds nothing, and says its lanes wait (N26)");
+                  lanes.heightFor(1) == ArrangementGeometry::kMinTrackHeight,
+              "SC-259: U folds Main without affecting the folded group");
         // A view of a group inside a folded one shows it: the folded group is left out.
         root.arrangement.chooseView(16);
         check(lanes.heightFor(16) > 0 && lanes.heightFor(17) > 0 && lanes.heightFor(13) == 0 && lanes.heightFor(1) > 0,
               "Fx And Hits viewed alone inside folded Body: it shows, with its tracks and Main");
         root.arrangement.chooseView(0);
         check(canvas.keyPressed(juce::KeyPress('u', juce::ModifierKeys::altModifier, 0)) &&
-                  root.state().foldedGroups.empty() && lanes.heightFor(14) > 0,
-              "Alt+U unfolds every group");
+                  root.state().foldedGroups.empty() && lanes.heightFor(14) > 0 && lanes.heightFor(1) == mainHeight,
+              "Alt+U unfolds Main as well as every group");
     }
     // On the bar over the names: Automation Mode switches on and off (AU-01, its own test below); Lock
     // Envelopes still waits for the engine, and a click says what for (the director's R6, 2 November).
@@ -2871,6 +2885,47 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
         root.arrangement.geometry.selection.track = 0;
         check(!browser.load(echoRow) && loaded.size() == 3 && root.error().rfind("Select a track", 0) == 0,
               "with no track selected it says to select one");
+        check(browser.load(glass) && loaded.size() == 4 && std::get<1>(loaded.back()) == 0 &&
+                  std::get<0>(loaded.back()).subtype == "instrument",
+              "SC-287: loading an instrument without a track creates a MIDI track");
+        juce::SparseSet<int> rowsToDrag;
+        rowsToDrag.addRange(juce::Range<int>(glass, glass + 1));
+        const auto drag = browser.list.getListBoxModel()->getDragSourceDescription(rowsToDrag);
+        auto &canvas = root.arrangement.canvas;
+        const juce::Point<int> midiLane{40, laneTop(root, midiTrack) + 10};
+        const juce::DragAndDropTarget::SourceDetails onMidi(drag, &browser.list, midiLane);
+        check(!drag.isVoid() && canvas.isInterestedInDragSource(onMidi) &&
+                  !canvas.isInterestedInDragSource({drag, &browser, midiLane}),
+              "SC-84: a catalogue plug-in drag comes from the Browser list");
+        const auto checkDrop = [&](juce::DragAndDropTarget &surface,
+                                   const juce::DragAndDropTarget::SourceDetails &details, std::int64_t target) {
+            const auto before = loaded.size();
+            check(surface.isInterestedInDragSource(details), "the surface accepts a Browser plug-in");
+            surface.itemDropped(details);
+            check(loaded.size() == before + 1 && std::get<1>(loaded.back()) == target &&
+                      std::get<0>(loaded.back()).uid == "org.adi.glass",
+                  "the drop loads the plug-in onto the destination");
+        };
+        checkDrop(canvas, onMidi, midiTrack);
+        checkDrop(root.arrangement.headers, onMidi, midiTrack);
+        root.arrangement.geometry.selection.track = midiTrack;
+        refresh();
+        checkDrop(root.devices, {drag, &browser.list, {10, 10}}, midiTrack);
+        MixerStrip strip(root.mixerView);
+        strip.bind(midiTrack);
+        checkDrop(strip, {drag, &browser.list, {10, 10}}, midiTrack);
+        const auto oldSize = root.getBounds();
+        root.setSize(oldSize.getWidth(), 1000);
+        int below = laneTop(root, midiTrack);
+        while (below < canvas.getHeight() && root.arrangement.geometry.trackAt(root.reader(), below) != nullptr)
+            ++below;
+        check(below >= 0 && below < canvas.getHeight(), "the canvas has a drop area below the regular tracks");
+        if (below >= 0 && below < canvas.getHeight())
+            checkDrop(canvas, {drag, &browser.list, {40, below}}, 0);
+        root.setSize(oldSize.getWidth(), oldSize.getHeight());
+        browser.setPluginScan({});
+        check(!canvas.isInterestedInDragSource(onMidi), "a plug-in removed during the drag cannot land");
+        browser.setPluginScan(scan);
         root.loadPlugin = nullptr;
         root.arrangement.geometry.selection.track = 4; // 3 Audio again, for the built-ins below
         browser.search.setText("zeta", false);
@@ -3210,20 +3265,6 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
               chainOf(4).empty(),
           "with Pd off, Auto Filter is refused with the reason, and nothing is written");
 #endif
-    // With no track selected a load says to select one (the root's own refusal, Pd or not).
-    check(!root.insertDevice("org.adidaw.builtin.utility", 0, std::nullopt) &&
-              root.error().find("Select a track") != std::string::npos,
-          "with no track selected, a load says to select one");
-    // Below the tracks a dragged device says where to drop it, and loads nothing.
-    {
-        const juce::DragAndDropTarget::SourceDetails below(
-            BrowserPanel::deviceDescription(*findBuiltin("org.adidaw.builtin.utility")), nullptr,
-            {40, root.arrangement.canvas.getHeight() - 2});
-        if (root.arrangement.geometry.trackAt(root.reader(), root.arrangement.canvas.getHeight() - 2) == nullptr) {
-            root.arrangement.canvas.itemDropped(below);
-            check(root.error().find("on a track's lane") != std::string::npos, "a device dropped below the tracks says to drop it on a lane");
-        }
-    }
     // The keyboard never lands on a folder's heading: into the list, the first entry is a device.
     browser.choose(audioEffects);
     browser.search.setText("reverb", false);
@@ -3755,6 +3796,132 @@ void oneShotTile(AppCommands &commands, const std::filesystem::path &dir) {
 #endif
 }
 // E2: Cut, Copy, Paste and Duplicate in the Arrangement (Live 12 manual 6.9, 41.5; N17).
+void deleteArrangementSelection(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "selection-delete.adi", true, {}, error);
+    check(document != nullptr, "a project for contextual Delete");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "selection-delete");
+    UiPeerRoot peer;
+    peer.setSize(1440, 900);
+    peer.addAndMakeVisible(root);
+    peer.setVisible(true);
+    peer.addToDesktop(0);
+    root.afterEdit = [&] { document->synchronise(); };
+    root.setSize(1440, 900);
+    root.frame();
+    constexpr auto bar = textproj::kWhole;
+    check(root.submitEdit("clip.create", {{"id", 50}, {"track", 2}, {"kind", "midi"},
+                                         {"pos", 0}, {"length", 2 * bar}}, "Add MIDI Clip"),
+          "contextual Delete: a clip on track 2");
+    root.frame();
+    auto &arrangement = root.arrangement;
+    auto &sel = arrangement.geometry.selection;
+    const auto trackOf = [&document](std::int64_t id) { return document->view().current()->findTrack(id); };
+    const auto selectClip = [&] {
+        arrangement.selectClip(2, 50);
+        root.frame();
+    };
+    selectClip();
+    const auto removedClip = root.command(AppCommands::DeleteTrack);
+    check(removedClip && trackOf(2) && trackOf(2)->clips.empty(), "SC-05: Edit Delete removes a selected clip, keeping its track");
+    if (removedClip)
+        root.command(AppCommands::Undo);
+    root.frame();
+
+    sel = {};
+    sel.track = 2;
+    sel.start = bar;
+    sel.end = 2 * bar;
+    root.publishSelection();
+    const auto removedRange = root.command(AppCommands::DeleteTrack);
+    check(removedRange && trackOf(2) && trackOf(2)->clips.size() == 1 &&
+              trackOf(2)->clips.front()->lengthTicks == bar,
+          "SC-05: Edit Delete trims the selected time range");
+    if (removedRange)
+        root.command(AppCommands::Undo);
+    root.frame();
+
+    selectClip();
+    arrangement.canvas.grabKeyboardFocus();
+    auto &headers = arrangement.headers;
+    const auto pressHeader = [&](std::int64_t track, juce::ModifierKeys mods) {
+        const juce::Point<float> at{42.f, static_cast<float>(laneTop(root, track) + 9)};
+        headers.mouseDown(pressAt(headers, at, mods.withFlags(juce::ModifierKeys::leftButtonModifier)));
+        headers.mouseUp(pressAt(headers, at));
+    };
+    pressHeader(2, juce::ModifierKeys());
+    pressHeader(3, juce::ModifierKeys(juce::ModifierKeys::commandModifier));
+    check(sel.clip == 0 && sel.start == sel.end && arrangement.geometry.selectedTracks(root.reader()).size() == 2,
+          "SC-260: track titles select tracks and clear the old time selection");
+    check(headers.hasKeyboardFocus(false) && peer.getPeer()->handleKeyPress(juce::KeyPress(juce::KeyPress::deleteKey)) &&
+              !trackOf(2) && !trackOf(3),
+          "SC-260: Delete removes all selected tracks");
+    check(root.command(AppCommands::Undo) && trackOf(2) && trackOf(3) && trackOf(2)->clips.size() == 1,
+          "SC-05: one Undo restores all selected tracks and their contents");
+    check(root.submitEdit("track.create", {{"id", 70}, {"kind", "group"}, {"name", "Group"}}, "Create Group") &&
+              root.submitEdit("track.setParent", {{"id", 2}, {"parent", 70}}, "Group Track"),
+          "contextual Delete: track 2 in a group");
+    root.frame();
+    sel = {};
+    sel.track = 70;
+    sel.picked = {2};
+    root.publishSelection();
+    check(root.command(AppCommands::DeleteTrack) && !trackOf(2) && !trackOf(70),
+          "SC-05: selecting a group and its child deletes them as one subtree");
+    check(root.command(AppCommands::Undo) && trackOf(2) && trackOf(2)->parent == 70 && trackOf(70),
+          "SC-05: Undo restores the subtree");
+}
+void trackClipboard(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "track-clipboard.adi", true, {}, error);
+    check(document != nullptr, "a project for the track clipboard");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "track-clipboard");
+    UiPeerRoot peer;
+    peer.setSize(1440, 900);
+    peer.addAndMakeVisible(root);
+    peer.setVisible(true);
+    peer.addToDesktop(0);
+    root.setSize(1440, 900);
+    root.afterEdit = [&] { document->synchronise(); };
+    check(root.submitEdit("clip.create", {{"id", 50}, {"track", 2}, {"kind", "midi"},
+                                        {"pos", 0}, {"length", textproj::kWhole}}, "Add MIDI Clip"),
+          "track clipboard: a clip in 1 MIDI");
+    root.frame();
+    auto &arrangement = root.arrangement;
+    auto &headers = arrangement.headers;
+    const juce::Point<float> header{42.f, static_cast<float>(laneTop(root, 2) + 9)};
+    headers.mouseDown(pressAt(headers, header, juce::ModifierKeys::leftButtonModifier));
+    headers.mouseUp(pressAt(headers, header));
+    const auto selectedCopy = [&] {
+        const auto *track = document->view().current()->findTrack(arrangement.geometry.selection.track);
+        return track != nullptr && track->id != 2 && track->kind == "midi" && track->clips.size() == 1 &&
+               track->clips.front()->id != 50 && track->clips.front()->lengthTicks == textproj::kWhole;
+    };
+    const auto shortcut = [&](int key) {
+        return peer.getPeer()->handleKeyPress(juce::KeyPress(key, juce::ModifierKeys::commandModifier, 0));
+    };
+    const auto count = document->view().current()->tracks.size();
+    check(shortcut('d') && selectedCopy() && document->view().current()->tracks.size() == count + 1 &&
+              document->view().current()->findTrack(arrangement.geometry.selection.track)->indexInParent ==
+                  document->view().current()->findTrack(2)->indexInParent + 1 &&
+              root.undoTitle(false) == "Undo Duplicate Track",
+          "SC-80: Ctrl+D copies the track and its clip immediately below the source");
+    check(root.command(AppCommands::Undo) && document->view().current()->tracks.size() == count,
+          "SC-80: one Undo removes the duplicate");
+    root.frame();
+    check(shortcut('c') && shortcut('v') && selectedCopy(), "SC-80: copy and paste make a new track");
+    const auto cut = arrangement.geometry.selection.track;
+    check(shortcut('x') && !document->view().current()->findTrack(cut) &&
+              shortcut('v') && selectedCopy() && arrangement.geometry.selection.track != cut,
+          "SC-80: cut removes a track and paste restores its content under new identities");
+    commands.clipClipboard().held = std::monostate{};
+}
 void clipClipboard(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto document = ProjectDocument::open(dir / "clipboard.adi", true, {}, error);
@@ -4552,7 +4719,7 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
         if (!index)
             return;
         // An added folder whose name is a sidebar label's: told apart by its volume, not its name.
-        const auto addedFolder = dir / "Samples";
+        const auto addedFolder = dir / "browser-places" / "Samples";
         std::filesystem::create_directories(addedFolder);
         {
             std::vector<float> samples(4800, .3f);
@@ -4663,6 +4830,23 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
         }
         check(root.command(AppCommands::Undo), "undo");
         root.frame();
+        geometry.selection.insert = bar5;
+        const auto checkSampleDrop = [&](juce::DragAndDropTarget &surface,
+                                         const juce::DragAndDropTarget::SourceDetails &sample) {
+            check(surface.isInterestedInDragSource(sample), "the track control accepts a Browser sample");
+            surface.itemDropped(sample);
+            root.frame();
+            const auto added = clipsOn(1);
+            check(added.size() == before + 1 && added.back().first == "Clap" && added.back().second == bar5,
+                  "SC-286: the sample goes to the track under the drop at the insert marker");
+            check(root.command(AppCommands::Undo), "undo the sample drop");
+            root.frame();
+        };
+        checkSampleDrop(root.arrangement.headers, details);
+        MixerStrip strip(root.mixerView);
+        strip.bind(1);
+        geometry.selection.insert = bar5;
+        checkSampleDrop(strip, {drag, &browser.list, {10, 10}});
         browser.setListing({});
     }
 }
@@ -4973,8 +5157,9 @@ void clipViewNotes(AppCommands &commands, const std::filesystem::path &dir) {
     const auto *made1 = panel.details();
     check(root.state().clipView && made1 != nullptr && panel.midi() && made1->posTicks == 2 * bar &&
               made1->lengthTicks == bar && made1->notes.empty() && geo.selection.clip == made1->id &&
-              submitter.nextUndo()->label == "Insert MIDI Clip" && submitter.nextUndo()->opCount == 1,
-          "a double-click on an empty MIDI lane makes a one-bar clip there, selects and opens it, one undo step");
+              made1->loopEnabled && made1->loopStartTicks == 0 && made1->loopLengthTicks == bar &&
+              submitter.nextUndo()->label == "Insert MIDI Clip" && submitter.nextUndo()->opCount == 2,
+          "a double-click makes, selects and opens a looping one-bar MIDI clip in one undo step");
     if (made1 == nullptr)
         return;
     const auto clipId = made1->id;
@@ -4991,8 +5176,9 @@ void clipViewNotes(AppCommands &commands, const std::filesystem::path &dir) {
     check(root.command(AppCommands::InsertMidiClip), "Insert Empty MIDI Clip(s) on a two-bar selection");
     root.frame();
     check(panel.details() != nullptr && panel.details()->id != clipId && panel.details()->posTicks == 4 * bar &&
-              panel.details()->lengthTicks == 2 * bar && geo.selection.clip == panel.details()->id,
-          "makes a two-bar clip there, selected and shown");
+              panel.details()->lengthTicks == 2 * bar && panel.details()->loopEnabled &&
+              panel.details()->loopLengthTicks == 2 * bar && geo.selection.clip == panel.details()->id,
+          "makes a looping two-bar clip there, selected and shown");
     geo.selection.clip = 0;
     geo.selection.start = 5 * bar;
     geo.selection.end = 7 * bar;
@@ -7360,7 +7546,7 @@ void clipViewClipTime(AppCommands &commands, const std::filesystem::path &dir) {
         // With the keyboard elsewhere.
         check(!root.noteEditorHasContext() && root.noteEditorShown() && !active(C::InvertSelection) && !active(C::Quantize) && !active(C::QuantizeSettings) &&
                   !active(C::CropClip) && !root.command(C::InvertSelection) && !root.command(C::CropClip) && ed.selected() == std::vector<std::uint64_t>{2} &&
-                  info(C::DeleteTrack).shortName != "Delete" && info(C::Split).shortName == "Split",
+                  info(C::Split).shortName == "Split",
               "with the keyboard elsewhere the editor's Edit commands are greyed and do nothing, and Delete and Split are the arrangement's");
         const bool wasFolded = ed.folded(), wasHighlit = ed.highlightScale, wasDrawing = ed.drawMode();
         check(active(C::FoldToNotes) && ticked(C::FoldToNotes) == wasFolded && root.command(C::FoldToNotes) && ed.folded() != wasFolded &&
@@ -10576,6 +10762,12 @@ void deviceClipboard(AppCommands &commands, const std::filesystem::path &dir) {
     root.devices.parameterDemand = [&](const void *owner, const std::vector<std::int64_t> &ids) {
         document->setParameterDemand(owner, ids);
     };
+    root.devices.moveDevice = [&](const DevicePanelData &expected, std::int64_t track,
+                                  std::optional<std::int64_t> before) {
+        const bool ok = document->moveDevice(expected, track, before);
+        root.say(ok ? std::string{} : document->error());
+        return ok;
+    };
     root.devices.submit = [&](const std::string &op, Payload p) {
         const bool ok = document->deviceAction(op, std::move(p));
         if (!ok)
@@ -10670,7 +10862,41 @@ void deviceClipboard(AppCommands &commands, const std::filesystem::path &dir) {
     order = chain();
     check(order.size() == 2 && order[0] == 3 && order[1] > 3 && clipboard->insert.dump() == held,
           "the duplicate goes after it, at the chain's end, and the clipboard keeps what it held");
+    if (order.size() != 2)
+        return;
     const auto duplicateId = order[1];
+    // SC-83: the ordinary plug-in's title drag captures its identity. The strip, lanes and
+    // headers deliver the drop through the same device move as the application.
+    const auto move = [&](juce::DragAndDropTarget &target, juce::Point<int> at) {
+        if (root.devices.panels.size() != 2)
+            return false;
+        auto *source = root.devices.panels[1].get();
+        const juce::DragAndDropTarget::SourceDetails details(DevicePanelView::kDeviceMoveDrag, source, at);
+        if (target.isInterestedInDragSource(details) || !source->beginDeviceDrag() ||
+            !target.isInterestedInDragSource(details))
+            return false;
+        target.itemDropped(details);
+        return root.error().empty() && !target.isInterestedInDragSource(details);
+    };
+    const auto undoMove = [&] {
+        const bool undone = root.command(AppCommands::Undo);
+        refresh();
+        return undone && chain() == order;
+    };
+    check(move(root.devices, {0, root.devices.getHeight() / 2}) &&
+              chain() == std::vector<std::int64_t>{duplicateId, 3} && undoMove(),
+          "dropping a plug-in before another device reorders their IDs in one undo step");
+    const auto deviceTrack = [&] {
+        return document->store().db().execAndGet("SELECT c.track_id FROM device_chains c JOIN devices d ON "
+                                                "d.chain_id = c.id WHERE d.id = " + std::to_string(duplicateId))
+            .getInt64();
+    };
+    check(move(root.arrangement.canvas, {40, laneTop(root, 3) + 10}) && deviceTrack() == 3 &&
+              chain() == std::vector<std::int64_t>{3} && undoMove(),
+          "dropping the plug-in on a lane moves the same device to that track and Undo brings it back");
+    check(move(root.arrangement.headers, {40, laneTop(root, 4) + 10}) && deviceTrack() == 4 &&
+              chain() == std::vector<std::int64_t>{3} && undoMove(),
+          "dropping the plug-in on a track header moves it to that track in one undo step");
     check(focus(1) && key('x'), "Ctrl/Cmd+X on the duplicate cuts it");
     refresh();
     check(chain() == std::vector<std::int64_t>{3} && clipboard->insert.value("name", "") == "UI knobs" &&
@@ -11068,6 +11294,30 @@ void stripParamUndo(AppCommands &commands, const std::filesystem::path &dir) {
         auto &control = *root.devices.panels[0]->controls[0];
         control.grabKeyboardFocus();
         auto *peer = host.getPeer();
+        const auto knobValue = [&] { return knobs->getParam("cutoff").normalized; };
+        if (peer != nullptr && knobs != nullptr) {
+            const auto previous = knobValue();
+            const auto hit = peer->handleKeyPress(juce::KeyPress(juce::KeyPress::upKey));
+            document->tick(0);
+            root.frame();
+            check(hit && knobValue() > previous, "SC-82: Up changes a focused device knob");
+            if (knobValue() != previous)
+                check(root.command(AppCommands::Undo), "undo the knob nudge");
+            control.grabKeyboardFocus();
+            peer->handleKeyPress(juce::KeyPress(juce::KeyPress::returnKey));
+            auto *editor = dynamic_cast<juce::TextEditor *>(juce::Component::getCurrentlyFocusedComponent());
+            if (editor) {
+                editor->setText("0.7");
+                peer->handleKeyPress(juce::KeyPress(juce::KeyPress::returnKey));
+                document->tick(0);
+                root.frame();
+            }
+            check(editor != nullptr && std::abs(knobValue() - .7) < 1e-9,
+                  "SC-82: typing commits the focused device knob");
+            if (knobValue() != previous)
+                check(root.command(AppCommands::Undo), "undo the typed knob value");
+            control.grabKeyboardFocus();
+        }
         const juce::KeyPress del(juce::KeyPress::deleteKey);
         check(peer != nullptr && control.hasKeyboardFocus(false) && peer->handleKeyPress(del) && submitted.empty() &&
                   knobs != nullptr && std::abs(knobs->getParam("cutoff").normalized - .5) < 1e-9 &&
@@ -11079,6 +11329,9 @@ void stripParamUndo(AppCommands &commands, const std::filesystem::path &dir) {
                   std::abs(cutoff.getValue() - .5) < 1e-9,
               "Return to Default is one undo step of its own, and the knob shows the default");
         root.devices.panels[0]->grabKeyboardFocus();
+        check(root.command(AppCommands::DeleteTrack) && submitted == std::vector<std::string>{"device.remove"},
+              "SC-05: Edit Delete addresses the focused device");
+        submitted.clear();
         check(root.devices.panels[0]->hasKeyboardFocus(false) && peer->handleKeyPress(del) &&
                   submitted == std::vector<std::string>{"device.remove"},
               "Delete on the focused device is still Delete");
@@ -11397,7 +11650,7 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     check(root.command(AppCommands::Redo), "redo");
     frame();
     check(!root.setMonitor(1, Monitor::In) && root.error().find("no input") != std::string::npos, "Main has no monitoring [P:recording#9]");
-    // Arrangement Record: F9 records both armed audio tracks; 2 MIDI, armed too, records nothing yet.
+    // Arrangement Record: F9 records both armed audio tracks and the armed MIDI track.
     juce::ApplicationCommandInfo recordInfo(AppCommands::ArrangementRecord);
     commands.getCommandInfo(AppCommands::ArrangementRecord, recordInfo);
     check(recordInfo.shortName == "Arrangement Record" &&
@@ -11492,15 +11745,17 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     auto landed = document->takeLanded();
-    check(landed && landed->ok && landed->clips.size() == 2 && landed->message == "Recorded 2 takes.",
-          "both armed tracks' takes land together [P:recording#19]");
+    check(landed && landed->ok && landed->clips.size() == 3,
+          "both audio takes and the MIDI take land together [P:recording#19]");
     frame();
-    check(root.reader().findTrack(4)->clips.size() == 1 && root.reader().findTrack(5)->clips.size() == 1,
+    check(root.reader().findTrack(3)->clips.size() == 1 && root.reader().findTrack(4)->clips.size() == 1 &&
+              root.reader().findTrack(5)->clips.size() == 1,
           "a clip on each armed track");
     check(root.command(AppCommands::Undo), "one Undo");
     frame();
-    check(root.reader().findTrack(4)->clips.empty() && root.reader().findTrack(5)->clips.empty(),
-          "takes both takes back [P:recording#23]");
+    check(root.reader().findTrack(3)->clips.empty() && root.reader().findTrack(4)->clips.empty() &&
+              root.reader().findTrack(5)->clips.empty(),
+          "takes all three takes back [P:recording#23]");
     // Punch-in: Record while playing records from the playhead, and Stop ends the take with the transport.
     check(root.command(AppCommands::ArrangementRecord) && document->recording() && document->mailbox().desiredPlaying(),
           "Record while playing records; the transport keeps rolling [P:recording#22]");
@@ -11515,7 +11770,7 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     landed = document->takeLanded();
-    check(landed && landed->ok && landed->clips.size() == 2, "the punched-in takes land");
+    check(landed && landed->ok && landed->clips.size() == 3, "the punched-in audio and MIDI takes land");
     frame();
     const auto stopped = transport.position();
     lanePress(270, juce::ModifierKeys::leftButtonModifier);
@@ -11590,6 +11845,65 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     frame();
     check(!root.midiOverdub() && !overdub.getToggleState(), "and off");
     document->release();
+}
+void midiTakePreview(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "midi-take-preview.adi", true, {}, error);
+    check(document != nullptr, "a project for the MIDI take preview");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "midi-take-preview");
+    root.setSize(1440, 900);
+    auto &geo = root.arrangement.geometry;
+    auto &canvas = root.arrangement.canvas;
+    geo.resizeTrack(2, 64);
+    geo.left = 0;
+    geo.scale = 96;
+    constexpr auto beat = textproj::kPPQ;
+    std::vector<LiveMidiTake> takes{{2, beat, 4 * beat, {}}};
+    root.liveMidiTakes = [&]() -> std::span<const LiveMidiTake> { return takes; };
+    root.mark(DirtySet::All);
+    root.frame();
+    const auto snapshot = [&] {
+        juce::Image image(juce::Image::ARGB, canvas.getWidth(), canvas.getHeight(), true, juce::SoftwareImageType{});
+        juce::Graphics graphics(image);
+        canvas.paintEntireComponent(graphics, true);
+        return image;
+    };
+    const auto takeWithNoNotes = snapshot();
+    const int top = laneTop(root, 2) + 17, bottom = laneTop(root, 2) + 61;
+    const int firstNote = static_cast<int>(geo.x(2 * beat + beat / 2));
+    const int later = static_cast<int>(geo.x(3 * beat + beat / 2));
+    check(takeWithNoNotes.getPixelAt(firstNote, top) == look::record,
+          "a growing MIDI take draws the record-coloured clip body before a note arrives");
+    const auto notePixels = [&](const juce::Image &image, int column) {
+        int changed = 0;
+        for (int y = top; y < bottom; ++y)
+            if (image.getPixelAt(column, y) != takeWithNoNotes.getPixelAt(column, y))
+                ++changed;
+        return changed;
+    };
+    takes.front().notes.push_back({2 * beat, 3 * beat, 60});
+    root.frame();
+    const auto noteAppeared = snapshot();
+    check(notePixels(noteAppeared, firstNote) > 0 && notePixels(noteAppeared, later) == 0 &&
+              root.reader().findTrack(2)->clips.empty(),
+          "a note appears in the clip preview before any edit is committed");
+    takes.front().notes.front().end = 4 * beat;
+    takes.front().end = 5 * beat;
+    allocations = 0;
+    audit = true;
+    root.frame();
+    audit = false;
+    check(allocations == 0, "a frame borrowing growing MIDI takes allocates zero");
+    const auto noteHeld = snapshot();
+    check(notePixels(noteHeld, later) > 0 &&
+              noteHeld.getPixelAt(static_cast<int>(geo.x(4 * beat + beat / 2)), top) == look::record,
+          "both the held note and the clip extend as recording progresses");
+    takes.clear();
+    root.frame();
+    check(snapshot().getPixelAt(firstNote, top) != look::record, "the preview disappears when the take ends");
 }
 // EX-11, the Export page (Live 12 manual 5.2.1): the choices in Live's order, what the renderer cannot do
 // yet refused with its reason, the range from the selection, the loop or the song, and the job the choices
@@ -11963,6 +12277,63 @@ void mixerDragLive(AppCommands &commands, const std::filesystem::path &dir) {
     three->volume.onDragEnd();
     root.frame();
     check(!document->mixerDragging() && std::abs(volumeOf(4) + 3) < 1e-6, "without the mouse held, the value commits at the end");
+    {
+        auto *peer = surfacePeer.getPeer();
+        const auto type = [&](juce::Slider &box, const char *value) {
+            if (peer == nullptr)
+                return false;
+            const auto centre = box.getLocalBounds().getCentre().toFloat();
+            box.mouseDown(pressAt(box, centre, juce::ModifierKeys::leftButtonModifier));
+            box.mouseUp(pressAt(box, centre));
+            if (!box.hasKeyboardFocus(false))
+                return false;
+            peer->handleKeyPress(juce::KeyPress(juce::KeyPress::returnKey));
+            auto *editor = dynamic_cast<juce::TextEditor *>(juce::Component::getCurrentlyFocusedComponent());
+            if (!editor || !box.isParentOf(editor))
+                return false;
+            editor->setText(value);
+            peer->handleKeyPress(juce::KeyPress(juce::KeyPress::returnKey));
+            root.frame();
+            return true;
+        };
+        const auto second = volumeOf(3);
+        sel.track = 3;
+        sel.toTrack = 4;
+        root.frame();
+        three->volume.mouseDoubleClick(pressAt(three->volume, {3.f, 3.f}, juce::ModifierKeys::leftButtonModifier));
+        check(std::abs(volumeOf(4)) < 1e-6 && volumeOf(3) == second, "SC-82: double-click resets only the clicked fader");
+        check(type(three->volume, "-7.5 dB") && std::abs(volumeOf(4) + 7.5) < 1e-9 && volumeOf(3) == second,
+              "SC-82: click and type a precise fader value");
+        check(type(three->pan, "25L") && three->pan.getValue() == -.5, "SC-82: the pan value box reads a left value");
+        if (!three->sendKnobs().empty()) {
+            auto &send = *three->sendKnobs().front();
+            const auto floor = send.getMinimum();
+            check(type(send, "-10") && std::abs(send.getValue() + 10) < 1e-6, "SC-82: click and type the send level");
+            check(peer != nullptr && peer->handleKeyPress(juce::KeyPress(juce::KeyPress::deleteKey)) &&
+                      send.getValue() == floor, "SC-82: Delete returns the focused send to silence");
+        }
+        sel.track = sel.toTrack = 0;
+        root.frame();
+        const auto dragFader = [&](int modifiers) {
+            auto &box = three->volume;
+            const auto centre = box.getLocalBounds().getCentre().toFloat();
+            const juce::ModifierKeys buttons(juce::ModifierKeys::leftButtonModifier | modifiers);
+            juce::ModifierKeys::currentModifiers = buttons;
+            box.mouseDown(pressAt(box, centre, buttons));
+            box.mouseDrag(dragAt(box, centre, centre.translated(0, -25), buttons));
+            letGo();
+            box.mouseUp(pressAt(box, centre));
+            root.frame();
+            return volumeOf(4);
+        };
+        const double start = volumeOf(4);
+        const double plain = dragFader(0) - start;
+        if (plain != 0)
+            root.command(AppCommands::Undo);
+        root.frame();
+        const double fine = dragFader(juce::ModifierKeys::shiftModifier) - start;
+        check(plain > 0 && fine > 0 && fine < plain, "SC-82: Shift makes an equal fader drag finer");
+    }
     // Without the live gesture, the release commits as before.
     root.beginMixerDrag = nullptr;
     press();
@@ -12493,6 +12864,26 @@ void automationMode(AppCommands &commands, const std::filesystem::path &dir) {
     } else {
         check(false, "right-clicking the envelope line offers Add Value");
     }
+    canvas.grabKeyboardFocus();
+    root.arrangement.geometry.selection.track = 2;
+    auto &headers = root.arrangement.headers;
+    const juce::Point<float> title{42.f, static_cast<float>(laneTop(root, 4) + 9)};
+    headers.mouseDown(pressAt(headers, title, juce::ModifierKeys::leftButtonModifier));
+    headers.mouseUp(pressAt(headers, title));
+    const auto pressU = [&] {
+        auto *peer = surfacePeer.getPeer();
+        return peer != nullptr && headers.hasKeyboardFocus(false) && peer->handleKeyPress(juce::KeyPress('u'));
+    };
+    check(root.arrangement.geometry.selection.track == 4 && pressU(),
+          "SC-259: pressing U after selecting the track title folds the track");
+    const auto foldedBodies = canvas.laneBodies();
+    check(std::none_of(foldedBodies.begin(), foldedBodies.end(), [](const auto &body) { return body.track->id == 4; }) &&
+              !canvas.automationPointAt(pointAt) &&
+              root.arrangement.automationLaneAt(static_cast<int>(audio->top)) == nullptr,
+          "SC-259: the folded envelope is absent from rendering and hit-testing");
+    check(pressU() && canvas.automationPointAt(pointAt) &&
+              root.undoTitle(false) == "Undo Add Automation Point",
+          "unfold restores the same envelope and breakpoint without editing the project");
     const float twoBars = static_cast<float>(root.arrangement.geometry.x(2 * textproj::kWhole));
     const float upper = audio->top + (audio->bottom - audio->top) * .25f;
     canvas.mouseDown(pressAt(canvas, pointAt));
@@ -15047,10 +15438,11 @@ void midiInputFeedCases() {
     struct Got {
         std::int64_t sample;
         engine::Event event;
+        std::int64_t inputSample;
     };
     std::vector<Got> got;
-    const auto take = [&got](std::int64_t sample, const engine::Event &e) {
-        got.push_back({sample, e});
+    const auto take = [&got](std::int64_t sample, const engine::Event &e, std::int64_t inputSample) {
+        got.push_back({sample, e, inputSample});
         return true;
     };
     // A 480-frame block at 48 kHz starting at stream sample 4800; the ports' clock reads 112 ms. What
@@ -15070,6 +15462,9 @@ void midiInputFeedCases() {
         check(got[2].event.type == engine::EventType::NoteOff && got[2].event.noteId == got[0].event.noteId &&
                   got[2].sample == 4800 + 480 - 2 * 48 && got[0].sample <= got[1].sample && got[1].sample <= got[2].sample,
               "the note off with its note's id, 2 ms before the clock; the stamps never go back");
+        check(got[0].inputSample == 4800 - 12 * 48 && got[1].inputSample == 4800 - 7 * 48 &&
+                  got[2].inputSample == 4800 - 2 * 48,
+              "capture also receives the original port timestamps before buffer scheduling");
     }
     // An event stamped earlier than one already given is put at that one's sample, never before it.
     got.clear();
@@ -15087,7 +15482,7 @@ void midiInputFeedCases() {
     // A refused event is counted; a restart forgets held notes, so a note off with no note on is nothing.
     got.clear();
     keys.push(msg(130, 0x90, 67, 90));
-    feed.pump(6240, 480, 48000, 131, [](std::int64_t, const engine::Event &) { return false; });
+    feed.pump(6240, 480, 48000, 131, [](std::int64_t, const engine::Event &, std::int64_t) { return false; });
     check(feed.refused() == 1, "a full session queue refuses the note, and it is counted");
     feed.restart();
     keys.push(msg(140, 0x80, 67, 0));
@@ -15634,18 +16029,23 @@ void untitledProjects(const std::filesystem::path &dir) {
         return juce::File(juce::String::fromUTF8(reinterpret_cast<const char *>(p.u8string().c_str())));
     };
     settings::AppSettings fresh(appdata::App::Daw, dir / "untitled-settings.json");
-    check(nextUntitledProject(fresh) == file(dir / "projects" / "Untitled.adi") &&
-              std::filesystem::is_directory(dir / "projects"),
-          "with no projects folder chosen, the first untitled project is <config>/projects/Untitled.adi");
+    check(nextUntitledProject(fresh) == file(dir / "projects" / "Untitled" / "Untitled.adi") &&
+              std::filesystem::is_directory(dir / "projects" / "Untitled"),
+          "with no projects folder chosen, the first Untitled reserves its own project folder");
     const auto folder = dir / "untitled";
     std::string why;
     check(fresh.set("files.projectsFolder", folder.string(), {}, why), "the projects folder is chosen");
-    check(nextUntitledProject(fresh) == file(folder / "Untitled.adi") && std::filesystem::is_directory(folder),
-          "the chosen projects folder is made, and its first untitled project is Untitled.adi");
-    std::ofstream(folder / "Untitled.adi").put('x');
+    check(nextUntitledProject(fresh) == file(folder / "Untitled" / "Untitled.adi") &&
+              std::filesystem::is_directory(folder / "Untitled"),
+          "the chosen projects folder is made and its first Untitled has a separate directory");
     std::ofstream(folder / "Untitled(2).adi").put('x');
-    check(nextUntitledProject(fresh) == file(folder / "Untitled(3).adi"),
-          "beside Untitled.adi and Untitled(2).adi, the next untitled project is Untitled(3).adi");
+    check(nextUntitledProject(fresh) == file(folder / "Untitled(3)" / "Untitled(3).adi") &&
+              std::filesystem::is_directory(folder / "Untitled(3)"),
+          "the next Untitled skips both a reserved folder and an existing flat project");
+    const auto saved = folder / "Song v1.2" / "Song v1.2.adi";
+    check(songProjectFile(file(folder / "Song v1.2.adi")) == file(saved) &&
+              songProjectFile(file(saved)) == file(saved),
+          "Save As adds one same-named folder and preserves dots in the song name");
 }
 int main(int argc, char **argv) {
     // WTS-02: no dialog box on Windows; JUCE's assertions counted, the run failing on one.
@@ -16655,7 +17055,11 @@ int main(int argc, char **argv) {
                     victim = t->id;
             const auto countBefore = view.current()->tracks.size();
             commands.activate(edits); // the Edit menu names the step of the active root
-            edits.arrangement.geometry.selection.track = victim;
+            auto &selection = edits.arrangement.geometry.selection;
+            selection.track = victim;
+            selection.toTrack = 0;
+            selection.picked.clear();
+            selection.clearMaterial();
             check(victim != 0 && edits.command(C::DeleteTrack) && view.current()->tracks.size() + 1 == countBefore &&
                       edits.undoTitle(false) == "Undo Delete Track" && edits.undoTitle(true) == "Nothing to Redo",
                   "Delete Track from the menu bar's window: the Undo item names the step, Redo has nothing");
@@ -16917,6 +17321,10 @@ int main(int argc, char **argv) {
         auto &arrangement = integrated.arrangement;
         integrated.setSize(1200, 720);
         const auto cmdKey = juce::ModifierKeys::commandModifier;
+        arrangement.geometry.selection.track = 1;
+        check(!integrated.command(AppCommands::DeleteTrack) && document->view().current()->findTrack(1) &&
+                  integrated.error().find("Main track cannot be deleted") != std::string::npos,
+              "SC-01: Delete Track on Main says why and preserves it");
         arrangement.geometry.selection.track = 2;
         check(integrated.keyPressed(juce::KeyPress('t', cmdKey, 0)),
               "Ctrl/Cmd+T inserts an audio track");
@@ -19018,6 +19426,7 @@ int main(int argc, char **argv) {
     trace("pluginWindows", [&] { pluginWindows(commands, settings, temp.path()); });
     trace("automationArm", [&] { automationArm(commands, temp.path()); });
     trace("armAndRecord", [&] { armAndRecord(commands, temp.path()); });
+    trace("midiTakePreview", [&] { midiTakePreview(commands, temp.path()); });
     trace("exportPage", [&] { exportPage(commands, temp.path()); });
     trace("mixerDragLive", [&] { mixerDragLive(commands, temp.path()); });
     trace("mixerShowsAutomation", [&] { mixerShowsAutomation(commands, temp.path()); });
@@ -19030,7 +19439,9 @@ int main(int argc, char **argv) {
     trace("importPrompt", [&] { importPrompt(commands, settings, temp.path()); });
     trace("browserDevices", [&] { browserDevices(commands, temp.path()); });
     trace("splitAndRangeEdits", [&] { splitAndRangeEdits(commands, settings, temp.path()); });
+    trace("deleteArrangementSelection", [&] { deleteArrangementSelection(commands, temp.path()); });
     trace("clipClipboard", [&] { clipClipboard(commands, temp.path()); });
+    trace("trackClipboard", [&] { trackClipboard(commands, temp.path()); });
     trace("timeCommands", [&] { timeCommands(commands, temp.path()); });
     trace("colorCabTile", [&] { colorCabTile(commands, temp.path()); });
     trace("oneShotTile", [&] { oneShotTile(commands, temp.path()); });

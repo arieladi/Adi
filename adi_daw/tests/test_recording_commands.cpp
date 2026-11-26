@@ -3,6 +3,7 @@
 #include "adi/recording_commands.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/engine/audio_recording.hpp"
+#include "adi/engine/clip_details.hpp"
 #include "adi/digest.hpp"
 #include "adi/history.hpp"
 #include "adi/store.hpp"
@@ -95,6 +96,110 @@ void latencyCompensatedPlacement() {
         check(exact,"corrected song position shifts the whole take without changing its recorded samples");
     }
 }
+void midiLinearTakes() {
+    Fixture fixture;
+    auto& store = *fixture.store;
+    auto& db = store.db();
+    db.exec("INSERT INTO tracks(id,kind,name) VALUES(23,'midi','MPE'),(24,'midi','Empty MIDI')");
+    const auto before = digestProject(store).text;
+    const std::array<notes::NoteValues, 2> notes{{
+        {.start=400, .duration=200, .id=17, .key=60, .velocity=96, .releaseVelocity=41},
+        {.start=120, .duration=180, .id=18, .key=65, .velocity=80, .channel=2},
+    }};
+    const auto point = [](std::int64_t at, float value) { return ExpressionPoint{at, value, 0.0f, 0, 0, {}}; };
+    const std::array bend{point(0, -2.0f), point(80, 2.5f)};
+    const std::array slide{point(25, .125f)};
+    const std::array pressure{point(42, .75f)};
+    const std::array<recording::MidiExpressionLane, 3> lanes{{
+        {17, ExpressionDim::Pitch, bend}, {17, ExpressionDim::Timbre, slide}, {18, ExpressionDim::Pressure, pressure},
+    }};
+    const std::array<recording::MidiLinearTake, 2> takes{{
+        {23, 7, 960, 960, "MPE Take", notes, lanes},
+        {24, 8, 960, 960, "Silent Take", {}, {}},
+    }};
+    auto badLanes = lanes;
+    badLanes.back().noteId = 400;
+    auto orphan = takes;
+    orphan.front().expression = badLanes;
+    check(!recording::prepareMidiLinearCommit(store, orphan, 48000).ok && digestProject(store).text == before,
+          "linear take rejects expression with no captured note without writing project rows");
+    auto prepared = recording::prepareMidiLinearCommit(store, takes, 48000);
+    check(prepared.ok && digestProject(store).text == before &&
+              !std::filesystem::exists(media::projectFolder(store) / "audio"),
+          "MIDI-only preparation changes no rows and creates no audio files");
+    const auto committed = recording::commit(store, prepared);
+    check(committed.ok && committed.seqs.size() == 1, "both armed MIDI takes land in one placement");
+    if (!committed.ok)
+        return;
+    const auto read = readClipDetails(store, 7, true, true);
+    check(read.clip && read.clip->notes.size() == 2 && read.clip->notes[0].id == 18 &&
+              read.clip->notes[1].id == 17 && read.clip->notes[1].startTicks == 400 &&
+              read.clip->notes[1].durationTicks == 200 && read.clip->notes[1].releaseVelocity == 41 &&
+              (read.clip->notes[1].flags & NoteFlags::HasExpression) != 0,
+          "the recorded notes retain play timing, release velocity and expression ownership");
+    check(read.clip && read.clip->posTicks == 960 && read.clip->lengthTicks == 960 && read.clip->loopEnabled &&
+              read.clip->loopStartTicks == 0 && read.clip->loopLengthTicks == 960,
+          "the recorded clip initially spans one loop of its captured material");
+    const auto silent = readClipDetails(store, 8);
+    check(silent.clip && silent.clip->lengthTicks == 960 && silent.clip->notes.empty(),
+          "an armed MIDI track with no notes keeps its recorded interval");
+    const auto expression = readNoteExpressions(store, 7);
+    check(expression.problems.empty() && expression.curves.size() == 3 && expression.curves[0].noteId == 17 &&
+              expression.curves[0].points.size() == 2 && expression.curves[0].points.back().time_ticks == 80 &&
+              expression.curves[0].points.back().value == 2.5f && expression.curves[1].noteId == 17 &&
+              expression.curves[1].dimension == static_cast<int>(ExpressionDim::Timbre) &&
+              expression.curves[2].noteId == 18 &&
+              expression.curves[2].dimension == static_cast<int>(ExpressionDim::Pressure),
+          "the two notes keep their own pitch, slide, and pressure curves");
+    const auto nativeBend = store.getNoteExpression(7, 17, static_cast<int>(ExpressionDim::Pitch));
+    History history(store);
+    check(history.nextUndo() && history.nextUndo()->label == "Record MIDI" && history.undo().ok &&
+              digestProject(store).text == before && !store.getNoteExpression(7, 17, static_cast<int>(ExpressionDim::Pitch)),
+          "one Undo removes the two takes and their expression");
+    check(nativeBend && history.redo().ok &&
+              store.getNoteExpression(7, 17, static_cast<int>(ExpressionDim::Pitch)) == nativeBend,
+          "Redo restores the exact captured expression bytes");
+}
+
+void mixedLinearTake() {
+    Fixture fixture;
+    auto& store = *fixture.store;
+    auto& db = store.db();
+    db.exec("INSERT INTO tracks(id,kind,name) VALUES(23,'midi','Keys');"
+            "INSERT INTO clips(id,track_id,kind,name,pos_ticks,length_ticks) VALUES(8,23,'midi','Earlier MIDI',0,1000)");
+    auto firstAudio = fixture.capture(false, Precision::Float32, false, 300, {}, 512);
+    const std::array<recording::ClipIds, 1> firstIds{{{7, 8, "Earlier Audio"}}};
+    auto first = recording::prepareCommit(store, firstAudio, firstIds);
+    if (!first.ok || !recording::commit(store, first).ok)
+        throw std::runtime_error("could not seed the earlier audio take");
+    const auto before = digestProject(store).text;
+    auto audio = fixture.capture(false, Precision::Float32, false, 100, {}, 600);
+    const std::array<recording::ClipIds, 1> audioIds{{{9, 10, "New Audio"}}};
+    const std::array<notes::NoteValues, 1> notes{{{.start=10, .duration=25, .id=17, .key=64, .velocity=80}}};
+    const std::array<recording::MidiLinearTake, 1> midi{{{23, 10, 400, 200, "New MIDI", notes, {}}}};
+    auto invalid = midi;
+    invalid.front().clip = audioIds.front().clip;
+    check(!recording::prepareCommit(store, audio, audioIds, invalid).ok && digestProject(store).text == before &&
+              std::filesystem::is_regular_file(audio.tracks[0].file),
+          "a colliding mixed take leaves the project and its private audio unmodified");
+    auto prepared = recording::prepareCommit(store, audio, audioIds, midi);
+    const auto committed = recording::commit(store, prepared);
+    if (!committed.ok)
+        throw std::runtime_error(committed.error);
+    const auto count = [&](const char* sql) { return db.execAndGet(sql).getInt(); };
+    check(count("SELECT count(*) FROM clips WHERE track_id=21") == 3 &&
+              count("SELECT count(*) FROM clips WHERE track_id=23") == 3 &&
+              count("SELECT count(*) FROM clips WHERE id=9 AND kind='audio'") == 1 &&
+              count("SELECT count(*) FROM clips WHERE id=10 AND kind='midi'") == 1,
+          "one mixed splice splits both covered clips and reserves both incoming IDs before allocating the fragments");
+    History history(store);
+    check(history.nextUndo() && history.nextUndo()->label == "Record" && history.undo().ok &&
+              digestProject(store).text == before,
+          "one Undo removes the mixed take and restores the original clips whole");
+    check(history.redo().ok && count("SELECT count(*) FROM clips") == 6,
+          "one Redo restores both audio and MIDI and their surviving fragments");
+}
+
 void midiLoopTakes() {
     constexpr std::int64_t width=5765760;
     Fixture f;
@@ -174,7 +279,7 @@ void midiLoopTakes() {
 void publicationStagingOwnership() {
     namespace fs=std::filesystem;
     Fixture f;auto recorded=f.capture();const auto before=digestProject(*f.store).text;
-    const auto audioFolder=media::projectFolder(*f.store)/"audio";
+    const auto audioFolder=media::projectFolder(*f.store)/"Samples"/"Recorded";
     const auto unrelated=audioFolder/".adi-media-unrelated";fs::create_directories(unrelated);
     const auto sentinel=unrelated/"keep.txt";{std::ofstream out(sentinel);out<<"unowned staging";}
     const auto sentinelHash=media::blake3File(sentinel),takeHash=media::blake3File(recorded.tracks[0].file);
@@ -232,7 +337,7 @@ void crossVolumePublication(const std::filesystem::path& workFolder) {
     check(committed.ok && committed.seqs.size()==2,"cross-volume capture commits through project-side AtomicOnly publication as one group (media, placement)");
     if(committed.ok) {
         const auto owned=media::projectFolder(*f.store)/media::pathFromUtf8(f.store->db().execAndGet("SELECT rel_path FROM media_files").getString());
-        check(owned.parent_path()==media::projectFolder(*f.store)/"audio" && media::blake3File(owned).hex==hash.hex && !fs::exists(recorded.directory()),
+        check(owned.parent_path()==media::projectFolder(*f.store)/"Samples"/"Recorded" && media::blake3File(owned).hex==hash.hex && !fs::exists(recorded.directory()),
             "cross-volume commit preserves exact captured bytes in project audio and discards its private take");
         const auto heard=f.play(Precision::Float32);bool exact=true;
         for(std::size_t frame=0;frame<heard.size();++frame)exact=exact && heard[frame]==(frame>=512 && frame<812?Fixture::sample(frame-512):0);
@@ -265,7 +370,7 @@ void forcedCrossDevicePublication() {
     namespace fs=std::filesystem;
     Fixture f;auto recorded=f.capture();const auto before=digestProject(*f.store).text;
     const auto take=recorded.tracks[0].file;const auto takeHash=media::blake3File(take);
-    const auto audioFolder=media::projectFolder(*f.store)/"audio";
+    const auto audioFolder=media::projectFolder(*f.store)/"Samples"/"Recorded";
     const std::array<recording::ClipIds,1> ids={{{7,8,"Other device"}}};
     fs::path published,staged;
     {
@@ -367,7 +472,7 @@ void existingMediaAndHistoryPaths() {
         const auto before=digestProject(*f.store).text;const std::array<recording::ClipIds,1> ids={{{7,18,"Reuse"}}};auto prepared=recording::prepareCommit(*f.store,recorded,ids);
         check(prepared.ok && recording::commit(*f.store,prepared).ok && f.store->db().execAndGet("SELECT count(*) FROM media_files").getInt()==1,"recording reuses existing media identity while ensuring an owned playable asset");
         std::string error;const auto owned=media::resolveMedia(media::projectFolder(*f.store),media::mediaRow(f.store->db(),8),error);
-        check(!owned.empty() && owned.parent_path().filename()=="audio" && std::filesystem::exists(owned),"existing external content is attached through a verified owned recording file");
+        check(!owned.empty() && owned.parent_path()==media::projectFolder(*f.store)/"Samples"/"Recorded" && std::filesystem::exists(owned),"existing external content is attached through a verified owned recording file");
         check(History(*f.store).undo().ok && digestProject(*f.store).text==before && std::filesystem::exists(priorPath),"undo restores exact prior media paths with their original files still available");
         recorded.discard();
     }
@@ -749,6 +854,7 @@ void loopReuseRefusesUnprovedExtents() {
 }
 int main(int argc,char** argv){try{
     latencyCompensatedPlacement();
+    midiLinearTakes();mixedLinearTake();
     midiLoopTakes();
     if(argc!=1 && (argc!=3 || std::string(argv[1])!="--cross-volume-work-folder"))throw std::runtime_error("usage: recording tests [--cross-volume-work-folder PATH]");
     publicationStagingOwnership();forcedCrossDevicePublication();heardPlacementAndHistory();linearTakeReplacesWhatItCovers();rollbackNeverDeletesLaterWriter();lateSqlAndOwnedReuse();existingMediaAndHistoryPaths();groupDedupAndGuards();loopPublicationRefusesFlattening();

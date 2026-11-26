@@ -12,8 +12,9 @@
 #include <stdexcept>
 #include <utility>
 namespace adi {
-namespace detail {
-std::int64_t deviceChainOwner(const SQLite::Database& db, std::int64_t chain) {
+namespace {
+std::int64_t chainOwner(const SQLite::Database& db, std::int64_t chain,
+                       std::optional<std::int64_t> movingRack = {}) {
     std::set<std::int64_t> seen;
     for (;;) {
         if (!seen.insert(chain).second) throw std::runtime_error("destination rack contains a cycle");
@@ -22,11 +23,18 @@ std::int64_t deviceChainOwner(const SQLite::Database& db, std::int64_t chain) {
         if (!row.executeStep()) throw std::runtime_error("destination chain is missing");
         if (!row.getColumn(0).isNull()) return row.getColumn(0).getInt64();
         if (row.getColumn(1).isNull()) throw std::runtime_error("destination chain has no owner");
+        const auto parentDevice = row.getColumn(1).getInt64();
+        if (movingRack == parentDevice) throw std::runtime_error("A rack cannot be moved into one of its own chains.");
         SQLite::Statement parent(db, "SELECT chain_id FROM devices WHERE id=?");
-        parent.bind(1, row.getColumn(1).getInt64());
+        parent.bind(1, parentDevice);
         if (!parent.executeStep()) throw std::runtime_error("destination rack owner is missing");
         chain = parent.getColumn(0).getInt64();
     }
+}
+}
+namespace detail {
+std::int64_t deviceChainOwner(const SQLite::Database& db, std::int64_t chain) {
+    return chainOwner(db, chain);
 }
 void requireDeviceInsertTrack(const SQLite::Database& db, std::int64_t track) {
     SQLite::Statement target(db, "SELECT kind FROM tracks WHERE id=?");
@@ -50,6 +58,36 @@ struct ChainDevice {
     Role role;
     bool rack;
 };
+std::vector<ChainDevice> chainOrder(SQLite::Database& db, std::int64_t chain) {
+    std::vector<ChainDevice> order;
+    SQLite::Statement devices(db, "SELECT devices.id,devices.ord,"
+        "COALESCE(NULLIF(plugin_refs.subtype,''),devices.rack_kind,''),devices.is_rack "
+        "FROM devices LEFT JOIN plugin_refs ON plugin_refs.id=devices.plugin_ref_id "
+        "WHERE devices.chain_id=? ORDER BY devices.ord,devices.id");
+    devices.bind(1, chain);
+    while (devices.executeStep())
+        order.push_back({devices.getColumn(0).getInt64(), devices.getColumn(1).getInt64(),
+                         role(devices.getColumn(2).getString()), devices.getColumn(3).getInt() != 0});
+    return order;
+}
+std::string editableTrackKind(SQLite::Database& db, std::int64_t track) {
+    std::set<std::int64_t> seen;
+    std::string kind;
+    for (auto current = track;;) {
+        if (!seen.insert(current).second)
+            throw std::runtime_error("The track's group hierarchy contains a cycle.");
+        SQLite::Statement row(db, "SELECT kind,frozen,locked,parent_id FROM tracks WHERE id=?");
+        row.bind(1, current);
+        if (!row.executeStep()) throw std::runtime_error("A track for the device move is missing.");
+        if (row.getColumn(1).getInt() != 0 || row.getColumn(2).getInt() != 0)
+            throw std::runtime_error("Devices cannot be moved on a frozen or locked track.");
+        if (current == track) kind = row.getColumn(0).getString();
+        const auto parent = row.getColumn(3);
+        if (parent.isNull()) return kind;
+        current = parent.getInt64();
+    }
+}
+
 std::size_t pluginPosition(std::span<const ChainDevice> devices, Role kind, std::size_t requested,
                            bool hasAnchor) {
     std::size_t firstNonMidi = devices.size(), firstAudio = devices.size();
@@ -68,7 +106,7 @@ std::size_t pluginPosition(std::span<const ChainDevice> devices, Role kind, std:
 std::string identity(SQLite::Database& db) {
     SQLite::Statement query(db,"PRAGMA database_list");
     while(query.executeStep())if(query.getColumn(1).getString()=="main")return query.getColumn(2).getString();
-    throw std::runtime_error("built-in insertion needs a project");
+    throw std::runtime_error("device editing needs a project");
 }
 Payload referenceRow(SQLite::Database& db,const Payload& values) {
     SQLite::Statement ddl(db,"SELECT sql FROM sqlite_master WHERE type='table' AND name='plugin_refs'");
@@ -109,26 +147,38 @@ const std::array<OpDescriptor,2> ops={{
 }
 std::span<const OpDescriptor> builtinReferenceOps(){return ops;}
 static PreparedBuiltinInsert prepareInsert(Store& store,const rows::PluginRef& ref,std::int64_t track,
-    std::optional<std::int64_t> before,std::int64_t retainedDeviceId,const PluginInsertOptions* plugin = nullptr) {
+    std::optional<std::int64_t> before,std::int64_t retainedDeviceId,std::span<const OpRequest> newTrack,
+    const PluginInsertOptions* plugin = nullptr) {
     PreparedBuiltinInsert result;
     try {
         if(store.readOnly())throw std::runtime_error("project is read-only");
         auto& db=store.db();RowIds ids(db);std::optional<SQLite::Transaction> read;
         if(sqlite3_get_autocommit(db.getHandle())!=0)read.emplace(db,SQLite::TransactionBehavior::DEFERRED);
         result.sourceFile=identity(db);result.options.expectHead.emplace(OpJournal(store).headSeq());
-        detail::requireDeviceInsertTrack(db, track);
+        const auto deviceRole = role(ref.subtype);
+        const std::string label="Insert "+ref.name;
+        if (newTrack.empty()) {
+            detail::requireDeviceInsertTrack(db, track);
+        } else {
+            const auto& create = newTrack.front();
+            if (before || create.opType != "track.create" || create.payload.at("id") != track ||
+                create.payload.at("kind") != (deviceRole == Role::AudioEffect ? "audio" : "midi"))
+                throw std::runtime_error("The new track does not match the device drop.");
+            result.newTrack = track;
+            result.requests.assign(newTrack.begin(), newTrack.end());
+            for (auto& request : result.requests) request.label = label;
+        }
         // A built-in instrument (OneShot, Sampler) goes where Live puts an instrument it loads: on a MIDI
         // track only (it takes notes and no audio, so it would silence any other track), between the MIDI
         // and the audio effects, in place of the track's instrument (walk-A A7, DF-W48).
-        const bool builtinInstrument = plugin == nullptr && role(ref.subtype) == Role::Instrument;
-        if (builtinInstrument) {
+        const bool builtinInstrument = plugin == nullptr && deviceRole == Role::Instrument;
+        if (builtinInstrument && newTrack.empty()) {
             SQLite::Statement kind(db, "SELECT kind FROM tracks WHERE id=?");
             kind.bind(1, track);
             if (kind.executeStep() && kind.getColumn(0).getString() != "midi" &&
                 kind.getColumn(0).getString() != "instrument")
                 throw std::runtime_error(ref.name + " is an instrument: load it onto a MIDI track");
         }
-        const std::string label="Insert "+ref.name;
         auto append=[&](const char* type,Payload payload,const char* kind,std::int64_t id) {
             OpRequest request;request.opType=type;request.payload=std::move(payload);request.label=label;
             request.targetKind=kind;request.targetId=id;result.requests.push_back(std::move(request));
@@ -158,14 +208,7 @@ static PreparedBuiltinInsert prepareInsert(Store& store,const rows::PluginRef& r
                 append("chain.create",{{"id",result.chainId},{"track",track},{"ord",0},{"name","Devices"}},"chain",result.chainId);
             }
         }
-        std::vector<ChainDevice> order;
-        SQLite::Statement devices(db,"SELECT devices.id,devices.ord,"
-            "COALESCE(NULLIF(plugin_refs.subtype,''),devices.rack_kind,''),devices.is_rack "
-            "FROM devices LEFT JOIN plugin_refs ON plugin_refs.id=devices.plugin_ref_id "
-            "WHERE devices.chain_id=? ORDER BY devices.ord,devices.id");
-        devices.bind(1,result.chainId);
-        while(devices.executeStep())order.push_back({devices.getColumn(0).getInt64(),devices.getColumn(1).getInt64(),
-                                                   role(devices.getColumn(2).getString()),devices.getColumn(3).getInt()!=0});
+        auto order = chainOrder(db, result.chainId);
         if(!std::in_range<std::int64_t>(order.size()))throw std::runtime_error("device order is exhausted");
         auto position=order.size();
         if(before)for(std::size_t i=0;i<order.size();++i)if(order[i].id==*before){position=i;break;}
@@ -184,7 +227,7 @@ static PreparedBuiltinInsert prepareInsert(Store& store,const rows::PluginRef& r
                 }
             }
             if (replacement == order.end()) {
-                position = pluginPosition(order,role(ref.subtype),position,before.has_value());
+                position = pluginPosition(order,deviceRole,position,before.has_value());
             } else {
                 if (replacement->rack)
                     throw std::runtime_error("select an instrument inside the rack to replace");
@@ -209,7 +252,7 @@ static PreparedBuiltinInsert prepareInsert(Store& store,const rows::PluginRef& r
     return result;
 }
 PreparedBuiltinInsert prepareBuiltinInsert(Store& store,std::string_view uid,std::int64_t track,std::optional<std::int64_t> before,
-    std::int64_t retainedDeviceId) {
+    std::int64_t retainedDeviceId,std::span<const OpRequest> newTrack) {
     const auto* info=findBuiltin(uid);
     if(!info || !info->available) {
         PreparedBuiltinInsert result;
@@ -219,10 +262,11 @@ PreparedBuiltinInsert prepareBuiltinInsert(Store& store,std::string_view uid,std
     rows::PluginRef ref;
     ref.format="internal";ref.uid=uid;ref.name=info->name;ref.vendor="ADI";ref.version="1";
     ref.subtype=info->instrument?"instrument":"effect";
-    return prepareInsert(store,ref,track,before,retainedDeviceId);
+    return prepareInsert(store,ref,track,before,retainedDeviceId,newTrack);
 }
 PreparedBuiltinInsert preparePluginInsert(Store& store,const rows::PluginRef& ref,std::int64_t track,
-    std::optional<std::int64_t> before,const PluginInsertOptions& options,std::int64_t retainedDeviceId) {
+    std::optional<std::int64_t> before,const PluginInsertOptions& options,std::int64_t retainedDeviceId,
+    std::span<const OpRequest> newTrack) {
     if((ref.format!="vst3" && ref.format!="clap") || ref.uid.empty() || ref.name.empty()) {
         PreparedBuiltinInsert result;result.error="Select a VST3 or CLAP plug-in with a valid identity";return result;
     }
@@ -233,7 +277,103 @@ PreparedBuiltinInsert preparePluginInsert(Store& store,const rows::PluginRef& re
         *engine::routeChoiceName(*options.expressionRoute) == '\0') {
         PreparedBuiltinInsert result;result.error="unknown plug-in expression route";return result;
     }
-    return prepareInsert(store,ref,track,before,retainedDeviceId,&options);
+    return prepareInsert(store,ref,track,before,retainedDeviceId,newTrack,&options);
+}
+PreparedDeviceMove prepareDeviceMove(Store& store, DeviceMoveSource source, std::int64_t track,
+                                    std::optional<std::int64_t> before) {
+    PreparedDeviceMove result;
+    try {
+        if (store.readOnly()) throw std::runtime_error("project is read-only");
+        auto& db = store.db();
+        std::optional<SQLite::Transaction> read;
+        if (sqlite3_get_autocommit(db.getHandle()) != 0)
+            read.emplace(db, SQLite::TransactionBehavior::DEFERRED);
+        result.sourceFile = identity(db);
+        result.options.expectHead.emplace(OpJournal(store).headSeq());
+        const auto sourceKind = editableTrackKind(db, source.track);
+        const auto targetKind = track == source.track ? sourceKind : editableTrackKind(db, track);
+        detail::requireDeviceInsertTrack(db, track);
+        auto from = chainOrder(db, source.chain);
+        const auto found = std::find_if(from.begin(), from.end(), [&](const auto& device) { return device.id == source.device; });
+        if (found == from.end() || chainOwner(db, source.chain) != source.track)
+            throw std::runtime_error("That device changed tracks or chains before it could be moved.");
+        const auto moved = *found;
+        if (before == source.device && track == source.track) {
+            result.ok = true;
+            return result;
+        }
+        if (source.track != track && moved.role != Role::AudioEffect && targetKind != "midi" && targetKind != "instrument")
+            throw std::runtime_error("MIDI effects and instruments need a MIDI track.");
+
+        std::optional<std::int64_t> destination;
+        if (before) {
+            SQLite::Statement anchor(db, "SELECT chain_id FROM devices WHERE id=?");
+            anchor.bind(1, *before);
+            if (!anchor.executeStep()) throw std::runtime_error("The destination device changed before the drop.");
+            destination = anchor.getColumn(0).getInt64();
+            if (chainOwner(db, *destination, source.device) != track)
+                throw std::runtime_error("The destination device belongs to another track.");
+        } else {
+            SQLite::Statement root(db, "SELECT id FROM device_chains WHERE track_id=? ORDER BY ord DESC,id DESC LIMIT 1");
+            root.bind(1, track);
+            if (root.executeStep()) destination = root.getColumn(0).getInt64();
+        }
+        const auto originalPosition = static_cast<std::size_t>(found - from.begin());
+        from.erase(found);
+        auto to = destination == source.chain ? from : destination ? chainOrder(db, *destination) : std::vector<ChainDevice>{};
+        if (destination != source.chain && moved.role == Role::Instrument &&
+            std::any_of(to.begin(), to.end(), [](const auto& device) { return device.role == Role::Instrument; }))
+            throw std::runtime_error("The destination chain already has an instrument.");
+        const auto anchor = before ? std::find_if(to.begin(), to.end(), [&](const auto& device) { return device.id == *before; }) : to.end();
+        if (before && anchor == to.end()) throw std::runtime_error("The destination device changed before the drop.");
+        const auto position = pluginPosition(to, moved.role, static_cast<std::size_t>(anchor - to.begin()), before.has_value());
+        if (destination == source.chain && position == originalPosition) {
+            result.ok = true;
+            return result;
+        }
+
+        const auto append = [&](const char* op, Payload payload, const char* kind, std::int64_t id) {
+            OpRequest request;
+            request.opType = op;
+            request.payload = std::move(payload);
+            request.label = "Move Device";
+            request.targetKind = kind;
+            request.targetId = id;
+            result.requests.push_back(std::move(request));
+        };
+        if (!destination) {
+            destination = RowIds(db).next("device_chains");
+            append("chain.create", {{"id", *destination}, {"track", track}, {"ord", 0}, {"name", "Devices"}},
+                   "chain", *destination);
+        }
+        to.insert(to.begin() + static_cast<std::ptrdiff_t>(position), moved);
+        const auto renumber = [&](const std::vector<ChainDevice>& order, std::int64_t chain) {
+            if (!std::in_range<std::int64_t>(order.size())) throw std::runtime_error("device order is exhausted");
+            for (std::size_t i = 0; i < order.size(); ++i) {
+                const auto ordinal = static_cast<std::int64_t>(i);
+                if (order[i].ord != ordinal || (order[i].id == moved.id && chain != source.chain))
+                    append("device.move", {{"id", order[i].id}, {"chain", chain}, {"ord", ordinal}},
+                           "device", order[i].id);
+            }
+        };
+        if (destination != source.chain) renumber(from, source.chain);
+        renumber(to, *destination);
+        result.ok = true;
+    } catch (const std::exception& error) { result.error = error.what(); }
+    return result;
+}
+CommitResult commitDeviceMove(Store& store, const PreparedDeviceMove& prepared, Actor actor) {
+    CommitResult result;
+    if (!prepared.ok) { result.error = prepared.error; return result; }
+    if (identity(store.db()) != prepared.sourceFile) {
+        result.error = "project changed after the device move was prepared";
+        result.stale = true;
+        return result;
+    }
+    if (prepared.requests.empty()) { result.ok = true; return result; }
+    auto requests = prepared.requests;
+    for (auto& request : requests) request.actor = actor;
+    return OpJournal(store).commit(requests, prepared.options);
 }
 CommitResult commitBuiltinInsert(Store& store,const PreparedBuiltinInsert& prepared,Actor actor) {
     CommitResult result;if(!prepared.ok){result.error=prepared.error;return result;}

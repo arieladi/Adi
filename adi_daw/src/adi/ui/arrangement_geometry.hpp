@@ -9,6 +9,7 @@
 #include <array>
 #include <cmath>
 #include <map>
+#include <set>
 #include <vector>
 #include <string>
 namespace adi::ui {
@@ -101,6 +102,8 @@ struct ArrangementGeometry {
     // geometry used without its view: the foot then follows the tracks.
     int lanesHeight = 0;
     std::map<std::int64_t, int> heights;
+    // Folded ordinary tracks keep their row and their expanded height.
+    std::set<std::int64_t> foldedTracks;
     // Bitwig's Use Large Track Height (Master Reference 10, Figure 33): off, every track shows
     // at half its height, never below the smallest. The heights kept are the large ones.
     bool largeTracks = true;
@@ -181,6 +184,8 @@ struct ArrangementGeometry {
     int heightFor(std::int64_t id) const noexcept {
         if (!shown(id))
             return 0;
+        if (foldedTracks.contains(id))
+            return kMinTrackHeight;
         const auto i = heights.find(id);
         const int h = i == heights.end() ? height : i->second;
         return largeTracks ? h : std::max(kMinTrackHeight, h / 2);
@@ -188,6 +193,11 @@ struct ArrangementGeometry {
     // `next` is a height as shown; while the tracks are small it is kept at twice that, so
     // the track comes back at the size it was given.
     void resizeTrack(std::int64_t id, int next, bool all = false) {
+        if (!all && foldedTracks.contains(id)) {
+            if (next <= kMinTrackHeight)
+                return; // A drag that leaves the row folded keeps its expanded height.
+            foldedTracks.erase(id);
+        }
         next = std::clamp(next, kMinTrackHeight, kMaxTrackHeight);
         if (!largeTracks)
             next = std::min(kMaxTrackHeight, next * 2);

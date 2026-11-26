@@ -2,6 +2,7 @@
 #include "ui_mixer.hpp"
 #include "ui_controls.hpp"
 #include "ui_shell.hpp"
+#include "ui_value_entry.hpp"
 #include "adi/engine/mixer.hpp"
 #include "adi/ui/automation_mode.hpp"
 #include "adi/ui/automation_override.hpp"
@@ -36,6 +37,29 @@ const juce::Identifier kHalfLit{"live.half"};
 // on: -70 dB is quiet, not silent.
 constexpr double kFloorDb = -70, kTopDb = 6, kSilenceDb = -150;
 double writtenVolume(double db) noexcept { return db <= kFloorDb ? kSilenceDb : db; }
+// R13 will settle the reset gestures for Live's fader and sends.
+constexpr bool kMixerResetOnDoubleClick = true;
+constexpr bool kMixerResetOnDelete = true;
+
+std::optional<double> levelValue(juce::String text, double floor) {
+    text = text.trim().toLowerCase();
+    if (text.endsWith("db"))
+        text = text.dropLastCharacters(2).trimEnd();
+    if (text == "-inf" || text == "-infinity" || text == juce::String::fromUTF8("−∞"))
+        return floor;
+    return valueNumber(text);
+}
+
+std::optional<double> panValue(juce::String text) {
+    text = text.trim().toUpperCase();
+    if (text == "C")
+        return 0;
+    const bool left = text.endsWithChar('L'), right = text.endsWithChar('R');
+    const auto parsed = valueNumber(left || right ? text.dropLastCharacters(1) : text);
+    if (!parsed)
+        return std::nullopt;
+    return (left ? -std::abs(*parsed) : right ? std::abs(*parsed) : *parsed) / 50;
+}
 // Live 11's meter, measured: +6 dB at the top, then 0, -12, -24, -36, -48 and -60 dB
 // at these depths; the scale is wider near 0 dB, as Live's.
 constexpr std::array<std::pair<double, double>, 7> kScale{
@@ -77,6 +101,62 @@ bool onInOrAuto(float x, float y, float gap, juce::Point<int> at) {
     return in.getUnion(automatic).contains(at.toFloat());
 }
 } // namespace
+PrimaryButtonSlider::PrimaryButtonSlider() = default;
+PrimaryButtonSlider::~PrimaryButtonSlider() = default;
+
+void PrimaryButtonSlider::enableValueEdits(double defaultValue, double step) {
+    default_ = defaultValue;
+    step_ = step;
+    setWantsKeyboardFocus(true);
+    // While clicked, the strip takes Esc for a live drag. Give the control
+    // the keyboard on release so the same click also enables typed entry.
+    setMouseClickGrabsKeyboardFocus(false);
+    setTextBoxIsEditable(false);
+    setVelocityModeParameters(1.0, 1, 0.0, true, juce::ModifierKeys::shiftModifier);
+}
+
+void PrimaryButtonSlider::mouseUp(const juce::MouseEvent &event) {
+    if (!std::exchange(primary_, false))
+        return;
+    const SafePointer<PrimaryButtonSlider> alive(this);
+    juce::Slider::mouseUp(event);
+    if (alive && alive->default_)
+        focusIfShowing(*alive);
+}
+
+void PrimaryButtonSlider::mouseDoubleClick(const juce::MouseEvent &event) {
+    if (event.mods.isPopupMenu() || !isEnabled())
+        return;
+    if (default_ && kMixerResetOnDoubleClick)
+        setValue(*default_, juce::sendNotificationSync);
+    else
+        juce::Slider::mouseDoubleClick(event);
+}
+
+bool PrimaryButtonSlider::keyPressed(const juce::KeyPress &key) {
+    if (!default_ || key.getModifiers().isAnyModifierKeyDown())
+        return juce::Slider::keyPressed(key);
+    if (key == juce::KeyPress::deleteKey || key == juce::KeyPress::backspaceKey) {
+        if (kMixerResetOnDelete)
+            setValue(*default_, juce::sendNotificationSync);
+        return true;
+    }
+    if (key == juce::KeyPress::upKey || key == juce::KeyPress::downKey) {
+        setValue(getValue() + (key == juce::KeyPress::upKey ? step_ : -step_), juce::sendNotificationSync);
+        return true;
+    }
+    const auto first = valueEntryStart(key);
+    if (key != juce::KeyPress::returnKey && first == 0)
+        return juce::Slider::keyPressed(key);
+    if (!valueEntry_)
+        valueEntry_ = std::make_unique<ValueEntry>(getTitle(), [this](const juce::String &text) {
+            setValue(getValueFromText(text), juce::sendNotificationSync);
+        });
+    const auto bounds = getLocalBounds().withHeight(std::min(getHeight(), 20)).withCentre(getLocalBounds().getCentre());
+    valueEntry_->open(*this, bounds, getTextFromValue(getValue()), first);
+    return true;
+}
+
 double meterDepth(double db) noexcept {
     if (db >= kScale.front().first)
         return 0;
@@ -169,6 +249,10 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
     volume.updateText();
     volume.setTitle("Track Volume");
     volume.setTooltip("Adjusts the track's output level.");
+    volume.valueFromTextFunction = [this](const juce::String &text) {
+        return levelValue(text, kFloorDb).value_or(volume.getValue());
+    };
+    volume.enableValueEdits(0, .1);
     pan.setRange(-1, 1, .02);
     // Live's pan reads 50L to 50R, C in the middle.
     pan.textFromValueFunction = [](double v) {
@@ -180,6 +264,8 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
     pan.setDoubleClickReturnValue(true, 0);
     pan.setTitle("Track Panning");
     pan.setTooltip("Places the track in the stereo field. Right-click for the pan mode.");
+    pan.valueFromTextFunction = [this](const juce::String &text) { return panValue(text).value_or(pan.getValue()); };
+    pan.enableValueEdits(0, .02);
     for (auto *s : {&volume, &pan}) {
         addAndMakeVisible(*s);
         // The wheel only scrolls, as Live (lookfeel.wheelChangesParameters).
@@ -1004,6 +1090,26 @@ void MixerStrip::mouseDoubleClick(const juce::MouseEvent &e) {
     panel_.root.publishSelection();
     panel_.root.showDeviceView();
 }
+bool MixerStrip::isInterestedInDragSource(const SourceDetails &details) {
+    return track_ != 0 && (panel_.root.browser.acceptsDeviceDrop(details) ||
+                           !BrowserPanel::droppedFiles(details.description).isEmpty());
+}
+void MixerStrip::itemDropped(const SourceDetails &details) {
+    if (track_ == 0)
+        return;
+    if (panel_.root.browser.acceptsDeviceDrop(details)) {
+        panel_.root.browser.loadDroppedDevice(details, track_);
+        return;
+    }
+    filesDropped(BrowserPanel::droppedFiles(details.description), details.localPosition.x, details.localPosition.y);
+}
+bool MixerStrip::isInterestedInFileDrag(const juce::StringArray &files) {
+    return track_ != 0 && !files.isEmpty();
+}
+void MixerStrip::filesDropped(const juce::StringArray &files, int, int) {
+    if (track_ != 0)
+        panel_.root.dropAudioPaths(files, track_, panel_.root.arrangement.geometry.selection.insert);
+}
 bool MixerStrip::onSplitLine(const juce::MouseEvent &e) const noexcept {
     return !panel_.vertical() && track_ != 0 && e.eventComponent == this &&
            e.y >= getHeight() - TrackHeaderList::kSplitLine;
@@ -1060,6 +1166,7 @@ void MixerStrip::mouseDown(const juce::MouseEvent &e) {
     // the tracks between. So Ctrl+G after picking strips groups them (walk-B B10).
     if (panel_.vertical() && e.eventComponent == this && e.y < kTitleHeight && track_ != 0 &&
         !e.mods.isPopupMenu()) {
+        focusIfShowing(*this);
         auto &selection = panel_.root.arrangement.geometry.selection;
         if (e.mods.isCommandDown() && selection.track != 0) {
             auto &picked = selection.picked;
@@ -1076,6 +1183,7 @@ void MixerStrip::mouseDown(const juce::MouseEvent &e) {
             selection.toTrack = 0;
             selection.picked.clear();
         }
+        selection.clearMaterial();
         panel_.root.publishSelection();
         panel_.root.arrangement.changed();
         return;
@@ -1195,7 +1303,7 @@ void MixerStrip::throwPrePost(std::int64_t ret) {
     panel_.root.submitEdits({clickReturnSendTap(ret)});
 }
 std::unique_ptr<juce::Slider> MixerStrip::makeSend(std::size_t index) {
-    auto knob = std::make_unique<juce::Slider>();
+    auto knob = std::make_unique<PrimaryButtonSlider>();
     if (panel_.vertical()) {
         knob->setSliderStyle(juce::Slider::RotaryHorizontalVerticalDrag);
         knob->setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
@@ -1220,6 +1328,10 @@ std::unique_ptr<juce::Slider> MixerStrip::makeSend(std::size_t index) {
     const auto letter = juce::String::charToString(static_cast<juce::juce_wchar>('A' + index % 26));
     knob->setTitle("Send " + letter);
     knob->setTooltip("Sets how much of the track goes to return track " + letter + ".");
+    knob->valueFromTextFunction = [control = knob.get()](const juce::String &text) {
+        return levelValue(text, kSendFloorDb).value_or(control->getValue());
+    };
+    knob->enableValueEdits(kSendFloorDb, .1);
     knob->setScrollWheelEnabled(false);
     // A drag is one undo step: it commits when the mouse lets go. A typed value commits at once.
     // A send that has its row is dragged live, as the fader is (MX-23); one with none yet is made when

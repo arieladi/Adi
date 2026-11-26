@@ -11,8 +11,8 @@ namespace {
 constexpr std::array<std::uint32_t, 3> pedals{64, 66, 69};
 }
 
-bool LiveMidiInput::push(std::int64_t sample, const Event& event) noexcept {
-    if (sample < 0 || !isNoteStream(event.type) || event.channel > 15 || !std::isfinite(event.value))
+bool LiveMidiInput::push(std::int64_t sample, const Event& event, std::int64_t inputSample) noexcept {
+    if (sample < 0 || inputSample < 0 || inputSample > sample || !isNoteStream(event.type) || event.channel > 15 || !std::isfinite(event.value))
         return false;
     if (event.type == EventType::Controller && event.paramId > 127) return false;
     if ((event.type == EventType::NoteOn || event.type == EventType::NoteOff) &&
@@ -24,7 +24,7 @@ bool LiveMidiInput::push(std::int64_t sample, const Event& event) noexcept {
         reset();
         return false;
     }
-    ring_[next % capacity] = {sample, epoch_.load(std::memory_order_acquire), event};
+    ring_[next % capacity] = {sample, inputSample, epoch_.load(std::memory_order_acquire), event};
     written_.store(next + 1, std::memory_order_release);
     return true;
 }
@@ -134,7 +134,7 @@ void LiveMidiInput::render(const GraphHost::RenderBlock& block, const AudioIo& i
         if (item.epoch != epoch || item.sample >= end) break;
         auto event = item.event;
         event.frame = static_cast<std::int32_t>(std::max(item.sample - io.streamTimeSamples, std::int64_t{0}));
-        if (capture) capture->record(item.sample, event);
+        if (capture) capture->record(item.sample, item.inputSample, event);
         for (const auto& route : routes)
             if (route.armedTrack && route.slot != kInvalidNode && !route.voices->flush)
                 deliver(block, route, event);

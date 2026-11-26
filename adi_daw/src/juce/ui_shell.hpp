@@ -8,6 +8,7 @@
 #include "adi/ui/export_choices.hpp"
 #include "adi/ui/automation_mode.hpp"
 #include "adi/ui/import_choices.hpp"
+#include "adi/ui/live_midi_take.hpp"
 #include "adi/ui/locator_edits.hpp"
 #include "adi/ui/loop_edits.hpp"
 #include "adi/ui/op_submitter.hpp"
@@ -35,6 +36,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <span>
 #include <type_traits>
 #include <variant>
 namespace adi::ui {
@@ -242,22 +244,26 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     const settings::AppSettings &settings() const noexcept { return settings_; }
     // For what the window writes back: the import prompt's last choices (E5).
     settings::AppSettings &writableSettings() noexcept { return settings_; }
-    // The Arrangement's clipboard (Live 12 manual 6.9, 41.5; E2, N17): a clip's copy or a time
-    // selection's, values the engine made (`copyClip`, `copyRange`), never ops. It is the app's, as
-    // the device clipboard is, so it outlives a window; the engine refuses it in another project.
+    struct TrackCopy {
+        std::string sourceFile, kind, name;
+        std::int64_t parent = 0, index = 0;
+        Payload contents;
+    };
+    // The Arrangement's clipboard holds captured material and outlives a window.
     struct ClipClipboard {
         // A Time copy (E3: Cut and Copy Time) shares it: the selected time across the whole Set.
         struct EnvelopeCopy {
             edit::AutomationRangeCopy range;
             std::string sourceFile;
         };
-        std::variant<std::monostate, clip_edit::ClipCopy, clip_edit::RangeCopy, clip_edit::TimeCopy, EnvelopeCopy> held;
+        std::variant<std::monostate, clip_edit::ClipCopy, clip_edit::RangeCopy, clip_edit::TimeCopy, TrackCopy, EnvelopeCopy> held;
         bool empty() const noexcept { return std::holds_alternative<std::monostate>(held); }
         // The project file a copy names; a Time copy names it by its material.
         static std::string *fileOf(clip_edit::ClipCopy &c) { return &c.sourceFile; }
         static std::string *fileOf(clip_edit::RangeCopy &c) { return &c.sourceFile; }
         static std::string *fileOf(clip_edit::TimeCopy &c) { return &c.material.sourceFile; }
         static std::string *fileOf(EnvelopeCopy &c) { return &c.sourceFile; }
+        static std::string *fileOf(TrackCopy &c) { return &c.sourceFile; }
         static std::string *fileOf(std::monostate &) { return nullptr; }
         std::string sourceFile() {
             auto *file = std::visit([](auto &copy) { return fileOf(copy); }, held);
@@ -407,6 +413,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // the engine refresh after an edit belong to whoever owns the document.
     std::function<bool(int)> applicationCommand;
     std::function<void()> afterEdit;
+    std::function<std::int64_t()> retainedDeviceId;
     // Commits the parameter edits the document still holds before Undo, Redo or a restored step acts
     // (DF-W29); false, with the document's reason said, when it could not.
     std::function<bool()> settleEdits;
@@ -487,6 +494,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     std::function<bool(std::int64_t insertTick, bool playing)> startRecording;
     std::function<void()> stopRecording;
     std::function<bool()> recording, capturingAudioTake;
+    std::function<std::span<const LiveMidiTake>()> liveMidiTakes;
     // Live's MIDI Arrangement Overdub (manual 21.2): the Control Bar's switch, the window's own state.
     // It decides what a MIDI recording does to the notes already there once MIDI records (SRF-05).
     bool midiOverdub() const noexcept { return midiOverdub_; }
@@ -499,6 +507,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // the drop area below the tracks (`track` 0), which makes a new audio track. One undo step;
     // the new clip and its track are selected. A refusal goes to the Status Bar.
     bool dropAudio(const std::string &utf8Path, std::int64_t track, std::int64_t pos, const std::string &name);
+    bool dropAudioPaths(const juce::StringArray &, std::int64_t track, std::int64_t pos, bool separate = false);
     // Several files dropped at once, each a (path, clip name): one after another on that track, or
     // with `separate` (Ctrl/Cmd held) the first there and each other on a new audio track of its own
     // (`adi::ui::dropAudio`). Each file is read and captured first; one undo step for them all.
@@ -678,6 +687,8 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     enum class ClipCommand { Cut, Copy, Paste, Duplicate };
     bool clipClipboard(ClipCommand);
     bool deleteAutomationRange();
+    bool trackClipboard(ClipCommand);
+    bool trackClipboardContext() const;
     bool canClipClipboard(ClipCommand) const;
     // Whether Cut, Copy, Paste or Duplicate (an AppCommands id) has something to act on, on a device
     // or in the Arrangement; and whether the device chain takes it first.
@@ -966,8 +977,10 @@ bool isTestLaunch(const juce::String &commandLine);
 // when missing.
 juce::File projectsFolder(const settings::AppSettings &settings);
 // Live's New Live Set (manual 5.4.1): a new project is untitled and asks nothing; Save As names and
-// places it. The next free Untitled.adi, Untitled(2).adi, ... in the projects folder, for launch and New.
+// places it. Reserve an exclusive Untitled, Untitled(2), ... directory for launch or New.
 juce::File nextUntitledProject(const settings::AppSettings &settings);
+// Map the save chooser's file to the song file inside its own same-named folder.
+juce::File songProjectFile(const juce::File &file);
 // Holds a root at its window's interface zoom: the root lays out in logical
 // units and the transform scales it, so nothing below knows the zoom exists.
 class ZoomHost final : public juce::Component {

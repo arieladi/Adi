@@ -23,23 +23,27 @@ class DeviceChainStrip;
 class SharedAnalysis;
 // One parameter of the DAW-drawn panel (ADR-0150, ADR-0198): its name, a control
 // shaped as the plug-in declares it, and the plug-in's own text for the value.
+class ValueEntry;
 class ParameterControl final : public juce::Component, public juce::SettableTooltipClient {
   public:
     // `defaultNormalized` is the plug-in's default for the parameter, where Delete returns it
     // (Live 12 manual 41.6, Return to Default).
     ParameterControl(DeviceChainStrip &, std::int64_t, const panel::Record &,
                      double defaultNormalized);
+    ~ParameterControl() override;
     void present(const panel::Record &, double defaultNormalized);
     void resized() override;
     void paint(juce::Graphics &) override;
     // A clicked control takes the focus, so Live's value keys reach it (manual 41.6): Delete
     // or Backspace is Return to Default, one gesture to the plug-in's default, one undo step.
-    // Other keys go on to the device, so the left and right arrows still move between devices.
+    // Up/Down nudge a knob; Enter or a numeric key edits its normalized value.
+    // Left and right still move between devices.
     bool keyPressed(const juce::KeyPress &) override;
     bool returnToDefault();
     // Live's parameter context menu (manual 25.4; AU-04): Re-Enable Automation while the parameter's
     // lane is overridden. A right-click on the knob or the control's labels opens it.
     void mouseDown(const juce::MouseEvent &) override;
+    void mouseDoubleClick(const juce::MouseEvent &) override;
     void showMenu();
     // The device's plug-in format, which names its parameters' lanes (`engine::automationParamRef`).
     std::string format;
@@ -54,10 +58,12 @@ class ParameterControl final : public juce::Component, public juce::SettableTool
 
   private:
     bool gesture(engine::ParamEventKind, double);
+    bool setOnce(double);
     DeviceChainStrip &strip;
     const panel::Record *record = nullptr;
     double defaultValue = 0;
     juce::Label name, value;
+    std::unique_ptr<ValueEntry> valueEntry_;
     int presentedMenuId_ = 0;
     std::int32_t menuSteps_ = 0;
     std::vector<std::string> menuLabels_;
@@ -143,6 +149,8 @@ class DevicePanelView final : public juce::Component, public juce::FileDragAndDr
     // Capture the displayed authored identity separately from native drag presentation.
     bool beginFunctionDrag();
     const DevicePanelData *functionDragTarget() const noexcept;
+    static constexpr const char *kDeviceMoveDrag = "adi-device-move";
+    bool beginDeviceDrag();
     // The device the keyboard chose, itself or one of its controls: where a load goes (D4).
     void focusGained(FocusChangeType) override;
     void focusOfChildComponentChanged(FocusChangeType) override;
@@ -300,9 +308,11 @@ class DeviceChainStrip final : public juce::Component, public juce::DragAndDropT
     // past the last device, or when none is chosen.
     std::optional<std::int64_t> insertPoint() const;
     void chose(std::int64_t device) { chosen_ = device; }
-    // A device dragged from the browser drops into the chain, in front of the device it lands on.
+    // A browser device loads here. An existing device moves to this position in the chain.
     bool isInterestedInDragSource(const SourceDetails &) override;
     void itemDropped(const SourceDetails &) override;
+    bool isMovingDevice(const SourceDetails &) const;
+    bool moveDroppedDevice(const SourceDetails &, std::int64_t track, std::optional<std::int64_t> before = {});
     // The device a drop at `x` (the strip's coordinates) goes in front of; none past the last.
     std::optional<std::int64_t> dropBefore(int x) const;
     void mouseDown(const juce::MouseEvent &) override;
@@ -325,6 +335,8 @@ class DeviceChainStrip final : public juce::Component, public juce::DragAndDropT
     std::function<bool(mix::Function, std::int64_t track)> addFunction;
     std::function<bool(const DevicePanelData &, std::int64_t track,
                        std::optional<std::int64_t> before)> moveFunction;
+    std::function<bool(const DevicePanelData &, std::int64_t track,
+                       std::optional<std::int64_t> before)> moveDevice;
     // The app's clipboard: `copy` keeps a device's copy (and removes it, for Cut); `paste` puts the
     // kept copy on `track`, in front of `before` or at the chain's end; `duplicate` copies and
     // pastes at once, the clipboard untouched; `holdsCopy` says whether there is one to paste.
@@ -339,6 +351,7 @@ class DeviceChainStrip final : public juce::Component, public juce::DragAndDropT
     std::vector<std::unique_ptr<DevicePanelView>> panels;
 
   private:
+    DevicePanelView *moveSource(const SourceDetails &) const;
     const DevicePanelData *dataOf(std::int64_t device) const;
     void showSamples();
     void updateParameterDemand(std::vector<std::int64_t>);
