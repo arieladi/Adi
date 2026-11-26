@@ -64,3 +64,14 @@ SC-71 (the grid and the ruler's labels below a quarter note; *reading owed*), SC
 Control Bar buttons that answer "not built yet": each wired, or greyed with its reason), SC-38 (where a
 dragged sample will land), SC-74 (a tempo change placed in the song), SC-75 (Stop pressed while
 stopped), SC-89, SC-91, SC-63, SC-04.
+
+## Added by round 2 (26 November)
+
+- **Before pass work, the readings of Live:** `2026-11-27-live-readings.md`, R1 to R66, if the director
+  gave you that prompt. Other sessions wait on its answers.
+- **SC-06 can be fed now:** the device manager already gives the load and the missed-buffer count
+  (`src/adi/engine/play.cpp`, about 793), so the number need not be hidden.
+- **SC-12 is fifteen buttons, not thirteen,** listed one by one in round 2's note on the row. Draw Mode
+  is only not wired to the command that already works in the Note Editor.
+
+Your second queue, when this one is empty: `2026-11-27-basics-browser.md`.
