@@ -11,6 +11,7 @@ The Linux session owns `basics/look-chain`, started from `origin/main`. The queu
 | SC-72 | `basics/look-chain` at `02bf4001` | Reveal the insert marker after Home, a locator jump or an entered position. Window seat. | Peerless Home, typed-position and locator tests verified the viewport and marker. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 | SC-73 | `basics/look-chain` at `4080cd3a` | Drag, wheel and per-part arrow input on the five Control Bar fields. Window seat. | The baseline fine-tempo wheel probe reproduced the failure. Peerless gesture and editing checks passed. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 | SC-76 | `basics/look-chain` at `c5f204b8` | Source the new-window Follow default and legacy fallback from one named constant. Window seat. | Tests checked fresh and legacy view states and explicit saved on and off. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
+| SC-424 | `basics/look-chain` at `842c8114` | Docked Info at the foot of the full-height Browser column. Clip and Device View use the space beside the Browser and fill the width when it is hidden. Window seat. | The baseline run reproduced the earlier layout failures. Measured peerless before and after through swaps, collapse, width and Info toggles. Menu seam exercised all four modes and the Analysers click. Debug Werror, 17 UI suites without DISPLAY and all 3 acceptance suites passed. | Pushed |
 
 ## Measurements
 
@@ -90,6 +91,24 @@ The keyboard-part underline is now 1 px tall at root y=23, inset 2 px from each 
 ### SC-76
 
 The Follow button is `(663, 9, 21, 17)` at 1920 × 1080 Compact and `(313, 9, 21, 17)` at 960 × 540. Its centred glyph is approximately 16 × 7 px. Bounds and the unlit initial state are the same before and after. One named setting now supplies the default for both new windows and legacy view data with no saved value. Explicit saved on and off toggles each round trip. The approved sheet shows the Follow group at `(640, 32, 36, 28)`, including the menu bar.
+
+### SC-424
+
+Measured before and after in peerless Compact roots. Rectangles are root-relative logical pixels in `(x, y, width, height)` order.
+
+| 1440 × 900 scenario | Before | After |
+|---|---|---|
+| Default | Browser `(8, 35, 308, 623)`, Info `(8, 666, 308, 196)` | Same visible panes in a full working column `(8, 35, 308, 827)`. Its foot meets the Status Bar at y=862. |
+| Clip View opened | Browser `(8, 35, 308, 329)`, Info `(8, 372, 308, 490)` | Browser `(8, 35, 308, 623)`, Info `(8, 666, 308, 196)`. Clip View is `(324, 372, 1108, 286)` and Device View is `(324, 666, 1108, 196)`. |
+| Swapped with Clip View open | Browser `(1124, 35, 308, 329)`, Info `(8, 372, 308, 490)`, Clip and Device x=324 and width=1108 | Browser `(1124, 35, 308, 623)`, Info `(1124, 666, 308, 196)`, Clip and Device x=8 and width=1108 |
+| Browser hidden after swap | Browser hidden, Info `(8, 372, 308, 490)`, Clip and Device x=324 and width=1108 | Browser and Info hidden, Clip `(8, 372, 1424, 286)`, Device `(8, 666, 1424, 196)` |
+| Browser width increased by 60 px | Info `(8, 666, 368, 196)`, Device `(384, 666, 1048, 196)` | Same measurement. Browser and Info each grow from 308 to 368 px wide when the width changes. |
+| Info View hidden with Browser open | Browser `(8, 35, 308, 623)`, list `(127, 81, 185, 546)`, Device `(8, 666, 1424, 196)` | Browser `(8, 35, 308, 827)`, list `(127, 81, 185, 750)`, Device `(324, 666, 1108, 196)` |
+| Both detail panes hidden | Arrangement `(324, 35, 887, 623)`, Info `(8, 666, 308, 196)` | Arrangement `(324, 35, 887, 819)`, Info `(8, 666, 308, 196)` |
+
+At 960 × 540, Info starts at `(8, 306, 308, 196)` in both versions. Turning it off now expands the list from `(127, 81, 185, 186)` to `(127, 81, 185, 390)`. The approved 1920 × 1080 sheet aligns both panes at x=6 with a width of 326 px and a 6 px split. The Compact implementation uses its standard 8 px gap. In a short window Info shrinks to leave the Browser's search and preview bars usable.
+
+The View menu still exposes Info View. After swapping, the regression uses the new Info rectangle for the four analyser menu choices and for the click that opens Analysers. It also checks that the earlier location does not request a menu. The menu request is intercepted in process.
 
 ## For the director
 
