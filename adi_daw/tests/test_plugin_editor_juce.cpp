@@ -67,6 +67,17 @@ bool runPluginEditorJuceTests() {
     component->setSize(1100,800);
     check(component->getWidth()==900 && component->getHeight()==700,"host resize obeys plugin constrainer");
     check(editor->hide() && !editor->visible() && editor->show() && editor->visible(),"visibility maps to JUCE component");
+    {
+        // walk-A A6: FloatingHost puts the wrapper in its window with setContentNonOwned, which makes it
+        // visible before it has a parent. The plug-in's component must stay visible, or JUCE's VST3 window
+        // never sees isShowing() turn true and never attaches the plug-in's view: a blank window.
+        juce::DocumentWindow window("A6",juce::Colours::black,0,false);
+        window.setContentNonOwned(component.get(),true);
+        check(editor->visible(),"editor stays visible when its wrapper becomes a window's content");
+        window.setVisible(true);window.setVisible(false);component->setVisible(false);component->setVisible(true);
+        check(editor->visible(),"editor stays visible through its window's and wrapper's hide and show");
+        window.clearContentComponent();
+    }
     component.reset();
     check(!editor->valid() && raw->getActiveEditor()==nullptr && counts.closed==1,"wrapper close unregisters active editor before deleting it");
     component=createEditorComponent(*device,error);

@@ -3,6 +3,7 @@
 #include "ui_controls.hpp"
 #include "ui_shell.hpp"
 #include "adi/engine/mixer.hpp"
+#include "adi/ui/automation_mode.hpp"
 #include "adi/ui/automation_override.hpp"
 #include "adi/ui/cue_edits.hpp"
 #include "adi/ui/midi_tracks.hpp"
@@ -127,11 +128,19 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
         pan.setSliderStyle(juce::Slider::RotaryHorizontalVerticalDrag);
         pan.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
         addAndMakeVisible(peakHold);
+        // A click resets the track's hold, not only this strip's.
+        peakHold.onClick = [this] {
+            peakHold.held = 0;
+            if (const auto at = panel_.peakLevels.find(track_); at != panel_.peakLevels.end())
+                at->second = 0;
+            peakHold.repaint();
+        };
         active.getProperties().set("live.font", static_cast<double>(look::fontTitle)); // Live's big number in its mixer
     } else {
-        // Live's value boxes: the number in the box, the volume's filled in blue.
+        // Live's value boxes: the number in the box, the volume's filled in blue. Dragged up or down, as
+        // Live's value fields are (manual 6.3, 7.1): JUCE's vertical bar, filled across all the same (LiveLook).
         for (auto *s : {&volume, &pan}) {
-            s->setSliderStyle(juce::Slider::LinearBar);
+            s->setSliderStyle(juce::Slider::LinearBarVertical);
             s->setTextBoxStyle(juce::Slider::TextBoxLeft, false, 0, 0);
             s->setSliderSnapsToMousePosition(false);
             s->setColour(juce::Slider::textBoxTextColourId, look::text);
@@ -334,6 +343,11 @@ void MixerStrip::bind(std::int64_t id) {
     position_ = number_ = 0;
     peak_ = rms_ = 0;
     lastFrame_ = -1;
+    // The Peak Level is the track's: what it held on the strip that showed it before, else -Inf.
+    const auto held = panel_.peakLevels.find(id);
+    peakHold.held = held != panel_.peakLevels.end() ? held->second : 0.f;
+    peakHold.repaint();
+    automation_.clear(); // the LEDs are the new track's
     frame(true);
 }
 void MixerStrip::resolveMeter() { meter_ = panel_.meter && track_ != 0 ? panel_.meter(track_) : nullptr; }
@@ -466,6 +480,10 @@ void MixerStrip::frame(bool changed) noexcept {
             showPost(*returnSwitches_[i], returns_[i]);
         repaint();
     }
+    // An automated control follows its lane at the playhead (Live 12 manual 25.4; walk-A A13); a drag
+    // overrides the lane, so the control dragged shows the hand's value.
+    if (t && !dragging_)
+        followAutomation(t->volumeDb, t->pan);
     // The meter: the engine's {peak, rms} for the strip, written per callback by the audio thread
     // and read with relaxed loads (UI-ARCHITECTURE §9; #381), never a tap, no allocation. A strip
     // bound before the session had a strip for its track finds the meter on a refresh.
@@ -480,6 +498,7 @@ void MixerStrip::frame(bool changed) noexcept {
     // between reads, so a callback no frame read is not in it (the held peak is N9's open half).
     if (panel_.vertical() && peakNow > peakHold.held) {
         peakHold.held = peakNow;
+        panel_.peakLevels[track_] = peakNow; // a track's entry is made at its first rise only
         peakHold.repaint();
     }
     // The window's ballistics: the level falls from where it was drawn; the peak line holds
@@ -497,6 +516,66 @@ void MixerStrip::frame(bool changed) noexcept {
         repaint(panel_.vertical() ? meterArea().expanded(1)
                                   : juce::Rectangle<int>((showsInOut() ? MixerPanel::kInOutWidth : 0) + 105, 0,
                                                          10, getHeight()));
+    }
+}
+void MixerStrip::followAutomation(double volumeDb, double panValue) {
+    const auto *snapshot = panel_.root.reader().get();
+    if (snapshot == nullptr)
+        return;
+    if (automation_.size() != 2 + sends_.size())
+        automation_.assign(2 + sends_.size(), {});
+    // The playhead the engine evaluates its lanes at, playing or parked (ADR-0164).
+    const auto tick = panel_.root.timelineTick();
+    bool relit = false;
+    const auto follow = [&](juce::Slider &control, AutomationShown &shown, std::string_view kind, std::int64_t owner,
+                            std::string_view param, double low, double high, double own) {
+        const auto lane = followedLane(*snapshot, kind, owner, param, tick);
+        const auto state = !lane.automated ? Automation::None
+                           : lane.overridden ? Automation::Overridden
+                                             : Automation::Followed;
+        relit = relit || state != shown.state;
+        shown.state = state;
+        if (lane.value)
+            control.setValue(std::clamp(*lane.value, low, high), juce::dontSendNotification);
+        else if (shown.showing) // overridden or gone: the control's own value again
+            control.setValue(own, juce::dontSendNotification);
+        shown.showing = lane.value.has_value();
+    };
+    follow(volume, automation_[0], "track", track_, "volume", kFloorDb, kTopDb, std::max(kFloorDb, volumeDb));
+    follow(pan, automation_[1], "track", track_, "pan", -1, 1, panValue);
+    // A send's lane is its routing row's (`sendTarget`).
+    const auto &rows = panel_.root.reader().sends();
+    for (std::size_t i = 0; i < sends_.size(); ++i) {
+        const auto *route = findSend(rows, track_, returns_[i]);
+        follow(*sends_[i], automation_[2 + i], "routing", route != nullptr ? route->id : 0, "gain_db", kSendFloorDb,
+               kSendTopDb, std::clamp(sendLevel(route), kSendFloorDb, kSendTopDb));
+    }
+    if (relit)
+        repaint();
+}
+const juce::Component *MixerStrip::automatedControl(std::size_t index) const noexcept {
+    if (index == 0)
+        return &volume;
+    if (index == 1)
+        return &pan;
+    return index - 2 < sends_.size() ? sends_[index - 2].get() : nullptr;
+}
+MixerStrip::Automation MixerStrip::automation(const juce::Component &control) const noexcept {
+    for (std::size_t i = 0; i < automation_.size(); ++i)
+        if (automatedControl(i) == &control)
+            return automation_[i].state;
+    return Automation::None;
+}
+void MixerStrip::paintOverChildren(juce::Graphics &g) {
+    // The LED at the control's top right, as a device knob's (`ParameterControl::paint`): red while it
+    // follows its lane, dim once overridden (ADI's colours until measured, parity-7.4 row 11).
+    for (std::size_t i = 0; i < automation_.size(); ++i) {
+        const auto *control = automatedControl(i);
+        if (automation_[i].state == Automation::None || control == nullptr || !control->isVisible())
+            continue;
+        g.setColour(automation_[i].state == Automation::Overridden ? look::textDim : juce::Colours::red);
+        const auto b = control->getBounds();
+        g.fillEllipse(static_cast<float>(b.getRight() - 6), static_cast<float>(b.getY() + 1), 5.f, 5.f);
     }
 }
 void MixerStrip::resized() {
@@ -681,7 +760,7 @@ void MixerStrip::paint(juce::Graphics &g) {
         }
         if (position_ > 0) {
             g.setColour(panel_.root.arrangement.colourFor(position_ - 1));
-            g.fillRect(0, 0, w, 17);
+            g.fillRect(0, 0, w, kTitleHeight);
             // A track in a group: a band in the group's colour along its top, as Live's Session
             // View draws what a group holds (manual 18.3).
             if (group_ > 0) {
@@ -917,7 +996,7 @@ bool MixerStrip::hitTest(int x, int y) {
 }
 void MixerStrip::mouseDoubleClick(const juce::MouseEvent &e) {
     // Live: a track's title bar, double-clicked, brings up the Device View with its devices.
-    if (!panel_.vertical() || e.eventComponent != this || e.y >= 17 || track_ == 0)
+    if (!panel_.vertical() || e.eventComponent != this || e.y >= kTitleHeight || track_ == 0)
         return;
     panel_.root.arrangement.geometry.selection.track = track_;
     panel_.root.arrangement.geometry.selection.toTrack = 0;
@@ -968,6 +1047,31 @@ void MixerStrip::mouseDown(const juce::MouseEvent &e) {
     // Main's Cue Out chooser opens on any click, as Live's choosers do (MX-08).
     if (e.eventComponent == this && onCueOut(e.getPosition())) {
         cueOutMenu();
+        return;
+    }
+    // A click on a Mixer View strip's title bar selects its track, as a click on its header does
+    // (Live 12 manual 18.1): Ctrl/Cmd+click picks it apart or lets it go, Shift+click reaches across
+    // the tracks between. So Ctrl+G after picking strips groups them (walk-B B10).
+    if (panel_.vertical() && e.eventComponent == this && e.y < kTitleHeight && track_ != 0 &&
+        !e.mods.isPopupMenu()) {
+        auto &selection = panel_.root.arrangement.geometry.selection;
+        if (e.mods.isCommandDown() && selection.track != 0) {
+            auto &picked = selection.picked;
+            if (track_ != selection.track) {
+                if (const auto at = std::find(picked.begin(), picked.end(), track_); at != picked.end())
+                    picked.erase(at);
+                else
+                    picked.push_back(track_);
+            }
+        } else if (e.mods.isShiftDown() && selection.track != 0)
+            selection.toTrack = track_ == selection.track ? 0 : track_;
+        else {
+            selection.track = track_;
+            selection.toTrack = 0;
+            selection.picked.clear();
+        }
+        panel_.root.publishSelection();
+        panel_.root.arrangement.changed();
         return;
     }
     if (!e.mods.isPopupMenu()) {
@@ -1084,8 +1188,8 @@ std::unique_ptr<juce::Slider> MixerStrip::makeSend(std::size_t index) {
         knob->setSliderStyle(juce::Slider::RotaryHorizontalVerticalDrag);
         knob->setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
     } else {
-        // Live's send box: the number in it, filled in blue as the volume's.
-        knob->setSliderStyle(juce::Slider::LinearBar);
+        // Live's send box: the number in it, filled in blue and dragged up or down as the volume's.
+        knob->setSliderStyle(juce::Slider::LinearBarVertical);
         knob->setTextBoxStyle(juce::Slider::TextBoxLeft, false, 0, 0);
         knob->setSliderSnapsToMousePosition(false);
         knob->setColour(juce::Slider::textBoxTextColourId, look::text);
@@ -1503,8 +1607,12 @@ void MixerPanel::place() {
             strips_[i]->setVisible(false);
 }
 void MixerPanel::frame(bool changed) noexcept {
-    if (changed)
+    if (changed) {
+        // A deleted track's Peak Level goes with it, so an id used again starts at -Inf.
+        for (auto at = peakLevels.begin(); at != peakLevels.end();)
+            at = root.reader().findTrack(at->first) != nullptr ? std::next(at) : peakLevels.erase(at);
         place();
+    }
     for (auto &s : strips_)
         if (s->isVisible())
             s->frame(changed);

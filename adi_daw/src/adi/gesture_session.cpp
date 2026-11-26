@@ -9,6 +9,7 @@
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <sqlite3.h>
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <limits>
 #include <set>
@@ -95,6 +96,9 @@ struct Entry {
     Status status;
     PresentationStatus presentationStatus;
     std::uint64_t revision = 0;
+    // The Store's write counters when the preview of `verifiedRevision` was last found current.
+    std::optional<std::array<std::int64_t, 4>> verified;
+    std::uint64_t verifiedRevision = 0;
     bool dirty = false, abandoned = false, callbackOrigin = false, provisional = false;
 };
 struct PendingCapture::Data { std::shared_ptr<Entry> entry; };
@@ -480,6 +484,28 @@ bool acceptedStillCurrent(const std::shared_ptr<Entry>& entry, const std::shared
         read.rollback(); return status.ok();
     } catch (...) { return false; }
 }
+// Every write through the connection, a commit by another one and any schema change move one of these
+// (as freeze_state.cpp's validation stamp).
+std::optional<std::array<std::int64_t, 4>> storeStamp(Store& store) noexcept {
+    try {
+        auto& db = store.db();
+        return std::array<std::int64_t, 4>{sqlite3_total_changes64(db.getHandle()),
+            db.execAndGet("PRAGMA data_version").getInt64(), db.execAndGet("PRAGMA schema_version").getInt64(),
+            db.execAndGet("PRAGMA temp.schema_version").getInt64()};
+    } catch (...) { return std::nullopt; }
+}
+// The idle drain's check (walk-A A20). The full guard reads the whole presentation image: every material
+// table with the samples' and plug-ins' state. Run by each drain, twice in every 20 ms tick of the message
+// thread, a full project's image outlasted the tick and the window took no more input, so the drag that
+// held the gesture never ended. A preview found current stays current until the Store is written.
+bool acceptedUnchanged(const std::shared_ptr<Entry>& entry, const std::shared_ptr<Domain>& domain) {
+    const auto stamp = storeStamp(*domain->store);
+    if (stamp && entry->verified == stamp && entry->verifiedRevision == entry->preview->revision() &&
+        sameBase(entry->preview->base(), currentBase(domain))) return true;
+    if (!acceptedStillCurrent(entry, domain)) return false;
+    entry->verified = stamp; entry->verifiedRevision = entry->preview->revision();
+    return true;
+}
 Status presentationFailure(const PresentationStatus& status) {
     return fail(status.state == PresentationState::Pending ? Error::Busy : Error::PreparationFailed,
                 status.message.empty() ? "gesture presentation is not ready" : status.message);
@@ -605,6 +631,7 @@ UpdateResult evaluate(const std::shared_ptr<Entry>& entry, const Input& input) {
         auto ready = entry->presentation->prepare(std::move(capture.value));
         if (!ready.status.ok() || !ready.value)
             return reject(entry, domain, ready.status.ok() ? fail(Error::PreparationFailed, "presentation returned no prepared value") : ready.status);
+        const auto stamp = storeStamp(*domain->store);
         {
             RollbackScope read(*domain->store);
             const auto guarded = guardCurrent(domain, base, prepared.value);
@@ -618,6 +645,7 @@ UpdateResult evaluate(const std::shared_ptr<Entry>& entry, const Input& input) {
         CapturedTransactionAccess::supersede(entry->offered); entry->offered.reset();
         entry->preview = std::move(frame); entry->base = base; ++entry->revision;
         entry->state = State::Previewed; entry->dirty = false; entry->status = {};
+        entry->verified = stamp; entry->verifiedRevision = entry->preview->revision();
         return {{}, entry->preview};
     } catch (const std::exception& exception) {
         const auto code = sqlite3_get_autocommit(domain->store->db().getHandle()) == 0 ? Error::RollbackFailed : Error::PreparationFailed;
@@ -976,7 +1004,7 @@ DrainOutcome Coordinator::drain(std::int64_t nowMs) {
             detail::BusyScope busy(*domain); detail::finishDurable(entry, domain); continue;
         }
         if (entry->provisional || !entry->input) continue;
-        if (entry->dirty || !entry->preview || !detail::acceptedStillCurrent(entry, domain)) {
+        if (entry->dirty || !entry->preview || !detail::acceptedUnchanged(entry, domain)) {
             const auto updated = detail::evaluate(entry, *entry->input);
             if (updated.status.ok()) ++result.reapplied; else result.status = updated.status;
         }

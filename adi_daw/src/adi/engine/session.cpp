@@ -49,6 +49,14 @@ device::ParamValue valueOf(const rows::PluginParam& p) noexcept {
                   : device::ParamValue::fromNormalized(p.normalized);
 }
 
+// The project a capture is stamped with, as recording_commands compares it when the take lands:
+// SQLite's resolved name of the main database.
+std::string recordingIdentity(const Store& store) {
+    SQLite::Statement row(store.db(),"PRAGMA database_list");
+    while(row.executeStep())if(row.getColumn(1).getString()=="main")return row.getColumn(2).getString();
+    return {};
+}
+
 }  // namespace
 
 struct ScopeLease::State {
@@ -1492,8 +1500,7 @@ bool Session::load(const Store& store, DeviceLoader loader, SessionSpec spec) {
     graph_.setPrecision(spec_.precision);   // ADR-0207 d2
     graph_.setDelayCompensation(spec_.delayCompensation);
     stats_ = Stats{};
-    SQLite::Statement recordingIdentity(store.db(),"PRAGMA database_list");
-    while(recordingIdentity.executeStep())if(recordingIdentity.getColumn(1).getString()=="main")recordingProject_=recordingIdentity.getColumn(2).getString();
+    recordingProject_ = recordingIdentity(store);
     if (!readPlayback(store))
         return false;
     loaded_ = true;
@@ -1566,6 +1573,10 @@ bool Session::refresh(const Store& store) {
     const bool replaced = !appliedSource_.sameConnection(source);
     if (replaced) appliedSequence_ = 0;
     appliedSource_ = source;
+    // Save As switched the store to its new file: a take recorded from now on is stamped with it, or
+    // it would be refused as another project's when it lands (walk-A A18). A capture running at the
+    // switch kept its stamp and has landed in the old file first (PD06-SAVEAS-GUARD).
+    if (replaced) recordingProject_ = recordingIdentity(store);
     if (replaced && !store.readOnly()) observeKeyRoutes();
     if(!store.readOnly() && !isGestureCommittedRefresh(gestureRuntime_)) {
         const auto registered=gesture::detail::registerSessionEndpoint(appliedSource_,endpoint_);

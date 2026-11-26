@@ -2496,6 +2496,25 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
         strip->mouseDoubleClick(pressAt(*strip, {20.f, 200.f}));
         check(!root.state().docked, "below the title, a double-click leaves the Device View hidden");
         check(root.command(AppCommands::ToggleDeviceView) && root.state().docked, "and shown again");
+        // walk-B B10: a single click on a strip's title selects its track as a click on its header
+        // does, Shift reaching across and Ctrl/Cmd picking apart; so Ctrl+G groups the strips picked.
+        auto &selection = root.arrangement.geometry.selection;
+        if (auto *two = rowOf(root.mixerView, 2), *four = rowOf(root.mixerView, 4); two != nullptr && four != nullptr) {
+            two->mouseDown(pressAt(*two, {20.f, 8.f}));
+            check(selection.track == 2 && selection.toTrack == 0 && selection.picked.empty(),
+                  "a click on 2 MIDI's strip title selects it alone");
+            strip->mouseDown(pressAt(*strip, {20.f, 8.f}, juce::ModifierKeys::shiftModifier));
+            check(selection.track == 2 && selection.toTrack == 3 &&
+                      root.arrangement.geometry.selectedTracks(root.reader()).size() == 2,
+                  "Shift+click on 3 Audio's reaches across: 2 MIDI and 3 Audio selected");
+            strip->mouseDown(pressAt(*strip, {20.f, 8.f}));
+            four->mouseDown(pressAt(*four, {20.f, 8.f}, juce::ModifierKeys::commandModifier));
+            check(selection.track == 3 && selection.picked == std::vector<std::int64_t>{4},
+                  "a click on 3 Audio's, then Ctrl/Cmd+click on 4 Audio's: the two picked");
+            four->mouseDown(pressAt(*four, {20.f, 8.f}, juce::ModifierKeys::commandModifier));
+            check(selection.track == 3 && selection.picked.empty(), "Ctrl/Cmd+click again lets 4 Audio go");
+        } else
+            check(false, "2 MIDI's and 4 Audio's Mixer View strips");
     } else
         check(false, "3 Audio's Mixer View strip");
     check(root.command(AppCommands::ToggleMixerView), "the Mixer View closes");
@@ -3480,7 +3499,7 @@ void splitAndRangeEdits(AppCommands &commands, settings::AppSettings &settings, 
     commands.detach(root);
     document->release();
 }
-// D5: Color Cab's Impulse tile (MR 9.8; N28, #414). The tile is drawn on Color Cab's panel only,
+// D5: Color Cab's Impulse tile (MR 9.8; N28, #414). The tile is drawn on Color Cab's panel
 // beside its controls, with no wrench (a built-in has no plug-in window). A file dropped assigns the
 // slot and Clear empties it, each one undo step, with Pd; with Pd off the drop says the device does
 // not run in this build.
@@ -3590,6 +3609,109 @@ void colorCabTile(AppCommands &commands, const std::filesystem::path &dir) {
         juce::PNGImageFormat().writeImageToStream(picture, out);
     }
     document->release();
+}
+// walk-A A5: OneShot's Sample tile. Every built-in that declares an [adi.sample] slot draws a tile for its
+// first one, named by the declaration (not Color Cab alone), so a sample dropped from the desktop or the
+// browser loads into OneShot as into Live's Simpler (Live 12 manual 30.11), on the tile or anywhere on the
+// panel; the Sampler's first is "Sample 1".
+void oneShotTile(AppCommands &commands, const std::filesystem::path &dir) {
+#if ADI_WITH_PD
+    std::string error;
+    auto document = ProjectDocument::open(dir / "oneshot-tile.adi", true, {}, error);
+    check(document != nullptr, "a project for OneShot's tile");
+    if (!document)
+        return;
+    check(document->insertBuiltin("org.adidaw.builtin.oneshot", 2, std::nullopt), "OneShot on 1 MIDI");
+    const auto dev = document->store().db().execAndGet("SELECT MAX(id) FROM devices").getInt64();
+    check(document->insertBuiltin("org.adidaw.builtin.sampler", 3, std::nullopt), "Sampler on 2 MIDI");
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "oneshot");
+    UiPeerRoot surfacePeer;
+    surfacePeer.setSize(1600, 1000);surfacePeer.addAndMakeVisible(root);
+    surfacePeer.setVisible(true);surfacePeer.addToDesktop(0);
+    root.afterEdit = [&] { document->synchronise(); };
+    root.devices.publication = [&] { return document->parameterFeed().current(); };
+    root.devices.parameterDemand = [&](const void *owner, const std::vector<std::int64_t> &ids) {
+        document->setParameterDemand(owner, ids);
+    };
+    root.devices.assignSample = [&](std::int64_t device, std::int32_t slot, const std::string &path) {
+        const bool ok = document->assignSample(device, slot, media::pathFromUtf8(path), 7);
+        if (!ok)
+            root.say(document->error());
+        return ok;
+    };
+    root.setSize(1440, 900);
+    const auto refresh = [&] {
+        document->tick(0);
+        root.frame();
+        root.frame();
+    };
+    root.arrangement.geometry.selection.track = 2;
+    refresh();
+    auto &panels = root.devices.panels;
+    const bool tiled = panels.size() == 1 && panels[0]->id == dev && panels[0]->sample != nullptr;
+    check(tiled, "OneShot's panel has a sample tile");
+    if (!tiled) {
+        document->release();
+        return;
+    }
+    auto &tile = *panels[0]->sample;
+    int controlsRight = 0;
+    for (const auto &control : panels[0]->controls)
+        if (control->isVisible())
+            controlsRight = std::max(controlsRight, control->getRight());
+    check(tile.isVisible() && tile.slot == 1 && tile.slotName == "Sample" && tile.state() == SampleTile::State::Empty &&
+              tile.getX() >= controlsRight && tile.getRight() <= panels[0]->getWidth() && tile.getHeight() >= 40,
+          "the tile is OneShot's declared slot 1, \"Sample\", empty, beside the controls and inside the panel");
+    const auto wav = dir / "oneshot-sample.wav";
+    {
+        std::vector<float> silence(256);
+        audio::WavWriter writer(wav, 48000, 1, audio::WavFormat::Float32);
+        writer.write(silence.data(), 256);
+    }
+    const auto path = juce::String::fromUTF8(media::pathUtf8(std::filesystem::path(wav).make_preferred()).c_str());
+    check(tile.isInterestedInFileDrag(juce::StringArray(path)), "the tile takes a file from the desktop");
+    tile.filesDropped(juce::StringArray(path), 10, 10);
+    refresh();
+    bool filled = false;
+    for (const auto &slot : document->view().current()->sampleSlots)
+        filled = filled || (slot && slot->deviceId == dev && slot->slot == 1 && !slot->empty && !slot->missing);
+    SQLite::Statement stored(document->store().db(),
+                             "SELECT COUNT(*) FROM plugin_state WHERE device_id=? AND stream_role='sample:1'");
+    stored.bind(1, dev);
+    check(stored.executeStep() && stored.getColumn(0).getInt() == 1 && filled &&
+              tile.state() == SampleTile::State::Loaded && document->ops().nextUndo() &&
+              document->ops().nextUndo()->label == "Assign device sample",
+          "a file dropped from the desktop loads OneShot's slot 1, one undo step; the tile shows it loaded");
+    const auto undone = [&] {
+        const bool ok = root.command(AppCommands::Undo);
+        refresh();
+        return ok && tile.state() == SampleTile::State::Empty;
+    };
+    check(undone(), "undo empties OneShot's slot");
+    // Off the tile: a file dropped on the controls loads the slot too, as Live's Simpler takes one.
+    auto &panel = *panels[0];
+    check(panel.isInterestedInFileDrag(juce::StringArray(path)), "OneShot's whole panel takes a file from the desktop");
+    panel.filesDropped(juce::StringArray(path), 20, 40);
+    refresh();
+    check(tile.state() == SampleTile::State::Loaded, "a file dropped on OneShot's controls loads its slot");
+    check(undone(), "undo empties OneShot's slot again");
+    const juce::DragAndDropTarget::SourceDetails fromBrowser("adi-sample:" + path, nullptr, {10, 10});
+    check(tile.isInterestedInDragSource(fromBrowser), "the tile takes a sample dragged from the browser");
+    tile.itemDropped(fromBrowser);
+    refresh();
+    check(tile.state() == SampleTile::State::Loaded, "a sample dragged from the browser loads OneShot's slot");
+    // The Sampler's slots are declared too: its panel draws the first, by its declared name.
+    root.arrangement.geometry.selection.track = 3;
+    refresh();
+    check(panels.size() == 1 && panels[0]->sample != nullptr && panels[0]->sample->slot == 1 &&
+              panels[0]->sample->slotName == "Sample 1",
+          "the Sampler's panel draws its first declared slot, \"Sample 1\"");
+    document->release();
+#else
+    (void)commands;
+    (void)dir;
+#endif
 }
 // E2: Cut, Copy, Paste and Duplicate in the Arrangement (Live 12 manual 6.9, 41.5; N17).
 void clipClipboard(AppCommands &commands, const std::filesystem::path &dir) {
@@ -7844,6 +7966,117 @@ void clipToTrack(AppCommands &commands, const std::filesystem::path &dir) {
     root.frame();
     check(trackOf(11) == 2 && root.reader().findTrack(2)->clips.front()->posTicks == bar, "and undo puts it back");
 }
+// Live's copy by dragging (walk-A A8): a clip dragged by its bar with Ctrl held (Option on the Mac) lands
+// a copy where it is dropped, the original staying, one undo step; several selected clips are copied
+// together. A Ctrl/Cmd+click on a clip's bar without a drag only picks it, or lets it go.
+void clipCopyDrag(AppCommands &commands, const std::filesystem::path &dir) {
+    StoreError err{};
+    auto store = Store::createEmpty(dir / "clip-copy-drag.adi", err);
+    check(store != nullptr, "the clip copy's project opens");
+    if (!store)
+        return;
+    store->db().exec("INSERT INTO project(id,name) VALUES(1,'Clip Copy Drag')");
+    engine::ProjectView view;
+    view.refresh(*store);
+    OpSubmitter submitter(*store, view);
+    TransportMailbox mailbox;
+    ViewStateStore persistence(*store);
+    SessionState session(*store);
+    const auto bar = textproj::kWhole;
+    bool madeAll = true;
+    for (const std::int64_t id : {1, 2}) {
+        OpRequest r;
+        r.opType = "track.create";
+        r.payload = {{"id", id}, {"kind", "midi"}, {"name", "# MIDI"}, {"index", id - 1}};
+        r.label = "Create track";
+        madeAll = submitter.submit(std::move(r)).ok && madeAll;
+    }
+    for (const auto &[id, track] : {std::pair<std::int64_t, std::int64_t>{11, 1}, {12, 2}}) {
+        OpRequest clip;
+        clip.opType = "clip.create";
+        clip.payload = {{"id", id}, {"track", track}, {"kind", "midi"}, {"pos", bar}, {"length", bar}};
+        clip.label = "Create clip";
+        madeAll = submitter.submit(std::move(clip)).ok && madeAll;
+    }
+    check(madeAll, "two MIDI tracks, a clip in bar 2 of each");
+    AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "clip-copy-drag");
+    root.setSize(1200, 720);
+    for (std::int64_t id = 1; id <= 2; ++id)
+        root.arrangement.geometry.resizeTrack(id, 48);
+    root.mark(DirtySet::All);
+    root.frame();
+    auto &geo = root.arrangement.geometry;
+    auto &canvas = root.arrangement.canvas;
+    const auto x = [&geo](std::int64_t tick) { return static_cast<float>(geo.x(tick)); };
+    const auto barOf = [&root](std::int64_t id) { return static_cast<float>(laneTop(root, id) + 5); };
+    // Each track's clips as (id, start, length), in time order.
+    using Clip = std::tuple<std::int64_t, std::int64_t, std::int64_t>;
+    const auto clipsOn = [&root](std::int64_t track) {
+        std::vector<Clip> out;
+        for (const auto &c : root.reader().findTrack(track)->clips)
+            out.emplace_back(c->id, c->posTicks, c->lengthTicks);
+        std::sort(out.begin(), out.end(), [](const Clip &a, const Clip &b) { return std::get<1>(a) < std::get<1>(b); });
+        return out;
+    };
+#if JUCE_MAC
+    const juce::ModifierKeys copyKey = juce::ModifierKeys::altModifier;
+#else
+    const juce::ModifierKeys copyKey = juce::ModifierKeys::ctrlModifier;
+#endif
+    const auto pick = juce::ModifierKeys::commandModifier;
+    const auto drag = [&](juce::Point<float> from, juce::Point<float> to, juce::ModifierKeys mods) {
+        canvas.mouseDown(pressAt(canvas, from, mods));
+        canvas.mouseDrag(dragAt(canvas, from, to, mods));
+        canvas.mouseUp(dragAt(canvas, from, to, mods));
+        root.frame();
+    };
+    const auto click = [&](juce::Point<float> at, juce::ModifierKeys mods = {}) {
+        canvas.mouseDown(pressAt(canvas, at, mods));
+        canvas.mouseUp(pressAt(canvas, at, mods));
+        root.frame();
+    };
+    // 1 MIDI's clip chosen, then dragged by its bar with Ctrl a bar on and down onto 2 MIDI: a copy
+    // lands there, 1 MIDI's clip stays where it was, and the copy is what is selected.
+    const juce::Point<float> grab(x(bar) + 6, barOf(1));
+    click(grab);
+    drag(grab, {x(2 * bar) + 6, barOf(2)}, copyKey);
+    const auto two = clipsOn(2);
+    const bool copied = two.size() == 2 && std::get<0>(two[0]) == 12 && std::get<1>(two[1]) == 2 * bar &&
+                        std::get<2>(two[1]) == bar && std::get<0>(two[1]) != 11 && std::get<0>(two[1]) != 12;
+    check(clipsOn(1) == std::vector<Clip>{{11, bar, bar}} && copied && submitter.nextUndo()->label == "Copy Clip" &&
+              geo.selection.clip == std::get<0>(two.back()) && geo.selection.track == 2,
+          "Ctrl+drag by the bar copies the clip to bar 3 of 2 MIDI; the original stays; the copy is selected");
+    check(root.command(AppCommands::Undo), "undo the copy");
+    root.frame();
+    check(clipsOn(1) == std::vector<Clip>{{11, bar, bar}} && clipsOn(2) == std::vector<Clip>{{12, bar, bar}},
+          "one Undo takes the copy away");
+    // Ctrl/Cmd+click on 2 MIDI's bar picks its clip besides 1 MIDI's, and again lets it go; nothing is
+    // copied or moved.
+    const auto steps = submitter.nextUndo()->label;
+    click(grab);
+    click({x(bar) + 6, barOf(2)}, pick);
+    check(geo.selection.clip == 11 && geo.selection.pickedClips == std::vector<std::int64_t>{12},
+          "Ctrl/Cmd+click on the other clip's bar picks it");
+    click({x(bar) + 6, barOf(2)}, pick);
+    check(geo.selection.clip == 11 && geo.selection.pickedClips.empty() && clipsOn(1).size() == 1 && clipsOn(2).size() == 1,
+          "again, without a drag, lets it go; nothing is copied");
+    // Both selected, dragged by the picked one's bar with Ctrl a bar on: both copied, one undo step.
+    click({x(bar) + 6, barOf(2)}, pick);
+    drag({x(bar) + 6, barOf(2)}, {x(2 * bar) + 6, barOf(2)}, copyKey);
+    const auto one = clipsOn(1);
+    const auto both = clipsOn(2);
+    check(one.size() == 2 && both.size() == 2 && std::get<0>(one[0]) == 11 && std::get<1>(one[0]) == bar &&
+              std::get<1>(one[1]) == 2 * bar && std::get<0>(both[0]) == 12 && std::get<1>(both[0]) == bar &&
+              std::get<1>(both[1]) == 2 * bar && submitter.nextUndo()->label == "Copy Clips",
+          "Ctrl+drag of two selected clips copies both a bar on, the originals staying, one step");
+    check(geo.selection.clip == std::get<0>(both[1]) && geo.selection.pickedClips == std::vector<std::int64_t>{std::get<0>(one[1])},
+          "the copies are what is selected");
+    check(root.command(AppCommands::Undo), "undo the two copies");
+    root.frame();
+    check(clipsOn(1) == std::vector<Clip>{{11, bar, bar}} && clipsOn(2) == std::vector<Clip>{{12, bar, bar}} &&
+              submitter.nextUndo()->label == steps,
+          "one Undo takes both copies away");
+}
 void rangeSelection(AppCommands &commands, const std::filesystem::path &dir) {
     StoreError err{};
     auto store = Store::createEmpty(dir / "range.adi", err);
@@ -10997,8 +11230,35 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     };
     for (int b = 0; b < 16; ++b)
         block();
+    // walk-B B4: while it records, the take is drawn on each recording track's lane, from where it began
+    // to the playhead, in the record colour; it goes once recording stops (the landed clip replaces it).
+    const auto recordPixels = [&] {
+        auto &canvas = root.arrangement.canvas;
+        const auto image = canvas.createComponentSnapshot(canvas.getLocalBounds(), true, 1.f);
+        int count = 0;
+        for (int y = 0; y < image.getHeight(); ++y)
+            for (int x = 0; x < image.getWidth(); ++x)
+                if (image.getPixelAt(x, y).withAlpha(1.f) == look::record.withAlpha(1.f))
+                    ++count;
+        return count;
+    };
+    frame();
+    {
+        const auto &live = root.arrangement.liveTake();
+        check(live && live->tracks == std::vector<std::int64_t>{4, 5} &&
+                  live->start == root.arrangement.geometry.selection.insert,
+              "Record from stopped: the take begins at the insert marker on both armed audio tracks");
+        if (live && root.timelineTick() > live->start && root.arrangement.geometry.inView(4)) {
+            // 21 ms recorded is 2 px at the default zoom, all outline: zoomed in, its body shows.
+            const double scale = root.arrangement.geometry.scale;
+            root.arrangement.geometry.scale = scale * 40;
+            check(recordPixels() > 0, "and is drawn, red, while the playhead moves on");
+            root.arrangement.geometry.scale = scale;
+        }
+    }
     check(root.command(AppCommands::ArrangementRecord), "F9's command again");
     frame();
+    check(!root.arrangement.liveTake(), "stopped, the growing take goes");
     check(!document->recording() && !record.getToggleState() && document->mailbox().desiredPlaying(),
           "stops the recording; the transport plays on, as Live's [P:recording#21]");
     for (int i = 0; i < 5000 && document->landingTake(); ++i) {
@@ -11353,6 +11613,51 @@ void mixerDragLive(AppCommands &commands, const std::filesystem::path &dir) {
     }
     sel.track = sel.toTrack = 0;
     root.frame();
+    // Walk A9: the row's value boxes are dragged up or down, as Live's value fields (manual 6.3, 7.1): the mouse's
+    // own drag, up raising and down lowering, heard live and one step at the release; a sideways drag moves nothing.
+    {
+        const juce::ModifierKeys left(juce::ModifierKeys::leftButtonModifier);
+        const auto drag = [&](juce::Slider &box, juce::Point<float> by) {
+            const auto centre = box.getLocalBounds().getCentre().toFloat();
+            press();
+            box.mouseDown(pressAt(box, centre, left));
+            box.mouseDrag(dragAt(box, centre, centre + by, left));
+            const bool live = document->mixerDragging();
+            letGo();
+            box.mouseUp(dragAt(box, centre, centre + by, left));
+            root.frame();
+            return live;
+        };
+        const auto ops = opCount();
+        check(drag(three->volume, {0, -30}) && volumeOf(4) > -8 && opCount() == ops + 1 &&
+                  root.undoTitle(false) == "Undo Change Track Volume",
+              "dragged up, the Track Volume box rises, live while it moves and one step at the release");
+        const auto raised = volumeOf(4);
+        check(drag(three->volume, {0, 30}) && volumeOf(4) < raised - 1 && opCount() == ops + 2,
+              "dragged down, it falls, one more step");
+        const auto lowered = volumeOf(4);
+        drag(three->volume, {40, 0});
+        check(volumeOf(4) == lowered && opCount() == ops + 2, "dragged sideways, it moves nothing and writes nothing");
+        const auto panOf = [&] {
+            return document->store().db().execAndGet("SELECT pan FROM mixer_strip WHERE track_id = 4").getDouble();
+        };
+        const auto centred = panOf();
+        check(drag(three->pan, {0, -20}) && panOf() > centred && root.undoTitle(false) == "Undo Change Track Panning",
+              "the Pan box dragged up goes right");
+        check(!three->sendKnobs().empty(), "3 Audio has a send");
+        if (!three->sendKnobs().empty()) {
+            auto &send = *three->sendKnobs()[0];
+            const auto floor = send.getValue();
+            drag(send, {0, -30});
+            check(send.getValue() > floor && root.undoTitle(false) == "Undo Change Send Level",
+                  "the Send A box dragged up rises, one step");
+            check(root.command(AppCommands::Undo), "undo the send");
+        }
+        check(root.command(AppCommands::Undo) && root.command(AppCommands::Undo) && root.command(AppCommands::Undo) &&
+                  std::abs(volumeOf(4) + 9) < 1e-6 && std::abs(panOf() - centred) < 1e-9,
+              "undone, 3 Audio is back at -9 dB, centred");
+        root.frame();
+    }
     // Esc while dragging puts the value back, and the release commits nothing.
     const auto stepBefore = document->ops().nextUndo() ? document->ops().nextUndo()->txnId : 0;
     press();
@@ -11422,24 +11727,18 @@ void mixerDragLive(AppCommands &commands, const std::filesystem::path &dir) {
     check(std::abs(volumeOf(4) + 12) < 1e-6, "without the live gesture the release commits the value");
     document->release();
 }
-// Walk-A A22: a Mixer View fader is grabbed by its ◁ wherever it is drawn, at 0 dB (every new track's) and at
-// +6 dB (the top of its travel), as Live's: the press goes through the window's own dispatch to the fader.
-void mixerViewFaderHandle(AppCommands &commands, const std::filesystem::path &dir) {
+// An automated mixer control shows its automation (Live 12 manual 25.4; walk-A A13): the envelope's value
+// at the playhead in the track controls and the Mixer View, shown without an op; once a manual change
+// overrides the lane, the manual value; Re-Enable Automation follows the lane again.
+void mixerShowsAutomation(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
-    auto document = ProjectDocument::open(dir / "fader-handle.adi", true, {}, error);
-    check(document != nullptr, "a project for the Mixer View's faders");
+    auto document = ProjectDocument::open(dir / "mixer-automation.adi", true, {}, error);
+    check(document != nullptr, "a project with an automated fader");
     if (!document)
         return;
     AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
-                          document->sessionState(), "handle");
+                          document->sessionState(), "automated");
     root.afterEdit = [&] { document->synchronise(); };
-    root.beginMixerDrag = [&](const gesture::RelativeScalarSelection &selection, std::optional<double> value,
-                              const std::string &label) {
-        return document->beginMixerDrag(selection, value, label);
-    };
-    root.mixerDrag = [&](double value) { return document->mixerDrag(value); };
-    root.endMixerDrag = [&] { return document->endMixerDrag(); };
-    root.cancelMixerDrag = [&] { document->cancelMixerDrag(); };
     UiPeerRoot surfacePeer;
     surfacePeer.setSize(1600, 1000);
     surfacePeer.addAndMakeVisible(root);
@@ -11447,61 +11746,128 @@ void mixerViewFaderHandle(AppCommands &commands, const std::filesystem::path &di
     surfacePeer.addToDesktop(0);
     root.setSize(1440, 900);
     root.frame();
-    check(root.command(AppCommands::ToggleMixerView), "the Mixer View opens");
-    root.mark(DirtySet::All);
-    root.frame();
-    MixerStrip *three = nullptr;
-    for (const auto &strip : root.mixerView.strips())
-        if (strip->isVisible() && strip->track() == 4)
-            three = strip.get();
-    auto *peer = surfacePeer.getPeer();
-    check(three != nullptr && peer != nullptr, "3 Audio's strip in the Mixer View");
-    if (three == nullptr || peer == nullptr) {
-        document->release();
-        return;
-    }
-    const auto opCount = [&] { return document->store().db().execAndGet("SELECT count(*) FROM ops").getInt(); };
-    juce::int64 when = 400000;
-    const auto mouse = [&](juce::Point<float> at, juce::ModifierKeys mods) {
-        juce::ModifierKeys::currentModifiers = mods;
-        peer->handleMouseEvent(juce::MouseInputSource::InputSourceType::mouse, at, mods, 1.f, 0.f, when += 1000);
-    };
-    const auto &fader = three->volume;
-    check(std::abs(fader.getPositionOfValue(6) - MixerStrip::kFaderReach) < .5f &&
-              std::abs(fader.getPositionOfValue(-70) - static_cast<float>(fader.getHeight() - MixerStrip::kFaderReach)) < .5f,
-          "the fader's travel stops short of its edges: the ◁ lies inside it at +6 dB and at -inf");
-    for (const double db : {0.0, 6.0})
-        // The ◁ as LiveLook draws it: its tip at `live.faderX` on the level, its back 8 px right, 5 px over
-        // and under the level. Pressed in its middle, and near its back over and under the level.
-        for (const auto &[dx, dy] : std::initializer_list<std::pair<float, float>>{{4.f, 0.f}, {7.f, -4.f}, {7.f, 4.f}}) {
-            OpRequest set;
-            set.opType = "mixer.setVolume";
-            set.payload = {{"id", 4}, {"db", db}};
-            check(document->ops().submit(set).ok && document->synchronise(), "3 Audio's volume set");
-            root.frame();
-            const juce::Point<float> handle(static_cast<float>(fader.getX() + 15) + dx,
-                                            static_cast<float>(fader.getY()) + fader.getPositionOfValue(db) + dy);
-            const auto at = surfacePeer.getLocalPoint(three, handle);
-            const auto below = at.translated(0, 30);
-            const auto ops = opCount();
-            mouse(at, {});
-            mouse(at, juce::ModifierKeys(juce::ModifierKeys::leftButtonModifier));
-            const bool pressed = fader.isMouseButtonDown();
-            mouse(at.translated(0, 10), juce::ModifierKeys(juce::ModifierKeys::leftButtonModifier));
-            mouse(below, juce::ModifierKeys(juce::ModifierKeys::leftButtonModifier));
-            mouse(below, {});
-            root.frame();
-            const auto step = document->ops().nextUndo();
-            const bool moved = pressed && fader.getValue() < db - 1 && opCount() == ops + 1 && step.has_value() &&
-                               step->label == "Change Track Volume";
-            if (!moved)
-                std::fprintf(stderr, "  the press at %+g dB, %g px from the level, missed the fader\n", db, dy);
-            check(moved, db == 0 ? "at 0 dB, a press on the fader's drawn handle and a drag down lower it: one "
-                                   "Change Track Volume"
-                                 : "at +6 dB, the top of its travel, a press on the fader's drawn handle and a drag "
-                                   "down lower it: one Change Track Volume");
+    // 3 Audio's Volume: 0 dB at bar 1, -24 dB at bar 2, 0 dB at bar 3; its Pan from hard left to the centre.
+    root.showAutomation(4, volumeTarget(4));
+    check(root.addAutomationPoint(4, 0, 0) && root.addAutomationPoint(4, textproj::kWhole, -24) &&
+              root.addAutomationPoint(4, 2 * textproj::kWhole, 0) && document->synchronise(),
+          "a Volume envelope on 3 Audio, three breakpoints");
+    root.showAutomation(4, panTarget(4));
+    check(root.addAutomationPoint(4, 0, -1) && root.addAutomationPoint(4, textproj::kWhole, 0) && document->synchronise(),
+          "and a Pan envelope");
+    // Send A raised by hand, which gives it its routing row; then its envelope, -40 dB at bar 1 to -10 dB at bar 2.
+    std::int64_t returnA = 0;
+    for (const auto &s : root.mixer.strips())
+        if (s->track() == 4 && s->isVisible() && !s->sendKnobs().empty()) {
+            returnA = s->sendsTo(0);
+            s->sendKnobs()[0]->setValue(-20, juce::sendNotificationSync);
         }
-    juce::ModifierKeys::currentModifiers = juce::ModifierKeys();
+    document->synchronise();
+    root.frame();
+    const auto *sendA = findSend(root.current()->sends, 4, returnA);
+    check(sendA != nullptr, "Send A has its row");
+    if (sendA != nullptr) {
+        root.showAutomation(4, sendTarget(sendA->id, "Send A"));
+        check(root.addAutomationPoint(4, 0, -40) && root.addAutomationPoint(4, textproj::kWhole, -10) &&
+                  document->synchronise(),
+              "and a Send A envelope");
+    }
+    root.setAutomationMode(false);
+    const auto strip = [&](MixerPanel &panel) -> const MixerStrip * {
+        for (const auto &s : panel.strips())
+            if (s->track() == 4 && s->isVisible())
+                return s.get();
+        return nullptr;
+    };
+    // What 3 Audio's controls show: its row in the track controls, then its strip in the Mixer View; and
+    // their automation LEDs.
+    using Led = MixerStrip::Automation;
+    struct Shown {
+        double rowVolume = 999, rowPan = 999, columnVolume = 999, columnPan = 999, send = 999;
+        Led rowVolumeLed = Led::None, rowPanLed = Led::None, columnVolumeLed = Led::None, sendLed = Led::None;
+    };
+    const auto shown = [&] {
+        Shown out;
+        root.mark(DirtySet::All);
+        root.frame();
+        if (const auto *row = strip(root.mixer)) {
+            out.rowVolume = row->volume.getValue();
+            out.rowPan = row->pan.getValue();
+            out.rowVolumeLed = row->automation(row->volume);
+            out.rowPanLed = row->automation(row->pan);
+            if (!row->sendKnobs().empty()) {
+                out.send = row->sendKnobs()[0]->getValue();
+                out.sendLed = row->automation(*row->sendKnobs()[0]);
+            }
+        }
+        root.command(AppCommands::ToggleMixerView);
+        root.mark(DirtySet::All);
+        root.frame();
+        if (const auto *column = strip(root.mixerView)) {
+            out.columnVolume = column->volume.getValue();
+            out.columnPan = column->pan.getValue();
+            out.columnVolumeLed = column->automation(column->volume);
+        }
+        root.command(AppCommands::ToggleMixerView);
+        root.mark(DirtySet::All);
+        root.frame();
+        return out;
+    };
+    const auto about = [](double a, double b, double within) { return std::abs(a - b) < within; };
+    const auto opCount = [&] { return document->store().db().execAndGet("SELECT count(*) FROM ops").getInt(); };
+    const auto stored = [&] {
+        return document->store().db().execAndGet("SELECT volume_db FROM mixer_strip WHERE track_id = 4").getDouble();
+    };
+    // The playhead where the driver puts it: parked, as the engine follows a lane parked too (ADR-0164).
+    document->prepare(48000, 64);
+    std::array<float, 64> outL{}, outR{};
+    float *outputs[]{outL.data(), outR.data()};
+    engine::AudioIo io;
+    io.out = outputs;
+    io.numOut = 2;
+    io.frames = 64;
+    const auto playheadAt = [&](std::int64_t tick) {
+        const auto tempo = document->view().current()->tempo;
+        document->session().transport().locate(static_cast<std::int64_t>(std::llround(tempo->ticksToSeconds(tick) * 48000)));
+        document->process(io);
+        root.frame();
+    };
+    const auto ops = opCount();
+    const auto step = document->ops().nextUndo() ? document->ops().nextUndo()->txnId : 0;
+    playheadAt(textproj::kWhole / 2);
+    check(root.timelineTick() == textproj::kWhole / 2, "the playhead half way to bar 2");
+    auto now = shown();
+    check(about(now.rowVolume, -12, .05) && about(now.columnVolume, -12, .05) && about(now.rowPan, -.5, .02) &&
+              about(now.columnPan, -.5, .02),
+          "there the box and the fader read -12 dB and the pan 25L: the envelopes' values");
+    check(about(now.send, -25, .05), "and Send A's box -25 dB");
+    check(now.rowVolumeLed == Led::Followed && now.columnVolumeLed == Led::Followed && now.rowPanLed == Led::Followed &&
+              now.sendLed == Led::Followed,
+          "Volume, Pan and Send A show their automation LEDs, lit");
+    playheadAt(textproj::kWhole + textproj::kWhole / 4);
+    now = shown();
+    check(about(now.rowVolume, -18, .05) && about(now.columnVolume, -18, .05) && about(now.rowPan, 0, .02),
+          "a quarter past bar 2, -18 dB: the controls move with the playhead; the pan at its last point");
+    check(about(now.send, -10, .05), "Send A at its last point, -10 dB");
+    check(opCount() == ops && std::abs(stored()) < 1e-9 && !document->mixerDragging() &&
+              (document->ops().nextUndo() ? document->ops().nextUndo()->txnId : 0) == step,
+          "shown only: no op, no undo step, no gesture, and the track keeps its own 0 dB");
+    // A manual change overrides the lane (ADR-0162): the control shows its own value again.
+    OpRequest manual;
+    manual.opType = "mixer.setVolume";
+    manual.payload = {{"id", 4}, {"db", -3.0}};
+    check(document->ops().submit(manual).ok && document->synchronise(), "3 Audio's volume set to -3 dB by hand");
+    now = shown();
+    const auto *lane = laneOf(*root.current(), "track", 4, "volume");
+    check(lane != nullptr && lane->overridden, "the Volume lane is overridden");
+    check(about(now.rowVolume, -3, 1e-6) && about(now.columnVolume, -3, 1e-6) && about(now.rowPan, 0, .02),
+          "overridden, the box and the fader show the manual -3 dB; the Pan still follows its lane");
+    check(now.rowVolumeLed == Led::Overridden && now.columnVolumeLed == Led::Overridden && now.rowPanLed == Led::Followed,
+          "the Volume's LED goes out (overridden); the Pan's stays lit");
+    // Re-Enable Automation (manual 25.4): the controls follow the lane again from the playhead.
+    check(document->reenableAutomation(), "Re-Enable Automation");
+    now = shown();
+    check(about(now.rowVolume, -18, .05) && about(now.columnVolume, -18, .05) && now.rowVolumeLed == Led::Followed,
+          "re-enabled, they read the envelope again, the LED lit");
     document->release();
 }
 // AU-01: Automation Mode in the Arrangement (Live 12 manual 25.2, 25.3): a track's Volume envelope on its
@@ -11541,19 +11907,32 @@ void automationMode(AppCommands &commands, const std::filesystem::path &dir) {
     const auto laneOf = [&] { return trackEnvelope(*document->view().current(), 4); };
     const float midY = (audio->top + audio->bottom) / 2;
     const float barX = static_cast<float>(root.arrangement.geometry.x(textproj::kWhole));
+    // With no breakpoint the line is the fader's level across the lane.
+    const double level = root.automationCurrent(volumeTarget(4));
+    const float lineY = audio->scaleBottom - static_cast<float>((level + 70) / 76) * (audio->scaleBottom - audio->top);
+    // A14: a click in the lane away from the line adds nothing; it selects there, as without the mode
+    // (Live 12 manual 25.5.2).
+    const auto titleBefore = root.undoTitle(false);
+    root.arrangement.geometry.selection.track = 2;
     canvas.mouseDown(pressAt(canvas, {barX + 1, midY}));
     canvas.mouseUp(pressAt(canvas, {barX + 1, midY}));
     root.frame();
+    check(std::abs(midY - lineY) > 12 && laneOf().lane == nullptr && root.undoTitle(false) == titleBefore &&
+              root.arrangement.geometry.selection.track == 4,
+          "a click in the lane off the envelope's line adds no breakpoint and no lane: it selects the track there");
+    canvas.mouseDown(pressAt(canvas, {barX + 1, lineY + 2}));
+    canvas.mouseUp(pressAt(canvas, {barX + 1, lineY + 2}));
+    root.frame();
     auto env = laneOf();
     check(env.lane != nullptr && env.data != nullptr && env.data->points.size() == 1 &&
-              env.data->points[0].time == textproj::kWhole && std::abs(env.data->points[0].value + 32) < 1.5 &&
+              env.data->points[0].time == textproj::kWhole && std::abs(env.data->points[0].value - level) < 1e-6 &&
               root.undoTitle(false) == "Undo Add Automation Point",
-          "a click on the lane adds a breakpoint on the grid at the value there, the Volume lane with it, one step");
+          "a click on the line adds a breakpoint on the grid, on the line, the Volume lane with it, one step");
     check(env.lane->paramRef == "volume" && env.lane->valueDomain == "real" && env.lane->ownerKind == "track",
           "the lane is the track's Volume in dB, as the engine plays it");
     check(env.data->points[0].curve == 1, "a new breakpoint is linear to the next, as the lane draws it");
-    // Drag it a bar later and up.
-    const auto pointAt = juce::Point<float>(barX, (audio->top + audio->bottom) / 2);
+    // Drag it a bar later and down.
+    const auto pointAt = juce::Point<float>(barX, lineY);
     const auto hit = canvas.automationPointAt(pointAt);
     check(hit && hit->track == 4, "the breakpoint is found where it is drawn");
     const float twoBars = static_cast<float>(root.arrangement.geometry.x(2 * textproj::kWhole));
@@ -11565,8 +11944,8 @@ void automationMode(AppCommands &commands, const std::filesystem::path &dir) {
     root.frame();
     env = laneOf();
     check(env.data->points.size() == 1 && env.data->points[0].time == 2 * textproj::kWhole &&
-              env.data->points[0].value > -32 && root.undoTitle(false) == "Undo Move Automation Point",
-          "let go, it is a bar later and higher: one step");
+              env.data->points[0].value < level - 6 && root.undoTitle(false) == "Undo Move Automation Point",
+          "let go, it is a bar later and lower: one step");
     check(root.command(AppCommands::Undo) && laneOf().data->points[0].time == textproj::kWhole, "Undo puts it back");
     check(root.command(AppCommands::Redo), "and Redo moves it again");
     root.frame();
@@ -11581,22 +11960,65 @@ void automationMode(AppCommands &commands, const std::filesystem::path &dir) {
               "a double-click on the last breakpoint deletes it and its lane, so the fader plays again: one step");
     }
     // Chosen, Delete takes it away.
-    canvas.mouseDown(pressAt(canvas, {barX + 1, midY}));
-    canvas.mouseUp(pressAt(canvas, {barX + 1, midY}));
+    canvas.mouseDown(pressAt(canvas, {barX + 1, lineY}));
+    canvas.mouseUp(pressAt(canvas, {barX + 1, lineY}));
     root.frame();
-    canvas.mouseDown(pressAt(canvas, {barX, midY}));
-    canvas.mouseUp(pressAt(canvas, {barX, midY}));
+    canvas.mouseDown(pressAt(canvas, {barX, lineY}));
+    canvas.mouseUp(pressAt(canvas, {barX, lineY}));
     check(canvas.chosenAutomationPoint().has_value(), "a click on a breakpoint chooses it");
     check(canvas.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)) && laneOf().lane == nullptr,
           "Delete takes the chosen breakpoint away");
-    // The lane's foot is silence, as the fader's.
+    // A14: the press that adds a breakpoint on the line goes on to move it while it drags.
+    canvas.mouseDown(pressAt(canvas, {barX + 1, lineY}));
+    canvas.mouseDrag(dragAt(canvas, {barX + 1, lineY}, {twoBars + 1, upper}));
+    canvas.mouseUp(dragAt(canvas, {barX + 1, lineY}, {twoBars + 1, upper}));
+    root.frame();
+    env = laneOf();
+    check(env.data != nullptr && env.data->points.size() == 1 && env.data->points[0].time == 2 * textproj::kWhole &&
+              env.data->points[0].value < level - 6 && root.undoTitle(false) == "Undo Move Automation Point",
+          "a press on the line and a drag: the new breakpoint follows the mouse and lands where it is let go");
+    check(root.command(AppCommands::Undo) && laneOf().data != nullptr && laneOf().data->points.size() == 1 &&
+              laneOf().data->points[0].time == textproj::kWhole && root.command(AppCommands::Undo) && laneOf().lane == nullptr,
+          "Undo puts it where the press added it, and again takes it away");
+    root.frame();
+    // Off the line a double-click adds a breakpoint where it is (manual 25.5.2): at the foot, silence.
     canvas.mouseDown(pressAt(canvas, {barX + 1, audio->scaleBottom}));
     canvas.mouseUp(pressAt(canvas, {barX + 1, audio->scaleBottom}));
+    check(laneOf().lane == nullptr, "the double-click's first press, off the line, adds nothing");
+    canvas.mouseDoubleClick(pressAt(canvas, {barX + 1, audio->scaleBottom}));
     root.frame();
     check(laneOf().data != nullptr && laneOf().data->points.size() == 1 && laneOf().data->points[0].value == -150,
-          "a breakpoint at the lane's foot is silence (-150 dB, as the fader writes it)");
+          "a double-click off the line adds a breakpoint there; at the lane's foot it is silence (-150 dB, as the fader writes it)");
     root.namesBar.automation.onClick();
     check(!root.automationMode(), "and the switch turns Automation Mode off");
+    // A14: A toggles Automation Mode (Live 12 manual 25.2, 41.7), the View menu's entry ticked with it.
+    commands.activate(root);
+    juce::ApplicationCommandInfo modeInfo(AppCommands::AutomationMode);
+    commands.getCommandInfo(AppCommands::AutomationMode, modeInfo);
+    check(modeInfo.shortName == "Automation Mode" && modeInfo.defaultKeypresses.contains(juce::KeyPress('a', 0, 0)) &&
+              (modeInfo.flags & juce::ApplicationCommandInfo::isTicked) == 0,
+          "Automation Mode is a command on A, unticked while off");
+    check(root.keyPressed(juce::KeyPress('a', 0, 'a')) && root.automationMode() && root.namesBar.automation.getToggleState(),
+          "A turns Automation Mode on, the bar's switch lit");
+    commands.getCommandInfo(AppCommands::AutomationMode, modeInfo);
+    check((modeInfo.flags & juce::ApplicationCommandInfo::isTicked) != 0, "and the menu's entry is ticked");
+    check(root.keyPressed(juce::KeyPress('a', 0, 'a')) && !root.automationMode() && !root.namesBar.automation.getToggleState(),
+          "A again turns it off");
+    // The Note Editor with the keyboard keeps A; so does a text field.
+    root.clipView.notes.contextOverride = true;
+    check(!root.keyPressed(juce::KeyPress('a', 0, 'a')) && !root.automationMode(), "A in the Note Editor is not Automation Mode's");
+    root.clipView.notes.contextOverride.reset();
+    {
+        juce::TextEditor field;
+        root.addAndMakeVisible(field);
+        field.setBounds(10, 10, 120, 24);
+        field.grabKeyboardFocus();
+        auto *peer = surfacePeer.getPeer();
+        check(field.hasKeyboardFocus(false) && peer != nullptr && peer->handleKeyPress(juce::KeyPress('a', 0, 'a')) &&
+                  field.getText() == "a" && !root.automationMode(),
+              "A typed into a text field is the field's");
+        root.removeChildComponent(&field);
+    }
     document->release();
 }
 // The Mix View (ADR-0209, ruled 1 November): F4 and the control bar's Mix button open it in place
@@ -14359,6 +14781,19 @@ void launchIsolation(AppCommands &commands) {
     check(!isTestLaunch("") && !isTestLaunch("song.adi") && !isTestLaunch("--no-audio song.adi") &&
               !isTestLaunch("smoke-output.adi") && !isTestLaunch("--smoke-outputs"),
           "an ordinary launch, or a file named after the flag, is not");
+    // walk-B B11: PowerShell's Start-Process leaves a space after the last argument; its empty token was
+    // taken for the project, and the working folder was opened ("could not open the database").
+    {
+        const auto quoted = launchArguments("\"D:\\Songs\\walk2.adi\" ");
+        check(quoted.size() == 1 && quoted[0] == "D:\\Songs\\walk2.adi",
+              "a trailing space after a quoted project path is no argument; the path is unquoted");
+        const auto spaced = launchArguments("  --no-audio   \"C:\\My Songs\\a b.adi\"  ");
+        check(spaced.size() == 2 && spaced[0] == "--no-audio" && spaced[1] == "C:\\My Songs\\a b.adi",
+              "spaces around and between the arguments are none; a quoted path keeps its own spaces");
+        check(launchArguments("").isEmpty() && launchArguments("   ").isEmpty() && launchArguments("\"\"").isEmpty(),
+              "a blank command line, or an empty quoted one, has no arguments");
+        check(isTestLaunch("\"native.adi\" --smoke-output out.png "), "a test launch is still one with a trailing space");
+    }
     std::string error;
     test::TempDirectory temp("ui_shell", "launch");
     auto document = ProjectDocument::open(temp.path() / "quiet.adi", true, {}, error);
@@ -14373,6 +14808,208 @@ void launchIsolation(AppCommands &commands) {
     check(window.isVisible() && !window.hasKeyboardFocus(true), "a quiet window shows and takes no focus");
     commands.detach(window.root());
     window.setVisible(false);
+    document->release();
+}
+// A16: a driver type as Windows Audio lists its devices, the system's default input among them; no
+// hardware is opened. A type that refuses inputs stands for a default input that cannot open.
+struct ListedAudioType final : juce::AudioIODeviceType {
+    struct Device final : juce::AudioIODevice {
+        Device(const juce::String &out, const juce::String &in, bool refused)
+            : AudioIODevice(out.isNotEmpty() ? out : in, "Listed"), ins(in.isNotEmpty() ? 2 : 0),
+              outs(out.isNotEmpty() ? 2 : 0), error(refused && in.isNotEmpty() ? "The input will not open." : "") {}
+        int ins, outs;
+        juce::String error;
+        juce::BigInteger activeIns, activeOuts;
+        static juce::StringArray names(int count) {
+            juce::StringArray out;
+            for (int i = 1; i <= count; ++i)
+                out.add(juce::String(i));
+            return out;
+        }
+        static juce::BigInteger within(const juce::BigInteger &bits, int count) {
+            juce::BigInteger out;
+            for (int i = 0; i < count; ++i)
+                out.setBit(i, bits[i]);
+            return out;
+        }
+        juce::StringArray getOutputChannelNames() override { return names(outs); }
+        juce::StringArray getInputChannelNames() override { return names(ins); }
+        juce::Array<double> getAvailableSampleRates() override { return {44100., 48000.}; }
+        juce::Array<int> getAvailableBufferSizes() override { return {256, 512}; }
+        int getDefaultBufferSize() override { return 256; }
+        juce::String open(const juce::BigInteger &in, const juce::BigInteger &out, double, int) override {
+            activeIns = within(in, ins);
+            activeOuts = within(out, outs);
+            return {};
+        }
+        void close() override {}
+        bool isOpen() override { return true; }
+        void start(juce::AudioIODeviceCallback *) override {}
+        void stop() override {}
+        bool isPlaying() override { return true; }
+        juce::String getLastError() override { return error; }
+        int getCurrentBufferSizeSamples() override { return 256; }
+        double getCurrentSampleRate() override { return 48000.; }
+        int getCurrentBitDepth() override { return 32; }
+        juce::BigInteger getActiveOutputChannels() const override { return activeOuts; }
+        juce::BigInteger getActiveInputChannels() const override { return activeIns; }
+        int getOutputLatencyInSamples() override { return 0; }
+        int getInputLatencyInSamples() override { return 0; }
+    };
+    ListedAudioType(juce::StringArray inputs, int defaultInput, bool refuseInputs = false)
+        : AudioIODeviceType("Listed Audio"), ins(std::move(inputs)), defaultIn(defaultInput), refused(refuseInputs) {}
+    juce::StringArray ins, outs{"Speakers"};
+    int defaultIn;
+    bool refused;
+    void scanForDevices() override {}
+    juce::StringArray getDeviceNames(bool wantInputNames) const override { return wantInputNames ? ins : outs; }
+    int getDefaultDeviceIndex(bool forInput) const override { return forInput ? defaultIn : 0; }
+    int getIndexOfDevice(juce::AudioIODevice *device, bool asInput) const override {
+        return device != nullptr ? getDeviceNames(asInput).indexOf(device->getName()) : -1;
+    }
+    bool hasSeparateInputsAndOutputs() const override { return true; }
+    juce::AudioIODevice *createDevice(const juce::String &out, const juce::String &in) override {
+        return new Device(out, in, refused);
+    }
+};
+// A16 (walk-A): a first run (no device kept) on a machine with an input opened no input, so F9 had
+// nothing to record. Live opens the system's input with its output, inputs 1/2 on (manual 17.2).
+void firstRunAudioInput(const std::filesystem::path &dir) {
+    settings::AppSettings fresh(appdata::App::Daw, dir / "first-run-audio.json");
+    auto open = [&fresh](std::unique_ptr<ListedAudioType> type, const juce::String &input, juce::String &why) {
+        juce::AudioDeviceManager manager;
+        manager.addAudioDeviceType(std::move(type));
+        juce::AudioDeviceManager::AudioDeviceSetup setup;
+        setup.inputDeviceName = input;
+        setup.outputDeviceName = fresh.get("audio.outputDevice").get<std::string>();
+        why = openAudioDevice(manager, setup, fresh);
+        const auto *device = manager.getCurrentAudioDevice();
+        return std::make_tuple(manager.getAudioDeviceSetup().inputDeviceName,
+                               device != nullptr ? device->getActiveInputChannels().countNumberOfSetBits() : -1,
+                               manager.getAudioDeviceSetup().outputDeviceName);
+    };
+    const juce::String none(fresh.get("audio.inputDevice").get<std::string>());
+    juce::String why;
+    check(none.isEmpty(), "a first run keeps no input device: the system's");
+    const auto [input, ins, output] =
+        open(std::make_unique<ListedAudioType>(juce::StringArray{"Microphone", "Cable Output"}, 1), none, why);
+    check(why.isEmpty() && input == "Cable Output" && ins == 2 && output == "Speakers",
+          ("the system's default input opens with the output, inputs 1/2 on: " + input.toStdString() + ", " +
+           std::to_string(ins) + " in; " + why.toStdString())
+              .c_str());
+    const auto [chosen, chosenIns, chosenOut] =
+        open(std::make_unique<ListedAudioType>(juce::StringArray{"Microphone", "Cable Output"}, 1), "Microphone", why);
+    check(why.isEmpty() && chosen == "Microphone" && chosenIns == 2 && chosenOut == "Speakers",
+          ("an input kept by name opens, not the default: " + chosen.toStdString()).c_str());
+    const auto [nothing, noIns, alone] = open(std::make_unique<ListedAudioType>(juce::StringArray{}, 0), none, why);
+    check(why.isEmpty() && nothing.isEmpty() && noIns == 0 && alone == "Speakers",
+          ("a machine with no input opens its output alone, without an error: " + why.toStdString()).c_str());
+    const auto [stuck, stuckIns, out] =
+        open(std::make_unique<ListedAudioType>(juce::StringArray{"Cable Output"}, 0, true), none, why);
+    check(why.isEmpty() && stuck.isEmpty() && stuckIns == 0 && out == "Speakers",
+          ("a default input that will not open leaves the output open, without an error: " + why.toStdString())
+              .c_str());
+}
+// Live's New Live Set (manual 5.4.1; walk-A A3): New opens the next untitled project in the projects folder
+// at once, as launch does, with no chooser; Save As names and places it.
+void untitledProjects(const std::filesystem::path &dir) {
+    const auto file = [](const std::filesystem::path &p) {
+        return juce::File(juce::String::fromUTF8(reinterpret_cast<const char *>(p.u8string().c_str())));
+    };
+    settings::AppSettings fresh(appdata::App::Daw, dir / "untitled-settings.json");
+    check(nextUntitledProject(fresh) == file(dir / "projects" / "Untitled.adi") &&
+              std::filesystem::is_directory(dir / "projects"),
+          "with no projects folder chosen, the first untitled project is <config>/projects/Untitled.adi");
+    const auto folder = dir / "untitled";
+    std::string why;
+    check(fresh.set("files.projectsFolder", folder.string(), {}, why), "the projects folder is chosen");
+    check(nextUntitledProject(fresh) == file(folder / "Untitled.adi") && std::filesystem::is_directory(folder),
+          "the chosen projects folder is made, and its first untitled project is Untitled.adi");
+    std::ofstream(folder / "Untitled.adi").put('x');
+    std::ofstream(folder / "Untitled(2).adi").put('x');
+    check(nextUntitledProject(fresh) == file(folder / "Untitled(3).adi"),
+          "beside Untitled.adi and Untitled(2).adi, the next untitled project is Untitled(3).adi");
+}
+// Walk-A A22: a Mixer View fader is grabbed by its ◁ wherever it is drawn, at 0 dB (every new track's) and at
+// +6 dB (the top of its travel), as Live's: the press goes through the window's own dispatch to the fader.
+void mixerViewFaderHandle(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "fader-handle.adi", true, {}, error);
+    check(document != nullptr, "a project for the Mixer View's faders");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "handle");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.beginMixerDrag = [&](const gesture::RelativeScalarSelection &selection, std::optional<double> value,
+                              const std::string &label) {
+        return document->beginMixerDrag(selection, value, label);
+    };
+    root.mixerDrag = [&](double value) { return document->mixerDrag(value); };
+    root.endMixerDrag = [&] { return document->endMixerDrag(); };
+    root.cancelMixerDrag = [&] { document->cancelMixerDrag(); };
+    UiPeerRoot surfacePeer;
+    surfacePeer.setSize(1600, 1000);
+    surfacePeer.addAndMakeVisible(root);
+    surfacePeer.setVisible(true);
+    surfacePeer.addToDesktop(0);
+    root.setSize(1440, 900);
+    root.frame();
+    check(root.command(AppCommands::ToggleMixerView), "the Mixer View opens");
+    root.mark(DirtySet::All);
+    root.frame();
+    MixerStrip *three = nullptr;
+    for (const auto &strip : root.mixerView.strips())
+        if (strip->isVisible() && strip->track() == 4)
+            three = strip.get();
+    auto *peer = surfacePeer.getPeer();
+    check(three != nullptr && peer != nullptr, "3 Audio's strip in the Mixer View");
+    if (three == nullptr || peer == nullptr) {
+        document->release();
+        return;
+    }
+    const auto opCount = [&] { return document->store().db().execAndGet("SELECT count(*) FROM ops").getInt(); };
+    juce::int64 when = 400000;
+    const auto mouse = [&](juce::Point<float> at, juce::ModifierKeys mods) {
+        juce::ModifierKeys::currentModifiers = mods;
+        peer->handleMouseEvent(juce::MouseInputSource::InputSourceType::mouse, at, mods, 1.f, 0.f, when += 1000);
+    };
+    const auto &fader = three->volume;
+    check(std::abs(fader.getPositionOfValue(6) - MixerStrip::kFaderReach) < .5f &&
+              std::abs(fader.getPositionOfValue(-70) - static_cast<float>(fader.getHeight() - MixerStrip::kFaderReach)) < .5f,
+          "the fader's travel stops short of its edges: the ◁ lies inside it at +6 dB and at -inf");
+    for (const double db : {0.0, 6.0})
+        // The ◁ as LiveLook draws it: its tip at `live.faderX` on the level, its back 8 px right, 5 px over
+        // and under the level. Pressed in its middle, and near its back over and under the level.
+        for (const auto &[dx, dy] : std::initializer_list<std::pair<float, float>>{{4.f, 0.f}, {7.f, -4.f}, {7.f, 4.f}}) {
+            OpRequest set;
+            set.opType = "mixer.setVolume";
+            set.payload = {{"id", 4}, {"db", db}};
+            check(document->ops().submit(set).ok && document->synchronise(), "3 Audio's volume set");
+            root.frame();
+            const juce::Point<float> handle(static_cast<float>(fader.getX() + 15) + dx,
+                                            static_cast<float>(fader.getY()) + fader.getPositionOfValue(db) + dy);
+            const auto at = surfacePeer.getLocalPoint(three, handle);
+            const auto below = at.translated(0, 30);
+            const auto ops = opCount();
+            mouse(at, {});
+            mouse(at, juce::ModifierKeys(juce::ModifierKeys::leftButtonModifier));
+            const bool pressed = fader.isMouseButtonDown();
+            mouse(at.translated(0, 10), juce::ModifierKeys(juce::ModifierKeys::leftButtonModifier));
+            mouse(below, juce::ModifierKeys(juce::ModifierKeys::leftButtonModifier));
+            mouse(below, {});
+            root.frame();
+            const auto step = document->ops().nextUndo();
+            const bool moved = pressed && fader.getValue() < db - 1 && opCount() == ops + 1 && step.has_value() &&
+                               step->label == "Change Track Volume";
+            if (!moved)
+                std::fprintf(stderr, "  the press at %+g dB, %g px from the level, missed the fader\n", db, dy);
+            check(moved, db == 0 ? "at 0 dB, a press on the fader's drawn handle and a drag down lower it: one "
+                                   "Change Track Volume"
+                                 : "at +6 dB, the top of its travel, a press on the fader's drawn handle and a drag "
+                                   "down lower it: one Change Track Volume");
+        }
+    juce::ModifierKeys::currentModifiers = juce::ModifierKeys();
     document->release();
 }
 int main(int argc, char **argv) {
@@ -15301,7 +15938,8 @@ int main(int argc, char **argv) {
                       C::ArrangementRecord == C::FitToTimeRange + 1 && C::ExportAudio == C::ArrangementRecord + 1 &&
                       C::DelayCompensation == C::ExportAudio + 1 && C::SoloSwitches == C::DelayCompensation + 1 &&
                       C::CueSwitches == C::SoloSwitches + 1 && C::HelpManual == C::CueSwitches + 1 &&
-                      C::KeyboardReference == C::HelpManual + 1 && C::LastId == C::KeyboardReference,
+                      C::KeyboardReference == C::HelpManual + 1 && C::AutomationMode == C::KeyboardReference + 1 &&
+                      C::LastId == C::AutomationMode,
                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
                   "Select Loop, Save a Copy, Collect All and Save, Collect and Export, Cut, Copy, Paste, Duplicate, "
                   "Show/Hide Plug-In Windows, Split, Clip View, Insert Empty MIDI Clip(s), the …Time commands and "
@@ -15456,9 +16094,9 @@ int main(int argc, char **argv) {
             check(has(C::ExpandClipView) && at(C::ExpandClipView) == at(C::ToggleClipView) + 1 && has(C::FoldToNotes) &&
                       at(C::FoldToScale) == at(C::FoldToNotes) + 1 && at(C::HighlightScales) == at(C::FoldToScale) + 1 &&
                       has(C::ArrangePanelsAutomatically) && at(C::ArrangePanelsHorizontally) == at(C::ArrangePanelsAutomatically) + 1 &&
-                      at(C::ArrangePanelsVertically) == at(C::ArrangePanelsHorizontally) + 1,
+                      at(C::ArrangePanelsVertically) == at(C::ArrangePanelsHorizontally) + 1 && has(C::AutomationMode),
                   "the View menu: Expand Clip View after Clip View (10.2), the three that arrange the Clip View's panels (8.1.2), "
-                  "and the Note Editor's Fold to Notes, Fold to Scale and Highlight Scales (10.6)");
+                  "the Note Editor's Fold to Notes, Fold to Scale and Highlight Scales (10.6), and Automation Mode (25.2)");
             // Live 12's groups (manual 6.1, the Mixer Controls submenu's figure): In/Out, Sends,
             // Volume | Track Options, Crossfader, Performance Impact | Return Tracks.
             check(submenus == juce::StringArray{"Arrangement Track Controls", "Mixer Controls"} &&
@@ -16877,6 +17515,16 @@ int main(int argc, char **argv) {
         for (int i = 0; i < 30; ++i)
             check(integrated.command(AppCommands::InsertAudioTrack), "many tracks");
         integrated.frame();
+        {
+            // Live brings the new track into sight (manual 18.2): the last one inserted stands whole
+            // above the foot, the lanes scrolled to it. Back to the top for the picture below.
+            auto &lanes = integrated.arrangement.geometry;
+            const auto newest = lanes.selection.track;
+            const int top = lanes.rowTop(integrated.reader(), newest);
+            check(lanes.scrollY > 0 && top >= 0 && top + lanes.heightFor(newest) <= lanes.footTop(integrated.reader()),
+                  "the newest of many inserted tracks is scrolled into sight, above the foot");
+            lanes.scrollY = 0;
+        }
         integrated.mark(DirtySet::All);
         integrated.frame();
         std::size_t visibleRows = 0;
@@ -17037,6 +17685,44 @@ int main(int argc, char **argv) {
             integrated.frame();
             check(held.held == .5f && sounding->peak() == .5f && sounding->rms() == halfSineRms,
                   "reset and ten seconds on, the strip is back at the engine's value");
+            // A12: the Peak Level is the track's (manual 18.1), not its column's. The track after
+            // track 2 moved before it takes track 2's strip; track 2's hold goes with track 2, silent now.
+            fixed.peak.store(0);
+            integrated.frame();
+            const auto at = std::find(trackOrder.begin(), trackOrder.end(), std::int64_t{2});
+            check(at != trackOrder.end() && at + 1 != trackOrder.end(), "track 2 has a track after it");
+            if (at != trackOrder.end() && at + 1 != trackOrder.end()) {
+                const auto selectionBefore = integrated.arrangement.geometry.selection;
+                const auto next = *(at + 1);
+                integrated.arrangement.geometry.selection.track = 2;
+                integrated.arrangement.geometry.selection.toTrack = 0;
+                integrated.arrangement.geometry.selection.picked.clear();
+                integrated.publishSelection();
+                check(integrated.moveTracks(next, {integrated.reader().findTrack(2)->parent, 2}),
+                      "move the next track before track 2");
+                integrated.mark(DirtySet::All);
+                integrated.frame();
+                const MixerStrip *two = nullptr, *moved = nullptr;
+                for (const auto &s : mixerView.strips())
+                    if (s->isVisible()) {
+                        if (s->track() == 2)
+                            two = s.get();
+                        if (s->track() == next)
+                            moved = s.get();
+                    }
+                check(moved == sounding && two != nullptr && std::abs(two->peakHold.held - .5f) < .01f &&
+                          moved->peakHold.held == 0,
+                      "the Peak Level follows its track to another strip; the other track's stays at -Inf");
+                check(integrated.command(AppCommands::Undo), "undo the move");
+                integrated.arrangement.geometry.selection = selectionBefore;
+                integrated.publishSelection();
+                integrated.mark(DirtySet::All);
+                integrated.frame();
+                check(sounding->track() == 2 && std::abs(held.held - .5f) < .01f,
+                      "undone, track 2 is back on its strip with its hold");
+            }
+            fixed.peak.store(.5f);
+            integrated.frame();
         }
         check(std::abs(meterDepth(0) - .06) < 1e-9 && std::abs(meterLevel(meterDepth(-24)) + 24) < 1e-9 &&
                   !columns.empty() &&
@@ -17640,6 +18326,7 @@ int main(int argc, char **argv) {
                 juce::PNGImageFormat{}.writeImageToStream(linkImage, *stream);
         }
     }
+    trace("firstRunAudioInput", [&] { firstRunAudioInput(temp.path()); });
     trace("liveParity", [&] { liveParity(commands, temp.path(), write); });
     trace("groupTracks", [&] { groupTracks(commands, temp.path()); });
     trace("footRows", [&] { footRows(commands, temp.path()); });
@@ -17651,6 +18338,7 @@ int main(int argc, char **argv) {
     trace("armAndRecord", [&] { armAndRecord(commands, temp.path()); });
     trace("exportPage", [&] { exportPage(commands, temp.path()); });
     trace("mixerDragLive", [&] { mixerDragLive(commands, temp.path()); });
+    trace("mixerShowsAutomation", [&] { mixerShowsAutomation(commands, temp.path()); });
     trace("mixerViewFaderHandle", [&] { mixerViewFaderHandle(commands, temp.path()); });
     trace("automationMode", [&] { automationMode(commands, temp.path()); });
     trace("sendKnobs", [&] { sendKnobs(commands, temp.path()); });
@@ -17661,8 +18349,10 @@ int main(int argc, char **argv) {
     trace("clipClipboard", [&] { clipClipboard(commands, temp.path()); });
     trace("timeCommands", [&] { timeCommands(commands, temp.path()); });
     trace("colorCabTile", [&] { colorCabTile(commands, temp.path()); });
+    trace("oneShotTile", [&] { oneShotTile(commands, temp.path()); });
     trace("rangeSelection", [&] { rangeSelection(commands, temp.path()); });
     trace("clipToTrack", [&] { clipToTrack(commands, temp.path()); });
+    trace("clipCopyDrag", [&] { clipCopyDrag(commands, temp.path()); });
     trace("clipView", [&] { clipView(commands, temp.path(), write); });
     trace("clipViewNotes", [&] { clipViewNotes(commands, temp.path()); });
     trace("clipViewFields", [&] { clipViewFields(commands, temp.path()); });
@@ -17684,6 +18374,7 @@ int main(int argc, char **argv) {
     trace("keymapGolden", [&] { keymapGolden(commands, settings, temp.path(), write); });
     trace("userShortcuts", [&] { userShortcuts(commands, settings); });
     trace("launchIsolation", [&] { launchIsolation(commands); });
+    trace("untitledProjects", [&] { untitledProjects(temp.path()); });
     trace("paintHygiene", [&] { paintHygiene(commands, temp.path()); });
     check(assertions.count() == 0, ("no JUCE assertion in the run; the last: " + assertions.last().toStdString()).c_str());
     if (assertions.queueFull() > 0)

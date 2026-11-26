@@ -398,6 +398,42 @@ PreparedEdit prepareDuplicate(Store& store,std::int64_t sourceId,std::int64_t ne
         return result;
     } catch(const std::exception& exception){PreparedEdit result;result.error=exception.what();return result;}
 }
+PreparedEdit prepareDuplicates(Store& store,std::span<const ClipPlacement> places,const edit_plan::Options& options) {
+    // preparePaste for several clips in one batch: each copy clears what it
+    // lands on; the scope covers every source and destination, in nanoseconds.
+    PreparedEdit result;
+    try {
+        validRate(options.referenceRate);if(places.empty())throw std::runtime_error("no clip to duplicate");
+        Read read(store.db());edit::TimeMap time(store.db());CopyIds ids(store.db());
+        for(const auto& place:places)ids.reserve("clips",place.newId);
+        std::set<std::int64_t> tracks;auto begin=std::numeric_limits<std::int64_t>::max();std::int64_t end=0;
+        edit_plan::detail::PlacementBatch batch;
+        for(const auto& place:places) {
+            const auto copy=copyClip(store,place.sourceId,options.referenceRate);
+            if(!copy.ok)throw std::runtime_error(copy.error);
+            verifyMediaKeys(store,copy.image);
+            auto image=cloneImage(copy.image,place.newId,ids);
+            relocate(image["row"],place.track,place.point,time);image["row"]["lane_id"]=nullptr;
+            const std::array<const Payload*,2> spans{&copy.image.at("row"),&image.at("row")};
+            for(const auto* row:spans) {
+                const int base=static_cast<int>(detail::signedInteger(row->at("time_base")));
+                const auto first=detail::signedInteger(row->at(base==0?"pos_ticks":"pos_ns"));
+                const auto last=edit::addTime(first,detail::signedInteger(row->at(base==0?"length_ticks":"length_ns")));
+                begin=std::min(begin,coordinate({base,first},1,time));end=std::max(end,coordinate({base,last},1,time));
+            }
+            const auto sourceTrack=detail::signedInteger(copy.image.at("row").at("track_id"));
+            tracks.insert(place.track);
+            if(sourceTrack!=place.track && detail::captureRow(store.db(),"tracks","id",sourceTrack))tracks.insert(sourceTrack);
+            batch.sourceTracks.push_back(sourceTrack);batch.incoming.push_back(std::move(image));
+        }
+        const std::vector<std::int64_t> literals(tracks.begin(),tracks.end());
+        const auto scope=edit_plan::materialScope(literals,edit_plan::PlacementClock::Nanoseconds,
+            {begin,std::max(end,edit::addTime(begin,1))});
+        result=edit_plan::detail::prepareCaptured(store,scope,std::move(batch),options,ids,
+            places.size()==1?"Duplicate Clip":"Duplicate Clips");
+    } catch(const std::exception& exception){result.ok=false;result.error=exception.what();result.requests.clear();}
+    return result;
+}
 namespace {
 OpRequest captureSplit(Store& store,const ClipSplit& split,std::int64_t firstId,
                        std::optional<std::int64_t> secondId,const edit::TimeMap& time,

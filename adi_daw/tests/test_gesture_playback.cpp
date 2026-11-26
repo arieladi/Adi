@@ -20,6 +20,7 @@
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <functional>
 #include <limits>
 #include <map>
@@ -887,6 +888,52 @@ void nativeMaterialGuard(Precision precision) {
     f.clean("native automatic material guard");
 }
 
+// walk-A A20: a Mixer View fader drag held while playing. Each idle drain re-read the whole presentation
+// image (every material table, the samples' and plug-ins' state) to re-check a preview nothing had
+// touched, twice in every 20 ms tick of the message thread; a full project's image outlasted the tick and
+// the window stopped taking input. An unwritten Store is re-checked by its change counters; a write still
+// re-checks the image.
+void idleDrainReadsNoImage(Precision precision) {
+    Fixture f(precision);
+    auto volume = f.begin(g::relativeScalarProducer({g::ScalarKind::TrackVolume, 1, {}, {-70, 6, -150}}));
+    f.update(*volume, std::make_unique<g::RelativeScalarInput>(-20), "A20 held drag");
+    auto* database = f.store->db().getHandle();
+    unsigned images = 0;
+    sqlite3_trace_v2(database, SQLITE_TRACE_STMT, [](unsigned, void* context, void*, void* text) -> int {
+        // The image's table walk (gesture_preview.cpp, readTables).
+        if (text && std::strstr(static_cast<const char*>(text), "UNION SELECT name FROM sqlite_temp_master"))
+            ++*static_cast<unsigned*>(context);
+        return 0;
+    }, &images);
+    bool drained = true;
+    for (int n = 0; n < 200; ++n) {
+        drained = drained && f.coordinator->drain(2000 + n).status.ok();
+        f.session.tick(2000 + n); // drains the same coordinator again, as the application's tick does
+        f.block(0, 0, false, "A20 playing");
+    }
+    check(drained && volume->state() == g::State::Previewed, "A20: idle drains keep the held preview");
+    check(images == 0, "A20: an idle drain reads no presentation image (read " + std::to_string(images) + " in 200 ticks)");
+    f.sound(0.025, 0.05, "A20: the held drag is still heard");
+    OpRequest stop; stop.opType = "transport.stop"; stop.payload = Payload::object();
+    check(OpJournal(*f.store).commit(stop).ok, "A20: Stop commits while the drag is held");
+    check(f.coordinator->drain(2300).status.ok() && volume->state() == g::State::Previewed,
+          "A20: the drain after Stop keeps the preview");
+    // A write outside the journal still re-checks the whole image, and the preview is taken again.
+    images = 0;
+    f.store->db().exec("UPDATE tempo_map SET bpm=90 WHERE id=37");
+    (void)f.coordinator->drain(2301);
+    check(images > 0, "A20: a write re-checks the presentation image");
+    for (int n = 0; n < 3 && volume->state() != g::State::Previewed; ++n) (void)f.coordinator->drain(2302 + n);
+    sqlite3_trace_v2(database, 0, nullptr, nullptr);
+    check(volume->state() == g::State::Previewed, "A20: the preview is taken again over the written Store");
+    const auto committed = volume->commit();
+    check(committed.status.ok() && committed.durable && committed.durable->ok && !committed.semanticNoOp,
+          "A20: the drag commits when the mouse lets go: " + committed.status.message);
+    check(f.coordinator->drain(2310).status.ok() &&
+              f.store->db().execAndGet("SELECT volume_db FROM mixer_strip WHERE track_id=1").getDouble() == -20,
+          "A20: the committed volume is written");
+}
+
 void endpointLifetimes() {
     test::TempDirectory directory{"gesture_playback", "endpoints"};
     StoreError error{}; auto store = Store::createEmpty(directory.path() / "project.adi", error);
@@ -1192,7 +1239,7 @@ int main() {
     for (const auto precision : {Precision::Float32, Precision::Float64}) {
         try { trackDelay(precision); }
         catch (const std::exception& exception) { check(false, std::string("unexpected Track Delay fixture exception: ") + exception.what()); }
-        try { scalars(precision); relativeScalars(precision); relativeScalarAtomicFailure(precision); relativeScalarForeign(precision); switches(precision); foreignAndCommit(precision); structure(precision); automationPreview(precision); largeBlockPreview(precision); firstScalarOverAutomation(precision); pedalAcrossPreview(precision); linkAcrossGesture(precision); performedTempoAcrossGesture(precision); countInAcrossGesture(precision); retainedRefusal(precision); nativeMaterialGuard(precision); referenceAndCue(precision); }
+        try { scalars(precision); relativeScalars(precision); relativeScalarAtomicFailure(precision); relativeScalarForeign(precision); switches(precision); foreignAndCommit(precision); structure(precision); automationPreview(precision); largeBlockPreview(precision); firstScalarOverAutomation(precision); pedalAcrossPreview(precision); linkAcrossGesture(precision); performedTempoAcrossGesture(precision); countInAcrossGesture(precision); retainedRefusal(precision); nativeMaterialGuard(precision); idleDrainReadsNoImage(precision); referenceAndCue(precision); }
         catch (const std::exception& exception) { check(false, std::string("unexpected native fixture exception: ") + exception.what()); }
     }
     try { endpointLifetimes(); } catch (const std::exception& exception) { check(false, std::string("unexpected endpoint fixture exception: ") + exception.what()); }

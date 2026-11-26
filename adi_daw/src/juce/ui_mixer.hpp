@@ -10,6 +10,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 namespace adi::engine {
 struct StripMeter; // adi/engine/mixer.hpp: the engine's {peak, rms} per strip (#381)
@@ -92,6 +93,9 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     void mouseMove(const juce::MouseEvent &) override;
     void mouseDrag(const juce::MouseEvent &) override;
     void mouseUp(const juce::MouseEvent &) override;
+    // A Mixer View strip's title bar: a click selects its track (Shift, Ctrl/Cmd as a header's), and a
+    // double-click also brings up the Device View.
+    static constexpr int kTitleHeight = 17;
     // A double-click on a Mixer View strip's title selects its track and brings up the Device View.
     void mouseDoubleClick(const juce::MouseEvent &) override;
     // A row takes clicks only level with the lanes (MixerPanel::rowsBand).
@@ -106,6 +110,11 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     // Finds the engine's meter for the track again (MixerPanel::meter): on binding, on every
     // refresh, and when the panel is asked to (MixerPanel::resolveMeters).
     void resolveMeter();
+    // Live's automation LED on Volume, Pan and each send (manual 25.4), as a device knob's: lit while the
+    // control follows its lane, dim once a manual change overrides it, none without a lane.
+    enum class Automation : char { None, Followed, Overridden };
+    Automation automation(const juce::Component &control) const noexcept;
+    void paintOverChildren(juce::Graphics &) override;
     PrimaryButtonSlider volume, pan;
     // Live's Track Delay (manual 18.7): a value box in milliseconds, typed or dragged up or down, a
     // negative value pre-delaying; its "ms" unit box beside it. Shown by Live's Track Options: on
@@ -261,6 +270,16 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     std::vector<juce::String> letters_;
     std::vector<std::array<char, 2>> letterCodes_; // the letters, compared each sync without allocating
     std::vector<char> sendOn_;
+    // Each automated control's LED, and whether it shows its lane's value: Volume, Pan, then the sends.
+    struct AutomationShown {
+        Automation state = Automation::None;
+        bool showing = false;
+    };
+    std::vector<AutomationShown> automation_;
+    const juce::Component *automatedControl(std::size_t index) const noexcept;
+    // While a lane is followed its control shows the envelope at the playhead, moving as the engine
+    // plays it; shown only, no op and no gesture. `volumeDb` and `pan` are the track's own values.
+    void followAutomation(double volumeDb, double pan);
     std::size_t shown_ = 0, returnCount_ = 0;
     int io_ = 0; // the In/Out section's height in the Mixer View, 0 while it is hidden
     int delay_ = 0; // the Track Delay section's height in the Mixer View, 0 while it is hidden
@@ -333,6 +352,9 @@ class MixerPanel final : public juce::Component {
     std::function<const engine::StripMeter *(std::int64_t)> meter;
     // The ballistics' clock, in seconds; JUCE's while unset (the tests set their own).
     std::function<double()> clock;
+    // Each track's Peak Level (manual 18.1), linear, by track id: the strips are reused for other
+    // tracks as tracks are added, moved, folded or scrolled past, and the hold is the track's (A12).
+    std::unordered_map<std::int64_t, float> peakLevels;
     // Auto Gain Stage, the one offline command (ADR-0195 d4, ADR-0203 d14): LUFS or RMS.
     std::function<bool(bool lufs)> autoGain;
     const std::vector<std::unique_ptr<MixerStrip>> &strips() const noexcept { return strips_; }
