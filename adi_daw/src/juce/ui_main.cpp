@@ -26,6 +26,7 @@
 #include <condition_variable>
 #include <memory>
 #include <mutex>
+#include <semaphore>
 #include <set>
 #include <stop_token>
 #include <thread>
@@ -133,6 +134,18 @@ class ProjectProgressWindow final : public juce::DocumentWindow {
     };
     Body* body_;
 };
+// A headless test launch holds the real archive at its first ZIP checkpoint.
+// The worker's deadline lets a blocking shutdown finish and report a failure.
+struct QuitExportProbe {
+    explicit QuitExportProbe(juce::File archive) : zip(std::move(archive)) {}
+    const juce::File zip;
+    std::binary_semaphore resume{0};
+    std::atomic<bool> checkpoint{false}, watchdog{false};
+    bool started = false, showingFinishing = true;
+    int ownerTurns = 0;
+    std::chrono::steady_clock::time_point closeRequested;
+    std::string status;
+};
 } // namespace
 class AdiApplication final : public juce::JUCEApplication,
                              private juce::Timer,
@@ -156,6 +169,8 @@ class AdiApplication final : public juce::JUCEApplication,
                 smokeSettings_ = true; // the smoke renders the Settings window's Audio page
             else if (a == "--control-test")
                 controlTest_ = true; // WTS-01: a test drives this instance (its API is WTS-05's)
+            else if (a == "--quit-export-probe" && i + 1 < args.size())
+                quitExportProbe_ = std::make_shared<QuitExportProbe>(juce::File(args[++i].unquoted()));
             else if (a.startsWithChar('-')) {
                 setApplicationReturnValue(2);
                 quit();
@@ -165,6 +180,12 @@ class AdiApplication final : public juce::JUCEApplication,
         }
         // Smoke runs use an explicit project and isolated settings, never the user's.
         if (smokeOutput_ != juce::File{} && (!noAudio_ || project == juce::File{})) {
+            setApplicationReturnValue(2);
+            quit();
+            return;
+        }
+        if (quitExportProbe_ && (!controlTest_ || !noAudio_ || project == juce::File{} || smokeOutput_ != juce::File{})) {
+            std::fprintf(stderr, "ADI: --quit-export-probe needs --control-test, --no-audio and a project file\n");
             setApplicationReturnValue(2);
             quit();
             return;
@@ -195,7 +216,7 @@ class AdiApplication final : public juce::JUCEApplication,
         configurePluginSources();
         pluginSourcesKey_ = pluginSourcesKey();
         // The plug-in catalogue's service (DF-W34, N58); its first job starts once the window is open.
-        if (smokeOutput_ == juce::File{})
+        if (smokeOutput_ == juce::File{} && !quitExportProbe_)
             startPluginCatalogue();
         manager_.addChangeListener(this);
         if (project == juce::File{}) {
@@ -215,6 +236,8 @@ class AdiApplication final : public juce::JUCEApplication,
         }
     }
     void startAfterFirstOpen() {
+        if (quitExportProbe_)
+            return;
         startLibrary();
         // The catalogue the first project read is listed at once; an Incremental discovery then finds
         // what was installed or removed since, in the background (engine-win's N58 handoff).
@@ -743,6 +766,7 @@ class AdiApplication final : public juce::JUCEApplication,
         // A Collect and Export still running finishes first: its ZIP is not left half written.
         if (export_.joinable())
             export_.join();
+        finishQuitExportProbe();
         importStop_.request_stop();
         if (import_.joinable())
             import_.join();
@@ -1194,7 +1218,7 @@ class AdiApplication final : public juce::JUCEApplication,
         // The Undo History's first action, as Live's "Open Live Set" row names the file.
         root->undoHistory.rootLabel = std::string(create ? "New Project: \u201c" : "Open Project: \u201c") +
                                       file.getFileName().toStdString() + "\u201d";
-        window_ = std::make_unique<AdiWindow>(std::move(root), *commands_);
+        window_ = std::make_unique<AdiWindow>(std::move(root), *commands_, !quitExportProbe_);
         window_->onClose = [this] { systemRequestedQuit(); };
         window_->setName("ADI - " + file.getFileNameWithoutExtension());
         // Where it was when the application last stood (window.places, WIN-02), at first run centred; full
@@ -1253,7 +1277,7 @@ class AdiApplication final : public juce::JUCEApplication,
         // A test launch never takes the foreground from the person at the desk (WTS-01).
         window_->quiet = testLaunch();
         window_->setVisible(true);
-        if (fullScreen)
+        if (fullScreen && !quitExportProbe_)
             window_->setFullScreen(true);
         // A Mix View kept open in its own window opens there again.
         syncMixView(*floating_, *root_, true);
@@ -1478,7 +1502,7 @@ class AdiApplication final : public juce::JUCEApplication,
     // Collect and Export, once the chooser has a file: on a worker the application owns, so the
     // window keeps working and a project opened meanwhile does not wait for it; the Status Bar says it
     // runs, then how it ended. One at a time. Quitting waits for it, the window still up.
-    void collectAndExport(const juce::File &file) {
+    void collectAndExport(const juce::File &file, media::ArchiveControl control = {}) {
         if (!document_ || !root_)
             return;
         if (exportRunning_->load()) {
@@ -1494,8 +1518,8 @@ class AdiApplication final : public juce::JUCEApplication,
             export_.join(); // the last one has finished
         const auto name = file.getFileName().toStdString();
         exportRunning_->store(true);
-        export_ = std::thread([this, job, name, running = exportRunning_] {
-            const auto result = ProjectDocument::runCollectAndExport(job);
+        export_ = std::thread([this, job, name, running = exportRunning_, control = std::move(control)] {
+            const auto result = ProjectDocument::runCollectAndExport(job, control);
             running->store(false);
             juce::MessageManager::callAsync([this, name, result] {
                 if (juce::JUCEApplicationBase::getInstance() != this || !root_ || !window_)
@@ -1504,6 +1528,53 @@ class AdiApplication final : public juce::JUCEApplication,
             });
         });
         root_->say("Collecting and exporting to " + name + "...");
+    }
+    void advanceQuitExportProbe() {
+        const auto probe = quitExportProbe_;
+        if (!probe->started) {
+            probe->started = true;
+            collectAndExport(probe->zip, {{}, [probe](media::ArchiveProgress progress) {
+                if (progress.phase == media::ArchivePhase::WriteArchive && !probe->checkpoint.exchange(true))
+                    probe->watchdog.store(!probe->resume.try_acquire_for(std::chrono::seconds(1)));
+            }});
+            return;
+        }
+        if (probe->closeRequested == std::chrono::steady_clock::time_point{}) {
+            if (probe->checkpoint.load()) {
+                probe->closeRequested = std::chrono::steady_clock::now();
+                probe->status = root_->error();
+                window_->closeButtonPressed();
+            } else if (!exportRunning_->load()) {
+                quit(); // The test will report that the worker never reached the checkpoint.
+            }
+            return;
+        }
+        if (probe->ownerTurns == 3 || probe->watchdog.load())
+            return;
+        root_->frame();
+        probe->status = root_->error();
+        probe->showingFinishing = probe->showingFinishing && window_->isVisible() && window_->getPeer() == nullptr &&
+                                 probe->status.starts_with("Finishing Collect and Export");
+        if (++probe->ownerTurns == 3)
+            probe->resume.release();
+        else if (probe->ownerTurns == 1)
+            window_->closeButtonPressed(); // A second Close during the same job must still defer.
+    }
+    void finishQuitExportProbe() {
+        if (!quitExportProbe_)
+            return;
+        const auto &probe = *quitExportProbe_;
+        const bool validZip = probe.zip.existsAsFile() && juce::ZipFile(probe.zip).getNumEntries() > 0;
+        const bool passed = probe.ownerTurns == 3 && probe.showingFinishing && !probe.watchdog.load() && validZip;
+        const double milliseconds = probe.closeRequested == std::chrono::steady_clock::time_point{} ? 0.0 :
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - probe.closeRequested).count();
+        std::fprintf(stderr, "SC-420 %s: %d owner turns during export, finishing shown %s, watchdog %s, valid ZIP %s, %.1f ms from Close to shutdown\n",
+                     passed ? "PASS" : "FAIL", probe.ownerTurns, probe.ownerTurns > 0 && probe.showingFinishing ? "yes" : "no",
+                     probe.watchdog.load() ? "released worker" : "unused", validZip ? "yes" : "no", milliseconds);
+        if (!passed) {
+            std::fprintf(stderr, "SC-420 last owner status: %s\n", probe.status.c_str());
+            setApplicationReturnValue(1);
+        }
     }
     bool applicationCommand(int id) {
         if (id == AppCommands::Quit) {
@@ -1740,6 +1811,8 @@ class AdiApplication final : public juce::JUCEApplication,
             floating_->collect();
             syncMixView(*floating_, *root_);
         }
+        if (quitExportProbe_)
+            advanceQuitExportProbe();
         if (smokeOutput_ != juce::File{}) {
             // Native-window smoke: software screenshot only, never an audio device.
             if (!window_->isShowing() || window_->getPeer() == nullptr) {
@@ -1769,6 +1842,7 @@ class AdiApplication final : public juce::JUCEApplication,
     }
     bool noAudio_ = false, smokeSettings_ = false;
     juce::File smokeOutput_;
+    std::shared_ptr<QuitExportProbe> quitExportProbe_;
     bool controlTest_ = false;
     bool testLaunch() const { return smokeOutput_ != juce::File{} || controlTest_; }
     std::unique_ptr<settings::AppSettings> settings_;
