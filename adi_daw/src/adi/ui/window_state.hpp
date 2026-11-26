@@ -57,7 +57,7 @@ struct WindowState {
     int clipPanelsArrangement = 0; // by the view's height, side by side, stacked (manual 8.1.2)
     int quantizeValue = 0, quantizeAmount = 100, quantizeSwing = 0;
     bool quantizeStarts = true, quantizeEnds = false;
-    bool aiChatOpen = false; // the AI tab at the browser's foot, collapsed as Live's column
+    bool aiChatOpen = false; // legacy state from before removal of the Browser's AI tab (SC-110)
     // The arrangement's own view: where it starts, its time zoom and its lane heights.
     // The Arrangement sheet spans 74 points per four bars. At this zoom the adaptive grid
     // opens on whole bars. Saved window states bring their own scale.

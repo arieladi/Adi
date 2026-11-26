@@ -179,11 +179,9 @@ void reference(AdiRootComponent &root, const char *name, bool write) {
         const auto devices = root.deviceArea();
         if (!devices.isEmpty())
             g.fillRect(devices.getX(), devices.getY() + 10, devices.getWidth(), 30);
-        // The Status Bar's message and button, the AI tab's label and the Info
-        // View's text are typography too; their geometry is checked by bounds.
+        // The Status Bar's message and button and the Info View's text are
+        // typography too; their geometry is checked by bounds.
         g.fillRect(root.status.getBounds().withTrimmedTop(1));
-        if (root.aiTab.isVisible())
-            g.fillRect(root.aiTab.getBounds());
         if (!root.infoArea().isEmpty())
             g.fillRect(root.infoArea().reduced(4));
         for (const auto &strip : root.mixerView.strips()) {
@@ -17403,7 +17401,7 @@ int main(int argc, char **argv) {
     audit = false;
     check(allocations == 0, "an unchanged selection costs a frame nothing");
     // The rulings since 29 September (ADR-0203 d6, d7, d12): Live's view keys,
-    // the strip's floor, the Info View and Status Bar, the AI tab, tooltips.
+    // the strip's floor, the Info View and Status Bar, tooltips.
     const auto cmd = juce::ModifierKeys::commandModifier;
     const auto alt = juce::ModifierKeys::altModifier;
     a.setSize(1200, 720);
@@ -17424,7 +17422,7 @@ int main(int argc, char **argv) {
           "Ctrl/Cmd+Alt+B hides the browser");
     check(persistence.load("main").panels.find(Panel::Browser)->collapsed,
           "browser visibility persists in ui_view");
-    check(!a.aiTab.isVisible() && a.browserArea().isEmpty(), "the AI tab goes with the browser");
+    check(!a.browser.isVisible() && a.browserArea().isEmpty(), "the browser has no visible area when hidden");
     check(a.keyPressed(juce::KeyPress('5', cmd | alt, 0)) &&
               !a.state().panels.find(Panel::Browser)->collapsed,
           "Ctrl/Cmd+Alt+5 shows it again");
@@ -17437,15 +17435,21 @@ int main(int argc, char **argv) {
     check(a.keyPressed(juce::KeyPress('4', cmd | alt, 0)) && a.state().docked &&
               a.deviceArea().getHeight() == 300,
           "and shows it at its own height");
-    check(!a.state().aiChatOpen && a.aiTab.isVisible() && a.chatArea().getHeight() == 20 &&
-              a.chatArea().getBottom() ==
-                  a.browserArea().getBottom() - BrowserPanel::kBarHeight - look::border,
-          "the AI chat is a collapsed tab at the foot of the browser's panes");
-    a.aiTab.onClick();
-    check(a.state().aiChatOpen && a.chatArea().getHeight() > 20 &&
-              persistence.load("main").aiChatOpen,
-          "the tab opens and is remembered per window");
-    a.aiTab.onClick();
+    {
+        // SC-110: a project saved with the old chat open still makes the full Browser available.
+        auto legacyState = persistence.load("main");
+        legacyState.aiChatOpen = true;
+        std::string error;
+        check(persistence.save("legacy-ai-chat", legacyState, error), "save the legacy chat flag");
+        AdiRootComponent legacy(view, submitter, mailbox, commands, persistence, session, "legacy-ai-chat");
+        check(legacy.state().aiChatOpen && legacy.browser.isVisible() &&
+                  legacy.browser.list.getBottom() == legacy.browser.contentArea().getBottom(),
+              "the old chat flag is readable and the Browser list reaches the preview strip");
+        bool hasAiTab = false;
+        for (auto *child : legacy.getChildren())
+            hasAiTab |= child->isVisible() && child->getTitle() == "AI";
+        check(!hasAiTab, "the Browser has no AI tab");
+    }
     check(commands.infoView() && a.infoArea().getX() == look::gap &&
               a.infoArea().getBottom() == a.status.getY() &&
               a.infoArea().getRight() + look::gap == a.deviceArea().getX(),

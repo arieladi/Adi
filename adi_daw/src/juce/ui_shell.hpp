@@ -539,7 +539,6 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     juce::Rectangle<int> clipArea() const noexcept { return clipArea_; }
     juce::Rectangle<int> infoArea() const noexcept { return infoArea_; }
     juce::Rectangle<int> browserArea() const noexcept { return browserArea_; }
-    juce::Rectangle<int> chatArea() const noexcept { return chatArea_; }
     AppCommands &commands() noexcept { return commands_; }
     // The project as it is now: what an action lands on, never this window's last frame.
     std::shared_ptr<const engine::Snapshot> current() const { return view_.current(); }
@@ -551,7 +550,6 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     bool playFrom(std::int64_t tick);
     TransportBar transport;
     StatusBar status;
-    juce::TextButton aiTab{"AI"};
     BrowserPanel browser{*this};
     // The bar over the track names and their controls (the Arrangement sheet; DF-W25): made before the
     // arrangement, which keeps its Show in step with the view chosen.
@@ -949,7 +947,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     std::optional<std::string> zoomDisplay_; // the display the zoom was last followed on
     juce::Component *hovered_ = nullptr;
     juce::String infoText_;
-    juce::Rectangle<int> clipArea_, deviceArea_, infoArea_, browserArea_, chatArea_, mixerArea_,
+    juce::Rectangle<int> clipArea_, deviceArea_, infoArea_, browserArea_, mixerArea_,
         mixerViewArea_, stripArea_, mixViewArea_, mixViewDock_;
     int leftWidth_ = 0, rightWidth_ = 0;
     std::string error_;
