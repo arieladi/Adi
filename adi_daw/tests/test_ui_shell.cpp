@@ -18012,6 +18012,33 @@ int main(int argc, char **argv) {
             check(row->hasMeter() && row->peak() == .5f && row->rms() == halfSineRms && unmetered != nullptr &&
                       !unmetered->hasMeter() && unmetered->peak() == 0 && unmetered->rms() == 0,
                   "the meter draws the engine's peak and RMS for its strip; a track with no strip yet draws silence");
+            {
+                // SC-81: the two Arrangement meter columns read the two actual strip outputs.
+                engine::StripNode leftOnly;
+                leftOnly.prepare(48000, 2);
+                const float left[]{.5f, -.5f}, right[]{0, 0};
+                float outLeft[2]{}, outRight[2]{};
+                const float *in[]{left, right};
+                float *out[]{outLeft, outRight};
+                engine::NodeIo io;
+                io.in = in;
+                io.out = out;
+                io.channels = io.frames = 2;
+                leftOnly.process(io);
+                meterOfTwo = &leftOnly.meter();
+                MixerStrip stereoRow(mixer);
+                stereoRow.setSize(400, 80);
+                stereoRow.bind(2);
+                juce::Image meters(juce::Image::ARGB, stereoRow.getWidth(), stereoRow.getHeight(), true,
+                                   juce::SoftwareImageType{});
+                juce::Graphics g(meters);
+                stereoRow.paint(g);
+                const int x = (stereoRow.showsInOut() ? MixerPanel::kInOutWidth : 0) + 105;
+                check(meters.getPixelAt(x + 1, 30) == look::meterLevel &&
+                          meters.getPixelAt(x + 6, 30) == look::display,
+                      "a left-only signal lights the left meter column and leaves the right dark");
+                meterOfTwo = &fixed;
+            }
             // A refresh finds the meter again (a track's strip arrives with the session's next sync,
             // after the row was bound): what the lookup now gives is drawn, five seconds on so the
             // ballistics have let the old values go.
