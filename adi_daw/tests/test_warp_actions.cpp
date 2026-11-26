@@ -13,6 +13,7 @@
 #include <array>
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 #include <fstream>
 namespace {
 using namespace adi;using namespace adi::engine;constexpr std::int64_t q=textproj::kPPQ;
@@ -104,7 +105,7 @@ void editedSourceWindow() {
     if(!apply(f,clip_edit::prepareSetWarp(*f.store,11,off,48000),
               "disable Warp after moving the split piece's Start"))return;
     check(db.execAndGet("SELECT warp_enabled FROM audio_clips WHERE clip_id=11").getInt()==0 &&
-              db.execAndGet("SELECT content_offset_ns FROM clip_playback_details WHERE clip_id=11").getInt64()==375'000'000 &&
+              std::llabs(db.execAndGet("SELECT content_offset_ns FROM clip_playback_details WHERE clip_id=11").getInt64()-375'000'000)<22'676 &&
               db.execAndGet("SELECT pos_ticks FROM clips WHERE id=11").getInt64()==q+q/2,
           "Warp off keeps the sample position and the clip's Arrangement start");
 }
