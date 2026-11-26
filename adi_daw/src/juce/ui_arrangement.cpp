@@ -2324,6 +2324,25 @@ void TrackHeaderList::mouseUp(const juce::MouseEvent &e) {
 void TrackHeaderList::mouseWheelMove(const juce::MouseEvent &e, const juce::MouseWheelDetails &w) {
     view.wheel(e, w);
 }
+bool TrackHeaderList::isInterestedInDragSource(const SourceDetails &details) {
+    return view.root.browser.acceptsDeviceDrop(details) ||
+           !BrowserPanel::droppedFiles(details.description).isEmpty();
+}
+void TrackHeaderList::itemDropped(const SourceDetails &details) {
+    if (view.root.browser.acceptsDeviceDrop(details)) {
+        if (const auto *target = view.geometry.trackAt(view.reader(), details.localPosition.y))
+            view.root.browser.loadDroppedDevice(details, target->id);
+        return;
+    }
+    filesDropped(BrowserPanel::droppedFiles(details.description), details.localPosition.x, details.localPosition.y);
+}
+bool TrackHeaderList::isInterestedInFileDrag(const juce::StringArray &files) {
+    return !files.isEmpty();
+}
+void TrackHeaderList::filesDropped(const juce::StringArray &files, int, int y) {
+    if (const auto *target = view.geometry.trackAt(view.reader(), y))
+        view.root.dropAudioPaths(files, target->id, view.geometry.selection.insert);
+}
 void ArrangementCanvas::paint(juce::Graphics &g) {
     // Live's lanes: grey, every other group of bars a shade lighter, the selected
     // track's lanes lighter still, the bar grid, a dark rule between tracks.
@@ -4033,20 +4052,13 @@ bool ArrangementCanvas::isInterestedInFileDrag(const juce::StringArray &files) {
 }
 bool ArrangementCanvas::isInterestedInDragSource(const SourceDetails &details) {
     return !BrowserPanel::droppedFiles(details.description).isEmpty() ||
-           !BrowserPanel::droppedDevice(details.description).empty();
+           view.root.browser.acceptsDeviceDrop(details);
 }
 void ArrangementCanvas::itemDropped(const SourceDetails &details) {
-    // A device dropped on a lane loads onto that track, at its chain's end; never a clip in the
-    // lane (the director, 28 October; audit row 101).
-    if (const auto uid = BrowserPanel::droppedDevice(details.description); !uid.empty()) {
+    // A lane targets its track's chain. The empty area below the lanes creates a track.
+    if (view.root.browser.acceptsDeviceDrop(details)) {
         const auto *track = view.geometry.trackAt(view.reader(), details.localPosition.y);
-        if (track == nullptr) {
-            const auto *info = findBuiltin(uid);
-            view.root.say("Drop " + (info != nullptr ? std::string(info->name) : std::string("a device")) +
-                          " on a track's lane to load it there.");
-            return;
-        }
-        view.root.insertDevice(uid, track->id, std::nullopt);
+        view.root.browser.loadDroppedDevice(details, track != nullptr ? track->id : 0);
         return;
     }
     filesDropped(BrowserPanel::droppedFiles(details.description), details.localPosition.x, details.localPosition.y);
@@ -4063,11 +4075,7 @@ void ArrangementCanvas::filesDropped(const juce::StringArray &files, int x, int 
     const auto *track = view.geometry.trackAt(view.reader(), y);
     // Several files go one after another on that track, or each on a track of its own with Ctrl/Cmd
     // held, as Live places them; one undo step for them all.
-    std::vector<std::pair<std::string, std::string>> dropped;
-    for (const auto &path : files)
-        dropped.emplace_back(path.toStdString(),
-                             juce::File::createFileWithoutCheckingPath(path).getFileNameWithoutExtension().toStdString());
-    view.root.dropAudioFiles(dropped, track != nullptr ? track->id : 0, at,
-                             juce::ModifierKeys::currentModifiers.isCommandDown());
+    view.root.dropAudioPaths(files, track != nullptr ? track->id : 0, at,
+                            juce::ModifierKeys::currentModifiers.isCommandDown());
 }
 } // namespace adi::ui

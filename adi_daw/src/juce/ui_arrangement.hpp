@@ -130,7 +130,10 @@ class TimelineRuler final : public juce::Component, public juce::SettableTooltip
 };
 // One row per track, on the RIGHT of the clips as in Live's Arrangement View (on the left,
 // before the track controls, with the side panels swapped).
-class TrackHeaderList final : public juce::Component, public juce::SettableTooltipClient {
+class TrackHeaderList final : public juce::Component,
+                              public juce::SettableTooltipClient,
+                              public juce::DragAndDropTarget,
+                              public juce::FileDragAndDropTarget {
   public:
     explicit TrackHeaderList(ArrangementView &);
     void paint(juce::Graphics &) override;
@@ -146,6 +149,10 @@ class TrackHeaderList final : public juce::Component, public juce::SettableToolt
     void mouseUp(const juce::MouseEvent &) override;
     void mouseMove(const juce::MouseEvent &) override;
     void mouseWheelMove(const juce::MouseEvent &, const juce::MouseWheelDetails &) override;
+    bool isInterestedInDragSource(const SourceDetails &) override;
+    void itemDropped(const SourceDetails &) override;
+    bool isInterestedInFileDrag(const juce::StringArray &) override;
+    void filesDropped(const juce::StringArray &, int, int) override;
 
     // Live's split line at a track's foot (manual 6.9: "dragging the split line"): a press this
     // close to a row's foot resizes the track; anywhere else on its title, a drag moves it.

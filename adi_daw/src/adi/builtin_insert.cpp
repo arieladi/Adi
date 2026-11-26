@@ -109,26 +109,38 @@ const std::array<OpDescriptor,2> ops={{
 }
 std::span<const OpDescriptor> builtinReferenceOps(){return ops;}
 static PreparedBuiltinInsert prepareInsert(Store& store,const rows::PluginRef& ref,std::int64_t track,
-    std::optional<std::int64_t> before,std::int64_t retainedDeviceId,const PluginInsertOptions* plugin = nullptr) {
+    std::optional<std::int64_t> before,std::int64_t retainedDeviceId,std::span<const OpRequest> newTrack,
+    const PluginInsertOptions* plugin = nullptr) {
     PreparedBuiltinInsert result;
     try {
         if(store.readOnly())throw std::runtime_error("project is read-only");
         auto& db=store.db();RowIds ids(db);std::optional<SQLite::Transaction> read;
         if(sqlite3_get_autocommit(db.getHandle())!=0)read.emplace(db,SQLite::TransactionBehavior::DEFERRED);
         result.sourceFile=identity(db);result.options.expectHead.emplace(OpJournal(store).headSeq());
-        detail::requireDeviceInsertTrack(db, track);
+        const auto deviceRole = role(ref.subtype);
+        const std::string label="Insert "+ref.name;
+        if (newTrack.empty()) {
+            detail::requireDeviceInsertTrack(db, track);
+        } else {
+            const auto& create = newTrack.front();
+            if (before || create.opType != "track.create" || create.payload.at("id") != track ||
+                create.payload.at("kind") != (deviceRole == Role::AudioEffect ? "audio" : "midi"))
+                throw std::runtime_error("The new track does not match the device drop.");
+            result.newTrack = track;
+            result.requests.assign(newTrack.begin(), newTrack.end());
+            for (auto& request : result.requests) request.label = label;
+        }
         // A built-in instrument (OneShot, Sampler) goes where Live puts an instrument it loads: on a MIDI
         // track only (it takes notes and no audio, so it would silence any other track), between the MIDI
         // and the audio effects, in place of the track's instrument (walk-A A7, DF-W48).
-        const bool builtinInstrument = plugin == nullptr && role(ref.subtype) == Role::Instrument;
-        if (builtinInstrument) {
+        const bool builtinInstrument = plugin == nullptr && deviceRole == Role::Instrument;
+        if (builtinInstrument && newTrack.empty()) {
             SQLite::Statement kind(db, "SELECT kind FROM tracks WHERE id=?");
             kind.bind(1, track);
             if (kind.executeStep() && kind.getColumn(0).getString() != "midi" &&
                 kind.getColumn(0).getString() != "instrument")
                 throw std::runtime_error(ref.name + " is an instrument: load it onto a MIDI track");
         }
-        const std::string label="Insert "+ref.name;
         auto append=[&](const char* type,Payload payload,const char* kind,std::int64_t id) {
             OpRequest request;request.opType=type;request.payload=std::move(payload);request.label=label;
             request.targetKind=kind;request.targetId=id;result.requests.push_back(std::move(request));
@@ -184,7 +196,7 @@ static PreparedBuiltinInsert prepareInsert(Store& store,const rows::PluginRef& r
                 }
             }
             if (replacement == order.end()) {
-                position = pluginPosition(order,role(ref.subtype),position,before.has_value());
+                position = pluginPosition(order,deviceRole,position,before.has_value());
             } else {
                 if (replacement->rack)
                     throw std::runtime_error("select an instrument inside the rack to replace");
@@ -209,7 +221,7 @@ static PreparedBuiltinInsert prepareInsert(Store& store,const rows::PluginRef& r
     return result;
 }
 PreparedBuiltinInsert prepareBuiltinInsert(Store& store,std::string_view uid,std::int64_t track,std::optional<std::int64_t> before,
-    std::int64_t retainedDeviceId) {
+    std::int64_t retainedDeviceId,std::span<const OpRequest> newTrack) {
     const auto* info=findBuiltin(uid);
     if(!info || !info->available) {
         PreparedBuiltinInsert result;
@@ -219,10 +231,11 @@ PreparedBuiltinInsert prepareBuiltinInsert(Store& store,std::string_view uid,std
     rows::PluginRef ref;
     ref.format="internal";ref.uid=uid;ref.name=info->name;ref.vendor="ADI";ref.version="1";
     ref.subtype=info->instrument?"instrument":"effect";
-    return prepareInsert(store,ref,track,before,retainedDeviceId);
+    return prepareInsert(store,ref,track,before,retainedDeviceId,newTrack);
 }
 PreparedBuiltinInsert preparePluginInsert(Store& store,const rows::PluginRef& ref,std::int64_t track,
-    std::optional<std::int64_t> before,const PluginInsertOptions& options,std::int64_t retainedDeviceId) {
+    std::optional<std::int64_t> before,const PluginInsertOptions& options,std::int64_t retainedDeviceId,
+    std::span<const OpRequest> newTrack) {
     if((ref.format!="vst3" && ref.format!="clap") || ref.uid.empty() || ref.name.empty()) {
         PreparedBuiltinInsert result;result.error="Select a VST3 or CLAP plug-in with a valid identity";return result;
     }
@@ -233,7 +246,7 @@ PreparedBuiltinInsert preparePluginInsert(Store& store,const rows::PluginRef& re
         *engine::routeChoiceName(*options.expressionRoute) == '\0') {
         PreparedBuiltinInsert result;result.error="unknown plug-in expression route";return result;
     }
-    return prepareInsert(store,ref,track,before,retainedDeviceId,&options);
+    return prepareInsert(store,ref,track,before,retainedDeviceId,newTrack,&options);
 }
 CommitResult commitBuiltinInsert(Store& store,const PreparedBuiltinInsert& prepared,Actor actor) {
     CommitResult result;if(!prepared.ok){result.error=prepared.error;return result;}

@@ -548,15 +548,49 @@ std::int64_t ProjectDocument::retainedDeviceId() const noexcept {
         id = std::max(id, session_.entryAt(i).deviceId);
     return id;
 }
-bool ProjectDocument::insertBuiltin(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before) {
-    return finishInsert(prepareBuiltinInsert(*store_, uid, track, before, retainedDeviceId()));
+namespace {
+// Capture the new sibling order and the device batch's expected head from
+// the same read transaction. Preparation does not publish a temporary track.
+template <class Prepare>
+PreparedBuiltinInsert prepareDeviceDrop(Store &store, bool midi, const RecordingDefaults *defaults, Prepare prepare) {
+    try {
+        auto &db = store.db();
+        std::optional<SQLite::Transaction> read;
+        if (sqlite3_get_autocommit(db.getHandle()) != 0)
+            read.emplace(db, SQLite::TransactionBehavior::DEFERRED);
+        const auto snapshot = engine::SnapshotBuilder::fromStore(store, {}, false);
+        const auto track = RowIds(db).next("tracks");
+        auto edit = insertTrack(snapshot->tracks, 0, midi, defaults, track);
+        return prepare(track, edit.ops);
+    } catch (const std::exception &error) {
+        PreparedBuiltinInsert refused;
+        refused.error = error.what();
+        return refused;
+    }
+}
+} // namespace
+bool ProjectDocument::insertBuiltin(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before,
+                                    const RecordingDefaults *defaults) {
+    if (track != 0)
+        return finishInsert(prepareBuiltinInsert(*store_, uid, track, before, retainedDeviceId()));
+    const auto *info = findBuiltin(uid);
+    return finishInsert(prepareDeviceDrop(*store_, info && info->instrument, defaults,
+        [&](std::int64_t id, std::span<const OpRequest> newTrack) {
+            return prepareBuiltinInsert(*store_, uid, id, before, retainedDeviceId(), newTrack);
+        }));
 }
 bool ProjectDocument::insertPlugin(const rows::PluginRef &ref, std::int64_t track,
                                    std::optional<std::int64_t> before, const PluginInsertOptions& options) {
     return finishInsert(preparePluginInsert(*store_, ref, track, before, options, retainedDeviceId()));
 }
-bool ProjectDocument::loadPlugin(const rows::PluginRef &ref, std::int64_t track, std::optional<std::int64_t> before) {
+bool ProjectDocument::loadPlugin(const rows::PluginRef &ref, std::int64_t track, std::optional<std::int64_t> before,
+                                 const RecordingDefaults *defaults) {
     PluginInsertOptions options;
+    if (track == 0)
+        return finishInsert(prepareDeviceDrop(*store_, ref.subtype == "instrument" || ref.subtype == "midi_effect", defaults,
+            [&](std::int64_t id, std::span<const OpRequest> newTrack) {
+                return preparePluginInsert(*store_, ref, id, before, options, retainedDeviceId(), newTrack);
+            }));
     if (ref.subtype == "instrument") {
         try {
             SQLite::Statement kind(store_->db(), "SELECT kind FROM tracks WHERE id=?");
@@ -579,6 +613,9 @@ bool ProjectDocument::finishInsert(PreparedBuiltinInsert prepared) {
         error_ = prepared.error.empty() ? "The device could not be loaded." : prepared.error;
         return false;
     }
+    const auto newTrack = prepared.newTrack;
+    if (newTrack)
+        prepared.requests.front().selBefore = sessionState_.advisory();
     const auto result = ops_.commitPrepared(std::move(prepared), [](Store &s, PreparedBuiltinInsert &p, Actor actor) {
         return commitBuiltinInsert(s, p, actor);
     });
@@ -586,6 +623,15 @@ bool ProjectDocument::finishInsert(PreparedBuiltinInsert prepared) {
     if (!result.ok || !synchronise())
         return false;
     feed_.publish(session_, realisedGeneration_);
+    if (newTrack) {
+        auto selected = sessionState_.selection();
+        selected.track = *newTrack;
+        selected.toTrack = selected.clip = 0;
+        selected.picked.clear();
+        selected.pickedClips.clear();
+        selected.start = selected.end = selected.insert;
+        (void)sessionState_.select(selected, error_);
+    }
     return true;
 }
 std::vector<DeviceKeyChoice> ProjectDocument::deviceKeyChoices(const DevicePanelData& target) {

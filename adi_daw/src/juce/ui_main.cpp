@@ -809,7 +809,7 @@ class AdiApplication final : public juce::JUCEApplication,
         }
         // A built-in device from the browser (D4): one undo step, its reason in the Status Bar.
         root->loadBuiltin = [this](const std::string &uid, std::int64_t track, std::optional<std::int64_t> before) {
-            const bool ok = document_->insertBuiltin(uid, track, before);
+            const bool ok = document_->insertBuiltin(uid, track, before, &commands_->recordingDefaults());
             if (!ok && root_)
                 root_->say(document_->error());
             return ok;
@@ -831,7 +831,7 @@ class AdiApplication final : public juce::JUCEApplication,
             const auto before_ = newest();
             // As Live loads one: an instrument onto a MIDI track only, in place of the track's instrument
             // (walk-A A26).
-            if (!document_->loadPlugin(ref, track, before)) {
+            if (!document_->loadPlugin(ref, track, before, &commands_->recordingDefaults())) {
                 if (root_)
                     root_->say(document_->error());
                 return false;
