@@ -4,6 +4,30 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-26 — `basics/*` Round 9 (`basics/speed-chain` `607e34fe` — FAIL in `adi_midi_clips_tests`)
+
+Verified `origin/basics/speed-chain` at `607e34fe` (77 files vs `origin/main`) under **GCC 12.4.0** (`-DADI_WERROR=ON`, headless Pd on, JUCE off, `-DADI_ACCEPTANCE=ON`).
+
+| Branch | SHA | GCC 12.4.0 (`-DADI_WERROR=ON`) | Clang 14.0.6 / JUCE / ASan | Verdict |
+|---|---|---|---|---|
+| `basics/speed-chain` | `607e34fe` | **TEST_FAIL** (0 warnings; 17/18 suites PASS; **`adi_midi_clips_tests` FAILs deterministically 2/2 runs**: `FAIL the project changed while it was opening`, `561 checks, 1 failure(s)`) | (stopped after deterministic GCC 12 test failure) | **FAIL (do not land)** |
+
+### Finding on `basics/speed-chain` (`607e34fe`)
+
+- **Deterministic test failure in `adi_midi_clips_tests` under GCC 12.4.0 (2/2 runs, 16.47 s):**
+  - Output:
+    ```
+    stored expression grid 4160/6960 updates delivered
+    stored expression grid 6944/6960 updates delivered
+    FAIL the project changed while it was opening
+    FAIL -- 561 checks, 1 failure(s)
+    ```
+  - Error string comes from `src/adi/engine/session.cpp:1538` (`Session::beginLoad`) / `:1578` (`Session::checkLoadRevision`), introduced in commit `28636bab8` (stepped project-open revision guard comparing `gesture::detail::storeWriteStamp(store)` and `appliedSource_.sequence()`).
+  - **Owner:** `basics/speed` (`basics/speed-chain` `607e34fe` / commit `28636bab8`).
+  - **Smallest repro:** `cmake --build build-gcc12 --target adi_midi_clips_tests && ctest --test-dir build-gcc12 -R '^adi_midi_clips_tests$' --output-on-failure`.
+
+---
+
 ## 2026-11-26 — `basics/*` Round 8 (`basics/look-chain` `26569ddf` — FAIL on Clang 14 JUCE)
 
 Verified `origin/basics/look-chain` at `26569ddf` (`SC-70`, `SC-112`, `SC-111`, `SC-110` on top of `land/basics-1127d` `90f4091d`) under **GCC 12.4.0** and **Clang 14.0.6 + libstdc++ 12** (`-DADI_WERROR=ON`, headless Pd on, JUCE off, `-DADI_ACCEPTANCE=ON`), all 5 delta JUCE TUs (`-DADI_WITH_JUCE=ON -DADI_WERROR=ON`), and **Clang 14 ASan + LSan + UBSan**.
