@@ -12539,6 +12539,31 @@ void clipWaveforms(AppCommands &commands, const std::filesystem::path &dir) {
         root.frame();
     }
     check(gainIs(-6.5), "undo restores the earlier Gain in Clip View");
+    const auto enterPitch = [&](Field field, const char *value) {
+        const auto box = panel.fieldBox(field);
+        const auto point = box.getCentre().toFloat();
+        panel.mouseDown(pressAt(panel, point));
+        panel.mouseUp(pressAt(panel, point));
+        if (!panel.fieldEditor().isVisible())
+            return false;
+        panel.fieldEditor().setText(value, false);
+        panel.fieldEditor().onReturnKey();
+        return true;
+    };
+    const auto pitchIs = [&](double pitch) { return panel.details() && panel.details()->transposeSemis == pitch; };
+    check(enterPitch(Field::Pitch, "12 st") && pitchIs(12.) && enterPitch(Field::Detune, "-50 ct") && pitchIs(11.5),
+          "the audio clip's semitone and cent controls set one shared pitch value");
+    const auto detune = panel.fieldBox(Field::Detune).getCentre().toFloat();
+    const auto up = detune.translated(0.f, -8.f);
+    panel.mouseDown(pressAt(panel, detune));
+    panel.mouseDrag(dragAt(panel, detune, up));
+    panel.mouseUp(dragAt(panel, detune, up));
+    const auto pitchEdit = document->ops().nextUndo();
+    check(pitchIs(11.52) && pitchEdit && pitchEdit->label == "Set Clip Pitch" && pitchEdit->opCount == 1,
+          "dragging Detune steps in cents and commits once");
+    check(root.command(AppCommands::Undo), "undo the cents drag");
+    root.frame();
+    check(pitchIs(11.5), "pitch Undo restores the previous cents");
     root.afterEdit = nullptr;
     document->release();
 }

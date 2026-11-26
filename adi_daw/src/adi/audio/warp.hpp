@@ -13,6 +13,8 @@ namespace adi::audio {
 enum class WarpMode { Beats,Tones,Texture,RePitch,Complex,ComplexPro };
 [[nodiscard]] const char* warpModeName(WarpMode)noexcept;
 [[nodiscard]] std::optional<WarpMode> parseWarpMode(std::string_view)noexcept;
+// Unwarped audio uses the transposed source clock at the existing sample-rate converter.
+[[nodiscard]] double pitchedSampleRate(double sampleRate,double semitones)noexcept;
 enum class TransientLoop { Off,Forward,PingPong };
 struct WarpAnchor {
     std::uint64_t sourceFrame=0,outputFrame=0;

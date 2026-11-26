@@ -294,6 +294,9 @@ struct Clip {
         while (static_cast<double>(currentRate) / priorRate > 256.0) {
             priorRate *= 128;
         }
+        while (static_cast<double>(priorRate) / currentRate > 256.0) {
+            priorRate /= 128;
+        }
 
         const std::int64_t divisor=std::gcd(currentRate, priorRate);
         const std::int64_t inPeriod=priorRate/divisor, outPeriod=currentRate/divisor;
@@ -326,7 +329,7 @@ struct Clip {
         const auto count=std::min(pageFrames,length-first);
         if (rate==sourceRate) {
             readSource(static_cast<std::uint64_t>(first),p.data.data(),static_cast<std::uint32_t>(count));
-        } else if (static_cast<double>(rate) / sourceRate > 256.0) {
+        } else if (!src_is_valid_ratio(static_cast<double>(rate) / sourceRate)) {
             std::vector<float> res = renderRange(first, count, rate);
             std::copy_n(res.begin(), static_cast<std::size_t>(count)*channels, p.data.begin());
         } else {
@@ -559,7 +562,8 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
         try {
             const auto a=std::find_if(project->rows.audioClips.begin(),project->rows.audioClips.end(),[&](const auto& x){return x.clipId==row.id;});
             if(a==project->rows.audioClips.end()) throw std::runtime_error("no audio row; silent");
-            if(!a->warpEnabled && (a->transposeSemis!=0 || a->formantShift!=0)) throw std::runtime_error("pitch/formant shift unsupported; silent");
+            if(!a->warpEnabled && a->formantShift!=0) throw std::runtime_error("unwarped formant shift unsupported");
+            if(!a->warpEnabled && !(std::abs(a->transposeSemis)<=48.)) throw std::runtime_error("invalid unwarped pitch");
             if(row.aliasOf) throw std::runtime_error("alias resolution unsupported; silent");
             if(row.fadeInCurve<0 || row.fadeInCurve>5 || row.fadeOutCurve<0 || row.fadeOutCurve>5) throw std::runtime_error("fade curve unsupported; silent");
             if(a->channelMode<0 || a->channelMode>3) throw std::runtime_error("unknown channel mode; silent");
@@ -606,6 +610,8 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             }
             clip->rate=static_cast<std::uint32_t>(rate);
             if(clip->channels>64 || clip->sourceRate<1 || clip->sourceRate>768000)throw std::runtime_error("source format outside supported bounds; silent");
+            if(!a->warpEnabled)
+                clip->sourceRate=static_cast<std::uint32_t>(audio::pitchedSampleRate(clip->sourceRate,a->transposeSemis));
             if(a->srcStartFrames<0 || a->srcLenFrames<=0 || static_cast<std::uint64_t>(a->srcStartFrames)>sourceFrames || static_cast<std::uint64_t>(a->srcLenFrames)>sourceFrames-static_cast<std::uint64_t>(a->srcStartFrames))throw std::runtime_error("source window outside audio; silent");
             clip->pageFrames=static_cast<std::int64_t>(std::ceil(8192.0*rate/48000.0));
             clip->sourceStart=static_cast<std::uint64_t>(a->srcStartFrames); clip->sourceLength=static_cast<std::uint64_t>(a->srcLenFrames);

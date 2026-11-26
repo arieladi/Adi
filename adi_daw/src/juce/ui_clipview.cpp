@@ -17,6 +17,7 @@ namespace adi::ui {
 namespace {
 // The playback reader accepts clip gain within this finite dB range.
 constexpr double kClipGainLimitDb = 120.;
+constexpr int kPitchLimitCents = 4800;
 const juce::String kGainLabel{"Gain"};
 juce::String clipGainText(double db) { return juce::String(db, 2) + " dB"; }
 const juce::String kUnsetWarpModeLabel{"Warp Mode"};
@@ -2944,8 +2945,10 @@ void SampleEditor::updateSource() {
         if (!markers_.empty()) {
             sourceEnd_ = markers_.back().tick;
         } else if (audio.mediaInfo && audio.mediaInfo->sampleRate.value_or(0) > 0) {
-            const auto seconds = static_cast<double>(audio.sourceLengthFrames) / static_cast<double>(*audio.mediaInfo->sampleRate);
-            sourceEnd_ = std::max<std::int64_t>(1, sourceSecondsToTicks(seconds));
+            const auto nativeRate = static_cast<double>(*audio.mediaInfo->sampleRate);
+            const auto rate = audio.warpEnabled ? nativeRate : adi::audio::pitchedSampleRate(nativeRate, audio.transposeSemis);
+            if (rate > 0.)
+                sourceEnd_ = std::max<std::int64_t>(1, sourceSecondsToTicks(static_cast<double>(audio.sourceLengthFrames) / rate));
         }
     }
     resized();
@@ -3184,7 +3187,10 @@ void SampleEditor::paint(juce::Graphics &g) {
     const auto &audio = *node->audio;
     const auto origin = static_cast<double>(audio.sourceStartFrames);
     const auto endFrame = origin + static_cast<double>(audio.sourceLengthFrames);
-    const auto rate = static_cast<double>(finest.sampleRate);
+    const auto rate = audio.warpEnabled ? static_cast<double>(finest.sampleRate)
+                                        : adi::audio::pitchedSampleRate(finest.sampleRate, audio.transposeSemis);
+    if (rate <= 0.)
+        return;
     g.setColour(look::ink.withAlpha(node->muted ? 0.35f : 0.7f));
     for (int x = from; x < to; ++x) {
         const auto f0 = origin + frameAt(time.tick(x), rate, audio), f1 = origin + frameAt(time.tick(x + 1), rate, audio);
@@ -3795,7 +3801,7 @@ void ClipViewPanel::frame(const SnapshotReader &reader) {
         resized();
         if (other) {
             closeEditor();
-            if (pressed_ == Field::Gain) {
+            if (pressed_ == Field::Gain || pressed_ == Field::Pitch || pressed_ == Field::Detune) {
                 pressed_ = Field::None;
                 dragged_ = false;
             }
@@ -3917,7 +3923,7 @@ ClipViewPanel::Readings ClipViewPanel::readings() const {
             out.signature = juce::String(s.first) + " / " + juce::String(s.second);
         } else if (pressed_ == Field::Length) {
             out.length = lengthText(draggedTicks(), meter_);
-        } else if (pressed_ != Field::Gain) {
+        } else if (pressed_ != Field::Gain && pressed_ != Field::Pitch && pressed_ != Field::Detune) {
             auto &shown = pressed_ == Field::Start ? out.start : pressed_ == Field::End ? out.end : out.position;
             shown = positionText(draggedTicks(), clipMeters_);
         }
@@ -3941,9 +3947,16 @@ juce::Rectangle<int> ClipViewPanel::fieldBox(Field field) const noexcept {
     }
     const auto main = mainArea().reduced(6, 5);
     const int half = (main.getWidth() - 6) / 2;
+    if (field == Field::Pitch || field == Field::Detune) {
+        if (panelsFolded_ || !audio())
+            return {};
+        return {main.getX() + (field == Field::Detune ? half + 6 : 0),
+                main.getY() + (getHeight() < 180 ? 112 : 142), half, kFieldBox};
+    }
+    const bool compactAudio = audio() && getHeight() < 180;
     const int row = field == Field::Start || field == Field::End          ? 0
-                    : field == Field::Position || field == Field::Length ? 58
-                                                                         : 95;
+                    : field == Field::Position || field == Field::Length ? (compactAudio ? 49 : 58)
+                                                                         : (compactAudio ? 81 : 95);
     const int column = field == Field::End || field == Field::Length || field == Field::Scale || field == Field::Gain ? 1 : 0;
     if (field == Field::None)
         return {};
@@ -4449,7 +4462,7 @@ juce::Rectangle<int> ClipViewPanel::loopBox() const noexcept {
     if (panelsFolded_)
         return {};
     const auto main = mainArea().reduced(6, 5);
-    return {main.getX(), main.getY() + 37, main.getWidth(), kFieldBox};
+    return {main.getX(), main.getY() + (audio() && getHeight() < 180 ? 33 : 37), main.getWidth(), kFieldBox};
 }
 juce::Rectangle<int> ClipViewPanel::warpBox() const noexcept {
     const auto header = headerArea();
@@ -4539,6 +4552,8 @@ bool ClipViewPanel::loopAvailable() const noexcept {
     return midi() || (node_ && node_->audio && node_->audio->warpEnabled);
 }
 bool ClipViewPanel::fieldEnabled(Field field) const noexcept {
+    if (field == Field::Pitch || field == Field::Detune)
+        return details_ && details_->pitchEnabled;
     return (field != Field::Position && field != Field::Length) || loopAvailable();
 }
 ClipViewPanel::Field ClipViewPanel::fieldAt(juce::Point<int> at) const noexcept {
@@ -4546,7 +4561,7 @@ ClipViewPanel::Field ClipViewPanel::fieldAt(juce::Point<int> at) const noexcept 
                              Field::Transpose, Field::VelocityAmount, Field::VelocityPercent, Field::VelocityLow,
                              Field::VelocityHigh, Field::Voices, Field::RandomAmount, Field::RampStart, Field::RampEnd,
                              Field::FilterA, Field::FilterB, Field::FilterC, Field::QuantizeAmount, Field::QuantizeSwing,
-                             Field::Interval, Field::Stretch, Field::Gain})
+                             Field::Interval, Field::Stretch, Field::Gain, Field::Pitch, Field::Detune})
         if (fieldEnabled(field) && fieldBox(field).contains(at) && (midi() || (field != Field::Scale && field != Field::Transpose)))
             return field;
     return Field::None;
@@ -4593,6 +4608,32 @@ bool ClipViewPanel::setGain(double db) {
     reread();
     return true;
 }
+int ClipViewPanel::pitchPart(Field field, bool preview) const noexcept {
+    const auto pitch = details_->transposeSemis.value_or(0.);
+    int cents = std::isfinite(pitch) ? static_cast<int>(std::lround(100. * std::clamp(pitch, -48., 48.))) : 0;
+    if (preview && dragged_ && (pressed_ == Field::Pitch || pressed_ == Field::Detune))
+        cents = std::clamp(cents + std::clamp(dragSteps_, -kPitchLimitCents, kPitchLimitCents) *
+                                      (pressed_ == Field::Pitch ? 100 : 1), -kPitchLimitCents, kPitchLimitCents);
+    const int semis = (cents + (cents < 0 ? -50 : 50)) / 100;
+    return field == Field::Pitch ? semis : cents - semis * 100;
+}
+bool ClipViewPanel::setPitch(Field field, int value, bool relative) {
+    if (!fieldEnabled(field))
+        return false;
+    const int semis = pitchPart(Field::Pitch), cents = pitchPart(Field::Detune);
+    const int current = semis * 100 + cents;
+    const int fieldValue = std::clamp(value, -kPitchLimitCents, kPitchLimitCents);
+    const auto next = relative ? current + fieldValue * (field == Field::Pitch ? 100 : 1)
+                    : field == Field::Pitch ? fieldValue * 100 + cents : semis * 100 + fieldValue;
+    const double pitch = std::clamp(next, -kPitchLimitCents, kPitchLimitCents) / 100.;
+    repaint();
+    if (pitch == details_->transposeSemis)
+        return true;
+    if (!root.submitEdit("audioClip.setTranspose", {{"id", clip_}, {"semitones", pitch}}, "Set Clip Pitch"))
+        return false;
+    reread();
+    return true;
+}
 double ClipViewPanel::draggedGain() const noexcept {
     return std::clamp(details_->gainDb + dragSteps_, -kClipGainLimitDb, kClipGainLimitDb);
 }
@@ -4628,6 +4669,23 @@ bool ClipViewPanel::typeField(Field field, const juce::String &typed) {
             return false;
         }
         return setGain(db);
+    }
+    if (field == Field::Pitch || field == Field::Detune) {
+        auto raw = typed.trim();
+        const char *unit = field == Field::Pitch ? "st" : "ct";
+        if (raw.endsWithIgnoreCase(unit))
+            raw = raw.dropLastCharacters(2).trimEnd();
+        if (raw.startsWithChar('+') && !raw.startsWith("+-"))
+            raw = raw.substring(1);
+        const auto number = raw.toStdString();
+        const auto end = number.data() + number.size();
+        int pitch = 0;
+        const auto parsed = std::from_chars(number.data(), end, pitch);
+        if (parsed.ec != std::errc{} || parsed.ptr != end) {
+            root.say(field == Field::Pitch ? "Type a whole number of semitones." : "Type a whole number of cents.");
+            return false;
+        }
+        return setPitch(field, pitch, false);
     }
     const auto text = typed.toStdString();
     {
@@ -4812,6 +4870,7 @@ void ClipViewPanel::openEditor(Field field) {
                        : field == Field::Length    ? r.length
                        : field == Field::SourceTempo ? (bpm > 0 ? juce::String(bpm, 2) : juce::String())
                        : field == Field::Gain      ? juce::String(details_->gainDb, 2)
+                       : field == Field::Pitch || field == Field::Detune ? juce::String(pitchPart(field))
                        : field == Field::Transpose ? juce::String("0")
                        : field == Field::Stretch   ? juce::String("100")
                        : plainField(field) != nullptr ? juce::String(*plainField(field))
@@ -5144,6 +5203,8 @@ void ClipViewPanel::mouseUp(const juce::MouseEvent &) {
         transpose(steps);
     else if (field == Field::Gain)
         setGain(details_->gainDb + steps);
+    else if (field == Field::Pitch || field == Field::Detune)
+        setPitch(field, steps, true);
     else if (field == Field::Stretch)
         stretch(std::clamp(100 + 5 * steps, 10, 1000));
     else if (field == Field::Signature)
@@ -5272,6 +5333,24 @@ void ClipViewPanel::paint(juce::Graphics &g) {
         g.fillRect(std::min(centre, handle), scale.getBottom() - 2.f, std::abs(handle - centre), 2.f);
         g.setColour(look::textDim);
         g.fillRect(centre - .5f, scale.getBottom() - 2.f, 1.f, 2.f);
+    }
+    if (audio()) {
+        const auto readPitch = [&](Field which, const char *unit) {
+            return juce::String(pitchPart(which, true)) + unit;
+        };
+        if (getHeight() < 180) {
+            for (const auto which : {Field::Pitch, Field::Detune}) {
+                const auto box = fieldBox(which);
+                if (box.isEmpty())
+                    continue;
+                controls::valueBox(g, box.toFloat(), fieldEnabled(which) ? readPitch(which, which == Field::Pitch ? " st" : " ct")
+                                                                        : juce::String{}, std::nullopt, look::fontLabel);
+                labels_.push_back(box);
+            }
+        } else {
+            field(Field::Pitch, "Pitch", readPitch(Field::Pitch, " st"));
+            field(Field::Detune, "Detune", readPitch(Field::Detune, " ct"));
+        }
     }
     if (midi() && !panelsFolded_) {
         field(Field::Scale, "Scale", r.scale);
