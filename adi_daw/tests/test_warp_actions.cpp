@@ -68,6 +68,45 @@ void actionAndHistory() {
     check(physicalGrid && std::all_of(unwarped.begin()+72000,unwarped.end(),[](float x){return x==0;}),"disabled Warp is heard at physical source speed and ends at its new boundary");
     check(history.undo().ok && digestProject(*f.store).text==enabled && render(f)==heard,"undo Warp off restores the complete stretched clip and its PCM");
 }
+void editedSourceWindow() {
+    Fixture f;
+    auto& db=f.store->db();
+    OpRequest resize;
+    resize.opType="clip.resize";
+    resize.payload={{"id",7},{"pos",q},{"length",q}};
+    if(!OpJournal(*f.store).commit(resize).ok) {
+        check(false,"trim the unwarped clip's right edge before switching Warp");
+        return;
+    }
+    if(!apply(f,clip_edit::prepareSplit(*f.store,7,11,{0,q+q/2},48000),
+              "split the trimmed audio clip"))return;
+    auto on=f.options();
+    on.analysis.sourceBpm=240;
+    on.analysis.fromFirstBeat=false;
+    for(const auto id:{7,11}) {
+        if(!apply(f,clip_edit::prepareSetWarp(*f.store,id,on,48000),
+                  "enable Warp on a piece of a split and trimmed clip"))return;
+    }
+    check(db.execAndGet("SELECT length_ticks FROM clips WHERE id=7").getInt64()==q &&
+              db.execAndGet("SELECT length_ticks FROM clips WHERE id=11").getInt64()==q &&
+              db.execAndGet("SELECT content_offset_ticks FROM clips WHERE id=11").getInt64()==q,
+          "both trimmed windows become one beat at 240 source BPM, the second at the next source beat");
+    OpRequest start;
+    start.opType="clip.setStartMarker";
+    start.payload={{"id",11},{"ticks",q+q/2}};
+    if(!OpJournal(*f.store).commit(start).ok) {
+        check(false,"move the warped clip's Start marker");
+        return;
+    }
+    auto off=on;
+    off.enabled=false;
+    if(!apply(f,clip_edit::prepareSetWarp(*f.store,11,off,48000),
+              "disable Warp after moving the split piece's Start"))return;
+    check(db.execAndGet("SELECT warp_enabled FROM audio_clips WHERE clip_id=11").getInt()==0 &&
+              db.execAndGet("SELECT content_offset_ns FROM clip_playback_details WHERE clip_id=11").getInt64()==375'000'000 &&
+              db.execAndGet("SELECT pos_ticks FROM clips WHERE id=11").getInt64()==q+q/2,
+          "Warp off keeps the sample position and the clip's Arrangement start");
+}
 void modesAndGuards() {
     Fixture f;auto& db=f.store->db();
     for(const auto mode:{audio::WarpMode::Beats,audio::WarpMode::Tones,audio::WarpMode::Texture,audio::WarpMode::RePitch,audio::WarpMode::Complex,audio::WarpMode::ComplexPro}) {
@@ -99,4 +138,4 @@ void cancellationAndCaptureGuards() {
     check(pending.ok && !clip_edit::commitPrepared(*f.store,pending).ok && digestProject(*f.store).text==before,"a changed source file after analysis rolls back the entire edit");
 }
 }
-int main(){try{actionAndHistory();modesAndGuards();futureMapRefusesRewrite();cancellationAndCaptureGuards();}catch(const std::exception& e){check(false,e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{actionAndHistory();editedSourceWindow();modesAndGuards();futureMapRefusesRewrite();cancellationAndCaptureGuards();}catch(const std::exception& e){check(false,e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
