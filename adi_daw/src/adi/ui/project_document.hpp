@@ -326,9 +326,12 @@ class ProjectDocument final : public engine::BlockProcessor {
     std::int32_t graphWorkerMinimumFrames_ = 1;
     double engineRate_ = 48000.0;   // the rate `prepare` last set, for a sample's preparation
     std::int32_t engineFrames_ = 512; // the block `prepare` last set, for the recorder
-    // Arrangement Record (MX-09): recording, then landing the take on the timer, then its outcome.
+    // Arrangement Record (MX-09): capture, staged audio files, then one owner commit.
+    struct TakePublication;
     void pollRecording(bool deviceStopped);
     void landTake();
+    void pollTakePublication();
+    bool waitForTake(bool forceDetached);
     // Discards a take that is not kept; what the Status Bar adds when its files stay (DF-E44), else empty.
     std::string discardTake(engine::AudioRecordingResult &);
     bool recording_ = false, landing_ = false;
@@ -341,6 +344,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     std::atomic<bool> captureReady_{false};
     std::atomic<bool> deviceStopped_{true}; // `release` without a `prepare` since
     std::optional<TakeLanded> landed_;
+    std::unique_ptr<TakePublication> takePublication_;
     // The mixer drag's gesture (MX-23): the coordinator of this store's gestures, and the open session.
     std::shared_ptr<gesture::Coordinator> coordinator_;
     std::unique_ptr<gesture::Session> mixerDrag_;

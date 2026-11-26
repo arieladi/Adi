@@ -23,6 +23,7 @@
 #include <complex>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
 #include <optional>
 #include <string_view>
 #include <thread>
@@ -1086,6 +1087,184 @@ void arrangementMidiRecord(const std::filesystem::path &path, bool mixed) {
     check(doc->ops().undo().ok && clipCount() == before && doc->ops().redo().ok && clipCount() == before + expected,
           "one Undo and one Redo for the whole take");
 }
+std::optional<std::uint64_t> ownerReadBytes() {
+#if defined(__linux__)
+    std::ifstream stats("/proc/thread-self/io");
+    std::string field;
+    std::uint64_t bytes = 0;
+    while (stats >> field >> bytes)
+        if (field == "rchar:")
+            return bytes;
+#endif
+    return std::nullopt;
+}
+void longTakeStopResponse(const std::filesystem::path &dir) {
+    using Clock = std::chrono::steady_clock;
+    using namespace std::chrono_literals;
+    constexpr int rate = 48'000, block = 4'096;
+    constexpr std::int64_t frames = 30 * 60 * rate;
+    constexpr std::array<std::int64_t, 4> tracks{4, 5, 8, 9};
+    std::string error;
+    auto doc = ui::ProjectDocument::open(dir / "long-take.adi", true, {}, error);
+    check(doc != nullptr, "long take: open the project");
+    if (!doc)
+        return;
+    std::vector<OpRequest> edits;
+    for (const auto id : {8, 9}) {
+        OpRequest &add = edits.emplace_back();
+        add.opType = "track.create";
+        add.payload = {{"id", id}, {"kind", "audio"}, {"name", "Recording track"}};
+    }
+    for (const auto id : tracks) {
+        OpRequest &arm = edits.emplace_back();
+        arm.opType = "track.setArm";
+        arm.payload = {{"id", id}, {"armed", true}};
+    }
+    const bool armed = doc->ops().submit(edits).ok && doc->synchronise();
+    check(armed, "long take: arm four audio tracks");
+    if (!armed)
+        return;
+    doc->prepare(rate, block);
+    const bool recording = doc->startRecording(0, 2, false);
+    check(recording, "long take: start stereo arrangement recording");
+    if (!recording) {
+        doc->release();
+        return;
+    }
+    std::filesystem::path lastTake;
+    const auto folder = media::projectFolder(doc->store());
+    for (const auto &entry : std::filesystem::directory_iterator(folder))
+        if (media::pathUtf8(entry.path().filename()).starts_with(".adi-record-"))
+            lastTake = entry.path() / "take-3.wav";
+    check(!lastTake.empty(), "long take: the recorder made its private take folder");
+    if (lastTake.empty()) {
+        doc->release();
+        return;
+    }
+
+    const auto sample = [](std::int64_t frame, int channel) {
+        return channel == 0 ? static_cast<float>(frame % 127 - 63) / 128.f
+                            : static_cast<float>(frame % 113 - 56) / 128.f;
+    };
+    std::array<float, block> left{}, right{}, outLeft{}, outRight{};
+    const float *inputs[]{left.data(), right.data()};
+    float *outputs[]{outLeft.data(), outRight.data()};
+    engine::AudioIo io;
+    io.in = inputs;
+    io.numIn = 2;
+    io.out = outputs;
+    io.numOut = 2;
+    const auto captureStarted = Clock::now();
+    std::int64_t stream = 0;
+    while (stream < frames) {
+        // The burst runs much faster than a device. Pace it against the last WAV
+        // writer so queued audio never fills the recorder's two-second ring.
+        std::error_code sizeError;
+        const auto size = std::filesystem::file_size(lastTake, sizeError);
+        const auto written = sizeError ? 0 : static_cast<std::int64_t>(size / (2 * sizeof(float)));
+        if (stream - written > 65'536) {
+            if (Clock::now() - captureStarted > 3min)
+                break;
+            std::this_thread::sleep_for(1ms);
+            continue;
+        }
+        io.frames = static_cast<std::int32_t>(std::min<std::int64_t>(block, frames - stream));
+        io.streamTimeSamples = stream;
+        for (int i = 0; i < io.frames; ++i) {
+            left[static_cast<std::size_t>(i)] = sample(stream + i, 0);
+            right[static_cast<std::size_t>(i)] = sample(stream + i, 1);
+        }
+        doc->process(io);
+        stream += io.frames;
+    }
+    check(stream == frames && doc->session().recording().acceptedFrames() == frames,
+          "long take: capture all 30 minutes on the four tracks");
+    if (stream != frames || doc->session().recording().acceptedFrames() != frames) {
+        doc->release();
+        return;
+    }
+
+    const auto readBefore = ownerReadBytes();
+    const auto stoppedAt = Clock::now();
+    doc->stopRecording();
+    const auto buttonTime = Clock::now() - stoppedAt;
+    io.streamTimeSamples = stream;
+    doc->process(io);
+    auto longestTick = Clock::duration::zero();
+    std::optional<Clock::time_point> clipsVisible;
+    std::optional<ui::ProjectDocument::TakeLanded> landed;
+    while (!landed && Clock::now() - stoppedAt < 2min) {
+        const auto tickStarted = Clock::now();
+        doc->tick(std::chrono::duration_cast<std::chrono::milliseconds>(tickStarted - stoppedAt).count());
+        longestTick = std::max(longestTick, Clock::now() - tickStarted);
+        if (!clipsVisible) {
+            const auto *track = doc->view().current()->findTrack(tracks.front());
+            if (track && !track->clips.empty())
+                clipsVisible = Clock::now();
+        }
+        landed = doc->takeLanded();
+        if (!landed)
+            std::this_thread::sleep_for(1ms);
+    }
+    const auto finishedAt = Clock::now();
+    const auto readAfter = ownerReadBytes();
+    const auto ms = [](auto duration) { return std::chrono::duration<double, std::milli>(duration).count(); };
+    std::printf("long take stop: 30 min, 4 stereo tracks at %d Hz, capture %.0f ms, Stop call %.3f ms, "
+                "longest owner tick %.3f ms, Stop to clips %.3f ms, Stop to completion %.3f ms\n",
+                rate, ms(stoppedAt - captureStarted), ms(buttonTime), ms(longestTick),
+                ms(clipsVisible.value_or(finishedAt) - stoppedAt), ms(finishedAt - stoppedAt));
+    if (readBefore && readAfter) {
+        const auto bytes = *readAfter - *readBefore;
+        std::printf("long take stop: owner read %llu bytes\n", static_cast<unsigned long long>(bytes));
+        check(bytes < 32 * 1'024 * 1'024, "long take: the owner does not read the recorded WAV data");
+    }
+    check(longestTick < 250ms, "long take: the owner timer returns within 250 ms");
+    if (landed && !landed->ok)
+        std::printf("long take stop: %s\n", landed->message.c_str());
+    check(landed && landed->ok && landed->clips.size() == tracks.size() && !doc->takeLanded(),
+          "long take: land four clips and report the result once");
+    if (!landed || !landed->ok || landed->clips.size() != tracks.size()) {
+        doc->release();
+        return;
+    }
+
+    auto &db = doc->store().db();
+    SQLite::Statement clips(db, "SELECT c.track_id, a.src_start_frames, a.src_len_frames, m.rel_path "
+                                "FROM clips c JOIN audio_clips a ON a.clip_id=c.id "
+                                "JOIN media_files m ON m.id=a.media_id ORDER BY c.track_id");
+    std::string relative;
+    bool exact = true;
+    for (const auto track : tracks) {
+        if (!clips.executeStep()) {
+            exact = false;
+            break;
+        }
+        if (relative.empty())
+            relative = clips.getColumn(3).getString();
+        exact = exact && clips.getColumn(0).getInt64() == track && clips.getColumn(1).getInt64() == 0 &&
+                clips.getColumn(2).getInt64() == frames && clips.getColumn(3).getString() == relative;
+    }
+    check(exact && !relative.empty() && !clips.executeStep(),
+          "long take: each armed track references the whole take and identical audio deduplicates");
+    if (!relative.empty()) {
+        audio::WavReader wave(folder / media::pathFromUtf8(relative));
+        std::array<float, 2 * block> interleaved{};
+        exact = wave.frames() == frames && wave.channels() == 2 && wave.sampleRate() == rate;
+        for (std::int64_t at = 0; exact && at < frames;) {
+            const auto count = static_cast<std::uint32_t>(std::min<std::int64_t>(block, frames - at));
+            exact = wave.read(interleaved.data(), count) == count;
+            for (std::uint32_t i = 0; exact && i < count; ++i)
+                exact = interleaved[2 * i] == sample(at + i, 0) && interleaved[2 * i + 1] == sample(at + i, 1);
+            at += count;
+        }
+        check(exact, "long take: the landed WAV matches all stereo input samples");
+    }
+    const auto undo = doc->ops().nextUndo();
+    check(undo && undo->label == "Record Audio" && doc->ops().undo().ok && doc->synchronise() &&
+              db.execAndGet("SELECT count(*) FROM clips").getInt() == 0,
+          "long take: one Undo removes all four clips");
+    doc->release();
+}
 // MX-23 and SRF-02: a fader dragged is heard while it moves, writes nothing until the mouse lets go, then
 // lands as one undo step; Esc puts it back (Live 12 manual 18.1).
 void mixerDragHeard(const std::filesystem::path &dir) {
@@ -1583,7 +1762,13 @@ void saveAsKeepsTheTake(const std::filesystem::path &dir) {
         block();
     doc->stopRecording();
     doc->release();
-    check(doc->landingTake(), "stopped: the take is pending");
+    for (int i = 0; i < 5000 && doc->session().recording().pending(); ++i) {
+        doc->tick(i);
+        if (doc->session().recording().pending())
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    check(!doc->session().recording().pending() && doc->landingTake(),
+          "the recorder finished and the take's publication is pending");
     const auto second = dir / "pending-as.adi";
     check(doc->saveAs(second) && !doc->landingTake() && clipsIn(second) == clipsBefore + 1 &&
               clipsIn(dir / "pending.adi") == clipsBefore + 1 && doc->warning().find("Recording stopped") == std::string::npos,
@@ -1686,6 +1871,11 @@ int main(int argc, char **argv) {
     if (argc == 2 && std::string_view(argv[1]) == "--large-song-speed-only") {
         test::TempDirectory speedDir("ui_document", "large-song");
         largeSongResponse(speedDir.path());
+        return failures != 0;
+    }
+    if (argc == 2 && std::string_view(argv[1]) == "--long-take-speed-only") {
+        test::TempDirectory speedDir("ui_document", "long-take");
+        longTakeStopResponse(speedDir.path());
         return failures != 0;
     }
     peakSpans();

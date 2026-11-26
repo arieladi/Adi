@@ -5,6 +5,7 @@
 #include "adi/media/publish_file.hpp"
 #include "adi/note_diff.hpp"
 #include "adi/ops.hpp"
+#include <stop_token>
 namespace adi::recording {
 struct ClipIds {std::int64_t clip=0,media=0;std::string name;};
 struct MidiExpressionLane {
@@ -18,6 +19,25 @@ struct MidiLinearTake {
     std::span<const notes::NoteValues> notes; // relative to the clip's start
     std::span<const MidiExpressionLane> expression;
 };
+struct RecordingEdit;
+enum class StagedRefresh { ready, restage, refused };
+/// Owned capture and verified file staging. Safe to move between workers and
+/// the document owner. Dropping it retains the original recoverable take.
+struct StagedTake {
+    bool ok = false;
+    std::string error;
+private:
+    struct Data;
+    std::shared_ptr<const Data> data_;
+    friend struct RecordingEdit;
+    friend StagedTake stageTake(const engine::AudioRecordingResult&,const std::filesystem::path&,std::stop_token);
+    friend RecordingEdit prepareStagedCommit(Store&,const StagedTake&,std::span<const ClipIds>,
+        std::span<const MidiLinearTake>,std::int64_t);
+};
+/// File worker only: stage and hash the closed native WAVs on the destination
+/// filesystem. No access to the document or its SQLite connection.
+[[nodiscard]] StagedTake stageTake(const engine::AudioRecordingResult&,const std::filesystem::path& projectFolder,
+                                   std::stop_token = {});
 /// Explicit owner-allocated identities. Lane IDs reserve fresh fallbacks when
 /// no existing take lane is eligible; clip IDs are always new. All supplied
 /// identities must be unoccupied even when a fallback is ultimately unused.
@@ -48,13 +68,18 @@ private:
     struct PreparedSource;
     std::vector<std::size_t> groupEnds_;
     static std::vector<PreparedSource> prepareSources(Store&,const engine::AudioRecordingResult&,
-        std::span<const ClipIds>,RecordingEdit&);
+        std::span<const ClipIds>,RecordingEdit&,const StagedTake* = nullptr);
     static RecordingEdit prepareLinear(Store&,const engine::AudioRecordingResult*,std::span<const ClipIds>,
-        std::span<const MidiLinearTake>,double,std::int64_t);
+        std::span<const MidiLinearTake>,double,std::int64_t,const StagedTake* = nullptr);
     std::shared_ptr<Files> files_;
     const Store* owner_=nullptr;
     std::string client_;
-    friend RecordingEdit prepareCommit(Store&,const engine::AudioRecordingResult&,std::span<const ClipIds>,std::int64_t);
+    friend RecordingEdit prepareStagedCommit(Store&,const StagedTake&,std::span<const ClipIds>,
+        std::span<const MidiLinearTake>,std::int64_t);
+    friend bool publishStagedTake(RecordingEdit&,std::stop_token);
+    friend std::string cleanupStagedTake(RecordingEdit&);
+    friend StagedRefresh refreshStagedCommit(Store&,const StagedTake&,RecordingEdit&,std::span<const ClipIds>,
+        std::span<const MidiLinearTake>,std::int64_t);
     friend RecordingEdit prepareCommit(Store&,const engine::AudioRecordingResult&,std::span<const ClipIds>,
         std::span<const MidiLinearTake>,std::int64_t);
     friend RecordingEdit prepareMidiLinearCommit(Store&,std::span<const MidiLinearTake>,double);
@@ -86,6 +111,25 @@ private:
 /// caller assigns distinct clip IDs and closes held notes at the take's end.
 /// Empty notes are allowed for a take with a positive recorded length.
 [[nodiscard]] RecordingEdit prepareMidiLinearCommit(Store&,std::span<const MidiLinearTake>,double sampleRate);
+/// Document owner: assemble current project rows from the staged media proof.
+/// No full file reads or publication. The resulting Store binding stays on the
+/// owner thread even while its prepared files are handed to a worker.
+[[nodiscard]] RecordingEdit prepareStagedCommit(Store&,const StagedTake&,std::span<const ClipIds>,
+    std::int64_t placementOffsetSamples=0);
+[[nodiscard]] RecordingEdit prepareStagedCommit(Store&,const StagedTake&,std::span<const ClipIds>,
+    std::span<const MidiLinearTake>,std::int64_t placementOffsetSamples=0);
+/// File worker: publish verified files atomically. The owner calls commit
+/// after success, or reads edit.error. No SQLite access on the worker.
+[[nodiscard]] bool publishStagedTake(RecordingEdit&,std::stop_token = {});
+/// Owner, before commit: when the Undo head moved during publication, rebuild
+/// against current rows if the already-published media binding is unchanged.
+[[nodiscard]] StagedRefresh refreshStagedCommit(Store&,const StagedTake&,RecordingEdit&,std::span<const ClipIds>,
+    std::int64_t placementOffsetSamples=0);
+[[nodiscard]] StagedRefresh refreshStagedCommit(Store&,const StagedTake&,RecordingEdit&,std::span<const ClipIds>,
+    std::span<const MidiLinearTake>,std::int64_t placementOffsetSamples=0);
+/// File worker, after a successful staged commit: remove private recovery
+/// files no longer needed by history. Empty means there is no cleanup warning.
+[[nodiscard]] std::string cleanupStagedTake(RecordingEdit&);
 /// Complete pass log to eligible existing or new take lanes and main-lane copies.
 /// A pre-existing same-track take lane is eligible when every clip provably ends
 /// at/before this pass's start. First visible (ord,id) wins; each is used once.
