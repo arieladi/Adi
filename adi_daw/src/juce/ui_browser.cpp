@@ -273,6 +273,15 @@ void BrowserPanel::refill() {
             for (const auto *d : in)
                 rows_.push_back({nullptr, d, {}});
         }
+    } else if (!chosen.heading && chosen.name == "Instruments") {
+        // ADI's own instruments, by name, where Live lists its instruments (walk-A A7, DF-W48).
+        std::vector<const BuiltinInfo *> in;
+        for (const auto &d : builtinCatalog())
+            if (d.category == "Instruments" && matches(d))
+                in.push_back(&d);
+        std::sort(in.begin(), in.end(), [](const BuiltinInfo *a, const BuiltinInfo *b) { return a->name < b->name; });
+        for (const auto *d : in)
+            rows_.push_back({nullptr, d, {}});
     } else if (!chosen.heading && chosen.name == "Pd Devices") {
         for (const auto &d : builtinCatalog())
             if (d.category == "ADI" && matches(d))
@@ -329,7 +338,7 @@ void BrowserPanel::paintListBoxItem(int row, juce::Graphics &g, int width, int h
     }
     const bool device = r.device != nullptr;
     const int indent = device && r.device->category == "Audio Effects" ? 12 : 0;
-    icon(g, device ? AudioFx : Samples,
+    icon(g, device ? (r.device->category == "Instruments" ? Instruments : AudioFx) : Samples,
          juce::Rectangle<float>(6.f + static_cast<float>(indent), (static_cast<float>(height) - 13.f) / 2.f, 13.f, 13.f));
     // An entry this build cannot load is dimmed (its reason is said when it is chosen).
     g.setColour(device && !unavailable(*r.device).empty() ? look::textDim : look::text);
@@ -534,7 +543,7 @@ void BrowserPanel::choose(int i) {
         repaint();
         refill();
         const bool library = entry.samples || entry.name == "User Library" || !entry.place.empty();
-        if (entry.name == "Audio Effects" || entry.name == "Pd Devices") {
+        if (entry.name == "Instruments" || entry.name == "Audio Effects" || entry.name == "Pd Devices") {
             // The catalogue's (D4): with Pd off, every entry is dimmed and the Status Bar says why.
             if (!rows_.empty() && std::none_of(rows_.begin(), rows_.end(), [](const Row &r) {
                     return r.device != nullptr && unavailable(*r.device).empty();
@@ -547,7 +556,7 @@ void BrowserPanel::choose(int i) {
                 root_.say(pluginScanStatus(pluginScan_));
         } else if (!library)
             // The other categories say what they wait for (D4; N15).
-            root_.say(entry.name == "Instruments" || entry.name == "MIDI Effects" || entry.name == "Sounds" ||
+            root_.say(entry.name == "MIDI Effects" || entry.name == "Sounds" ||
                               entry.name == "Drums"
                           ? (entry.name + " wait for the devices lane's instruments and MIDI effects.").toStdString()
                           : (entry.name + " is not listed yet.").toStdString());

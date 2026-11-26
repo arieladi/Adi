@@ -6,6 +6,7 @@
 #include "../src/juce/ui_floating.hpp"
 #include "../src/juce/ui_settings.hpp"
 #include "../src/juce/ui_shell.hpp"
+#include "../src/juce/window_release.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/automation_lanes.hpp"
 #include "adi/cue_settings.hpp"
@@ -2662,9 +2663,11 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
     root.arrangement.geometry.selection.track = 4;
     refresh();
     auto &browser = root.browser;
-    int audioEffects = -1, pdDevices = -1, plugIns = -1;
+    int instruments = -1, audioEffects = -1, pdDevices = -1, plugIns = -1;
     for (std::size_t i = 0; i < browser.sidebar().size(); ++i) {
         const auto &e = browser.sidebar()[i];
+        if (e.name == "Instruments")
+            instruments = static_cast<int>(i);
         if (e.name == "Audio Effects")
             audioEffects = static_cast<int>(i);
         if (e.name == "Pd Devices")
@@ -2716,6 +2719,33 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
     check(browser.rows().size() == 3 && browser.rows()[0].device != nullptr && browser.rows()[1].device != nullptr &&
               browser.rows()[2].device != nullptr,
           "Pd Devices lists ADI's own: ADI-Shaper, Chord Comb and Color Cab");
+    // Instruments (walk-A A7, DF-W48): ADI's own instruments, by name, where Live lists its instruments;
+    // OneShot loads onto a MIDI track from there, one step, and says why where this build cannot load it.
+    root.say({});
+    browser.choose(instruments);
+    check(browser.rows().size() == 2 && browser.rows()[0].device != nullptr &&
+              browser.rows()[0].device->name == "OneShot" && browser.rows()[1].device != nullptr &&
+              browser.rows()[1].device->name == "Sampler" &&
+              root.error().find("wait for the devices lane") == std::string::npos,
+          "Instruments lists ADI's own instruments, OneShot and Sampler, by name");
+#if ADI_WITH_PD
+    check(!browser.load(0) && root.error().find("load it onto a MIDI track") != std::string::npos,
+          "OneShot onto the selected 3 Audio is refused, and the Status Bar says to use a MIDI track");
+#endif
+    root.arrangement.geometry.selection.track = 2; // 1 MIDI
+#if ADI_WITH_PD
+    check(browser.load(0) && document->ops().nextUndo() && document->ops().nextUndo()->label == "Insert OneShot" &&
+              value(document->store(), "SELECT count(*) FROM devices d JOIN device_chains c ON c.id=d.chain_id "
+                                       "WHERE c.track_id=2 AND d.name='OneShot'") == "1",
+          "OneShot loads from the Browser's Instruments onto 1 MIDI, one step");
+    check(root.command(AppCommands::Undo), "undo the OneShot load");
+    refresh();
+#else
+    check(!browser.load(0) && root.error().find("Pd devices") != std::string::npos,
+          "without Pd, OneShot is dimmed in Instruments, and a double-click says why");
+#endif
+    root.arrangement.geometry.selection.track = 4;
+    root.say({});
     // Plug-Ins (DF-W9): outside the app nothing scans, and it says where they list.
     browser.choose(plugIns);
     check(root.error().find("list in the application") != std::string::npos && browser.rows().empty(),
@@ -15229,6 +15259,41 @@ void firstRunAudioInput(const std::filesystem::path &dir) {
           ("a default input that will not open leaves the output open, without an error: " + why.toStdString())
               .c_str());
 }
+// Walk-A A27: New, Open and Quit destroy the main window, and on Windows that can run the message loop
+// (UiaDisconnectAllProviders waits in a COM modal loop with a UI Automation client attached). The
+// application's 20 ms timer then reads its root pointer, which must be null by then: it read the
+// destroyed root and crashed (an access violation in AdiRootComponent::setRecordStates).
+void windowTeardownRunsTimers() {
+    struct Root {
+        int recordStates = 1;
+    };
+    struct Window {
+        std::unique_ptr<Root> content = std::make_unique<Root>();
+        ~Window() {
+            content.reset(); // a window's content goes first (ResizableWindow::clearContentComponent)
+            // ...then the teardown waits in a loop that dispatches the due timers for a while.
+            for (int i = 0; i < 10; ++i) {
+                juce::Timer::callPendingTimersSynchronously();
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+        }
+    };
+    struct Application final : juce::Timer {
+        std::unique_ptr<Window> window = std::make_unique<Window>();
+        Root *root = window->content.get();
+        int ticks = 0, rootReads = 0;
+        void timerCallback() override {
+            ++ticks;
+            if (root != nullptr) // the application's own guard: `if (root_) root_->setRecordStates(...)`
+                ++rootReads;
+        }
+    } app;
+    app.startTimer(1);
+    releaseWindow(app.window, app.root);
+    app.stopTimer();
+    check(app.ticks > 0 && app.rootReads == 0 && app.window == nullptr && app.root == nullptr,
+          "a timer run inside the main window's teardown finds the root pointer already null");
+}
 // Live's New Live Set (manual 5.4.1; walk-A A3): New opens the next untitled project in the projects folder
 // at once, as launch does, with no chooser; Save As names and places it.
 void untitledProjects(const std::filesystem::path &dir) {
@@ -18614,6 +18679,7 @@ int main(int argc, char **argv) {
     trace("userShortcuts", [&] { userShortcuts(commands, settings); });
     trace("launchIsolation", [&] { launchIsolation(commands); });
     trace("untitledProjects", [&] { untitledProjects(temp.path()); });
+    trace("windowTeardownRunsTimers", [&] { windowTeardownRunsTimers(); });
     trace("paintHygiene", [&] { paintHygiene(commands, temp.path()); });
     check(assertions.count() == 0, ("no JUCE assertion in the run; the last: " + assertions.last().toStdString()).c_str());
     if (assertions.queueFull() > 0)

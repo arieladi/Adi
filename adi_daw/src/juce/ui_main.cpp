@@ -16,6 +16,7 @@
 #include "ui_floating.hpp"
 #include "ui_settings.hpp"
 #include "ui_shell.hpp"
+#include "window_release.hpp"
 #include "mix_function_host.hpp"
 #include <algorithm>
 #include <chrono>
@@ -588,7 +589,7 @@ class AdiApplication final : public juce::JUCEApplication,
         historyWindow_.reset();
         if (window_)
             window_->place.flush(); // a move still settling is kept (WIN-02)
-        window_.reset();
+        releaseWindow(window_, root_); // root_ is null before the window's teardown can pump (A27)
         document_.reset();
         commands_.reset();
         settings_.reset();
@@ -666,7 +667,8 @@ class AdiApplication final : public juce::JUCEApplication,
             window_->place.flush();
             standingAt = standing(*window_, fullScreen);
         }
-        window_.reset();
+        // The timer and posted callbacks read root_; the window's teardown can run them (walk-A A27).
+        releaseWindow(window_, root_);
         document_ = std::move(next);
         auto root = std::make_unique<AdiRootComponent>(document_->view(), document_->ops(),
                                                        document_->mailbox(), *commands_,
