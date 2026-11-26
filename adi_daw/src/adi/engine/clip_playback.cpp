@@ -129,6 +129,7 @@ struct Clip {
     fs::path path;
     std::shared_ptr<const audio::PreparedWarp> warped;
     std::shared_ptr<audio::ProgressiveFile> progressive;
+    bool reverse = false;
     bool monitorInputOnly = false;
     bool failed = false; // page worker only
     // Open streams and cache pins die with the generation off the callback.
@@ -263,11 +264,19 @@ struct Clip {
         return false;
     }
     void readSource(std::uint64_t first,float* out,std::uint32_t count) {
+        // The worker reads each requested source span contiguously. In a reversed
+        // window, that span lives at the reflected offset with the frames reversed.
+        first=sourceStart+(reverse?sourceLength-first-count:first);
         if(progressive) {
             const auto result=progressive->read(first,std::span(out,static_cast<std::size_t>(count)*channels));
             if(result==audio::ProgressiveRead::Pending)throw PrefixPending{};
             if(result!=audio::ProgressiveRead::Frames)throw std::runtime_error("progressive source failed: "+progressive->error());
         } else reader->read(first, out, count);
+        if(reverse)for(std::uint32_t i=0;i<count/2;++i) {
+            auto* left=out+static_cast<std::size_t>(i)*channels;
+            auto* right=out+static_cast<std::size_t>(count-1-i)*channels;
+            std::swap_ranges(left,left+channels,right);
+        }
     }
     std::vector<float> renderRange(std::int64_t first, std::int64_t count, std::uint32_t currentRate) {
         if (currentRate == sourceRate) {
@@ -276,7 +285,7 @@ struct Clip {
             const auto readEnd = std::min<std::int64_t>(static_cast<std::int64_t>(sourceLength), first + count);
             if (readEnd > readBegin) {
                 auto* dst = buf.data() + static_cast<std::size_t>(readBegin - first) * channels;
-                readSource(sourceStart+static_cast<std::uint64_t>(readBegin),dst,static_cast<std::uint32_t>(readEnd-readBegin));
+                readSource(static_cast<std::uint64_t>(readBegin),dst,static_cast<std::uint32_t>(readEnd-readBegin));
             }
             return buf;
         }
@@ -316,7 +325,7 @@ struct Clip {
         std::fill(p.data.begin(),p.data.end(),0.0f);
         const auto count=std::min(pageFrames,length-first);
         if (rate==sourceRate) {
-            readSource(sourceStart+static_cast<std::uint64_t>(first),p.data.data(),static_cast<std::uint32_t>(count));
+            readSource(static_cast<std::uint64_t>(first),p.data.data(),static_cast<std::uint32_t>(count));
         } else if (static_cast<double>(rate) / sourceRate > 256.0) {
             std::vector<float> res = renderRange(first, count, rate);
             std::copy_n(res.begin(), static_cast<std::size_t>(count)*channels, p.data.begin());
@@ -339,7 +348,7 @@ struct Clip {
             const auto readEnd=std::min<std::int64_t>(static_cast<std::int64_t>(sourceLength),begin+inputCount);
             if (readEnd>readBegin) {
                 auto* dst=input.data()+static_cast<std::size_t>(readBegin-begin)*channels;
-                readSource(sourceStart+static_cast<std::uint64_t>(readBegin),dst,static_cast<std::uint32_t>(readEnd-readBegin));
+                readSource(static_cast<std::uint64_t>(readBegin),dst,static_cast<std::uint32_t>(readEnd-readBegin));
             }
             if(sourceRate==44100 && rate==48000 && channels==2 &&
                detail::renderSinc441To480(input,first-outBegin,
@@ -550,7 +559,6 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
         try {
             const auto a=std::find_if(project->rows.audioClips.begin(),project->rows.audioClips.end(),[&](const auto& x){return x.clipId==row.id;});
             if(a==project->rows.audioClips.end()) throw std::runtime_error("no audio row; silent");
-            if(a->reverse) throw std::runtime_error("reverse unsupported; silent");
             if(!a->warpEnabled && (a->transposeSemis!=0 || a->formantShift!=0)) throw std::runtime_error("pitch/formant shift unsupported; silent");
             if(row.aliasOf) throw std::runtime_error("alias resolution unsupported; silent");
             if(row.fadeInCurve<0 || row.fadeInCurve>5 || row.fadeOutCurve<0 || row.fadeOutCurve>5) throw std::runtime_error("fade curve unsupported; silent");
@@ -559,6 +567,7 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             if(media==project->rows.media.end() || media->embedded) throw std::runtime_error("missing or embedded media; extract first; silent");
             auto clip=std::make_unique<Clip>();
             clip->clipId=row.id; clip->mediaId=media->id; clip->storedBlake3=media->hashBlake3;
+            clip->reverse=a->reverse;
             if(media->relPath) clip->path=project->folder/utf8Path(*media->relPath);
             else if(auto h=project->hints.find(media->id);h!=project->hints.end()) clip->path=h->second;
             else throw std::runtime_error("no media path; silent");

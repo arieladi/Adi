@@ -347,6 +347,19 @@ class WaveformCache {
     std::atomic<int> builds_{0};
     std::jthread worker_; // last: stopped and joined before the rest goes
 };
+// The file-relative frame on a canonical warp map. Its last marker denotes
+// the boundary after the last sample, so endpoints are valid for peak spans.
+inline double warpedWaveformFrame(std::span<const WarpMarker> markers, std::int64_t tick) noexcept {
+    const auto right = std::upper_bound(markers.begin(), markers.end(), tick,
+                                        [](std::int64_t at, const WarpMarker &marker) { return at < marker.tick; });
+    if (right == markers.begin())
+        return 0.;
+    const auto &a = *(right - 1);
+    if (right == markers.end())
+        return static_cast<double>(a.sourceFrame);
+    return static_cast<double>(a.sourceFrame) + static_cast<double>(tick - a.tick) *
+           static_cast<double>(right->sourceFrame - a.sourceFrame) / static_cast<double>(right->tick - a.tick);
+}
 // Where a clip's timeline tick falls in its file: the source frame, or none outside its source
 // window. Unwarped, seconds from the clip's placement are added to its source offset and converted
 // at the file's rate. Warped, ticks from the placement are added to the source offset, then mapped
@@ -377,22 +390,23 @@ class ClipSourceMap {
             return std::nullopt;
         const auto into = tick - pos_;
         double frame = 0;
+        const double sourceLength = static_cast<double>(audio_.sourceLengthFrames);
         if (markers_.size() >= 2) {
-            if (offsetTicks_ < 0 || offsetTicks_ >= markers_.back().tick - into)
+            const auto end = markers_.back().tick;
+            if (offsetTicks_ < 0 || offsetTicks_ >= end - into)
                 return std::nullopt;
             const auto sourceTick = into + offsetTicks_;
-            const auto after = std::upper_bound(markers_.begin(), markers_.end(), sourceTick,
-                                                [](std::int64_t t, const WarpMarker &m) { return t < m.tick; });
-            const auto &b = *after, &a = *(after - 1);
-            frame = static_cast<double>(a.sourceFrame) + static_cast<double>(sourceTick - a.tick) *
-                                                             static_cast<double>(b.sourceFrame - a.sourceFrame) /
-                                                             static_cast<double>(b.tick - a.tick);
+            frame = warpedWaveformFrame(markers_, audio_.reverse ? end - sourceTick : sourceTick);
+            if (audio_.reverse)
+                frame = std::max(0., frame - 1.);
         } else {
             const double seconds = tempo_ != nullptr ? tempo_->ticksToSeconds(tick) - startSeconds_
                                                      : static_cast<double>(into) * fallbackSecondsPerTick;
             frame = (offsetSeconds_ + seconds) * rate_;
+            if (audio_.reverse && frame >= 0 && frame < sourceLength)
+                frame = std::max(0., sourceLength - 1. - frame);
         }
-        if (frame < 0 || frame >= static_cast<double>(audio_.sourceLengthFrames))
+        if (frame < 0 || frame >= sourceLength)
             return std::nullopt;
         return static_cast<double>(audio_.sourceStartFrames) + frame;
     }
