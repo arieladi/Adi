@@ -1252,6 +1252,142 @@ void recordAfterSaveAs(const std::filesystem::path &dir) {
           "as one Record Audio step in the saved file, the file it was saved from untouched");
     doc->release();
 }
+void firstSaveMovesTheTake(const std::filesystem::path &dir) {
+    namespace fs = std::filesystem;
+    const auto staging = dir / "Untitled";
+    fs::create_directory(staging);
+    const auto source = staging / "Untitled.adi";
+    std::string error;
+    auto doc = ui::ProjectDocument::open(source, true, {}, error);
+    check(doc != nullptr, "first save starts with an unnamed project");
+    if (!doc)
+        return;
+
+    doc->prepare(48000, 64);
+    OpRequest arm;
+    arm.opType = "track.setArm";
+    arm.payload = {{"id", 4}, {"armed", true}};
+    check(doc->ops().submit(arm).ok && doc->synchronise(), "first-save fixture arms its audio track");
+    if (!doc->startRecording(0, 1, false)) {
+        check(false, "first-save fixture records");
+        return;
+    }
+    std::array<float, 64> in{}, left{}, right{};
+    in.fill(0.25f);
+    const float *inputs[]{in.data()};
+    float *outputs[]{left.data(), right.data()};
+    engine::AudioIo io;
+    io.in = inputs;
+    io.numIn = 1;
+    io.out = outputs;
+    io.numOut = 2;
+    io.frames = 64;
+    for (int block = 0; block < 16; ++block) {
+        io.streamTimeSamples = block * 64;
+        doc->process(io);
+    }
+    doc->release();
+    check(doc->settleRecording(), "the unnamed project's recording lands");
+    const auto take = doc->takeLanded();
+    check(take && take->ok, "the unnamed project has a recorded clip");
+    if (!take || !take->ok)
+        return;
+    const auto id = doc->store().db().execAndGet("SELECT id FROM media_files").getInt64();
+    const auto mediaPath = [&] {
+        return media::resolveMedia(media::projectFolder(doc->store()), media::mediaRow(doc->store().db(), id), error);
+    };
+    const auto originalAudio = mediaPath();
+    check(!originalAudio.empty(), "the take resolves in unnamed staging");
+
+    const auto occupied = dir / "Occupied.adi";
+    fs::create_directory(occupied);
+    check(!doc->saveAs(occupied, true) && doc->store().path() == source && fs::exists(source) &&
+              !originalAudio.empty() && fs::is_regular_file(originalAudio),
+          "a refused first save retains the original project and its recording");
+
+    const auto destination = dir / "Song";
+    fs::create_directory(destination);
+    const auto named = destination / "Song.adi";
+    const bool saved = doc->saveAs(named, true);
+    check(saved && doc->name() == "Song" && doc->store().path() == named,
+          "first save names the active project");
+    if (!saved) {
+        std::printf("first save: %s\n", doc->error().c_str());
+        return;
+    }
+    const auto newAudio = mediaPath();
+    check(!newAudio.empty() && newAudio != originalAudio &&
+              newAudio == media::projectFolder(doc->store()) /
+                              originalAudio.lexically_relative(fs::canonical(staging.parent_path()) / staging.filename()),
+          "first save keeps the take in the destination's media folder");
+    const auto undoStep = doc->ops().nextUndo();
+    check(undoStep && undoStep->label == "Record Audio", "first save preserves the recording's undo step");
+    const bool undone = doc->ops().undo().ok && doc->synchronise();
+    check(undone, "the relocated project's recording can be undone");
+    const bool redone = undone && doc->ops().redo().ok && doc->synchronise();
+    check(redone && mediaPath() == newAudio, "redo restores the recording at its relocated path");
+    check(doc->takeSnapshot("First snapshot", 1, 0).ok,
+          "after naming, the project can take a snapshot");
+    doc.reset();
+    check(!fs::exists(source) && !fs::exists(staging) && fs::is_regular_file(newAudio),
+          "the closed named project retains the take and leaves no unnamed copy");
+    if (!redone)
+        return;
+
+    StoreError openError{};
+    const auto reopened = Store::open(named, openError, true);
+    engine::Session playback;
+    engine::SessionSpec spec;
+    spec.sampleRate = 48000;
+    spec.maxFrames = 64;
+    const bool loaded = reopened && playback.load(*reopened, {}, spec);
+    check(loaded, "the named project reopens for playback");
+    if (!loaded)
+        return;
+    playback.transport().locate(0);
+    playback.transport().play();
+    auto *clips = playback.clips();
+    check(clips && clips->prime(), "the relocated take's audio is ready");
+    io.in = nullptr;
+    io.numIn = 0;
+    io.streamTimeSamples = 0;
+    left.fill(0);
+    right.fill(0);
+    playback.process(io);
+    const auto renderedTake = [](float sample) { return std::abs(sample - 0.25f) < 0.01f; };
+    check(std::all_of(left.begin(), left.end(), renderedTake) && std::all_of(right.begin(), right.end(), renderedTake),
+          "the reopened, redone clip plays the recorded PCM with no audio input");
+}
+void firstSavePreservesLaterSourceEdits(const std::filesystem::path &dir) {
+    namespace fs = std::filesystem;
+    const auto staging = dir / "Untitled";
+    const auto song = dir / "Song";
+    fs::create_directory(staging);
+    fs::create_directory(song);
+    const auto unnamed = staging / "Untitled.adi";
+    StoreError error{};
+    auto active = Store::create(unnamed, error);
+    auto other = Store::open(unnamed, error);
+    check(active && other, "first-save cleanup has an independent source writer");
+    if (!active || !other)
+        return;
+    const auto named = song / "Song.adi";
+    const auto result = active->saveUntitledAs(named);
+    check(result.ok && active->path() == named && fs::exists(unnamed),
+          "first save publishes the destination while the source writer's lease protects the original");
+    if (!result.ok)
+        return;
+    OpRequest late;
+    late.opType = "project.setName";
+    late.payload = {{"name", "A later source edit"}};
+    check(OpJournal(*other).commit(late).ok && other->close(), "the other writer commits and closes before cleanup");
+    other.reset();
+    active->finishUntitledSave();
+    auto original = Store::open(unnamed, error, true);
+    check(original && original->db().execAndGet("SELECT name FROM project").getString() == "A later source edit" &&
+              active->db().execAndGet("SELECT name FROM project").getString() != "A later source edit",
+          "first-save cleanup preserves a newer source revision after its writer closes");
+}
 int main(int argc, char **argv) {
 #if defined(_MSC_VER) && defined(_DEBUG)
     _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
@@ -1278,6 +1414,10 @@ int main(int argc, char **argv) {
         saveAsKeepsTheTake(guardDir.path());
         test::TempDirectory afterDir("ui_document", "after-save-as");
         recordAfterSaveAs(afterDir.path());
+        test::TempDirectory firstSaveDir("ui_document", "first-save");
+        firstSaveMovesTheTake(firstSaveDir.path());
+        test::TempDirectory firstSaveHeld("ui_document", "first-save-held");
+        firstSavePreservesLaterSourceEdits(firstSaveHeld.path());
         test::TempDirectory refusedDir("ui_document", "refused");
         discardRefusalSaid(refusedDir.path());
         test::TempDirectory dragDir("ui_document", "drag");

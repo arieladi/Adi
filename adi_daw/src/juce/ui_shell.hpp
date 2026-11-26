@@ -400,6 +400,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // The application's commands (New, Open, Take Snapshot, Save As, Settings) and
     // the engine refresh after an edit belong to whoever owns the document.
     std::function<bool(int)> applicationCommand;
+    bool needsFirstSave = false;
     std::function<void()> afterEdit;
     // Commits the parameter edits the document still holds before Undo, Redo or a restored step acts
     // (DF-W29); false, with the document's reason said, when it could not.

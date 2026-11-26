@@ -24,34 +24,38 @@ struct WaveformSource {
     explicit WaveformSource(std::filesystem::path file) : path(std::move(file)) {}
     std::mutex mutex;
     std::filesystem::path path;
+    std::unique_ptr<Store> idleReader;
 };
 namespace {
-// The waveform worker's build: its own read-only store on the project's file, opened on the worker
-// at its first build and kept for the next (the worker is the only caller).
-// The worker's reader follows the document's file: after Save As the pool rows of anything imported
-// since are in the new file only, and a reader left on the old one finds none of them.
+// The waveform worker checks out its read-only store for a build. A Save As
+// can release the idle reader immediately, and an in-flight build hands it
+// back only if the document still uses its file.
 WaveformCache::Build peaksFrom(std::shared_ptr<WaveformSource> source) {
-    auto reader = std::make_shared<std::unique_ptr<Store>>();
-    auto opened = std::make_shared<std::filesystem::path>();
-    return [source = std::move(source), reader, opened](std::int64_t mediaId, std::stop_token stop) {
+    return [source = std::move(source)](std::int64_t mediaId, std::stop_token stop) {
         std::filesystem::path path;
+        std::unique_ptr<Store> reader;
         {
             std::lock_guard lock(source->mutex);
             path = source->path;
+            reader = std::move(source->idleReader);
         }
-        if (!*reader || *opened != path) {
-            reader->reset();
+        if (!reader) {
             StoreError error{};
-            *reader = Store::open(path, error, true);
-            *opened = path;
-            if (!*reader) {
+            reader = Store::open(path, error, true);
+            if (!reader) {
                 media::PeakResult refused;
                 refused.problem = media::PeakProblem::database;
                 refused.detail = "the project could not be read for its waveforms: " + std::string(toString(error));
                 return refused;
             }
         }
-        return media::buildMediaPeaks(**reader, mediaId, 4096, std::move(stop));
+        auto result = media::buildMediaPeaks(*reader, mediaId, 4096, std::move(stop));
+        {
+            std::lock_guard lock(source->mutex);
+            if (source->path == path)
+                source->idleReader = std::move(reader);
+        }
+        return result;
     };
 }
 } // namespace
@@ -143,7 +147,7 @@ History::SnapshotResult ProjectDocument::takeSnapshot(const std::string &name,
 std::string ProjectDocument::snapshotName(std::int64_t nowUtc, int utcOffsetMinutes) const {
     return History::defaultSnapshotName(name_, nowUtc, utcOffsetMinutes);
 }
-bool ProjectDocument::saveAs(const std::filesystem::path &path) {
+bool ProjectDocument::saveAs(const std::filesystem::path &path, bool firstSave) {
     warning_.clear();
     // The store refuses an existing file too, in its own words; the Status Bar gets ours, with
     // the name, since Live would have asked here and replaced it.
@@ -164,7 +168,7 @@ bool ProjectDocument::saveAs(const std::filesystem::path &path) {
     // No History, OpJournal or Statement of ours is alive here: every one is made per call, and
     // the members hold the Store itself, which keeps its identity across the switch.
     refreshReportedLatenciesForSave();
-    const auto result = store_->saveAs(path);
+    const auto result = firstSave ? store_->saveUntitledAs(path) : store_->saveAs(path);
     if (!result.ok) {
         error_ = "Save As failed: " + result.error;
         return false;
@@ -175,6 +179,7 @@ bool ProjectDocument::saveAs(const std::filesystem::path &path) {
         warning_ = std::string("Recording stopped, its take kept, before Save As.") + (warning_.empty() ? "" : " ") + warning_;
     {
         std::lock_guard lock(waveformSource_->mutex);
+        waveformSource_->idleReader.reset();
         waveformSource_->path = store_->path();
     }
     const auto stem = store_->path().stem().u8string();
@@ -189,7 +194,8 @@ bool ProjectDocument::saveAs(const std::filesystem::path &path) {
         if (!warning_.empty())
             warning_ += ' ';
         warning_ += "Saved, but the session did not re-read the file: " + error_;
-    }
+    } else
+        store_->finishUntitledSave();
     error_.clear();
     return true;
 }
@@ -389,8 +395,10 @@ bool ProjectDocument::settleParameters() {
     return true;
 }
 void ProjectDocument::tick(std::int64_t milliseconds) {
-    synchronise();
+    const bool synced = synchronise();
     session_.tick(milliseconds);
+    if (synced)
+        store_->finishUntitledSave();
     if (!limiterReductionSources_.empty() &&
         limiterReductionPublication_ != session_.graph().stats().published)
         refreshLimiterReductionSources();

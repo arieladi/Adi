@@ -679,6 +679,7 @@ class AdiApplication final : public juce::JUCEApplication,
                                                        document_->views(),
                                                        document_->sessionState(), "main");
         root_ = root.get();
+        root->needsFirstSave = create;
         root->browser.setListing(library_, libraryReady_); // the library listed so far, if anything
         root->devices.publication = [this] { return document_->parameterFeed().current(); };
         root->devices.parameterDemand = [this](const void *consumer, const std::vector<std::int64_t> &ids) {
@@ -1176,7 +1177,7 @@ class AdiApplication final : public juce::JUCEApplication,
             return;
         }
         const auto before = document_->deviceCopyIdentity();
-        const bool saved = document_->saveAs(path);
+        const bool saved = document_->saveAs(path, root_->needsFirstSave);
         // A take landed before the switch (PD06-SAVEAS-GUARD) is told here with Save As's own words, so the
         // timer finds nothing to say over them; a kept take is chosen, as when it lands on its own.
         std::string landedFirst;
@@ -1197,6 +1198,8 @@ class AdiApplication final : public juce::JUCEApplication,
             deviceClipboard_->sourceFile = document_->deviceCopyIdentity();
         commands_->clipClipboard().rebase(before, document_->deviceCopyIdentity());
         window_->setName("ADI - " + file.getFileNameWithoutExtension());
+        root_->needsFirstSave = false;
+        commands_->manager.commandStatusChanged();
         root_->say(landedFirst + document_->warning());
     }
     // Save a Copy, once the chooser has a file. The Status Bar says where it went, since nothing
@@ -1246,27 +1249,30 @@ class AdiApplication final : public juce::JUCEApplication,
             systemRequestedQuit();
             return true;
         }
-        if (id == AppCommands::TakeSnapshot) {
+        const bool firstSave = root_ && root_->needsFirstSave;
+        if (id == AppCommands::TakeSnapshot && !firstSave) {
             promptSnapshot();
             return true;
         }
-        if (id == AppCommands::SaveAs) {
-            // Live's Save Live Set As (manual 5.4.1, 41.3; ADR-0203 d6): a new file the project
-            // carries on in. The chooser opens beside the current song's folder so two saved
-            // variations get their own folders. The document copies and switches (`Store::saveAs`).
-            if (chooser_)
+        if (id == AppCommands::SaveAs || id == AppCommands::TakeSnapshot) {
+            if (chooser_ || !document_)
                 return false;
             const auto current = juce::File(juce::String::fromUTF8(reinterpret_cast<const char *>(
                 document_->store().path().u8string().c_str())));
-            const auto suggested = songProjectFile(current) == current
-                                       ? current.getParentDirectory().getSiblingFile(current.getFileName())
-                                       : current;
-            chooser_ = std::make_unique<juce::FileChooser>("Save ADI project as", suggested, "*.adi");
+            // A named variation starts beside the song folder. First save starts in Projects.
+            auto suggested = current;
+            if (firstSave)
+                suggested = projectsFolder(*settings_).getChildFile(current.getFileName());
+            else if (songProjectFile(current) == current)
+                suggested = current.getParentDirectory().getSiblingFile(current.getFileName());
+            const auto generation = installGeneration_;
+            chooser_ = std::make_unique<juce::FileChooser>(firstSave ? "Save ADI project" : "Save ADI project as",
+                                                           suggested, "*.adi");
             chooser_->launchAsync(juce::FileBrowserComponent::saveMode |
                                       juce::FileBrowserComponent::canSelectFiles,
-                                  [this](const juce::FileChooser &chooser) {
+                                  [this, generation](const juce::FileChooser &chooser) {
                                       const auto file = chooser.getResult();
-                                      if (file != juce::File{})
+                                      if (file != juce::File{} && generation == installGeneration_)
                                           saveAs(withAdiExtension(file));
                                       juce::MessageManager::callAsync([this] {
                                           if (juce::JUCEApplicationBase::getInstance() == this)

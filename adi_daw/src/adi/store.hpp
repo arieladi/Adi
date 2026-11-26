@@ -19,6 +19,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -133,6 +134,12 @@ public:
     /// statements. Refresh ProjectView/Session and the window's filename after
     /// success. A failed switch retains the source and a completed copy.
     [[nodiscard]] StoreFileResult saveAs(const std::filesystem::path&, StoreFileCollision=StoreFileCollision::Fail);
+    /// Name a newly created, unnamed project. Project-local media and history
+    /// follow the file; the original is discarded only after the switch.
+    [[nodiscard]] StoreFileResult saveUntitledAs(const std::filesystem::path&);
+    /// Retry releasing an unnamed project's old files once playback and
+    /// waveform readers have switched away from them.
+    void finishUntitledSave() noexcept;
     /// Copy current and undo/branch media into audio/, verify their hashes and
     /// save the new locations atomically. Owner thread; no live SQL statements
     /// or transaction. Refresh readers after success. No undo step is appended.
@@ -212,7 +219,10 @@ private:
     Store(std::unique_ptr<SQLite::Database>, std::filesystem::path, bool readOnly,
           std::shared_ptr<media::ProjectFileLease>);
     struct CopyState;
-    CopyState saveCopyImpl(const std::filesystem::path&,StoreFileCollision) const;
+    CopyState saveCopyImpl(const std::filesystem::path&,StoreFileCollision,bool firstSave=false) const;
+    StoreFileResult saveAsImpl(const std::filesystem::path&,StoreFileCollision,bool firstSave);
+    std::function<bool()> untitledCleanup_;
+    bool untitledCleanupReady_=false;
     bool applySessionPragmas();
     // Source invalidation has already completed; fold WAL and release SQLite.
     bool closeFinalized();
