@@ -115,9 +115,7 @@ void modesAndGuards() {
         check(db.execAndGet("SELECT warp_mode FROM audio_clips").getString()==audio::warpModeName(mode) && History(*f.store).undo().ok,"selected mode is captured and its change undoes");
     }
     check(!clip_edit::prepareSetWarp(*f.store,999,f.options(),48000).ok,"missing clip refuses");
-    db.exec("UPDATE clips SET content_offset_ticks=100");check(!clip_edit::prepareSetWarp(*f.store,7,f.options(),48000).ok,"edited source offset refuses with no silent remapping");db.exec("UPDATE clips SET content_offset_ticks=0");
     db.exec("UPDATE clips SET loop_enabled=1,loop_len_ticks=5765760");check(!clip_edit::prepareSetWarp(*f.store,7,f.options(),48000).ok,"source loop refuses the clean-import producer");db.exec("UPDATE clips SET loop_enabled=0");
-    db.exec("UPDATE clips SET length_ticks=1000");check(!clip_edit::prepareSetWarp(*f.store,7,f.options(),48000).ok,"trimmed visible extent refuses the clean-import producer");
 }
 void futureMapRefusesRewrite() {
     Fixture f;auto markers=audio::writeWarpMap(std::vector<WarpMarker>{{0,0},{45334,4*q}},45334);

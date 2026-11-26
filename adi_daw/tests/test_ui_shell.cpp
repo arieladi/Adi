@@ -8,6 +8,7 @@
 #include "../src/juce/ui_shell.hpp"
 #include "../src/juce/window_release.hpp"
 #include "adi/audio/wav_file.hpp"
+#include "adi/warp_commands.hpp"
 #include "adi/automation_lanes.hpp"
 #include "adi/cue_settings.hpp"
 #include "adi/media/media_ops.hpp"
@@ -10187,6 +10188,72 @@ void clipFades(AppCommands &commands, const std::filesystem::path &dir) {
     commands.detach(root);
     document->release();
 }
+void clipWarpSwitch(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "clip-warp.adi", true, {}, error);
+    check(document != nullptr, "a project for the Clip View Warp switch");
+    if (!document)
+        return;
+    const auto wav = dir / "clip-warp.wav";
+    {
+        std::vector<float> frames(96000);
+        for (std::size_t i = 0; i < frames.size(); i += 24000)
+            frames[i] = .8f;
+        audio::WavWriter writer(wav, 48000, 1, audio::WavFormat::Pcm16);
+        writer.write(frames.data(), static_cast<std::uint32_t>(frames.size()));
+    }
+    AudioImport import;
+    if (!document->prepareImport(wav.string(), 1'700'000'000'000'000, import)) {
+        check(false, "read the file for the Warp switch");
+        return;
+    }
+    auto drop = dropAudio(*document->view().current(), 4, 0, "Loop", import);
+    if (!drop.refusal.empty() || !document->ops().submit(std::move(drop.ops)).ok || !document->synchronise()) {
+        check(false, "place a sample on the audio track");
+        return;
+    }
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "clip-warp");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.setSize(1440, 900);
+    root.frame();
+    commands.activate(root);
+    const auto *track = root.reader().findTrack(4);
+    const auto id = track && !track->clips.empty() ? track->clips.front()->id : 0;
+    clip_edit::WarpOptions options;
+    options.analysis.sourceBpm = 120;
+    if (!root.commitEdit(clip_edit::prepareSetWarp(root.editStore(), id, options, root.editRate()))) {
+        check(false, "seed a clip with a known source tempo");
+        commands.detach(root);
+        return;
+    }
+    root.frame();
+    root.arrangement.selectClip(4, id);
+    if (!root.state().clipView)
+        root.command(AppCommands::ToggleClipView);
+    root.frame();
+    auto &panel = root.clipView;
+    const auto warped = [&] {
+        const auto *node = panel.node();
+        return node && node->audio && node->audio->warpEnabled;
+    };
+    const auto button = panel.warpBox();
+    check(!button.isEmpty() && warped(), "Warp is available and lit on the selected warped audio clip");
+    if (!button.isEmpty()) {
+        const auto click = [&] {
+            panel.mouseDown(pressAt(panel, button.getCentre().toFloat(), juce::ModifierKeys::leftButtonModifier));
+            root.frame();
+        };
+        click();
+        check(!warped() && root.undoTitle(false) == "Undo Disable Warp", "the switch disables Warp in one edit");
+        click();
+        check(warped() && root.undoTitle(false) == "Undo Enable Warp", "the switch re-enables the saved Warp map");
+        check(root.command(AppCommands::Undo), "Undo the Warp switch");
+        root.frame();
+        check(!warped(), "Undo restores the prior Warp state");
+    }
+    commands.detach(root);
+}
 void clipWaveforms(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto document = ProjectDocument::open(dir / "waves.adi", true, {}, error);
@@ -18895,6 +18962,7 @@ int main(int argc, char **argv) {
     trace("recordingOptions", [&] { recordingOptions(commands, settings, temp.path()); });
     trace("undoHistoryWindow", [&] { undoHistoryWindow(commands, temp.path()); });
     trace("clipWaveforms", [&] { clipWaveforms(commands, temp.path()); });
+    trace("clipWarpSwitch", [&] { clipWarpSwitch(commands, temp.path()); });
     trace("clipFades", [&] { clipFades(commands, temp.path()); });
     trace("showcase", [&] { showcase(commands, temp.path()); });
     trace("returnInGroup", [&] { returnInGroup(commands, temp.path()); });

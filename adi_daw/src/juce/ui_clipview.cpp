@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_clipview.hpp"
+#include "adi/warp_commands.hpp"
 #include "ui_controls.hpp"
 #include "ui_shell.hpp"
 #include "adi/ui/loop_edits.hpp"
@@ -4091,6 +4092,12 @@ juce::Rectangle<int> ClipViewPanel::loopBox() const noexcept {
     const auto main = mainArea().reduced(6, 5);
     return {main.getX(), main.getY() + 37, main.getWidth(), kFieldBox};
 }
+juce::Rectangle<int> ClipViewPanel::warpBox() const noexcept {
+    const auto header = headerArea();
+    if (!node_ || !node_->audio || header.getWidth() < 198)
+        return {};
+    return {header.getX() + 72, header.getY() + 2, 52, 13};
+}
 std::int64_t ClipViewPanel::fieldTicks(Field field) const noexcept {
     if (!details_)
         return 0;
@@ -4336,6 +4343,16 @@ bool ClipViewPanel::toggleLoop() {
     const bool on = !details_->loopEnabled;
     return commitForAll([on](const engine::ClipDetails &clip) { return clip.loopEnabled == on ? TrackEdit{} : toggleClipLoop(clip); });
 }
+bool ClipViewPanel::toggleWarp() {
+    if (!node_ || !node_->audio)
+        return false;
+    clip_edit::WarpOptions options;
+    options.enabled = !node_->audio->warpEnabled;
+    options.mode = audio::parseWarpMode(node_->audio->warpMode).value_or(audio::WarpMode::Beats);
+    if (const auto snapshot = root.current(); snapshot && snapshot->tempo)
+        options.analysis.tempoHint = snapshot->tempo->bpmAt(node_->posTicks);
+    return root.commitEdit(clip_edit::prepareSetWarp(root.editStore(), node_->id, options, root.editRate()));
+}
 void ClipViewPanel::openEditor(Field field) {
     // A field of a scrolled column comes whole into view before it opens.
     if (const auto view = columnArea(), box = fieldBox(field); !view.isEmpty() && field != Field::Name && !box.isEmpty() && box.getRight() <= view.getRight()) {
@@ -4412,6 +4429,10 @@ void ClipViewPanel::mouseDown(const juce::MouseEvent &e) {
             setFieldHere(field);
             return;
         }
+    if (warpBox().contains(at)) {
+        toggleWarp();
+        return;
+    }
     if (loopBox().contains(at)) {
         toggleLoop();
         return;
@@ -4969,11 +4990,14 @@ void ClipViewPanel::paint(juce::Graphics &g) {
         labels_.push_back(invert);
         labels_.push_back(select);
     }
+    if (const auto warp = warpBox(); !warp.isEmpty())
+        controls::button(g, warp.toFloat(), node_->audio->warpEnabled ? controls::ButtonState::On : controls::ButtonState::Rest,
+                         "Warp", look::fontSmall);
     text(midi() ? "Notes" : audio() ? "Sample" : "", header.withTrimmedLeft(midi() ? coloursBox().getRight() - header.getX() + 10 : 8).withWidth(60),
          juce::Justification::centredLeft, look::text, look::fontBody, true);
     text(r.grid, header.withTrimmedRight(8).removeFromRight(70), juce::Justification::centredRight, look::text, look::fontLabel);
     if (!problem_.empty())
-        text(juce::String(problem_), header.withTrimmedLeft(76).withTrimmedRight(84), juce::Justification::centredLeft,
+        text(juce::String(problem_), header.withTrimmedLeft(warpBox().isEmpty() ? 76 : 128).withTrimmedRight(84), juce::Justification::centredLeft,
              look::text, look::fontLabel);
     if (!midi() && !audio()) {
         g.setColour(look::lane);

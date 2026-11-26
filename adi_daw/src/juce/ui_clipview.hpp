@@ -610,6 +610,7 @@ class ClipViewPanel final : public juce::Component {
     juce::Rectangle<int> fieldBox(Field) const noexcept;
     juce::Rectangle<int> setBox(Field) const noexcept;
     juce::Rectangle<int> loopBox() const noexcept;
+    juce::Rectangle<int> warpBox() const noexcept;
     Field fieldAt(juce::Point<int>) const noexcept;
     // A value typed into a field: a position as 1.1.1, a length as 2.0.0, a signature as 3/4.
     bool typeField(Field, const juce::String &);
@@ -618,6 +619,7 @@ class ClipViewPanel final : public juce::Component {
     // The field's Set button.
     bool setFieldHere(Field);
     bool toggleLoop();
+    bool toggleWarp();
     // The field open for typing, and its editor.
     Field editing() const noexcept { return editing_; }
     juce::TextEditor &fieldEditor() noexcept { return editor_; }
