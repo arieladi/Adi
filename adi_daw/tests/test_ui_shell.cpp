@@ -12510,6 +12510,28 @@ void sampleEditorMouse(AppCommands &commands, const std::filesystem::path &dir) 
         check(edit.time.historySize == history - 1 && edit.time.left != selectedLeft,
               "the same Arrangement range does not zoom the Sample Editor on every frame");
     }
+
+    if (!root.state().follow)
+        root.command(AppCommands::Follow);
+    root.arrangement.followPaused = false;
+    edit.time.left = 50.;
+    engine::Transport driver;
+    driver.locate(3 * 48000);
+    driver.play(true);
+    document->mailbox().publish(driver);
+    root.frame();
+    const auto at = edit.time.x(edit.sourceTick(root.timelineTick()));
+    check(root.playing() && root.state().follow && edit.playhead.isVisible() && at >= -.001 && at < edit.getWidth(),
+          "Follow pages the Sample Editor to the audio clip's playhead");
+    edit.time.left = 50.;
+    edit.mouseWheelMove(pressAt(edit, point, juce::ModifierKeys::shiftModifier),
+                        juce::MouseWheelDetails{0.f, -1.f, false, false, false});
+    const auto parked = edit.time.left;
+    root.frame();
+    check(root.arrangement.followPaused && edit.time.left == parked, "a manual waveform scroll pauses Follow");
+    driver.play(false);
+    document->mailbox().publish(driver);
+    root.frame();
     commands.detach(root);
 }
 void clipWaveforms(AppCommands &commands, const std::filesystem::path &dir) {
