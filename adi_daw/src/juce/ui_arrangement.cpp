@@ -23,37 +23,41 @@ ArrangementOverview::ArrangementOverview(ArrangementView &v) : view(v) {
                "double-click to see all of it.");
 }
 namespace {
-// Live's lanes: grey, every other sixteen grid steps a shade lighter, lighter again
-// for the selected track, with the grid (§6.10) a quarter darker than the lane under it.
+// Live's lanes alternate shades every sixteen grid steps. Bar lines have more contrast
+// than beat lines against the underlying lane in both selected and unselected tracks.
 void paintLanes(juce::Graphics &g, const ArrangementGeometry &geo, int width, int top, int height,
                 bool selected) {
     // The shading follows the plain step, so triplets keep it on the bars.
     const double grid = geo.gridQuarters();
     const double group = geo.plainGridQuarters() * 16;
+    const bool metered = geo.metered();
+    const auto shade = [selected](bool alternate) {
+        return selected ? (alternate ? look::laneSelectedAlt : look::laneSelected)
+                        : (alternate ? look::laneAlt : look::lane);
+    };
     for (double q = std::floor(geo.left / group) * group; q < geo.left + width / geo.scale; q += group) {
         const bool alt = static_cast<std::int64_t>(std::llround(q / group)) % 2 != 0;
-        const auto lane = selected ? (alt ? look::laneSelectedAlt : look::laneSelected)
-                                   : (alt ? look::laneAlt : look::lane);
         const double x0 = (q - geo.left) * geo.scale, x1 = x0 + group * geo.scale;
+        const auto lane = shade(alt);
         g.setColour(lane);
         g.fillRect(static_cast<float>(x0), static_cast<float>(top), static_cast<float>(x1 - x0),
                    static_cast<float>(height));
-        if (geo.metered())
+        if (metered)
             continue;
-        g.setColour(lane.darker(0.33f));
+        const auto barInk = lane.darker(.66f), beatInk = lane.darker(.33f);
         for (double line = q; line < q + group && line < geo.left + width / geo.scale; line += grid)
-            if (line >= geo.left)
+            if (line >= geo.left) {
+                const bool bar = std::llround(line * textproj::kPPQ) % textproj::kWhole == 0;
+                g.setColour(bar ? barInk : beatInk);
                 g.fillRect(static_cast<int>((line - geo.left) * geo.scale), top, 1, height);
+            }
     }
-    // In the project's meters the lines run from each bar line (manual 6.10), each a quarter darker
-    // than the lane under it.
-    if (geo.metered())
+    if (metered)
         geo.forEachGridLine(geo.tick(0.), geo.tick(static_cast<double>(width)), [&](std::int64_t line) {
             const double q = static_cast<double>(line) / textproj::kPPQ;
             const bool alt = static_cast<std::int64_t>(std::floor(q / group)) % 2 != 0;
-            const auto lane = selected ? (alt ? look::laneSelectedAlt : look::laneSelected)
-                                       : (alt ? look::laneAlt : look::lane);
-            g.setColour(lane.darker(0.33f));
+            const bool bar = geo.barHolding(line).start == line;
+            g.setColour(shade(alt).darker(bar ? .66f : .33f));
             g.fillRect(static_cast<int>(geo.x(line)), top, 1, height);
         });
 }
@@ -1291,8 +1295,8 @@ void ArrangementView::paint(juce::Graphics &g) {
     const juce::Rectangle<int> time(canvas.getX(), canvas.getBottom(), clipsW, kTimeRulerHeight);
     g.setColour(look::band);
     g.fillRect(time);
-    // The grid's spacing sits at the ruler's right end, as Live shows it (§6.10).
-    const juce::Rectangle<int> spacing(time.getRight() - 48, time.getY() + 2, 46, 14);
+    juce::Graphics::ScopedSaveState clip(g);
+    g.reduceClipRegion(time);
     if (const auto *tempo = reader().tempo()) {
         const double from = tempo->ticksToSeconds(geometry.tick(0));
         const double to = tempo->ticksToSeconds(geometry.tick(static_cast<double>(clipsW)));
@@ -1309,18 +1313,11 @@ void ArrangementView::paint(juce::Graphics &g) {
             g.setColour(look::textOnBand);
             g.fillRect(x, time.getY(), 1, 5);
             const int sec = static_cast<int>(t + 0.5);
-            // A time that would run into the grid's spacing keeps its mark only.
-            if (x + 3 + 32 < spacing.getX())
+            if (x + 3 + 32 <= time.getRight())
                 g.drawText(juce::String(sec / 60) + ":" + juce::String(sec % 60).paddedLeft('0', 2),
                            x + 3, time.getY() + 2, 50, 14, juce::Justification::centredLeft);
         }
     }
-    g.setColour(look::band);
-    g.fillRect(spacing);
-    g.setColour(look::textOnBand);
-    g.setFont(look::font(look::fontBody));
-    g.drawText(juce::String(gridLabel(geometry.gridQuarters(), geometry.grid.triplet)), spacing,
-               juce::Justification::centredRight);
 }
 void ArrangementView::frame(bool modelChanged) noexcept {
     const int x = static_cast<int>(std::clamp(geometry.x(root.timelineTick()), -1e7, 1e7));
@@ -1885,9 +1882,8 @@ void ArrangementView::wheel(const juce::MouseEvent &e, const juce::MouseWheelDet
     changed();
 }
 void TimelineRuler::paint(juce::Graphics &g) {
-    // Live's beat-time ruler: bar numbers along its foot in light grey on the dark band, each after
-    // its hook; a dot at every bar. In the project's meters (#299): a signature change starts a new
-    // bar where it falls, and a bar's beats are its signature's (Live 12 manual 6.1).
+    // The beat-time ruler draws plain labels above thin ticks. A signature change starts a new
+    // bar where it falls, and the beats follow its signature (Live 12 manual 6.1).
     g.fillAll(look::band);
     const auto &geo = view.geometry;
     const auto &meters = view.reader().meters();
@@ -1904,28 +1900,26 @@ void TimelineRuler::paint(juce::Graphics &g) {
     while (static_cast<double>(barStep) * beatPx * first.numerator < 56)
         barStep *= 2;
     const int foot = getHeight();
+    const auto ink = look::rulerLabel.interpolatedWith(look::band, .5f);
     g.setFont(look::font(look::fontField, true));
-    auto label = [&](std::int64_t tick, const juce::String &text) {
-        const int x = static_cast<int>(geo.x(tick));
-        g.setColour(look::rulerLabel);
-        g.fillRect(x, foot - 11, 1, 8);
-        g.fillRect(x, foot - 11, 3, 1);
-        g.setColour(look::textOnBand);
-        g.drawText(text, x + 5, foot - 15, 60, 14, juce::Justification::centredLeft);
+    const auto tickMark = [&](int x, int height) {
+        g.setColour(ink);
+        g.fillRect(x, foot - height, 1, height);
     };
-    const bool dots = beatPx * first.numerator >= 8;
+    const auto label = [&](int x, const juce::String &text) {
+        g.setColour(look::textOnBand);
+        g.drawText(text, x + 4, 1, 60, 16, juce::Justification::centredLeft);
+    };
     // From a bar before the left edge, so a bar's later beats still show.
     forEachBar(from - first.barTicks(), to, meters, [&](std::int64_t tick, std::int64_t bar) {
-        if (dots) {
-            g.setColour(look::rulerLabel);
-            g.fillRect(static_cast<int>(geo.x(tick)), foot - 2, 1, 1);
-        }
-        if (!beats) {
-            if ((bar - 1) % barStep == 0)
-                label(tick, juce::String(bar));
+        const int x = static_cast<int>(geo.x(tick));
+        if (beats || (bar - 1) % barStep == 0) {
+            label(x, juce::String(bar));
+            tickMark(x, 12);
+        } else if (beatPx * first.numerator >= 8)
+            tickMark(x, 5);
+        if (!beats)
             return;
-        }
-        label(tick, juce::String(bar));
         const auto &m = meterAt(tick, meters);
         const auto beatTicks = textproj::kWhole / std::max<std::int64_t>(1, m.denominator);
         // A change part-way through a bar cuts it short (Live's fragmentary bar, manual 6.5): its
@@ -1936,8 +1930,11 @@ void TimelineRuler::paint(juce::Graphics &g) {
                 until = next.start_ticks;
                 break;
             }
-        for (std::int64_t b = beatStep; b < m.numerator && tick + b * beatTicks < until; b += beatStep)
-            label(tick + b * beatTicks, juce::String(bar) + "." + juce::String(b + 1));
+        for (std::int64_t b = beatStep; b < m.numerator && tick + b * beatTicks < until; b += beatStep) {
+            const int beatX = static_cast<int>(geo.x(tick + b * beatTicks));
+            label(beatX, juce::String(bar) + "." + juce::String(b + 1));
+            tickMark(beatX, 5);
+        }
     });
 }
 void TimelineRuler::mouseDown(const juce::MouseEvent &e) {
@@ -2629,6 +2626,15 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
     }
     if (view.root.automationMode())
         paintAutomation(g);
+    // The grid spacing sits inside the lower right of the lanes, above the time ruler.
+    auto corner = getLocalBounds().reduced(2);
+    const auto spacing = corner.removeFromBottom(14).removeFromRight(46);
+    g.setColour(look::band);
+    g.fillRect(spacing);
+    g.setColour(look::textOnBand);
+    g.setFont(look::font(look::fontBody));
+    g.drawText(juce::String(gridLabel(geo.gridQuarters(), geo.grid.triplet)), spacing.reduced(2, 0),
+               juce::Justification::centredRight);
 }
 std::vector<ArrangementCanvas::LaneBody> ArrangementCanvas::laneBodies() const {
     // The clip body's band of every track drawn, as clipBodies walks them; Main's and the returns' too.

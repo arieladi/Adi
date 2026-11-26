@@ -134,6 +134,7 @@ WindowState ViewStateStore::load(const std::string &window, DesktopDefaults defa
         state.docked = j.at("docked").get<bool>();
         state.aiChatOpen = j.value("aiChat", false);
         state.timelineLeft = j.value("timelineLeft", 0.);
+        // Windows saved before timeline zoom was persisted used the original scale.
         state.pixelsPerQuarter = j.value("pixelsPerQuarter", 48.);
         state.laneHeight = j.value("laneHeight", 88);
         state.mixerView = j.value("mixerView", false);

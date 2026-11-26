@@ -223,6 +223,9 @@ void reference(AdiRootComponent &root, const char *name, bool write) {
                    32, 15);
         const auto canvas = root.arrangement.canvas.getBounds() + area.getPosition();
         {
+            auto laneInterior = canvas.reduced(2);
+            const auto badge = laneInterior.removeFromBottom(14).removeFromRight(46);
+            g.fillRect(badge.reduced(2, 0));
             const auto &geo = root.arrangement.geometry;
             const auto rowsShown = geo.rows(root.reader());
             const int dropTop = canvas.getY() + geo.tracksHeight(root.reader()) - geo.scrollY;
@@ -338,6 +341,67 @@ void renderMenu(juce::LookAndFeel &look, const juce::PopupMenu &menu, const juce
     file.deleteFile();
     if (auto stream = file.createOutputStream())
         juce::PNGImageFormat{}.writeImageToStream(image, *stream);
+}
+void arrangementRulerAndGrid(AppCommands &commands, const std::filesystem::path &dir) {
+    StoreError err{};
+    auto store = Store::createEmpty(dir / "ruler-grid.adi", err);
+    check(store != nullptr, "the ruler and grid project opens");
+    if (!store)
+        return;
+    store->db().exec("INSERT INTO project(id,name) VALUES(1,'Ruler and grid')");
+    engine::ProjectView view;
+    view.refresh(*store);
+    OpSubmitter submitter(*store, view);
+    check(submitter.submit(track(1)).ok, "make a lane for the grid");
+    TransportMailbox mailbox;
+    ViewStateStore persistence(*store);
+    SessionState session(*store);
+
+    auto saved = persistence.load("saved");
+    saved.pixelsPerQuarter = 48;
+    std::string error;
+    check(persistence.save("saved", saved, error) && persistence.load("saved").pixelsPerQuarter == 48,
+          "the default scale does not overwrite a saved zoom");
+    AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "ruler-grid");
+    root.setSize(1440, 900);
+    auto &arrangement = root.arrangement;
+    auto &geo = arrangement.geometry;
+    const auto canvasBounds = root.getLocalArea(&arrangement.canvas, arrangement.canvas.getLocalBounds());
+    const auto rulerBounds = root.getLocalArea(&arrangement.ruler, arrangement.ruler.getLocalBounds());
+    std::printf("SC-70 canvas %d,%d %dx%d; beat ruler %d,%d %dx%d; bar %.2f px; grid %.2f quarters\n",
+                canvasBounds.getX(), canvasBounds.getY(), canvasBounds.getWidth(), canvasBounds.getHeight(),
+                rulerBounds.getX(), rulerBounds.getY(), rulerBounds.getWidth(), rulerBounds.getHeight(),
+                geo.x(textproj::kWhole), geo.gridQuarters());
+    check(geo.x(textproj::kWhole) == 18.5 && geo.gridQuarters() == 4,
+          "a fresh window uses a one-bar grid and a 74-pixel span for four bars");
+
+    // Keep a known zoom for the beat versus bar and badge paint probes.
+    geo.scale = 48;
+    {
+        auto &canvas = arrangement.canvas;
+        juce::Image image(juce::Image::ARGB, canvas.getWidth(), canvas.getHeight(), true, juce::SoftwareImageType{});
+        juce::Graphics g(image);
+        canvas.paint(g);
+        std::printf("SC-70 explicit 48 px/q: bar #%06x, beat #%06x, lane #%06x, lower-right #%06x\n",
+                    image.getPixelAt(192, 35).getARGB() & 0xffffffu, image.getPixelAt(48, 35).getARGB() & 0xffffffu,
+                    image.getPixelAt(49, 35).getARGB() & 0xffffffu,
+                    image.getPixelAt(canvas.getWidth() - 47, canvas.getHeight() - 15).getARGB() & 0xffffffu);
+        check(image.getPixelAt(192, 35).getBrightness() < image.getPixelAt(48, 35).getBrightness() &&
+                  image.getPixelAt(48, 35).getBrightness() < image.getPixelAt(49, 35).getBrightness(),
+              "the bar line is darker than a beat line and the beat line is darker than the lane");
+        check(image.getPixelAt(canvas.getWidth() - 47, canvas.getHeight() - 15) == look::band,
+              "the grid-spacing badge sits inside the lanes above the elapsed time ruler");
+    }
+    {
+        auto &ruler = arrangement.ruler;
+        juce::Image image(juce::Image::ARGB, ruler.getWidth(), ruler.getHeight(), true, juce::SoftwareImageType{});
+        juce::Graphics g(image);
+        ruler.paint(g);
+        const int foot = ruler.getHeight();
+        check(image.getPixelAt(0, foot - 2) != look::band && image.getPixelAt(1, foot - 2) == look::band &&
+                  image.getPixelAt(2, foot - 11) == look::band,
+              "the first bar uses a single-pixel vertical tick and no hook");
+    }
 }
 // Live parity (ADR-0203 d5): Live 11's default set as the director's capture shows it
 // (collab/window/look-live11.md): four tracks, the fourth selected with EQ Eight and
@@ -5460,6 +5524,7 @@ void clipView(AppCommands &commands, const std::filesystem::path &dir, bool writ
     AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "clip-view");
     commands.activate(root);
     root.setSize(1400, 900);
+    root.arrangement.geometry.scale = 48; // These gestures use fixed pixel offsets into clips.
     for (std::int64_t id = 1; id <= 2; ++id)
         root.arrangement.geometry.resizeTrack(id, 48);
     root.mark(DirtySet::All);
@@ -5671,6 +5736,7 @@ void clipViewNotes(AppCommands &commands, const std::filesystem::path &dir) {
     AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "clip-view-notes");
     commands.activate(root);
     root.setSize(1400, 900);
+    root.arrangement.geometry.scale = 48; // These gestures use fixed pixel offsets into clips.
     for (std::int64_t id = 1; id <= 2; ++id)
         root.arrangement.geometry.resizeTrack(id, 48);
     root.mark(DirtySet::All);
@@ -5911,6 +5977,7 @@ void clipViewFields(AppCommands &commands, const std::filesystem::path &dir) {
     AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "clip-view-fields");
     commands.activate(root);
     root.setSize(1400, 900);
+    root.arrangement.geometry.scale = 48; // These gestures use fixed pixel offsets into clips.
     root.arrangement.geometry.resizeTrack(1, 48);
     root.mark(DirtySet::All);
     root.frame();
@@ -6082,6 +6149,7 @@ void clipViewTools(AppCommands &commands, const std::filesystem::path &dir) {
     AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "clip-view-tools");
     commands.activate(root);
     root.setSize(1400, 900);
+    root.arrangement.geometry.scale = 48; // These gestures use fixed pixel offsets into clips.
     for (std::int64_t id = 1; id <= 2; ++id)
         root.arrangement.geometry.resizeTrack(id, 48);
     root.mark(DirtySet::All);
@@ -6372,6 +6440,7 @@ void clipViewMore(AppCommands &commands, const std::filesystem::path &dir) {
     AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "clip-view-more");
     commands.activate(root);
     root.setSize(1400, 900);
+    root.arrangement.geometry.scale = 48; // These gestures use fixed pixel offsets into clips.
     root.arrangement.geometry.resizeTrack(1, 48);
     root.mark(DirtySet::All);
     root.frame();
@@ -6730,6 +6799,7 @@ void clipViewTime(AppCommands &commands, const std::filesystem::path &dir) {
     AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "clip-view-time");
     commands.activate(root);
     root.setSize(1400, 900);
+    root.arrangement.geometry.scale = 48; // These gestures use fixed pixel offsets into clips.
     root.arrangement.geometry.resizeTrack(1, 48);
     root.mark(DirtySet::All);
     root.frame();
@@ -7580,6 +7650,7 @@ void clipViewClipTime(AppCommands &commands, const std::filesystem::path &dir) {
     AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "clip-view-clip-time");
     commands.activate(root);
     root.setSize(1400, 900);
+    root.arrangement.geometry.scale = 48; // These gestures use fixed pixel offsets into clips.
     root.arrangement.geometry.resizeTrack(1, 48);
     root.mark(DirtySet::All);
     root.frame();
@@ -8416,6 +8487,7 @@ void clipViewMulti(AppCommands &commands, const std::filesystem::path &dir) {
     AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "clip-view-multi");
     commands.activate(root);
     root.setSize(1400, 900);
+    root.arrangement.geometry.scale = 48; // These gestures use fixed pixel offsets into clips.
     for (std::int64_t id = 1; id <= 3; ++id)
         root.arrangement.geometry.resizeTrack(id, 48);
     root.mark(DirtySet::All);
@@ -16829,6 +16901,7 @@ int main(int argc, char **argv) {
     }
     if (argc == 2 && std::string(argv[1]) == "--arrangement-components-only") {
         // These fixtures render components in software and do not create a native peer.
+        trace("arrangementRulerAndGrid", [&] { arrangementRulerAndGrid(commands, temp.path()); });
         trace("liveParity", [&] { liveParity(commands, temp.path(), false); });
         trace("groupTracks", [&] { groupTracks(commands, temp.path()); });
         trace("sendKnobs", [&] { sendKnobs(commands, temp.path()); });
@@ -20172,6 +20245,7 @@ int main(int argc, char **argv) {
         }
     }
     trace("firstRunAudioInput", [&] { firstRunAudioInput(temp.path()); });
+    trace("arrangementRulerAndGrid", [&] { arrangementRulerAndGrid(commands, temp.path()); });
     trace("liveParity", [&] { liveParity(commands, temp.path(), write); });
     trace("groupTracks", [&] { groupTracks(commands, temp.path()); });
     trace("groupCommandContext", [&] { groupCommandContext(commands, temp.path()); });
