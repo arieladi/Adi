@@ -4,6 +4,16 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-26 — Item 1 (`walk/*` Round 18): `walk/a31-plugin-tables-per-tick` (`674d6863`)
+
+Built under **GCC 12.4.0** and **Clang 14.0.6 + libstdc++ 12** with `-DADI_WERROR=ON -DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF -DADI_ACCEPTANCE=ON`, plus targeted JUCE `-DADI_WERROR=ON` compile check on `tests/test_mix_pipeline_document.cpp.o`.
+
+| Branch | Head | Touched files | GCC 12.4.0 `-DADI_WERROR=ON` | Clang 14.0.6 + libstdc++ 12 `-DADI_WERROR=ON` | Acceptance (`ctest -L acceptance`) | Extra checks / Findings |
+|---|---|---|---|---|---|---|
+| `walk/a31-plugin-tables-per-tick` | `674d6863` | `src/adi/ui/parameter_feed.{hpp,cpp}`, `tests/test_mix_parameter_feed.cpp`, `tests/test_mix_pipeline_document.cpp`, `tests/test_ui_document.cpp` | **PASS** (0 warnings; `adi_mix_parameter_feed_tests` 1.60 s, `adi_mix_document_tests` 7.90 s, `adi_ui_document_tests` 15.83 s; JUCE TU `test_mix_pipeline_document.cpp.o` 0 warnings) | **PASS** (0 warnings; `adi_mix_parameter_feed_tests` 1.37 s, `adi_mix_document_tests` 6.87 s, `adi_mix_eq_pipeline_tests` 13.07 s, `adi_ui_document_tests` 14.24 s; JUCE TU `test_mix_pipeline_document.cpp.o` 0 warnings) | **2/2 PASS** on both (`adi_builtin_realtime_tests` 256.59 s / 233.11 s; `adi_acceptance_wts01` 41.77 s / 37.45 s) | Clean across all legs. |
+
+---
+
 ## 2026-11-26 — Item 1 (`walk/*` Round 17): `walk/a28-vblank-window-open` (`a45b1cb4`), `walk/b12-play-start-dropout` (`05f157ec`), `walk/b14-clip-rename` (`6a4a7dbb`)
 
 All three heads built under **GCC 12.4.0** and **Clang 14.0.6 + libstdc++ 12** with `-DADI_WERROR=ON -DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF -DADI_ACCEPTANCE=ON`, plus targeted JUCE `-DADI_WERROR=ON` compile checks on all touched JUCE TUs.
