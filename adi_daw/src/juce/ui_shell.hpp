@@ -551,7 +551,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // The playhead in ticks, from the driver's feedback at the device's rate.
     std::int64_t timelineTick() const noexcept;
     // Asks the driver to move the playhead; reads the current cell on arrival.
-    bool locate(std::int64_t tick);
+    bool locate(std::int64_t tick, bool fromInsertMarker = false);
     // Plays from a point: starts the transport there, or jumps there while it plays.
     bool playFrom(std::int64_t tick);
     TransportBar transport;
