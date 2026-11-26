@@ -2287,8 +2287,8 @@ bool AdiRootComponent::trackClipboardContext() const {
     if (sel.clip != 0 || !sel.pickedClips.empty() || sel.start != sel.end)
         return false;
     const auto *focus = juce::Component::getCurrentlyFocusedComponent();
-    return focus == nullptr || focus == this || focus == &arrangement.headers ||
-           (mixerView.isParentOf(focus) && dynamic_cast<const MixerStrip *>(focus) != nullptr);
+    return focus == &arrangement.headers ||
+           (dynamic_cast<const MixerStrip *>(focus) != nullptr && mixerView.isParentOf(focus));
 }
 bool AdiRootComponent::trackClipboard(ClipCommand command) {
     using track_edits_detail::children;
