@@ -28,16 +28,25 @@ fix, not a new feature, so it is worked now.
    - `adi_ui_shell_tests` in a **Debug** build if you touched the window. MSVC's Debug containers
      allocate for every string and vector made, and a frame of the window must allocate nothing. An
      optimised build does not show this, and it failed CI on 26 November;
+   - **on Linux, the window suites with no display, as CI runs them:** `env -u DISPLAY ctest -R '^adi_ui_'`
+     (`.github/workflows/ui.yml` unsets DISPLAY on purpose; an earlier line of these queues said "a virtual
+     display", which was wrong). A test that opens a real menu or window passes under a virtual display
+     and crashes there: it happened on 27 November. Do not show a menu in a test: use the view's seam
+     (`ArrangementView::onContextMenu` for the lanes and names, `onMenu` on a header's Solo) or add one
+     like them, and count the request;
    - the session suite: `ctest -L acceptance`;
    - if your session can drive the real window, do the gesture there, with `ADI_HOME` set to a folder
      of its own.
-5. One branch per item, named `basics/<sc id>-<short name>`. **Start your first from origin/main and each
-   later one from your own previous item's branch,** so that your items form a chain and never collide
-   with each other. (On 27 November four branches could not be stacked because a session had cut each
-   from main and changed the same functions twice in different ways.) Commit and push. **Open no pull
-   request:** the one macOS runner cannot carry one per fix. Win stacks the branches and lands them.
-   - If win's report says a branch of yours collides: merge the landing stack it names (`origin/land/...`)
-     into that branch, resolve it yourself, since you wrote both sides, run your tests and push.
+5. **One chain branch per queue: `basics/<your queue>-chain`.** Every item of yours is a commit, or a
+   few, on that one branch, with its SC id in the message. Push after each item. **Open no pull
+   request:** the one macOS runner cannot carry one per fix. Win merges the chains into a landing stack.
+   - Start the chain from the newest landing stack (`origin/land/basics-*`), or from origin/main once
+     that stack has merged. Before each push, merge the newest of them into your chain.
+   - This replaced "one branch per item" on 27 November: of 34 separate branches, 28 collided with each
+     other, most of them with their own session's earlier ones, and could not be stacked.
+   - If you already pushed separate item branches: make the chain, merge each of them into it, oldest
+     first, resolve the collisions yourself (you wrote both sides), run your tests and push. Your report
+     then names the chain's head for each item.
 6. Add a line to your report and start the next item in the same turn.
 
 ## Your report

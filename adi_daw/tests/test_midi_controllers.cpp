@@ -17,37 +17,43 @@
 namespace {
 std::atomic<unsigned> callbackAllocations{0};
 }
-void *operator new(std::size_t n) {
+#if defined(__GNUC__) && !defined(__clang__)
+#define ADI_TEST_NOINLINE __attribute__((noinline))
+#else
+#define ADI_TEST_NOINLINE
+#endif
+ADI_TEST_NOINLINE void *operator new(std::size_t n) {
     if (adi::audio::onAudioThread)
         ++callbackAllocations;
     if (auto *p = std::malloc(n ? n : 1))
         return p;
     throw std::bad_alloc();
 }
-void *operator new[](std::size_t n) {
+ADI_TEST_NOINLINE void *operator new[](std::size_t n) {
     return operator new(n);
 }
-void operator delete(void *p) noexcept {
+ADI_TEST_NOINLINE void operator delete(void *p) noexcept {
     std::free(p);
 }
-void operator delete[](void *p) noexcept {
+ADI_TEST_NOINLINE void operator delete[](void *p) noexcept {
     std::free(p);
 }
-void operator delete(void *p, std::size_t) noexcept {
+ADI_TEST_NOINLINE void operator delete(void *p, std::size_t) noexcept {
     std::free(p);
 }
-void operator delete[](void *p, std::size_t) noexcept {
+ADI_TEST_NOINLINE void operator delete[](void *p, std::size_t) noexcept {
     std::free(p);
 }
 // Nothrow allocations use the same counted malloc/free pair under sanitizers.
-void* operator new(std::size_t n, const std::nothrow_t&) noexcept {
+ADI_TEST_NOINLINE void* operator new(std::size_t n, const std::nothrow_t&) noexcept {
     try { return ::operator new(n); } catch (...) { return nullptr; }
 }
-void* operator new[](std::size_t n, const std::nothrow_t&) noexcept {
+ADI_TEST_NOINLINE void* operator new[](std::size_t n, const std::nothrow_t&) noexcept {
     try { return ::operator new[](n); } catch (...) { return nullptr; }
 }
-void operator delete(void* p, const std::nothrow_t&) noexcept { ::operator delete(p); }
-void operator delete[](void* p, const std::nothrow_t&) noexcept { ::operator delete[](p); }
+ADI_TEST_NOINLINE void operator delete(void* p, const std::nothrow_t&) noexcept { ::operator delete(p); }
+ADI_TEST_NOINLINE void operator delete[](void* p, const std::nothrow_t&) noexcept { ::operator delete[](p); }
+#undef ADI_TEST_NOINLINE
 namespace {
 using namespace adi;
 using namespace adi::engine;

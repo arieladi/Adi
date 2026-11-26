@@ -18,12 +18,18 @@
 #include <cstdlib>
 #include <new>
 namespace {thread_local bool countAllocations=false;int callbackAllocations=0;}
-void* operator new(std::size_t bytes){if(countAllocations)++callbackAllocations;if(void* p=std::malloc(bytes?bytes:1))return p;throw std::bad_alloc();}
-void* operator new[](std::size_t bytes){return operator new(bytes);}
-void operator delete(void* p)noexcept{std::free(p);}
-void operator delete[](void* p)noexcept{std::free(p);}
-void operator delete(void* p,std::size_t)noexcept{std::free(p);}
-void operator delete[](void* p,std::size_t)noexcept{std::free(p);}
+#if defined(__GNUC__) && !defined(__clang__)
+#define ADI_TEST_NOINLINE __attribute__((noinline))
+#else
+#define ADI_TEST_NOINLINE
+#endif
+ADI_TEST_NOINLINE void* operator new(std::size_t bytes){if(countAllocations)++callbackAllocations;if(void* p=std::malloc(bytes?bytes:1))return p;throw std::bad_alloc();}
+ADI_TEST_NOINLINE void* operator new[](std::size_t bytes){return operator new(bytes);}
+ADI_TEST_NOINLINE void operator delete(void* p)noexcept{std::free(p);}
+ADI_TEST_NOINLINE void operator delete[](void* p)noexcept{std::free(p);}
+ADI_TEST_NOINLINE void operator delete(void* p,std::size_t)noexcept{std::free(p);}
+ADI_TEST_NOINLINE void operator delete[](void* p,std::size_t)noexcept{std::free(p);}
+#undef ADI_TEST_NOINLINE
 namespace {
 using namespace adi;using namespace adi::device;using namespace adi::engine;
 int checks=0,failures=0;
