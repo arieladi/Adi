@@ -4,6 +4,7 @@
 #include "adi/engine/timeline_clips.hpp"
 #include "adi/engine/snapshot.hpp"
 #include "adi/engine/clip_fade.hpp"
+#include "adi/engine/clip_sinc_441_to_480.hpp"
 #include "adi/engine/warp_projection.hpp"
 #include "adi/audio/decode.hpp"
 #include "adi/audio/progressive_decode.hpp"
@@ -200,6 +201,11 @@ struct Clip {
         return out;
     }
     void request(const std::array<std::int64_t,slots>& w) noexcept {
+        // The same horizon lasts across many callbacks. Keep an in-flight
+        // worker snapshot valid until the single producer changes its pages.
+        if(std::equal(w.begin(),w.end(),requests.begin(),[](auto page,const auto& requested) {
+            return page==requested.load(std::memory_order_relaxed);
+        }))return;
         requestSeq.fetch_add(1,std::memory_order_seq_cst);
         for(std::size_t i=0;i<slots;++i) requests[i].store(w[i],std::memory_order_seq_cst);
         requestSeq.fetch_add(1,std::memory_order_seq_cst);
@@ -306,27 +312,35 @@ struct Clip {
             const auto begin=anchor-((guard+inPeriod-1)/inPeriod)*inPeriod;
             const auto outBegin=(begin/inPeriod)*outPeriod;
             const auto inputCount=static_cast<std::int64_t>(std::ceil(static_cast<double>(first+count-outBegin)*sourceRate/rate))+guard;
-            const auto outputCount=static_cast<std::int64_t>(std::ceil(static_cast<double>(inputCount)*rate/sourceRate))+32;
+            // The right guard supplies filter context. Its output is outside
+            // this page and need not be computed.
+            const auto outputCount=first-outBegin+count;
             std::vector<float> input(static_cast<std::size_t>(inputCount)*channels,0.0f);
-            std::vector<float> output(static_cast<std::size_t>(outputCount)*channels,0.0f);
             const auto readBegin=std::max<std::int64_t>(0,begin);
             const auto readEnd=std::min<std::int64_t>(static_cast<std::int64_t>(sourceLength),begin+inputCount);
             if (readEnd>readBegin) {
                 auto* dst=input.data()+static_cast<std::size_t>(readBegin-begin)*channels;
                 readSource(sourceStart+static_cast<std::uint64_t>(readBegin),dst,static_cast<std::uint32_t>(readEnd-readBegin));
             }
+            if(sourceRate==44100 && rate==48000 && channels==2 &&
+               detail::renderSinc441To480(input,first-outBegin,
+                   std::span(p.data.data(),static_cast<std::size_t>(count)*channels))) {
+                p.number=number;
+                return;
+            }
+            std::vector<float> output(static_cast<std::size_t>(outputCount)*channels,0.0f);
             SRC_DATA data{};
             data.data_in=input.data(); data.data_out=output.data();
             data.input_frames=static_cast<long>(inputCount); data.output_frames=static_cast<long>(outputCount);
             data.src_ratio=static_cast<double>(rate)/sourceRate; data.end_of_input=1;
             const int error=src_simple(&data,SRC_SINC_BEST_QUALITY,channels);
-            if(error!=0 || data.output_frames_gen<first-outBegin+count) throw std::runtime_error("resampler did not fill page");
+            if(error!=0 || data.output_frames_gen!=outputCount) throw std::runtime_error("resampler did not fill page");
             std::copy_n(output.data()+static_cast<std::size_t>(first-outBegin)*channels,
                         static_cast<std::size_t>(count)*channels,p.data.data());
         }
         p.number=number;
     }
-    bool service(const ClipPlayback::RequestSnapshotProbeForTest* probe) {
+    bool service(const ClipPlayback::RequestSnapshotProbeForTest* probe,bool interleave) {
         if(failed)return false;
         if(progressive) {
             const auto status=progressive->snapshot().status;
@@ -379,6 +393,7 @@ struct Clip {
                 catch(const PrefixPending&) { p.number=-1;p.state.store(0,std::memory_order_release);break; }
                 catch(...) { failed=true;errors.fetch_add(1,std::memory_order_relaxed); p.number=-1; }
                 p.state.store(p.number>=0?2:0,std::memory_order_release);
+                if(interleave)return true;
                 worked=true; break;
             }
         }
@@ -489,9 +504,10 @@ struct ClipPlayback::Impl {
     std::vector<std::string> problems;
     std::atomic<bool> stalled{false};
     std::atomic<const ClipPlayback::RequestSnapshotProbeForTest*> requestProbe{nullptr};
-    std::jthread worker;
+    // Last member so all workers join before any of their clips are destroyed.
+    std::vector<std::jthread> workers;
     Impl(Transport& t,std::int32_t f):transport(t),maxFrames(f){}
-    ~Impl() { worker.request_stop(); if(worker.joinable()) worker.join(); }
+    ~Impl() { for(auto& worker:workers) worker.request_stop(); }
 };
 ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport& transport,
                            double rate,std::int32_t channels,std::int32_t maxFrames, audio::ProgressiveDecoder* decoder)
@@ -676,16 +692,36 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
         impl_->externalSources.push_back({clip->clipId,clip->mediaId,fs::absolute(clip->path),std::move(clip->storedBlake3)});
     for(auto& t:impl_->tracks) t->owner=impl_;
     if(impl_->clips.empty()) return;
-    impl_->worker=std::jthread([p=impl_.get()](std::stop_token stop){
-        while(!stop.stop_requested()) {
-            bool work=false;
-            if(!p->stalled.load(std::memory_order_acquire)) for(auto& c:p->clips) {
-                if(stop.stop_requested()) break;
-                work=c->service(p->requestProbe.load(std::memory_order_acquire))||work;
+    // A single worker handles native-rate playback and small conversion jobs.
+    // Spread heavier conversion work without increasing the number of workers
+    // with every added clip. Each clip still has exactly one page writer.
+    constexpr std::size_t maxWorkers=4, conversionsPerWorker=4;
+    const auto converted=static_cast<std::size_t>(std::count_if(impl_->clips.begin(),impl_->clips.end(),
+        [](const auto& clip){return clip->rate!=clip->sourceRate;}));
+    const auto hardware=static_cast<std::size_t>(std::thread::hardware_concurrency());
+    const auto workerCount=std::max(std::size_t{1},std::min({hardware,maxWorkers,
+        (converted+conversionsPerWorker-1)/conversionsPerWorker}));
+    std::vector<std::vector<Clip*>> shards(workerCount);
+    std::size_t native=0, resampled=0;
+    for(const auto& clip:impl_->clips) {
+        auto& next=clip->rate==clip->sourceRate?native:resampled;
+        shards[next++%workerCount].push_back(clip.get());
+    }
+    impl_->workers.reserve(workerCount);
+    for(auto& shard:shards) {
+        impl_->workers.emplace_back([p=impl_.get(), clips=std::move(shard), interleave=workerCount>1](std::stop_token stop){
+            while(!stop.stop_requested()) {
+                bool work=false;
+                if(!p->stalled.load(std::memory_order_acquire)) for(auto* clip:clips) {
+                    if(stop.stop_requested()) break;
+                    // On busy generations, give every clip its first missing
+                    // page before filling a clip's remaining lookahead.
+                    work=clip->service(p->requestProbe.load(std::memory_order_acquire),interleave)||work;
+                }
+                if(!work) std::this_thread::sleep_for(std::chrono::milliseconds(1));
             }
-            if(!work) std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
-    });
+        });
+    }
 }
 ClipPlayback::~ClipPlayback()=default;
 std::vector<Node*> ClipPlayback::sourcesFor(std::int64_t id) {
