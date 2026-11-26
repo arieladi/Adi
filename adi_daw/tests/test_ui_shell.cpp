@@ -9386,6 +9386,40 @@ void clipCopyDrag(AppCommands &commands, const std::filesystem::path &dir) {
               submitter.nextUndo()->label == steps,
           "one Undo takes both copies away");
 }
+void selectionDurationAcrossTempo(AppCommands &commands, const std::filesystem::path &dir) {
+    StoreError err{};
+    auto store = Store::createEmpty(dir / "selection-duration.adi", err);
+    check(store != nullptr, "open the time selection duration project");
+    if (!store)
+        return;
+    store->db().exec("INSERT INTO project(id,name) VALUES(1,'Selection duration')");
+    engine::ProjectView view;
+    view.refresh(*store);
+    OpSubmitter submitter(*store, view);
+    constexpr auto quarter = textproj::kPPQ;
+    OpRequest change;
+    change.opType = "project.insertTempoEvent";
+    change.payload = {{"pos", 8 * quarter}, {"bpm", 60.0}, {"curve", 0}};
+    check(submitter.submit(std::move(change)).ok, "slow the song to 60 BPM at bar 3");
+    TransportMailbox mailbox;
+    ViewStateStore persistence(*store);
+    SessionState session(*store);
+    AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "selection-duration");
+    root.setSize(1440, 900);
+    root.frame();
+    auto &selection = root.arrangement.geometry.selection;
+    selection.start = 4 * quarter;
+    selection.end = 12 * quarter;
+    check(root.selectionText().endsWith("(Duration: 0:06)"), "the selection spans two seconds plus four");
+    std::swap(selection.start, selection.end);
+    check(root.selectionText().endsWith("(Duration: 0:06)"), "a backwards selection gives the same duration");
+    selection.end = 8 * quarter;
+    check(root.selectionText().endsWith("(Duration: 0:04)"), "the duration starts at the selection's later tempo");
+    selection.start = selection.end;
+    selection.insert = 12 * quarter;
+    selection.marked = true;
+    check(root.selectionText().endsWith("(Time: 0:08)"), "the insert marker still shows absolute elapsed time");
+}
 void rangeSelection(AppCommands &commands, const std::filesystem::path &dir) {
     StoreError err{};
     auto store = Store::createEmpty(dir / "range.adi", err);
@@ -21524,6 +21558,7 @@ int main(int argc, char **argv) {
     trace("colorCabTile", [&] { colorCabTile(commands, temp.path()); });
     trace("oneShotTile", [&] { oneShotTile(commands, temp.path()); });
     trace("rangeSelection", [&] { rangeSelection(commands, temp.path()); });
+    trace("selectionDurationAcrossTempo", [&] { selectionDurationAcrossTempo(commands, temp.path()); });
     trace("clipToTrack", [&] { clipToTrack(commands, temp.path()); });
     trace("clipCopyDrag", [&] { clipCopyDrag(commands, temp.path()); });
     trace("clipView", [&] { clipView(commands, temp.path(), write); });

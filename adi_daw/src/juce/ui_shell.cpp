@@ -3119,9 +3119,10 @@ juce::String AdiRootComponent::selectionText() const {
         const auto at = barPosition(tick, meters);
         return juce::String(at.bar) + "." + juce::String(at.beat) + "." + juce::String(at.sixteenth);
     };
-    auto seconds = [this](std::int64_t tick) {
-        const auto *tempo = reader_->tempo();
-        const int t = tempo ? static_cast<int>(tempo->ticksToSeconds(tick)) : 0;
+    const auto *tempo = reader_->tempo();
+    const auto timeAt = [tempo](std::int64_t tick) { return tempo ? tempo->ticksToSeconds(tick) : 0.; };
+    const auto seconds = [](double elapsed) {
+        const auto t = static_cast<std::int64_t>(elapsed);
         return juce::String(t / 60) + ":" + juce::String(t % 60).paddedLeft('0', 2);
     };
     if (s.start != s.end) {
@@ -3129,10 +3130,10 @@ juce::String AdiRootComponent::selectionText() const {
         const auto length = barSpan(a, b - a, meters);
         return "Time Selection   Start: " + where(a) + "   End: " + where(b) + "   Length: " +
                juce::String(length.bar) + "." + juce::String(length.beat) + "." +
-               juce::String(length.sixteenth) + "   (Duration: " + seconds(b - a) + ")";
+               juce::String(length.sixteenth) + "   (Duration: " + seconds(timeAt(b) - timeAt(a)) + ")";
     }
     return "Insert Mark " + where(s.marked ? s.insert : 0) + " (Time: " +
-           seconds(s.marked ? s.insert : 0) + ")";
+           seconds(timeAt(s.marked ? s.insert : 0)) + ")";
 }
 std::string AdiRootComponent::undoTitle(bool redo) const {
     const auto step = redo ? submitter_.nextRedo() : submitter_.nextUndo();
