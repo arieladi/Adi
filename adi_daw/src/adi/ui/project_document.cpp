@@ -651,9 +651,9 @@ bool ProjectDocument::prepareCollectAndExport(const std::filesystem::path &zip, 
     error_.clear();
     return true;
 }
-StoreFileResult ProjectDocument::runCollectAndExport(const ExportJob &job) {
+StoreFileResult ProjectDocument::runCollectAndExport(const ExportJob &job, const media::ArchiveControl &control) {
     try {
-        const auto result = media::collectExport(job.project, job.zip);
+        const auto result = media::collectExport(job.project, job.zip, control);
         return {result.ok, result.error, result.warning};
     } catch (const std::exception &e) {
         return {false, e.what(), {}};

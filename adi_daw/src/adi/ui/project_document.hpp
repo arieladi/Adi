@@ -10,6 +10,7 @@
 #include "adi/history.hpp"
 #include "adi/mix_functions.hpp"
 #include "adi/mix/limiter/ReductionMailbox.h"
+#include "adi/media/collect_export.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/store.hpp"
 #include "adi/material_commands.hpp"
@@ -126,7 +127,7 @@ class ProjectDocument final : public engine::BlockProcessor {
         std::filesystem::path project, zip;
     };
     bool prepareCollectAndExport(const std::filesystem::path &zip, ExportJob &out);
-    static StoreFileResult runCollectAndExport(const ExportJob &);
+    static StoreFileResult runCollectAndExport(const ExportJob &, const media::ArchiveControl & = {});
     bool synchronise();
     void tick(std::int64_t milliseconds);
     // Commits every parameter edit still held in the capture, each as the undo step it was going to
