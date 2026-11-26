@@ -4,6 +4,20 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-26 — `land/*` Round 2 (`land/basics-1127b` `6ecdb2b6` — PASS)
+
+Verified `origin/land/basics-1127b` at `6ecdb2b6` (win's stack merging `land/basics-1127a` `b6753499` + 15 `basics/*` branches: `sc-02-lane-transport`, `sc-01-protect-main`, `sc-05-selection-delete`, `sc-80-track-clipboard`, `sc-82-value-controls`, `sc-83-device-drag`, `sc-84-browser-device-drops`, `sc-259-track-fold`, `sc-220-midi-loop`, `sc-50-arrangement-midi`, `sc-310-vst3-param-to-processor`, `sc-311-vst3-editor-and-automation-follow`, `sc-407-resampled-playback`, `sc-408-shared-wav-readers`, `sc-148-project-folders`) under **GCC 12.4.0** and **Clang 14.0.6 + libstdc++ 12** (`-DADI_WERROR=ON`, headless Pd on, JUCE off, `-DADI_ACCEPTANCE=ON`), all 11 touched JUCE TUs (`-DADI_WITH_JUCE=ON -DADI_WERROR=ON`), and **Clang 14 ASan + LSan + UBSan** (`-O1 -g1 -fsanitize=address,undefined -fno-sanitize-recover=undefined`).
+
+| Branch | SHA | Compiler / Tool | Warnings | Touched Headless Suites (`ctest`, 16/16 + `adi_clap_probe`) | Acceptance (`ctest -L acceptance`) | JUCE TUs (`-DADI_WITH_JUCE=ON -DADI_WERROR=ON`, 11/11) | Verdict |
+|---|---|---|---|---|---|---|---|
+| `land/basics-1127b` | `6ecdb2b6` | GCC 12.4.0 | 0 | **PASS** (16/16, 154.39 s: `adi_clip_playback_tests`, `adi_changeset_tests`, `adi_project_replace_tests`, `adi_track_delete_tests`, `adi_pd_amxd_tests`, `adi_clap_tests`, `adi_builtin_devices_tests`, `adi_return_send_tap_tests`, `adi_recording_commands_tests`, `adi_midi_clips_tests`, `adi_ui_seams_tests`, `adi_ui_document_tests`, `adi_ui_window_state_tests`, `adi_ui_note_edits_tests`, `adi_replace_operator_new_tests`, `adi_midi_capture_input_tests`; + `adi_clap_probe`) | **PASS** (2/2, 295.95 s: `adi_builtin_realtime_tests` 254.52 s, `adi_acceptance_wts01` 41.42 s) | **PASS** (11/11, 0 warnings: `ui_arrangement.cpp.o`, `ui_browser.cpp.o`, `ui_devices.cpp.o`, `ui_mixer.cpp.o`, `ui_shell.cpp.o`, `ui_main.cpp.o`, `test_ui_shell.cpp.o`, `vst3_host.cpp.o`, `vst3_probe.cpp.o`, `vst3_expression_synth.cpp.o`, `test_vst3_key.cpp.o`) | **PASS** |
+| `land/basics-1127b` | `6ecdb2b6` | Clang 14.0.6 + libstdc++ 12 | 0 | **PASS** (16/16, 148.42 s; + `adi_clap_probe`) | **PASS** (2/2, 277.02 s: `adi_builtin_realtime_tests` 238.96 s, `adi_acceptance_wts01` 38.05 s) | **PASS** (11/11, 0 warnings) | **PASS** |
+| `land/basics-1127b` | `6ecdb2b6` | Clang 14 ASan + LSan + UBSan | 0 | **PASS** (16/16, 172.34 s; 0 sanitizer reports, 0 leaks) | — | — | **PASS** |
+
+No findings on `land/basics-1127b` (`6ecdb2b6`) or any of its 15 stacked `basics/*` branches.
+
+---
+
 ## 2026-11-26 — `basics/*` Round 3 (`sc-02-lane-transport` `3a545410`, `sc-220-midi-loop` `062af8f9` — PASS)
 
 Verified under **GCC 12.4.0** and **Clang 14.0.6 + libstdc++ 12** (`-DADI_WERROR=ON`, headless Pd on, JUCE off, `-DADI_ACCEPTANCE=ON`), touched JUCE TUs (`-DADI_WITH_JUCE=ON -DADI_WERROR=ON`), and **Clang 14 ASan + LSan + UBSan** (`-O1 -g1 -fsanitize=address,undefined -fno-sanitize-recover=undefined`). (Non-DSP UI branches below run `adi_acceptance_wts01` for acceptance; full 2/2 `ctest -L acceptance` including `adi_builtin_realtime_tests` runs on every `land/*` stack and DSP/engine branch.)
