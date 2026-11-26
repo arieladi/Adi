@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/audio/wav_file.hpp"
 #include "adi/automation_lanes.hpp"
+#include "adi/controller_lanes.hpp"
 #include "adi/engine/clip_details.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/settings/store.hpp"
@@ -1011,9 +1012,13 @@ void arrangementMidiAutoTiming(const std::filesystem::path &path, bool overdub) 
         doc->tick(io.streamTimeSamples);
     };
     block();
-    check(doc->session().enqueueMidiInput(112, {0, engine::EventType::NoteOn, 1, 64, 9, 0, 1}, 80) &&
+    constexpr double mod = .3 + 0x1p-43;
+    constexpr auto pitch = static_cast<std::uint16_t>(ExpressionDim::Pitch);
+    check(doc->session().enqueueMidiInput(108, {0, engine::EventType::Controller, 1, 0, 0, 1, mod}, 76) &&
+              doc->session().enqueueMidiInput(112, {0, engine::EventType::NoteOn, 1, 64, 9, 0, 1}, 80) &&
+              doc->session().enqueueMidiInput(144, {0, engine::EventType::NoteExpression, 1, pitch, 0, 0, 1.}, 116) &&
               doc->session().enqueueMidiInput(160, {0, engine::EventType::NoteOff, 1, 64, 9, 0, 0}, 128),
-          "record the same event on each track across the first track's suppression boundary");
+          "record notes and channel controllers on both tracks across an Auto suppression boundary");
     block();
     block();
     const auto expected = [&](std::int64_t track) {
@@ -1043,6 +1048,16 @@ void arrangementMidiAutoTiming(const std::filesystem::path &path, bool overdub) 
         const auto &note = read.clip->notes.front();
         check(*read.clip->posTicks + note.startTicks == start && note.durationTicks == end - start,
               "the landed note preserves both endpoints from its track's selected clock");
+        const auto lanes = controllers::readLanes(doc->store(), id);
+        const bool heardMod = read.clip->trackId == 3 || overdub;
+        const auto modTime = tick(heardMod ? 108 - upstream : 76);
+        check(lanes.ok && lanes.lanes.size() == 2 && lanes.lanes[0].controller == 1 &&
+                  lanes.lanes[0].points.size() == 1 && lanes.lanes[0].points.front().value == mod &&
+                  *read.clip->posTicks + lanes.lanes[0].points.front().timeTicks == modTime &&
+                  lanes.lanes[1].controller == controllers::kPitchBend && lanes.lanes[1].points.size() == 1 &&
+                  lanes.lanes[1].points.front().value == .75 &&
+                  *read.clip->posTicks + lanes.lanes[1].points.front().timeTicks == tick(144 - upstream),
+              "CC retains its audible or raw time, and pitch follows monitoring when the clip ends under a held note");
     }
 }
 // MX-23 and SRF-02: a fader dragged is heard while it moves, writes nothing until the mouse lets go, then

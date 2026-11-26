@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include "adi/blob.hpp"
+#include "adi/controller_data.hpp"
 #include "adi/engine/audio_recording.hpp"
 #include "adi/media/publish_file.hpp"
 #include "adi/note_diff.hpp"
@@ -12,12 +13,17 @@ struct MidiExpressionLane {
     ExpressionDim dimension=ExpressionDim::Pitch;
     std::span<const ExpressionPoint> points; // relative to the note's start
 };
+struct MidiControllerLane {
+    int channel = 0, controller = 0;
+    std::span<const controllers::Point> points; // in time order, relative to the clip's start
+};
 struct MidiLinearTake {
     std::int64_t track=0,clip=0,start=0,length=0;
     std::string name;
     std::span<const notes::NoteValues> notes; // relative to the clip's start
     std::span<const MidiExpressionLane> expression;
     bool overdub = false;
+    std::span<const MidiControllerLane> controllers{};
 };
 struct MidiLinearLanding {
     std::int64_t clip = 0, sourceStart = 0;

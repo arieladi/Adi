@@ -286,10 +286,10 @@ void processes(){
     // Cross-process lease exclusion and release are tested through pipes, with
     // no time-based sleep or timeout expansion.
     int ready[2]{},release[2]{};if(::pipe(ready)!=0 || ::pipe(release)!=0)throw std::runtime_error("pipe");
-    child=::fork();if(child==0){::close(ready[0]);::close(release[1]);std::error_code ec;auto held=media::ProjectFileLease::openShared(target,ec);char marker=held?'Y':'N';(void)::write(ready[1],&marker,1);(void)::read(release[0],&marker,1);::_exit(held?0:99);}
+    child=::fork();if(child==0){::close(ready[0]);::close(release[1]);std::error_code ec;auto held=media::ProjectFileLease::openShared(target,ec);char marker=held?'Y':'N';if(::write(ready[1],&marker,1)!=1)::_exit(98);if(::read(release[0],&marker,1)!=1)::_exit(97);::_exit(held?0:99);}
     ::close(ready[1]);::close(release[0]);char marker=0;const auto got=::read(ready[0],&marker,1);
     check(got==1 && marker=='Y' && !active->saveCopy(target,StoreFileCollision::ReplaceConfirmed).ok,"another process's lease refuses confirmed replacement");
-    (void)::write(release[1],"X",1);::close(ready[0]);::close(release[1]);check(childStatus(child,0),"lease-holder process exits cleanly");
+    check(::write(release[1],"X",1)==1,"release signal written to lease-holder process");::close(ready[0]);::close(release[1]);check(childStatus(child,0),"lease-holder process exits cleanly");
     check(active->saveCopy(target,StoreFileCollision::ReplaceConfirmed).ok,"replacement proceeds after other process exits");active.reset();
     const auto staged=temp.path()/"Stage";write(staged,"crash complete bytes");write(target,"previous complete bytes");
     child=::fork();if(child==0){media::ReplaceHooks hooks;hooks.syncDirectory=crashAfterRename;(void)media::replaceFile(staged,target,hooks);::_exit(99);}

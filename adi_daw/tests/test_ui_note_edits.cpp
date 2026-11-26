@@ -1134,7 +1134,6 @@ void midiClips() {
     check(insertMidiClips(snapshot, {3}, 8 * beat, 9 * beat).refusal.empty(), "right after a clip is free");
 }
 void loopPlayhead() {
-    constexpr auto beat = textproj::kPPQ;
     engine::ClipDetails clip;
     clip.posTicks = 8 * beat;
     clip.lengthTicks = 12 * beat;

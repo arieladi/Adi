@@ -41,6 +41,7 @@ struct ProjectDocument::MidiRecording {
         std::vector<notes::NoteValues> notes;
         std::map<std::uint64_t, Held> held;
         std::map<std::pair<std::uint64_t, ExpressionDim>, std::vector<ExpressionPoint>> expression;
+        std::map<std::pair<int, int>, std::vector<controllers::Point>> controllerPoints;
     };
     std::shared_ptr<const engine::TempoMap> tempo;
     double sampleRate = 0;
@@ -59,6 +60,17 @@ struct ProjectDocument::MidiRecording {
         return next - seconds < seconds - tempo->ticksToSeconds(tick) ? tick + 1 : tick;
     }
 
+    bool monitorsAt(const Track &track, std::int64_t sample) const noexcept {
+        if (!track.monitor)
+            return false;
+        if (overdub)
+            return true;
+        const auto &ranges = track.monitor->blockedRanges;
+        const auto range = std::upper_bound(ranges.begin(), ranges.end(), sample,
+            [](std::int64_t at, const engine::MidiMonitorRange &span) { return at < span.end; });
+        return range == ranges.end() || sample < range->start;
+    }
+
     void ingest(const engine::MidiCapturePacket &packet) {
         if (packet.kind == engine::MidiCapturePacket::Kind::Span) {
             if (!started)
@@ -74,7 +86,14 @@ struct ProjectDocument::MidiRecording {
             return;
         }
         const auto &event = packet.event;
-        if (!started || event.noteId == 0 || event.type == engine::EventType::Controller)
+        const bool channelPitch = capture::isChannelPitchWheel(event);
+        const bool control = event.type == engine::EventType::Controller || channelPitch;
+        if (!started || (!control && event.noteId == 0))
+            return;
+        const auto address = channelPitch ? controllers::kPitchBend : event.paramId;
+        const auto controlValue = channelPitch ? capture::channelPitchWheelValue(event.value) : event.value;
+        if (control && (event.channel >= 16 || !controllers::validController(address) ||
+                        !std::isfinite(controlValue) || controlValue < 0. || controlValue > 1.))
             return;
         const auto played = tickAt(packet.timelineSample - (packet.streamSample - packet.inputSample));
         for (std::size_t i = 0; i < tracks.size(); ++i) {
@@ -82,17 +101,18 @@ struct ProjectDocument::MidiRecording {
             auto &take = preview[i];
             const auto held = track.held.find(event.noteId);
             // Latch the onset's clock for its release and expression, even if the note spans a clip edge.
-            bool monitored = held != track.held.end() && held->second.monitored;
-            if (event.type == engine::EventType::NoteOn && track.monitor) {
-                const auto& ranges = track.monitor->blockedRanges;
-                const auto range = std::upper_bound(ranges.begin(), ranges.end(), packet.timelineSample,
-                    [](std::int64_t at, const engine::MidiMonitorRange& span) { return at < span.end; });
-                monitored = overdub || range == ranges.end() || packet.timelineSample < range->start;
-            }
+            const bool monitored = control || event.type == engine::EventType::NoteOn
+                ? monitorsAt(track, packet.timelineSample)
+                : held != track.held.end() && held->second.monitored;
             // Live input goes directly to the instrument. A replayed clip passes through the upstream nodes first.
             const auto tick = monitored ? tickAt(packet.timelineSample - track.monitor->instrumentArrival) : played;
             const auto at = std::clamp(tick, take.start, take.end - 1);
-            if (event.type == engine::EventType::NoteOn) {
+            if (control) {
+                if (!monitored && packet.inputSample < firstStreamSample)
+                    continue;
+                auto &lane = track.controllerPoints[{event.channel, static_cast<int>(address)}];
+                lane.push_back({lane.size() + 1, at - take.start, controlValue});
+            } else if (event.type == engine::EventType::NoteOn) {
                 if (held != track.held.end() || (!monitored && packet.inputSample < firstStreamSample))
                     continue;
                 const auto index = track.notes.size();
@@ -1619,8 +1639,10 @@ void ProjectDocument::landTake() {
     }
     std::vector<recording::MidiLinearTake> takes;
     std::vector<std::vector<recording::MidiExpressionLane>> expressions;
+    std::vector<std::vector<recording::MidiControllerLane>> controllerLanes;
     if (hasMidi) {
         expressions.resize(midi->tracks.size());
+        controllerLanes.resize(midi->tracks.size());
         takes.reserve(midi->tracks.size());
         for (std::size_t i = 0; i < midi->tracks.size(); ++i) {
             auto &track = midi->tracks[i];
@@ -1631,10 +1653,18 @@ void ProjectDocument::landTake() {
                 if (!points.empty())
                     expressions[i].push_back({key.first, key.second, points});
             }
+            for (auto &[address, points] : track.controllerPoints) {
+                // Crossing a Monitor Auto boundary can change the clock for the next control.
+                std::stable_sort(points.begin(), points.end(), [](const auto &a, const auto &b) {
+                    return a.timeTicks < b.timeTicks;
+                });
+                controllerLanes[i].push_back({address.first, address.second, points});
+            }
             const auto clip = rows.next("clips");
             auto name = shownTrackName(current, span.track);
             takes.push_back({span.track, clip, span.start, span.end - span.start,
-                             name.empty() ? std::string("Take") : std::move(name), track.notes, expressions[i], midi->overdub});
+                             name.empty() ? std::string("Take") : std::move(name),
+                             track.notes, expressions[i], midi->overdub, controllerLanes[i]});
         }
     }
     auto edit = hasAudio ? recording::prepareCommit(*store_, *audio, ids, takes)
@@ -1687,7 +1717,7 @@ void ProjectDocument::landTake() {
     outcome.ok = true;
     outcome.message = outcome.clips.size() == 1 ? "Recorded one take." : "Recorded " + std::to_string(outcome.clips.size()) + " takes.";
     if (overdubTakeLane)
-        outcome.message += " Kept overdub notes in a Take Lane where merging would change other material.";
+        outcome.message += " Kept overdub in a Take Lane where merging would change other material.";
     if (!quantizeProblem.empty())
         outcome.message += " Record Quantize could not be applied: " + quantizeProblem + ".";
     if (!audioProblem.empty())

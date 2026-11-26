@@ -316,9 +316,9 @@ private:
             // Max's number box holds an int: what arrives is truncated first.
             Fragment f;
             f.records = {"#X obj " + at(b.x, b.y - 20) + " i", "#X floatatom " + at(b.x, b.y) + " 5 0 0 0 - - - 0"};
-            f.internal = {{0, 0, 1, 0}};
-            f.inlets = {{0, 0}};
-            f.outlets = {{1, 0}};
+            f.internal.push_back({0, 0, 1, 0});
+            f.inlets.push_back({0, 0});
+            f.outlets.push_back({1, 0});
             frags_[b.id] = std::move(f);
             return;
         }

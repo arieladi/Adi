@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "temp_directory.hpp"
+#include "adi/controller_lanes.hpp"
 #include "adi/recording_commands.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/engine/audio_recording.hpp"
@@ -167,22 +168,34 @@ void midiOverdub() {
     auto& db = store.db();
     db.exec("INSERT INTO tracks(id,kind,name) VALUES(23,'midi','One period'),(24,'midi','Repeated')");
     const std::array<notes::NoteValues, 1> oldNotes{{{.start=100, .duration=60, .id=17, .key=60, .velocity=80}}};
+    const std::array modBefore{controllers::Point{1, 100, .25}};
+    const std::array pedalBefore{controllers::Point{1, 80, 1.}};
+    const std::array<recording::MidiControllerLane, 2> oldControls{{{1, 1, modBefore}, {1, 64, pedalBefore}}};
     const std::array<recording::MidiLinearTake, 2> original{{
-        {23, 7, 960, 960, "One period", oldNotes, {}},
-        {24, 8, 960, 960, "Repeated", oldNotes, {}},
+        {23, 7, 960, 960, "One period", oldNotes, {}, false, oldControls},
+        {24, 8, 960, 960, "Repeated", oldNotes, {}, false, oldControls},
     }};
     auto seed = recording::prepareMidiLinearCommit(store, original, 48000);
     if (!seed.ok || !recording::commit(store, seed).ok)
         throw std::runtime_error("seed the overdub's original clips");
     db.exec("UPDATE clips SET length_ticks=1920 WHERE id=8");
     const auto before = digestProject(store).text;
+    const auto firstControls = controllers::readLanes(store, 7);
+    const auto repeatControls = controllers::readLanes(store, 8);
+    check(firstControls.ok && firstControls.lanes.size() == 2 && repeatControls.ok && repeatControls.lanes.size() == 2,
+          "linear take images retain independently addressed mod and sustain lanes");
 
     const std::array<notes::NoteValues, 1> input{{{.start=120, .duration=90, .id=17, .key=67, .velocity=90}}};
     const std::array<ExpressionPoint, 1> bend{{{0, 2.f, 0.f, 0, 0, {}}}};
     const std::array<recording::MidiExpressionLane, 1> expression{{{17, ExpressionDim::Pitch, bend}}};
+    const std::array modInput{controllers::Point{1, 120, .875}};
+    const std::array pitchInput{controllers::Point{1, 80, .75}};
+    const std::array<recording::MidiControllerLane, 2> controllerInput{{
+        {1, 1, modInput}, {1, controllers::kPitchBend, pitchInput},
+    }};
     const std::array<recording::MidiLinearTake, 2> overdub{{
-        {23, 9, 1200, 240, "Merge", input, expression, true},
-        {24, 10, 2160, 240, "Repeat Safety", input, expression, true},
+        {23, 9, 1200, 240, "Merge", input, expression, true, controllerInput},
+        {24, 10, 2160, 240, "Repeat Safety", input, expression, true, controllerInput},
     }};
     auto edit = recording::prepareMidiLinearCommit(store, overdub, 48000);
     check(edit.ok && edit.midiLandings.size() == 2 && digestProject(store).text == before,
@@ -208,6 +221,19 @@ void midiOverdub() {
               saved.clip->notes.size() == 1 && saved.clip->noteExpressions.curves.size() == 1 &&
               repeat.clip && repeat.clip->lengthTicks == 1920 && repeat.clip->notes.size() == 1,
           "taking a later loop occurrence preserves the recorded notes and leaves the repeating clip intact");
+    const auto mergedLanes = controllers::readLanes(store, 7);
+    const auto fallbackLanes = controllers::readLanes(store, 10);
+    check(firstControls.lanes.size() == 2 && mergedLanes.ok && mergedLanes.lanes.size() == 3 &&
+              mergedLanes.lanes[0].id == firstControls.lanes[0].id &&
+              mergedLanes.lanes[0].points == std::vector<controllers::Point>{{1, 100, .25}, {2, 360, .875}} &&
+              mergedLanes.lanes[1] == firstControls.lanes[1] && mergedLanes.lanes[2].controller == controllers::kPitchBend &&
+              mergedLanes.lanes[2].points == std::vector<controllers::Point>{{1, 320, .75}},
+          "overdub adds shifted points with fresh identities and preserves the other envelope bytes");
+    check(fallbackLanes.ok && fallbackLanes.lanes.size() == 2 &&
+              fallbackLanes.lanes[0].points == std::vector<controllers::Point>(modInput.begin(), modInput.end()) &&
+              fallbackLanes.lanes[1].points == std::vector<controllers::Point>(pitchInput.begin(), pitchInput.end()) &&
+              controllers::readLanes(store, 8).lanes == repeatControls.lanes,
+          "a fallback take keeps the new trajectories and preserves the repeating source envelopes");
 
     const std::array<recording::MidiRecordQuantize, 1> targets{{{7, merge.sourceStart, 1200, 240, 240, merge.noteIds}}};
     const auto quantize = recording::prepareRecordQuantize(store, targets);
@@ -223,6 +249,35 @@ void midiOverdub() {
     check(raw.clip && raw.clip->notes.size() == 2 && raw.clip->notes[1].startTicks == 360 &&
               history.undo().ok && digestProject(store).text == before,
           "Undo first restores the raw overdub, then removes the new note and the separate take lane");
+}
+
+void midiControllerOnlyTake() {
+    Fixture fixture;
+    auto& store = *fixture.store;
+    store.db().exec("INSERT INTO tracks(id,kind,name) VALUES(23,'midi','Wheels')");
+    const std::array points{controllers::Point{1, 120, .5}};
+    const std::array<recording::MidiControllerLane, 1> wheel{{{15, controllers::kPitchBend, points}}};
+    const std::array<recording::MidiLinearTake, 1> fresh{{{23, 7, 1000, 1000, "Wheel", {}, {}, false, wheel}}};
+    const auto seed = recording::prepareMidiLinearCommit(store, fresh, 48000);
+    check(seed.ok && recording::commit(store, seed).ok, "record a new pitch-only Arrangement take");
+    if (!seed.ok)
+        return;
+    const auto original = controllers::readLanes(store, 7);
+    const auto prior = digestProject(store).text;
+    const std::array moved{controllers::Point{1, 120, .125}};
+    const std::array<recording::MidiControllerLane, 1> movedWheel{{{15, controllers::kPitchBend, moved}}};
+    const std::array<recording::MidiLinearTake, 1> take{{{23, 8, 1000, 800, "Move", {}, {}, true, movedWheel}}};
+    const auto overdub = recording::prepareMidiLinearCommit(store, take, 48000);
+    check(overdub.ok && recording::commit(store, overdub).ok, "overdub a pitch-only take into its existing source");
+    const auto landed = controllers::readLanes(store, 7);
+    check(original.ok && original.lanes.size() == 1 && landed.ok && landed.lanes.size() == 1 &&
+              landed.lanes.front().id == original.lanes.front().id && landed.lanes.front().channel == 15 &&
+              landed.lanes.front().points == std::vector<controllers::Point>{{1, 120, .5}, {2, 120, .125}},
+          "same-tick overdub preserves the old point and orders the captured wheel value after it");
+    History history(store);
+    check(history.undo().ok && digestProject(store).text == prior &&
+              history.redo().ok && controllers::readLanes(store, 7).lanes == landed.lanes,
+          "one undo or redo restores the complete controller-only overdub");
 }
 
 void mixedLinearTake() {
@@ -918,7 +973,7 @@ void loopReuseRefusesUnprovedExtents() {
 }
 int main(int argc,char** argv){try{
     latencyCompensatedPlacement();
-    midiLinearTakes();midiOverdub();mixedLinearTake();
+    midiLinearTakes();midiOverdub();midiControllerOnlyTake();mixedLinearTake();
     midiLoopTakes();
     if(argc!=1 && (argc!=3 || std::string(argv[1])!="--cross-volume-work-folder"))throw std::runtime_error("usage: recording tests [--cross-volume-work-folder PATH]");
     publicationStagingOwnership();forcedCrossDevicePublication();heardPlacementAndHistory();linearTakeReplacesWhatItCovers();rollbackNeverDeletesLaterWriter();lateSqlAndOwnedReuse();existingMediaAndHistoryPaths();groupDedupAndGuards();loopPublicationRefusesFlattening();
