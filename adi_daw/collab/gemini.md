@@ -4,6 +4,18 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-26 — Item 1 (`walk/*` Round 17): `walk/a28-vblank-window-open` (`a45b1cb4`), `walk/b12-play-start-dropout` (`05f157ec`), `walk/b14-clip-rename` (`6a4a7dbb`)
+
+All three heads built under **GCC 12.4.0** and **Clang 14.0.6 + libstdc++ 12** with `-DADI_WERROR=ON -DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF -DADI_ACCEPTANCE=ON`, plus targeted JUCE `-DADI_WERROR=ON` compile checks on all touched JUCE TUs.
+
+| Branch | Head | Touched files | GCC 12.4.0 `-DADI_WERROR=ON` | Clang 14.0.6 + libstdc++ 12 `-DADI_WERROR=ON` | Acceptance (`ctest -L acceptance`) | Extra checks / Findings |
+|---|---|---|---|---|---|---|
+| `walk/a28-vblank-window-open` | `a45b1cb4` | `src/juce/ui_shell.{hpp,cpp}`, `tests/test_ui_shell.cpp` | **PASS** (0 warnings; headless + JUCE TUs `ui_shell.cpp.o` & `test_ui_shell.cpp.o` 0 warnings) | **PASS** (0 warnings; headless + JUCE TUs `ui_shell.cpp.o` & `test_ui_shell.cpp.o` 0 warnings) | **2/2 PASS** on both (`adi_builtin_realtime_tests` 252.39 s / 255.38 s; `adi_acceptance_wts01` 41.34 s / 38.19 s) | Clean across all legs. |
+| `walk/b12-play-start-dropout` | `05f157ec` | `src/adi/engine/session.{hpp,cpp}`, `tests/test_ui_document.cpp` | **PASS** (0 warnings; `adi_session_tests` 1.19 s, `adi_ui_document_tests` 15.87 s) | **PASS** (0 warnings; `adi_session_tests` 1.20 s, `adi_ui_document_tests` 14.54 s) | **2/2 PASS** on both (`adi_builtin_realtime_tests` 250.73 s / 229.66 s; `adi_acceptance_wts01` 41.11 s / 37.37 s) | Clean across all legs. |
+| `walk/b14-clip-rename` | `6a4a7dbb` | `src/juce/ui_arrangement.{hpp,cpp}`, `src/juce/ui_shell.cpp`, `tests/test_ui_shell.cpp` | **PASS** (0 warnings; headless + JUCE TUs `ui_arrangement.cpp.o`, `ui_shell.cpp.o`, `test_ui_shell.cpp.o` 0 warnings) | **PASS** (0 warnings; headless + JUCE TUs `ui_arrangement.cpp.o`, `ui_shell.cpp.o`, `test_ui_shell.cpp.o` 0 warnings) | **2/2 PASS** on both (`adi_builtin_realtime_tests` 258.98 s / 234.55 s; `adi_acceptance_wts01` 42.83 s / 37.87 s) | Clean across all legs. |
+
+---
+
 ## 2026-11-26 — Item 1 (`walk/*` Round 16): `walk/a27-window-teardown-crash` (`a27380b5`), `walk/a7-oneshot-in-browser` (`fab2a702`)
 
 Both heads built under **GCC 12.4.0** and **Clang 14.0.6 + libstdc++ 12** with `-DADI_WERROR=ON -DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF -DADI_ACCEPTANCE=ON`, plus targeted JUCE `-DADI_WERROR=ON` compile checks on all touched JUCE TUs.
