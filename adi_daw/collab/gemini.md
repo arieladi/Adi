@@ -4,6 +4,17 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-26 — Item 1 (`walk/*` Round 16): `walk/a27-window-teardown-crash` (`a27380b5`), `walk/a7-oneshot-in-browser` (`fab2a702`)
+
+Both heads built under **GCC 12.4.0** and **Clang 14.0.6 + libstdc++ 12** with `-DADI_WERROR=ON -DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF -DADI_ACCEPTANCE=ON`, plus targeted JUCE `-DADI_WERROR=ON` compile checks on all touched JUCE TUs.
+
+| Branch | Head | Touched files | GCC 12.4.0 `-DADI_WERROR=ON` | Clang 14.0.6 + libstdc++ 12 `-DADI_WERROR=ON` | Acceptance (`ctest -L acceptance`) | Extra checks / Findings |
+|---|---|---|---|---|---|---|
+| `walk/a27-window-teardown-crash` | `a27380b5` | `src/juce/ui_main.cpp`, `src/juce/window_release.hpp`, `tests/test_ui_shell.cpp` | **PASS** (0 warnings; headless + JUCE TUs `ui_main.cpp.o` & `test_ui_shell.cpp.o` 0 warnings) | **PASS** (0 warnings; headless + JUCE TUs `ui_main.cpp.o` & `test_ui_shell.cpp.o` 0 warnings) | **2/2 PASS** on both (`adi_builtin_realtime_tests` 251.45 s / 229.73 s; `adi_acceptance_wts01` 41.16 s / 38.07 s) | Clean across all legs. |
+| `walk/a7-oneshot-in-browser` | `fab2a702` | `src/adi/builtin_insert.cpp`, `tests/test_builtin_devices.cpp`, `src/juce/ui_browser.{hpp,cpp}`, `tests/test_ui_shell.cpp` | **PASS** (0 warnings; `adi_builtin_devices_tests` 3.97 s PASS; JUCE TUs `ui_browser.cpp.o` & `test_ui_shell.cpp.o` 0 warnings) | **PASS** (0 warnings; `adi_builtin_devices_tests` 3.87 s PASS; JUCE TUs `ui_browser.cpp.o` & `test_ui_shell.cpp.o` 0 warnings) | **2/2 PASS** on both (`adi_builtin_realtime_tests` 250.84 s / 230.20 s; `adi_acceptance_wts01` 41.51 s / 37.14 s) | Clean across all legs. |
+
+---
+
 ## 2026-11-26 — Item 5 (Standing Queue Item 13): Full `-D_GLIBCXX_DEBUG` headless sweep on `origin/main` (`946db965`)
 
 Built and ran all **277** headless CTest suites (`-LE performance`, `-DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF -DADI_WERROR=OFF`) on `origin/main` (`946db965`) under **GCC 12.4.0** with `-O1 -g0 -D_GLIBCXX_DEBUG`.
