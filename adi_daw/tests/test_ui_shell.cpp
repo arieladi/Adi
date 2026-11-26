@@ -12460,6 +12460,24 @@ void sampleEditorMouse(AppCommands &commands, const std::filesystem::path &dir) 
     check(panel.setField(Field::Start, 2 * beat) && panel.setField(Field::End, 6 * beat),
           "start with material trimmed at both ends");
     root.frame();
+    check(panel.readings().start == "0:01.000" && panel.readings().end == "0:03.000",
+          "unwarped audio reads Start and End in minutes, seconds and milliseconds");
+    const bool typedClock = panel.typeField(Field::Start, "0:01.125");
+    check(typedClock && panel.readings().start == "0:01.125", "a typed source time changes the Start marker");
+    if (typedClock) {
+        check(!panel.typeField(Field::End, "0:60.200"), "a source clock with 60 seconds is refused");
+        check(root.command(AppCommands::Undo), "undo the source clock edit");
+        root.frame();
+    }
+    if (root.setTempoAtPlay("100")) {
+        root.frame();
+        check(panel.readings().start == "0:01.000" && panel.readings().end == "0:03.000",
+              "a tempo change preserves both unwarped source clock readings");
+        check(root.command(AppCommands::Undo), "undo the tempo change before the Sample Editor gestures");
+        root.frame();
+    } else {
+        check(false, "change tempo with unwarped Start and End markers set");
+    }
     check(edit.time.tick(0) == 0 && edit.time.tick(edit.getWidth()) >= 8 * beat,
           "the editor still shows the whole source around both markers");
     const auto x = [&](std::int64_t at) { return static_cast<float>(std::ceil(edit.time.x(at))); };
