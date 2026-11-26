@@ -9,14 +9,15 @@ The basics-export session has claimed all nine Export and import rows assigned t
 | SC-396 | `basics/sc-396-export-settings` `0393c7c4` (local) | The export dialog uses Settings defaults, remembers session choices and refreshes the range. Window and window-fn. | Changed translation units compiled with MSVC Debug and warnings as errors before stacking. | blocked pending Linux verification |
 | SC-397 | `basics/sc-397-stem-export` `fde9fa38` (local) | The app queues post-fader files for all or selected audio-bearing tracks. Return and Main processing for isolated stems still needs the engine's ViaMain route. Window and window-fn. | Regression cases cover both modes and track selection. | blocked pending Linux verification |
 | SC-398 | `basics/sc-398-export-formats` `09b23cc2` (local) | Framework-free AIFF in 16- and 24-bit PCM and 32-bit float AIFF-C. FLAC and MP3 require the planned encoder pins. Engine-win, window and window-fn. | Windows render queue passed 465 checks. A Linux GCC probe decoded each format back to the original samples at 176.4 kHz. | blocked on the libFLAC and LAME grants and the Linux application and acceptance verification |
-| SC-399 | `basics/sc-399-export-guard` `6f1d1313` (local) | New, Open and Quit ask before stopping a render. Main window progress stays visible when the dialog is closed. Window and window-fn. | MSVC Debug compiled the changed files before stacking. The interruption test failed when the wait was removed. | blocked pending Linux verification |
+| SC-399 | `basics/sc-399-export-guard` `6f1d1313` (local) | New, Open and Quit ask before stopping a render. Main window progress stays visible when the dialog is closed. Window and window-fn. | MSVC Debug compiled the changed files before stacking. A Linux GCC probe passed the idle, keep-exporting and cancel-and-continue paths. | blocked pending the Linux window and acceptance suites |
 | SC-400 | `basics/sc-400-export-progress` `9eb53083` (local) | Progress advances through preroll and normalization. Engine-win and window-fn. | Windows Debug passed render queue, normalization and NI Stems on the initial stacked head. A baseline probe produced four expected progress failures. | blocked pending Linux verification |
 | SC-401 | `basics/sc-401-export-messages` `e03239b8` (local) | Plain-language messages and the three Shaped names from ADR-0250. Window. | A Linux GCC probe of the production choices failed on the preceding head and passed on the fix. | blocked pending the Linux window and acceptance suites |
 | SC-402 | `basics/sc-402-export-sample-rates` `da40d850` (local) | 176.4 and 192 kHz are offered for any project. Window. | A Linux GCC probe found the rates missing on the preceding head and present on the fix. | blocked pending the Linux window and acceptance suites |
 
 The session is running a temporary Debian VM because the available host is Windows. Item branches
-stay local until the required Linux build and suites pass. The landing branches will form a chain
-per the updated howto on main. The merge from main at `44f9562b` changed Markdown only.
+stay local until the required Linux build and suites pass. Each item has its own branch as requested
+by the director. These branches form one chain, so the newest verified item includes all preceding
+verified items. The merge from main at `44f9562b` changed Markdown only.
 
 ## For the director
 
