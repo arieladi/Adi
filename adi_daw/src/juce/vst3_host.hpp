@@ -381,6 +381,27 @@ private:
 
     Vst3ParamChanges paramChanges_;
     Vst3ParamChanges outParams_;
+
+    /// SC-310, ADR-0073's hand-over, built. ADI calls the processor itself, so JUCE's `processBlock`, which
+    /// hands the processor what was set on the controller, never runs: a value the host sets (the panel,
+    /// Undo, Delete to default, a project's rows at open) reached the edit controller and stopped there.
+    /// Each set is posted here, one slot per parameter, and the next process call sends every slot that
+    /// changed at the segment's start through `paramChanges_`. Sized at construction (the parameter list
+    /// is read once), written from the message thread, read on the audio thread: no lock, no allocation.
+    struct PendingParam {
+        std::atomic<double> value{0.0};
+        std::atomic<std::uint32_t> sequence{0};
+    };
+    std::unique_ptr<PendingParam[]> pending_;
+    std::vector<std::uint32_t> wireIds_;      ///< the VST3 ParamID of each of `params_`
+    std::vector<std::uint8_t> wireValid_;     ///< 1 when that id is numeric (a VST3 ParamID)
+    std::vector<std::uint32_t> pendingSent_;  ///< audio thread: the sequence last sent, per slot
+    std::atomic<std::uint32_t> pendingEpoch_{0};
+    std::uint32_t pendingSeen_ = 0;           ///< audio thread: the epoch last drained in full
+    /// Message thread: post parameter `i`'s value for the processor.
+    void postToProcessor(std::size_t i, double normalized) noexcept;
+    /// Audio thread: every posted value not yet sent, at offset 0 of this call.
+    void drainPosted() noexcept;
     std::vector<engine::Event> injected_;
     std::size_t injectedUsed_ = 0;
     std::vector<float*> rawIn_, rawOut_;

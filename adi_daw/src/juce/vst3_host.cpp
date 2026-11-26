@@ -3,6 +3,7 @@
 // See vst3_host.hpp, in particular for what JUCE's host path cannot carry.
 
 #include "juce/vst3_host.hpp"
+#include <charconv>
 #include "juce/vst3_scan_host.hpp"
 #include "adi/engine/graph.hpp"
 #include "adi/scan_batch.hpp"
@@ -476,6 +477,46 @@ void Vst3Device::readParameters() {
         params_.push_back(std::move(d));
         handles_.push_back(p);
     }
+    // SC-310: one slot per parameter for the values the host sets, and each one's VST3 ParamID (JUCE
+    // names a VST3 parameter by its id in decimal, as the automation lanes do).
+    pending_ = std::make_unique<PendingParam[]>(params_.size());
+    pendingSent_.assign(params_.size(), 0);
+    wireIds_.assign(params_.size(), 0);
+    wireValid_.assign(params_.size(), 0);
+    for (std::size_t i = 0; i < params_.size(); ++i) {
+        const auto& text = params_[i].id;
+        std::uint32_t id = 0;
+        const auto [end, fault] = std::from_chars(text.data(), text.data() + text.size(), id);
+        if (fault == std::errc{} && end == text.data() + text.size() && !text.empty()) {
+            wireIds_[i] = id;
+            wireValid_[i] = 1;
+        }
+    }
+}
+
+void Vst3Device::postToProcessor(std::size_t i, double normalized) noexcept {
+    if (pending_ == nullptr || i >= params_.size() || wireValid_[i] == 0) return;
+    pending_[i].value.store(normalized, std::memory_order_relaxed);
+    pending_[i].sequence.fetch_add(1, std::memory_order_release);
+    pendingEpoch_.fetch_add(1, std::memory_order_release);
+}
+
+void Vst3Device::drainPosted() noexcept {
+    const auto epoch = pendingEpoch_.load(std::memory_order_acquire);
+    if (epoch == pendingSeen_ || pending_ == nullptr) return;
+    // A value posted after this scan bumps the epoch again, so the next call scans again. A slot whose
+    // value finds the pool full stays unsent and is retried in the next call.
+    bool all = true;
+    for (std::size_t i = 0; i < pendingSent_.size(); ++i) {
+        const auto sequence = pending_[i].sequence.load(std::memory_order_acquire);
+        if (sequence == pendingSent_[i]) continue;
+        if (paramChanges_.set(static_cast<SV::ParamID>(wireIds_[i]),
+                              pending_[i].value.load(std::memory_order_relaxed), 0))
+            pendingSent_[i] = sequence;
+        else
+            all = false;
+    }
+    if (all) pendingSeen_ = epoch;
 }
 
 const ParamDescriptor* Vst3Device::paramAt(std::int32_t i) const noexcept {
@@ -511,6 +552,8 @@ bool Vst3Device::setParam(const std::string& paramId, const ParamValue& v) {
         h->beginChangeGesture();
         h->setValueNotifyingHost(static_cast<float>(v.normalized));
         h->endChangeGesture();
+        // SC-310: and to the processor, in the next process call (JUCE's hand-over never runs here).
+        postToProcessor(i, v.normalized);
         return true;
     }
     return false;
@@ -676,7 +719,9 @@ void Vst3Device::prepare(double sampleRate, std::int32_t maxFrames) {
     const double updates = (sampleRate > 0.0)
                              ? (static_cast<double>(maxFrames) / sampleRate) * 500.0 : 1.0;
     const auto points = static_cast<std::int32_t>(updates * 3.0) + 10;
-    paramChanges_.reserve(256, points);
+    // Room for every parameter at once: a project's rows replayed at open reach the processor in one
+    // call (SC-310).
+    paramChanges_.reserve(std::max<std::int32_t>(256, static_cast<std::int32_t>(params_.size()) + 16), points);
     outParams_.reserve(256, points);
     // Room for channel resets on note-on and one configuration message.
     constexpr std::int32_t routerHeadroom = 16 * 4 + 8;
@@ -755,6 +800,9 @@ void Vst3Device::process(const engine::NodeIo& io) noexcept {
         events_.clear();
         paramChanges_.clear();
         outParams_.clear();
+        // SC-310: what the host set since the last call, first, at the segment's start; the automation
+        // and mapped controllers below follow it in the same queues.
+        drainPosted();
 
         // ADR-0097: a route change asked for since the last call. Every
         // sounding note ends on its own channel before the new route starts.
