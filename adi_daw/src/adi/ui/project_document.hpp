@@ -24,6 +24,7 @@
 #include "adi/ui/waveform.hpp"
 #include "adi/ui/window_state.hpp"
 #include <atomic>
+#include <cstddef>
 #include <functional>
 #include <optional>
 namespace adi::ui {
@@ -45,6 +46,37 @@ class ProjectDocument final : public engine::BlockProcessor {
     static std::unique_ptr<ProjectDocument> open(const std::filesystem::path &, bool create,
                                                  engine::DeviceLoader, std::string &error,
                                                  const RecordingDefaults *defaults = nullptr);
+    // A candidate remains private until its graph and view agree. Advance and
+    // destroy this job on the document owner, between message loop turns.
+    class OpenJob {
+      public:
+        enum class Phase { preparing, loadingDevices, buildingGraph, ready, failed };
+        ~OpenJob();
+        Phase phase() const noexcept { return phase_; }
+        void advance();
+        std::size_t completedDevices() const noexcept { return completedDevices_; }
+        std::size_t totalDevices() const noexcept { return totalDevices_; }
+        const std::string &error() const noexcept { return error_; }
+        std::unique_ptr<ProjectDocument> takeDocument();
+
+      private:
+        friend class ProjectDocument;
+        OpenJob(std::filesystem::path, bool, engine::DeviceLoader, const RecordingDefaults *);
+        void prepare();
+        void fail(std::string reason);
+
+        std::filesystem::path path_;
+        bool create_;
+        engine::DeviceLoader loader_;
+        std::optional<RecordingDefaults> defaults_;
+        std::unique_ptr<ProjectDocument> document_;
+        Phase phase_ = Phase::preparing;
+        std::size_t completedDevices_ = 0;
+        std::size_t totalDevices_ = 0;
+        std::string error_;
+    };
+    static std::unique_ptr<OpenJob> startOpen(const std::filesystem::path &, bool create, engine::DeviceLoader,
+                                              const RecordingDefaults *defaults = nullptr);
     // Take Snapshot (ADR-0203 d6, d13; ADR-0128): history metadata, not an op,
     // so it neither refreshes the view nor enters the undo list.
     History::SnapshotResult takeSnapshot(const std::string &name, std::int64_t nowUtc,
