@@ -11052,6 +11052,30 @@ void stripParamUndo(AppCommands &commands, const std::filesystem::path &dir) {
         auto &control = *root.devices.panels[0]->controls[0];
         control.grabKeyboardFocus();
         auto *peer = host.getPeer();
+        const auto knobValue = [&] { return knobs->getParam("cutoff").normalized; };
+        if (peer != nullptr && knobs != nullptr) {
+            const auto previous = knobValue();
+            const auto hit = peer->handleKeyPress(juce::KeyPress(juce::KeyPress::upKey));
+            document->tick(0);
+            root.frame();
+            check(hit && knobValue() > previous, "SC-82: Up changes a focused device knob");
+            if (knobValue() != previous)
+                check(root.command(AppCommands::Undo), "undo the knob nudge");
+            control.grabKeyboardFocus();
+            peer->handleKeyPress(juce::KeyPress(juce::KeyPress::returnKey));
+            auto *editor = dynamic_cast<juce::TextEditor *>(juce::Component::getCurrentlyFocusedComponent());
+            if (editor) {
+                editor->setText("0.7");
+                peer->handleKeyPress(juce::KeyPress(juce::KeyPress::returnKey));
+                document->tick(0);
+                root.frame();
+            }
+            check(editor != nullptr && std::abs(knobValue() - .7) < 1e-9,
+                  "SC-82: typing commits the focused device knob");
+            if (knobValue() != previous)
+                check(root.command(AppCommands::Undo), "undo the typed knob value");
+            control.grabKeyboardFocus();
+        }
         const juce::KeyPress del(juce::KeyPress::deleteKey);
         check(peer != nullptr && control.hasKeyboardFocus(false) && peer->handleKeyPress(del) && submitted.empty() &&
                   knobs != nullptr && std::abs(knobs->getParam("cutoff").normalized - .5) < 1e-9 &&
@@ -11898,6 +11922,63 @@ void mixerDragLive(AppCommands &commands, const std::filesystem::path &dir) {
     three->volume.onDragEnd();
     root.frame();
     check(!document->mixerDragging() && std::abs(volumeOf(4) + 3) < 1e-6, "without the mouse held, the value commits at the end");
+    {
+        auto *peer = surfacePeer.getPeer();
+        const auto type = [&](juce::Slider &box, const char *value) {
+            if (peer == nullptr)
+                return false;
+            const auto centre = box.getLocalBounds().getCentre().toFloat();
+            box.mouseDown(pressAt(box, centre, juce::ModifierKeys::leftButtonModifier));
+            box.mouseUp(pressAt(box, centre));
+            if (!box.hasKeyboardFocus(false))
+                return false;
+            peer->handleKeyPress(juce::KeyPress(juce::KeyPress::returnKey));
+            auto *editor = dynamic_cast<juce::TextEditor *>(juce::Component::getCurrentlyFocusedComponent());
+            if (!editor || !box.isParentOf(editor))
+                return false;
+            editor->setText(value);
+            peer->handleKeyPress(juce::KeyPress(juce::KeyPress::returnKey));
+            root.frame();
+            return true;
+        };
+        const auto second = volumeOf(3);
+        sel.track = 3;
+        sel.toTrack = 4;
+        root.frame();
+        three->volume.mouseDoubleClick(pressAt(three->volume, {3.f, 3.f}, juce::ModifierKeys::leftButtonModifier));
+        check(volumeOf(4) == 0 && volumeOf(3) == second, "SC-82: double-click resets only the clicked fader");
+        check(type(three->volume, "-7.5 dB") && std::abs(volumeOf(4) + 7.5) < 1e-9 && volumeOf(3) == second,
+              "SC-82: click and type a precise fader value");
+        check(type(three->pan, "25L") && three->pan.getValue() == -.5, "SC-82: the pan value box reads a left value");
+        if (!three->sendKnobs().empty()) {
+            auto &send = *three->sendKnobs().front();
+            const auto floor = send.getMinimum();
+            check(type(send, "-10") && send.getValue() == -10, "SC-82: click and type the send level");
+            check(peer != nullptr && peer->handleKeyPress(juce::KeyPress(juce::KeyPress::deleteKey)) &&
+                      send.getValue() == floor, "SC-82: Delete returns the focused send to silence");
+        }
+        sel.track = sel.toTrack = 0;
+        root.frame();
+        const auto dragFader = [&](int modifiers) {
+            auto &box = three->volume;
+            const auto centre = box.getLocalBounds().getCentre().toFloat();
+            const juce::ModifierKeys buttons(juce::ModifierKeys::leftButtonModifier | modifiers);
+            juce::ModifierKeys::currentModifiers = buttons;
+            box.mouseDown(pressAt(box, centre, buttons));
+            box.mouseDrag(dragAt(box, centre, centre.translated(0, -25), buttons));
+            letGo();
+            box.mouseUp(pressAt(box, centre));
+            root.frame();
+            return volumeOf(4);
+        };
+        const double start = volumeOf(4);
+        const double plain = dragFader(0) - start;
+        if (plain != 0)
+            root.command(AppCommands::Undo);
+        root.frame();
+        const double fine = dragFader(juce::ModifierKeys::shiftModifier) - start;
+        check(plain > 0 && fine > 0 && fine < plain, "SC-82: Shift makes an equal fader drag finer");
+    }
     // Without the live gesture, the release commits as before.
     root.beginMixerDrag = nullptr;
     press();

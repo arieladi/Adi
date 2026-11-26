@@ -34,10 +34,15 @@ class SoloButton final : public juce::TextButton {
 };
 // Live's peak level (manual 18.1): the highest peak since the last click, in dB, red once
 // it has clipped. A click resets it.
+class ValueEntry;
 // A mixer control the left button moves; the right one opens the strip's menu for it and moves nothing (AU-04):
 // JUCE's Slider starts a drag on any button when its own menu is off.
 class PrimaryButtonSlider final : public juce::Slider {
   public:
+    PrimaryButtonSlider();
+    ~PrimaryButtonSlider() override;
+    void enableValueEdits(double defaultValue, double step);
+    bool keyPressed(const juce::KeyPress &) override;
     // A gesture belongs to the press that began it: a primary press's drag and release reach the Slider whatever
     // keys or buttons join it (a Ctrl held at the release is a popup click on macOS), and a popup press's never do.
     void mouseDown(const juce::MouseEvent &e) override {
@@ -49,18 +54,14 @@ class PrimaryButtonSlider final : public juce::Slider {
         if (primary_)
             juce::Slider::mouseDrag(e);
     }
-    void mouseUp(const juce::MouseEvent &e) override {
-        if (primary_)
-            juce::Slider::mouseUp(e);
-        primary_ = false;
-    }
-    void mouseDoubleClick(const juce::MouseEvent &e) override {
-        if (!e.mods.isPopupMenu())
-            juce::Slider::mouseDoubleClick(e);
-    }
+    void mouseUp(const juce::MouseEvent &) override;
+    void mouseDoubleClick(const juce::MouseEvent &) override;
 
   private:
     bool primary_ = false;
+    std::optional<double> default_;
+    double step_ = 0;
+    std::unique_ptr<ValueEntry> valueEntry_;
 };
 class PeakHold final : public juce::Button {
   public:
