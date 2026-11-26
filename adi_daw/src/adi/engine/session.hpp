@@ -557,7 +557,7 @@ private:
         [[nodiscard]] const TransportInfo* beginBlock()const noexcept override;
         [[nodiscard]] Node* inputMonitorSource(std::int64_t track) const noexcept;
     };
-    void prepareMidiInput(TimingView&, const rows::Model&);
+    void prepareMidiInput(TimingView&, const rows::Model&, const MidiClips&);
     MainLoudness mainLoudness_;
     CueSettings cueSettings_;
     CueMonitor cueMonitor_;
