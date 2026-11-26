@@ -5402,6 +5402,49 @@ void clipViewNoteGrid(AppCommands &commands, const std::filesystem::path &dir) {
           "the temporary bypass keeps a resized start off the grid and preserves the end");
 }
 
+void clipViewLoopPlayhead(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "note-loop-playhead.adi", true, {}, error);
+    check(document != nullptr, "open a project for the clip playhead");
+    if (!document)
+        return;
+    document->prepare(48000, 64);
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "note-loop-playhead");
+    root.setSize(1400, 900);
+    constexpr auto beat = textproj::kPPQ;
+    check(root.insertMidiClips({2}, 2 * beat, 14 * beat) && root.showClipView(), "open a long MIDI clip");
+    root.resizeClipView(360);
+    root.frame();
+    const auto id = root.clipView.clip();
+    OpRequest loop;
+    loop.opType = "clip.loop";
+    loop.payload = {{"id", id}, {"on", true}, {"start", beat}, {"length", 2 * beat}};
+    check(document->ops().submit(std::move(loop)).ok, "shorten the source loop inside the long Arrangement clip");
+    root.frame();
+    auto &editor = root.clipView.notes;
+    editor.time.left = 2.;
+    editor.time.scale = static_cast<double>(editor.notesArea().getWidth()) / 4.;
+    if (!root.state().follow)
+        root.command(AppCommands::Follow);
+    root.arrangement.followPaused = false;
+
+    engine::Transport clock;
+    const auto playAt = [&](std::int64_t tick) {
+        const auto tempo = document->view().current()->tempo;
+        clock.locate(static_cast<std::int64_t>(std::llround(tempo->ticksToSeconds(tick) * 48000)));
+        clock.play(true);
+        document->mailbox().publish(clock);
+        root.frame();
+    };
+    playAt(4 * beat);
+    const int first = editor.playhead.getX();
+    check(editor.playhead.isVisible() && first > editor.notesArea().getX(), "the first pass has an editor playhead");
+    playAt(8 * beat);
+    check(root.timelineTick() == 8 * beat && editor.playhead.isVisible() && editor.playhead.getX() == first &&
+              editor.time.left == 2., "a later repeat draws the same source position and keeps Follow on the notes");
+}
+
 // The Clip View's Main panel (worklist G2; manual 8.2): Start, End, the Loop switch, the loop's Position
 // and Length and the clip's Signature act, typed, dragged or through Live's Set buttons, each one of
 // the clip's own ops and one undo step; what the engine would refuse is refused with a reason; the
@@ -19258,6 +19301,7 @@ int main(int argc, char **argv) {
     trace("clipViewNotes", [&] { clipViewNotes(commands, temp.path()); });
     trace("clipViewNotePreview", [&] { clipViewNotePreview(commands, temp.path()); });
     trace("clipViewNoteGrid", [&] { clipViewNoteGrid(commands, temp.path()); });
+    trace("clipViewLoopPlayhead", [&] { clipViewLoopPlayhead(commands, temp.path()); });
     trace("clipViewFields", [&] { clipViewFields(commands, temp.path()); });
     trace("clipViewTools", [&] { clipViewTools(commands, temp.path()); });
     trace("clipViewMore", [&] { clipViewMore(commands, temp.path()); });

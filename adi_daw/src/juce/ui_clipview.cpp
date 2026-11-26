@@ -186,17 +186,18 @@ void NoteEditor::frame() {
     }
     // Live draws the playhead only while it plays; here over the key tracks and the Velocity lane.
     const auto area = notesArea();
-    if (panel.details() != nullptr && panel.root.playing() && panel.root.state().follow && !panel.root.arrangement.followPaused &&
-        area.getWidth() > 0) {
+    const auto songTick = panel.root.timelineTick();
+    const auto tick = clip != nullptr ? noteEditorPlayheadTick(*clip, songTick) : songTick;
+    const bool playing = clip != nullptr && panel.root.playing();
+    if (playing && panel.root.state().follow && !panel.root.arrangement.followPaused && area.getWidth() > 0) {
         // Follow (manual 8.7, 10.2.2): a page at a time, as the playhead leaves the editor.
-        const auto tick = panel.root.timelineTick();
         if (const double at = time.x(tick); at < 0 || at >= area.getWidth()) {
             time.left = std::max(0., static_cast<double>(tick) / textproj::kPPQ);
             repaint();
         }
     }
-    const int x = static_cast<int>(std::clamp(time.x(panel.root.timelineTick()), -1e7, 1e7));
-    playhead.setVisible(panel.details() != nullptr && panel.root.playing() && x >= 0 && x < area.getWidth());
+    const int x = static_cast<int>(std::clamp(time.x(tick), -1e7, 1e7));
+    playhead.setVisible(playing && x >= 0 && x < area.getWidth());
     playhead.setBounds(area.getX() + x, area.getY(), 1, getHeight() - area.getY());
 }
 void NoteEditor::setLaneShape(LaneShape shape) {
