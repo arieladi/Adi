@@ -5172,6 +5172,7 @@ void clipViewNotePreview(AppCommands &commands, const std::filesystem::path &dir
     };
     constexpr auto beat = textproj::kPPQ;
     check(root.insertMidiClips({2}, 0, 4 * beat), "create a MIDI clip on an unarmed track for preview");
+    check(root.showClipView(), "open the Note Editor before driving its piano and note gestures");
     root.resizeClipView(360);
     root.frame();
     auto &panel = root.clipView;
@@ -5179,6 +5180,8 @@ void clipViewNotePreview(AppCommands &commands, const std::filesystem::path &dir
     check(panel.midi() && editor.previewButton().getToggleState(), "the Preview switch above the unarmed track's piano is on");
     if (!panel.midi())
         return;
+    editor.fitWidth();
+    editor.fitHeight();
     const auto area = editor.notesArea();
     const auto point = [&](int key, float x) {
         return juce::Point<float>{x, static_cast<float>(area.getY() + editor.keys.y(key).value_or(0) + editor.keys.keyHeight / 2)};
