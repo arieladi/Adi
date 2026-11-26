@@ -16470,7 +16470,11 @@ int main(int argc, char **argv) {
                     victim = t->id;
             const auto countBefore = view.current()->tracks.size();
             commands.activate(edits); // the Edit menu names the step of the active root
-            edits.arrangement.geometry.selection.track = victim;
+            auto &selection = edits.arrangement.geometry.selection;
+            selection.track = victim;
+            selection.toTrack = 0;
+            selection.picked.clear();
+            selection.clearMaterial();
             check(victim != 0 && edits.command(C::DeleteTrack) && view.current()->tracks.size() + 1 == countBefore &&
                       edits.undoTitle(false) == "Undo Delete Track" && edits.undoTitle(true) == "Nothing to Redo",
                   "Delete Track from the menu bar's window: the Undo item names the step, Redo has nothing");
