@@ -60,6 +60,27 @@ void declaredMidiMap() {
 // (ADR-0073). ADI calls the processor itself, so JUCE's own hand-over in processBlock never runs: a
 // value set only through JUCE reached the edit controller and stopped there. The fixture records Drive
 // as its processor received it and through nothing else, as a plug-in that keeps its processor apart.
+// SC-332: a plug-in that renames a parameter (a macro) and says so shows the new name, at the next pump.
+void renamedParameterShows(device::Vst3Host& host, const juce::PluginDescription& desc, void (*rename)(int)) {
+    std::string error;
+    auto instance = host.instantiate(desc, 48000.0, 64, error);
+    if (!instance)
+        throw std::runtime_error(error);
+    device::Vst3Device vst(std::move(instance), device::identityOf(desc));
+    const auto nameOf = [&]() -> std::string {
+        for (std::int32_t i = 0; i < vst.paramCount(); ++i)
+            if (const auto* d = vst.paramAt(i); d != nullptr && d->id == "4000") return d->name;
+        return "<none>";
+    };
+    check(nameOf() == "Drive", "the parameter reads its first title");
+    rename(1);
+    vst.pumpMainThread();
+    check(nameOf() == "Macro 1", "renamed by the plug-in, it reads the new title (SC-332)");
+    rename(0);
+    vst.pumpMainThread();
+    check(nameOf() == "Drive", "and back");
+}
+
 void valuesReachProcessor(device::Vst3Host& host, const juce::PluginDescription& desc, double (*processorDrive)(),
                           bool offline) {
     constexpr double sampleRate = 48000.0;
@@ -623,6 +644,10 @@ void contract() {
             valuesReachProcessor(host, *expression, processorDrive, offline);
     if (processorDrive != nullptr)
         editorAndAutomationFollow(host, *expression, processorDrive);
+    const auto rename = reinterpret_cast<void (*)(int)>(module.getFunction("adiFixtureRenameDrive"));
+    check(rename != nullptr, "the fixture can rename its Drive parameter");
+    if (rename != nullptr)
+        renamedParameterShows(host, *expression, rename);
     for (const auto &desc : types)
         for (bool wide : {false, true}) {
             std::string error;

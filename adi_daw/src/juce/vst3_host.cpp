@@ -549,7 +549,21 @@ void Vst3Device::recordFollowed(std::uint32_t wireId, double value) noexcept {
     followedEpoch_.fetch_add(1, std::memory_order_release);
 }
 
+void Vst3Device::readTitles() {
+    for (std::size_t i = 0; i < params_.size() && i < handles_.size(); ++i) {
+        if (handles_[i] == nullptr) continue;
+        params_[i].name = handles_[i]->getName(128).toStdString();
+        params_[i].unit = handles_[i]->getLabel().toStdString();
+    }
+}
+
 void Vst3Device::pumpMainThread() {
+    // SC-332: a plug-in that renamed its parameters (macros) shows the new names. JUCE has already
+    // re-read its own titles; the panel's feed compares names, so the rows follow.
+    if (const auto titles = titlesEpoch_.load(std::memory_order_acquire); titles != titlesRead_) {
+        titlesRead_ = titles;
+        readTitles();
+    }
     const auto epoch = followedEpoch_.load(std::memory_order_acquire);
     if (epoch == followedHanded_ || followed_ == nullptr) return;
     // A host set, not an edit: muted from our own listener (ADR-0124), so it is never taken for the
@@ -1193,6 +1207,8 @@ void Vst3Device::audioProcessorChanged(juce::AudioProcessor*, const ChangeDetail
     // so the message thread coalesces these and republishes once.
     if (d.latencyChanged)
         latencyEpoch_.fetch_add(1, std::memory_order_release);
+    if (d.parameterInfoChanged)
+        titlesEpoch_.fetch_add(1, std::memory_order_release); // SC-332: read on the message thread
     if (d.parameterInfoChanged || d.programChanged || d.nonParameterStateChanged) {
         // ADR-0142: the answer to our own load or set is not a boundary.
         if (hostMutationOnCurrentThread()) mutedStateSignals_.fetch_add(1, std::memory_order_release);
