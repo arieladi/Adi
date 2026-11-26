@@ -12,8 +12,9 @@ Verified under **GCC 12.4.0** and **Clang 14.0.6 + libstdc++ 12** (`-DADI_WERROR
 |---|---|---|---|---|---|---|
 | `basics/sc-02-lane-transport` | `3a545410` | **PASS** (0 warnings; 2/2 touched `adi_ui_seams_tests`, `adi_ui_window_state_tests` + `adi_acceptance_wts01`, 53.74 s) | **PASS** (0 warnings; 2/2 touched + `adi_acceptance_wts01`, 48.85 s) | **PASS** (3/3 both compilers, 0 warnings: `ui_arrangement.cpp.o`, `ui_shell.cpp.o`, `test_ui_shell.cpp.o`) | **PASS** (2/2 touched, 12.41 s; 0 errors, 0 leaks) | **PASS** |
 | `basics/sc-220-midi-loop` | `062af8f9` | **PASS** (0 warnings; 2/2 touched `adi_ui_note_edits_tests`, `adi_ui_seams_tests` + `adi_acceptance_wts01`, 52.67 s) | **PASS** (0 warnings; 2/2 touched + `adi_acceptance_wts01`, 46.32 s) | **PASS** (2/2 both compilers, 0 warnings: `ui_shell.cpp.o`, `test_ui_shell.cpp.o`) | **PASS** (2/2 touched, 11.42 s; 0 errors, 0 leaks) | **PASS** |
+| `basics/sc-01-protect-main` | `265fbe7f` | **PASS** (0 warnings; 3/3 touched `adi_changeset_tests`, `adi_track_delete_tests`, `adi_ui_seams_tests` + `adi_acceptance_wts01`, 64.55 s) | **PASS** (0 warnings; 3/3 touched + `adi_acceptance_wts01`, 57.41 s) | **PASS** (1/1 both compilers, 0 warnings: `test_ui_shell.cpp.o`) | **PASS** (3/3 touched, 22.19 s; 0 errors, 0 leaks) | **PASS** |
 
-No findings on `basics/sc-02-lane-transport` (`3a545410`) or `basics/sc-220-midi-loop` (`062af8f9`).
+No findings on `basics/sc-02-lane-transport` (`3a545410`), `basics/sc-220-midi-loop` (`062af8f9`), or `basics/sc-01-protect-main` (`265fbe7f`).
 
 ---
 
