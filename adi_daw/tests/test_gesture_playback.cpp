@@ -429,7 +429,7 @@ void relativeScalars(Precision precision) {
     f.sound(.25 * (1 + beginGain), .5 * (1 + beginGain), "relative origin");
     g::RelativeScalarSelection selection{g::ScalarKind::TrackVolume, 1, {2, 1}, {-70, 6, -150}};
     auto volume = f.begin(g::relativeScalarProducer(selection));
-    selection.selected = {9}; // Caller-owned selection cannot change this gesture.
+    selection.selected.assign(1, 9); // Caller-owned selection cannot change this gesture.
     f.update(*volume, std::make_unique<g::RelativeScalarInput>(-20), "relative volume -20");
     const auto quietReturn = std::pow(10.0, -30.0 / 20.0);
     f.sound(.025 * (1 + quietReturn), .05 * (1 + quietReturn), "two relative volume overlays");
