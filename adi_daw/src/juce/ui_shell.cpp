@@ -1250,6 +1250,13 @@ juce::Rectangle<float> StatusBar::clipViewFrame() const {
     return {inner.getX() + inner.getWidth() * static_cast<float>(from), inner.getY() - 1.f,
             std::max(2.f, inner.getWidth() * static_cast<float>(to - from)), inner.getHeight() + 2.f};
 }
+void StatusBar::setExportProgress(std::optional<int> percent) {
+    if (exportPercent_ == percent)
+        return;
+    exportPercent_ = percent;
+    exportProgressText_ = percent ? "Exporting " + juce::String(*percent) + "%" : juce::String{};
+    repaint();
+}
 void StatusBar::paint(juce::Graphics &g) {
     g.fillAll(look::frame);
     const int w = getWidth();
@@ -1319,7 +1326,10 @@ void StatusBar::paint(juce::Graphics &g) {
     if (audioProblem && error)
         text << "  " << juce::String(root_.error());
     const auto actionWidth = audioSettings.isVisible() ? audioSettings.getWidth() + 4 : 0;
-    g.drawText(text, message.reduced(8, 0).withTrimmedRight(actionWidth), juce::Justification::centredLeft);
+    auto textArea = message.reduced(8, 0).withTrimmedRight(actionWidth);
+    if (exportProgressText_.isNotEmpty())
+        g.drawText(exportProgressText_, textArea.removeFromLeft(128), juce::Justification::centredLeft);
+    g.drawText(text, textArea, juce::Justification::centredLeft);
     // The selected track's name, as Live shows it at the right.
     const auto rows = root_.arrangement.geometry.rows(root_.reader());
     if (const auto i = rows.find(root_.arrangement.geometry.selection.track); i < rows.size()) {

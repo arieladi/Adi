@@ -18,6 +18,7 @@
 #include "adi/transport_settings.hpp"
 #include "adi/engine/clip_fade.hpp"
 #include "adi/engine/mixer.hpp"
+#include "adi/ui/export_interruption.hpp"
 #include "adi/ui/fade_edits.hpp"
 #include "adi/ui/export_preferences.hpp"
 #include "adi/ui/midi_tracks.hpp"
@@ -14268,6 +14269,31 @@ void exportPage(AppCommands &commands, const std::filesystem::path &dir) {
     check(result.state == render::JobState::Completed && result.output == dir / "Song {mix}.wav" &&
               std::filesystem::exists(result.output) && result.framesWritten == static_cast<std::uint64_t>(expected),
           "the renderer writes the chosen file, the whole range [P:export#3]");
+    {
+        ExportInterruption interruption;
+        int proceeded = 0;
+        const auto proceed = [&] { ++proceeded; };
+        check(!interruption.request(false, proceed) && proceeded == 1,
+              "an idle renderer lets a project change or Quit proceed immediately");
+        check(interruption.request(true, proceed) && proceeded == 1,
+              "an active export waits for an explicit answer before the project changes");
+        check(!interruption.request(false, proceed) && proceeded == 1,
+              "another request cannot slip through while an export decision is pending");
+        interruption.answer(false);
+        check(proceeded == 1, "Keep Exporting drops the requested action");
+        check(interruption.request(true, proceed), "a fresh request can prompt again after Keep Exporting");
+        interruption.answer(true);
+        interruption.answer(true);
+        check(proceeded == 2, "cancelling the export proceeds exactly once");
+
+        root.status.setExportProgress(37);
+        root.say("A different status message.");
+        root.frame();
+        check(root.status.exportProgressText() == "Exporting 37%" && root.error() == "A different status message.",
+              "export progress remains in the main window alongside other status messages");
+        root.status.setExportProgress(std::nullopt);
+        check(root.status.exportProgressText().isEmpty(), "a finished or cancelled export clears the progress");
+    }
     document->release();
 }
 void midiNoteMeter(AppCommands &commands, const std::filesystem::path &dir) {

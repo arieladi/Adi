@@ -356,6 +356,8 @@ class StatusBar final : public juce::Component {
     // click that shows or hides the view. The part of the clip the editor shows is framed in it.
     void mouseDown(const juce::MouseEvent &) override;
     void mouseDrag(const juce::MouseEvent &) override;
+    void setExportProgress(std::optional<int> percent);
+    const juce::String &exportProgressText() const noexcept { return exportProgressText_; }
     juce::Rectangle<float> clipViewFrame() const;
     juce::Rectangle<int> secondField() const noexcept { return {getWidth() - 376, 8, 206, 22}; }
     // Live 12's arrow beside the Mixer View Control: its options menu (manual 18.1).
@@ -366,6 +368,8 @@ class StatusBar final : public juce::Component {
     juce::String audioDeviceProblem_;
     juce::Point<int> selectorLast_;
     bool selectorDragged_ = false;
+    std::optional<int> exportPercent_;
+    juce::String exportProgressText_;
 };
 // The window is JUCE's drag container, so a browser row can be dragged onto the lanes (D1).
 class AdiRootComponent final : public juce::Component,

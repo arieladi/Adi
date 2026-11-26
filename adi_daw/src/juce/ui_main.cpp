@@ -5,6 +5,7 @@
 #include "adi/render/host_dispatch.hpp"
 #include "adi/settings/device_grant.hpp"
 #include "adi/ui/export_preferences.hpp"
+#include "adi/ui/export_interruption.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include "adi/ui/plugin_hold_off.hpp"
 #include "adi/ui/plugin_scan.hpp"
@@ -465,6 +466,8 @@ class AdiApplication final : public juce::JUCEApplication,
         auto alive = renderAlive_;
         if (exportPage_)
             exportPage_->showProgress(0);
+        if (root_)
+            root_->status.setExportProgress(0);
         auto host = std::make_shared<render::HostDispatch>();
         renderHost_ = host;
         auto completed = std::make_shared<std::promise<void>>();
@@ -480,8 +483,12 @@ class AdiApplication final : public juce::JUCEApplication,
             const double current = total > 0 ? static_cast<double>(written) / static_cast<double>(total) : 0.0;
             const double fraction = (static_cast<double>(id - 1) + current) / static_cast<double>(count);
             juce::MessageManager::callAsync([this, alive, fraction] {
-                if (alive->load() && exportPage_)
+                if (!alive->load())
+                    return;
+                if (exportPage_)
                     exportPage_->showProgress(fraction);
+                if (root_)
+                    root_->status.setExportProgress(static_cast<int>(std::clamp(fraction, 0.0, 1.0) * 100));
             });
         };
         render_ = std::thread([this, alive, completed, jobs = std::move(jobs),
@@ -521,8 +528,10 @@ class AdiApplication final : public juce::JUCEApplication,
                 renderHost_.reset();
                 if (exportPage_)
                     exportPage_->showDone(message);
-                if (root_)
+                if (root_) {
+                    root_->status.setExportProgress(std::nullopt);
                     root_->say(message);
+                }
             });
         });
     }
@@ -535,6 +544,28 @@ class AdiApplication final : public juce::JUCEApplication,
         }
         renderHost_.reset();
         renderAlive_ = std::make_shared<std::atomic<bool>>(true);
+        if (root_)
+            root_->status.setExportProgress(std::nullopt);
+    }
+    void confirmExportInterruption(const juce::String &action, std::function<void()> proceed) {
+        const bool exporting = render_.joinable() &&
+                               renderDone_.wait_for(std::chrono::seconds(0)) != std::future_status::ready;
+        if (!exportInterruption_.request(exporting, std::move(proceed)))
+            return;
+        const auto options = juce::MessageBoxOptions()
+                                 .withIconType(juce::MessageBoxIconType::WarningIcon)
+                                 .withTitle("Export in progress")
+                                 .withMessage(action + " will cancel the audio export.")
+                                 .withButton(juce::MessageBoxButtonOptions("Keep Exporting", 0)
+                                                 .withRole(juce::MessageBoxButtonRole::cancel)
+                                                 .withPreferredAction())
+                                 .withButton(juce::MessageBoxButtonOptions("Cancel Export and Continue", 1)
+                                                 .withRole(juce::MessageBoxButtonRole::destroy))
+                                 .withAssociatedComponent(window_.get());
+        exportInterruptionPrompt_ = juce::AlertWindow::showScopedAsync(options, [this](int answer) {
+            if (juce::JUCEApplicationBase::getInstance() == this)
+                exportInterruption_.answer(answer == 1);
+        });
     }
     // The plug-in catalogue's service (DF-W34): engine-win's discovery jobs (N58), started, read and
     // adopted on the message thread; the loader runs each on its own worker. Never in a smoke run.
@@ -637,7 +668,10 @@ class AdiApplication final : public juce::JUCEApplication,
     // A project opens at once, a discovery running or not (SC-330): a plug-in the catalogue does not know
     // yet stands as a placeholder, and the running discovery's adoption wakes it (SC-318's
     // `discoverAfter`), where the open used to wait for the whole scan behind one Status Bar line.
-    void openSettled(const juce::File &file, bool create) { install(file, create); }
+    void openSettled(const juce::File &file, bool create) {
+        confirmExportInterruption(create ? "Creating a new project" : "Opening another project",
+                                  [this, file, create] { (void)install(file, create); });
+    }
     // A discovery asked for (Rescan, a folder change, the Browser's scan, the startup's): once it has been
     // adopted, a device the open kept as a placeholder whose plug-in is now installed wakes in its place,
     // its stored state restored, without reopening the project (SC-318).
@@ -686,6 +720,8 @@ class AdiApplication final : public juce::JUCEApplication,
         importStop_.request_stop();
         if (import_.joinable())
             import_.join();
+        exportInterruption_.answer(false);
+        exportInterruptionPrompt_.close();
         stopRender();
         stopLibrary();
         stopPluginCatalogue();
@@ -712,8 +748,10 @@ class AdiApplication final : public juce::JUCEApplication,
         commands_.reset();
         settings_.reset();
     }
-    // Every edit is already in the file (ADR-0203 d13): quitting asks nothing.
-    void systemRequestedQuit() override { quit(); }
+    // The project is already saved. Only a running export can be lost here.
+    void systemRequestedQuit() override {
+        confirmExportInterruption("Quitting ADI", [this] { quit(); });
+    }
     void anotherInstanceStarted(const juce::String &commandLine) override {
         // A test launch runs on its own (WTS-01); should one reach here, it opens nothing.
         if (isTestLaunch(commandLine))
@@ -2017,6 +2055,8 @@ class AdiApplication final : public juce::JUCEApplication,
     std::unique_ptr<juce::DialogWindow> exportWindow_;
     ExportPage *exportPage_ = nullptr;
     ExportPreferences exportPreferences_;
+    ExportInterruption exportInterruption_;
+    juce::ScopedMessageBox exportInterruptionPrompt_;
     std::thread render_;
     std::stop_source renderStop_;
     std::shared_ptr<render::HostDispatch> renderHost_;
