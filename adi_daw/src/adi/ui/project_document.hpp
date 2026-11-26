@@ -220,15 +220,18 @@ class ProjectDocument final : public engine::BlockProcessor {
     // A built-in device from the browser (D4; N15, #395): `uid` from `builtinCatalog()` onto
     // `track`, in front of `before` or at the end of its chain. The plug-in reference and the
     // chain are made in the same batch when the project has neither: one undo step, "Insert <name>".
+    // A drop below the tracks passes track 0 and creates and selects the appropriate track.
     // The catalogue's refusals (an unavailable device, a missing track) come back in `error()`.
-    bool insertBuiltin(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before);
+    bool insertBuiltin(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before,
+                       const RecordingDefaults *defaults = nullptr);
     bool insertPlugin(const rows::PluginRef &, std::int64_t track,
                       std::optional<std::int64_t> before = {}, const PluginInsertOptions& = {});
     // A plug-in the user loads from the Browser or the Stack's menu, as Live loads one (walk-A A26,
     // DF-W52): an instrument goes onto a MIDI track only (it takes notes and no audio, so it would
     // silence any other track) and takes the place of the track's instrument, in the same undo step.
     // An effect loads as `insertPlugin` places it.
-    bool loadPlugin(const rows::PluginRef &, std::int64_t track, std::optional<std::int64_t> before = {});
+    bool loadPlugin(const rows::PluginRef &, std::int64_t track, std::optional<std::int64_t> before = {},
+                    const RecordingDefaults *defaults = nullptr);
     bool addMixFunction(mix::Function, std::int64_t track);
     std::vector<DeviceKeyChoice> deviceKeyChoices(const DevicePanelData&);
     bool setDeviceKeyChoice(const DevicePanelData&,const DeviceKeyChoice&);

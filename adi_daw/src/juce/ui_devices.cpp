@@ -1880,7 +1880,7 @@ bool DeviceChainStrip::isInterestedInDragSource(const SourceDetails &details) {
         return source && source->functionDragTarget() && &source->strip.root == &root &&
                source->functionDragTarget()->track == selectedTrack;
     }
-    return isMovingDevice(details) || !BrowserPanel::droppedDevice(details.description).empty();
+    return isMovingDevice(details) || (selectedTrack != 0 && root.browser.acceptsDeviceDrop(details));
 }
 std::optional<std::int64_t> DeviceChainStrip::dropBefore(int x) const {
     const int at = x + scroll.getViewPositionX();
@@ -1899,9 +1899,8 @@ void DeviceChainStrip::itemDropped(const SourceDetails &details) {
         moveDroppedDevice(details, selectedTrack, dropBefore(details.localPosition.x));
         return;
     }
-    const auto uid = BrowserPanel::droppedDevice(details.description);
-    if (!uid.empty())
-        root.insertDevice(uid, selectedTrack, dropBefore(details.localPosition.x));
+    if (selectedTrack != 0)
+        root.browser.loadDroppedDevice(details, selectedTrack, dropBefore(details.localPosition.x));
 }
 DevicePanelView *DeviceChainStrip::moveSource(const SourceDetails &details) const {
     if (details.description.toString() != DevicePanelView::kDeviceMoveDrag)

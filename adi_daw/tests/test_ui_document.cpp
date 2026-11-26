@@ -408,6 +408,78 @@ void moveOrdinaryDevice(const std::filesystem::path &file) {
               order(targetTrack).empty() && OpJournal(document->store()).headSeq() == reorderedHead,
           "SC-83: Undo restores the source order and removes the added chain");
 }
+void dropDeviceOnNewTrack(const std::filesystem::path &dir) {
+    constexpr std::int64_t existingTrack = 4;
+    for (const auto *subtype : {"instrument", "midi_effect", "effect"}) {
+        std::string error;
+        auto document = ui::ProjectDocument::open(dir / (std::string("new-track-") + subtype + ".adi"),
+                                                  true, test::knobsLoader(), error);
+        check(document != nullptr, "SC-84/61: a document for dropping a device below the tracks");
+        if (!document)
+            continue;
+        rows::PluginRef plugin;
+        plugin.format = "clap";
+        plugin.uid = test::kKnobsUid;
+        plugin.name = "Drop device";
+        plugin.subtype = subtype;
+        auto &db = document->store().db();
+        const auto tracks = [&] { return db.execAndGet("SELECT count(*) FROM tracks").getInt(); };
+        const auto before = tracks();
+        const auto beforeHead = OpJournal(document->store()).headSeq();
+        ui::Selection selection;
+        selection.track = existingTrack;
+        selection.marked = true;
+        selection.insert = textproj::kWhole;
+        selection.start = selection.insert;
+        selection.end = selection.insert * 2;
+        check(document->sessionState().select(selection, error), "SC-84/61: select an existing track first");
+        const ui::RecordingDefaults defaults{"off", false};
+        check(!document->loadPlugin(plugin, 0, std::int64_t{1}, &defaults) && tracks() == before &&
+                  OpJournal(document->store()).headSeq() == beforeHead,
+              "SC-84/61: an incompatible anchor leaves no new track or history");
+        db.exec("CREATE TEMP TRIGGER refuse_device_drop BEFORE INSERT ON main.ops "
+                "WHEN NEW.op_type='device.insert' BEGIN SELECT RAISE(ABORT,'drop rejected'); END");
+        check(!document->loadPlugin(plugin, 0, {}, &defaults) && tracks() == before &&
+                  OpJournal(document->store()).headSeq() == beforeHead && document->sessionState().selection() == selection,
+              "SC-84/61: a late device refusal rolls back the track and leaves the selection alone");
+        db.exec("DROP TRIGGER refuse_device_drop");
+        const auto loaded = document->loadPlugin(plugin, 0, {}, &defaults);
+        const auto selected = document->sessionState().selection();
+        const auto current = document->view().current();
+        const auto *track = current->findTrack(selected.track);
+        const auto *firstReturn = current->findTrack(6);
+        const auto expectedKind = std::string_view(subtype) == "effect" ? "audio" : "midi";
+        check(loaded && tracks() == before + 1 && track != nullptr && track->kind == expectedKind &&
+                  track->parent == 0 && firstReturn != nullptr && track->indexInParent < firstReturn->indexInParent &&
+                  selected.track != existingTrack && selected.start == selected.end && selected.insert == selection.insert,
+              "SC-84/61: the correct new top-level track is selected before the returns");
+        if (!loaded || track == nullptr)
+            continue;
+        {
+            SQLite::Statement row(db, "SELECT t.monitor_mode,o.record_enabled,o.keep_monitoring_latency,d.name "
+                "FROM tracks t JOIN track_recording_options o ON o.track_id=t.id "
+                "JOIN device_chains c ON c.track_id=t.id JOIN devices d ON d.chain_id=c.id WHERE t.id=?");
+            row.bind(1, track->id);
+            check(row.executeStep() && row.getColumn(0).getInt() == 2 && row.getColumn(1).getInt() == 0 &&
+                      row.getColumn(2).getInt() == 0 && row.getColumn(3).getString() == plugin.name,
+                  "SC-84/61: new-track recording defaults and the device are created together");
+        }
+        const auto step = document->ops().nextUndo();
+        const auto undone = document->ops().undo();
+        check(step && step->label == "Insert Drop device" && undone.ok && document->synchronise() && tracks() == before &&
+                  OpJournal(document->store()).headSeq() == beforeHead,
+              "SC-84/61: one Undo removes the track and the device");
+    }
+    const auto *builtin = findBuiltin("org.adidaw.builtin.auto-filter");
+    if (builtin != nullptr && builtin->available) {
+        std::string error;
+        auto document = ui::ProjectDocument::open(dir / "new-track-builtin.adi", true, {}, error);
+        const bool loaded = document && document->insertBuiltin(std::string(builtin->uid), 0, {});
+        const auto *track = loaded ? document->view().current()->findTrack(document->sessionState().selection().track) : nullptr;
+        check(track != nullptr && track->kind == "audio",
+              "SC-84: an ADI audio effect dropped below the tracks creates an audio track too");
+    }
+}
 
 void mixSurfacePublication(const std::filesystem::path &file) {
     using engine::ParamEventKind;
@@ -2342,6 +2414,7 @@ int main(int argc, char **argv) {
     refusedBeginOwnership(temp.path());
     importWithChoices(temp.path());
     moveOrdinaryDevice(temp.path() / "move-device.adi");
+    dropDeviceOnNewTrack(temp.path());
     mixSurfacePublication(temp.path() / "mix-surface.adi");
     reportedDeviceLatency(temp.path());
     std::printf("%d checks, %d failures\n", checks, failures);

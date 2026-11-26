@@ -1353,7 +1353,8 @@ bool AdiRootComponent::insertDevice(const std::string &uid, std::int64_t track, 
     const std::string name = info != nullptr ? std::string(info->name) : std::string("the device");
     if (!loadBuiltin)
         return fail("Devices load in the application.");
-    if (track == 0 || reader().findTrack(track) == nullptr)
+    const auto current = view_.current();
+    if (track != 0 && (!current || current->findTrack(track) == nullptr))
         return fail("Select a track to load " + name + " onto.");
     const juce::Component::SafePointer<AdiRootComponent> alive(this);
     if (!loadBuiltin(uid, track, before))
@@ -3064,6 +3065,16 @@ bool AdiRootComponent::deleteTrack() {
 bool AdiRootComponent::dropAudio(const std::string &utf8Path, std::int64_t track, std::int64_t pos,
                                  const std::string &name) {
     return dropAudioFiles({{utf8Path, name}}, track, pos, false);
+}
+bool AdiRootComponent::dropAudioPaths(const juce::StringArray &paths, std::int64_t track, std::int64_t pos,
+                                     bool separate) {
+    if (paths.isEmpty())
+        return false;
+    std::vector<std::pair<std::string, std::string>> files;
+    for (const auto &path : paths)
+        files.emplace_back(path.toStdString(),
+                           juce::File::createFileWithoutCheckingPath(path).getFileNameWithoutExtension().toStdString());
+    return dropAudioFiles(files, track, pos, separate);
 }
 bool AdiRootComponent::dropAudioFiles(const std::vector<std::pair<std::string, std::string>> &files,
                                       std::int64_t track, std::int64_t pos, bool separate) {

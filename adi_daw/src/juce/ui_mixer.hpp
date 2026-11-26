@@ -78,7 +78,10 @@ double meterLevel(double depth) noexcept;
 // In/Out column, then the Track Activator, Solo and Arm; volume and pan; one send per
 // return on the rows under them (ADR-0203 d3); the meter. A channel has no button of its own for
 // any Mix View function: those are added in the Mix View like every other one (ADR-0243).
-class MixerStrip final : public juce::Component, public juce::SettableTooltipClient {
+class MixerStrip final : public juce::Component,
+                         public juce::SettableTooltipClient,
+                         public juce::DragAndDropTarget,
+                         public juce::FileDragAndDropTarget {
   public:
     // Esc during a live drag cancels it (MX-23).
     bool keyPressed(const juce::KeyPress &) override;
@@ -99,6 +102,10 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     static constexpr int kTitleHeight = 17;
     // A double-click on a Mixer View strip's title selects its track and brings up the Device View.
     void mouseDoubleClick(const juce::MouseEvent &) override;
+    bool isInterestedInDragSource(const SourceDetails &) override;
+    void itemDropped(const SourceDetails &) override;
+    bool isInterestedInFileDrag(const juce::StringArray &) override;
+    void filesDropped(const juce::StringArray &, int, int) override;
     // A row takes clicks only level with the lanes (MixerPanel::rowsBand).
     bool hitTest(int x, int y) override;
     std::int64_t track() const noexcept { return track_; }

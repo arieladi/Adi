@@ -2871,6 +2871,47 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
         root.arrangement.geometry.selection.track = 0;
         check(!browser.load(echoRow) && loaded.size() == 3 && root.error().rfind("Select a track", 0) == 0,
               "with no track selected it says to select one");
+        check(browser.load(glass) && loaded.size() == 4 && std::get<1>(loaded.back()) == 0 &&
+                  std::get<0>(loaded.back()).subtype == "instrument",
+              "SC-287: loading an instrument without a track creates a MIDI track");
+        juce::SparseSet<int> rowsToDrag;
+        rowsToDrag.addRange(juce::Range<int>(glass, glass + 1));
+        const auto drag = browser.list.getListBoxModel()->getDragSourceDescription(rowsToDrag);
+        auto &canvas = root.arrangement.canvas;
+        const juce::Point<int> midiLane{40, laneTop(root, midiTrack) + 10};
+        const juce::DragAndDropTarget::SourceDetails onMidi(drag, &browser.list, midiLane);
+        check(!drag.isVoid() && canvas.isInterestedInDragSource(onMidi) &&
+                  !canvas.isInterestedInDragSource({drag, &browser, midiLane}),
+              "SC-84: a catalogue plug-in drag comes from the Browser list");
+        const auto checkDrop = [&](juce::DragAndDropTarget &surface,
+                                   const juce::DragAndDropTarget::SourceDetails &details, std::int64_t target) {
+            const auto before = loaded.size();
+            check(surface.isInterestedInDragSource(details), "the surface accepts a Browser plug-in");
+            surface.itemDropped(details);
+            check(loaded.size() == before + 1 && std::get<1>(loaded.back()) == target &&
+                      std::get<0>(loaded.back()).uid == "org.adi.glass",
+                  "the drop loads the plug-in onto the destination");
+        };
+        checkDrop(canvas, onMidi, midiTrack);
+        checkDrop(root.arrangement.headers, onMidi, midiTrack);
+        root.arrangement.geometry.selection.track = midiTrack;
+        refresh();
+        checkDrop(root.devices, {drag, &browser.list, {10, 10}}, midiTrack);
+        MixerStrip strip(root.mixerView);
+        strip.bind(midiTrack);
+        checkDrop(strip, {drag, &browser.list, {10, 10}}, midiTrack);
+        const auto oldSize = root.getBounds();
+        root.setSize(oldSize.getWidth(), 1000);
+        int below = laneTop(root, midiTrack);
+        while (below < canvas.getHeight() && root.arrangement.geometry.trackAt(root.reader(), below) != nullptr)
+            ++below;
+        check(below >= 0 && below < canvas.getHeight(), "the canvas has a drop area below the regular tracks");
+        if (below >= 0 && below < canvas.getHeight())
+            checkDrop(canvas, {drag, &browser.list, {40, below}}, 0);
+        root.setSize(oldSize.getWidth(), oldSize.getHeight());
+        browser.setPluginScan({});
+        check(!canvas.isInterestedInDragSource(onMidi), "a plug-in removed during the drag cannot land");
+        browser.setPluginScan(scan);
         root.loadPlugin = nullptr;
         root.arrangement.geometry.selection.track = 4; // 3 Audio again, for the built-ins below
         browser.search.setText("zeta", false);
@@ -3210,20 +3251,6 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
               chainOf(4).empty(),
           "with Pd off, Auto Filter is refused with the reason, and nothing is written");
 #endif
-    // With no track selected a load says to select one (the root's own refusal, Pd or not).
-    check(!root.insertDevice("org.adidaw.builtin.utility", 0, std::nullopt) &&
-              root.error().find("Select a track") != std::string::npos,
-          "with no track selected, a load says to select one");
-    // Below the tracks a dragged device says where to drop it, and loads nothing.
-    {
-        const juce::DragAndDropTarget::SourceDetails below(
-            BrowserPanel::deviceDescription(*findBuiltin("org.adidaw.builtin.utility")), nullptr,
-            {40, root.arrangement.canvas.getHeight() - 2});
-        if (root.arrangement.geometry.trackAt(root.reader(), root.arrangement.canvas.getHeight() - 2) == nullptr) {
-            root.arrangement.canvas.itemDropped(below);
-            check(root.error().find("on a track's lane") != std::string::npos, "a device dropped below the tracks says to drop it on a lane");
-        }
-    }
     // The keyboard never lands on a folder's heading: into the list, the first entry is a device.
     browser.choose(audioEffects);
     browser.search.setText("reverb", false);
@@ -4768,6 +4795,23 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
         }
         check(root.command(AppCommands::Undo), "undo");
         root.frame();
+        geometry.selection.insert = bar5;
+        const auto checkSampleDrop = [&](juce::DragAndDropTarget &surface,
+                                         const juce::DragAndDropTarget::SourceDetails &sample) {
+            check(surface.isInterestedInDragSource(sample), "the track control accepts a Browser sample");
+            surface.itemDropped(sample);
+            root.frame();
+            const auto added = clipsOn(1);
+            check(added.size() == before + 1 && added.back().first == "Clap" && added.back().second == bar5,
+                  "SC-286: the sample goes to the track under the drop at the insert marker");
+            check(root.command(AppCommands::Undo), "undo the sample drop");
+            root.frame();
+        };
+        checkSampleDrop(root.arrangement.headers, details);
+        MixerStrip strip(root.mixerView);
+        strip.bind(1);
+        geometry.selection.insert = bar5;
+        checkSampleDrop(strip, {drag, &browser.list, {10, 10}});
         browser.setListing({});
     }
 }

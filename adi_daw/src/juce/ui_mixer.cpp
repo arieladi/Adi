@@ -1090,6 +1090,26 @@ void MixerStrip::mouseDoubleClick(const juce::MouseEvent &e) {
     panel_.root.publishSelection();
     panel_.root.showDeviceView();
 }
+bool MixerStrip::isInterestedInDragSource(const SourceDetails &details) {
+    return track_ != 0 && (panel_.root.browser.acceptsDeviceDrop(details) ||
+                           !BrowserPanel::droppedFiles(details.description).isEmpty());
+}
+void MixerStrip::itemDropped(const SourceDetails &details) {
+    if (track_ == 0)
+        return;
+    if (panel_.root.browser.acceptsDeviceDrop(details)) {
+        panel_.root.browser.loadDroppedDevice(details, track_);
+        return;
+    }
+    filesDropped(BrowserPanel::droppedFiles(details.description), details.localPosition.x, details.localPosition.y);
+}
+bool MixerStrip::isInterestedInFileDrag(const juce::StringArray &files) {
+    return track_ != 0 && !files.isEmpty();
+}
+void MixerStrip::filesDropped(const juce::StringArray &files, int, int) {
+    if (track_ != 0)
+        panel_.root.dropAudioPaths(files, track_, panel_.root.arrangement.geometry.selection.insert);
+}
 bool MixerStrip::onSplitLine(const juce::MouseEvent &e) const noexcept {
     return !panel_.vertical() && track_ != 0 && e.eventComponent == this &&
            e.y >= getHeight() - TrackHeaderList::kSplitLine;
