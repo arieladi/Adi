@@ -41,8 +41,8 @@ void newProject() {
           db.execAndGet("SELECT count(*) FROM tracks WHERE id IN(1,6,7) AND monitor_mode=0").getInt()==3,
           "New monitors all four input tracks on Auto");
     check(db.execAndGet("SELECT group_concat(name,',') FROM (SELECT name FROM tracks "
-                        "WHERE kind!='master' ORDER BY index_in_parent,id)").getString()=="1 MIDI,2 MIDI,3 Audio,4 Audio,A Reverb,B Delay",
-          "default track names and positions are deterministic");
+                        "WHERE kind!='master' ORDER BY index_in_parent,id)").getString()=="# MIDI,# MIDI,# Audio,# Audio,A Reverb,B Delay",
+          "default track names and positions are deterministic: numbered names, as Live's (walk-B B13)");
     check(count(*store,"mixer_strip")==7 && db.execAndGet("SELECT count(*) FROM mixer_strip "
         "WHERE volume_db=0 AND pan=0 AND input_gain_db=0 AND delay_samples=0").getInt()==7,"every root track has its default mixer strip");
     check(db.execAndGet("SELECT count(*) FROM tempo_map WHERE pos_ticks=0 AND bpm=120").getInt()==1 &&

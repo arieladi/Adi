@@ -3,6 +3,7 @@
 #include "ui_look.hpp"
 #include "ui_shell.hpp"
 #include "adi/ui/track_order.hpp"
+#include "adi/ui/arrangement_geometry.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -208,12 +209,16 @@ void MixFocus::select(std::int64_t id) {
 void MixFocus::refreshControls() {
     // The initial refresh runs while AdiRootComponent is still constructing its panel.
     const SnapshotReader snapshot(members_.empty() ? SnapshotPtr{} : root_.current());
+    // Each chip names its track as the track's header does (walk-B B13).
+    const auto shown = members_.empty() ? std::map<std::int64_t, std::string>{} : shownTrackNames(snapshot);
     for (auto &m : members_)
         if (const auto *t = snapshot.findTrack(m.id)) {
+            const auto named = shown.find(m.id);
+            const auto &name = named != shown.end() ? named->second : t->name;
             m.colour =
                 t->color ? look::paletteColour(*t->color) : look::trackColour(static_cast<std::size_t>(static_cast<int>(m.id % 70)));
             m.chip->setButtonText((main_ == m.id ? juce::String::fromUTF8("\xe2\x98\x85 ") : juce::String()) +
-                                  juce::String::fromUTF8(t->name.c_str()));
+                                  juce::String::fromUTF8(name.c_str()));
             m.chip->setColour(juce::TextButton::textColourOffId, m.colour.brighter());
             m.chip->setToggleState(m.id == active_, juce::dontSendNotification);
         }
@@ -370,8 +375,12 @@ void MixFocus::learnMatchPreview() {
     const auto *main = reader.findTrack(learned->main);
     const auto *target = reader.findTrack(learned->target);
     if (!main || !target) return;
-    auto caption = " / Match " + juce::String::fromUTF8(target->name.c_str()) + " toward " +
-                   juce::String::fromUTF8(main->name.c_str()) + " (+/-" +
+    const auto shown = shownTrackNames(reader); // as the headers show them (walk-B B13)
+    const auto nameOf = [&shown](const engine::TrackNode &t) {
+        const auto at = shown.find(t.id);
+        return juce::String::fromUTF8((at != shown.end() ? at->second : t.name).c_str());
+    };
+    auto caption = " / Match " + nameOf(*target) + " toward " + nameOf(*main) + " (+/-" +
                    juce::String(static_cast<int>(matchDisplayDb)) + " dB)";
     if (!matchCaptureIsCurrent(*pair[0]->data)) return;
     matchCaption_ = std::move(caption);
@@ -520,11 +529,13 @@ void MixFocus::frame(const SnapshotReader &reader) {
                                    : 0;
         choices_.clear();
         available.clear(juce::dontSendNotification);
+        const auto shown = shownTrackNames(reader); // as the headers show them (walk-B B13)
         for (const auto &t : reader.tracks())
             if (focusable(*t)) {
                 choices_.push_back(t->id);
                 const int item = static_cast<int>(choices_.size());
-                const auto name = juce::String::fromUTF8(t->name.c_str());
+                const auto named = shown.find(t->id);
+                const auto name = juce::String::fromUTF8((named != shown.end() ? named->second : t->name).c_str());
                 available.addItem(name.isEmpty() ? "Channel " + juce::String(item) : name, item);
                 if (oldChoice == t->id)
                     available.setSelectedId(item, juce::dontSendNotification);

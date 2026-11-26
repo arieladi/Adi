@@ -2,6 +2,7 @@
 #include "ui_mix_analysers.hpp"
 #include "ui_look.hpp"
 #include "adi/ui/snapshot_reader.hpp"
+#include "adi/ui/arrangement_geometry.hpp"
 #include <algorithm>
 #include <cmath>
 #include <map>
@@ -426,8 +427,14 @@ void MixAnalysers::refreshChannels(const SnapshotReader &reader, std::int64_t ma
     channelSnapshot_ = reader.get();
     channelMain_ = main;
     const auto &tracks = reader.tracks();
-    if (std::ranges::equal(tracks, channels_, [main](const auto &track, const Channel &channel) {
-            return track->id == channel.id && track->name == channel.name && (track->id == main) == channel.isMain;
+    // Each channel named as its track's header shows it (walk-B B13).
+    const auto shown = shownTrackNames(reader);
+    const auto nameOf = [&shown](const auto &track) -> const std::string & {
+        const auto at = shown.find(track->id);
+        return at != shown.end() ? at->second : track->name;
+    };
+    if (std::ranges::equal(tracks, channels_, [main, &nameOf](const auto &track, const Channel &channel) {
+            return track->id == channel.id && nameOf(track) == channel.name && (track->id == main) == channel.isMain;
         })) return;
 
     std::map<std::int64_t, int> previous;
@@ -437,7 +444,7 @@ void MixAnalysers::refreshChannels(const SnapshotReader &reader, std::int64_t ma
     for (const auto &track : tracks) {
         const auto found = previous.find(track->id);
         const int menu = found != previous.end() ? found->second : nextMenuId_++;
-        channels_.push_back({track->id, track->name, menu, track->id == main});
+        channels_.push_back({track->id, nameOf(track), menu, track->id == main});
     }
     if (fixedTrack_ && !reader.findTrack(fixedTrack_)) fixedTrack_ = 0;
     refreshSourceControl();

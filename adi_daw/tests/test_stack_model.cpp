@@ -2783,6 +2783,9 @@ void actualChainAdapter() {
     SnapshotRows out;
     const auto refresh = [&] { tracksFromSnapshot(reader, geometry, provider, devices, out); };
     out.tracks.reserve(snapshot->tracks.size());
+    // The shown names (walk-B B13). Made here, not only reserved: MSVC's Debug library allocates a
+    // proxy for every string it constructs, and these names are short enough to need no other heap.
+    out.names.resize(snapshot->tracks.size());
     out.items.reserve(devices.size());
     out.chainOrder.reserve(devices.size());
     allocations = 0;
