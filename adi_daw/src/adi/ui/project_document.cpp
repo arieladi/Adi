@@ -18,6 +18,7 @@
 #include <cmath>
 #include <future>
 #include <mutex>
+#include <system_error>
 #include <thread>
 namespace adi::ui {
 // Where the document's file is now. The message thread moves it at Save As; the waveform worker
@@ -180,6 +181,38 @@ struct ProjectDocument::TakePublication {
         staging = std::async(std::launch::async, [recorded = recorded, folder, stop = stop.get_token()] {
             return recording::stageTake(recorded, folder, stop);
         });
+    }
+};
+
+struct ProjectDocument::SaveJob {
+    using Phase = SaveProgress::Phase;
+    std::filesystem::path path;
+    SaveKind kind;
+    Phase phase = Phase::waitingForRecording;
+    bool wasRecording;
+    bool keptTake = false;
+    bool switched = false;
+    std::string adoptionWarning;
+    std::chrono::steady_clock::time_point recordingDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    std::stop_source stop;
+    StoreFileSave file;
+    mutable std::mutex progressMutex;
+    StoreSaveProgress progress;
+    std::future<StoreFileResult> copy;
+    std::future<std::string> retirement;
+
+    SaveJob(std::filesystem::path output, SaveKind operation, bool recording)
+        : path(std::move(output)), kind(operation), wasRecording(recording) {}
+    ~SaveJob() { stop.request_stop(); }
+    bool terminal() const noexcept {
+        return phase == Phase::succeeded || phase == Phase::cancelled || phase == Phase::failed;
+    }
+    SaveProgress status() const {
+        std::lock_guard lock(progressMutex);
+        auto display = phase;
+        if (phase == Phase::copying && progress.phase != StoreSavePhase::copying)
+            display = progress.phase == StoreSavePhase::relocating ? Phase::relocating : Phase::finishing;
+        return {display, progress.pagesCopied, progress.totalPages, switched};
     }
 };
 namespace {
@@ -396,9 +429,13 @@ bool ProjectDocument::saveAs(const std::filesystem::path &path) {
         error_ = "Save As failed: " + result.error;
         return false;
     }
+    followSaveAs(result, wasRecording && landed_ && landed_->ok);
+    return true;
+}
+void ProjectDocument::followSaveAs(const StoreFileResult &result, bool keptTake) {
     warning_ = result.warning;
     // Said only of a take that landed; one that was not kept says so itself (`takeLanded`).
-    if (wasRecording && landed_ && landed_->ok)
+    if (keptTake)
         warning_ = std::string("Recording stopped, its take kept, before Save As.") + (warning_.empty() ? "" : " ") + warning_;
     {
         std::lock_guard lock(waveformSource_->mutex);
@@ -411,14 +448,19 @@ bool ProjectDocument::saveAs(const std::filesystem::path &path) {
     // by now, so false would lie ("nothing moved"): a session that fails to re-read is a warning
     // on a save that stands, and the next synchronise() tries again.
     // With the session's overridden lanes, so the marks stand and one refresh does (DF-W30 b).
-    view_.refresh(*store_, session_.overriddenLanes());
-    if (!synchronise()) {
+    std::string refreshError;
+    try {
+        view_.refresh(*store_, session_.overriddenLanes());
+        if (!synchronise()) refreshError = error_;
+    } catch (const std::exception &error) {
+        refreshError = error.what();
+    }
+    if (!refreshError.empty()) {
         if (!warning_.empty())
             warning_ += ' ';
-        warning_ += "Saved, but the session did not re-read the file: " + error_;
+        warning_ += "Saved, but the session did not re-read the file: " + refreshError;
     }
     error_.clear();
-    return true;
 }
 namespace {
 // The store never replaces a file; the Status Bar says so in the window's words, with the name.
@@ -447,6 +489,138 @@ bool ProjectDocument::saveCopy(const std::filesystem::path &path) {
     error_.clear();
     return true;
 }
+
+bool ProjectDocument::startSave(const std::filesystem::path &path, SaveKind kind) {
+    if (saveJob_) return false;
+    warning_.clear();
+    const bool switching = kind == SaveKind::as;
+    if (refuseExisting(path, switching ? "Save As" : "Save a Copy", error_)) return false;
+    error_.clear();
+    saveJob_ = std::make_unique<SaveJob>(path, kind, switching && recording_);
+    if (saveJob_->wasRecording) stopRecording();
+    advanceSave();
+    return true;
+}
+
+std::optional<ProjectDocument::SaveProgress> ProjectDocument::saveProgress() const {
+    return saveJob_ ? std::optional{saveJob_->status()} : std::nullopt;
+}
+
+void ProjectDocument::cancelSave() {
+    if (saveJob_ && !saveJob_->terminal()) saveJob_->stop.request_stop();
+}
+
+void ProjectDocument::clearSave() {
+    if (saveJob_ && saveJob_->terminal()) saveJob_.reset();
+}
+
+void ProjectDocument::advanceSave() {
+    if (!saveJob_ || saveJob_->terminal()) return;
+    using Phase = SaveProgress::Phase;
+    using namespace std::chrono_literals;
+    auto &job = *saveJob_;
+    const bool switching = job.kind == SaveKind::as;
+    const auto fail = [&](std::string why, std::string warning = {}) {
+        error_ = std::string(switching ? "Save As failed: " : "Save a Copy failed: ") + why;
+        warning_ = std::move(warning);
+        job.phase = Phase::failed;
+    };
+    const auto finish = [&] {
+        error_.clear();
+        job.phase = Phase::succeeded;
+    };
+    const auto finishRetirement = [&](std::string warning) {
+        warning_ = std::move(job.adoptionWarning);
+        if (!warning.empty()) {
+            if (!warning_.empty()) warning_ += ' ';
+            warning_ += warning;
+        }
+        finish();
+    };
+    try {
+        if (job.phase == Phase::waitingForRecording) {
+            if (job.stop.stop_requested()) {
+                job.phase = Phase::cancelled;
+                return;
+            }
+            if (switching && (recording_ || landing_)) {
+                if (!takePublication_ && std::chrono::steady_clock::now() >= job.recordingDeadline)
+                    fail("The take is still being saved. Try Save As again in a moment.");
+                return;
+            }
+            job.keptTake = job.wasRecording && landed_ && landed_->ok;
+            refreshReportedLatenciesForSave();
+            const auto kind = switching ? StoreSaveKind::saveAs : StoreSaveKind::copy;
+            const auto prepared = store_->prepareFileSave(job.path, kind, job.file);
+            if (!prepared.ok) {
+                fail(prepared.error, prepared.warning);
+                return;
+            }
+            job.copy = std::async(std::launch::async, [job = &job] {
+                return job->file.write(job->stop.get_token(), [job](StoreSaveProgress progress) {
+                    std::lock_guard lock(job->progressMutex);
+                    job->progress = progress;
+                });
+            });
+            job.phase = Phase::copying;
+            return;
+        }
+        if (job.phase == Phase::finishing) {
+            if (job.retirement.wait_for(0ms) == std::future_status::ready)
+                finishRetirement(job.retirement.get());
+            return;
+        }
+        if (job.copy.wait_for(0ms) != std::future_status::ready) return;
+        const auto result = job.copy.get();
+        if (!result.ok) {
+            if (job.file.cancelled()) {
+                warning_.clear();
+                error_.clear();
+                job.phase = Phase::cancelled;
+            } else {
+                fail(result.error, result.warning);
+            }
+            return;
+        }
+        if (!switching) {
+            warning_ = result.warning;
+            finish();
+            return;
+        }
+        if (job.stop.stop_requested()) {
+            warning_ = "A copy was saved. The original project remains active.";
+            error_.clear();
+            job.phase = Phase::cancelled;
+            return;
+        }
+        if (recording_ || landing_) {
+            fail("A take is recording or still being saved. A copy was saved and the original project remains active.",
+                 result.warning);
+            return;
+        }
+        const auto adopted = store_->adoptFileSave(job.file);
+        if (!adopted.ok) {
+            fail(adopted.error, adopted.warning);
+            return;
+        }
+        job.switched = true;
+        job.phase = Phase::finishing;
+        followSaveAs(adopted, job.keptTake);
+        job.adoptionWarning = std::move(warning_);
+        try {
+            job.retirement = std::async(std::launch::async, [job = &job] { return job->file.closeReplacedProject(); });
+        } catch (const std::system_error &) {
+            finishRetirement(job.file.closeReplacedProject());
+        }
+    } catch (const std::exception &error) {
+        if (job.phase == Phase::finishing) {
+            finishRetirement(std::string("Saved, but could not close the old project: ") + error.what());
+        } else {
+            fail(error.what());
+        }
+    }
+}
+
 bool ProjectDocument::collectAllAndSave() {
     warning_.clear();
     refreshReportedLatenciesForSave();
@@ -641,6 +815,7 @@ void ProjectDocument::tick(std::int64_t milliseconds) {
     commitCaptured(requests);
     feed_.publish(session_, realisedGeneration_);
     persistReportedLatencies();
+    advanceSave();
 }
 void ProjectDocument::refreshReportedLatenciesForSave() {
     if (realisedGeneration_ != view_.generation()) return;
