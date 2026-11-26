@@ -13,8 +13,9 @@ Verified `origin/land/basics-1127b` at `6ecdb2b6` (win's stack merging `land/bas
 | `land/basics-1127b` | `6ecdb2b6` | GCC 12.4.0 | 0 | **PASS** (16/16, 154.39 s: `adi_clip_playback_tests`, `adi_changeset_tests`, `adi_project_replace_tests`, `adi_track_delete_tests`, `adi_pd_amxd_tests`, `adi_clap_tests`, `adi_builtin_devices_tests`, `adi_return_send_tap_tests`, `adi_recording_commands_tests`, `adi_midi_clips_tests`, `adi_ui_seams_tests`, `adi_ui_document_tests`, `adi_ui_window_state_tests`, `adi_ui_note_edits_tests`, `adi_replace_operator_new_tests`, `adi_midi_capture_input_tests`; + `adi_clap_probe`) | **PASS** (2/2, 295.95 s: `adi_builtin_realtime_tests` 254.52 s, `adi_acceptance_wts01` 41.42 s) | **PASS** (11/11, 0 warnings: `ui_arrangement.cpp.o`, `ui_browser.cpp.o`, `ui_devices.cpp.o`, `ui_mixer.cpp.o`, `ui_shell.cpp.o`, `ui_main.cpp.o`, `test_ui_shell.cpp.o`, `vst3_host.cpp.o`, `vst3_probe.cpp.o`, `vst3_expression_synth.cpp.o`, `test_vst3_key.cpp.o`) | **PASS** |
 | `land/basics-1127b` | `6ecdb2b6` | Clang 14.0.6 + libstdc++ 12 | 0 | **PASS** (16/16, 148.42 s; + `adi_clap_probe`) | **PASS** (2/2, 277.02 s: `adi_builtin_realtime_tests` 238.96 s, `adi_acceptance_wts01` 38.05 s) | **PASS** (11/11, 0 warnings) | **PASS** |
 | `land/basics-1127b` | `6ecdb2b6` | Clang 14 ASan + LSan + UBSan | 0 | **PASS** (16/16, 172.34 s; 0 sanitizer reports, 0 leaks) | — | — | **PASS** |
+| `land/basics-1127b` | `2ab946f3` | GCC 12.4.0 + Clang 14.0.6 (`-DADI_WERROR=ON`) | 0 | **PASS** (headless C++ unchanged from `6ecdb2b6`; delta is `bdbc9e5f` 4 lines in `tests/test_ui_shell.cpp` + `origin/main` merge `#797`–`#802`) | **PASS** (unchanged from `6ecdb2b6`) | **PASS** (`test_ui_shell.cpp.o` 0 warnings on both GCC 12.4.0 and Clang 14.0.6) | **PASS** |
 
-No findings on `land/basics-1127b` (`6ecdb2b6`) or any of its 15 stacked `basics/*` branches.
+No findings on `land/basics-1127b` (`6ecdb2b6` / `2ab946f3`) or any of its 15 stacked `basics/*` branches.
 
 ---
 
