@@ -147,8 +147,8 @@ class Driver {
         io.streamTimeSamples = stream;
         if (feed)
             feed->pump(stream, kFrames, kRate, static_cast<double>(stream) * 1000.0 / kRate,
-                       [this](std::int64_t sample, const engine::Event &event) {
-                           return doc_->session().enqueueMidiInput(sample, event);
+                       [this](std::int64_t sample, const engine::Event &event, std::int64_t inputSample) {
+                           return doc_->session().enqueueMidiInput(sample, event, inputSample);
                        });
         doc_->process(io);
         if (clips && clips == doc_->session().clips())

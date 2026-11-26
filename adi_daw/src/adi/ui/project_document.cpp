@@ -2,6 +2,7 @@
 #include "project_document.hpp"
 #include "arrangement_geometry.hpp"
 #include "adi/audio/decode.hpp"
+#include "adi/engine/midi_input_capture.hpp"
 #include "adi/gesture_navigation_detail.hpp"
 #include "adi/media/collect_export.hpp"
 #include "adi/mix_function_edit.hpp"
@@ -29,6 +30,7 @@ struct WaveformSource {
 struct ProjectDocument::MidiRecording {
     struct Track {
         bool monitored = false;
+        std::int32_t instrumentArrival = 0;
         std::vector<notes::NoteValues> notes;
         std::map<std::uint64_t, std::size_t> held;
         std::map<std::pair<std::uint64_t, ExpressionDim>, std::vector<ExpressionPoint>> expression;
@@ -38,6 +40,7 @@ struct ProjectDocument::MidiRecording {
     std::vector<Track> tracks;
     std::vector<LiveMidiTake> preview;
     bool started = false;
+    std::int64_t firstStreamSample = 0;
     engine::MidiCaptureState state = engine::MidiCaptureState::Waiting;
 
     std::int64_t tickAt(std::int64_t sample) const noexcept {
@@ -51,6 +54,8 @@ struct ProjectDocument::MidiRecording {
 
     void ingest(const engine::MidiCapturePacket &packet) {
         if (packet.kind == engine::MidiCapturePacket::Kind::Span) {
+            if (!started)
+                firstStreamSample = packet.streamSample;
             const auto start = tickAt(packet.timelineSample);
             const auto end = tickAt(packet.timelineSample + packet.frames);
             for (auto &take : preview) {
@@ -64,15 +69,17 @@ struct ProjectDocument::MidiRecording {
         const auto &event = packet.event;
         if (!started || event.noteId == 0 || event.type == engine::EventType::Controller)
             return;
-        const auto heard = tickAt(packet.timelineSample);
         const auto played = tickAt(packet.timelineSample - (packet.streamSample - packet.inputSample));
         for (std::size_t i = 0; i < tracks.size(); ++i) {
             auto &track = tracks[i];
             auto &take = preview[i];
+            // Live input goes directly to the instrument. A replayed clip passes through the
+            // upstream nodes first, so place it on the clock at the instrument's input.
+            const auto heard = tickAt(packet.timelineSample - track.instrumentArrival);
             const auto at = std::clamp(track.monitored ? heard : played, take.start, take.end - 1);
             const auto held = track.held.find(event.noteId);
             if (event.type == engine::EventType::NoteOn) {
-                if (held != track.held.end())
+                if (held != track.held.end() || (!track.monitored && packet.inputSample < firstStreamSample))
                     continue;
                 const auto index = track.notes.size();
                 const auto velocity = static_cast<int>(std::lround(std::clamp(event.value, 0.0, 1.0) * 127.0));
@@ -1346,9 +1353,20 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
         midi->sampleRate = engineRate_;
         midi->tracks.resize(armed.midi.size());
         midi->preview.resize(armed.midi.size());
+        const auto *graph = session_.graph().currentGraph();
         for (std::size_t i = 0; i < armed.midi.size(); ++i) {
-            midi->preview[i].track = armed.midi[i];
-            midi->tracks[i].monitored = recordState(states, armed.midi[i]).monitor != Monitor::Off;
+            const auto track = armed.midi[i];
+            midi->preview[i].track = track;
+            auto &timing = midi->tracks[i];
+            timing.monitored = recordState(states, track).monitor != Monitor::Off;
+            if (timing.monitored && graph) {
+                const auto chain = session_.chainFor(track);
+                const auto instrument = std::find_if(chain.begin(), chain.end(), [](const auto *node) {
+                    return node->eventFlow() == engine::EventFlow::Consume;
+                });
+                if (instrument != chain.end())
+                    timing.instrumentArrival = std::max(0, graph->arrivalOf(graph->find(**instrument)));
+            }
         }
     }
     engine::AudioRecordingSpec spec;

@@ -134,7 +134,7 @@ void LiveMidiInput::render(const GraphHost::RenderBlock& block, const AudioIo& i
         if (item.epoch != epoch || item.sample >= end) break;
         auto event = item.event;
         event.frame = static_cast<std::int32_t>(std::max(item.sample - io.streamTimeSamples, std::int64_t{0}));
-        if (capture) capture->record(item.inputSample, event);
+        if (capture) capture->record(item.sample, item.inputSample, event);
         for (const auto& route : routes)
             if (route.armedTrack && route.slot != kInvalidNode && !route.voices->flush)
                 deliver(block, route, event);

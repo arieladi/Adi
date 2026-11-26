@@ -146,12 +146,14 @@ double bin(const std::array<float, 2048> &data, int k) {
 // DevicePanelData::latency defaulted to zero. The two controls retain the shared headless fixture.
 class SurfaceKnobs final : public device::DeviceInstance {
   public:
-    explicit SurfaceKnobs(std::int32_t initialLatency = 37) : reportedLatency(initialLatency) {}
+    explicit SurfaceKnobs(std::int32_t initialLatency = 37, engine::EventFlow flow = engine::EventFlow::Through)
+        : reportedLatency(initialLatency), flow_(flow) {}
     const device::DeviceIdentity &identity() const noexcept override { return controls.identity(); }
     bool loaded() const noexcept override { return true; }
     std::string_view processingIssue() const noexcept override { return issue; }
     void process(const engine::NodeIo &io) noexcept override { device::passThrough(io); }
     std::int32_t latencySamples() const noexcept override { return reportedLatency; }
+    engine::EventFlow eventFlow() const noexcept override { return flow_; }
     std::int32_t paramCount() const noexcept override { return controls.paramCount(); }
     const device::ParamDescriptor *paramAt(std::int32_t i) const noexcept override { return controls.paramAt(i); }
     device::ParamValue getParam(const std::string &id) const noexcept override { return controls.getParam(id); }
@@ -160,6 +162,8 @@ class SurfaceKnobs final : public device::DeviceInstance {
     std::int32_t reportedLatency;
     test::Knobs controls;
     std::string issue;
+  private:
+    engine::EventFlow flow_;
 };
 
 Payload readLatencyReport(Store &store) {
@@ -834,7 +838,15 @@ void arrangementRecord(const std::filesystem::path &dir) {
 }
 void arrangementMidiRecord(const std::filesystem::path &path, bool mixed) {
     std::string error;
-    auto doc = ui::ProjectDocument::open(path, true, {}, error);
+    constexpr std::int32_t upstreamLatency = 16;
+    auto doc = ui::ProjectDocument::open(path, true,
+        [](const engine::DeviceRequest &request, std::string &) -> std::unique_ptr<device::DeviceInstance> {
+            if (request.ref->uid == "record.test.delay")
+                return std::make_unique<SurfaceKnobs>(16);
+            if (request.ref->uid == "record.test.keys")
+                return std::make_unique<SurfaceKnobs>(0, engine::EventFlow::Consume);
+            return nullptr;
+        }, error);
     check(doc != nullptr, "a project for Arrangement MIDI recording");
     if (!doc)
         return;
@@ -844,6 +856,15 @@ void arrangementMidiRecord(const std::filesystem::path &path, bool mixed) {
         request.payload = std::move(payload);
         return doc->ops().submit(request).ok;
     };
+    if (mixed) {
+        doc->store().db().exec("INSERT INTO plugin_refs(id,format,uid,name,subtype) VALUES"
+                              "(30,'clap','record.test.delay','Delay','effect'),"
+                              "(31,'clap','record.test.keys','Keys','instrument')");
+        check(set("chain.create", {{"id", 30}, {"track", 2}, {"ord", 0}, {"name", "Devices"}}) &&
+                  set("device.insert", {{"id", 30}, {"chain", 30}, {"ord", 0}, {"ref", 30}, {"name", "Delay"}, {"latency", 0}}) &&
+                  set("device.insert", {{"id", 31}, {"chain", 30}, {"ord", 1}, {"ref", 31}, {"name", "Keys"}, {"latency", 0}}),
+              "the monitored track has an instrument after a device with latency");
+    }
     check(set("track.setArm", {{"id", 2}, {"armed", true}}) &&
               set("track.setMonitorMode", {{"id", 2}, {"mode", 1}}) &&
               (!mixed || (set("track.setArm", {{"id", 3}, {"armed", true}}) &&
@@ -902,7 +923,7 @@ void arrangementMidiRecord(const std::filesystem::path &path, bool mixed) {
         if (!read.clip || read.clip->kind != "midi")
             continue;
         const auto &clip = *read.clip;
-        const double samples = clip.trackId == 2 ? 112.0 : 80.0;
+        const double samples = clip.trackId == 2 ? 112.0 - (mixed ? upstreamLatency : 0) : 80.0;
         const auto ticks = static_cast<std::int64_t>(std::lround(samples * textproj::kPPQ / 24000.0));
         check(clip.notes.size() == 1 && clip.notes.front().startTicks == ticks && clip.notes.front().key == 64,
               "monitored notes land where heard and unmonitored notes where played");
