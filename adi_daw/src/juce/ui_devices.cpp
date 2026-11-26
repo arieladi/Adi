@@ -249,20 +249,80 @@ void WrenchButton::paintButton(juce::Graphics &g, bool over, bool) {
     const auto head = juce::Rectangle<float>(r.getRight() - 6.5f, r.getY(), 6.5f, 6.5f);
     g.drawEllipse(head.reduced(0.6f), 1.8f);
 }
-SampleTile::SampleTile(DeviceChainStrip &s, std::int64_t d, std::int32_t sl, juce::String n)
-    : device(d), slot(sl), slotName(std::move(n)), strip_(s) {
-    setTitle(slotName + " sample");
+void HotSwapButton::paintButton(juce::Graphics &g, bool over, bool down) {
+    const auto centre = getLocalBounds().toFloat().getCentre();
+    const float x = centre.x, y = centre.y;
+    juce::Path arrows;
+    arrows.startNewSubPath(x - 4.f, y - 1.f);
+    arrows.quadraticTo(x - 1.f, y - 6.f, x + 4.f, y - 2.f);
+    arrows.startNewSubPath(x + 1.f, y - 2.f);
+    arrows.lineTo(x + 4.f, y - 2.f);
+    arrows.lineTo(x + 4.f, y - 5.f);
+    arrows.startNewSubPath(x + 4.f, y + 1.f);
+    arrows.quadraticTo(x + 1.f, y + 6.f, x - 4.f, y + 2.f);
+    arrows.startNewSubPath(x - 1.f, y + 2.f);
+    arrows.lineTo(x - 4.f, y + 2.f);
+    arrows.lineTo(x - 4.f, y + 5.f);
+    g.setColour(down ? look::accent : over ? look::text : look::outline);
+    g.strokePath(arrows, juce::PathStrokeType(1.2f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+}
+SampleTile::SampleTile(DeviceChainStrip &s, std::int64_t d, std::vector<DeclaredSlot> slots)
+    : device(d), slot(slots.front().id), strip_(s), slots_(std::move(slots)) {
+    setWantsKeyboardFocus(true);
     setTooltip("Drop a sample file here, from the desktop or the browser.");
     clear.getProperties().set("live.small", true);
-    clear.setTooltip("Empties the " + slotName + " slot: one undo step.");
     clear.onClick = [this] {
         if (targetValid && !targetValid()) return;
         if (strip_.clearSample)
             strip_.clearSample(device, slot);
     };
     addChildComponent(clear);
+    addChildComponent(hotSwapButton);
+    hotSwapButton.setTitle("Hot-Swap Sample");
+    hotSwapButton.setTooltip("Browse samples for this slot (Q).");
+    addChildComponent(slotChooser);
+    if (slots_.size() > 1) {
+        slotChooser.setTitle("Sample Slot");
+        slotChooser.setTooltip("Choose which sample slot to show and edit.");
+        for (std::size_t i = 0; i < slots_.size(); ++i)
+            slotChooser.addItem(slots_[i].name, static_cast<int>(i + 1));
+        slotChooser.setSelectedId(1, juce::dontSendNotification);
+        slotChooser.onChange = [this] {
+            const auto index = slotChooser.getSelectedItemIndex();
+            if (index >= 0 && static_cast<std::size_t>(index) < slots_.size())
+                choose(slots_[static_cast<std::size_t>(index)]);
+        };
+        slotChooser.setVisible(true);
+    }
+    choose(slots_.front());
 }
-void SampleTile::resized() { clear.setBounds(getWidth() - 40, getHeight() - 17, 36, 13); }
+void SampleTile::choose(const DeclaredSlot &choice) {
+    slot = choice.id;
+    slotName = choice.name;
+    setTitle(slotName + " sample");
+    clear.setTooltip("Empties the " + slotName + " slot: one undo step.");
+    refresh();
+    repaint();
+}
+void SampleTile::refresh() {
+    if (const auto *snapshot = strip_.root.reader().get()) {
+        for (const auto &node : snapshot->sampleSlots)
+            if (node && node->deviceId == device && node->slot == slot) {
+                show(node.get());
+                return;
+            }
+        show(nullptr);
+    }
+}
+void SampleTile::resized() {
+    slotChooser.setBounds(3, 2, getWidth() - 6, 17);
+    hotSwapButton.setBounds(4, getHeight() - 18, 17, 15);
+    clear.setBounds(getWidth() - 40, getHeight() - 17, 36, 13);
+}
+void SampleTile::mouseDown(const juce::MouseEvent &event) {
+    if (event.mods.isLeftButtonDown())
+        focusIfShowing(*this);
+}
 void SampleTile::show(const engine::SampleSlotNode *node) {
     const auto next = node == nullptr || node->empty ? State::Empty : node->missing ? State::Missing : State::Loaded;
     const auto problem = node != nullptr ? node->problem : std::string();
@@ -293,7 +353,8 @@ void SampleTile::paint(juce::Graphics &g) {
     // Light text on the dark display, as a device's display draws it.
     g.setColour(look::textOnBand);
     g.setFont(look::font(11.5f, true));
-    g.drawText(slotName, 6, 3, getWidth() - 12, 14, juce::Justification::centredLeft);
+    if (!slotChooser.isVisible())
+        g.drawText(slotName, 6, 3, getWidth() - 12, 14, juce::Justification::centredLeft);
     g.setFont(look::font(11.f));
     const char *what = state_ == State::Empty ? "Drop a sample" : state_ == State::Missing ? "File missing" : "Sample loaded";
     g.setColour(state_ == State::Empty     ? juce::Colour(0xff8a8a8a)
@@ -888,6 +949,12 @@ DevicePanelView::DevicePanelView(DeviceChainStrip &s, const DevicePanelData &d, 
         strip.root.togglePluginWindow(id, juce::ModifierKeys::currentModifiers.isCommandDown());
         wrench.setToggleState(strip.root.pluginWindowOpen(id), juce::dontSendNotification);
     };
+    addChildComponent(hotSwapButton);
+    hotSwapButton.setTitle("Hot-Swap Device");
+    hotSwapButton.setTooltip("Browse replacements for this device (Q).");
+    hotSwapButton.onClick = [this] {
+        if (data) requestHotSwap(*data, std::nullopt, menuEpoch_);
+    };
     addChildComponent(search);
     addChildComponent(functionBand);
     addChildComponent(functionSection);
@@ -1328,23 +1395,28 @@ void DevicePanelView::present(const DevicePanelData &d) {
         title.setButtonText(caption);
     }
     enabled.setToggleState(d.enabled, juce::dontSendNotification);
-    // The first sample slot the built-in declares (ENGINE-SAMPLE-SLOTS.md), named by its [adi.sample]:
-    // the same declarations ProjectDocument::assignSample checks, so OneShot and the Sampler take a drop
-    // as Color Cab does (walk-A A5). Read once per panel. With Pd off no patch is embedded, and Color
-    // Cab keeps its Impulse tile so a drop still says why it cannot load.
+    // The declarations ProjectDocument::assignSample checks also name the sample slots on the panel.
+    // With Pd off Color Cab still keeps its Impulse tile so a drop can explain why it cannot load.
     if (!sample && !sampleSlotsRead_ && d.format == "internal" && !d.uid.empty()) {
         sampleSlotsRead_ = true;
-        const auto slots = device::parsePdDeclarations(builtinDeclarations(d.uid)).samples;
-        if (!slots.empty())
-            sample = std::make_unique<SampleTile>(strip, id, slots.front().id, juce::String(slots.front().name));
-        else if (d.uid == "org.adidaw.builtin.color-cab")
-            sample = std::make_unique<SampleTile>(strip, id, 1, "Impulse");
-        if (sample) {
+        std::vector<SampleTile::DeclaredSlot> slots;
+        for (const auto &declared : device::parsePdDeclarations(builtinDeclarations(d.uid)).samples)
+            slots.push_back({declared.id, juce::String(declared.name)});
+        if (slots.empty() && d.uid == "org.adidaw.builtin.color-cab")
+            slots.push_back({1, "Impulse"});
+        if (!slots.empty()) {
+            sample = std::make_unique<SampleTile>(strip, id, std::move(slots));
             sample->targetValid = [this] { return validTarget(); };
+            sample->hotSwapButton.onClick = [this] {
+                if (data && sample) requestHotSwap(*data, sample->slot, menuEpoch_);
+            };
             addAndMakeVisible(*sample);
             resized();
         }
     }
+    const bool swapVisible = !strip.folded(id) && canHotSwap();
+    if (hotSwapButton.isVisible() != swapVisible)
+        resized();
     // Only a plug-in has a window of its own (parity-7.5 row 1).
     if (wrench.isVisible() != (d.plugin && !strip.folded(id))) {
         wrench.setVisible(d.plugin && !strip.folded(id));
@@ -1434,7 +1506,7 @@ int DevicePanelView::widthFor(int height) const noexcept {
     // Wide enough for the title bar's switches, a name and Configure; and a sample tile beside.
     int pageWidth = 12;
     for (const auto &page : parameterPages) pageWidth += pageSelectorWidth(page) + (page.enableParameter.empty() ? 0 : 18) + 3;
-    return std::max({eqPresentation() ? 270 : 150, pageWidth,
+    return std::max({eqPresentation() ? 270 : hotSwapButton.isVisible() ? 168 : 150, pageWidth,
                      columns * ParameterControl::kWidth + 12 + (sample ? kTileWidth : 0)});
 }
 void DevicePanelView::layoutCompactControls(int top) {
@@ -1469,10 +1541,14 @@ void DevicePanelView::resized() {
     title.setVisible(!isFolded);
     configureButton.setVisible(!mixCard_ && !isFolded && !eqPresentation());
     wrench.setVisible(!isFolded && data != nullptr && data->plugin);
+    hotSwapButton.setVisible(!isFolded && canHotSwap());
     // Live's order (manual 23.3's figure): the activator, the fold switch, the wrench, the name.
     const int nameLeft = wrench.isVisible() ? 50 : 32;
     wrench.setBounds(32, 1, 16, 15);
-    title.setBounds(nameLeft, 1, std::max(0, getWidth() - nameLeft - (eqPresentation() || mixCard_ ? 4 : 58)), 15);
+    const int titleRight = getWidth() - (eqPresentation() || mixCard_ ? 4 : 58);
+    const int swapWidth = hotSwapButton.isVisible() ? 17 : 0;
+    hotSwapButton.setBounds(titleRight - swapWidth, 1, swapWidth, 15);
+    title.setBounds(nameLeft, 1, std::max(0, titleRight - swapWidth - nameLeft), 15);
     configureButton.setBounds(getWidth() - 56, 2, 52, 13);
     if (mixCard_ && !isFolded) {
         const auto rail = look::fieldHeight;
@@ -1483,6 +1559,7 @@ void DevicePanelView::resized() {
     }
     if (sample) {
         sample->setVisible(!isFolded);
+        sample->hotSwapButton.setVisible(hotSwapButton.isVisible());
         const int tileTop = kTitleHeight + (configuring ? 26 : 4) + (parameterPages.empty() ? 0 : kPageHeight);
         sample->setBounds(getWidth() - kTileWidth, tileTop, kTileWidth - 6, std::min(84, std::max(0, getHeight() - tileTop - 4)));
     }
@@ -1609,7 +1686,30 @@ void DevicePanelView::paint(juce::Graphics &g) {
                          36, juce::Justification::centred, 2);
     }
 }
+bool DevicePanelView::canHotSwap() const {
+    if (!strip.hotSwap || mixCard_ || !data || !data->available || data->uid.empty() || nativeFunction())
+        return false;
+    if (data->format != "internal" && data->format != "clap" && data->format != "vst3")
+        return false;
+    const auto current = strip.root.current();
+    const auto *track = current ? current->findTrack(data->track) : nullptr;
+    return track && !track->frozen && !track->frozenByGroup;
+}
+bool DevicePanelView::requestHotSwap(DevicePanelData expected, std::optional<std::int32_t> slot,
+                                     std::uint64_t epoch) {
+    const auto safe = SafePointer<DevicePanelView>(this);
+    if (menuEpoch_ != epoch || !canHotSwap() || !validTarget() || !safe)
+        return false;
+    if (!safe->strip.validExpected(expected) || !safe || safe->menuEpoch_ != epoch || !safe->strip.hotSwap)
+        return false;
+    safe->strip.hotSwap(expected, slot);
+    return true;
+}
 bool DevicePanelView::keyPressed(const juce::KeyPress &k) {
+    if (k == juce::KeyPress('q') && data && !rename.isVisible() && !strip.root.transport.keyboard.getToggleState() &&
+        dynamic_cast<const juce::TextEditor *>(juce::Component::getCurrentlyFocusedComponent()) == nullptr)
+        return requestHotSwap(*data, sample && sample->hasKeyboardFocus(true) ? std::optional{sample->slot} : std::nullopt,
+                              menuEpoch_);
     if (!validTarget())
         return k == juce::KeyPress::deleteKey || k == juce::KeyPress::backspaceKey;
     if (k == juce::KeyPress::deleteKey || k == juce::KeyPress::backspaceKey)
@@ -1727,6 +1827,21 @@ juce::PopupMenu DevicePanelView::commands() {
         if (safe && safe->validTarget())
             safe->strip.fold(safe->id);
     });
+    if (strip.hotSwap && !mixCard_) {
+        juce::PopupMenu::Item item("Hot-Swap");
+        item.shortcutKeyDescription = juce::KeyPress('q').getTextDescriptionWithIcons();
+        item.isEnabled = canHotSwap();
+        if (item.isEnabled) {
+            item.action = [safe, epoch, expected = *data] {
+                if (!safe || safe->menuEpoch_ != epoch)
+                    return;
+                safe->endInteraction(Interaction::Menu);
+                if (safe) safe->requestHotSwap(expected, std::nullopt, epoch);
+            };
+        }
+        m.addSeparator();
+        m.addItem(std::move(item));
+    }
     if (strip.savePreset) {
         const auto current = strip.root.current();
         const auto *track = current && data ? current->findTrack(data->track) : nullptr;
@@ -2167,18 +2282,8 @@ bool DeviceChainStrip::clipboard(Clip c, std::optional<std::int64_t> device) {
     return false;
 }
 void DeviceChainStrip::showSamples() {
-    // A sample tile shows its slot as the snapshot holds it: empty, loaded or missing.
-    const auto *snapshot = root.reader().get();
-    if (snapshot == nullptr)
-        return;
     for (auto &p : panels)
-        if (p->sample) {
-            const engine::SampleSlotNode *node = nullptr;
-            for (const auto &slot : snapshot->sampleSlots)
-                if (slot && slot->deviceId == p->id && slot->slot == p->sample->slot)
-                    node = slot.get();
-            p->sample->show(node);
-        }
+        if (p->sample) p->sample->refresh();
 }
 void DeviceChainStrip::frame(std::int64_t track) {
     const auto safe = SafePointer<DeviceChainStrip>(this);

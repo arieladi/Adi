@@ -46,6 +46,12 @@ struct PluginInsertOptions {
 [[nodiscard]] PreparedBuiltinInsert preparePluginInsert(Store&,const rows::PluginRef&,std::int64_t track,
     std::optional<std::int64_t> beforeDevice={},const PluginInsertOptions& = {},
     std::int64_t retainedDeviceId=0,std::span<const OpRequest> newTrack={});
+// Replace a device of the same role in its chain. The caller may append
+// parameter and state requests for the new device before committing.
+[[nodiscard]] PreparedBuiltinInsert prepareBuiltinReplacement(Store&, std::string_view uid,
+    std::int64_t targetDevice, std::int64_t retainedDeviceId=0);
+[[nodiscard]] PreparedBuiltinInsert preparePluginReplacement(Store&, const rows::PluginRef&,
+    std::int64_t targetDevice, std::int64_t retainedDeviceId=0);
 [[nodiscard]] CommitResult commitBuiltinInsert(Store&,const PreparedBuiltinInsert&,Actor=Actor::User);
 
 struct DeviceMoveSource {

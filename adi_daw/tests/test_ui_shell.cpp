@@ -3396,6 +3396,53 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
         if (iceRow >= 0)
             browser.list.getListBoxModel()->listBoxItemDoubleClicked(iceRow, pressAt(browser.list, {10, 10}));
         check(loaded.size() == 2 && loaded.back() == ice, "double-click opens the matched installed plug-in preset");
+
+        using Swap = BrowserPanel::HotSwapChoice;
+        scan.listing.plugins.push_back({"clap", "fixture.synth", "Fixture Synth", "Fixture", "1", {},
+                                        PluginEntry::Kind::Instrument});
+        scan.listing.plugins.push_back({"clap", "fixture.notes", "Fixture Notes", "Fixture", "1", {},
+                                        PluginEntry::Kind::MidiEffect});
+        scan.listing.plugins.push_back({"vst3", "fixture.unknown", "Unknown Kind", "Fixture", "1", {}});
+        browser.choose(instruments);
+        browser.setHotSwap(BrowserPanel::HotSwapFilter{"effect", "Utility"});
+        browser.setPluginScan(scan);
+        check(browser.hotSwapActive() && browser.search.getText().isEmpty() &&
+                  std::none_of(browser.rows().begin(), browser.rows().end(), [](const auto &row) {
+                      return row.file || (row.device && (!row.device->available || row.device->instrument)) ||
+                             (row.plugin && row.plugin->kind != PluginEntry::Kind::Effect);
+                  }) && linked("Ice", "First Shell"),
+              "SC-285: device Hot-Swap lists compatible devices and their exact preset identities");
+        int normalLoads = 0;
+        root.loadPlugin = [&](rows::PluginRef, std::int64_t, std::optional<std::int64_t>, bool) {
+            ++normalLoads;
+            return true;
+        };
+        browser.swapChoice = [&](const Swap &choice) {
+            check(choice.kind == Swap::Kind::Plugin && choice.plugin && choice.plugin->shellId == 12,
+                  "the swap passes an owning plug-in choice with the shell member's identity");
+            return false;
+        };
+        const int firstShell = presetRow("Ice") - 1;
+        check(firstShell >= 0 && !browser.load(firstShell) && normalLoads == 0 && browser.hotSwapActive(),
+              "a refused swap leaves the mode active and never falls through to insert");
+        browser.search.setText("ice", false);
+        browser.search.onTextChange();
+        const int swapPreset = presetRow("Ice");
+        std::filesystem::path swapped;
+        browser.swapChoice = [&](const Swap &choice) {
+            check(choice.kind == Swap::Kind::Preset, "Enter dispatches the Hot-Swap preset choice");
+            browser.setDevicePresets({});
+            swapped = choice.path;
+            return true;
+        };
+        if (swapPreset >= 0)
+            browser.list.getListBoxModel()->returnKeyPressed(swapPreset);
+        check(swapped == ice && loaded.size() == 2, "a preset choice owns its path across a Browser refresh");
+        check(browser.searchKeys().keyPressed(juce::KeyPress(juce::KeyPress::escapeKey), &browser.search) &&
+                  !browser.hotSwapActive() && browser.selected() == instruments && browser.search.getText() == "ice",
+              "Escape restores the Browser category and search used before Hot-Swap");
+        browser.swapChoice = {};
+        root.loadPlugin = {};
         browser.loadDevicePreset = {};
         browser.setDevicePresets({});
         browser.search.setText({}, false);
@@ -4138,6 +4185,12 @@ void oneShotTile(AppCommands &commands, const std::filesystem::path &dir) {
         root.frame();
         root.frame();
     };
+    std::int64_t swappingDevice = 0;
+    std::optional<std::int32_t> swappingSlot;
+    root.devices.hotSwap = [&](const DevicePanelData &device, std::optional<std::int32_t> slot) {
+        swappingDevice = device.id;
+        swappingSlot = slot;
+    };
     root.arrangement.geometry.selection.track = 2;
     refresh();
     auto &panels = root.devices.panels;
@@ -4155,6 +4208,9 @@ void oneShotTile(AppCommands &commands, const std::filesystem::path &dir) {
     check(tile.isVisible() && tile.slot == 1 && tile.slotName == "Sample" && tile.state() == SampleTile::State::Empty &&
               tile.getX() >= controlsRight && tile.getRight() <= panels[0]->getWidth() && tile.getHeight() >= 40,
           "the tile is OneShot's declared slot 1, \"Sample\", empty, beside the controls and inside the panel");
+    check(!tile.slotChooser.isVisible() && tile.hotSwapButton.isVisible(), "a single slot offers Hot-Swap without a chooser");
+    tile.hotSwapButton.onClick();
+    check(swappingDevice == dev && swappingSlot == 1, "the sample tile opens the Browser for its exact slot");
     const auto wav = dir / "oneshot-sample.wav";
     {
         std::vector<float> silence(256);
@@ -4196,9 +4252,21 @@ void oneShotTile(AppCommands &commands, const std::filesystem::path &dir) {
     // The Sampler's slots are declared too: its panel draws the first, by its declared name.
     root.arrangement.geometry.selection.track = 3;
     refresh();
-    check(panels.size() == 1 && panels[0]->sample != nullptr && panels[0]->sample->slot == 1 &&
-              panels[0]->sample->slotName == "Sample 1",
+    const bool sampler = panels.size() == 1 && panels[0]->sample && panels[0]->sample->slot == 1 &&
+                         panels[0]->sample->slotName == "Sample 1";
+    check(sampler,
           "the Sampler's panel draws its first declared slot, \"Sample 1\"");
+    if (sampler) {
+        auto &samplerTile = *panels[0]->sample;
+        check(samplerTile.slotChooser.isVisible() && samplerTile.slotChooser.getNumItems() == 32,
+              "the Sampler's slot chooser exposes its declared slots");
+        samplerTile.slotChooser.setSelectedId(2, juce::sendNotificationSync);
+        samplerTile.grabKeyboardFocus();
+        auto *peer = surfacePeer.getPeer();
+        check(samplerTile.slot == 2 && samplerTile.slotName == "Sample 2" && peer &&
+                  peer->handleKeyPress(juce::KeyPress('q')) && swappingDevice == panels[0]->id && swappingSlot == 2,
+              "Q in the Sampler's tile opens Hot-Swap for the chosen second slot");
+    }
     document->release();
 #else
     (void)commands;
@@ -5200,6 +5268,23 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
         check(instruments.size() == 4 && instruments.back().first == 2 &&
                   instruments.back().second == browser.shown()[0]->path,
               "SC-283: a Browser sample double-click loads an instrument on the selected MIDI track");
+        using Swap = BrowserPanel::HotSwapChoice;
+        browser.setHotSwap(BrowserPanel::HotSwapFilter{{}, "OneShot", true});
+        browser.search.setText("rim", false);
+        browser.search.onTextChange();
+        std::filesystem::path sampleSwap;
+        browser.swapChoice = [&](const Swap &choice) {
+            if (choice.kind == Swap::Kind::Sample)
+                sampleSwap = choice.path;
+            return false;
+        };
+        browser.list.getListBoxModel()->listBoxItemDoubleClicked(0, pressAt(browser.list, {10, 10}));
+        check(browser.rows().size() == 1 && sampleSwap.filename() == "Rim.wav" && instruments.size() == 4,
+              "SC-285: a sample-only swap uses the searched sample and leaves normal instrument loading alone");
+        check(browser.list.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey)) &&
+                  browser.shown().size() == 3 && browser.search.getText().isEmpty(),
+              "Escape also closes Hot-Swap from the Browser content list");
+        browser.swapChoice = {};
         geometry.selection.track = 1;
         check(!browser.load(0) && instruments.size() == 4,
               "a Browser sample double-click without MIDI leaves the audio track alone");
@@ -11364,6 +11449,55 @@ void deviceClipboard(AppCommands &commands, const std::filesystem::path &dir) {
             check(blocked && !blocked->isEnabled && !blocked->action, "a missing device's Save Preset is disabled");
         }
         root.devices.savePreset = {};
+    }
+    if (!root.devices.panels.empty()) {
+        std::optional<DevicePanelData> swapped;
+        root.devices.hotSwap = [&](const DevicePanelData &expected, std::optional<std::int32_t> slot) {
+            if (!slot) swapped = expected;
+        };
+        refresh();
+        auto &device = *root.devices.panels.front();
+        // Production binds the action before the first layout; this fixture binds it afterwards.
+        device.resized();
+        const auto swapItem = [](const juce::PopupMenu &menu) -> std::optional<juce::PopupMenu::Item> {
+            for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+                if (it.getItem().text == "Hot-Swap")
+                    return it.getItem();
+            return std::nullopt;
+        };
+        const auto old = swapItem(device.commands());
+        check(old && old->isEnabled && old->action && device.hotSwapButton.isVisible(),
+              "SC-285: a loaded device offers Hot-Swap on its title and in the context menu");
+        device.cancelInteractions();
+        if (old && old->action) old->action();
+        check(!swapped, "an expired Hot-Swap menu cannot open the Browser for its device");
+        const auto live = swapItem(device.commands());
+        root.devices.targetCurrent = [](std::int64_t, const engine::DeviceRuntimeToken &, std::uint64_t) { return false; };
+        if (live && live->action) live->action();
+        check(!swapped, "Hot-Swap refuses a runtime that changed after the menu was shown");
+        root.devices.targetCurrent = {};
+        if (live && live->action) live->action();
+        check(swapped && swapped->id == device.id && swapped->instance == device.presentedInstance(),
+              "the live title action opens Hot-Swap for the exact runtime");
+        swapped.reset();
+        device.hotSwapButton.onClick();
+        check(swapped && swapped->id == device.id, "the device's Hot-Swap button opens the same Browser action");
+        swapped.reset();
+        device.grabKeyboardFocus();
+        auto *peer = host.getPeer();
+        check(peer && peer->handleKeyPress(juce::KeyPress('q')) && swapped && swapped->id == device.id,
+              "plain Q on the focused title opens Hot-Swap");
+        swapped.reset();
+        root.transport.keyboard.setToggleState(true, juce::dontSendNotification);
+        check(!device.keyPressed(juce::KeyPress('q')) && !swapped, "the Computer MIDI Keyboard keeps plain Q");
+        root.transport.keyboard.setToggleState(false, juce::dontSendNotification);
+        check(!device.keyPressed(juce::KeyPress('q', juce::ModifierKeys::commandModifier, 0)) && !swapped,
+              "Cmd/Ctrl+Q keeps its existing action");
+        check(device.beginRename(), "the title can enter inline rename");
+        if (peer) peer->handleKeyPress(juce::KeyPress('q', 0, 'q'));
+        check(device.rename.getText() == "q" && !swapped, "Q typed in the name editor stays in the editor");
+        device.rename.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey));
+        root.devices.hotSwap = {};
     }
     const auto chain = [&] {
         std::vector<std::int64_t> out;

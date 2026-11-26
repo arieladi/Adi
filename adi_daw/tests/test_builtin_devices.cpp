@@ -280,6 +280,96 @@ void thirdPartyPlacement() {
           !preparePluginInsert(store,replacement,1,rack,replace).ok,
           "instrument racks bound audio placement while a replacement protects their nested devices");
 }
+void hotSwapPlacement() {
+    Project project;
+    auto& store = *project.store;
+    auto& db = store.db();
+    db.exec("INSERT INTO tracks(id,kind,name) VALUES(20,'group','Group');"
+            "UPDATE tracks SET parent_id=20 WHERE id=1;"
+            "INSERT INTO device_chains(id,track_id,ord) VALUES(10,1,0),(11,1,1);"
+            "INSERT INTO plugin_refs(id,format,uid,name,subtype,is_shell,shell_id) VALUES"
+            "(1,'clap','test.effect','Existing effect','effect',0,NULL),"
+            "(2,'vst3','test.replacement','Replacement effect','effect',1,71),"
+            "(3,'internal','org.adidaw.mix.eq','EQ','effect',0,NULL);"
+            "INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name,enabled) VALUES"
+            "(30,11,-6,1,'First',1),(40,11,11,1,'Target',0),(50,11,25,1,'Last',1),(70,10,1,3,'Mix EQ',1);"
+            "INSERT INTO devices(id,chain_id,ord,is_rack,rack_kind) VALUES(60,10,0,1,'effect');"
+            "INSERT INTO plugin_params(device_id,param_id,normalized_value) VALUES(40,'shape',0.375);"
+            "INSERT INTO automation_lanes(id,owner_kind,owner_id,param_ref) VALUES(7,'device',40,'shape');");
+
+    using DeviceOrder = std::vector<std::pair<std::int64_t, std::int64_t>>;
+    const auto order = [&] {
+        DeviceOrder result;
+        SQLite::Statement rows(db, "SELECT id,ord FROM devices WHERE chain_id=11 ORDER BY ord,id");
+        while (rows.executeStep()) result.emplace_back(rows.getColumn(0).getInt64(), rows.getColumn(1).getInt64());
+        return result;
+    };
+    const DeviceOrder original{{30, -6}, {40, 11}, {50, 25}};
+    rows::PluginRef candidate;
+    candidate.format = "vst3";
+    candidate.uid = "test.replacement";
+    candidate.name = "Replacement effect";
+    // Existing references carry the stored role regardless of scan guesses.
+    candidate.subtype = "instrument";
+    candidate.isShell = true;
+    candidate.shellId = 71;
+    const auto replacement = preparePluginReplacement(store, candidate, 40, 1000);
+    check(replacement.ok && replacement.referenceId == 2 && replacement.chainId == 11 && replacement.deviceId > 1000 &&
+              order() == original,
+          "SC-285 preparation anchors to the exact chain, installed shell reference, and a fresh runtime ID");
+    if (!replacement.ok) return;
+    auto otherShell = candidate;
+    otherShell.shellId = 72;
+    check(!preparePluginReplacement(store, otherShell, 40).ok && !preparePluginReplacement(store, candidate, 60).ok &&
+              !preparePluginReplacement(store, candidate, 70).ok && !preparePluginReplacement(store, candidate, 400).ok,
+          "SC-285 a different device role, a rack, a native Mix function, and a missing target refuse");
+    db.exec("CREATE TRIGGER reject_hot_swap BEFORE INSERT ON devices WHEN NEW.name='Replacement effect' "
+            "BEGIN SELECT RAISE(ABORT,'injected insert failure'); END");
+    check(!commitBuiltinInsert(store, replacement).ok && order() == original &&
+              db.execAndGet("SELECT COUNT(*) FROM automation_lanes WHERE owner_id=40").getInt() == 1,
+          "SC-285 a failed candidate insert rolls the removed device and its automation back");
+    db.exec("DROP TRIGGER reject_hot_swap");
+    History history(store);
+    const DeviceOrder swapped{{30, -6}, {replacement.deviceId, 11}, {50, 25}};
+    check(commitBuiltinInsert(store, replacement).ok && order() == swapped &&
+              db.execAndGet("SELECT enabled FROM devices WHERE ord=11").getInt() == 0 &&
+              db.execAndGet("SELECT COUNT(*) FROM automation_lanes WHERE owner_id=40").getInt() == 0,
+          "SC-285 a single replacement preserves exact order and bypass with no extra instance");
+    const auto undo = history.nextUndo();
+    check(undo && undo->label == "Hot-Swap Device" && history.undo().ok && order() == original &&
+              db.execAndGet("SELECT normalized_value FROM plugin_params WHERE device_id=40").getDouble() == 0.375 &&
+              db.execAndGet("SELECT owner_id FROM automation_lanes WHERE id=7").getInt64() == 40,
+          "SC-285 one Undo restores the original device, parameter, and automation");
+    check(history.redo().ok && order() == swapped && history.undo().ok, "SC-285 Redo reuses the same replacement slot");
+
+    db.exec("UPDATE devices SET ord=11 WHERE id=50");
+    const DeviceOrder tied{{30, -6}, {40, 11}, {50, 11}};
+    const auto tiedReplacement = preparePluginReplacement(store, candidate, 40);
+    check(tiedReplacement.ok && commitBuiltinInsert(store, tiedReplacement).ok &&
+              order() == DeviceOrder{{30, 0}, {tiedReplacement.deviceId, 1}, {50, 2}} &&
+              history.undo().ok && order() == tied,
+          "SC-285 a tied order retains its audible order through the replacement and Undo");
+
+    const auto stale = preparePluginReplacement(store, candidate, 40);
+    OpRequest lock;
+    lock.opType = "track.setLocked";
+    lock.payload = {{"id", 20}, {"locked", true}};
+    const auto locked = OpJournal(store).commit(std::span(&lock, 1));
+    check(stale.ok && locked.ok && commitBuiltinInsert(store, stale).stale &&
+              !preparePluginReplacement(store, candidate, 40).ok && order() == tied,
+          "SC-285 a locked ancestor refuses the swap and a moved head invalidates a prepared swap");
+    check(history.undo().ok, "SC-285 test unlocks the group");
+    db.exec("UPDATE tracks SET frozen=1 WHERE id=1");
+    check(!preparePluginReplacement(store, candidate, 40).ok && order() == tied,
+          "SC-285 a frozen track refuses device replacement before mutation");
+    db.exec("UPDATE tracks SET frozen=0 WHERE id=1");
+#if ADI_WITH_PD
+    const auto builtin = prepareBuiltinReplacement(store, "org.adidaw.builtin.utility", 40);
+    check(builtin.ok && commitBuiltinInsert(store, builtin).ok &&
+              order() == DeviceOrder{{30, 0}, {builtin.deviceId, 1}, {50, 2}} && history.undo().ok && order() == tied,
+          "SC-285 the built-in wrapper replaces an effect at the same position");
+#endif
+}
 // DF-E50: automation on a built-in device is applied, at its frame. Utility's
 // Gain is "11", -120..35 dB on a linear curve, so 0 dB is 120/155 and +6 dB
 // 126/155; its core ramps a gain change over 5 ms.
@@ -762,4 +852,4 @@ void builtinInstrumentPlacement() {
           "SC-282: one Undo restores the original effect order");
 #endif
 }
-int main(){try{catalogueAndHost();paramsAndState();insertionAndHistory();thirdPartyPlacement();playingSession();instrumentSession();duplicatePrepareKeepsBuiltinState();builtinInstrumentPlacement();}catch(const std::exception& exception){counting=false;check(false,exception.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{catalogueAndHost();paramsAndState();insertionAndHistory();thirdPartyPlacement();hotSwapPlacement();playingSession();instrumentSession();duplicatePrepareKeepsBuiltinState();builtinInstrumentPlacement();}catch(const std::exception& exception){counting=false;check(false,exception.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

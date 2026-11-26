@@ -737,6 +737,75 @@ void devicePresetRoundTrip(const std::filesystem::path &dir) {
     check(target->ops().redo().ok && target->synchronise() && samePreset(),
           "a single Redo restores the stored parameters and embedded sample on that device");
     target->release();
+
+    auto recall = ui::ProjectDocument::open(dir / "preset-hot-swap.adi", true, device::withBuiltinDevices(), error);
+    if (!recall || !prepareTrack(*recall) || !recall->insertBuiltin(oneShot, track, {})) {
+        check(false, "SC-285: a project with a fresh OneShot and a playable MIDI note");
+        return;
+    }
+    const auto device = recall->store().db().execAndGet("SELECT MAX(id) FROM devices").getInt64();
+    auto *const originalRuntime = recall->session().instanceFor(device);
+    auto publication = recall->parameterFeed().current();
+    const auto panelForRecall = std::find_if(publication->begin(), publication->end(),
+                                            [&](const auto &entry) { return entry.id == device; });
+    if (panelForRecall == publication->end() || !originalRuntime) {
+        check(false, "SC-285: capture the fresh device's runtime and slot");
+        recall->release();
+        return;
+    }
+    const auto expected = *panelForRecall;
+    const double untouched = originalRuntime->getParam(volume).normalized;
+    automation::LaneSpec lane;
+    lane.id = 1;
+    lane.ownerKind = "device";
+    lane.ownerId = device;
+    lane.paramRef = volume;
+    lane.paramName = "Volume";
+    lane.enabled = false;
+    check(recall->ops().submit(automation::createLane(lane)).ok && recall->synchronise(),
+          "SC-285: the selected OneShot has authored automation");
+    const auto recallHead = OpJournal(recall->store()).headSeq();
+    const auto originalAudio = renderNote(*recall);
+    const auto originalAutomation = [&] {
+        const auto snapshot = recall->view().current();
+        const auto *row = snapshot->findAutomationLane(lane.id);
+        return row && row->ownerId == device && row->paramRef == lane.paramRef;
+    };
+    auto unsupported = values;
+    unsupported.parameters.emplace("no-such-control", .5);
+    check(recall->hotSwapPreset(expected, std::move(unsupported)) == 0 &&
+              OpJournal(recall->store()).headSeq() == recallHead,
+          "SC-285: incompatible preset parameters leave the live device and history unchanged");
+    auto stale = expected;
+    stale.chain = 0;
+    check(!recall->hotSwapTarget(stale) && recall->hotSwapPreset(stale, values) == 0 &&
+              OpJournal(recall->store()).headSeq() == recallHead,
+          "SC-285: a stale captured chain cannot write to the device");
+    if (recall->hotSwapPreset(expected, values) != device) {
+        check(false, ("SC-285: apply a preset to the same instance: " + recall->error()).c_str());
+        recall->release();
+        return;
+    }
+    recall->tick(0);
+    check(originalAutomation() && recall->session().instanceFor(device) == originalRuntime &&
+              originalRuntime->getParam(volume).normalized == setting && renderNote(*recall) == expectedAudio,
+          "SC-285: recall keeps the instance and its automation and plays the embedded sample");
+    check(recall->ops().undo().ok && recall->synchronise(), "SC-285: undo preset recall once");
+    recall->tick(1);
+    SQLite::Statement param(recall->store().db(), "SELECT 1 FROM plugin_params WHERE device_id=? AND param_id=?");
+    param.bind(1, device);
+    param.bind(2, volume);
+    SQLite::Statement sample(recall->store().db(), "SELECT 1 FROM plugin_state WHERE device_id=? AND stream_role='sample:1'");
+    sample.bind(1, device);
+    check(OpJournal(recall->store()).headSeq() == recallHead && originalAutomation() &&
+              recall->session().instanceFor(device) == originalRuntime && !param.executeStep() && !sample.executeStep() &&
+              originalRuntime->getParam(volume).normalized == untouched && renderNote(*recall) == originalAudio,
+          "SC-285: one Undo restores the unrecorded parameter, empty sample and previous sound");
+    check(recall->ops().redo().ok && recall->synchronise(), "SC-285: redo preset recall once");
+    recall->tick(2);
+    check(originalAutomation() && recall->session().instanceFor(device) == originalRuntime && renderNote(*recall) == expectedAudio,
+          "SC-285: Redo restores the same instrument's recalled sound");
+    recall->release();
 }
 
 void mixSurfacePublication(const std::filesystem::path &file) {

@@ -7,6 +7,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
 #include <map>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -17,7 +18,10 @@ class AdiRootComponent;
 class BrowserList final : public juce::ListBox {
   public:
     std::function<void()> onLeft;
+    std::function<bool()> onEscape;
     bool keyPressed(const juce::KeyPress &k) override {
+        if (k == juce::KeyPress::escapeKey && onEscape && onEscape())
+            return true;
         if (k == juce::KeyPress::leftKey && onLeft) {
             onLeft();
             return true;
@@ -97,6 +101,21 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     bool load(int row);
     void setDevicePresets(std::vector<preset::Entry>);
     std::function<bool(const std::filesystem::path &)> loadDevicePreset;
+    struct HotSwapFilter {
+        std::string subtype, targetName;
+        bool samples = false;
+    };
+    struct HotSwapChoice {
+        enum class Kind { Builtin, Plugin, Preset, Sample };
+        Kind kind;
+        std::string uid;
+        std::optional<PluginEntry> plugin;
+        std::filesystem::path path;
+    };
+    void setHotSwap(std::optional<HotSwapFilter>);
+    bool hotSwapActive() const noexcept { return hotSwap_.has_value(); }
+    std::function<bool(const HotSwapChoice &)> swapChoice;
+    std::function<void()> leaveHotSwap;
     // Asks the app to scan the plug-ins when Plug-Ins is chosen and no scan has begun; unset outside the
     // app. It returns at once: the scan runs on the app's worker (DF-W34).
     std::function<void()> scanPlugins;
@@ -124,6 +143,8 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
   private:
     const PluginEntry *draggedPlugin(const juce::DragAndDropTarget::SourceDetails &) const;
     bool loadPluginEntry(const PluginEntry &, std::int64_t track, std::optional<std::int64_t> before);
+    bool cancelHotSwap();
+    bool loadHotSwap(const Row &);
     // The list's rows for the label chosen and the search typed.
     void refill();
     int getNumRows() override;
@@ -136,6 +157,8 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     int lastSelected_ = -1;
     void returnKeyPressed(int row) override { load(row); }
     std::vector<Row> rows_;
+    std::optional<HotSwapFilter> hotSwap_;
+    juce::String idleSearch_;
     std::map<std::string, std::vector<preset::Entry>> devicePresets_;
     LibraryListing listing_;
     bool ready_ = false;

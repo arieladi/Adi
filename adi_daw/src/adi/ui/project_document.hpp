@@ -249,6 +249,17 @@ class ProjectDocument final : public engine::BlockProcessor {
                           const std::string &name, std::filesystem::path &saved);
     std::int64_t loadDevicePreset(preset::Preset, std::int64_t track, std::optional<std::int64_t> before,
                                   const std::optional<rows::PluginRef> &installed = {});
+    struct HotSwapTargetInfo {
+        preset::Identity device;
+        std::string subtype;
+    };
+    std::optional<HotSwapTargetInfo> hotSwapTarget(const DevicePanelData &);
+    std::int64_t hotSwapBuiltin(const DevicePanelData &, const std::string &uid);
+    std::int64_t hotSwapPlugin(const DevicePanelData &, const rows::PluginRef &);
+    std::int64_t hotSwapPreset(const DevicePanelData &, preset::Preset,
+                               const std::optional<rows::PluginRef> &installed = {});
+    bool hotSwapSample(const DevicePanelData &, std::int32_t slot, const std::filesystem::path &,
+                       std::int64_t nowUtc);
     bool addMixFunction(mix::Function, std::int64_t track);
     std::vector<DeviceKeyChoice> deviceKeyChoices(const DevicePanelData&);
     bool setDeviceKeyChoice(const DevicePanelData&,const DeviceKeyChoice&);
@@ -305,6 +316,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     void pollTrackRender();
     void stopTrackRender();
     bool finishInsert(PreparedBuiltinInsert);
+    std::int64_t finishDevicePreset(PreparedBuiltinInsert, preset::Preset, bool inPlace = false);
     ProjectDocument(std::unique_ptr<Store>, std::string name);
     // The clock the capture's timers run on: steady milliseconds, the same for the timer's drain
     // and for a gesture, so a gesture's quiet timer and its End agree.

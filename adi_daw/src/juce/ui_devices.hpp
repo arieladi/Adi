@@ -82,6 +82,11 @@ class WrenchButton final : public juce::Button {
     WrenchButton() : juce::Button("Plug-In Window") {}
     void paintButton(juce::Graphics &, bool over, bool down) override;
 };
+class HotSwapButton final : public juce::Button {
+  public:
+    HotSwapButton() : juce::Button("Hot-Swap") {}
+    void paintButton(juce::Graphics &, bool over, bool down) override;
+};
 // A built-in's sample slot (MR 9.8; D5, N28, #414): a tile a sample file drops on, from the desktop
 // or from the browser's Samples; Clear empties it. It names the slot and shows whether it is empty,
 // holds a sample, or holds one whose file is missing, from the snapshot's sample slots.
@@ -90,13 +95,17 @@ class SampleTile final : public juce::Component,
                          public juce::FileDragAndDropTarget,
                          public juce::DragAndDropTarget {
   public:
-    SampleTile(DeviceChainStrip &, std::int64_t device, std::int32_t slot, juce::String slotName);
+    struct DeclaredSlot { std::int32_t id; juce::String name; };
+    SampleTile(DeviceChainStrip &, std::int64_t device, std::vector<DeclaredSlot>);
     void paint(juce::Graphics &) override;
     void resized() override;
+    void mouseDown(const juce::MouseEvent &) override;
     bool isInterestedInFileDrag(const juce::StringArray &files) override { return !files.isEmpty(); }
     void filesDropped(const juce::StringArray &files, int x, int y) override;
     bool isInterestedInDragSource(const SourceDetails &) override;
     void itemDropped(const SourceDetails &) override;
+    // Refresh the selected slot from the project snapshot.
+    void refresh();
     // The slot as the snapshot holds it; none when it was never assigned (empty).
     void show(const engine::SampleSlotNode *);
     // A file dropped: assigns the slot (one undo step), or says why not.
@@ -104,13 +113,17 @@ class SampleTile final : public juce::Component,
     enum class State { Empty, Loaded, Missing };
     State state() const noexcept { return state_; }
     juce::TextButton clear{"Clear"};
+    juce::ComboBox slotChooser;
+    HotSwapButton hotSwapButton;
     std::function<bool()> targetValid;
     const std::int64_t device;
-    const std::int32_t slot;
-    const juce::String slotName;
+    std::int32_t slot;
+    juce::String slotName;
 
   private:
+    void choose(const DeclaredSlot &);
     DeviceChainStrip &strip_;
+    std::vector<DeclaredSlot> slots_;
     State state_ = State::Empty;
     std::string problem_;
 };
@@ -172,6 +185,7 @@ class DevicePanelView final : public juce::Component, public juce::FileDragAndDr
     juce::TextButton title, configureButton{"Configure"};
     ActivatorButton enabled;
     WrenchButton wrench;
+    HotSwapButton hotSwapButton;
     juce::TextEditor search;
     std::vector<std::unique_ptr<ParameterControl>> controls;
     struct ParameterPageControl {
@@ -194,8 +208,7 @@ class DevicePanelView final : public juce::Component, public juce::FileDragAndDr
     bool chooseFunctionBand(std::int32_t);
     bool chooseFunctionSection(const std::string &);
     std::string_view parameterPageUnavailableReason() const;
-    // A built-in's first declared [adi.sample] slot as a tile, beside its controls (D5; Color Cab's
-    // and Hybrid Reverb's Impulse, OneShot's Sample, the Sampler's Sample 1); none where none is declared.
+    // A built-in's [adi.sample] slot tile beside its controls, initially on the first slot declared.
     std::unique_ptr<SampleTile> sample;
     bool sampleSlotsRead_ = false;
     static constexpr int kTileWidth = 96;
@@ -216,6 +229,8 @@ class DevicePanelView final : public juce::Component, public juce::FileDragAndDr
 
   private:
     void endRename(bool commit);
+    bool canHotSwap() const;
+    bool requestHotSwap(DevicePanelData expected, std::optional<std::int32_t> slot, std::uint64_t epoch);
     bool editFunctionParameter(const std::string &, engine::ParamEventKind, double);
     void endFunctionParameter();
     void finishEqEdit(bool cancel);
@@ -336,6 +351,8 @@ class DeviceChainStrip final : public juce::Component,
     std::function<bool(const std::string &, Payload)> submit;
     // The application names and saves a preset for this exact loaded device.
     std::function<void(const DevicePanelData &)> savePreset;
+    // A slot is present when the Browser should offer samples for this device slot.
+    std::function<void(const DevicePanelData &, std::optional<std::int32_t> slot)> hotSwap;
     std::function<std::vector<DeviceKeyChoice>(const DevicePanelData&)> keyChoices;
     std::function<bool(const DevicePanelData&,const DeviceKeyChoice&)> setKey;
     std::function<mix::Availability(mix::Function)> functionAvailability;

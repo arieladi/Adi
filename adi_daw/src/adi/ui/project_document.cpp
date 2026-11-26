@@ -10,6 +10,7 @@
 #include "adi/media/collect_export.hpp"
 #include "adi/media/blake3.hpp"
 #include "adi/mix_function_edit.hpp"
+#include "adi/row_capture.hpp"
 #include "adi/row_ids.hpp"
 #include "adi/device_key_routes.hpp"
 #include "adi/recording_commands.hpp"
@@ -1037,6 +1038,97 @@ std::int64_t ProjectDocument::loadDevicePreset(preset::Preset presetValue, std::
             options.replaceInstrument = installed->subtype == "instrument";
             prepared = preparePluginInsert(*store_, *installed, track, before, options, retainedDeviceId());
         }
+        return finishDevicePreset(std::move(prepared), std::move(presetValue));
+    } catch (const std::exception &e) {
+        error_ = e.what();
+        return 0;
+    }
+}
+
+std::optional<ProjectDocument::HotSwapTargetInfo> ProjectDocument::hotSwapTarget(const DevicePanelData &target) {
+    try {
+        if (store_->readOnly())
+            throw std::runtime_error("The project is read-only.");
+        if (!deviceTargetCurrent(target.id, target.runtime, target.instance))
+            throw std::runtime_error("The Hot-Swap device is no longer current.");
+        SQLite::Statement device(store_->db(),
+                                 "SELECT p.format,p.uid,p.shell_id,p.subtype FROM devices d "
+                                 "JOIN plugin_refs p ON p.id=d.plugin_ref_id JOIN device_chains c ON c.id=d.chain_id "
+                                 "WHERE d.id=? AND c.id=? AND c.track_id=? AND d.is_rack=0");
+        device.bind(1, target.id);
+        device.bind(2, target.chain);
+        device.bind(3, target.track);
+        if (!device.executeStep())
+            throw std::runtime_error("The Hot-Swap device is no longer on that track and chain.");
+        SQLite::Statement editable(store_->db(),
+            "WITH RECURSIVE enclosing(id,parent_id,frozen,locked) AS ("
+            " SELECT id,parent_id,frozen,locked FROM tracks WHERE id=?"
+            " UNION SELECT t.id,t.parent_id,t.frozen,t.locked FROM tracks t JOIN enclosing e ON t.id=e.parent_id)"
+            " SELECT 1 FROM enclosing WHERE frozen<>0 OR locked<>0 LIMIT 1");
+        editable.bind(1, target.track);
+        if (editable.executeStep())
+            throw std::runtime_error("A device cannot be swapped on a frozen or locked track.");
+        HotSwapTargetInfo result;
+        result.device.format = device.getColumn(0).getString();
+        result.device.uid = device.getColumn(1).getString();
+        if (!device.getColumn(2).isNull())
+            result.device.shellId = device.getColumn(2).getInt64();
+        result.subtype = device.getColumn(3).getString();
+        error_.clear();
+        return result;
+    } catch (const std::exception &e) {
+        error_ = e.what();
+        return std::nullopt;
+    }
+}
+
+std::int64_t ProjectDocument::hotSwapBuiltin(const DevicePanelData &target, const std::string &uid) {
+    if (!hotSwapTarget(target))
+        return 0;
+    auto prepared = prepareBuiltinReplacement(*store_, uid, target.id, retainedDeviceId());
+    const auto id = prepared.deviceId;
+    return finishInsert(std::move(prepared)) ? id : 0;
+}
+
+std::int64_t ProjectDocument::hotSwapPlugin(const DevicePanelData &target, const rows::PluginRef &ref) {
+    if (!hotSwapTarget(target))
+        return 0;
+    auto prepared = preparePluginReplacement(*store_, ref, target.id, retainedDeviceId());
+    const auto id = prepared.deviceId;
+    return finishInsert(std::move(prepared)) ? id : 0;
+}
+
+bool ProjectDocument::hotSwapSample(const DevicePanelData &target, std::int32_t slot,
+                                    const std::filesystem::path &file, std::int64_t nowUtc) {
+    return hotSwapTarget(target).has_value() && assignSample(target.id, slot, file, nowUtc);
+}
+
+std::int64_t ProjectDocument::hotSwapPreset(const DevicePanelData &target, preset::Preset presetValue,
+                                          const std::optional<rows::PluginRef> &installed) {
+    const auto identity = hotSwapTarget(target);
+    if (!identity)
+        return 0;
+    PreparedBuiltinInsert prepared;
+    const bool inPlace = identity->device == presetValue.device;
+    if (inPlace) {
+        prepared.ok = true;
+        prepared.deviceId = target.id;
+        prepared.chainId = target.chain;
+        prepared.options.expectHead.emplace(OpJournal(*store_).headSeq());
+    } else if (presetValue.device.format == "internal" && !presetValue.device.shellId) {
+        prepared = prepareBuiltinReplacement(*store_, presetValue.device.uid, target.id, retainedDeviceId());
+    } else if (installed && preset::Identity{installed->format, installed->uid, installed->shellId} == presetValue.device) {
+        prepared = preparePluginReplacement(*store_, *installed, target.id, retainedDeviceId());
+    } else {
+        error_ = "The exact plug-in for this preset is unavailable.";
+        return 0;
+    }
+    return finishDevicePreset(std::move(prepared), std::move(presetValue), inPlace);
+}
+
+std::int64_t ProjectDocument::finishDevicePreset(PreparedBuiltinInsert prepared, preset::Preset presetValue,
+                                                 bool inPlace) {
+    try {
         if (!prepared.ok)
             throw std::runtime_error(prepared.error);
 
@@ -1052,7 +1144,7 @@ std::int64_t ProjectDocument::loadDevicePreset(preset::Preset presetValue, std::
             prepared.requests.push_back(std::move(request));
         };
         std::set<std::string> hashes;
-        for (auto &[role, bytes] : presetValue.state) {
+        const auto addState = [&](const std::string &role, std::vector<std::byte> bytes) {
             std::string hint = "adi.device-preset";
             if (presetValue.device.format == "internal" && role.starts_with("sample:")) {
                 if (bytes.empty())
@@ -1072,12 +1164,70 @@ std::int64_t ProjectDocument::loadDevicePreset(preset::Preset presetValue, std::
             add("device.loadState", {{"dev", device}, {"role", role}, {"hash", hash.hex}, {"hint", hint}});
             if (hashes.insert(hash.hex).second)
                 inputs.stateBlobs.push_back({hash.hex, std::move(bytes)});
+        };
+        const auto addParam = [&](const std::string &id, Payload value) {
+            add("device.setParam", {{"dev", device}, {"param", id}, {"norm", std::move(value)}});
+        };
+        if (inPlace) {
+            auto baseline = parameterOps_.readDevicePresetState(device, error_);
+            if (!baseline)
+                return 0;
+            auto &db = store_->db();
+            const auto deviceRow = adi::detail::captureRow(db, "devices", "id", device);
+            if (!deviceRow || deviceRow->at("chain_id").get<std::int64_t>() != prepared.chainId)
+                throw std::runtime_error("The Hot-Swap device is no longer in that chain.");
+            const auto ref = deviceRow->at("plugin_ref_id").get<std::int64_t>();
+            const auto refRow = adi::detail::captureRow(db, "plugin_refs", "id", ref);
+            const auto shell = presetValue.device.shellId ? Payload(*presetValue.device.shellId) : Payload(nullptr);
+            if (!refRow || refRow->at("format").get_ref<const std::string &>() != presetValue.device.format ||
+                refRow->at("uid").get_ref<const std::string &>() != presetValue.device.uid || refRow->at("shell_id") != shell)
+                throw std::runtime_error("The Hot-Swap device no longer matches the preset.");
+            inputs.rowGuards.push_back({"devices", {{"id", device}}, deviceRow});
+            inputs.rowGuards.push_back({"plugin_refs", {{"id", ref}}, refRow});
+            const auto readRows = [&](const char *sql, const char *table, const char *key) {
+                OpRowSetGuard guard{table, {{"device_id", device}}, {}};
+                std::set<std::string> recorded;
+                SQLite::Statement rows(db, sql);
+                rows.bind(1, device);
+                while (rows.executeStep()) {
+                    auto row = adi::detail::captureQueryRow(rows);
+                    recorded.insert(row.at(key).get<std::string>());
+                    guard.expectedRows.push_back(std::move(row));
+                }
+                inputs.rowSetGuards.push_back(std::move(guard));
+                return recorded;
+            };
+            const auto recordedParams = readRows("SELECT * FROM plugin_params WHERE device_id=? ORDER BY param_id",
+                                                 "plugin_params", "param_id");
+            const auto recordedStates = readRows("SELECT * FROM plugin_state WHERE device_id=? ORDER BY stream_role",
+                                                 "plugin_state", "stream_role");
+            for (const auto &[id, normalized] : presetValue.parameters)
+                if (!baseline->parameters.contains(id) || !std::isfinite(normalized) || normalized < 0 || normalized > 1)
+                    throw std::runtime_error("The preset contains an unsupported parameter or value.");
+            for (const auto &[id, oldValue] : baseline->parameters) {
+                if (recordedParams.contains(id) || (presetValue.state.empty() && !presetValue.parameters.contains(id)))
+                    continue;
+                addParam(id, oldValue);
+                // On Undo, restore the old value after restoring opaque state, then remove the
+                // temporary parameter row. A null replay only acknowledges that a row is absent.
+                if (!presetValue.state.empty())
+                    addParam(id, nullptr);
+            }
+            for (const auto &[role, bytes] : presetValue.state) {
+                const auto old = baseline->state.find(role);
+                if (old == baseline->state.end() || bytes.empty())
+                    throw std::runtime_error("The preset contains an unsupported or empty state stream.");
+                if (!recordedStates.contains(role))
+                    addState(role, std::move(old->second));
+            }
         }
+        for (auto &[role, bytes] : presetValue.state)
+            addState(role, std::move(bytes));
         for (const auto &[param, normalized] : presetValue.parameters)
-            add("device.setParam", {{"dev", device}, {"param", param}, {"norm", normalized}});
+            addParam(param, normalized);
         add("device.setPreset", {{"dev", device}, {"preset", presetValue.name}});
         for (auto &request : prepared.requests)
-            request.label = "Load Device Preset";
+            request.label = inPlace ? "Hot-Swap Device Preset" : "Load Device Preset";
 
         const auto result = ops_.commitPrepared(prepared.requests, [&](Store &store, Actor) {
             return OpJournal(store).commitCaptured(prepared.requests, source, prepared.options, inputs);
@@ -1085,6 +1235,13 @@ std::int64_t ProjectDocument::loadDevicePreset(preset::Preset presetValue, std::
         error_ = result.error;
         if (!result || !synchronise())
             return 0;
+        if (inPlace) {
+            const auto applied = parameterOps_.retryApplied(captureNowMs());
+            if (applied.state == engine::AppliedDeliveryState::Refused || applied.state == engine::AppliedDeliveryState::Invalidated) {
+                error_ = "The preset was recorded, but could not be delivered to the device. " + applied.error;
+                return 0;
+            }
+        }
         feed_.publish(session_, realisedGeneration_);
         return device;
     } catch (const std::exception &e) {
