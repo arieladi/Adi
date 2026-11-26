@@ -23,22 +23,25 @@ juce::String lengthText(std::int64_t ticks, const textproj::Meter &meter) {
     return juce::String(l.bars) + ". " + juce::String(l.beats) + ". " + juce::String(l.sixteenths);
 }
 // The time ruler both editors share: the song's bars along the foot of a dark band, as the
-// arrangement's beat-time ruler draws them, and beats when they have room.
+// arrangement's beat-time ruler draws them. The Note Editor also marks the finer editing grid.
 void paintRuler(juce::Graphics &g, juce::Rectangle<int> area, const ArrangementGeometry &time,
-                const std::vector<textproj::Meter> &meters) {
+                const std::vector<textproj::Meter> &meters, bool showSubdivisions = false) {
     g.setColour(look::band);
     g.fillRect(area);
     juce::Graphics::ScopedSaveState state(g);
     g.reduceClipRegion(area);
     const auto from = time.tick(0.), to = time.tick(static_cast<double>(area.getWidth()));
     const auto &first = meterAt(from, meters);
+    constexpr double minLabelSpacing = 56.;
+    const double gridQuarters = time.gridQuarters();
+    const bool subdivisions = showSubdivisions && gridQuarters < 1. && gridQuarters * time.scale >= 4.;
     const double beatPx = 4. / std::max<double>(1, first.denominator) * time.scale;
     std::int64_t beatStep = 1;
-    while (beatStep < first.numerator && static_cast<double>(beatStep) * beatPx < 56)
+    while (beatStep < first.numerator && static_cast<double>(beatStep) * beatPx < minLabelSpacing)
         beatStep *= 2;
     const bool beats = beatStep < first.numerator;
     std::int64_t barStep = 1;
-    while (static_cast<double>(barStep) * beatPx * first.numerator < 56)
+    while (static_cast<double>(barStep) * beatPx * first.numerator < minLabelSpacing)
         barStep *= 2;
     const int foot = area.getBottom();
     g.setFont(look::font(look::fontLabel, true));
@@ -66,6 +69,25 @@ void paintRuler(juce::Graphics &g, juce::Rectangle<int> area, const ArrangementG
             }
         for (std::int64_t b = beatStep; b < m.numerator && tick + b * beatTicks < until; b += beatStep)
             label(tick + b * beatTicks, juce::String(bar) + "." + juce::String(b + 1));
+        if (!subdivisions)
+            return;
+        constexpr auto sixteenth = textproj::kWhole / 16;
+        const double sixteenthPixels = time.scale / 4.;
+        const auto labelStep = sixteenthPixels >= minLabelSpacing ? sixteenth :
+                               2 * sixteenthPixels >= minLabelSpacing ? 2 * sixteenth : beatTicks;
+        const auto last = std::min({to, tick + m.barTicks() - 1, until - 1});
+        time.forEachGridLine(std::max(from, tick), last, [&](std::int64_t line) {
+            const auto offset = (line - tick) % beatTicks;
+            if (offset == 0)
+                return;
+            if (offset % labelStep == 0) {
+                const auto beat = (line - tick) / beatTicks + 1;
+                label(line, juce::String(bar) + "." + juce::String(beat) + "." + juce::String(offset / sixteenth + 1));
+            } else {
+                g.setColour(look::rulerLabel);
+                g.fillRect(area.getX() + static_cast<int>(time.x(line)), foot - 5, 1, 3);
+            }
+        });
     });
 }
 // The editing grid's lines and the bar lines over them, across `area`.
@@ -111,6 +133,7 @@ bool timeWheel(ArrangementGeometry &time, const juce::MouseEvent &e, const juce:
 
 // ---------------------------------------------------------------------------------------------
 NoteEditor::NoteEditor(ClipViewPanel &p) : panel(p) {
+    time.adaptiveGridFloor = ArrangementGeometry::kFinestGrid;
     setTitle("MIDI Note Editor");
     setOpaque(true);
     setWantsKeyboardFocus(true);
@@ -443,6 +466,7 @@ void NoteEditor::zoomToNotes() {
         return;
     if (const auto span = timeSelection(); span && !anySelected()) {
         time.fit(span->first, span->second + std::max<std::int64_t>(1, (span->second - span->first) / 24), notesArea().getWidth());
+        panel.repaint(panel.gridBox());
         repaint();
         return;
     }
@@ -462,11 +486,13 @@ void NoteEditor::zoomToNotes() {
     const auto area = notesArea();
     const auto margin = std::max<std::int64_t>(1, (to - from) / 24);
     time.fit(std::max<std::int64_t>(0, window.toArrangement(from)), window.toArrangement(to) + margin, area.getWidth());
+    panel.repaint(panel.gridBox());
     keys.show(range->low, range->high, area.getHeight());
     repaint();
 }
 void NoteEditor::zoomBack() {
     time.back();
+    panel.repaint(panel.gridBox());
     repaint();
 }
 bool NoteEditor::quantize() {
@@ -1291,6 +1317,7 @@ void NoteEditor::fitWidth() {
     const auto length = std::max<std::int64_t>(textproj::kPPQ, to - from);
     time.fit(from, from + length + length / 24, area.getWidth());
     panel.root.arrangement.followPaused = true;
+    panel.repaint(panel.gridBox());
     repaint();
 }
 void NoteEditor::fitHeight() {
@@ -1413,6 +1440,7 @@ bool NoteEditor::duplicateLoop() {
         const auto from = std::min(window.pos, window.toArrangement(start));
         const auto to = std::max(window.end(), end);
         time.fit(from, to + (to - from) / 24, area.getWidth());
+        panel.repaint(panel.gridBox());
     }
     repaint();
     return true;
@@ -2554,8 +2582,10 @@ void NoteEditor::mouseWheelMove(const juce::MouseEvent &e, const juce::MouseWhee
         keys.zoom(keys.keyHeight + (w.deltaY > 0 ? 2 : -2), e.y - area.getY(), area.getHeight());
     else if (!timeWheel(time, e, w, area.getX()))
         keys.scrollBy(static_cast<int>(std::lround(-w.deltaY * 180.f)), area.getHeight());
-    else
+    else {
         panel.root.arrangement.followPaused = true; // a scroll or zoom in time pauses Follow
+        panel.repaint(panel.gridBox());
+    }
     repaint();
 }
 std::vector<juce::Rectangle<int>> NoteEditor::textAreas() const {
@@ -2593,7 +2623,7 @@ void NoteEditor::paint(juce::Graphics &g) {
         return;
     }
     const auto &meters = *time.meters;
-    paintRuler(g, ruler, time, meters);
+    paintRuler(g, ruler, time, meters, true);
     // The stretch markers' strip, under the ruler.
     g.setColour(look::lane.darker(0.25f));
     g.fillRect(stretchArea());

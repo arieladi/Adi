@@ -4815,6 +4815,7 @@ void clipView(AppCommands &commands, const std::filesystem::path &dir, bool writ
     check(!editor.velocityArea().isEmpty() && editor.velocityArea().getY() == area.getBottom(),
           "the Velocity lane is under the key tracks");
 
+    check(panel.chooseGrid(15), "use a fixed quarter-note grid for the Clip View layout reference");
     clipViewReference(panel, "clip-view-midi", write);
     if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
         juce::Image picture(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
@@ -4986,7 +4987,7 @@ void clipViewNotes(AppCommands &commands, const std::filesystem::path &dir) {
     // Back on the first clip: its bar across the editor, a quarter-note grid, opened around middle C.
     canvas.mouseDoubleClick(pressAt(canvas, {x(2 * bar) + 30, lane(1)}));
     root.frame();
-    check(panel.clip() == clipId && ed.gridTicks() == beat, "the first clip again, on a quarter-note grid");
+    check(panel.clip() == clipId && panel.chooseGrid(15) && ed.gridTicks() == beat, "the first clip again, with a fixed quarter-note grid");
     const auto area = ed.notesArea();
     const int kh = ed.keys.keyHeight;
     const int step = static_cast<int>(std::lround(ed.time.scale)); // a quarter note, in pixels
@@ -5255,6 +5256,96 @@ void clipViewNotePreview(AppCommands &commands, const std::filesystem::path &dir
     check(panel.details() != nullptr && panel.details()->trackId == 3 && maskTrack == 3 && !editor.previewButton().getToggleState(),
           "the same Preview switch applies across clips, and playback lights follow the new track");
 }
+void clipViewNoteGrid(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "note-grid.adi", true, {}, error);
+    check(document != nullptr, "a project for the Note Editor grid");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "note-grid");
+    root.setSize(1400, 900);
+    constexpr auto beat = textproj::kPPQ, step = beat / 4, clipStart = beat + beat / 8;
+    check(root.insertMidiClips({2}, clipStart, clipStart + 4 * beat) && root.showClipView(),
+          "open a MIDI clip whose position is off the sixteenth grid");
+    root.resizeClipView(360);
+    root.frame();
+    auto &panel = root.clipView;
+    auto &ed = panel.notes;
+    if (panel.details() == nullptr)
+        return;
+
+    const auto key = [](int code) { return juce::KeyPress(code, juce::ModifierKeys::commandModifier, 0); };
+    ed.time.left = 1.;
+    ed.time.scale = 64.;
+    check(ed.time.grid.fixed && ed.gridTicks() == step && panel.readings().grid == "1/16",
+          "a new window opens with a fixed sixteenth editing grid");
+    check(ed.keyPressed(key('5')), "the grid can switch to Adaptive");
+    check(!ed.time.grid.fixed && ed.gridTicks() == step && panel.readings().grid == "1/16",
+          "the adaptive editor has a sixteenth grid at this zoom");
+    ed.time.zoomAround(2., beat);
+    check(ed.gridTicks() == step / 2 && panel.readings().grid == "1/32" &&
+              ed.keyPressed(key('2')) && ed.gridTicks() == step &&
+              ed.keyPressed(key('1')) && ed.gridTicks() == step / 2,
+          "zoom reaches thirty-seconds and the wider and narrower commands still apply");
+    auto &arrangement = root.arrangement.geometry;
+    arrangement.scale = ed.time.scale;
+    check(arrangement.gridQuarters() == 1., "the editor's finer adaptive grid leaves Arrangement's grid alone");
+
+    ed.time.zoomAround(2., beat);
+    const auto ruler = ed.rulerArea();
+    const auto rulerX = [&](std::int64_t tick) { return ruler.getX() + static_cast<int>(ed.time.x(tick)); };
+    juce::Image image(juce::Image::ARGB, ed.getWidth(), ed.getHeight(), true, juce::SoftwareImageType{});
+    juce::Graphics graphics(image);
+    ed.paint(graphics);
+    check(image.getPixelAt(rulerX(beat + 3 * beat / 8), ruler.getBottom() - 4) == look::rulerLabel &&
+              image.getPixelAt(rulerX(beat + step), ruler.getBottom() - 8) == look::rulerLabel,
+          "the ruler marks a thirty-second and gives a sixteenth room for a position label");
+
+    ed.time.scale = 64.;
+    const auto area = ed.notesArea();
+    const auto at = [&](std::int64_t tick, int pitch) {
+        return juce::Point<float>{static_cast<float>(area.getX() + ed.time.x(tick)),
+                                  static_cast<float>(area.getY() + ed.keys.y(pitch).value_or(0) + ed.keys.keyHeight / 2)};
+    };
+    const auto window = ClipWindow::of(*panel.details());
+    const auto note = [&](std::uint64_t id) {
+        for (const auto &n : panel.details()->notes)
+            if (n.id == id)
+                return n;
+        return engine::ClipNote{};
+    };
+    const auto add = [&](std::uint64_t id, std::int64_t start, std::int64_t duration, int pitch) {
+        OpRequest request;
+        request.opType = "note.insert";
+        request.payload = {{"clip", panel.clip()}, {"note", id}, {"start", window.toSource(start)}, {"dur", duration}, {"key", pitch}};
+        request.label = "Add Note";
+        const bool inserted = document->ops().submit(std::move(request)).ok;
+        root.frame();
+        return inserted;
+    };
+    ed.setDrawMode(true);
+    const auto draw = at(2 * beat + beat / 16, 60);
+    ed.mouseDown(pressAt(ed, draw));
+    ed.mouseUp(pressAt(ed, draw));
+    ed.setDrawMode(false);
+    check(panel.details()->notes.size() == 1 && panel.details()->notes.front().startTicks == window.toSource(2 * beat) &&
+              panel.details()->notes.front().durationTicks == step,
+          "Draw Mode makes a sixteenth aligned on the song grid inside the off-grid clip");
+    if (panel.details()->notes.empty())
+        return;
+    const auto drawn = panel.details()->notes.front().id;
+    check(ed.keyPressed(juce::KeyPress(juce::KeyPress::rightKey)) && note(drawn).startTicks == window.toSource(2 * beat + step),
+          "Right moves the selected note a sixteenth");
+
+    check(add(20, 2 * beat + 3 * step / 4, beat, 66), "a beat-long note just before a sixteenth");
+    ed.select({20});
+    check(ed.keyPressed(key('u')) && note(20).startTicks == window.toSource(2 * beat + step) && note(20).durationTicks == beat,
+          "Ctrl/Cmd+U quantizes to the sixteenth while keeping the note's length");
+    check(ed.keyPressed(key('e')) && ed.selected().size() == 4 && note(20).durationTicks == step,
+          "Chop divides the beat-long note into four pieces at the same grid");
+}
+
 // The Clip View's Main panel (worklist G2; manual 8.2): Start, End, the Loop switch, the loop's Position
 // and Length and the clip's Signature act, typed, dragged or through Live's Set buttons, each one of
 // the clip's own ops and one undo step; what the engine would refuse is refused with a reason; the
@@ -5607,6 +5698,7 @@ void clipViewTools(AppCommands &commands, const std::filesystem::path &dir) {
         low = std::min(low, static_cast<int>(n.key));
     check(low == 55 && undoIs("Drop 2", 1), "Drop 2 takes the G down an octave");
     panel.setToolsTab(0);
+    check(panel.chooseGrid(15), "use quarter notes for the length and overlap checks");
     click(panel.toolBox(Tool::FixedLength));
     bool allStep = true;
     for (const auto &n : panel.details()->notes)
@@ -5757,6 +5849,7 @@ void clipViewMore(AppCommands &commands, const std::filesystem::path &dir) {
     canvas.mouseDoubleClick(pressAt(canvas, {static_cast<float>(geo.x(0)) + 20.f, static_cast<float>(laneTop(root, 1) + 30)}));
     root.frame();
     check(panel.clip() == 11 && panel.details()->notes.size() == 2, "the clip is open with its two notes");
+    check(panel.chooseGrid(15), "use a fixed quarter-note grid for the editing gestures below");
     const auto note = [&](std::uint64_t id) {
         for (const auto &n : panel.details()->notes)
             if (n.id == id)
@@ -6117,6 +6210,7 @@ void clipViewTime(AppCommands &commands, const std::filesystem::path &dir) {
     check(panel.details() != nullptr && panel.details()->notes.size() == 4, "the clip is open in the Note Editor");
     if (panel.details() == nullptr)
         return;
+    check(panel.chooseGrid(15), "use a fixed quarter-note grid for the time and marker gestures");
     const auto area = ed.notesArea();
     const auto g = ed.gridTicks();
     const auto xAt = [&](std::int64_t tick) { return static_cast<float>(area.getX()) + static_cast<float>(ed.time.x(tick)); };
@@ -6818,6 +6912,9 @@ void clipViewTime(AppCommands &commands, const std::filesystem::path &dir) {
               "with Ctrl, a page sideways and back");
         // The grid's keys act on the editor's own grid.
         const auto arrangementGrid = geo.grid;
+        const double scaleBeforeGrid = ed.time.scale;
+        ed.time.scale = 64.;
+        check(panel.chooseGrid(3), "switch to the adaptive grid at this zoom");
         const auto grid = ed.gridTicks();
         check(ed.keyPressed(key('1', command)) && ed.gridTicks() == grid / 2 && ed.keyPressed(key('2', command)) && ed.gridTicks() == grid,
               "Ctrl+1 narrows the editing grid and Ctrl+2 widens it");
@@ -6837,6 +6934,7 @@ void clipViewTime(AppCommands &commands, const std::filesystem::path &dir) {
                   panel.chooseGrid(3) && !ed.time.grid.fixed && ed.time.grid.narrow == 0 && ed.gridTicks() == grid && !panel.chooseGrid(99),
               "its Triplet Grid and Snap to Grid; and the adaptive grid's Medium, as it was");
         // Zoom in time; W and H.
+        ed.time.scale = scaleBeforeGrid;
         const double scale = ed.time.scale;
         check(ed.keyPressed(key('+')) && ed.time.scale > scale && ed.keyPressed(key('-')) && std::abs(ed.time.scale - scale) < 1e-6,
               "+ zooms in time and - out again");
@@ -7218,6 +7316,7 @@ void clipViewClipTime(AppCommands &commands, const std::filesystem::path &dir) {
         const auto kept = [&] { return ViewStateStore(*store).load("clip-view-clip-time"); };
         check(kept().noteGridNarrow == 0 && kept().highlightScale && kept().noteColours == 0 && kept().quantizeAmount == 100 && kept().quantizeStarts,
               "a window that changed none of the editor's settings holds their defaults");
+        ed.time.grid.fixed = false;
         check(ed.keyPressed(key('1', command)) && kept().noteGridNarrow == 1 && ed.keyPressed(key('3', command)) && kept().noteGridTriplet &&
                   ed.keyPressed(key('4', command)) && !kept().noteGridSnap,
               "the grid's keys in the editor are kept as they are pressed");
@@ -7845,7 +7944,7 @@ void clipViewMulti(AppCommands &commands, const std::filesystem::path &dir) {
     const auto mine = [&]() -> const engine::ClipNote & { return panel.details()->notes[0]; };
     const auto theirs = [&]() -> const engine::ClipNote & { return panel.others()[0].details.notes[0]; };
     const auto all = juce::KeyPress('a', juce::ModifierKeys::commandModifier, 0);
-    check(ed.gridTicks() == beat && ed.keyPressed(all) && ed.selected() == std::vector<std::uint64_t>{1} &&
+    check(panel.chooseGrid(15) && ed.gridTicks() == beat && ed.keyPressed(all) && ed.selected() == std::vector<std::uint64_t>{1} &&
               ed.selectedIn(12) == std::vector<std::uint64_t>{1} && ed.anySelected(),
           "Ctrl/Cmd+A selects the notes of both clips");
     const auto mineStart = mine().startTicks, theirStart = theirs().startTicks;
@@ -19102,6 +19201,7 @@ int main(int argc, char **argv) {
     trace("clipView", [&] { clipView(commands, temp.path(), write); });
     trace("clipViewNotes", [&] { clipViewNotes(commands, temp.path()); });
     trace("clipViewNotePreview", [&] { clipViewNotePreview(commands, temp.path()); });
+    trace("clipViewNoteGrid", [&] { clipViewNoteGrid(commands, temp.path()); });
     trace("clipViewFields", [&] { clipViewFields(commands, temp.path()); });
     trace("clipViewTools", [&] { clipViewTools(commands, temp.path()); });
     trace("clipViewMore", [&] { clipViewMore(commands, temp.path()); });
