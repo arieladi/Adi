@@ -1859,8 +1859,9 @@ int main(int argc, char **argv) {
             check(panel != nullptr && panel->track == 2 && panel->records.size() == 2 &&
                       panel->records[0].id == "cutoff" && std::abs(panel->records[0].playing - .5) < 1e-9 &&
                       panel->records[0].text == "10.0 kHz" && panel->records[1].text == "-24.0 dB" &&
-                      panel->defaults.size() == 2 && std::abs(panel->defaults.at("cutoff") - .5) < 1e-9 &&
-                      std::abs(panel->defaults.at("gain") - .25) < 1e-9,
+                      panel->defaultValues().size() == 2 &&
+                      std::abs(panel->defaultValues().at("cutoff") - .5) < 1e-9 &&
+                      std::abs(panel->defaultValues().at("gain") - .25) < 1e-9,
                   "the strip's feed lists the device on its track, its parameters by the plug-in's ids, in the "
                   "plug-in's own words, with their defaults (manual 41.6's Return to Default)");
             const auto opsBeforeDrag = strip->store().db().execAndGet("SELECT count(*) FROM ops").getInt();
