@@ -10767,14 +10767,28 @@ void recordingOptions(AppCommands &commands, settings::AppSettings &settings, co
     root.frame();
     check(!root.reader().findTrack(2)->recording.recordEnabled && recordQuantizeText(root.reader().findTrack(2)->recording) == "Free",
           "and Free turns it off");
-    check(pick(headers.quantizeMenu(2, false), "1/4"), "Play-Q 1/4");
+    const auto playQLight = [&] {
+        const auto &geometry = root.arrangement.geometry;
+        const auto box = headers.quantizeBox(0, geometry.rowTop(root.reader(), 2), geometry.heightFor(2), false);
+        if (box.isEmpty() || !headers.getLocalBounds().contains(box.getCentreX(), box.getY()))
+            return false;
+        juce::Image image(juce::Image::ARGB, headers.getWidth(), headers.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics graphics(image);
+            headers.paintEntireComponent(graphics, true);
+        }
+        return image.getPixelAt(box.getCentreX(), box.getY()) == look::playQuantize;
+    };
+    check(!playQLight() && pick(headers.quantizeMenu(2, false), "1/4"), "the Play-Q warning starts off");
     root.frame();
+    check(playQLight(), "Play-Q lights its amber latency indicator when enabled");
     check(root.reader().findTrack(2)->recording.playEnabled && root.reader().findTrack(2)->recording.playGrid == "1/4" &&
               document->ops().nextUndo()->label == "Change Live Quantization",
           "Play-Q writes track.setPlayQuantize, one step");
     check(root.command(AppCommands::Undo), "undo");
     root.frame();
-    check(!root.reader().findTrack(2)->recording.playEnabled, "undo puts Play-Q back off");
+    check(!root.reader().findTrack(2)->recording.playEnabled && !playQLight(),
+          "undo turns Play-Q and its latency indicator off");
     // Keep Monitoring Latency from 3 Audio's In or Auto button.
     MixerStrip *audio = nullptr;
     for (const auto &strip : root.mixer.strips())

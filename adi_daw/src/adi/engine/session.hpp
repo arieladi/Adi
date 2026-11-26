@@ -562,6 +562,8 @@ private:
         std::vector<rows::TimeSignature> signatures;
         std::vector<std::pair<std::int64_t, std::int64_t>> deviceClockChanges; ///< sample, tick
         std::vector<LiveMidiInput::Route> midiInputRoutes;
+        std::vector<PlayTempoPoint> playQuantizeTempo;
+        std::uint32_t playQuantizeRate = 0;
         std::vector<std::shared_ptr<LiveMidiInput::History>> midiHistories;
         std::vector<LiveMidiInput::PreviewRoute> midiPreviewRoutes;
         std::shared_ptr<const StripLaneBindings> stripLanes;

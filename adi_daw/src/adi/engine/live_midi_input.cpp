@@ -10,6 +10,20 @@
 namespace adi::engine {
 namespace {
 constexpr std::array<std::uint32_t, 3> pedals{64, 66, 69};
+
+std::int64_t playDelay(const LiveMidiInput::Route& route, const LiveMidiInput::PlayClock& clock,
+                       const Transport& transport, std::int32_t frame) noexcept {
+    if (route.playGrid == 0 || !transport.playing())
+        return 0;
+    const auto timeline = transport.sampleAt(frame);
+    const auto release = playQuantizeRelease(timeline, clock.tempo, clock.sampleRate,
+                                              static_cast<double>(route.playGrid), route.playForgiveness);
+    if (!release)
+        return 0;
+    // A wrap starts a new pass. Use its boundary for a grid line beyond this pass.
+    const auto due = transport.looping() ? std::min(*release, transport.loopEnd()) : *release;
+    return due - timeline;
+}
 }
 
 bool LiveMidiInput::push(std::int64_t sample, const Event& event, std::int64_t inputSample) noexcept {
@@ -37,8 +51,14 @@ void LiveMidiInput::reset() noexcept {
 void LiveMidiInput::release(const GraphHost::RenderBlock& block, const Route& route, std::int32_t frame) noexcept {
     auto& state = *route.voices;
     state.retry = false;
+    if (state.flush)
+        state.pendingCount = 0;
     for (auto& voice : state.active) {
         if (!voice.sourceId || (!state.flush && !voice.releasing)) continue;
+        if (voice.awaitingOn) {
+            voice = {};
+            continue;
+        }
         voice.off.frame = frame;
         if (block.pushInputEvent(route.slot, voice.off)) voice = {};
         else state.retry = true;
@@ -55,8 +75,8 @@ void LiveMidiInput::release(const GraphHost::RenderBlock& block, const Route& ro
     state.flush = state.retry;
 }
 
-void LiveMidiInput::deliver(const GraphHost::RenderBlock& block, const Route& route,
-                            const Event& event) noexcept {
+void LiveMidiInput::deliver(const GraphHost::RenderBlock& block, const Route& route, const Event& event,
+                            std::int64_t streamStart, const Transport& transport, const PlayClock& clock) noexcept {
     auto& state = *route.voices;
     if (event.type == EventType::Controller) {
         auto controller = event;
@@ -74,41 +94,98 @@ void LiveMidiInput::deliver(const GraphHost::RenderBlock& block, const Route& ro
         (void)block.pushInputEvent(route.slot, event);
         return;
     }
-    const auto voice = std::find_if(state.active.begin(), state.active.end(),
-                                    [&](const Voices::Voice& v) { return v.sourceId == event.noteId; });
-    auto note = event;
+    auto voice = std::find_if(state.active.begin(), state.active.end(),
+                               [&](const Voices::Voice& v) { return v.sourceId == event.noteId; });
     if (event.type == EventType::NoteOn) {
         if (voice != state.active.end() || voiceSerial_ == kLiveNoteIdPrefix - 1) return;
-        const auto free = std::find_if(state.active.begin(), state.active.end(),
-                                       [](const Voices::Voice& v) { return v.sourceId == 0; });
-        if (free == state.active.end()) return;
-        note.noteId = kLiveNoteIdPrefix | ++voiceSerial_;
-        if (!block.pushInputEvent(route.slot, note)) return;
-        note.type = EventType::NoteOff;
-        note.value = 0;
-        *free = {event.noteId, note};
-        return;
+        voice = std::find_if(state.active.begin(), state.active.end(),
+                             [](const Voices::Voice& v) { return v.sourceId == 0; });
+        if (voice == state.active.end()) return;
+        auto off = event;
+        off.noteId = kLiveNoteIdPrefix | ++voiceSerial_;
+        off.type = EventType::NoteOff;
+        off.value = 0;
+        *voice = {event.noteId, off, false, true, playDelay(route, clock, transport, event.frame)};
     }
     if (voice == state.active.end() || voice->releasing) return;
+    if (voice->playDelay == 0) {
+        sendVoice(block, route, *voice, event);
+        return;
+    }
+
+    const auto sample = streamStart + event.frame;
+    if (state.pendingCount < state.pending.size() &&
+        voice->playDelay <= std::numeric_limits<std::int64_t>::max() - sample) {
+        const auto due = sample + voice->playDelay;
+        auto delayed = event;
+        delayed.noteId = voice->off.noteId;
+        const auto end = state.pending.begin() + static_cast<std::ptrdiff_t>(state.pendingCount);
+        const auto position = std::upper_bound(state.pending.begin(), end, due,
+            [](std::int64_t frame, const Voices::Pending& pending) { return frame < pending.due; });
+        std::move_backward(position, end, end + 1);
+        *position = {due, delayed};
+        ++state.pendingCount;
+        return;
+    }
+    // Overflow may drop an attack or expression. A sounding note still gets its release.
+    if (event.type == EventType::NoteOn || (event.type == EventType::NoteOff && voice->awaitingOn))
+        *voice = {};
+    else if (event.type == EventType::NoteOff)
+        sendVoice(block, route, *voice, event);
+}
+
+void LiveMidiInput::sendVoice(const GraphHost::RenderBlock& block, const Route& route, Voices::Voice& voice,
+                              const Event& event) noexcept {
+    auto note = event;
+    note.noteId = voice.off.noteId;
+    if (note.type == EventType::NoteOn) {
+        if (block.pushInputEvent(route.slot, note))
+            voice.awaitingOn = false;
+        else
+            voice = {};
+        return;
+    }
+    if (voice.releasing || voice.awaitingOn) return;
     if (note.type == EventType::NoteOff) {
-        note = voice->off;
+        note = voice.off;
         note.frame = event.frame;
         note.value = event.value;
-        if (block.pushInputEvent(route.slot, note)) *voice = {};
+        if (block.pushInputEvent(route.slot, note))
+            voice = {};
         else {
-            voice->off = note;
-            voice->releasing = true;
-            state.retry = true;
+            voice.off = note;
+            voice.releasing = true;
+            route.voices->retry = true;
         }
     } else {
-        note.noteId = voice->off.noteId;
         (void)block.pushInputEvent(route.slot, note);
+    }
+}
+
+void LiveMidiInput::drainPending(const GraphHost::RenderBlock& block, const Route& route,
+                                 std::int64_t streamStart, std::int32_t beforeFrame) noexcept {
+    auto& state = *route.voices;
+    std::size_t count = 0;
+    while (count < state.pendingCount && state.pending[count].due < streamStart + beforeFrame) {
+        const auto& pending = state.pending[count++];
+        const auto voice = std::find_if(state.active.begin(), state.active.end(),
+            [&](const Voices::Voice& v) { return v.sourceId != 0 && v.off.noteId == pending.event.noteId; });
+        if (voice == state.active.end())
+            continue;
+        auto event = pending.event;
+        event.frame = static_cast<std::int32_t>(std::max<std::int64_t>(0, pending.due - streamStart));
+        sendVoice(block, route, *voice, event);
+    }
+    if (count != 0) {
+        std::move(state.pending.begin() + static_cast<std::ptrdiff_t>(count),
+                  state.pending.begin() + static_cast<std::ptrdiff_t>(state.pendingCount), state.pending.begin());
+        state.pendingCount -= count;
     }
 }
 
 void LiveMidiInput::render(const GraphHost::RenderBlock& block, const AudioIo& io,
                           std::span<const Route> routes, std::span<const std::shared_ptr<History>> histories,
-                          const Transport& transport,
+                          const Transport& transport, const PlayClock& clock,
                           MidiInputCapture* capture) noexcept {
     const auto epoch = epoch_.load(std::memory_order_acquire);
     if (capture) capture->beginSlice(io, transport, epoch);
@@ -117,8 +194,13 @@ void LiveMidiInput::render(const GraphHost::RenderBlock& block, const AudioIo& i
         if (generation != generation_)
             route.slot = route.processes ? block.find(*route.node) : kInvalidNode;
         auto& state = *route.voices;
-        if (state.track != route.monitorTrack || epoch != renderedEpoch_) state.flush = true;
+        const bool playChanged = state.playGrid != 0 && (state.playGrid != route.playGrid ||
+            state.playForgiveness != route.playForgiveness || state.transportRevision != transport.revision());
+        if (state.track != route.monitorTrack || epoch != renderedEpoch_ || playChanged) state.flush = true;
         state.track = route.monitorTrack;
+        state.playGrid = route.playGrid;
+        state.playForgiveness = route.playForgiveness;
+        state.transportRevision = transport.revision();
         if (route.slot != kInvalidNode && (state.flush || state.retry)) release(block, route, 0);
     }
     generation_ = generation;
@@ -191,11 +273,15 @@ void LiveMidiInput::render(const GraphHost::RenderBlock& block, const AudioIo& i
                 const auto at = eventFrame(item);
                 if (at >= runEnd) break;
                 if (!blocked && !state.flush) {
+                    if (state.pendingCount != 0)
+                        drainPending(block, route, io.streamTimeSamples, at + 1);
                     auto event = item.event;
                     event.frame = at;
-                    deliver(block, route, event);
+                    deliver(block, route, event, io.streamTimeSamples, transport, clock);
                 }
             }
+            if (!blocked && !state.flush && state.pendingCount != 0)
+                drainPending(block, route, io.streamTimeSamples, runEnd);
             frame = runEnd;
         }
     }

@@ -329,6 +329,141 @@ void midiMonitoring() {
           "Auto follows the wrapped playhead and closes again where the clip restarts");
 }
 
+void livePlayQuantize() {
+    const auto configure = [](Fixture& fixture, bool enabled) {
+        OpRequest setting;
+        setting.opType = "track.setPlayQuantize";
+        setting.payload = {{"id", 1}, {"on", enabled}, {"grid", "1/32"}, {"forgivenessMs", 1.0}};
+        return OpJournal(*fixture.store).commit(setting).ok;
+    };
+    const auto input = [](Fixture& fixture, std::int64_t sample, EventType type, std::uint64_t id, std::uint16_t key) {
+        return fixture.session.enqueueMidiInput(sample, {0, type, 0, key, id, 0, .75});
+    };
+    const auto heard = [](const Instrument& instrument, std::int64_t at, EventType type, std::uint16_t key) {
+        const auto end = instrument.heard.begin() + static_cast<std::ptrdiff_t>(instrument.count);
+        const auto found = std::find_if(instrument.heard.begin(), end, [&](const Heard& hit) {
+            return hit.clock == at && hit.e.type == type && hit.e.dim == key;
+        });
+        return found == end ? std::uint64_t{0} : found->e.noteId;
+    };
+    for (const bool savedOff : {false, true}) {
+        Fixture exact(48000, 64);
+        exact.store->db().exec("UPDATE tracks SET monitor_mode=1 WHERE id=1");
+        if (savedOff)
+            check(configure(exact, false), "persist Play-Q Off");
+        exact.load();
+        check(input(exact, 11, EventType::NoteOn, 1, 65) && input(exact, 57, EventType::NoteOff, 1, 65),
+              "send live input with Play-Q off or absent");
+        exact.render();
+        const auto id = heard(*exact.instrument, 11, EventType::NoteOn, 65);
+        check(id != 0 && heard(*exact.instrument, 57, EventType::NoteOff, 65) == id && exact.instrument->count == 2,
+              "saved Off and projects without a Play-Q row keep the exact original live timing");
+    }
+
+    Fixture f(48000, 64);
+    f.clip();
+    f.store->db().exec("UPDATE tracks SET record_armed=1,monitor_mode=2 WHERE id=1;"
+                       "UPDATE clips SET pos_ticks=960960 WHERE id=1"); // starts at sample 4000
+    check(configure(f, true), "enable persisted Play-Q 1/32 and a one-millisecond forgiveness window");
+    f.load();
+    f.instrument->audible = true;
+    const std::array<std::int64_t, 1> tracks{1};
+    std::string error;
+    check(f.session.startMidiInputCapture(tracks, error), "start raw Arrangement capture");
+    check(f.session.enqueueMidiInput(100, {0, EventType::NoteOn, 0, 66, 91, 0, .75}, 80) &&
+              f.session.enqueueMidiInput(120, {0, EventType::NoteExpression, 0, 1, 91, 0, .2}, 100) &&
+              f.session.enqueueMidiInput(148, {0, EventType::NoteOff, 0, 66, 91, 0, .4}, 128) &&
+              input(f, 3032, EventType::NoteOn, 92, 69) && input(f, 3096, EventType::NoteOff, 92, 69),
+          "queue a short expressive note and a second note within late forgiveness");
+
+    while (f.clock < 192)
+        f.render();
+    check(f.instrument->count == 0, "the unquantized note and its release have arrived without any early sound");
+    f.session.midiInputCapture().stop();
+    f.render();
+    std::array<MidiCapturePacket, 32> captured{};
+    const auto capturedCount = f.session.midiInputCapture().drain(captured);
+    std::array<std::int64_t, 3> accepted{}, original{};
+    std::size_t saved = 0;
+    for (const auto& packet : std::span(captured).first(capturedCount)) {
+        if (packet.kind == MidiCapturePacket::Kind::Event && saved < accepted.size()) {
+            accepted[saved] = packet.timelineSample;
+            original[saved++] = packet.inputSample;
+        }
+    }
+    check(saved == 3 && accepted == std::array<std::int64_t, 3>{100, 120, 148} &&
+              original == std::array<std::int64_t, 3>{80, 100, 128},
+          "Play-Q leaves both Arrangement capture clocks unquantized");
+
+    while (f.clock < 2944)
+        f.render();
+    check(f.instrument->count == 0, "no delayed note sounds before its grid");
+    std::array<double, 64> audio{};
+    f.render(64, audio);
+    check(audio[55] == 0.0 && audio[56] > .1, "the note becomes audible at sample 3000, the next grid line");
+    while (f.clock < 6208)
+        f.render();
+    const auto id = heard(*f.instrument, 3000, EventType::NoteOn, 66);
+    const auto forgiven = heard(*f.instrument, 3032, EventType::NoteOn, 69);
+    check(id != 0 && heard(*f.instrument, 3020, EventType::NoteExpression, 1) == id &&
+              heard(*f.instrument, 3048, EventType::NoteOff, 66) == id &&
+              forgiven != 0 && heard(*f.instrument, 3096, EventType::NoteOff, 69) == forgiven,
+          "the delayed note keeps its duration and expression while late forgiveness is immediate");
+    const auto clip = heard(*f.instrument, 4100, EventType::NoteOn, 60);
+    check(clip != 0 && heard(*f.instrument, 6100, EventType::NoteOff, 60) == clip &&
+              f.instrument->voices == 0 && f.instrument->balance() == 0,
+          "authored clip notes play at their original samples and physical notes leave no voices held");
+
+    for (const bool turnOff : {false, true}) {
+        Fixture cancel(48000, 64);
+        cancel.store->db().exec("UPDATE tracks SET monitor_mode=1 WHERE id=1");
+        check(configure(cancel, true), "enable Play-Q before a pending note");
+        cancel.load();
+        check(input(cancel, 10, EventType::NoteOn, 1, 67) && input(cancel, 20, EventType::NoteOff, 1, 67),
+              "send a complete short note while waiting for a grid line");
+        cancel.render();
+        if (turnOff) {
+            check(configure(cancel, false), "turn off Play-Q with an attack and release pending");
+            cancel.refresh();
+            check(input(cancel, 75, EventType::NoteOn, 2, 68) && input(cancel, 85, EventType::NoteOff, 2, 68),
+                  "new input is available after the setting changes");
+        } else {
+            cancel.session.transport().locate(2000);
+        }
+        while (cancel.clock < 3136)
+            cancel.render();
+        check(cancel.instrument->count == (turnOff ? 2u : 0u) &&
+                  cancel.instrument->balance() == 0 &&
+                  (!turnOff || (heard(*cancel.instrument, 75, EventType::NoteOn, 68) != 0 &&
+                                heard(*cancel.instrument, 85, EventType::NoteOff, 68) != 0)),
+              "disabling Play-Q or seeking clears pending input without replaying a stale note");
+    }
+
+    Fixture wrap(48000, 64);
+    wrap.store->db().exec("UPDATE tracks SET monitor_mode=1 WHERE id=1");
+    check(configure(wrap, true), "enable Play-Q for a short Arrangement loop");
+    wrap.load();
+    wrap.render();
+    wrap.session.transport().loop(1000, 2000);
+    wrap.session.transport().locate(1980);
+    const auto beforeWrap = wrap.clock;
+    check(input(wrap, beforeWrap + 5, EventType::NoteOn, 1, 62) &&
+              input(wrap, beforeWrap + 11, EventType::NoteOff, 1, 62),
+          "send a note just before the wrap and beyond late forgiveness");
+    wrap.render();
+    const auto wrapped = heard(*wrap.instrument, beforeWrap + 20, EventType::NoteOn, 62);
+    check(wrapped != 0 && heard(*wrap.instrument, beforeWrap + 26, EventType::NoteOff, 62) == wrapped,
+          "a note due beyond this loop pass plays at the wrap and keeps its release");
+    wrap.session.transport().play(false);
+    const auto stopped = wrap.clock;
+    check(input(wrap, stopped + 11, EventType::NoteOn, 2, 75) && input(wrap, stopped + 26, EventType::NoteOff, 2, 75),
+          "live input remains playable with the musical clock stopped");
+    wrap.render();
+    check(heard(*wrap.instrument, stopped + 11, EventType::NoteOn, 75) != 0 &&
+              heard(*wrap.instrument, stopped + 26, EventType::NoteOff, 75) != 0 && wrap.instrument->balance() == 0,
+          "a stationary grid leaves stopped monitoring immediate");
+}
+
 void noteEditorAudition() {
     Fixture fixture(48000, 64);
     auto& db = fixture.store->db();
@@ -1596,6 +1731,8 @@ int main(int argc,char** argv){
     catch (const std::exception& e) { check(false, e.what()); }
     try { if (only == "all" || only == "monitor") midiMonitoring(); }
     catch (const std::exception& e) { check(false,e.what()); }
+    try { if (only == "all" || only == "play-quantize") livePlayQuantize(); }
+    catch (const std::exception& e) { check(false, e.what()); }
     try { if (only == "all" || only == "note-preview") noteEditorAudition(); }
     catch (const std::exception& e) { check(false, e.what()); }
     try { if (only == "all" || only == "driver-capture") driverMidiCapture(); }

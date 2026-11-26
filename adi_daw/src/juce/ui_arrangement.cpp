@@ -1940,6 +1940,10 @@ void TrackHeaderList::paint(juce::Graphics &g) {
                     const auto value = record ? recordQuantizeText(t->recording) : playQuantizeText(t->recording);
                     controls::chooser(g, box.toFloat(), juce::String(record ? "Rec-Q " : "Play-Q ") + juce::String(value),
                                       look::fontSmall);
+                    if (!record && t->recording.playEnabled) {
+                        g.setColour(look::playQuantize);
+                        g.drawRoundedRectangle(box.toFloat().reduced(.5f), look::radiusBox, 1.f);
+                    }
                 }
         y += h;
     }

@@ -970,9 +970,13 @@ void Session::prepareMidiInput(TimingView& timing, const rows::Model& model, con
     struct Target {
         std::int64_t track;
         std::span<const MidiMonitorRange> blockedRanges;
+        std::int64_t playGrid;
+        std::int64_t playForgiveness;
     };
     std::map<const Node*, Target> monitored;
     decltype(midiHistories_) histories;
+    const bool validPlayRate = std::isfinite(timing.sampleRate) && timing.sampleRate >= 1 &&
+                               timing.sampleRate <= std::numeric_limits<std::uint32_t>::max();
     for (const auto& track : model.tracks) {
         const bool midi = track.kind == "midi" || track.kind == "instrument";
         const bool armed = recordArmed(track);
@@ -990,11 +994,27 @@ void Session::prepareMidiInput(TimingView& timing, const rows::Model& model, con
             continue;
         const auto blocked = midi && track.monitorMode == 2 ? clips.monitorRanges(track.id)
                                                            : std::span<const MidiMonitorRange>{};
+        const auto& recording = track.recording;
+        const auto playGrid = midi && recording.playEnabled && validPlayRate
+            ? trackRecordingGridTicks(recording.playGrid) * playQuantizePpq / textproj::kPPQ : 0;
+        const auto playForgiveness = playGrid != 0 && std::isfinite(recording.playForgivenessMs)
+            ? std::llround(std::clamp(recording.playForgivenessMs, 0., 1000.) * timing.sampleRate / 1000.) : 0;
         for (const auto* node : chainFor(track.id)) {
             if (node->eventFlow() == EventFlow::Consume) {
-                monitored.emplace(node, Target{track.id, blocked});
+                monitored.emplace(node, Target{track.id, blocked, playGrid, playForgiveness});
                 break;
             }
+        }
+    }
+    if (std::any_of(monitored.begin(), monitored.end(), [](const auto& target) { return target.second.playGrid != 0; })) {
+        timing.playQuantizeRate = static_cast<std::uint32_t>(std::llround(timing.sampleRate));
+        timing.playQuantizeTempo.push_back({0, timing.tempo.bpmAt(0)});
+        for (const auto& point : timing.tempo.events) {
+            const auto sample = timing.sampleForTick(point.posTicks);
+            if (sample == timing.playQuantizeTempo.back().sample)
+                timing.playQuantizeTempo.back().bpm = point.bpm;
+            else
+                timing.playQuantizeTempo.push_back({sample, point.bpm});
         }
     }
     for (const auto& entry : entries_) {
@@ -1018,6 +1038,8 @@ void Session::prepareMidiInput(TimingView& timing, const rows::Model& model, con
         route.processes = node.eventFlow() == EventFlow::Consume;
         if (target != monitored.end()) {
             route.monitorTrack = target->second.track;
+            route.playGrid = target->second.playGrid;
+            route.playForgiveness = target->second.playForgiveness;
             const auto ranges = target->second.blockedRanges;
             if (!ranges.empty())
                 route.blockedRanges.assign(ranges.begin(), ranges.end());
@@ -2520,8 +2542,8 @@ bool Session::RenderBlock::process(const AudioIo& io, bool captureRecording) noe
         block.exporting = timing->spec.exporting;
         auto* capture = captureRecording && timing->spec.performanceState && !timing->spec.exporting
             ? session_.midiInputCapture_.get() : nullptr;
-        session_.midiInput_->render(graph_, io, timing->midiInputRoutes, timing->midiHistories,
-                                    session_.transport_, capture);
+        session_.midiInput_->render(graph_, io, timing->midiInputRoutes, timing->midiHistories, session_.transport_,
+                                    {timing->playQuantizeTempo, timing->playQuantizeRate}, capture);
         session_.midiInput_->renderPreview(graph_, io.frames, timing->midiPreviewRoutes, timing->sampleRate);
     }
     auto* inputMonitors = timing ? timing->inputMonitors.get() : nullptr;
