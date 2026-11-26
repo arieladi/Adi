@@ -21,6 +21,7 @@
 #include <limits>
 #include <map>
 #include <functional>
+#include <set>
 #include <vector>
 
 namespace adi {
@@ -46,9 +47,10 @@ struct Stage {
 bool localPath(const fs::path& relative) {
     return !relative.empty() && !relative.is_absolute() && *relative.begin()!=".." && relative!=".";
 }
+std::string collectionNameKey(const fs::path& filename);
 struct UntitledMedia {
     struct Move {
-        media::FileIdentity identity;
+        std::optional<media::FileIdentity> identity;
         fs::path destination;
     };
     struct Publication {
@@ -59,6 +61,7 @@ struct UntitledMedia {
     bool privateFolder;
     bool replacing;
     std::map<fs::path,Move> sources;
+    std::set<std::string> destinations;
     std::vector<fs::path> createdDirectories;
     std::vector<Publication> published;
     bool keepPublished=false;
@@ -74,34 +77,37 @@ struct UntitledMedia {
         else if(!fs::is_directory(fs::symlink_status(directory)))
             throw std::runtime_error("project media folder is not an ordinary directory");
     }
-    fs::path destinationFor(const fs::path& relative) const {
+    Move& reserveDestination(const fs::path& relative) {
+        if(const auto found=sources.find(relative);found!=sources.end())return found->second;
         auto candidate=relative;
-        if(!replacing)return candidate;
-        const auto exists=[](const fs::path& path){return fs::symlink_status(path).type()!=fs::file_type::not_found;};
-        // An existing take may still belong to another file in the destination.
-        for(unsigned suffix=2;exists(targetFolder/candidate) || exists(staged/candidate);++suffix){
-            auto name=relative.stem();
-            name+=fs::path(" ("+std::to_string(suffix)+")");
-            name+=relative.extension();
-            candidate=relative.parent_path()/name;
+        if(replacing){
+            const auto exists=[](const fs::path& path){return fs::symlink_status(path).type()!=fs::file_type::not_found;};
+            auto key=collectionNameKey(candidate);
+            // A reservation may be for missing media with no staged file yet.
+            for(unsigned suffix=2;destinations.contains(key) || exists(targetFolder/candidate) || exists(staged/candidate);++suffix){
+                auto name=relative.stem();
+                name+=fs::path(" ("+std::to_string(suffix)+")");
+                name+=relative.extension();
+                candidate=relative.parent_path()/name;
+                key=collectionNameKey(candidate);
+            }
+            destinations.insert(std::move(key));
         }
-        return candidate;
+        return sources.emplace(relative,Move{std::nullopt,std::move(candidate)}).first->second;
     }
-    fs::path stage(const fs::path& source,const fs::path& relative) {
-        if(const auto found=sources.find(relative);found!=sources.end())return found->second.destination;
-        const auto destination=destinationFor(relative);
+    void stage(const fs::path& source,Move& move) {
+        if(move.identity)return;
         std::error_code identityError;
         const auto identity=media::readFileIdentity(source,identityError);
         if(!identity)throw fs::filesystem_error("identify project media",source,identityError);
-        const auto copy=staged/destination;
+        const auto copy=staged/move.destination;
         fs::create_directories(copy.parent_path());
         fs::copy_file(source,copy);
         const auto originalHash=media::blake3File(source),copiedHash=media::blake3File(copy);
         if(!originalHash || !copiedHash || originalHash.hex!=copiedHash.hex ||
            media::readFileIdentity(source,identityError)!=identity)
             throw std::runtime_error("project media changed during first save: "+media::pathUtf8(source));
-        sources.emplace(relative,Move{*identity,destination});
-        return destination;
+        move.identity=identity;
     }
     bool relocate(Payload& paths,const fs::path& oldFolder,const fs::path& primary) {
         const auto relative=primary.lexically_relative(oldFolder);
@@ -112,13 +118,16 @@ struct UntitledMedia {
         const auto status=fs::symlink_status(primary);
         if(!fs::is_regular_file(status) && status.type()!=fs::file_type::not_found)
             throw std::runtime_error("project media is not an ordinary file: "+media::pathUtf8(primary));
-        paths["rel_path"]=media::pathUtf8(fs::is_regular_file(status) ? stage(primary,relative) : destinationFor(relative));
+        auto& move=reserveDestination(relative);
+        if(fs::is_regular_file(status))stage(primary,move);
+        paths["rel_path"]=media::pathUtf8(move.destination);
         paths["abs_path_hint"]=nullptr;
         return true;
     }
     void publish() {
         for(const auto& [relative,move]:sources) {
             (void)relative;
+            if(!move.identity)continue;
             const auto destination=targetFolder/move.destination;
             makeDirectory(destination.parent_path());
             published.push_back({destination,{}});
@@ -432,7 +441,7 @@ Store::CopyState Store::saveCopyImpl(const std::filesystem::path& output,StoreFi
             copied.warning=joinedWarning(std::move(copied.warning),"the unnamed file was kept because durability could not be confirmed");
         if(mediaToMove && privateFolder)
             for(const auto& [relative,move]:mediaToMove->sources)
-                copied.originalMedia.emplace(relative,move.identity);
+                if(move.identity)copied.originalMedia.emplace(relative,*move.identity);
         return copied;
     }catch(const std::exception& e){return {false,e.what(),{}};}
 }
