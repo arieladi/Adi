@@ -4,6 +4,39 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-26 — Item 4 (part 2, after-3-December pile): Clones seat's ADI-Shaper stacks (`clones/shaper-time-block-cost` `31df6e89` and `clones/shaper-curve-edit` `b3d393b3`)
+
+Checked ancestry per `clones/log`: Clones has two maximal ADI-Shaper stack heads:
+1. **`clones/shaper-time-block-cost` (`31df6e89`)** — full 10-stage DSP cumulative stack (30 files vs merge-base `300efe61`, +8,302 / -241 lines).
+2. **`clones/shaper-curve-edit` (`b3d393b3`)** — full evaluator + panel stack (contains `clones/shaper-panel-trim-1125` `a0aa1b64`, 29 files vs merge-base `73e26e4a`, +9,677 / -94 lines).
+
+| Stack / Head | Compiler & Flags | Build | Suites & Results | Verdict |
+|---|---|---|---|---|
+| `clones/shaper-time-block-cost` (`31df6e89`) | GCC 12.4.0 `-DADI_WERROR=ON` (Pd on, JUCE off) | **FAIL** (5 files, 94 `-Werror` hits; see Findings 1–7) | Blocked by `-Werror` | **FAIL** |
+| `clones/shaper-time-block-cost` (`31df6e89`) | Clang 14.0.6 + libstdc++ 12 `-DADI_WERROR=ON` (Pd on, JUCE off) | **FAIL** (7 files; adds 2 Clang-only `-Werror` files `adi_shaper_drive.cpp:118` and `test_adi_shaper_drive.cpp:349,350`) | Blocked by `-Werror` | **FAIL** |
+| `clones/shaper-time-block-cost` (`31df6e89`) | GCC 12.4.0 ASan+LSan+UBSan (`-DADI_WERROR=OFF -O1 -g1 -fsanitize=address,undefined`) | PASS | All 9 non-Pd shaper suites (`adi_shaper_tests`, `adi_shaper_filter_tests`, `adi_shaper_sweep_tests`, `adi_shaper_drive_tests`, `adi_shaper_crush_tests`, `adi_shaper_noise_tests`, `adi_shaper_reverb_tests`, `adi_shaper_time_tests`, `adi_shaper_session_tests`): **9/9 PASS** with `detect_leaks=1` (0 reports, 0 leaks). Both Pd suites (`adi_shaper_pd_tests`, `adi_pd_native_devices_tests` 287/0): **2/2 PASS** under ASan+UBSan (`detect_leaks=0`; with `detect_leaks=1` they hit only the pre-DF-E67 (b) `canvas_setargs` 1-byte leaks inherited from base `300efe61`). | **PASS (ASan+UBSan)** |
+| `clones/shaper-curve-edit` (`b3d393b3`, includes `a0aa1b64`) | GCC 12.4.0 `-DADI_WERROR=ON` (Pd on, JUCE off) | **PASS** (0 warnings) | All 10 headless suites (`adi_shaper_tests`, `adi_shaper_filter_tests`, `adi_shaper_sweep_tests`, `adi_shaper_drive_tests`, `adi_shaper_crush_tests`, `adi_shaper_time_tests`, `adi_shaper_wave_tests`, `adi_shaper_session_tests`, `adi_shaper_pd_tests`, `adi_pd_native_devices_tests`): **10/10 PASS** | **PASS** |
+| `clones/shaper-curve-edit` (`b3d393b3`) | Clang 14.0.6 + libstdc++ 12 `-DADI_WERROR=ON` (Pd on, JUCE off) | **PASS** (0 warnings) | All 10 headless suites: **10/10 PASS** | **PASS** |
+| `clones/shaper-curve-edit` (`b3d393b3`) | GCC 12.4.0 ASan+LSan+UBSan | **PASS** | 8/8 non-Pd suites **PASS** with `detect_leaks=1` (0 reports, 0 leaks); 2/2 Pd suites **PASS** with ASan+UBSan (`detect_leaks=0` for pre-DF-E67 (b) base `73e26e4a`) | **PASS** |
+| `clones/shaper-curve-edit` (`b3d393b3`) | GCC 12.4.0 & Clang 14.0.6 `-DADI_WERROR=ON -DADI_WITH_JUCE=ON` (panel UI TUs) | **PASS** (0 warnings on all panel/shell TUs: `adi_shaper_panel.cpp`, `adi_shaper_panel_session.cpp`, `adi_shaper_panel_view.cpp`, `adi_shaper_panel_tests.cpp`, `ui_devices.cpp`, `ui_shell.cpp`, `ui_main.cpp`, `test_ui_shell.cpp`) | Compile clean on both compilers | **PASS** |
+
+### Findings on `clones/shaper-time-block-cost` (`31df6e89`) — 7 files fail Linux `-DADI_WERROR=ON` (Owner: `clones`)
+
+Smallest repro for all 7:
+```sh
+cmake -S adi_daw -B build -G Ninja -DADI_WERROR=ON -DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF
+cmake --build build --target adi_shaper_tests adi_shaper_drive_tests adi_shaper_noise_tests adi_shaper_pd_tests -- -k 0
+```
+1. **`adi_daw/src/adi/dsp/adi_shaper.cpp:44,47,52,55,59,60,76,96,98,283`** — **GCC 12.4.0 & Clang 14.0.6** (`-Werror=sign-conversion`, 51 hits under GCC 12): indexing `std::array` with signed `int`.
+2. **`adi_daw/src/adi/dsp/adi_shaper_reverb.cpp:102`** — **GCC 12.4.0** (`-Werror=conversion`) & **Clang 14.0.6** (`-Werror,-Wimplicit-int-float-conversion`): implicit conversion from `std::array::size_type` (`unsigned long`) to `double`.
+3. **`adi_daw/src/adi/dsp/adi_shaper_drive.cpp:118`** — **Clang 14.0.6 only** (`-Werror,-Wunneeded-internal-declaration`): `function 'floorMagnitude' is not needed and will not be emitted`.
+4. **`adi_daw/tests/test_adi_shaper.cpp:687,689,690,707,813,814,820,1012,1013,1018,2075,2126,2132,2136,2137,2570,2579,2585`** — **GCC 12.4.0 & Clang 14.0.6** (`-Werror=sign-conversion`, 32 hits under GCC 12): indexing `std::vector` with signed `int`.
+5. **`adi_daw/tests/test_adi_shaper_drive.cpp:349,350`** — **Clang 14.0.6 only** (`-Werror,-Wfloat-conversion`): `if (!strength && ...)` implicitly converts `const float` to `bool` (use `strength == 0.f`).
+6. **`adi_daw/tests/test_adi_shaper_noise.cpp:200,207`** — **GCC 12.4.0 & Clang 14.0.6** (`-Werror=sign-conversion`, 3 hits): indexing `std::array<double, 1024>` with signed `int i`.
+7. **`adi_daw/tests/test_adi_shaper_pd.cpp:532,533,724,727,992,993,1028`** — **GCC 12.4.0 & Clang 14.0.6** (`-Werror=sign-conversion`, 7 hits): indexing `std::array<float, 64>` / `std::array<float, 8192>` with signed `int`.
+
+---
+
 ## 2026-11-26 — Item 4 (part 1, after-3-December pile): Mix View joined head `mixview/mx30-parked-realtime-burst-lands-after-2026-12-03` (`b87b53a8`)
 
 Checked branch ancestry first: **`mixview/mx30-parked-realtime-burst-lands-after-2026-12-03` (`b87b53a8`) contains all 85 of 85 `lands-after-2026-12-03` branches on origin** (66 files changed vs merge-base `73e26e4a`, +14,990 / -573 lines).
