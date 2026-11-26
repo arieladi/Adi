@@ -1634,10 +1634,10 @@ void DevicePanelView::resized() {
 void DevicePanelView::paint(juce::Graphics &g) {
     // Live's device: grey, its title bar and a 2 pt edge lighter; blue-grey when the
     // device has the focus, as Live marks the selected device.
-    const bool picked = !mixCard_ && strip.isSelected(id);
     const bool range = !mixCard_ && strip.selectionActsOn(id);
-    const auto edge = nativeFunction() && !range ? look::accent
-                                                 : picked || hasKeyboardFocus(true) ? look::focus : look::field;
+    auto edge = range || hasKeyboardFocus(true) ? look::focus : look::field;
+    if (nativeFunction() && !range)
+        edge = look::accent;
     g.fillAll(look::panel);
     g.setColour(edge);
     if (!mixCard_) g.fillRect(0, 0, getWidth(), kTitleHeight);
@@ -1799,7 +1799,7 @@ void DevicePanelView::mouseExit(const juce::MouseEvent &) {
     }
 }
 void DevicePanelView::mouseUp(const juce::MouseEvent &event) {
-    if (std::exchange(selectOnRelease_, false) && !startedDeviceDrag_ && !event.mouseWasDraggedSinceMouseDown())
+    if (std::exchange(selectOnRelease_, false) && !startedDeviceDrag_ && event.getDistanceFromDragStart() < 4)
         strip.selectTitle(*this, false);
     releaseEqHandle();
 }
