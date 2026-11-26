@@ -147,7 +147,9 @@ void LiveMidiInput::render(const GraphHost::RenderBlock& block, const AudioIo& i
     for (const auto& route : routes) {
         if (!route.monitorTrack || route.slot == kInvalidNode) continue;
         auto& state = *route.voices;
-        const bool followClips = transport.playing() && !route.blockedRanges.empty();
+        // During overdub the armed Auto track hears the original clip and the new notes.
+        const bool followClips = transport.playing() && !route.blockedRanges.empty() &&
+                                 !(capture && capture->overdubs(route.monitorTrack));
         auto input = first;
         for (std::int32_t frame = 0; frame < io.frames;) {
             auto runEnd = io.frames;

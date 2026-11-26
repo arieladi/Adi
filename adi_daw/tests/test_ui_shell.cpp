@@ -11468,8 +11468,8 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     surfacePeer.addToDesktop(0);
     root.afterEdit = [&] { document->synchronise(); };
     root.readRecordStates = [&] { return document->recordStates(); };
-    root.startRecording = [&](std::int64_t insertTick, bool playing) {
-        const bool ok = document->startRecording(insertTick, 2, playing);
+    root.startRecording = [&](std::int64_t insertTick, bool playing, bool overdub) {
+        const bool ok = document->startRecording(insertTick, 2, playing, overdub);
         if (!ok)
             root.say(document->error());
         return ok;

@@ -353,7 +353,7 @@ public:
     /// Call when the producer disconnects or replaces its port configuration.
     void resetMidiInput() noexcept;
     /// Owner only. Start a new capture with the listed armed MIDI tracks.
-    bool startMidiInputCapture(std::span<const std::int64_t> tracks, std::string& error);
+    bool startMidiInputCapture(std::span<const std::int64_t> tracks, std::string& error, bool overdub = false);
     [[nodiscard]] MidiInputCapture& midiInputCapture() noexcept { return *midiInputCapture_; }
     // With the audio callback detached, finish without waiting for another slice.
     void finishMidiInputCapture() noexcept;

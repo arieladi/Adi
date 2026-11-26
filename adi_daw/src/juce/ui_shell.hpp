@@ -498,7 +498,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
         if (states != recordStates_)
             recordStates_ = std::move(states);
     }
-    std::function<bool(std::int64_t insertTick, bool playing)> startRecording;
+    std::function<bool(std::int64_t insertTick, bool playing, bool overdub)> startRecording;
     std::function<void()> stopRecording;
     std::function<bool()> recording;
     std::function<std::span<const LiveMidiTake>()> liveMidiTakes;

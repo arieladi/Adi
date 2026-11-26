@@ -2595,7 +2595,7 @@ void Session::clearMidiPreviewDevice() noexcept {
     }
 }
 
-bool Session::startMidiInputCapture(std::span<const std::int64_t> tracks, std::string& error) {
+bool Session::startMidiInputCapture(std::span<const std::int64_t> tracks, std::string& error, bool overdub) {
     if (!loaded_ || !spec_.performanceState || spec_.exporting || tracks.empty() || tracks.size() > 256) {
         error = "MIDI capture needs a live project and between 1 and 256 armed tracks";
         return false;
@@ -2610,7 +2610,7 @@ bool Session::startMidiInputCapture(std::span<const std::int64_t> tracks, std::s
             return false;
         }
     }
-    if (!midiInputCapture_->start({tracks.begin(), tracks.end()}, spec_.sampleRate)) {
+    if (!midiInputCapture_->start({tracks.begin(), tracks.end()}, spec_.sampleRate, overdub)) {
         error = "finish and drain the previous MIDI capture first";
         return false;
     }

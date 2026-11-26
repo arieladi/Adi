@@ -908,14 +908,14 @@ class AdiApplication final : public juce::JUCEApplication,
         root->midiKeysSounding = [this](std::int64_t track) {
             return document_ ? document_->session().midiKeysSounding(track) : std::array<std::uint64_t, 2>{};
         };
-        root->startRecording = [this](std::int64_t insertTick, bool playing) {
+        root->startRecording = [this](std::int64_t insertTick, bool playing, bool overdub) {
             const auto *device = manager_.getCurrentAudioDevice();
             const int inputs = device != nullptr ? device->getActiveInputChannels().countNumberOfSetBits() : 0;
             if (device == nullptr) {
                 root_->say("Recording needs an audio device. Choose one in the Settings' Audio page.");
                 return false;
             }
-            if (!document_->startRecording(insertTick, inputs, playing)) {
+            if (!document_->startRecording(insertTick, inputs, playing, overdub)) {
                 root_->say(document_->error());
                 return false;
             }

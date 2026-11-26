@@ -3342,7 +3342,7 @@ bool AdiRootComponent::toggleRecord() {
         return fail("Transport command queue is full");
     // Where the take begins: the playhead when playing (punch-in), else the insert marker.
     const auto takeStart = rolling ? timelineTick() : arrangement.geometry.selection.insert;
-    if (!startRecording(arrangement.geometry.selection.insert, rolling))
+    if (!startRecording(arrangement.geometry.selection.insert, rolling, midiOverdub()))
         return false; // the application said why
     // The armed audio tracks record (MX-09; MIDI does not record yet), and their lanes show the take as
     // it grows (walk-B B4).

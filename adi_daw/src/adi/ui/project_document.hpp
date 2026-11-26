@@ -160,7 +160,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     // marker after the saved Count-In (`RenderBlock::startPlayback`). Playing, it records from the
     // playhead on, as Live's punch in. False with `error()` saying why.
     // `inputs` is the device's input channel count, `insertTick` where a stopped transport starts.
-    bool startRecording(std::int64_t insertTick, std::int32_t inputs, bool playing);
+    bool startRecording(std::int64_t insertTick, std::int32_t inputs, bool playing, bool overdub = false);
     // How many inputs the audio device has open (N65's window half): every audio track is fed by inputs
     // 1/2 (input 1 alone on a one-input device) until a track's input has its grammar (MX-25), as
     // recording takes them, and the session hears them as each track's Arm and monitoring say (In
