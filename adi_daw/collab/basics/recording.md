@@ -15,6 +15,11 @@ test uses the context-menu seam. The waveform and its landed clip now use the sa
 start, verified by the document regression. A repeat VB-CABLE run measured the same 960-sample
 placement shift and a 5,140-sample residual on each of four clicks.
 
+`basics/recording-chain` `392a6a6e` brings all six item branches through SC-21 and SC-246 into the
+Windows landing stack. The combined Debug app, private-desktop Audio Settings smoke, all six touched
+suites, and both WTS-01 tests passed. The latest landing update allows rounding in two unrelated SC-82
+test assertions. The combined performance acceptance test is running.
+
 Routing has its own claimed log. Under the current handoff, this session continues with recording
 wave 2 once the first recording queue is finished.
 
