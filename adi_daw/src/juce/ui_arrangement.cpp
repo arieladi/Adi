@@ -4091,7 +4091,7 @@ bool ArrangementCanvas::arrow(bool forward, const juce::ModifierKeys &mods) {
                 auto selected = geo.selectedTracks(view.reader());
                 std::erase_if(selected, [&](const auto id) {
                     const auto *row = view.reader().findTrack(id);
-                    return row == nullptr || !geo.shown(id) || (row->kind != "audio" && row->kind != "midi");
+                    return row == nullptr || !geo.shown(id) || (row->kind != "audio" && !isMidiTrack(*row));
                 });
                 const auto content = rangeContent(current->tracks, selected, lo, hi);
                 if (!content.inside.empty() || content.crossing != 0) {
