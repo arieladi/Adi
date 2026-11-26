@@ -12,12 +12,18 @@
 #include <stdexcept>
 #include <vector>
 namespace {bool counting=false;std::size_t allocations=0;}
-void* operator new(std::size_t n){if(counting)++allocations;if(auto p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
-void* operator new[](std::size_t n){return operator new(n);}
-void operator delete(void* p) noexcept {std::free(p);}
-void operator delete[](void* p) noexcept {std::free(p);}
-void operator delete(void* p,std::size_t) noexcept {std::free(p);}
-void operator delete[](void* p,std::size_t) noexcept {std::free(p);}
+#if defined(__GNUC__) && !defined(__clang__)
+#define ADI_TEST_NOINLINE __attribute__((noinline))
+#else
+#define ADI_TEST_NOINLINE
+#endif
+ADI_TEST_NOINLINE void* operator new(std::size_t n){if(counting)++allocations;if(auto p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
+ADI_TEST_NOINLINE void* operator new[](std::size_t n){return operator new(n);}
+ADI_TEST_NOINLINE void operator delete(void* p) noexcept {std::free(p);}
+ADI_TEST_NOINLINE void operator delete[](void* p) noexcept {std::free(p);}
+ADI_TEST_NOINLINE void operator delete(void* p,std::size_t) noexcept {std::free(p);}
+ADI_TEST_NOINLINE void operator delete[](void* p,std::size_t) noexcept {std::free(p);}
+#undef ADI_TEST_NOINLINE
 namespace {
 using namespace adi::dsp;
 int checks=0,failures=0;
