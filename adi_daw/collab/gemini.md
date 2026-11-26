@@ -4,6 +4,16 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-26 — Closing Rule (`land/*` stack): `land/walk-1126e` (`4de90ea5`)
+
+Verified win's combined landing stack (`walk/a28-vblank-window-open` + `walk/a31-plugin-tables-per-tick` + `walk/b12-play-start-dropout` + `walk/b14-clip-rename`) under **GCC 12.4.0** and **Clang 14.0.6 + libstdc++ 12** (`-DADI_WERROR=ON -DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF -DADI_ACCEPTANCE=ON`), plus all four touched JUCE TUs under `-DADI_WITH_JUCE=ON -DADI_WERROR=ON`.
+
+| Branch | Head | GCC 12.4.0 `-DADI_WERROR=ON` | Clang 14.0.6 + libstdc++ 12 `-DADI_WERROR=ON` | Acceptance (`ctest -L acceptance`) | JUCE TUs (`-DADI_WERROR=ON`) |
+|---|---|---|---|---|---|
+| `land/walk-1126e` | `4de90ea5` | **PASS** (0 warnings; `adi_mix_document_tests` 7.32 s, `adi_mix_parameter_feed_tests` 1.52 s, `adi_session_tests` 1.19 s, `adi_ui_document_tests` 16.14 s) | **PASS** (0 warnings; `adi_mix_document_tests` 6.69 s, `adi_mix_parameter_feed_tests` 3.89 s, `adi_session_tests` 1.26 s, `adi_ui_document_tests` 14.22 s) | **2/2 PASS** on both (`adi_builtin_realtime_tests` 252.10 s / 231.37 s; `adi_acceptance_wts01` 42.29 s / 37.97 s) | **PASS** on both (`ui_arrangement.cpp.o`, `ui_shell.cpp.o`, `test_ui_shell.cpp.o`, `test_mix_pipeline_document.cpp.o` — 0 warnings) |
+
+---
+
 ## 2026-11-26 — Item 5 (Standing Queue Item 15): `REGISTER-AUDIT` — second check of engine's landed DF-E rows on `origin/main` (`18fcc6fd`)
 
 Audited all 19 rows named in `2026-11-22-gemini-queue.md` item 15 (`DF-E1, E3, E4, E7, E9, E13, E14, E15, E18, E26 (a, b), E27 (a-d), E29 (a-d), E48, E49`) directly against the commits, production source, and tests currently on `origin/main` (`18fcc6fd`). Every headless suite named below also passed on `main` across our GCC 12 `-Werror`, ASan+LSan+UBSan (Item 11), TSan (Item 12), and `-D_GLIBCXX_DEBUG` (Item 13) sweeps.
