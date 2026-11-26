@@ -4,6 +4,43 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-26 — Closing Rule (Full-tree Release `-O3 -DNDEBUG -DADI_WERROR=ON` sweep on `origin/main` `cf6d0ca4`)
+
+Swept all **757** headless translation units (**473** core/library TUs + **284** test TUs, `-DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF -DADI_ACCEPTANCE=ON`) under **GCC 12.4.0** and **Clang 14.0.6 + libstdc++ 12** in `CMAKE_BUILD_TYPE=Release` (`-O3 -DNDEBUG`) with `-DADI_WERROR=ON`.
+
+| Compiler | Core TUs (473) | Test TUs (284) | Acceptance (`adi_acceptance_wts01`) | Summary |
+|---|---|---|---|---|
+| **Clang 14.0.6 + libstdc++ 12 (`-O3 -DNDEBUG -DADI_WERROR=ON`)** | **473 / 473 PASS** (0 warnings) | **284 / 284 PASS** (0 warnings) | **PASS** (10.19 s; note: Release `adi_builtin_realtime_tests` runs full 10× `kLength=1.0` timed workload and exceeded the 600 s shell ceiling while actively running at 99.5% CPU; CTest timeout is 900 s) | **757 / 757 CLEAN — 0 warnings.** |
+| **GCC 12.4.0 (`-O3 -DNDEBUG -DADI_WERROR=ON`)** | **469 / 473 PASS** (4 failed) | **234 / 284 PASS** (50 failed) | Blocked by 4 `adi_core` TUs | **703 / 757 clean; 54 TUs fail** across 5 warning classes (extends `DF-E89`, full breakdown below). |
+
+### GCC 12.4.0 Release (`-O3 -DNDEBUG -DADI_WERROR=ON`) failures on `origin/main` (`cf6d0ca4`)
+
+Smallest repro for any TU below:
+```sh
+cmake -S adi_daw -B build-rel -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_C_COMPILER=gcc-12 -DCMAKE_CXX_COMPILER=g++-12 \
+  -DADI_WERROR=ON -DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF -DADI_ACCEPTANCE=ON
+cmake --build build-rel --target <target>
+```
+
+1. **`-Werror=mismatched-new-delete` (44 test TUs, 0 `src/` TUs — same class as `DF-M77` / `DF-E89`):** inline `operator delete(...) { std::free(p); }` inlined into STL destructors while `operator new` is not inlined.
+   - **Shared header (7 test TUs; owner: `engine` / `devices`):** `tests/replace_operator_new.hpp:43` (`test_builtin_devices.cpp`, `test_clip_envelopes.cpp`, `test_freeze_commands.cpp`, `test_midi_capture.cpp`, `test_scala_import.cpp`, `test_send_automation.cpp`, `test_warp_playback.cpp`).
+   - **37 individual test files (owners: `engine`, `engine-win`, `mixview`, `devices`):** `test_analysis_cache_trim.cpp:43`, `test_analysis_comparison.cpp:34`, `test_audio_recording.cpp:29`, `test_bypass_delay.cpp:23`, `test_clip_candidate_ready.cpp:33`, `test_clip_playback.cpp:41`, `test_colorcab.cpp:19`, `test_cue_monitor.cpp:21`, `test_dsp.cpp:58`, `test_external_tempo.cpp:26,28`, `test_gesture_graph.cpp:41`, `test_host.cpp:44`, `test_loudness.cpp:48`, `test_midi_clips.cpp:42`, `test_midi_controllers.cpp:37`, `test_mix_compressor.cpp:43`, `test_mix_deesser.cpp:35`, `test_mix_eq_chain.cpp:43`, `test_mix_focus.cpp:1325`, `test_mix_gate.cpp:37`, `test_note_overlap_playback.cpp:44`, `test_offline_capture.cpp:19`, `test_param_automation.cpp:51`, `test_param_live_replay.cpp:52`, `test_pcm_stream.cpp:36`, `test_pd.cpp:49`, `test_redux_pd.cpp:42`, `test_retap.cpp:45`, `test_sample_settings.cpp:33`, `test_sample_slots.cpp:25`, `test_shared_analysis.cpp:3057`, `test_spectrum_average.cpp:151`, `test_stack_model.cpp:57`, `test_strip_lane_bindings.cpp:25`, `test_transport_settings.cpp:35`, `test_triggered_scope.cpp:225`, `test_warp.cpp:33`. (Also `test_reverb.cpp:25` at `-O2`, reported in Round 15.)
+2. **`-Werror=array-bounds` (7 TUs — GCC 12 `-O3` single-element `std::vector` initializer-list / `__builtin_memcpy` false positive):**
+   - `src/juce/pd_amxd.cpp:319` (`f.internal = {{0, 0, 1, 0}}`, owner: `devices`).
+   - `src/adi/ui/note_edits.hpp:95` (via `tests/test_ui_note_edits.cpp`, owner: `window` / `window-fn`).
+   - `tests/test_auto_warp.cpp:73`, `tests/test_edit_placement.cpp:322`, `tests/test_freeze_commands.cpp:464`, `tests/test_gesture_playback.cpp:432` (owner: `engine`).
+   - `tests/test_sampler.cpp:190` (owner: `devices`).
+3. **`-Werror=maybe-uninitialized` (2 `src/` TUs — GCC 12 `-O3` on `std::optional<std::int64_t>`):**
+   - `src/adi/clip_commands.cpp:507` (`secondId`, owner: `engine`).
+   - `src/adi/return_send_tap.cpp:64` (`previous`, owner: `engine`).
+4. **`-Werror=stringop-overflow=` (1 `src/` TU):**
+   - `src/adi/audio/mp4_aac.cpp:44` inlined at `:205` (`sampleDescription` calling `zeros(Bytes&, 8)` after `put` realloc, owner: `engine-win`).
+5. **`-Werror=unused-result` (1 test TU — already registered in `DF-E89`):**
+   - `tests/test_project_replace.cpp:289,292` (unchecked POSIX `read`/`write`, owner: `window-fn`).
+
+---
+
 ## 2026-11-26 — Closing Rule (After-3-December `PR requested` sweep, `engine` seat): 5 stack heads (`au08`, `mi04`, `tm-wt02`, `tm-wt03`)
 
 All five branches predate `DF-M62` (`FloatRealTransform.h:61`) and `DF-E69` (Clang 14 structured-binding / `std::ranges` fixes since landed on `main`); `FloatRealTransform.h:61` was patched transiently locally only to compile past it and reverted after each branch.
