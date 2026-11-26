@@ -30,6 +30,14 @@ SC-416 adds an upfront note preview read to full projections. In a matched Relea
 
 The completed items were consolidated oldest first on `basics/speed-chain`. SC-407 and SC-408 were already in the ancestry of `origin/main`. The resolved source and test tree matches the previously measured SC-421 tree. The original item branches remain available for comparison. On the consolidated head, the JUCE/Pd Debug app and all window targets built with warnings as errors. With `DISPLAY` unset, all 18 window tests and all three acceptance targets passed. All 18 selected Release engine and document tests also passed on that head.
 
+## Landing stack verification
+
+All 19 speed rows above were reverified on `basics/speed-chain` at `d15f1852` after merging `land/basics-1127e` (`9a9c3f38`) and `origin/main` (`6de06e1e`). The 11 conflict resolutions touch the tracks, recording, look, engine, and window code. MIDI Monitor Auto follows clips moved on armed tracks. Track Activator stays selected as a stepped target and keeps live device demand at zero. Background take publication keeps numbered WAVs, punch placement, and the live waveform handoff. Browser Hot-Swap uses the shared search index. Staged Save As cancels an active track render and rebinds the copied devices when the new project takes over. Freeze honors cancellation during clip page waits, and the CLI reports device trouble through the landed bridge.
+
+Linux builds kept warnings as errors. With `DISPLAY` unset, 42 Release tests passed. The JUCE/Pd Debug app and CLI built, and all 18 window tests, seven selected core and CLI tests, 14 mixer and analyser tests, and three acceptance tests passed. A separate offline CLI run wrote a valid float WAV.
+
+All 19 targeted probe runs passed. Thirty-two resampled stereo tracks played 480 callbacks with zero gaps, and both reader generations played all 600 WAV clips exactly. The 30-minute, four-track take spent 34.019 ms in its longest owner tick and read 90,219 bytes on the owner. At 200,000 Browser entries, the median searches took 4.905 ms for `Q`, 0.038 ms for `QX`, and 0.025 ms for `QXY`. At 20,000 notes, peerless paint took 17.106 ms and the held drag took 1.728 ms. These probe runs overlapped with the verification builds or suites. All speed rows are complete.
+
 ## SC-194 ownership
 
 The speed session takes the Warp render cache and background rendering. The clips session owns the Warp controls and marker edits.
