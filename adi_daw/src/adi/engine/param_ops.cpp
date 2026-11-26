@@ -133,7 +133,7 @@ struct ParamOps::Runtime final : SessionRuntimeClient, std::enable_shared_from_t
     const AppliedDeliveryStatus& appliedDeliveryStatus() const noexcept;
     std::size_t drain(std::int64_t, std::vector<OpRequest>&);
     std::size_t snapshot(std::int64_t, std::int64_t, std::vector<OpRequest>&);
-    SnapshotAllResult snapshotAll(std::int64_t nowMs);
+    SnapshotAllResult snapshotAll(std::int64_t nowMs, SnapshotGestures);
     std::vector<StateBlob> takeBlobs();
     bool writeBlobs(Store&, std::string&);
     bool applied(const Payload&, std::int64_t);
@@ -149,7 +149,7 @@ struct ParamOps::Runtime final : SessionRuntimeClient, std::enable_shared_from_t
     struct Attached;
     struct Gesture;
     bool presentationReady(const AppliedSource&,std::uint64_t) const noexcept override;
-    bool capturePending(std::int64_t);
+    bool capturePending(std::int64_t, bool finishOpen = false);
     void advanceGestures(std::int64_t);
     std::size_t offerOne(std::vector<OpRequest>&);
     std::shared_ptr<Gesture> beginGesture(std::int64_t,const std::string&,ParameterImage,bool,bool unchanged=false,
@@ -1656,7 +1656,7 @@ std::size_t ParamOps::Runtime::snapshot(std::int64_t deviceId, std::int64_t nowM
     return appended;
 }
 
-ParamOps::SnapshotAllResult ParamOps::Runtime::snapshotAll(std::int64_t nowMs) {
+ParamOps::SnapshotAllResult ParamOps::Runtime::snapshotAll(std::int64_t nowMs, SnapshotGestures gestures) {
     SnapshotAllResult result;
     const auto refuse = [&](gesture::Status status, std::optional<std::int64_t> id = {}) {
         result.status = std::move(status);
@@ -1674,6 +1674,17 @@ ParamOps::SnapshotAllResult ParamOps::Runtime::snapshotAll(std::int64_t nowMs) {
 
     std::optional<std::int64_t> device;
     try {
+        const bool finishOpen = gestures == SnapshotGestures::FinishOpen;
+        if (finishOpen) {
+            if (!capturePending(nowMs, true))
+                return refuse({gesture::Error::Busy, "device input capture is pending"});
+            for (const auto& task : gestures_) {
+                if (task->state || task->complete || task->terminal() || task->cancelRequested) continue;
+                task->complete = true;
+                if (task->pairedParameter.empty())
+                    openGestures_.erase({task->deviceId, task->parameter});
+            }
+        }
         const auto pumped = pumpGestures(nowMs);
         if (!pumped.status.ok())
             return refuse(pumped.status);
@@ -1682,9 +1693,10 @@ ParamOps::SnapshotAllResult ParamOps::Runtime::snapshotAll(std::int64_t nowMs) {
                 if (!task->status.ok()) return task->status;
                 return gesture::Status{gesture::Error::Busy, "device state capture is not ready to commit"};
             }
-            if (task->transaction && task->transaction->phase() == CapturedSubmissionPhase::Refused)
+            const bool refused = task->transaction && task->transaction->phase() == CapturedSubmissionPhase::Refused;
+            if (refused && !finishOpen)
                 return gesture::Status{gesture::Error::CommitRefused, task->transaction->lastRefusal()};
-            const auto saved = commitPending(*task->owner, nowMs, false);
+            const auto saved = commitPending(*task->owner, nowMs, refused);
             if (!saved.status.ok()) return saved.status;
             if (!saved.durable || !saved.durable->ok)
                 return gesture::Status{gesture::Error::CommitRefused, "device state capture did not commit"};
@@ -1714,7 +1726,7 @@ ParamOps::SnapshotAllResult ParamOps::Runtime::snapshotAll(std::int64_t nowMs) {
         auto& session = *replay_->session;
         for (std::size_t i = 0; i < session.entryCount(); ++i) {
             const auto& entry = session.entryAt(i);
-            if (entry.placeholder || entry.retired) continue;
+            if (entry.placeholder || entry.parked || entry.retired) continue;
             const auto id = entry.deviceId;
             device = id;
             const auto found = devices_.find(id);
@@ -2135,7 +2147,7 @@ std::shared_ptr<ParamOps::Runtime::Gesture> ParamOps::Runtime::beginGesture(std:
     return task;
 }
 
-bool ParamOps::Runtime::capturePending(std::int64_t nowMs) {
+bool ParamOps::Runtime::capturePending(std::int64_t nowMs, bool finishOpen) {
     ownerNow_=nowMs;
     if(!coordinator_ || replay_->blocked)return !replay_->blocked;
     if(replay_->session && (replay_->life.expired() || !replay_->source.alive() ||
@@ -2194,7 +2206,7 @@ bool ParamOps::Runtime::capturePending(std::int64_t nowMs) {
             const bool unacknowledged=std::any_of(attached.activities.begin(),attached.activities.end(),[](const auto& activity){return activity.fence!=nullptr;});
             if(attached.activityCursor==attached.activities.size() && !unacknowledged) {
                 attached.activities.clear();attached.activityEdits.clear();attached.activityCursor=0;
-                attached.capture->drainLifecycle(nowMs,attached.activityEdits,attached.activities,signalled);
+                attached.capture->drainLifecycle(nowMs,attached.activityEdits,attached.activities,signalled,finishOpen);
             }
             while(attached.activityCursor<attached.activities.size()) {
                 auto& activity=attached.activities[attached.activityCursor];
@@ -2457,7 +2469,9 @@ AppliedDeliveryStatus ParamOps::retryApplied(std::int64_t now) { return runtime_
 const AppliedDeliveryStatus& ParamOps::appliedDeliveryStatus() const noexcept { return runtime_->appliedDeliveryStatus(); }
 std::size_t ParamOps::drain(std::int64_t now,std::vector<OpRequest>& out) { return runtime_->drain(now,out); }
 std::size_t ParamOps::snapshot(std::int64_t id,std::int64_t now,std::vector<OpRequest>& out) { return runtime_->snapshot(id,now,out); }
-ParamOps::SnapshotAllResult ParamOps::snapshotAll(std::int64_t now) { return runtime_->snapshotAll(now); }
+ParamOps::SnapshotAllResult ParamOps::snapshotAll(std::int64_t now, SnapshotGestures gestures) {
+    return runtime_->snapshotAll(now, gestures);
+}
 std::vector<StateBlob> ParamOps::takeBlobs() { return runtime_->takeBlobs(); }
 bool ParamOps::writeBlobs(Store& store,std::string& error) { return runtime_->writeBlobs(store,error); }
 bool ParamOps::applied(const Payload& payload,std::int64_t now) { return runtime_->applied(payload,now); }

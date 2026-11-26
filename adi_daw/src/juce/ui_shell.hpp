@@ -410,6 +410,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     bool needsFirstSave = false;
     std::function<void(const juce::File &)> openRecentProject;
     std::function<void()> afterEdit;
+    std::function<bool(std::string &)> beforeDeleteTrack;
     // Commits the parameter edits the document still holds before Undo, Redo or a restored step acts
     // (DF-W29); false, with the document's reason said, when it could not.
     std::function<bool()> settleEdits;

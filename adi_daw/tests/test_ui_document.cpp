@@ -143,7 +143,7 @@ double bin(const std::array<float, 2048> &data, int k) {
 
 // A declared nonzero runtime latency prevents the publication test from passing merely because
 // DevicePanelData::latency defaulted to zero. The two controls retain the shared headless fixture.
-class SurfaceKnobs final : public device::DeviceInstance {
+class SurfaceKnobs : public device::DeviceInstance {
   public:
     explicit SurfaceKnobs(std::int32_t initialLatency = 37) : reportedLatency(initialLatency) {}
     const device::DeviceIdentity &identity() const noexcept override { return controls.identity(); }
@@ -160,6 +160,107 @@ class SurfaceKnobs final : public device::DeviceInstance {
     test::Knobs controls;
     std::string issue;
 };
+
+class SilentStateKnobs final : public SurfaceKnobs {
+  public:
+    SilentStateKnobs() : SurfaceKnobs(0) {}
+    std::vector<std::string> stateRoles() const override { return {"chunk"}; }
+    std::vector<std::uint8_t> saveState(const std::string &role) const override {
+        if (role != "chunk" || refuseSave)
+            return {};
+        return {patch};
+    }
+    bool loadState(const std::string &role, const std::vector<std::uint8_t> &bytes) override {
+        if (role != "chunk" || bytes.size() != 1)
+            return false;
+        patch = bytes.front();
+        return true;
+    }
+    void nativeDragWithoutEnd(double value) {
+        broadcastParam(1, engine::ParamEventKind::Begin, 0);
+        controls.setParam("gain", device::ParamValue::fromNormalized(value));
+        broadcastParam(1, engine::ParamEventKind::Value, value);
+    }
+    std::uint8_t patch = 1;
+    bool refuseSave = false;
+};
+
+void capturedPluginState(const std::filesystem::path &dir) {
+    const auto loader = [](const engine::DeviceRequest &, std::string &)
+        -> std::unique_ptr<device::DeviceInstance> { return std::make_unique<SilentStateKnobs>(); };
+    std::string error;
+    auto document = ui::ProjectDocument::open(dir / "silent.adi", true, loader, error);
+    check(document != nullptr, "SC-09: open a document for a plug-in with silent state changes");
+    if (!document)
+        return;
+    rows::PluginRef plugin;
+    plugin.format = "clap";
+    plugin.uid = "test.silent-state";
+    plugin.name = "Silent sampler";
+    plugin.subtype = "effect";
+    const bool inserted = document->insertPlugin(plugin, 4);
+    check(inserted && document->session().model().devices.size() == 1, "SC-09: insert the sampler");
+    if (!inserted || document->session().model().devices.size() != 1)
+        return;
+    const auto id = document->session().model().devices.front().id;
+    const auto instance = [&](ui::ProjectDocument &doc) {
+        return dynamic_cast<SilentStateKnobs *>(doc.session().instanceFor(id));
+    };
+    auto *sampler = instance(*document);
+    check(sampler && sampler->stateEpoch() == 0, "SC-09: fixture gives no state-change signal");
+    if (!sampler)
+        return;
+
+    auto snapshot = document->takeSnapshot("Baseline", 1'000'000, 0);
+    check(snapshot.ok, "SC-09: save the first opaque state with a snapshot");
+    sampler->patch = 2;
+    const auto before = History(document->store()).head();
+    snapshot = document->takeSnapshot("Changed patch", 2'000'000, 0);
+    const auto history = History(document->store()).readTimeline();
+    const auto head = History(document->store()).head();
+    check(snapshot.ok && head != before && !history.snapshots.empty() && history.snapshots.front().opSeq == head,
+          "SC-09: a named snapshot follows the new opaque state in history");
+    check(document->takeSnapshot("Same patch", 3'000'000, 0).ok && History(document->store()).head() == head,
+          "SC-09: capturing unchanged state appends no undo step");
+
+    sampler->patch = 3;
+    sampler->refuseSave = true;
+    const auto copy = dir / "silent-copy.adi";
+    check(!document->saveCopy(copy) && !std::filesystem::exists(copy) &&
+              document->error().find("Silent sampler") != std::string::npos,
+          "SC-09: refused opaque capture leaves no published copy and names the plug-in");
+    sampler->refuseSave = false;
+    check(document->saveCopy(copy), "SC-09: retry copies the now readable state");
+    auto reopened = ui::ProjectDocument::open(copy, false, loader, error);
+    check(reopened && instance(*reopened) && instance(*reopened)->patch == 3,
+          "SC-09: opening Save a Copy restores the patch that made no callback");
+    reopened.reset();
+
+    sampler->patch = 4;
+    const auto saved = dir / "silent-saved.adi";
+    check(document->saveAs(saved), "SC-09: Save As captures silent state before it switches");
+    reopened = ui::ProjectDocument::open(saved, false, loader, error);
+    check(reopened && instance(*reopened) && instance(*reopened)->patch == 4,
+          "SC-09: opening Save As restores the latest patch");
+    reopened.reset();
+    sampler = instance(*document);
+    if (!sampler)
+        return;
+
+    sampler->patch = 5;
+    using engine::ParamEventKind;
+    check(document->parameterGesture(id, "cutoff", ParamEventKind::Begin, .5) &&
+              document->parameterGesture(id, "cutoff", ParamEventKind::Value, .8),
+          "SC-09: the strip has an unfinished knob drag");
+    sampler->nativeDragWithoutEnd(.6);
+    check(document->capturePluginState(), "SC-09: close captures both open knob drags and the silent patch");
+    document.reset();
+    reopened = ui::ProjectDocument::open(saved, false, loader, error);
+    const auto *closed = reopened ? instance(*reopened) : nullptr;
+    check(closed && closed->patch == 5 && std::abs(closed->getParam("cutoff").normalized - .8) < 1e-12 &&
+              std::abs(closed->getParam("gain").normalized - .6) < 1e-12,
+          "SC-09: reopening restores the silent patch and each drag's last value");
+}
 
 Payload readLatencyReport(Store &store) {
     SQLite::Statement query(store.db(), "SELECT value FROM session_state WHERE key='devices.reported_latency'");
@@ -2408,6 +2509,7 @@ int main(int argc, char **argv) {
     refusedBeginOwnership(temp.path());
     importWithChoices(temp.path());
     mixSurfacePublication(temp.path() / "mix-surface.adi");
+    capturedPluginState(temp.path());
     reportedDeviceLatency(temp.path());
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

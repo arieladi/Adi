@@ -79,6 +79,9 @@ class ProjectDocument final : public engine::BlockProcessor {
     };
     bool prepareCollectAndExport(const std::filesystem::path &zip, ExportJob &out);
     static StoreFileResult runCollectAndExport(const ExportJob &);
+    // Finish pending device edits and capture even plug-ins that never report changed state.
+    // Call before closing the document or reading the file for an offline render.
+    bool capturePluginState();
     bool synchronise();
     void tick(std::int64_t milliseconds);
     // Commits every parameter edit still held in the capture, each as the undo step it was going to
@@ -204,8 +207,8 @@ class ProjectDocument final : public engine::BlockProcessor {
     bool autoGainStage(bool lufs);
     // A device edit from the strip (enable, remove, panel), as one op.
     bool deviceAction(const std::string &op, Payload payload);
-    // Live's device clipboard (manual 23.2.1; N18, #394). Copy reads the device's stored state only,
-    // so a device whose plug-in is not loaded copies too; the clipboard is the app's, not the
+    // Live's device clipboard (manual 23.2.1; N18, #394). Copy captures live state first and uses
+    // stored state for a device whose plug-in is not loaded; the clipboard is the app's, not the
     // document's. Paste puts a new device, with the next free id and the copy's stored state, in
     // front of `before` in its chain, or at the end of `track`'s own chain: one undo step. The
     // engine's refusals (a rack with nested chains, a copy from another project) come back in

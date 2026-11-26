@@ -130,11 +130,11 @@ std::size_t ParamEditCapture::drainAbsorbing(std::int64_t nowMs, std::vector<Par
 }
 
 std::size_t ParamEditCapture::drainLifecycle(std::int64_t nowMs,std::vector<ParamEdit>& out,
-                                             std::vector<ParamActivity>& activity,bool absorb) {
-    return drainImpl(nowMs,out,absorb,&activity);
+                                             std::vector<ParamActivity>& activity,bool absorb,bool finishOpen) {
+    return drainImpl(nowMs,out,absorb,&activity,finishOpen);
 }
 std::size_t ParamEditCapture::drainImpl(std::int64_t nowMs, std::vector<ParamEdit>& out,
-                                        bool absorb,std::vector<ParamActivity>* activity) {
+                                        bool absorb,std::vector<ParamActivity>* activity,bool finishOpen) {
     const auto start = out.size();
     // Expire before processing queued values, even when the queue is empty.
     for (auto& [key, p] : parameters_) {
@@ -265,8 +265,8 @@ std::size_t ParamEditCapture::drainImpl(std::int64_t nowMs, std::vector<ParamEdi
         }
     }
     for (auto& [key, p] : parameters_) {
-        if (!p.open || !p.implicit) continue;
-        if (absorb) {
+        if (!p.open) continue;
+        if (absorb && p.implicit) {
             if(activity)activity->push_back({ParamActivityKind::Absorbed,{key.first,key.second,ParamEventKind::End,0},p.before,p.after,true,false,nullptr});
             // Folded into the snapshot: the value is where the plugin put it,
             // and no edit says so.
@@ -277,8 +277,13 @@ std::size_t ParamEditCapture::drainImpl(std::int64_t nowMs, std::vector<ParamEdi
             }
             p.open = false;
             p.hasValue = false;
-        } else if (elapsed(nowMs, p.lastValueMs) >= static_cast<std::uint64_t>(quietMs_)) {
-            if(activity)activity->push_back({ParamActivityKind::QuietEnd,{key.first,key.second,ParamEventKind::End,0},p.before,p.after,true,false,nullptr});
+        } else if (finishOpen || (p.implicit && elapsed(nowMs, p.lastValueMs) >= static_cast<std::uint64_t>(quietMs_))) {
+            if (activity) {
+                const auto before = p.hasValue ? p.before : p.last;
+                const auto after = p.hasValue ? p.after : p.last;
+                activity->push_back({ParamActivityKind::QuietEnd,
+                    {key.first,key.second,ParamEventKind::End,0},before,after,p.implicit,false,nullptr});
+            }
             close(key, p, out);
         }
     }

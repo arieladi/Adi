@@ -140,7 +140,11 @@ History::SnapshotResult ProjectDocument::takeSnapshot(const std::string &name,
         refused.error = "Project is read-only";
         return refused;
     }
-    refreshReportedLatenciesForSave();
+    if (!capturePluginState()) {
+        History::SnapshotResult refused;
+        refused.error = error_;
+        return refused;
+    }
     History history(*store_);
     return history.takeSnapshot(name, nowUtc, utcOffsetMinutes);
 }
@@ -167,7 +171,8 @@ bool ProjectDocument::saveAs(const std::filesystem::path &path, bool firstSave) 
     }
     // No History, OpJournal or Statement of ours is alive here: every one is made per call, and
     // the members hold the Store itself, which keeps its identity across the switch.
-    refreshReportedLatenciesForSave();
+    if (!capturePluginState())
+        return false;
     const auto result = firstSave ? store_->saveUntitledAs(path) : store_->saveAs(path);
     if (!result.ok) {
         error_ = "Save As failed: " + result.error;
@@ -216,7 +221,8 @@ bool ProjectDocument::saveCopy(const std::filesystem::path &path) {
     warning_.clear();
     if (refuseExisting(path, "Save a Copy", error_))
         return false;
-    refreshReportedLatenciesForSave();
+    if (!capturePluginState())
+        return false;
     const auto result = store_->saveCopy(path);
     if (!result.ok) {
         error_ = "Save a Copy failed: " + result.error;
@@ -228,7 +234,8 @@ bool ProjectDocument::saveCopy(const std::filesystem::path &path) {
 }
 bool ProjectDocument::collectAllAndSave() {
     warning_.clear();
-    refreshReportedLatenciesForSave();
+    if (!capturePluginState())
+        return false;
     const auto result = store_->collectAllAndSave();
     warning_ = result.warning;
     if (!result.ok) {
@@ -250,7 +257,8 @@ bool ProjectDocument::collectAllAndSave() {
 bool ProjectDocument::prepareCollectAndExport(const std::filesystem::path &zip, ExportJob &out) {
     if (refuseExisting(zip, "Collect and Export", error_))
         return false;
-    refreshReportedLatenciesForSave();
+    if (!capturePluginState())
+        return false;
     out.project = media::projectFolder(*store_) / store_->path().filename();
     out.zip = zip;
     error_.clear();
@@ -394,6 +402,40 @@ bool ProjectDocument::settleParameters() {
     }
     return true;
 }
+bool ProjectDocument::capturePluginState() {
+    if (store_->readOnly())
+        return true;
+    if (!synchronise())
+        return false;
+    if (mixerDrag_ && !endMixerDrag())
+        return false;
+    const auto captured = parameterOps_.snapshotAll(captureNowMs(), engine::ParamOps::SnapshotGestures::FinishOpen);
+    // Several independently committed devices may precede a refusal. Publish those writes too.
+    if (captured.journalOps != 0) {
+        view_.refresh(*store_, session_.overriddenLanes());
+        if (!synchronise() && captured.ok())
+            return false;
+    }
+    if (!surfaceGestures_.empty()) {
+        const auto pending = parameterOps_.pendingGestures();
+        std::erase_if(surfaceGestures_, [&](const auto &item) {
+            return std::none_of(pending.begin(), pending.end(), [&](const auto &edit) {
+                return edit.owner && edit.owner->sameOwner(*item.second.owner);
+            });
+        });
+    }
+    if (!captured.ok()) {
+        const auto *entry = captured.failedDevice ? session_.entryFor(*captured.failedDevice) : nullptr;
+        error_ = "Could not save plug-in state";
+        if (entry)
+            error_ += " for " + entry->name;
+        error_ += captured.status.message.empty() ? "." : ": " + captured.status.message;
+        return false;
+    }
+    refreshReportedLatenciesForSave();
+    error_.clear();
+    return true;
+}
 void ProjectDocument::tick(std::int64_t milliseconds) {
     const bool synced = synchronise();
     session_.tick(milliseconds);
@@ -516,6 +558,8 @@ bool ProjectDocument::autoGainStage(bool lufs) {
     return synchronise();
 }
 bool ProjectDocument::deviceAction(const std::string &op, Payload payload) {
+    if (op == "device.remove" && !capturePluginState())
+        return false;
     OpRequest r;
     r.opType = op;
     r.payload = std::move(payload);
@@ -534,6 +578,8 @@ bool ProjectDocument::deviceAction(const std::string &op, Payload payload) {
     return true;
 }
 bool ProjectDocument::copyDevice(std::int64_t id, DeviceCopy &out) {
+    if (!capturePluginState())
+        return false;
     auto copy = readDeviceCopy(*store_, id);
     if (!copy.ok) {
         error_ = copy.error.empty() ? "The device could not be copied." : copy.error;

@@ -383,6 +383,11 @@ class AdiApplication final : public juce::JUCEApplication,
                     exportPage_->showDone("A WAV cannot be named \"" + stem + "\"; choose another name.");
                 return;
             }
+            if (!document_->capturePluginState()) {
+                if (exportPage_)
+                    exportPage_->showDone(document_->error());
+                return;
+            }
             // The user chose to replace it: the old file goes to the trash, so a failed render loses nothing.
             if (file.existsAsFile() && !file.moveToTrash()) {
                 if (exportPage_)
@@ -614,8 +619,13 @@ class AdiApplication final : public juce::JUCEApplication,
         commands_.reset();
         settings_.reset();
     }
-    // Every edit is already in the file (ADR-0203 d13): quitting asks nothing.
-    void systemRequestedQuit() override { quit(); }
+    void systemRequestedQuit() override {
+        if (document_ && !document_->capturePluginState()) {
+            report(document_->error());
+            return;
+        }
+        quit();
+    }
     void anotherInstanceStarted(const juce::String &commandLine) override {
         // A test launch runs on its own (WTS-01); should one reach here, it opens nothing.
         if (isTestLaunch(commandLine))
@@ -674,6 +684,10 @@ class AdiApplication final : public juce::JUCEApplication,
     bool install(const juce::File &file, bool create) {
         if (file == juce::File{}) {
             report("Cannot create an Untitled project folder in " + projectsFolder(*settings_).getFullPathName().toStdString());
+            return false;
+        }
+        if (document_ && !document_->capturePluginState()) {
+            report(document_->error());
             return false;
         }
         std::string error;
@@ -1043,6 +1057,12 @@ class AdiApplication final : public juce::JUCEApplication,
         };
         // Undo and Redo commit the knob edits still held first (DF-W29).
         root->editsHeld = [this] { return !document_->pendingParameterGestures().empty(); };
+        root->beforeDeleteTrack = [this](std::string &reason) {
+            if (document_->capturePluginState())
+                return true;
+            reason = document_->error();
+            return false;
+        };
         root->settleEdits = [this] {
             const bool ok = document_->settleParameters();
             if (!ok && root_)

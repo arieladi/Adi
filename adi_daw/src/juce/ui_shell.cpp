@@ -2944,6 +2944,9 @@ bool AdiRootComponent::deleteTrack() {
     const auto id = arrangement.geometry.selection.track;
     if (id == 0)
         return fail("Select a track to delete.");
+    std::string error;
+    if (beforeDeleteTrack && !beforeDeleteTrack(error))
+        return fail(std::move(error));
     OpRequest request;
     request.opType = "track.delete";
     request.payload = {{"id", id}};
