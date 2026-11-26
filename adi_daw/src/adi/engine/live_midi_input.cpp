@@ -107,7 +107,8 @@ void LiveMidiInput::deliver(const GraphHost::RenderBlock& block, const Route& ro
 }
 
 void LiveMidiInput::render(const GraphHost::RenderBlock& block, const AudioIo& io,
-                          std::span<const Route> routes, const Transport& transport,
+                          std::span<const Route> routes, std::span<const std::shared_ptr<History>> histories,
+                          const Transport& transport,
                           MidiInputCapture* capture) noexcept {
     const auto epoch = epoch_.load(std::memory_order_acquire);
     if (capture) capture->beginSlice(io, transport, epoch);
@@ -129,6 +130,15 @@ void LiveMidiInput::render(const GraphHost::RenderBlock& block, const AudioIo& i
     const auto end = io.streamTimeSamples + io.frames;
     const auto first = read_.load(std::memory_order_relaxed);
     const auto written = written_.load(std::memory_order_acquire);
+    const bool changesHistory = !histories.empty() && (first != written || renderedHistoryEpoch_ != epoch);
+    if (changesHistory) historyRevision_.fetch_add(1);
+    renderedHistoryEpoch_ = epoch;
+    for (const auto& history : histories) {
+        if (history->inputEpoch == epoch) continue;
+        history->memory.setListening(true, false);
+        history->memory.discontinuity(io.streamTimeSamples);
+        history->inputEpoch = epoch;
+    }
     const auto eventFrame = [&io](const Timed& item) {
         return static_cast<std::int32_t>(std::max(item.sample - io.streamTimeSamples, std::int64_t{0}));
     };
@@ -137,17 +147,23 @@ void LiveMidiInput::render(const GraphHost::RenderBlock& block, const AudioIo& i
         const auto& item = ring_[next % capacity];
         if (item.epoch < epoch) continue;
         if (item.epoch != epoch || item.sample >= end) break;
-        if (capture) {
+        if (capture || !histories.empty()) {
             auto event = item.event;
             event.frame = eventFrame(item);
-            capture->record(item.sample, item.inputSample, event);
+            if (capture) capture->record(item.sample, item.inputSample, event);
+            for (const auto& history : histories)
+                history->memory.push(event, io.streamTimeSamples + event.frame);
         }
     }
+    for (const auto& history : histories) history->memory.advance(end);
+    if (changesHistory) historyRevision_.fetch_add(1);
     // Only monitoring is gated. Recording above sees the original input regardless of the track's Monitor switch.
     for (const auto& route : routes) {
         if (!route.monitorTrack || route.slot == kInvalidNode) continue;
         auto& state = *route.voices;
-        const bool followClips = transport.playing() && !route.blockedRanges.empty();
+        // During overdub the armed Auto track hears the original clip and the new notes.
+        const bool followClips = transport.playing() && !route.blockedRanges.empty() &&
+                                 !(capture && capture->overdubs(route.monitorTrack));
         auto input = first;
         for (std::int32_t frame = 0; frame < io.frames;) {
             auto runEnd = io.frames;

@@ -11,6 +11,9 @@
 #include <utility>
 namespace adi::ui {
 namespace {
+// Pending the direct Live reading (R20): an editor click places its local cursor.
+constexpr bool kNoteEditorClickMovesArrangementInsertMarker = false;
+
 // Live's position fields read bar. beat. sixteenth from 1 (manual 8.2).
 juce::String positionText(std::int64_t tick, const std::vector<textproj::Meter> &meters) {
     const bool before = tick < 0;
@@ -2049,6 +2052,11 @@ void NoteEditor::mouseDown(const juce::MouseEvent &e) {
             // The insert marker goes where the click is, on the grid (manual 10.5.2).
             const auto at = time.tick(static_cast<double>(from_.x - notesArea().getX()));
             insert_ = snapping(e.mods) ? time.snap(at, false) : at;
+            if constexpr (kNoteEditorClickMovesArrangementInsertMarker) {
+                panel.root.arrangement.geometry.selection.insert = *insert_;
+                panel.root.publishSelection();
+                panel.root.arrangement.changed();
+            }
             head_.reset();
         }
         bandBase_ = selected_;
@@ -2335,6 +2343,11 @@ bool NoteEditor::keyPressed(const juce::KeyPress &key) {
             commit(across([&](const engine::ClipDetails &of, const std::vector<std::uint64_t> &ids) { return changeVelocities(of, ids, by); }));
             return true;
         }
+    }
+    if (code == juce::KeyPress::spaceKey && !mods.isAnyModifierKeyDown() && insert_) {
+        const auto range = timeSelection();
+        panel.root.playOrStopFrom(range ? range->first : *insert_);
+        return true;
     }
     // The Main panel's Set buttons from the keyboard (manual 41.8): Ctrl/Cmd with F9 sets the Start
     // marker, F10 the loop's start, F11 the loop's end, F12 the End marker.

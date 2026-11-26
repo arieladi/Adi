@@ -4335,6 +4335,87 @@ void timeCommands(AppCommands &commands, const std::filesystem::path &dir) {
     commands.detach(root);
     document->release();
 }
+void midiFileDrop(AppCommands &commands, const std::filesystem::path &dir) {
+    const auto path = dir / "Scale.mid";
+    constexpr std::array<unsigned char, 34> bytes{
+        'M', 'T', 'h', 'd', 0, 0, 0, 6, 0, 0, 0, 1, 0, 96,
+        'M', 'T', 'r', 'k', 0, 0, 0, 12,
+        0, 0x90, 60, 100, 96, 0x80, 60, 0, 0, 0xff, 0x2f, 0};
+    {
+        std::ofstream file(path, std::ios::binary);
+        file.write(reinterpret_cast<const char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+        check(file.good(), "make a MIDI file to drop");
+    }
+    std::string error;
+    auto document = ProjectDocument::open(dir / "midi-file-drop.adi", true, {}, error);
+    check(document != nullptr, "a project for the MIDI file drop");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "midi-file-drop");
+    root.setSize(1400, 900);
+    root.mark(DirtySet::All);
+    root.frame();
+    auto &arrangement = root.arrangement;
+    const auto pathUtf8 = path.u8string();
+    constexpr auto beat = textproj::kPPQ;
+    const auto x = static_cast<int>(std::lround(arrangement.geometry.x(beat)));
+    arrangement.canvas.filesDropped(juce::StringArray{juce::String::fromUTF8(reinterpret_cast<const char *>(pathUtf8.c_str()))},
+                                    x, laneTop(root, 2) + 10);
+    root.frame();
+    const auto selected = root.midiClipForExport();
+    const auto details = engine::readClipDetails(document->store(), selected);
+    check(selected > 0 && details.clip && details.clip->trackId == 2 && details.clip->name == "Scale" &&
+              details.clip->notes.size() == 1 && details.clip->notes.front().key == 60,
+          "the Arrangement drop imports and selects a MIDI clip on the dropped track");
+    int command = 0;
+    root.applicationCommand = [&](int id) { command = id; return true; };
+    check(root.command(AppCommands::ExportMidiClip) && command == AppCommands::ExportMidiClip,
+          "Export MIDI Clip dispatches the selected MIDI clip to the application");
+    check(root.command(AppCommands::ImportMidiFile) && command == AppCommands::ImportMidiFile,
+          "Import MIDI File dispatches the chooser command");
+    const auto drop = juce::StringArray{juce::String::fromUTF8(reinterpret_cast<const char *>(pathUtf8.c_str()))};
+    const auto count = [&] {
+        return document->store().db().execAndGet("SELECT count(*) FROM clips WHERE track_id=2").getInt();
+    };
+    arrangement.canvas.filesDropped(drop, x, laneTop(root, 2) + 10);
+    root.frame();
+    const auto replacement = root.midiClipForExport();
+    check(replacement > 0 && replacement != selected && count() == 1 &&
+              !engine::readClipDetails(document->store(), selected).clip,
+          "repeated MIDI drop replaces the old span instead of leaving an overlapping clip");
+    check(root.command(AppCommands::Undo) && count() == 1 &&
+              engine::readClipDetails(document->store(), selected).clip &&
+              !engine::readClipDetails(document->store(), replacement).clip,
+          "one Undo removes the replacement and restores the previous import");
+    check(root.command(AppCommands::Undo) && !engine::readClipDetails(document->store(), selected).clip,
+          "undo removes the file import in one step");
+
+    if (!root.insertMidiClips({2}, 0, 4 * beat)) {
+        check(false, "set up a clip that extends on both sides of the MIDI drop");
+        return;
+    }
+    const auto original = arrangement.geometry.selection.clip;
+    check(root.dropMidiFiles({{drop[0].toStdString(), "Scale"}}, 2, beat, false),
+          "import into the middle of an existing clip");
+    const auto snapshot = document->view().current();
+    const auto *track = snapshot ? snapshot->findTrack(2) : nullptr;
+    const auto placed = root.midiClipForExport();
+    const auto hasSpan = [&](std::int64_t start, std::int64_t length) {
+        return track != nullptr && std::any_of(track->clips.begin(), track->clips.end(), [&](const auto &clip) {
+            return clip != nullptr && clip->posTicks == start && clip->lengthTicks == length;
+        });
+    };
+    check(count() == 3 && hasSpan(0, beat) && hasSpan(beat, beat) && hasSpan(2 * beat, 2 * beat) &&
+              placed != 0 && placed != original,
+          "only the landed interval is replaced, with the before and after fragments retained");
+    check(root.command(AppCommands::Undo) && count() == 1 &&
+              !engine::readClipDetails(document->store(), placed).clip,
+          "one Undo removes the import and recombines both fragments");
+    const auto restored = engine::readClipDetails(document->store(), original);
+    check(restored.clip && restored.clip->posTicks == 0 && restored.clip->lengthTicks == 4 * beat,
+          "Undo restores the exact original MIDI clip interval");
+}
 void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
     StoreError err{};
     auto store = Store::createEmpty(dir / "drop.adi", err);
@@ -5144,6 +5225,44 @@ void clipViewNotes(AppCommands &commands, const std::filesystem::path &dir) {
     check(root.command(AppCommands::Undo), "undo");
     root.frame();
     check(panel.details()->notes.size() == 1, "and Undo brings the note back into the view");
+}
+void clipViewPlayFromMarker(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "clip-play-from-marker.adi", true, {}, error);
+    check(document != nullptr, "a project for Note Editor playback");
+    if (!document) return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "note-play-marker");
+    root.setSize(1400, 900);
+    constexpr auto beat = textproj::kPPQ;
+    check(root.insertMidiClips({2}, 2 * beat, 6 * beat) && root.showClipView(), "open a later Arrangement clip in the Note Editor");
+    root.resizeClipView(360);
+    root.frame();
+    auto& editor = root.clipView.notes;
+    const juce::KeyPress space(juce::KeyPress::spaceKey);
+    check(!editor.keyPressed(space), "without a local marker, Space reaches the global transport");
+    auto& mailbox = document->mailbox();
+    mailbox.setSampleRate(48000);
+    engine::Transport transport;
+    root.arrangement.geometry.selection.insert = beat;
+    const auto area = editor.notesArea();
+    const auto click = juce::Point<float>(static_cast<float>(area.getX() + editor.time.x(4 * beat) + 2),
+                                          static_cast<float>(area.getCentreY()));
+    editor.mouseDown(pressAt(editor, click));
+    editor.mouseUp(pressAt(editor, click));
+    mailbox.drain(transport);
+    check(editor.insertMarker() == 4 * beat && root.arrangement.geometry.selection.insert == beat &&
+              !transport.playing() && transport.position() == 0,
+          "an empty editor click places the local marker without moving the Arrangement marker or transport");
+    check(editor.keyPressed(space), "focused Space starts at the editor marker");
+    mailbox.drain(transport);
+    check(transport.playing() && transport.position() == 96000 && root.arrangement.geometry.selection.insert == beat,
+          "the driver starts at the clicked beat in song time");
+    check(editor.keyPressed(space), "focused Space also stops playback");
+    mailbox.drain(transport);
+    check(!transport.playing() && transport.position() == 96000, "Space stops at the current playhead without seeking");
+    check(editor.keyPressed(space) && editor.keyPressed(space) && !mailbox.desiredPlaying(),
+          "two Space presses before the next driver block cancel the pending start");
 }
 void clipViewNotePreview(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
@@ -11666,8 +11785,8 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     surfacePeer.addToDesktop(0);
     root.afterEdit = [&] { document->synchronise(); };
     root.readRecordStates = [&] { return document->recordStates(); };
-    root.startRecording = [&](std::int64_t insertTick, bool playing) {
-        const bool ok = document->startRecording(insertTick, 2, playing);
+    root.startRecording = [&](std::int64_t insertTick, bool playing, bool overdub) {
+        const bool ok = document->startRecording(insertTick, 2, playing, overdub);
         if (!ok)
             root.say(document->error());
         return ok;
@@ -11889,6 +12008,58 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     frame();
     check(!root.midiOverdub() && !overdub.getToggleState(), "and off");
     document->release();
+}
+void captureMidiButton(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "capture-midi-button.adi", true, {}, error);
+    check(document != nullptr, "a project for the Capture MIDI button");
+    if (!document) return;
+    document->prepare(48000, 64);
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "capture-midi");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.readRecordStates = [&] { return document->recordStates(); };
+    ProjectDocument::TakeLanded captured;
+    bool stopped = false;
+    root.captureRecentMidi = [&](std::int64_t tick, bool playing) {
+        stopped = !playing;
+        captured = document->captureRecentMidi(tick, playing);
+    };
+    check(!root.transport.capture.isEnabled() && !document->canCaptureMidi(), "Capture remains disabled without input");
+    check(root.armTrack(2, true) && root.setMonitor(2, Monitor::Off) && root.setMonitor(3, Monitor::In),
+          "one muted-monitor armed track and one unarmed input-monitored track");
+    root.arrangement.geometry.selection.insert = textproj::kPPQ;
+    using engine::EventType;
+    constexpr auto pressure = static_cast<std::uint16_t>(ExpressionDim::Pressure);
+    auto& session = document->session();
+    check(session.enqueueMidiInput(8, {0, EventType::NoteOn, 1, 60, 17, 0, 1}) &&
+          session.enqueueMidiInput(12, {0, EventType::NoteExpression, 1, pressure, 17, 0, .5}) &&
+          session.enqueueMidiInput(32, {0, EventType::NoteOff, 1, 60, 17, 0, 0}),
+          "typed keyboard notes and expression reach the live MIDI queue without recording");
+    std::array<float, 64> left{}, right{};
+    float* out[]{left.data(), right.data()};
+    document->process({out, nullptr, 2, 0, 64, 0});
+    root.transport.capture.setEnabled(document->canCaptureMidi());
+    check(root.transport.capture.isEnabled() && !document->recording(), "live input enables the Capture button while stopped");
+    root.transport.capture.onClick();
+    check(captured.ok && stopped && captured.clips.size() == 2 && !document->canCaptureMidi(),
+          "the Capture button commits both eligible tracks and consumes the captured history");
+    if (!captured.ok || captured.clips.size() != 2) return;
+    for (const auto clip : captured.clips) {
+        const auto bytes = document->store().getNoteExpression(clip, 17, pressure);
+        bool expression = false;
+        if (bytes) {
+            const StreamReader<ExpressionPoint> reader(*bytes, FourCC::Expression);
+            expression = reader.ok() && reader.count() == 1 && reader.at(0)->time_ticks > 0 && reader.at(0)->value == .5f;
+        }
+        check(expression, "the Capture button saves the actual MPE expression with its note");
+    }
+    check(document->store().db().execAndGet("SELECT count(*) FROM clips WHERE pos_ticks=" +
+              std::to_string(textproj::kPPQ) + " AND loop_enabled=1").getInt() == 2,
+          "stopped Capture makes looped clips at the insert marker");
+    check(History(document->store()).nextUndo()->label == "Capture MIDI" && document->ops().undo().ok &&
+              document->store().db().execAndGet("SELECT count(*) FROM clips").getInt() == 0,
+          "one Capture MIDI undo removes both captured clips");
 }
 void midiTakePreview(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
@@ -19277,6 +19448,7 @@ int main(int argc, char **argv) {
     trace("automationArm", [&] { automationArm(commands, temp.path()); });
     trace("selectionArmsTrack", [&] { selectionArmsTrack(commands, temp.path()); });
     trace("armAndRecord", [&] { armAndRecord(commands, temp.path()); });
+    trace("captureMidiButton", [&] { captureMidiButton(commands, temp.path()); });
     trace("midiTakePreview", [&] { midiTakePreview(commands, temp.path()); });
     trace("computerMidiKeyboard", [&] { computerMidiKeyboard(commands, temp.path()); });
     trace("exportPage", [&] { exportPage(commands, temp.path()); });
@@ -19287,6 +19459,7 @@ int main(int argc, char **argv) {
     trace("automationMode", [&] { automationMode(commands, temp.path()); });
     trace("sendKnobs", [&] { sendKnobs(commands, temp.path()); });
     trace("audioDrop", [&] { audioDrop(commands, temp.path()); });
+    trace("midiFileDrop", [&] { midiFileDrop(commands, temp.path()); });
     trace("importPrompt", [&] { importPrompt(commands, settings, temp.path()); });
     trace("browserDevices", [&] { browserDevices(commands, temp.path()); });
     trace("splitAndRangeEdits", [&] { splitAndRangeEdits(commands, settings, temp.path()); });
@@ -19299,6 +19472,7 @@ int main(int argc, char **argv) {
     trace("clipCopyDrag", [&] { clipCopyDrag(commands, temp.path()); });
     trace("clipView", [&] { clipView(commands, temp.path(), write); });
     trace("clipViewNotes", [&] { clipViewNotes(commands, temp.path()); });
+    trace("clipViewPlayFromMarker", [&] { clipViewPlayFromMarker(commands, temp.path()); });
     trace("clipViewNotePreview", [&] { clipViewNotePreview(commands, temp.path()); });
     trace("clipViewNoteGrid", [&] { clipViewNoteGrid(commands, temp.path()); });
     trace("clipViewLoopPlayhead", [&] { clipViewLoopPlayhead(commands, temp.path()); });
