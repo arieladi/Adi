@@ -5453,7 +5453,7 @@ void clipViewTools(AppCommands &commands, const std::filesystem::path &dir) {
     // An audio clip has the Main panel only; a MIDI clip has the Pitch and Time panel beside it.
     open(2);
     check(panel.audio() && panel.toolsArea().isEmpty() && panel.panelWidth() == ClipViewPanel::kPanelWidth &&
-              panel.sample.getX() == ClipViewPanel::kPanelWidth + 1 && panel.fieldAt(panel.fieldBox(Field::Scale).getCentre()) == Field::None,
+              panel.sample.getX() == ClipViewPanel::kPanelWidth + 1 && panel.fieldBox(Field::Scale).isEmpty(),
           "an audio clip: the Main panel only, the Sample Editor right beside it, no Scale field");
     open(1);
     const int both = ClipViewPanel::kPanelWidth + ClipViewPanel::kToolsWidth;
