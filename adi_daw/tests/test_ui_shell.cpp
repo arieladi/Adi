@@ -12483,6 +12483,33 @@ void sampleEditorMouse(AppCommands &commands, const std::filesystem::path &dir) 
     check(edit.keyPressed(juce::KeyPress('i', juce::ModifierKeys::commandModifier, 0)) &&
               root.undoTitle(false) == undoBefore,
           "the Sample Editor consumes Insert Silence without inserting song time");
+
+    if (const auto *clip = panel.node()) {
+        auto &arrangement = root.arrangement;
+        auto &lane = arrangement.geometry;
+        auto &canvas = arrangement.canvas;
+        lane.grid.snap = false;
+        lane.scale = 120.;
+        lane.left = 0.;
+        const auto bodyY = static_cast<float>(laneTop(root, track) + ArrangementCanvas::kClipBarHeight + 9);
+        const juce::Point<float> from{static_cast<float>(lane.x(clip->posTicks + beat / 4)), bodyY};
+        const juce::Point<float> until{static_cast<float>(lane.x(clip->posTicks + beat / 2)), bodyY};
+        canvas.mouseDown(pressAt(canvas, from, juce::ModifierKeys::leftButtonModifier));
+        canvas.mouseDrag(dragAt(canvas, from, until, juce::ModifierKeys::leftButtonModifier));
+        canvas.mouseUp(dragAt(canvas, from, until));
+        root.frame();
+        const auto selectedFrom = edit.sourceTick(lane.selection.start), selectedTo = edit.sourceTick(lane.selection.end);
+        check(lane.selection.start < lane.selection.end && edit.time.x(selectedFrom) < 1. &&
+                  edit.time.x(selectedFrom) > -1. && edit.time.x(selectedTo) > edit.getWidth() * .9,
+              "an Arrangement body time selection fits the corresponding source range in the Sample Editor");
+        const auto history = edit.time.historySize;
+        const auto selectedLeft = edit.time.left;
+        check(edit.keyPressed(juce::KeyPress('x')) && edit.time.left != selectedLeft,
+              "Zoom Back restores the waveform view from before the Arrangement selection");
+        root.frame();
+        check(edit.time.historySize == history - 1 && edit.time.left != selectedLeft,
+              "the same Arrangement range does not zoom the Sample Editor on every frame");
+    }
     commands.detach(root);
 }
 void clipWaveforms(AppCommands &commands, const std::filesystem::path &dir) {
