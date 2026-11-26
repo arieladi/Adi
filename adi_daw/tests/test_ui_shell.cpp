@@ -2857,7 +2857,7 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
 
             // SC-262: inspect the actual popup request without opening a native window.
             const auto savedSelection = selection;
-            auto &view = root.arrangement;
+            auto &lanesView = root.arrangement;
             juce::PopupMenu shown;
             root.mixerView.contextMenuPresenter = [&](juce::PopupMenu menu) { shown = std::move(menu); };
             const auto menuItem = [&](const char *name) -> std::optional<juce::PopupMenu::Item> {
@@ -2872,14 +2872,14 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
             selection.start = 10;
             selection.end = 20;
             selection.insert = 30;
-            view.selectedLocator = 42;
-            view.selectedMeter = 10;
-            view.loopSelected = true;
+            lanesView.selectedLocator = 42;
+            lanesView.selectedMeter = 10;
+            lanesView.loopSelected = true;
             two->mouseDown(pressAt(*two, {20.f, 8.f}, right));
             const auto colour = menuItem("Colour");
             check(selection.track == 2 && selection.clip == 0 && selection.pickedClips.empty() &&
-                      selection.start == 30 && selection.end == 30 && !view.loopSelected &&
-                      view.selectedLocator == 0 && view.selectedMeter == -1 && menuItem("Rename") &&
+                      selection.start == 30 && selection.end == 30 && !lanesView.loopSelected &&
+                      lanesView.selectedLocator == 0 && lanesView.selectedMeter == -1 && menuItem("Rename") &&
                       (menuItem("Delete Track") || menuItem("Delete")) && menuItem("Group Tracks") &&
                       colour && colour->customComponent && !menuItem("Auto Gain Stage: gated RMS, -18 dBFS"),
                   "a channel-name popup selects that track, clears the old edit target and offers its track menu");
@@ -5371,8 +5371,8 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
         const auto drag = BrowserPanel::dragDescription({browser.shown()[1]});
         const auto bar5 = 4 * textproj::kWhole;
         const juce::Point<int> at{static_cast<int>(geometry.x(bar5)) + 3, laneTop(root, 1) + 10};
-        const auto carried = BrowserPanel::droppedFiles(drag);
-        check(carried.size() == 1 && juce::File::createFileWithoutCheckingPath(carried[0]).getFileName() == "Clap.wav",
+        const auto carriedFiles = BrowserPanel::droppedFiles(drag);
+        check(carriedFiles.size() == 1 && juce::File::createFileWithoutCheckingPath(carriedFiles[0]).getFileName() == "Clap.wav",
               "the drag carries the sample's native path, its file name Clap.wav on every system");
         juce::DragAndDropTarget::SourceDetails details(drag, nullptr, at);
         check(canvas.isInterestedInDragSource(details) &&
@@ -19838,11 +19838,11 @@ int main(int argc, char **argv) {
                 check(nextColumn != columns.end(), "the next track has a Mixer strip");
                 if (nextColumn != columns.end()) {
                     auto &nextStrip = **nextColumn;
-                    const auto left = juce::ModifierKeys::leftButtonModifier;
+                    const auto leftButton = juce::ModifierKeys::leftButtonModifier;
                     const juce::Point<float> grab{20.f, 8.f};
                     const auto drop = grab.translated(static_cast<float>(sounding->getX() - nextStrip.getX()), 0.f);
-                    nextStrip.mouseDown(pressAt(nextStrip, grab, left));
-                    nextStrip.mouseDrag(dragAt(nextStrip, grab, drop, left));
+                    nextStrip.mouseDown(pressAt(nextStrip, grab, leftButton));
+                    nextStrip.mouseDrag(dragAt(nextStrip, grab, drop, leftButton));
                     nextStrip.mouseUp(dragAt(nextStrip, grab, drop));
                     check(integrated.undoTitle(false) == "Undo Move Track", "the strip title drag is one track move");
                 }
