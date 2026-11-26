@@ -14,7 +14,11 @@
 #include "ui_browser.hpp"
 #include "ui_controls.hpp"
 #include "ui_shell.hpp"
+#include <array>
+#include <charconv>
+#include <cmath>
 #include <limits>
+#include <string_view>
 namespace adi::ui {
 ArrangementOverview::ArrangementOverview(ArrangementView &v) : view(v) {
     setTitle("Overview");
@@ -626,6 +630,13 @@ ArrangementCanvas::ArrangementCanvas(ArrangementView &v) : view(v) {
             endClipRename();
         }
     };
+    addChildComponent(automationValueEditor_);
+    automationValueEditor_.setTitle("Automation breakpoint value");
+    automationValueEditor_.setInputRestrictions(64);
+    automationValueEditor_.onCommit=[this] {commitAutomationValue();};
+    automationValueEditor_.onCancel=[this] {endAutomationValueEdit();};
+    automationValueEditor_.onTab=[this](bool) {commitAutomationValue();};
+    automationValueEditor_.onFocusLost=[this] {endAutomationValueEdit(false);};
     setWantsKeyboardFocus(true);
     setTitle("Arrangement");
     setDescription("Clips on a timeline. Up and down move between tracks; left and right move the "
@@ -1631,9 +1642,14 @@ juce::PopupMenu ArrangementView::headerMenu() {
                        "Colour");
     return menu;
 }
-void ArrangementView::contextMenu(juce::Point<int> where, bool header, const engine::AutomationLaneNode *lane) {
-    contextMenuItems(header, lane).showMenuAsync(juce::PopupMenu::Options{}.withTargetScreenArea(
-        juce::Rectangle<int>(where.x, where.y, 1, 1)));
+void ArrangementView::contextMenu(juce::Point<int> where, bool header, const engine::AutomationLaneNode *lane,
+                                  const std::function<void(juce::PopupMenu &)> &configure) {
+    auto menu = contextMenuItems(header, lane);
+    if(configure)configure(menu);
+    if (onContextMenu)
+        onContextMenu(menu);
+    else
+        menu.showMenuAsync(juce::PopupMenu::Options{}.withTargetScreenArea(juce::Rectangle<int>(where.x, where.y, 1, 1)));
 }
 const engine::AutomationLaneNode *ArrangementView::automationLaneAt(int y) const {
     if (!root.automationMode())
@@ -2518,8 +2534,10 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
             top += geo.heightFor(id);
         }
     }
-    if (view.root.automationMode())
+    if (view.root.automationMode()) {
         paintAutomation(g);
+        paintAutomationValueReadout(g);
+    }
 }
 std::vector<ArrangementCanvas::LaneBody> ArrangementCanvas::laneBodies() const {
     // The clip body's band of every track drawn, as clipBodies walks them; Main's and the returns' too.
@@ -2552,8 +2570,38 @@ double automationValue(float y, const AutomationRange &r, float top, float botto
     return r.minimum + t * (r.maximum - r.minimum);
 }
 constexpr float kPointHit = 5.f;
+juce::String automationValueText(const AutomationTarget &target,double value,bool forEditing=false) {
+    juce::String number;
+    if(target.footIsSilence && value==kAutomationSilenceDb)number="-inf";
+    else if(forEditing) {
+        // Enter on the initial text must round-trip the stored breakpoint.
+        std::array<char,64> buffer{};
+        const auto converted=std::to_chars(buffer.data(),buffer.data()+buffer.size(),value,std::chars_format::general);
+        if(converted.ec==std::errc{})
+            number=juce::String::fromUTF8(buffer.data(),static_cast<int>(converted.ptr-buffer.data()));
+    } else number=juce::String(value,6).trimCharactersAtEnd("0").trimCharactersAtEnd(".");
+    if(!target.unit.empty())number+=" "+juce::String::fromUTF8(target.unit.c_str());
+    return number;
+}
+std::optional<double> parseAutomationValue(juce::String text,const AutomationTarget &target) {
+    text=text.trim().replaceCharacter(0x2212,'-');
+    const auto unit=juce::String::fromUTF8(target.unit.c_str());
+    if(unit.isNotEmpty() && text.endsWithIgnoreCase(unit))
+        text=text.dropLastCharacters(unit.length()).trimEnd();
+    if(target.footIsSilence && text.equalsIgnoreCase("-inf"))return kAutomationSilenceDb;
+    const auto bytes=text.toStdString();
+    std::string_view input(bytes);
+    if(!input.empty() && input.front()=='+')input.remove_prefix(1);
+    if(input.empty())return std::nullopt;
+    double value=0;
+    const auto parsed=std::from_chars(input.data(),input.data()+input.size(),value,std::chars_format::general);
+    if(parsed.ec!=std::errc{} || parsed.ptr!=input.data()+input.size() || !std::isfinite(value))return std::nullopt;
+    return value;
+}
 } // namespace
 std::optional<ArrangementCanvas::AutomationPick> ArrangementCanvas::automationPointAt(juce::Point<float> at) const {
+    std::int64_t track=0;bool edge=false;
+    if(barAt(juce::roundToInt(at.x),juce::roundToInt(at.y),track,edge))return std::nullopt;
     const auto current = view.root.current();
     if (!current)
         return std::nullopt;
@@ -2623,6 +2671,157 @@ void ArrangementCanvas::paintAutomation(juce::Graphics &g) const {
         }
     }
 }
+std::optional<ArrangementCanvas::AutomationValueAddress> ArrangementCanvas::automationValueAt(
+    juce::Point<float> at,bool snapToGrid,bool allowAdd) const {
+    if(!view.root.automationMode())return std::nullopt;
+    const auto current=view.root.current();
+    if(!current)return std::nullopt;
+    std::int64_t titleTrack=0;bool edge=false;
+    if(barAt(juce::roundToInt(at.x),juce::roundToInt(at.y),titleTrack,edge))return std::nullopt;
+    const auto hit=automationPointAt(at);
+    if(!hit && !allowAdd)return std::nullopt;
+    const auto bodies=laneBodies();
+    const auto body=std::find_if(bodies.begin(),bodies.end(),[&](const auto &item) {
+        return hit?item.track->id==hit->track:at.y>=item.top && at.y<=item.bottom;
+    });
+    if(body==bodies.end())return std::nullopt;
+    AutomationValueAddress result;
+    result.track=body->track->id;
+    result.target=view.root.automationTarget(result.track);
+    const auto envelope=envelopeOf(*current,result.target);
+    result.lane=envelope.lane?envelope.lane->id:0;
+    result.data=envelope.data?envelope.data->id:0;
+    result.anchor=at.roundToInt();
+    if(hit) {
+        if(!envelope.data)return std::nullopt;
+        const auto point=std::find_if(envelope.data->points.begin(),envelope.data->points.end(),[&](const auto &item) {
+            return item.id==hit->point;
+        });
+        if(point==envelope.data->points.end())return std::nullopt;
+        result.point=point->id;result.tick=point->time;result.value=point->value;
+    } else {
+        if(!editableEnvelope(envelope))return std::nullopt;
+        const auto raw=std::max<std::int64_t>(0,view.geometry.tick(at.x));
+        result.tick=snapToGrid?view.geometry.snap(raw,false):raw;
+        result.value=view.root.automationCurrent(result.target);
+        if(envelope.data)result.value=envelopeValue(*envelope.data,result.tick).value_or(result.value);
+    }
+    return result;
+}
+
+bool ArrangementCanvas::resolveAutomationValue(const AutomationValueAddress &address,const TrackEnvelope &envelope) const {
+    if(!view.root.automationMode() || view.root.automationTarget(address.track)!=address.target ||
+       (envelope.lane?envelope.lane->id:0)!=address.lane ||
+       (envelope.data?envelope.data->id:0)!=address.data)return false;
+    if(!address.point)return editableEnvelope(envelope);
+    return envelope.data && std::any_of(envelope.data->points.begin(),envelope.data->points.end(),[&](const auto &point) {
+        return point.id==*address.point && point.time==address.tick && point.value==address.value;
+    });
+}
+
+void ArrangementCanvas::automationContextMenu(const juce::MouseEvent &e) {
+    const auto edit=automationValueAt(e.position,view.snaps(e.mods),true);
+    const juce::Component::SafePointer<ArrangementCanvas> safe(this);
+    view.contextMenu(e.getScreenPosition(),false,view.automationLaneAt(e.y),[safe,edit](juce::PopupMenu &menu) {
+        if(!edit)return;
+        menu.addSeparator();
+        const auto name=juce::String::fromUTF8(edit->point?"Edit Value\xE2\x80\xA6":"Add Value\xE2\x80\xA6");
+        menu.addItem(name,[safe,address=*edit] {
+            if(safe!=nullptr)safe->beginAutomationValueEdit(address);
+        });
+    });
+}
+
+void ArrangementCanvas::beginAutomationValueEdit(const AutomationValueAddress &address) {
+    endAutomationValueEdit(false);
+    const auto current=view.root.current();
+    if(!current || current->findTrack(address.track)==nullptr ||
+       !resolveAutomationValue(address,envelopeOf(*current,address.target))) {
+        view.root.say("That automation point or lane changed. Select it again.");
+        return;
+    }
+    clearAutomationValueReadout();
+    automationValueAddress_=address;
+    constexpr int width=116,height=24;
+    const int left=std::clamp(address.anchor.x+8,0,std::max(0,getWidth()-width));
+    const int top=std::clamp(address.anchor.y-12,0,std::max(0,getHeight()-height));
+    automationValueEditor_.setBounds(left,top,width,height);
+    automationValueEditor_.setText(automationValueText(address.target,address.value,true),false);
+    automationValueEditor_.selectAll();
+    automationValueEditor_.setVisible(true);
+    focusIfShowing(automationValueEditor_);
+}
+
+void ArrangementCanvas::commitAutomationValue() {
+    if(!automationValueAddress_)return;
+    const auto address=*automationValueAddress_;
+    const auto current=view.root.current();
+    if(!current || current->findTrack(address.track)==nullptr) {
+        endAutomationValueEdit();
+        return;
+    }
+    const auto envelope=envelopeOf(*current,address.target);
+    if(!resolveAutomationValue(address,envelope)) {
+        view.root.say("That automation point or lane changed. Select it again.");
+        endAutomationValueEdit();
+        return;
+    }
+    const auto value=parseAutomationValue(automationValueEditor_.getText(),address.target);
+    if(!value || !validExactAutomationValue(envelope,address.target,*value)) {
+        view.root.say("Enter a value within the automation control's range.");
+        return;
+    }
+    const bool done=address.point
+        ? view.root.moveAutomationPoint(address.track,*address.point,address.tick,*value,true)
+        : view.root.addAutomationPoint(address.track,address.tick,*value,true);
+    if(!done)return;
+    endAutomationValueEdit();
+    showAutomationValue(address.target,*value,address.anchor.toFloat());
+    view.changed();
+}
+
+void ArrangementCanvas::endAutomationValueEdit(bool refocus) {
+    if(!automationValueAddress_)return;
+    automationValueAddress_.reset();
+    automationValueEditor_.setVisible(false);
+    if(refocus)focusIfShowing(*this);
+    repaint();
+}
+
+void ArrangementCanvas::resetAutomationValueInput() {
+    endAutomationValueEdit(false);
+    clearAutomationValueReadout();
+}
+
+void ArrangementCanvas::showAutomationValue(const AutomationTarget &target,double value,juce::Point<float> at) {
+    automationValueReadout_=automationValueText(target,value);
+    const auto font=look::font(look::fontBody,true);
+    automationValueGlyphs_.clear();
+    automationValueGlyphs_.addLineOfText(font,automationValueReadout_,0.f,0.f);
+    const float width=juce::GlyphArrangement::getStringWidth(font,automationValueReadout_)+12.f;
+    constexpr float height=20.f;
+    const float x=std::clamp(at.x+9.f,0.f,std::max(0.f,static_cast<float>(getWidth())-width));
+    const float y=std::clamp(at.y-height-4.f,0.f,std::max(0.f,static_cast<float>(getHeight())-height));
+    automationValueReadoutBounds_={x,y,width,height};
+    repaint();
+}
+
+void ArrangementCanvas::clearAutomationValueReadout() {
+    if(automationValueReadout_.isEmpty())return;
+    automationValueReadout_.clear();
+    automationValueGlyphs_.clear();
+    repaint();
+}
+
+void ArrangementCanvas::paintAutomationValueReadout(juce::Graphics &g) const {
+    if(automationValueReadout_.isEmpty() || automationValueAddress_)return;
+    g.setColour(look::band);
+    g.fillRoundedRectangle(automationValueReadoutBounds_,3.f);
+    g.setColour(look::rulerLabel);
+    automationValueGlyphs_.draw(g,juce::AffineTransform::translation(
+        automationValueReadoutBounds_.getX()+6.f,automationValueReadoutBounds_.getY()+14.f));
+}
+
 bool ArrangementCanvas::hasAutomationSelection() const {
     const auto &selection=view.geometry.selection;
     // History restores time coordinates through the ordinary selection advisory.
@@ -2663,7 +2862,7 @@ bool ArrangementCanvas::automationSelectionDown(const juce::MouseEvent &e) {
         raw < std::max(sel.start, sel.end) &&
         std::any_of(automationSelectionTargets_.begin(), automationSelectionTargets_.end(),
                     [&](const auto &entry) { return entry.first == track; })) {
-        view.contextMenu(e.getScreenPosition(), false, view.automationLaneAt(e.y));
+        automationContextMenu(e);
         return true;
     }
     if (extending) {
@@ -2683,7 +2882,7 @@ bool ArrangementCanvas::automationSelectionDown(const juce::MouseEvent &e) {
         view.locate();
     view.changed();
     if (e.mods.isPopupMenu())
-        view.contextMenu(e.getScreenPosition(), false, view.automationLaneAt(e.y));
+        automationContextMenu(e);
     else
         beginDragAutoRepeat(ArrangementView::kAutoRepeatMs);
     return true;
@@ -2968,6 +3167,7 @@ std::optional<ArrangementCanvas::FadeHandle> ArrangementCanvas::fadeHandleAt(int
     return std::nullopt;
 }
 void ArrangementCanvas::mouseExit(const juce::MouseEvent &) {
+    if(!pointDrag_)clearAutomationValueReadout();
     if (hoverClip_ != 0) {
         hoverClip_ = 0;
         repaint();
@@ -3203,10 +3403,20 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
     pointDrag_.reset();
     chosenPoint_.reset(); // chosen again below when the press is on a breakpoint
     pointAdded_ = false;
-    if (!panning && automationDown(e)) {
+    if (!panning && e.mods.isPopupMenu() && view.root.automationMode() && automationPointAt(e.position)) {
         clearAutomationSelection();
+        automationContextMenu(e);
         return;
     }
+    if (!panning && automationDown(e)) {
+        clearAutomationSelection();
+        if(const auto point=automationValueAt(e.position,false,false))
+            showAutomationValue(point->target,point->value,e.position);
+        else if(pointDrag_)
+            showAutomationValue(view.root.automationTarget(pointDrag_->track),pointValue_,e.position);
+        return;
+    }
+    clearAutomationValueReadout();
     if (!panning && automationSelectionDown(e))
         return;
     clearAutomationSelection();
@@ -3353,6 +3563,9 @@ const engine::ClipNode *ArrangementCanvas::barAt(int x, int y, std::int64_t &tra
     return nullptr;
 }
 void ArrangementCanvas::mouseMove(const juce::MouseEvent &e) {
+    if(const auto point=automationValueAt(e.position,false,false))
+        showAutomationValue(point->target,point->value,e.position);
+    else clearAutomationValueReadout();
     focusLost(focusChangedDirectly);
     // The audio clip under the mouse shows its fade handles (manual 6.8).
     std::int64_t over = 0;
@@ -3384,8 +3597,10 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
             if (body.track->id == pointDrag_->track) {
                 const auto raw = std::max<std::int64_t>(0, view.geometry.tick(e.position.x));
                 pointTick_ = view.snaps(e.mods) ? view.geometry.snap(raw, false) : raw;
-                pointValue_ = automationValue(e.position.y, automationRange(view.root.automationTarget(body.track->id)),
+                const auto target=view.root.automationTarget(body.track->id);
+                pointValue_ = automationValue(e.position.y, automationRange(target),
                                               body.top, body.scaleBottom);
+                showAutomationValue(target,writtenAutomationValue(target,pointValue_),e.position);
             }
         repaint();
         return;
@@ -3777,10 +3992,10 @@ void ArrangementCanvas::mouseDoubleClick(const juce::MouseEvent &e) {
             if (e.position.y >= body.top && e.position.y <= body.bottom && !e.mods.isShiftDown() && !e.mods.isCommandDown()) {
                 if (!automationLineAt(e.position)) {
                     const auto raw = std::max<std::int64_t>(0, view.geometry.tick(e.position.x));
-                    view.root.addAutomationPoint(body.track->id, view.snaps(e.mods) ? view.geometry.snap(raw, false) : raw,
-                                                 automationValue(e.position.y, automationRange(view.root.automationTarget(body.track->id)),
-                                                                 body.top, body.scaleBottom));
-                    repaint();
+                    const auto target=view.root.automationTarget(body.track->id);
+                    const auto value=automationValue(e.position.y,automationRange(target),body.top,body.scaleBottom);
+                    if(view.root.addAutomationPoint(body.track->id,view.snaps(e.mods)?view.geometry.snap(raw,false):raw,value))
+                        showAutomationValue(target,writtenAutomationValue(target,value),e.position);
                 }
                 return;
             }

@@ -302,6 +302,9 @@ class ArrangementCanvas final : public juce::Component,
     bool beginClipRename(std::int64_t clip);
     std::int64_t renamingClip() const noexcept { return renamingClip_; }
     RenameEditor clipEditor;
+    RenameEditor &automationValueEditor() noexcept { return automationValueEditor_; }
+    const juce::String &automationValueReadout() const noexcept { return automationValueReadout_; }
+    void resetAutomationValueInput();
 
   private:
     bool commitClipRename();
@@ -329,6 +332,28 @@ class ArrangementCanvas final : public juce::Component,
     void rememberAutomationSelection();
     std::optional<Selection> automationSelection_;
     std::vector<std::pair<std::int64_t, AutomationTarget>> automationSelectionTargets_;
+    struct AutomationValueAddress {
+        AutomationTarget target;
+        std::int64_t track=0,lane=0,data=0,tick=0;
+        std::optional<std::uint64_t> point;
+        double value=0;
+        juce::Point<int> anchor;
+    };
+    std::optional<AutomationValueAddress> automationValueAt(juce::Point<float>,bool snapToGrid,
+                                                           bool allowAdd) const;
+    void automationContextMenu(const juce::MouseEvent &);
+    void beginAutomationValueEdit(const AutomationValueAddress &);
+    void commitAutomationValue();
+    void endAutomationValueEdit(bool refocus=true);
+    bool resolveAutomationValue(const AutomationValueAddress &,const TrackEnvelope &) const;
+    void showAutomationValue(const AutomationTarget &,double,juce::Point<float>);
+    void clearAutomationValueReadout();
+    void paintAutomationValueReadout(juce::Graphics &) const;
+    RenameEditor automationValueEditor_;
+    std::optional<AutomationValueAddress> automationValueAddress_;
+    juce::String automationValueReadout_;
+    juce::GlyphArrangement automationValueGlyphs_;
+    juce::Rectangle<float> automationValueReadoutBounds_;
     std::optional<AutomationPick> pointDrag_, chosenPoint_;
     std::int64_t pointTick_ = 0;
     bool pointAdded_ = false; // the press added a breakpoint: its drag moves that one or nothing
@@ -507,8 +532,11 @@ class ArrangementView final : public juce::Component {
     // Live's right-click menu for the track area and the headers.
     // The lanes' or a header's menu at `where`. `lane`: in Automation Mode, the envelope under the click, whose
     // Re-Enable Automation the lanes' menu ends with (AU-04).
-    void contextMenu(juce::Point<int> where, bool header, const engine::AutomationLaneNode *lane = nullptr);
+    void contextMenu(juce::Point<int> where, bool header, const engine::AutomationLaneNode *lane = nullptr,
+                     const std::function<void(juce::PopupMenu &)> &configure = {});
     juce::PopupMenu contextMenuItems(bool header, const engine::AutomationLaneNode *lane = nullptr);
+    // Optional menu presenter for the headless shell.
+    std::function<void(const juce::PopupMenu &)> onContextMenu;
     // In Automation Mode, the Volume lane of the track at `y` that the engine plays, else null; a pointer into
     // the root's current snapshot, for use at once.
     const engine::AutomationLaneNode *automationLaneAt(int y) const;

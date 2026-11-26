@@ -12357,6 +12357,93 @@ void automationMode(AppCommands &commands, const std::filesystem::path &dir) {
     const auto pointAt = juce::Point<float>(barX, lineY);
     const auto hit = canvas.automationPointAt(pointAt);
     check(hit && hit->track == 4, "the breakpoint is found where it is drawn");
+    canvas.mouseMove(pressAt(canvas,pointAt));
+    check(canvas.automationValueReadout().contains("dB"),"hovering a Volume point shows its value in dB");
+    const auto menuAction = [&](juce::Point<float> at, const juce::String &label) {
+        std::function<void()> action;
+        root.arrangement.onContextMenu = [&](const juce::PopupMenu &menu) {
+            for (juce::PopupMenu::MenuItemIterator item(menu); item.next();)
+                if (item.getItem().isEnabled && item.getItem().text == label)
+                    action = item.getItem().action;
+        };
+        const auto right = juce::ModifierKeys::rightButtonModifier;
+        canvas.mouseDown(pressAt(canvas, at, right));
+        canvas.mouseUp(pressAt(canvas, at, right));
+        root.arrangement.onContextMenu = {};
+        return action;
+    };
+    const auto editLabel = juce::String::fromUTF8("Edit Value…");
+    const auto addLabel = juce::String::fromUTF8("Add Value…");
+    const auto enter = juce::KeyPress(juce::KeyPress::returnKey);
+    auto &valueEditor = canvas.automationValueEditor();
+    if (const auto edit = menuAction(pointAt, editLabel)) {
+        edit();
+        check(valueEditor.isVisible(), "Edit Value opens the inline value editor");
+        const auto beforeInvalid = root.undoTitle(false);
+        valueEditor.setText("not a value", false);
+        valueEditor.keyPressed(enter);
+        root.frame();
+        check(valueEditor.isVisible() && laneOf().data && laneOf().data->points.size() == 1 &&
+                  laneOf().data->points[0].value == level && root.undoTitle(false) == beforeInvalid,
+              "invalid value leaves the editor open and the breakpoint and Undo unchanged");
+        if (valueEditor.isVisible())
+            valueEditor.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey));
+    } else {
+        check(false, "right-clicking a breakpoint offers Edit Value");
+    }
+    if (const auto edit = menuAction(pointAt, editLabel)) {
+        edit();
+        valueEditor.setText("-70 dB", false);
+        valueEditor.keyPressed(enter);
+        root.frame();
+        const bool edited = laneOf().data && laneOf().data->points.size() == 1 &&
+                            laneOf().data->points[0].time == textproj::kWhole &&
+                            laneOf().data->points[0].value == -70.;
+        check(edited, "typing -70 dB writes exactly -70 dB at the same time");
+        if (edited)
+            check(root.command(AppCommands::Undo) && laneOf().data && laneOf().data->points.size() == 1 &&
+                      laneOf().data->points[0].value == level, "one Undo restores the previous breakpoint value");
+        if (valueEditor.isVisible())
+            valueEditor.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey));
+        root.frame();
+    } else {
+        check(false, "the breakpoint still offers Edit Value after invalid input");
+    }
+    const auto nextBar = 2 * textproj::kWhole;
+    const auto nextX = static_cast<float>(root.arrangement.geometry.x(nextBar));
+    if (const auto add = menuAction({nextX + 1, lineY}, addLabel)) {
+        add();
+        check(valueEditor.isVisible(), "Add Value opens the inline value editor");
+        constexpr double precise=-12.25000001234;
+        valueEditor.setText("-12.25000001234 dB", false);
+        valueEditor.keyPressed(enter);
+        root.frame();
+        const auto added = laneOf();
+        const bool exact = added.data && added.data->points.size() == 2 && added.data->points[1].time == nextBar &&
+                           added.data->points[1].value == precise;
+        check(exact, "Add Value inserts the typed dB value at the chosen grid location");
+        if(exact) {
+            const float valueY=audio->scaleBottom-static_cast<float>((precise+70)/76)*(audio->scaleBottom-audio->top);
+            if(const auto edit=menuAction({nextX,valueY},editLabel)) {
+                edit();
+                const auto beforeEnter=root.undoTitle(false);
+                valueEditor.keyPressed(enter);
+                root.frame();
+                const auto same=laneOf();
+                check(!valueEditor.isVisible() && same.data && same.data->points.size()==2 &&
+                      same.data->points[1].value==precise && root.undoTitle(false)==beforeEnter,
+                      "accepting the initial value preserves full precision and adds no undo step");
+            } else check(false,"the precisely typed point can be edited again");
+        }
+        if (exact)
+            check(root.command(AppCommands::Undo) && laneOf().data && laneOf().data->points.size() == 1,
+                  "one Undo removes the added breakpoint");
+        if (valueEditor.isVisible())
+            valueEditor.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey));
+        root.frame();
+    } else {
+        check(false, "right-clicking the envelope line offers Add Value");
+    }
     const float twoBars = static_cast<float>(root.arrangement.geometry.x(2 * textproj::kWhole));
     const float upper = audio->top + (audio->bottom - audio->top) * .25f;
     canvas.mouseDown(pressAt(canvas, pointAt));
@@ -12440,6 +12527,24 @@ void automationMode(AppCommands &commands, const std::filesystem::path &dir) {
                   field.getText() == "a" && !root.automationMode(),
               "A typed into a text field is the field's");
         root.removeChildComponent(&field);
+    }
+    // The breakpoint hit tolerance reaches into a clip title when the value tops the lane.
+    OpRequest clip;
+    clip.opType = "clip.create";
+    clip.payload = {{"id", 125}, {"track", 2}, {"kind", "midi"}, {"name", "Clip title by breakpoint"},
+                    {"pos", 0}, {"length", 2 * textproj::kWhole}};
+    check(document->ops().submit(clip).ok && document->synchronise(), "a MIDI clip behind the high breakpoint");
+    root.setAutomationMode(true);
+    check(root.addAutomationPoint(2, textproj::kWhole, 6.0), "a Volume breakpoint at the lane's top");
+    root.frame();
+    const auto titleBodies = canvas.laneBodies();
+    const auto midiBody = std::find_if(titleBodies.begin(), titleBodies.end(),
+                                      [](const auto &body) { return body.track->id == 2; });
+    check(midiBody != titleBodies.end(), "the MIDI lane with a clip title is visible");
+    if (midiBody != titleBodies.end()) {
+        const juce::Point<float> atTitle(barX, midiBody->top - 2);
+        check(!menuAction(atTitle, editLabel) && root.arrangement.geometry.selection.clip == 125,
+              "the clip title has priority over a nearby automation breakpoint");
     }
     document->release();
 }

@@ -726,7 +726,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // breakpoints edited there, each edit one undo step. Off in a new window, as Live's.
     bool automationMode() const noexcept { return automationMode_; }
     void setAutomationMode(bool on);
-    bool addAutomationPoint(std::int64_t track, std::int64_t tick, double value);
+    bool addAutomationPoint(std::int64_t track, std::int64_t tick, double value, bool exactValue = false);
     // Live's lane chooser (DF-W37; manual 25.2): what a track's lane shows in Automation Mode, its
     // Volume until another is chosen; a choice whose device or send is gone reads as Volume again.
     // Window state, kept while the window lives.
@@ -746,7 +746,8 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // Mode is on, or a chooser is built, this window demands every device, so any track's chooser lists
     // its devices' parameters. Off, the demand goes.
     void demandAutomationDevices(bool on);
-    bool moveAutomationPoint(std::int64_t track, std::uint64_t point, std::int64_t tick, double value);
+    // For a typed value, tick is the point's expected, unchanged native time.
+    bool moveAutomationPoint(std::int64_t track, std::uint64_t point, std::int64_t tick, double value, bool exactValue = false);
     bool deleteAutomationPoint(std::int64_t track, std::uint64_t point);
     // Live's Solo in Place (manual 18.6): soloing leaves the returns audible. The project's one
     // field, which the Solo button's menu and the Options menu's entry share (`mixer.setSoloInPlace`,

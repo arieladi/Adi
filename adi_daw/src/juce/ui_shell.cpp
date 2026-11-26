@@ -3350,8 +3350,10 @@ void AdiRootComponent::demandAutomationDevices(bool on) {
 }
 void AdiRootComponent::setAutomationMode(bool on) {
     automationMode_ = on;
-    if (!on)
+    if (!on) {
         arrangement.canvas.clearAutomationSelection();
+        arrangement.canvas.resetAutomationValueInput();
+    }
     demandAutomationDevices(on);
     namesBar.automation.setToggleState(on, juce::dontSendNotification);
     say(on ? "Automation Mode: each track shows its chosen envelope, its Volume until Show Automation chooses "
@@ -3377,6 +3379,8 @@ AutomationTarget AdiRootComponent::automationTarget(std::int64_t track) const {
     return volumeTarget(track);
 }
 void AdiRootComponent::showAutomation(std::int64_t track, const AutomationTarget &target) {
+    if(automationTarget(track)!=target)
+        arrangement.canvas.resetAutomationValueInput();
     automationTargets_[track] = target;
     if (!automationMode_)
         setAutomationMode(true);
@@ -3432,25 +3436,47 @@ double AdiRootComponent::automationCurrent(const AutomationTarget &target) const
             }
     return target.minimum;
 }
-bool AdiRootComponent::addAutomationPoint(std::int64_t track, std::int64_t tick, double value) {
+bool AdiRootComponent::addAutomationPoint(std::int64_t track, std::int64_t tick, double value, bool exactValue) {
     const auto current = view_.current();
     if (current == nullptr || current->findTrack(track) == nullptr)
         return fail("That track is gone.");
     const auto target = automationTarget(track);
+    const auto envelope = envelopeOf(*current, target);
+    if (exactValue) {
+        if (!editableEnvelope(envelope))
+            return fail("Adding a value requires an envelope in musical time.");
+        if (!validExactAutomationValue(envelope, target, value))
+            return fail("Enter a finite value in the envelope's range.");
+    }
     RowIds rows(submitter_.store().db()); // one allocation context for the edit (DF-E16)
     AutomationIds ids;
     ids.lane = rows.next("automation_lanes");
     ids.data = rows.next("automation_data");
     ids.point = 1;
-    return submitEdits(::adi::ui::addAutomationPoint(envelopeOf(*current, target), target, tick, value,
-                                                     automationCurrent(target), ids));
+    return submitEdits(::adi::ui::addAutomationPoint(envelope, target, tick, value,
+                                                     automationCurrent(target), ids, exactValue));
 }
-bool AdiRootComponent::moveAutomationPoint(std::int64_t track, std::uint64_t point, std::int64_t tick, double value) {
+bool AdiRootComponent::moveAutomationPoint(std::int64_t track, std::uint64_t point, std::int64_t tick, double value,
+                                          bool exactValue) {
     const auto current = view_.current();
     if (!current)
         return false;
     const auto target = automationTarget(track);
-    auto ops = ::adi::ui::moveAutomationPoint(envelopeOf(*current, target), target, point, tick, value);
+    const auto envelope = envelopeOf(*current, target);
+    if (exactValue) {
+        if (!envelope.lane || !envelope.data)
+            return fail("That breakpoint is gone.");
+        const auto &points = envelope.data->points;
+        const auto found = std::find_if(points.begin(), points.end(), [point](const auto &entry) {
+            return entry.id == point;
+        });
+        if (found == points.end() || found->time != tick)
+            return fail("That breakpoint has changed. Open Edit Value again.");
+        if (!validExactAutomationValue(envelope, target, value))
+            return fail("Enter a finite value in the envelope's range.");
+        return found->value == value || submitEdits({editAutomationPointValue(envelope, *found, value)});
+    }
+    auto ops = ::adi::ui::moveAutomationPoint(envelope, target, point, tick, value);
     return !ops.empty() && submitEdits(std::move(ops));
 }
 bool AdiRootComponent::deleteAutomationPoint(std::int64_t track, std::uint64_t point) {
