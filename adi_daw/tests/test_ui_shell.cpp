@@ -1765,16 +1765,32 @@ void groupCommandContext(AppCommands &commands, const std::filesystem::path &dir
         return;
     check(peer->handleKeyPress(juce::KeyPress('g')) && notes.scaleFolded(),
           "plain G still folds the Note Editor to the scale");
-    auto &headers = root.arrangement.headers;
+    auto &arrangement = root.arrangement;
+    auto &headers = arrangement.headers;
     const auto clickHeader = [&](std::int64_t track, juce::ModifierKeys mods = {}) {
-        const juce::Point<float> title{60.f, static_cast<float>(laneTop(root, track) + 8)};
-        headers.mouseDown(pressAt(headers, title, mods));
+        if (arrangement.geometry.reveal(root.reader(), track))
+            arrangement.changed();
+        const int y = laneTop(root, track) + 9;
+        const auto *hit = arrangement.geometry.trackAt(root.reader(), y);
+        const juce::Point<float> title{42.f, static_cast<float>(y)};
+        if (!hit || hit->id != track || !headers.getLocalBounds().contains(title.toInt()))
+            return false;
+        headers.mouseDown(pressAt(headers, title, mods.withFlags(juce::ModifierKeys::leftButtonModifier)));
         headers.mouseUp(pressAt(headers, title));
+        return true;
     };
-    clickHeader(midi);
-    clickHeader(audio, cmd);
-    const bool grouped = headers.hasKeyboardFocus(false) && active(C::GroupTracks) && peer->handleKeyPress(group) &&
-                         parent(midi) != 0 && parent(midi) == parent(audio);
+    const bool midiClicked = clickHeader(midi);
+    check(midiClicked && headers.hasKeyboardFocus(false) && !root.noteEditorHasContext(),
+          "the first visible track title takes keyboard focus from the Note Editor");
+    const bool audioClicked = clickHeader(audio, cmd);
+    const bool bothPicked = arrangement.geometry.selectedTracks(root.reader()) == std::vector<std::int64_t>{midi, audio};
+    check(audioClicked && bothPicked, "Ctrl/Cmd+click on the revealed second title adds that track to the selection");
+    if (!midiClicked || !audioClicked || !bothPicked)
+        return;
+    const bool groupActive = active(C::GroupTracks);
+    const bool groupHandled = peer->handleKeyPress(group);
+    check(groupActive && groupHandled, "with the two titles selected the Group Tracks menu and shortcut are active");
+    const bool grouped = parent(midi) != 0 && parent(midi) == parent(audio);
     check(grouped && root.undoTitle(false) == "Undo Group Tracks",
           "Arrangement titles take focus from the notes and group the two picked tracks in one edit");
     if (!grouped)
@@ -1788,11 +1804,11 @@ void groupCommandContext(AppCommands &commands, const std::filesystem::path &dir
     check(ungroupBlocked && parent(midi) == groupTrack, "track Ungroup is disabled while a text field owns focus");
     if (!ungroupBlocked)
         return;
-    clickHeader(groupTrack);
-    check(active(C::UngroupTracks) && peer->handleKeyPress(ungroup) && parent(midi) == 0 && parent(audio) == 0,
+    check(clickHeader(groupTrack) && active(C::UngroupTracks) && peer->handleKeyPress(ungroup) &&
+              parent(midi) == 0 && parent(audio) == 0,
           "the group's title takes focus back and Ctrl/Cmd+Shift+G ungroups it");
 
-    clickHeader(midi);
+    check(clickHeader(midi), "the MIDI track title is available after Ungroup Tracks");
     root.showDeviceView();
     refresh();
     auto &panels = root.devices.panels;
