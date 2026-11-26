@@ -108,16 +108,16 @@ struct UntitledMedia {
             published.back().identity=result.identity;
             durable=durable && result.durabilityConfirmed;
         }
+        for (const auto &directory : createdDirectories)
+            if (media::syncPublishedDirectory(directory.parent_path()))
+                durable = false;
     }
     ~UntitledMedia(){
         // This save owns the paths it published and the directories it
         // created. Exclude a file that has been replaced in the meantime.
         if(keepPublished)return;
-        for(const auto& file:published) {
-            std::error_code ec;
-            if(file.identity && media::readFileIdentity(file.path,ec)==file.identity)
-                fs::remove(file.path,ec);
-        }
+        for(const auto& file:published)
+            if(file.identity)(void)media::removePublishedFile(file.path,*file.identity);
         for(auto at=createdDirectories.rbegin();at!=createdDirectories.rend();++at){
             std::error_code ec;
             fs::remove(*at,ec);
@@ -327,6 +327,9 @@ Store::CopyState Store::saveCopyImpl(const std::filesystem::path& output,StoreFi
         if(!result.durabilityConfirmed && result.warning.empty())warning=joinedWarning(std::move(warning),"file published; durability could not be confirmed");
         CopyState copied{true,{},std::move(warning),result.identity};
         copied.durable=result.durabilityConfirmed && (!mediaToMove || mediaToMove->durable);
+        if(firstSave && targetFolder.has_relative_path() &&
+           media::syncPublishedDirectory(targetFolder.parent_path()))
+            copied.durable=false;
         if(firstSave && !copied.durable)
             copied.warning=joinedWarning(std::move(copied.warning),"the unnamed file was kept because durability could not be confirmed");
         if(mediaToMove && privateFolder)copied.originalMedia=std::move(mediaToMove->sources);
@@ -348,6 +351,12 @@ StoreFileResult Store::saveAsImpl(const std::filesystem::path& output,StoreFileC
     if(major_!=kSchemaMajor)return {false,"use Save a Copy for an unsupported schema major",{}};
     if(sqlite3_next_stmt(db_->getHandle(),nullptr))return {false,"finish database statements before Save As",{}};
     const auto oldFolder=firstSave ? media::projectFolder(*this) : fs::path{};
+    const auto readRevision=[](SQLite::Database &db) -> std::pair<std::int64_t,std::int64_t> {
+        return {db.execAndGet("SELECT COALESCE(MAX(seq),0) FROM ops").getInt64(),
+                db.execAndGet("SELECT COALESCE(head_seq,0) FROM op_branches WHERE is_current=1").getInt64()};
+    };
+    const auto dataVersion=firstSave ? db_->execAndGet("PRAGMA data_version").getInt64() : 0;
+    const auto sourceRevision=firstSave ? readRevision(*db_) : std::pair<std::int64_t,std::int64_t>{};
     auto copied=saveCopyImpl(output,collision,firstSave);
     if(!copied.ok)return copied;
     StoreError error{};
@@ -356,6 +365,9 @@ StoreFileResult Store::saveAsImpl(const std::filesystem::path& output,StoreFileC
         return {false,"copy saved but could not switch projects: "+std::string(toString(error)),{}};
     if(!copied.identity || !replacement->fileLease_ || replacement->fileLease_->identity()!=*copied.identity)
         return {false,"copy saved but destination changed before switching",copied.warning};
+    if(firstSave && db_->execAndGet("PRAGMA data_version").getInt64()!=dataVersion)
+        return {false,"The unnamed project changed during first save. A copy was written, and the original remains open.",
+                copied.warning};
     try {
         detail::prepareAppliedReplacement(*replacement,*this);
     } catch(const std::exception& exception) {
@@ -376,18 +388,32 @@ StoreFileResult Store::saveAsImpl(const std::filesystem::path& output,StoreFileC
     const bool privateFolder=firstSave && oldFolder.filename()==replacement->path_.stem();
     const bool folded=replacement->closeFinalized();
     if(sourceLease) {
-        untitledCleanup_=[sourceLease=std::move(sourceLease),oldFolder,privateFolder,
+        untitledCleanupReady_=false;
+        untitledCleanup_=[sourceLease=std::move(sourceLease),oldFolder,privateFolder,sourceRevision,readRevision,
                           files=std::move(copied.originalMedia)]() mutable {
             std::error_code error;
             if(sourceLease) {
                 if(projectDestinationReady(sourceLease->path()))return false;
-                if(!sourceLease->removeCreated(error))return false;
+                const auto validate=[&]() -> std::error_code {
+                    if(const auto sidecars=projectDestinationReady(sourceLease->path()))return sidecars;
+                    SQLite::Database source(media::pathUtf8(sourceLease->path()),SQLite::OPEN_READONLY);
+                    if(readRevision(source)!=sourceRevision)return std::make_error_code(std::errc::state_not_recoverable);
+                    return {};
+                };
+                if(!sourceLease->removeCreated(error,validate)){
+                    // A durable edit appeared since the backup. Keep its project and media.
+                    return error==std::errc::state_not_recoverable;
+                }
                 sourceLease.reset();
             }
             for(auto file=files.begin();file!=files.end();) {
                 const auto path=oldFolder/file->first;
-                const auto identity=media::readFileIdentity(path,error);
-                if(identity==file->second)fs::remove(path,error);
+#if defined(_WIN32)
+                error=media::removePublishedFile(path,file->second);
+#else
+                // Linux and macOS only remove owned recordings in the app-created Untitled folder.
+                if(privateFolder && media::readFileIdentity(path,error)==file->second)fs::remove(path,error);
+#endif
                 if(error && error!=std::errc::no_such_file_or_directory){++file;continue;}
                 for(auto parent=path.parent_path();parent!=oldFolder;parent=parent.parent_path()){
                     if(!fs::remove(parent,error) || error)break;
@@ -397,11 +423,11 @@ StoreFileResult Store::saveAsImpl(const std::filesystem::path& output,StoreFileC
             if(privateFolder && files.empty())fs::remove(oldFolder,error);
             return files.empty();
         };
-        finishUntitledSave();
     }
     return {true,{},joinedWarning(copied.warning,folded?std::string{}:std::string("old project is still in use; its WAL could not be folded"))};
 }
 void Store::finishUntitledSave() noexcept {
+    untitledCleanupReady_=true;
     try {
         if(untitledCleanup_ && untitledCleanup_())untitledCleanup_={};
     } catch(...) {}

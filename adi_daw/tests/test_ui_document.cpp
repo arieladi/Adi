@@ -1331,6 +1331,36 @@ void firstSaveMovesTheTake(const std::filesystem::path &dir) {
     check(!fs::exists(source) && !fs::exists(staging) && fs::is_regular_file(newAudio),
           "the closed named project retains the take and leaves no unnamed copy");
 }
+void firstSavePreservesLaterSourceEdits(const std::filesystem::path &dir) {
+    namespace fs = std::filesystem;
+    const auto staging = dir / "Untitled";
+    const auto song = dir / "Song";
+    fs::create_directory(staging);
+    fs::create_directory(song);
+    const auto unnamed = staging / "Untitled.adi";
+    StoreError error{};
+    auto active = Store::create(unnamed, error);
+    auto other = Store::open(unnamed, error);
+    check(active && other, "first-save cleanup has an independent source writer");
+    if (!active || !other)
+        return;
+    const auto named = song / "Song.adi";
+    const auto result = active->saveUntitledAs(named);
+    check(result.ok && active->path() == named && fs::exists(unnamed),
+          "first save publishes the destination while the source writer's lease protects the original");
+    if (!result.ok)
+        return;
+    OpRequest late;
+    late.opType = "project.setName";
+    late.payload = {{"name", "A later source edit"}};
+    check(OpJournal(*other).commit(late).ok && other->close(), "the other writer commits and closes before cleanup");
+    other.reset();
+    active->finishUntitledSave();
+    auto original = Store::open(unnamed, error, true);
+    check(original && original->db().execAndGet("SELECT name FROM project").getString() == "A later source edit" &&
+              active->db().execAndGet("SELECT name FROM project").getString() != "A later source edit",
+          "first-save cleanup preserves a newer source revision after its writer closes");
+}
 int main(int argc, char **argv) {
 #if defined(_MSC_VER) && defined(_DEBUG)
     _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
@@ -1359,6 +1389,8 @@ int main(int argc, char **argv) {
         recordAfterSaveAs(afterDir.path());
         test::TempDirectory firstSaveDir("ui_document", "first-save");
         firstSaveMovesTheTake(firstSaveDir.path());
+        test::TempDirectory firstSaveHeld("ui_document", "first-save-held");
+        firstSavePreservesLaterSourceEdits(firstSaveHeld.path());
         test::TempDirectory refusedDir("ui_document", "refused");
         discardRefusalSaid(refusedDir.path());
         test::TempDirectory dragDir("ui_document", "drag");

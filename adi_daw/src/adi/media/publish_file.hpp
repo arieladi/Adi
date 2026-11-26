@@ -37,6 +37,7 @@ struct FileIdentity {
 // This verifies object identity, not unchanged contents; owner/off-callback.
 [[nodiscard]] std::error_code removePublishedFile(const std::filesystem::path&,
                                                   const FileIdentity&) noexcept;
+[[nodiscard]] std::error_code syncPublishedDirectory(const std::filesystem::path&) noexcept;
 // Owner-only native protection for an open project, before SQLite opens and
 // until it closes. Shared leases permit existing SQLite reader/writer policy;
 // an authoritative replacement alone takes an exclusive lease. POSIX uses a
@@ -53,7 +54,8 @@ public:
     FileIdentity identity() const noexcept;
     const std::filesystem::path& path() const noexcept;
     // Failed creation only; never removes a different file now at that name.
-    bool removeCreated(std::error_code&) noexcept;
+    bool removeCreated(std::error_code&,
+                       const std::function<std::error_code()>& validate = {}) noexcept;
 private:
     struct Impl;
     explicit ProjectFileLease(std::unique_ptr<Impl>);

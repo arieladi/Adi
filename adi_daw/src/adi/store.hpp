@@ -222,6 +222,7 @@ private:
     CopyState saveCopyImpl(const std::filesystem::path&,StoreFileCollision,bool firstSave=false) const;
     StoreFileResult saveAsImpl(const std::filesystem::path&,StoreFileCollision,bool firstSave);
     std::function<bool()> untitledCleanup_;
+    bool untitledCleanupReady_=false;
     bool applySessionPragmas();
     // Source invalidation has already completed; fold WAL and release SQLite.
     bool closeFinalized();

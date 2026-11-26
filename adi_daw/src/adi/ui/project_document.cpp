@@ -194,8 +194,8 @@ bool ProjectDocument::saveAs(const std::filesystem::path &path, bool firstSave) 
         if (!warning_.empty())
             warning_ += ' ';
         warning_ += "Saved, but the session did not re-read the file: " + error_;
-    }
-    store_->finishUntitledSave();
+    } else
+        store_->finishUntitledSave();
     error_.clear();
     return true;
 }
@@ -395,9 +395,10 @@ bool ProjectDocument::settleParameters() {
     return true;
 }
 void ProjectDocument::tick(std::int64_t milliseconds) {
-    synchronise();
+    const bool synced = synchronise();
     session_.tick(milliseconds);
-    store_->finishUntitledSave();
+    if (synced)
+        store_->finishUntitledSave();
     if (!limiterReductionSources_.empty() &&
         limiterReductionPublication_ != session_.graph().stats().published)
         refreshLimiterReductionSources();
