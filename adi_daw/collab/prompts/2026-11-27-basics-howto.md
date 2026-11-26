@@ -67,5 +67,6 @@ answer goes under "For the director" in the same file, with your recommendation;
 
 ## When your queue is empty
 
-Take the wave 2 rows of your queue in `docs/SANITY-CHECK.md`, in their order. Stop only at your usage
+Your queue file names your second queue. After both, take the wave 2 rows of your queues in `docs/SANITY-CHECK.md`
+(round 2 added rows SC-120 onward, each with its queue), in their order. Stop only at your usage
 limit or a broken environment, and say which in your report.
