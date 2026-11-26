@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/engine/live_midi_input.hpp"
 #include "adi/engine/midi_input_capture.hpp"
+#include "adi/engine/transport.hpp"
 
 #include <algorithm>
 #include <cmath>
