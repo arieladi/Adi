@@ -6,6 +6,24 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-26, night — the hold has ended (pass 9 clean); the sanity check's round 2
+
+**The hold of ADR-0248 d2 ended today.** The Windows 11 walk session walked all nine steps in the real window on a clean build of main at `5ebc7453`, with #790's two fixes checked: every step passes (its report, pass 9). That is the clean pass of ADR-0255 d1. What opens is ordered by ADR-0257 d1: the basics first; the Dream, Track S and additions behind them. The seats' branches marked "after 3 December" may land from now; win brings the order to the director with round 2.
+
+**Round 2 of the sanity check.** The director asked for a deeper check. Nineteen audits, each taking one source completely: eleven read Live 12's manual chapter by chapter (every keyboard shortcut among them), two listed every control of ADI's own window, six asked one cross-cutting question (a first hour, gestures and menus, the audio device and files, plug-in hosting, undo and safety, export). They wrote 449 rows; merged, 287 new rows, SC-120 to SC-406, are in `docs/SANITY-CHECK.md`, and 43 of round 1's rows carry a note. A twentieth audit, on large projects, is still measuring.
+
+- **By grade:** 30 that a new user meets in the first hour, 112 in the first week, 145 now and then.
+- **The worst, measured or probed:** a value ADI sets on a VST3 never reaches its sound on most plug-ins tried (SC-310; ADR-0073's cure was never built); one automation point on a track makes Paste, Duplicate and copy fail there (SC-334); a right-click throws the selection away (SC-174); a drag inside a clip selects from the clip's start (SC-175); recording over a take plays the old take to the player (SC-245); a take that cannot be landed is deleted with its audio (SC-247, SC-254).
+- **Corrections to round 1:** SC-11 is run and confirmed; SC-24's premise was off (takes already go to the project's audio folder, ruled by ADR-0127); SC-12 is fifteen buttons; SC-01 was read again on main and stands.
+- **New queue names** in the rows: browser, plugins, safety, edit, device, export, automation, routing, beside the six of 27 November. Their queue files follow the director's word on who takes what.
+- **The walk's A35** (the box when the output cannot be opened at launch) is a note on SC-375.
+- **Readings of Live 12:** 31 more, R36 to R66, in `collab/prompts/2026-11-27-live-readings.md`.
+- **For the director:** seventeen product decisions the audits met (a folder per song, a name asked at the first Ctrl+S, starter sounds, take lanes now or at M6, and others), each with a recommendation.
+
+**Next free:** unchanged (ADR-0258, DF-W60, DF-R3).
+
+---
+
 ## 2026-11-26, evening — the sanity check; "the basics come first" (ADR-0257); the weekend's queues
 
 The director asked how a waveform while recording went unplanned, and ordered a check of the whole program for other missing basics. His words approve every choice win had open with him.

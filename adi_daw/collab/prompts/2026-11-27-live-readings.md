@@ -110,3 +110,37 @@ Give Live's exact version at the top. When the list is done, fetch this file aga
   do? The same for an instrument and an audio effect.
 - R35. The widths of the Browser and of the Info View at the default window size, and the Info View's
   height. What does the search field read when empty?
+
+**From the deeper check (added 26 November)**
+
+- R36. New Set, one long clip, click an empty place so that nothing is selected, Loop switch off: open Export. Read Render Start and Render Length (the whole song, or the loop brace?). Note whether Include Return and Main Effects starts ticked. (SC-394, SC-397)
+- R37. Click once in the body of an Arrangement clip and press Delete: is the clip deleted? Then drag inside a clip from beat 6 to beat 8 and press Delete: what goes? (SC-175)
+- R38. Select time, then right-click inside it: does the selection stay? Write down every entry of that menu, of a clip's menu and of a track name's menu. With three tracks selected, right-click one: are all three still selected? (SC-174, SC-176)
+- R39. Select time across three tracks over several clips, press on a clip inside it and drag: does everything selected move? (SC-181)
+- R40. Copy a clip, click an empty place, press Ctrl+V twice: two copies end to end, or one? (SC-183)
+- R41. Insert Silence with only the insert marker placed: does it ask an amount? Create a MIDI clip over a clip that is there: is it replaced? (SC-187)
+- R42. Ctrl+E with nothing selected: what is split? Select All with no clips: is all time selected? Rename with several tracks or clips selected: are all renamed?
+- R43. Add Locator twice in a row, stopped and while playing: two locators, or does the second press delete the first? Is a new locator selected when it is made? (SC-354)
+- R44. In a fresh Set, read Monitor on a new audio track and on a new MIDI track. (SC-249)
+- R45. Record over an existing clip with Monitor on Auto, then on Off: through the overlap, is the input heard, the old clip, or both? (SC-245, SC-26)
+- R46. With no track armed, press Arrangement Record: does the transport roll in record? (SC-335)
+- R47. Arm a track and press Ctrl+Z: is the arm undone, or the edit before it? The same for Solo, Monitor, Record Quantization, the Loop switch and the Metronome. (SC-280)
+- R48. While Arrangement Record runs, press Ctrl+Z. (SC-258)
+- R49. Click the unit box beside Track Delay: does it switch units? (SC-274)
+- R50. With an audio track selected, double-click an instrument in the Browser: a new MIDI track, or a refusal? (SC-287)
+- R51. Drag a sample onto a MIDI track's lane in the Arrangement: is an instrument made? (SC-283)
+- R52. Copy a device, click another track's header, press Ctrl+V. (SC-300)
+- R53. Select a device and press 0: the device goes off, or the track? Select a track's header and press 0.
+- R54. Open a third-party plug-in's window and switch to another program: does the plug-in window stay above it? (SC-313)
+- R55. In Automation Mode, click a breakpoint once: deleted, or selected? (SC-346)
+- R56. In Automation Mode, select time over a lane that has breakpoints and a clip, press Delete: the automation, the clip, or both? Copy it and paste on another control's lane. (SC-336)
+- R57. Automation: Alt and a drag on a segment; Shift while dragging a point (finer? held to one axis?); a point dragged past its neighbour. (SC-347, SC-348)
+- R58. Loop a MIDI clip in the Arrangement over several repeats, open it and play: does the editor's playhead stay inside the loop on the second pass, and does Follow keep the notes in view? Note the pointer over a note's two edges. (SC-222, SC-223)
+- R59. Select a MIDI clip in the Arrangement without clicking in its editor, press Ctrl+U: quantized? (SC-229)
+- R60. In the Note Editor with a note selected: Alt+Left and Right (walk to the next note, or nudge off the grid?); Ctrl+Shift+Up and Down; Alt against Shift with the arrows on the clip's region; plus and minus on a selected group track; Ctrl+Shift+F. (SC-235)
+- R61. Legato on the notes of a looped clip: does the last note reach the loop's end? Read the Quantize chooser's two mixed values. (SC-236, SC-244)
+- R62. In the Clip View of an unlooped Arrangement clip, move End later: does the clip grow in the Arrangement? Transpose a clip with Warp off; read the Sample Editor's ruler for such a clip. (SC-201, SC-209)
+- R63. Save a Set that uses a sample outside its Project, move the Set file alone to another folder, open it: is the sample found? Record into a new Set and save it: are the recordings moved into the new Project? (SC-150, SC-148, SC-07)
+- R64. Drop a Set file from the file manager onto Live: opened? Copy a clip, open another Set, paste. (SC-164, SC-190)
+- R65. Drag in a MIDI file of several tracks: what is made, and is its tempo taken? (SC-57)
+- R66. Drop several audio files with Ctrl held: onto the tracks below, or onto new tracks? Does the Browser show file extensions by default? Does Esc cancel a drag?
