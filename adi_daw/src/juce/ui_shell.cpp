@@ -659,6 +659,13 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         info.addDefaultKeypress('m', cmd | shift);
         break;
     case DeleteTrack:
+        info.addDefaultKeypress(juce::KeyPress::deleteKey, 0);
+        info.addDefaultKeypress(juce::KeyPress::backspaceKey, 0);
+        if (active_ != nullptr && active_->devices.focusedDevice()) {
+            info.shortName = "Delete";
+            info.setActive(true);
+            break;
+        }
         // On a selected locator, Delete removes it (Live 12 manual 6.4).
         if (active_ != nullptr && active_->arrangement.selectedLocator != 0) {
             info.shortName = "Delete Locator";
@@ -671,7 +678,19 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
             info.setActive(true);
             break;
         }
-        info.setActive(active_ != nullptr && active_->arrangement.geometry.selection.track != 0);
+        if (active_ != nullptr) {
+            const auto &selection = active_->arrangement.geometry.selection;
+            const auto &canvas = active_->arrangement.canvas;
+            const bool detail = canvas.hasKeyboardFocus(true) && active_->automationMode() &&
+                                canvas.chosenAutomationPoint().has_value();
+            const bool material = detail || selection.clip != 0 || selection.start != selection.end;
+            if (material)
+                info.shortName = "Delete";
+            info.setActive(material ||
+                           (selection.track != 0 && !active_->arrangement.canvas.hasKeyboardFocus(true)));
+        } else {
+            info.setActive(false);
+        }
         break;
     case Quit:
         // §41.3: Ctrl+Q. On the Mac Cmd+Q is the application menu's own Quit, which
@@ -2838,7 +2857,9 @@ bool AdiRootComponent::insertTrack(bool midi) {
     arrangement.geometry.selection.track = edit.select;
     arrangement.geometry.selection.toTrack = 0;
     arrangement.geometry.selection.picked.clear();
+    arrangement.geometry.selection.clearMaterial();
     publishSelection();
+    focusIfShowing(arrangement.headers);
     return true;
 }
 bool AdiRootComponent::insertMidiClips(const std::vector<std::int64_t> &tracks, std::int64_t start, std::int64_t end) {
@@ -2898,21 +2919,37 @@ bool AdiRootComponent::insertReturnTrack(std::int64_t group) {
     return true;
 }
 bool AdiRootComponent::deleteTrack() {
-    const auto id = arrangement.geometry.selection.track;
-    if (id == 0)
+    const SnapshotReader current(view_.current());
+    const auto selected = arrangement.geometry.selectedTracks(current);
+    if (selected.empty())
         return fail("Select a track to delete.");
-    OpRequest request;
-    request.opType = "track.delete";
-    request.payload = {{"id", id}};
-    request.label = "Delete Track";
-    request.selBefore = session_.advisory();
-    const auto result = submitter_.submit(std::move(request));
-    if (!result)
-        return fail(result.error);
-    arrangement.followPaused = true;
-    arrangement.geometry.selection.track = 0;
-    arrangement.geometry.selection.clip = 0;
-    arrangement.geometry.selection.pickedClips.clear();
+    std::vector<OpRequest> requests;
+    for (const auto id : selected) {
+        const auto *track = current.findTrack(id);
+        if (track == nullptr)
+            return fail("A selected track is gone.");
+        if (track->kind == "master")
+            return fail("The Main track cannot be deleted.");
+        // Deleting a group also removes its descendants.
+        bool covered = false;
+        auto parentId = track->parent;
+        for (std::size_t depth = 0; parentId != 0 && depth < current.tracks().size(); ++depth) {
+            if (std::find(selected.begin(), selected.end(), parentId) != selected.end()) {
+                covered = true;
+                break;
+            }
+            const auto *parent = current.findTrack(parentId);
+            parentId = parent != nullptr ? parent->parent : 0;
+        }
+        if (!covered)
+            requests.push_back(track_edits_detail::op("track.delete", {{"id", id}}, "Delete Track"));
+    }
+    if (requests.empty() || !submitEdits(std::move(requests)))
+        return false;
+    auto &selection = arrangement.geometry.selection;
+    selection.track = selection.toTrack = 0;
+    selection.picked.clear();
+    selection.clearMaterial();
     publishSelection();
     return true;
 }
@@ -4275,13 +4312,20 @@ bool AdiRootComponent::command(int id) {
             return false;
         break;
     case AppCommands::DeleteTrack:
+        if (const auto device = devices.focusedDevice())
+            return devices.action("device.remove", {{"id", *device}});
         if (arrangement.selectedLocator != 0)
             return deleteLocator(arrangement.selectedLocator);
         if (arrangement.selectedMeter >= 0)
             return deleteMeter(arrangement.selectedMeter);
-        if (!deleteTrack())
+        if (arrangement.canvas.hasKeyboardFocus(true) &&
+            (arrangement.canvas.selectedFade() || (automationMode() && arrangement.canvas.chosenAutomationPoint())))
+            return arrangement.canvas.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey));
+        if (const auto &sel = arrangement.geometry.selection; sel.clip != 0 || sel.start != sel.end)
+            return arrangement.canvas.editMaterialSelection(false);
+        if (arrangement.canvas.hasKeyboardFocus(true))
             return false;
-        break;
+        return deleteTrack();
     case AppCommands::InsertTimeSignatureChange: {
         // At the insert marker (Live 12 manual 6.5): a field there to type the value; where a marker
         // stands, that marker's value. The start's signature is the control bar's.

@@ -147,6 +147,7 @@ class TrackHeaderList final : public juce::Component, public juce::SettableToolt
     void mouseMove(const juce::MouseEvent &) override;
     void mouseWheelMove(const juce::MouseEvent &, const juce::MouseWheelDetails &) override;
 
+    bool keyPressed(const juce::KeyPress &) override;
     // Live's split line at a track's foot (manual 6.9: "dragging the split line"): a press this
     // close to a row's foot resizes the track; anywhere else on its title, a drag moves it.
     static constexpr int kSplitLine = 5;
@@ -223,6 +224,7 @@ class ArrangementCanvas final : public juce::Component,
     void mouseUp(const juce::MouseEvent &) override;
     void mouseWheelMove(const juce::MouseEvent &, const juce::MouseWheelDetails &) override;
     bool keyPressed(const juce::KeyPress &) override;
+    bool editMaterialSelection(bool deactivate);
     // Automation Mode (AU-01): each track's lane body, where its envelope is drawn and edited; the
     // breakpoint under a point, if any; the one chosen for Delete.
     struct LaneBody {

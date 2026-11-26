@@ -3744,6 +3744,84 @@ void oneShotTile(AppCommands &commands, const std::filesystem::path &dir) {
 #endif
 }
 // E2: Cut, Copy, Paste and Duplicate in the Arrangement (Live 12 manual 6.9, 41.5; N17).
+void deleteArrangementSelection(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "selection-delete.adi", true, {}, error);
+    check(document != nullptr, "a project for contextual Delete");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "selection-delete");
+    UiPeerRoot peer;
+    peer.setSize(1440, 900);
+    peer.addAndMakeVisible(root);
+    peer.setVisible(true);
+    peer.addToDesktop(0);
+    root.afterEdit = [&] { document->synchronise(); };
+    root.setSize(1440, 900);
+    root.frame();
+    constexpr auto bar = textproj::kWhole;
+    check(root.submitEdit("clip.create", {{"id", 50}, {"track", 2}, {"kind", "midi"},
+                                         {"pos", 0}, {"length", 2 * bar}}, "Add MIDI Clip"),
+          "contextual Delete: a clip on track 2");
+    root.frame();
+    auto &arrangement = root.arrangement;
+    auto &sel = arrangement.geometry.selection;
+    const auto trackOf = [&document](std::int64_t id) { return document->view().current()->findTrack(id); };
+    const auto selectClip = [&] {
+        arrangement.selectClip(2, 50);
+        root.frame();
+    };
+    selectClip();
+    const auto removedClip = root.command(AppCommands::DeleteTrack);
+    check(removedClip && trackOf(2) && trackOf(2)->clips.empty(), "SC-05: Edit Delete removes a selected clip, keeping its track");
+    if (removedClip)
+        root.command(AppCommands::Undo);
+    root.frame();
+
+    sel = {};
+    sel.track = 2;
+    sel.start = bar;
+    sel.end = 2 * bar;
+    root.publishSelection();
+    const auto removedRange = root.command(AppCommands::DeleteTrack);
+    check(removedRange && trackOf(2) && trackOf(2)->clips.size() == 1 &&
+              trackOf(2)->clips.front()->lengthTicks == bar,
+          "SC-05: Edit Delete trims the selected time range");
+    if (removedRange)
+        root.command(AppCommands::Undo);
+    root.frame();
+
+    selectClip();
+    arrangement.canvas.grabKeyboardFocus();
+    auto &headers = arrangement.headers;
+    const auto pressHeader = [&](std::int64_t track, juce::ModifierKeys mods) {
+        const juce::Point<float> at{42.f, static_cast<float>(laneTop(root, track) + 9)};
+        headers.mouseDown(pressAt(headers, at, mods.withFlags(juce::ModifierKeys::leftButtonModifier)));
+        headers.mouseUp(pressAt(headers, at));
+    };
+    pressHeader(2, juce::ModifierKeys());
+    pressHeader(3, juce::ModifierKeys(juce::ModifierKeys::commandModifier));
+    check(sel.clip == 0 && sel.start == sel.end && arrangement.geometry.selectedTracks(root.reader()).size() == 2,
+          "SC-260: track titles select tracks and clear the old time selection");
+    check(headers.hasKeyboardFocus(false) && peer.getPeer()->handleKeyPress(juce::KeyPress(juce::KeyPress::deleteKey)) &&
+              !trackOf(2) && !trackOf(3),
+          "SC-260: Delete removes all selected tracks");
+    check(root.command(AppCommands::Undo) && trackOf(2) && trackOf(3) && trackOf(2)->clips.size() == 1,
+          "SC-05: one Undo restores all selected tracks and their contents");
+    check(root.submitEdit("track.create", {{"id", 70}, {"kind", "group"}, {"name", "Group"}}, "Create Group") &&
+              root.submitEdit("track.setParent", {{"id", 2}, {"parent", 70}}, "Group Track"),
+          "contextual Delete: track 2 in a group");
+    root.frame();
+    sel = {};
+    sel.track = 70;
+    sel.picked = {2};
+    root.publishSelection();
+    check(root.command(AppCommands::DeleteTrack) && !trackOf(2) && !trackOf(70),
+          "SC-05: selecting a group and its child deletes them as one subtree");
+    check(root.command(AppCommands::Undo) && trackOf(2) && trackOf(2)->parent == 70 && trackOf(70),
+          "SC-05: Undo restores the subtree");
+}
 void clipClipboard(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto document = ProjectDocument::open(dir / "clipboard.adi", true, {}, error);
@@ -7339,7 +7417,7 @@ void clipViewClipTime(AppCommands &commands, const std::filesystem::path &dir) {
         // With the keyboard elsewhere.
         check(!root.noteEditorHasContext() && root.noteEditorShown() && !active(C::InvertSelection) && !active(C::Quantize) && !active(C::QuantizeSettings) &&
                   !active(C::CropClip) && !root.command(C::InvertSelection) && !root.command(C::CropClip) && ed.selected() == std::vector<std::uint64_t>{2} &&
-                  info(C::DeleteTrack).shortName != "Delete" && info(C::Split).shortName == "Split",
+                  info(C::Split).shortName == "Split",
               "with the keyboard elsewhere the editor's Edit commands are greyed and do nothing, and Delete and Split are the arrangement's");
         const bool wasFolded = ed.folded(), wasHighlit = ed.highlightScale, wasDrawing = ed.drawMode();
         check(active(C::FoldToNotes) && ticked(C::FoldToNotes) == wasFolded && root.command(C::FoldToNotes) && ed.folded() != wasFolded &&
@@ -11063,6 +11141,9 @@ void stripParamUndo(AppCommands &commands, const std::filesystem::path &dir) {
                   std::abs(cutoff.getValue() - .5) < 1e-9,
               "Return to Default is one undo step of its own, and the knob shows the default");
         root.devices.panels[0]->grabKeyboardFocus();
+        check(root.command(AppCommands::DeleteTrack) && submitted == std::vector<std::string>{"device.remove"},
+              "SC-05: Edit Delete addresses the focused device");
+        submitted.clear();
         check(root.devices.panels[0]->hasKeyboardFocus(false) && peer->handleKeyPress(del) &&
                   submitted == std::vector<std::string>{"device.remove"},
               "Delete on the focused device is still Delete");
@@ -18763,6 +18844,7 @@ int main(int argc, char **argv) {
     trace("importPrompt", [&] { importPrompt(commands, settings, temp.path()); });
     trace("browserDevices", [&] { browserDevices(commands, temp.path()); });
     trace("splitAndRangeEdits", [&] { splitAndRangeEdits(commands, settings, temp.path()); });
+    trace("deleteArrangementSelection", [&] { deleteArrangementSelection(commands, temp.path()); });
     trace("clipClipboard", [&] { clipClipboard(commands, temp.path()); });
     trace("timeCommands", [&] { timeCommands(commands, temp.path()); });
     trace("colorCabTile", [&] { colorCabTile(commands, temp.path()); });

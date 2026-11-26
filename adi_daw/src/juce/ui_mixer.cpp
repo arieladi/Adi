@@ -1054,6 +1054,7 @@ void MixerStrip::mouseDown(const juce::MouseEvent &e) {
     // the tracks between. So Ctrl+G after picking strips groups them (walk-B B10).
     if (panel_.vertical() && e.eventComponent == this && e.y < kTitleHeight && track_ != 0 &&
         !e.mods.isPopupMenu()) {
+        focusIfShowing(*this);
         auto &selection = panel_.root.arrangement.geometry.selection;
         if (e.mods.isCommandDown() && selection.track != 0) {
             auto &picked = selection.picked;
@@ -1070,6 +1071,7 @@ void MixerStrip::mouseDown(const juce::MouseEvent &e) {
             selection.toTrack = 0;
             selection.picked.clear();
         }
+        selection.clearMaterial();
         panel_.root.publishSelection();
         panel_.root.arrangement.changed();
         return;
