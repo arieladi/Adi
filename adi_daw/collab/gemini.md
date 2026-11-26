@@ -4,6 +4,19 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-26 — Item 1 (`walk/*` fixes, Round 14): rebased `walk/a10-first-send-live` (`eb5df19b`) and `walk/a22-fader-handle-at-top` (`4a0d72c1`)
+
+Both branches merged `origin/main` (`d12f9094`, PR `#773`). Verified on GCC 12.4.0 and Clang 14.0.6 + libstdc++ 12 with `-DADI_WERROR=ON -DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF -DADI_ACCEPTANCE=ON`:
+
+| Branch | Head SHA | Compiler (`-DADI_WERROR=ON`) | Warnings | Touched suites | Acceptance (`adi_acceptance_wts01`) | Verdict |
+|---|---|---|---|---|---|---|
+| `walk/a10-first-send-live` | `eb5df19b` | GCC 12.4.0 | 0 | `adi_ui_seams_tests` PASS (9.69 s) | PASS (43.32 s) | **PASS** |
+| `walk/a10-first-send-live` | `eb5df19b` | Clang 14.0.6 + libstdc++ 12 | 0 | `adi_ui_seams_tests` PASS (8.26 s) | PASS (37.98 s) | **PASS** |
+| `walk/a22-fader-handle-at-top` | `4a0d72c1` | GCC 12.4.0 | 0 | (JUCE UI only: `ui_look`, `ui_mixer`, `test_ui_shell`) | PASS (43.47 s) | **PASS** |
+| `walk/a22-fader-handle-at-top` | `4a0d72c1` | Clang 14.0.6 + libstdc++ 12 | 0 | (JUCE UI only: `ui_look`, `ui_mixer`, `test_ui_shell`) | PASS (37.90 s) | **PASS** |
+
+---
+
 ## 2026-11-25 — Item 3 (part 4): `gemini/co01-collab-core` (`9e9b739a`, re-review fixes)
 
 Addressed all six findings from win's 25 November engine re-review (`collab/win.md`), test-first, touching loaned paths only (`src/adi/collab/{batch,replica}.{hpp,cpp}`, `tests/test_collab_{fractional,sync}.cpp`):
