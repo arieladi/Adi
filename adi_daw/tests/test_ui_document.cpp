@@ -587,6 +587,158 @@ void dropSampleInstrument(const std::filesystem::path &dir) {
     document->release();
 }
 
+void devicePresetRoundTrip(const std::filesystem::path &dir) {
+    constexpr auto oneShot = "org.adidaw.builtin.oneshot";
+    constexpr std::int64_t track = 2;
+    std::string error;
+    auto source = ui::ProjectDocument::open(dir / "preset-source.adi", true, device::withBuiltinDevices(), error);
+    check(source != nullptr, "SC-85: a project to save a preset from");
+    if (!source)
+        return;
+    preset::Preset shell;
+    shell.device = {"vst3", "fixture.shell", 12};
+    shell.name = "Shell preset";
+    rows::PluginRef other;
+    other.format = "vst3";
+    other.uid = "fixture.shell";
+    other.shellId = 34;
+    const auto initialHead = OpJournal(source->store()).headSeq();
+    check(source->loadDevicePreset(shell, track, {}, other) == 0 &&
+              source->error().find("exact plug-in") != std::string::npos &&
+              OpJournal(source->store()).headSeq() == initialHead,
+          "SC-85: a different shell member cannot load the preset or change history");
+    const auto *builtin = findBuiltin(oneShot);
+    if (builtin == nullptr || !builtin->available)
+        return;
+
+    const auto prepareTrack = [track](ui::ProjectDocument &document) {
+        document.session().graph().setFadeFrames(0);
+        document.prepare(48000, 64);
+        std::vector<OpRequest> ops(2);
+        ops[0].opType = "clip.create";
+        ops[0].payload = {{"id", 1}, {"track", track}, {"kind", "midi"}, {"pos", 0},
+                          {"length", textproj::kWhole}};
+        ops[1].opType = "note.insert";
+        ops[1].payload = {{"clip", 1}, {"note", 1}, {"start", 0}, {"dur", textproj::kPPQ},
+                          {"key", 60}, {"vel", 127}};
+        return document.ops().submit(std::move(ops)).ok && document.synchronise();
+    };
+    const auto renderNote = [](ui::ProjectDocument &document) {
+        std::array<float, 64 * 16> rendered{};
+        std::array<float, 64> left{}, right{};
+        float *outputs[]{left.data(), right.data()};
+        engine::AudioIo io;
+        io.out = outputs;
+        io.numOut = 2;
+        io.frames = 64;
+        document.mailbox().post(ui::TransportMailbox::Command::Locate, 0);
+        document.mailbox().post(ui::TransportMailbox::Command::Play);
+        for (int block = 0; block < 16; ++block) {
+            io.streamTimeSamples = block * io.frames;
+            document.process(io);
+            std::copy(left.begin(), left.end(), rendered.begin() + block * io.frames);
+        }
+        document.mailbox().post(ui::TransportMailbox::Command::Stop);
+        io.streamTimeSamples += io.frames;
+        document.process(io);
+        return rendered;
+    };
+    const auto wave = dir / "preset-embedded-source.wav";
+    {
+        std::array<float, 1024> samples{};
+        for (std::size_t i = 0; i < samples.size(); ++i)
+            samples[i] = static_cast<float>(.5 * std::sin(static_cast<double>(i) * .13));
+        audio::WavWriter writer(wave, 48000, 1, audio::WavFormat::Float32);
+        writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
+    }
+    if (!prepareTrack(*source) || !source->loadSampleInstrument(track, wave, 17)) {
+        check(false, ("build the OneShot preset source: " + source->error()).c_str());
+        return;
+    }
+    const auto &model = source->session().model();
+    const auto original = std::find_if(model.devices.begin(), model.devices.end(),
+                                       [](const auto &row) { return row.name == "OneShot"; });
+    auto *instance = original != model.devices.end() ? source->session().instanceFor(original->id) : nullptr;
+    check(instance && instance->loaded(), "the preset source is a real OneShot");
+    if (!instance)
+        return;
+    const auto deviceId = original->id;
+    constexpr auto volume = "18";
+    constexpr double setting = .375;
+    using engine::ParamEventKind;
+    check(source->parameterGesture(deviceId, volume, ParamEventKind::Begin, instance->getParam(volume).normalized) &&
+              source->parameterGesture(deviceId, volume, ParamEventKind::Value, setting) &&
+              source->parameterGesture(deviceId, volume, ParamEventKind::End, setting) &&
+              instance->getParam(volume).normalized == setting,
+          "the source OneShot's volume was changed through its authored parameter gesture");
+    source->setParameterDemand(source.get(), {deviceId});
+    source->tick(0);
+    const auto feed = source->parameterFeed().current();
+    check(feed != nullptr, "the document published a parameter feed for preset capture");
+    if (!feed)
+        return;
+    const auto panel = std::find_if(feed->begin(), feed->end(), [&](const auto &device) { return device.id == deviceId; });
+    check(panel != feed->end(), "the Device View has the exact preset source runtime");
+    if (panel == feed->end())
+        return;
+    const auto library = dir / "Preset Test Library";
+    std::filesystem::path saved;
+    const auto sourceHead = OpJournal(source->store()).headSeq();
+    if (!source->saveDevicePreset(*panel, library, "Portable OneShot", saved)) {
+        check(false, ("save the OneShot preset: " + source->error()).c_str());
+        return;
+    }
+    check(OpJournal(source->store()).headSeq() == sourceHead,
+          "saving a library file creates no project Undo step");
+    const auto listing = preset::list(library);
+    const auto values = preset::read(saved);
+    const preset::Identity identity{"internal", oneShot, {}};
+    check(listing.size() == 1 && listing.front().path == saved && listing.front().deviceKey == preset::deviceKey(identity) &&
+              values.device == identity && values.name == "Portable OneShot" && values.parameters.contains(volume) &&
+              values.parameters.at(volume) == setting && values.state.contains("sample:1"),
+          "the library file round-trips the OneShot identity, edited parameter and sample");
+    const auto expectedAudio = renderNote(*source);
+    check(std::any_of(expectedAudio.begin(), expectedAudio.end(), [](float v) { return std::abs(v) > .05f; }),
+          "the source OneShot note is audible");
+    source->release();
+    source.reset();
+    check(std::filesystem::remove(wave), "remove the original audio before loading the independent preset");
+
+    auto target = ui::ProjectDocument::open(dir / "preset-target.adi", true, device::withBuiltinDevices(), error);
+    const bool targetReady = target && prepareTrack(*target);
+    check(targetReady, "a separate project with just the same MIDI note");
+    if (!targetReady)
+        return;
+    const auto before = OpJournal(target->store()).headSeq();
+    const auto loaded = target->loadDevicePreset(values, track, {});
+    if (loaded == 0) {
+        check(false, ("load the saved OneShot preset: " + target->error()).c_str());
+        return;
+    }
+    const auto samePreset = [&] {
+        SQLite::Statement row(target->store().db(),
+                              "SELECT d.preset_name,p.normalized_value FROM devices d JOIN plugin_params p "
+                              "ON p.device_id=d.id WHERE d.id=? AND p.param_id=?");
+        row.bind(1, loaded);
+        row.bind(2, volume);
+        const auto *runtime = target->session().instanceFor(loaded);
+        const auto snapshot = target->view().current();
+        const bool availableSample = std::any_of(snapshot->sampleSlots.begin(), snapshot->sampleSlots.end(),
+            [&](const auto &slot) { return slot && slot->deviceId == loaded && !slot->empty && !slot->missing; });
+        return row.executeStep() && row.getColumn(0).getString() == values.name && row.getColumn(1).getDouble() == setting &&
+               runtime && runtime->loaded() && runtime->getParam(volume).normalized == setting && availableSample;
+    };
+    check(samePreset() && renderNote(*target) == expectedAudio,
+          "the new project binds the authored preset and renders exactly the same note without its source file");
+    const auto pendingUndo = target->ops().nextUndo();
+    check(pendingUndo && pendingUndo->label == "Load Device Preset" && target->ops().undo().ok &&
+              target->synchronise() && OpJournal(target->store()).headSeq() == before && !samePreset(),
+          "a single Undo removes the loaded preset and its device");
+    check(target->ops().redo().ok && target->synchronise() && samePreset(),
+          "a single Redo restores the stored parameters and embedded sample on that device");
+    target->release();
+}
+
 void mixSurfacePublication(const std::filesystem::path &file) {
     using engine::ParamEventKind;
     engine::DeviceLoader loader = [](const engine::DeviceRequest &request, std::string &error)
@@ -1417,6 +1569,113 @@ void playRightAfterAStoppedCommit(const std::filesystem::path &dir) {
     }
     doc->release();
 }
+void trackRenderLifecycle(const std::filesystem::path &dir) {
+    const auto project = dir / "freeze-document.adi";
+    {
+        StoreError error{};
+        auto store = Store::create(project, error);
+        check(store != nullptr, "SC-86: create the render lifecycle project");
+        if (!store)
+            return;
+        // Use a project with no plug-in dependencies and a known clock.
+        store->db().exec("UPDATE project SET sample_rate=48000; DELETE FROM tempo_map;"
+                         "INSERT INTO tempo_map(id,pos_ticks,bpm) VALUES(1,0,120);"
+                         "INSERT INTO tracks(id,kind,name,index_in_parent) "
+                         "VALUES(1,'master','Main',1),(2,'audio','Source',0);"
+                         "INSERT INTO mixer_strip(track_id) VALUES(1),(2);");
+    }
+    std::atomic<bool> hostRequested{false};
+    std::string error;
+    auto doc = ui::ProjectDocument::open(project, false, {}, error);
+    check(doc != nullptr, "open the render lifecycle project");
+    if (!doc)
+        return;
+    doc->prepare(48000, 128);
+    doc->configureFreezeTail(0.015625); // 750 frames at 48 kHz.
+    doc->configureTrackRenderDispatch([&hostRequested](std::function<void()>) {
+        // Leave the worker's pending host call for the owner's next tick.
+        hostRequested.store(true, std::memory_order_release);
+    });
+    const auto wav = dir / "source.wav";
+    {
+        std::vector<float> samples(6000, .25f);
+        audio::WavWriter writer(wav, 48000, 1, audio::WavFormat::Float32);
+        writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
+    }
+    ui::AudioImport import;
+    if (!doc->prepareImport(media::pathUtf8(wav), 1'700'000'000'000'000, import)) {
+        check(false, "import the source file to freeze");
+        return;
+    }
+    auto drop = ui::dropAudio(*doc->view().current(), 2, 0, "Source", import);
+    const auto clip = drop.clip;
+    if (!drop.refusal.empty() || !doc->ops().submit(std::move(drop.ops)).ok || !doc->synchronise()) {
+        check(false, "place the source clip to freeze");
+        return;
+    }
+    auto &db = doc->store().db();
+    std::int64_t now = 0;
+    const auto finish = [&]() {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (doc->trackRenderRunning() && std::chrono::steady_clock::now() < deadline) {
+            doc->tick(++now);
+            if (doc->trackRenderRunning())
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        return doc->takeTrackRenderStatus();
+    };
+    if (!doc->freezeTrack(2)) {
+        check(false, ("start asynchronous Freeze: " + doc->error()).c_str());
+        return;
+    }
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!hostRequested.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    check(hostRequested.load(std::memory_order_acquire) && doc->trackRenderRunning() &&
+              !doc->takeTrackRenderStatus(),
+          "the render reaches its host handoff before it can land");
+    check(!doc->bounceTrackToNewTrack(2) && doc->error().find("already rendering") != std::string::npos,
+          "a second track render cannot replace the pending one");
+    OpRequest mute;
+    mute.opType = "clip.setMute";
+    mute.payload = {{"id", clip}, {"muted", true}};
+    mute.label = "Mute Source Clip";
+    check(doc->ops().submit(mute).ok, "an authored edit reaches the project while Freeze waits");
+    const auto stale = finish();
+    check(stale && stale->find("project changed") != std::string::npos && !doc->takeTrackRenderStatus(),
+          "Freeze reports the stale capture once");
+    check(db.execAndGet("SELECT frozen FROM tracks WHERE id=2").getInt() == 0 &&
+              db.execAndGet("SELECT count(*) FROM frozen_renders").getInt() == 0 &&
+              db.execAndGet("SELECT count(*) FROM media_files").getInt() == 1 &&
+              doc->ops().nextUndo() && doc->ops().nextUndo()->label == "Mute Source Clip",
+          "a stale Freeze publishes no cache, media row or history step");
+    const auto hasPublishedFile = std::any_of(std::filesystem::directory_iterator(dir),
+                                             std::filesystem::directory_iterator(), [](const auto &entry) {
+        const auto name = media::pathUtf8(entry.path().filename());
+        return name.starts_with("freeze-") && entry.path().extension() == ".wav";
+    });
+    check(!hasPublishedFile, "the stale render leaves no published freeze audio");
+    mute.payload["muted"] = false;
+    mute.label = "Unmute Source Clip";
+    check(doc->ops().submit(mute).ok && doc->synchronise(), "restore the sample for a fresh Freeze");
+    if (!doc->freezeTrack(2)) {
+        check(false, ("start the new Freeze: " + doc->error()).c_str());
+        return;
+    }
+    const auto frozen = finish();
+    if (!frozen || *frozen != "Freeze Track complete.")
+        std::printf("Freeze completion: %s\n", frozen ? frozen->c_str() : "timed out");
+    const auto snapshot = doc->view().current();
+    const auto *track = snapshot ? snapshot->findTrack(2) : nullptr;
+    check(frozen && *frozen == "Freeze Track complete." && track && track->frozen && track->freezeMediaId &&
+              db.execAndGet("SELECT COALESCE(MAX(frames),0) FROM frozen_renders").getInt64() == 6750 &&
+              doc->ops().nextUndo() && doc->ops().nextUndo()->label == "Freeze Tracks",
+          "a new Freeze publishes its cache and configured tail in one step");
+    if (track && track->frozen)
+        check(doc->ops().undo().ok && doc->synchronise() && !doc->view().current()->findTrack(2)->frozen,
+              "one Undo gives back the original unfrozen track");
+    doc->release();
+}
 void peakSpans() {
     media::MediaPeaks p;
     p.channels = 2;
@@ -1637,6 +1896,8 @@ int main(int argc, char **argv) {
         commitKeepsClipSounding(commitDir.path());
         test::TempDirectory stoppedDir("ui_document", "stopped-commit");
         playRightAfterAStoppedCommit(stoppedDir.path());
+        test::TempDirectory renderDir("ui_document", "track-render");
+        trackRenderLifecycle(renderDir.path());
     }
     test::TempDirectory temp("ui_document", "lifetime");
     std::string error;
@@ -2621,6 +2882,7 @@ int main(int argc, char **argv) {
     moveOrdinaryDevice(temp.path() / "move-device.adi");
     dropDeviceOnNewTrack(temp.path());
     dropSampleInstrument(temp.path());
+    devicePresetRoundTrip(temp.path());
     mixSurfacePublication(temp.path() / "mix-surface.adi");
     reportedDeviceLatency(temp.path());
     std::printf("%d checks, %d failures\n", checks, failures);

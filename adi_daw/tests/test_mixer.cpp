@@ -2885,6 +2885,50 @@ void testAutomationPlays() {
               "not at the next block");
     }
     {
+        Mix m("track-activator");
+        // The cue tests also add the optional role column until its migration lands.
+        auto &db = m.store->db();
+        if (db.execAndGet("SELECT count(*) FROM pragma_table_info('tracks') WHERE name='role'").getInt() == 0)
+            db.exec("ALTER TABLE tracks ADD COLUMN role TEXT");
+        m.track(1, "audio", "Source", 0.5f);
+        m.track(4, "return", "Post FX return");
+        m.track(5, "return", "Post Mixer return");
+        m.track(6, "audio", "Silent solo");
+        m.track(9, "master", "Main");
+        sendRow(m, 11, 1, 4, 0.0, true, true);
+        sendRow(m, 12, 1, 5, 0.0, true, false);
+        m.set("track.setMute", 1, "muted", true);
+        // Older projects may store linear segments. The Activator is binary,
+        // so the next point cannot take effect halfway to its time.
+        m.lane(1, 1, "mute", {{0.0, 1.0}, {0.025, 0.0}, {0.075, 1.0}}, "enum");
+        m.load();
+        m.session.transport().play();
+        m.play(0.10);
+        check(m.at(0.022) == 0.0f && m.at(0.06) == 1.5f && m.at(0.09) == 0.0f,
+              "SC-87: a held Activator lane unmutes an authored-muted track and both its sends");
+
+        m.session.transport().play(false);
+        m.session.transport().locate(2880);
+        m.set("track.setSolo", 6, "soloed", true);
+        m.refresh();
+        m.settle();
+        check(m.l[511] == 0.0f, "SC-87: an automated Activator cannot bypass another track's solo");
+        m.set("track.setSolo", 6, "soloed", false);
+        m.set("track.setRole", 1, "role", "reference");
+        m.refresh();
+        m.settle();
+        check(m.l[511] == 0.0f, "SC-87: a designated Reference track stays out of Main and sends");
+        m.set("track.setRole", 1, "role", nullptr);
+        m.refresh();
+        m.settle();
+        check(m.l[511] == 1.5f, "SC-87: parked playback reads the held Activator value");
+
+        m.store->db().exec("DELETE FROM automation_data WHERE lane_id=1");
+        m.refresh();
+        m.settle();
+        check(m.l[511] == 0.0f, "SC-87: clearing the envelope returns to the authored muted state");
+    }
+    {
         Mix m("refused");
         m.track(1, "audio", "A", 0.5f);
         m.track(9, "master", "Master");

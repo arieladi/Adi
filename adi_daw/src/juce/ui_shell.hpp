@@ -41,6 +41,7 @@
 namespace adi::ui {
 class AdiRootComponent;
 class FloatingHost;
+class ProjectDocument;
 // The app-scoped command layer (ADR-0180 d6): one manager, installed on every window.
 // The keys are Live 12's (manual §41, ADR-0203 d6) unless a preset says otherwise.
 class AppCommands final : public juce::ApplicationCommandTarget {
@@ -170,7 +171,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         HelpManual,        // the Help menu's manual (WIN-09)
         KeyboardReference, // the Help menu's keyboard reference, written from the keys in force (WIN-09)
         AutomationMode,    // the View menu's Automation Mode, A (Live 12 manual 25.2, 41.7)
-        LastId = AutomationMode
+        DeleteAutomation,
+        LastId = DeleteAutomation
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -366,6 +368,8 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // letter, selected; the returns shown again if they were hidden. With `group`, Insert Return Track
     // in Group (ADR-0247 d2): inside it, after what it holds, lettered with its initial ("DA").
     bool insertReturnTrack(std::int64_t group = 0);
+    void attachTrackRendering(ProjectDocument &document) noexcept { trackRenderDocument_ = &document; }
+    void addTrackRenderItems(juce::PopupMenu &, std::int64_t track);
     void mark(unsigned bits) noexcept { dirty_.mark(bits); }
     const SnapshotReader &reader() const noexcept { return *reader_; }
     bool playing() const noexcept { return playing_; }
@@ -383,6 +387,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     double bpm() const noexcept;
     std::uint64_t generation() const noexcept { return generation_; }
     std::uint64_t projectViewGeneration() const noexcept { return view_.generation(); }
+    std::uint64_t committedGeneration() const noexcept { return view_.committedGeneration(); }
     unsigned lastDrain() const noexcept { return lastDrain_; }
     const std::string &error() const noexcept { return error_; }
     WindowState &state() noexcept { return state_; }
@@ -470,6 +475,9 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // The item in a control's context menu while the control has a lane (`lane`, null for none):
     // available while that lane is overridden, as Live's.
     void addReenableAutomation(juce::PopupMenu &menu, const engine::AutomationLaneNode *lane);
+    void addAutomationDeleteItem(juce::PopupMenu &, const AutomationTarget &);
+    void addTrackAutomationDeleteItem(juce::PopupMenu &, std::int64_t track);
+    void addDeviceAutomationDeleteItem(juce::PopupMenu &, std::int64_t device);
     std::function<bool()> automationArmed;
     std::function<void(bool)> armAutomation;
     // Arm, monitoring and Arrangement Record (MX-09). The session's rows hold a track's arm and its
@@ -626,9 +634,9 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // The ★ Reference's [REF] and Shift+R, down or up at a time in milliseconds (ADR-0209 d9): a
     // tap latches, a hold auditions. True when the reference's state changed.
     bool referenceKey(bool down, std::int64_t nowMs);
-    // Live's momentary latching (§42.25) for S, F1…F8 and Z: the key goes down and its command runs,
+    // Live's momentary latching (§42.25) for S, F1…F8, Z and B: the key goes down and its command runs,
     // once, however long it is held; it comes up after 500 ms or more and the window goes back: the
-    // solo or the activator's step is undone, while it is still the latest, and the zoom goes back.
+    // solo or the activator's step is undone while it is still the latest, and zoom or Draw Mode goes back.
     static bool latches(int command) noexcept;
     bool latchKey(int command, int keyCode, bool down, std::int64_t nowMs);
     const MomentaryLatch &latch() const noexcept { return latch_; }
@@ -731,6 +739,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // Live's Automation Mode (AU-01; manual 25.2): each track's Volume envelope drawn on its lane, and its
     // breakpoints edited there, each edit one undo step. Off in a new window, as Live's.
     bool automationMode() const noexcept { return automationMode_; }
+    bool drawMode() const noexcept { return clipView.notes.drawMode(); }
     void setAutomationMode(bool on);
     bool addAutomationPoint(std::int64_t track, std::int64_t tick, double value);
     // Live's lane chooser (DF-W37; manual 25.2): what a track's lane shows in Automation Mode, its
@@ -754,6 +763,11 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     void demandAutomationDevices(bool on);
     bool moveAutomationPoint(std::int64_t track, std::uint64_t point, std::int64_t tick, double value);
     bool deleteAutomationPoint(std::int64_t track, std::uint64_t point);
+    bool drawAutomationStroke(std::int64_t track, const AutomationTarget &target,
+                              std::int64_t begin, std::int64_t end,
+                              const std::map<std::int64_t, double> &points, bool stepped,
+                              std::uint64_t generation);
+    bool canDeleteShownAutomation() const;
     // Live's Solo in Place (manual 18.6): soloing leaves the returns audible. The project's one
     // field, which the Solo button's menu and the Options menu's entry share (`mixer.setSoloInPlace`,
     // #412); outside undo, saved with the project; the session re-reads the project after it.
@@ -844,6 +858,8 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // Live's track drag (the Arrangement View; manual 18.3): the selected tracks when `dragged` is
     // among them, else that track alone, to `to`; one undo step, "Move Track" or "Move Tracks".
     bool moveTracks(std::int64_t dragged, TrackDrop to);
+    // Group the selected tracks, or ungroup an explicit group from its title menu.
+    bool groupTracks(bool ungroup, std::int64_t group = 0);
     // Live: "Double-clicking a track's title bar brings up the Device View" (Live 12 manual, Live
     // Concepts): shown if it is hidden, the selected track's devices in it.
     bool showDeviceView();
@@ -864,16 +880,20 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     void toggleClipViewFull();
     // Whether the Clip View's Note Editor is the view in use, so that the Edit menu's commands are its own.
     bool noteEditorHasContext() const;
-    // Whether the Clip View shows a MIDI clip's notes: the editor's own switches (the folds, Highlight
-    // Scales, Draw Mode) can then be thrown from the menus, with the keyboard anywhere.
+    // Whether the Clip View shows a MIDI clip's notes: its folding and scale switches can then be
+    // thrown from the menus, with the keyboard anywhere.
     bool noteEditorShown() const;
     bool clipViewFull() const noexcept { return clipViewRestore_ > 0; }
 
   private:
+    std::vector<std::int64_t> trackAutomationLanes(std::int64_t track);
+    bool deleteAutomationLanes(const std::vector<std::int64_t> &, const char *label);
+    enum class TrackRenderAction { Freeze, Unfreeze, Flatten, BounceToNewTrack, BounceInPlace };
+    bool canRenderTrack(TrackRenderAction, const engine::TrackNode &) const;
+    bool renderTrack(TrackRenderAction, std::int64_t);
+    ProjectDocument *trackRenderDocument_ = nullptr;
     bool insertTrack(bool midi);
     bool deleteTrack();
-    // Live's Group Tracks and Ungroup Tracks (manual 18.3), each one undo step.
-    bool groupTracks(bool ungroup);
     // A transport edit (the metronome, the loop): outside undo, so no step and no Follow paused; the
     // session re-reads the project after it (afterEdit), so the engine clicks and loops as it says.
     bool submitTransport(LoopEdit edit);
@@ -950,6 +970,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     const MixViewProvider *mixProvider_ = &defaultMixProvider_;
     ReferenceAudition reference_;
     MomentaryLatch latch_;
+    bool drawBeforeLatch_ = false, trimBeforeDrawLatch_ = false;
     TapTempo tap_;
     std::int64_t tapStep_ = 0; // the undo step the tap run made
     double tapBpm_ = 0;

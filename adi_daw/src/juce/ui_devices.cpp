@@ -35,6 +35,8 @@ ParameterControl::ParameterControl(DeviceChainStrip &s, std::int64_t d, const pa
     // The wheel only scrolls, as Live (lookfeel.wheelChangesParameters, ADR-0203 d11).
     slider.setScrollWheelEnabled(false);
     slider.addMouseListener(this, false); // its right-click opens the parameter's menu (showMenu)
+    toggle.addMouseListener(this, false);
+    menu.addMouseListener(this, true); // includes the ComboBox's label
     // Shift while dragging is Live's finer resolution (manual 41.6). JUCE's way is its
     // velocity mode under the swap key: slow movement under Shift moves the value by a
     // fraction of the plain drag's pixel, speeding up as the mouse does; the plain drag stays
@@ -158,25 +160,35 @@ void ParameterControl::present(const panel::Record &r, double defaultNormalized)
     }
 }
 void ParameterControl::mouseDown(const juce::MouseEvent &e) {
-    if (e.mods.isPopupMenu() && (e.eventComponent == this || e.eventComponent == &slider))
+    if (e.mods.isPopupMenu() && (e.eventComponent == this || e.eventComponent == &slider ||
+                                e.eventComponent == &toggle || e.eventComponent == &menu ||
+                                menu.isParentOf(e.eventComponent)))
         showMenu();
 }
 void ParameterControl::mouseDoubleClick(const juce::MouseEvent &e) {
     if (!e.mods.isPopupMenu() && record && record->shape == panel::Shape::Continuous)
         returnToDefault();
 }
-void ParameterControl::showMenu() {
+juce::PopupMenu ParameterControl::menuItems() {
+    juce::PopupMenu m;
     const auto current = strip.root.current();
     if (!current)
-        return;
-    juce::PopupMenu m;
+        return m;
     // Live's Show Automation (manual 25.2; DF-W37): the track's lane shows this parameter's envelope.
-    if ((!record || !record->missing) && strip.root.deviceAutomationTarget(device, parameter))
-        m.addItem("Show Automation", [safe = SafePointer<ParameterControl>(this)] {
-            if (safe)
-                safe->strip.root.showDeviceAutomation(safe->device, safe->parameter);
-        });
+    const auto target = strip.root.deviceAutomationTarget(device, parameter);
+    if (target) {
+        if (!record || !record->missing)
+            m.addItem("Show Automation", [safe = SafePointer<ParameterControl>(this)] {
+                if (safe)
+                    safe->strip.root.showDeviceAutomation(safe->device, safe->parameter);
+            });
+        strip.root.addAutomationDeleteItem(m, target->second);
+    }
     strip.root.addReenableAutomation(m, deviceLaneOf(*current, device, format, parameter));
+    return m;
+}
+void ParameterControl::showMenu() {
+    auto m = menuItems();
     if (m.getNumItems() > 0)
         m.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(this));
 }
@@ -1715,6 +1727,46 @@ juce::PopupMenu DevicePanelView::commands() {
         if (safe && safe->validTarget())
             safe->strip.fold(safe->id);
     });
+    if (strip.savePreset) {
+        const auto current = strip.root.current();
+        const auto *track = current && data ? current->findTrack(data->track) : nullptr;
+        const bool supported = data && !data->uid.empty() && !nativeFunction() &&
+                               (data->format == "internal" || data->format == "clap" || data->format == "vst3");
+        juce::PopupMenu::Item item(juce::String::fromUTF8("Save Preset\xe2\x80\xa6"));
+        item.isEnabled = supported && data->available && track && !track->frozen && !track->frozenByGroup;
+        if (item.isEnabled) {
+            item.action = [safe, epoch, expected = *data] {
+                if (!safe || safe->menuEpoch_ != epoch)
+                    return;
+                safe->endInteraction(Interaction::Menu);
+                if (!safe || safe->menuEpoch_ != epoch || !safe->validTarget())
+                    return;
+                if (!safe || safe->menuEpoch_ != epoch || !safe->strip.validExpected(expected))
+                    return;
+                if (safe && safe->menuEpoch_ == epoch && safe->strip.savePreset)
+                    safe->strip.savePreset(expected);
+            };
+        }
+        m.addSeparator();
+        m.addItem(std::move(item));
+    }
+    juce::PopupMenu automation;
+    strip.root.addDeviceAutomationDeleteItem(automation, id);
+    if (automation.getNumItems() > 0) {
+        m.addSeparator();
+        for (juce::PopupMenu::MenuItemIterator iter(automation); iter.next();) {
+            auto item = iter.getItem();
+            if (item.action)
+                item.action = [safe, epoch, action = item.action] {
+                    if (!safe || safe->menuEpoch_ != epoch)
+                        return;
+                    safe->endInteraction(Interaction::Menu);
+                    if (safe && safe->validTarget())
+                        action();
+                };
+            m.addItem(std::move(item));
+        }
+    }
     if (data && strip.keyChoices && strip.setKey) {
         const auto expected=*data;juce::PopupMenu keys;
         const auto choices=strip.keyChoices(expected);

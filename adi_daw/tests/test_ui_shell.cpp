@@ -708,6 +708,42 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
         const auto columns = shownStrips(root.mixerView);
         check(std::find(columns.begin(), columns.end(), 17) != columns.end(),
               "the Mixer View still shows them: folding is the timeline's (UI-ARCHITECTURE §4)");
+        // A Mixer menu is addressed to its clicked column, even when the primary selection is
+        // the folded parent. Rename reveals the child in the Arrangement's existing editor.
+        const auto child = std::find_if(root.mixerView.strips().begin(), root.mixerView.strips().end(),
+                                        [](const auto &strip) { return strip->isVisible() && strip->track() == 17; });
+        if (child != root.mixerView.strips().end()) {
+            const auto savedSelection = lanes.selection;
+            const int savedScroll = lanes.scrollY;
+            lanes.selection.track = 16;
+            lanes.selection.toTrack = 0;
+            lanes.selection.picked = {17};
+            lanes.selection.clip = 0;
+            lanes.selection.pickedClips.clear();
+            lanes.selection.start = lanes.selection.end = lanes.selection.insert;
+            juce::PopupMenu menu;
+            root.mixerView.contextMenuPresenter = [&](juce::PopupMenu shown) { menu = std::move(shown); };
+            (*child)->mouseDown(pressAt(**child, {20.f, 8.f}, juce::ModifierKeys::rightButtonModifier));
+            std::function<void()> rename;
+            bool groupActions = false;
+            for (juce::PopupMenu::MenuItemIterator it(menu); it.next();) {
+                const auto &item = it.getItem();
+                if (item.text == "Rename") rename = item.action;
+                if (item.text == "Insert Return Track in Group" || (item.text == "Ungroup Tracks" && item.isEnabled))
+                    groupActions = true;
+            }
+            check(rename && !groupActions, "the selected child opens its menu instead of its parent group's");
+            if (rename) rename();
+            check(lanes.shown(17) && headers.renaming() == 17 && lanes.selection.track == 16 &&
+                      lanes.selection.picked == std::vector<std::int64_t>{17},
+                  "Rename reveals the folded-away Mixer channel, keeping the selected tracks");
+            if (headers.renaming() != 0) headers.editor.onCancel();
+            if (!root.state().foldedGroups.contains(16)) root.arrangement.toggleFold(16);
+            lanes.selection = savedSelection;
+            lanes.scrollY = savedScroll;
+            root.arrangement.changed();
+            root.mixerView.contextMenuPresenter = {};
+        }
         check(root.command(AppCommands::ToggleMixerView), "the Mixer View closes");
         lanes.selection.track = 16;
         check(root.arrangement.canvas.keyPressed(juce::KeyPress(juce::KeyPress::downKey)) && lanes.selection.track == 1,
@@ -2421,7 +2457,7 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
         root.command(AppCommands::Undo);
     root.frame();
     check(muted().empty(), "three undos: every track active");
-    // Live's momentary latching (§42.25): S, F1…F8 and Z held 500 ms or more go back when let go; a
+    // Live's momentary latching (§42.25): S, F1…F8, Z and B held 500 ms or more go back when let go; a
     // tap stays. The key's repeats while it is held do nothing.
     auto lastStep = [&submitter] {
         const auto step = submitter.nextUndo();
@@ -2487,6 +2523,44 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
     root.command(AppCommands::ZoomBack);
     root.arrangement.geometry.selection.start = root.arrangement.geometry.selection.end = 0;
     check(root.arrangement.geometry.scale == zoomScale, "Zoom Back, as before");
+    {
+        juce::ApplicationCommandInfo drawInfo(AppCommands::DrawMode);
+        commands.getCommandInfo(AppCommands::DrawMode, drawInfo);
+        check((drawInfo.flags & juce::ApplicationCommandInfo::isDisabled) == 0 && !root.drawMode(),
+              "Options > Draw Mode is offered without opening the Note Editor");
+        root.transport.draw.onClick();
+        commands.getCommandInfo(AppCommands::DrawMode, drawInfo);
+        check(root.drawMode() && root.transport.draw.getToggleState() &&
+                  (drawInfo.flags & juce::ApplicationCommandInfo::isTicked) != 0,
+              "the Control Bar turns on Draw Mode and ticks the Options entry");
+        root.transport.draw.onClick();
+        const auto last = lastStep();
+        std::int64_t now = 15000;
+        bool bDown = true;
+        root.input.now = [&] { return now; };
+        root.input.keyDown = [&](int key) { return bDown && key == 'b'; };
+        check(root.keyPressed(juce::KeyPress('b')) && root.drawMode() && root.latch().key() == 'b',
+              "B starts drawing in the Arrangement");
+        now += 200;
+        check(root.keyPressed(juce::KeyPress('b')) && root.drawMode(), "a held B's repeat leaves Draw Mode on");
+        bDown = false;
+        now += 400;
+        check(root.keyStateChanged(false) && !root.drawMode() && !root.transport.draw.getToggleState() &&
+                  lastStep() == last,
+              "releasing held B restores the mode without undoing any edit");
+        bDown = true;
+        check(root.keyPressed(juce::KeyPress('b')) && root.drawMode(), "B again turns on Draw Mode");
+        bDown = false;
+        now += 100;
+        root.keyStateChanged(false);
+        check(root.drawMode() && root.command(AppCommands::DrawMode) && !root.drawMode(),
+              "a tap leaves Draw Mode on until the next toggle");
+        root.transport.keyboard.setToggleState(true, juce::dontSendNotification);
+        check(!root.keyPressed(juce::KeyPress('b')) && !root.drawMode(), "the active computer MIDI keyboard keeps its B");
+        root.transport.keyboard.setToggleState(false, juce::dontSendNotification);
+        root.input.now = {};
+        root.input.keyDown = {};
+    }
     // Live 12 manual, Live Concepts: "Double-clicking a track's title bar brings up the Device View".
     check(root.command(AppCommands::ToggleDeviceView) && !root.state().docked, "the Device View hidden");
     auto &headers = root.arrangement.headers;
@@ -2528,6 +2602,102 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
                   "a click on 3 Audio's, then Ctrl/Cmd+click on 4 Audio's: the two picked");
             four->mouseDown(pressAt(*four, {20.f, 8.f}, juce::ModifierKeys::commandModifier));
             check(selection.track == 3 && selection.picked.empty(), "Ctrl/Cmd+click again lets 4 Audio go");
+
+            // SC-263: a plain title press keeps the selection until it is a click or a drag.
+            const auto beforeDrag = laneOrder(root);
+            const auto selectionBeforeDrag = selection;
+            const auto left = juce::ModifierKeys::leftButtonModifier;
+            const juce::Point<float> grab{20.f, 8.f};
+            const auto drop = grab.translated(static_cast<float>(two->getX() - four->getX()), 0.f);
+            four->mouseDown(pressAt(*four, grab, juce::ModifierKeys::commandModifier));
+            four->mouseDown(pressAt(*four, grab, left));
+            check(selection.track == 3 && selection.picked == std::vector<std::int64_t>{4},
+                  "a pressed title holds the selected siblings for a potential reorder");
+            four->mouseDrag(dragAt(*four, grab, drop, left));
+            check(laneOrder(root) == beforeDrag, "crossing a channel title only previews the reorder");
+            four->mouseUp(dragAt(*four, grab, drop));
+            root.frame();
+            const auto reordered = laneOrder(root);
+            const auto firstMoved = std::find(reordered.begin(), reordered.end(), 3);
+            const auto secondMoved = std::find(reordered.begin(), reordered.end(), 4);
+            const auto before = std::find(reordered.begin(), reordered.end(), 2);
+            check(firstMoved < secondMoved && secondMoved < before && root.undoTitle(false) == "Undo Move Tracks",
+                  "dragging a selected title moves its selected siblings in order in one edit");
+            const bool undone = root.command(AppCommands::Undo);
+            root.frame();
+            check(undone && laneOrder(root) == beforeDrag, "one undo restores both channels to their places");
+            selection.track = 3;
+            selection.toTrack = 0;
+            selection.picked = {4};
+            four->mouseDown(pressAt(*four, grab, left));
+            four->mouseUp(pressAt(*four, grab));
+            check(selection.track == 4 && selection.picked.empty(), "a title released in place selects only that channel");
+            const auto beforeCancelled = root.committedGeneration();
+            four->mouseDown(pressAt(*four, grab, left));
+            four->mouseDrag(dragAt(*four, grab, drop, left));
+            four->mouseUp(dragAt(*four, grab, {drop.x, -5.f}));
+            check(root.committedGeneration() == beforeCancelled,
+                  "releasing a dragged channel outside the Mixer makes no track edit");
+            four->mouseDown(pressAt(*four, grab, left));
+            four->mouseDrag(dragAt(*four, grab, drop, left));
+            check(root.mixerView.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey)),
+                  "the Mixer panel handles Escape during a title drag");
+            four->mouseUp(dragAt(*four, grab, drop));
+            check(root.committedGeneration() == beforeCancelled,
+                  "releasing after Escape makes no track edit");
+            selection = selectionBeforeDrag;
+            root.publishSelection();
+
+            // SC-262: inspect the actual popup request without opening a native window.
+            const auto savedSelection = selection;
+            auto &view = root.arrangement;
+            juce::PopupMenu shown;
+            root.mixerView.contextMenuPresenter = [&](juce::PopupMenu menu) { shown = std::move(menu); };
+            const auto menuItem = [&](const char *name) -> std::optional<juce::PopupMenu::Item> {
+                for (juce::PopupMenu::MenuItemIterator it(shown); it.next();)
+                    if (it.getItem().text == name)
+                        return it.getItem();
+                return std::nullopt;
+            };
+            const auto right = juce::ModifierKeys::rightButtonModifier;
+            selection.clip = 11;
+            selection.pickedClips = {12};
+            selection.start = 10;
+            selection.end = 20;
+            selection.insert = 30;
+            view.selectedLocator = 42;
+            view.selectedMeter = 10;
+            view.loopSelected = true;
+            two->mouseDown(pressAt(*two, {20.f, 8.f}, right));
+            const auto colour = menuItem("Colour");
+            check(selection.track == 2 && selection.clip == 0 && selection.pickedClips.empty() &&
+                      selection.start == 30 && selection.end == 30 && !view.loopSelected &&
+                      view.selectedLocator == 0 && view.selectedMeter == -1 && menuItem("Rename") &&
+                      (menuItem("Delete Track") || menuItem("Delete")) && menuItem("Group Tracks") &&
+                      colour && colour->customComponent && !menuItem("Auto Gain Stage: gated RMS, -18 dBFS"),
+                  "a channel-name popup selects that track, clears the old edit target and offers its track menu");
+            four->mouseDown(pressAt(*four, {20.f, 8.f}, juce::ModifierKeys::commandModifier));
+            four->mouseDown(pressAt(*four, {20.f, 8.f}, right));
+            const auto rename = menuItem("Rename");
+            check(selection.track == 2 && selection.picked == std::vector<std::int64_t>{4} && rename && rename->action,
+                  "a popup on a picked channel preserves the selected tracks");
+            if (rename && rename->action)
+                rename->action();
+            check(headers.renaming() == 4 && headers.editor.isVisible() && selection.track == 2 &&
+                      selection.picked == std::vector<std::int64_t>{4},
+                  "Rename opens the clicked channel's editor without changing the selected tracks");
+            if (headers.renaming() != 0)
+                headers.editor.onCancel();
+
+            const auto selectedBeforeBackground = selection;
+            strip->mouseDown(pressAt(*strip, {2.f, 23.f}, right));
+            check(selection == selectedBeforeBackground && shown.getNumItems() == 2 &&
+                      menuItem("Auto Gain Stage: gated RMS, -18 dBFS") &&
+                      menuItem("Auto Gain Stage: integrated loudness, -18 LUFS"),
+                  "a popup below the channel name leaves the selection and Auto Gain Stage menu alone");
+            root.mixerView.contextMenuPresenter = {};
+            selection = savedSelection;
+            root.publishSelection();
         } else
             check(false, "2 MIDI's and 4 Audio's Mixer View strips");
     } else
@@ -2979,6 +3149,93 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
                   root.error().find("the rest are listed") == std::string::npos,
               "with plug-ins kept from before, a stopped scan says the list may be incomplete");
         browser.scanPlugins = nullptr;
+        browser.setPluginScan({});
+    }
+    {
+        const auto key = [](const std::string &format, const std::string &uid,
+                            std::optional<std::int64_t> shell = std::nullopt) {
+            return preset::deviceKey({format, uid, shell});
+        };
+        const auto utilityKey = key("internal", "org.adidaw.builtin.utility");
+        const auto clapKey = key("clap", "org.adi.fixture");
+        const auto vstFirstKey = key("vst3", "fixture.shell", 12);
+        const auto vstSecondKey = key("vst3", "fixture.shell", 34);
+        const auto alpha = dir / "Alpha.adipreset";
+        const auto ice = dir / "Ice.adipreset";
+        browser.setDevicePresets({
+            {utilityKey, "Zebra", dir / "Zebra.adipreset"},
+            {utilityKey, "Alpha", alpha},
+            {clapKey, "Clap preset", dir / "Clap.adipreset"},
+            {vstFirstKey, "Ice", ice},
+            {vstSecondKey, "Warm", dir / "Warm.adipreset"},
+        });
+        const auto presetRow = [&](std::string_view name) {
+            for (std::size_t i = 0; i < browser.rows().size(); ++i) {
+                const auto *preset = browser.rows()[i].savedPreset;
+                if (preset && preset->name == name)
+                    return static_cast<int>(i);
+            }
+            return -1;
+        };
+        browser.choose(audioEffects);
+        const int a = presetRow("Alpha"), z = presetRow("Zebra");
+        check(a > 0 && z == a + 1 && browser.rows()[static_cast<std::size_t>(a - 1)].device &&
+                  browser.rows()[static_cast<std::size_t>(a - 1)].device->name == "Utility" &&
+                  browser.rows()[static_cast<std::size_t>(a)].depth ==
+                      browser.rows()[static_cast<std::size_t>(a - 1)].depth + 1,
+              "SC-85: authored preset rows are alphabetical and inset beneath their own built-in");
+        check(a >= 0 && !browser.load(a) && root.error().find("needs the application") != std::string::npos,
+              "a preset cannot load in a Browser with no application");
+        std::vector<std::filesystem::path> loaded;
+        browser.loadDevicePreset = [&](const std::filesystem::path &path) {
+            loaded.push_back(path);
+            return true;
+        };
+        browser.search.setText("alpha", false);
+        browser.search.onTextChange();
+        const int found = presetRow("Alpha");
+        check(found == 2 && browser.rows().size() == 3 && browser.rows()[1].device &&
+                  browser.rows()[1].device->name == "Utility" && presetRow("Zebra") < 0,
+              "search by preset title keeps its device context and hides unrelated rows");
+        if (found >= 0) {
+            juce::SparseSet<int> chosen;
+            chosen.addRange(juce::Range<int>(found, found + 1));
+            check(browser.list.getListBoxModel()->getDragSourceDescription(chosen).isVoid(),
+                  "a preset is not a sample or a default device drag");
+            browser.list.getListBoxModel()->returnKeyPressed(found);
+        }
+        check(loaded.size() == 1 && loaded.front() == alpha, "Enter opens the matching preset file");
+        browser.search.setText({}, false);
+        browser.search.onTextChange();
+        browser.choose(plugIns);
+        PluginScan scan;
+        scan.phase = PluginScan::Phase::Done;
+        scan.listing.plugins = {{"clap", "org.adi.fixture", "CLAP Fixture", "Fixture", "1", {}, PluginEntry::Kind::Effect},
+                                {"vst3", "fixture.shell", "First Shell", "Fixture", "1", {}, PluginEntry::Kind::Effect, 12},
+                                {"vst3", "fixture.shell", "Second Shell", "Fixture", "1", {}, PluginEntry::Kind::Effect, 34}};
+        browser.setPluginScan(scan);
+        const auto linked = [&](std::string_view name, std::string_view parent) {
+            const int row = presetRow(name);
+            if (row <= 0)
+                return false;
+            const auto &above = browser.rows()[static_cast<std::size_t>(row - 1)];
+            return above.plugin && above.plugin->name == parent &&
+                   browser.rows()[static_cast<std::size_t>(row)].depth == above.depth + 1;
+        };
+        check(linked("Clap preset", "CLAP Fixture") && linked("Ice", "First Shell") && linked("Warm", "Second Shell"),
+              "presets stay under the exact CLAP or VST3 identity, including distinct shell IDs");
+        browser.search.setText("ice", false);
+        browser.search.onTextChange();
+        const int iceRow = presetRow("Ice");
+        check(iceRow == 3 && browser.rows().size() == 4 && linked("Ice", "First Shell"),
+              "a plug-in preset title is searchable without the plug-in's name");
+        if (iceRow >= 0)
+            browser.list.getListBoxModel()->listBoxItemDoubleClicked(iceRow, pressAt(browser.list, {10, 10}));
+        check(loaded.size() == 2 && loaded.back() == ice, "double-click opens the matched installed plug-in preset");
+        browser.loadDevicePreset = {};
+        browser.setDevicePresets({});
+        browser.search.setText({}, false);
+        browser.search.onTextChange();
         browser.setPluginScan({});
     }
     {
@@ -7580,9 +7837,14 @@ void clipViewClipTime(AppCommands &commands, const std::filesystem::path &dir) {
         check(active(C::DrawMode) && ticked(C::DrawMode) == wasDrawing && root.command(C::DrawMode) && ed.drawMode() != wasDrawing && ticked(C::DrawMode) != wasDrawing &&
                   root.command(C::DrawMode) && ed.drawMode() == wasDrawing,
               "Options > Draw Mode switches the editor's Draw Mode and is ticked while it is on");
-        check(!commands.key(key('f'), root) && ed.folded() == wasFolded && !commands.key(key('b'), root) && ed.drawMode() == wasDrawing &&
-                  !commands.key(key('k'), root) && ed.highlightScale == wasHighlit,
-              "F, B and K pressed outside the editor are no command's: nothing folds or switches");
+        check(!commands.key(key('f'), root) && ed.folded() == wasFolded && !commands.key(key('k'), root) &&
+                  ed.highlightScale == wasHighlit,
+              "F and K pressed outside the editor do not fold or highlight notes");
+        check(commands.key(key('b'), root) && ed.drawMode() != wasDrawing &&
+                  root.transport.draw.getToggleState() == ed.drawMode(),
+              "B outside the editor also switches Draw Mode in the editor and Control Bar");
+        root.letGoUnseen();
+        root.command(C::DrawMode);
         const int height = root.clipArea().getHeight();
         check(active(C::ExpandClipView) && !ticked(C::ExpandClipView) && root.command(C::ExpandClipView) && root.clipViewFull() && ticked(C::ExpandClipView) &&
                   root.clipArea().getHeight() > height && commands.key(key('e', command | juce::ModifierKeys::altModifier), root) && !root.clipViewFull() &&
@@ -8717,6 +8979,70 @@ void rangeSelection(AppCommands &commands, const std::filesystem::path &dir) {
 }
 // Live's foot (Live 12 manual 6.1, its demo arrangement): the returns and Main pinned at the
 // bottom of the lanes, below the drop area, whatever the scroll.
+void trackRenderMenu(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "track-render-menu.adi", true, {}, error);
+    check(document != nullptr, "SC-86: a project for the track render menu");
+    if (!document)
+        return;
+    auto &store = document->store();
+    OpRequest group;
+    group.opType = "track.create";
+    group.payload = {{"id", 20}, {"kind", "group"}, {"name", "Bus"}};
+    group.label = "Create Track";
+    check(document->ops().submit(group).ok && document->synchronise(), "add a group to the render menu fixture");
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "track-render-menu");
+    const auto menuFor = [&](std::int64_t track) {
+        root.arrangement.geometry.selection.track = track;
+        return root.arrangement.contextMenuItems(true);
+    };
+    const auto enabled = [](const juce::PopupMenu &menu, const char *name) -> std::optional<bool> {
+        for (juce::PopupMenu::MenuItemIterator item(menu); item.next();)
+            if (item.getItem().text == name)
+                return item.getItem().isEnabled;
+        return std::nullopt;
+    };
+    check(enabled(menuFor(4), "Freeze Track") == false, "Freeze waits for an attached document");
+    root.attachTrackRendering(*document);
+    auto audio = menuFor(4);
+    check(enabled(audio, "Freeze Track") == true && !enabled(audio, "Unfreeze Track").has_value() &&
+              enabled(audio, "Flatten Track") == false && enabled(audio, "Bounce to New Track") == true &&
+              enabled(audio, "Bounce Track in Place") == true,
+          "SC-86: an ordinary audio track can Freeze or Bounce, and Flatten waits for its cache");
+    check(enabled(menuFor(2), "Freeze Track") == true, "a MIDI track can be frozen");
+    check(enabled(menuFor(20), "Bounce to New Track") == true &&
+              !enabled(menuFor(20), "Bounce Track in Place").has_value() &&
+              !enabled(menuFor(20), "Freeze Track").has_value(),
+          "a group can bounce its direct output to a new track");
+    check(!enabled(menuFor(1), "Bounce to New Track").has_value() &&
+              !enabled(menuFor(6), "Freeze Track").has_value() &&
+              !enabled(root.arrangement.contextMenuItems(false), "Freeze Track").has_value(),
+          "track render commands stay off Main, return and lane menus");
+    OpRequest lock;
+    lock.opType = "track.setLocked";
+    lock.payload = {{"id", 4}, {"locked", true}};
+    lock.label = "Lock Track";
+    check(document->ops().submit(lock).ok && enabled(menuFor(4), "Freeze Track") == false,
+          "a locked track's menu greys out Freeze");
+    for (juce::PopupMenu::MenuItemIterator item(audio); item.next();)
+        if (item.getItem().text == "Freeze Track" && item.getItem().action)
+            item.getItem().action();
+    check(!document->trackRenderRunning() && root.error().find("no longer available") != std::string::npos,
+          "a menu action rechecks the original track before starting a render");
+    lock.payload["locked"] = false;
+    check(document->ops().submit(lock).ok, "unlock the track for the frozen fixture");
+    store.db().exec("UPDATE tracks SET frozen=1 WHERE id=4"); // Legacy frozen flag with no verified audio.
+    document->view().refresh(store);
+    auto frozen = menuFor(4);
+    check(!enabled(frozen, "Freeze Track").has_value() && enabled(frozen, "Unfreeze Track") == true &&
+              enabled(frozen, "Flatten Track") == false && enabled(frozen, "Bounce Track in Place") == false,
+          "a legacy frozen track offers Unfreeze and cannot flatten without cached audio");
+    for (juce::PopupMenu::MenuItemIterator item(frozen); item.next();)
+        if (item.getItem().text == "Unfreeze Track" && item.getItem().action)
+            item.getItem().action();
+    check(enabled(menuFor(4), "Freeze Track") == true, "Unfreeze opens the track back up from its title menu");
+}
 void footRows(AppCommands &commands, const std::filesystem::path &dir) {
     StoreError err{};
     auto store = Store::createEmpty(dir / "foot.adi", err);
@@ -10836,6 +11162,45 @@ void deviceClipboard(AppCommands &commands, const std::filesystem::path &dir) {
         root.frame();
     };
     refresh();
+    // SC-85: the device title's menu offers the preset action for a loaded device. The owner
+    // receives the exact displayed instance and an expired menu cannot open another dialog.
+    if (!root.devices.panels.empty()) {
+        auto &device = *root.devices.panels.front();
+        std::optional<DevicePanelData> saved;
+        root.devices.savePreset = [&](const DevicePanelData &expected) { saved = expected; };
+        const auto saveItem = [](const juce::PopupMenu &menu) -> std::optional<juce::PopupMenu::Item> {
+            for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+                if (it.getItem().text == juce::String::fromUTF8("Save Preset\xe2\x80\xa6"))
+                    return it.getItem();
+            return std::nullopt;
+        };
+        const auto stale = saveItem(device.commands());
+        check(stale && stale->isEnabled && stale->action, "a loaded CLAP device offers Save Preset with an ellipsis");
+        device.cancelInteractions();
+        if (stale && stale->action)
+            stale->action();
+        check(!saved, "an invalidated preset menu does not open a naming dialog");
+        const auto current = saveItem(device.commands());
+        root.devices.targetCurrent = [](std::int64_t, const engine::DeviceRuntimeToken &, std::uint64_t) { return false; };
+        if (current && current->action)
+            current->action();
+        check(!saved, "an instance that changed after the menu opened cannot be saved");
+        root.devices.targetCurrent = {};
+        const auto fresh = saveItem(device.commands());
+        if (fresh && fresh->action)
+            fresh->action();
+        check(saved && saved->id == 3 && saved->available && saved->instance == device.presentedInstance() &&
+                  saved->runtime.sameInstance(document->session().deviceRuntimeToken(3)),
+              "Save Preset hands the owning app the selected device and its exact runtime");
+        if (saved) {
+            auto placeholder = *saved;
+            placeholder.available = false;
+            DevicePanelView unavailable(root.devices, placeholder);
+            const auto blocked = saveItem(unavailable.commands());
+            check(blocked && !blocked->isEnabled && !blocked->action, "a missing device's Save Preset is disabled");
+        }
+        root.devices.savePreset = {};
+    }
     const auto chain = [&] {
         std::vector<std::int64_t> out;
         SQLite::Statement q(document->store().db(), "SELECT id FROM devices WHERE chain_id = 3 ORDER BY ord, id");
@@ -12185,8 +12550,12 @@ void mixerDragLive(AppCommands &commands, const std::filesystem::path &dir) {
         root.frame();
         const auto fader = three->volumeMenuItems();
         const auto *item = reenable(fader);
-        check(item != nullptr && !item->isEnabled && fader.getNumItems() == 1,
-              "the fader's menu is the Volume lane's Re-Enable Automation, unavailable while it follows its lane");
+        bool canDelete = false;
+        for (juce::PopupMenu::MenuItemIterator it(fader); it.next();)
+            if (it.getItem().text == "Delete Automation")
+                canDelete = it.getItem().isEnabled;
+        check(item != nullptr && !item->isEnabled && canDelete,
+              "the fader's own automation can be deleted while Re-Enable is unavailable");
         const int y = laneTop(root, 4) + 4;
         check(root.arrangement.automationLaneAt(y) == nullptr, "outside Automation Mode a lane's menu has no envelope item");
         root.setAutomationMode(true);
@@ -12878,6 +13247,69 @@ void automationMode(AppCommands &commands, const std::filesystem::path &dir) {
     root.frame();
     check(laneOf().data != nullptr && laneOf().data->points.size() == 1 && laneOf().data->points[0].value == -150,
           "a double-click off the line adds a breakpoint there; at the lane's foot it is silence (-150 dB, as the fader writes it)");
+    const auto activator = activatorTarget(4);
+    const auto choices = root.automationChoices(4);
+    check(std::find(choices.begin(), choices.end(), activator) != choices.end(),
+          "SC-87: Track Activator is a Mixer automation target");
+    root.showAutomation(4, activator);
+    root.command(AppCommands::DrawMode);
+    const juce::Point<float> off{barX + 1, audio->scaleBottom - 3};
+    const juce::Point<float> on{twoBars + 1, audio->top + 3};
+    const auto activatorEnvelope = [&] { return envelopeOf(*document->view().current(), activator); };
+    canvas.mouseDown(pressAt(canvas, off));
+    canvas.mouseDrag(dragAt(canvas, off, on));
+    check(activatorEnvelope().lane == nullptr, "SC-87: a held Draw stroke previews without writing rows");
+    canvas.mouseUp(dragAt(canvas, off, on));
+    const auto drawn = activatorEnvelope();
+    check(drawn.data != nullptr && drawn.lane->valueDomain == "enum" &&
+              std::ranges::any_of(drawn.data->points, [](const auto &p) {
+                  return p.time == textproj::kWhole && p.value == 1.0 && p.curve == 0;
+              }) &&
+              std::ranges::any_of(drawn.data->points, [](const auto &p) {
+                  return p.time == 2 * textproj::kWhole && p.value == 0.0 && p.curve == 0;
+              }) && root.undoTitle(false) == "Undo Draw Automation",
+          "SC-87: one stepped stroke writes binary Activator values to the crossed grid cells");
+    check(root.command(AppCommands::Undo) && activatorEnvelope().lane == nullptr &&
+              laneOf().lane != nullptr && root.command(AppCommands::Redo),
+          "SC-87: one Undo removes the stroke and retains Volume, and Redo restores it");
+    root.arrangement.geometry.selection.track = 4;
+    const juce::KeyPress clear(juce::KeyPress::backspaceKey, juce::ModifierKeys::commandModifier, 0);
+    check(root.keyPressed(clear) && activatorEnvelope().lane == nullptr && laneOf().lane != nullptr &&
+              root.undoTitle(false) == "Undo Delete Automation" && root.command(AppCommands::Undo) &&
+              activatorEnvelope().lane != nullptr,
+          "SC-87: the command shortcut deletes just the displayed envelope and one Undo restores it");
+    root.showAutomation(4, volumeTarget(4));
+    const auto beforeFreehand = laneOf().data ? laneOf().data->points : std::vector<engine::AutomationPointNode>{};
+    const juce::Point<float> freeBegin{barX + 7, midY}, freeEnd{twoBars - 7, upper};
+    const auto rawBegin = root.arrangement.geometry.tick(freeBegin.x);
+    const auto rawEnd = root.arrangement.geometry.tick(freeEnd.x);
+    const juce::ModifierKeys fineFreehand(juce::ModifierKeys::altModifier | juce::ModifierKeys::shiftModifier);
+    canvas.mouseDown(pressAt(canvas, freeBegin, fineFreehand));
+    canvas.mouseDrag(dragAt(canvas, freeBegin, freeEnd, fineFreehand));
+    canvas.mouseUp(dragAt(canvas, freeBegin, freeEnd, fineFreehand));
+    const auto freehandValue = [&](std::int64_t tick) -> std::optional<double> {
+        if (const auto *data = laneOf().data)
+            for (const auto &p : data->points)
+                if (p.time == tick && p.curve == 1)
+                    return p.value;
+        return {};
+    };
+    const auto startValue = freehandValue(rawBegin), endValue = freehandValue(rawEnd);
+    check(rawBegin != textproj::kWhole && rawEnd != 2 * textproj::kWhole && startValue && endValue &&
+              *endValue > *startValue && *endValue - *startValue < 5.0,
+          "SC-87: Alt writes off-grid linear points and Shift reduces the vertical change");
+    check(root.command(AppCommands::Undo) && laneOf().data && laneOf().data->points == beforeFreehand,
+          "SC-87: one Undo restores an existing envelope after a freehand stroke");
+    root.command(AppCommands::DrawMode);
+    root.arrangement.geometry.selection.track = 4;
+    const auto trackMenu = root.arrangement.headerMenu();
+    for (juce::PopupMenu::MenuItemIterator it(trackMenu); it.next();)
+        if (it.getItem().text == "Delete All Automation" && it.getItem().action)
+            it.getItem().action();
+    check(activatorEnvelope().lane == nullptr && laneOf().lane == nullptr &&
+              root.undoTitle(false) == "Undo Delete All Automation" && root.command(AppCommands::Undo) &&
+              activatorEnvelope().lane && laneOf().lane,
+          "SC-87: track Delete All Automation clears both lanes as one step");
     root.namesBar.automation.onClick();
     check(!root.automationMode(), "and the switch turns Automation Mode off");
     // A14: A toggles Automation Mode (Live 12 manual 25.2, 41.7), the View menu's entry ticked with it.
@@ -16800,12 +17232,12 @@ int main(int argc, char **argv) {
                       C::DelayCompensation == C::ExportAudio + 1 && C::SoloSwitches == C::DelayCompensation + 1 &&
                       C::CueSwitches == C::SoloSwitches + 1 && C::HelpManual == C::CueSwitches + 1 &&
                       C::KeyboardReference == C::HelpManual + 1 && C::AutomationMode == C::KeyboardReference + 1 &&
-                      C::LastId == C::AutomationMode,
+                      C::DeleteAutomation == C::AutomationMode + 1 && C::LastId == C::DeleteAutomation,
                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
                   "Select Loop, Save a Copy, Collect All and Save, Collect and Export, Cut, Copy, Paste, Duplicate, "
                   "Show/Hide Plug-In Windows, Split, Clip View, Insert Empty MIDI Clip(s), the …Time commands and "
                   "Insert Silence, then Create Fade In/Out and Delete Fades/Crossfades, then the Note Editor's nine, "
-                  "Arrangement Record and Delay Compensation, each named");
+                  "Arrangement Record, Delay Compensation and Delete Automation, each named");
             // The Note Editor's commands, the last ids: named in the table's order, each on the editor's key.
             {
                 const auto named = [&](int id) {
@@ -16858,12 +17290,13 @@ int main(int argc, char **argv) {
         if (const auto pictures = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); pictures.isNotEmpty())
             renderMenu(look::liveLook(), bar->getMenuForIndex(names.indexOf("Options"), "Options"),
                        juce::File(pictures).getChildFile("adi-options-menu.png"));
-        check(items("Edit") == std::vector<int>{C::Undo, C::Redo, 0, C::Cut, C::Copy, C::Paste, C::Duplicate, C::DeleteTrack, 0,
+        check(items("Edit") == std::vector<int>{C::Undo, C::Redo, 0, C::Cut, C::Copy, C::Paste, C::Duplicate,
+                                                C::DeleteTrack, C::DeleteAutomation, 0,
                                                 C::CutTime, C::CopyTime, C::PasteTime, C::DuplicateTime, C::DeleteTime,
                                                 C::InsertSilence, 0, C::RenameTrack, C::EditInfoText,
                                                 C::SelectAll, C::InvertSelection, 0, C::LoopSelection, C::SelectLoop, 0, C::Split, C::CropClip, 0,
                                                 C::Quantize, C::QuantizeSettings, C::FitToTimeRange, 0, C::GroupTracks, C::UngroupTracks},
-              "the Edit menu: Cut, Copy, Paste and Duplicate, then Delete (41.5), then the …Time commands and Insert Silence "
+              "the Edit menu: Cut, Copy, Paste and Duplicate, then Delete and Delete Automation, then the …Time commands and Insert Silence "
               "(6.11), before Rename (§18.2), Select All and Invert Selection, then Loop Selection and Select Loop (§6.6), then "
               "Split and Crop Clip, the clip commands (6.9, 10.7.1), then Quantize, its settings (10.5.8) and Fit to Time Range (10.5.5), then Group and "
               "Ungroup Tracks");
@@ -18612,8 +19045,19 @@ int main(int argc, char **argv) {
                 integrated.arrangement.geometry.selection.toTrack = 0;
                 integrated.arrangement.geometry.selection.picked.clear();
                 integrated.publishSelection();
-                check(integrated.moveTracks(next, {integrated.reader().findTrack(2)->parent, 2}),
-                      "move the next track before track 2");
+                const auto nextColumn = std::find_if(columns.begin(), columns.end(),
+                                                     [next](const auto *strip) { return strip->track() == next; });
+                check(nextColumn != columns.end(), "the next track has a Mixer strip");
+                if (nextColumn != columns.end()) {
+                    auto &nextStrip = **nextColumn;
+                    const auto left = juce::ModifierKeys::leftButtonModifier;
+                    const juce::Point<float> grab{20.f, 8.f};
+                    const auto drop = grab.translated(static_cast<float>(sounding->getX() - nextStrip.getX()), 0.f);
+                    nextStrip.mouseDown(pressAt(nextStrip, grab, left));
+                    nextStrip.mouseDrag(dragAt(nextStrip, grab, drop, left));
+                    nextStrip.mouseUp(dragAt(nextStrip, grab, drop));
+                    check(integrated.undoTitle(false) == "Undo Move Track", "the strip title drag is one track move");
+                }
                 integrated.mark(DirtySet::All);
                 integrated.frame();
                 const MixerStrip *two = nullptr, *moved = nullptr;
@@ -19243,6 +19687,7 @@ int main(int argc, char **argv) {
     trace("firstRunAudioInput", [&] { firstRunAudioInput(temp.path()); });
     trace("liveParity", [&] { liveParity(commands, temp.path(), write); });
     trace("groupTracks", [&] { groupTracks(commands, temp.path()); });
+    trace("trackRenderMenu", [&] { trackRenderMenu(commands, temp.path()); });
     trace("footRows", [&] { footRows(commands, temp.path()); });
     trace("newProject", [&] { newProject(commands, temp.path()); });
     trace("trackColoursStay", [&] { trackColoursStay(commands, temp.path()); });

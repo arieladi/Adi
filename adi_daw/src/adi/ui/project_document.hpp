@@ -2,6 +2,7 @@
 #pragma once
 #include "adi/builtin_catalog.hpp"
 #include "adi/device_copy.hpp"
+#include "adi/device_presets.hpp"
 #include "adi/sample_slots.hpp"
 #include "adi/engine/audio_recording.hpp"
 #include "adi/engine/param_ops.hpp"
@@ -205,6 +206,17 @@ class ProjectDocument final : public engine::BlockProcessor {
     bool mixerDragging() const noexcept { return mixerDrag_ != nullptr; }
     // Auto Gain Stage (ADR-0195 d4): one offline command, one undo step.
     bool autoGainStage(bool lufs);
+    // One track render at a time. The window thread owns plug-in life cycles
+    // and the final edit, while the worker reads and renders its own snapshot.
+    void configureFreezeTail(double seconds) noexcept;
+    void configureTrackRenderDispatch(std::function<void(std::function<void()>)> post);
+    bool freezeTrack(std::int64_t track);
+    bool unfreezeTrack(std::int64_t track);
+    bool flattenTrack(std::int64_t track);
+    bool bounceTrackToNewTrack(std::int64_t track);
+    bool bounceTrackInPlace(std::int64_t track);
+    bool trackRenderRunning() const noexcept { return trackRender_ != nullptr; }
+    std::optional<std::string> takeTrackRenderStatus();
     // A device edit from the strip (enable, remove, panel), as one op.
     bool deviceAction(const std::string &op, Payload payload);
     // Live's device clipboard (manual 23.2.1; N18, #394). Copy reads the device's stored state only,
@@ -233,6 +245,10 @@ class ProjectDocument final : public engine::BlockProcessor {
     // An effect loads as `insertPlugin` places it.
     bool loadPlugin(const rows::PluginRef &, std::int64_t track, std::optional<std::int64_t> before = {},
                     const RecordingDefaults *defaults = nullptr);
+    bool saveDevicePreset(const DevicePanelData &, const std::filesystem::path &library,
+                          const std::string &name, std::filesystem::path &saved);
+    std::int64_t loadDevicePreset(preset::Preset, std::int64_t track, std::optional<std::int64_t> before,
+                                  const std::optional<rows::PluginRef> &installed = {});
     bool addMixFunction(mix::Function, std::int64_t track);
     std::vector<DeviceKeyChoice> deviceKeyChoices(const DevicePanelData&);
     bool setDeviceKeyChoice(const DevicePanelData&,const DeviceKeyChoice&);
@@ -283,6 +299,11 @@ class ProjectDocument final : public engine::BlockProcessor {
     WaveformCache &waveforms() noexcept { return waveforms_; }
 
   private:
+    enum class TrackRenderKind { Freeze, BounceToNew, BounceInPlace };
+    struct TrackRenderWork;
+    bool startTrackRender(TrackRenderKind, std::int64_t track);
+    void pollTrackRender();
+    void stopTrackRender();
     bool finishInsert(PreparedBuiltinInsert);
     ProjectDocument(std::unique_ptr<Store>, std::string name);
     // The clock the capture's timers run on: steady milliseconds, the same for the timer's drain
@@ -317,6 +338,11 @@ class ProjectDocument final : public engine::BlockProcessor {
     ViewStateStore views_;
     SessionState sessionState_;
     engine::Session session_;
+    engine::DeviceLoader renderLoader_;
+    std::unique_ptr<TrackRenderWork> trackRender_;
+    std::optional<std::string> trackRenderStatus_;
+    std::function<void(std::function<void()>)> postTrackRenderHost_;
+    double freezeTailSeconds_ = 4.0;
     engine::ParamOps parameterOps_; // destroyed before Session and its instances
     struct SurfaceGesture {
         std::uint64_t instance = 0;
