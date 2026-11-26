@@ -17202,11 +17202,6 @@ int main(int argc, char **argv) {
                               sel.end == pos0 + step && clipAt() != nullptr && clipAt()->posTicks == pos0 &&
                               integrated.error().find("split") != std::string::npos,
                           "a selection holding part of a clip stays, and the Status Bar says it waits for split");
-                    point(pos0);
-                    integrated.say({});
-                    check(press(juce::KeyPress::returnKey) && !arrangement.canvas.keyResizing() &&
-                              integrated.error().find("content offset") != std::string::npos,
-                          "Enter at a clip's start says moving its start waits for a content offset");
                     point(end0);
                     const auto undoBefore = integrated.undoTitle(false);
                     check(press(juce::KeyPress::returnKey) && arrangement.canvas.keyResizing() &&

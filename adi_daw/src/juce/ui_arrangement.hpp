@@ -334,14 +334,17 @@ class ArrangementCanvas final : public juce::Component,
     bool arrow(bool forward, const juce::ModifierKeys &);
     // The nearest clip edge on the selected track after `tick`, or before it; `tick` if none.
     std::int64_t clipEdge(std::int64_t tick, bool forward) const;
-    // Deletes or switches the selected clip: one op, through the root.
-    bool clipEdit(const char *op, Payload payload, const char *label);
+    enum class ResizeEdge { None, Left, Right };
+    void beginResize(const engine::ClipNode &, std::int64_t track, ResizeEdge);
+    void resizeTo(std::int64_t tick, std::int64_t minLength);
+    std::optional<std::int64_t> commitResize();
     // Shift+click: the selection from its anchor to the point clicked, across tracks too (§6.9).
     void extendTo(int x, int y, bool snapToGrid);
     // Delete or 0 on a time selection, on every selected track, as one undo step.
     bool rangeEdit(bool deactivate);
     std::int64_t moving_ = 0, movingFrom_ = 0, movingTo_ = 0, grabTicks_ = 0, movingSource_ = 0, movingTrack_ = 0;
-    std::int64_t resizing_ = 0, resizeStart_ = 0, resizeFrom_ = 0, resizeLength_ = 0;
+    std::int64_t resizing_ = 0, resizeTrack_ = 0, resizeStart_ = 0, resizeFrom_ = 0, resizeLength_ = 0;
+    ResizeEdge resizeEdge_ = ResizeEdge::None;
     bool keyResize_ = false;
     // A plain press on the bar of one of several selected clips keeps them for the drag; released
     // without one, it selects that clip alone, from where it was pressed.
@@ -358,8 +361,8 @@ class ArrangementCanvas final : public juce::Component,
     // with the track it lands on (`clipsAcross`); the track a clip is drawn on while dragging.
     std::vector<std::pair<std::int64_t, std::int64_t>> movingAcross_;
     std::int64_t movingTargetOf(std::int64_t clip) const noexcept;
-    // The clip's bar under a point, and whether the point is on its right edge.
-    const engine::ClipNode *barAt(int x, int y, std::int64_t &track, bool &edge) const;
+    // The clip's bar under a point and the edge closest to the pointer, if within reach.
+    const engine::ClipNode *barAt(int x, int y, std::int64_t &track, ResizeEdge &edge) const;
     // A group's lane, row `at`: Live's overview of the clips of what it holds.
     void paintGroupLane(juce::Graphics &, std::size_t at, int y, int h, juce::Colour) const;
     // An audio clip's waveform in its body, from `left` to `right` and `top` to `bottom`, the clip
