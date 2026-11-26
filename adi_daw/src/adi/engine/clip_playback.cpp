@@ -497,6 +497,23 @@ public:
             }
             return;
         }
+        const auto offset = static_cast<std::int64_t>(io.blockOffset);
+        const auto firstSample = transport.sampleAt(offset);
+        const auto firstFrames = transport.contiguousFrames(offset, io.frames);
+        std::int64_t wrappedSample = 0, wrappedFrames = 0;
+        if (firstFrames < io.frames) {
+            const auto wrapOffset = offset + firstFrames;
+            wrappedSample = transport.sampleAt(wrapOffset);
+            // If the block wraps again, the second range already covers the
+            // whole loop. Further laps visit only samples in that range.
+            wrappedFrames = transport.contiguousFrames(wrapOffset, io.frames - firstFrames);
+        }
+        const auto intersects = [](const Clip& clip, std::int64_t start, std::int64_t frames) {
+            // Use a distance to avoid overflowing an exclusive end near the
+            // transport's saturated sample position.
+            return frames > 0 && start < clip.end &&
+                   (clip.start <= start || clip.start - start < frames);
+        };
         // One clip is not a sum: its samples go straight out, bit for bit.
         // Two or more may overlap, and then every sample is summed in double:
         // at 32 into `wide`, converted once at the end; at 64 the output is
@@ -519,7 +536,9 @@ public:
                 clip->request(clip->wanted(transport,maxFrames));
                 for(const auto number:required)if(number>=0)(void)clip->reserve(number);
             }
-            if(clip->warpPending())continue;
+            if(clip->warpPending() ||
+               (!intersects(*clip, firstSample, firstFrames) && !intersects(*clip, wrappedSample, wrappedFrames)))
+                continue;
             Page* page=nullptr; std::int64_t number=-1; std::uint32_t missing=0;
             for(std::int32_t i=0;i<io.frames;++i) {
                 const auto time=transport.sampleAt(io.blockOffset+i);
@@ -556,6 +575,7 @@ public:
 struct ClipPlayback::Impl {
     Transport& transport;
     std::int32_t maxFrames;
+    const bool synchronousReads;
     std::vector<std::unique_ptr<Clip>> clips;
     std::vector<ClipMediaSource> externalSources;
     std::vector<std::unique_ptr<TrackSource>> tracks;
@@ -564,12 +584,13 @@ struct ClipPlayback::Impl {
     std::atomic<const ClipPlayback::RequestSnapshotProbeForTest*> requestProbe{nullptr};
     // Last member so all workers join before any of their clips are destroyed.
     std::vector<std::jthread> workers;
-    Impl(Transport& t,std::int32_t f):transport(t),maxFrames(f){}
+    Impl(Transport& t,std::int32_t f,bool synchronous):transport(t),maxFrames(f),synchronousReads(synchronous){}
     ~Impl() { for(auto& worker:workers) worker.request_stop(); }
 };
 ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport& transport,
-                           double rate,std::int32_t channels,std::int32_t maxFrames, audio::ProgressiveDecoder* decoder)
-    :impl_(std::make_shared<Impl>(transport,maxFrames)) {
+                           double rate,std::int32_t channels,std::int32_t maxFrames, audio::ProgressiveDecoder* decoder,
+                           bool synchronousReads)
+    :impl_(std::make_shared<Impl>(transport,maxFrames,synchronousReads)) {
     if(!project) return;
     if(!std::isfinite(rate) || rate<44100 || rate>768000 || rate!=std::floor(rate) || channels<1 || channels>64 || maxFrames<1 || maxFrames>4096)
         throw std::runtime_error("clip playback format outside 44.1-768 kHz integer rate / 1-64 channels / 1-4096 frames");
@@ -775,7 +796,7 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
     for(auto& clip:impl_->clips)
         impl_->externalSources.push_back({clip->clipId,clip->mediaId,fs::absolute(clip->path),std::move(clip->storedBlake3)});
     for(auto& t:impl_->tracks) t->owner=impl_;
-    if(impl_->clips.empty()) return;
+    if(impl_->clips.empty() || impl_->synchronousReads) return;
     // A single worker handles native-rate playback and small conversion jobs.
     // Spread heavier conversion work without increasing the number of workers
     // with every added clip. Each clip still has exactly one page writer.
@@ -853,9 +874,9 @@ std::vector<std::string> ClipPlayback::decodeProblems() const {
     }
     return result;
 }
-bool ClipPlayback::prime(std::chrono::milliseconds timeout) {
+bool ClipPlayback::prime(std::chrono::milliseconds timeout,std::stop_token stop) {
     if(audio::onAudioThread)return false;
-    return primeAt(impl_->transport,timeout);
+    return primeTargets(impl_->transport,nullptr,timeout,true,stop);
 }
 bool ClipPlayback::waitForWarp(std::stop_token stop) const {
     if(audio::onAudioThread)return false;
@@ -911,15 +932,16 @@ bool ClipPlayback::primeAt(const Transport& snapshot,const Transport& alternate,
     return primeTargets(snapshot,&alternate,timeout,waitForPendingWarp);
 }
 bool ClipPlayback::primeTargets(const Transport& snapshot,const Transport* alternate,std::chrono::milliseconds timeout,
-                                bool waitForPendingWarp) {
+                                bool waitForPendingWarp,std::stop_token stop) {
     if(audio::onAudioThread || timeout.count()<0)return false;
     // One stable request for the entire wait. In particular, a driver advancing
     // the live Transport cannot move a candidate's readiness target mid-wait.
     const Transport target=snapshot;
     const Transport other=alternate?*alternate:Transport{};
+    const bool synchronous=impl_->synchronousReads;
     auto wanted=[&](const Clip& clip,std::array<std::int64_t,slots>& pages) {
-        pages=clip.wanted(target,impl_->maxFrames);
-        if(alternate)for(const auto number:clip.wanted(other,impl_->maxFrames)) {
+        pages=clip.wanted(target,impl_->maxFrames,!synchronous);
+        if(alternate)for(const auto number:clip.wanted(other,impl_->maxFrames,!synchronous)) {
             if(number<0 || std::find(pages.begin(),pages.end(),number)!=pages.end())continue;
             const auto empty=std::find(pages.begin(),pages.end(),-1);
             if(empty==pages.end())return false;
@@ -930,11 +952,16 @@ bool ClipPlayback::primeTargets(const Transport& snapshot,const Transport* alter
     const auto started=std::chrono::steady_clock::now();
     std::array<std::int64_t,slots> pages;
     // Refuse the complete preparation before posting any partial union.
-    for(const auto& clip:impl_->clips)if(!wanted(*clip,pages))return false;
+    if(alternate)for(const auto& clip:impl_->clips)if(!wanted(*clip,pages))return false;
     const auto releaseAll=[&]()noexcept{for(auto& clip:impl_->clips)clip->releaseAdmission();};
-    releaseAll();
-    for(auto& clip:impl_->clips){(void)wanted(*clip,pages);clip->request(pages);}
+    if(!synchronous)releaseAll();
+    for(auto& clip:impl_->clips) {
+        (void)wanted(*clip,pages);
+        if(synchronous)clip->trimAdmission(pages);
+        clip->request(pages);
+    }
     do {
+        if(stop.stop_requested()){releaseAll();return false;}
         bool ready=true;
         for(auto& clip:impl_->clips) {
             if(clip->monitorInputOnly)continue;
@@ -945,9 +972,16 @@ bool ClipPlayback::primeTargets(const Transport& snapshot,const Transport* alter
             }
             if(!waitForPendingWarp && clip->warpPending())continue;
             (void)wanted(*clip,pages);
+            bool serviced=false;
             for(const auto number:pages) {
-                if(number<0)continue;
-                if(!clip->reserve(number))ready=false;
+                if(number<0 || clip->reserve(number))continue;
+                if(synchronous && !serviced && !impl_->stalled.load(std::memory_order_acquire)) {
+                    if(stop.stop_requested()){releaseAll();return false;}
+                    (void)clip->service(impl_->requestProbe.load(std::memory_order_acquire),false);
+                    if(clip->errors.load(std::memory_order_relaxed)){releaseAll();return false;}
+                    serviced=true;
+                }
+                if(!synchronous || !clip->reserve(number))ready=false;
             }
         }
         if(ready)return true;

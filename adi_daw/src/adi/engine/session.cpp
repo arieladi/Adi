@@ -1033,7 +1033,8 @@ bool Session::rebuild() {
     try {
         const DeviceChainFn eventPath = eventPathFor(model_);
         nextClips = std::make_shared<ClipPlayback>(clipProject_, transport_, spec_.sampleRate,
-                                                spec_.channels, spec_.maxFrames, spec_.progressiveDecoder);
+                                                spec_.channels, spec_.maxFrames, spec_.progressiveDecoder,
+                                                spec_.synchronousClipReads);
         nextMidi = std::make_shared<MidiClips>(playbackModel_,transport_,spec_.sampleRate,midiState_,
                                                eventPath,clipNoteExpressions(*clipProject_));
         prepareInputMonitors(*timing, model_, *nextClips);
