@@ -79,7 +79,7 @@ struct Page {
     // overwrite and no audio-side retry loop.
     std::atomic<int> state{0};
     std::atomic<std::int64_t> number{-1};
-    std::vector<float> data;
+    std::unique_ptr<float[]> data;
 };
 struct PrefixPending {};
 struct WavSource {
@@ -159,6 +159,9 @@ struct Clip {
     Clip(const Clip&) = delete;
     Clip& operator=(const Clip&) = delete;
     std::array<Page, slots> pages;
+    // Only the page writer allocates or releases storage while it owns a slot.
+    std::size_t allocatedPages = 0;
+    std::chrono::steady_clock::time_point releaseAfter{};
     // Single request producer/renderer only. Admission is a real lease: a
     // worker must not even temporarily claim a page until rendering releases
     // or supersedes it. No callback allocation or shared ownership operation.
@@ -338,13 +341,19 @@ struct Clip {
 
     void fill(Page& p, std::int64_t number) {
         const auto first=number*pageFrames;
-        std::fill(p.data.begin(),p.data.end(),0.0f);
+        const auto sampleCount=static_cast<std::size_t>(pageFrames)*channels;
+        if(!p.data) {
+            p.data=std::make_unique<float[]>(sampleCount);
+            ++allocatedPages;
+        } else {
+            std::fill_n(p.data.get(),sampleCount,0.0f);
+        }
         const auto count=std::min(pageFrames,length-first);
         if (rate==sourceRate) {
-            readSource(sourceStart+static_cast<std::uint64_t>(first),p.data.data(),static_cast<std::uint32_t>(count));
+            readSource(sourceStart+static_cast<std::uint64_t>(first),p.data.get(),static_cast<std::uint32_t>(count));
         } else if (static_cast<double>(rate) / sourceRate > 256.0) {
             std::vector<float> res = renderRange(first, count, rate);
-            std::copy_n(res.begin(), static_cast<std::size_t>(count)*channels, p.data.begin());
+            std::copy_n(res.begin(), static_cast<std::size_t>(count)*channels, p.data.get());
         } else {
             // Independent rationally aligned pages with real context either
             // side. Alignment makes the resampler phase identical at a page
@@ -368,7 +377,7 @@ struct Clip {
             }
             if(sourceRate==44100 && rate==48000 && channels==2 &&
                detail::renderSinc441To480(input,first-outBegin,
-                   std::span(p.data.data(),static_cast<std::size_t>(count)*channels))) {
+                   std::span(p.data.get(),static_cast<std::size_t>(count)*channels))) {
                 p.number=number;
                 return;
             }
@@ -380,10 +389,33 @@ struct Clip {
             const int error=src_simple(&data,SRC_SINC_BEST_QUALITY,channels);
             if(error!=0 || data.output_frames_gen!=outputCount) throw std::runtime_error("resampler did not fill page");
             std::copy_n(output.data()+static_cast<std::size_t>(first-outBegin)*channels,
-                        static_cast<std::size_t>(count)*channels,p.data.data());
+                        static_cast<std::size_t>(count)*channels,p.data.get());
         }
         p.number=number;
     }
+    bool reclaimPages(std::uint32_t seq) noexcept {
+        if(!allocatedPages)return false;
+        bool reclaimed=false;
+        for(auto& page:pages) {
+            if(!page.data)continue;
+            int state=page.state.load(std::memory_order_relaxed);
+            if(state!=0 && state!=2)continue;
+            if(!page.state.compare_exchange_strong(state,1,std::memory_order_acquire))continue;
+            // A seek may have posted fresh needs or admitted a page just as
+            // the worker tried to retire it. Keep the new request intact.
+            if(requestSeq.load(std::memory_order_seq_cst)!=seq) {
+                page.state.store(state,std::memory_order_release);
+                break;
+            }
+            page.data.reset();
+            --allocatedPages;
+            page.number=-1;
+            page.state.store(0,std::memory_order_release);
+            reclaimed=true;
+        }
+        return reclaimed;
+    }
+
     bool service(const ClipPlayback::RequestSnapshotProbeForTest* probe,bool interleave) {
         if(failed)return false;
         if(warp && !reader) {
@@ -415,6 +447,16 @@ struct Clip {
             ~CompletedProbe(){if(probe && probe->afterService)probe->afterService(probe->context);}
         } completed{probe};
         if(probe && probe->afterSnapshot)probe->afterSnapshot(probe->context,w.front());
+        if(w.front()<0) {
+            if(!allocatedPages)return false;
+            // Hold a short window for nearby seeks before returning the
+            // storage of clips outside the current block and read-ahead.
+            const auto now=std::chrono::steady_clock::now();
+            if(releaseAfter==std::chrono::steady_clock::time_point{})
+                releaseAfter=now+std::chrono::milliseconds(250);
+            return now>=releaseAfter && reclaimPages(seq);
+        }
+        releaseAfter={};
         bool worked=false;
         for(const auto number:w) {
             if(number<0) continue;
@@ -549,7 +591,7 @@ public:
                     number=n/clip->pageFrames; page=clip->acquire(number);
                 }
                 if(!page) { ++missing; continue; }
-                const auto* sample=page->data.data()+static_cast<std::size_t>(n%clip->pageFrames)*clip->channels;
+                const auto* sample=page->data.get()+static_cast<std::size_t>(n%clip->pageFrames)*clip->channels;
                 if constexpr (std::is_same_v<T,float>) {
                     const float gain=clip->envelope(time);
                     for(std::int32_t c=0;c<io.channels;++c) {
@@ -786,7 +828,6 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             }
             if(!std::isfinite(row.gainDb) || std::abs(row.gainDb)>120) throw std::runtime_error("invalid clip gain; silent");
             clip->gain=static_cast<float>(std::pow(10.0,row.gainDb/20)); clip->gainWide=std::pow(10.0,row.gainDb/20); clip->mode=static_cast<int>(a->channelMode); clip->track=row.trackId;
-            for(auto& p:clip->pages) p.data.resize(static_cast<std::size_t>(clip->pageFrames)*clip->channels);
             auto track=std::find_if(impl_->tracks.begin(),impl_->tracks.end(),[&](const auto& x){return x->track==row.trackId;});
             if(track==impl_->tracks.end()) { impl_->tracks.push_back(std::make_unique<TrackSource>(transport,maxFrames,channels,row.trackId)); track=impl_->tracks.end()-1; }
             (*track)->clips.push_back(clip.get()); impl_->clips.push_back(std::move(clip));
@@ -959,6 +1000,10 @@ bool ClipPlayback::primeTargets(const Transport& snapshot,const Transport* alter
         (void)wanted(*clip,pages);
         if(synchronous)clip->trimAdmission(pages);
         clip->request(pages);
+        // A queued export has no page workers and advances block by block.
+        // Release pages for clips its caller has passed.
+        if(synchronous && pages.front()<0 && clip->allocatedPages)
+            (void)clip->reclaimPages(clip->requestSeq.load(std::memory_order_seq_cst));
     }
     do {
         if(stop.stop_requested()){releaseAll();return false;}

@@ -1384,6 +1384,154 @@ void mixerDragHeard(const std::filesystem::path &dir) {
           "a pan drag lands as one step too");
     doc->release();
 }
+struct ProcessMemory {
+    std::uint64_t residentKiB = 0, peakKiB = 0;
+};
+ProcessMemory processMemory() {
+    ProcessMemory memory;
+#if defined(__linux__)
+    std::ifstream status("/proc/self/status");
+    std::string field;
+    while (std::getline(status, field)) {
+        if (field.starts_with("VmRSS:") || field.starts_with("VmHWM:")) {
+            const auto value = field.find_first_of("0123456789");
+            if (value == std::string::npos)
+                continue;
+            const auto kib = std::strtoull(field.c_str() + value, nullptr, 10);
+            if (field.starts_with("VmRSS:"))
+                memory.residentKiB = kib;
+            else
+                memory.peakKiB = kib;
+        }
+    }
+#endif
+    return memory;
+}
+void manyTrackMemory(const std::filesystem::path &dir) {
+    constexpr std::int64_t trackCount = 256, firstAddedTrack = 8, faderTrack = 4;
+    const auto file = dir / "many-track-memory.adi";
+    {
+        StoreError error{};
+        auto store = Store::createNewProject(file, error);
+        check(store != nullptr, "many-track memory: create the project fixture");
+        if (!store)
+            return;
+        std::vector<OpRequest> tracks;
+        // A new Set already has four arrangement tracks, two returns and Main.
+        for (std::int64_t i = 0; i < trackCount - 4; ++i) {
+            auto &add = tracks.emplace_back();
+            add.opType = "track.create";
+            add.payload = {{"id", firstAddedTrack + i}, {"kind", "audio"}, {"name", "Empty track"}};
+        }
+        const auto seeded = OpJournal(*store).commit(tracks);
+        check(seeded.ok, "many-track memory: seed 256 empty arrangement tracks");
+        if (!seeded.ok)
+            return;
+    }
+    const auto report = [](const char *phase, ui::ProjectDocument *doc, ProcessMemory memory) {
+        std::printf("256 tracks %s: RSS %llu KiB, HWM %llu KiB", phase,
+                    static_cast<unsigned long long>(memory.residentKiB), static_cast<unsigned long long>(memory.peakKiB));
+        if (doc != nullptr) {
+            auto &host = doc->session().graph();
+            const auto graph = host.currentGraph();
+            const auto stats = host.stats();
+            std::printf(", PDC %zu bytes, graphs %lld published / %lld swapped / %lld reclaimed",
+                        graph != nullptr ? graph->compensationBytes() : 0,
+                        static_cast<long long>(stats.published), static_cast<long long>(stats.swaps),
+                        static_cast<long long>(stats.reclaimed));
+        }
+        std::printf("\n");
+    };
+    report("before open", nullptr, processMemory());
+    Tone tone;
+    std::string error;
+    auto doc = ui::ProjectDocument::open(file, false, {}, error);
+    check(doc && doc->session().model().tracks.size() == trackCount + 3, "many-track memory: open all 256 tracks");
+    if (!doc)
+        return;
+    report("open", doc.get(), processMemory());
+    const auto openPdc = doc->session().graph().currentGraph()->compensationBytes();
+
+    // A test signal on one otherwise empty track makes the same real callback
+    // path prove the fader still sounds right. It adds no media or plugin.
+    doc->session().setSourcesFor([&](std::int64_t id) {
+        return id == faderTrack ? std::vector<engine::Node *>{&tone} : std::vector<engine::Node *>{};
+    });
+    constexpr int frames = 512;
+    doc->prepare(48000, frames);
+    report("prepare", doc.get(), processMemory());
+    const auto preparedPdc = doc->session().graph().currentGraph()->compensationBytes();
+    std::array<float, frames> l{}, r{};
+    float *outputs[]{l.data(), r.data()};
+    engine::AudioIo io;
+    io.out = outputs;
+    io.numOut = 2;
+    io.frames = frames;
+    std::int64_t stream = 0;
+    const auto block = [&] {
+        io.streamTimeSamples = stream;
+        doc->process(io);
+        stream += frames;
+        doc->tick(stream / 48);
+        return std::max(*std::max_element(l.begin(), l.end()), *std::max_element(r.begin(), r.end()));
+    };
+    doc->mailbox().post(ui::TransportMailbox::Command::Play);
+    for (int i = 0; i < 8; ++i)
+        (void)block();
+    const double base = block();
+    check(base > .05, "many-track memory: the graph is actually playing the test signal");
+    report("callbacks and ticks", doc.get(), processMemory());
+
+    const auto storedDb = [&] {
+        return doc->store().db().execAndGet("SELECT volume_db FROM mixer_strip WHERE track_id = 4").getDouble();
+    };
+    const auto ops = OpJournal(doc->store()).count();
+    const gesture::RelativeScalarSelection fader{gesture::ScalarKind::TrackVolume, faderTrack, {}, {-70, 6, -150}};
+    const bool started = doc->beginMixerDrag(fader, std::nullopt, "Change Track Volume");
+    check(started, "many-track memory: start a real live fader gesture");
+    report("fader begin", doc.get(), processMemory());
+    if (!started) {
+        doc->release();
+        return;
+    }
+    const auto afterBegin = doc->session().graph().stats();
+    ProcessMemory duringDrag;
+    bool moved = true;
+    for (int i = 1; i <= 20; ++i) {
+        moved = doc->mixerDrag(-i) && moved;
+        (void)block();
+        const auto memory = processMemory();
+        duringDrag.residentKiB = std::max(duringDrag.residentKiB, memory.residentKiB);
+        duringDrag.peakKiB = std::max(duringDrag.peakKiB, memory.peakKiB);
+    }
+    const double dragged = block();
+    report("20 fader updates (peak)", doc.get(), duringDrag);
+    check(moved && storedDb() == 0 && OpJournal(doc->store()).count() == ops &&
+              std::abs(dragged / base - .1) < .025,
+          "many-track memory: the gesture changes the sound without writing history");
+    check(doc->session().graph().stats().published == afterBegin.published,
+          "many-track memory: live fader updates do not publish another graph");
+    check(doc->endMixerDrag() && std::abs(storedDb() + 20) < 1e-6 &&
+              OpJournal(doc->store()).count() == ops + 1 && doc->ops().nextUndo() &&
+              doc->ops().nextUndo()->label == "Change Track Volume",
+          "many-track memory: fader release writes one Undo step at the final level");
+    report("fader release", doc.get(), processMemory());
+    for (int i = 0; i < 8; ++i)
+        (void)block();
+    check(doc->ops().undo().ok && doc->synchronise(), "many-track memory: undo the fader edit");
+    for (int i = 0; i < 8; ++i)
+        (void)block();
+    check(storedDb() == 0 && std::abs(block() / base - 1.) < .025,
+          "many-track memory: one Undo restores the level and the sound");
+    report("Undo, callbacks and collection", doc.get(), processMemory());
+    // Leave room for real summing inputs and Track Delay history. Most edges
+    // on the empty strips do not need an 8K-sample reserve of their own.
+    check(std::max(openPdc, preparedPdc) < 36U * 1024U * 1024U,
+          "many-track memory: empty-track PDC rings stay below 36 MiB");
+    doc->release();
+    doc.reset();
+    report("close", nullptr, processMemory());
+}
 // walk-A A21: an edit committed during playback never interrupts it (Live). A clip plays; a fader drag
 // let go and a plain fader commit each rebuild the graph, and no block after either is silent while the
 // clip sounds. Blocks run back to back, as a callback does, with no time for a cold reader to catch up.
@@ -1921,6 +2069,11 @@ int main(int argc, char **argv) {
     if (argc == 2 && std::string_view(argv[1]) == "--many-device-speed-only") {
         test::TempDirectory speedDir("ui_document", "many-device-tick");
         manyDeviceTickSpeed(speedDir.path());
+        return failures != 0;
+    }
+    if (argc == 2 && std::string_view(argv[1]) == "--many-track-memory-only") {
+        test::TempDirectory memoryDir("ui_document", "many-track-memory");
+        manyTrackMemory(memoryDir.path());
         return failures != 0;
     }
     if (argc == 2 && std::string_view(argv[1]) == "--long-take-speed-only") {
