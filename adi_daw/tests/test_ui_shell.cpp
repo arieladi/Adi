@@ -16651,6 +16651,10 @@ int main(int argc, char **argv) {
         auto &arrangement = integrated.arrangement;
         integrated.setSize(1200, 720);
         const auto cmdKey = juce::ModifierKeys::commandModifier;
+        arrangement.geometry.selection.track = 1;
+        check(!integrated.command(AppCommands::DeleteTrack) && document->view().current()->findTrack(1) &&
+                  integrated.error().find("Main track cannot be deleted") != std::string::npos,
+              "SC-01: Delete Track on Main says why and preserves it");
         arrangement.geometry.selection.track = 2;
         check(integrated.keyPressed(juce::KeyPress('t', cmdKey, 0)),
               "Ctrl/Cmd+T inserts an audio track");
