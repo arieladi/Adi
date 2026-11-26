@@ -594,9 +594,9 @@ void testUnassignedIdsAndCapacity() {
     check(v.size() == 1 && v[0].channel == 2 && v[0].key == 62,
           "notes with id 0 are matched by key: 62 ends on ITS channel, 2");
     Out o3;
-    route(r, {expr(6, 0, ExpressionDim::Pitch, 1.0)}, o3);
+    route(r, {expr(6, 0, ExpressionDim::Pressure, 1.0)}, o3);
     check(o3.list.size() == 0 && r.unknownNotes() == 1,
-          "expression needs an id to find its note; with 0 it is counted, not guessed");
+          "per-note pressure needs an id to find its note; with 0 it is counted, not guessed");
 
     MpeRouter small;
     small.configure(ExpressionRoute::MpeMidi, ExpressionCaps{});

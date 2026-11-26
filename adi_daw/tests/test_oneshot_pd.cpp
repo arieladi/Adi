@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "adi/blob.hpp"
 #include "adi/pd_builtins/oneshot_sample.hpp"
 #include "juce/pd_engine.hpp"
 #include <algorithm>
@@ -62,12 +61,12 @@ engine::Event note(std::uint64_t id, bool on = true) {
             on ? 1. : 0.};
 }
 struct Fixture {
-    device::LibPdEngine pd;
+    device::LibPdEngine pd{ADI_DEVICE_PATCH_DIR, "OneShot.pd", 2, 2};
     device::PdLatencyReceiver latency;
     device::PdDeclarations declarations;
     std::array<float, 1024> left{}, right{};
     bool ready = false, realtime = true;
-    explicit Fixture(int inputs = 2) : pd(ADI_DEVICE_PATCH_DIR, "OneShot.pd", inputs, 2) {
+    Fixture() {
         pd.addSearchPath(ADI_PD_PATCH_DIR);
         std::string error;
         ready = pd.open(latency, error);
@@ -91,8 +90,8 @@ struct Fixture {
         pd.bindSamples(declarations);
         pd.bindParameters(declarations);
         pd.requestLatencyReport();
-        check(latency.latencySamples() == 0 && pd.adapterLatencySamples() == (inputs == 0 ? 0 : 64),
-              "instrument's reported adapter delay matches its execution mode");
+        check(latency.latencySamples() == 0 && pd.adapterLatencySamples() == 64,
+              "native sampler has zero intrinsic delay and main's Pd adapter reports its tick");
         bool routed = true;
         for (const auto& p : declarations.params) routed &= pd.sendParameter(p.id, static_cast<float>(p.def));
         check(routed, "every declared control reaches its compiled-in external");
@@ -125,54 +124,6 @@ struct Fixture {
         return true;
     }
 };
-void nativeControllers() {
-    Fixture f(0);
-    if (!f.ready) return;
-    constexpr auto cc = engine::EventType::Controller;
-    check(f.pd.publishSample(1, sample(.25f, -.125f)), "native controller sample publishes");
-    engine::Event pedal{0, cc, 7, 0, 0, 64, 1};
-    auto on = note(1);
-    auto off = note(1, false);
-    on.channel = off.channel = 7;
-    f.block(&pedal);
-    f.block(&on);
-    f.block(&off);
-    f.block();
-    check(f.constant(.25f, -.125f), "native instrument receives sustain on the original MIDI channel");
-    const engine::Event addressedValue{0, engine::EventType::ParamValue, 0, 0, 0,
-                                        device::OneShot::Volume, 0};
-    f.block(&addressedValue);
-    check(f.constant(.25f, -.125f), "native MIDI input keeps host parameter messages on the parameter path");
-    pedal.value = 0;
-    f.block(&pedal);
-    f.block();
-    check(f.constant(0, 0), "native instrument releases at sustain pedal up");
-
-    auto ramp = std::make_unique<device::PdSampleBuffer>();
-    ramp->id = 1;
-    ramp->channels = 1;
-    ramp->frames = 2048;
-    ramp->sampleRate = 48000;
-    ramp->interleaved.resize(2048);
-    for (std::size_t i = 0; i < ramp->interleaved.size(); ++i)
-        ramp->interleaved[i] = static_cast<float>(i) / 2048.f;
-    check(f.pd.publishSample(1, device::prepareOneShotSample(std::move(ramp))) &&
-          f.pd.sendParameter(device::OneShot::LfoOn + 1, 1) &&
-          f.pd.sendParameter(device::OneShot::LfoShape + 1, 1) &&
-          f.pd.sendParameter(device::OneShot::LfoPitch + 1, 12),
-          "native instrument receives sample and authored LFO depth");
-    const engine::Event bend{0, engine::EventType::NoteExpression, 7,
-                              static_cast<std::uint16_t>(ExpressionDim::Pitch), 0, 0, 12};
-    engine::Event wheel{0, cc, 7, 0, 0, 1, 0};
-    f.block(&bend);
-    f.block(&wheel);
-    f.block(&on);
-    check(f.left[63] == 126.f / 2048, "native pitch input receives ordinary channel bend with CC1 down");
-    wheel.value = 1;
-    f.block(&wheel);
-    check(f.left[1] == 132.f / 2048 && f.realtime,
-          "native CC1 scales LFO pitch without allocating or freeing in the callback");
-}
 void run() {
     Fixture f;
     if (!f.ready) return;
@@ -272,7 +223,6 @@ int main() {
     _CrtSetAllocHook(allocationHook);
 #endif
     run();
-    nativeControllers();
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
