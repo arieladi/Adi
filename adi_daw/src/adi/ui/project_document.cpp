@@ -402,14 +402,22 @@ bool ProjectDocument::settleParameters() {
     }
     return true;
 }
-bool ProjectDocument::capturePluginState() {
+bool ProjectDocument::capturePluginState(std::optional<std::int64_t> deviceId) {
     if (store_->readOnly())
         return true;
     if (!synchronise())
         return false;
-    if (mixerDrag_ && !endMixerDrag())
+    if (deviceId) {
+        const auto *entry = session_.entryFor(*deviceId);
+        if (!entry || entry->placeholder || entry->parked || entry->retired)
+            return true;
+    }
+    if (!deviceId && mixerDrag_ && !endMixerDrag())
         return false;
-    const auto captured = parameterOps_.snapshotAll(captureNowMs(), engine::ParamOps::SnapshotGestures::FinishOpen);
+    const auto now = captureNowMs();
+    const auto finish = engine::ParamOps::SnapshotGestures::FinishOpen;
+    const auto captured = deviceId ? parameterOps_.snapshotDeviceState(*deviceId, now, finish)
+                                   : parameterOps_.snapshotAll(now, finish);
     // Several independently committed devices may precede a refusal. Publish those writes too.
     if (captured.journalOps != 0) {
         view_.refresh(*store_, session_.overriddenLanes());
@@ -558,7 +566,7 @@ bool ProjectDocument::autoGainStage(bool lufs) {
     return synchronise();
 }
 bool ProjectDocument::deviceAction(const std::string &op, Payload payload) {
-    if (op == "device.remove" && !capturePluginState())
+    if (op == "device.remove" && !capturePluginState(payload.value("id", std::int64_t{})))
         return false;
     OpRequest r;
     r.opType = op;
@@ -578,7 +586,7 @@ bool ProjectDocument::deviceAction(const std::string &op, Payload payload) {
     return true;
 }
 bool ProjectDocument::copyDevice(std::int64_t id, DeviceCopy &out) {
-    if (!capturePluginState())
+    if (!capturePluginState(id))
         return false;
     auto copy = readDeviceCopy(*store_, id);
     if (!copy.ok) {

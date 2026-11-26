@@ -81,7 +81,8 @@ class ProjectDocument final : public engine::BlockProcessor {
     static StoreFileResult runCollectAndExport(const ExportJob &);
     // Finish pending device edits and capture even plug-ins that never report changed state.
     // Call before closing the document or reading the file for an offline render.
-    bool capturePluginState();
+    // An individual device copy or removal supplies its target.
+    bool capturePluginState(std::optional<std::int64_t> deviceId = {});
     bool synchronise();
     void tick(std::int64_t milliseconds);
     // Commits every parameter edit still held in the capture, each as the undo step it was going to

@@ -226,6 +226,9 @@ public:
     /// Call before publishing a named snapshot, copying or closing the Store.
     [[nodiscard]] SnapshotAllResult snapshotAll(std::int64_t nowMs,
                                                 SnapshotGestures = SnapshotGestures::Completed);
+    /// As for snapshotAll, but read fresh state from the selected device only.
+    [[nodiscard]] SnapshotAllResult snapshotDeviceState(std::int64_t deviceId, std::int64_t nowMs,
+                                                        SnapshotGestures);
 
     /// Session-bound: copy the first offered group's retained resources.
     /// Taking/dropping this copy cannot release common ownership. Standalone:
