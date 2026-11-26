@@ -3532,6 +3532,16 @@ void splitAndRangeEdits(AppCommands &commands, settings::AppSettings &settings, 
     geo.grid.fixed = true;
     geo.grid.fixedQuarters = 1.;
     geo.grid.snap = true;
+    const juce::Point<float> body(static_cast<float>(geo.x(bar / 2)) + 1.f,
+                                 static_cast<float>(laneTop(root, 2) + 20));
+    canvas.mouseDown(pressAt(canvas, body));
+    canvas.mouseUp(pressAt(canvas, body));
+    check(sel.track == 2 && sel.marked && sel.insert == bar / 2 && sel.start == sel.end && sel.clip == 0,
+          "SC-175: a plain clip body click places only the insert marker");
+    const auto clipsBeforeDelete = clipsOf(2);
+    canvas.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey));
+    root.frame();
+    check(clipsOf(2) == clipsBeforeDelete, "SC-175: Delete after a body click does not remove the clip");
     const auto dragInsideClip = [&](std::int64_t track, std::int64_t from, std::int64_t to) {
         const auto y = static_cast<float>(laneTop(root, track) + 20);
         const juce::Point<float> press(static_cast<float>(geo.x(from)) + 1.f, y);
@@ -8336,7 +8346,7 @@ void rangeSelection(AppCommands &commands, const std::filesystem::path &dir) {
     {
         const auto pick = juce::ModifierKeys::commandModifier;
         auto clickClip = [&](std::int64_t track, juce::ModifierKeys mods = {}) {
-            const juce::Point<float> at(x(bar) + 10, lane(track));
+            const juce::Point<float> at(x(bar) + 10, static_cast<float>(laneTop(root, track) + 5));
             canvas.mouseDown(pressAt(canvas, at, mods));
             canvas.mouseUp(pressAt(canvas, at, mods));
         };
@@ -17143,15 +17153,18 @@ int main(int argc, char **argv) {
             const auto origin =
                 peerRoot.getLocalPoint(&arrangement.canvas, juce::Point<int>{10, laneTop(integrated, 2) + 35})
                     .toFloat();
+            const auto title =
+                peerRoot.getLocalPoint(&arrangement.canvas, juce::Point<int>{10, laneTop(integrated, 2) + 5})
+                    .toFloat();
             juce::int64 when = 100000;
             auto mouse = [&](juce::Point<float> point, int mods) {
                 peer->handleMouseEvent(juce::MouseInputSource::InputSourceType::mouse, point,
                                        juce::ModifierKeys(mods), 1.f, 0.f, when += 100);
             };
             arrangement.geometry.selection.clip = 0;
-            mouse(origin, 0);
-            mouse(origin, juce::ModifierKeys::leftButtonModifier);
-            mouse(origin, 0);
+            mouse(title, 0);
+            mouse(title, juce::ModifierKeys::leftButtonModifier);
+            mouse(title, 0);
             check(arrangement.geometry.selection.clip == 1 && arrangement.geometry.selection.marked,
                   "peer dispatch hit-tests, selects the painted clip and places the marker");
             mouse(origin, juce::ModifierKeys::leftButtonModifier);
