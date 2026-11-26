@@ -48,6 +48,7 @@ class NoteEditor final : public juce::Component {
     // drag moves the selected notes, or their start or end edges; a drag in the Velocity lane
     // changes their velocities; a drag from empty space selects. Each gesture is one undo step.
     void mouseDown(const juce::MouseEvent &) override;
+    void mouseMove(const juce::MouseEvent &) override;
     void mouseDrag(const juce::MouseEvent &) override;
     void mouseUp(const juce::MouseEvent &) override;
     void mouseDoubleClick(const juce::MouseEvent &) override;
@@ -58,6 +59,7 @@ class NoteEditor final : public juce::Component {
     juce::TextButton &previewButton() noexcept { return preview_; }
     bool keySounding(int key) const noexcept;
     static constexpr int kKeysWidth = 44, kRulerHeight = 18, kVelocityHeight = 56;
+    static constexpr int kScrubHeight = 10;
     // The lane's height (manual 10.1: the divider between the key tracks and the lanes drags to
     // resize them): never lower than its header needs, and it leaves the key tracks four rows.
     static constexpr int kLaneFloor = 50, kKeysFloor = 48;
@@ -282,6 +284,7 @@ class NoteEditor final : public juce::Component {
     juce::Rectangle<int> notesArea() const noexcept;
     juce::Rectangle<int> velocityArea() const noexcept;
     juce::Rectangle<int> rulerArea() const noexcept;
+    juce::Rectangle<int> scrubArea() const noexcept;
     juce::Rectangle<int> keysArea() const noexcept;
     // The loop brace in the time ruler (manual 8.2.2): its left and right edge in this component;
     // none for a clip with no loop window.

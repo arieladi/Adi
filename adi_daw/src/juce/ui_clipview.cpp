@@ -673,15 +673,19 @@ std::int64_t NoteEditor::otherClipAt(juce::Point<int> at, std::uint64_t *note) c
 juce::Rectangle<int> NoteEditor::rulerArea() const noexcept {
     return {kKeysWidth, barsHeight(), std::max(0, getWidth() - kKeysWidth), kRulerHeight};
 }
+juce::Rectangle<int> NoteEditor::scrubArea() const noexcept {
+    const auto ruler = rulerArea();
+    return {ruler.getX(), ruler.getBottom(), ruler.getWidth(), kScrubHeight};
+}
 juce::Rectangle<int> NoteEditor::velocityArea() const noexcept {
     // As high as its divider left it, while the key tracks keep their floor; with no room for both, no lane.
-    const int room = getHeight() - kRulerHeight - barsHeight() - kStretchHeight - kKeysFloor;
+    const int room = getHeight() - scrubArea().getBottom() - kStretchHeight - kKeysFloor;
     const int h = room >= kLaneFloor ? std::clamp(laneHeight_, kLaneFloor, room) : 0;
     return {kKeysWidth, getHeight() - h, std::max(0, getWidth() - kKeysWidth), h};
 }
 void NoteEditor::setLaneHeight(int height) {
     // Held to the room there is once the editor has a size; before that, kept as given.
-    const int room = getHeight() - kRulerHeight - barsHeight() - kStretchHeight - kKeysFloor;
+    const int room = getHeight() - scrubArea().getBottom() - kStretchHeight - kKeysFloor;
     laneHeight_ = getHeight() > 0 ? std::clamp(height, kLaneFloor, std::max(kLaneFloor, room)) : std::max(kLaneFloor, height);
     keys.clampScroll(notesArea().getHeight());
     repaint();
@@ -691,11 +695,12 @@ juce::Rectangle<int> NoteEditor::laneDivider() const noexcept {
     return lane.isEmpty() ? lane : juce::Rectangle<int>(0, lane.getY() - 3, getWidth(), 6);
 }
 juce::Rectangle<int> NoteEditor::stretchArea() const noexcept {
-    return {kKeysWidth, barsHeight() + kRulerHeight, std::max(0, getWidth() - kKeysWidth), kStretchHeight};
+    const auto scrub = scrubArea();
+    return {scrub.getX(), scrub.getBottom(), scrub.getWidth(), kStretchHeight};
 }
 juce::Rectangle<int> NoteEditor::notesArea() const noexcept {
     const int bottom = getHeight() - velocityArea().getHeight();
-    const int top = barsHeight() + kRulerHeight + kStretchHeight;
+    const int top = stretchArea().getBottom();
     return {kKeysWidth, top, std::max(0, getWidth() - kKeysWidth), std::max(0, bottom - top)};
 }
 juce::Rectangle<int> NoteEditor::keysArea() const noexcept {
@@ -1814,6 +1819,18 @@ void NoteEditor::mouseDown(const juce::MouseEvent &e) {
     }
     if (clip == nullptr)
         return;
+    const auto scrub = scrubArea();
+    const bool inStrip = scrub.contains(from_);
+    if (inStrip || (e.mods.isShiftDown() && rulerArea().contains(from_))) {
+        const bool permanent = panel.root.commandSettings().get("lookfeel.permanentScrubAreas") == true;
+        if ((inStrip && permanent) || (e.mods.isShiftDown() && !permanent)) {
+            // As in Arrangement, launch quantization is applied once the transport owns it.
+            if (panel.root.playFrom(time.tick(static_cast<double>(e.position.x) - scrub.getX())))
+                panel.root.arrangement.followPaused = false;
+            return;
+        }
+        if (inStrip) return;
+    }
     if (std::uint64_t picked = 0; noteAt(from_) == nullptr) {
         if (const auto other = otherClipAt(from_, &picked); other != 0 && picked != 0 && e.mods.isShiftDown() && !panel.focus()) {
             auto &ids = otherIds(other);
@@ -2034,6 +2051,10 @@ void NoteEditor::mouseDown(const juce::MouseEvent &e) {
         drag_ = Drag::Band;
     }
     repaint();
+}
+void NoteEditor::mouseMove(const juce::MouseEvent &e) {
+    setMouseCursor(panel.details() && scrubArea().contains(e.getPosition())
+        ? juce::MouseCursor::PointingHandCursor : juce::MouseCursor::NormalCursor);
 }
 void NoteEditor::mouseDrag(const juce::MouseEvent &e) {
     const auto *clip = panel.details();
@@ -2582,7 +2603,7 @@ void NoteEditor::paint(juce::Graphics &g) {
     g.fillAll(look::lane);
     const auto ruler = rulerArea(), area = notesArea(), keyboard = keysArea(), velocity = velocityArea();
     g.setColour(look::band);
-    g.fillRect(0, 0, kKeysWidth, barsHeight() + kRulerHeight + kStretchHeight);
+    g.fillRect(0, 0, kKeysWidth, area.getY());
     const auto *clip = panel.details();
     if (barsHeight() > 0) {
         // The loop bars: each clip's in its colour, the edited clip's outlined; with Focus on the
@@ -2607,7 +2628,9 @@ void NoteEditor::paint(juce::Graphics &g) {
     }
     const auto &meters = *time.meters;
     paintRuler(g, ruler, time, meters);
-    // The stretch markers' strip, under the ruler.
+    g.setColour(look::band.brighter(.12f));
+    g.fillRect(scrubArea());
+    // The stretch markers' strip, between the scrub area and the key tracks.
     g.setColour(look::lane.darker(0.25f));
     g.fillRect(stretchArea());
     if (const auto brace = loopBrace()) {

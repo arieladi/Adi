@@ -5182,6 +5182,65 @@ void clipViewPlayFromMarker(AppCommands &commands, const std::filesystem::path &
     check(editor.keyPressed(space) && editor.keyPressed(space) && !mailbox.desiredPlaying(),
           "two Space presses before the next driver block cancel the pending start");
 }
+void clipViewScrubArea(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "clip-scrub-area.adi", true, {}, error);
+    check(document != nullptr, "a project for the Note Editor scrub strip");
+    if (!document) return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "note-scrub");
+    root.setSize(1400, 900);
+    constexpr auto beat = textproj::kPPQ;
+    check(root.insertMidiClips({2}, 0, 4 * beat) && root.showClipView(), "open a MIDI clip for scrub playback");
+    root.resizeClipView(360);
+    root.frame();
+    auto& editor = root.clipView.notes;
+    auto& mailbox = document->mailbox();
+    mailbox.setSampleRate(48000);
+    engine::Transport transport;
+    auto& settings = commands.writableSettings();
+    constexpr auto key = "lookfeel.permanentScrubAreas";
+    const auto saved = settings.get(key);
+    check(settings.set(key, true, {}, error), "enable the existing Permanent Scrub Areas preference");
+    const auto strip = editor.scrubArea();
+    const auto point = [&](std::int64_t tick, juce::Rectangle<int> area) {
+        return juce::Point<float>(static_cast<float>(area.getX() + editor.time.x(tick) + 1.25),
+                                 static_cast<float>(area.getCentreY()));
+    };
+    const auto expected = [&](juce::Point<float> at, juce::Rectangle<int> area) {
+        const auto tick = editor.time.tick(static_cast<double>(at.x) - area.getX());
+        return static_cast<std::int64_t>(root.reader().tempo()->ticksToSeconds(tick) * 48000.);
+    };
+    check(strip.getHeight() > 0 && strip.getY() == editor.rulerArea().getBottom() &&
+              strip.getBottom() == editor.stretchArea().getY(), "the scrub strip sits below the ruler above the editing controls");
+    const auto first = point(beat, strip);
+    const auto second = point(2 * beat, strip);
+    root.arrangement.followPaused = true;
+    editor.mouseDown(pressAt(editor, first));
+    editor.mouseUp(pressAt(editor, first));
+    mailbox.drain(transport);
+    check(transport.playing() && transport.position() == expected(first, strip) &&
+              !editor.insertMarker() && !root.arrangement.followPaused,
+          "clicking the strip starts at the exact clicked time and resumes Follow");
+    editor.mouseDown(pressAt(editor, second));
+    editor.mouseUp(pressAt(editor, second));
+    mailbox.drain(transport);
+    check(transport.playing() && transport.position() == expected(second, strip), "the strip also seeks while playing");
+    check(root.command(AppCommands::Stop) && settings.set(key, false, {}, error), "stop playback and switch permanent scrubbing off");
+    mailbox.drain(transport);
+    editor.mouseDown(pressAt(editor, first));
+    editor.mouseUp(pressAt(editor, first));
+    mailbox.drain(transport);
+    check(!transport.playing(), "with permanent scrub off, a plain strip click stays stopped");
+    const auto ruler = editor.rulerArea();
+    const auto shifted = point(3 * beat, ruler);
+    editor.mouseDown(pressAt(editor, shifted, juce::ModifierKeys::shiftModifier));
+    editor.mouseUp(pressAt(editor, shifted));
+    mailbox.drain(transport);
+    check(transport.playing() && transport.position() == expected(shifted, ruler),
+          "Shift-click on the ruler scrubs with the preference off");
+    check(settings.set(key, saved, {}, error), "restore the previous scrub preference");
+}
 void clipViewNotePreview(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto document = ProjectDocument::open(dir / "clip-note-preview.adi", true, {}, error);
@@ -7206,7 +7265,7 @@ void clipViewClipTime(AppCommands &commands, const std::filesystem::path &dir) {
                   ed.stretchPartAt(at(song(4 * beat)).roundToInt()) == Part::End && ed.stretchPartAt(at(song(2 * beat)).roundToInt()) == Part::Middle &&
                   ed.stretchPartAt(at(song(5 * beat)).roundToInt()) == Part::None &&
                   ed.stretchPartAt(juce::Point<float>(at(song(4 * beat)).x, static_cast<float>(area.getY() + 2)).roundToInt()) == Part::None &&
-                  ed.stretchArea().getBottom() == area.getY() && ed.stretchArea().getY() == ed.rulerArea().getBottom(),
+                  ed.stretchArea().getBottom() == area.getY() && ed.stretchArea().getY() == ed.scrubArea().getBottom(),
               "with several notes selected a pair of markers stands at the selection's start and end, in their own strip between the ruler and the key tracks");
         // The End marker dragged from beat 4 to beat 6: half as long again. The F3 at 5 is not selected and stays.
         const auto unwritten = submitter.nextUndo()->txnId;
@@ -7846,7 +7905,7 @@ void clipViewMulti(AppCommands &commands, const std::filesystem::path &dir) {
               panel.others()[0].colour != panel.colour(),
           "with a second MIDI clip selected, both are shown, each in its own track's colour; the edited clip stays");
     check(ed.barsHeight() == 2 * NoteEditor::kLoopBarHeight + 2 && ed.rulerArea().getY() == ed.barsHeight() &&
-              ed.notesArea().getY() == ed.barsHeight() + NoteEditor::kRulerHeight + NoteEditor::kStretchHeight && !panel.focusBox().isEmpty(),
+              ed.notesArea().getY() == ed.barsHeight() + NoteEditor::kRulerHeight + NoteEditor::kScrubHeight + NoteEditor::kStretchHeight && !panel.focusBox().isEmpty(),
           "a loop bar for each clip sits above the ruler, the editor moves down under them, and the Focus switch appears");
     const auto own = ed.loopBar(0), other = ed.loopBar(1);
     check(own.getX() == NoteEditor::kKeysWidth + static_cast<int>(ed.time.x(0)) &&
@@ -19139,8 +19198,9 @@ int main(int argc, char **argv) {
     trace("clipCopyDrag", [&] { clipCopyDrag(commands, temp.path()); });
     trace("clipView", [&] { clipView(commands, temp.path(), write); });
     trace("clipViewNotes", [&] { clipViewNotes(commands, temp.path()); });
-    trace("clipViewPlayFromMarker", [&] { clipViewPlayFromMarker(commands, temp.path()); });
     trace("clipViewNotePreview", [&] { clipViewNotePreview(commands, temp.path()); });
+    trace("clipViewPlayFromMarker", [&] { clipViewPlayFromMarker(commands, temp.path()); });
+    trace("clipViewScrubArea", [&] { clipViewScrubArea(commands, temp.path()); });
     trace("clipViewFields", [&] { clipViewFields(commands, temp.path()); });
     trace("clipViewTools", [&] { clipViewTools(commands, temp.path()); });
     trace("clipViewMore", [&] { clipViewMore(commands, temp.path()); });
