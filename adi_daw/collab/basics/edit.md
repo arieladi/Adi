@@ -12,6 +12,13 @@ The basics-edit session has claimed the Arrangement edit queue. The item branche
 
 | SC-179 | `basics/sc-179-multi-clip-clipboard` `a3c6c8f6` (local) | Copy and Cut capture exactly the picked clips. Paste preserves offsets and gap material. Duplicate makes and selects all copies in one edit. Engine, window and window-fn. | Shell regressions cover sparse Paste, exact Cut and one-step Undo. The changed C++ files passed MSVC Debug syntax checks before the peerless menu follow-up. | blocked pending Linux verification |
 | SC-178 | — | Consolidate depends on ED-06 and TM-FC-02. | Existing engine report records the shared pre-effects capture dependency and open Warp and MIDI mapping choices. | blocked on the render and MIDI consolidation contracts |
+| SC-180 | `basics/sc-180-arrow-group-move` `2518247d` (local) | Arrows move all picked clips by a common grid step and move the selected material inside a time range in one edit. Engine, window and window-fn. | Shell regressions check offsets, partial range overlap and Undo. | blocked pending Linux verification |
+| SC-181 | — | The SC-180 planner supplies the atomic range move. | R39 is still pending for the drag gesture. | blocked on the Live 12 observation |
+| SC-182 | `basics/sc-182-play-selection-start` `ed2d96cb` (local) | Space starts a time range at its earliest tick, even when the drag began on the right. Window and window-fn. | Shell regression drives playback through the transport mailbox. | blocked pending Linux verification |
+| SC-183 | — | Repeated Paste destination. | R40 is still pending. | blocked on the Live 12 observation |
+| SC-185 | — | Arrangement Crop under ED-04. | The engine report lists the open DF-E38(b) questions. The Note Editor command only crops notes in source time. | blocked on the Arrangement Crop contract |
+| SC-186 | `basics/sc-186-fragmentary-bar-repair` `f885e45f` (local) | The scrub menu repairs a fragmentary bar using global time edits. Completing a fragment retains its opening meter at the insertion boundary. Engine, window and window-fn. | Shell regressions invoke both menu actions and check the meter, locator and Undo. | blocked pending Linux verification |
+| SC-187 | — | Insert Silence with an insert marker alone. | R41 is still pending. | blocked on the Live 12 observation |
 
 ## Coordination
 
@@ -20,3 +27,4 @@ The basics-edit session has claimed the Arrangement edit queue. The item branche
 ## For the director
 
 - SC-178. I recommend deterministically allocating new MIDI note IDs on collisions and repeated loop occurrences, and remapping per-note expression with them. For audio, I agree with the engine report's recommendation to keep consolidated clips warped at the project tempo. The shared pre-effects capture is needed before the audio command can be exposed.
+- SC-185. I recommend defining the crop bounds and crossing-note expression behavior before connecting Ctrl+Shift+J in the Arrangement. Retain ED-04's no-media-write rule and keep the original project data in Undo.
