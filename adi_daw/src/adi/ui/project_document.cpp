@@ -1344,6 +1344,13 @@ void ProjectDocument::landTake(engine::AudioRecordingResult &result) {
         return;
     }
     synchronise();
+    if (const auto snapshot = view_.current(); snapshot && result.preview) {
+        try {
+            waveforms_.seedRecording(*snapshot, outcome.clips, *result.preview);
+        } catch (const std::exception &) {
+            // The clip is already saved. Its waveform can be read from the file.
+        }
+    }
     outcome.ok = true;
     if (!interruption.empty())
         outcome.message = "Kept the audio recorded before the interruption: " + interruption + ".";

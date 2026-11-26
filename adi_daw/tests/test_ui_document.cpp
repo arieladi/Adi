@@ -1098,6 +1098,53 @@ void peakSpans() {
     check(is(ui::peakSpan(p, 0., 256., 1), 9.f, 9.f), "peak span: the second channel reads its own bins");
 }
 
+void recordedWaveformHandoff() {
+    auto clip = std::make_shared<engine::ClipNode>();
+    clip->id = 21;
+    clip->audio.emplace();
+    auto &audio = *clip->audio;
+    audio.mediaId = 13;
+    audio.mediaInfo = engine::AudioMediaIdentity{"recorded-hash", 48000, 2, 4};
+    auto track = std::make_shared<engine::TrackNode>();
+    track->id = 4;
+    track->clips.push_back(clip);
+    engine::Snapshot snapshot;
+    snapshot.tracks.push_back(track);
+
+    engine::AudioRecordingPreview preview;
+    preview.peaks = {{}, 48000, 3, 4, 2,
+                     {{-.2f, .4f}, {-.1f, .1f}, {-.3f, .5f}, {-.4f, .6f}, {-.1f, .1f}, {-.5f, .7f}}};
+    preview.tracks.push_back({track->id, {2, 0}});
+    const std::array clips{clip->id};
+    const media::MediaPeaks filePeaks{"recorded-hash", 48000, 2, 4, 4, {{-.5f, .7f}, {-.4f, .6f}}};
+    std::atomic<bool> allowBuild{false};
+    std::atomic<std::int64_t> requestedMedia{0};
+    ui::WaveformCache waves([&](std::int64_t mediaId, std::stop_token stop) -> media::PeakResult {
+        while (!allowBuild.load() && !stop.stop_requested())
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        if (stop.stop_requested())
+            return {media::PeakProblem::cancelled, {}, {}};
+        requestedMedia.store(mediaId);
+        return {media::PeakProblem::none, {}, filePeaks};
+    });
+    waves.seedRecording(snapshot, clips, preview);
+    waves.follow(snapshot, 1);
+    const auto provisional = waves.peaks(audio);
+    const std::vector<media::PeakBin> trackBins{{-.3f, .5f}, {-.2f, .4f}, {-.5f, .7f}, {-.4f, .6f}};
+    check(provisional && provisional->channels == 2 && provisional->frames == 4 &&
+              provisional->framesPerBin == 2 && provisional->bins == trackBins,
+          "the landed clip immediately uses the recording's bins in track channel order");
+    allowBuild.store(true);
+    for (int waited = 0; waited < 5000 && !waves.idle(); ++waited)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    const auto built = waves.peaks(audio);
+    check(requestedMedia.load() == audio.mediaId && waves.builds() == 1 && built && *built == filePeaks,
+          "the file's waveform replaces the provisional recording waveform");
+    waves.seedRecording(snapshot, clips, preview);
+    check(waves.peaks(audio) == built && waves.builds() == 1,
+          "landing another reference preserves the decoded waveform");
+}
+
 // PD06-SAVEAS-GUARD: Save As during Record, or while a take's placement is pending, lands the take in
 // the file it was recorded in first, as one undo step, and then switches; the saved file holds it.
 void saveAsKeepsTheTake(const std::filesystem::path &dir) {
@@ -1271,6 +1318,7 @@ int main(int argc, char **argv) {
         return 0;
     }
     peakSpans();
+    recordedWaveformHandoff();
     {
         test::TempDirectory recordDir("ui_document", "record");
         arrangementRecord(recordDir.path());

@@ -2,6 +2,7 @@
 #pragma once
 #include "adi/audio/wav_file.hpp"
 #include "adi/engine/process.hpp"
+#include "adi/media/peaks.hpp"
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -46,6 +47,15 @@ struct RecordedTrack {
     std::uint16_t channels=0;
     std::filesystem::path file;
 };
+struct AudioRecordingPreview {
+    struct Track {
+        std::int64_t trackId=0;
+        std::vector<std::uint32_t> channels; // indices into the preview's unique input channels
+    };
+    std::int64_t startSample=0; // actual unadjusted position of the first captured frame
+    media::MediaPeaks peaks; // in file-frame order, shared by tracks with the same input
+    std::vector<Track> tracks;
+};
 /// A completed/failed capture is retained on disk for retry/recovery. Only
 /// discard() or successful publication removes its newly owned directory.
 class AudioRecordingResult {
@@ -56,6 +66,7 @@ public:
     std::uint64_t frames=0;
     std::int64_t startSample=0;
     std::vector<RecordedTrack> tracks;
+    std::shared_ptr<const AudioRecordingPreview> preview;
     [[nodiscard]] const std::filesystem::path& directory()const noexcept;
     [[nodiscard]] const std::string& sourceProject()const noexcept{return sourceProject_;}
     [[nodiscard]] const std::optional<AudioRecordingLoop>& loopSpec()const noexcept{return loop_;}
@@ -110,6 +121,8 @@ public:
     // Owner-thread status queries.
     [[nodiscard]] bool pending()const noexcept;
     [[nodiscard]] std::uint64_t acceptedFrames()const noexcept;
+    // Writer-published peaks for the prefix written to every target so far.
+    [[nodiscard]] std::shared_ptr<const AudioRecordingPreview> preview()const noexcept;
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

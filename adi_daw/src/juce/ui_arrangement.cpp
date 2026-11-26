@@ -2,6 +2,7 @@
 #include "ui_arrangement.hpp"
 #include "adi/ui/audio_drop.hpp"
 #include "adi/ui/automation_override.hpp"
+#include "adi/engine/audio_recording.hpp"
 #include "adi/engine/clip_details.hpp"
 #include "adi/engine/clip_fade.hpp"
 #include "adi/ui/fade_edits.hpp"
@@ -22,6 +23,31 @@ ArrangementOverview::ArrangementOverview(ArrangementView &v) : view(v) {
                "double-click to see all of it.");
 }
 namespace {
+template <typename FrameAt>
+void paintPeakColumns(juce::Graphics &g, const media::MediaPeaks &peaks, int from, int to, float top, float bottom,
+                      std::span<const std::uint32_t> channelMap, FrameAt frameAt) {
+    const auto channels = channelMap.empty() ? peaks.channels : static_cast<std::uint32_t>(channelMap.size());
+    if (channels == 0 || bottom - top < 4.f)
+        return;
+    const float band = (bottom - top) / static_cast<float>(channels);
+    for (int x = from; x < to; ++x) {
+        const auto frame = frameAt(x);
+        if (!frame)
+            continue;
+        const double end = frameAt(x + 1).value_or(*frame + 1.);
+        for (std::uint32_t ch = 0; ch < channels; ++ch) {
+            const auto source = channelMap.empty() ? ch : channelMap[ch];
+            const auto peak = peakSpan(peaks, std::min(*frame, end), std::max(*frame + 1., end), source);
+            if (!peak)
+                continue;
+            const float mid = top + band * (static_cast<float>(ch) + .5f), half = band * .5f;
+            const float y0 = mid - std::clamp(peak->maximum, -1.f, 1.f) * half,
+                        y1 = mid - std::clamp(peak->minimum, -1.f, 1.f) * half;
+            g.fillRect(static_cast<float>(x), y0, 1.f, std::max(1.f, y1 - y0));
+        }
+    }
+}
+
 // Live's lanes: grey, every other sixteen grid steps a shade lighter, lighter again
 // for the selected track, with the grid (§6.10) a quarter darker than the lane under it.
 void paintLanes(juce::Graphics &g, const ArrangementGeometry &geo, int width, int top, int height,
@@ -1324,10 +1350,9 @@ void ArrangementView::frame(bool modelChanged) noexcept {
             canvas.repaint();
         }
     }
-    // A take being recorded grows with the playhead; once recording has stopped it goes, and the
-    // landed clip takes its place.
+    // Keep the capture visible until the document has finished adding it.
     if (liveTake_) {
-        if (!root.isRecording())
+        if (!root.isRecording() && !liveTake_->landing)
             liveTake_.reset();
         canvas.repaint();
     }
@@ -1343,8 +1368,18 @@ void ArrangementView::beginLiveTake(std::int64_t start, std::vector<std::int64_t
     if (tracks.empty())
         liveTake_.reset();
     else
-        liveTake_ = LiveTake{start, std::move(tracks)};
+        liveTake_ = LiveTake{start, std::move(tracks), {}, 0, false};
     canvas.repaint();
+}
+void ArrangementView::setRecordingPreview(std::shared_ptr<const engine::AudioRecordingPreview> preview,
+                                           std::uint64_t capturedFrames,
+                                           bool landing) noexcept {
+    if (liveTake_) {
+        if (preview)
+            liveTake_->preview = std::move(preview);
+        liveTake_->capturedFrames = capturedFrames;
+        liveTake_->landing = landing;
+    }
 }
 bool ArrangementView::follow(std::int64_t tick, bool page) noexcept {
     const double width = canvas.getWidth();
@@ -2450,12 +2485,26 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
                     for (const auto &c : other->clips)
                         if (movingTargetOf(c->id) == t->id)
                             drawClip(*c);
-        // The take being recorded on this track (Live 12 manual 21.1; walk-B B4): a clip in the record
-        // colour from where it began to the playhead, named as the take will be, over what it covers.
+        // Draw the captured audio over the lane from its actual first sample. The preview can lag
+        // the playhead while the writer drains, and the playhead can keep rolling after Record stops.
         if (const auto &live = view.liveTake();
             live && std::find(live->tracks.begin(), live->tracks.end(), t->id) != live->tracks.end()) {
-            if (const auto now = view.root.timelineTick(); now > live->start) {
-                const double x0 = geo.x(live->start), x1 = geo.x(now);
+            auto start = live->start;
+            auto end = live->landing ? start : view.root.timelineTick();
+            const auto *preview = live->preview.get();
+            const auto *snapshot = view.reader().get();
+            const auto *tempo = snapshot ? snapshot->tempo.get() : nullptr;
+            const bool havePreview = preview && tempo && preview->peaks.sampleRate > 0;
+            double startSeconds = 0.;
+            if (havePreview) {
+                const auto rate = static_cast<double>(preview->peaks.sampleRate);
+                startSeconds = static_cast<double>(preview->startSample) / rate;
+                const auto frames = std::max(preview->peaks.frames, live->capturedFrames);
+                start = tempo->secondsToTicks(startSeconds);
+                end = tempo->secondsToTicks(startSeconds + static_cast<double>(frames) / rate);
+            }
+            if (end > start) {
+                const double x0 = geo.x(start), x1 = geo.x(end);
                 if (x1 >= 0 && x0 <= getWidth()) {
                     const float left = static_cast<float>(std::max(-1., x0)),
                                 right = static_cast<float>(std::min(x1, static_cast<double>(getWidth() + 1)));
@@ -2464,6 +2513,24 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
                     g.fillRect(left, top, width, static_cast<float>(h - 4));
                     g.setColour(look::record.darker(0.3f));
                     g.fillRect(left, top, width, static_cast<float>(kClipBarHeight));
+                    if (havePreview) {
+                        const auto mapping = std::find_if(preview->tracks.begin(), preview->tracks.end(),
+                            [&](const auto &track) { return track.trackId == t->id; });
+                        if (mapping != preview->tracks.end() && !mapping->channels.empty()) {
+                            g.setColour(look::ink.withAlpha(0.85f));
+                            const int from = std::max(0, static_cast<int>(std::floor(left)));
+                            const int to = std::min(getWidth(), static_cast<int>(std::ceil(right)));
+                            paintPeakColumns(g, preview->peaks, from, to, top + kClipBarHeight,
+                                             top + static_cast<float>(h - 4), mapping->channels,
+                                             [&](int x) -> std::optional<double> {
+                                const auto seconds = tempo->ticksToSeconds(geo.tick(x)) - startSeconds;
+                                const auto frame = std::max(0., seconds * preview->peaks.sampleRate);
+                                if (frame >= static_cast<double>(preview->peaks.frames))
+                                    return std::nullopt;
+                                return frame;
+                            });
+                        }
+                    }
                     if (right - left > 6.f) {
                         g.setColour(look::ink);
                         g.setFont(look::font(look::fontSmall));
@@ -2938,25 +3005,11 @@ void ArrangementCanvas::paintWaveform(juce::Graphics &g, const engine::ClipNode 
     moved.posTicks = pos; // drawn where a drag would put it
     const ClipSourceMap source(moved, snapshot != nullptr ? snapshot->tempo.get() : nullptr,
                                static_cast<double>(peaks->sampleRate));
-    const float band = (bottom - top) / static_cast<float>(peaks->channels);
     g.setColour(look::ink.withAlpha(clip.muted ? 0.4f : 0.85f));
     const int from = std::max(0, static_cast<int>(std::floor(left))),
               to = std::min(getWidth(), static_cast<int>(std::ceil(right)));
-    for (int x = from; x < to; ++x) {
-        const auto f0 = source.frameAt(geo.tick(x)), f1 = source.frameAt(geo.tick(x + 1));
-        if (!f0)
-            continue;
-        const double end = f1 ? *f1 : *f0 + 1.;
-        for (std::uint32_t ch = 0; ch < peaks->channels; ++ch) {
-            const auto span = peakSpan(*peaks, std::min(*f0, end), std::max(*f0 + 1., end), ch);
-            if (!span)
-                continue;
-            const float mid = top + band * (static_cast<float>(ch) + .5f), half = band * .5f;
-            const float y0 = mid - std::clamp(span->maximum, -1.f, 1.f) * half,
-                        y1 = mid - std::clamp(span->minimum, -1.f, 1.f) * half;
-            g.fillRect(static_cast<float>(x), y0, 1.f, std::max(1.f, y1 - y0));
-        }
-    }
+    paintPeakColumns(g, *peaks, from, to, top, bottom, {},
+                     [&](int x) { return source.frameAt(geo.tick(x)); });
 }
 void ArrangementCanvas::paintNotes(juce::Graphics &g, const engine::ClipNode &clip, std::int64_t pos, float left,
                                    float right, float top, float bottom) const {

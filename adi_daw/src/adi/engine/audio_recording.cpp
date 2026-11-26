@@ -7,8 +7,10 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <exception>
 #include <limits>
+#include <mutex>
 #include <set>
 #include <stdexcept>
 #include <thread>
@@ -56,6 +58,11 @@ fs::path reserve(const fs::path& parent) {
     throw std::runtime_error("cannot reserve recording directory");
 }
 struct Job {
+    static constexpr std::size_t maxPreviewBins = 4096;
+    static constexpr std::uint64_t firstPreviewBinFrames = 64;
+    static constexpr auto previewInterval = std::chrono::milliseconds(50);
+    using Clock = std::chrono::steady_clock;
+
     AudioRecordingSpec spec;
     fs::path directory;
     std::vector<RecordedTrack> tracks;
@@ -70,6 +77,12 @@ struct Job {
     std::atomic<bool> stopWriter{false},done{false},transportEnded{false};
     std::thread worker;
     std::exception_ptr writerError;
+    // Accumulation stays on the writer. Only the immutable pointer crosses to the owner.
+    AudioRecordingPreview accumulatingPreview;
+    bool previewDisabled=false;
+    Clock::time_point nextPreview=Clock::time_point::min();
+    mutable std::mutex previewMutex;
+    std::shared_ptr<const AudioRecordingPreview> publishedPreview;
     bool finalized=false; // written before publishing done
     bool discardRequested=false; // owner only; cancellation also discards failed takes
     // Callback-owned continuity state; observed only after its quiescence.
@@ -99,6 +112,86 @@ struct Job {
         // A sink whose close throws may still own a file handle.
         writers.clear();
     }
+    [[nodiscard]] std::shared_ptr<const AudioRecordingPreview> latestPreview() const noexcept {
+        const std::lock_guard lock(previewMutex);
+        return publishedPreview;
+    }
+    void publishPreview(Clock::time_point now) noexcept {
+        if (previewDisabled || accumulatingPreview.peaks.frames == 0)
+            return;
+        nextPreview = now + previewInterval;
+        try {
+            auto snapshot = std::make_shared<const AudioRecordingPreview>(accumulatingPreview);
+            {
+                const std::lock_guard lock(previewMutex);
+                publishedPreview.swap(snapshot);
+            }
+        } catch (...) {
+            // Preview publication is optional. A resource failure cannot stop recording.
+        }
+    }
+    void appendPreview(std::uint32_t frames) noexcept {
+        if (previewDisabled)
+            return;
+        auto &peaks = accumulatingPreview.peaks;
+        const auto width = inputChannels.size();
+        if (peaks.frames == 0) {
+            try {
+                accumulatingPreview.startSample = firstSample.load(std::memory_order_relaxed);
+                peaks.channels = static_cast<std::uint32_t>(width);
+                peaks.sampleRate = spec.sampleRate;
+                peaks.framesPerBin = firstPreviewBinFrames;
+                peaks.bins.reserve(maxPreviewBins * width);
+                accumulatingPreview.tracks.reserve(spec.targets.size());
+                for (std::size_t target = 0; target < spec.targets.size(); ++target) {
+                    AudioRecordingPreview::Track track;
+                    track.trackId = spec.targets[target].trackId;
+                    track.channels.reserve(mappings[target].size());
+                    for (const auto channel : mappings[target])
+                        track.channels.push_back(static_cast<std::uint32_t>(channel));
+                    accumulatingPreview.tracks.push_back(std::move(track));
+                }
+            } catch (...) {
+                previewDisabled = true;
+                return;
+            }
+        }
+
+        constexpr auto infinity = std::numeric_limits<float>::infinity();
+        for (std::uint32_t offset = 0; offset < frames;) {
+            const auto inBin = peaks.frames % peaks.framesPerBin;
+            if (inBin == 0) {
+                if (peaks.bins.size() == maxPreviewBins * width) {
+                    // The buffer is full of complete bins. Merge pairs to retain the whole take.
+                    for (std::size_t bin = 0; bin < maxPreviewBins / 2; ++bin)
+                        for (std::size_t channel = 0; channel < width; ++channel) {
+                            const auto first = peaks.bins[(2 * bin) * width + channel];
+                            const auto second = peaks.bins[(2 * bin + 1) * width + channel];
+                            peaks.bins[bin * width + channel] = {std::min(first.minimum, second.minimum),
+                                                                 std::max(first.maximum, second.maximum)};
+                        }
+                    peaks.bins.resize(maxPreviewBins / 2 * width);
+                    peaks.framesPerBin *= 2;
+                }
+                peaks.bins.resize(peaks.bins.size() + width, {infinity, -infinity});
+            }
+            const auto count = static_cast<std::uint32_t>(
+                std::min<std::uint64_t>(frames - offset, peaks.framesPerBin - inBin));
+            auto *bin = peaks.bins.data() + peaks.bins.size() - width;
+            for (auto frame = offset; frame < offset + count; ++frame)
+                for (std::size_t channel = 0; channel < width; ++channel) {
+                    const float raw = readBuffer[static_cast<std::size_t>(frame) * width + channel];
+                    const float value = std::isfinite(raw) ? raw : 0.f;
+                    bin[channel].minimum = std::min(bin[channel].minimum, value);
+                    bin[channel].maximum = std::max(bin[channel].maximum, value);
+                }
+            offset += count;
+            peaks.frames += count;
+        }
+        const auto now = Clock::now();
+        if (now >= nextPreview)
+            publishPreview(now);
+    }
     void run()noexcept {
         bool drained=false;
         try {
@@ -125,6 +218,7 @@ struct Job {
                         values[static_cast<std::size_t>(frame)*mapping.size()+channel]=readBuffer[static_cast<std::size_t>(frame)*inputChannels.size()+mapping[channel]];
                     writers[target]->write(std::span<const float>(values.data(),static_cast<std::size_t>(frames)*mapping.size()),frames);
                 }
+                appendPreview(frames);
             }
             drained=true;
         } catch(...) {
@@ -133,6 +227,7 @@ struct Job {
         closeWriters();
         // A kept prefix needs the whole write loop and every close to succeed.
         finalized=drained && !writerError;
+        publishPreview(Clock::now());
         done.store(true,std::memory_order_release);
     }
     void capture(const AudioIo& io,const Transport& transport)noexcept {
@@ -219,6 +314,9 @@ AudioInputRecorder::AudioInputRecorder():impl_(std::make_unique<Impl>()){}
 AudioInputRecorder::~AudioInputRecorder()=default;
 bool AudioInputRecorder::pending()const noexcept{return static_cast<bool>(impl_->job);}
 std::uint64_t AudioInputRecorder::acceptedFrames()const noexcept{return impl_->job?impl_->job->written.load(std::memory_order_acquire):0;}
+std::shared_ptr<const AudioRecordingPreview> AudioInputRecorder::preview()const noexcept {
+    return impl_->job ? impl_->job->latestPreview() : nullptr;
+}
 bool AudioInputRecorder::start(const AudioRecordingSpec& spec,std::string& error,AudioRecordingSinkFactory factory) {
     fs::path owned;
     try {
@@ -283,6 +381,7 @@ std::optional<AudioRecordingResult> AudioInputRecorder::poll(bool deviceStopped)
             result.error="Recording writer failed";
         }
     }
+    if(!job->discardRequested)result.preview=job->latestPreview();
     if(result.failure==RecordingFailure::None && result.frames==0)result.failure=RecordingFailure::NoFrames;
     if(result.error.empty())switch(result.failure) {
         case RecordingFailure::None:break;

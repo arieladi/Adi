@@ -905,7 +905,10 @@ class AdiApplication final : public juce::JUCEApplication,
             root_->say(playing ? "Recording from the playhead." : "Recording.");
             return true;
         };
-        root->stopRecording = [this] { document_->stopRecording(); };
+        root->stopRecording = [this] {
+            document_->stopRecording();
+            refreshRecordingPreview();
+        };
         root->recording = [this] { return document_->recording(); };
         // Export Audio/Video (EX-11): the Export page, then a file, then a render on a worker.
         root->exportAudio = [this](const ExportChoices &c) { openExport(c); };
@@ -1415,6 +1418,11 @@ class AdiApplication final : public juce::JUCEApplication,
         if (settingsWindow_)
             settingsWindow_->panel().refreshValues();
     }
+    void refreshRecordingPreview() {
+        const auto &recorder = document_->session().recording();
+        root_->arrangement.setRecordingPreview(recorder.preview(), recorder.acceptedFrames(),
+                                               document_->landingTake());
+    }
     void timerCallback() override {
         // The plug-in catalogue's running discovery: its progress, and its result once it has finished.
         if (catalogue_)
@@ -1424,6 +1432,7 @@ class AdiApplication final : public juce::JUCEApplication,
         document_->tick(static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
         if (root_) {
             root_->setRecordStates(document_->recordStates());
+            refreshRecordingPreview();
             // A take landed (MX-09): its outcome in the Status Bar, its clips selected.
             if (auto landed = document_->takeLanded()) {
                 root_->say(landed->message);

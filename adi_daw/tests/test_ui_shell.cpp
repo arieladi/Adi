@@ -11310,14 +11310,23 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
             root.say(document->error());
         return ok;
     };
-    root.stopRecording = [&] { document->stopRecording(); };
+    const auto refreshRecordingPreview = [&] {
+        const auto &recorder = document->session().recording();
+        root.arrangement.setRecordingPreview(recorder.preview(), recorder.acceptedFrames(), document->landingTake());
+    };
+    root.stopRecording = [&] {
+        document->stopRecording();
+        refreshRecordingPreview();
+    };
     root.recording = [&] { return document->recording(); };
+    root.arrangement.waveforms = &document->waveforms();
     root.setSize(1440, 900);
     // The application's frame: the timer's tick, the rows handed over, the window's frame.
     std::int64_t now = 0;
     const auto frame = [&] {
         document->tick(++now);
         root.setRecordStates(document->recordStates());
+        refreshRecordingPreview();
         root.frame();
     };
     frame();
@@ -11413,35 +11422,50 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     };
     for (int b = 0; b < 16; ++b)
         block();
-    // walk-B B4: while it records, the take is drawn on each recording track's lane, from where it began
-    // to the playhead, in the record colour; it goes once recording stops (the landed clip replaces it).
-    const auto recordPixels = [&] {
-        auto &canvas = root.arrangement.canvas;
-        const auto image = canvas.createComponentSnapshot(canvas.getLocalBounds(), true, 1.f);
-        int count = 0;
-        for (int y = 0; y < image.getHeight(); ++y)
-            for (int x = 0; x < image.getWidth(); ++x)
-                if (image.getPixelAt(x, y).withAlpha(1.f) == look::record.withAlpha(1.f))
-                    ++count;
-        return count;
-    };
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!document->session().recording().preview() && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     frame();
     {
         const auto &live = root.arrangement.liveTake();
         check(live && live->tracks == std::vector<std::int64_t>{4, 5} &&
                   live->start == root.arrangement.geometry.selection.insert,
               "Record from stopped: the take begins at the insert marker on both armed audio tracks");
-        if (live && root.timelineTick() > live->start && root.arrangement.geometry.inView(4)) {
-            // 21 ms recorded is 2 px at the default zoom, all outline: zoomed in, its body shows.
+        check(live && live->preview && live->preview->peaks.frames > 0,
+              "SC-20: the Arrangement reads live peaks from the writer during recording");
+        if (live && live->preview && root.arrangement.geometry.inView(4)) {
+            const auto preview = live->preview;
+            const auto capturedFrames = live->capturedFrames;
+            // The first written block can be shorter than a pixel at the default zoom.
             const double scale = root.arrangement.geometry.scale;
-            root.arrangement.geometry.scale = scale * 40;
-            check(recordPixels() > 0, "and is drawn, red, while the playhead moves on");
+            root.arrangement.geometry.scale = scale * 120;
+            auto &canvas = root.arrangement.canvas;
+            const auto drawn = canvas.createComponentSnapshot(canvas.getLocalBounds(), true, 1.f);
+            auto blank = std::make_shared<engine::AudioRecordingPreview>(*preview);
+            blank->peaks.bins.clear();
+            root.arrangement.setRecordingPreview(std::move(blank), capturedFrames, false);
+            const auto redOnly = canvas.createComponentSnapshot(canvas.getLocalBounds(), true, 1.f);
+            int waveformPixels = 0;
+            for (int y = 0; y < drawn.getHeight(); ++y)
+                for (int x = 0; x < drawn.getWidth(); ++x) {
+                    const auto colour = redOnly.getPixelAt(x, y).withAlpha(1.f);
+                    if (colour == look::record.withAlpha(1.f) && drawn.getPixelAt(x, y).withAlpha(1.f) != colour)
+                        ++waveformPixels;
+                }
+            check(waveformPixels > 0, "SC-20: captured PCM draws waveforms inside the recording clips");
             root.arrangement.geometry.scale = scale;
+            allocations = 0;
+            audit = true;
+            root.arrangement.setRecordingPreview(preview, capturedFrames, false);
+            root.frame();
+            audit = false;
+            check(allocations == 0, "SC-20: replacing the live waveform snapshot allocates nothing in a frame");
         }
     }
     check(root.command(AppCommands::ArrangementRecord), "F9's command again");
     frame();
-    check(!root.arrangement.liveTake(), "stopped, the growing take goes");
+    check(root.arrangement.liveTake() && root.arrangement.liveTake()->landing,
+          "SC-20: the waveform stays visible while the writer finishes");
     check(!document->recording() && !record.getToggleState() && document->mailbox().desiredPlaying(),
           "stops the recording; the transport plays on, as Live's [P:recording#21]");
     for (int i = 0; i < 5000 && document->landingTake(); ++i) {
@@ -11454,6 +11478,7 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     check(landed && landed->ok && landed->clips.size() == 2 && landed->message == "Recorded 2 takes.",
           "both armed tracks' takes land together [P:recording#19]");
     frame();
+    check(!root.arrangement.liveTake(), "SC-20: the recorded clip replaces the live preview after landing");
     check(root.reader().findTrack(4)->clips.size() == 1 && root.reader().findTrack(5)->clips.size() == 1,
           "a clip on each armed track");
     check(root.command(AppCommands::Undo), "one Undo");

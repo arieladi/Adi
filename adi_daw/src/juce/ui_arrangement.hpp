@@ -12,6 +12,7 @@
 #include <map>
 #include <optional>
 #include <vector>
+namespace adi::engine { struct AudioRecordingPreview; }
 namespace adi::ui {
 class AdiRootComponent;
 class ArrangementView;
@@ -464,14 +465,18 @@ class ArrangementView final : public juce::Component {
     // (ADR-0211), else the colour of its place, as Live's auto-assigned colours.
     juce::Colour colourFor(std::size_t position) const;
     void frame(bool changed) noexcept;
-    // The take being recorded (Live 12 manual 21.1): drawn on each recording track's lane from where it
-    // began to the playhead, in the record colour, until the take lands as a clip (walk-B B4). Begun by
-    // Arrangement Record; ended by the frame once recording has stopped.
+    // Arrangement Record opens the preview. The writer's captured extent and peaks replace the
+    // initial bounds, and the preview stays visible while the take is being added to the project.
     struct LiveTake {
         std::int64_t start = 0;
         std::vector<std::int64_t> tracks;
+        std::shared_ptr<const engine::AudioRecordingPreview> preview;
+        std::uint64_t capturedFrames = 0;
+        bool landing = false;
     };
     void beginLiveTake(std::int64_t start, std::vector<std::int64_t> tracks);
+    void setRecordingPreview(std::shared_ptr<const engine::AudioRecordingPreview>, std::uint64_t capturedFrames,
+                             bool landing) noexcept;
     const std::optional<LiveTake> &liveTake() const noexcept { return liveTake_; }
     void changed();
     bool command(int);
