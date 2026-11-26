@@ -11288,6 +11288,57 @@ void automationArm(AppCommands &commands, const std::filesystem::path &dir) {
 // Arm, monitoring and Arrangement Record (MX-09; Live 12 manual 21.1, 21.4): the strips' Arm and the
 // monitoring switch, and the Control Bar's Record and F9, wired as ui_main.cpp wires them, over a
 // document whose callback the test drives with an input.
+void selectionArmsTrack(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "arm-selection.adi", true, {}, error);
+    check(document != nullptr, "a project for selection arming");
+    if (!document)
+        return;
+    document->prepare(48000, 64);
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "record");
+    commands.activate(root);
+    root.afterEdit = [&] { document->synchronise(); };
+    root.readRecordStates = [&] { return document->recordStates(); };
+    root.setSelectionArmedTrack = [&](std::int64_t track) { return document->session().setSelectionArmedTrack(track); };
+    const auto select = [&](std::int64_t track) {
+        root.arrangement.geometry.selection.track = track;
+        root.publishSelection();
+    };
+    const auto armed = [&](std::int64_t track) { return document->recordStates().at(track).armed; };
+    const auto head = [&] { return OpJournal(document->store()).headSeq(); };
+    auto &prefs = commands.writableSettings();
+    const auto saved = prefs.get("record.autoArmOnSelect");
+    const auto mode = [&](const settings::Value &value) {
+        check(prefs.set("record.autoArmOnSelect", value, {}, error), "the setting accepts an arming choice");
+        commands.reload();
+    };
+    mode("none");
+    select(2);
+    check(!armed(2), "selection arming is off by default");
+    mode("instrumentAndMidi");
+    check(armed(2) && root.recordState(2).armed &&
+              document->store().db().execAndGet("SELECT record_armed FROM tracks WHERE id=2").getInt() == 0,
+          "selection arms the MIDI track in the session and UI without writing its manual arm");
+    const auto originalHead = head();
+    check(root.armTrack(2, false) && !armed(2) && head() == originalHead,
+          "the Arm switch can clear a selection arm without adding an undo step");
+    select(2);
+    check(!armed(2), "a click on the same track leaves a cleared selection arm off");
+    select(3);
+    const std::array<std::int64_t, 1> captureTrack{3};
+    check(armed(3) && document->session().startMidiInputCapture(captureTrack, error),
+          "selecting another MIDI track switches the arm and admits driver capture");
+    select(4);
+    check(!armed(3) && !armed(4) && head() == originalHead,
+          "selecting an audio track in MIDI-only mode clears the temporary arm without an edit");
+    mode("all");
+    check(armed(4) && head() == originalHead, "all tracks mode also arms a selected audio track");
+    mode("none");
+    check(!armed(4) && head() == originalHead, "switching off selection arming clears it immediately");
+    mode(saved);
+    document->release();
+}
 void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto document = ProjectDocument::open(dir / "arm-record.adi", true, {}, error);
@@ -18751,6 +18802,7 @@ int main(int argc, char **argv) {
     trace("deviceClipboard", [&] { deviceClipboard(commands, temp.path()); });
     trace("pluginWindows", [&] { pluginWindows(commands, settings, temp.path()); });
     trace("automationArm", [&] { automationArm(commands, temp.path()); });
+    trace("selectionArmsTrack", [&] { selectionArmsTrack(commands, temp.path()); });
     trace("armAndRecord", [&] { armAndRecord(commands, temp.path()); });
     trace("exportPage", [&] { exportPage(commands, temp.path()); });
     trace("mixerDragLive", [&] { mixerDragLive(commands, temp.path()); });

@@ -62,6 +62,10 @@ void AppCommands::reload() {
     followByPage_ = settings_.get("lookfeel.followMode") != "scroll";
     exclusiveSolo_ = flag(settings_, "record.exclusiveSolo", true);
     exclusiveArm_ = flag(settings_, "record.exclusiveArm", true);
+    const auto armOnSelect = settings_.get("record.autoArmOnSelect");
+    const auto nextArm = armOnSelect == "all" ? SelectionArm::All
+                         : armOnSelect == "instrumentAndMidi" ? SelectionArm::Midi : SelectionArm::None;
+    const bool armModeChanged = std::exchange(selectionArm_, nextArm) != nextArm;
     if (const auto quantize = settings_.get("record.quantize"); quantize.is_string())
         recordingDefaults_.quantize = quantize.get<std::string>();
     recordingDefaults_.keepMonitoringLatency = flag(settings_, "audio.keepMonitoringLatency", true);
@@ -94,6 +98,8 @@ void AppCommands::reload() {
                     if (const auto key = parseChord(chord.get<std::string>()))
                         mappings->addKeyPress(command, *key);
         }
+    if (active_ && armModeChanged)
+        active_->refreshSelectionArming();
 }
 settings::Value AppCommands::userKeys() const {
     auto out = settings::Value::object();
@@ -2085,10 +2091,32 @@ bool AdiRootComponent::chooseMixViewTab(int tab) {
     return true;
 }
 void AdiRootComponent::publishSelection() {
+    const auto priorTrack = session_.selection().track;
     std::string why;
     if (!session_.select(arrangement.geometry.selection, why))
         fail(why);
     selectionGeneration_ = session_.generation();
+    if (priorTrack != session_.selection().track)
+        refreshSelectionArming();
+}
+bool AdiRootComponent::changeSelectionArming(std::int64_t track) {
+    if (!setSelectionArmedTrack || track == selectionArmedTrack_)
+        return true;
+    if (!setSelectionArmedTrack(track))
+        return fail("The selected track's recording arm could not be updated.");
+    selectionArmedTrack_ = track;
+    setRecordStates(freshRecordStates());
+    mark(DirtySet::Content);
+    return true;
+}
+void AdiRootComponent::refreshSelectionArming() {
+    const auto mode = commands_.selectionArm();
+    const auto current = view_.current();
+    const auto *track = current ? current->findTrack(session_.selection().track) : nullptr;
+    const bool eligible = track && !track->frozen &&
+                          ((mode == AppCommands::SelectionArm::All && armable(*track)) ||
+                           (mode == AppCommands::SelectionArm::Midi && isMidiTrack(*track)));
+    changeSelectionArming(eligible ? track->id : 0);
 }
 bool AdiRootComponent::submitEdit(const std::string &op, Payload payload, const char *label) {
     OpRequest request;
@@ -3207,6 +3235,16 @@ bool AdiRootComponent::armTrack(std::int64_t id, bool add) {
                           commands_.exclusiveArm(), add);
     if (!edit.refusal.empty())
         return fail(std::move(edit.refusal));
+    const auto implicit = selectionArmedTrack_;
+    const auto disarmsImplicit = [implicit](const OpRequest &request) {
+        return request.payload.at("id") == implicit && request.payload.at("armed") == false;
+    };
+    if (implicit != 0 && std::any_of(edit.ops.begin(), edit.ops.end(), disarmsImplicit)) {
+        if (!changeSelectionArming(0))
+            return false;
+        if (!::adi::ui::recordState(freshRecordStates(), implicit).armed)
+            std::erase_if(edit.ops, disarmsImplicit);
+    }
     return edit.ops.empty() || submitEdits(std::move(edit.ops));
 }
 bool AdiRootComponent::setMonitor(std::int64_t id, Monitor mode) {
@@ -4106,8 +4144,12 @@ bool AdiRootComponent::command(int id) {
             return fail(result.error);
         arrangement.followPaused = true;
         // Undo puts back what was selected before the undone step (ADR-0021).
-        if (id == AppCommands::Undo && result.selBefore)
+        if (id == AppCommands::Undo && result.selBefore) {
+            const auto priorTrack = session_.selection().track;
             session_.restore(*result.selBefore);
+            if (priorTrack != session_.selection().track)
+                refreshSelectionArming();
+        }
         break;
     }
     case AppCommands::SwapPanels: {

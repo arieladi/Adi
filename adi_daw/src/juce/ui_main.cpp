@@ -183,6 +183,8 @@ class AdiApplication final : public juce::JUCEApplication,
                                                                 return false;
                                                             (void)settings_->save(why);
                                                             return true;
+                                                        }, [this] {
+                                                            return settings_->get(settings::kNewMidiInputTrackKey).get<bool>();
                                                         });
             midiPorts_->setFeed(&midiFeed_);
             midiPorts_->onInputsChanged = [this] {
@@ -809,7 +811,7 @@ class AdiApplication final : public juce::JUCEApplication,
         }
         // A built-in device from the browser (D4): one undo step, its reason in the Status Bar.
         root->loadBuiltin = [this](const std::string &uid, std::int64_t track, std::optional<std::int64_t> before) {
-            const bool ok = document_->insertBuiltin(uid, track, before);
+            const bool ok = document_->insertBuiltin(uid, track, before, commands_->exclusiveArm());
             if (!ok && root_)
                 root_->say(document_->error());
             return ok;
@@ -831,7 +833,7 @@ class AdiApplication final : public juce::JUCEApplication,
             const auto before_ = newest();
             // As Live loads one: an instrument onto a MIDI track only, in place of the track's instrument
             // (walk-A A26).
-            if (!document_->loadPlugin(ref, track, before)) {
+            if (!document_->loadPlugin(ref, track, before, commands_->exclusiveArm())) {
                 if (root_)
                     root_->say(document_->error());
                 return false;
@@ -890,7 +892,9 @@ class AdiApplication final : public juce::JUCEApplication,
         root->armAutomation = [this](bool armed) { document_->setAutomationArmed(armed); };
         // Arm, monitoring and Arrangement Record (MX-09): the session's rows, and the recorder.
         root->readRecordStates = [this] { return document_->recordStates(); };
+        root->setSelectionArmedTrack = [this](std::int64_t track) { return document_->session().setSelectionArmedTrack(track); };
         root->setRecordStates(document_->recordStates());
+        root->refreshSelectionArming();
         root->startRecording = [this](std::int64_t insertTick, bool playing) {
             const auto *device = manager_.getCurrentAudioDevice();
             const int inputs = device != nullptr ? device->getActiveInputChannels().countNumberOfSetBits() : 0;

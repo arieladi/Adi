@@ -230,6 +230,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     // Live's Exclusive Arm (the same page), on by default: arming a track disarms the others unless
     // Ctrl/Cmd is held.
     bool exclusiveArm() const noexcept { return exclusiveArm_; }
+    enum class SelectionArm { None, Midi, All };
+    SelectionArm selectionArm() const noexcept { return selectionArm_; }
     // The registry's recording defaults a new track takes (`record.quantize`,
     // `audio.keepMonitoringLatency`; N31).
     const RecordingDefaults &recordingDefaults() const noexcept { return recordingDefaults_; }
@@ -287,6 +289,7 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     bool followByPage_ = true;
     bool exclusiveSolo_ = true;
     bool exclusiveArm_ = true;
+    SelectionArm selectionArm_ = SelectionArm::None;
     RecordingDefaults recordingDefaults_;
     bool linkLoop_ = false;
     bool splitAll_ = true;
@@ -474,6 +477,8 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // `recording` reads whether it runs. A refusal comes back as false and the application has said
     // why. Unset outside the application.
     std::function<RecordStates()> readRecordStates;
+    std::function<bool(std::int64_t)> setSelectionArmedTrack;
+    void refreshSelectionArming();
     void setRecordStates(RecordStates states) {
         if (states != recordStates_)
             recordStates_ = std::move(states);
@@ -895,6 +900,8 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     bool playing_ = false;
     bool midiOverdub_ = false; // Live's MIDI Arrangement Overdub, off in a new Set
     RecordStates recordStates_; // the arm and monitoring the application last handed over (MX-09)
+    std::int64_t selectionArmedTrack_ = 0;
+    bool changeSelectionArming(std::int64_t track);
     RecordStates freshRecordStates() const { return readRecordStates ? readRecordStates() : recordStates_; }
     bool midiIn_ = false;
     bool automationMode_ = false;

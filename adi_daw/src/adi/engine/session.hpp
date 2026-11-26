@@ -458,6 +458,11 @@ public:
     /// AudioIo inputs; per-device channel configuration remains the adapter's.
     bool startRecording(const AudioRecordingSpec&,std::string& error);
     [[nodiscard]] AudioInputRecorder& recording() noexcept;
+    // Selection arming is a live session choice. Explicit arms stay in the project.
+    bool setSelectionArmedTrack(std::int64_t track);
+    [[nodiscard]] bool recordArmed(const rows::Track& track) const noexcept {
+        return track.recordArmed || (selectionArmedTrack_ != 0 && track.id == selectionArmedTrack_);
+    }
     // Message/offline driver inspection. Pointer valid until the next rebuild.
     [[nodiscard]] ClipPlayback* clips() noexcept { if(auto* value=gestureClips(gestureRuntime_))return value;return clips_.get(); }
     [[nodiscard]] MidiClips* midiClips() noexcept { if(auto* value=gestureMidi(gestureRuntime_))return value;return midi_.get(); }
@@ -651,6 +656,7 @@ private:
     DeviceLoader loader_;
     SourceFn sources_;
     SessionSpec spec_;
+    std::int64_t selectionArmedTrack_ = 0;
     Stats stats_;
     std::vector<Entry> entries_;
     std::unordered_map<std::int64_t, std::size_t> byId_;   ///< device id -> entries_

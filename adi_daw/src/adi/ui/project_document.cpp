@@ -548,15 +548,18 @@ std::int64_t ProjectDocument::retainedDeviceId() const noexcept {
         id = std::max(id, session_.entryAt(i).deviceId);
     return id;
 }
-bool ProjectDocument::insertBuiltin(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before) {
-    return finishInsert(prepareBuiltinInsert(*store_, uid, track, before, retainedDeviceId()));
+bool ProjectDocument::insertBuiltin(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before,
+                                     bool exclusiveArm) {
+    return finishInsert(prepareBuiltinInsert(*store_, uid, track, before, retainedDeviceId(), exclusiveArm));
 }
 bool ProjectDocument::insertPlugin(const rows::PluginRef &ref, std::int64_t track,
                                    std::optional<std::int64_t> before, const PluginInsertOptions& options) {
     return finishInsert(preparePluginInsert(*store_, ref, track, before, options, retainedDeviceId()));
 }
-bool ProjectDocument::loadPlugin(const rows::PluginRef &ref, std::int64_t track, std::optional<std::int64_t> before) {
+bool ProjectDocument::loadPlugin(const rows::PluginRef &ref, std::int64_t track, std::optional<std::int64_t> before,
+                                  bool exclusiveArm) {
     PluginInsertOptions options;
+    options.exclusiveArm = exclusiveArm;
     if (ref.subtype == "instrument") {
         try {
             SQLite::Statement kind(store_->db(), "SELECT kind FROM tracks WHERE id=?");
@@ -1211,7 +1214,7 @@ void ProjectDocument::process(const engine::AudioIo &io) noexcept {
 RecordStates ProjectDocument::recordStates() const {
     RecordStates out;
     for (const auto &t : session_.model().tracks)
-        out[t.id] = {t.recordArmed, t.monitorMode == 1 ? Monitor::In : t.monitorMode == 2 ? Monitor::Auto : Monitor::Off};
+        out[t.id] = {session_.recordArmed(t), t.monitorMode == 1 ? Monitor::In : t.monitorMode == 2 ? Monitor::Auto : Monitor::Off};
     return out;
 }
 bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t inputs, bool playing) {

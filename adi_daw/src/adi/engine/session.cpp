@@ -291,6 +291,14 @@ void Session::retainRuntimeClient(std::shared_ptr<SessionRuntimeClient> client) 
 }
 
 AudioInputRecorder& Session::recording() noexcept{return *recording_;}
+bool Session::setSelectionArmedTrack(std::int64_t track) {
+    if (track == selectionArmedTrack_) return true;
+    const auto previous = std::exchange(selectionArmedTrack_, track);
+    if (!loaded_ || rebuild()) return true;
+    selectionArmedTrack_ = previous;
+    return false;
+}
+
 bool Session::startRecording(const AudioRecordingSpec& options,std::string& error) {
     if(!live_){error="No active audio session for recording";return false;}
     if(options.sampleRate!=spec_.sampleRate || options.maxFrames!=static_cast<std::uint32_t>(spec_.maxFrames)) {
@@ -298,7 +306,7 @@ bool Session::startRecording(const AudioRecordingSpec& options,std::string& erro
     }
     for(const auto& target:options.targets) {
         const auto track=std::find_if(model_.tracks.begin(),model_.tracks.end(),[&](const auto& row){return row.id==target.trackId;});
-        if(track==model_.tracks.end() || !track->recordArmed || (track->kind!="audio" && track->kind!="midi")) {
+        if(track==model_.tracks.end() || !recordArmed(*track) || (track->kind!="audio" && track->kind!="midi")) {
             error="Recording target must be an armed audio or MIDI track";return false;
         }
     }
@@ -801,7 +809,7 @@ void Session::prepareInputMonitors(TimingView& timing, const rows::Model& model,
             frozenGroupChildren_.contains(track.id))
             continue;
         const bool inputOnly = track.monitorMode == 1;
-        const bool armedAuto = track.monitorMode == 2 && track.recordArmed;
+        const bool armedAuto = track.monitorMode == 2 && recordArmed(track);
         if (!inputOnly && !armedAuto) continue;
         const auto binding = monitorInputs_.find(track.id);
         if (binding == monitorInputs_.end()) continue;
@@ -961,7 +969,7 @@ void Session::prepareMidiInput(TimingView& timing, const rows::Model& model) {
     if (!timing.spec.performanceState || timing.spec.exporting) return;
     std::map<const Node*, std::int64_t> armed;
     for (const auto& track : model.tracks) {
-        if (!track.recordArmed ||
+        if (!recordArmed(track) ||
             (track.kind != "midi" && track.kind != "instrument" && track.kind != "audio"))
             continue;
         for (const auto* node : chainFor(track.id)) {
@@ -2523,7 +2531,7 @@ bool Session::startMidiInputCapture(std::span<const std::int64_t> tracks, std::s
     for (const auto id : tracks) {
         const auto track = std::find_if(model_.tracks.begin(), model_.tracks.end(),
             [id](const rows::Track& t) { return t.id == id; });
-        if (id <= 0 || track == model_.tracks.end() || !track->recordArmed ||
+        if (id <= 0 || track == model_.tracks.end() || !recordArmed(*track) ||
             (track->kind != "midi" && track->kind != "instrument") || !seen.insert(id).second) {
             error = "MIDI capture needs distinct armed MIDI or instrument tracks";
             return false;

@@ -325,6 +325,31 @@ void midiPortsCore() {
                   settings::validate(*row, *both, why),
               "two devices that swapped sockets each keep their own record");
     }
+    {
+        const settings::Value saved = {
+            {"in:manual", {{"track", false}, {"name", "Manual Keys"}}},
+            {"in:legacy", {{"remote", true}}},
+            {"out:existing", {{"track", true}, {"name", "External Synth"}}},
+        };
+        const auto first = reconcileMidiPorts(saved, {{"in:old", "Old Input"}, {"in:legacy", "Legacy Input"},
+                                                      {"out:old", "Old Input"}}, false);
+        check(first && first->at("in:old").at("track") == false && !first->contains("out:old"),
+              "discovering a new input saves even an off default and does not change its output");
+        const std::vector<MidiPortListing> expanded = {
+            {"in:old", "Old Input"}, {"in:legacy", "Legacy Input"}, {"in:moved", "Manual Keys"},
+            {"in:new", "New Input"}, {"out:new", "New Input"}, {"out:existing", "External Synth"},
+        };
+        const auto second = first ? reconcileMidiPorts(*first, expanded, true) : std::nullopt;
+        check(second && midiPortSwitches(*second, "in:new").track && !second->contains("out:new") &&
+                  midiPortSwitches(*second, "out:existing").track && !midiPortSwitches(*second, "out:new").track &&
+                  settings::validate(*row, *second, why),
+              "the enabled default reaches a new input while output Track switches keep their prior behavior");
+        check(second && !midiPortSwitches(*second, "in:old").track && !second->at("in:legacy").contains("track") &&
+                  !midiPortSwitches(*second, "in:moved").track && !second->contains("in:manual"),
+              "changing the default preserves seeded off, legacy partial records, and a moved manual off");
+        check(!reconcileMidiPorts(saved, {{"in:one", "Manual Keys"}, {"in:two", "Manual Keys"}}, true),
+              "an ambiguous saved input is left for the user instead of being enabled by the new default");
+    }
     // The ring: in order, refusing when full, counting what it lost.
     MidiEventRing<4> ring;
     for (std::uint32_t i = 0; i < 5; ++i) {
