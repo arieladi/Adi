@@ -4,6 +4,7 @@
 #include "adi/render/host_dispatch.hpp"
 #include "adi/settings/device_grant.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
+#include "adi/ui/plugin_hold_off.hpp"
 #include "adi/ui/plugin_scan.hpp"
 #include "adi/ui/project_document.hpp"
 #include "juce/device_bridge.hpp"
@@ -648,12 +649,25 @@ class AdiApplication final : public juce::JUCEApplication,
         std::string error;
         std::string catalogueError;
         (void)loader_.hydrateCatalogue(catalogueError); // no scanner child or root enumeration
-        auto next = ProjectDocument::open(pathFromUtf8(file.getFullPathName().toStdString()), create, loader_.fn(), error,
+        // SC-320: a marker still naming this project is a plug-in that brought ADI down while it loaded;
+        // the project opens with its plug-ins held off, and the window asks what to load (askHeldOff).
+        const auto projectPath = pathFromUtf8(file.getFullPathName().toStdString());
+        auto holdOff = std::make_shared<PluginHoldOff>();
+        std::optional<LoadingMarker> crashed;
+        if (!create)
+            if (auto marker = LoadingGuard::read(loadGuard_->file()); marker && LoadingGuard::names(*marker, projectPath))
+                crashed = std::move(marker);
+        if (crashed)
+            holdOff->scope = PluginHoldOff::Scope::All;
+        loadGuard_->arm(projectPath);
+        auto next = ProjectDocument::open(projectPath, create, holdingOff(loader_.fn(), holdOff, loadGuard_), error,
                                           &commands_->recordingDefaults());
+        loadGuard_->disarm();
         if (!next) {
             report(error);
             return false;
         }
+        holdOff_ = std::move(holdOff);
         // A worker preparing for the document going is stopped; its result is dropped.
         ++installGeneration_;
         importStop_.request_stop();
@@ -1079,7 +1093,47 @@ class AdiApplication final : public juce::JUCEApplication,
         syncMixView(*floating_, *root_, true);
         if (!noAudio_)
             attachAudio();
+        if (crashed)
+            askHeldOff(*crashed);
         return true;
+    }
+    // SC-320 (ADR-0258 d16): the project opened with its plug-ins held off because one brought ADI down
+    // as it loaded. Load all but that one, all of them, or keep them held off; each held-off device is a
+    // placeholder that keeps its state, and the next ordinary open loads it again.
+    void askHeldOff(const LoadingMarker &crashed) {
+        const std::string who = crashed.name.empty() ? std::string() : "“" + crashed.name + "”";
+        if (testLaunch()) {
+            std::fprintf(stderr, "ADI: plug-ins held off: ADI closed while %s was loading in this project\n",
+                         who.empty() ? "a plug-in" : crashed.name.c_str());
+            return;
+        }
+        const auto text = juce::String::fromUTF8(
+            ("ADI closed while " + (who.empty() ? std::string("this project's plug-ins were") : who + " was") +
+             " loading in this project, so its plug-ins are held off. Each stands as a placeholder that keeps "
+             "its settings.").c_str());
+        auto *prompt = new juce::AlertWindow("Plug-ins held off", text, juce::MessageBoxIconType::WarningIcon);
+        if (!who.empty())
+            prompt->addButton(juce::String::fromUTF8(("Load All but " + who).c_str()), 1,
+                              juce::KeyPress(juce::KeyPress::returnKey));
+        prompt->addButton("Load All", 2);
+        prompt->addButton("Keep Held Off", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+        const auto *asked = document_.get();
+        prompt->enterModalState(
+            true, juce::ModalCallbackFunction::create([this, asked, crashed](int chosen) {
+                if (chosen == 0 || !document_ || document_.get() != asked || !holdOff_)
+                    return;
+                holdOff_->scope = chosen == 1 ? PluginHoldOff::Scope::One : PluginHoldOff::Scope::None;
+                holdOff_->format = crashed.format;
+                holdOff_->uid = crashed.uid;
+                // Loading them again is guarded as the open was: another crash asks again.
+                loadGuard_->arm(document_->store().path());
+                const auto woke = document_->wakeMissingPlugins();
+                loadGuard_->disarm();
+                if (root_)
+                    root_->say(woke == 0 ? std::string("No held-off plug-in could be loaded.")
+                                         : std::to_string(woke) + (woke == 1 ? " plug-in" : " plug-ins") + " loaded.");
+            }),
+            true);
     }
     void attachAudio() {
         juce::AudioDeviceManager::AudioDeviceSetup setup;
@@ -1503,6 +1557,10 @@ class AdiApplication final : public juce::JUCEApplication,
     std::uint64_t midiSeen_ = 0;
     juce::uint32 midiLitUntil_ = 0;
     std::unique_ptr<ProjectDocument> document_;
+    // SC-320: the marker a project's plug-in loads leave while they run, and what the current document's
+    // loader holds off.
+    std::shared_ptr<LoadingGuard> loadGuard_ = std::make_shared<LoadingGuard>(loadingMarkerFile());
+    std::shared_ptr<PluginHoldOff> holdOff_;
     std::shared_ptr<const MainMeterSource> mainMeterSource_;
     juce::AudioDeviceManager manager_;
     // The document with the keyboard in front of it, which the bridge drives (N60).
