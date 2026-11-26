@@ -925,6 +925,12 @@ class AdiApplication final : public juce::JUCEApplication,
         root->stopRecording = [this] { document_->stopRecording(); };
         root->recording = [this] { return document_->recording(); };
         root->liveMidiTakes = [this] { return document_->liveMidiTakes(); };
+        root->captureRecentMidi = [this](std::int64_t tick, bool playing) {
+            auto result = document_->captureRecentMidi(tick, playing);
+            root_->say(std::move(result.message));
+            if (result.ok && !result.clips.empty()) root_->selectClip(result.clips.front());
+            root_->transport.capture.setEnabled(document_->canCaptureMidi());
+        };
         // Export Audio/Video (EX-11): the Export page, then a file, then a render on a worker.
         root->exportAudio = [this](const ExportChoices &c) { openExport(c); };
         // A mixer drag heard while it moves (MX-23, SRF-02): the document's live gesture.
@@ -1442,6 +1448,7 @@ class AdiApplication final : public juce::JUCEApplication,
         document_->tick(static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
         if (root_) {
             root_->setRecordStates(document_->recordStates());
+            root_->transport.capture.setEnabled(document_->canCaptureMidi());
             // A take landed (MX-09): its outcome in the Status Bar, its clips selected.
             if (auto landed = document_->takeLanded()) {
                 root_->say(landed->message);

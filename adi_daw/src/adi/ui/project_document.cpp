@@ -2,9 +2,11 @@
 #include "project_document.hpp"
 #include "arrangement_geometry.hpp"
 #include "adi/audio/decode.hpp"
+#include "adi/edit_time.hpp"
 #include "adi/engine/midi_input_capture.hpp"
 #include "adi/gesture_navigation_detail.hpp"
 #include "adi/media/collect_export.hpp"
+#include "adi/midi_capture.hpp"
 #include "adi/mix_function_edit.hpp"
 #include "adi/row_ids.hpp"
 #include "adi/device_key_routes.hpp"
@@ -17,6 +19,7 @@
 #include <chrono>
 #include <cmath>
 #include <mutex>
+#include <set>
 #include <thread>
 namespace adi::ui {
 // Where the document's file is now. The message thread moves it at Save As; the waveform worker
@@ -1480,6 +1483,83 @@ std::string ProjectDocument::discardTake(engine::AudioRecordingResult &result) {
     return " Its recorded files could not be removed (" + refused.message() + "); they stay in " +
            media::pathUtf8(result.directory().filename()) + " in the project's folder.";
 }
+bool ProjectDocument::canCaptureMidi() const noexcept {
+    return !store_->readOnly() && !recording_ && !landing_ && session_.midiHistoryAvailable();
+}
+
+ProjectDocument::TakeLanded ProjectDocument::captureRecentMidi(std::int64_t positionTick, bool playing) {
+    TakeLanded outcome;
+    if (recording_ || landing_) {
+        outcome.message = "Finish Arrangement Record before using Capture MIDI.";
+        return outcome;
+    }
+    std::vector<engine::MidiMemorySnapshot> histories;
+    if (!session_.readMidiHistories(histories, outcome.message)) return outcome;
+    std::erase_if(histories, [this](const auto& history) {
+        if (std::any_of(history.events.begin(), history.events.end(), [](const auto& event) {
+                return event.event.type == engine::EventType::NoteOn || event.event.type == engine::EventType::Controller;
+            })) return false;
+        session_.consumeMidiHistories(std::span(&history, 1));
+        return true;
+    });
+    if (histories.empty()) {
+        outcome.message = "No new MIDI notes or controllers to capture.";
+        return outcome;
+    }
+    try {
+        const auto first = std::min_element(histories.begin(), histories.end(), [](const auto& a, const auto& b) {
+            return a.events.front().sample < b.events.front().sample;
+        })->events.front().sample;
+        const auto latest = std::max_element(histories.begin(), histories.end(), [](const auto& a, const auto& b) {
+            return a.endSample < b.endSample;
+        })->endSample;
+        auto start = std::max<std::int64_t>(0, positionTick);
+        if (playing) {
+            const edit::TimeMap time(store_->db());
+            const auto now = time.nanos(start);
+            const double ago = static_cast<double>(latest - first) * 1e9 / histories.front().sampleRate;
+            start = ago >= static_cast<double>(now) ? 0 : time.ticks(now - std::llround(ago));
+        }
+        RowIds rows(store_->db());
+        const SnapshotReader current(view_.current());
+        std::vector<capture::MidiSpec> specs;
+        for (const auto& history : histories) {
+            std::set<std::uint64_t> held;
+            for (const auto& remembered : history.events) {
+                const auto& event = remembered.event;
+                if (event.type == engine::EventType::NoteOn) held.insert(event.noteId);
+                else if (event.type == engine::EventType::NoteOff) held.erase(event.noteId);
+            }
+            auto name = shownTrackName(current, history.trackId);
+            auto& spec = specs.emplace_back();
+            spec.clip = rows.next("clips");
+            spec.positionTicks = start;
+            spec.firstSample = first;
+            spec.endSample = held.empty() ? history.events.back().sample + 1 : history.endSample;
+            if (!name.empty()) spec.name = std::move(name);
+            spec.liveHistory = true;
+        }
+        auto prepared = capture::prepareMidiBatch(*store_, histories, specs, outcome.message);
+        if (!prepared) return outcome;
+        const auto committed = ops_.commitPrepared(prepared->requests, [&](Store& store, Actor) {
+            return capture::commitMidi(store, *prepared);
+        });
+        if (!committed) {
+            outcome.message = committed.error;
+            return outcome;
+        }
+        session_.consumeMidiHistories(histories);
+        synchronise();
+        for (const auto& spec : specs) outcome.clips.push_back(spec.clip);
+        outcome.ok = true;
+        outcome.message = outcome.clips.size() == 1 ? "Captured one MIDI clip." :
+            "Captured " + std::to_string(outcome.clips.size()) + " MIDI clips.";
+    } catch (const std::exception& exception) {
+        outcome.message = exception.what();
+    }
+    return outcome;
+}
+
 void ProjectDocument::landTake() {
     auto audio = std::move(audioTake_);
     audioTake_.reset();

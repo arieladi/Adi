@@ -11692,6 +11692,58 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     check(!root.midiOverdub() && !overdub.getToggleState(), "and off");
     document->release();
 }
+void captureMidiButton(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "capture-midi-button.adi", true, {}, error);
+    check(document != nullptr, "a project for the Capture MIDI button");
+    if (!document) return;
+    document->prepare(48000, 64);
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "capture-midi");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.readRecordStates = [&] { return document->recordStates(); };
+    ProjectDocument::TakeLanded captured;
+    bool stopped = false;
+    root.captureRecentMidi = [&](std::int64_t tick, bool playing) {
+        stopped = !playing;
+        captured = document->captureRecentMidi(tick, playing);
+    };
+    check(!root.transport.capture.isEnabled() && !document->canCaptureMidi(), "Capture remains disabled without input");
+    check(root.armTrack(2, true) && root.setMonitor(2, Monitor::Off) && root.setMonitor(3, Monitor::In),
+          "one muted-monitor armed track and one unarmed input-monitored track");
+    root.arrangement.geometry.selection.insert = textproj::kPPQ;
+    using engine::EventType;
+    constexpr auto pressure = static_cast<std::uint16_t>(ExpressionDim::Pressure);
+    auto& session = document->session();
+    check(session.enqueueMidiInput(8, {0, EventType::NoteOn, 1, 60, 17, 0, 1}) &&
+          session.enqueueMidiInput(12, {0, EventType::NoteExpression, 1, pressure, 17, 0, .5}) &&
+          session.enqueueMidiInput(32, {0, EventType::NoteOff, 1, 60, 17, 0, 0}),
+          "typed keyboard notes and expression reach the live MIDI queue without recording");
+    std::array<float, 64> left{}, right{};
+    float* out[]{left.data(), right.data()};
+    document->process({out, nullptr, 2, 0, 64, 0});
+    root.transport.capture.setEnabled(document->canCaptureMidi());
+    check(root.transport.capture.isEnabled() && !document->recording(), "live input enables the Capture button while stopped");
+    root.transport.capture.onClick();
+    check(captured.ok && stopped && captured.clips.size() == 2 && !document->canCaptureMidi(),
+          "the Capture button commits both eligible tracks and consumes the captured history");
+    if (!captured.ok || captured.clips.size() != 2) return;
+    for (const auto clip : captured.clips) {
+        const auto bytes = document->store().getNoteExpression(clip, 17, pressure);
+        bool expression = false;
+        if (bytes) {
+            const StreamReader<ExpressionPoint> reader(*bytes, FourCC::Expression);
+            expression = reader.ok() && reader.count() == 1 && reader.at(0)->time_ticks > 0 && reader.at(0)->value == .5f;
+        }
+        check(expression, "the Capture button saves the actual MPE expression with its note");
+    }
+    check(document->store().db().execAndGet("SELECT count(*) FROM clips WHERE pos_ticks=" +
+              std::to_string(textproj::kPPQ) + " AND loop_enabled=1").getInt() == 2,
+          "stopped Capture makes looped clips at the insert marker");
+    check(History(document->store()).nextUndo()->label == "Capture MIDI" && document->ops().undo().ok &&
+              document->store().db().execAndGet("SELECT count(*) FROM clips").getInt() == 0,
+          "one Capture MIDI undo removes both captured clips");
+}
 void midiTakePreview(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto document = ProjectDocument::open(dir / "midi-take-preview.adi", true, {}, error);
@@ -19079,6 +19131,7 @@ int main(int argc, char **argv) {
     trace("automationArm", [&] { automationArm(commands, temp.path()); });
     trace("selectionArmsTrack", [&] { selectionArmsTrack(commands, temp.path()); });
     trace("armAndRecord", [&] { armAndRecord(commands, temp.path()); });
+    trace("captureMidiButton", [&] { captureMidiButton(commands, temp.path()); });
     trace("midiTakePreview", [&] { midiTakePreview(commands, temp.path()); });
     trace("computerMidiKeyboard", [&] { computerMidiKeyboard(commands, temp.path()); });
     trace("exportPage", [&] { exportPage(commands, temp.path()); });

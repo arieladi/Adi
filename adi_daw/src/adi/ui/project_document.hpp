@@ -186,6 +186,8 @@ class ProjectDocument final : public engine::BlockProcessor {
         std::vector<std::int64_t> clips;
         std::string message;
     };
+    [[nodiscard]] bool canCaptureMidi() const noexcept;
+    TakeLanded captureRecentMidi(std::int64_t positionTick, bool playing);
     std::optional<TakeLanded> takeLanded();
     // A mixer drag heard while it moves (MX-23, SRF-02; Live 12 manual 18.1): a fader, a pan or a send
     // knob, on its track or, when that track is among the selected, on every selected track by the same
