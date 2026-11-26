@@ -20340,3 +20340,164 @@ device preset. Six readings of Live 12 are owed and named in the list.
 | `docs/DEFERRED.md` | DF-W59 (the list is the register of its rows), DF-R2 |
 | `collab/README.md` | ADR 0257 used |
 | `collab/RESERVATIONS.md` | the next free ADR is 0258 |
+
+## ADR-0258 — After the sanity check's round 2: a folder per song and fifteen more answers, each as Live; a silent MIDI track until it has an instrument; presets are files; who works what — `DECIDED` (2026-11-26) — **DIRECTOR'S ANSWERS OF 26 NOVEMBER TO WIN'S SIXTEEN NUMBERED CHOICES AND TO T AND U; AMENDS ADR-0127, ADR-0132 d6, ADR-0246 d7, ADR-0249 d3 AND TM-MD-03; WIN'S PLACEMENTS ARE NAMED, THE DIRECTOR MAY STRIKE THEM**
+
+**What this records.** Round 2 of the sanity check (`docs/SANITY-CHECK.md`, SC-120 onward) met sixteen
+things that are product decisions and not fixes. Win put them to the director as numbered choices, each
+with the recommendation "as Live", together with the two choices left from round 1, T and U, and a table
+of who works what this weekend. His words: "yes to all, T a, U a, go".
+
+### Decisions
+
+**Songs and files**
+
+1. **Each song has a folder of its own (SC-148).** Saving a song makes a folder named after it, which
+   holds the song file and its media, as a Live Project. Two songs never share a media folder.
+2. **Recordings live in that folder in Live's layout (SC-24):** a Recorded folder under Samples, each
+   file named after its track. This replaces ADR-0127's `audio` folder for songs saved from now on; a
+   song that has an `audio` folder is still read.
+3. **The first Ctrl+S on a song with no name asks its name and place, once (SC-149).** After that Ctrl+S
+   takes a named snapshot, as ADR-0203 d6 rules.
+4. **That first save takes everything along (SC-152):** the Untitled file and its recordings become the
+   song. Nothing is left behind as a second copy.
+5. **Collected samples keep their own names (SC-154),** with a short suffix when two clash.
+6. **A User Library exists from the first launch (SC-135).**
+7. **Projects live under the user's documents by default (SC-100, SC-159),** after the engine keeps an
+   open project whole in a synced folder. PD-08 moves up and lands before the default folder moves.
+8. **A copy sent to someone leaves the history out (SC-172).** Save a Copy and the collected export
+   carry the song without its undo history, with a box to keep it.
+9. **An older project is copied before it is upgraded (SC-169),** and ADI says so. The upgrade in place
+   (ADR-0144) stands.
+
+**Sound and clips**
+
+10. **ADI ships a small set of sounds of its own (SC-128):** drum hits and a few loops, made for ADI,
+    listed under Sounds, Drums and Samples. No other maker's samples. *Win's placement:* a first dozen
+    hits come this weekend from a generator in the repository; the Foundry (ADR-0257 d7) makes the set
+    proper.
+11. **A recorded take follows the tempo, as Live's (SC-248).** ADR-0132 d6 stands for imported files.
+12. **A click in a clip's body places the insert marker; the clip's title selects the clip (SC-175).** As
+    Live, once the reading of Live confirms it.
+13. **A sample changed outside ADI plays its new content, with a notice (SC-213).** TM-MD-03's "listed,
+    never played" is replaced.
+
+**The order of work**
+
+14. **Take lanes move up (SC-252, SC-253),** from M6 to beside loop recording (SC-27). ADR-0246 d7 left
+    this to his word.
+15. **The Drum Rack moves up to the racks' step (SC-295).**
+16. **An addition: after a plug-in has brought ADI down while a project loaded, ADI offers to open that
+    project with its plug-ins held off (SC-320).** Live lacks it.
+
+**The two choices of round 1**
+
+17. **T: a MIDI track with no instrument is silent, as Live (SC-62).** ADR-0169 d4 and d5 stand. SC-52
+    makes the track play the moment an instrument is loaded.
+18. **U: a device preset is a file (SC-85):** one file per preset in the User Library, listed in the
+    Browser under its device, as Live. The file is ADI's own readable form.
+
+**Who works what, 27 to 29 November (win's contract under ADR-0257 d2)**
+
+19. Fifteen queue names stand in the list's rows. Six sessions outside the seats work them, each a
+    first queue and then a second, and the gemini seat reads their branches; `collab/prompts/2026-11-27-basics-*.md` holds each queue.
+
+    | Session | First | Then |
+    |---|---|---|
+    | Codex on the Windows 10 machine | recording | routing |
+    | the Windows 10 walker | plugins | clips |
+    | Codex on the Windows 11 machine | midi | automation |
+    | the Windows 11 walker | the readings of Live, then look | browser |
+    | Codex in the cloud | tracks | edit |
+    | Claude in the cloud | project | safety |
+    | gemini | every branch on the older compilers | DF-E89 |
+
+    The speed queue (SC-407 onward: ADI at the size of a real song, from the round's twentieth audit)
+    goes to a session the director starts for it, or to the first that empties its own. The device and
+    export queues wait likewise.
+20. **The hold of ADR-0248 d2 ended on 26 November** with the walk's clean ninth pass (ADR-0255 d1). The
+    seats' branches marked "after 3 December" land from now in win's stacks; a `basics/*` branch goes
+    ahead of them on the runner.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0127 (the `audio` folder) | a saved song keeps its media in its own folder, recordings under Samples in a Recorded folder (d1, d2); an existing `audio` folder is still read |
+| ADR-0203 d6 | Ctrl+S asks a name and place the first time (d3) |
+| ADR-0132 d6 | a recorded take follows the tempo; imports unchanged (d11) |
+| ADR-0144 | a copy is kept before the upgrade (d9) |
+| ADR-0246 d7 | take lanes move up beside loop recording (d14) |
+| ADR-0249 d3, ADR-0253 d7 | the Drum Rack moves to the racks' step (d15) |
+| ADR-0169 d4, d5 | confirmed (d17) |
+| `docs/PLAN.md` TM-MD-03, PD-08, DEV-04, CT-01, CT-04, CT-05 | the changed-sample rule (d13); PD-08 before the default folder moves (d7); the rows of d14 and d15 move up. Win writes these with the rows owed under DF-R2 |
+| `docs/SANITY-CHECK.md` | SC-62 closed as ruled (d17); SC-24, SC-85 and the rows named above carry their answers |
+| `collab/README.md` | ADR 0258 used |
+| `collab/RESERVATIONS.md` | the next free ADR is 0259 |
+
+## ADR-0259 — Surfaces, phones and the agent's stop: what an outside proposal adds to the decided design — `DECIDED` (2026-11-26) — **DIRECTOR'S WORD OF 26 NOVEMBER ON FIVE CHOICES (H1 TO H5), AS AMENDED BY HIS OUTSIDE PANEL AND CORRECTED BY WIN; ADDS TO AGT-04, AGT-05, AGT-06, SRF-05, SRF-08, SRF-09 AND SRF-13; NOTHING OF IT BEFORE THE BASICS (ADR-0257 d1)**
+
+**What this records.** A panel of three outside models, which reads ADI's public documents, proposed a
+design for hardware controllers, a Stream Deck and phones. Win read it against the plan's rows SRF-01 to
+SRF-16 and AGT-01 to AGT-12, this log and the code. Most of it is ADI's decided design under other
+names: one write path and one undo for every surface; an actor on every journal row; a whole fader or
+knob gesture as one undo step; feedback to a device as a read-only projection; AI optional, asynchronous
+and off the audio path; commands, a parameter feed and pages that every surface binds to. Five things
+were new or stood against a ruling. Win put them to the director as H1 to H5; the panel amended them;
+win corrected three points. His words: "as the panel, with win's corrections".
+
+### Decisions
+
+1. **Stop Agent (H1), an addition.** One command.
+   - On the press the agent's writes are refused. Its queued jobs are cancelled and a running one ends
+     at its next safe point; ADI does not promise that a render ends at once. Its pending proposals are
+     rejected. The agent is read-only until the user re-arms it.
+   - Re-arming allows new writes only. Nothing that was cancelled resumes.
+   - It has a fixed key in the window and a fixed key on ADI's own Stream Deck profile (SRF-13). ADI
+     reserves no control on a controller it does not know.
+   - One entry in the agent's log says what was rejected, with the actor `user` and the surface the press
+     came from. It is not an undo step: no project content changes.
+   - It exists before any agent job runs: a condition of AGT-06 and of any unattended run (ADR-0257 d7).
+     It stops a Foundry run too.
+2. **Captures (H2).** A place in the Browser for what is made outside a song, phone notes and quick
+   ideas, from which the user drags what he keeps. Takes do not go there: they land on the track and in
+   the song's folder (ADR-0258 d2). The agent's renders do not go there: their home is the session's own
+   folder (ADR-0257 d9), so the rule that media on disk asks first is untouched. No inbox stands between
+   the user and his own recording.
+3. **A phone page (H3): the direction only.** A page that ADI serves on the local network, for transport
+   and review. Before anything is promised, a trial of its trust flow (the pairing, and a certificate a
+   phone's browser accepts on a home network), done with the surface host's work. The earlier ruling on
+   a mobile ADI, a real application, is separate and unchanged.
+4. **Bias controls and "make variants" (H4) are parked with the Dream,** until the small Dream has been
+   heard (ADR-0257 d7).
+5. **OSC and learned mappings stay as decided (H5).**
+   - OSC keeps SRF-09's rules: off by default, on the interface the user picks, with a client list. Its
+     documentation states its trust boundary: OSC has no authentication. Its writes go through the one
+     write path and the permission tiers.
+   - A learned MIDI mapping stays in the project, as Live keeps it in the Set. Surface profiles stay per
+     user (SRF-08).
+6. **A lost device.** An abandoned gesture is cancelled, as the engine does today; it is never committed
+   at its last value. While automation is being recorded, a lost controller ends the pass and what was
+   written until then is kept. Noticing a lost port is SRF-05's.
+7. **Who did it.** A hand on a controller is the actor `user`; the device is named in the row's detail.
+   A write that arrives over OSC or the phone page is the actor `remote`, which the journal has and
+   nothing uses yet. A user's row records no model.
+8. **A refinement win takes into the rows:** each command and each parameter target a surface can bind
+   declares whether it asks for confirmation and what it does on a frozen track (WIN-06, SRF-08).
+
+**What is not settled here.** The history's size cap, its compaction, and how long generated media is
+kept: the director's, open.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| AGT-04, AGT-05, AGT-06 | Stop Agent: cancel, reject, read-only until re-armed; a condition of the agent's process (d1) |
+| SRF-13 | a fixed Stop Agent key on ADI's profile (d1) |
+| SRF-05, AU-03 | a lost controller cancels a gesture and ends a recording pass, keeping what was written (d6) |
+| SRF-09 | its trust boundary is documented; its writes are the actor `remote` under the tiers (d5, d7) |
+| SRF-08, WIN-06 | the two flags of d8; profiles per user confirmed (d5) |
+| ADR-0257 d7, d9 | bias controls parked with the Dream (d4); the session's folder stays the home of the agent's renders (d2) |
+| `docs/DEFERRED.md` | DF-C8 holds the rows owed |
+| `collab/README.md` | ADR 0259 used |
+| `collab/RESERVATIONS.md` | the next free ADR is 0260; DF-C9 |

@@ -344,6 +344,8 @@ subject, say so in your log instead of writing it twice.
 | 0255 | win | `win/adr-0255` | the seats' parked questions answered (25 November); the hold of ADR-0248 d2 ends on the proof in the real window; a walk in the real window by his order; Live's Backup folder on by default; Paste refuses across kinds; the Gate before the EQ | used |
 | 0256 | win | `win/adr-0256` | after the walk: playing from the computer keyboard, recording MIDI and recording automation go first when the hold ends; OneShot in the Browser now; the walker takes DF-M76 | used |
 | 0257 | win | `win/sanity-1126` | the basics come first: the sanity check's rows are fixes worked now; the Dream's shape and ground; view filters placed; no AI tab, a larger Info box and its analyser's switch | used |
+| 0258 | win | `win/sanity2-1126` | after the sanity check's round 2: a folder per song and fifteen more answers, each as Live; a silent MIDI track until it has an instrument; presets are files; who works what on 27 to 29 November | used |
+| 0259 | win | `win/adr-0259` | surfaces, phones and the agent's stop: Stop Agent, a Captures place, a phone page as a direction, bias controls parked, OSC and learned mappings as decided, a lost device, who did it | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a
