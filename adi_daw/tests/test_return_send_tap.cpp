@@ -592,7 +592,7 @@ void switchingPreFxClearsSource() {
         liveControls.sync(next, &transport, bound);
         const auto source = send->captureControls().source;
         check(send == liveControls.sendFor(41) && send->latencySamples() == (pre ? 0 : -480) &&
-              (source.config.lanes != nullptr) == !pre && source.audible == pre &&
+              (source.config.lanes != nullptr) == !pre && source.audible && source.config.unmuted == pre &&
               source.config.pan == (pre ? 0.0 : 1.0) && source.config.volumeDb == (pre ? 0.0 : -12.0),
               "the same send node changes source controls and compensation with its tap");
         if (!reused.refresh(store)) throw std::runtime_error("refresh switching send");

@@ -1,5 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "ui_floating.hpp"
+#if JUCE_WINDOWS
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
 #include <chrono>
 namespace adi::ui {
 namespace {
@@ -339,8 +348,53 @@ void FloatingHost::setAlwaysOnTop(const std::string &key, bool onTop) {
     if (it == entries_.end())
         return;
     it->second->onTop = onTop;
-    if (it->second->window)
-        it->second->window->setAlwaysOnTop(onTop);
+    if (!it->second->window)
+        return;
+    // SC-313: an owned window floats above ADI's own window, not above every program.
+    if (native_ && it->second->ownedKind &&
+        floatAboveOwner(*it->second->window, root_.getTopLevelComponent(), onTop)) {
+        it->second->window->setAlwaysOnTop(false);
+        return;
+    }
+    it->second->window->setAlwaysOnTop(onTop);
+}
+bool FloatingHost::floatAboveOwner(juce::Component &window, juce::Component *owner, bool on) {
+#if JUCE_WINDOWS
+    auto *peer = window.getPeer();
+    auto *ownerPeer = owner != nullptr ? owner->getPeer() : nullptr;
+    if (peer == nullptr || (on && ownerPeer == nullptr))
+        return false;
+    const auto hwnd = static_cast<HWND>(peer->getNativeHandle());
+    // A topmost window stays topmost whatever its owner: take that off first.
+    SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT,
+                      on ? reinterpret_cast<LONG_PTR>(static_cast<HWND>(ownerPeer->getNativeHandle())) : 0);
+    return true;
+#else
+    juce::ignoreUnused(window, owner, on);
+    return false;
+#endif
+}
+bool FloatingHost::nativelyOwnedBy(juce::Component &window, juce::Component &owner) {
+#if JUCE_WINDOWS
+    auto *peer = window.getPeer();
+    auto *ownerPeer = owner.getPeer();
+    return peer != nullptr && ownerPeer != nullptr &&
+           GetWindow(static_cast<HWND>(peer->getNativeHandle()), GW_OWNER) == static_cast<HWND>(ownerPeer->getNativeHandle());
+#else
+    juce::ignoreUnused(window, owner);
+    return false;
+#endif
+}
+bool FloatingHost::nativelyTopmost(juce::Component &window) {
+#if JUCE_WINDOWS
+    auto *peer = window.getPeer();
+    return peer != nullptr &&
+           (GetWindowLongPtrW(static_cast<HWND>(peer->getNativeHandle()), GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
+#else
+    juce::ignoreUnused(window);
+    return false;
+#endif
 }
 bool FloatingHost::alwaysOnTop(const std::string &key) const {
     const auto it = entries_.find(key);

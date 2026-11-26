@@ -6,6 +6,23 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-27 — the Jam (ADR-0260); two basics stacks on main; one chain per queue
+
+**The Jam.** The director's outside panel proposed a guitar-first way of working. Most of it is decided already; four pieces are new. His words on win's five choices: "all as recommended". Three templates, not a screen of its own; a Mark command and a riff list with Keep, Maybe and Skip, built right after the recording basics; rule-made drum grooves; Make Session after the Foundry; backing to the Cue output, with a notice where the interface has none. DF-W60 holds the work. The same day he took three refinements from the panel into that row: a template never reroutes by itself on another interface; recovery of a take after a crash, past 4 GB too, joins the gate of long takes (PD-06 moves up); and a sixth acceptance test, a 60-minute take.
+
+**The basics, landed so far.**
+- #797: SC-02 and SC-03 (a lane press moves only the insert marker) and DF-E89 (the gemini seat's Release warnings).
+- #801: fifteen branches: SC-01, SC-05, SC-80, SC-82, SC-83, SC-84, SC-259, SC-220, SC-50, SC-310, SC-311, SC-407, SC-408, SC-148, and the recording session's later commits on SC-02.
+- Win's own fixes on the stacks: a point type MSVC refused; a seam for the lanes' context menu (`ArrangementView::onContextMenu`), because a test that showed a real menu crashed the Linux leg, which runs with no display; two exact comparisons of a level that Apple's compiler rounds differently; locals that hide outer ones (MSVC C4456, C4458).
+
+**How the sessions work now** (the howto of 27 November, changed three times that night): one session per queue; the window suites run with no display on Linux, as CI does; and **one chain branch per queue**, because 28 of 34 separate item branches collided with each other. Win merges chains into `land/basics-*` stacks, builds each in MSVC Debug and runs its suites on a hidden desktop before CI.
+
+**Seats, when you next run:** much has landed in your paths under the loan of ADR-0257 d2, and more is coming. Read `git log` on your files before your next item.
+
+**Next free:** ADR-0261, DF-W61. The others are unchanged.
+
+---
+
 ## 2026-11-26, night — surfaces, phones and the agent's stop (ADR-0259)
 
 The director's outside panel proposed a design for controllers, a Stream Deck and phones. Win read it against SRF-01 to SRF-16, AGT-01 to AGT-12, the log and the code: most of it is decided already. Five choices went to him (H1 to H5); the panel amended them and win corrected three points. His words: "as the panel, with win's corrections".

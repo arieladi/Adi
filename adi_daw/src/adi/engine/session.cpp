@@ -957,16 +957,23 @@ DeviceChainFn Session::eventPathFor(const rows::Model& model) {
     };
 }
 
-void Session::prepareMidiInput(TimingView& timing, const rows::Model& model) {
+void Session::prepareMidiInput(TimingView& timing, const rows::Model& model, const MidiClips& clips) {
     if (!timing.spec.performanceState || timing.spec.exporting) return;
-    std::map<const Node*, std::int64_t> armed;
+    struct Target {
+        std::int64_t track;
+        std::span<const MidiMonitorRange> blockedRanges;
+    };
+    std::map<const Node*, Target> monitored;
     for (const auto& track : model.tracks) {
-        if (!track.recordArmed ||
-            (track.kind != "midi" && track.kind != "instrument" && track.kind != "audio"))
+        const bool midi = track.kind == "midi" || track.kind == "instrument";
+        const bool monitorMidi = midi && (track.monitorMode == 1 || (track.monitorMode == 2 && track.recordArmed));
+        if (!monitorMidi && !(track.kind == "audio" && track.recordArmed))
             continue;
+        const auto blocked = midi && track.monitorMode == 2 ? clips.monitorRanges(track.id)
+                                                           : std::span<const MidiMonitorRange>{};
         for (const auto* node : chainFor(track.id)) {
             if (node->eventFlow() == EventFlow::Consume) {
-                armed.emplace(node, track.id);
+                monitored.emplace(node, Target{track.id, blocked});
                 break;
             }
         }
@@ -979,15 +986,24 @@ void Session::prepareMidiInput(TimingView& timing, const rows::Model& model) {
         auto& instance = devices_.deviceAt(entry.hostIndex);
         if (instance.eventFlow() != EventFlow::Consume) continue;
         auto& node = devices_.nodeAt(entry.hostIndex);
-        const auto target = armed.find(&node);
+        const auto target = monitored.find(&node);
         // Keep a disarmed or parked instrument's state until it can render
         // its releases. A retired instance's last graph still owns its state.
         auto voices = midiInputVoices_.find(entry.hostIndex);
-        if (target == armed.end() && voices == midiInputVoices_.end()) continue;
+        if (target == monitored.end() && voices == midiInputVoices_.end()) continue;
         if (voices == midiInputVoices_.end())
             voices = midiInputVoices_.emplace(entry.hostIndex, std::make_shared<LiveMidiInput::Voices>()).first;
-        timing.midiInputRoutes.push_back({&node, voices->second, target == armed.end() ? 0 : target->second,
-                                          node.eventFlow() == EventFlow::Consume});
+        LiveMidiInput::Route route;
+        route.node = &node;
+        route.voices = voices->second;
+        route.processes = node.eventFlow() == EventFlow::Consume;
+        if (target != monitored.end()) {
+            route.monitorTrack = target->second.track;
+            const auto ranges = target->second.blockedRanges;
+            if (!ranges.empty())
+                route.blockedRanges.assign(ranges.begin(), ranges.end());
+        }
+        timing.midiInputRoutes.push_back(std::move(route));
     }
 }
 
@@ -1031,7 +1047,8 @@ bool Session::rebuild() {
         nextClips = std::make_shared<ClipPlayback>(clipProject_, transport_, spec_.sampleRate,
                                                 spec_.channels, spec_.maxFrames, spec_.progressiveDecoder);
         nextMidi = std::make_shared<MidiClips>(playbackModel_,transport_,spec_.sampleRate,midiState_,
-                                               eventPath,clipNoteExpressions(*clipProject_));
+                                               eventPath,clipNoteExpressions(*clipProject_),
+                                               spec_.performanceState && !spec_.exporting);
         prepareInputMonitors(*timing, model_, *nextClips);
     } catch (const std::exception& e) { error_ = e.what(); return false; }
     // ADR-0164: the automation this graph plays, bound to strips, less every
@@ -1124,7 +1141,7 @@ bool Session::rebuild() {
     cueMonitor_.captureLanes(*laneBindings);
     timing->stripLanes = std::move(laneBindings);
     timing->generationControls=nativeGestureControls(*this);
-    prepareMidiInput(*timing, model_);
+    prepareMidiInput(*timing, model_, *midi_);
     attach(std::move(timing)); // publish the matching clock with this graph
     gestureAudio_->stageReset(gestureGeneration); // tagged, inert until this graph is adopted
     ++stats_.rebuilds;

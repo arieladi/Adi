@@ -26,6 +26,7 @@ struct PluginEntry {
     std::string name, vendor, version;
     std::string path; // the file or bundle the scan found it in
     Kind kind = Kind::Unknown;
+    std::optional<std::int64_t> shellId{};
 };
 struct PluginListing {
     std::vector<PluginEntry> plugins;
@@ -161,6 +162,8 @@ inline rows::PluginRef pluginReference(const PluginEntry &p, bool unknownAsInstr
     ref.vendor = p.vendor;
     ref.version = p.version;
     ref.pathHint = p.path;
+    ref.shellId = p.shellId;
+    ref.isShell = p.shellId.has_value();
     using K = PluginEntry::Kind;
     ref.subtype = p.kind == K::Instrument    ? "instrument"
                   : p.kind == K::MidiEffect ? "midi_effect"

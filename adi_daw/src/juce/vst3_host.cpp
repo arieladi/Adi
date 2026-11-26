@@ -4,6 +4,7 @@
 
 #include "juce/vst3_host.hpp"
 #include <charconv>
+#include <string_view>
 #include "juce/vst3_scan_host.hpp"
 #include "adi/engine/graph.hpp"
 #include "adi/scan_batch.hpp"
@@ -149,6 +150,38 @@ std::unique_ptr<juce::AudioPluginInstance> Vst3Host::instantiate(
     auto inst = formats_.createPluginInstance(desc, sampleRate, blockSize, err);
     if (inst == nullptr) error = err.toStdString();
     return inst;
+}
+
+bool mapDeclaredMidiControllers(const std::vector<ParamDescriptor>& params, engine::ExpressionCaps& caps) {
+    constexpr std::string_view prefix = "MIDI CC ";
+    bool found = false;
+    for (const auto& p : params) {
+        if (p.name.size() <= prefix.size() || p.name.compare(0, prefix.size(), prefix) != 0) continue;
+        // "<channel>|<controller>", both decimal, and the id a VST3 ParamID in decimal.
+        const char* first = p.name.data() + prefix.size();
+        const char* last = p.name.data() + p.name.size();
+        unsigned channel = 0, controller = 0;
+        auto [bar, e1] = std::from_chars(first, last, channel);
+        if (e1 != std::errc{} || bar == last || *bar != '|') continue;
+        auto [end, e2] = std::from_chars(bar + 1, last, controller);
+        if (e2 != std::errc{} || end != last || channel > 15) continue;
+        std::uint32_t id = 0;
+        auto [idEnd, e3] = std::from_chars(p.id.data(), p.id.data() + p.id.size(), id);
+        if (e3 != std::errc{} || idEnd != p.id.data() + p.id.size() || p.id.empty()) continue;
+        std::uint32_t* slot = nullptr;
+        if (controller < 128) slot = &caps.controllerParam[channel][controller];
+        else if (controller == engine::kCtrlAfterTouch) slot = &caps.pressureParam[channel];
+        else if (controller == engine::kCtrlPitchBend) slot = &caps.bendParam[channel];
+        if (slot == nullptr || *slot != engine::kNoParam) continue;
+        *slot = id;
+        if (controller == engine::kCtrlTimbre && caps.timbreParam[channel] == engine::kNoParam)
+            caps.timbreParam[channel] = id;
+        if (channel == 0 && controller == 101 && caps.rpnParam[0] == engine::kNoParam) caps.rpnParam[0] = id;
+        if (channel == 0 && controller == 100 && caps.rpnParam[1] == engine::kNoParam) caps.rpnParam[1] = id;
+        if (channel == 0 && controller == 6 && caps.rpnParam[2] == engine::kNoParam) caps.rpnParam[2] = id;
+        found = true;
+    }
+    return found;
 }
 
 DeviceIdentity identityOf(const juce::PluginDescription& desc) {
@@ -298,6 +331,10 @@ Vst3Device::Vst3Device(std::unique_ptr<juce::AudioPluginInstance> inst, DeviceId
         // note-expression interfaces belong to the controller, which is not
         // called from the audio thread.
         caps_ = probeExpressionCaps(*inst_);
+        // SC-312: a controller the host cannot reach still declares its MIDI map as parameters (every
+        // JUCE-built plug-in): read it there, so the sustain pedal, the mod wheel and the pitch wheel
+        // reach the plug-in rather than being dropped.
+        if (!caps_.controllerReachable) (void)mapDeclaredMidiControllers(params_, caps_);
         // ADR-0207 d2: what the graph asks, before it prepares. Here, because
         // it asks the processor, and that is a message-thread question.
         canDouble_ = inst_->supportsDoublePrecisionProcessing();
