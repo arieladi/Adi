@@ -133,6 +133,12 @@ std::size_t ParamEditCapture::drainLifecycle(std::int64_t nowMs,std::vector<Para
                                              std::vector<ParamActivity>& activity,bool absorb) {
     return drainImpl(nowMs,out,absorb,&activity);
 }
+void ParamEditCapture::clearLastTouch() noexcept {
+    lastTouched_ = -1;
+    const auto read = read_.load(std::memory_order_relaxed);
+    const auto write = write_.load(std::memory_order_acquire);
+    priorAttachmentEvents_ = write >= read ? write - read : ring_.size() - read + write;
+}
 std::size_t ParamEditCapture::drainImpl(std::int64_t nowMs, std::vector<ParamEdit>& out,
                                         bool absorb,std::vector<ParamActivity>* activity) {
     const auto start = out.size();
@@ -153,7 +159,11 @@ std::size_t ParamEditCapture::drainImpl(std::int64_t nowMs, std::vector<ParamEdi
         }
     }
     // ADR-0154: only explicit gestures contribute touches during absorption.
-    std::int32_t touched = -1;
+    const auto touch = [&](std::int32_t index) {
+        if (priorAttachmentEvents_ != 0 || index < 0) return;
+        lastTouched_ = index;
+        ++lastTouchSequence_;
+    };
     const auto activityStart = activity ? activity->size() : 0;
     bool promotedActivity = false;
     auto r = read_.load(std::memory_order_relaxed);
@@ -183,7 +193,7 @@ std::size_t ParamEditCapture::drainImpl(std::int64_t nowMs, std::vector<ParamEdi
         switch (event.kind) {
         case ParamEventKind::Begin: {
             observed.kind=ParamActivityKind::Begin;
-            touched = event.paramIndex;
+            touch(event.paramIndex);
             const bool promote=p.open && p.implicit;
             observed.implicit=promote && absorb && activity;
             promotedActivity=promotedActivity || observed.implicit;
@@ -225,7 +235,7 @@ std::size_t ParamEditCapture::drainImpl(std::int64_t nowMs, std::vector<ParamEdi
                     break;
                 }
             }
-            if (!absorb || (p.open && !p.implicit)) touched = event.paramIndex;
+            if (!absorb || (p.open && !p.implicit)) touch(event.paramIndex);
             if (!p.open) {
                 p.open = true;
                 p.implicit = true;
@@ -242,10 +252,10 @@ std::size_t ParamEditCapture::drainImpl(std::int64_t nowMs, std::vector<ParamEdi
             break;
         }
         if(activity)activity->push_back(std::move(observed));
+        if (priorAttachmentEvents_ != 0) --priorAttachmentEvents_;
         r = r + 1 == ring_.size() ? 0 : r + 1;
         read_.store(r, std::memory_order_release);
     }
-    if (touched >= 0) lastTouched_ = touched;
     if (activity && promotedActivity) {
         // ParamOps gives implicit observations to the state snapshot. A
         // promoted gesture owns its earlier values in the same prefix, back

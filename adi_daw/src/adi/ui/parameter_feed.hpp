@@ -4,8 +4,12 @@
 #include "adi/panel.hpp"
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
+namespace adi::engine {
+class ParamOps;
+}
 namespace adi::ui {
 struct ParameterGroupMetadata {
     std::string groupId, groupName;
@@ -24,6 +28,11 @@ struct DeviceKeyChoice {
     std::string tap="post_mixer",name;
     bool current=false;
     std::uint64_t generation=0; // owner snapshot when this menu choice was built
+};
+struct PluginParameterTouch {
+    std::string parameter;
+    std::uint64_t sequence = 0;
+    bool operator==(const PluginParameterTouch &) const = default;
 };
 struct DevicePanelData {
     std::int64_t id = 0, track = 0;
@@ -67,11 +76,15 @@ struct DevicePanelData {
     const auto &parameters() const noexcept { return cachedRecords ? *cachedRecords : records; }
     // Copied nonfatal runtime status; availability and editing remain independent.
     std::string processingIssue{};
+    // Latest user touch in this instance's own plug-in window, available even without panel demand.
+    std::optional<PluginParameterTouch> pluginTouch{};
 };
 using ParameterPublication = std::vector<DevicePanelData>;
 // One document-owned message-thread publication, shared by every window/surface.
 class ParameterFeed {
   public:
+    ParameterFeed() = default;
+    explicit ParameterFeed(const engine::ParamOps &parameterOps) : parameterOps_(&parameterOps) {}
     void publish(engine::Session &, std::uint64_t modelRevision);
     // Each surface owns its demand. Releasing one must not silence another.
     // Empty demand removes the consumer; identity/mixer rows remain published.
@@ -82,6 +95,7 @@ class ParameterFeed {
     }
 
   private:
+    const engine::ParamOps *parameterOps_ = nullptr;
     struct Identity {
         engine::DeviceRuntimeToken runtime;
         std::optional<std::int64_t> pluginRef;

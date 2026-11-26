@@ -414,6 +414,8 @@ void testTheWholeLoopThroughTheJournal() {
     knobs->begin(0); knobs->value(0, 0.9); knobs->end(0);
     std::vector<OpRequest> out;
     eqi(static_cast<long long>(ops.drain(1000, out)), 2, "opener and edit");
+    const auto cutoffTouch = ops.lastTouchSequence(100);
+    check(cutoffTouch != 0 && ops.lastTouched(100) == 0, "SC-317 the live Session publishes its drained native touch");
     if (out.size() != 2) return;
 
     OpJournal j(*store);
@@ -466,6 +468,8 @@ void testTheWholeLoopThroughTheJournal() {
     std::vector<OpRequest> again;
     eqi(static_cast<long long>(ops.drain(1400, again)), 2,
         "the next edit after the undo: an opener again, then the edit");
+    check(ops.lastTouchSequence(100) > cutoffTouch && ops.lastTouched(100) == 0,
+          "SC-317 the same live Session parameter produces a new touch");
 }
 
 // ---------------------------------------------------------------------------
@@ -784,15 +788,20 @@ void testAnUndoneChunkReseedsTheCapture() {
 
 void testTheLastTouchedParameter() {
     section("ADR-0154 -- the parameter last touched in the plug-in's window: gestures and knob turns, never echoes or presets");
-    Sampler s;
+    Sampler s, replacement;
     ParamOps ops;
     ops.attach(20, s);
     std::vector<OpRequest> out;
     eqi(ops.lastTouched(20), -1, "nothing touched yet");
     s.drag(1, 0.6);
+    check(ops.lastTouchSequence(20) == 0, "SC-317 producer events stay unpublished until the owner drains them");
     ops.drain(1000, out);
     eqi(ops.lastTouched(20), 1, "a drag of gain: gain is the temporary entry");
-    // A plug-in with no gestures: a bare value is a touch too.
+    const auto firstGain = ops.lastTouchSequence(20);
+    s.drag(1, 0.65);
+    ops.drain(1050, out);
+    check(firstGain != 0 && ops.lastTouchSequence(20) > firstGain && ops.lastTouched(20) == 1,
+          "SC-317 a repeat gesture of the same knob advances the sequence");
     s.drag(0, 0.3);
     ops.drain(1100, out);
     eqi(ops.lastTouched(20), 0, "then cutoff");
@@ -805,13 +814,39 @@ void testTheLastTouchedParameter() {
     std::vector<OpRequest> o2;
     ops2.drain(2100, o2);
     eqi(ops2.lastTouched(21), -1, "its echo is not a touch");
+    check(ops2.lastTouchSequence(21) == 0, "SC-317 an echo leaves the sequence unchanged");
+    k.value(1, 0.7);
+    ops2.drain(2120, o2);
+    const auto firstBare = ops2.lastTouchSequence(21);
+    k.value(1, 0.8);
+    ops2.drain(2140, o2);
+    const auto repeatBare = ops2.lastTouchSequence(21);
+    ops2.drain(2340, o2);
+    check(firstBare != 0 && repeatBare > firstBare && ops2.lastTouchSequence(21) == repeatBare &&
+              ops2.lastTouched(21) == 1,
+          "SC-317 repeated bare values touch the same parameter, while quiet completion is not another touch");
     // A preset moves cutoff with no gesture: absorbed, and not a touch.
     s.drag(1, 0.7);
     ops.drain(1200, out);
+    const auto beforePreset = ops.lastTouchSequence(20);
     s.pickPreset(4, 0.9);
     ops.drain(1300, out);
     eqi(ops.lastTouched(20), 1, "a preset's own broadcast does not steal the temporary entry");
+    check(ops.lastTouchSequence(20) == beforePreset, "SC-317 an absorbed preset broadcast cannot advance the touch sequence");
     eqi(ops.lastTouched(99), -1, "an unknown device has none");
+    check(ops.lastTouchSequence(99) == 0, "SC-317 an unknown device has no touch sequence");
+
+    s.drag(1, 0.8); // Leave the old instance's final callback in the ring.
+    ops.detach(20);
+    check(ops.lastTouched(20) == -1 && ops.lastTouchSequence(20) == 0 && ops.attach(20, replacement),
+          "SC-317 detaching clears access to the old touch and allows the ID to be reused");
+    ops.drain(1400, out);
+    check(ops.lastTouched(20) == -1 && ops.lastTouchSequence(20) == 0,
+          "SC-317 an old queued callback cannot name a parameter on the replacement");
+    replacement.drag(1, 0.6);
+    ops.drain(1500, out);
+    check(ops.lastTouched(20) == 1 && ops.lastTouchSequence(20) > beforePreset,
+          "SC-317 the replacement publishes its own fresh native touch");
 }
 
 void testTheStateLoopThroughTheJournal() {

@@ -12143,6 +12143,136 @@ void pluginWindows(AppCommands &commands, settings::AppSettings &settings, const
     root.pluginHost = nullptr;
     document->release();
 }
+void pluginConfigureTouches(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "plugin-touches.adi", true, test::knobsLoader("0000001f", "clap"), error);
+    rows::PluginRef plugin;
+    plugin.format = "clap";
+    plugin.uid = test::kKnobsUid;
+    plugin.name = "Touch controls";
+    plugin.subtype = "effect";
+    const bool inserted = document && document->insertPlugin(plugin, 2);
+    check(inserted, "SC-317: a hosted plug-in with a software editor");
+    if (!inserted) return;
+    const auto id = document->parameterFeed().current()->front().id;
+    auto *knobs = dynamic_cast<test::Knobs *>(document->session().instanceFor(id));
+    const std::vector<std::string> original{"older-missing-control"};
+    const auto reset = [&] { return document->deviceAction("device.setPanel", {{"dev", id}, {"params", original}}); };
+    const auto ordered = [&] {
+        SQLite::Statement q(document->store().db(), "SELECT param_id FROM device_panel_params WHERE device_id=? ORDER BY ord");
+        q.bind(1, id);
+        std::vector<std::string> out;
+        while (q.executeStep()) out.push_back(q.getColumn(0).getString());
+        return out;
+    };
+    const bool ready = knobs && reset();
+    check(ready, "the authored panel includes a previously missing control");
+    if (!ready) return;
+
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "plugin-touches");
+    UiPeerRoot surface;
+    surface.setSize(1440, 900);
+    surface.addAndMakeVisible(root);
+    root.setBounds(surface.getLocalBounds());
+    surface.setVisible(true);
+    surface.addToDesktop(0);
+    root.afterEdit = [&] { document->synchronise(); };
+    root.devices.publication = [&] { return document->parameterFeed().current(); };
+    root.devices.parameterDemand = [&](const void *owner, const std::vector<std::int64_t> &ids) {
+        document->setParameterDemand(owner, ids);
+    };
+    int panelEdits = 0;
+    root.devices.submit = [&](const std::string &op, Payload payload) {
+        if (op == "device.setPanel") ++panelEdits;
+        return document->deviceAction(op, std::move(payload));
+    };
+    FloatingHost host(root, commands, document->views(), document->view(), [](std::int64_t) { return true; }, false);
+    root.pluginHost = &host;
+    std::vector<std::int64_t> opened;
+    root.pluginEditor = [&](std::int64_t device, std::string &) {
+        opened.push_back(device);
+        AdiRootComponent::PluginEditorView editor;
+        editor.view = std::make_unique<juce::Component>();
+        editor.view->setSize(320, 200);
+        return editor;
+    };
+    std::int64_t now = 0;
+    const auto frame = [&] {
+        document->tick(now++);
+        root.frame();
+    };
+    const auto settle = [&] {
+        root.devices.settleParameterTouches();
+        frame();
+    };
+    auto &selection = root.arrangement.geometry.selection;
+    selection.track = 2;
+    root.publishSelection();
+    frame();
+    frame();
+    const bool shown = root.devices.panels.size() == 1;
+    check(shown, "the selected plug-in owns the visible Device View panel");
+    if (!shown) return;
+    auto &panel = *root.devices.panels.front();
+    const auto menuAction = [&](const juce::String &param, const juce::String &item) -> std::function<void()> {
+        const auto menu = panel.commands();
+        for (juce::PopupMenu::MenuItemIterator outer(menu); outer.next();)
+            if (const auto &entry = outer.getItem(); entry.text == "Last Touched: " + param && entry.subMenu)
+                for (juce::PopupMenu::MenuItemIterator inner(*entry.subMenu); inner.next();)
+                    if (const auto &action = inner.getItem(); action.text == item && action.isEnabled)
+                        return action.action;
+        return {};
+    };
+    const auto touch = [&](std::int32_t index, double value) {
+        knobs->windowGesture(index, value);
+        frame();
+    };
+
+    touch(1, .4);
+    const auto beforeConfigure = menuAction("Gain", "Show on Device Panel");
+    check(beforeConfigure && ordered() == original && panelEdits == 0,
+          "outside Configure a plug-in touch is offered without editing the panel");
+    panel.configureButton.onClick();
+    settle();
+    check(panel.configuring && panel.search.isVisible() && panel.parameterList.isVisible() &&
+              opened == std::vector<std::int64_t>{id} && host.contains(AdiRootComponent::pluginWindowKey(id)),
+          "Configure opens this plug-in's editor and keeps the typed Parameter List available");
+    check(ordered() == original && panelEdits == 0, "Configure ignores the touch already present when it opened");
+    touch(0, .6);
+    check(panelEdits == 0 && ordered() == original, "the view defers the edit until its frame is complete");
+    settle();
+    check(panelEdits == 1 && ordered() == std::vector<std::string>{original.front(), "0000001f"},
+          "a fresh touch adds its stable ID after the existing missing entry");
+    touch(0, .7);
+    settle();
+    check(panelEdits == 1, "another touch of the same parameter does not duplicate the row or history step");
+    touch(1, .5);
+    settle();
+    check(panelEdits == 2 && ordered() == std::vector<std::string>{original.front(), "0000001f", "gain"} &&
+              root.command(AppCommands::Undo) && ordered() == std::vector<std::string>{original.front(), "0000001f"},
+          "a second learned parameter follows the first and one Undo removes just that panel edit");
+
+    panel.configureButton.onClick();
+    check(!panel.configuring && !panel.search.isVisible() && reset(), "leaving Configure keeps ordinary offers temporary again");
+    touch(1, .6);
+    const auto stale = menuAction("Gain", "Show on Device Panel");
+    touch(0, .8);
+    const auto automate = menuAction("Cutoff", "Show Automation");
+    if (stale) stale();
+    check(stale && automate && ordered() == original, "a menu captured before a newer touch cannot add the old parameter");
+    if (automate) automate();
+    const auto target = root.automationTarget(2);
+    check(root.automationMode() && target.ownerId == id && target.paramRef == "31" &&
+              ordered() == std::vector<std::string>{original.front(), "0000001f"},
+          "choosing Show Automation displays the exact parameter lane and makes that control permanent");
+    touch(1, .7);
+    const auto show = menuAction("Gain", "Show on Device Panel");
+    if (show) show();
+    check(show && ordered() == std::vector<std::string>{original.front(), "0000001f", "gain"},
+          "choosing Show on Device Panel also adds the latest touch in order");
+    root.pluginHost = nullptr;
+}
 void stripParamUndo(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto document = ProjectDocument::open(dir / "strip-undo.adi", true, test::knobsLoader(), error);
@@ -20498,6 +20628,7 @@ int main(int argc, char **argv) {
     trace("stripParamUndo", [&] { stripParamUndo(commands, temp.path()); });
     trace("deviceClipboard", [&] { deviceClipboard(commands, temp.path()); });
     trace("pluginWindows", [&] { pluginWindows(commands, settings, temp.path()); });
+    trace("pluginConfigureTouches", [&] { pluginConfigureTouches(commands, temp.path()); });
     trace("automationArm", [&] { automationArm(commands, temp.path()); });
     trace("armFollowsSelection", [&] { armFollowsSelection(commands, temp.path()); });
     trace("externalAudioInputMenus", [&] { externalAudioInputMenus(commands, temp.path()); });

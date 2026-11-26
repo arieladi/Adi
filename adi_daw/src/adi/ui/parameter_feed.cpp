@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "parameter_feed.hpp"
+#include "adi/engine/param_ops.hpp"
 #include <algorithm>
 #include <cmath>
 #include <tuple>
@@ -10,7 +11,7 @@ bool samePanel(const DevicePanelData &a, const DevicePanelData &b) {
     const auto card = [](const DevicePanelData &d) {
         // The instance stamp includes the preparation shape and token epoch.
         return std::tie(d.id, d.track, d.chain, d.instance, d.available, d.latency,
-                        d.name, d.enabled, d.instrument, d.plugin, d.uid, d.sidechainChannels, d.processingIssue,
+                        d.name, d.enabled, d.instrument, d.plugin, d.uid, d.sidechainChannels, d.processingIssue, d.pluginTouch,
                         d.metadata, d.cachedRecords, d.defaults, d.parameterGroups,
                         d.resolved.configured, d.resolved.showsConfigureHint, d.resolved.modifiableCount);
     };
@@ -102,6 +103,15 @@ void ParameterFeed::publish(engine::Session &session, std::uint64_t modelRevisio
             }
             data.runtime = identity.runtime;
             data.instance = identity.stamp; identity.seen = publication;
+            if (parameterOps_ && data.available && (data.format == "vst3" || data.format == "clap") &&
+                session.resolveDevice(data.runtime) == instance) {
+                const auto sequence = parameterOps_->lastTouchSequence(row.id);
+                const auto index = sequence ? parameterOps_->lastTouched(row.id) : -1;
+                if (const auto *parameter = index >= 0 ? instance->paramAt(index) : nullptr;
+                    parameter && !parameter->id.empty() && !parameter->missing &&
+                    (parameter->automatable || parameter->configurable))
+                    data.pluginTouch = PluginParameterTouch{parameter->id, sequence};
+            }
             // Mixer and selection identity stays available without touching parameters.
             if (!demanded_.contains(row.id)) { next->push_back(std::move(data)); continue; }
             const auto readValues = [&](const device::ParamDescriptor &descriptor,

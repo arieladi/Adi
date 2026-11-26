@@ -51,6 +51,7 @@ struct AutomationTarget {
     bool footIsSilence = true; // the foot written as silence (-150 dB), as the fader's and a send's
     std::string device = "Mixer";
     bool stepped = false;
+    bool lastTouched = false;
     friend bool operator==(const AutomationTarget &a, const AutomationTarget &b) {
         return a.ownerKind == b.ownerKind && a.ownerId == b.ownerId && a.paramRef == b.paramRef;
     }
@@ -148,12 +149,24 @@ inline std::vector<AutomationTarget> automationChoices(const engine::Snapshot &s
                 out.push_back(sendTarget(s->id, std::string("Send ") + static_cast<char>('A' + i % 26)));
                 break;
             }
-    if (devices != nullptr)
-        for (const auto &d : *devices)
-            if (d.track == track)
-                for (const auto &p : d.declarations())
-                    if (auto target = deviceTarget(d, p))
+    if (devices != nullptr) {
+        for (const auto &d : *devices) {
+            if (d.track != track) continue;
+            const auto &parameters = d.declarations();
+            const auto touched = d.pluginTouch
+                ? std::find_if(parameters.begin(), parameters.end(), [&](const auto &p) { return p.id == d.pluginTouch->parameter; })
+                : parameters.end();
+            if (touched != parameters.end())
+                if (auto target = deviceTarget(d, *touched)) {
+                    target->lastTouched = true;
+                    out.push_back(std::move(*target));
+                }
+            for (auto p = parameters.begin(); p != parameters.end(); ++p)
+                if (p != touched)
+                    if (auto target = deviceTarget(d, *p))
                         out.push_back(std::move(*target));
+        }
+    }
     return out;
 }
 // The envelope Automation Mode shows on a track: its lane for `param` and the arrangement's data of it

@@ -86,6 +86,14 @@ public:
     /// set is not a touch, and neither is a preset's broadcast absorbed into a
     /// snapshot (drainAbsorbing), unless it was inside an explicit gesture.
     [[nodiscard]] std::int32_t lastTouched() const noexcept { return lastTouched_; }
+    /// Owner-only sequence of the latest native touch, including repeat
+    /// touches of the same parameter. Zero means no current touch.
+    [[nodiscard]] std::uint64_t lastTouchSequence() const noexcept {
+        return lastTouched_ < 0 ? 0 : lastTouchSequence_;
+    }
+    /// A new instance can reuse a ring for outstanding capture ownership.
+    /// Its predecessor's events no longer supply the latest touch.
+    void clearLastTouch() noexcept;
     void setQuietMs(std::int64_t ms);
     void setEchoTtlMs(std::int64_t ms);
     void setEchoTolerance(double tol);
@@ -132,6 +140,8 @@ private:
     std::map<Key, Parameter> parameters_;
     std::int64_t quietMs_ = 150, echoTtlMs_ = 500;
     std::int32_t lastTouched_ = -1;
+    std::uint64_t lastTouchSequence_ = 0;
+    std::size_t priorAttachmentEvents_ = 0;
     double echoTolerance_ = 1e-6;
     mutable Stats stats_{};
 };

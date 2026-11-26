@@ -399,7 +399,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     // The mixer drag's gesture (MX-23): the coordinator of this store's gestures, and the open session.
     std::shared_ptr<gesture::Coordinator> coordinator_;
     std::unique_ptr<gesture::Session> mixerDrag_;
-    ParameterFeed feed_;
+    ParameterFeed feed_{parameterOps_};
     // Owner-only. Refresh the pointer even when latency fields still match so
     // an old load of controls is never held after its display changes.
     std::shared_ptr<const ParameterPublication> reportedLatencyFeed_;
