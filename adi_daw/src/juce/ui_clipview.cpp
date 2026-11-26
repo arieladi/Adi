@@ -115,6 +115,14 @@ void shadeOutside(juce::Graphics &g, juce::Rectangle<int> area, const Arrangemen
         g.fillRect(std::max(area.getX(), end), area.getY(), area.getRight() - std::max(area.getX(), end),
                    area.getHeight());
 }
+// Alt on Windows/Linux or Cmd on macOS bypasses snapping and starts note-velocity drags.
+bool alternateNoteGesture(const juce::ModifierKeys &mods) noexcept {
+#if JUCE_MAC
+    return mods.isCommandDown();
+#else
+    return mods.isAltDown();
+#endif
+}
 // The wheel in an editor: Ctrl/Cmd zooms time around the pointer, Shift (or a sideways wheel)
 // scrolls time, as in the arrangement (manual 10.2).
 bool timeWheel(ArrangementGeometry &time, const juce::MouseEvent &e, const juce::MouseWheelDetails &w, int originX) {
@@ -264,7 +272,7 @@ void NoteEditor::setTrimMode(bool on) {
     trimMode_ = on;
     if (on)
         drawMode_ = false;
-    setMouseCursor(on ? juce::MouseCursor::CrosshairCursor : juce::MouseCursor::NormalCursor);
+    updateCursor();
     panel.repaint();
 }
 void NoteEditor::trimStroke() {
@@ -365,7 +373,7 @@ void NoteEditor::setDrawMode(bool on) {
     drawMode_ = on;
     if (on)
         trimMode_ = false;
-    setMouseCursor(on ? juce::MouseCursor::CrosshairCursor : juce::MouseCursor::NormalCursor);
+    updateCursor();
     panel.repaint();
 }
 std::vector<std::int64_t> NoteEditor::drawnSteps() const {
@@ -1488,8 +1496,10 @@ std::optional<std::pair<std::int64_t, std::int64_t>> NoteEditor::stretchSpan() c
 }
 NoteEditor::StretchPart NoteEditor::stretchPartAt(juce::Point<int> at) const {
     const auto area = stretchArea();
+    if (!area.contains(at))
+        return StretchPart::None;
     const auto span = stretchSpan();
-    if (!span || !area.contains(at))
+    if (!span)
         return StretchPart::None;
     const int a = area.getX() + static_cast<int>(std::clamp(time.x(span->first), -1e6, 1e6));
     const int b = area.getX() + static_cast<int>(std::clamp(time.x(span->second), -1e6, 1e6));
@@ -1690,6 +1700,7 @@ void NoteEditor::select(std::vector<std::uint64_t> ids) {
     if (ids.empty())
         otherSelected_.clear();
     selected_ = std::move(ids);
+    updateCursor();
     repaint();
 }
 void NoteEditor::prune() {
@@ -1710,18 +1721,14 @@ void NoteEditor::prune() {
         scaleFolded_ = false;
     if (folded_ || scaleFolded_ || keys.isFolded())
         refold();
+    updateCursor();
 }
 std::int64_t NoteEditor::gridTicks() const noexcept {
     return std::max<std::int64_t>(1, static_cast<std::int64_t>(time.gridQuarters() * static_cast<double>(textproj::kPPQ)));
 }
 bool NoteEditor::snapping(const juce::ModifierKeys &mods) const noexcept {
     // Alt (Cmd on the Mac) bypasses snapping; with the grid off, it snaps while held (manual 10.2.1).
-#if JUCE_MAC
-    const bool bypass = mods.isCommandDown();
-#else
-    const bool bypass = mods.isAltDown();
-#endif
-    return time.grid.snap != bypass;
+    return time.grid.snap != alternateNoteGesture(mods);
 }
 const engine::ClipNote *NoteEditor::noteAt(juce::Point<int> at, NotePart *part) const noexcept {
     const auto *clip = panel.details();
@@ -1808,10 +1815,61 @@ bool NoteEditor::commit(NoteEdit edit) {
     panel.reread();
     return true;
 }
+juce::MouseCursor::StandardCursorType NoteEditor::cursorAt(juce::Point<int> at, const juce::ModifierKeys &mods) const {
+    using Cursor = juce::MouseCursor;
+    if (panel.details() == nullptr)
+        return Cursor::NormalCursor;
+    const auto rulerPart = rulerPartAt(at);
+    if (rulerPart != RulerPart::None)
+        return rulerPart == RulerPart::Loop ? Cursor::DraggingHandCursor : Cursor::LeftRightResizeCursor;
+    if (keysArea().contains(at))
+        return Cursor::NormalCursor; // piano keys take priority over the lane divider
+    if (laneDivider().contains(at))
+        return noteAt(at) == nullptr && otherClipAt(at) != 0 ? Cursor::NormalCursor : Cursor::UpDownResizeCursor;
+    if (stretchPartAt(at) != StretchPart::None)
+        return Cursor::LeftRightResizeCursor;
+    if (velocityArea().contains(at) && drawMode_ && shape_ == LaneShape::Pointer)
+        return Cursor::CrosshairCursor;
+    if (!notesArea().contains(at))
+        return Cursor::NormalCursor;
+
+    NotePart part = NotePart::None;
+    const auto *note = noteAt(at, &part);
+    if (drawMode_ || trimMode_) {
+        if (note == nullptr && otherClipAt(at) != 0)
+            return Cursor::NormalCursor;
+        return trimMode_ || note != nullptr || keys.keyAt(at.y - notesArea().getY())
+                   ? Cursor::CrosshairCursor : Cursor::NormalCursor;
+    }
+    if (note == nullptr || (mods.isShiftDown() ? isSelected(note->id) : alternateNoteGesture(mods)))
+        return Cursor::NormalCursor;
+    return part == NotePart::Start || part == NotePart::End ? Cursor::LeftRightResizeCursor : Cursor::NormalCursor;
+}
+void NoteEditor::updateCursor() {
+    if (drag_ == Drag::None)
+        setMouseCursor(hover_ ? cursorAt(*hover_, hoverMods_) : juce::MouseCursor::NormalCursor);
+}
+void NoteEditor::mouseEnter(const juce::MouseEvent &e) { mouseMove(e); }
+void NoteEditor::mouseMove(const juce::MouseEvent &e) {
+    const auto at = e.getPosition();
+    hover_ = getLocalBounds().contains(at) ? std::optional{at} : std::nullopt;
+    hoverMods_ = e.mods;
+    updateCursor();
+}
+void NoteEditor::mouseExit(const juce::MouseEvent &) {
+    hover_.reset();
+    updateCursor();
+}
+void NoteEditor::modifierKeysChanged(const juce::ModifierKeys &mods) {
+    hoverMods_ = mods;
+    updateCursor();
+    juce::Component::modifierKeysChanged(mods);
+}
 void NoteEditor::mouseDown(const juce::MouseEvent &e) {
     focusIfShowing(*this);
     releasePianoPreview();
     drag_ = Drag::None;
+    mouseMove(e);
     copying_ = false;
     dragTicks_ = 0;
     dragKeys_ = 0;
@@ -2032,13 +2090,8 @@ void NoteEditor::mouseDown(const juce::MouseEvent &e) {
             audition(clip->trackId, n->key, n->velocity);
             anchor_ = n->id;
             drag_ = part == NotePart::Start ? Drag::Start : part == NotePart::End ? Drag::End : Drag::Move;
-#if JUCE_MAC
-            const bool velocity = e.mods.isCommandDown();
-#else
-            const bool velocity = e.mods.isAltDown();
-#endif
             // Alt (Cmd on the Mac) held at the press: a vertical drag changes velocity (manual 10.5.12).
-            if (velocity && !e.mods.isShiftDown())
+            if (alternateNoteGesture(e.mods) && !e.mods.isShiftDown())
                 beginVelocityDrag(true);
         }
     } else if (notesArea().contains(from_)) {
@@ -2183,15 +2236,17 @@ void NoteEditor::mouseDrag(const juce::MouseEvent &e) {
     }
     repaint();
 }
-void NoteEditor::mouseUp(const juce::MouseEvent &) {
+void NoteEditor::mouseUp(const juce::MouseEvent &e) {
     releasePianoPreview();
     const auto kind = std::exchange(drag_, Drag::None);
     const auto ticks = std::exchange(dragTicks_, 0);
     const int keysBy = std::exchange(dragKeys_, 0);
     const auto *clip = panel.details();
     repaint();
-    if (clip == nullptr)
+    if (clip == nullptr) {
+        mouseMove(e);
         return;
+    }
     const bool copy = std::exchange(copying_, false);
     if (kind == Drag::Move && copy && (ticks != 0 || keysBy != 0))
         commit(across([&](const engine::ClipDetails &of, const std::vector<std::uint64_t> &ids) {
@@ -2257,6 +2312,7 @@ void NoteEditor::mouseUp(const juce::MouseEvent &) {
         drag_ = Drag::None;
         commit(drawNotes(*clip, steps, gridTicks(), drawKey_));
     }
+    mouseMove(e);
 }
 void NoteEditor::mouseDoubleClick(const juce::MouseEvent &e) {
     const auto *clip = panel.details();
@@ -2591,6 +2647,7 @@ void NoteEditor::resized() {
         }
     }
     keys.clampScroll(area.getHeight());
+    updateCursor();
 }
 void NoteEditor::mouseWheelMove(const juce::MouseEvent &e, const juce::MouseWheelDetails &w) {
     const auto area = notesArea();
@@ -2603,6 +2660,7 @@ void NoteEditor::mouseWheelMove(const juce::MouseEvent &e, const juce::MouseWhee
         panel.root.arrangement.followPaused = true; // a scroll or zoom in time pauses Follow
         panel.repaint(panel.gridBox());
     }
+    mouseMove(e);
     repaint();
 }
 std::vector<juce::Rectangle<int>> NoteEditor::textAreas() const {

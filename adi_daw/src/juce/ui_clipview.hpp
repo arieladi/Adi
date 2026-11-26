@@ -51,6 +51,10 @@ class NoteEditor final : public juce::Component {
     void mouseDrag(const juce::MouseEvent &) override;
     void mouseUp(const juce::MouseEvent &) override;
     void mouseDoubleClick(const juce::MouseEvent &) override;
+    void mouseEnter(const juce::MouseEvent &) override;
+    void mouseMove(const juce::MouseEvent &) override;
+    void mouseExit(const juce::MouseEvent &) override;
+    void modifierKeysChanged(const juce::ModifierKeys &) override;
     void focusLost(FocusChangeType) override;
     // Delete, the arrows (with Shift: an octave, or the length), Ctrl/Cmd+A, Esc, and 0 to
     // deactivate (manual 10.5).
@@ -359,6 +363,10 @@ class NoteEditor final : public juce::Component {
     // the previous and next note in time, left and right to those on the same key. Shift extends.
     bool walk(bool sideways, bool forward, bool extend);
     Drag drag_ = Drag::None;
+    std::optional<juce::Point<int>> hover_;
+    juce::ModifierKeys hoverMods_;
+    juce::MouseCursor::StandardCursorType cursorAt(juce::Point<int>, const juce::ModifierKeys &) const;
+    void updateCursor();
     bool copying_ = false, folded_ = false, drawMode_ = false, scaleFolded_ = false;
     // The key tracks shown, after either fold or none.
     void refold();

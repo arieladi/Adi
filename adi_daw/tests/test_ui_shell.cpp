@@ -5402,6 +5402,105 @@ void clipViewNoteGrid(AppCommands &commands, const std::filesystem::path &dir) {
           "the temporary bypass keeps a resized start off the grid and preserves the end");
 }
 
+void clipViewNoteCursors(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "note-cursors.adi", true, {}, error);
+    check(document != nullptr, "a project for Note Editor cursors");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "note-cursors");
+    root.setSize(1400, 900);
+    constexpr auto beat = textproj::kPPQ;
+    check(root.insertMidiClips({2}, 0, 4 * beat) && root.showClipView(), "open a looping MIDI clip");
+    root.resizeClipView(360);
+    root.frame();
+    auto &panel = root.clipView;
+    auto &ed = panel.notes;
+    if (panel.details() == nullptr)
+        return;
+    const auto add = [&](std::uint64_t id, std::int64_t start, std::int64_t length, int pitch) {
+        OpRequest request;
+        request.opType = "note.insert";
+        request.payload = {{"clip", panel.clip()}, {"note", id}, {"start", start}, {"dur", length}, {"key", pitch}};
+        request.label = "Add Note";
+        return document->ops().submit(std::move(request)).ok;
+    };
+    check(add(11, beat, beat / 2, 60) && add(12, 2 * beat, beat / 2, 64) && add(13, 3 * beat, beat / 32, 67),
+          "the clip has wide and narrow notes");
+    root.frame();
+    if (!panel.details() || panel.details()->notes.size() != 3)
+        return;
+    ed.time.left = 0.;
+    ed.time.scale = 128.;
+    const auto wide = ed.boxOf(panel.details()->notes.front()), narrow = ed.boxOf(panel.details()->notes.back());
+    check(wide.has_value() && narrow.has_value(), "the notes have pointer hit boxes");
+    if (!wide || !narrow)
+        return;
+
+    using Cursor = juce::MouseCursor;
+    const auto hover = [&](juce::Point<int> point, Cursor::StandardCursorType cursor) {
+        ed.mouseMove(pressAt(ed, point.toFloat()));
+        return ed.getMouseCursor() == cursor;
+    };
+    const auto edge = [&](const NoteBox &box, bool right) {
+        return juce::Point<int>{static_cast<int>(right ? box.x + box.width - 2 : box.x + 1), box.y + box.height / 2};
+    };
+    const auto left = edge(*wide, false), right = edge(*wide, true);
+    const auto body = juce::Point<int>{static_cast<int>(wide->x + wide->width / 2), left.y};
+    check(hover(left, Cursor::LeftRightResizeCursor) && hover(right, Cursor::LeftRightResizeCursor) &&
+              hover(body, Cursor::NormalCursor) && hover(edge(*narrow, false), Cursor::NormalCursor),
+          "only the actual resize zones show the horizontal resize cursor");
+
+    check(hover(right, Cursor::LeftRightResizeCursor), "hover a note edge before changing tools");
+    ed.setDrawMode(true);
+    check(ed.getMouseCursor() == Cursor::CrosshairCursor, "Draw changes a stationary note-edge cursor to the crosshair");
+    const auto divider = ed.laneDivider();
+    check(hover(divider.getCentre(), Cursor::UpDownResizeCursor) &&
+              hover({4, divider.getY()}, Cursor::NormalCursor),
+          "the velocity divider shows vertical resize except where the piano handles the press");
+    check(hover(left, Cursor::CrosshairCursor), "Draw keeps its crosshair over editable notes");
+    ed.setTrimMode(true);
+    check(ed.getMouseCursor() == Cursor::CrosshairCursor, "Trim also uses a crosshair over the note");
+    ed.setTrimMode(false);
+    check(ed.getMouseCursor() == Cursor::LeftRightResizeCursor, "leaving Trim restores the edge cursor");
+#if JUCE_MAC
+    ed.modifierKeysChanged(juce::ModifierKeys::commandModifier);
+#else
+    ed.modifierKeysChanged(juce::ModifierKeys::altModifier);
+#endif
+    check(ed.getMouseCursor() == Cursor::NormalCursor, "a modifier that makes the edge a velocity drag removes the resize cue");
+    ed.modifierKeysChanged({});
+    check(ed.getMouseCursor() == Cursor::LeftRightResizeCursor, "releasing the modifier restores the resize cue");
+
+    ed.select({11, 12});
+    const auto stretch = ed.stretchArea();
+    const auto stretchAt = [&](std::int64_t tick) {
+        return juce::Point<int>{stretch.getX() + static_cast<int>(ed.time.x(tick)), stretch.getCentreY()};
+    };
+    check(hover(stretchAt(beat), Cursor::LeftRightResizeCursor) &&
+              hover(stretchAt(5 * beat / 2), Cursor::LeftRightResizeCursor) &&
+              hover(stretchAt(2 * beat), Cursor::LeftRightResizeCursor),
+          "the stretch handles and the span between them use the horizontal cursor");
+    ed.select({});
+    check(ed.getMouseCursor() == Cursor::NormalCursor, "deselecting removes the stretch cursor without waiting for movement");
+
+    const auto ruler = ed.rulerArea();
+    const auto loop = ed.loopBrace();
+    check(loop.has_value(), "the clip has an editable loop brace");
+    if (!loop)
+        return;
+    check(hover({loop->getStart(), ruler.getY() + 2}, Cursor::LeftRightResizeCursor) &&
+              hover({loop->getEnd(), ruler.getY() + 2}, Cursor::LeftRightResizeCursor) &&
+              hover({loop->getStart() + loop->getLength() / 2, ruler.getY() + 2}, Cursor::DraggingHandCursor),
+          "loop edges resize and the body shows a hand for moving the whole brace");
+    check(hover({ed.markerX(false), ruler.getBottom() - 2}, Cursor::LeftRightResizeCursor) &&
+              hover({ed.markerX(true), ruler.getBottom() - 2}, Cursor::LeftRightResizeCursor),
+          "the Start and End flags use the horizontal cursor");
+    ed.mouseExit(pressAt(ed, right.toFloat()));
+    check(ed.getMouseCursor() == Cursor::NormalCursor, "leaving the Note Editor clears the affordance cursor");
+}
+
 // The Clip View's Main panel (worklist G2; manual 8.2): Start, End, the Loop switch, the loop's Position
 // and Length and the clip's Signature act, typed, dragged or through Live's Set buttons, each one of
 // the clip's own ops and one undo step; what the engine would refuse is refused with a reason; the
@@ -19258,6 +19357,7 @@ int main(int argc, char **argv) {
     trace("clipViewNotes", [&] { clipViewNotes(commands, temp.path()); });
     trace("clipViewNotePreview", [&] { clipViewNotePreview(commands, temp.path()); });
     trace("clipViewNoteGrid", [&] { clipViewNoteGrid(commands, temp.path()); });
+    trace("clipViewNoteCursors", [&] { clipViewNoteCursors(commands, temp.path()); });
     trace("clipViewFields", [&] { clipViewFields(commands, temp.path()); });
     trace("clipViewTools", [&] { clipViewTools(commands, temp.path()); });
     trace("clipViewMore", [&] { clipViewMore(commands, temp.path()); });
