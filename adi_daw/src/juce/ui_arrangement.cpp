@@ -3200,10 +3200,10 @@ bool ArrangementCanvas::fadeHandlesShown(const engine::ClipNode &c) const {
     return c.audio && !view.root.automationMode() && (showFades || c.id == hoverClip_ || view.geometry.clipSelected(c.id) ||
                        (fadeDrag_ && fadeDrag_->clip == c.id));
 }
-void ArrangementCanvas::fadesOf(const engine::ClipNode &c, std::int64_t &in, std::int64_t &out,
+void ArrangementCanvas::fadesOf(const engine::ClipNode &c, engine::ClipFadeHandles &in, engine::ClipFadeHandles &out,
                                 std::optional<double> &inTension, std::optional<double> &outTension) const {
-    in = c.fadeInTicks;
-    out = c.fadeOutTicks;
+    in = fadeHandles(c, true);
+    out = fadeHandles(c, false);
     inTension = c.fadeInTension;
     outTension = c.fadeOutTension;
     if (!fadeDrag_)
@@ -3216,7 +3216,7 @@ void ArrangementCanvas::fadesOf(const engine::ClipNode &c, std::int64_t &in, std
     if (fadeDrag_->curve)
         (fadeDrag_->in ? inTension : outTension) = fadeTension_;
     else
-        (fadeDrag_->in ? in : out) = fadeLimit(c, fadeDrag_->in, fadeTicks_);
+        (fadeDrag_->in ? in : out) = movedFadeHandle(c, fadeDrag_->in, fadeDrag_->start, fadeTicks_);
 }
 void ArrangementCanvas::paintFades(juce::Graphics &g, const engine::ClipNode &c, float left, float right, float top,
                                    float bottom) const {
@@ -3225,11 +3225,15 @@ void ArrangementCanvas::paintFades(juce::Graphics &g, const engine::ClipNode &c,
     // peak and a diamond on each curve.
     if (bottom - top < 8.f || right - left < 4.f)
         return;
-    std::int64_t in = 0, out = 0;
+    engine::ClipFadeHandles in, out;
     std::optional<double> inTension, outTension;
     fadesOf(c, in, out, inTension, outTension);
     const auto &geo = view.geometry;
-    const float xIn = static_cast<float>(geo.x(c.posTicks + in)), xOut = static_cast<float>(geo.x(c.posTicks + c.lengthTicks - out));
+    const auto x = [&](bool incoming, std::int64_t ticks) {
+        return static_cast<float>(geo.x(incoming ? c.posTicks + ticks : c.posTicks + c.lengthTicks - ticks));
+    };
+    const float xIn = x(true, in.peakTicks), xOut = x(false, out.peakTicks);
+    const float startIn = x(true, in.zeroTicks), startOut = x(false, out.zeroTicks);
     const auto curveY = [&](double shape) { return bottom - static_cast<float>(shape) * (bottom - top); };
     const auto draw = [&](float x0, float x1, bool fadeIn, std::int64_t curve, const std::optional<double> &tension) {
         if (x1 - x0 < 1.f)
@@ -3257,35 +3261,51 @@ void ArrangementCanvas::paintFades(juce::Graphics &g, const engine::ClipNode &c,
     const bool bendingIn = fadeDrag_ && fadeDrag_->curve && fadeDrag_->in && inTension != c.fadeInTension;
     const bool bendingOut = fadeDrag_ && fadeDrag_->curve && !fadeDrag_->in && outTension != c.fadeOutTension;
     const auto inCurve = bendingIn ? kBentFadeCurve : c.fadeInCurve, outCurve = bendingOut ? kBentFadeCurve : c.fadeOutCurve;
-    draw(left, xIn, true, inCurve, inTension);
-    draw(xOut, right, false, outCurve, outTension);
+    g.setColour(look::ink.withAlpha(0.22f));
+    if (startIn > left)
+        g.fillRect(left, top, startIn - left, bottom - top);
+    if (right > startOut)
+        g.fillRect(startOut, top, right - startOut, bottom - top);
+    draw(startIn, xIn, true, inCurve, inTension);
+    draw(xOut, startOut, false, outCurve, outTension);
     if (!fadeHandlesShown(c))
         return;
-    const auto square = [&](float x, bool chosen) {
-        const auto box = juce::Rectangle<float>(x - 3.5f, top, 7.f, 7.f);
+    const auto &active = fadeDrag_ ? fadeDrag_ : selectedFade_;
+    if (active && active->clip == c.id) {
+        const auto limit = active->start ? (active->in ? in.peakTicks : out.peakTicks) : fadePeakLimit(c, active->in);
+        const float at = x(active->in, limit);
+        constexpr float dashes[] = {2.f, 2.f};
+        g.setColour(look::ink.withAlpha(.8f));
+        g.drawDashedLine({at, top, at, bottom}, dashes, 2);
+    }
+    const auto square = [&](float horizontal, float y, bool chosen) {
+        const auto box = juce::Rectangle<float>(horizontal - 3.5f, y, 7.f, 7.f);
         g.setColour(chosen ? look::handleChosen : look::handle);
         g.fillRect(box);
         g.setColour(look::ink);
         g.drawRect(box, 1.f);
     };
-    const auto diamond = [&](float x, float y, bool chosen) {
+    const auto diamond = [&](float horizontal, float y, bool chosen) {
         juce::Path d;
-        d.addQuadrilateral(x, y - 4.f, x + 4.f, y, x, y + 4.f, x - 4.f, y);
+        d.addQuadrilateral(horizontal, y - 4.f, horizontal + 4.f, y, horizontal, y + 4.f, horizontal - 4.f, y);
         g.setColour(chosen ? look::handleChosen : look::handle);
         g.fillPath(d);
         g.setColour(look::ink);
         g.strokePath(d, juce::PathStrokeType(1.f));
     };
-    const auto chosen = [&](bool fadeIn, bool curve) {
-        const auto &h = fadeDrag_ ? fadeDrag_ : selectedFade_;
-        return h && h->clip == c.id && h->in == fadeIn && h->curve == curve;
+    const auto chosen = [&](bool fadeIn, bool curve, bool start = false) {
+        return active && active->clip == c.id && active->in == fadeIn && active->curve == curve && active->start == start;
     };
-    square(std::max(left + 3.5f, xIn), chosen(true, false));
-    square(std::min(right - 3.5f, xOut), chosen(false, false));
-    if (in > 0)
-        diamond((left + xIn) / 2.f, curveY(engine::clipFadeShape(0.5, inCurve, inTension)), chosen(true, true));
-    if (out > 0)
-        diamond((xOut + right) / 2.f, curveY(engine::clipFadeShape(0.5, outCurve, outTension)), chosen(false, true));
+    square(std::max(left + 3.5f, xIn), top, chosen(true, false));
+    square(std::min(right - 3.5f, xOut), top, chosen(false, false));
+    if (in.peakTicks > in.zeroTicks) {
+        square(std::max(left + 3.5f, startIn), bottom - 7.f, chosen(true, false, true));
+        diamond((startIn + xIn) / 2.f, curveY(engine::clipFadeShape(0.5, inCurve, inTension)), chosen(true, true));
+    }
+    if (out.peakTicks > out.zeroTicks) {
+        square(std::min(right - 3.5f, startOut), bottom - 7.f, chosen(false, false, true));
+        diamond((xOut + startOut) / 2.f, curveY(engine::clipFadeShape(0.5, outCurve, outTension)), chosen(false, true));
+    }
 }
 std::optional<juce::Point<float>> ArrangementCanvas::fadeHandlePoint(const FadeHandle &h) const {
     for (const auto &b : clipBodies())
@@ -3294,41 +3314,47 @@ std::optional<juce::Point<float>> ArrangementCanvas::fadeHandlePoint(const FadeH
     return std::nullopt;
 }
 std::optional<juce::Point<float>> ArrangementCanvas::fadeHandlePoint(const FadeHandle &h, const ClipBody &b) const {
-    {
-        if (b.clip->id != h.clip || !fadeHandlesShown(*b.clip) || b.bottom - b.top < 8.f)
-            return std::nullopt;
-        std::int64_t in = 0, out = 0;
-        std::optional<double> inTension, outTension;
-        fadesOf(*b.clip, in, out, inTension, outTension);
-        const auto &geo = view.geometry;
-        const float xIn = static_cast<float>(geo.x(b.clip->posTicks + in));
-        const float xOut = static_cast<float>(geo.x(b.clip->posTicks + b.clip->lengthTicks - out));
-        if (!h.curve)
-            return juce::Point<float>(h.in ? std::max(b.left + 3.5f, xIn) : std::min(b.right - 3.5f, xOut), b.top + 3.5f);
-        if ((h.in ? in : out) == 0)
-            return std::nullopt;
-        const bool bending = fadeDrag_ && fadeDrag_->curve && fadeDrag_->clip == h.clip && fadeDrag_->in == h.in;
-        const auto curve = bending ? kBentFadeCurve : h.in ? b.clip->fadeInCurve : b.clip->fadeOutCurve;
-        const auto shape = engine::clipFadeShape(0.5, curve, h.in ? inTension : outTension);
-        return juce::Point<float>(h.in ? (b.left + xIn) / 2.f : (xOut + b.right) / 2.f,
-                                  b.bottom - static_cast<float>(shape) * (b.bottom - b.top));
+    const auto &c = *b.clip;
+    if (c.id != h.clip || !fadeHandlesShown(c) || b.bottom - b.top < 8.f)
+        return std::nullopt;
+    engine::ClipFadeHandles in, out;
+    std::optional<double> inTension, outTension;
+    fadesOf(c, in, out, inTension, outTension);
+    const auto handles = h.in ? in : out;
+    if ((h.start || h.curve) && handles.peakTicks <= handles.zeroTicks)
+        return std::nullopt;
+    const auto point = [&](std::int64_t ticks) {
+        return static_cast<float>(view.geometry.x(h.in ? c.posTicks + ticks : c.posTicks + c.lengthTicks - ticks));
+    };
+    const auto peak = point(handles.peakTicks), start = point(handles.zeroTicks);
+    if (!h.curve) {
+        const auto raw = h.start ? start : peak;
+        return juce::Point<float>(h.in ? std::max(b.left + 3.5f, raw) : std::min(b.right - 3.5f, raw),
+                                  h.start ? b.bottom - 3.5f : b.top + 3.5f);
     }
+    const bool bending = fadeDrag_ && fadeDrag_->curve && fadeDrag_->clip == h.clip && fadeDrag_->in == h.in;
+    const auto curve = bending ? kBentFadeCurve : h.in ? c.fadeInCurve : c.fadeOutCurve;
+    const auto shape = engine::clipFadeShape(0.5, curve, h.in ? inTension : outTension);
+    return juce::Point<float>((start + peak) / 2.f, b.bottom - static_cast<float>(shape) * (b.bottom - b.top));
 }
 std::optional<ArrangementCanvas::FadeHandle> ArrangementCanvas::fadeHandleAt(int x, int y) const {
-    // The nearest shown handle within a few pixels; the curve's diamond before the squares, which
-    // sit at the clip's top.
     const juce::Point<float> at(static_cast<float>(x), static_cast<float>(y));
+    std::optional<FadeHandle> nearest;
+    float distance = 6.f;
     for (const auto &b : clipBodies()) {
         if (!fadeHandlesShown(*b.clip))
             continue;
-        for (const bool curve : {true, false})
-            for (const bool in : {true, false}) {
-                const FadeHandle h{b.clip->id, b.track->id, in, curve};
-                if (const auto p = fadeHandlePoint(h, b); p && p->getDistanceFrom(at) <= 6.f)
-                    return h;
+        for (const bool in : {true, false})
+            for (const auto &h : {FadeHandle{b.clip->id, b.track->id, in, true},
+                                  FadeHandle{b.clip->id, b.track->id, in, false},
+                                  FadeHandle{b.clip->id, b.track->id, in, false, true}}) {
+                if (const auto p = fadeHandlePoint(h, b); p && p->getDistanceFrom(at) < distance) {
+                    distance = p->getDistanceFrom(at);
+                    nearest = h;
+                }
             }
     }
-    return std::nullopt;
+    return nearest;
 }
 void ArrangementCanvas::mouseExit(const juce::MouseEvent &) {
     if (hoverClip_ != 0) {
@@ -3663,7 +3689,8 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
                     }
                     fadeDrag_ = h;
                     selectedFade_ = h;
-                    fadeTicks_ = h->in ? b.clip->fadeInTicks : b.clip->fadeOutTicks;
+                    const auto handles = fadeHandles(*b.clip, h->in);
+                    fadeTicks_ = h->start ? handles.zeroTicks : handles.peakTicks;
                     fadeTensionFrom_ = fadeTension_ = (h->in ? b.clip->fadeInTension : b.clip->fadeOutTension).value_or(0.0);
                     fadeFromY_ = e.y;
                 }
@@ -3851,8 +3878,11 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
             for (const auto &b : clipBodies())
                 if (b.clip->id == fadeDrag_->clip) {
                     const auto at = view.geometry.tick(e.x);
-                    fadeTicks_ = fadeDrag_->in ? at - b.clip->posTicks : b.clip->posTicks + b.clip->lengthTicks - at;
-                    fadeTicks_ = fadeLimit(*b.clip, fadeDrag_->in, fadeTicks_);
+                    const auto ticks = fadeDrag_->in ? at - b.clip->posTicks : b.clip->posTicks + b.clip->lengthTicks - at;
+                    const auto before = fadeHandles(*b.clip, fadeDrag_->in);
+                    const auto requested = !fadeDrag_->start && before.zeroTicks > 0 ? std::max(ticks, before.zeroTicks + 1) : ticks;
+                    const auto next = movedFadeHandle(*b.clip, fadeDrag_->in, fadeDrag_->start, requested);
+                    fadeTicks_ = fadeDrag_->start ? next.zeroTicks : next.peakTicks;
                 }
         }
         repaint();
@@ -3986,13 +4016,14 @@ void ArrangementCanvas::mouseUp(const juce::MouseEvent &e) {
         for (const auto &b : clipBodies())
             if (b.clip->id == h.clip)
                 dragged = b.clip;
+        const auto handles = dragged ? fadeHandles(*dragged, h.in) : engine::ClipFadeHandles{};
         const bool changed = dragged != nullptr &&
                              (h.curve ? (h.in ? dragged->fadeInTension : dragged->fadeOutTension).value_or(0.0) != fadeTension_
-                                      : (h.in ? dragged->fadeInTicks : dragged->fadeOutTicks) != fadeTicks_);
+                                      : (h.start ? handles.zeroTicks : handles.peakTicks) != fadeTicks_);
         if (changed) {
             if (const auto current = view.root.current()) {
                 auto edit = dragFades(current->tracks, clips, h.in, h.curve ? std::nullopt : std::optional<std::int64_t>(fadeTicks_),
-                                      h.curve ? std::optional<double>(fadeTension_) : std::nullopt);
+                                      h.curve ? std::optional<double>(fadeTension_) : std::nullopt, h.start);
                 if (!edit.ops.empty())
                     view.root.submitEdits(std::move(edit.ops));
             }

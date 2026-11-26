@@ -307,12 +307,12 @@ class ArrangementCanvas final : public juce::Component,
     // marker at its end, the arrows, then Enter to keep it or Esc to cancel (§41.4.1.3).
     bool keyResizing() const noexcept { return resizing_ != 0 && keyResize_; }
     // Live's fade handles on audio clips (Live 12 manual 6.8; E4): a square at each fade's peak sets
-    // its length, a diamond on its curve its shape. They show over the clip under the mouse, on the
+    // its length, a lower square its start, and a diamond its curve. They show over the clip under the mouse, on the
     // selected clips, and on every audio clip while F is held. A drag is one `clip.setFades` batch
     // for the dragged clip and every other selected audio clip.
     struct FadeHandle {
         std::int64_t clip = 0, track = 0;
-        bool in = true, curve = false;
+        bool in = true, curve = false, start = false;
         friend bool operator==(const FadeHandle &, const FadeHandle &) = default;
     };
     std::optional<FadeHandle> fadeHandleAt(int x, int y) const;
@@ -357,7 +357,7 @@ class ArrangementCanvas final : public juce::Component,
     std::optional<juce::Point<float>> fadeHandlePoint(const FadeHandle &, const ClipBody &) const;
     bool fadeHandlesShown(const engine::ClipNode &) const;
     // A clip's fades as drawn: what the snapshot holds, or what a drag would set.
-    void fadesOf(const engine::ClipNode &, std::int64_t &in, std::int64_t &out, std::optional<double> &inTension,
+    void fadesOf(const engine::ClipNode &, engine::ClipFadeHandles &in, engine::ClipFadeHandles &out, std::optional<double> &inTension,
                  std::optional<double> &outTension) const;
     void paintFades(juce::Graphics &, const engine::ClipNode &, float left, float right, float top,
                     float bottom) const;
