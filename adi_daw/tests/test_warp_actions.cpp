@@ -20,10 +20,11 @@ int checks=0,failures=0;
 void check(bool ok,const char* what){++checks;if(!ok){++failures;std::printf("FAIL %s\n",what);}}
 struct Fixture {
     test::TempDirectory temporary{"warp_actions","project"};std::unique_ptr<Store> store;
-    Fixture() {
+    explicit Fixture(bool beats=true) {
         StoreError error{};store=Store::createEmpty(temporary.path()/"song.adi",error);if(!store)throw std::runtime_error(toString(error));
         store->db().exec("INSERT INTO tracks(id,kind,name) VALUES(1,'audio','Warp'),(9,'master','Main')");
-        std::vector<float> input(44100+1234,0);for(std::size_t beat=0;beat<4;++beat)input[1234+11025*beat]=1;
+        std::vector<float> input(beats ? 44100+1234 : 44100,0);
+        if(beats)for(std::size_t beat=0;beat<4;++beat)input[1234+11025*beat]=1;
         {audio::WavWriter writer(temporary.path()/"source.wav",44100,1,audio::WavFormat::Float32);writer.write(input.data(),static_cast<std::uint32_t>(input.size()));writer.close();}
         clip_edit::ImportOptions options;options.source=temporary.path()/"source.wav";options.track=1;options.clipId=7;options.mediaId=8;options.at={0,q};
         auto imported=clip_edit::prepareImportAudio(*store,options,48000);const auto committed=clip_edit::commitMaterial(*store,imported);
@@ -107,6 +108,70 @@ void editedSourceWindow() {
               db.execAndGet("SELECT pos_ticks FROM clips WHERE id=11").getInt64()==q+q/2,
           "Warp off keeps the sample position and the clip's Arrangement start");
 }
+void explicitSourceTempo() {
+    Fixture f(false);
+    check(!clip_edit::prepareSetWarp(*f.store,7,f.options(),48000).ok,
+          "silence contains no beat for Auto-Warp");
+    auto manual=f.options();
+    manual.analysis.sourceBpm=120;
+    if(!apply(f,clip_edit::prepareSetWarp(*f.store,7,manual,48000),
+              "an explicit source BPM enables Warp without a detected beat"))return;
+    auto& db=f.store->db();
+    check(db.execAndGet("SELECT src_start_frames FROM audio_clips WHERE clip_id=7").getInt64()==0 &&
+          db.execAndGet("SELECT src_len_frames FROM audio_clips WHERE clip_id=7").getInt64()==44100 &&
+          db.execAndGet("SELECT length_ticks FROM clips WHERE id=7").getInt64()==2*q,
+          "a manual source tempo covers the complete sample from frame zero");
+}
+void correctWarpedSourceTempo() {
+    Fixture f;
+    auto& db=f.store->db();
+    if(!apply(f,clip_edit::prepareSetWarp(*f.store,7,f.options(),48000),
+              "prepare a warped one-second source with a detected 240 BPM"))return;
+
+    const auto request=[](const char* type,Payload payload){
+        OpRequest op;
+        op.opType=type;
+        op.payload=std::move(payload);
+        return op;
+    };
+    const std::array edits{
+        request("clip.resize",{{"id",7},{"pos",q},{"length",2*q}}),
+        request("clip.setStartMarker",{{"id",7},{"ticks",q}}),
+        request("clip.setEndMarker",{{"id",7},{"ticks",3*q}}),
+        request("clip.setLoop",{{"id",7},{"on",true},{"start",q},{"length",q}})
+    };
+    if(!OpJournal(*f.store).commit(edits).ok){
+        check(false,"prepare a trimmed and looped warped clip");
+        return;
+    }
+
+    const auto original=digestProject(*f.store).text;
+    auto manual=f.options();
+    manual.analysis.sourceBpm=120;
+    if(!apply(f,clip_edit::prepareSetWarp(*f.store,7,manual,48000),
+              "halve the source tempo of an existing warped clip"))return;
+    const auto get=[&](const char* sql){return db.execAndGet(sql).getInt64();};
+    check(get("SELECT pos_ticks FROM clips WHERE id=7")==q &&
+          get("SELECT src_start_frames FROM audio_clips WHERE clip_id=7")==1234 &&
+          get("SELECT src_len_frames FROM audio_clips WHERE clip_id=7")==44100,
+          "a tempo correction keeps the song start and immutable source window");
+    check(get("SELECT content_offset_ticks FROM clips WHERE id=7")==q/2 &&
+          get("SELECT length_ticks FROM clips WHERE id=7")==q &&
+          get("SELECT end_marker_ticks FROM clip_properties WHERE clip_id=7")==3*q/2 &&
+          get("SELECT loop_start_ticks FROM clips WHERE id=7")==q/2 &&
+          get("SELECT loop_len_ticks FROM clips WHERE id=7")==q/2,
+          "the new tempo projects the same physical Start, End, trim and loop boundaries");
+    const auto half=digestProject(*f.store).text;
+    History history(*f.store);
+    check(history.undo().ok && digestProject(*f.store).text==original &&
+          history.redo().ok && digestProject(*f.store).text==half,
+          "tempo correction Undo and Redo restore the captured map and clip bounds");
+    manual.analysis.sourceBpm=240;
+    if(!apply(f,clip_edit::prepareSetWarp(*f.store,7,manual,48000),
+              "double the source tempo of an existing warped clip"))return;
+    check(digestProject(*f.store).text==original,
+          "halving then doubling an exact clock restores all clip and marker data");
+}
 void modesAndGuards() {
     Fixture f;auto& db=f.store->db();
     for(const auto mode:{audio::WarpMode::Beats,audio::WarpMode::Tones,audio::WarpMode::Texture,audio::WarpMode::RePitch,audio::WarpMode::Complex,audio::WarpMode::ComplexPro}) {
@@ -136,4 +201,4 @@ void cancellationAndCaptureGuards() {
     check(pending.ok && !clip_edit::commitPrepared(*f.store,pending).ok && digestProject(*f.store).text==before,"a changed source file after analysis rolls back the entire edit");
 }
 }
-int main(){try{actionAndHistory();editedSourceWindow();modesAndGuards();futureMapRefusesRewrite();cancellationAndCaptureGuards();}catch(const std::exception& e){check(false,e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{actionAndHistory();editedSourceWindow();explicitSourceTempo();correctWarpedSourceTempo();modesAndGuards();futureMapRefusesRewrite();cancellationAndCaptureGuards();}catch(const std::exception& e){check(false,e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
