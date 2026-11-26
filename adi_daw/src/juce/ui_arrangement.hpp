@@ -616,6 +616,7 @@ class ArrangementView final : public juce::Component {
     // without one, an audio clip is drawn as its colour and its name.
     WaveformCache *waveforms = nullptr;
     std::uint64_t waveformsSeen = 0;
+    float waveformZoomScale() const noexcept;
     // Live 11's measures at 100 % (2026-10-27): the Overview with its margin, the beat
     // ruler with its numbers along its foot, the locator band, a dark gap, then the
     // lanes; the time ruler under them; a margin left of the time; the track header's
@@ -676,6 +677,7 @@ class ArrangementView final : public juce::Component {
     void firstShownIfHidden();
 
   private:
+    juce::Slider waveformZoom_;
     std::optional<LiveTake> liveTake_;
     bool hadLiveMidiTake_ = false;
     void refreshTree();

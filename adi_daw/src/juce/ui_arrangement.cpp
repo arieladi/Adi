@@ -15,6 +15,7 @@
 #include "ui_browser.hpp"
 #include "ui_controls.hpp"
 #include "ui_shell.hpp"
+#include <cmath>
 #include <limits>
 #include <span>
 namespace adi::ui {
@@ -792,6 +793,17 @@ ArrangementView::ArrangementView(AdiRootComponent &r)
     : root(r), overview(*this), ruler(*this), scrub(*this), headers(*this), canvas(*this) {
     for (auto *c : std::array<juce::Component *, 6>{&overview, &ruler, &scrub, &headers, &canvas, &playhead})
         addAndMakeVisible(c);
+    waveformZoom_.setComponentID("waveformVerticalZoom");
+    waveformZoom_.setName("Waveform Vertical Zoom");
+    waveformZoom_.setTitle("Waveform Vertical Zoom");
+    waveformZoom_.setTooltip("Waveform Vertical Zoom for all audio clips in the Arrangement");
+    waveformZoom_.setSliderStyle(juce::Slider::LinearHorizontal);
+    waveformZoom_.setTextBoxStyle(juce::Slider::TextBoxLeft, false, 35, 15);
+    waveformZoom_.setTextValueSuffix(" dB");
+    waveformZoom_.setRange(0., 36., 1.);
+    waveformZoom_.setDoubleClickReturnValue(true, 0.);
+    waveformZoom_.onValueChange = [this] { canvas.repaint(); };
+    addAndMakeVisible(waveformZoom_);
     // The tree the snapshot carries (#299).
     trackRows_ = rowsFromSnapshot;
     auto &show = root.namesBar.show;
@@ -1253,6 +1265,9 @@ juce::PopupMenu ArrangementView::projectViewMenu() {
     return menu;
 }
 const SnapshotReader &ArrangementView::reader() const { return root.reader(); }
+float ArrangementView::waveformZoomScale() const noexcept {
+    return std::pow(10.f, static_cast<float>(waveformZoom_.getValue()) / 20.f);
+}
 int ArrangementView::overviewHeight() const noexcept { return root.state().overview ? kOverviewHeight : 0; }
 void ArrangementView::setNamesFirst(bool first, int controls) {
     if (first == namesFirst_ && controls == controlsGap_)
@@ -1274,6 +1289,8 @@ void ArrangementView::resized() {
     canvas.setBounds(lanesX, top, clipsW, body);
     geometry.lanesHeight = body;
     headers.setBounds(namesFirst_ ? 0 : kLeftMargin + clipsW, top, headerW, body);
+    waveformZoom_.setBounds(headers.getX() + 2, canvas.getBottom(), std::max(0, headerW - 4), kTimeRulerHeight);
+    waveformZoom_.setVisible(headerW >= 52);
     frame(true);
 }
 juce::Colour ArrangementView::colourFor(std::size_t position) const {
@@ -2790,7 +2807,7 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
                                              [&](int x) -> std::optional<double> {
                                 const auto seconds = tempo->ticksToSeconds(geo.tick(x)) - startSeconds;
                                 return sourceStartFrame + std::max(0., seconds * preview->peaks.sampleRate);
-                            }, sourceEndFrame);
+                            }, sourceEndFrame, view.waveformZoomScale());
                         }
                     }
                     if (right - left > 6.f) {
@@ -3451,7 +3468,7 @@ void ArrangementCanvas::paintWaveform(juce::Graphics &g, const engine::ClipNode 
     auto moved = clip;
     moved.posTicks = pos; // drawn where a drag would put it
     const ClipSourceMap source(moved, snapshot != nullptr ? snapshot->tempo.get() : nullptr, rate);
-    const auto gain = std::abs(clip.gainDb) <= 120.f ? std::pow(10.f, clip.gainDb / 20.f) : 0.f;
+    const auto gain = std::abs(clip.gainDb) <= 120.f ? std::pow(10.f, clip.gainDb / 20.f) * view.waveformZoomScale() : 0.f;
     const auto waveColour = look::ink.withAlpha(clip.muted ? 0.4f : 0.85f);
     g.setColour(waveColour);
     const int from = std::max(0, static_cast<int>(std::floor(left))),
