@@ -2111,39 +2111,23 @@ bool AdiRootComponent::placeClips(const std::vector<ClipPlace> &places, const ch
     const auto current = view_.current();
     if (!current || places.empty())
         return fail("Select a clip to move.");
-    // The scope: every track a clip leaves or lands on, over the span from the earliest start to the
-    // latest end, where it was and where it goes.
-    std::vector<std::int64_t> tracks;
-    std::int64_t begin = std::numeric_limits<std::int64_t>::max(), end = 0;
     std::vector<edit_plan::Move> moves;
-    for (const auto &place : places) {
-        const engine::ClipNode *clip = nullptr;
-        std::int64_t from = 0;
-        for (const auto &t : current->tracks)
-            if (t)
-                for (const auto &c : t->clips)
-                    if (c && c->id == place.clip) {
-                        clip = c.get();
-                        from = t->id;
-                    }
-        if (clip == nullptr)
-            return fail("That clip is gone.");
-        for (const auto id : {from, place.track})
-            if (std::find(tracks.begin(), tracks.end(), id) == tracks.end())
-                tracks.push_back(id);
-        begin = std::min({begin, clip->posTicks, place.position});
-        end = std::max({end, clip->posTicks + clip->lengthTicks, place.position + clip->lengthTicks});
+    moves.reserve(places.size());
+    for (const auto &place : places)
         moves.push_back({place.clip, {place.track, std::nullopt}, {0, place.position}});
-    }
-    const auto scope = edit_plan::materialScope(tracks, edit_plan::PlacementClock::Ticks, {begin, std::max(end, begin + 1)});
     edit_plan::Options options;
     options.referenceRate = editRate();
     options.policy = edit_plan::capturePolicy(commands_.settings());
-    auto prepared = edit_plan::prepareMove(submitter_.store(), scope, moves, options);
+    auto prepared = edit_plan::prepareMove(submitter_.store(), moves, options);
     if (!prepared.ok) {
-        // The planner will not place here yet (automation that follows its clips, AU-05; a frozen track;
-        // an editing setting off Live's rule; clips that already overlap): the clips move as before,
-        // keeping what they land on, and the Status Bar says why, as a range edit does.
+        // Preserve the existing move for the planner's policy exclusions. A failed splice
+        // must stop the whole edit before moving any material.
+        if (options.policy.deleteOverlaps && !options.policy.mutedClipsAsDeleted &&
+            prepared.error != "frozen placement requires TM-FC-04 policy" &&
+            prepared.error != "frozen-group placement requires TM-FC-04 policy" &&
+            prepared.error != "change or detach the take lane explicitly before moving it" &&
+            prepared.error != edit_plan::toString(edit_plan::PlacementError::OverlappingIncoming))
+            return commitEdit(std::move(prepared));
         std::vector<OpRequest> ops;
         for (const auto &place : places) {
             OpRequest op;
@@ -2333,12 +2317,12 @@ bool AdiRootComponent::clipClipboard(ClipCommand command) {
     switch (command) {
     case ClipCommand::Copy: {
         if (chosen.clip != nullptr) {
-            auto copy = clip_edit::copyClip(store, chosen.clip->id, rate);
+            auto copy = clip_edit::copyClip(store, chosen.clip->id, options);
             if (!copy.ok)
                 return fail(copy.error);
             board.held = std::move(copy);
         } else {
-            auto copy = clip_edit::copyRange(store, selection, rate);
+            auto copy = clip_edit::copyRange(store, selection, options);
             if (!copy.ok)
                 return fail(copy.error);
             board.held = std::move(copy);
@@ -2352,7 +2336,7 @@ bool AdiRootComponent::clipClipboard(ClipCommand command) {
     case ClipCommand::Cut: {
         // The copy is kept only once the cut is in, so a refused Cut leaves the clipboard as it was.
         if (chosen.clip != nullptr) {
-            auto cut = clip_edit::prepareCutClip(store, chosen.clip->id, rate);
+            auto cut = clip_edit::prepareCutClip(store, chosen.clip->id, options);
             if (!cut.copy.ok)
                 return fail(cut.copy.error);
             if (!commitEdit(std::move(cut.edit)))

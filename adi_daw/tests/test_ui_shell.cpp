@@ -3425,7 +3425,9 @@ void splitAndRangeEdits(AppCommands &commands, settings::AppSettings &settings, 
     check(clipsOf(2) == std::vector<std::pair<std::int64_t, std::int64_t>>{{0, bar}}, "the clip is trimmed at the selection");
     check(root.command(AppCommands::Undo), "undo");
     root.frame();
-    // Delete over a selection inside the clip cuts the middle out, one step.
+    // Delete over a selection inside the clip cuts the middle out, even on an automated track.
+    check(root.addAutomationPoint(2, 3 * bar / 4, -6.0), "a Volume breakpoint inside the selection");
+    root.frame();
     sel = {};
     sel.track = 2;
     sel.start = bar / 2;
@@ -3434,9 +3436,18 @@ void splitAndRangeEdits(AppCommands &commands, settings::AppSettings &settings, 
     root.frame();
     check(clipsOf(2) == std::vector<std::pair<std::int64_t, std::int64_t>>{{0, bar / 2}, {bar, bar}},
           "the middle is cut out; the two ends stay as clips");
+    const auto hasMiddlePoint = [&] {
+        const auto envelope = trackEnvelope(*root.current(), 2);
+        return envelope.data != nullptr &&
+               std::any_of(envelope.data->points.begin(), envelope.data->points.end(),
+                           [&](const auto &point) { return point.time == 3 * bar / 4; });
+    };
+    check(!hasMiddlePoint(), "the selected Volume breakpoint goes with the middle");
     check(root.command(AppCommands::Undo), "undo");
     root.frame();
-    check(clipsOf(2).size() == 1, "one undo makes it whole");
+    check(clipsOf(2).size() == 1 && hasMiddlePoint(), "one undo restores the clip and the breakpoint");
+    check(root.command(AppCommands::Undo), "undo the automation fixture");
+    root.frame();
     // 0 over 2 MIDI's clip's right edge: split there, the right part deactivated, one step.
     sel = {};
     sel.track = 3;
@@ -3838,7 +3849,9 @@ void clipClipboard(AppCommands &commands, const std::filesystem::path &dir) {
         juce::FileOutputStream out(file);
         juce::PNGImageFormat().writeImageToStream(image, out);
     };
-    // A range cut across two tracks and pasted at bar 3 comes back in its order.
+    // A range cut across two tracks and pasted at bar 3 comes back in its order, with automation.
+    check(root.addAutomationPoint(2, bar / 4, -6.0), "a Volume breakpoint on 1 MIDI");
+    root.frame();
     sel = {};
     sel.track = 2;
     sel.toTrack = 3;
@@ -3856,6 +3869,11 @@ void clipClipboard(AppCommands &commands, const std::filesystem::path &dir) {
           "each track's material comes back on the track in its place, in order");
     check(sel.track == 2 && sel.toTrack == 3 && sel.start == 2 * bar && sel.end == 3 * bar && sel.clip == 0,
           "the pasted range is the time selection");
+    const auto envelope = trackEnvelope(*root.current(), 2);
+    check(envelope.data != nullptr &&
+              std::any_of(envelope.data->points.begin(), envelope.data->points.end(),
+                          [&](const auto &point) { return point.time == 2 * bar + bar / 4 && point.value == -6.0; }),
+          "the pasted range carries its Volume breakpoint to bar 3");
     picture("adi-clipboard-pasted.png");
     check(root.command(AppCommands::Undo), "undo the paste");
     root.frame();
@@ -3875,6 +3893,8 @@ void clipClipboard(AppCommands &commands, const std::filesystem::path &dir) {
     check(root.command(AppCommands::Undo), "undo the cut");
     root.frame();
     check(clipsOf(2) == Clips{{0, bar}} && clipsOf(3) == Clips{{0, bar / 2}}, "both as they were again");
+    check(root.command(AppCommands::Undo), "undo the automation fixture");
+    root.frame();
     // A clip's copy: MIDI does not go on an audio track.
     clickClip(2, 50, 0, bar);
     check(root.command(AppCommands::Copy) && std::holds_alternative<clip_edit::ClipCopy>(commands.clipClipboard().held),
@@ -3974,6 +3994,7 @@ void clipClipboard(AppCommands &commands, const std::filesystem::path &dir) {
         later.payload = {{"id", 60}, {"track", 3}, {"kind", "midi"}, {"pos", bar / 2}, {"length", bar / 2}};
         later.label = "Insert MIDI Clip";
         check(document->ops().submit(later).ok && document->synchronise(), "a second half bar on 2 MIDI, right after its clip");
+        check(root.addAutomationPoint(3, bar / 4, -6.0), "a Volume breakpoint on the clip to duplicate");
         root.frame();
         clickClip(3, 51, 0, bar / 2);
         check(root.keyPressed(duplicateKey), "Duplicate onto the clip after it");
@@ -3999,7 +4020,7 @@ void clipClipboard(AppCommands &commands, const std::filesystem::path &dir) {
         root.frame();
         check(idsOf(3) == std::vector<std::int64_t>{51, 60} && clipsOf(3) == Clips{{0, bar / 2}, {bar / 2, bar / 2}},
               "Undo restores both");
-        check(root.command(AppCommands::Undo), "undo the second clip");
+        check(root.command(AppCommands::Undo) && root.command(AppCommands::Undo), "undo the automation and the second clip");
         root.frame();
         check(idsOf(3) == std::vector<std::int64_t>{51}, "2 MIDI as before");
     }
@@ -8068,6 +8089,8 @@ void clipCopyDrag(AppCommands &commands, const std::filesystem::path &dir) {
     // 1 MIDI's clip chosen, then dragged by its bar with Ctrl a bar on and down onto 2 MIDI: a copy
     // lands there, 1 MIDI's clip stays where it was, and the copy is what is selected.
     const juce::Point<float> grab(x(bar) + 6, barOf(1));
+    check(root.addAutomationPoint(1, bar + bar / 2, -6.0), "a Volume breakpoint on the clip to Ctrl-drag");
+    root.frame();
     click(grab);
     drag(grab, {x(2 * bar) + 6, barOf(2)}, copyKey);
     const auto two = clipsOn(2);
@@ -8080,6 +8103,8 @@ void clipCopyDrag(AppCommands &commands, const std::filesystem::path &dir) {
     root.frame();
     check(clipsOn(1) == std::vector<Clip>{{11, bar, bar}} && clipsOn(2) == std::vector<Clip>{{12, bar, bar}},
           "one Undo takes the copy away");
+    check(root.command(AppCommands::Undo), "undo the automation fixture");
+    root.frame();
     // Ctrl/Cmd+click on 2 MIDI's bar picks its clip besides 1 MIDI's, and again lets it go; nothing is
     // copied or moved.
     const auto steps = submitter.nextUndo()->label;
@@ -8390,26 +8415,17 @@ void rangeSelection(AppCommands &commands, const std::filesystem::path &dir) {
             for (const auto &c : root.reader().findTrack(3)->clips)
                 whole = whole || (c->id == 13 && c->posTicks == start && c->lengthTicks == length);
             check(whole, "one Undo gives 13 back whole");
-            // Where the planner does not place yet (here a track with an automation lane, AU-05), the clip
-            // moves as before, keeping what it lands on, and the Status Bar says why.
-            automation::LaneSpec volumeLane;
-            volumeLane.id = 77;
-            volumeLane.ownerKind = "track";
-            volumeLane.ownerId = 3;
-            volumeLane.paramRef = "volume";
-            volumeLane.paramName = "Volume";
-            check(submitter.submit(automation::createLane(volumeLane)).ok, "an automation lane on track 3");
+            check(root.addAutomationPoint(3, start + 3 * length / 4, -6.0), "a Volume breakpoint on track 3");
             root.frame();
-            check(root.placeClips({{12, 3, start + length / 2}}, "Move Clip") &&
-                      root.error().rfind("Moved, keeping what the clips land on", 0) == 0,
-                  "with an automation lane the move still goes, saying it keeps what it lands on");
+            check(root.placeClips({{12, 3, start + length / 2}}, "Move Clip") && root.error().empty(),
+                  "the move uses the planner on a track with automation");
             root.frame();
-            bool kept = false, moved = false;
+            bool trimmed = false, moved = false;
             for (const auto &c : root.reader().findTrack(3)->clips) {
-                kept = kept || (c->id == 13 && c->lengthTicks == length);
+                trimmed = trimmed || (c->id == 13 && c->posTicks == start && c->lengthTicks == length / 2);
                 moved = moved || (c->id == 12 && c->posTicks == start + length / 2);
             }
-            check(kept && moved, "12 moved, 13 kept whole");
+            check(trimmed && moved, "12 moved and replaced the second half of 13");
             check(root.command(AppCommands::Undo) && root.command(AppCommands::Undo), "undo the move and the lane");
             root.frame();
         }

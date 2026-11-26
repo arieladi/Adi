@@ -3531,6 +3531,15 @@ void ArrangementCanvas::extendTo(int x, int y, bool snapToGrid) {
     view.changed();
     announce(view.root.selectionText());
 }
+namespace {
+// These existing planner exclusions keep the window's whole-clip Delete behavior.
+bool canDeleteWholeClips(const edit_plan::EditPolicy &policy, std::string_view error) {
+    return !policy.deleteOverlaps || policy.mutedClipsAsDeleted ||
+           error == "frozen placement requires TM-FC-04 policy" ||
+           error == "frozen-group placement requires TM-FC-04 policy";
+}
+} // namespace
+
 bool ArrangementCanvas::rangeEdit(bool deactivate) {
     // From the CURRENT cell, as every action is (ADR-0201).
     const auto current = view.root.current();
@@ -3543,31 +3552,40 @@ bool ArrangementCanvas::rangeEdit(bool deactivate) {
     // of a clip the selection lies inside (`prepareDeleteRange`, with the settings' editing policy);
     // 0 over one clip splits it at the selection's edges inside it and deactivates the part inside,
     // one batch.
-    if (content.crossing > 0 && !deactivate) {
-        clip_edit::RangeSelection range{selected, {0, std::min(sel.start, sel.end)}, {0, std::max(sel.start, sel.end)}};
+    if (!deactivate && !selected.empty()) {
         const edit_plan::Options options{view.root.editRate(), edit_plan::capturePolicy(view.root.commandSettings())};
-        auto prepared = clip_edit::prepareDeleteRange(view.root.editStore(), range, options);
-        if (prepared.ok) {
-            if (!view.root.commitEdit(std::move(prepared)))
-                return false;
-            view.changed();
-            return true;
+        if (options.policy.automationFollowsClips || content.crossing > 0) {
+            const clip_edit::RangeSelection range{selected, {0, std::min(sel.start, sel.end)}, {0, std::max(sel.start, sel.end)}};
+            auto prepared = clip_edit::prepareDeleteRange(view.root.editStore(), range, options);
+            if (prepared.ok) {
+                if (prepared.requests.empty()) {
+                    view.root.say("There is nothing in the selection to delete.");
+                    return false;
+                }
+                if (content.crossing == 0 && !content.inside.empty())
+                    prepared.requests.front().label = content.inside.size() == 1 ? "Delete Clip" : "Delete Clips";
+                if (!view.root.commitEdit(std::move(prepared)))
+                    return false;
+                view.changed();
+                return true;
+            }
+            if (!canDeleteWholeClips(options.policy, prepared.error))
+                return view.root.commitEdit(std::move(prepared));
+            if (content.crossing > 0) {
+                const auto why = "The clips that cross the selection stay whole: the engine will not trim them here (" +
+                                 prepared.error + ").";
+                auto whole = deleteRange(current->tracks, selected, sel.start, sel.end);
+                if (whole.ops.empty()) {
+                    view.root.say(why);
+                    return false;
+                }
+                if (!view.root.submitEdits(std::move(whole.ops)))
+                    return false;
+                view.changed();
+                view.root.say(why);
+                return true;
+            }
         }
-        // The engine will not trim here (a track whose automation follows its clips, a frozen track,
-        // the editing settings): the whole clips inside go as before, and the Status Bar says why the
-        // crossing ones stay.
-        const auto why = "The clips that cross the selection stay whole: the engine will not trim them here (" +
-                         prepared.error + ").";
-        auto whole = deleteRange(current->tracks, selected, sel.start, sel.end);
-        if (whole.ops.empty()) {
-            view.root.say(why);
-            return false;
-        }
-        if (!view.root.submitEdits(std::move(whole.ops)))
-            return false;
-        view.changed();
-        view.root.say(why);
-        return true;
     }
     if (deactivate)
         if (const auto split = edgeSplit(content, sel.start, sel.end)) {
@@ -3888,6 +3906,23 @@ bool ArrangementCanvas::keyPressed(const juce::KeyPress &k) {
             if (!edit.refusal.empty()) {
                 view.root.say(edit.refusal);
                 return true;
+            }
+            if (erase) {
+                const edit_plan::Options options{view.root.editRate(), edit_plan::capturePolicy(view.root.commandSettings())};
+                if (options.policy.automationFollowsClips) {
+                    // Use the available clips, ignoring selected IDs that have gone away.
+                    std::vector<std::int64_t> present;
+                    for (const auto &op : edit.ops)
+                        present.push_back(op.payload.at("id").get<std::int64_t>());
+                    auto prepared = edit_plan::prepareDelete(view.root.editStore(), present, options);
+                    if (prepared.ok || !canDeleteWholeClips(options.policy, prepared.error)) {
+                        if (!prepared.requests.empty())
+                            prepared.requests.front().label = edit.ops.front().label;
+                        if (!view.root.commitEdit(std::move(prepared)))
+                            return true;
+                        edit.ops.clear();
+                    }
+                }
             }
             if (!view.root.submitEdits(std::move(edit.ops)) || !erase)
                 return true;
