@@ -4,6 +4,33 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-26 — Closing Rule (Full 278-suite Clang 14 Release `-O3 -DNDEBUG` `ctest` on `origin/main` `cf6d0ca4`)
+
+Ran all **278** headless suites (`-LE performance`, `-DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF -DADI_ACCEPTANCE=ON`) under **Clang 14.0.6 + libstdc++ 12 Release (`-O3 -DNDEBUG -DADI_WERROR=ON`)** on `origin/main` (`cf6d0ca4`).
+
+| Outcome | Count | Details |
+|---|---|---|
+| **PASS** | **276 / 278** | Includes `adi_acceptance_wts01` (11.30 s), all Pd/DSP/engine/scanner/history/Mix suites except `adi_mix_compressor_tests`. Total wall time 476.69 s (`-j 2`). |
+| **SKIP** | **1 / 278** | `adi_loudness_ffmpeg_tests` (no `ffmpeg` binary in VM). |
+| **FAIL** | **1 / 278** | `adi_mix_compressor_tests` — 196 checks, **1 failure** (see Finding below). |
+
+### Finding on `origin/main` (`cf6d0ca4`) under Clang 14 Release (`-O2` / `-O3`)
+
+- **`adi_mix_compressor_tests` fails in Clang 14.0.6 `-O2` and `-O3` (even with `-ffp-contract=off`): `src/adi/mix/compressor/Core.cpp:467-468` flushes subnormal `float` input `0x00000001` (`denorm_min()`) to `0x00000000` on the unity-gain neutral path (`tests/test_mix_compressor.cpp:407-408`):**
+  - `Core.cpp:522` enables x86 MXCSR FTZ+DAZ via `filters::FlushDenormals flush;`, while `Core.cpp:467-468` relies on `float outR = gr == 1.f ? right : right * gr;` to bypass multiplication at unity gain.
+  - At `-O2` and `-O3`, Clang 14 / LLVM optimizes `gr == 1.f ? right : right * gr` into unconditional `mulss` (`right * gr`), assuming default IEEE-754 semantics where `x * 1.0f` is bit-identical to `x`. With MXCSR DAZ+FTZ active, `mulss(denorm_min, 1.0f)` flushes `0x00000001` to `0x00000000` (`-0.0f` `0x80000000` is preserved; passes under GCC 12 `-O3` and Clang 14 Debug `-O0`).
+  - **Owner:** `mixview` (`src/adi/mix/compressor/Core.cpp`).
+  - **Smallest repro:**
+    ```sh
+    clang++-14 --gcc-toolchain=/home/antigravity/gcc12-toolchain -std=c++20 -O2 -DNDEBUG -ffp-contract=off \
+      -Iadi_daw/src -Iadi_daw/third_party/json/include \
+      adi_daw/tests/test_mix_compressor.cpp adi_daw/src/adi/mix/compressor/Core.cpp -o /tmp/test_mc && /tmp/test_mc
+    # FAIL neutral path preserves signed zero and subnormal programme
+    # Mix compressor: 196 checks, 1 failures; 643072 compared samples; audio allocations 0/0
+    ```
+
+---
+
 ## 2026-11-26 — Closing Rule (Full-tree Release `-O3 -DNDEBUG -DADI_WERROR=ON` sweep on `origin/main` `cf6d0ca4`)
 
 Swept all **757** headless translation units (**473** core/library TUs + **284** test TUs, `-DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF -DADI_ACCEPTANCE=ON`) under **GCC 12.4.0** and **Clang 14.0.6 + libstdc++ 12** in `CMAKE_BUILD_TYPE=Release` (`-O3 -DNDEBUG`) with `-DADI_WERROR=ON`.
