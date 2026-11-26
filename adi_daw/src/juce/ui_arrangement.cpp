@@ -604,6 +604,8 @@ TrackHeaderList::TrackHeaderList(ArrangementView &v) : view(v) {
         }
     };
     setTitle("Track headers");
+    setWantsKeyboardFocus(true);
+    setMouseClickGrabsKeyboardFocus(false);
     setTooltip("Click to select a track; drag its lower part to resize it, with Alt to resize "
                "all. Right-click for the track's commands.");
 }
@@ -1649,7 +1651,8 @@ juce::PopupMenu ArrangementView::contextMenuItems(bool header, const engine::Aut
         // A clip's menu (Live 12 manual 6.9): Cut, Copy, Paste and Duplicate, then Split at where it
         // was clicked, above the lanes' items. The lanes' own menu offers Paste.
         if (geometry.selection.clip != 0) {
-            for (const auto id : {AppCommands::Cut, AppCommands::Copy, AppCommands::Paste, AppCommands::Duplicate})
+            for (const auto id : {AppCommands::Cut, AppCommands::Copy, AppCommands::Paste, AppCommands::Duplicate,
+                                  AppCommands::DeleteTrack})
                 menu.addCommandItem(&commands.manager, id);
             menu.addSeparator();
             menu.addCommandItem(&commands.manager, AppCommands::Split);
@@ -1662,6 +1665,8 @@ juce::PopupMenu ArrangementView::contextMenuItems(bool header, const engine::Aut
             menu.addCommandItem(&commands.manager, AppCommands::Paste);
             menu.addSeparator();
         }
+        if (geometry.selection.clip == 0 && geometry.selection.start != geometry.selection.end)
+            menu.addCommandItem(&commands.manager, AppCommands::DeleteTrack);
         menu.addCommandItem(&commands.manager, AppCommands::InsertAudioTrack);
         menu.addCommandItem(&commands.manager, AppCommands::InsertMidiTrack);
         // The lanes' menu sets the grid as well (§6.10).
@@ -2085,6 +2090,7 @@ void TrackHeaderList::mouseDown(const juce::MouseEvent &e) {
     moveId_ = 0;
     moving_ = selectOnUp_ = false;
     if (auto *t = view.geometry.trackAt(view.reader(), e.y)) {
+        focusIfShowing(*this);
         // The split line at the row's foot resizes it; the rest of the title moves it, Main and
         // the returns aside.
         const auto pressed = view.geometry.rowAt(view.reader(), e.y, &top);
@@ -2111,11 +2117,9 @@ void TrackHeaderList::mouseDown(const juce::MouseEvent &e) {
             view.geometry.selection.track = t->id;
             view.geometry.selection.toTrack = 0;
             view.geometry.selection.picked.clear();
-            // The track is what is selected now, not a clip (Live): Rename then acts on the track
-            // (walk-B B14).
-            view.geometry.selection.clip = 0;
-            view.geometry.selection.pickedClips.clear();
         }
+        // A title chooses tracks. The insert marker can stay at its previous position.
+        view.geometry.selection.clearMaterial();
         if (split)
             resizeId = t->id;
         else if (!e.mods.isPopupMenu() && pressed < rows.size() && !rows[pressed].place.main) {
@@ -2327,6 +2331,11 @@ void TrackHeaderList::mouseUp(const juce::MouseEvent &e) {
 }
 void TrackHeaderList::mouseWheelMove(const juce::MouseEvent &e, const juce::MouseWheelDetails &w) {
     view.wheel(e, w);
+}
+bool TrackHeaderList::keyPressed(const juce::KeyPress &key) {
+    if (key == juce::KeyPress::deleteKey || key == juce::KeyPress::backspaceKey)
+        return view.root.keyPressed(key);
+    return view.canvas.keyPressed(key);
 }
 void ArrangementCanvas::paint(juce::Graphics &g) {
     // Live's lanes: grey, every other group of bars a shade lighter, the selected
@@ -3613,6 +3622,28 @@ bool ArrangementCanvas::rangeEdit(bool deactivate) {
         view.root.say(note);
     return true;
 }
+bool ArrangementCanvas::editMaterialSelection(bool deactivate) {
+    auto &sel = view.geometry.selection;
+    if (sel.clip == 0)
+        return sel.start != sel.end && rangeEdit(deactivate);
+    const auto current = view.root.current();
+    if (!current)
+        return false;
+    const auto ids = view.geometry.selectedClips();
+    auto edit = deactivate ? deactivateClips(current->tracks, ids) : deleteClips(current->tracks, ids);
+    if (!edit.refusal.empty()) {
+        view.root.say(std::move(edit.refusal));
+        return false;
+    }
+    if (!view.root.submitEdits(std::move(edit.ops)))
+        return false;
+    if (!deactivate) {
+        sel.insert = sel.start;
+        sel.clearMaterial();
+        view.changed();
+    }
+    return true;
+}
 void ArrangementCanvas::mouseDoubleClick(const juce::MouseEvent &e) {
     // Live: a double-click on a clip opens it in the Clip View (manual 8).
     if (e.mods.isPopupMenu())
@@ -3873,35 +3904,10 @@ bool ArrangementCanvas::keyPressed(const juce::KeyPress &k) {
     }
     // Live's Delete, and 0 to deactivate (§6.9), on a time selection: every selected track's
     // material, as one undo step.
-    if (sel.clip == 0 && sel.start != sel.end &&
-        (k == juce::KeyPress::deleteKey || k == juce::KeyPress::backspaceKey || k == juce::KeyPress('0'))) {
-        rangeEdit(k == juce::KeyPress('0'));
+    const bool erase = k == juce::KeyPress::deleteKey || k == juce::KeyPress::backspaceKey;
+    if (erase || (k == juce::KeyPress('0') && (sel.clip != 0 || sel.start != sel.end))) {
+        editMaterialSelection(!erase);
         return true;
-    }
-    // Live's Delete, and 0 to deactivate (§6.9), on the selected clips: the one clicked and those
-    // picked besides it with Ctrl/Cmd+click, one undo step for them all, from the CURRENT cell.
-    if (view.geometry.selection.clip != 0) {
-        const bool erase = k == juce::KeyPress::deleteKey || k == juce::KeyPress::backspaceKey;
-        if (erase || k == juce::KeyPress('0')) {
-            const auto current = view.root.current();
-            if (!current)
-                return true;
-            const auto ids = view.geometry.selectedClips();
-            auto edit = erase ? deleteClips(current->tracks, ids) : deactivateClips(current->tracks, ids);
-            // A refused edit is still the key's: the Status Bar says why.
-            if (!edit.refusal.empty()) {
-                view.root.say(edit.refusal);
-                return true;
-            }
-            if (!view.root.submitEdits(std::move(edit.ops)) || !erase)
-                return true;
-            sel.clip = 0;
-            sel.pickedClips.clear();
-            sel.end = sel.start;
-            sel.insert = sel.start;
-            view.changed();
-            return true;
-        }
     }
     return view.root.keyPressed(k);
 }
