@@ -502,6 +502,7 @@ class ArrangementView final : public juce::Component {
     // Re-Enable Automation the lanes' menu ends with (AU-04).
     void contextMenu(juce::Point<int> where, bool header, const engine::AutomationLaneNode *lane = nullptr);
     juce::PopupMenu contextMenuItems(bool header, const engine::AutomationLaneNode *lane = nullptr);
+    std::function<void(bool header)> onContextMenu; // peerless tests intercept delivery of a popup
     // In Automation Mode, the Volume lane of the track at `y` that the engine plays, else null; a pointer into
     // the root's current snapshot, for use at once.
     const engine::AutomationLaneNode *automationLaneAt(int y) const;
