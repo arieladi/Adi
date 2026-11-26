@@ -330,6 +330,140 @@ void slowProjectOpen(const std::filesystem::path &dir) {
           "a stale candidate releases all of its devices on the owner");
 }
 
+void manyDeviceTickSpeed(const std::filesystem::path &dir) {
+    using Clock = std::chrono::steady_clock;
+    constexpr int warmupTicks = 5, timedTicks = 80, frames = 64;
+    struct ParameterReads {
+        std::size_t counts = 0, descriptors = 0, values = 0, texts = 0;
+    };
+    class StandIn final : public device::DeviceInstance {
+      public:
+        StandIn(int parameterCount, ParameterReads &reads)
+            : parameters_(static_cast<std::size_t>(parameterCount)), reads_(reads) {
+            identity_.format = "vst3";
+            identity_.uid = "test.many-parameters";
+            identity_.name = "Parameter stand-in";
+            for (int index = 0; index < parameterCount; ++index) {
+                auto &parameter = parameters_[static_cast<std::size_t>(index)];
+                parameter.id = std::to_string(index);
+                parameter.name = "Parameter " + parameter.id;
+                parameter.defaultValue = device::ParamValue::fromNormalized(0.25);
+            }
+        }
+        const device::DeviceIdentity &identity() const noexcept override { return identity_; }
+        bool loaded() const noexcept override { return true; }
+        void pumpMainThread() override { ++pumps; }
+        void process(const engine::NodeIo &io) noexcept override { ++blocks; device::passThrough(io); }
+        std::int32_t paramCount() const noexcept override {
+            ++reads_.counts;
+            return static_cast<std::int32_t>(parameters_.size());
+        }
+        const device::ParamDescriptor *paramAt(std::int32_t index) const noexcept override {
+            ++reads_.descriptors;
+            return index >= 0 && static_cast<std::size_t>(index) < parameters_.size()
+                ? &parameters_[static_cast<std::size_t>(index)] : nullptr;
+        }
+        device::ParamValue getParam(const std::string &) const noexcept override {
+            ++reads_.values;
+            return device::ParamValue::fromNormalized(0.25);
+        }
+        std::string paramText(const std::string &, double) const override { ++reads_.texts; return "25%"; }
+        int pumps = 0, blocks = 0;
+
+      private:
+        std::vector<device::ParamDescriptor> parameters_;
+        ParameterReads &reads_;
+        device::DeviceIdentity identity_;
+    };
+    const auto compare = [&](int deviceCount, int parameterCount) {
+        const auto file = dir / ("stand-ins-" + std::to_string(deviceCount) + ".adi");
+        {
+            StoreError error{};
+            auto store = Store::createEmpty(file, error);
+            if (!store) throw std::runtime_error(toString(error));
+            auto &db = store->db();
+            db.exec("INSERT INTO project(id,name) VALUES(1,'Plug-in tick benchmark');"
+                    "INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(100,'master','Main',100);"
+                    "INSERT INTO plugin_refs(id,format,uid,name) VALUES"
+                    "(1,'vst3','test.many-parameters','Parameter stand-in');");
+            for (int track = 1; track <= deviceCount; ++track) {
+                const auto id = std::to_string(track);
+                db.exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(" + id + ",'audio','Track'," + id + ");"
+                        "INSERT INTO device_chains(id,track_id) VALUES(" + id + "," + id + ");"
+                        "INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name) VALUES(" + id + "," + id + ",0,1,'Stand-in');");
+            }
+            db.exec("INSERT INTO mixer_strip(track_id) SELECT id FROM tracks");
+        }
+        const auto measure = [&](int parameters) -> std::optional<double> {
+            ParameterReads reads;
+            std::vector<StandIn *> instances;
+            std::string error;
+            auto doc = ui::ProjectDocument::open(file, false,
+                [&](const engine::DeviceRequest &request, std::string &) -> std::unique_ptr<device::DeviceInstance> {
+                    if (!request.ref || request.ref->uid != "test.many-parameters") return {};
+                    auto instance = std::make_unique<StandIn>(parameters, reads);
+                    instances.push_back(instance.get());
+                    return instance;
+                }, error);
+            check(doc != nullptr, error.empty() ? "open plug-in tick benchmark project" : error.c_str());
+            if (!doc) return {};
+            check(instances.size() == static_cast<std::size_t>(deviceCount) &&
+                      doc->session().stats().loaded == deviceCount,
+                  "all shapes use the same live plug-in count and routing");
+            doc->prepare(48000, frames);
+            std::array<float, frames> left{}, right{};
+            std::array<float *, 2> outputs{left.data(), right.data()};
+            engine::AudioIo io;
+            io.out = outputs.data();
+            io.numOut = static_cast<std::int32_t>(outputs.size());
+            io.frames = frames;
+            doc->process(io);
+            check(std::all_of(instances.begin(), instances.end(), [](const StandIn *p) { return p->blocks == 1; }),
+                  "the running graph processes every stand-in");
+            for (int tick = 0; tick < warmupTicks; ++tick) doc->tick(tick * 20);
+            reads = {};
+            for (auto *instance : instances) instance->pumps = 0;
+            std::array<double, timedTicks> times{};
+            for (int tick = 0; tick < timedTicks; ++tick) {
+                const auto start = Clock::now();
+                doc->tick((warmupTicks + tick) * 20);
+                times[static_cast<std::size_t>(tick)] = std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+            }
+            std::sort(times.begin(), times.end());
+            const double median = (times[times.size() / 2 - 1] + times[times.size() / 2]) / 2;
+            const bool allPumped = std::all_of(instances.begin(), instances.end(), [&](const StandIn *p) {
+                return p->pumps == timedTicks && p->blocks == 1;
+            });
+            std::printf("SC-417 %d x %d: %.3f ms median idle tick, %zu count / %zu descriptor / %zu value / %zu text reads, %s\n",
+                        deviceCount, parameters, median, reads.counts, reads.descriptors, reads.values, reads.texts,
+                        allPumped ? "all plug-ins pumped each tick" : "unexpected plug-in pump or process count");
+            check(allPumped, "each idle tick pumps every live plug-in once without running the audio callback");
+            check(reads.counts == 0 && reads.descriptors == 0 && reads.values == 0 && reads.texts == 0,
+                  "idle ticks without demand do not ask plug-ins for parameters");
+            reads = {};
+            const auto choices = doc->automationParameters(1);
+            check(choices && choices->size() == 1 && choices->front().track == 1 &&
+                      choices->front().declarations().size() == static_cast<std::size_t>(parameters) &&
+                      choices->front().defaultValues().at("0") == 0.25 && choices->front().parameters().empty(),
+                  "the lane chooser gets declarations and defaults from just its track");
+            check(reads.counts == 1 && reads.descriptors == static_cast<std::size_t>(parameters) &&
+                      reads.values == 0 && reads.texts == 0,
+                  "opening the lane chooser reads metadata without polling live values");
+            doc->release();
+            return median;
+        };
+        const auto sparse = measure(2);
+        const auto dense = measure(parameterCount);
+        if (sparse && dense) {
+            std::printf("SC-417 %d devices: %.2fx idle tick at %d instead of 2 parameters\n",
+                        deviceCount, *dense / *sparse, parameterCount);
+            check(*dense < 3 * *sparse, "idle tick cost tracks plug-in count, not the size of each parameter table");
+        }
+    };
+    compare(20, 700);
+    compare(40, 2000);
+}
+
 void reportedDeviceLatency(const std::filesystem::path &dir) {
     const auto loader = [](std::int32_t latency) -> engine::DeviceLoader {
         return [latency](const engine::DeviceRequest &request, std::string &error)
@@ -2032,6 +2166,11 @@ int main(int argc, char **argv) {
         slowProjectOpen(speedDir.path());
         return failures != 0;
     }
+    if (argc == 2 && std::string_view(argv[1]) == "--many-device-speed-only") {
+        test::TempDirectory speedDir("ui_document", "many-device-tick");
+        manyDeviceTickSpeed(speedDir.path());
+        return failures != 0;
+    }
     if (argc == 2 && std::string_view(argv[1]) == "--long-take-speed-only") {
         test::TempDirectory speedDir("ui_document", "long-take");
         longTakeStopResponse(speedDir.path());
@@ -3043,6 +3182,7 @@ int main(int argc, char **argv) {
     mixSurfacePublication(temp.path() / "mix-surface.adi");
     reportedDeviceLatency(temp.path());
     slowProjectOpen(temp.path());
+    manyDeviceTickSpeed(temp.path());
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

@@ -1609,7 +1609,6 @@ juce::PopupMenu ArrangementView::headerMenu() {
     // one chosen shows on the track's lane in Automation Mode.
     {
         const auto track = geometry.selection.track;
-        root.demandAutomationDevices(true); // the parameters of a device the Device View does not show
         const auto shown = root.automationTarget(track);
         juce::PopupMenu show;
         std::map<std::string, juce::PopupMenu> byDevice;
@@ -1624,9 +1623,6 @@ juce::PopupMenu ArrangementView::headerMenu() {
         for (const auto &key : order)
             show.addSubMenu(juce::String::fromUTF8(key.substr(0, key.rfind('#') == std::string::npos ? key.size() : key.rfind('#')).c_str()),
                             byDevice[key]);
-        // The choices are read: with Automation Mode off, this window keeps no demand on the feed.
-        if (!root.automationMode())
-            root.demandAutomationDevices(false);
         menu.addSeparator();
         menu.addSubMenu("Show Automation", show, show.getNumItems() > 0);
     }

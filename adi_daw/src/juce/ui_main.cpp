@@ -857,6 +857,7 @@ class AdiApplication final : public juce::JUCEApplication,
         root->devices.parameterDemand = [this](const void *consumer, const std::vector<std::int64_t> &ids) {
             document_->setParameterDemand(consumer, ids);
         };
+        root->automationParameters = [this](std::int64_t track) { return document_->automationParameters(track); };
         root->sharedAnalysis = document_->analysis();
         const auto meterOwner = juce::Component::SafePointer<AdiRootComponent>(root_);
         root->mixViewPanel.stack.setLimiterObserver([this, meterOwner](const DevicePanelData &target) {

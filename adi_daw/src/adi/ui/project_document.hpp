@@ -138,6 +138,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     // The parameter feed every window and the control API drain (ADR-0180 d5).
     ParameterFeed &parameterFeed() noexcept { return feed_; }
     void setParameterDemand(const void *consumer, const std::vector<std::int64_t> &devices);
+    std::shared_ptr<const ParameterPublication> automationParameters(std::int64_t track);
     const std::shared_ptr<SharedAnalysis> &analysis() const noexcept { return analysis_; }
     // Visible surfaces hold one owner-thread lease per presented runtime.
     // Reads are nonconsuming and expose the same current frame to every reader.
