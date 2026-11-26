@@ -4,6 +4,7 @@
 #include "adi/render/queue.hpp"
 #include "adi/render/host_dispatch.hpp"
 #include "adi/settings/device_grant.hpp"
+#include "adi/ui/export_preferences.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include "adi/ui/plugin_hold_off.hpp"
 #include "adi/ui/plugin_scan.hpp"
@@ -340,8 +341,7 @@ class AdiApplication final : public juce::JUCEApplication,
     // The render Session owns its plug-ins on the message thread and processes on the worker.
     void openExport(const ExportChoices &initial) {
         if (exportWindow_) {
-            // Shown again while it is up or rendering; one Escape or the close button hid is made afresh,
-            // with the choices of now.
+            // A visible or rendering page keeps its state. Reopen a hidden page with the current range.
             if (exportWindow_->isVisible() || render_.joinable()) {
                 exportWindow_->setVisible(true);
                 exportWindow_->toFront(true);
@@ -358,7 +358,8 @@ class AdiApplication final : public juce::JUCEApplication,
             if (row.track != nullptr && row.track->kind != "master")
                 tracks.emplace_back(row.track->id, displayName(row.track->name, row.number())); // as headed (B13)
         meters = root_->reader().meters();
-        auto page = std::make_unique<ExportPage>(initial, std::move(tracks), std::move(meters));
+        auto page = std::make_unique<ExportPage>(exportPreferences_.open(initial, *settings_), std::move(tracks),
+                                                 std::move(meters));
         exportPage_ = page.get();
         page->onCancel = [this] {
             if (render_.joinable()) {
@@ -378,6 +379,8 @@ class AdiApplication final : public juce::JUCEApplication,
         exportWindow_->setVisible(true);
     }
     void closeExport() {
+        if (exportPage_)
+            exportPreferences_.remember(exportPage_->choices());
         exportPage_ = nullptr;
         exportWindow_.reset();
     }
@@ -385,7 +388,9 @@ class AdiApplication final : public juce::JUCEApplication,
         if (chooser_ || render_.joinable() || !document_)
             return;
         const auto project = juce::File(juce::String::fromUTF8(media::pathUtf8(document_->store().path()).c_str()));
-        chooser_ = std::make_unique<juce::FileChooser>("Export Audio", project.getParentDirectory().getChildFile(
+        const auto folder = exportPreferences_.folder(*settings_, document_->store().path().parent_path());
+        const auto destination = juce::File(juce::String::fromUTF8(media::pathUtf8(folder).c_str()));
+        chooser_ = std::make_unique<juce::FileChooser>("Export Audio", destination.getChildFile(
                                                                            project.getFileNameWithoutExtension() + ".wav"),
                                                        "*.wav");
         const int flags = juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles |
@@ -428,8 +433,9 @@ class AdiApplication final : public juce::JUCEApplication,
             const auto current = document_->view().current();
             if (!current || !current->tempo)
                 return;
-            startRender(exportJob(c, document_->store().path(), pathFromUtf8(file.getFullPathName().toStdString()),
-                                  *current->tempo));
+            const auto output = pathFromUtf8(file.getFullPathName().toStdString());
+            exportPreferences_.rememberFolder(*settings_, output.parent_path());
+            startRender(exportJob(c, document_->store().path(), output, *current->tempo));
         });
     }
     void startRender(render::Job job) {
@@ -739,6 +745,7 @@ class AdiApplication final : public juce::JUCEApplication,
         // An export of the old project stops, and its page goes: its tracks and range were that project's.
         stopRender();
         closeExport();
+        exportPreferences_.forgetTrack();
         // Detach callbacks BEFORE their processor, window services or plug-ins die.
         detachAudio();
         // A take still recording or landing goes into the project it was recorded in (MX-09); a take that
@@ -1971,6 +1978,7 @@ class AdiApplication final : public juce::JUCEApplication,
     // names files by.
     std::unique_ptr<juce::DialogWindow> exportWindow_;
     ExportPage *exportPage_ = nullptr;
+    ExportPreferences exportPreferences_;
     std::thread render_;
     std::stop_source renderStop_;
     std::shared_ptr<render::HostDispatch> renderHost_;

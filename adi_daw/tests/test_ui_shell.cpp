@@ -19,6 +19,7 @@
 #include "adi/engine/clip_fade.hpp"
 #include "adi/engine/mixer.hpp"
 #include "adi/ui/fade_edits.hpp"
+#include "adi/ui/export_preferences.hpp"
 #include "adi/ui/midi_tracks.hpp"
 #include "adi/ui/library_listing.hpp"
 #include "adi/ui/project_document.hpp"
@@ -14331,6 +14332,68 @@ void midiNoteMeter(AppCommands &commands, const std::filesystem::path &dir) {
     root.frame();
     check(shows(look::display), "stopping playback clears the held note indication");
 }
+void exportPreferences(const std::filesystem::path &dir) {
+    settings::AppSettings settings(appdata::App::Daw, dir / "export-settings.json");
+    settings.setLogUserChanges(false);
+    std::string why;
+    const auto configuredFolder = dir / "configured export";
+    const auto lastFolder = dir / "last export";
+    std::filesystem::create_directory(configuredFolder);
+    std::filesystem::create_directory(lastFolder);
+    check(settings.set("export.fileType", "flac", {}, why) &&
+              settings.set("export.bitDepth", 16, {}, why) &&
+              settings.set("export.dither", "rectangular", {}, why) &&
+              settings.set("export.normalize", "loudness", {}, why) &&
+              settings.set("export.loudnessTargetLufs", -16.0, {}, why) &&
+              settings.set("export.truePeakCeilingDb", -2.0, {}, why) &&
+              settings.set("files.renderFolder", media::pathUtf8(configuredFolder), {}, why),
+          "Settings accepts the export defaults");
+
+    ExportPreferences preferences;
+    ExportChoices range;
+    range.lengthTicks = textproj::kWhole;
+    ExportPage first(preferences.open(range, settings), {{42, "Audio"}, {43, "Audio"}}, {});
+    const engine::TempoMap tempo{{{0, 120}}};
+    const auto job = exportJob(first.choices(), dir / "Song.adi", configuredFolder / "Song.wav", tempo);
+    check(first.choices().fileType == "FLAC" && first.choices().bitDepth == 16 &&
+              first.choices().dither == "Rectangular" && first.choices().normalize &&
+              job.normalization.mode == render::NormalizeMode::Loudness &&
+              job.normalization.targetLufs == -16 && job.normalization.truePeakCeilingDb == -2 &&
+              preferences.folder(settings, dir) == configuredFolder,
+          "the first Export page reads the configured defaults and render folder");
+
+    first.renderedTrack.setSelectedId(3, juce::sendNotificationSync);
+    first.fileType.setSelectedId(1, juce::sendNotificationSync);
+    first.bitDepth.setSelectedId(2, juce::sendNotificationSync);
+    first.dither.setSelectedId(1, juce::sendNotificationSync);
+    first.normalize.setToggleState(false, juce::dontSendNotification);
+    first.normalize.onClick();
+    preferences.remember(first.choices());
+    preferences.rememberFolder(settings, lastFolder);
+
+    range.startTicks = textproj::kWhole;
+    range.lengthTicks = 2 * textproj::kWhole;
+    ExportPage reopened(preferences.open(range, settings), {{43, "Audio"}, {42, "Audio"}}, {});
+    check(reopened.choices().track == 43 && reopened.choices().fileType == "WAV" &&
+              reopened.choices().bitDepth == 24 && reopened.choices().dither == "No Dither" &&
+              !reopened.choices().normalize && preferences.folder(settings, dir) == lastFolder &&
+              reopened.choices().startTicks == range.startTicks && reopened.choices().lengthTicks == range.lengthTicks,
+          "a reopened Export page restores choices by track ID and uses the current time range");
+    ExportPage duplicateName(preferences.open(range, settings), {{42, "Audio"}, {43, "Audio"}}, {});
+    check(duplicateName.choices().track == 43, "a duplicate name cannot steal the remembered track selection");
+    ExportPage removed(preferences.open(range, settings), {{42, "Audio"}}, {});
+    check(removed.choices().track == 0, "a removed track falls back to Main");
+
+    check(settings.set("export.fileType", "mp3", {}, why) && settings.set("export.normalize", "peak", {}, why) &&
+              settings.set("files.renderFolder", "", {}, why),
+          "Settings accepts later export defaults");
+    preferences.forgetTrack();
+    const auto changed = preferences.open(range, settings);
+    check(changed.track == 0 && !changed.encodePcm && changed.encodeMp3 && changed.normalize &&
+              changed.normalization.mode == render::NormalizeMode::Peak &&
+              changed.bitDepth == 24 && changed.dither == "No Dither" && preferences.folder(settings, dir) == dir,
+          "later Settings changes override their choices and a new project starts with Main");
+}
 // MX-23 and SRF-02 from the strip: the fader's own drag is the document's live gesture, one undo step at
 // the release, the selected tracks moving together by the same move, Esc putting them back.
 void mixerDragLive(AppCommands &commands, const std::filesystem::path &dir) {
@@ -21915,6 +21978,7 @@ int main(int argc, char **argv) {
     trace("armAndRecord", [&] { armAndRecord(commands, temp.path()); });
     trace("midiTakePreview", [&] { midiTakePreview(commands, temp.path()); });
     trace("exportPage", [&] { exportPage(commands, temp.path()); });
+    trace("exportPreferences", [&] { exportPreferences(temp.path()); });
     trace("midiNoteMeter", [&] { midiNoteMeter(commands, temp.path()); });
     trace("mixerDragLive", [&] { mixerDragLive(commands, temp.path()); });
     trace("mixerShowsAutomation", [&] { mixerShowsAutomation(commands, temp.path()); });

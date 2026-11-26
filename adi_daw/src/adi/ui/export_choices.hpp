@@ -37,9 +37,10 @@ struct ExportChoices {
     std::string dither = "Triangular";       // No Dither, Rectangular, Triangular, POW-r 1, 2, 3
     bool encodeMp3 = false;
     bool video = false;
+    render::Normalization normalization{render::NormalizeMode::Peak, -14, 0};
 };
 inline constexpr std::array<int, 6> kExportSampleRates{22050, 32000, 44100, 48000, 88200, 96000};
-inline constexpr std::array<const char *, 3> kExportFileTypes{"WAV", "AIFF", "FLAC"};
+inline constexpr std::array<const char *, 4> kExportFileTypes{"WAV", "AIFF", "FLAC", "AAC"};
 inline constexpr std::array<int, 3> kExportBitDepths{16, 24, 32};
 inline constexpr std::array<const char *, 6> kExportDithers{"No Dither", "Rectangular", "Triangular",
                                                             "POW-r 1", "POW-r 2", "POW-r 3"};
@@ -154,10 +155,8 @@ inline render::Job exportJob(const ExportChoices &c, const std::filesystem::path
     job.encoding.dither = c.dither == "No Dither" ? audio::WavDither::None
                           : c.dither == "Rectangular" ? audio::WavDither::Rectangular
                                                       : audio::WavDither::Triangular;
-    if (c.normalize) {
-        job.normalization.mode = render::NormalizeMode::Peak;
-        job.normalization.truePeakCeilingDb = 0;
-    }
+    if (c.normalize)
+        job.normalization = c.normalization;
     // The page moves a file the user chose to replace to the trash before it renders; a file that appeared
     // since is not overwritten.
     job.collision = render::Collision::Fail;

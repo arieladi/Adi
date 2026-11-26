@@ -17,13 +17,14 @@ ExportPage::ExportPage(ExportChoices initial, std::vector<std::pair<std::int64_t
                        std::vector<textproj::Meter> meters)
     : choices_(std::move(initial)), tracks_(std::move(tracks)), meters_(std::move(meters)) {
     std::vector<juce::String> trackNames{"Main"};
-    juce::String currentTrack = "Main";
+    int currentTrack = 1;
     for (const auto &[id, name] : tracks_) {
         trackNames.push_back(juce::String::fromUTF8(name.c_str()));
         if (id == choices_.track)
-            currentTrack = trackNames.back();
+            currentTrack = static_cast<int>(trackNames.size());
     }
-    fill(renderedTrack, trackNames, currentTrack);
+    fill(renderedTrack, trackNames, "Main");
+    renderedTrack.setSelectedId(currentTrack, juce::dontSendNotification);
     std::vector<juce::String> rates;
     for (const int r : kExportSampleRates)
         rates.push_back(juce::String(r));
