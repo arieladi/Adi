@@ -27,7 +27,7 @@ const NoteExpressionsRead& clipNoteExpressions(const ClipProject&) noexcept;
 class ClipPlayback {
 public:
     ClipPlayback(std::shared_ptr<const ClipProject>, Transport&, double rate, std::int32_t channels,
-                 std::int32_t maxFrames, audio::ProgressiveDecoder* = nullptr);
+                 std::int32_t maxFrames, audio::ProgressiveDecoder* = nullptr, bool synchronousReads = false);
     ~ClipPlayback();
     ClipPlayback(const ClipPlayback&) = delete;
     ClipPlayback& operator=(const ClipPlayback&) = delete;
@@ -46,7 +46,7 @@ public:
     [[nodiscard]] std::span<const ClipMediaSource> externalSources() const noexcept;
     // Offline/test driver support ONLY, between callbacks: request the next
     // block and wait for disk. Session::process NEVER calls this.
-    bool prime(std::chrono::milliseconds timeout = std::chrono::seconds(10));
+    bool prime(std::chrono::milliseconds timeout = std::chrono::seconds(10), std::stop_token stop = {});
     // Wait for preparation independently of the page-read timeout. Offline
     // renders use this before reading their first block of a cold Warp clip.
     bool waitForWarp(std::stop_token stop = {}) const;
@@ -103,7 +103,8 @@ public:
     // Initial construction problems remain in problems().
     std::vector<std::string> decodeProblems() const;
 private:
-    bool primeTargets(const Transport&,const Transport*,std::chrono::milliseconds,bool waitForPendingWarp);
+    bool primeTargets(const Transport&,const Transport*,std::chrono::milliseconds,bool waitForPendingWarp,
+                      std::stop_token stop = {});
     struct Impl;
     std::shared_ptr<Impl> impl_;
 };

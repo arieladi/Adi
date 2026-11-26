@@ -113,6 +113,8 @@ struct SessionSpec {
     bool exporting = false;
     /// Processing without a realtime deadline, even at the normal quality.
     bool offline = false;
+    /// An offline driver prepares clip pages itself between process calls.
+    bool synchronousClipReads = false;
 };
 
 /// What a loader is asked for: the row, the identity it names, and the format

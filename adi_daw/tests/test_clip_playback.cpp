@@ -1249,6 +1249,38 @@ void segmentsAndCrop() {
     bool exact=true;
     for(int i=0;i<4096;++i)exact=exact && output[static_cast<std::size_t>(i)]==(i>=63?f.media[static_cast<std::size_t>(i-63+9)*2]:0);
     check(exact,"sub-block offsets address the original block buffers and clock");
+
+    Fixture looped;
+    looped.add(1,12,5,100,5);
+    looped.add(2,24,4,200,4);
+    looped.add(3,38,4,300,4);
+    looped.add(4,60,10,400,10);
+    looped.load(96);
+    looped.session.transport().loop(10,40);
+    looped.session.transport().locate(30);
+    if(!looped.session.clips()->prime())throw std::runtime_error("looped segment prime");
+    auto loopSources=looped.session.clips()->sourcesFor(1);
+    std::array<float,192> loopPcm{};
+    float* loopOut[]{loopPcm.data(),loopPcm.data()+96};
+    constexpr std::array slices{std::pair{0,8},std::pair{8,64},std::pair{72,24}};
+    for(const auto& [offset,frames]:slices) {
+        NodeIo io;io.out=loopOut;io.channels=2;io.frames=frames;io.blockOffset=offset;io.sampleRate=48000;
+        audio::CallbackScope callback;loopSources.at(0)->process(io);
+    }
+    bool exactLoop=true;
+    for(int frame=0;frame<96;++frame) {
+        const auto time=frame<10?30+frame:10+(frame-10)%30;
+        int sourceFrame=-1;
+        if(time>=12 && time<17)sourceFrame=100+time-12;
+        if(time>=24 && time<28)sourceFrame=200+time-24;
+        if(time>=38)sourceFrame=300+time-38;
+        for(std::size_t channel=0;channel<2;++channel) {
+            const auto wanted=sourceFrame<0?0.0f:looped.media[static_cast<std::size_t>(sourceFrame)*2+channel];
+            exactLoop=exactLoop && loopPcm[channel*96+static_cast<std::size_t>(frame)]==wanted;
+        }
+    }
+    check(exactLoop,"nonzero-offset slices include clips before, after and across repeated loop wraps");
+
     Fixture crop(44100,1,88200,997);crop.add(1,0,48000,123,44100);crop.load(4096);crop.session.transport().locate(8100);
     const auto out=crop.render(4096);double peak=0;
     for(int i=0;i<4096;++i)peak=std::max(peak,std::abs(static_cast<double>(out[static_cast<std::size_t>(i)])-0.5*std::sin(2*std::numbers::pi*997*(123.0/44100+(8100.0+i)/48000))));
