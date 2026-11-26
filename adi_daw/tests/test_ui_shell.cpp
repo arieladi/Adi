@@ -9854,8 +9854,33 @@ void trackRenderMenu(AppCommands &commands, const std::filesystem::path &dir) {
           "a menu action rechecks the original track before starting a render");
     lock.payload["locked"] = false;
     check(document->ops().submit(lock).ok, "unlock the track for the frozen fixture");
+    root.setSize(1440, 1100); // Leave the frozen row above the pinned return tracks.
+    root.frame();
+    auto &headers = root.arrangement.headers;
+    MixerStrip row(root.mixer), strip(root.mixerView);
+    row.setSize(MixerPanel::kInOutWidth + MixerPanel::kControlsWidth, 88);
+    strip.setSize(MixerPanel::kStripWidth, 260);
+    row.bind(4);
+    strip.bind(4);
+    const auto sample = [](juce::Component &component, int x, int y) {
+        juce::Image image(juce::Image::ARGB, component.getWidth(), component.getHeight(), true,
+                          juce::SoftwareImageType{});
+        juce::Graphics graphics(image);
+        component.paint(graphics);
+        return image.getPixelAt(x, y);
+    };
+    const auto frozenMarks = [&] {
+        const auto rowTop = root.arrangement.geometry.rowTop(root.reader(), 4);
+        return std::array{sample(headers, headers.getWidth() - 12, rowTop + 8),
+                          sample(row, row.getWidth() - 2, 6), sample(strip, strip.getWidth() - 14, 8)};
+    };
+    const auto thawedMarks = frozenMarks();
     store.db().exec("UPDATE tracks SET frozen=1 WHERE id=4"); // Legacy frozen flag with no verified audio.
     document->view().refresh(store);
+    root.frame();
+    check(frozenMarks() == std::array{look::value, look::value, look::value} &&
+              thawedMarks[0] != look::value && thawedMarks[1] != look::value && thawedMarks[2] != look::value,
+          "SC-266: frozen track status is visible on the Arrangement header, inline mixer and Mixer View title");
     auto frozen = menuFor(4);
     check(!enabled(frozen, "Freeze Track").has_value() && enabled(frozen, "Unfreeze Track") == true &&
               enabled(frozen, "Flatten Track") == false && enabled(frozen, "Bounce Track in Place") == false,
@@ -9864,6 +9889,8 @@ void trackRenderMenu(AppCommands &commands, const std::filesystem::path &dir) {
         if (item.getItem().text == "Unfreeze Track" && item.getItem().action)
             item.getItem().action();
     check(enabled(menuFor(4), "Freeze Track") == true, "Unfreeze opens the track back up from its title menu");
+    root.frame();
+    check(frozenMarks() == thawedMarks, "SC-266: unfreezing removes all three frozen state marks");
 }
 void footRows(AppCommands &commands, const std::filesystem::path &dir) {
     StoreError err{};

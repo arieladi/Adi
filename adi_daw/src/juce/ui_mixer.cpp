@@ -899,6 +899,7 @@ bool MixerStrip::showsInOut() const noexcept {
            getWidth() >= MixerPanel::kInOutWidth + MixerPanel::kControlsWidth;
 }
 void MixerStrip::paint(juce::Graphics &g) {
+    const auto *track = panel_.root.reader().findTrack(track_);
     if (panel_.vertical()) {
         // Live's strip: grey, lighter when its track is selected; the name in the track's
         // colour; dark rules between the parts and down the right-hand edge.
@@ -952,11 +953,14 @@ void MixerStrip::paint(juce::Graphics &g) {
                 g.setColour(panel_.root.arrangement.colourFor(group_ - 1));
                 g.fillRect(0, 0, w, 3);
             }
-            if (const auto *track = panel_.root.reader().findTrack(track_)) {
+            if (track) {
                 g.setColour(look::ink);
                 g.setFont(look::font(look::fontBody, true));
-                g.drawText(juce::String::fromUTF8(displayName(track->name, number_).c_str()), 4, 0, w - 8,
-                           17, juce::Justification::centredLeft);
+                const int badgeSpace = track->frozen ? 14 : 0;
+                g.drawText(juce::String::fromUTF8(displayName(track->name, number_).c_str()), 4, 0,
+                           w - 8 - badgeSpace, 17, juce::Justification::centredLeft);
+                if (track->frozen)
+                    controls::frozenTrackBadge(g, {static_cast<float>(w - 14), 3, 11, 11});
             }
         }
         if (audio_)
@@ -978,10 +982,15 @@ void MixerStrip::paint(juce::Graphics &g) {
     }
     if (delay.isVisible())
         paintDelayUnit(g);
+    const auto meter = meterArea();
     if (audio_)
-        paintMeter(g, meterArea());
+        paintMeter(g, meter);
     else
-        paintMidiMeter(g, meterArea());
+        paintMidiMeter(g, meter);
+    if (track && track->frozen) {
+        g.setColour(look::value);
+        g.fillRect(meter.getRight(), meter.getY(), 2, meter.getHeight());
+    }
 }
 void MixerStrip::paintDelayUnit(juce::Graphics &g) const {
     // Live's "ms" box right of the Track Delay's value box, lit as its figure shows it (manual 18.7).

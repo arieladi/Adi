@@ -57,6 +57,8 @@ void group(juce::Graphics &, juce::Rectangle<float>);
 void separator(juce::Graphics &, float x, float top, float height);
 // A lit cell inside a group (the playing transport, an on switch in the Control Bar).
 void groupCell(juce::Graphics &, juce::Rectangle<float>, juce::Colour fill);
+// The snowflake shown beside a frozen track's name.
+void frozenTrackBadge(juce::Graphics &, juce::Rectangle<float>);
 // The ring knob (part C): the value is the ring. `radius` from look::knobSmall, knobMedium or
 // knobLarge, or the knob's bounds.
 struct KnobLook {

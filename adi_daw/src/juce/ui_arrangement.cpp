@@ -2148,8 +2148,11 @@ void TrackHeaderList::paint(juce::Graphics &g) {
         if (t->id != renaming_) {
             g.setColour(look::ink);
             g.setFont(look::font(look::fontBody, true));
+            const int badgeSpace = t->frozen ? 14 : 0;
             g.drawText(juce::String::fromUTF8(displayName(t->name, row.number()).c_str()), x + 23, y + 2,
-                       getWidth() - x - 25, 15, juce::Justification::centredLeft);
+                       getWidth() - x - 25 - badgeSpace, 15, juce::Justification::centredLeft);
+            if (t->frozen)
+                controls::frozenTrackBadge(g, {static_cast<float>(getWidth() - 14), static_cast<float>(y + 3), 11, 11});
         }
         // ADI's Rec-Q and Play-Q (MR V.2 §9) on a MIDI track's header: what new recordings are
         // quantized to ([1/16] or [Free]) and the live quantization (a grid or Off).
