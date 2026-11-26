@@ -4,6 +4,43 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-26 — Item 4 (part 1, after-3-December pile): Mix View joined head `mixview/mx30-parked-realtime-burst-lands-after-2026-12-03` (`b87b53a8`)
+
+Checked branch ancestry first: **`mixview/mx30-parked-realtime-burst-lands-after-2026-12-03` (`b87b53a8`) contains all 85 of 85 `lands-after-2026-12-03` branches on origin** (66 files changed vs merge-base `73e26e4a`, +14,990 / -573 lines).
+
+| Configuration | Compiler & Flags | Build | Suites & Results | Verdict |
+|---|---|---|---|---|
+| Headless Debug (`-DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF`) | GCC 12.4.0 `-DADI_WERROR=ON` | PASS (0 warnings, all 698 targets) | Full headless `ctest` (`-LE performance`): **277/277 PASS**, 1 skipped (`adi_loudness_ffmpeg_tests`), 0 failures (`adi_history_retention_fuzz_tests` 17,095/0 PASS when run without 180 s cap) | **PASS** |
+| Headless Debug (`-DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF`) | Clang 14.0.6 + libstdc++ 12 `-DADI_WERROR=ON` | PASS (0 project warnings; 2 third-party `ZLEqualizer` `spin_lock.hpp` `[[clang::nonblocking]]` warnings) | All 38 Mix View / analysis / graph / scope / spectrum / envelope suites: **38/38 PASS** | **PASS** |
+| Headless ASan+LSan+UBSan | GCC 12.4.0 `-O1 -g1 -fsanitize=address,undefined` (`detect_leaks=1:alloc_dealloc_mismatch=1:halt_on_error=1`) | PASS (emitted `-Wmismatched-new-delete` warning at `tests/test_shared_analysis.cpp:6224`, see Finding 1) | All 15 directly touched Mix View suites (`adi_mix_limiter_tests`, `adi_mix_limiter_owner_tests`, `adi_mix_document_tests`, `adi_mix_eq_tests`, `adi_mix_eq_host_tests`, `adi_mix_eq_pipeline_tests`, `adi_mix_eq_chain_tests`, `adi_mix_eq_chain_backend_tests`, `adi_mix_focus_tests` 480/0, `adi_graph_tests`, `adi_ui_analysis_comparison_tests`, `adi_ui_spectrum_slope_tests`, `adi_ui_spectrum_average_tests`, `adi_ui_shared_analysis_tests`, `adi_ui_triggered_scope_tests`): **15/15 PASS** (0 sanitizer reports, 0 leaks) | **PASS** |
+| Headless Release probe (`-O2 -Werror`) | GCC 12.4.0 `-O2 -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Werror` | **FAIL** (`tests/test_shared_analysis.cpp:6224:50`) | See Finding 1 below | **FAIL** |
+| JUCE UI TUs (`-DADI_WITH_JUCE=ON -DADI_WITH_PD=OFF`) | GCC 12.4.0 & Clang 14.0.6 + libstdc++ 12 `-DADI_WERROR=ON` | **FAIL** (`tests/test_ui_shared_analysis.cpp:2150:74`; all 7 other touched UI TUs `ui_analysis.cpp`, `ui_mix_analysers.cpp`, `ui_mix_channels.cpp`, `ui_mix_focus.cpp`, `ui_mixview.cpp`, `ui_stack.cpp`, `test_ui_mix_functions.cpp` compiled with 0 warnings on both) | See Finding 2 below | **FAIL** |
+
+### Findings (2 Linux `-Werror` landing-day blockers)
+
+1. **`adi_daw/tests/test_shared_analysis.cpp:6224:50` — GCC 12.4.0 Release (`-O2`) `-DADI_WERROR=ON` build failure**
+   - **Owner:** Mix View (`mixview`)
+   - **Compiler:** GCC 12.4.0 (`-std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror`)
+   - **Error:** `error: 'void free(void*)' called on pointer returned from a mismatched allocation function [-Werror=mismatched-new-delete]` on `void operator delete(void *p) noexcept {std::free(p);}` (inlined into `std::vector<float>` / `std::make_unique<FocusCapturedTruePeak>` destructors in `focus_scope.hpp:411`, `test_shared_analysis.cpp:4378`, `5792`). Same class as `DF-M69`.
+   - **Smallest repro:**
+     ```sh
+     g++-12 -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -DADI_VERSION_STRING=\"0.1.0\" -DADI_WITH_PD=1 \
+       -Ibuild/generated -Iadi_daw/src -isystem adi_daw/third_party/clap/include \
+       -isystem adi_daw/third_party/SQLiteCpp/include -isystem adi_daw/third_party/SQLiteCpp/sqlite3 \
+       -isystem adi_daw/third_party/json/include -c adi_daw/tests/test_shared_analysis.cpp -o /dev/null
+     ```
+2. **`adi_daw/tests/test_ui_shared_analysis.cpp:2150:74` — GCC 12.4.0 AND Clang 14.0.6 `-DADI_WERROR=ON -DADI_WITH_JUCE=ON` build failure**
+   - **Owner:** Mix View (`mixview`)
+   - **Compilers:** GCC 12.4.0 (`error: conversion from 'int' to 'float' may change value [-Werror=conversion]`) and Clang 14.0.6 (`error: implicit conversion from 'int' to 'float' may lose precision [-Werror,-Wimplicit-int-float-conversion]`).
+   - **Line:** `return SharedSpectrumViewTestAccess::moveCursor(pane.view, {left + column + .5f, top + height * .5f});`
+   - **Smallest repro:**
+     ```sh
+     cmake -S adi_daw -B build-ui -G Ninja -DADI_WITH_JUCE=ON -DADI_WITH_PD=OFF -DADI_WERROR=ON
+     cmake --build build-ui --target CMakeFiles/adi_ui_shared_spectrum_tests.dir/tests/test_ui_shared_analysis.cpp.o
+     ```
+
+---
+
 ## 2026-11-26 — Item 1 (`walk/*` fixes, Round 14): rebased `walk/a10-first-send-live` (`eb5df19b`) and `walk/a22-fader-handle-at-top` (`4a0d72c1`)
 
 Both branches merged `origin/main` (`d12f9094`, PR `#773`). Verified on GCC 12.4.0 and Clang 14.0.6 + libstdc++ 12 with `-DADI_WERROR=ON -DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF -DADI_ACCEPTANCE=ON`:
