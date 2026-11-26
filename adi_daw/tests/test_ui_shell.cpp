@@ -10400,16 +10400,20 @@ void relinkMissingSample(AppCommands &commands, const std::filesystem::path &dir
         const auto target = document->clipRelinkTarget(id);
         relinked = target && document->relinkClipMedia(*target, selectedFile);
     };
-    root.setSize(1200, 800);
+    root.setSize(1440, 1200);
     root.frame();
     auto &geometry = root.arrangement.geometry;
     geometry.scale = 40;
     geometry.left = 0;
-    const auto *track = root.reader().findTrack(4);
-    if (!track || track->clips.empty()) { check(false, "the clip survives its missing file"); return; }
-    const auto clip = track->clips.front();
+    const auto shownClip = [&root]() -> std::shared_ptr<const engine::ClipNode> {
+        const auto *track = root.reader().findTrack(4);
+        return track && !track->clips.empty() ? track->clips.front() : nullptr;
+    };
+    const auto clip = shownClip();
+    if (!clip) { check(false, "the clip survives its missing file"); return; }
     if (!clip->audio || !clip->audio->mediaInfo) { check(false, "the missing clip retains its media identity"); return; }
     check(root.clipMediaOffline(*clip), "the reopened clip is offline");
+    geometry.reveal(root.reader(), 4);
     auto &waveforms = document->waveforms();
     const auto &hash = clip->audio->mediaInfo->contentHash;
     waveforms.peaks(*clip->audio);
@@ -10421,15 +10425,23 @@ void relinkMissingSample(AppCommands &commands, const std::filesystem::path &dir
     juce::Image image(juce::Image::RGB, canvas.getWidth(), canvas.getHeight(), true, juce::SoftwareImageType{});
     juce::Graphics g(image);
     canvas.paintEntireComponent(g, true);
-    const int y = laneTop(root, 4) + 1 + ArrangementCanvas::kClipBarHeight;
-    check(image.getBounds().contains(5, y) && image.getPixelAt(5, y) == look::error,
-          "the offline sample is marked on its clip");
+    const int clipLeft = static_cast<int>(std::ceil(geometry.x(clip->posTicks)));
+    const int clipRight = static_cast<int>(std::floor(geometry.x(clip->posTicks + clip->lengthTicks)));
+    const int top = laneTop(root, 4) + 1 + ArrangementCanvas::kClipBarHeight;
+    const auto clipBody = image.getBounds().getIntersection({clipLeft, top, std::max(0, clipRight - clipLeft),
+        std::max(0, geometry.heightFor(4) - 4 - ArrangementCanvas::kClipBarHeight)});
+    int markedPixels = 0;
+    for (int y = clipBody.getY(); y < clipBody.getBottom(); ++y)
+        for (int x = clipBody.getX(); x < clipBody.getRight(); ++x)
+            if (image.getPixelAt(x, y) == look::error)
+                ++markedPixels;
+    check(markedPixels > 0, "the offline sample is marked on its clip");
 
     root.selectClip(clip->id);
     const auto locateAction = [&] {
         auto menu = root.arrangement.contextMenuItems(false, nullptr);
         for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
-            if (it.getItem().text == "Locate Missing Sample…")
+            if (it.getItem().text == "Locate Missing Sample...")
                 return it.getItem().action;
         return std::function<void()>{};
     };
@@ -10442,9 +10454,11 @@ void relinkMissingSample(AppCommands &commands, const std::filesystem::path &dir
                   OpJournal(document->store()).headSeq() == head, "a file with different content leaves the project unchanged");
         selectedFile = relocated;
         action();
-        check(relinked && !root.clipMediaOffline(*clip) && !locateAction(),
+        root.frame();
+        const auto recovered = shownClip();
+        check(relinked && recovered && !root.clipMediaOffline(*recovered) && !locateAction(),
               "the same file at its new path relinks and clears the offline mark and menu action");
-        waveforms.peaks(*clip->audio);
+        if (recovered && recovered->audio) waveforms.peaks(*recovered->audio);
         for (int retry = 0; retry < 1000 && !waveforms.idle(); ++retry)
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
         check(waveforms.holds(hash), "the waveform is available through the new link");
@@ -10458,7 +10472,10 @@ void relinkMissingSample(AppCommands &commands, const std::filesystem::path &dir
         if (ready) session.process(io);
         check(ready && left == right && std::all_of(left.begin(), left.end(), [](float value) { return value == 0.25f; }),
               "the relinked clip sends the original PCM into the playback graph");
-        check(document->ops().undo().ok && document->synchronise() && root.clipMediaOffline(*clip),
+        const bool undone = document->ops().undo().ok && document->synchronise();
+        root.frame();
+        const auto restored = shownClip();
+        check(undone && restored && root.clipMediaOffline(*restored),
               "one Undo restores the original missing link");
     }
     commands.detach(root);

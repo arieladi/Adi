@@ -1668,7 +1668,7 @@ juce::PopupMenu ArrangementView::contextMenuItems(bool header, const engine::Aut
                     const auto &clip = **found;
                     if (root.clipMediaOffline(clip) && clip.audio->mediaInfo) {
                         const auto safe = juce::Component::SafePointer<ArrangementView>(this);
-                        menu.addItem("Locate Missing Sample…", [safe, clipId] {
+                        menu.addItem("Locate Missing Sample...", [safe, clipId] {
                             if (safe && safe->root.locateClipMedia) safe->root.locateClipMedia(clipId);
                         });
                     }
