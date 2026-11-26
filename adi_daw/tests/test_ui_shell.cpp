@@ -3744,6 +3744,54 @@ void oneShotTile(AppCommands &commands, const std::filesystem::path &dir) {
 #endif
 }
 // E2: Cut, Copy, Paste and Duplicate in the Arrangement (Live 12 manual 6.9, 41.5; N17).
+void trackClipboard(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "track-clipboard.adi", true, {}, error);
+    check(document != nullptr, "a project for the track clipboard");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "track-clipboard");
+    UiPeerRoot peer;
+    peer.setSize(1440, 900);
+    peer.addAndMakeVisible(root);
+    peer.setVisible(true);
+    peer.addToDesktop(0);
+    root.setSize(1440, 900);
+    root.afterEdit = [&] { document->synchronise(); };
+    check(root.submitEdit("clip.create", {{"id", 50}, {"track", 2}, {"kind", "midi"},
+                                        {"pos", 0}, {"length", textproj::kWhole}}, "Add MIDI Clip"),
+          "track clipboard: a clip in 1 MIDI");
+    root.frame();
+    auto &arrangement = root.arrangement;
+    auto &headers = arrangement.headers;
+    const juce::Point<float> header{42.f, static_cast<float>(laneTop(root, 2) + 9)};
+    headers.mouseDown(pressAt(headers, header, juce::ModifierKeys::leftButtonModifier));
+    headers.mouseUp(pressAt(headers, header));
+    const auto selectedCopy = [&] {
+        const auto *track = document->view().current()->findTrack(arrangement.geometry.selection.track);
+        return track != nullptr && track->id != 2 && track->kind == "midi" && track->clips.size() == 1 &&
+               track->clips.front()->id != 50 && track->clips.front()->lengthTicks == textproj::kWhole;
+    };
+    const auto shortcut = [&](int key) {
+        return peer.getPeer()->handleKeyPress(juce::KeyPress(key, juce::ModifierKeys::commandModifier, 0));
+    };
+    const auto count = document->view().current()->tracks.size();
+    check(shortcut('d') && selectedCopy() && document->view().current()->tracks.size() == count + 1 &&
+              document->view().current()->findTrack(arrangement.geometry.selection.track)->indexInParent ==
+                  document->view().current()->findTrack(2)->indexInParent + 1 &&
+              root.undoTitle(false) == "Undo Duplicate Track",
+          "SC-80: Ctrl+D copies the track and its clip immediately below the source");
+    check(root.command(AppCommands::Undo) && document->view().current()->tracks.size() == count,
+          "SC-80: one Undo removes the duplicate");
+    root.frame();
+    check(shortcut('c') && shortcut('v') && selectedCopy(), "SC-80: copy and paste make a new track");
+    const auto cut = arrangement.geometry.selection.track;
+    check(shortcut('x') && !document->view().current()->findTrack(cut) &&
+              shortcut('v') && selectedCopy() && arrangement.geometry.selection.track != cut,
+          "SC-80: cut removes a track and paste restores its content under new identities");
+    commands.clipClipboard().held = std::monostate{};
+}
 void clipClipboard(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto document = ProjectDocument::open(dir / "clipboard.adi", true, {}, error);
@@ -18764,6 +18812,7 @@ int main(int argc, char **argv) {
     trace("browserDevices", [&] { browserDevices(commands, temp.path()); });
     trace("splitAndRangeEdits", [&] { splitAndRangeEdits(commands, settings, temp.path()); });
     trace("clipClipboard", [&] { clipClipboard(commands, temp.path()); });
+    trace("trackClipboard", [&] { trackClipboard(commands, temp.path()); });
     trace("timeCommands", [&] { timeCommands(commands, temp.path()); });
     trace("colorCabTile", [&] { colorCabTile(commands, temp.path()); });
     trace("oneShotTile", [&] { oneShotTile(commands, temp.path()); });

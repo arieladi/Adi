@@ -100,6 +100,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     SessionState &sessionState() noexcept { return sessionState_; }
     TransportMailbox &mailbox() noexcept { return mailbox_; }
     engine::Session &session() noexcept { return session_; }
+    std::int64_t retainedDeviceId() const noexcept;
     const std::string &error() const noexcept { return error_; }
     // The parameter feed every window and the control API drain (ADR-0180 d5).
     ParameterFeed &parameterFeed() noexcept { return feed_; }
@@ -274,7 +275,6 @@ class ProjectDocument final : public engine::BlockProcessor {
     WaveformCache &waveforms() noexcept { return waveforms_; }
 
   private:
-    std::int64_t retainedDeviceId() const noexcept;
     bool finishInsert(PreparedBuiltinInsert);
     ProjectDocument(std::unique_ptr<Store>, std::string name);
     // The clock the capture's timers run on: steady milliseconds, the same for the timer's drain

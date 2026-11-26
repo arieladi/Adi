@@ -604,6 +604,8 @@ TrackHeaderList::TrackHeaderList(ArrangementView &v) : view(v) {
         }
     };
     setTitle("Track headers");
+    setWantsKeyboardFocus(true);
+    setMouseClickGrabsKeyboardFocus(false);
     setTooltip("Click to select a track; drag its lower part to resize it, with Alt to resize "
                "all. Right-click for the track's commands.");
 }
@@ -1584,6 +1586,8 @@ juce::PopupMenu ArrangementView::headerMenu() {
         return menu;
     menu.addSeparator();
     menu.addCommandItem(&commands.manager, AppCommands::RenameTrack);
+    for (const auto id : {AppCommands::Cut, AppCommands::Copy, AppCommands::Paste, AppCommands::Duplicate})
+        menu.addCommandItem(&commands.manager, id);
     menu.addCommandItem(&commands.manager, AppCommands::DeleteTrack);
     // Live's lane chooser (DF-W37; manual 25.2): the track's mixer, then each device's parameters; the
     // one chosen shows on the track's lane in Automation Mode.
@@ -2081,6 +2085,7 @@ void TrackHeaderList::mouseDown(const juce::MouseEvent &e) {
     moveId_ = 0;
     moving_ = selectOnUp_ = false;
     if (auto *t = view.geometry.trackAt(view.reader(), e.y)) {
+        focusIfShowing(*this);
         // The split line at the row's foot resizes it; the rest of the title moves it, Main and
         // the returns aside.
         const auto pressed = view.geometry.rowAt(view.reader(), e.y, &top);
@@ -2107,11 +2112,9 @@ void TrackHeaderList::mouseDown(const juce::MouseEvent &e) {
             view.geometry.selection.track = t->id;
             view.geometry.selection.toTrack = 0;
             view.geometry.selection.picked.clear();
-            // The track is what is selected now, not a clip (Live): Rename then acts on the track
-            // (walk-B B14).
-            view.geometry.selection.clip = 0;
-            view.geometry.selection.pickedClips.clear();
         }
+        // A title chooses tracks. The insert marker can stay at its previous position.
+        view.geometry.selection.clearMaterial();
         if (split)
             resizeId = t->id;
         else if (!e.mods.isPopupMenu() && pressed < rows.size() && !rows[pressed].place.main) {
@@ -2323,6 +2326,11 @@ void TrackHeaderList::mouseUp(const juce::MouseEvent &e) {
 }
 void TrackHeaderList::mouseWheelMove(const juce::MouseEvent &e, const juce::MouseWheelDetails &w) {
     view.wheel(e, w);
+}
+bool TrackHeaderList::keyPressed(const juce::KeyPress &key) {
+    if (key == juce::KeyPress::deleteKey || key == juce::KeyPress::backspaceKey)
+        return view.root.keyPressed(key);
+    return view.canvas.keyPressed(key);
 }
 void ArrangementCanvas::paint(juce::Graphics &g) {
     // Live's lanes: grey, every other group of bars a shade lighter, the selected

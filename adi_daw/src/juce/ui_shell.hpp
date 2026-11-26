@@ -241,17 +241,21 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     const settings::AppSettings &settings() const noexcept { return settings_; }
     // For what the window writes back: the import prompt's last choices (E5).
     settings::AppSettings &writableSettings() noexcept { return settings_; }
-    // The Arrangement's clipboard (Live 12 manual 6.9, 41.5; E2, N17): a clip's copy or a time
-    // selection's, values the engine made (`copyClip`, `copyRange`), never ops. It is the app's, as
-    // the device clipboard is, so it outlives a window; the engine refuses it in another project.
+    struct TrackCopy {
+        std::string sourceFile, kind, name;
+        std::int64_t parent = 0, index = 0;
+        Payload contents;
+    };
+    // The Arrangement's clipboard holds captured material and outlives a window.
     struct ClipClipboard {
         // A Time copy (E3: Cut and Copy Time) shares it: the selected time across the whole Set.
-        std::variant<std::monostate, clip_edit::ClipCopy, clip_edit::RangeCopy, clip_edit::TimeCopy> held;
+        std::variant<std::monostate, clip_edit::ClipCopy, clip_edit::RangeCopy, clip_edit::TimeCopy, TrackCopy> held;
         bool empty() const noexcept { return std::holds_alternative<std::monostate>(held); }
         // The project file a copy names; a Time copy names it by its material.
         static std::string *fileOf(clip_edit::ClipCopy &c) { return &c.sourceFile; }
         static std::string *fileOf(clip_edit::RangeCopy &c) { return &c.sourceFile; }
         static std::string *fileOf(clip_edit::TimeCopy &c) { return &c.material.sourceFile; }
+        static std::string *fileOf(TrackCopy &c) { return &c.sourceFile; }
         static std::string *fileOf(std::monostate &) { return nullptr; }
         std::string sourceFile() {
             auto *file = std::visit([](auto &copy) { return fileOf(copy); }, held);
@@ -401,6 +405,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // the engine refresh after an edit belong to whoever owns the document.
     std::function<bool(int)> applicationCommand;
     std::function<void()> afterEdit;
+    std::function<std::int64_t()> retainedDeviceId;
     // Commits the parameter edits the document still holds before Undo, Redo or a restored step acts
     // (DF-W29); false, with the document's reason said, when it could not.
     std::function<bool()> settleEdits;
@@ -671,6 +676,8 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // to the Status Bar. `canClipClipboard` says whether there is something to act on.
     enum class ClipCommand { Cut, Copy, Paste, Duplicate };
     bool clipClipboard(ClipCommand);
+    bool trackClipboard(ClipCommand);
+    bool trackClipboardContext() const;
     bool canClipClipboard(ClipCommand) const;
     // Whether Cut, Copy, Paste or Duplicate (an AppCommands id) has something to act on, on a device
     // or in the Arrangement; and whether the device chain takes it first.
