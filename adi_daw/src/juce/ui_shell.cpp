@@ -3036,7 +3036,7 @@ bool AdiRootComponent::dropAudioFiles(const std::vector<std::pair<std::string, s
     if (importMaterial && importAsks(commands_.settings())) {
         importPrompt_ = std::make_unique<ImportPrompt>(
             files.size(), last,
-            [this, files, track, pos, separate](std::optional<ImportChoices> answer) {
+            [this, files, track, pos, separate](std::optional<ImportChoices> answer, bool stopAsking) {
                 // The prompt goes once it is answered (deleted after its own click returns); the drop
                 // goes on with its choices.
                 if (importPrompt_) {
@@ -3058,7 +3058,7 @@ bool AdiRootComponent::dropAudioFiles(const std::vector<std::pair<std::string, s
                 }
                 std::string why;
                 const bool kept = keepImportChoices(commands_.writableSettings(), *answer, why,
-                                                    juce::Time::currentTimeMillis() * 1000);
+                                                    juce::Time::currentTimeMillis() * 1000, stopAsking);
                 dropWithChoices(files, track, pos, separate, *answer);
                 if (!kept) {
                     const auto warning = "The import's choices were used but not saved: " + why;
@@ -3069,7 +3069,7 @@ bool AdiRootComponent::dropAudioFiles(const std::vector<std::pair<std::string, s
                 }
             });
         addAndMakeVisible(*importPrompt_);
-        importPrompt_->setBounds(getLocalBounds().withSizeKeepingCentre(380, 214));
+        importPrompt_->setBounds(getLocalBounds().withSizeKeepingCentre(380, 184));
         importPrompt_->toFront(true);
         return true;
     }
@@ -4952,12 +4952,12 @@ bool AdiWindow::keyStateChanged(bool isKeyDown, juce::Component *) {
     // A held key comes up wherever the focus is: the root lets it go.
     return root_->keyStateChanged(isKeyDown);
 }
-AdiRootComponent::ImportPrompt::ImportPrompt(std::size_t files, const ImportChoices &choices,
-                                             std::function<void(std::optional<ImportChoices>)> reply)
+AdiRootComponent::ImportPrompt::ImportPrompt(std::size_t files, const ImportChoices &choices, Reply reply)
     : title_(files == 1 ? juce::String("Import Audio") : "Import " + juce::String(static_cast<int>(files)) + " Audio Files"),
       answer_(std::move(reply)) {
-    for (auto *b : {&warp, &fades, &copy})
+    for (auto *b : {&warp, &fades, &copy, &stopAsking})
         addAndMakeVisible(*b);
+    stopAsking.setTooltip("To show this prompt again, set Audio import options to Ask in Settings > Editing.");
     warp.setToggleState(choices.warp, juce::dontSendNotification);
     fades.setToggleState(choices.edgeFades, juce::dontSendNotification);
     copy.setToggleState(choices.copyIn, juce::dontSendNotification);
@@ -4996,7 +4996,8 @@ void AdiRootComponent::ImportPrompt::answer(bool importing) {
         return;
     auto reply = std::move(answer_);
     answer_ = nullptr;
-    reply(importing ? std::optional<ImportChoices>(choices()) : std::nullopt);
+    reply(importing ? std::optional<ImportChoices>(choices()) : std::nullopt,
+          importing && stopAsking.getToggleState());
 }
 bool AdiRootComponent::ImportPrompt::keyPressed(const juce::KeyPress &key) {
     if (key == juce::KeyPress::returnKey) {
@@ -5009,7 +5010,7 @@ bool AdiRootComponent::ImportPrompt::keyPressed(const juce::KeyPress &key) {
     }
     if (key.getKeyCode() == juce::KeyPress::tabKey) {
         // Round its own controls, whatever the window's Tab setting.
-        std::array<juce::Component *, 6> order{&warp, &mode, &fades, &copy, &import, &cancel};
+        std::array<juce::Component *, 7> order{&warp, &mode, &fades, &copy, &stopAsking, &import, &cancel};
         const auto at = std::find(order.begin(), order.end(), getCurrentlyFocusedComponent());
         const auto step = key.getModifiers().isShiftDown() ? order.size() - 1 : 1;
         const auto from = at == order.end() ? (step == 1 ? order.size() - 1 : 0)
@@ -5026,7 +5027,7 @@ bool AdiRootComponent::ImportPrompt::keyPressed(const juce::KeyPress &key) {
     return true;
 }
 void AdiRootComponent::ImportPrompt::paint(juce::Graphics &g) {
-    // A panel in Live's look: its title bar, then the choices, then a line on where they live.
+    // A title bar above the choices.
     g.setColour(look::panel);
     g.fillRoundedRectangle(getLocalBounds().toFloat(), look::radiusControl);
     g.setColour(look::field);
@@ -5034,11 +5035,6 @@ void AdiRootComponent::ImportPrompt::paint(juce::Graphics &g) {
     g.setColour(look::text);
     g.setFont(look::font(look::fontHeading, true));
     g.drawText(title_, getLocalBounds().withHeight(24).reduced(8, 0), juce::Justification::centredLeft);
-    g.setFont(look::font(look::fontLabel));
-    g.drawFittedText("All off by default. The last choices are kept; Settings > Editing > Audio import options "
-                     "turns this prompt off.",
-                     getLocalBounds().withTrimmedTop(122).withHeight(44).reduced(10, 0), juce::Justification::topLeft, 3,
-                     1.0f);
     g.setColour(look::separator);
     g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(0.5f), look::radiusControl, look::hairline);
 }
@@ -5049,6 +5045,7 @@ void AdiRootComponent::ImportPrompt::resized() {
     mode.setBounds(row.removeFromLeft(150).reduced(0, 2));
     fades.setBounds(r.removeFromTop(26));
     copy.setBounds(r.removeFromTop(26));
+    stopAsking.setBounds(r.removeFromTop(26));
     auto foot = getLocalBounds().removeFromBottom(40).reduced(10, 8);
     cancel.setBounds(foot.removeFromRight(80));
     foot.removeFromRight(8);

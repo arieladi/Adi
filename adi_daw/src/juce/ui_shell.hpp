@@ -1080,7 +1080,8 @@ class AdiWindow final : public juce::DocumentWindow, private juce::KeyListener {
 // settings), Cancel imports nothing. It is ADI's dialog: Live imports without asking.
 class AdiRootComponent::ImportPrompt final : public juce::Component {
   public:
-    ImportPrompt(std::size_t files, const ImportChoices &, std::function<void(std::optional<ImportChoices>)> answer);
+    using Reply = std::function<void(std::optional<ImportChoices>, bool stopAsking)>;
+    ImportPrompt(std::size_t files, const ImportChoices &, Reply answer);
     void paint(juce::Graphics &) override;
     void resized() override;
     // What the toggles say now.
@@ -1091,11 +1092,12 @@ class AdiRootComponent::ImportPrompt final : public juce::Component {
     // so the arrangement's keys do not act behind an open prompt.
     bool keyPressed(const juce::KeyPress &) override;
     juce::ToggleButton warp{"Warp"}, fades{"Create Fades on Clip Edges"}, copy{"Copy into the project's folder"};
+    juce::ToggleButton stopAsking{"Do not show this again"};
     juce::ComboBox mode;
     juce::TextButton import{"Import"}, cancel{"Cancel"};
 
   private:
     juce::String title_;
-    std::function<void(std::optional<ImportChoices>)> answer_;
+    Reply answer_;
 };
 } // namespace adi::ui

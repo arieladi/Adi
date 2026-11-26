@@ -4269,6 +4269,45 @@ void importPrompt(AppCommands &commands, settings::AppSettings &settings, const 
     keepImportChoices(settings, ImportChoices{}, why);
     settings.set("files.copyImportedMedia", std::string("never"), {}, why);
     settings.set("editing.importOptions", std::string("ask"), {}, why);
+    const auto beforeOptOut = clipsOn();
+    settings.set("files.copyImportedMedia", std::string("ask"), {}, why);
+    const auto next = 32 * textproj::kWhole;
+    root.dropAudio(wav.string(), audioTrack, next, "Prompted");
+    check(root.importPrompt() != nullptr, "SC-160: the import prompt offers an opt-out");
+    if (auto *prompt = root.importPrompt()) {
+        prompt->stopAsking.setToggleState(true, juce::dontSendNotification);
+        prompt->copy.setToggleState(true, juce::dontSendNotification);
+        prompt->answer(false);
+    }
+    root.frame();
+    check(clipsOn() == beforeOptOut && settings.get("editing.importOptions") == "ask" &&
+              settings.get("files.copyImportedMedia") == "ask",
+          "SC-160: Cancel saves neither the opt-out nor the copy choice");
+    root.dropAudio(wav.string(), audioTrack, next, "Prompted");
+    if (auto *prompt = root.importPrompt()) {
+        prompt->stopAsking.setToggleState(true, juce::dontSendNotification);
+        prompt->copy.setToggleState(true, juce::dontSendNotification);
+        prompt->fades.setToggleState(true, juce::dontSendNotification);
+        prompt->answer(true);
+    }
+    root.frame();
+    check(clipsOn() == beforeOptOut + 1 && !importAsks(settings) &&
+              settings.get("editing.importOptions") == "never" && settings.get("files.copyImportedMedia") == "always" &&
+              importChoicesFrom(settings).edgeFades,
+          "SC-160: Import remembers the selected options and stops prompting");
+    root.dropAudio(wav.string(), audioTrack, next + 4 * textproj::kWhole, "Prompted");
+    root.frame();
+    check(clipsOn() == beforeOptOut + 2 && root.importPrompt() == nullptr && !asked.empty() &&
+              asked.back().copyIn && asked.back().edgeFades,
+          "SC-160: the next import uses the saved copy and fade options directly");
+    settings.set("editing.importOptions", std::string("ask"), {}, why);
+    root.dropAudio(wav.string(), audioTrack, next + 8 * textproj::kWhole, "Prompted");
+    check(root.importPrompt() && !root.importPrompt()->stopAsking.getToggleState() &&
+              root.importPrompt()->choices().copyIn && root.importPrompt()->choices().edgeFades,
+          "SC-160: Settings can re-enable the prompt with its last import options");
+    if (auto *prompt = root.importPrompt())
+        prompt->answer(false);
+    keepImportChoices(settings, ImportChoices{}, why);
     settings.save(why);
     commands.detach(root);
     document->release();
