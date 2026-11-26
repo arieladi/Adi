@@ -19,6 +19,50 @@ settings::ChannelConfig channelConfigFor(const settings::AppSettings &store, con
         return *kept;
     return settings::defaultChannelConfig(inputs, outputs);
 }
+std::vector<ExternalAudioInput> externalAudioInputsFor(const settings::ChannelConfig &config,
+                                                       const juce::BigInteger &active, int inputCount) {
+    if (inputCount <= 0)
+        return {};
+    // The recorder accepts driver buffer indices 0 through 63. A bit's rank counts all
+    // active physical channels, including those only opened by another configured option.
+    constexpr int maxRecordingInputs = 64;
+    std::vector<int> callbackIndices(static_cast<std::size_t>(inputCount), -1);
+    int packed = 0;
+    for (int bit = active.findNextSetBit(0); bit >= 0 && bit < inputCount && packed < maxRecordingInputs;
+         bit = active.findNextSetBit(bit + 1))
+        callbackIndices[static_cast<std::size_t>(bit)] = packed++;
+    const auto inputAt = [&](int physical) {
+        return physical >= 1 && physical <= inputCount ? callbackIndices[static_cast<std::size_t>(physical - 1)] : -1;
+    };
+
+    std::vector<ExternalAudioInput> inputs;
+    for (const auto &mono : config.monoInputs) {
+        const int channel = inputAt(mono.channel);
+        if (mono.on && channel >= 0)
+            inputs.push_back({"ext:mono:" + std::to_string(mono.channel), settings::displayName(mono),
+                              {static_cast<std::uint32_t>(channel)}});
+    }
+    for (const auto &pair : config.stereoInputs) {
+        if (!pair.on || pair.left >= inputCount)
+            continue;
+        const int left = inputAt(pair.left), right = inputAt(pair.left + 1);
+        if (left >= 0 && right >= 0)
+            inputs.push_back({"ext:stereo:" + std::to_string(pair.left), settings::displayName(pair),
+                              {static_cast<std::uint32_t>(left), static_cast<std::uint32_t>(right)}});
+    }
+    return inputs;
+}
+std::vector<ExternalAudioInput> readExternalAudioInputs(juce::AudioDeviceManager &manager,
+                                                        const settings::AppSettings &store) {
+    auto *device = manager.getCurrentAudioDevice();
+    if (device == nullptr || !device->isOpen())
+        return {};
+    const auto setup = manager.getAudioDeviceSetup();
+    const int inputs = device->getInputChannelNames().size();
+    const auto config = channelConfigFor(store, setup.inputDeviceName.toStdString(), inputs,
+                                         device->getOutputChannelNames().size());
+    return externalAudioInputsFor(config, device->getActiveInputChannels(), inputs);
+}
 bool keepChannelConfig(settings::AppSettings &store, const std::string &device, bool inputs,
                        const settings::ChannelConfig &edited, std::string &why) {
     auto record = settings::channelConfig(store, device).value_or(edited);
@@ -210,15 +254,18 @@ void AudioDevicePage::openConfig(bool inputs) {
         name);
     juce::Component::SafePointer<AudioDevicePage> self(this);
     panel->onOk = [self, inputs, name](const settings::ChannelConfig &edited) {
-        if (self == nullptr)
+        // Closing the dialog destroys this callable, so use a local handle afterwards.
+        const auto page = self;
+        if (page == nullptr)
             return;
         std::string why;
         // Kept with the device, then the device opened with the channels now in use.
-        self->error_ = keepChannelConfig(self->settings_, name.toStdString(), inputs, edited, why)
-                           ? useChannelConfig(self->manager_, self->settings_)
-                           : juce::String::fromUTF8(why.c_str());
-        self->closeConfig();
-        self->refresh();
+        const bool saved = keepChannelConfig(page->settings_, name.toStdString(), inputs, edited, why);
+        page->error_ = saved ? useChannelConfig(page->manager_, page->settings_) : juce::String::fromUTF8(why.c_str());
+        page->closeConfig();
+        page->refresh();
+        if (saved && page->onChannelConfigChanged)
+            page->onChannelConfigChanged();
     };
     panel->onCancel = [self] {
         if (self != nullptr)

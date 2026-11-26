@@ -962,26 +962,38 @@ class AdiApplication final : public juce::JUCEApplication,
             const auto *device = manager_.getCurrentAudioDevice();
             return device != nullptr ? device->getActiveOutputChannels().getHighestBit() + 1 : 0;
         };
+        root->externalAudioInputs = [this] { return document_->externalAudioInputs(); };
+        root->externalInputMeter = document_->externalInputMeter();
+        root->configureExternalInputs = [this] {
+            if (applicationCommand(AppCommands::Settings))
+                settingsWindow_->panel().showPage("Audio");
+        };
         root->automationArmed = [this] { return document_->automationArmed(); };
         root->armAutomation = [this](bool armed) { document_->setAutomationArmed(armed); };
         // Arm, monitoring and Arrangement Record (MX-09): the session's rows, and the recorder.
         root->readRecordStates = [this] { return document_->recordStates(); };
         root->setRecordStates(document_->recordStates());
         root->startRecording = [this](std::int64_t insertTick, bool playing) {
-            const auto *device = manager_.getCurrentAudioDevice();
-            const int inputs = device != nullptr ? device->getActiveInputChannels().countNumberOfSetBits() : 0;
-            if (device == nullptr) {
+            auto *audioDevice = manager_.getCurrentAudioDevice();
+            if (audioDevice == nullptr) {
                 root_->say("Recording needs an audio device. Choose one in the Settings' Audio page.");
                 return false;
             }
-            if (!document_->startRecording(insertTick, inputs, playing)) {
+            applyInputChannels();
+            const int inputs = audioDevice->getActiveInputChannels().countNumberOfSetBits();
+            const auto latency = device::reportedRoundTripLatency(*audioDevice);
+            const auto recordFolder = settings_->get("files.recordFolder").get<std::string>();
+            if (!document_->startRecording(insertTick, inputs, playing, latency, recordFolder)) {
                 root_->say(document_->error());
                 return false;
             }
             root_->say(playing ? "Recording from the playhead." : "Recording.");
             return true;
         };
-        root->stopRecording = [this] { document_->stopRecording(); };
+        root->stopRecording = [this] {
+            document_->stopRecording();
+            refreshRecordingPreview();
+        };
         root->recording = [this] { return document_->recording(); };
         root->liveMidiTakes = [this] { return document_->liveMidiTakes(); };
         // Export Audio/Video (EX-11): the Export page, then a file, then a render on a worker.
@@ -1572,7 +1584,9 @@ class AdiApplication final : public juce::JUCEApplication,
                 // The smoke shows the page over an unopened device manager.
                 if (!noAudio_ || smokeSettings_)
                     devices = [this]() -> std::unique_ptr<juce::Component> {
-                        return std::make_unique<AudioDevicePage>(manager_, *settings_);
+                        auto page = std::make_unique<AudioDevicePage>(manager_, *settings_);
+                        page->onChannelConfigChanged = [this] { applyInputChannels(); };
+                        return page;
                     };
                 settingsWindow_ = std::make_unique<SettingsWindow>(*settings_, std::move(devices));
                 // A change applies at once: the commands re-read what they keep of the
@@ -1645,13 +1659,15 @@ class AdiApplication final : public juce::JUCEApplication,
         });
         return true;
     }
-    // The device's open inputs, for the tracks' monitoring (N65): every audio track hears inputs 1/2 as
-    // its Arm and monitoring say.
+    // The granted input bits resolve saved physical channel choices to the callback's packed order.
     void applyInputChannels() {
         if (!document_)
             return;
-        const auto *device = manager_.getCurrentAudioDevice();
-        document_->setInputChannels(device != nullptr ? device->getActiveInputChannels().countNumberOfSetBits() : 0);
+        document_->setExternalAudioInputs(readExternalAudioInputs(manager_, *settings_));
+        if (root_) {
+            root_->mixer.repaint();
+            root_->mixerView.repaint();
+        }
     }
     void changeListenerCallback(juce::ChangeBroadcaster *) override {
         if (!settings_ || noAudio_)
@@ -1676,6 +1692,11 @@ class AdiApplication final : public juce::JUCEApplication,
         if (settingsWindow_)
             settingsWindow_->panel().refreshValues();
     }
+    void refreshRecordingPreview() {
+        const auto &recorder = document_->session().recording();
+        root_->arrangement.setRecordingPreview(recorder.preview(), recorder.acceptedFrames(),
+                                               document_->landingTake());
+    }
     void timerCallback() override {
         // The plug-in catalogue's running discovery: its progress, and its result once it has finished.
         if (catalogue_)
@@ -1689,6 +1710,7 @@ class AdiApplication final : public juce::JUCEApplication,
                              !root_->devices.validExpected(hotSwap_->expected)))
                 leaveHotSwap();
             root_->setRecordStates(document_->recordStates());
+            refreshRecordingPreview();
             // A take landed (MX-09): its outcome in the Status Bar, its clips selected.
             if (auto landed = document_->takeLanded()) {
                 root_->say(landed->message);

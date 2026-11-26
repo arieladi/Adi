@@ -2,6 +2,7 @@
 #pragma once
 #include "adi/audio/wav_file.hpp"
 #include "adi/engine/process.hpp"
+#include "adi/media/peaks.hpp"
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -32,6 +33,10 @@ struct RecordedPass {
     std::uint64_t sourceStartFrame=0,frames=0;
     std::int64_t timelineStartSample=0,timelineEndSample=0; // half-open
 };
+// Subtract the signed correction from the captured timeline position and clamp
+// at song zero. An unrepresentable sample position cannot be placed.
+[[nodiscard]] std::optional<std::int64_t> recordingPlacementStart(std::int64_t startSample,
+                                                                 std::int64_t offsetSamples) noexcept;
 struct AudioRecordingSpec {
     std::filesystem::path workFolder;
     std::string sourceProject; // Session supplies its resolved project identity
@@ -39,12 +44,22 @@ struct AudioRecordingSpec {
     audio::WavFormat format=audio::WavFormat::Float32;
     std::vector<RecordingTarget> targets;
     std::optional<AudioRecordingLoop> loop; // absent retains linear capture
+    std::int64_t placementOffsetSamples = 0; // captured with the device settings for a linear take
 };
 enum class RecordingFailure : std::uint8_t {None,Overflow,MissingInput,BlockSize,Discontinuity,Cancelled,Io,NoFrames,InvalidCapture,PassLimit};
 struct RecordedTrack {
     std::int64_t trackId=0;
     std::uint16_t channels=0;
     std::filesystem::path file;
+};
+struct AudioRecordingPreview {
+    struct Track {
+        std::int64_t trackId=0;
+        std::vector<std::uint32_t> channels; // indices into the preview's unique input channels
+    };
+    std::int64_t startSample=0; // clip position on the timeline after the placement correction
+    media::MediaPeaks peaks; // in file-frame order, shared by tracks with the same input
+    std::vector<Track> tracks;
 };
 /// A completed/failed capture is retained on disk for retry/recovery. Only
 /// discard() or successful publication removes its newly owned directory.
@@ -55,7 +70,9 @@ public:
     std::uint32_t sampleRate=0;
     std::uint64_t frames=0;
     std::int64_t startSample=0;
+    std::int64_t placementOffsetSamples=0;
     std::vector<RecordedTrack> tracks;
+    std::shared_ptr<const AudioRecordingPreview> preview;
     [[nodiscard]] const std::filesystem::path& directory()const noexcept;
     [[nodiscard]] const std::string& sourceProject()const noexcept{return sourceProject_;}
     [[nodiscard]] const std::optional<AudioRecordingLoop>& loopSpec()const noexcept{return loop_;}
@@ -106,10 +123,14 @@ public:
     /// and the worker has drained/finalized it. A result is returned once.
     /// deviceStopped=true requires the driver already quiescent.
     [[nodiscard]] std::optional<AudioRecordingResult> poll(bool deviceStopped=false);
-    void capture(const AudioIo&,const Transport&)noexcept; // callback only
+    // Callback only. Returns the sorted track IDs whose input was accepted in
+    // this slice. The view is valid until the next capture call on the driver.
+    std::span<const std::int64_t> capture(const AudioIo&,const Transport&)noexcept;
     // Owner-thread status queries.
     [[nodiscard]] bool pending()const noexcept;
     [[nodiscard]] std::uint64_t acceptedFrames()const noexcept;
+    // Writer-published peaks for the prefix written to every target so far.
+    [[nodiscard]] std::shared_ptr<const AudioRecordingPreview> preview()const noexcept;
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

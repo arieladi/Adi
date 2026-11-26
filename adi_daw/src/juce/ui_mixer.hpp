@@ -163,6 +163,9 @@ class MixerStrip final : public juce::Component,
     // Which of In, Auto and Off is under `at`, where this strip draws the monitoring switch (MX-09).
     std::optional<Monitor> monitorAt(juce::Point<int>) const noexcept;
     juce::PopupMenu monitorMenu();
+    bool onAudioInput(juce::Point<int>) const noexcept;
+    juce::PopupMenu audioInputMenu();
+    std::function<void(juce::PopupMenu)> onAudioInputMenu;
     // Whether the sends show, in the row and in the Mixer View: the View menu's Sends (§42.1).
     bool showsSends() const noexcept;
     // The switches the keyboard reaches, in the row's order: the Track Activator, Solo, Arm.
@@ -223,6 +226,8 @@ class MixerStrip final : public juce::Component,
     void selectTitle(std::int64_t track);
     bool cancelTitleDrag();
     void paintInOut(juce::Graphics &, int x) const;
+    const char *audioInputLabel() const;
+    void showAudioInputMenu();
 
     // The Mixer View strip's In/Out section, as Live 12's Mixer draws it.
     void paintMixerInOut(juce::Graphics &) const;
