@@ -186,8 +186,12 @@ class SilentStateKnobs final : public SurfaceKnobs {
 };
 
 void capturedPluginState(const std::filesystem::path &dir) {
-    const auto loader = [](const engine::DeviceRequest &, std::string &)
-        -> std::unique_ptr<device::DeviceInstance> { return std::make_unique<SilentStateKnobs>(); };
+    const auto loader = [](const engine::DeviceRequest &request, std::string &)
+        -> std::unique_ptr<device::DeviceInstance> {
+        if (request.ref && request.ref->uid == "test.silent-state")
+            return std::make_unique<SilentStateKnobs>();
+        return {};
+    };
     std::string error;
     auto document = ui::ProjectDocument::open(dir / "silent.adi", true, loader, error);
     check(document != nullptr, "SC-09: open a document for a plug-in with silent state changes");
@@ -199,10 +203,13 @@ void capturedPluginState(const std::filesystem::path &dir) {
     plugin.name = "Silent sampler";
     plugin.subtype = "effect";
     const bool inserted = document->insertPlugin(plugin, 4);
-    check(inserted && document->session().model().devices.size() == 1, "SC-09: insert the sampler");
-    if (!inserted || document->session().model().devices.size() != 1)
+    const auto &devices = document->session().model().devices;
+    const auto samplerRow = std::find_if(devices.begin(), devices.end(),
+                                        [&](const auto &device) { return device.name == plugin.name; });
+    check(inserted && samplerRow != devices.end(), "SC-09: insert the sampler");
+    if (!inserted || samplerRow == devices.end())
         return;
-    const auto id = document->session().model().devices.front().id;
+    const auto id = samplerRow->id;
     const auto instance = [&](ui::ProjectDocument &doc) {
         return dynamic_cast<SilentStateKnobs *>(doc.session().instanceFor(id));
     };
