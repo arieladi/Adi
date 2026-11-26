@@ -11867,6 +11867,30 @@ void clipFades(AppCommands &commands, const std::filesystem::path &dir) {
         check(image.getPixelAt(x0, y).getBrightness() + 0.05f < image.getPixelAt(x1, y).getBrightness(),
               "the faded start of the clip is drawn darker than its middle, over the selection's tint");
     }
+    // The lower square moves the silent boundary without moving the peak.
+    const auto beforeStartDrag = clips()[0]->fadeInHandles;
+    const juce::Point<float> fadeStart(static_cast<float>(lanes.x(0)) + 3.5f,
+                                      static_cast<float>(laneTop(root, 4) + lanes.heightFor(4)) - 6.5f);
+    const juce::Point<float> newStart(static_cast<float>(lanes.x(bar / 8)), fadeStart.y);
+    canvas.mouseDown(pressAt(canvas, fadeStart));
+    const bool pickedStart = canvas.fadeDragging().has_value();
+    canvas.mouseDrag(dragAt(canvas, fadeStart, newStart));
+    canvas.mouseUp(dragAt(canvas, fadeStart, newStart));
+    root.frame();
+    const auto afterStartDrag = clips()[0]->fadeInHandles;
+    check(pickedStart && near(afterStartDrag.zeroTicks, bar / 8) &&
+              afterStartDrag.peakTicks == beforeStartDrag.peakTicks,
+          "the lower fade handle moves the fade start and leaves its peak fixed");
+    if (afterStartDrag != beforeStartDrag) {
+        check(root.command(AppCommands::Undo), "one undo restores the fade start");
+        root.frame();
+        check(clips()[0]->fadeInHandles == beforeStartDrag, "undo preserves the original peak and start");
+    }
+    sel.track = 4;
+    sel.clip = first;
+    sel.start = 0;
+    sel.end = bar;
+    root.frame();
     // The curve's diamond, dragged up, writes the fade's tension.
     if (const auto diamond = canvas.fadeHandlePoint(Handle{first, 4, true, true})) {
         const juce::Point<float> up(diamond->x, diamond->y - 30.f);
