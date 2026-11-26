@@ -91,7 +91,8 @@ struct StackTab::State : juce::ScrollBar::Listener {
     bool syncing = false, ending = false, destroying = false, began = false, parametersSuspended = false;
     std::uint64_t frame = 0, layout = 0, addMenuEpoch = 0;
     std::int64_t addTrack = 0;
-    std::string addName;
+    std::string addName, addStored; // shown, and the stored name it was made from (walk-B B13)
+    std::size_t addNumber = 0;
     bool addAvailable = false, addTooltipReady = false;
     std::optional<stack::CaptureRef> interaction;
     const DevicePanelData *editData = nullptr;
@@ -547,7 +548,8 @@ juce::Rectangle<int> StackTab::listArea() const noexcept {
 }
 juce::String StackTab::scope() const {
     if (const auto id = root.state().viewGroup; id != 0)
-        if (const auto *track = root.reader().findTrack(id)) return juce::String(track->name);
+        if (root.reader().findTrack(id) != nullptr) // as its header shows it (walk-B B13)
+            return juce::String::fromUTF8(shownName(root.arrangement.geometry, root.reader(), id).c_str());
     return "Project";
 }
 const DevicePanelData *StackTab::device(std::int64_t id) const noexcept {
@@ -643,13 +645,23 @@ void StackTab::frameAt(const SnapshotReader &reader, stack::TimeMs time) {
     }
     const auto *selected = reader.findTrack(track);
     const bool available = selected != nullptr;
-    const std::string_view name = selected ? std::string_view(selected->name) : std::string_view{};
+    // The channel named as its header shows it (walk-B B13): its stored name at its number. Compared as
+    // they are, so a steady frame builds nothing; the name is made only when either changes.
+    std::size_t number = 0;
+    if (selected) {
+        const auto rows = root.arrangement.geometry.rows(reader);
+        if (const auto at = rows.find(track); at < rows.size())
+            number = rows[at].number();
+    }
+    const std::string_view stored = selected ? std::string_view(selected->name) : std::string_view{};
     if (!state_->addTooltipReady || trackChanged || state_->addAvailable != available ||
-        state_->addName != name) {
+        state_->addStored != stored || state_->addNumber != number) {
+        state_->addStored.assign(stored);
+        state_->addNumber = number;
+        state_->addName = selected ? displayName(selected->name, number) : std::string{};
         addFunction.setEnabled(available);
-        addFunction.setTooltip(selected ? "Add a Mix View function to " + juce::String(selected->name)
+        addFunction.setTooltip(selected ? "Add a Mix View function to " + juce::String::fromUTF8(state_->addName.c_str())
                                         : "Select a channel to add a Mix View function.");
-        state_->addName = name;
         state_->addAvailable = available;
         state_->addTooltipReady = true;
     }

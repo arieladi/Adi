@@ -2777,6 +2777,7 @@ void actualChainAdapter() {
     SnapshotRows out;
     const auto refresh = [&] { tracksFromSnapshot(reader, geometry, provider, devices, out); };
     out.tracks.reserve(snapshot->tracks.size());
+    out.names.reserve(snapshot->tracks.size()); // the shown names (walk-B B13), short enough to need no heap
     out.items.reserve(devices.size());
     out.chainOrder.reserve(devices.size());
     allocations = 0;

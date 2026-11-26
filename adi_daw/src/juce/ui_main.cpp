@@ -299,7 +299,7 @@ class AdiApplication final : public juce::JUCEApplication,
         std::vector<textproj::Meter> meters;
         for (const auto &row : root_->arrangement.geometry.rows(root_->reader()))
             if (row.track != nullptr && row.track->kind != "master")
-                tracks.emplace_back(row.track->id, row.track->name);
+                tracks.emplace_back(row.track->id, displayName(row.track->name, row.number())); // as headed (B13)
         meters = root_->reader().meters();
         auto page = std::make_unique<ExportPage>(initial, std::move(tracks), std::move(meters));
         exportPage_ = page.get();

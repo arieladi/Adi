@@ -1381,7 +1381,7 @@ bool AdiRootComponent::togglePluginWindow(std::int64_t device, bool several) {
         for (const auto &d : *feed)
             if (d.id == device) {
                 const auto *t = reader().findTrack(d.track);
-                title = (t != nullptr ? t->name + "/" : std::string()) + d.name;
+                title = (t != nullptr ? shownName(arrangement.geometry, reader(), t->id) + "/" : std::string()) + d.name; // B13
             }
     auto frameEditor = std::move(editor.frame);
     auto gone = std::move(editor.gone);
@@ -2387,7 +2387,7 @@ bool AdiRootComponent::clipClipboard(ClipCommand command) {
         if (const auto *copy = std::get_if<clip_edit::ClipCopy>(&board.held)) {
             // Audio on audio tracks, MIDI on MIDI tracks, as Live places them.
             if (const auto kind = imageKind(copy->image); !kind.empty() && kind != track->kind)
-                return fail("The copied clip goes on " + kindWord(kind) + " track: " + track->name + " is " +
+                return fail("The copied clip goes on " + kindWord(kind) + " track: " + shownName(arrangement.geometry, reader(), track->id) + " is " +
                             kindWord(track->kind) + " track.");
             // A new identity, never the copied clip's own: after a Cut of the newest clip, the
             // project's next free id is the one the copy still carries.
@@ -2438,7 +2438,7 @@ bool AdiRootComponent::clipClipboard(ClipCommand command) {
                 const auto *target = reader().findTrack(targets[i]);
                 if (!kind.empty() && target != nullptr && target->kind != kind)
                     return fail("The copy's track " + std::to_string(i + 1) + " goes on " + kindWord(kind) +
-                                " track: " + target->name + " is " + kindWord(target->kind) + " track.");
+                                " track: " + shownName(arrangement.geometry, reader(), target->id) + " is " + kindWord(target->kind) + " track.");
             }
             if (!commitEdit(clip_edit::preparePasteRange(store, rangeCopy, targets, {0, at}, options)))
                 return false;
@@ -2671,10 +2671,11 @@ bool AdiRootComponent::splitAtMarker() {
         // with it).
         const bool onTrack = everyTrack ? arrangement.geometry.inView(t->id)
                                         : std::find(selected.begin(), selected.end(), t->id) != selected.end();
+        const auto trackName = shownName(arrangement.geometry, reader(), t->id); // as its header (B13)
         for (const auto &c : t->clips) {
             if (!c)
                 continue;
-            Cut cut{c->id, {}, t->name};
+            Cut cut{c->id, {}, trackName};
             if (timeSelection) {
                 if (!onTrack)
                     continue;

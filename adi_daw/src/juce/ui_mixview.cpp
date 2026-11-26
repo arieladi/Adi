@@ -305,8 +305,8 @@ juce::Rectangle<int> MixViewPanel::timeline() const noexcept {
 }
 juce::String MixViewPanel::referenceText() const {
     if (const auto id = root_.referenceTrack(); id != 0)
-        if (const auto *t = root_.reader().findTrack(id))
-            return juce::String::fromUTF8(t->name.c_str());
+        if (const auto name = shownName(root_.arrangement.geometry, root_.reader(), id); !name.empty())
+            return juce::String::fromUTF8(name.c_str()); // as its header shows it (walk-B B13)
     return "None yet";
 }
 void MixViewPanel::refreshTheme() {

@@ -567,6 +567,9 @@ struct SnapshotRows {
     // Adapter scratch only: source indices sorted by owning track, then source order. Reused so
     // unchanged publications allocate nothing; it never owns project state or supplies identity.
     std::vector<std::pair<TrackId, std::size_t>> chainOrder;
+    // Each track's name as its header shows it ("# Audio" at 3 is "3 Audio", walk-B B13), which
+    // `tracks[i].name` views; refilled in place, so unchanged names allocate nothing.
+    std::vector<std::string> names;
     RowsInput input(std::uint64_t generation, std::uint64_t providerRevision = 0) const noexcept;
 };
 

@@ -4,6 +4,7 @@
 #include "adi/media/media_ops.hpp"
 #include "adi/settings/store.hpp"
 #include "adi/ui/project_document.hpp"
+#include "adi/ui/arrangement_geometry.hpp"
 #include "knobs_device.hpp"
 #include "temp_directory.hpp"
 #include "juce/device_core.hpp"
@@ -12,6 +13,7 @@
 #include <array>
 #include <atomic>
 #include <filesystem>
+#include <map>
 #include <chrono>
 #include <cmath>
 #include <complex>
@@ -1296,11 +1298,16 @@ int main(int argc, char **argv) {
     }
     // New is the store's (#307, N2): Main and Live's default Set, at the history's root.
     const auto *made = doc->view().current().get();
+    // Its tracks are numbered ones, "# MIDI" and "# Audio", shown 1 MIDI ... 4 Audio (walk-B B13).
+    const auto shownNew = made != nullptr ? ui::shownTrackNames(ui::SnapshotReader(doc->view().current()))
+                                          : std::map<std::int64_t, std::string>{};
     check(made != nullptr && made->tracks.size() == 7 && made->findTrack(1) != nullptr &&
-              made->findTrack(1)->kind == "master" && made->findTrack(2)->name == "1 MIDI" &&
-              made->findTrack(3)->name == "2 MIDI" && made->findTrack(4)->name == "3 Audio" &&
-              made->findTrack(5)->name == "4 Audio" && made->findTrack(6)->name == "A Reverb" &&
-              made->findTrack(7)->name == "B Delay",
+              made->findTrack(1)->kind == "master" && made->findTrack(2)->name == "# MIDI" &&
+              made->findTrack(3)->name == "# MIDI" && made->findTrack(4)->name == "# Audio" &&
+              made->findTrack(5)->name == "# Audio" && made->findTrack(6)->name == "A Reverb" &&
+              made->findTrack(7)->name == "B Delay" && shownNew.size() == 7 && shownNew.at(2) == "1 MIDI" &&
+              shownNew.at(3) == "2 MIDI" && shownNew.at(4) == "3 Audio" && shownNew.at(5) == "4 Audio" &&
+              shownNew.at(6) == "A Reverb" && shownNew.at(7) == "B Delay" && shownNew.at(1) == "Main",
           "New makes Main and Live's default Set: 1 MIDI, 2 MIDI, 3 Audio, 4 Audio, A Reverb, B Delay (N41)");
     check(doc->store().db().execAndGet("SELECT count(*) FROM ops").getInt() == 0,
           "as the history's root: no op, no undo step");

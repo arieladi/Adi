@@ -599,10 +599,15 @@ std::vector<DeviceKeyChoice> ProjectDocument::deviceKeyChoices(const DevicePanel
     if(!keyAvailable && count==0)return choices;
     choices.push_back({{},"post_mixer","None",count==0,view_.generation()});
     if(!keyAvailable)return choices; // recovery only; never fabricate an input
+    // Each source named as its track's header shows it (walk-B B13).
+    const SnapshotReader shownFrom(view_.current());
+    const auto shown=shownFrom.get()?shownTrackNames(shownFrom):std::map<std::int64_t,std::string>{};
     for(const auto& track:model.tracks){
         if(track.kind=="vca")continue;
+        const auto named=shown.find(track.id);
+        const auto& name=named!=shown.end()?named->second:track.name;
         for(const auto& tap:{"pre_fx","post_fx","post_mixer"})
-            choices.push_back({track.id,tap,track.name,count==1 && current->enabled && current->srcKind=="track" && current->srcId==track.id && current->keyTap==tap});
+            choices.push_back({track.id,tap,name,count==1 && current->enabled && current->srcKind=="track" && current->srcId==track.id && current->keyTap==tap});
     }
     for(auto& choice:choices)choice.generation=view_.generation();
     return choices;

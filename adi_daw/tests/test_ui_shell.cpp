@@ -8734,7 +8734,11 @@ void newProject(AppCommands &commands, const std::filesystem::path &dir) {
     root.frame();
     root.frame();
     check(laneOrder(root) == std::vector<std::int64_t>{2, 3, 4, 5, 6, 7, 1} &&
-              root.reader().findTrack(2)->name == "1 MIDI" && root.reader().findTrack(5)->name == "4 Audio" &&
+              root.reader().findTrack(2)->name == "# MIDI" && root.reader().findTrack(5)->name == "# Audio" &&
+              shownName(root.arrangement.geometry, root.reader(), 2) == "1 MIDI" &&
+              shownName(root.arrangement.geometry, root.reader(), 3) == "2 MIDI" &&
+              shownName(root.arrangement.geometry, root.reader(), 4) == "3 Audio" &&
+              shownName(root.arrangement.geometry, root.reader(), 5) == "4 Audio" &&
               root.reader().findTrack(7)->name == "B Delay",
           "New shows Live's default Set: 1 MIDI, 2 MIDI, 3 Audio, 4 Audio, A Reverb, B Delay, then Main (N41)");
     check(!root.canUndo(false) && root.undoTitle(false) == "Nothing to Undo" && root.undoTitle(true) == "Nothing to Redo",
@@ -8757,6 +8761,59 @@ void newProject(AppCommands &commands, const std::filesystem::path &dir) {
         if (auto stream = file.createOutputStream())
             juce::PNGImageFormat{}.writeImageToStream(picture, *stream);
     }
+    document->release();
+}
+// walk-B B13: a new project's tracks renumber as Live's when a track is inserted or grouped before
+// them (manual 18.2). They are stored "# MIDI" and "# Audio"; before, "3 Audio" and "4 Audio" kept their
+// numbers, so an audio track inserted after 2 MIDI made two "3 Audio", and a group two "4 Audio". Every
+// surface that names a track shows the number: the headers, the Mix View's Stack and a plug-in's window.
+void defaultTracksRenumber(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "renumber.adi", true, {}, error);
+    check(document != nullptr, "New opens a project to insert into");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "renumber");
+    root.setSize(1600, 900);
+    root.frame();
+    auto names = [&root] {
+        root.frame();
+        std::vector<std::string> out;
+        for (const auto row : root.arrangement.geometry.rows(root.reader()))
+            out.push_back(displayName(row.track->name, row.number()));
+        return out;
+    };
+    check(names() == std::vector<std::string>{"1 MIDI", "2 MIDI", "3 Audio", "4 Audio", "A Reverb", "B Delay", "Main"},
+          "New: 1 MIDI, 2 MIDI, 3 Audio, 4 Audio, A Reverb, B Delay, Main");
+    root.arrangement.geometry.selection.track = 3; // 2 MIDI
+    root.publishSelection();
+    check(root.command(AppCommands::InsertAudioTrack), "Insert Audio Track after 2 MIDI");
+    const auto inserted = root.arrangement.geometry.selection.track;
+    check(names() == std::vector<std::string>{"1 MIDI", "2 MIDI", "3 Audio", "4 Audio", "5 Audio", "A Reverb", "B Delay",
+                                              "Main"} &&
+              shownName(root.arrangement.geometry, root.reader(), inserted) == "3 Audio" &&
+              shownName(root.arrangement.geometry, root.reader(), 4) == "4 Audio" &&
+              shownName(root.arrangement.geometry, root.reader(), 5) == "5 Audio",
+          "the new track is 3 Audio, and the default Set's audio tracks after it renumber to 4 and 5: no two alike");
+    // The Mix View's Stack names each row as its header does (it showed "# Audio").
+    check(root.command(AppCommands::ToggleMixView), "the Mix View opens");
+    root.frame();
+    const auto &model = root.mixViewPanel.stack.model();
+    check(model.trackName(inserted) == "3 Audio" && model.trackName(4) == "4 Audio" && model.trackName(2) == "1 MIDI",
+          "the Stack's rows read 3 Audio, 4 Audio and 1 MIDI, as the headers");
+    check(root.command(AppCommands::ToggleMixView), "closed");
+    // A group made before them: they renumber again.
+    root.arrangement.geometry.selection.track = 2;
+    root.arrangement.geometry.selection.toTrack = 3;
+    root.publishSelection();
+    check(root.command(AppCommands::GroupTracks), "Group Tracks on 1 MIDI and 2 MIDI");
+    const auto shown = names();
+    const bool distinct = std::set<std::string>(shown.begin(), shown.end()).size() == shown.size();
+    if (!distinct)
+        for (const auto &name : shown)
+            std::printf("  after the group: %s\n", name.c_str());
+    check(distinct, "after the group no two tracks read alike");
     document->release();
 }
 // A track's colour is fixed when it is made (ADR-0211 d2; Live 12 manual 2.3.2): Insert Audio and MIDI
@@ -10778,7 +10835,7 @@ void pluginWindows(AppCommands &commands, settings::AppSettings &settings, const
     {
         auto *window = dynamic_cast<juce::DocumentWindow *>(host.window(key3));
         const auto *track = root.reader().findTrack(2);
-        check(window != nullptr && track != nullptr && window->getName() == juce::String(track->name + "/UI knobs") &&
+        check(window != nullptr && track != nullptr && window->getName() == juce::String(shownName(root.arrangement.geometry, root.reader(), track->id) + "/UI knobs") &&
                   !window->isResizable() && window->getContentComponentBorder().addedTo(host.content(key3)->getBounds()).getWidth() == window->getWidth(),
               "its window is titled track/device, fits the plug-in, and does not resize");
     }
@@ -18689,6 +18746,7 @@ int main(int argc, char **argv) {
     trace("footRows", [&] { footRows(commands, temp.path()); });
     trace("newProject", [&] { newProject(commands, temp.path()); });
     trace("trackColoursStay", [&] { trackColoursStay(commands, temp.path()); });
+    trace("defaultTracksRenumber", [&] { defaultTracksRenumber(commands, temp.path()); });
     trace("stripParamUndo", [&] { stripParamUndo(commands, temp.path()); });
     trace("deviceClipboard", [&] { deviceClipboard(commands, temp.path()); });
     trace("pluginWindows", [&] { pluginWindows(commands, settings, temp.path()); });
