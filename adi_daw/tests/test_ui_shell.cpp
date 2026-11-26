@@ -3543,6 +3543,26 @@ void splitAndRangeEdits(AppCommands &commands, settings::AppSettings &settings, 
                   sel.clip == 0 && sel.pickedClips.empty(),
               "SC-175: a clip body drag keeps its press point as the anchor and selects only time");
     };
+
+    // SC-180: a time selection moves only the material it covers.
+    dragInsideClip(2, bar / 2, bar);
+    const auto beforeArrow = document->ops().nextUndo();
+    check(canvas.keyPressed(juce::KeyPress(juce::KeyPress::leftKey)), "SC-180: Left moves part of the clip");
+    root.frame();
+    check(clipsOf(2) == std::vector<std::pair<std::int64_t, std::int64_t>>{
+                            {0, bar / 4}, {bar / 4, bar / 2}, {bar, bar}, {3 * bar, bar / 2}},
+          "SC-180: the moved part overwrites the destination overlap and keeps the outer pieces");
+    check(sel.clip == 0 && sel.start == bar / 4 && sel.end == 3 * bar / 4 && sel.insert == bar / 4,
+          "SC-180: the time selection follows the moved material");
+    const auto afterArrow = document->ops().nextUndo();
+    check(beforeArrow && afterArrow && beforeArrow->txnId != afterArrow->txnId && root.command(AppCommands::Undo),
+          "SC-180: undo the time selection move");
+    root.frame();
+    const auto undoneArrow = document->ops().nextUndo();
+    check(beforeArrow && undoneArrow && beforeArrow->txnId == undoneArrow->txnId &&
+              clipsOf(2) == std::vector<std::pair<std::int64_t, std::int64_t>>{{0, 2 * bar}, {3 * bar, bar / 2}},
+          "SC-180: one Undo rejoins the original clip");
+
     dragInsideClip(2, bar / 2, bar);
     check(canvas.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)), "SC-175: Delete the dragged range");
     root.frame();
@@ -4125,6 +4145,19 @@ void clipClipboard(AppCommands &commands, const std::filesystem::path &dir) {
               selectedCopy(2, offset) && selectedCopy(20, offset + 2 * bar),
           "SC-179: both duplicates are selected");
     undoOne("SC-179: undo Duplicate");
+
+    pickBoth();
+    // The later clip is between grid lines, so both must use the earlier clip's step size.
+    arrangement.geometry.grid.fixed = true;
+    arrangement.geometry.grid.fixedQuarters = 16.;
+    check(canvas.keyPressed(juce::KeyPress(juce::KeyPress::rightKey)), "SC-180: Right moves the picked clips");
+    root.frame();
+    check(clipsOf(2) == Clips{{bar, bar / 2}, {4 * bar, bar}, {gapAt, bar / 4}} &&
+              clipsOf(3) == between && clipsOf(20) == Clips{{6 * bar, bar / 2}},
+          "SC-180: both clips move by the earlier clip's grid step and keep their track offsets");
+    check(sel.clip == 61 && sel.pickedClips == std::vector<std::int64_t>{50},
+          "SC-180: both moved clips stay selected");
+    undoOne("SC-180: undo the picked clips' move");
     commands.clipClipboard().held = std::monostate{};
     commands.detach(root);
     document->release();

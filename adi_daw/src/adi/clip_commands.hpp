@@ -100,6 +100,7 @@ struct RangeCut {RangeCopy copy;PreparedEdit edit;};
 [[nodiscard]] PreparedEdit preparePasteRange(Store&,const RangeCopy&,const std::vector<std::int64_t>& tracks,
     TimePoint at,const edit_plan::Options&);
 [[nodiscard]] PreparedEdit prepareDuplicateRange(Store&,const RangeSelection&,const edit_plan::Options&);
+[[nodiscard]] PreparedEdit prepareMoveRange(Store&,const RangeSelection&,TimePoint destination,const edit_plan::Options&);
 /// Whole-Set clipboard, including global maps and automation. Owner-thread
 /// value; its media/tuning/lane identities are rechecked during preparation.
 struct TimeCopy {

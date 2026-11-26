@@ -888,8 +888,9 @@ PreparedEdit preparePasteRange(Store& store,const RangeCopy& copy,const std::vec
     } catch(const std::exception& exception){result.ok=false;result.error=exception.what();}
     return result;
 }
-PreparedEdit preparePasteRange(Store& store,const RangeCopy& copy,const std::vector<std::int64_t>& tracks,
-                                TimePoint at,const edit_plan::Options& options) {
+namespace {
+PreparedEdit prepareRangePlacement(Store& store,const RangeCopy& copy,const std::vector<std::int64_t>& tracks,
+                                   TimePoint at,const edit_plan::Options& options,bool move) {
     PreparedEdit result;
     try {
         if(!copy.ok)throw std::runtime_error(copy.error);
@@ -915,6 +916,8 @@ PreparedEdit preparePasteRange(Store& store,const RangeCopy& copy,const std::vec
         auto scopeBegin=std::min(beginNs,sourceBeginNs),scopeEnd=std::max(endNs,sourceEndNs);
         if(copy.clearsRange)
             for(const auto track:tracks)batch.clear.push_back({{track,std::nullopt},{beginNs,endNs}});
+        if(move)
+            for(const auto track:copy.selection.tracks)batch.clear.push_back({{track,std::nullopt},{sourceBeginNs,sourceEndNs}});
         for(const auto& image:copy.images)ids.reserve("clips",detail::signedInteger(image.at("id")));
         for(const auto& original:copy.images) {
             verifyMediaKeys(store,original);auto image=cloneImage(original,ids.next("clips"),ids);
@@ -937,9 +940,21 @@ PreparedEdit preparePasteRange(Store& store,const RangeCopy& copy,const std::vec
             if(detail::captureRow(store.db(),"tracks","id",track))scopeTracks.insert(track);
         const std::vector<std::int64_t> literals(scopeTracks.begin(),scopeTracks.end());
         const auto scope=edit_plan::materialScope(literals,edit_plan::PlacementClock::Nanoseconds,{scopeBegin,scopeEnd});
-        result=edit_plan::detail::prepareCaptured(store,scope,std::move(batch),options,ids,"Paste Material");
+        result=edit_plan::detail::prepareCaptured(store,scope,std::move(batch),options,ids,move?"Move Material":"Paste Material");
     } catch(const std::exception& exception){result.ok=false;result.error=exception.what();}
     return result;
+}
+} // namespace
+PreparedEdit preparePasteRange(Store& store,const RangeCopy& copy,const std::vector<std::int64_t>& tracks,
+                                TimePoint at,const edit_plan::Options& options) {
+    return prepareRangePlacement(store,copy,tracks,at,options,false);
+}
+PreparedEdit prepareMoveRange(Store& store,const RangeSelection& selection,TimePoint at,const edit_plan::Options& options) {
+    try {
+        Read read(store.db());
+        const auto copy=copyRange(store,selection,options.referenceRate);
+        return prepareRangePlacement(store,copy,selection.tracks,at,options,true);
+    } catch(const std::exception& exception){PreparedEdit result;result.error=exception.what();return result;}
 }
 PreparedEdit prepareDuplicateRange(Store& store,const RangeSelection& selection,const edit_plan::Options& options) {
     try {

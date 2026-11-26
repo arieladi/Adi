@@ -4036,6 +4036,41 @@ bool ArrangementCanvas::arrow(bool forward, const juce::ModifierKeys &mods) {
         announce(view.root.selectionText());
         return true;
     }
+    if (!sel.pickedClips.empty()) {
+        std::vector<AdiRootComponent::ClipPlace> clips;
+        auto first = std::numeric_limits<std::int64_t>::max();
+        if (const auto current = view.root.current())
+            for (const auto &row : current->tracks)
+                if (row)
+                    for (const auto &clip : row->clips)
+                        if (clip && geo.clipSelected(clip->id)) {
+                            first = std::min(first, clip->posTicks);
+                            clips.push_back({clip->id, row->id, clip->posTicks});
+                        }
+        if (clips.size() != geo.selectedClips().size() || clips.empty()) {
+            view.root.say("A selected clip is no longer in the Arrangement.");
+            return true;
+        }
+        const auto delta = geo.nextGridLine(first, forward) - first;
+        if (delta == 0)
+            return true;
+        if (delta > 0 && std::any_of(clips.begin(), clips.end(), [delta](const auto &clip) {
+                return clip.position > std::numeric_limits<std::int64_t>::max() - delta;
+            })) {
+            view.root.say("The clips would move past the end of the timeline.");
+            return true;
+        }
+        for (auto &clip : clips)
+            clip.position += delta;
+        if (view.root.placeClips(clips, "Move Clips")) {
+            sel.start += delta;
+            sel.end += delta;
+            sel.insert = sel.start;
+            view.changed();
+            announce(view.root.selectionText());
+        }
+        return true;
+    }
     if (sel.clip != 0) {
         // Move Clips with Arrow Keys, on by default in Live (§41.1.1): the selected clip moves
         // to the next or previous grid line, one undo step a press.
@@ -4055,24 +4090,28 @@ bool ArrangementCanvas::arrow(bool forward, const juce::ModifierKeys &mods) {
         return true;
     }
     if (sel.start != sel.end) {
-        // A time selection moves by the grid when it holds no clip. Part of a clip moves once Split
-        // has cut it there (which selects the part inside); a whole clip moves once selected.
         const auto lo = std::min(sel.start, sel.end), hi = std::max(sel.start, sel.end);
-        if (track != nullptr) {
-            bool crosses = false, holds = false;
-            for (const auto &c : track->clips) {
-                const auto a = c->posTicks, b = c->posTicks + c->lengthTicks;
-                if (a < hi && b > lo)
-                    (a < lo || b > hi ? crosses : holds) = true;
-            }
-            if (crosses || holds) {
-                view.root.say(crosses ? "The arrow keys move whole clips: split the clip at the selection first "
-                                        "(Ctrl/Cmd+E), which selects the part inside."
-                                      : "The arrow keys move a selected clip: click the clip to move it.");
-                return true;
-            }
+        const auto target = geo.nextGridLine(lo, forward);
+        const auto delta = target - lo;
+        if (delta > 0 && hi > std::numeric_limits<std::int64_t>::max() - delta) {
+            view.root.say("The selection would move past the end of the timeline.");
+            return true;
         }
-        const auto delta = geo.nextGridLine(lo, forward) - lo;
+        if (delta != 0)
+            if (const auto current = view.root.current()) {
+                auto selected = geo.selectedTracks(view.reader());
+                std::erase_if(selected, [&](const auto id) {
+                    const auto *row = view.reader().findTrack(id);
+                    return row == nullptr || !geo.shown(id) || (row->kind != "audio" && row->kind != "midi");
+                });
+                const auto content = rangeContent(current->tracks, selected, lo, hi);
+                if (!content.inside.empty() || content.crossing != 0) {
+                    const clip_edit::RangeSelection range{std::move(selected), {0, lo}, {0, hi}};
+                    const edit_plan::Options options{view.root.editRate(), edit_plan::capturePolicy(view.root.commandSettings())};
+                    if (!view.root.commitEdit(clip_edit::prepareMoveRange(view.root.editStore(), range, {0, target}, options)))
+                        return true;
+                }
+            }
         sel.start += delta;
         sel.end += delta;
         sel.insert = lo + delta;
