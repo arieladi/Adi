@@ -268,11 +268,6 @@ std::unique_ptr<ProjectDocument> ProjectDocument::open(const std::filesystem::pa
             error = "Cannot open project: " + std::string(toString(result));
             return {};
         }
-        // New's audio and MIDI tracks monitor on Auto, as Live's (N67, ruled by win under ADR-0203 d1),
-        // where the store's seed writes Off. Part of the new file, as the seed is: no op, no undo step.
-        if (create)
-            store->db().exec("UPDATE tracks SET monitor_mode = " + std::to_string(kNewTrackMonitorMode) +
-                             " WHERE kind IN ('audio', 'midi')");
         const auto stem = path.stem().u8string();
         auto document = std::unique_ptr<ProjectDocument>(new ProjectDocument(
             std::move(store), std::string(reinterpret_cast<const char *>(stem.data()), stem.size())));

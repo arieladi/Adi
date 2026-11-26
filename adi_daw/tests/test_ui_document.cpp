@@ -527,7 +527,7 @@ void dropDeviceOnNewTrack(const std::filesystem::path &dir) {
         const auto current = document->view().current();
         const auto *track = current->findTrack(selected.track);
         const auto *firstReturn = current->findTrack(6);
-        const auto expectedKind = std::string_view(subtype) == "effect" ? "audio" : "midi";
+        const std::string_view expectedKind = std::string_view(subtype) == "effect" ? "audio" : "midi";
         check(loaded && tracks() == before + 1 && track != nullptr && track->kind == expectedKind &&
                   track->parent == 0 && firstReturn != nullptr && track->indexInParent < firstReturn->indexInParent &&
                   selected.track != existingTrack && selected.start == selected.end && selected.insert == selection.insert,
@@ -539,7 +539,8 @@ void dropDeviceOnNewTrack(const std::filesystem::path &dir) {
                 "FROM tracks t JOIN track_recording_options o ON o.track_id=t.id "
                 "JOIN device_chains c ON c.track_id=t.id JOIN devices d ON d.chain_id=c.id WHERE t.id=?");
             row.bind(1, track->id);
-            check(row.executeStep() && row.getColumn(0).getInt() == 2 && row.getColumn(1).getInt() == 0 &&
+            const int expectedMonitor = expectedKind == "audio" ? 0 : 2;
+            check(row.executeStep() && row.getColumn(0).getInt() == expectedMonitor && row.getColumn(1).getInt() == 0 &&
                       row.getColumn(2).getInt() == 0 && row.getColumn(3).getString() == plugin.name,
                   "SC-84/61: new-track recording defaults and the device are created together");
         }
@@ -1454,6 +1455,7 @@ void arrangementRecord(const std::filesystem::path &dir) {
         check(doc->ops().submit(rename).ok && doc->synchronise(), "3 Audio stored as \"# Audio\"");
     }
     const auto clipsBefore = doc->store().db().execAndGet("SELECT count(*) FROM clips").getInt();
+    doc->setInputChannels(1);
     check(doc->startRecording(0, 1, false) && doc->recording(), "Record starts with one input");
     std::array<float, 64> in{}, l{}, r{};
     const float *inputs[]{in.data()};
@@ -1465,14 +1467,19 @@ void arrangementRecord(const std::filesystem::path &dir) {
     io.numOut = 2;
     io.frames = 64;
     std::int64_t stream = 0;
+    bool microphoneSilent = true;
     for (int b = 0; b < 32; ++b) {
         for (int i = 0; i < 64; ++i)
             in[static_cast<std::size_t>(i)] = static_cast<float>((stream + i) % 17) / 32.f - .25f;
         io.streamTimeSamples = stream;
         doc->process(io);
+        microphoneSilent = microphoneSilent &&
+            std::all_of(l.begin(), l.end(), [](float sample) { return sample == 0.f; }) &&
+            std::all_of(r.begin(), r.end(), [](float sample) { return sample == 0.f; });
         stream += 64;
     }
     check(doc->mailbox().playing(), "the Record command started the transport");
+    check(microphoneSilent, "SC-249: recording on a new audio track does not monitor the input");
     doc->stopRecording();
     check(!doc->recording() && doc->landingTake(), "stopped, the take is landing");
     std::optional<ui::ProjectDocument::TakeLanded> landed;

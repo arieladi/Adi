@@ -12716,8 +12716,8 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
         return;
     }
     const auto states = [&] { return document->recordStates(); };
-    check(states().at(4).monitor == Monitor::Auto && states().at(3).monitor == Monitor::Auto,
-          "New's audio and MIDI tracks monitor on Auto, as Live's (N67) [P:recording#11]");
+    check(states().at(4).monitor == Monitor::Off && states().at(3).monitor == Monitor::Auto,
+          "SC-249: New shows Monitor Off for audio and Auto for MIDI [P:recording#11]");
     three->arm.onClick();
     frame();
     check(states().at(4).armed && three->arm.getToggleState() && root.error().empty(),
@@ -12751,14 +12751,14 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     root.command(AppCommands::ToggleMixerView);
     check(root.setMonitor(4, Monitor::In), "3 Audio's monitoring to In");
     frame();
-    check(states().at(4).monitor == Monitor::In && states().at(5).monitor == Monitor::Auto &&
+    check(states().at(4).monitor == Monitor::In && states().at(5).monitor == Monitor::Off &&
               root.recordState(4).monitor == Monitor::In,
           "track.setMonitorMode In on 3 Audio alone [P:recording#9]");
     check(root.setMonitor(4, Monitor::In) && root.error().empty(), "the same choice again is accepted");
     frame();
     check(root.command(AppCommands::Undo), "undo");
     frame();
-    check(states().at(4).monitor == Monitor::Auto, "the same choice again changed nothing: one Undo puts 3 Audio back on Auto [P:recording#9]");
+    check(states().at(4).monitor == Monitor::Off, "the same choice again changed nothing: one Undo puts 3 Audio back on Off [P:recording#9]");
     check(root.command(AppCommands::Redo), "redo");
     frame();
     check(!root.setMonitor(1, Monitor::In) && root.error().find("no input") != std::string::npos, "Main has no monitoring [P:recording#9]");
