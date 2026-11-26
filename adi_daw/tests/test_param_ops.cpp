@@ -836,17 +836,45 @@ void testTheLastTouchedParameter() {
     eqi(ops.lastTouched(99), -1, "an unknown device has none");
     check(ops.lastTouchSequence(99) == 0, "SC-317 an unknown device has no touch sequence");
 
-    s.drag(1, 0.8); // Leave the old instance's final callback in the ring.
+    s.drag(1, 0.8); // Leave the old instance's final callbacks in the ring.
     ops.detach(20);
-    check(ops.lastTouched(20) == -1 && ops.lastTouchSequence(20) == 0 && ops.attach(20, replacement),
+    check(ops.lastTouched(20) == -1 && ops.lastTouchSequence(20) == 0 && ops.recentTouches(20).empty() &&
+              ops.attach(20, replacement),
           "SC-317 detaching clears access to the old touch and allows the ID to be reused");
     ops.drain(1400, out);
-    check(ops.lastTouched(20) == -1 && ops.lastTouchSequence(20) == 0,
+    check(ops.lastTouched(20) == -1 && ops.lastTouchSequence(20) == 0 && ops.recentTouches(20).empty(),
           "SC-317 an old queued callback cannot name a parameter on the replacement");
     replacement.drag(1, 0.6);
     ops.drain(1500, out);
-    check(ops.lastTouched(20) == 1 && ops.lastTouchSequence(20) > beforePreset,
+    check(ops.lastTouched(20) == 1 && ops.lastTouchSequence(20) > beforePreset && ops.recentTouches(20).size() == 1,
           "SC-317 the replacement publishes its own fresh native touch");
+}
+
+void testNativeTouchHistory() {
+    section("SC-317 -- a drain keeps each native parameter touch in chronological order");
+    Knobs k;
+    ParamOps ops(8);
+    check(ops.attach(20, k), "attach a device with a small producer ring");
+    std::vector<OpRequest> out;
+    k.value(0, 0.6);
+    k.value(1, 0.7);
+    k.value(1, 0.8);
+    k.value(0, 0.9);
+    ops.drain(1000, out);
+    const auto initial = ops.recentTouches(20);
+    const auto lastInitial = ops.lastTouchSequence(20);
+    check(initial.size() == 3 && initial[0].index == 0 && initial[1].index == 1 && initial[2].index == 0 &&
+              initial[1].sequence == initial[0].sequence + 2 && initial[2].sequence == lastInitial,
+          "an X/Y drain keeps both parameters, compressing only adjacent repeats at their newest sequence");
+    for (int pass = 0; pass < 70; ++pass) {
+        k.value(1, 0.7);
+        k.value(0, 0.5);
+        ops.drain(1100 + pass, out);
+    }
+    const auto recent = ops.recentTouches(20);
+    check(recent.size() == 128 && recent.front().index == 1 && recent.front().sequence > lastInitial &&
+              recent.back().index == ops.lastTouched(20) && recent.back().sequence == ops.lastTouchSequence(20),
+          "the recent history keeps a bounded chronological tail even with a small capture ring");
 }
 
 void testTheStateLoopThroughTheJournal() {
@@ -1177,6 +1205,7 @@ int main() {
     testAnUndoneChunkReseedsTheCapture();
     testTheStateLoopThroughTheJournal();
     testTheLastTouchedParameter();
+    testNativeTouchHistory();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

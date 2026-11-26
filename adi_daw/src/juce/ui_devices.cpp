@@ -2089,16 +2089,22 @@ void DevicePanelView::queueConfigureTouch(const DevicePanelData &next) {
         closeConfigure();
         return;
     }
-    if (!next.pluginTouch || next.pluginTouch->sequence <= configureSession_->observed)
+    auto &session = *configureSession_;
+    const auto &touches = next.recentPluginTouches;
+    if (!touches || touches->empty() || touches->back().sequence <= session.observed)
         return;
-    configureSession_->observed = next.pluginTouch->sequence;
-    const auto &paramId = next.pluginTouch->parameter;
-    auto &pending = configureSession_->pending;
-    if (configurableParameter(next, paramId) && !showsParameter(next, paramId) &&
-        std::find(pending.begin(), pending.end(), paramId) == pending.end()) {
-        pending.push_back(paramId);
-        strip.triggerAsyncUpdate();
+    auto &pending = session.pending;
+    const auto pendingBefore = pending.size();
+    for (const auto &touch : *touches) {
+        if (touch.sequence <= session.observed) continue;
+        session.observed = touch.sequence;
+        const auto &paramId = touch.parameter;
+        if (configurableParameter(next, paramId) && !showsParameter(next, paramId) &&
+            std::find(pending.begin(), pending.end(), paramId) == pending.end())
+            pending.push_back(paramId);
     }
+    if (pending.size() != pendingBefore)
+        strip.triggerAsyncUpdate();
 }
 void DevicePanelView::applyConfigureTouches() {
     if (!configureSession_ || configureSession_->pending.empty()) return;
@@ -2151,10 +2157,16 @@ void DevicePanelView::configure() {
 
     if (plugin && data->available) {
         const auto expected = *data;
+        if (const auto poll = strip.pollParameterEdits) poll();
+        if (!safe || safe->configuring || !safe->panelTargetCurrent(expected) || !safe)
+            return;
         const auto feed = strip.latestPublication();
         if (!safe) return;
-        if (const auto *latest = findPanelDevice(feed, expected))
-            configureSession_ = ConfigureSession{expected, latest->pluginTouch ? latest->pluginTouch->sequence : 0, {}};
+        const auto *latest = findPanelDevice(feed, expected);
+        if (!latest || !latest->available || !latest->plugin) return;
+        const auto &touches = latest->recentPluginTouches;
+        const auto observed = touches && !touches->empty() ? touches->back().sequence : 0;
+        configureSession_ = ConfigureSession{expected, observed, {}};
     }
     configuring = true;
     configureButton.setToggleState(true, juce::dontSendNotification);
@@ -2648,7 +2660,8 @@ void DeviceChainStrip::frame(std::int64_t track) {
                     const auto panel = std::find_if(panels.begin(), panels.end(), [&](const auto &candidate) {
                         return candidate->id == device.id;
                     });
-                    if (track == selectedTrack && panel != panels.end() && !scroll.getViewArea().isEmpty() &&
+                    if (track == selectedTrack && panel != panels.end() && !(*panel)->configureSession_ &&
+                        !scroll.getViewArea().isEmpty() &&
                         !(*panel)->getBounds().intersects(scroll.getViewArea())) continue;
                     demanded.push_back(device.id);
                 }

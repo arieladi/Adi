@@ -296,6 +296,9 @@ public:
     /// Owner thread. Advances on another native touch even if lastTouched()
     /// is unchanged. Zero means no touch on the current live attachment.
     [[nodiscard]] std::uint64_t lastTouchSequence(std::int64_t deviceId) const noexcept;
+    /// Current attachment's chronological native touches. Consume the span
+    /// before draining again or changing attachments.
+    [[nodiscard]] std::span<const ParameterTouch> recentTouches(std::int64_t deviceId) const noexcept;
 
     /// How close is "the same value" for `applied` (decision 3). Default 1e-6,
     /// the capture's own echo tolerance.

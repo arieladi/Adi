@@ -708,6 +708,7 @@ class AdiApplication final : public juce::JUCEApplication,
         root->browser.swapChoice = [this](const BrowserPanel::HotSwapChoice &choice) { return swapBrowserChoice(choice); };
         root->browser.leaveHotSwap = [this] { leaveHotSwap(); };
         root->devices.publication = [this] { return document_->parameterFeed().current(); };
+        root->devices.pollParameterEdits = [this] { document_->pollParameterEdits(); };
         root->devices.parameterDemand = [this](const void *consumer, const std::vector<std::int64_t> &ids) {
             document_->setParameterDemand(consumer, ids);
         };

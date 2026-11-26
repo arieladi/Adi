@@ -11,7 +11,8 @@ bool samePanel(const DevicePanelData &a, const DevicePanelData &b) {
     const auto card = [](const DevicePanelData &d) {
         // The instance stamp includes the preparation shape and token epoch.
         return std::tie(d.id, d.track, d.chain, d.instance, d.available, d.latency,
-                        d.name, d.enabled, d.instrument, d.plugin, d.uid, d.sidechainChannels, d.processingIssue, d.pluginTouch,
+                        d.name, d.enabled, d.instrument, d.plugin, d.uid, d.sidechainChannels, d.processingIssue,
+                        d.pluginTouch, d.recentPluginTouches,
                         d.metadata, d.cachedRecords, d.defaults, d.parameterGroups,
                         d.resolved.configured, d.resolved.showsConfigureHint, d.resolved.modifiableCount);
     };
@@ -99,18 +100,37 @@ void ParameterFeed::publish(engine::Session &session, std::uint64_t modelRevisio
                 identity.stamp = ++nextIdentity_;
                 identity.runtime = session.deviceRuntimeToken(row.id);
                 identity.pluginRef = row.pluginRefId; identity.uid = data.uid;
+                identity.touchSequence = 0;
+                identity.recentTouches.reset();
                 native_.erase(row.id);
             }
             data.runtime = identity.runtime;
             data.instance = identity.stamp; identity.seen = publication;
             if (parameterOps_ && data.available && (data.format == "vst3" || data.format == "clap") &&
                 session.resolveDevice(data.runtime) == instance) {
+                const auto stableId = [instance](std::int32_t index) -> const std::string * {
+                    const auto *parameter = index >= 0 ? instance->paramAt(index) : nullptr;
+                    if (parameter && !parameter->id.empty() && !parameter->missing &&
+                        (parameter->automatable || parameter->configurable))
+                        return &parameter->id;
+                    return nullptr;
+                };
                 const auto sequence = parameterOps_->lastTouchSequence(row.id);
                 const auto index = sequence ? parameterOps_->lastTouched(row.id) : -1;
-                if (const auto *parameter = index >= 0 ? instance->paramAt(index) : nullptr;
-                    parameter && !parameter->id.empty() && !parameter->missing &&
-                    (parameter->automatable || parameter->configurable))
-                    data.pluginTouch = PluginParameterTouch{parameter->id, sequence};
+                if (const auto *id = stableId(index))
+                    data.pluginTouch = PluginParameterTouch{*id, sequence};
+                if (sequence != identity.touchSequence) {
+                    std::vector<PluginParameterTouch> touches;
+                    const auto recent = parameterOps_->recentTouches(row.id);
+                    touches.reserve(recent.size());
+                    for (const auto &touch : recent)
+                        if (const auto *id = stableId(touch.index))
+                            touches.push_back({*id, touch.sequence});
+                    identity.recentTouches = touches.empty() ? nullptr :
+                        std::make_shared<const std::vector<PluginParameterTouch>>(std::move(touches));
+                    identity.touchSequence = sequence;
+                }
+                data.recentPluginTouches = identity.recentTouches;
             }
             // Mixer and selection identity stays available without touching parameters.
             if (!demanded_.contains(row.id)) { next->push_back(std::move(data)); continue; }

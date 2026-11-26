@@ -145,6 +145,7 @@ struct ParamOps::Runtime final : SessionRuntimeClient, std::enable_shared_from_t
     bool isAttached(std::int64_t) const noexcept;
     std::int32_t lastTouched(std::int64_t) const noexcept;
     std::uint64_t lastTouchSequence(std::int64_t) const noexcept;
+    std::span<const ParameterTouch> recentTouches(std::int64_t) const noexcept;
     const ParamEditCapture* touchCapture(std::int64_t) const noexcept;
     void frontendEnded() noexcept;
     void pump(std::int64_t nowMs) override;
@@ -902,6 +903,10 @@ std::int32_t ParamOps::Runtime::lastTouched(std::int64_t deviceId) const noexcep
 std::uint64_t ParamOps::Runtime::lastTouchSequence(std::int64_t deviceId) const noexcept {
     const auto* capture = touchCapture(deviceId);
     return capture ? capture->lastTouchSequence() : 0;
+}
+std::span<const ParameterTouch> ParamOps::Runtime::recentTouches(std::int64_t deviceId) const noexcept {
+    const auto* capture = touchCapture(deviceId);
+    return capture ? capture->recentTouches() : std::span<const ParameterTouch>{};
 }
 
 const ParamEditCapture::Stats* ParamOps::Runtime::captureStats(std::int64_t deviceId) const noexcept {
@@ -2564,6 +2569,7 @@ const ParamEditCapture::Stats* ParamOps::uiCaptureStats(std::int64_t id) const n
 bool ParamOps::isAttached(std::int64_t id) const noexcept { return runtime_->isAttached(id); }
 std::int32_t ParamOps::lastTouched(std::int64_t id) const noexcept { return runtime_->lastTouched(id); }
 std::uint64_t ParamOps::lastTouchSequence(std::int64_t id) const noexcept { return runtime_->lastTouchSequence(id); }
+std::span<const ParameterTouch> ParamOps::recentTouches(std::int64_t id) const noexcept { return runtime_->recentTouches(id); }
 void ParamOps::setTolerance(double value) noexcept { runtime_->tolerance_=value>0.0?value:0.0; }
 
 void ParamOps::Runtime::frontendEnded() noexcept {

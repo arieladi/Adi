@@ -395,6 +395,20 @@ void pluginTouchPublication(const std::filesystem::path &file) {
     check(first != targets.end() && first->lastTouched && first->paramRef == "31" &&
               std::count_if(targets.begin(), targets.end(), [](const auto &target) { return target.lastTouched; }) == 1,
           "SC-317: Automation offers the touched parameter first for its exact device");
+
+    knobs->windowGesture(1, .625);
+    knobs->windowGesture(0, .875);
+    document->pollParameterEdits();
+    const auto burst = document->parameterFeed().current();
+    const auto history = burst->front().recentPluginTouches;
+    check(history && history->size() >= 2 && burst->front().pluginTouch &&
+              (*history)[history->size() - 2].parameter == "gain" &&
+              history->back() == *burst->front().pluginTouch && history->back().parameter == "0000001f" &&
+              (*history)[history->size() - 2].sequence < history->back().sequence,
+          "SC-317: polling the Configure baseline publishes both editor touches in order");
+    document->tick(3);
+    check(document->parameterFeed().current()->front().recentPluginTouches == history,
+          "SC-317: unchanged history stays shared across publications");
 }
 
 void moveOrdinaryDevice(const std::filesystem::path &file) {

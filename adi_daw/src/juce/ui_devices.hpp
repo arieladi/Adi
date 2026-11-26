@@ -361,6 +361,8 @@ class DeviceChainStrip final : public juce::Component,
     void focusLost(FocusChangeType) override { repaint(); }
     AdiRootComponent &root;
     std::function<std::shared_ptr<const ParameterPublication>()> publication;
+    // Publish native gestures already waiting when a Configure session opens.
+    std::function<void()> pollParameterEdits;
     std::function<void(const void *, const std::vector<std::int64_t> &)> parameterDemand;
     std::function<bool(std::int64_t, const std::string &, engine::ParamEventKind, double)> gesture;
     std::function<bool(std::int64_t, const std::string &, engine::ParamEventKind, double,

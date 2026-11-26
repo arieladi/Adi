@@ -576,6 +576,12 @@ bool ProjectDocument::settleParameters() {
     }
     return true;
 }
+void ProjectDocument::pollParameterEdits() {
+    std::vector<OpRequest> requests;
+    parameterOps_.drain(captureNowMs(), requests);
+    commitCaptured(requests);
+    feed_.publish(session_, realisedGeneration_);
+}
 void ProjectDocument::tick(std::int64_t milliseconds) {
     synchronise();
     session_.tick(milliseconds);
@@ -587,10 +593,7 @@ void ProjectDocument::tick(std::int64_t milliseconds) {
     // turns Record off. A healthy capture returns nothing. With the device stopped, nothing moves the
     // callback on, so the take is settled as the driver's is.
     pollRecording(deviceStopped_.load(std::memory_order_acquire));
-    std::vector<OpRequest> requests;
-    parameterOps_.drain(captureNowMs(), requests);
-    commitCaptured(requests);
-    feed_.publish(session_, realisedGeneration_);
+    pollParameterEdits();
     persistReportedLatencies();
     pollTrackRender();
 }

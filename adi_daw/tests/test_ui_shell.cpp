@@ -12179,6 +12179,7 @@ void pluginConfigureTouches(AppCommands &commands, const std::filesystem::path &
     surface.addToDesktop(0);
     root.afterEdit = [&] { document->synchronise(); };
     root.devices.publication = [&] { return document->parameterFeed().current(); };
+    root.devices.pollParameterEdits = [&] { document->pollParameterEdits(); };
     root.devices.parameterDemand = [&](const void *owner, const std::vector<std::int64_t> &ids) {
         document->setParameterDemand(owner, ids);
     };
@@ -12233,12 +12234,14 @@ void pluginConfigureTouches(AppCommands &commands, const std::filesystem::path &
     const auto beforeConfigure = menuAction("Gain", "Show on Device Panel");
     check(beforeConfigure && ordered() == original && panelEdits == 0,
           "outside Configure a plug-in touch is offered without editing the panel");
+    knobs->windowGesture(0, .57);
     panel.configureButton.onClick();
     settle();
     check(panel.configuring && panel.search.isVisible() && panel.parameterList.isVisible() &&
               opened == std::vector<std::int64_t>{id} && host.contains(AdiRootComponent::pluginWindowKey(id)),
           "Configure opens this plug-in's editor and keeps the typed Parameter List available");
-    check(ordered() == original && panelEdits == 0, "Configure ignores the touch already present when it opened");
+    check(ordered() == original && panelEdits == 0,
+          "Configure ignores touches already published or still waiting when it opened");
     touch(0, .6);
     check(panelEdits == 0 && ordered() == original, "the view defers the edit until its frame is complete");
     settle();
@@ -12252,6 +12255,16 @@ void pluginConfigureTouches(AppCommands &commands, const std::filesystem::path &
     check(panelEdits == 2 && ordered() == std::vector<std::string>{original.front(), "0000001f", "gain"} &&
               root.command(AppCommands::Undo) && ordered() == std::vector<std::string>{original.front(), "0000001f"},
           "a second learned parameter follows the first and one Undo removes just that panel edit");
+    check(reset(), "reset the panel to exercise two plug-in touches in one drain");
+    frame();
+    const auto beforeBoth = panelEdits;
+    knobs->windowGesture(1, .55);
+    knobs->windowGesture(0, .75);
+    frame();
+    settle();
+    check(panelEdits == beforeBoth + 1 && ordered() == std::vector<std::string>{original.front(), "gain", "0000001f"} &&
+              root.command(AppCommands::Undo) && ordered() == original,
+          "two native controls touched in the same drain appear in touch order and one Undo restores the prior panel");
 
     panel.configureButton.onClick();
     check(!panel.configuring && !panel.search.isVisible() && reset(), "leaving Configure keeps ordinary offers temporary again");

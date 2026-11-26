@@ -78,6 +78,8 @@ struct DevicePanelData {
     std::string processingIssue{};
     // Latest user touch in this instance's own plug-in window, available even without panel demand.
     std::optional<PluginParameterTouch> pluginTouch{};
+    // Recent touches in capture order, shared by all the surfaces that show this instance.
+    std::shared_ptr<const std::vector<PluginParameterTouch>> recentPluginTouches{};
 };
 using ParameterPublication = std::vector<DevicePanelData>;
 // One document-owned message-thread publication, shared by every window/surface.
@@ -102,6 +104,8 @@ class ParameterFeed {
         std::string uid;
         std::uint64_t stamp = 0;
         std::uint64_t seen = 0;
+        std::uint64_t touchSequence = 0;
+        std::shared_ptr<const std::vector<PluginParameterTouch>> recentTouches;
     };
     std::map<std::int64_t, Identity> identities_;
     struct NativeCache {
