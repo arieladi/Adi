@@ -11201,17 +11201,23 @@ void loopMetronome(AppCommands &commands, settings::AppSettings &settings, const
                         return slider;
         return nullptr;
     };
+    // JUCE snaps to a hundredth of a dB. Fused arithmetic can round the same
+    // step slightly differently, so compare well below the slider interval.
+    const auto sameLevel = [](double actual, double expected) { return std::abs(actual - expected) < 1e-9; };
     const auto volumeMenu = bar.metronomeMenu();
     auto *slider = volumeSlider(volumeMenu);
-    check(slider && slider->getValue() == readCueSettings(document->store()).volumeDb,
+    check(slider && sameLevel(slider->getValue(), readCueSettings(document->store()).volumeDb),
           "SC-246: the menu slider shows the project's Cue Volume");
     if (slider) {
-        slider->setValue(-12.0, juce::sendNotificationSync);
+        constexpr double newVolumeDb = -12.0;
+        slider->setValue(newVolumeDb, juce::sendNotificationSync);
         root.frame();
         const auto updated = bar.metronomeMenu();
         const auto *updatedSlider = volumeSlider(updated);
-        check(readCueSettings(document->store()).volumeDb == -12.0 && root.reader().get()->cue.volumeDb == -12.0 &&
-                  updatedSlider && updatedSlider->getValue() == -12.0 && root.undoTitle(false) == undoTitle,
+        check(sameLevel(readCueSettings(document->store()).volumeDb, newVolumeDb) &&
+                  sameLevel(root.reader().get()->cue.volumeDb, newVolumeDb) &&
+                  updatedSlider && sameLevel(updatedSlider->getValue(), newVolumeDb) &&
+                  root.undoTitle(false) == undoTitle,
               "SC-246: the slider changes shared Cue Volume and reopening reads it back without an undo step");
     }
 
