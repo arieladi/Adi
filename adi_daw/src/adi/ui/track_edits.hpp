@@ -22,6 +22,21 @@ namespace adi::ui {
 // track. Indexes are put in order as part of the batch wherever the edit needs it: tracks that
 // share an index_in_parent fall to their order in the snapshot, and a reorder for each makes the
 // order the edit leaves the one the file says, whatever indexes it held before.
+// The name a rename stores (Live 12 manual 18.2; walk-A A34, DF-W57). An empty name is no name: Live
+// gives the track its default name back. For a MIDI, audio or group track that is "# MIDI", "# Audio" or
+// "# Group", whose '#' shows the track's number. A return, a VCA and Main, whose names are made when
+// they are, keep the name they have.
+inline std::string renamedTrackName(const engine::TrackNode &track, const std::string &text) {
+    if (text.find_first_not_of(" \t") != std::string::npos)
+        return text;
+    if (track.kind == "midi" || track.kind == "instrument")
+        return "# MIDI";
+    if (track.kind == "audio")
+        return "# Audio";
+    if (track.kind == "group")
+        return "# Group";
+    return track.name;
+}
 struct TrackEdit {
     std::vector<OpRequest> ops;
     std::int64_t select = 0; // the track to select once the batch lands

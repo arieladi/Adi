@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_stack.hpp"
+#include "adi/ui/track_edits.hpp"
 #include "ui_stack_picker.hpp"
 #include "adi/builtin_catalog.hpp"
 #include "ui_devices.hpp"
@@ -1489,8 +1490,9 @@ void StackTab::endRename(bool commit) {
     if (commit && capture && model().live(capture->target.row)) {
         const auto current = root.current();
         const auto *track = current ? current->findTrack(capture->target.row.track) : nullptr;
-        if (track && track->name != text)
-            root.submitEdit("track.rename", {{"id", track->id}, {"name", text}}, "Rename Track");
+        // An empty name gives the track its default name back, as Live (walk-A A34).
+        if (const auto name = track ? renamedTrackName(*track, text) : std::string(); track && track->name != name)
+            root.submitEdit("track.rename", {{"id", track->id}, {"name", name}}, "Rename Track");
     }
     endInteraction();
 }

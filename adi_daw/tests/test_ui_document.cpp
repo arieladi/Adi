@@ -1814,6 +1814,61 @@ int main(int argc, char **argv) {
         }
     }
     {
+        // Live's load of a plug-in instrument (walk-A A26, DF-W52): onto a MIDI track only, and in place
+        // of the track's instrument, in one undo step.
+        auto live = ui::ProjectDocument::open(temp.path() / "load-plugin.adi", true, test::knobsLoader(), error);
+        check(live != nullptr, "a fresh document for loading plug-ins as Live does");
+        if (live) {
+            auto &db = live->store().db();
+            const auto onTrack = [&db](int track) {
+                return db.execAndGet("SELECT count(*) FROM devices JOIN device_chains ON device_chains.id = "
+                                     "devices.chain_id WHERE device_chains.track_id = " + std::to_string(track)).getInt();
+            };
+            const auto deviceOn = [&db](int track) {
+                return db.execAndGet("SELECT COALESCE(MAX(devices.id), 0) FROM devices JOIN device_chains ON "
+                                     "device_chains.id = devices.chain_id WHERE device_chains.track_id = " +
+                                     std::to_string(track)).getInt64();
+            };
+            rows::PluginRef synth;
+            synth.format = "clap";
+            synth.uid = test::kKnobsUid;
+            synth.name = "First synth";
+            synth.subtype = "instrument";
+            const auto opsHeld = db.execAndGet("SELECT count(*) FROM ops").getInt();
+            check(!live->loadPlugin(synth, 4) &&
+                      live->error() == "First synth is an instrument: load it onto a MIDI track" && onTrack(4) == 0 &&
+                      db.execAndGet("SELECT count(*) FROM ops").getInt() == opsHeld,
+                  "a plug-in instrument is refused on an audio track, and nothing is written");
+            check(!live->loadPlugin(synth, 1) && onTrack(1) == 0, "and on Main");
+            check(live->loadPlugin(synth, 2) && onTrack(2) == 1, "it loads onto a MIDI track");
+            const auto first = deviceOn(2);
+            auto second = synth;
+            second.name = "Second synth";
+            check(live->loadPlugin(second, 2) && live->synchronise() && onTrack(2) == 1 && deviceOn(2) != first &&
+                      live->ops().nextUndo() && live->ops().nextUndo()->label == "Insert Second synth",
+                  "a second instrument takes the first one's place, in one step named for it");
+            check(live->ops().undo().ok && live->synchronise() && onTrack(2) == 1 && deviceOn(2) == first,
+                  "one Undo brings the first instrument back");
+            live->release();
+        }
+        auto fx = ui::ProjectDocument::open(temp.path() / "load-effect.adi", true, test::knobsLoader(), error);
+        check(fx != nullptr, "a fresh document for loading an effect");
+        if (fx) {
+            rows::PluginRef effect;
+            effect.format = "clap";
+            effect.uid = test::kKnobsUid;
+            effect.name = "An effect";
+            effect.subtype = "effect";
+            const bool loaded = fx->loadPlugin(effect, 4) && fx->loadPlugin(effect, 4);
+            // Counted on its track: the default Set's returns hold devices of their own.
+            check(loaded && fx->store().db().execAndGet(
+                                "SELECT count(*) FROM devices JOIN device_chains ON device_chains.id = "
+                                "devices.chain_id WHERE device_chains.track_id = 4").getInt() == 2,
+                  ("an effect loads onto an audio track, and a second one beside it, as before: " + fx->error()).c_str());
+            fx->release();
+        }
+    }
+    {
         // Live's device clipboard (manual 23.2.1; D2, N18, #394), on a device the project stores and
         // no plug-in loaded: Copy reads the stored rows only; Paste in front of a device is one undo
         // step with a new id and the source's stored parameters; Cut and Paste bring it back.

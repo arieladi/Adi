@@ -223,6 +223,11 @@ class ProjectDocument final : public engine::BlockProcessor {
     bool insertBuiltin(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before);
     bool insertPlugin(const rows::PluginRef &, std::int64_t track,
                       std::optional<std::int64_t> before = {}, const PluginInsertOptions& = {});
+    // A plug-in the user loads from the Browser or the Stack's menu, as Live loads one (walk-A A26,
+    // DF-W52): an instrument goes onto a MIDI track only (it takes notes and no audio, so it would
+    // silence any other track) and takes the place of the track's instrument, in the same undo step.
+    // An effect loads as `insertPlugin` places it.
+    bool loadPlugin(const rows::PluginRef &, std::int64_t track, std::optional<std::int64_t> before = {});
     bool addMixFunction(mix::Function, std::int64_t track);
     std::vector<DeviceKeyChoice> deviceKeyChoices(const DevicePanelData&);
     bool setDeviceKeyChoice(const DevicePanelData&,const DeviceKeyChoice&);

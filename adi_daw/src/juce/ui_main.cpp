@@ -829,7 +829,9 @@ class AdiApplication final : public juce::JUCEApplication,
                 return document_->store().db().execAndGet("SELECT COALESCE(MAX(id), 0) FROM devices").getInt64();
             };
             const auto before_ = newest();
-            if (!document_->insertPlugin(ref, track, before)) {
+            // As Live loads one: an instrument onto a MIDI track only, in place of the track's instrument
+            // (walk-A A26).
+            if (!document_->loadPlugin(ref, track, before)) {
                 if (root_)
                     root_->say(document_->error());
                 return false;
