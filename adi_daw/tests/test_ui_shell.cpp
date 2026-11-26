@@ -13088,6 +13088,17 @@ void automationChooserControls(AppCommands &commands, const std::filesystem::pat
         root.setAutomationMode(false);
         row.mouseDown(pressAt(row.volume, row.volume.getLocalBounds().getCentre().toFloat(), left));
         check(root.automationTarget(2) == panTarget(2), "clicking Volume with Automation Mode off leaves the choice alone");
+        root.setAutomationMode(true);
+        const auto &children = row.volume.getChildren();
+        const auto label = std::find_if(children.begin(), children.end(), [](const auto *child) {
+            return dynamic_cast<const juce::Label *>(child) != nullptr;
+        });
+        check(label != children.end(), "the inline Volume bar has its value label");
+        if (label != children.end()) {
+            row.mouseDown(pressAt(**label, (*label)->getLocalBounds().getCentre().toFloat(), left));
+            check(root.automationTarget(2) == volumeTarget(2),
+                  "clicking the inline Volume value label shows its envelope in Automation Mode");
+        }
     }
 }
 void automationRangeEdits(AppCommands &commands,const std::filesystem::path &dir) {
