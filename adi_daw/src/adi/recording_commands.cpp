@@ -136,14 +136,15 @@ fs::path reservePublication(const fs::path& parent) {
     }
     throw std::runtime_error("cannot reserve recording publication staging");
 }
-engine::TempoMap tempoOf(Store& store) {
+engine::TempoMap tempoOf(Store& store, bool addDefaultLeadIn = true) {
     engine::TempoMap result;SQLite::Statement points(store.db(),"SELECT pos_ticks,bpm,curve FROM tempo_map ORDER BY pos_ticks,id");
     while(points.executeStep()) {
         const auto at=points.getColumn(0).getInt64();const auto bpm=points.getColumn(1).getDouble();
         if(at<0 || !std::isfinite(bpm) || bpm<=0 || bpm>=1000)throw std::runtime_error("recording placement needs a valid tempo map");
         result.events.push_back({at,bpm,points.getColumn(2).getInt()});
     }
-    if(result.events.empty() || result.events.front().posTicks!=0)result.events.insert(result.events.begin(),{0,120,0});
+    if(result.events.empty() || (addDefaultLeadIn && result.events.front().posTicks!=0))
+        result.events.insert(result.events.begin(),{0,120,0});
     return result;
 }
 std::int64_t tickAt(const engine::TempoMap& tempo,std::int64_t sample,std::uint32_t rate) {
@@ -154,14 +155,23 @@ std::int64_t tickAt(const engine::TempoMap& tempo,std::int64_t sample,std::uint3
         throw std::runtime_error("recording boundary cannot preserve its sample on this musical clock");
     return tick;
 }
+void validatePunchBoundary(const engine::TempoMap& tempo,const engine::RecordingPunchWindow::Boundary& boundary,
+                           std::uint32_t rate) {
+    const auto sample = static_cast<long double>(tempo.ticksToSeconds(boundary.tick)) * rate;
+    if(!std::isfinite(sample) || sample < 0 || sample > 0x1p50L || std::llround(sample)!=boundary.sample)
+        throw std::runtime_error("the recording clock changed at a punch boundary");
+}
+
 struct RecordedPiece {
     std::int64_t id=0,begin=0,end=0;
     std::uint64_t source=0;
     std::string name;
+    std::optional<std::pair<std::int64_t,std::int64_t>> placementTicks{};
 };
 Payload recordedImage(Store& store,const engine::TempoMap& tempo,const RecordedPiece& piece,
     std::int64_t track,std::int64_t media,std::uint32_t rate,std::optional<std::int64_t> lane={}) {
-    const auto first=tickAt(tempo,piece.begin,rate),last=tickAt(tempo,piece.end,rate);
+    const auto [first,last]=piece.placementTicks ? *piece.placementTicks
+        : std::pair{tickAt(tempo,piece.begin,rate),tickAt(tempo,piece.end,rate)};
     if(last<=first)throw std::runtime_error("recorded pass has no representable musical extent");
     auto row=edit::defaultRow(store.db(),"clips",{{"id",piece.id},{"track_id",track},{"kind","audio"},
         {"name",piece.name},{"time_base",0},{"pos_ticks",first},{"length_ticks",last-first}});
@@ -409,21 +419,33 @@ RecordingEdit RecordingEdit::prepareLinear(Store& store, const engine::AudioReco
             const auto& recorded = *audioTake;
             if (recorded.loopSpec())
                 throw std::runtime_error("loop recording needs take-pass publication; linear attachment is not permitted");
-            const auto tempo = tempoOf(store);
+            const auto& punch = recorded.punchWindow();
+            const auto tempo = tempoOf(store, !punch.active());
             constexpr auto ceiling = std::numeric_limits<std::int64_t>::max();
             if (recorded.frames > static_cast<std::uint64_t>(ceiling) || recorded.startSample < 0 ||
                 recorded.frames > static_cast<std::uint64_t>(ceiling - recorded.startSample) ||
                 recorded.sampleRate < 8000 || recorded.sampleRate > 768000)
                 throw std::runtime_error("recording is not a completed attachable take");
-            const auto placed = engine::recordingPlacementStart(recorded.startSample, placementOffsetSamples);
-            if (!placed)
-                throw std::runtime_error("recording latency placement overflows the song clock");
-            const auto start = *placed;
-            if (recorded.frames > static_cast<std::uint64_t>(ceiling - start))
-                throw std::runtime_error("recording latency placement overflows the song clock");
-            const auto end = start + static_cast<std::int64_t>(recorded.frames);
-            const auto beginTick = tickAt(tempo, start, recorded.sampleRate);
-            const auto endTick = tickAt(tempo, end, recorded.sampleRate);
+            const auto range = engine::recordingPlacementRange(recorded.startSample, recorded.frames,
+                                                               placementOffsetSamples, punch);
+            if (!range) {
+                result.audioOutsidePunch = punch.active() &&
+                    engine::recordingPlacementRange(recorded.startSample, recorded.frames, placementOffsetSamples, {}).has_value();
+                throw std::runtime_error(result.audioOutsidePunch ? "no audio remains within the compensated punch range"
+                                                                  : "recording latency placement overflows the song clock");
+            }
+            if (punch.in)
+                validatePunchBoundary(tempo, *punch.in, recorded.sampleRate);
+            if (punch.out)
+                validatePunchBoundary(tempo, *punch.out, recorded.sampleRate);
+            const auto start = range->timelineStartSample;
+            const auto end = range->timelineEndSample;
+            // Several ticks can project to the same sample. Use the authored
+            // brace at a clipped edge so even the edit range stays inside it.
+            const auto beginTick = punch.in && start == punch.in->sample
+                ? punch.in->tick : tickAt(tempo, start, recorded.sampleRate);
+            const auto endTick = punch.out && end == punch.out->sample
+                ? punch.out->tick : tickAt(tempo, end, recorded.sampleRate);
             if (endTick <= beginTick)
                 throw std::runtime_error("recording has no representable musical extent");
             auto sources = prepareSources(store, recorded, ids, result);
@@ -435,7 +457,8 @@ RecordingEdit RecordingEdit::prepareLinear(Store& store, const engine::AudioReco
                     source.mediaEdit->label = label;
                     result.requests.push_back(std::move(*source.mediaEdit));
                 }
-                const RecordedPiece take{wanted.clip, start, end, 0, wanted.name.empty() ? std::string("Recording") : wanted.name};
+                const RecordedPiece take{wanted.clip, start, end, range->sourceStartFrame,
+                    wanted.name.empty() ? std::string("Recording") : wanted.name, std::pair{beginTick,endTick}};
                 place(recordedImage(store, tempo, take, target.trackId, source.mediaId, recorded.sampleRate),
                       target.trackId, beginTick, endTick);
             }

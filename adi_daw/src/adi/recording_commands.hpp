@@ -45,6 +45,7 @@ struct MidiTakePass {
 };
 struct RecordingEdit {
     bool ok=false;
+    bool audioOutsidePunch=false; // valid latency placement with no frames inside the punch
     std::string error,sourceProject;
     std::vector<OpRequest> requests;
     CommitOptions options;

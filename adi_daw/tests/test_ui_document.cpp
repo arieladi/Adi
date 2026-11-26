@@ -1899,6 +1899,98 @@ void arrangementMidiRecord(const std::filesystem::path &path, bool mixed) {
     check(doc->ops().undo().ok && clipCount() == before && doc->ops().redo().ok && clipCount() == before + expected,
           "one Undo and one Redo for the whole take");
 }
+void mixedPunchKeepsMidi(const std::filesystem::path &dir) {
+    std::string error;
+    auto doc = ui::ProjectDocument::open(dir / "mixed-punch.adi", true, {}, error);
+    check(doc != nullptr, "SC-26: a project for a mixed punch take");
+    if (!doc)
+        return;
+    const auto set = [&](const char *type, Payload payload) {
+        OpRequest request;
+        request.opType = type;
+        request.payload = std::move(payload);
+        return doc->ops().submit(request).ok;
+    };
+    constexpr int frames = 64;
+    const auto tempo = doc->view().current()->tempo;
+    // Both authored offsets are smaller than a sample. The canonical
+    // sample-to-tick conversion falls beyond both ends of this brace.
+    const auto start = tempo->secondsToTicks(static_cast<double>(frames) / 48000) + 16;
+    const auto end = tempo->secondsToTicks(3.0 * frames / 48000) - 16;
+    if (!set("track.setArm", {{"id", 2}, {"armed", true}}) ||
+        !set("track.setArm", {{"id", 4}, {"armed", true}}) ||
+        !set("track.setMonitorMode", {{"id", 2}, {"mode", 0}}) ||
+        !set("track.setMonitorMode", {{"id", 4}, {"mode", 0}}) ||
+        !set("transport.setLoop", {{"on", false}, {"start", start}, {"end", end}}) ||
+        !set("transport.setPunch", {{"in", true}, {"out", true}}) || !doc->synchronise())
+        throw std::runtime_error("could not configure the mixed punch take");
+    doc->prepare(48000, frames);
+    const auto recovery = dir / "punch-recovery";
+    if (!doc->startRecording(0, 1, false, 4 * frames, media::pathUtf8(recovery)))
+        throw std::runtime_error(doc->error());
+
+    std::array<float, frames> in{}, left{}, right{};
+    in.fill(.25f);
+    const float *inputs[]{in.data()};
+    float *outputs[]{left.data(), right.data()};
+    engine::AudioIo io;
+    io.in = inputs;
+    io.numIn = 1;
+    io.out = outputs;
+    io.numOut = 2;
+    io.frames = frames;
+    const auto block = [&] {
+        doc->process(io);
+        io.streamTimeSamples += io.frames;
+        doc->tick(io.streamTimeSamples);
+    };
+    block();
+    check(doc->session().enqueueMidiInput(80, {0, engine::EventType::NoteOn, 1, 64, 9, 0, 1.0}, 80) &&
+              doc->session().enqueueMidiInput(112, {0, engine::EventType::NoteOff, 1, 64, 9, 0, .5}, 112),
+          "SC-26: capture one MIDI note within the brace");
+    block();
+    block();
+    const auto preview = doc->liveMidiTakes();
+    check(preview.size() == 1 && preview.front().start == start && preview.front().end == end,
+          "SC-26: the MIDI preview preserves both authored punch ticks within the captured samples");
+    doc->stopRecording();
+    block();
+    doc->release();
+    check(doc->settleRecording(), "SC-26: settle the mixed punch take");
+
+    std::filesystem::path capture;
+    for (const auto &entry : std::filesystem::directory_iterator(recovery))
+        if (entry.is_directory() && media::pathUtf8(entry.path().filename()).starts_with(".adi-record-"))
+            capture = entry.path();
+    const auto landed = doc->takeLanded();
+    check(landed && landed->ok && landed->clips.size() == 1 &&
+              landed->message.find("compensated punch range") != std::string::npos && !capture.empty() &&
+              landed->message.find(media::pathUtf8(capture)) != std::string::npos,
+          "SC-26: preserve the MIDI take and report the rejected audio's full directory");
+    check(doc->store().db().execAndGet("SELECT count(*) FROM media_files").getInt() == 0,
+          "SC-26: the retained audio is not added to the project's media pool");
+    if (landed && landed->clips.size() == 1) {
+        const auto detail = engine::readClipDetails(doc->store(), landed->clips.front(), true, true);
+        check(detail.clip && detail.clip->kind == "midi" && detail.clip->trackId == 2 &&
+                  detail.clip->posTicks == start && detail.clip->lengthTicks == end - start &&
+                  detail.clip->notes.size() == 1 && detail.clip->notes.front().key == 64,
+              "SC-26: the MIDI clip lands at the authored brace without overwriting either side");
+        check(doc->ops().undo().ok && doc->store().db().execAndGet("SELECT count(*) FROM clips").getInt() == 0 &&
+                  doc->ops().redo().ok && doc->store().db().execAndGet("SELECT count(*) FROM clips").getInt() == 1,
+              "SC-26: the MIDI take can be undone and redone as one edit");
+    }
+    const auto wav = capture / "take-0.wav";
+    const bool retained = !capture.empty() && std::filesystem::is_regular_file(wav);
+    check(retained, "SC-26: the private WAV remains available for recovery");
+    if (retained) {
+        audio::WavReader reader(wav);
+        std::array<float, 2 * frames> samples{};
+        check(reader.channels() == 1 && reader.frames() == samples.size() &&
+                  reader.read(samples.data(), static_cast<std::uint32_t>(samples.size())) == samples.size() &&
+                  std::all_of(samples.begin(), samples.end(), [](float value) { return value == .25f; }),
+              "SC-26: the retained WAV contains all the original punched PCM");
+    }
+}
 // MX-23 and SRF-02: a fader dragged is heard while it moves, writes nothing until the mouse lets go, then
 // lands as one undo step; Esc puts it back (Live 12 manual 18.1).
 void mixerDragHeard(const std::filesystem::path &dir) {
@@ -2270,6 +2362,30 @@ void peakSpans() {
     check(is(ui::peakSpan(p, 0., 256., 1), 9.f, 9.f), "peak span: the second channel reads its own bins");
 }
 
+void punchedWaveformBounds() {
+    engine::TempoMap tempo;
+    tempo.events.push_back({0, 120, 0});
+    constexpr std::uint32_t rate = 48000;
+    constexpr std::int64_t start = 64, end = 192;
+    const auto inverseFirst = tempo.secondsToTicks(static_cast<double>(start) / rate);
+    const auto inverseLast = tempo.secondsToTicks(static_cast<double>(end) / rate);
+    // The ticks intentionally differ from the sample clock's inverse but still
+    // round to the same device samples. The landed clip keeps the authored ticks.
+    using Boundary = engine::RecordingPunchWindow::Boundary;
+    engine::AudioRecordingPreview::PunchedPlacement punch{start, 32,
+        {Boundary{start, inverseFirst - 1}, Boundary{end, inverseLast + 1}}};
+    const auto early = ui::punchedPreviewRange(punch, 128, rate, tempo);
+    check(early && early->startTicks == punch.window.in->tick && early->sourceStartFrame == 32 &&
+              early->sourceEndFrame == 128,
+          "SC-26: preview uses the exact authored Punch-In tick and skips trimmed source frames");
+    punch.offsetSamples = -32;
+    const auto late = ui::punchedPreviewRange(punch, 128, rate, tempo);
+    check(late && late->endTicks == punch.window.out->tick && late->sourceStartFrame == 0 &&
+              late->sourceEndFrame == 96,
+          "SC-26: preview uses the exact authored Punch-Out tick and stops at the trimmed source end");
+    punch.offsetSamples = 256;
+    check(!ui::punchedPreviewRange(punch, 128, rate, tempo), "SC-26: a fully clipped preview draws no take");
+}
 void recordedWaveformHandoff() {
     auto clip = std::make_shared<engine::ClipNode>();
     clip->id = 21;
@@ -2490,6 +2606,7 @@ int main(int argc, char **argv) {
         return 0;
     }
     peakSpans();
+    punchedWaveformBounds();
     recordedWaveformHandoff();
     {
         test::TempDirectory bitDepthDir("ui_document", "record-bit-depth");
@@ -2502,6 +2619,8 @@ int main(int argc, char **argv) {
         arrangementMidiRecord(midiRecordingDir.path() / "midi.adi", false);
         test::TempDirectory mixedRecordingDir("ui_document", "record-mixed");
         arrangementMidiRecord(mixedRecordingDir.path() / "mixed.adi", true);
+        test::TempDirectory punchRecoveryDir("ui_document", "mixed-punch-recovery");
+        mixedPunchKeepsMidi(punchRecoveryDir.path());
         test::TempDirectory latencyDir("ui_document", "latency");
         recordWithDeviceLatency(latencyDir.path());
         test::TempDirectory refusedPublicationDir{"ui_document", "recording_publication_refused"};

@@ -835,6 +835,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     bool setMetronome(bool on);
     bool toggleMetronome();
     bool setCountIn(int bars);
+    bool togglePunch(bool start);
     // Live's Arrangement Loop (manual 6.6), `transport.setLoop` outside undo and saved with the
     // project (#383, N19), from the CURRENT cell (ADR-0201). The control bar's switch; the brace over
     // `range`, the switch as it is; Loop Selection (Ctrl/Cmd+L): the brace to the time selection or

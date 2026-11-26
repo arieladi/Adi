@@ -11060,6 +11060,21 @@ void loopMetronome(AppCommands &commands, settings::AppSettings &settings, const
     check(!stored().metronome && !bar.metronome.getToggleState() && root.undoTitle(false) == undoTitle,
           "the switch clicked: off again, no undo step");
 
+    check(!bar.punchIn.getToggleState() && !bar.punchOut.getToggleState(), "a new project has both punch switches off");
+    bar.punchIn.onClick();
+    root.frame();
+    check(stored().punchIn && !stored().punchOut && !stored().loopEnabled &&
+              bar.punchIn.getToggleState() && !bar.punchOut.getToggleState(),
+          "Punch-In persists and lights independently of Punch-Out and Loop");
+    bar.punchOut.onClick();
+    bar.punchIn.onClick();
+    root.frame();
+    check(!stored().punchIn && stored().punchOut && !stored().loopEnabled &&
+              !bar.punchIn.getToggleState() && bar.punchOut.getToggleState() && root.undoTitle(false) == undoTitle,
+          "Punch-Out stays on when Punch-In is switched off and does not add an Undo step");
+    bar.punchOut.onClick();
+    root.frame();
+
     // SC-21, SC-246: use the real menu and its actions with no popup or audio device.
     int menuPresses = 0;
     auto openMenu = std::move(bar.metronome.onDropdown);

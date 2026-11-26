@@ -24,6 +24,27 @@ std::optional<std::int64_t> recordingPlacementStart(std::int64_t startSample,
     return offsetSamples > startSample ? 0 : startSample - offsetSamples;
 }
 
+std::optional<RecordedPass> recordingPlacementRange(std::int64_t startSample,std::uint64_t frames,
+    std::int64_t offsetSamples,const RecordingPunchWindow& punch) noexcept {
+    constexpr auto ceiling = std::numeric_limits<std::int64_t>::max();
+    const auto placed = recordingPlacementStart(startSample,offsetSamples);
+    if(!placed || frames > static_cast<std::uint64_t>(ceiling))
+        return {};
+    // A punched take keeps the original sample mapping even when the correction
+    // crosses song zero. An unpunched take retains the song-zero placement rule.
+    const auto start = punch.active() && offsetSamples > startSample ? startSample-offsetSamples : *placed;
+    const auto count = static_cast<std::int64_t>(frames);
+    if(start > ceiling-count)
+        return {};
+    const auto end = start+count;
+    const auto keptStart = std::max({start,std::int64_t{0},punch.in ? punch.in->sample : std::int64_t{0}});
+    const auto keptEnd = punch.out ? std::min(end,punch.out->sample) : end;
+    if(keptStart >= keptEnd)
+        return {};
+    return RecordedPass{static_cast<std::uint64_t>(keptStart-start),static_cast<std::uint64_t>(keptEnd-keptStart),
+                        keptStart,keptEnd};
+}
+
 struct AudioRecordingResult::Files {fs::path directory;};
 bool AudioRecordingResult::hasAttachableAudio()const noexcept {
     if(frames==0)return false;
@@ -82,6 +103,7 @@ struct Job {
     std::vector<float> ring,readBuffer;
     std::atomic<std::uint64_t> written{0},read{0};
     std::atomic<std::int64_t> firstSample{-1};
+    RecordingPunchWindow punchWindow; // written once before publishing the first captured frames
     std::atomic<RecordingFailure> failure{RecordingFailure::None};
     std::atomic<bool> stopWriter{false},done{false},transportEnded{false};
     std::thread worker;
@@ -156,6 +178,8 @@ struct Job {
                 const auto start = firstSample.load(std::memory_order_relaxed);
                 const auto offset = spec.loop ? 0 : spec.placementOffsetSamples;
                 accumulatingPreview.startSample = recordingPlacementStart(start, offset).value_or(start);
+                if (punchWindow.active())
+                    accumulatingPreview.punchedPlacement = AudioRecordingPreview::PunchedPlacement{start, offset, punchWindow};
                 peaks.channels = static_cast<std::uint32_t>(width);
                 peaks.sampleRate = spec.sampleRate;
                 peaks.framesPerBin = firstPreviewBinFrames;
@@ -248,9 +272,15 @@ struct Job {
         publishPreview(Clock::now());
         done.store(true,std::memory_order_release);
     }
-    bool capture(const AudioIo& io,const Transport& transport)noexcept {
+    bool capture(const AudioIo& io,const Transport& transport,RecordingPunch punch,
+                 const RecordingPunchWindow& window)noexcept {
         if(failure.load(std::memory_order_relaxed)!=RecordingFailure::None || transportEnded.load(std::memory_order_relaxed))return false;
-        if(!transport.playing()){if(begun)transportEnded.store(true,std::memory_order_release);return false;}
+        if(begun && !spec.loop && window!=punchWindow){fail(RecordingFailure::Discontinuity);return false;}
+        if(!transport.playing() || punch==RecordingPunch::After) {
+            if(begun)transportEnded.store(true,std::memory_order_release);
+            return false;
+        }
+        if(punch==RecordingPunch::Before)return false;
         if(io.frames==0)return false;
         if(io.frames<0 || static_cast<std::uint32_t>(io.frames)>spec.maxFrames){fail(RecordingFailure::BlockSize);return false;}
         const auto frames=static_cast<std::uint32_t>(io.frames);
@@ -288,7 +318,10 @@ struct Job {
         }
         for(std::uint32_t frame=0;frame<frames;++frame)for(std::size_t channel=0;channel<inputChannels.size();++channel)
             ring[static_cast<std::size_t>((head+frame)%spec.ringFrames)*inputChannels.size()+channel]=io.in[inputChannels[channel]][frame];
-        if(!begun){firstSample.store(position,std::memory_order_relaxed);transportRevision=transport.revision();begun=true;}
+        if(!begun){
+            if(!spec.loop)punchWindow=window;
+            firstSample.store(position,std::memory_order_relaxed);transportRevision=transport.revision();begun=true;
+        }
         nextTimeline=spec.loop?transport.sampleAt(frames):position+frames;nextStream=io.streamTimeSamples+frames;
         written.store(head+frames,std::memory_order_release);
         return true;
@@ -390,6 +423,7 @@ std::optional<AudioRecordingResult> AudioInputRecorder::poll(bool deviceStopped)
     result.finalizedPrefix_=job->finalized;
     result.sourceProject_=job->spec.sourceProject;
     result.loop_=job->spec.loop;
+    result.punchWindow_=job->punchWindow;
     result.passes_.assign(job->passes.begin(),job->passes.begin()+static_cast<std::ptrdiff_t>(job->passCount));
     if(job->discardRequested) {
         result.failure=RecordingFailure::Cancelled;
@@ -427,9 +461,10 @@ std::optional<AudioRecordingResult> AudioInputRecorder::poll(bool deviceStopped)
     }
     return result;
 }
-std::span<const std::int64_t> AudioInputRecorder::capture(const AudioIo& io,const Transport& transport)noexcept {
+std::span<const std::int64_t> AudioInputRecorder::capture(const AudioIo& io,const Transport& transport,
+                                                        RecordingPunch punch,const RecordingPunchWindow& window)noexcept {
     SnapshotPublisher<State>::AudioRead state(*impl_->published);
-    if(state.valid() && state->job && state->job->capture(io,transport))
+    if(state.valid() && state->job && state->job->capture(io,transport,punch,window))
         return state->job->trackIds;
     return {};
 }

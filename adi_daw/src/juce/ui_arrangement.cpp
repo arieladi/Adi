@@ -26,19 +26,21 @@ ArrangementOverview::ArrangementOverview(ArrangementView &v) : view(v) {
 namespace {
 template <typename FrameAt>
 void paintPeakColumns(juce::Graphics &g, const media::MediaPeaks &peaks, int from, int to, float top, float bottom,
-                      std::span<const std::uint32_t> channelMap, FrameAt frameAt) {
+                      std::span<const std::uint32_t> channelMap, FrameAt frameAt,
+                      double sourceEnd = std::numeric_limits<double>::infinity()) {
     const auto channels = channelMap.empty() ? peaks.channels : static_cast<std::uint32_t>(channelMap.size());
     if (channels == 0 || bottom - top < 4.f)
         return;
     const float band = (bottom - top) / static_cast<float>(channels);
     for (int x = from; x < to; ++x) {
         const auto frame = frameAt(x);
-        if (!frame)
+        if (!frame || *frame >= sourceEnd)
             continue;
         const double end = frameAt(x + 1).value_or(*frame + 1.);
         for (std::uint32_t ch = 0; ch < channels; ++ch) {
             const auto source = channelMap.empty() ? ch : channelMap[ch];
-            const auto peak = peakSpan(peaks, std::min(*frame, end), std::max(*frame + 1., end), source);
+            const auto peak = peakSpan(peaks, std::min(*frame, end), std::min(sourceEnd, std::max(*frame + 1., end)),
+                                       source);
             if (!peak)
                 continue;
             const float mid = top + band * (static_cast<float>(ch) + .5f), half = band * .5f;
@@ -2618,13 +2620,33 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
             const auto *snapshot = view.reader().get();
             const auto *tempo = snapshot ? snapshot->tempo.get() : nullptr;
             const bool havePreview = preview && tempo && preview->peaks.sampleRate > 0;
-            double startSeconds = 0.;
+            double startSeconds = 0., sourceStartFrame = 0., sourceEndFrame = 0.;
             if (havePreview) {
-                const auto rate = static_cast<double>(preview->peaks.sampleRate);
-                startSeconds = static_cast<double>(preview->startSample) / rate;
                 const auto frames = std::max(preview->peaks.frames, live->capturedFrames);
-                start = tempo->secondsToTicks(startSeconds);
-                end = tempo->secondsToTicks(startSeconds + static_cast<double>(frames) / rate);
+                sourceEndFrame = static_cast<double>(preview->peaks.frames);
+                if (const auto &punch = preview->punchedPlacement) {
+                    const auto range = punchedPreviewRange(*punch, frames, preview->peaks.sampleRate, *tempo);
+                    if (range) {
+                        start = range->startTicks;
+                        end = range->endTicks;
+                        startSeconds = range->startSeconds;
+                        sourceStartFrame = static_cast<double>(range->sourceStartFrame);
+                        sourceEndFrame = static_cast<double>(std::min(preview->peaks.frames, range->sourceEndFrame));
+                    } else {
+                        end = start;
+                    }
+                } else {
+                    const auto rate = static_cast<double>(preview->peaks.sampleRate);
+                    startSeconds = static_cast<double>(preview->startSample) / rate;
+                    start = tempo->secondsToTicks(startSeconds);
+                    end = tempo->secondsToTicks(startSeconds + static_cast<double>(frames) / rate);
+                }
+            } else if (snapshot && !snapshot->transport.loopEnabled) {
+                const auto &transport = snapshot->transport;
+                if (transport.punchIn)
+                    start = std::max(start, transport.loopStartTicks);
+                if (transport.punchOut)
+                    end = std::min(end, transport.loopEndTicks);
             }
             if (end > start) {
                 const double x0 = geo.x(start), x1 = geo.x(end);
@@ -2647,11 +2669,8 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
                                              top + static_cast<float>(h - 4), mapping->channels,
                                              [&](int x) -> std::optional<double> {
                                 const auto seconds = tempo->ticksToSeconds(geo.tick(x)) - startSeconds;
-                                const auto frame = std::max(0., seconds * preview->peaks.sampleRate);
-                                if (frame >= static_cast<double>(preview->peaks.frames))
-                                    return std::nullopt;
-                                return frame;
-                            });
+                                return sourceStartFrame + std::max(0., seconds * preview->peaks.sampleRate);
+                            }, sourceEndFrame);
                         }
                     }
                     if (right - left > 6.f) {

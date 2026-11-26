@@ -3,6 +3,8 @@
 #include "adi/engine/audio_recording.hpp"
 #include "adi/engine/transport.hpp"
 #include "adi/engine/session.hpp"
+#include "adi/engine/midi_input_capture.hpp"
+#include "adi/ops.hpp"
 #include "adi/store.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include "adi/audio/io_audit.hpp"
@@ -504,6 +506,158 @@ void actualSessionBothWidths() {
         check(result.failure==RecordingFailure::None && result.startSample==777 && result.frames==stream && heard==expected,"actual Session captures selected input bits and exact placement in either processing precision");result.discard();
     }
 }
+void punchCapturesOnlyTheBrace() {
+    test::TempDirectory directory{"audio_recording","punch"};
+    StoreError storeError{};
+    auto store=Store::createEmpty(directory.path()/"song.adi",storeError);
+    if(!store)throw std::runtime_error(toString(storeError));
+    store->db().exec("INSERT INTO tracks(id,kind,name,record_armed) VALUES"
+                     "(21,'audio','Audio',1),(22,'midi','MIDI',1),(9,'master','Main',0)");
+    Session session;
+    if(!session.load(*store,{},SessionSpec{2,48000,128}))throw std::runtime_error(session.error());
+    constexpr std::int64_t start=13,end=45;
+    constexpr auto frames=static_cast<std::uint32_t>(end-start);
+    OpRequest brace;
+    brace.opType="transport.setLoop";
+    const auto [startTick,endTick]=[&] {
+        auto clock=session.beginRender();
+        return std::pair{clock.tickAtSample(start),clock.tickAtSample(end)};
+    }();
+    brace.payload={{"on",false},{"start",startTick},{"end",endTick}};
+    OpRequest punch;
+    punch.opType="transport.setPunch";
+    punch.payload={{"in",true},{"out",true}};
+    if(!OpJournal(*store).commit(brace).ok || !OpJournal(*store).commit(punch).ok || !session.refresh(*store))
+        throw std::runtime_error("could not set the linear punch range");
+
+    auto request=spec(directory.path());
+    request.sampleRate=48000;
+    request.targets={{21,{0}}};
+    const std::array<std::int64_t,1> midiTrack{22};
+    auto startBoth=[&] {
+        std::string reason;
+        if(!session.startRecording(request,reason) || !session.startMidiInputCapture(midiTrack,reason))
+            throw std::runtime_error(reason);
+        session.transport().locate(0);
+        session.transport().play();
+    };
+    startBoth();
+    for(const int frame:{4,18,61})
+        check(session.enqueueMidiInput(frame,{0,EventType::NoteOn,1,64,static_cast<std::uint64_t>(frame),0,1.0}),
+              "queue a note before, inside or after the punch");
+    std::array<float,128> signal{},left{},right{};
+    for(std::size_t i=0;i<signal.size();++i)signal[i]=static_cast<float>(i)/128.f;
+    const float* inputs[]{signal.data()};
+    float* outputs[]{left.data(),right.data()};
+    AudioIo io{outputs,inputs,2,1,128,0};
+    session.process(io);
+    check(session.transport().position()==128 && session.transport().playing() &&
+          session.recording().acceptedFrames()==frames && session.midiInputCapture().state()==MidiCaptureState::Complete,
+          "both punch edges split one callback without stopping the transport");
+    std::array<MidiCapturePacket,8> packets{};
+    const auto count=session.midiInputCapture().drain(packets);
+    check(count==2 && packets[0].kind==MidiCapturePacket::Kind::Span &&
+          packets[0].timelineSample==start && packets[0].frames==end-start &&
+          packets[1].kind==MidiCapturePacket::Kind::Event && packets[1].timelineSample==18,
+          "the MIDI tap keeps the exact punched interval and skips events outside it");
+    auto& recorder=session.recording();
+    (void)recorder.poll();
+    io.streamTimeSamples=128;
+    session.process(io);
+    auto result=finish(recorder);
+    check(result.failure==RecordingFailure::None && result.startSample==start && result.frames==frames,
+          "the audio writer finalizes the punched prefix without an explicit Stop");
+    if(result.hasAttachableAudio()) {
+        std::array<float,frames> recorded{};
+        audio::WavReader wav(result.tracks[0].file);
+        check(wav.read(recorded.data(),static_cast<std::uint32_t>(recorded.size()))==recorded.size() &&
+              std::equal(recorded.begin(),recorded.end(),signal.begin()+start),
+              "the WAV contains only samples between the two brace markers");
+    }
+    result.discard();
+
+    startBoth();
+    io.frames=4;
+    io.streamTimeSamples=256;
+    session.process(io);
+    recorder.stop();
+    session.midiInputCapture().stop();
+    io.streamTimeSamples+=io.frames;
+    session.process(io);
+    auto empty=finish(recorder);
+    check(empty.failure==RecordingFailure::NoFrames && session.midiInputCapture().state()==MidiCaptureState::Complete &&
+          session.midiInputCapture().drain(packets)==0,
+          "explicit Stop settles both recorders even before Punch-In with no captured input");
+    empty.discard();
+
+    std::string reason;
+    if(!session.startRecording(request,reason))
+        throw std::runtime_error(reason);
+    session.transport().locate(0);
+    session.transport().play();
+    io.frames=32;
+    io.streamTimeSamples+=4;
+    session.process(io); // The linear take has accepted [13,32).
+    brace.payload["start"] = brace.payload["start"].get<std::int64_t>() + 1;
+    if(!OpJournal(*store).commit(brace).ok || !session.refresh(*store))
+        throw std::runtime_error("could not move the punch brace during capture");
+    io.streamTimeSamples+=io.frames;
+    session.process(io);
+    (void)recorder.poll();
+    io.streamTimeSamples+=io.frames;
+    session.process(io);
+    auto prefix=finish(recorder);
+    check(prefix.failure==RecordingFailure::Discontinuity && prefix.hasAttachableAudio() &&
+              prefix.frames==static_cast<std::uint64_t>(32-start) && prefix.punchWindow().in &&
+              prefix.punchWindow().in->tick==brace.payload["start"].get<std::int64_t>()-1,
+          "changing a punch brace retains the first bounds and the previously accepted WAV prefix");
+    prefix.discard();
+
+    startBoth();
+    io.streamTimeSamples+=io.frames;
+    session.process(io); // Both recorders now own [13,32).
+    punch.payload["out"] = false; // Changes the window without relocating the transport.
+    if(!OpJournal(*store).commit(punch).ok || !session.refresh(*store))
+        throw std::runtime_error("could not turn Punch-Out off during mixed capture");
+    io.streamTimeSamples+=io.frames;
+    session.process(io);
+    RecordingPunchWindow frozen;
+    const auto mixedCount=session.midiInputCapture().drain(packets,&frozen);
+    check(session.midiInputCapture().state()==MidiCaptureState::Discontinuity && mixedCount==1 &&
+              packets[0].timelineSample==start && packets[0].frames==32-start &&
+              frozen.in && frozen.in->tick==brace.payload["start"].get<std::int64_t>() &&
+              frozen.out && frozen.out->tick==brace.payload["end"].get<std::int64_t>(),
+          "changing a punch switch preserves the authored bounds and ends MIDI with the accepted prefix");
+    (void)recorder.poll();
+    io.streamTimeSamples+=io.frames;
+    session.process(io);
+    auto mixedPrefix=finish(recorder);
+    check(mixedPrefix.failure==RecordingFailure::Discontinuity &&
+              mixedPrefix.frames==static_cast<std::uint64_t>(32-start) && mixedPrefix.punchWindow()==frozen,
+          "the mixed audio and MIDI prefixes stop at the same boundary");
+    mixedPrefix.discard();
+    punch.payload["out"] = true;
+    if(!OpJournal(*store).commit(punch).ok || !session.refresh(*store))
+        throw std::runtime_error("could not restore Punch-Out");
+
+    // Both authored ticks map to the same sample. The one-frame minimum for
+    // running a loop must not allow a linear take through the punch boundary.
+    brace.payload["start"] = 0;
+    brace.payload["end"] = 1;
+    if(!OpJournal(*store).commit(brace).ok || !session.refresh(*store))
+        throw std::runtime_error("could not set a sub-sample punch brace");
+    startBoth();
+    io.streamTimeSamples+=io.frames;
+    session.process(io);
+    recorder.stop();
+    session.midiInputCapture().stop();
+    io.streamTimeSamples+=io.frames;
+    session.process(io);
+    auto subSample=finish(recorder);
+    check(subSample.failure==RecordingFailure::NoFrames && session.midiInputCapture().drain(packets)==0,
+          "a sub-sample linear punch brace accepts neither audio nor MIDI");
+    subSample.discard();
+}
 void boundedOverflow() {
     for(const bool looping:{false,true}) {
     test::TempDirectory directory{"audio_recording","overflow"};AudioInputRecorder recorder;std::string error;auto request=spec(directory.path());request.maxFrames=8;request.ringFrames=8;request.targets={{21,{0}}};
@@ -639,7 +793,7 @@ int main() {
 #if defined(_WIN32)
         cancelReportsCleanupDenial();
 #endif
-        stoppedDriverReleasesRetiredCapture();actualSessionBothWidths();sessionLoopPasses();
+        stoppedDriverReleasesRetiredCapture();actualSessionBothWidths();punchCapturesOnlyTheBrace();sessionLoopPasses();
         loopBoundsAndCapacity();loopDiscontinuities();
     } catch(const std::exception& error) {
         check(false,error.what());

@@ -259,9 +259,9 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
         {&capture, "Capture MIDI", "Turns what you just played into a clip."},
         {&sessionRecord, "Session Record", "Records into Session View (P2)."},
         {&loopStart, "Loop Start", "Where the arrangement loop starts. Click to type another, such as 5.1.1."},
-        {&punchIn, "Punch-In", "Records only after the loop's start."},
+        {&punchIn, "Punch-In", "Records from the loop brace's start."},
         {&loop, "Loop Switch", "Loops the arrangement between the loop brace's ends. Ctrl/Cmd+L loops the selection."},
-        {&punchOut, "Punch-Out", "Records only before the loop's end."},
+        {&punchOut, "Punch-Out", "Ends the recording at the loop brace's end."},
         {&loopLength, "Loop Length", "How long the arrangement loop is, in bars, beats and sixteenths. Click to "
                                      "type another, such as 8.0.0."},
         {&draw, "Draw Mode", "Draws notes and automation with the mouse. B."},
@@ -296,7 +296,9 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
     metronome.onDropdown = [this] {
         metronomeMenu().showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(&metronome));
     };
+    punchIn.onClick = [this] { root_.togglePunch(true); };
     loop.onClick = [this] { root_.toggleLoop(); };
+    punchOut.onClick = [this] { root_.togglePunch(false); };
     loopStart.onClick = [this] { beginLoopStartEdit(); };
     loopLength.onClick = [this] { beginLoopLengthEdit(); };
     position.onClick = [this] { beginPositionEdit(); };
@@ -355,7 +357,8 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
         if (item != &play && item != &stop && item != &follow && item != &mix && item != &arrangementPage &&
             item != &signature && item != &tempo &&
             item != &tap && item != &position && item != &automationArm && item != &reEnable && item != &metronome &&
-            item != &loop && item != &loopStart && item != &loopLength && item != &record && item != &overdub &&
+            item != &punchIn && item != &loop && item != &punchOut &&
+            item != &loopStart && item != &loopLength && item != &record && item != &overdub &&
             item != &indicators && item != &draw)
             item->onClick = [this, item] {
                 root_.say(item->getTitle().toStdString() + " is not built yet.");
@@ -480,7 +483,9 @@ void TransportBar::refresh() {
         loopLength.setText(juce::String(length.bar) + ".  " + juce::String(length.beat) + ".  " + juce::String(length.sixteenth));
     }
     metronome.setToggleState(transport.metronome, juce::dontSendNotification);
+    punchIn.setToggleState(transport.punchIn, juce::dontSendNotification);
     loop.setToggleState(transport.loopEnabled, juce::dontSendNotification);
+    punchOut.setToggleState(transport.punchOut, juce::dontSendNotification);
     play.setToggleState(root_.playing(), juce::dontSendNotification);
     record.setToggleState(root_.isRecording(), juce::dontSendNotification);
     overdub.setToggleState(root_.midiOverdub(), juce::dontSendNotification);

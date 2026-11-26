@@ -1048,10 +1048,7 @@ bool Session::rebuild() {
         timing->tempo.events.push_back({e.posTicks, e.bpm, static_cast<int>(e.curve)});
     if (timing->tempo.events.empty()) timing->tempo.events.push_back({0, 120.0, 0});
     const auto loopSample = [&](std::int64_t ticks) { return timing->sampleForTick(ticks); };
-    timing->loopBegin=loopSample(transportSettings_.loopStartTicks);
-    timing->loopEnd=loopSample(transportSettings_.loopEndTicks);
-    if(timing->loopEnd<=timing->loopBegin && timing->loopBegin<std::numeric_limits<std::int64_t>::max())
-        timing->loopEnd=timing->loopBegin+1; // a valid sub-sample tick window plays one frame
+    timing->setBraceSamples(loopSample(transportSettings_.loopStartTicks), loopSample(transportSettings_.loopEndTicks));
     // Snapshot has tempo but no meter data. rows::readModel reads this vector
     // from time_signature_map, sorted by position and id.
     timing->signatures = model_.signatures;
@@ -2176,6 +2173,13 @@ std::int64_t Session::TimingView::sampleForTick(std::int64_t tick) const noexcep
     return static_cast<std::int64_t>(std::llround(sample));
 }
 
+void Session::TimingView::setBraceSamples(std::int64_t begin, std::int64_t end) noexcept {
+    loopBegin = begin;
+    punchOutSample = end;
+    // A sub-sample loop plays one frame. Linear capture uses the original boundary.
+    loopEnd = end <= begin && begin < std::numeric_limits<std::int64_t>::max() ? begin + 1 : end;
+}
+
 void Session::TimingView::prepareDeviceClockChanges() {
     lastTickSeconds = tempo.ticksToSeconds(std::numeric_limits<std::int64_t>::max());
     deviceClockChanges.clear();
@@ -2475,7 +2479,28 @@ bool Session::RenderBlock::process(const AudioIo& io, bool captureRecording) noe
         return false;
     }
     const auto remaining = session_.transport_.countInRemaining();
-    if (remaining > 0 && timing &&
+    auto prefix = io.frames;
+    auto punch = RecordingPunch::Within;
+    RecordingPunchWindow punchWindow;
+    if (remaining > 0 && remaining < prefix && timing)
+        prefix = static_cast<std::int32_t>(remaining);
+    if (timing && captureRecording && !session_.transport_.looping() && !timing->settings.loopEnabled) {
+        if (timing->settings.punchIn)
+            punchWindow.in = RecordingPunchWindow::Boundary{timing->loopBegin, timing->settings.loopStartTicks};
+        if (timing->settings.punchOut)
+            punchWindow.out = RecordingPunchWindow::Boundary{timing->punchOutSample, timing->settings.loopEndTicks};
+        if (session_.transport_.playing() && punchWindow.active()) {
+            const auto position = session_.transport_.position();
+            if (punchWindow.out && position >= punchWindow.out->sample)
+                punch = RecordingPunch::After;
+            else if (punchWindow.in && position < punchWindow.in->sample)
+                punch = RecordingPunch::Before;
+            const auto &boundary = punch == RecordingPunch::Before ? punchWindow.in : punchWindow.out;
+            if (boundary && boundary->sample > position && boundary->sample - position < prefix)
+                prefix = static_cast<std::int32_t>(boundary->sample - position);
+        }
+    }
+    if ((remaining > 0 || prefix < io.frames) && timing &&
         (static_cast<std::size_t>(io.numIn) > timing->inputSlice.size() ||
          static_cast<std::size_t>(io.numOut) > timing->outputSlice.size() ||
          io.streamTimeSamples < 0 ||
@@ -2484,10 +2509,9 @@ bool Session::RenderBlock::process(const AudioIo& io, bool captureRecording) noe
         silence.process(io);
         return false;
     }
-    if (remaining > 0 && remaining < io.frames && timing) {
+    if (prefix < io.frames && timing) {
         // Bounds and the whole physical stream interval were validated before
         // rendering either half. No heap work or new graph acquisition.
-        const auto prefix = static_cast<std::int32_t>(remaining);
         AudioIo lead = io;
         lead.frames = prefix;
         if (!process(lead, captureRecording))
@@ -2510,7 +2534,7 @@ bool Session::RenderBlock::process(const AudioIo& io, bool captureRecording) noe
         return process(tail, captureRecording);
     }
     session_.recordingAudioTracks_ = captureRecording
-        ? session_.recording_->capture(io, session_.transport_)
+        ? session_.recording_->capture(io, session_.transport_, punch, punchWindow)
         : std::span<const std::int64_t>{};
     session_.playbackRunning_.store(session_.transport_.playing(), std::memory_order_release);
     AudioIo block = io;
@@ -2519,7 +2543,7 @@ bool Session::RenderBlock::process(const AudioIo& io, bool captureRecording) noe
         block.exporting = timing->spec.exporting;
         auto* capture = captureRecording && timing->spec.performanceState && !timing->spec.exporting
             ? session_.midiInputCapture_.get() : nullptr;
-        session_.midiInput_->render(graph_, io, timing->midiInputRoutes, session_.transport_, capture);
+        session_.midiInput_->render(graph_, io, timing->midiInputRoutes, session_.transport_, capture, punch, punchWindow);
     }
     auto* inputMonitors = timing ? timing->inputMonitors.get() : nullptr;
     if (inputMonitors) {

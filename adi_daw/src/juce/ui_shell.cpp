@@ -4043,6 +4043,13 @@ bool AdiRootComponent::setCountIn(int bars) {
         return fail("Count-in needs an open project.");
     return submitTransport(::adi::ui::setCountIn(current->transport, bars));
 }
+bool AdiRootComponent::togglePunch(bool start) {
+    const auto current = view_.current();
+    if (!current)
+        return fail("Punch-In and Punch-Out need an open project.");
+    const auto &t = current->transport;
+    return submitTransport(setPunch(t, start ? !t.punchIn : t.punchIn, start ? t.punchOut : !t.punchOut));
+}
 bool AdiRootComponent::toggleLoop() {
     const auto current = view_.current();
     if (!current)

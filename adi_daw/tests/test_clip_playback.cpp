@@ -192,6 +192,28 @@ void liveInputMonitoring() {
         check(render(true) == playing, "stopping capture while playing restores Auto clip playback");
         checkCapture(57, 17);
 
+        const auto punchTicks = [&] {
+            auto clock = f.session.beginRender();
+            return std::pair{clock.tickAtSample(23), clock.tickAtSample(39)};
+        }();
+        change("transport.setLoop", {{"on",false},{"start",punchTicks.first},{"end",punchTicks.second}});
+        change("transport.setPunch", {{"in",true},{"out",true}});
+        startCapture();
+        const auto punched = render(true);
+        bool punchExact = true;
+        for (std::size_t channel = 0; channel < 2; ++channel)
+            for (std::size_t frame = 0; frame < 64; ++frame) {
+                const double input = channel == 0 ? 0.5 : 0.125;
+                const auto expected = frame >= 23 && frame < 39 ? input : playing[channel * 64 + frame];
+                punchExact = punchExact && punched[channel * 64 + frame] == expected;
+            }
+        check(punchExact && transport.playing() && transport.position() == 64,
+              "Auto hears the old clip before Punch-In and after Punch-Out while playback keeps advancing");
+        (void)recorder.poll(); // publish the automatic punch-out stop
+        (void)renderBlock(); // the next callback acknowledges it
+        checkCapture(16, 23);
+        change("transport.setPunch", {{"in",false},{"out",false}});
+
         f.session.transport().loop(5,41,true);
         const auto looped = render(true,true,35);
         bool loopExact = true;

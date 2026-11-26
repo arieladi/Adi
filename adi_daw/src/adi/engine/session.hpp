@@ -538,12 +538,13 @@ private:
         Session* session=nullptr; // retained Session owns every published graph
         mutable TransportInfo blockInfo{}; // the single audio driver's scratch
         TransportSettings settings;
-        // Allocated on the owner; used only at a count-in's exact split. Input
-        // recording supports64 physical channels; output covers the full graph.
+        // Allocated on the owner for exact count-in and punch boundary splits.
+        // Input supports 64 physical channels and output covers the full graph.
         mutable std::vector<const float *> inputSlice;
         mutable std::vector<float *> outputSlice;
         mutable std::vector<double *> outputSlice64;
         std::int64_t loopBegin=0,loopEnd=0;
+    std::int64_t punchOutSample=0; // brace end without the one-frame minimum for loops
         TempoMap tempo;
         std::vector<rows::TimeSignature> signatures;
         std::vector<std::pair<std::int64_t, std::int64_t>> deviceClockChanges; ///< sample, tick
@@ -555,6 +556,7 @@ private:
         double lastTickSeconds = 0.0;
         SessionSpec spec;
         [[nodiscard]] std::int64_t sampleForTick(std::int64_t tick) const noexcept;
+        void setBraceSamples(std::int64_t begin, std::int64_t end) noexcept;
         void prepareDeviceClockChanges();
         void applyLoop() const noexcept;
         [[nodiscard]] TransportInfo at(const Transport& transport) const noexcept;

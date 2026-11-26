@@ -51,6 +51,7 @@ struct ProjectDocument::MidiRecording {
     bool started = false;
     std::int64_t firstStreamSample = 0;
     engine::MidiCaptureState state = engine::MidiCaptureState::Waiting;
+    engine::RecordingPunchWindow punchWindow;
 
     std::int64_t tickAt(std::int64_t sample) const noexcept {
         const double seconds = static_cast<double>(std::max<std::int64_t>(0, sample)) / sampleRate;
@@ -65,8 +66,13 @@ struct ProjectDocument::MidiRecording {
         if (packet.kind == engine::MidiCapturePacket::Kind::Span) {
             if (!started)
                 firstStreamSample = packet.streamSample;
-            const auto start = tickAt(packet.timelineSample);
-            const auto end = tickAt(packet.timelineSample + packet.frames);
+            const auto firstSample = packet.timelineSample;
+            const auto lastSample = firstSample + packet.frames;
+            // The authored brace can share a sample with several nearby ticks.
+            const auto start = punchWindow.in && firstSample == punchWindow.in->sample
+                ? punchWindow.in->tick : tickAt(firstSample);
+            const auto end = punchWindow.out && lastSample == punchWindow.out->sample
+                ? punchWindow.out->tick : tickAt(lastSample);
             for (auto &take : preview) {
                 if (!started)
                     take.start = start;
@@ -128,7 +134,7 @@ struct ProjectDocument::MidiRecording {
         // The callback publishes its last packets before its terminal state. Observing the state
         // first lets the final drain collect everything before releasing the take.
         state = capture.state();
-        while (const auto count = capture.drain(packets))
+        while (const auto count = capture.drain(packets, &punchWindow))
             for (const auto &packet : std::span(packets).first(count))
                 ingest(packet);
         for (std::size_t i = 0; i < tracks.size(); ++i)
@@ -2321,7 +2327,7 @@ void ProjectDocument::landTake() {
         default: break;
         }
     }
-    const bool hasAudio = audio && audio->hasAttachableAudio();
+    bool hasAudio = audio && audio->hasAttachableAudio();
     const bool hasMidi = midi && midi->started;
     using Failure = engine::RecordingFailure;
     const bool discardAudio = audio && (audio->failure == Failure::Cancelled || audio->failure == Failure::NoFrames);
@@ -2340,6 +2346,7 @@ void ProjectDocument::landTake() {
     // One `RowIds` for the take's rows (DF-E16): past every clip and media row, and past a clip id a
     // remark still holds.
     recording::RecordingEdit edit;
+    std::string unplacedAudio;
     try {
         RowIds rows(store_->db());
         std::vector<recording::ClipIds> ids;
@@ -2375,6 +2382,14 @@ void ProjectDocument::landTake() {
         }
         edit = hasAudio ? recording::prepareCommit(*store_, *audio, ids, takes, audio->placementOffsetSamples)
                         : recording::prepareMidiLinearCommit(*store_, takes, midi->sampleRate);
+        if (edit.audioOutsidePunch && hasMidi) {
+            unplacedAudio = std::move(edit.error);
+            hasAudio = false;
+            outcome.clips.clear();
+            for (const auto &take : takes)
+                outcome.clips.push_back(take.clip);
+            edit = recording::prepareMidiLinearCommit(*store_, takes, midi->sampleRate);
+        }
     } catch (const std::exception &error) {
         edit.error = error.what();
     }
@@ -2402,7 +2417,9 @@ void ProjectDocument::landTake() {
     }
     outcome.ok = true;
     outcome.message = outcome.clips.size() == 1 ? "Recorded one take." : "Recorded " + std::to_string(outcome.clips.size()) + " takes.";
-    if (!audioProblem.empty())
+    if (!unplacedAudio.empty())
+        outcome.message += " Audio stayed in the recording folder because " + unplacedAudio + "." + audioLocation;
+    else if (!audioProblem.empty())
         outcome.message = hasAudio ? "Kept the audio recorded before the interruption: " + audioProblem + "."
                                    : outcome.message + " Audio recording ended: " + audioProblem + "." + audioLocation;
     if (!midiProblem.empty())

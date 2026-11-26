@@ -20,6 +20,37 @@
 #include <thread>
 #include <vector>
 namespace adi::ui {
+struct PunchedPreviewRange {
+    std::int64_t startTicks, endTicks;
+    double startSeconds;
+    std::uint64_t sourceStartFrame, sourceEndFrame;
+};
+
+inline std::optional<PunchedPreviewRange> punchedPreviewRange(
+    const engine::AudioRecordingPreview::PunchedPlacement &punch, std::uint64_t frames,
+    std::uint32_t sampleRate, const engine::TempoMap &tempo) noexcept {
+    if (sampleRate == 0)
+        return std::nullopt;
+    const auto range = engine::recordingPlacementRange(punch.rawStartSample, frames, punch.offsetSamples, punch.window);
+    if (!range)
+        return std::nullopt;
+    const auto rate = static_cast<double>(sampleRate);
+    const double firstSeconds = static_cast<double>(range->timelineStartSample) / rate;
+    auto first = tempo.secondsToTicks(firstSeconds);
+    auto last = tempo.secondsToTicks(static_cast<double>(range->timelineEndSample) / rate);
+    // Several ticks can project to a single device sample. At a cut, draw the
+    // authored brace tick that landing uses instead of the inverse clock's tick.
+    if (punch.window.in)
+        first = range->timelineStartSample == punch.window.in->sample ? punch.window.in->tick
+                                                                     : std::max(first, punch.window.in->tick);
+    if (punch.window.out)
+        last = range->timelineEndSample == punch.window.out->sample ? punch.window.out->tick
+                                                                   : std::min(last, punch.window.out->tick);
+    if (last <= first)
+        return std::nullopt;
+    return PunchedPreviewRange{first, last, firstSeconds, range->sourceStartFrame, range->sourceStartFrame + range->frames};
+}
+
 // An audio clip's waveform (Live 12 manual 6.1, chapter 9; parity-7.3 row 35; N40, #404).
 //
 // The peaks come from `media::buildMediaPeaks` (APKS v1), on a worker of their own, never on the

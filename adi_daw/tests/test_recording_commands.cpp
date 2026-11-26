@@ -4,6 +4,7 @@
 #include "adi/engine/session.hpp"
 #include "adi/engine/audio_recording.hpp"
 #include "adi/engine/clip_details.hpp"
+#include "adi/engine/snapshot.hpp"
 #include "adi/digest.hpp"
 #include "adi/history.hpp"
 #include "adi/store.hpp"
@@ -522,6 +523,75 @@ void linearTakeReplacesWhatItCovers() {
     check(History(*f.store).undo().ok && digestProject(*f.store).text==before,
           "one Undo restores the covered clip whole");
 }
+void latencyCompensationKeepsPunchProtection() {
+    constexpr std::int64_t punchIn=512,punchOut=640,oldStart=416,oldEnd=704,streamStart=480;
+    struct Placement {std::int64_t correction, start, end, source;};
+    for(const auto placement : {Placement{32,512,608,32},Placement{-32,544,640,0}}) {
+        Fixture f;
+        auto old=f.capture(false,Precision::Float32,false,static_cast<int>(oldEnd-oldStart),{},oldStart);
+        const std::array<recording::ClipIds,1> oldIds{{{7,8,"Before punch"}}};
+        auto first=recording::prepareCommit(*f.store,old,oldIds);
+        if(!recording::commit(*f.store,first).ok)
+            throw std::runtime_error("cannot land the surrounding clip");
+
+        const auto tempo=SnapshotBuilder::fromStore(*f.store)->tempo;
+        const auto inTick=tempo->secondsToTicks(static_cast<double>(punchIn)/48000);
+        const auto outTick=tempo->secondsToTicks(static_cast<double>(punchOut)/48000);
+        OpRequest brace;
+        brace.opType="transport.setLoop";
+        brace.payload={{"on",false},{"start",inTick},{"end",outTick}};
+        OpRequest punch;
+        punch.opType="transport.setPunch";
+        punch.payload={{"in",true},{"out",true}};
+        if(!OpJournal(*f.store).commit(brace).ok || !OpJournal(*f.store).commit(punch).ok)
+            throw std::runtime_error("cannot set the punch brace");
+        const auto before=digestProject(*f.store).text;
+        auto take=f.capture(false,Precision::Float32,false,192,{},streamStart);
+        const RecordingPunchWindow bounds{RecordingPunchWindow::Boundary{punchIn,inTick},
+                                          RecordingPunchWindow::Boundary{punchOut,outTick}};
+        check(take.startSample==punchIn && take.frames==static_cast<std::uint64_t>(punchOut-punchIn) && take.punchWindow()==bounds,
+              "the take remembers both authored punch edges from its render clock");
+        const auto raw=media::blake3File(take.tracks.front().file);
+        const std::array<recording::ClipIds,1> ids{{{17,18,"Punched take"}}};
+        auto outside=recording::prepareCommit(*f.store,take,ids,256);
+        check(!outside.ok && std::filesystem::is_regular_file(take.tracks.front().file) &&
+                  digestProject(*f.store).text==before,
+              "a correction outside the brace retains the raw WAV and leaves the project untouched");
+        auto prepared=recording::prepareCommit(*f.store,take,ids,placement.correction);
+        const auto committed=recording::commit(*f.store,prepared);
+        if(!committed.ok)
+            throw std::runtime_error("cannot land the punched take: "+committed.error);
+        auto &db=f.store->db();
+        SQLite::Statement clip(db,"SELECT c.pos_ticks,c.length_ticks,a.src_start_frames,a.src_len_frames "
+                                  "FROM clips c JOIN audio_clips a ON a.clip_id=c.id WHERE c.id=17");
+        const auto startTick=tempo->secondsToTicks(static_cast<double>(placement.start)/48000);
+        const auto endTick=tempo->secondsToTicks(static_cast<double>(placement.end)/48000);
+        check(clip.executeStep() && clip.getColumn(0).getInt64()==startTick && clip.getColumn(1).getInt64()==endTick-startTick &&
+                  clip.getColumn(2).getInt64()==placement.source && clip.getColumn(3).getInt64()==placement.end-placement.start,
+              "the clip uses the compensated intersection and its exact source interval");
+        clip.reset();
+        std::string why;
+        const auto saved=media::resolveMedia(media::projectFolder(*f.store),media::mediaRow(db,18),why);
+        const auto published=media::blake3File(saved);
+        check(raw && published && raw.hex==published.hex &&
+                  db.execAndGet("SELECT frames FROM media_files WHERE id=18").getInt64()==punchOut-punchIn,
+              "the published WAV keeps the entire captured interval byte for byte");
+
+        const auto heard=f.play(Precision::Float32);
+        bool exact=true;
+        for(std::size_t frame=0;frame<heard.size();++frame) {
+            const auto at=static_cast<std::int64_t>(frame);
+            const auto expected=at>=placement.start && at<placement.end
+                ? Fixture::sample(static_cast<std::size_t>(punchIn-streamStart+placement.source+at-placement.start))
+                : at>=oldStart && at<oldEnd ? Fixture::sample(static_cast<std::size_t>(at-oldStart)) : 0.0f;
+            exact=exact && heard[frame]==expected;
+        }
+        check(exact,"both correction signs preserve the audible surrounding clip and shifted samples");
+        check(History(*f.store).undo().ok && digestProject(*f.store).text==before &&
+                  History(*f.store).redo().ok && std::filesystem::is_regular_file(saved),
+              "Undo and Redo replay the captured clip edit without replacing its WAV");
+    }
+}
 void existingMediaAndHistoryPaths() {
     for(const bool sourceAlreadyInPool:{false,true}) {
         Fixture f;auto recorded=f.capture();const auto external=f.temporary.path()/"external.wav";
@@ -931,6 +1001,7 @@ void loopReuseRefusesUnprovedExtents() {
 }
 int main(int argc,char** argv){try{
     latencyCompensatedPlacement();
+    latencyCompensationKeepsPunchProtection();
     midiLinearTakes();mixedLinearTake();
     midiLoopTakes();
     if(argc!=1 && (argc!=3 || std::string(argv[1])!="--cross-volume-work-folder"))throw std::runtime_error("usage: recording tests [--cross-volume-work-folder PATH]");

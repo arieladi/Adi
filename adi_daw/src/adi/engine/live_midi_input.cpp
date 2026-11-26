@@ -108,9 +108,9 @@ void LiveMidiInput::deliver(const GraphHost::RenderBlock& block, const Route& ro
 
 void LiveMidiInput::render(const GraphHost::RenderBlock& block, const AudioIo& io,
                           std::span<const Route> routes, const Transport& transport,
-                          MidiInputCapture* capture) noexcept {
+                          MidiInputCapture* capture, RecordingPunch punch, const RecordingPunchWindow& punchWindow) noexcept {
     const auto epoch = epoch_.load(std::memory_order_acquire);
-    if (capture) capture->beginSlice(io, transport, epoch);
+    if (capture) capture->beginSlice(io, transport, epoch, punch, punchWindow);
     const auto generation = block.generation();
     for (const auto& route : routes) {
         if (generation != generation_)
