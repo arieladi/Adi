@@ -11,6 +11,34 @@
 #include <optional>
 #include <utility>
 namespace adi::ui::controls {
+// A control with an external context menu must not start a value gesture on a
+// popup press. A primary press still owns its drag and release when modifiers
+// change during the gesture.
+template <class Control> class PrimaryMouseControl : public Control {
+  public:
+    using Control::Control;
+    void mouseDown(const juce::MouseEvent &e) override {
+        primary_ = !e.mods.isPopupMenu();
+        if (primary_)
+            Control::mouseDown(e);
+    }
+    void mouseDrag(const juce::MouseEvent &e) override {
+        if (primary_)
+            Control::mouseDrag(e);
+    }
+    void mouseUp(const juce::MouseEvent &e) override {
+        if (primary_)
+            Control::mouseUp(e);
+        primary_ = false;
+    }
+    void mouseDoubleClick(const juce::MouseEvent &e) override {
+        if (!e.mods.isPopupMenu())
+            Control::mouseDoubleClick(e);
+    }
+
+  private:
+    bool primary_ = false;
+};
 // A button's state, as part B shows them left to right; and disabled while on, its lit colour dimmed
 // (a Settings switch of another scope).
 enum class ButtonState { Rest, Over, Pressed, On, OnRecord, OnValue, Disabled, DisabledOn };

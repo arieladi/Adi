@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include "adi/ui/arrangement_geometry.hpp"
+#include "adi/ui/automation_mode.hpp"
 #include "adi/ui/locator_edits.hpp"
 #include "adi/ui/loop_edits.hpp"
 #include "adi/ui/track_edits.hpp"
@@ -320,6 +321,18 @@ class ArrangementCanvas final : public juce::Component,
     // Automation Mode: the breakpoint being dragged, where it is shown now, and the chosen one.
     void paintAutomation(juce::Graphics &) const;
     bool automationDown(const juce::MouseEvent &);
+    bool beginAutomationStroke(const juce::MouseEvent &);
+    void updateAutomationStroke(const juce::MouseEvent &);
+    struct AutomationStroke {
+        AutomationTarget target;
+        std::int64_t track = 0, lastTick = 0, end = 0;
+        std::uint64_t generation = 0;
+        std::map<std::int64_t, double> values;
+        float top = 0, bottom = 0, lastY = 0, valueY = 0;
+        double lastValue = 0;
+        bool stepped = false, cancelled = false;
+    };
+    std::optional<AutomationStroke> automationStroke_;
     std::optional<AutomationPick> pointDrag_, chosenPoint_;
     std::int64_t pointTick_ = 0;
     bool pointAdded_ = false; // the press added a breakpoint: its drag moves that one or nothing

@@ -6,6 +6,7 @@
 #include "adi/mix_functions.hpp"
 #include "adi/ui/parameter_feed.hpp"
 #include "ui_arrangement.hpp"
+#include "ui_controls.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
 #include <map>
@@ -37,9 +38,9 @@ class ParameterControl final : public juce::Component, public juce::SettableTool
     // Other keys go on to the device, so the left and right arrows still move between devices.
     bool keyPressed(const juce::KeyPress &) override;
     bool returnToDefault();
-    // Live's parameter context menu (manual 25.4; AU-04): Re-Enable Automation while the parameter's
-    // lane is overridden. A right-click on the knob or the control's labels opens it.
+    // The parameter's automation commands, from the control or its labels.
     void mouseDown(const juce::MouseEvent &) override;
+    juce::PopupMenu menuItems();
     void showMenu();
     // The device's plug-in format, which names its parameters' lanes (`engine::automationParamRef`).
     std::string format;
@@ -47,8 +48,8 @@ class ParameterControl final : public juce::Component, public juce::SettableTool
     static constexpr int kWidth = 58, kHeight = 54;
     std::int64_t device;
     std::string parameter;
-    juce::Slider slider;
-    juce::ToggleButton toggle;
+    controls::PrimaryMouseControl<juce::Slider> slider;
+    controls::PrimaryMouseControl<juce::ToggleButton> toggle;
     juce::ComboBox menu;
     std::function<bool(const std::string &, engine::ParamEventKind, double)> parameterGesture;
 

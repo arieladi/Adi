@@ -2407,7 +2407,7 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
         root.command(AppCommands::Undo);
     root.frame();
     check(muted().empty(), "three undos: every track active");
-    // Live's momentary latching (§42.25): S, F1…F8 and Z held 500 ms or more go back when let go; a
+    // Live's momentary latching (§42.25): S, F1…F8, Z and B held 500 ms or more go back when let go; a
     // tap stays. The key's repeats while it is held do nothing.
     auto lastStep = [&submitter] {
         const auto step = submitter.nextUndo();
@@ -2473,6 +2473,44 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
     root.command(AppCommands::ZoomBack);
     root.arrangement.geometry.selection.start = root.arrangement.geometry.selection.end = 0;
     check(root.arrangement.geometry.scale == zoomScale, "Zoom Back, as before");
+    {
+        juce::ApplicationCommandInfo drawInfo(AppCommands::DrawMode);
+        commands.getCommandInfo(AppCommands::DrawMode, drawInfo);
+        check((drawInfo.flags & juce::ApplicationCommandInfo::isDisabled) == 0 && !root.drawMode(),
+              "Options > Draw Mode is offered without opening the Note Editor");
+        root.transport.draw.onClick();
+        commands.getCommandInfo(AppCommands::DrawMode, drawInfo);
+        check(root.drawMode() && root.transport.draw.getToggleState() &&
+                  (drawInfo.flags & juce::ApplicationCommandInfo::isTicked) != 0,
+              "the Control Bar turns on Draw Mode and ticks the Options entry");
+        root.transport.draw.onClick();
+        const auto last = lastStep();
+        std::int64_t now = 15000;
+        bool bDown = true;
+        root.input.now = [&] { return now; };
+        root.input.keyDown = [&](int key) { return bDown && key == 'b'; };
+        check(root.keyPressed(juce::KeyPress('b')) && root.drawMode() && root.latch().key() == 'b',
+              "B starts drawing in the Arrangement");
+        now += 200;
+        check(root.keyPressed(juce::KeyPress('b')) && root.drawMode(), "a held B's repeat leaves Draw Mode on");
+        bDown = false;
+        now += 400;
+        check(root.keyStateChanged(false) && !root.drawMode() && !root.transport.draw.getToggleState() &&
+                  lastStep() == last,
+              "releasing held B restores the mode without undoing any edit");
+        bDown = true;
+        check(root.keyPressed(juce::KeyPress('b')) && root.drawMode(), "B again turns on Draw Mode");
+        bDown = false;
+        now += 100;
+        root.keyStateChanged(false);
+        check(root.drawMode() && root.command(AppCommands::DrawMode) && !root.drawMode(),
+              "a tap leaves Draw Mode on until the next toggle");
+        root.transport.keyboard.setToggleState(true, juce::dontSendNotification);
+        check(!root.keyPressed(juce::KeyPress('b')) && !root.drawMode(), "the active computer MIDI keyboard keeps its B");
+        root.transport.keyboard.setToggleState(false, juce::dontSendNotification);
+        root.input.now = {};
+        root.input.keyDown = {};
+    }
     // Live 12 manual, Live Concepts: "Double-clicking a track's title bar brings up the Device View".
     check(root.command(AppCommands::ToggleDeviceView) && !root.state().docked, "the Device View hidden");
     auto &headers = root.arrangement.headers;
@@ -7394,9 +7432,14 @@ void clipViewClipTime(AppCommands &commands, const std::filesystem::path &dir) {
         check(active(C::DrawMode) && ticked(C::DrawMode) == wasDrawing && root.command(C::DrawMode) && ed.drawMode() != wasDrawing && ticked(C::DrawMode) != wasDrawing &&
                   root.command(C::DrawMode) && ed.drawMode() == wasDrawing,
               "Options > Draw Mode switches the editor's Draw Mode and is ticked while it is on");
-        check(!commands.key(key('f'), root) && ed.folded() == wasFolded && !commands.key(key('b'), root) && ed.drawMode() == wasDrawing &&
-                  !commands.key(key('k'), root) && ed.highlightScale == wasHighlit,
-              "F, B and K pressed outside the editor are no command's: nothing folds or switches");
+        check(!commands.key(key('f'), root) && ed.folded() == wasFolded && !commands.key(key('k'), root) &&
+                  ed.highlightScale == wasHighlit,
+              "F and K pressed outside the editor do not fold or highlight notes");
+        check(commands.key(key('b'), root) && ed.drawMode() != wasDrawing &&
+                  root.transport.draw.getToggleState() == ed.drawMode(),
+              "B outside the editor also switches Draw Mode in the editor and Control Bar");
+        root.letGoUnseen();
+        root.command(C::DrawMode);
         const int height = root.clipArea().getHeight();
         check(active(C::ExpandClipView) && !ticked(C::ExpandClipView) && root.command(C::ExpandClipView) && root.clipViewFull() && ticked(C::ExpandClipView) &&
                   root.clipArea().getHeight() > height && commands.key(key('e', command | juce::ModifierKeys::altModifier), root) && !root.clipViewFull() &&
@@ -11886,8 +11929,12 @@ void mixerDragLive(AppCommands &commands, const std::filesystem::path &dir) {
         root.frame();
         const auto fader = three->volumeMenuItems();
         const auto *item = reenable(fader);
-        check(item != nullptr && !item->isEnabled && fader.getNumItems() == 1,
-              "the fader's menu is the Volume lane's Re-Enable Automation, unavailable while it follows its lane");
+        bool canDelete = false;
+        for (juce::PopupMenu::MenuItemIterator it(fader); it.next();)
+            if (it.getItem().text == "Delete Automation")
+                canDelete = it.getItem().isEnabled;
+        check(item != nullptr && !item->isEnabled && canDelete,
+              "the fader's own automation can be deleted while Re-Enable is unavailable");
         const int y = laneTop(root, 4) + 4;
         check(root.arrangement.automationLaneAt(y) == nullptr, "outside Automation Mode a lane's menu has no envelope item");
         root.setAutomationMode(true);
@@ -12502,6 +12549,69 @@ void automationMode(AppCommands &commands, const std::filesystem::path &dir) {
     root.frame();
     check(laneOf().data != nullptr && laneOf().data->points.size() == 1 && laneOf().data->points[0].value == -150,
           "a double-click off the line adds a breakpoint there; at the lane's foot it is silence (-150 dB, as the fader writes it)");
+    const auto activator = activatorTarget(4);
+    const auto choices = root.automationChoices(4);
+    check(std::find(choices.begin(), choices.end(), activator) != choices.end(),
+          "SC-87: Track Activator is a Mixer automation target");
+    root.showAutomation(4, activator);
+    root.command(AppCommands::DrawMode);
+    const juce::Point<float> off{barX + 1, audio->scaleBottom - 3};
+    const juce::Point<float> on{twoBars + 1, audio->top + 3};
+    const auto activatorEnvelope = [&] { return envelopeOf(*document->view().current(), activator); };
+    canvas.mouseDown(pressAt(canvas, off));
+    canvas.mouseDrag(dragAt(canvas, off, on));
+    check(activatorEnvelope().lane == nullptr, "SC-87: a held Draw stroke previews without writing rows");
+    canvas.mouseUp(dragAt(canvas, off, on));
+    const auto drawn = activatorEnvelope();
+    check(drawn.data != nullptr && drawn.lane->valueDomain == "enum" &&
+              std::ranges::any_of(drawn.data->points, [](const auto &p) {
+                  return p.time == textproj::kWhole && p.value == 1.0 && p.curve == 0;
+              }) &&
+              std::ranges::any_of(drawn.data->points, [](const auto &p) {
+                  return p.time == 2 * textproj::kWhole && p.value == 0.0 && p.curve == 0;
+              }) && root.undoTitle(false) == "Undo Draw Automation",
+          "SC-87: one stepped stroke writes binary Activator values to the crossed grid cells");
+    check(root.command(AppCommands::Undo) && activatorEnvelope().lane == nullptr &&
+              laneOf().lane != nullptr && root.command(AppCommands::Redo),
+          "SC-87: one Undo removes the stroke and retains Volume, and Redo restores it");
+    root.arrangement.geometry.selection.track = 4;
+    const juce::KeyPress clear(juce::KeyPress::backspaceKey, juce::ModifierKeys::commandModifier, 0);
+    check(root.keyPressed(clear) && activatorEnvelope().lane == nullptr && laneOf().lane != nullptr &&
+              root.undoTitle(false) == "Undo Delete Automation" && root.command(AppCommands::Undo) &&
+              activatorEnvelope().lane != nullptr,
+          "SC-87: the command shortcut deletes just the displayed envelope and one Undo restores it");
+    root.showAutomation(4, volumeTarget(4));
+    const auto beforeFreehand = laneOf().data ? laneOf().data->points : std::vector<engine::AutomationPointNode>{};
+    const juce::Point<float> freeBegin{barX + 7, midY}, freeEnd{twoBars - 7, upper};
+    const auto rawBegin = root.arrangement.geometry.tick(freeBegin.x);
+    const auto rawEnd = root.arrangement.geometry.tick(freeEnd.x);
+    const juce::ModifierKeys fineFreehand(juce::ModifierKeys::altModifier | juce::ModifierKeys::shiftModifier);
+    canvas.mouseDown(pressAt(canvas, freeBegin, fineFreehand));
+    canvas.mouseDrag(dragAt(canvas, freeBegin, freeEnd, fineFreehand));
+    canvas.mouseUp(dragAt(canvas, freeBegin, freeEnd, fineFreehand));
+    const auto freehandValue = [&](std::int64_t tick) -> std::optional<double> {
+        if (const auto *data = laneOf().data)
+            for (const auto &p : data->points)
+                if (p.time == tick && p.curve == 1)
+                    return p.value;
+        return {};
+    };
+    const auto startValue = freehandValue(rawBegin), endValue = freehandValue(rawEnd);
+    check(rawBegin != textproj::kWhole && rawEnd != 2 * textproj::kWhole && startValue && endValue &&
+              *endValue > *startValue && *endValue - *startValue < 5.0,
+          "SC-87: Alt writes off-grid linear points and Shift reduces the vertical change");
+    check(root.command(AppCommands::Undo) && laneOf().data && laneOf().data->points == beforeFreehand,
+          "SC-87: one Undo restores an existing envelope after a freehand stroke");
+    root.command(AppCommands::DrawMode);
+    root.arrangement.geometry.selection.track = 4;
+    const auto trackMenu = root.arrangement.headerMenu();
+    for (juce::PopupMenu::MenuItemIterator it(trackMenu); it.next();)
+        if (it.getItem().text == "Delete All Automation" && it.getItem().action)
+            it.getItem().action();
+    check(activatorEnvelope().lane == nullptr && laneOf().lane == nullptr &&
+              root.undoTitle(false) == "Undo Delete All Automation" && root.command(AppCommands::Undo) &&
+              activatorEnvelope().lane && laneOf().lane,
+          "SC-87: track Delete All Automation clears both lanes as one step");
     root.namesBar.automation.onClick();
     check(!root.automationMode(), "and the switch turns Automation Mode off");
     // A14: A toggles Automation Mode (Live 12 manual 25.2, 41.7), the View menu's entry ticked with it.
@@ -16415,12 +16525,12 @@ int main(int argc, char **argv) {
                       C::DelayCompensation == C::ExportAudio + 1 && C::SoloSwitches == C::DelayCompensation + 1 &&
                       C::CueSwitches == C::SoloSwitches + 1 && C::HelpManual == C::CueSwitches + 1 &&
                       C::KeyboardReference == C::HelpManual + 1 && C::AutomationMode == C::KeyboardReference + 1 &&
-                      C::LastId == C::AutomationMode,
+                      C::DeleteAutomation == C::AutomationMode + 1 && C::LastId == C::DeleteAutomation,
                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
                   "Select Loop, Save a Copy, Collect All and Save, Collect and Export, Cut, Copy, Paste, Duplicate, "
                   "Show/Hide Plug-In Windows, Split, Clip View, Insert Empty MIDI Clip(s), the …Time commands and "
                   "Insert Silence, then Create Fade In/Out and Delete Fades/Crossfades, then the Note Editor's nine, "
-                  "Arrangement Record and Delay Compensation, each named");
+                  "Arrangement Record, Delay Compensation and Delete Automation, each named");
             // The Note Editor's commands, the last ids: named in the table's order, each on the editor's key.
             {
                 const auto named = [&](int id) {
@@ -16473,12 +16583,13 @@ int main(int argc, char **argv) {
         if (const auto pictures = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); pictures.isNotEmpty())
             renderMenu(look::liveLook(), bar->getMenuForIndex(names.indexOf("Options"), "Options"),
                        juce::File(pictures).getChildFile("adi-options-menu.png"));
-        check(items("Edit") == std::vector<int>{C::Undo, C::Redo, 0, C::Cut, C::Copy, C::Paste, C::Duplicate, C::DeleteTrack, 0,
+        check(items("Edit") == std::vector<int>{C::Undo, C::Redo, 0, C::Cut, C::Copy, C::Paste, C::Duplicate,
+                                                C::DeleteTrack, C::DeleteAutomation, 0,
                                                 C::CutTime, C::CopyTime, C::PasteTime, C::DuplicateTime, C::DeleteTime,
                                                 C::InsertSilence, 0, C::RenameTrack, C::EditInfoText,
                                                 C::SelectAll, C::InvertSelection, 0, C::LoopSelection, C::SelectLoop, 0, C::Split, C::CropClip, 0,
                                                 C::Quantize, C::QuantizeSettings, C::FitToTimeRange, 0, C::GroupTracks, C::UngroupTracks},
-              "the Edit menu: Cut, Copy, Paste and Duplicate, then Delete (41.5), then the …Time commands and Insert Silence "
+              "the Edit menu: Cut, Copy, Paste and Duplicate, then Delete and Delete Automation, then the …Time commands and Insert Silence "
               "(6.11), before Rename (§18.2), Select All and Invert Selection, then Loop Selection and Select Loop (§6.6), then "
               "Split and Crop Clip, the clip commands (6.9, 10.7.1), then Quantize, its settings (10.5.8) and Fit to Time Range (10.5.5), then Group and "
               "Ungroup Tracks");

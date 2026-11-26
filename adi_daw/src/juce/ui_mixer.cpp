@@ -287,7 +287,8 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
     solo.setTooltip("Solos the track.");
     arm.setTitle("Arm Recording");
     arm.setTooltip("Arms the track for recording.");
-    for (juce::TextButton *b : {&active, static_cast<juce::TextButton *>(&solo), static_cast<juce::TextButton *>(&arm)}) {
+    for (juce::TextButton *b : {static_cast<juce::TextButton *>(&active), static_cast<juce::TextButton *>(&solo),
+                                static_cast<juce::TextButton *>(&arm)}) {
         addAndMakeVisible(*b);
         b->setColour(juce::TextButton::buttonColourId, look::button);
         // Only the keyboard focuses a mixer switch, so a focused one is ringed (Live 12).
@@ -305,6 +306,11 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
     active.setClickingTogglesState(false);
     // Live's Track Activator (manual 18.1): the selected tracks together when this one is among them.
     active.onClick = [this] { panel_.root.activateTrack(track_); };
+    active.onMenu = [this] {
+        auto m = activatorMenuItems();
+        if (m.getNumItems() > 0)
+            m.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(&active));
+    };
     // Live's Solo (manual 18.1): exclusive unless Ctrl/Cmd is held; the selected tracks together.
     // With Options > Cue Switches it is Live's Cue button (manual 18.6; MX-08): the track to Cue Out.
     solo.onClick = [this] {
@@ -1319,17 +1325,19 @@ void MixerStrip::enableAllSends() {
     else
         panel_.root.submitEdits(std::move(edit.ops));
 }
-void MixerStrip::sendMenu(std::size_t index) {
+juce::PopupMenu MixerStrip::sendMenuItems(std::size_t index) {
     // Live's Enable Send, ticked while the send is on. A track's sends are on from the start; a
     // return's are off until it is chosen (ADR-0203 d3).
     juce::PopupMenu m;
+    if (index >= sends_.size() || index >= returns_.size())
+        return m;
     const bool on = sendOn(index);
     m.addItem("Enable Send", true, on, [this, index, on] { enableSend(index, !on); });
     // A return's sends start off; Live's menu also switches them all on at once (§18.4).
     if (kind_ == "return")
         m.addItem("Enable All Sends", [this] { enableAllSends(); });
     // Where this send taps its track (ADR-0245 d10; DF-W33): Live's three, the one it uses ticked.
-    if (const auto current = panel_.root.current(); current && index < returns_.size()) {
+    if (const auto current = panel_.root.current()) {
         m.addSeparator();
         const auto tap = adi::ui::sendTap(*current, track_, returns_[index]);
         // A plain local for the lambda: Clang 14 rejects a lambda capturing a structured binding.
@@ -1343,11 +1351,18 @@ void MixerStrip::sendMenu(std::size_t index) {
             });
         }
     }
-    // Live's Re-Enable Automation for this send's level, owned by its routing row (AU-04).
+    // The envelope belongs to this send's routing row.
     if (const auto current = panel_.root.current())
-        if (const auto *send = findSend(current->sends, track_, returns_[index]))
+        if (const auto *send = findSend(current->sends, track_, returns_[index])) {
             panel_.root.addReenableAutomation(m, laneOf(*current, "routing", send->id, "gain_db"));
-    m.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(sends_[index].get()));
+            panel_.root.addAutomationDeleteItem(m, sendTarget(send->id, "Send Level"));
+        }
+    return m;
+}
+void MixerStrip::sendMenu(std::size_t index) {
+    auto m = sendMenuItems(index);
+    if (m.getNumItems() > 0)
+        m.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(sends_[index].get()));
 }
 void MixerStrip::chooseSendTap(std::size_t index, IndividualSendTap tap) {
     // From the CURRENT cell (ADR-0201), as every send edit.
@@ -1375,19 +1390,20 @@ juce::PopupMenu MixerStrip::soloMenu() {
     });
     return m;
 }
-void SoloButton::mouseDown(const juce::MouseEvent &e) {
-    // A right-click is the menu's, never a press: the button is not put down, so the release that
-    // follows solos nothing.
-    if (!e.mods.isPopupMenu())
-        juce::TextButton::mouseDown(e);
-    else if (onMenu)
+void MixerMenuButton::mouseDown(const juce::MouseEvent &e) {
+    PrimaryMouseControl::mouseDown(e);
+    if (e.mods.isPopupMenu() && onMenu)
         onMenu();
 }
-void SoloButton::mouseUp(const juce::MouseEvent &e) {
-    if (!e.mods.isPopupMenu())
-        juce::TextButton::mouseUp(e);
+juce::PopupMenu MixerStrip::activatorMenuItems() {
+    juce::PopupMenu m;
+    const auto target = activatorTarget(track_);
+    if (const auto current = panel_.root.current())
+        panel_.root.addReenableAutomation(m, laneOf(*current, target.ownerKind, target.ownerId, target.paramRef));
+    panel_.root.addAutomationDeleteItem(m, target);
+    return m;
 }
-void MixerStrip::panMenu() {
+juce::PopupMenu MixerStrip::panMenuItems() {
     juce::PopupMenu m;
     m.addItem(1, "Stereo Pan", true, true);
     // Live's Split Stereo Pan Mode (ADR-0203 d9) needs a pan mode and two pans per
@@ -1396,7 +1412,11 @@ void MixerStrip::panMenu() {
     // Live's Re-Enable Automation for the pan (AU-04).
     if (const auto current = panel_.root.current())
         panel_.root.addReenableAutomation(m, laneOf(*current, "track", track_, "pan"));
-    m.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(&pan));
+    panel_.root.addAutomationDeleteItem(m, panTarget(track_));
+    return m;
+}
+void MixerStrip::panMenu() {
+    panMenuItems().showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(&pan));
 }
 // The volume fader's menu: Live's Re-Enable Automation for the track's Volume lane (manual 25.4, AU-04). A
 // track with no Volume lane has nothing to offer, and the fader shows no menu.
@@ -1404,6 +1424,7 @@ juce::PopupMenu MixerStrip::volumeMenuItems() {
     juce::PopupMenu m;
     if (const auto current = panel_.root.current())
         panel_.root.addReenableAutomation(m, laneOf(*current, "track", track_, "volume"));
+    panel_.root.addAutomationDeleteItem(m, volumeTarget(track_));
     return m;
 }
 void MixerStrip::volumeMenu() {

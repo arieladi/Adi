@@ -4,6 +4,7 @@
 #include "adi/ops.hpp"
 #include "adi/return_send_tap.hpp"
 #include "adi/ui/arm_edits.hpp"
+#include "ui_controls.hpp"
 #include <array>
 #include <functional>
 #include <juce_gui_basics/juce_gui_basics.h>
@@ -24,44 +25,16 @@ class ArmButton final : public juce::TextButton {
   public:
     void paintButton(juce::Graphics &, bool over, bool down) override;
 };
-// Live's Solo switch: a right-click opens its menu (Solo in Place, manual 18.6) and solos nothing.
-class SoloButton final : public juce::TextButton {
+// A right-click opens a mixer switch's menu without switching it.
+class MixerMenuButton final : public controls::PrimaryMouseControl<juce::TextButton> {
   public:
-    using juce::TextButton::TextButton;
+    using PrimaryMouseControl::PrimaryMouseControl;
     std::function<void()> onMenu;
     void mouseDown(const juce::MouseEvent &) override;
-    void mouseUp(const juce::MouseEvent &) override;
 };
 // Live's peak level (manual 18.1): the highest peak since the last click, in dB, red once
 // it has clipped. A click resets it.
-// A mixer control the left button moves; the right one opens the strip's menu for it and moves nothing (AU-04):
-// JUCE's Slider starts a drag on any button when its own menu is off.
-class PrimaryButtonSlider final : public juce::Slider {
-  public:
-    // A gesture belongs to the press that began it: a primary press's drag and release reach the Slider whatever
-    // keys or buttons join it (a Ctrl held at the release is a popup click on macOS), and a popup press's never do.
-    void mouseDown(const juce::MouseEvent &e) override {
-        primary_ = !e.mods.isPopupMenu();
-        if (primary_)
-            juce::Slider::mouseDown(e);
-    }
-    void mouseDrag(const juce::MouseEvent &e) override {
-        if (primary_)
-            juce::Slider::mouseDrag(e);
-    }
-    void mouseUp(const juce::MouseEvent &e) override {
-        if (primary_)
-            juce::Slider::mouseUp(e);
-        primary_ = false;
-    }
-    void mouseDoubleClick(const juce::MouseEvent &e) override {
-        if (!e.mods.isPopupMenu())
-            juce::Slider::mouseDoubleClick(e);
-    }
-
-  private:
-    bool primary_ = false;
-};
+using PrimaryButtonSlider = controls::PrimaryMouseControl<juce::Slider>;
 class PeakHold final : public juce::Button {
   public:
     PeakHold();
@@ -137,8 +110,7 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     // The drag's travel: the box's 2000 ms over this many pixels, 0.1 ms a pixel (PROVISIONAL,
     // Live's step is M1-06).
     static constexpr int kDelayDragPixels = 20000;
-    juce::TextButton active;
-    SoloButton solo{"S"};
+    MixerMenuButton active, solo{"S"};
     bool cueMode_ = false; // the Solo button is the Cue button (Options > Cue Switches)
     bool cueDragging_ = false;
     ArmButton arm;
@@ -224,6 +196,9 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
   public:
     // The volume fader's menu as its right-click shows it: empty when the track has no Volume lane.
     juce::PopupMenu volumeMenuItems();
+    juce::PopupMenu panMenuItems();
+    juce::PopupMenu sendMenuItems(std::size_t index);
+    juce::PopupMenu activatorMenuItems();
 
   private:
     void sendMenu(std::size_t index);
