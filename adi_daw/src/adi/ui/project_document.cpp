@@ -583,6 +583,8 @@ bool ProjectDocument::loadPlugin(const rows::PluginRef &ref, std::int64_t track,
         }
         options.replaceInstrument = true;
     }
+    if (pluginRouteDefault)
+        options.expressionRoute = pluginRouteDefault(ref.format, ref.uid);
     return insertPlugin(ref, track, before, options);
 }
 bool ProjectDocument::finishInsert(PreparedBuiltinInsert prepared) {

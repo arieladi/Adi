@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/appdata.hpp"
+#include "adi/plugin_registry.hpp"
 #include "adi/render/queue.hpp"
 #include "adi/render/host_dispatch.hpp"
 #include "adi/settings/device_grant.hpp"
@@ -698,6 +699,12 @@ class AdiApplication final : public juce::JUCEApplication,
         // The timer and posted callbacks read root_; the window's teardown can run them (walk-A A27).
         releaseWindow(window_, root_);
         document_ = std::move(next);
+        document_->pluginRouteDefault = [](const std::string &format, const std::string &uid)
+            -> std::optional<engine::RouteChoice> {
+            std::string why;
+            auto registry = PluginRegistry::open(appdata::pluginRegistryFile(), why);
+            return registry ? registry->route(format, uid) : std::nullopt;
+        };
         auto root = std::make_unique<AdiRootComponent>(document_->view(), document_->ops(),
                                                        document_->mailbox(), *commands_,
                                                        document_->views(),
@@ -803,6 +810,16 @@ class AdiApplication final : public juce::JUCEApplication,
             return ok;
         };
         root->devices.holdsCopy = [this] { return deviceClipboard_.has_value(); };
+        // SC-325: a plug-in's expression route chosen from its menu is remembered for that plug-in in the
+        // application's registry (ADR-0134 d7), the default its next instance starts with.
+        root->devices.rememberRoute = [this](const DevicePanelData &target, engine::RouteChoice route) {
+            std::string why;
+            const auto now = std::chrono::duration_cast<std::chrono::seconds>(
+                                 std::chrono::system_clock::now().time_since_epoch()).count();
+            auto registry = PluginRegistry::open(appdata::pluginRegistryFile(), why);
+            if ((!registry || !registry->remember(target.format, target.uid, route, now, why)) && root_)
+                root_->say("The choice is kept in this project, not for the plug-in's next instance: " + why);
+        };
         root->devices.keyChoices=[this](const DevicePanelData& target){return document_->deviceKeyChoices(target);};
         root->devices.setKey=[this](const DevicePanelData& target,const DeviceKeyChoice& choice){
             const bool ok=document_->setDeviceKeyChoice(target,choice);

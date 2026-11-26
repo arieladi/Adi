@@ -426,6 +426,43 @@ void heldOffAfterACrash(const std::filesystem::path &dir) {
           "held off: Load All loads Crashy too");
 }
 
+// SC-325: the expression route remembered for a plug-in is the one its next instance starts with, on the
+// device row, so the project plays it the same anywhere.
+void rememberedRouteStartsANewInstance(const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ui::ProjectDocument::open(dir / "remembered-route.adi", true, test::knobsLoader("cutoff", "clap"), error);
+    check(document != nullptr, "route: a fresh project");
+    if (!document) return;
+    std::vector<std::pair<std::string, std::string>> asked;
+    document->pluginRouteDefault = [&](const std::string &format, const std::string &uid)
+        -> std::optional<engine::RouteChoice> {
+        asked.emplace_back(format, uid);
+        return engine::RouteChoice::MpeMidi;
+    };
+    rows::PluginRef ref;
+    ref.format = "clap";
+    ref.uid = test::kKnobsUid;
+    ref.name = "UI knobs";
+    ref.subtype = "effect";
+    const bool loaded = document->loadPlugin(ref, 2);
+    check(loaded, ("route: the plug-in loads: " + document->error()).c_str());
+    check(asked.size() == 1 && asked[0].first == "clap" && asked[0].second == test::kKnobsUid,
+          "route: the remembered route is asked for that plug-in");
+    try {
+        SQLite::Statement row(document->store().db(),
+                              "SELECT r.route FROM device_expression_routes r JOIN devices d ON d.id=r.device_id "
+                              "JOIN plugin_refs p ON p.id=d.plugin_ref_id WHERE p.uid=?");
+        row.bind(1, test::kKnobsUid);
+        check(row.executeStep() && row.getColumn(0).getString() == "mpe_midi",
+              "route: the new instance's device row holds it");
+    } catch (const std::exception &e) {
+        check(false, e.what());
+    }
+    check(document->ops().undo().ok && document->store().db().execAndGet(
+                                            "SELECT count(*) FROM device_expression_routes").getInt() == 0,
+          "route: one undo step takes the device and its route away together");
+}
+
 void mixSurfacePublication(const std::filesystem::path &file) {
     using engine::ParamEventKind;
     engine::DeviceLoader loader = [](const engine::DeviceRequest &request, std::string &error)
@@ -2358,6 +2395,7 @@ int main(int argc, char **argv) {
     deviceGraphWorkers(temp.path());
     refusedBeginOwnership(temp.path());
     heldOffAfterACrash(temp.path());
+    rememberedRouteStartsANewInstance(temp.path());
     importWithChoices(temp.path());
     mixSurfacePublication(temp.path() / "mix-surface.adi");
     reportedDeviceLatency(temp.path());

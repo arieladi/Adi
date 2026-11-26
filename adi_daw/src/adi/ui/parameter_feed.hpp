@@ -49,6 +49,9 @@ struct DevicePanelData {
     // Its plug-in reference's format ("vst3", "clap", "internal"; "" for none): what names its
     // parameters' automation lanes (`engine::automationParamRef`).
     std::string format;
+    // How it receives per-note expression (`device_expression_routes.route`: "note_expression",
+    // "mpe_midi", "plain"; "" is Auto, the plug-in's own declaration), chosen in its menu (SC-325).
+    std::string route;
     panel::Resolved resolved;
     std::vector<panel::Declared> declared;
     std::vector<panel::Record> records;

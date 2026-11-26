@@ -231,6 +231,9 @@ class ProjectDocument final : public engine::BlockProcessor {
     // silence any other track) and takes the place of the track's instrument, in the same undo step.
     // An effect loads as `insertPlugin` places it.
     bool loadPlugin(const rows::PluginRef &, std::int64_t track, std::optional<std::int64_t> before = {});
+    // SC-325 (ADR-0134 d7): the expression route remembered for a plug-in (format, uid), the default of a
+    // new instance `loadPlugin` makes; the project then keeps it on the device row. Unset: Auto.
+    std::function<std::optional<engine::RouteChoice>(const std::string &, const std::string &)> pluginRouteDefault;
     bool addMixFunction(mix::Function, std::int64_t track);
     std::vector<DeviceKeyChoice> deviceKeyChoices(const DevicePanelData&);
     bool setDeviceKeyChoice(const DevicePanelData&,const DeviceKeyChoice&);

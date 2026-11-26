@@ -17546,6 +17546,55 @@ int main(int argc, char **argv) {
             integrated.devices.fold(11);
             check(!first.beginRename() && !first.rename.isVisible(), "a folded device has no title to rename");
             integrated.devices.fold(11);
+            // SC-325: a plug-in's menu chooses how it receives per-note expression, as Live's MPE Mode.
+            {
+                auto plugged = std::make_shared<ParameterPublication>(*publication);
+                (*plugged)[1].plugin = true;
+                (*plugged)[1].format = "vst3";
+                (*plugged)[1].uid = "VST3-Synth-1-2";
+                (*plugged)[1].route = "mpe_midi";
+                integrated.devices.publication = [plugged] { return plugged; };
+                integrated.frame();
+                const auto routesOf = [&](const juce::PopupMenu &menu) {
+                    std::vector<juce::PopupMenu::Item> found;
+                    for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+                        if (it.getItem().text == "MPE" && it.getItem().subMenu)
+                            for (juce::PopupMenu::MenuItemIterator sub(*it.getItem().subMenu); sub.next();)
+                                found.push_back(sub.getItem());
+                    return found;
+                };
+                check(routesOf(integrated.devices.panels[0]->commands()).empty(),
+                      "ADI's own device has no MPE choice");
+                const auto routes = routesOf(integrated.devices.panels[1]->commands());
+                juce::StringArray labels;
+                for (const auto &item : routes) labels.add(item.text + (item.isTicked ? "*" : ""));
+                check(labels == juce::StringArray{"Auto", "VST3 Note Expression", "MIDI-MPE*", "Poly-AT (no MPE)"},
+                      "a plug-in's MPE choices, the project's one ticked (SC-325)");
+                std::vector<std::pair<std::string, Payload>> sent;
+                std::vector<std::pair<std::string, engine::RouteChoice>> remembered;
+                integrated.devices.submit = [&](const std::string &op, Payload p) {
+                    sent.emplace_back(op, std::move(p));
+                    return true;
+                };
+                integrated.devices.rememberRoute = [&](const DevicePanelData &d, engine::RouteChoice c) {
+                    remembered.emplace_back(d.uid, c);
+                };
+                if (routes.size() == 4) {
+                    routes[1].action();
+                    routes[0].action();
+                }
+                check(sent.size() == 2 && sent[0].first == "device.setExpressionRoute" &&
+                          sent[0].second.value("dev", 0) == 12 && sent[0].second["route"] == "note_expression" &&
+                          sent[1].second["route"].is_null(),
+                      "a choice is one op on the device row; Auto clears it");
+                check(remembered.size() == 2 && remembered[0].first == "VST3-Synth-1-2" &&
+                          remembered[0].second == engine::RouteChoice::NoteExpression &&
+                          remembered[1].second == engine::RouteChoice::Auto,
+                      "and it is remembered for the plug-in's next instance");
+                integrated.devices.rememberRoute = nullptr;
+                integrated.devices.publication = [publication] { return publication; };
+                integrated.frame();
+            }
             UiPeerRoot deviceHost;
             deviceHost.setSize(integrated.getWidth(), integrated.getHeight());
             deviceHost.addAndMakeVisible(integrated);
