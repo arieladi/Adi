@@ -116,17 +116,31 @@ public:
     AuditPresentation(Store& store, ProjectView& view, engine::Session& session)
         : store_(store), native_(view, session) {}
     int captures = 0, preparations = 0, publications = 0;
+    int verifiedCaptures = 0;
     bool captureInTransaction = true, laterAutocommit = true;
     std::function<void()> afterPrepare;
     g::PresentationStatus adoptCommitted(const Store& store, const g::Base& base,
                                         const AppliedBatch* batch) override {
         outside(); return native_.adoptCommitted(store, base, batch);
     }
+    std::optional<OpPresentationImageGuard> adoptedImage(const g::Base& base) const noexcept override {
+        return native_.adoptedImage(base);
+    }
     g::CaptureResult capture(const Store& store, const g::Base& base, const g::OwnerToken& owner,
                              g::Strategy strategy, std::span<const OpRequest> requests) override {
+        insideCapture();
+        return native_.capture(store, base, owner, strategy, requests);
+    }
+    g::CaptureResult captureVerified(const Store& store, const g::Base& base, const g::OwnerToken& owner,
+                                     g::Strategy strategy, std::span<const OpRequest> requests,
+                                     const OpPresentationImageGuard& verifiedImage) override {
+        insideCapture();
+        ++verifiedCaptures;
+        return native_.captureVerified(store, base, owner, strategy, requests, verifiedImage);
+    }
+    void insideCapture() {
         ++captures;
         captureInTransaction = captureInTransaction && sqlite3_get_autocommit(store_.db().getHandle()) == 0;
-        return native_.capture(store, base, owner, strategy, requests);
     }
     g::PrepareResult prepare(std::unique_ptr<const g::CapturedPresentation> captured) override {
         ++preparations; outside();
@@ -637,8 +651,12 @@ void relativeScalarAtomicFailure(Precision precision) {
     Fixture f(precision);
     auto gesture =
         f.begin(g::relativeScalarProducer({g::ScalarKind::TrackVolume, 1, {2, 1}, {-70, 6, -150}}));
+    f.update(*gesture, std::make_unique<g::RelativeScalarInput>(-5),
+             "seed grouped preview before testing the stable fader path");
+    const auto verified = f.presentation->verifiedCaptures;
     f.update(*gesture, std::make_unique<g::RelativeScalarInput>(-10),
-             "healthy grouped preview before trigger");
+             "healthy grouped fader update before trigger");
+    check(f.presentation->verifiedCaptures == verified + 1, "grouped fader used its verified committed image before the TEMP trigger");
     const auto head = OpJournal(*f.store).headSeq();
     const auto digest = digestProject(*f.store).text;
     const auto sequence = appliedSource(*f.store).sequence();
@@ -863,9 +881,11 @@ void nativeMaterialGuard(Precision precision) {
     Fixture f(precision);
     f.sound(0.25, 0.5, "native material guard baseline");
     auto volume = f.begin(g::scalarProducer({g::ScalarKind::TrackVolume, 1}));
+    f.update(*volume, std::make_unique<g::ScalarInput>(-10), "seed a stable fader revision");
     const auto head = OpJournal(*f.store).headSeq();
     const auto sequence = appliedSource(*f.store).sequence();
     const auto publications = f.presentation->publications;
+    const auto verified = f.presentation->verifiedCaptures;
     bool changed = false;
     f.presentation->afterPrepare = [&] {
         f.store->db().exec("UPDATE tempo_map SET bpm=90 WHERE id=37");
@@ -873,6 +893,7 @@ void nativeMaterialGuard(Precision precision) {
     };
     const auto result = volume->update(std::make_unique<g::ScalarInput>(-20));
     f.presentation->afterPrepare = {};
+    check(f.presentation->verifiedCaptures == verified + 1, "same-head write interrupts a fader update using a verified image");
     check(changed && result.status.error == g::Error::StaleBase && !result.preview,
           "real native captured image refuses unrelated same-head tempo change after preparation");
     check(f.presentation->publications == publications,
