@@ -4,6 +4,35 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-26 — `walk/*` Round 19 (`walk/b13-default-track-numbers` `deb41b55`)
+
+Verified `origin/walk/b13-default-track-numbers` at `deb41b55` under **GCC 12.4.0** and **Clang 14.0.6 + libstdc++ 12** with `-DADI_WERROR=ON` (headless Pd on, JUCE off, `-DADI_ACCEPTANCE=ON`), plus all 7 touched JUCE UI translation units with `-DADI_WITH_JUCE=ON -DADI_WERROR=ON`.
+
+| Branch | SHA | Compiler | Warnings | Touched Suites (`ctest`, 6/6) | Acceptance (`ctest -L acceptance`) | JUCE TUs (`-DADI_WITH_JUCE=ON -DADI_WERROR=ON`) |
+|---|---|---|---|---|---|---|
+| `walk/b13-default-track-numbers` | `deb41b55` | GCC 12.4.0 | 0 | **PASS** (6/6, 36.71 s: `adi_project_bootstrap_tests`, `adi_track_recording_tests`, `adi_ui_seams_tests` 10.14 s, `adi_ui_document_tests` 17.87 s, `adi_ui_stack_model_tests` 2.74 s, `adi_separated_stems_tests` 4.98 s) | **PASS** (2/2, 299.89 s: `adi_builtin_realtime_tests` 257.43 s, `adi_acceptance_wts01` 42.45 s) | **PASS** (7/7, 0 warnings: `ui_main.cpp.o`, `ui_mix_analysers.cpp.o`, `ui_mix_focus.cpp.o`, `ui_mixview.cpp.o`, `ui_shell.cpp.o`, `ui_stack.cpp.o`, `test_ui_shell.cpp.o`) |
+| `walk/b13-default-track-numbers` | `deb41b55` | Clang 14.0.6 + libstdc++ 12 | 0 | **PASS** (6/6, 36.32 s: `adi_project_bootstrap_tests`, `adi_track_recording_tests`, `adi_ui_seams_tests` 9.65 s, `adi_ui_document_tests` 17.27 s, `adi_ui_stack_model_tests` 2.52 s, `adi_separated_stems_tests` 5.71 s) | **PASS** (2/2, 275.39 s: `adi_builtin_realtime_tests` 236.71 s, `adi_acceptance_wts01` 38.67 s) | **PASS** (7/7, 0 warnings: `ui_main.cpp.o`, `ui_mix_analysers.cpp.o`, `ui_mix_focus.cpp.o`, `ui_mixview.cpp.o`, `ui_shell.cpp.o`, `ui_stack.cpp.o`, `test_ui_shell.cpp.o`) |
+
+No findings on `walk/b13-default-track-numbers` (`deb41b55`).
+
+### Also completed before pausing for `walk/b13`: 7 waiting after-3-December `engine/*` stacks
+
+Checked with `-DADI_WERROR=ON` (Pd on, JUCE off; pre-DF-M62 bases patched locally in `FloatRealTransform.h:61` only to see past it, reverted immediately; pre-DF-E69 bases checked via touched `.o` targets on Clang 14):
+
+| Branch | SHA | Base | GCC 12.4.0 `-DADI_WERROR=ON` | Clang 14.0.6 + libstdc++ 12 `-DADI_WERROR=ON` | Notes |
+|---|---|---|---|---|---|
+| `engine/df-e17a-move-overlap` | `98ee01f8` | `01c70983` | **PASS** (`adi_clip_edit_tests` PASS; `ui_shell.cpp.o` JUCE 0 warnings; `adi_ui_seams_tests` only hits pre-DF-E76 `-fsanitize-trap=signed-integer-overflow` on base) | **PASS** (2/2: `adi_clip_edit_tests` 16.56 s, `adi_ui_seams_tests` 9.21 s; `ui_shell.cpp.o` JUCE 0 warnings) | Clean; rebase picks up landed `DF-E76`. |
+| `engine/tm-tt01-tempo-ramps-current` | `7c37df25` | `dbf98b0c` | **PASS** (11/11 touched suites, 50.92 s, 0 warnings across 41 files) | **27/31 touched `.o` PASS (0 warnings)**; 4 TUs (`freeze_commands`, `clip_playback`, `midi_clips`, `automation_clips`) only hit pre-DF-E69 base (`timeline_clips.hpp:13` / `midi_clips.cpp:840`, fixed on `main`) | 0 warnings introduced by branch. |
+| `engine/srf08-mcu-vpot-wire` | `5f41d14d` | `73f13028` | **PASS** (`adi_mcu_fader_tests` 0.09 s, DF-M62 patched locally) | **PASS** (`adi_mcu_fader_tests` 0.06 s, DF-M62 patched locally) | Clean on both compilers. |
+| `engine/tm-ic04-compound-file` | `3ff8ba64` | `73f13028` | **PASS** (`adi_compound_file_tests` 0.17 s, DF-M62 patched locally) | **PASS** (2/2 touched `.o`, 0 warnings; full link blocked only by pre-DF-E69 base) | Clean. |
+| `engine/tm-ls03-midi-transport-edges` | `eb545c1e` | `87ea349c` | **PASS** (2/2: `adi_time_base_tests` 4.65 s, `adi_midi_sync_wire_tests` 0.01 s; DF-M62 patched locally) | **PASS** (6/6 touched `.o`, 0 warnings; full link blocked only by pre-DF-E69 base) | Clean. |
+| `engine/tm-ic02-smf-codec` | `ec515123` | `73f13028` | **PASS** (`adi_smf_tests` 0.01 s, DF-M62 patched locally) | **PASS** (2/2 touched `.o`, 0 warnings; full link blocked only by pre-DF-E69 base) | Clean. |
+| `engine/dev04-drum-pad-routing` | `b1b50df2` | `73f13028` | **PASS** (`adi_device_ops_tests` 2.04 s, DF-M62 patched locally) | **PASS** (2/2 touched `.o`, 0 warnings; full link blocked only by pre-DF-E69 base) | Clean. |
+
+(Note: `2026-11-27-gemini-basics.md` read from `origin/win/sanity-1126`; moving to Item 3 `DF-E89` loan `gemini/df-e89-release-warnings` next, continuing to check `origin/walk/*`, `origin/basics/*`, and `origin/land/*` first before every step.)
+
+---
+
 ## 2026-11-26 — Closing Rule / Queue Item 11 (Clang 14.0.6 + libstdc++ 12 ASan + LSan + UBSan on `origin/main` `2b1f777f`)
 
 Completed the second compiler leg of Standing Queue Item 11: all **278** headless suites (`-LE performance`, `-DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF -DADI_ACCEPTANCE=ON`) under **Clang 14.0.6 + libstdc++ 12** with `-O1 -g1 -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=undefined -DADI_WERROR=ON`, `ASAN_OPTIONS=detect_leaks=1:alloc_dealloc_mismatch=1:halt_on_error=1`, `UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1` on `origin/main` `2b1f777f` (identical source tree to `5ebc7453`). All 479 core/helper targets built with **0 warnings**.
