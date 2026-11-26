@@ -10,6 +10,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
 #include <map>
+#include <span>
 #include <string_view>
 #include <utility>
 namespace adi::ui {
@@ -251,6 +252,9 @@ class DevicePanelView final : public juce::Component, public juce::FileDragAndDr
     DeviceChainStrip &strip;
     const DevicePanelData *data = nullptr;
     std::optional<DevicePanelData> dragTarget_;
+    std::vector<DevicePanelData> draggedDevices_;
+    bool selectOnRelease_ = false;
+    bool startedDeviceDrag_ = false;
     std::uint64_t dragEpoch_ = 0;
     std::string editingParameter_;
     double editingValue_ = 0;
@@ -315,9 +319,10 @@ class DeviceChainStrip final : public juce::Component,
     // a click in the strip's empty space; Duplicate goes in front of the next device in its chain
     // and leaves the clipboard as it was. False when there is nothing to act on.
     enum class Clip { Cut, Copy, Paste, Duplicate };
-    bool clipboard(Clip, std::optional<std::int64_t> device = std::nullopt);
+    bool clipboard(Clip, std::optional<std::int64_t> device = std::nullopt, bool includeSelection = false);
     bool canClipboard(Clip) const;
     std::optional<std::int64_t> focusedDevice() const;
+    bool deleteDevices(std::optional<std::int64_t> device = {});
     // Whether the chain's end is chosen: the strip itself has the focus, after a click past the
     // last device.
     bool endChosen() const { return hasKeyboardFocus(false); }
@@ -368,6 +373,11 @@ class DeviceChainStrip final : public juce::Component,
     std::function<bool(std::int64_t track, std::optional<std::int64_t> before)> paste;
     std::function<bool(std::int64_t device, std::int64_t track, std::optional<std::int64_t> before)> duplicate;
     std::function<bool()> holdsCopy;
+    // A title range acts as one edit. Each item carries the identity observed by the UI.
+    std::function<bool(std::span<const DevicePanelData>)> removeSelection;
+    std::function<bool(std::span<const DevicePanelData>, bool cut)> copySelection;
+    std::function<bool(std::span<const DevicePanelData>, std::int64_t track, std::optional<std::int64_t> before)>
+        duplicateSelection, moveSelection;
     // The app's sample slot edits (D5): a file assigned to a device's slot, or the slot cleared;
     // each one undo step, its refusal said in the Status Bar.
     std::function<bool(std::int64_t device, std::int32_t slot, const std::string &path)> assignSample;
@@ -375,6 +385,17 @@ class DeviceChainStrip final : public juce::Component,
     std::vector<std::unique_ptr<DevicePanelView>> panels;
 
   private:
+    struct PickedDevice {
+        std::int64_t id, track, chain;
+        std::uint64_t instance;
+        bool matches(const DevicePanelData &) const;
+    };
+    bool isSelected(std::int64_t) const;
+    bool selectionActsOn(std::int64_t) const;
+    void selectTitle(const DevicePanelView &, bool extend);
+    void clearSelection();
+    std::vector<DevicePanelData> selectedTargets() const;
+    bool clipboardSelection(Clip);
     DevicePanelView *moveSource(const SourceDetails &) const;
     bool acceptsSample() const;
     const DevicePanelData *dataOf(std::int64_t device) const;
@@ -384,12 +405,16 @@ class DeviceChainStrip final : public juce::Component,
     bool parametersSuspended_ = false;
     std::int64_t selectedTrack = -1;
     std::optional<std::int64_t> chosen_;
+    std::vector<PickedDevice> selected_;
+    std::optional<PickedDevice> selectionAnchor_;
+    std::uint64_t selectionEpoch_ = 0;
     int end_ = 0; // where the chain ends, in the content's pixels
     juce::Viewport scroll;
     juce::Component content;
     std::shared_ptr<const ParameterPublication> presented;
     std::uint64_t addMenuEpoch_ = 0;
     std::uint64_t frameEpoch_ = 0;
+    friend class DevicePanelView;
 };
 // The strip's top edge: drag it up to grow the strip (ADR-0184), never below its floor.
 class DockResizer final : public juce::Component {

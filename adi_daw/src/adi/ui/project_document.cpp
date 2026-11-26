@@ -920,6 +920,118 @@ bool ProjectDocument::copyDevice(std::int64_t id, DeviceCopy &out) {
     error_.clear();
     return true;
 }
+
+std::vector<DeviceMoveSource> ProjectDocument::deviceRange(std::span<const DevicePanelData> selected, bool mutation) {
+    if (selected.empty())
+        throw std::runtime_error("Select one or more devices first.");
+    if (mutation && store_->readOnly())
+        throw std::runtime_error("The project is read-only.");
+    const auto chain = selected.front().chain;
+    const auto track = selected.front().track;
+    std::set<std::int64_t> ids;
+    for (const auto &device : selected) {
+        if (device.chain != chain || device.track != track || !ids.insert(device.id).second)
+            throw std::runtime_error("Select distinct devices from one chain.");
+        if ((selected.size() > 1 && device.runtime.claimIdentity().expired()) ||
+            !deviceTargetCurrent(device.id, device.runtime, device.instance))
+            throw std::runtime_error("One of the selected devices changed or belongs to another project.");
+    }
+    auto &db = store_->db();
+    if (track <= 0 || adi::detail::deviceChainOwner(db, chain) != track)
+        throw std::runtime_error("The selected device chain changed tracks.");
+    if (mutation) {
+        SQLite::Statement editable(db,
+            "WITH RECURSIVE enclosing(id,parent_id,frozen,locked) AS ("
+            " SELECT id,parent_id,frozen,locked FROM tracks WHERE id=?"
+            " UNION SELECT t.id,t.parent_id,t.frozen,t.locked FROM tracks t JOIN enclosing e ON t.id=e.parent_id)"
+            " SELECT 1 FROM enclosing WHERE frozen<>0 OR locked<>0 LIMIT 1");
+        editable.bind(1, track);
+        if (editable.executeStep())
+            throw std::runtime_error("Devices cannot be edited on a frozen or locked track.");
+    }
+    std::vector<DeviceMoveSource> ordered;
+    ordered.reserve(selected.size());
+    for (const auto &device : adi::detail::deviceChainOrder(db, chain))
+        if (ids.contains(device.id))
+            ordered.push_back({device.id, track, chain});
+    if (ordered.size() != selected.size())
+        throw std::runtime_error("One of the selected devices changed chains.");
+    return ordered;
+}
+
+bool ProjectDocument::copyDevices(std::span<const DevicePanelData> selected, std::vector<DeviceCopy> &out, bool cut) {
+    return editDeviceRange(selected, &out, cut);
+}
+
+bool ProjectDocument::removeDevices(std::span<const DevicePanelData> selected) {
+    return editDeviceRange(selected, nullptr, true);
+}
+
+bool ProjectDocument::editDeviceRange(std::span<const DevicePanelData> selected, std::vector<DeviceCopy> *clipboard,
+                                      bool remove) {
+    try {
+        std::vector<DeviceCopy> copied;
+        std::vector<OpRequest> requests;
+        OpTransactionInputs inputs;
+        CommitOptions options;
+        const auto source = appliedSource(*store_);
+        {
+            auto &db = store_->db();
+            std::optional<SQLite::Transaction> read;
+            if (sqlite3_get_autocommit(db.getHandle()) != 0)
+                read.emplace(db, SQLite::TransactionBehavior::DEFERRED);
+            const auto devices = deviceRange(selected, remove);
+            options.expectHead.emplace(OpJournal(*store_).headSeq());
+            for (const auto &device : devices) {
+                if (clipboard) {
+                    DeviceCopy copy;
+                    if (!copyDevice(device.device, copy))
+                        return false;
+                    copied.push_back(std::move(copy));
+                }
+                if (remove) {
+                    inputs.rowGuards.push_back({"devices", {{"id", device.device}},
+                        adi::detail::captureRow(db, "devices", "id", device.device)});
+                    OpRequest request;
+                    request.opType = "device.remove";
+                    request.payload = {{"id", device.device}};
+                    request.label = clipboard ? "Cut Devices" : "Remove Devices";
+                    request.targetKind = "device";
+                    request.targetId = device.device;
+                    requests.push_back(std::move(request));
+                }
+            }
+            if (remove) {
+                const auto chain = devices.front().chain;
+                inputs.rowGuards.push_back({"device_chains", {{"id", chain}},
+                    adi::detail::captureRow(db, "device_chains", "id", chain)});
+                requests.front().selBefore = sessionState_.advisory();
+            }
+        }
+        if (remove) {
+            const auto result = ops_.commitPrepared(requests, [&](Store &store, Actor) {
+                return OpJournal(store).commitCaptured(requests, source, options, inputs);
+            });
+            error_ = result.error;
+            if (!result.ok)
+                return false;
+            const bool refreshed = synchronise();
+            if (refreshed)
+                feed_.publish(session_, realisedGeneration_);
+            if (clipboard)
+                *clipboard = std::move(copied);
+            return true;
+        }
+        if (clipboard)
+            *clipboard = std::move(copied);
+        error_.clear();
+        return true;
+    } catch (const std::exception &e) {
+        error_ = e.what();
+        return false;
+    }
+}
+
 std::int64_t ProjectDocument::retainedDeviceId() const noexcept {
     // Removed instances stay alive for Undo, even after their store rows leave.
     std::int64_t id = 0;
@@ -1356,11 +1468,26 @@ bool ProjectDocument::moveMixFunction(const DevicePanelData &expected, std::int6
 }
 bool ProjectDocument::moveDevice(const DevicePanelData &expected, std::int64_t track,
                                  std::optional<std::int64_t> before) {
-    if (!deviceTargetCurrent(expected.id, expected.runtime, expected.instance)) {
-        error_ = "That device changed before it could be moved.";
+    return moveDevices(std::span<const DevicePanelData>(&expected, 1), track, before);
+}
+bool ProjectDocument::moveDevices(std::span<const DevicePanelData> selected, std::int64_t track,
+                                  std::optional<std::int64_t> before) {
+    PreparedDeviceMove prepared;
+    try {
+        auto &db = store_->db();
+        std::optional<SQLite::Transaction> read;
+        if (sqlite3_get_autocommit(db.getHandle()) != 0)
+            read.emplace(db, SQLite::TransactionBehavior::DEFERRED);
+        const auto sources = deviceRange(selected, true);
+        if (selected.size() > 1 && std::any_of(selected.begin(), selected.end(), [](const auto &device) {
+                return mix::functionForReference(device.format, device.uid) != nullptr;
+            }))
+            throw std::runtime_error("Move Mix View functions from their own controls.");
+        prepared = prepareDeviceMove(*store_, sources, track, before);
+    } catch (const std::exception &e) {
+        error_ = e.what();
         return false;
     }
-    auto prepared = prepareDeviceMove(*store_, {expected.id, expected.track, expected.chain}, track, before);
     if (!prepared.ok) {
         error_ = prepared.error;
         return false;
@@ -1458,13 +1585,24 @@ std::string ProjectDocument::deviceCopyIdentity() const {
     return {};
 }
 bool ProjectDocument::pasteDevice(const DeviceCopy &copy, std::int64_t track, std::optional<std::int64_t> before) {
+    return pasteDevices(std::span<const DeviceCopy>(&copy, 1), track, before);
+}
+bool ProjectDocument::pasteDevices(std::span<const DeviceCopy> copies, std::int64_t track,
+                                   std::optional<std::int64_t> before) {
     PreparedDevicePaste prepared;
     try {
+        if (copies.empty())
+            throw std::runtime_error("The device clipboard is empty.");
         auto &db = store_->db();
         std::optional<SQLite::Transaction> read;
         if (sqlite3_get_autocommit(db.getHandle()) != 0)
             read.emplace(db, SQLite::TransactionBehavior::DEFERRED);
-        if (copy.reference && mix::functionForReference(copy.reference->format, copy.reference->uid)) {
+        std::set<std::string> functions;
+        for (const auto &copy : copies) {
+            if (!copy.reference || !mix::functionForReference(copy.reference->format, copy.reference->uid))
+                continue;
+            if (!functions.insert(copy.reference->uid).second)
+                throw std::runtime_error("The device clipboard contains the same Mix View function twice.");
             SQLite::Statement exists(db,
                 "WITH RECURSIVE chains(id) AS (SELECT id FROM device_chains WHERE track_id=? "
                 "UNION SELECT c.id FROM device_chains c JOIN devices owner ON owner.id=c.parent_device_id "
@@ -1473,10 +1611,8 @@ bool ProjectDocument::pasteDevice(const DeviceCopy &copy, std::int64_t track, st
                 "WHERE p.format='internal' AND p.uid=? LIMIT 1");
             exists.bind(1, track);
             exists.bind(2, copy.reference->uid);
-            if (exists.executeStep()) {
-                error_ = "That function is already present on this channel.";
-                return false;
-            }
+            if (exists.executeStep())
+                throw std::runtime_error("That function is already present on this channel.");
         }
         // A paste can go before a device in a nested chain or at the end of
         // the track chain. The first paste can also create that track chain.
@@ -1484,23 +1620,24 @@ bool ProjectDocument::pasteDevice(const DeviceCopy &copy, std::int64_t track, st
         if (before) {
             SQLite::Statement q(db, "SELECT chain_id FROM devices WHERE id = ?");
             q.bind(1, *before);
-            if (q.executeStep())
-                chain = q.getColumn(0).getInt64();
-        } else {
-            SQLite::Statement q(db, "SELECT id FROM device_chains WHERE track_id = ? AND parent_device_id IS NULL "
-                                    "ORDER BY ord, id LIMIT 1");
-            q.bind(1, track);
-            if (q.executeStep())
-                chain = q.getColumn(0).getInt64();
+            if (!q.executeStep())
+                throw std::runtime_error("The device selected for pasting before is gone.");
+            chain = q.getColumn(0).getInt64();
+            if (adi::detail::deviceChainOwner(db, chain) != track)
+                throw std::runtime_error("The paste position is on a different track.");
         }
         auto floor = retainedDeviceId();
-        if (copy.ok && copy.insert.contains("id") && copy.insert.at("id").is_number_integer())
-            floor = std::max(floor, copy.insert.at("id").get<std::int64_t>());
+        for (const auto &copy : copies)
+            if (copy.ok && copy.insert.contains("id") && copy.insert.at("id").is_number_integer())
+                floor = std::max(floor, copy.insert.at("id").get<std::int64_t>());
         RowIds ids(db);
         ids.reserve("devices", floor);
-        const auto id = ids.next("devices");
-        prepared = !before && chain == 0 ? prepareDevicePasteForTrack(*store_, copy, id, track)
-                                         : prepareDevicePaste(*store_, copy, id, chain, before);
+        std::vector<std::int64_t> newIds;
+        newIds.reserve(copies.size());
+        for (std::size_t n = 0; n < copies.size(); ++n)
+            newIds.push_back(ids.next("devices"));
+        prepared = before ? prepareDevicePaste(*store_, copies, newIds, chain, before)
+                          : prepareDevicePasteForTrack(*store_, copies, newIds, track);
     } catch (const std::exception &e) {
         error_ = e.what();
         return false;

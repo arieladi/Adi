@@ -2,6 +2,7 @@
 #include "adi/builtin_catalog.hpp"
 #include "adi/engine/mpe_output.hpp"
 #include "adi/mix_functions.hpp"
+#include "adi/op_transaction_resources.hpp"
 #include "adi/row_ids.hpp"
 #include "adi/row_capture.hpp"
 #include "adi/store.hpp"
@@ -16,7 +17,7 @@
 namespace adi {
 namespace {
 std::int64_t chainOwner(const SQLite::Database& db, std::int64_t chain,
-                       std::optional<std::int64_t> movingRack = {}) {
+                       const std::set<std::int64_t>* moving = nullptr) {
     std::set<std::int64_t> seen;
     for (;;) {
         if (!seen.insert(chain).second) throw std::runtime_error("destination rack contains a cycle");
@@ -26,7 +27,8 @@ std::int64_t chainOwner(const SQLite::Database& db, std::int64_t chain,
         if (!row.getColumn(0).isNull()) return row.getColumn(0).getInt64();
         if (row.getColumn(1).isNull()) throw std::runtime_error("destination chain has no owner");
         const auto parentDevice = row.getColumn(1).getInt64();
-        if (movingRack == parentDevice) throw std::runtime_error("A rack cannot be moved into one of its own chains.");
+        if (moving && moving->contains(parentDevice))
+            throw std::runtime_error("A rack cannot be moved into one of its own chains.");
         SQLite::Statement parent(db, "SELECT chain_id FROM devices WHERE id=?");
         parent.bind(1, parentDevice);
         if (!parent.executeStep()) throw std::runtime_error("destination rack owner is missing");
@@ -318,28 +320,43 @@ PreparedBuiltinInsert preparePluginReplacement(Store& store, const rows::PluginR
 }
 PreparedDeviceMove prepareDeviceMove(Store& store, DeviceMoveSource source, std::int64_t track,
                                     std::optional<std::int64_t> before) {
+    return prepareDeviceMove(store, std::span(&source, 1), track, before);
+}
+PreparedDeviceMove prepareDeviceMove(Store& store, std::span<const DeviceMoveSource> sources, std::int64_t track,
+                                    std::optional<std::int64_t> before) {
     PreparedDeviceMove result;
     try {
         if (store.readOnly()) throw std::runtime_error("project is read-only");
+        if (sources.empty()) throw std::runtime_error("Select at least one device to move.");
+        const auto& source = sources.front();
+        std::set<std::int64_t> selected;
+        for (const auto& member : sources) {
+            if (member.track != source.track || member.chain != source.chain || !selected.insert(member.device).second)
+                throw std::runtime_error("Select distinct devices in one chain to move together.");
+        }
+
         auto& db = store.db();
         std::optional<SQLite::Transaction> read;
         if (sqlite3_get_autocommit(db.getHandle()) != 0)
             read.emplace(db, SQLite::TransactionBehavior::DEFERRED);
-        result.sourceFile = identity(db);
+        result.source = appliedSource(store);
         result.options.expectHead.emplace(OpJournal(store).headSeq());
         const auto sourceKind = editableTrackKind(db, source.track);
         const auto targetKind = track == source.track ? sourceKind : editableTrackKind(db, track);
         detail::requireDeviceInsertTrack(db, track);
         auto from = detail::deviceChainOrder(db, source.chain);
-        const auto found = std::find_if(from.begin(), from.end(), [&](const auto& device) { return device.id == source.device; });
-        if (found == from.end() || chainOwner(db, source.chain) != source.track)
-            throw std::runtime_error("That device changed tracks or chains before it could be moved.");
-        const auto moved = *found;
-        if (before == source.device && track == source.track) {
+        const auto isSelected = [&](const auto& device) { return selected.contains(device.id); };
+        const auto first = std::find_if(from.begin(), from.end(), isSelected);
+        const auto last = std::find_if_not(first, from.end(), isSelected);
+        if (!std::cmp_equal(last - first, selected.size()) || chainOwner(db, source.chain) != source.track)
+            throw std::runtime_error("The selected devices no longer form one contiguous range in their chain.");
+        if (before && track == source.track && selected.contains(*before)) {
             result.ok = true;
             return result;
         }
-        if (source.track != track && moved.role != detail::DeviceRole::AudioEffect && targetKind != "midi" && targetKind != "instrument")
+        const std::vector<detail::ChainDevice> moved(first, last);
+        if (source.track != track && targetKind != "midi" && targetKind != "instrument" &&
+            std::ranges::any_of(moved, [](const auto& device) { return device.role != detail::DeviceRole::AudioEffect; }))
             throw std::runtime_error("MIDI effects and instruments need a MIDI track.");
 
         std::optional<std::int64_t> destination;
@@ -348,23 +365,37 @@ PreparedDeviceMove prepareDeviceMove(Store& store, DeviceMoveSource source, std:
             anchor.bind(1, *before);
             if (!anchor.executeStep()) throw std::runtime_error("The destination device changed before the drop.");
             destination = anchor.getColumn(0).getInt64();
-            if (chainOwner(db, *destination, source.device) != track)
+            if (chainOwner(db, *destination, &selected) != track)
                 throw std::runtime_error("The destination device belongs to another track.");
         } else {
             SQLite::Statement root(db, "SELECT id FROM device_chains WHERE track_id=? ORDER BY ord DESC,id DESC LIMIT 1");
             root.bind(1, track);
             if (root.executeStep()) destination = root.getColumn(0).getInt64();
         }
-        const auto originalPosition = static_cast<std::size_t>(found - from.begin());
-        from.erase(found);
-        auto to = destination == source.chain ? from : destination ? detail::deviceChainOrder(db, *destination) : std::vector<detail::ChainDevice>{};
-        if (destination != source.chain && moved.role == detail::DeviceRole::Instrument &&
-            std::any_of(to.begin(), to.end(), [](const auto& device) { return device.role == detail::DeviceRole::Instrument; }))
-            throw std::runtime_error("The destination chain already has an instrument.");
+        const auto originalPosition = static_cast<std::size_t>(first - from.begin());
+        from.erase(first, last);
+        const bool sameChain = destination == source.chain;
+        auto to = sameChain ? std::move(from) : destination ? detail::deviceChainOrder(db, *destination)
+                                                          : std::vector<detail::ChainDevice>{};
+        const auto isInstrument = [](const auto& device) { return device.role == detail::DeviceRole::Instrument; };
+        if (!sameChain && std::ranges::any_of(moved, isInstrument)) {
+            if (std::ranges::any_of(to, isInstrument))
+                throw std::runtime_error("The destination chain already has an instrument.");
+            if (std::ranges::count_if(moved, isInstrument) > 1)
+                throw std::runtime_error("Only one instrument can move to a different chain.");
+        }
         const auto anchor = before ? std::find_if(to.begin(), to.end(), [&](const auto& device) { return device.id == *before; }) : to.end();
         if (before && anchor == to.end()) throw std::runtime_error("The destination device changed before the drop.");
-        const auto position = detail::deviceInsertPosition(to, moved.role, static_cast<std::size_t>(anchor - to.begin()));
-        if (destination == source.chain && position == originalPosition) {
+        const auto requested = static_cast<std::size_t>(anchor - to.begin());
+        if (!std::ranges::is_sorted(moved, {}, &detail::ChainDevice::role))
+            throw std::runtime_error("The selected devices cannot move together in their current order.");
+        // The last role sets the earliest position, and the first role sets
+        // the latest. The whole selection must fit at one position.
+        const auto earliest = detail::deviceInsertPosition(to, moved.back().role, 0);
+        const auto latest = detail::deviceInsertPosition(to, moved.front().role, to.size());
+        if (earliest > latest) throw std::runtime_error("There is no position for all selected devices in this chain.");
+        const auto position = std::clamp(requested, earliest, latest);
+        if (sameChain && position == originalPosition) {
             result.ok = true;
             return result;
         }
@@ -373,7 +404,7 @@ PreparedDeviceMove prepareDeviceMove(Store& store, DeviceMoveSource source, std:
             OpRequest request;
             request.opType = op;
             request.payload = std::move(payload);
-            request.label = "Move Device";
+            request.label = moved.size() == 1 ? "Move Device" : "Move Devices";
             request.targetKind = kind;
             request.targetId = id;
             result.requests.push_back(std::move(request));
@@ -383,17 +414,17 @@ PreparedDeviceMove prepareDeviceMove(Store& store, DeviceMoveSource source, std:
             append("chain.create", {{"id", *destination}, {"track", track}, {"ord", 0}, {"name", "Devices"}},
                    "chain", *destination);
         }
-        to.insert(to.begin() + static_cast<std::ptrdiff_t>(position), moved);
+        to.insert(to.begin() + static_cast<std::ptrdiff_t>(position), moved.begin(), moved.end());
         const auto renumber = [&](const std::vector<detail::ChainDevice>& order, std::int64_t chain) {
             if (!std::in_range<std::int64_t>(order.size())) throw std::runtime_error("device order is exhausted");
             for (std::size_t i = 0; i < order.size(); ++i) {
                 const auto ordinal = static_cast<std::int64_t>(i);
-                if (order[i].ord != ordinal || (order[i].id == moved.id && chain != source.chain))
+                if (order[i].ord != ordinal || (chain != source.chain && isSelected(order[i])))
                     append("device.move", {{"id", order[i].id}, {"chain", chain}, {"ord", ordinal}},
                            "device", order[i].id);
             }
         };
-        if (destination != source.chain) renumber(from, source.chain);
+        if (!sameChain) renumber(from, source.chain);
         renumber(to, *destination);
         result.ok = true;
     } catch (const std::exception& error) { result.error = error.what(); }
@@ -402,15 +433,14 @@ PreparedDeviceMove prepareDeviceMove(Store& store, DeviceMoveSource source, std:
 CommitResult commitDeviceMove(Store& store, const PreparedDeviceMove& prepared, Actor actor) {
     CommitResult result;
     if (!prepared.ok) { result.error = prepared.error; return result; }
-    if (identity(store.db()) != prepared.sourceFile) {
+    if (!prepared.source.alive() || !prepared.source.sameConnection(appliedSource(store))) {
         result.error = "project changed after the device move was prepared";
         result.stale = true;
         return result;
     }
-    if (prepared.requests.empty()) { result.ok = true; return result; }
     auto requests = prepared.requests;
     for (auto& request : requests) request.actor = actor;
-    return OpJournal(store).commit(requests, prepared.options);
+    return OpJournal(store).commitCaptured(requests, prepared.source, prepared.options, {});
 }
 CommitResult commitBuiltinInsert(Store& store,const PreparedBuiltinInsert& prepared,Actor actor) {
     CommitResult result;if(!prepared.ok){result.error=prepared.error;return result;}

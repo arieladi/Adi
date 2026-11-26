@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
+#include "adi/applied_batches.hpp"
 #include "adi/ops.hpp"
 #include "adi/store_rows.hpp"
 #include <span>
@@ -59,7 +60,8 @@ struct DeviceMoveSource {
 };
 struct PreparedDeviceMove {
     bool ok = false;
-    std::string error, sourceFile;
+    std::string error;
+    AppliedSource source;
     std::vector<OpRequest> requests;
     CommitOptions options;
 };
@@ -67,6 +69,9 @@ struct PreparedDeviceMove {
 // track's root chain, which is created in the same Undo step when needed.
 [[nodiscard]] PreparedDeviceMove prepareDeviceMove(Store&, DeviceMoveSource, std::int64_t track,
                                                     std::optional<std::int64_t> before);
+// Move one contiguous range from a single chain in its existing visual order.
+[[nodiscard]] PreparedDeviceMove prepareDeviceMove(Store&, std::span<const DeviceMoveSource>,
+                                                    std::int64_t track, std::optional<std::int64_t> before);
 [[nodiscard]] CommitResult commitDeviceMove(Store&, const PreparedDeviceMove&, Actor = Actor::User);
 std::span<const OpDescriptor> builtinReferenceOps();
 

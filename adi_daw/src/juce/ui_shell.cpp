@@ -4801,8 +4801,8 @@ bool AdiRootComponent::command(int id) {
             return false;
         break;
     case AppCommands::DeleteTrack:
-        if (const auto device = devices.focusedDevice())
-            return devices.action("device.remove", {{"id", *device}});
+        if (devices.focusedDevice())
+            return devices.deleteDevices();
         if (arrangement.selectedLocator != 0)
             return deleteLocator(arrangement.selectedLocator);
         if (arrangement.selectedMeter >= 0)

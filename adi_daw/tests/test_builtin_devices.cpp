@@ -370,6 +370,74 @@ void hotSwapPlacement() {
           "SC-285 the built-in wrapper replaces an effect at the same position");
 #endif
 }
+void moveDeviceRange() {
+    Project project;
+    auto& store = *project.store;
+    auto& db = store.db();
+    db.exec("UPDATE tracks SET kind='midi' WHERE id=1;"
+            "INSERT INTO tracks(id,kind,name) VALUES(2,'midi','Keys'),(3,'audio','Audio 2'),(4,'midi','Synth');"
+            "INSERT INTO device_chains(id,track_id) VALUES(10,1),(20,2),(40,4);"
+            "INSERT INTO plugin_refs(id,format,uid,name,subtype) VALUES"
+            "(1,'clap','test.midi','MIDI effect','midi_effect'),(2,'clap','test.synth','Synth','instrument'),"
+            "(3,'clap','test.effect','Audio effect','effect');"
+            "INSERT INTO devices(id,chain_id,ord,plugin_ref_id) VALUES"
+            "(10,10,0,1),(11,10,1,2),(12,10,2,3),(13,10,3,3),(14,10,4,3),"
+            "(20,20,0,1),(21,20,1,3),(40,40,0,2);"
+            "INSERT INTO plugin_params(device_id,param_id,normalized_value) VALUES(12,'shape',0.375);"
+            "INSERT INTO automation_lanes(id,owner_kind,owner_id,param_ref) VALUES(7,'device',11,'level');");
+    const auto order = [&](std::int64_t track) {
+        std::vector<std::int64_t> result;
+        SQLite::Statement rows(db, "SELECT d.id FROM devices d JOIN device_chains c ON c.id=d.chain_id "
+                                   "WHERE c.track_id=? ORDER BY c.ord,c.id,d.ord,d.id");
+        rows.bind(1, track);
+        while (rows.executeStep()) result.push_back(rows.getColumn(0).getInt64());
+        return result;
+    };
+    const std::vector<std::int64_t> original{10, 11, 12, 13, 14};
+    const std::array effects{DeviceMoveSource{13, 1, 10}, DeviceMoveSource{12, 1, 10}};
+    const auto self = prepareDeviceMove(store, effects, 1, 13);
+    const auto adjacent = prepareDeviceMove(store, effects, 1, 14);
+    check(self.ok && self.requests.empty() && adjacent.ok && adjacent.requests.empty() &&
+              commitDeviceMove(store, self).ok && !OpJournal(store).headSeq(),
+          "SC-288 dropping a range on itself or in its existing position leaves history alone");
+    const std::array separated{DeviceMoveSource{12, 1, 10}, DeviceMoveSource{14, 1, 10}};
+    const std::array wrongOwner{DeviceMoveSource{12, 1, 10}, DeviceMoveSource{13, 2, 10}};
+    check(!prepareDeviceMove(store, separated, 1, {}).ok && !prepareDeviceMove(store, wrongOwner, 1, {}).ok &&
+              !prepareDeviceMove(store, effects, 1, 21).ok && order(1) == original,
+          "SC-288 separated or stale source devices and a destination anchor on the wrong track refuse");
+
+    History history(store);
+    const auto tail = prepareDeviceMove(store, effects, 1, {});
+    check(tail.ok && commitDeviceMove(store, tail).ok && order(1) == std::vector<std::int64_t>{10, 11, 14, 12, 13} &&
+              history.nextUndo() && history.nextUndo()->label == "Move Devices" && history.undo().ok && order(1) == original,
+          "SC-288 a same-chain range drag keeps visual order and is one Undo step");
+    const std::array mixed{DeviceMoveSource{12, 1, 10}, DeviceMoveSource{10, 1, 10}, DeviceMoveSource{11, 1, 10}};
+    check(!prepareDeviceMove(store, mixed, 3, {}).ok && !prepareDeviceMove(store, mixed, 4, {}).ok,
+          "SC-288 a range with an instrument cannot move to audio or into a second instrument");
+    const auto cross = prepareDeviceMove(store, mixed, 2, 20);
+    StoreError error{};
+    const auto otherConnection = Store::open(store.path(), error, true);
+    check(otherConnection && commitDeviceMove(*otherConnection, cross).stale && order(1) == original,
+          "SC-288 a prepared move belongs to the exact connection, even for the same file");
+    check(cross.ok && commitDeviceMove(store, cross).ok && order(1) == std::vector<std::int64_t>{13, 14} &&
+              order(2) == std::vector<std::int64_t>{20, 10, 11, 12, 21} &&
+              db.execAndGet("SELECT normalized_value FROM plugin_params WHERE device_id=12").getDouble() == 0.375 &&
+              db.execAndGet("SELECT owner_id FROM automation_lanes WHERE id=7").getInt64() == 11 &&
+              history.undo().ok && order(1) == original && order(2) == std::vector<std::int64_t>{20, 21},
+          "SC-288 a mixed-role range moves to its one legal slot with the same state and returns in one Undo");
+
+    const auto emptyTrack = prepareDeviceMove(store, effects, 3, {});
+    check(emptyTrack.ok && commitDeviceMove(store, emptyTrack).ok && order(3) == std::vector<std::int64_t>{12, 13} &&
+              history.undo().ok && order(1) == original &&
+              db.execAndGet("SELECT COUNT(*) FROM device_chains WHERE track_id=3").getInt() == 0,
+          "SC-288 moving a range to an empty track makes the chain in the same Undo step");
+    OpRequest lock;
+    lock.opType = "track.setLocked";
+    lock.payload = {{"id", 3}, {"locked", true}};
+    check(OpJournal(store).commit(lock).ok && commitDeviceMove(store, emptyTrack).stale &&
+              !prepareDeviceMove(store, effects, 3, {}).ok && order(1) == original && order(3).empty(),
+          "SC-288 a changed head or a locked destination refuses the entire move");
+}
 // DF-E50: automation on a built-in device is applied, at its frame. Utility's
 // Gain is "11", -120..35 dB on a linear curve, so 0 dB is 120/155 and +6 dB
 // 126/155; its core ramps a gain change over 5 ms.
@@ -852,4 +920,4 @@ void builtinInstrumentPlacement() {
           "SC-282: one Undo restores the original effect order");
 #endif
 }
-int main(){try{catalogueAndHost();paramsAndState();insertionAndHistory();thirdPartyPlacement();hotSwapPlacement();playingSession();instrumentSession();duplicatePrepareKeepsBuiltinState();builtinInstrumentPlacement();}catch(const std::exception& exception){counting=false;check(false,exception.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{catalogueAndHost();paramsAndState();insertionAndHistory();thirdPartyPlacement();hotSwapPlacement();moveDeviceRange();playingSession();instrumentSession();duplicatePrepareKeepsBuiltinState();builtinInstrumentPlacement();}catch(const std::exception& exception){counting=false;check(false,exception.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

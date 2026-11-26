@@ -938,6 +938,11 @@ DevicePanelView::DevicePanelView(DeviceChainStrip &s, const DevicePanelData &d, 
     configureButton.setColour(juce::TextButton::buttonColourId, look::button);
     configureButton.getProperties().set("live.small", true);
     setWantsKeyboardFocus(true);
+    if (!mixCard_) {
+        // Take focus after handling the title press. A Shift click needs the old anchor.
+        setMouseClickGrabsKeyboardFocus(false);
+        title.setMouseClickGrabsKeyboardFocus(false);
+    }
     addAndMakeVisible(title);
     addAndMakeVisible(enabled);
     addAndMakeVisible(configureButton);
@@ -1029,6 +1034,9 @@ void DevicePanelView::cancelInteractions() {
     // and completion must neither mutate this target nor end a newly acquired capture.
     ++menuEpoch_;
     dragTarget_.reset();
+    draggedDevices_.clear();
+    selectOnRelease_ = false;
+    startedDeviceDrag_ = false;
     if (eqPreview_) eqPreview_->hovered = -1;
     const auto safe = SafePointer<DevicePanelView>(this);
     finishEqEdit(true);
@@ -1060,7 +1068,13 @@ const DevicePanelData *DevicePanelView::functionDragTarget() const noexcept {
 }
 bool DevicePanelView::beginDeviceDrag() {
     if (mixCard_ || nativeFunction() || !data || !validTarget()) return false;
-    dragTarget_ = *data;
+    if (strip.selectionActsOn(id)) {
+        draggedDevices_ = strip.selectedTargets();
+        if (draggedDevices_.empty()) return false;
+    } else {
+        draggedDevices_ = {*data};
+    }
+    startedDeviceDrag_ = true;
     return true;
 }
 void DevicePanelView::endFunctionParameter() {
@@ -1620,7 +1634,10 @@ void DevicePanelView::resized() {
 void DevicePanelView::paint(juce::Graphics &g) {
     // Live's device: grey, its title bar and a 2 pt edge lighter; blue-grey when the
     // device has the focus, as Live marks the selected device.
-    const auto edge = nativeFunction() ? look::accent : hasKeyboardFocus(true) ? look::focus : look::field;
+    const bool picked = !mixCard_ && strip.isSelected(id);
+    const bool range = !mixCard_ && strip.selectionActsOn(id);
+    const auto edge = nativeFunction() && !range ? look::accent
+                                                 : picked || hasKeyboardFocus(true) ? look::focus : look::field;
     g.fillAll(look::panel);
     g.setColour(edge);
     if (!mixCard_) g.fillRect(0, 0, getWidth(), kTitleHeight);
@@ -1713,7 +1730,7 @@ bool DevicePanelView::keyPressed(const juce::KeyPress &k) {
     if (!validTarget())
         return k == juce::KeyPress::deleteKey || k == juce::KeyPress::backspaceKey;
     if (k == juce::KeyPress::deleteKey || k == juce::KeyPress::backspaceKey)
-        return strip.action("device.remove", {{"id", id}});
+        return mixCard_ ? strip.action("device.remove", {{"id", id}}) : strip.deleteDevices(id);
     // Live moves between devices with the left and right arrows (§41.4.1.5).
     if (k == juce::KeyPress::leftKey || k == juce::KeyPress::rightKey)
         return navigate ? navigate(k == juce::KeyPress::rightKey) : strip.focusNext(id, k == juce::KeyPress::rightKey);
@@ -1721,6 +1738,8 @@ bool DevicePanelView::keyPressed(const juce::KeyPress &k) {
 }
 void DevicePanelView::focusGained(FocusChangeType) {
     strip.chose(id);
+    if (!mixCard_ && !strip.isSelected(id))
+        strip.selectTitle(*this, false);
     repaint();
 }
 void DevicePanelView::focusOfChildComponentChanged(FocusChangeType) {
@@ -1728,19 +1747,39 @@ void DevicePanelView::focusOfChildComponentChanged(FocusChangeType) {
         beginInteraction(Interaction::Text);
     else if (!rename.isVisible())
         endInteraction(Interaction::Text);
-    if (hasKeyboardFocus(true))
+    if (hasKeyboardFocus(true)) {
         strip.chose(id);
+        if (!mixCard_ && !strip.isSelected(id))
+            strip.selectTitle(*this, false);
+    }
     repaint();
 }
 void DevicePanelView::mouseDown(const juce::MouseEvent &e) {
     dragTarget_.reset();
+    draggedDevices_.clear();
+    selectOnRelease_ = false;
+    startedDeviceDrag_ = false;
     if (!validTarget()) return;
-    if (e.mods.isPopupMenu() && (e.eventComponent == &title || e.eventComponent == this))
+    const bool titleHit = e.eventComponent == &title ||
+                          (e.eventComponent == this && !foldSwitch().contains(e.getPosition()) &&
+                           (e.y < kTitleHeight || strip.folded(id)));
+    if (e.mods.isPopupMenu() && (e.eventComponent == &title || e.eventComponent == this)) {
+        if (!mixCard_) {
+            if (!strip.isSelected(id)) strip.selectTitle(*this, false);
+            focusIfShowing(*this);
+        }
         contextMenu(e.getScreenPosition());
-    else if (e.eventComponent == this && foldSwitch().contains(e.getPosition()))
+    } else if (!mixCard_ && titleHit && e.mods.isLeftButtonDown()) {
+        selectOnRelease_ = !e.mods.isShiftDown() && strip.selectionActsOn(id);
+        if (!selectOnRelease_) strip.selectTitle(*this, e.mods.isShiftDown());
+        focusIfShowing(*this);
+    } else if (e.eventComponent == this && foldSwitch().contains(e.getPosition())) {
+        focusIfShowing(*this);
         strip.fold(id);
-    else if (e.eventComponent == this && e.mods.isLeftButtonDown())
+    } else if (e.eventComponent == this && e.mods.isLeftButtonDown()) {
+        focusIfShowing(*this);
         pressEqGraph(e.position);
+    }
 }
 juce::Rectangle<int> DevicePanelView::foldSwitch() const noexcept {
     return mixCard_ ? juce::Rectangle<int>{} : juce::Rectangle<int>{19, 3, 11, 11};
@@ -1759,17 +1798,25 @@ void DevicePanelView::mouseExit(const juce::MouseEvent &) {
         repaint(eqPreviewBounds().toNearestInt());
     }
 }
-void DevicePanelView::mouseUp(const juce::MouseEvent &) { releaseEqHandle(); }
+void DevicePanelView::mouseUp(const juce::MouseEvent &event) {
+    if (std::exchange(selectOnRelease_, false) && !startedDeviceDrag_ && !event.mouseWasDraggedSinceMouseDown())
+        strip.selectTitle(*this, false);
+    releaseEqHandle();
+}
 void DevicePanelView::mouseDrag(const juce::MouseEvent &e) {
     if (eqPreview_ && eqPreview_->edit) { dragEqHandle(e.position); return; }
     const auto pressed = e.getMouseDownPosition();
     const bool panelTitle = e.eventComponent == this && !foldSwitch().contains(pressed) &&
                             (pressed.y < kTitleHeight || strip.folded(id));
-    if (dragTarget_ || e.getDistanceFromDragStart() < 4 || !e.mods.isLeftButtonDown() ||
+    if (dragTarget_ || startedDeviceDrag_ || e.getDistanceFromDragStart() < 4 || !e.mods.isLeftButtonDown() ||
         !(e.eventComponent == &title || panelTitle)) return;
     auto *container = juce::DragAndDropContainer::findParentDragContainerFor(this);
     if (!container) return;
     const bool function = nativeFunction() != nullptr;
+    if (function && !mixCard_ && strip.selectionActsOn(id)) {
+        strip.root.say("Move native Mix functions one at a time.");
+        return;
+    }
     if (function ? beginFunctionDrag() : beginDeviceDrag())
         container->startDragging(juce::String(function ? "adi-mix-function" : kDeviceMoveDrag), this,
                                  juce::ScaledImage{}, function, nullptr, &e.source);
@@ -1785,17 +1832,18 @@ juce::PopupMenu DevicePanelView::commands() {
     juce::PopupMenu m;
     const auto safe = SafePointer<DevicePanelView>(this);
     const auto epoch = menuEpoch_;
+    const auto selectionEpoch = strip.selectionEpoch_;
     using Clip = DeviceChainStrip::Clip;
     const auto clipItem = [&](const char *name, char key, Clip c) {
         juce::PopupMenu::Item item(name);
         item.isEnabled = c != Clip::Duplicate || !nativeFunction();
         item.shortcutKeyDescription =
             juce::KeyPress(key, juce::ModifierKeys::commandModifier, 0).getTextDescriptionWithIcons();
-        item.action = [safe, c, epoch] {
+        item.action = [safe, c, epoch, selectionEpoch] {
             if (!safe || safe->menuEpoch_ != epoch) return;
             if (safe) safe->endInteraction(Interaction::Menu);
-            if (safe && safe->validTarget())
-                safe->strip.clipboard(c, safe->id);
+            if (safe && (safe->mixCard_ || safe->strip.selectionEpoch_ == selectionEpoch) && safe->validTarget())
+                safe->strip.clipboard(c, safe->id, !safe->mixCard_);
         };
         m.addItem(std::move(item));
     };
@@ -1815,11 +1863,13 @@ juce::PopupMenu DevicePanelView::commands() {
     };
     m.addItem(std::move(renameItem));
     m.addSeparator();
-    m.addItem("Delete", [safe, epoch] {
+    m.addItem("Delete", [safe, epoch, selectionEpoch] {
         if (!safe || safe->menuEpoch_ != epoch) return;
         if (safe) safe->endInteraction(Interaction::Menu);
-        if (safe && safe->validTarget())
-            safe->strip.action("device.remove", {{"id", safe->id}});
+        if (!safe || (!safe->mixCard_ && safe->strip.selectionEpoch_ != selectionEpoch) || !safe->validTarget())
+            return;
+        if (safe->mixCard_) safe->strip.action("device.remove", {{"id", safe->id}});
+        else safe->strip.deleteDevices(safe->id);
     });
     m.addItem(strip.folded(id) ? "Unfold" : "Fold", [safe, epoch] {
         if (!safe || safe->menuEpoch_ != epoch) return;
@@ -2028,6 +2078,7 @@ DeviceChainStrip::DeviceChainStrip(AdiRootComponent &r) : root(r) {
 void DeviceChainStrip::mouseDown(const juce::MouseEvent &e) {
     if (e.eventComponent == &content && e.x >= end_ - 11 && !e.mods.isPopupMenu()) {
         chosen_.reset();
+        clearSelection();
         focusIfShowing(*this);
     }
 }
@@ -2092,7 +2143,7 @@ DevicePanelView *DeviceChainStrip::moveSource(const SourceDetails &details) cons
     if (details.description.toString() != DevicePanelView::kDeviceMoveDrag)
         return nullptr;
     auto *source = dynamic_cast<DevicePanelView *>(details.sourceComponent.get());
-    if (!source || &source->strip.root != &root || source->nativeFunction() || !source->dragTarget_)
+    if (!source || &source->strip.root != &root || source->nativeFunction() || source->draggedDevices_.empty())
         return nullptr;
     return source;
 }
@@ -2106,13 +2157,13 @@ bool DeviceChainStrip::moveDroppedDevice(const SourceDetails &details, std::int6
         root.say("That device changed before it could be moved.");
         return false;
     }
-    auto expected = std::move(*source->dragTarget_);
-    source->dragTarget_.reset();
-    if (!moveDevice) {
-        root.say("Devices move in the application.");
-        return false;
-    }
-    return moveDevice(expected, track, before);
+    auto expected = std::exchange(source->draggedDevices_, {});
+    if (expected.size() > 1 && moveSelection)
+        return moveSelection(expected, track, before);
+    if (expected.size() == 1 && moveDevice)
+        return moveDevice(expected.front(), track, before);
+    root.say("Devices move in the application.");
+    return false;
 }
 bool DeviceChainStrip::hasFunction(mix::Function kind) const {
     if (presented) for (const auto &d : *presented)
@@ -2230,6 +2281,66 @@ const DevicePanelData *DeviceChainStrip::dataOf(std::int64_t device) const {
                 return &d;
     return nullptr;
 }
+bool DeviceChainStrip::PickedDevice::matches(const DevicePanelData &data) const {
+    return data.id == id && data.track == track && data.chain == chain && data.instance == instance;
+}
+bool DeviceChainStrip::isSelected(std::int64_t id) const {
+    return std::any_of(selected_.begin(), selected_.end(), [id](const auto &device) { return device.id == id; });
+}
+bool DeviceChainStrip::selectionActsOn(std::int64_t id) const {
+    return selected_.size() > 1 && isSelected(id);
+}
+void DeviceChainStrip::clearSelection() {
+    if (selected_.empty()) return;
+    selected_.clear();
+    selectionAnchor_.reset();
+    ++selectionEpoch_;
+    for (const auto &p : panels) p->repaint();
+}
+void DeviceChainStrip::selectTitle(const DevicePanelView &panel, bool extend) {
+    const auto *clicked = panel.data;
+    if (!clicked) return;
+    chose(clicked->id);
+    auto first = std::find_if(panels.begin(), panels.end(), [&](const auto &p) { return p.get() == &panel; });
+    if (first == panels.end()) return;
+    auto last = first;
+    if (extend && selectionAnchor_ && selectionAnchor_->chain == clicked->chain) {
+        const auto anchor = std::find_if(panels.begin(), panels.end(), [&](const auto &p) {
+            return p->data && selectionAnchor_->matches(*p->data);
+        });
+        if (anchor != panels.end()) {
+            first = std::min(anchor, last);
+            last = std::max(anchor, last);
+        }
+    }
+    const PickedDevice target{clicked->id, clicked->track, clicked->chain, clicked->instance};
+    if (first == last)
+        selectionAnchor_ = target;
+    selected_.clear();
+    for (auto i = first; i <= last; ++i)
+        if (const auto *data = (*i)->data; data && data->chain == clicked->chain)
+            selected_.push_back({data->id, data->track, data->chain, data->instance});
+    ++selectionEpoch_;
+    for (const auto &p : panels) p->repaint();
+}
+std::vector<DevicePanelData> DeviceChainStrip::selectedTargets() const {
+    std::vector<DevicePanelData> targets;
+    targets.reserve(selected_.size());
+    for (const auto &panel : panels) {
+        const auto *data = panel->data;
+        if (data && std::any_of(selected_.begin(), selected_.end(), [&](const auto &picked) { return picked.matches(*data); }))
+            targets.push_back(*data);
+    }
+    if (targets.size() != selected_.size()) return {};
+    return targets;
+}
+bool DeviceChainStrip::deleteDevices(std::optional<std::int64_t> device) {
+    if (!device) device = focusedDevice();
+    if (!device) return false;
+    if (!selectionActsOn(*device)) return action("device.remove", {{"id", *device}});
+    const auto targets = selectedTargets();
+    return targets.size() > 1 && removeSelection && removeSelection(targets);
+}
 std::optional<std::int64_t> DeviceChainStrip::focusedDevice() const {
     // While its name is being edited the keys are the editor's: no device is chosen.
     for (const auto &p : panels)
@@ -2241,13 +2352,35 @@ bool DeviceChainStrip::canClipboard(Clip c) const {
     const auto device = focusedDevice();
     if (c == Clip::Paste)
         return holdsCopy && holdsCopy() && (device || (endChosen() && selectedTrack >= 0));
+    if (device && selectionActsOn(*device))
+        return true;
     if (c == Clip::Duplicate && device)
         if (const auto *data = dataOf(*device); data && !data->plugin && mix::functionForUid(data->uid)) return false;
     return device.has_value();
 }
-bool DeviceChainStrip::clipboard(Clip c, std::optional<std::int64_t> device) {
+bool DeviceChainStrip::clipboardSelection(Clip c) {
+    const auto targets = selectedTargets();
+    if (targets.size() < 2) return false;
+    if (c == Clip::Cut || c == Clip::Copy)
+        return copySelection && copySelection(targets, c == Clip::Cut);
+    if (c != Clip::Duplicate || !duplicateSelection) return false;
+    const auto &last = targets.back();
+    const auto after = std::find_if(panels.begin(), panels.end(), [&](const auto &p) { return p->id == last.id; });
+    if (after == panels.end()) return false;
+    std::optional<std::int64_t> before;
+    for (auto i = std::next(after); i != panels.end(); ++i)
+        if ((*i)->data && (*i)->data->chain == last.chain) {
+            before = (*i)->id;
+            break;
+        }
+    return duplicateSelection(targets, last.track, before);
+}
+bool DeviceChainStrip::clipboard(Clip c, std::optional<std::int64_t> device, bool includeSelection) {
+    includeSelection = includeSelection || !device;
     if (!device)
         device = focusedDevice();
+    if (c != Clip::Paste && includeSelection && device && selectionActsOn(*device))
+        return clipboardSelection(c);
     const auto *data = device ? dataOf(*device) : nullptr;
     switch (c) {
     case Clip::Cut:
@@ -2322,6 +2455,7 @@ void DeviceChainStrip::frame(std::int64_t track) {
     if (track != selectedTrack) {
         ++addMenuEpoch_;
         chosen_.reset();
+        clearSelection();
     }
     selectedTrack = track;
     // Keep the old publication alive until every control has adopted the new one.
@@ -2330,6 +2464,11 @@ void DeviceChainStrip::frame(std::int64_t track) {
         for (const auto &d : *next)
             if (d.track == track)
                 visible.push_back(&d);
+    // A selected ID reused for another runtime must never join a later edit.
+    if (std::any_of(selected_.begin(), selected_.end(), [&](const auto &picked) {
+            return std::none_of(visible.begin(), visible.end(), [&](const auto *d) { return picked.matches(*d); });
+        }))
+        clearSelection();
     bool same = panels.size() == visible.size();
     if (same)
         for (std::size_t i = 0; i < panels.size(); ++i)

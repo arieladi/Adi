@@ -21,6 +21,7 @@
 #include <complex>
 #include <cstdio>
 #include <cstdlib>
+#include <iterator>
 #include <optional>
 #include <thread>
 #if !defined(_WIN32)
@@ -413,6 +414,76 @@ void moveOrdinaryDevice(const std::filesystem::path &file) {
     check(countTargetChains() == 0 && order(sourceTrack) == std::vector<std::int64_t>{moving.id, first} &&
               order(targetTrack).empty() && OpJournal(document->store()).headSeq() == reorderedHead,
           "SC-83: Undo restores the source order and removes the added chain");
+}
+void deviceRangeEdits(const std::filesystem::path &file) {
+    constexpr std::int64_t source = 2, destination = 4;
+    std::string error;
+    auto document = ui::ProjectDocument::open(file, true, test::knobsLoader(), error);
+    if (!document) {
+        check(false, "SC-288: a project for device range edits");
+        return;
+    }
+    rows::PluginRef plugin;
+    plugin.format = "clap";
+    plugin.uid = test::kKnobsUid;
+    plugin.name = "UI knobs";
+    plugin.subtype = "effect";
+    if (!document->insertPlugin(plugin, source) || !document->insertPlugin(plugin, source) ||
+        !document->insertPlugin(plugin, source) || !document->insertPlugin(plugin, destination)) {
+        check(false, "SC-288: three devices in one chain and an anchor in another");
+        return;
+    }
+    const auto panels = [&](std::int64_t track) {
+        const auto current = document->parameterFeed().current();
+        std::vector<ui::DevicePanelData> devices;
+        std::copy_if(current->begin(), current->end(), std::back_inserter(devices),
+                     [track](const auto &device) { return device.track == track; });
+        return devices;
+    };
+    const auto order = [&](std::int64_t track) {
+        std::vector<std::int64_t> ids;
+        for (const auto &device : panels(track)) ids.push_back(device.id);
+        return ids;
+    };
+    const auto undo = [&] {
+        const bool done = document->ops().undo().ok;
+        document->tick(0);
+        return done;
+    };
+    const auto original = panels(source);
+    const auto other = panels(destination);
+    if (original.size() != 3 || other.size() != 1) {
+        check(false, "SC-288: both chains are published");
+        return;
+    }
+    const auto sourceOrder = order(source), destinationOrder = order(destination);
+    const auto head = OpJournal(document->store()).headSeq();
+    std::array selected{original[1], original[0]};
+    std::vector<DeviceCopy> clipboard;
+    check(document->copyDevices(selected, clipboard) && clipboard.size() == 2 &&
+              clipboard.front().insert.at("id").get<std::int64_t>() == sourceOrder.front() &&
+              OpJournal(document->store()).headSeq() == head,
+          "SC-288: Copy stages the range in chain order without writing history");
+    std::array invalid{original[0], other[0]};
+    check(!document->copyDevices(invalid, clipboard, true) && clipboard.size() == 2 &&
+              OpJournal(document->store()).headSeq() == head && order(source) == sourceOrder,
+          "SC-288: an invalid Cut keeps all devices and the previous clipboard");
+    check(document->pasteDevices(clipboard, destination, other[0].id) && order(destination).size() == 3 &&
+              order(destination).back() == other[0].id && order(source) == sourceOrder &&
+              undo() && order(destination) == destinationOrder,
+          "SC-288: one Paste and one Undo cover both new devices");
+    check(document->moveDevices(selected, destination, other[0].id) &&
+              order(destination) == std::vector<std::int64_t>{sourceOrder[0], sourceOrder[1], other[0].id} &&
+              order(source) == std::vector<std::int64_t>{sourceOrder[2]} &&
+              !document->removeDevices(selected) && undo() && order(source) == sourceOrder,
+          "SC-288: Move retains IDs and order, rejects the previous source, and undoes once");
+    check(document->copyDevices(selected, clipboard, true) && order(source) == std::vector<std::int64_t>{sourceOrder[2]} &&
+              clipboard.size() == 2 && undo() && order(source) == sourceOrder,
+          "SC-288: one Cut removes the range and one Undo restores it");
+    const auto refreshed = panels(source);
+    check(refreshed.size() >= 2 && document->removeDevices(std::span<const ui::DevicePanelData>(refreshed).first(2)) &&
+              order(source) == std::vector<std::int64_t>{sourceOrder[2]} && undo() && order(source) == sourceOrder,
+          "SC-288: one Delete removes the range and one Undo restores it");
 }
 void dropDeviceOnNewTrack(const std::filesystem::path &dir) {
     constexpr std::int64_t existingTrack = 4;
@@ -2949,6 +3020,7 @@ int main(int argc, char **argv) {
     refusedBeginOwnership(temp.path());
     importWithChoices(temp.path());
     moveOrdinaryDevice(temp.path() / "move-device.adi");
+    deviceRangeEdits(temp.path() / "device-range.adi");
     dropDeviceOnNewTrack(temp.path());
     dropSampleInstrument(temp.path());
     devicePresetRoundTrip(temp.path());

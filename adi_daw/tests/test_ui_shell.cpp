@@ -11645,6 +11645,82 @@ void deviceClipboard(AppCommands &commands, const std::filesystem::path &dir) {
             other->release();
         }
     }
+    // SC-288: the range is addressed as a batch through the same commands as a single device.
+    const bool added = focus(1) && key('d');
+    refresh();
+    const auto range = chain();
+    const bool shown = added && range.size() == 3 && root.devices.panels.size() == 3 && peer != nullptr;
+    check(shown, "a three-device chain for selecting both ends and the device between");
+    if (shown) {
+        std::vector<DeviceCopy> board;
+        root.devices.copySelection = [&](std::span<const DevicePanelData> selection, bool cut) {
+            return document->copyDevices(selection, board, cut);
+        };
+        root.devices.removeSelection = [&](std::span<const DevicePanelData> selection) {
+            return document->removeDevices(selection);
+        };
+        root.devices.moveSelection = [&](std::span<const DevicePanelData> selection, std::int64_t track,
+                                         std::optional<std::int64_t> before) {
+            return document->moveDevices(selection, track, before);
+        };
+        const auto click = [&](std::size_t index, bool extend) {
+            auto &title = root.devices.panels[index]->title;
+            const auto at = host.getLocalPoint(&title, title.getLocalBounds().getCentre()).toFloat();
+            const auto mouse = [&](juce::ModifierKeys mods) {
+                juce::ModifierKeys::currentModifiers = mods;
+                peer->handleMouseEvent(juce::MouseInputSource::InputSourceType::mouse, at, mods, 1.f, 0.f, when += 1000);
+            };
+            auto down = juce::ModifierKeys(juce::ModifierKeys::leftButtonModifier);
+            if (extend) down = down.withFlags(juce::ModifierKeys::shiftModifier);
+            mouse({});
+            mouse(down);
+            mouse({});
+        };
+        const auto selectRange = [&] {
+            click(0, false);
+            click(2, true);
+        };
+        const auto copied = [&] {
+            std::vector<std::int64_t> ids;
+            for (const auto &item : board)
+                ids.push_back(item.insert.value("id", std::int64_t{0}));
+            return ids;
+        };
+        selectRange();
+        check(root.devices.focusedDevice() == range.back() && root.devices.insertPoint() == range.back() &&
+                  key('c') && copied() == range && chain() == range,
+              "Shift-click chooses all three devices in order, while the focused endpoint remains the Browser anchor");
+        check(root.devices.clipboard(Clip::Copy, range[1]) && copied() == range &&
+                  clipboard->insert.value("id", std::int64_t{0}) == range[1],
+              "the Stack's explicit device copy still addresses one device");
+        click(1, false);
+        board.clear();
+        check(key('c') && board.empty() && clipboard->insert.value("id", std::int64_t{0}) == range[1],
+              "a plain click on a selected member collapses the range on release");
+
+        selectRange();
+        auto &origin = *root.devices.panels[1];
+        auto &title = origin.title;
+        origin.mouseDown(pressAt(title, {4.f, 4.f}, juce::ModifierKeys::leftButtonModifier));
+        const bool began = origin.beginDeviceDrag();
+        origin.mouseUp(pressAt(title, {4.f, 4.f}));
+        const juce::DragAndDropTarget::SourceDetails drag(DevicePanelView::kDeviceMoveDrag, &origin, {});
+        check(began && root.devices.moveDroppedDevice(drag, 4) && chain().empty() && label() == "Move Devices" &&
+                  root.command(AppCommands::Undo) && chain() == range,
+              "dragging a picked member preserves the full range and moves it to another track in one undo step");
+        refresh();
+        if (root.devices.panels.size() == 3) {
+            selectRange();
+            check(root.command(AppCommands::DeleteTrack) && chain().empty() && label() == "Remove Devices" &&
+                      root.command(AppCommands::Undo) && chain() == range,
+                  "Edit Delete removes the full selected device range and one Undo restores it");
+        } else {
+            check(false, "all three device panels are visible again after Undo");
+        }
+        root.devices.copySelection = {};
+        root.devices.removeSelection = {};
+        root.devices.moveSelection = {};
+    }
     host.removeChildComponent(&root);
     document->release();
 }

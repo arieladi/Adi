@@ -28,6 +28,7 @@
 #include <atomic>
 #include <functional>
 #include <optional>
+#include <span>
 namespace adi::ui {
 using media::pathFromUtf8;
 // The history's first entry in a project made by New; never undone (Live 5.4.2).
@@ -227,6 +228,9 @@ class ProjectDocument final : public engine::BlockProcessor {
     // `error()`.
     bool copyDevice(std::int64_t id, DeviceCopy &out);
     bool pasteDevice(const DeviceCopy &copy, std::int64_t track, std::optional<std::int64_t> before);
+    bool copyDevices(std::span<const DevicePanelData>, std::vector<DeviceCopy> &out, bool cut = false);
+    bool removeDevices(std::span<const DevicePanelData>);
+    bool pasteDevices(std::span<const DeviceCopy>, std::int64_t track, std::optional<std::int64_t> before);
     // The file the engine names a device copy's project by (`DeviceCopy::sourceFile`): after Save As
     // the app moves a held copy over to the new file, the same project under a new name.
     std::string deviceCopyIdentity() const;
@@ -268,6 +272,7 @@ class ProjectDocument final : public engine::BlockProcessor {
                          std::optional<std::int64_t> before);
     bool moveDevice(const DevicePanelData &expected, std::int64_t track,
                     std::optional<std::int64_t> before);
+    bool moveDevices(std::span<const DevicePanelData>, std::int64_t track, std::optional<std::int64_t> before);
     // A built-in device's sample slot (D5; N28, #414; ENGINE-SAMPLE-SLOTS.md): `file` imported by its
     // content and prepared for the engine's rate, then the slot replaced, in one undo step; Clear
     // empties it. The live device takes the new state at once (`ParamOps::appliedState`). The
@@ -317,6 +322,8 @@ class ProjectDocument final : public engine::BlockProcessor {
     void stopTrackRender();
     bool finishInsert(PreparedBuiltinInsert);
     std::int64_t finishDevicePreset(PreparedBuiltinInsert, preset::Preset, bool inPlace = false);
+    std::vector<DeviceMoveSource> deviceRange(std::span<const DevicePanelData>, bool mutation);
+    bool editDeviceRange(std::span<const DevicePanelData>, std::vector<DeviceCopy> *clipboard, bool remove);
     ProjectDocument(std::unique_ptr<Store>, std::string name);
     // The clock the capture's timers run on: steady milliseconds, the same for the timer's drain
     // and for a gesture, so a gesture's quiet timer and its End agree.

@@ -755,6 +755,12 @@ class AdiApplication final : public juce::JUCEApplication,
             if (root_) root_->say(ok ? std::string{} : document_->error());
             return ok;
         };
+        root->devices.moveSelection = [this](std::span<const DevicePanelData> selection, std::int64_t track,
+                                             std::optional<std::int64_t> before) {
+            const bool ok = document_->moveDevices(selection, track, before);
+            if (root_) root_->say(ok ? std::string{} : document_->error());
+            return ok;
+        };
         root->devices.gesture = [this](std::int64_t id, const std::string &param,
                                        engine::ParamEventKind kind, double value) {
             const bool ok = document_->parameterGesture(id, param, kind, value);
@@ -791,17 +797,30 @@ class AdiApplication final : public juce::JUCEApplication,
             // Cut keeps the copy only once the device is gone, so a refused Cut leaves the
             // clipboard as it was.
             adi::DeviceCopy copy;
-            bool ok = document_->copyDevice(id, copy) && (!cut || document_->deviceAction("device.remove", {{"id", id}}));
-            if (ok)
-                deviceClipboard_ = std::move(copy);
+            const bool ok = document_->copyDevice(id, copy) && (!cut || document_->deviceAction("device.remove", {{"id", id}}));
+            if (ok) {
+                deviceClipboard_.clear();
+                deviceClipboard_.push_back(std::move(copy));
+            }
             if (root_)
                 root_->say(ok ? std::string{} : document_->error());
             return ok;
         };
+        root->devices.removeSelection = [this](std::span<const DevicePanelData> selection) {
+            const bool ok = document_->removeDevices(selection);
+            if (root_) root_->say(ok ? std::string{} : document_->error());
+            return ok;
+        };
+        root->devices.copySelection = [this](std::span<const DevicePanelData> selection, bool cut) {
+            const bool ok = document_->copyDevices(selection, deviceClipboard_, cut);
+            if (root_) root_->say(ok ? std::string{} : document_->error());
+            return ok;
+        };
         root->devices.paste = [this](std::int64_t track, std::optional<std::int64_t> before) {
-            const bool ok = deviceClipboard_ && document_->pasteDevice(*deviceClipboard_, track, before);
+            const bool copied = !deviceClipboard_.empty();
+            const bool ok = copied && document_->pasteDevices(deviceClipboard_, track, before);
             if (!ok && root_)
-                root_->say(deviceClipboard_ ? document_->error() : std::string("Copy a device first."));
+                root_->say(copied ? document_->error() : std::string("Copy a device first."));
             return ok;
         };
         root->devices.duplicate = [this](std::int64_t id, std::int64_t track, std::optional<std::int64_t> before) {
@@ -811,7 +830,14 @@ class AdiApplication final : public juce::JUCEApplication,
                 root_->say(ok ? std::string{} : document_->error());
             return ok;
         };
-        root->devices.holdsCopy = [this] { return deviceClipboard_.has_value(); };
+        root->devices.duplicateSelection = [this](std::span<const DevicePanelData> selection, std::int64_t track,
+                                                  std::optional<std::int64_t> before) {
+            std::vector<adi::DeviceCopy> copy;
+            const bool ok = document_->copyDevices(selection, copy) && document_->pasteDevices(copy, track, before);
+            if (root_) root_->say(ok ? std::string{} : document_->error());
+            return ok;
+        };
+        root->devices.holdsCopy = [this] { return !deviceClipboard_.empty(); };
         root->retainedDeviceId = [this] { return document_->retainedDeviceId(); };
         root->devices.savePreset = [this](const DevicePanelData &target) { promptDevicePreset(target); };
         root->devices.hotSwap = [this](const DevicePanelData &target, std::optional<std::int32_t> slot) {
@@ -1401,8 +1427,11 @@ class AdiApplication final : public juce::JUCEApplication,
             return;
         }
         // The same project under a new file: a copy held from it still pastes into it.
-        if (deviceClipboard_ && deviceClipboard_->sourceFile == before)
-            deviceClipboard_->sourceFile = document_->deviceCopyIdentity();
+        if (!deviceClipboard_.empty() && deviceClipboard_.front().sourceFile == before) {
+            const auto after = document_->deviceCopyIdentity();
+            for (auto &copied : deviceClipboard_)
+                copied.sourceFile = after;
+        }
         commands_->clipClipboard().rebase(before, document_->deviceCopyIdentity());
         window_->setName("ADI - " + file.getFileNameWithoutExtension());
         root_->say(landedFirst + document_->warning());
@@ -1753,7 +1782,7 @@ class AdiApplication final : public juce::JUCEApplication,
     std::uint64_t installGeneration_ = 0;
     // Live's device clipboard (manual 23.2.1): the app's, so a copy outlives the document it came
     // from; the engine refuses a paste into another project and says so.
-    std::optional<adi::DeviceCopy> deviceClipboard_;
+    std::vector<adi::DeviceCopy> deviceClipboard_;
     struct SwapTarget {
         DevicePanelData expected;
         std::optional<std::int32_t> slot;
