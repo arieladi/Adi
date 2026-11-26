@@ -4554,6 +4554,24 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
             audio::WavWriter writer(addedFolder / "Rim.wav", 48000, 1, audio::WavFormat::Pcm16);
             writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
         }
+        settings::AppSettings librarySettings(appdata::App::Daw, dir / "library-settings.json");
+        SettingsPanel panel(librarySettings);
+        panel.showPage("Library");
+        const auto *contentFolders = settings::find("library.contentFolders");
+        const auto row = std::find_if(panel.rows().begin(), panel.rows().end(), [contentFolders](const auto &candidate) {
+            return &candidate->setting == contentFolders;
+        });
+        check(row != panel.rows().end() &&
+                  dynamic_cast<juce::TextButton *>((*row)->getChildComponent(1)) != nullptr,
+              "Settings' Content folders has a folder-picker button");
+        int libraryChanges = 0;
+        panel.onChange = [&libraryChanges] { ++libraryChanges; };
+        const auto picked = juce::File(juce::String::fromUTF8(media::pathUtf8(addedFolder).c_str()));
+        check(contentFolders && panel.acceptLibraryFolder(*contentFolders, picked) &&
+                  panel.acceptLibraryFolder(*contentFolders, picked) &&
+                  librarySettings.get("library.contentFolders") == settings::Value::array({picked.getFullPathName().toStdString()}) &&
+                  libraryChanges == 1,
+              "the chosen folder is added once and immediately notifies the application");
         library::MarkerVolumeProvider volumes;
         const std::vector<LibraryFolder> folders{{"User Library", library, true}, {"Samples", addedFolder, false},
                                                  {"Drums", library / "Drums", false}};
@@ -4562,8 +4580,10 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
                   listing.samples[0].name == "Bass Hit.wav" && listing.samples[1].name == "Clap.wav" &&
                   listing.samples[2].name == "Rim.wav" && listing.places[0].userLibrary,
               "the scan lists the three audio files once each by name (Clap.wav under two folders), and no text file");
-        std::atomic<bool> stopNow{true};
-        check(scanLibrary(*index, folders, volumes, &stopNow).places.empty(), "a stop before the first folder scans none");
+        std::stop_source stopNow;
+        stopNow.request_stop();
+        check(scanLibrary(*index, folders, volumes, stopNow.get_token()).places.empty(),
+              "a stop before the first folder scans none");
         auto &browser = root.browser;
         browser.setListing(listing);
         int samples = -1, user = -1;
@@ -4657,6 +4677,27 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
                 juce::PNGImageFormat{}.writeImageToStream(picture, *stream);
         }
         check(root.command(AppCommands::Undo), "undo");
+        root.frame();
+        browser.choose(samples);
+        browser.list.selectRow(1);
+        geometry.selection.track = 1;
+        geometry.selection.insert = bar5;
+        check(browser.list.keyPressed(juce::KeyPress(juce::KeyPress::returnKey)), "Enter on the selected sample");
+        root.frame();
+        const auto entered = clipsOn(1);
+        check(entered.size() == before + 1 && entered.back() == Clips::value_type{"Clap", bar5},
+              "Enter on Clap.wav places a clip on the selected audio track at the insert marker");
+        check(root.command(AppCommands::Undo), "undo the browser's Enter");
+        root.frame();
+        geometry.selection.track = 1;
+        geometry.selection.insert = bar5;
+        if (auto *item = browser.list.getComponentForRowNumber(1))
+            item->mouseDoubleClick(pressAt(*item, {10.f, 8.f}));
+        root.frame();
+        const auto doubled = clipsOn(1);
+        check(doubled.size() == before + 1 && doubled.back() == Clips::value_type{"Clap", bar5},
+              "double-clicking the sample uses the same clip placement");
+        check(root.command(AppCommands::Undo), "undo the browser's double-click");
         root.frame();
         browser.setListing({});
     }

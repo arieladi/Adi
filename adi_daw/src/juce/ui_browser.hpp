@@ -91,7 +91,7 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
         int depth = 0;
     };
     const std::vector<Row> &rows() const noexcept { return rows_; }
-    // Loads the device on `row` (double-click, Enter), or says why it cannot.
+    // Loads the sample or device on `row` (double-click, Enter), or says why it cannot.
     bool load(int row);
     // Asks the app to scan the plug-ins when Plug-Ins is chosen and no scan has begun; unset outside the
     // app. It returns at once: the scan runs on the app's worker (DF-W34).

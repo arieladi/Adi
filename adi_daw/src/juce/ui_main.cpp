@@ -224,23 +224,32 @@ class AdiApplication final : public juce::JUCEApplication,
         startTimer(20);
     }
     // The browser's Samples and Places (D1): the library index (#102) at its app-data file, on one
-    // background owner. It registers and scans the User Library and the added content folders the
-    // settings name, then hands the browser what it lists, and keeps the index open so it goes on
-    // hashing while `library.backgroundIndexing` is on, until Quit. An empty User Library setting
-    // uses the default folder. A smoke run or a machine with no app-data folder indexes nothing.
-    //
-    // Quit never waits on a folder still being walked: `Index::scan` cannot be stopped part way (N50),
-    // so the owner checks its stop flag between folders, and Quit leaves an owner still scanning to
-    // end on its own. Everything it touches is its own or held in the shared state.
+    // background owner. Folder changes cancel any superseded request and queue the new list on the
+    // same owner, so a walk never blocks Settings or races another writer of the same index. An
+    // empty User Library setting uses the default folder.
+    struct LibraryRequest {
+        std::vector<LibraryFolder> folders;
+        bool hashing = false;
+        std::stop_token stop;
+    };
     struct LibraryOwner {
         std::mutex mutex;
         std::condition_variable wake;
-        std::atomic<bool> stop{false}, scanned{false};
+        std::optional<LibraryRequest> pending;
+        std::stop_source cancel;
+        bool stop = false, scanning = false;
     };
     void startLibrary() {
         const auto file = appdata::libraryIndexFile();
+        const auto user = settings_->get("library.userLibrary");
+        const auto added = settings_->get("library.contentFolders");
+        const auto background = settings_->get("library.backgroundIndexing");
+        const auto preferences = settings::Value::array({user, added, background});
+        if (preferences == libraryPreferences_)
+            return;
+        libraryPreferences_ = preferences;
         std::vector<LibraryFolder> folders;
-        auto userLibrary = pathFromUtf8(settings_->get("library.userLibrary").get<std::string>());
+        auto userLibrary = user.is_string() ? pathFromUtf8(user.get<std::string>()) : std::filesystem::path{};
         if (userLibrary.empty() && !file.empty() && smokeOutput_ == juce::File{}) {
             if (const auto folder = defaultUserLibraryFolder(); folder != juce::File{}) {
                 auto path = pathFromUtf8(folder.getFullPathName().toStdString());
@@ -253,7 +262,7 @@ class AdiApplication final : public juce::JUCEApplication,
         }
         if (!userLibrary.empty())
             folders.push_back({"User Library", std::move(userLibrary), true});
-        if (const auto added = settings_->get("library.contentFolders"); added.is_array())
+        if (added.is_array())
             for (const auto &folder : added)
                 if (folder.is_string() && !folder.get<std::string>().empty()) {
                     const auto path = pathFromUtf8(folder.get<std::string>());
@@ -261,48 +270,84 @@ class AdiApplication final : public juce::JUCEApplication,
                                                                                : path.filename()),
                                        path});
                 }
-        if (file.empty() || smokeOutput_ != juce::File{} || folders.empty()) {
+        if (file.empty() || smokeOutput_ != juce::File{} || (folders.empty() && !libraryOwner_)) {
             libraryReady_ = true;
             if (root_)
                 root_->browser.setListing(library_, true);
             return;
         }
-        const auto background = settings_->get("library.backgroundIndexing");
-        const bool hashing = !background.is_boolean() || background.get<bool>();
+        if (!libraryOwner_)
+            startLibraryWorker(file);
+        libraryReady_ = false;
+        if (root_)
+            root_->browser.setListing(library_, false);
+        {
+            std::lock_guard lock(libraryOwner_->mutex);
+            libraryOwner_->cancel.request_stop();
+            libraryOwner_->cancel = std::stop_source{};
+            libraryOwner_->pending = LibraryRequest{std::move(folders), !background.is_boolean() || background.get<bool>(),
+                                                     libraryOwner_->cancel.get_token()};
+        }
+        libraryOwner_->wake.notify_one();
+    }
+    void startLibraryWorker(const std::filesystem::path &file) {
         auto owner = libraryOwner_ = std::make_shared<LibraryOwner>();
-        libraryThread_ = std::thread([this, owner, file, folders, hashing] {
-            LibraryListing listing;
+        libraryThread_ = std::thread([this, owner, file] {
             std::unique_ptr<library::Index> index;
-            try {
-                std::string error;
-                index = library::Index::open(file, error, hashing);
-                if (index) {
-                    library::MarkerVolumeProvider volumes;
-                    listing = scanLibrary(*index, folders, volumes, &owner->stop);
-                } else {
-                    listing.error = "The library index could not be opened: " + error;
-                }
-            } catch (const std::exception &e) {
-                listing.error = std::string("The library could not be indexed: ") + e.what();
-            }
-            owner->scanned = true;
-            if (!owner->stop.load())
-                juce::MessageManager::callAsync([this, owner, found = std::move(listing)] {
-                    if (owner->stop.load() || juce::JUCEApplicationBase::getInstance() != this)
+            bool hashing = false;
+            for (;;) {
+                LibraryRequest request;
+                {
+                    std::unique_lock lock(owner->mutex);
+                    owner->wake.wait(lock, [&owner] { return owner->stop || owner->pending.has_value(); });
+                    if (owner->stop)
                         return;
-                    library_ = found;
-                    libraryReady_ = true;
-                    if (root_) {
-                        root_->browser.setListing(library_, true);
-                        if (!library_.error.empty())
-                            root_->say(library_.error);
+                    request = std::move(*owner->pending);
+                    owner->pending.reset();
+                    owner->scanning = true;
+                }
+                LibraryListing listing;
+                try {
+                    if (index && hashing != request.hashing) {
+                        if (request.hashing)
+                            index->start();
+                        else
+                            index->cancel();
+                        hashing = request.hashing;
                     }
-                });
-            // The index stays open, hashing in the background, until Quit.
-            std::unique_lock lock(owner->mutex);
-            owner->wake.wait(lock, [&owner] { return owner->stop.load(); });
-            lock.unlock();
-            index.reset();
+                    if (!request.folders.empty() && !request.stop.stop_requested()) {
+                        if (!index) {
+                            std::string error;
+                            index = library::Index::open(file, error, request.hashing);
+                            hashing = request.hashing;
+                            if (!index)
+                                listing.error = "The library index could not be opened: " + error;
+                        }
+                        if (index) {
+                            library::MarkerVolumeProvider volumes;
+                            listing = scanLibrary(*index, request.folders, volumes, request.stop);
+                        }
+                    }
+                } catch (const std::exception &e) {
+                    listing.error = std::string("The library could not be indexed: ") + e.what();
+                }
+                {
+                    std::lock_guard lock(owner->mutex);
+                    owner->scanning = false;
+                }
+                if (!request.stop.stop_requested())
+                    juce::MessageManager::callAsync([this, stop = request.stop, found = std::move(listing)]() mutable {
+                        if (stop.stop_requested() || juce::JUCEApplicationBase::getInstance() != this)
+                            return;
+                        library_ = std::move(found);
+                        libraryReady_ = true;
+                        if (root_) {
+                            root_->browser.setListing(library_, true);
+                            if (!library_.error.empty())
+                                root_->say(library_.error);
+                        }
+                    });
+            }
         });
     }
     // Live's Export Audio/Video (EX-11; manual 5.2.1): the page with the choices, Export asks for a file,
@@ -584,17 +629,19 @@ class AdiApplication final : public juce::JUCEApplication,
     void stopLibrary() {
         if (!libraryThread_.joinable())
             return;
+        bool scanning;
         {
             std::lock_guard lock(libraryOwner_->mutex);
             libraryOwner_->stop = true;
+            libraryOwner_->cancel.request_stop();
+            scanning = libraryOwner_->scanning;
         }
         libraryOwner_->wake.notify_all();
-        // An owner still walking a folder is left to finish on its own; one waiting only stops its
-        // hashing and ends.
-        if (libraryOwner_->scanned.load())
-            libraryThread_.join();
-        else
+        // A filesystem request may be blocked in the OS even after cancellation.
+        if (scanning)
             libraryThread_.detach();
+        else
+            libraryThread_.join();
     }
     void shutdown() override {
         // A Collect and Export still running finishes first: its ZIP is not left half written.
@@ -1517,6 +1564,7 @@ class AdiApplication final : public juce::JUCEApplication,
                     if (root_ && root_->applyDelayCompensation)
                         root_->applyDelayCompensation(commands_->delayCompensation());
                     pluginSourcesChanged();
+                    startLibrary();
                     // The MIDI Ports' switches open or close inputs: after the row's commit has unwound.
                     juce::MessageManager::callAsync([this] {
                         if (juce::JUCEApplicationBase::getInstance() == this && midiPorts_)
@@ -1678,6 +1726,7 @@ class AdiApplication final : public juce::JUCEApplication,
     // The library index's owner and what it last listed (D1).
     std::thread libraryThread_;
     std::shared_ptr<LibraryOwner> libraryOwner_;
+    settings::Value libraryPreferences_;
     LibraryListing library_;
     bool libraryReady_ = false;
     // Collect and Export's worker and whether it runs (A4); the flag is shared with the worker.

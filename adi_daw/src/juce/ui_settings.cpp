@@ -166,6 +166,12 @@ SettingRow::SettingRow(SettingsPanel &panel, const settings::Setting &s)
     control->setEnabled(s.scope == Scope::App);
     control->setTitle(getTitle());
     addAndMakeVisible(*control);
+    if (s.key == "library.userLibrary" || s.key == "library.contentFolders") {
+        folderPicker_ = std::make_unique<juce::TextButton>(s.type == Type::PathList ? "Add Folder..." : "Browse...");
+        folderPicker_->setColour(juce::TextButton::buttonColourId, look::button);
+        folderPicker_->onClick = [this] { panel_.chooseLibraryFolder(setting); };
+        addAndMakeVisible(*folderPicker_);
+    }
     addMouseListener(this, true);
     refresh();
 }
@@ -216,7 +222,10 @@ void SettingRow::resized() {
         break;
     }
     width = std::min(width, std::max(40, getWidth() - kControlX - 8));
-    control->setBounds(kControlX, 3, width, kHeight - 6);
+    juce::Rectangle<int> field(kControlX, 3, width, kHeight - 6);
+    if (folderPicker_)
+        folderPicker_->setBounds(field.removeFromRight(std::min(88, width / 2)).withTrimmedLeft(4));
+    control->setBounds(field);
 }
 void SettingRow::focusOfChildComponentChanged(FocusChangeType cause) {
     // Marked where the keyboard put the focus, as Live 12's focus ring; a click marks nothing.
@@ -576,6 +585,53 @@ void SettingsPanel::setHelp(const juce::String &text) {
         return;
     help_ = text;
     repaint(pageArea().withTrimmedTop(std::max(0, pageArea().getHeight() - kHelpHeight)));
+}
+void SettingsPanel::chooseLibraryFolder(const settings::Setting &setting) {
+    if (folderChooser_)
+        return;
+    const auto value = store.get(setting.key);
+    const auto last = value.is_array() && !value.empty() ? value.back() : value;
+    auto start = juce::File::getSpecialLocation(juce::File::userHomeDirectory);
+    if (last.is_string() && !last.get_ref<const std::string &>().empty()) {
+        const auto previous = juce::File::getCurrentWorkingDirectory().getChildFile(
+            juce::String::fromUTF8(last.get_ref<const std::string &>().c_str()));
+        if (previous.isDirectory())
+            start = previous;
+    }
+    folderChooser_ = std::make_unique<juce::FileChooser>(
+        setting.type == Type::PathList ? "Add a sample folder" : "Choose the User Library", start);
+    juce::Component::SafePointer<SettingsPanel> safe(this);
+    const int flags = juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories;
+    folderChooser_->launchAsync(flags, [safe, key = setting.key](const juce::FileChooser &chooser) {
+        if (!safe)
+            return;
+        if (const auto *chosen = settings::find(key); chosen && chooser.getResult() != juce::File{}) {
+            safe->acceptLibraryFolder(*chosen, chooser.getResult());
+            safe->refreshValues();
+        }
+        juce::MessageManager::callAsync([safe] {
+            if (safe)
+                safe->folderChooser_.reset();
+        });
+    });
+}
+bool SettingsPanel::acceptLibraryFolder(const settings::Setting &setting, const juce::File &folder) {
+    if (!folder.isDirectory()) {
+        setHelp("Choose an existing folder.");
+        return false;
+    }
+    if (setting.key == "library.userLibrary")
+        return change(setting, folder.getFullPathName().toStdString());
+    if (setting.key != "library.contentFolders")
+        return false;
+    auto folders = store.get(setting.key);
+    const auto workingDirectory = juce::File::getCurrentWorkingDirectory();
+    for (const auto &path : folders)
+        if (path.is_string() && !path.get_ref<const std::string &>().empty() &&
+            workingDirectory.getChildFile(juce::String::fromUTF8(path.get_ref<const std::string &>().c_str())) == folder)
+            return true;
+    folders.push_back(folder.getFullPathName().toStdString());
+    return change(setting, folders);
 }
 bool SettingsPanel::change(const settings::Setting &s, const settings::Value &v) {
     // Applied at once and written at once: Live has no OK button (Master Reference V.1).

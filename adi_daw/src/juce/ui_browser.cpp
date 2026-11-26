@@ -410,6 +410,16 @@ void BrowserPanel::setPluginScan(const PluginScan &scan) {
 }
 bool BrowserPanel::load(int row) {
     if (row >= 0 && row < static_cast<int>(rows_.size()))
+        if (const auto *sample = rows_[static_cast<std::size_t>(row)].file) {
+            const auto &selection = root_.arrangement.geometry.selection;
+            if (selection.track == 0) {
+                root_.say("Select an audio track to load " + sample->name + " onto.");
+                return false;
+            }
+            return root_.dropAudio(media::pathUtf8(sample->path), selection.track, selection.insert,
+                                   media::pathUtf8(sample->path.stem()));
+        }
+    if (row >= 0 && row < static_cast<int>(rows_.size()))
         if (const auto *p = rows_[static_cast<std::size_t>(row)].plugin) {
             if (!root_.loadPlugin) {
                 root_.say(pluginWaits(*p));
