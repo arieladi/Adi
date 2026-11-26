@@ -9,6 +9,7 @@
 #include "../src/juce/window_release.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/automation_lanes.hpp"
+#include "adi/blob.hpp"
 #include "adi/cue_settings.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/store.hpp"
@@ -31,6 +32,7 @@
 #include "temp_directory.hpp"
 #include "ui_fake_peer.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <sqlite3.h>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -4644,6 +4646,165 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
         root.frame();
         browser.setListing({});
     }
+}
+void arrangementMidiRedraw(AppCommands &commands, const std::filesystem::path &dir) {
+    constexpr int firstTrack = 20, tracks = 42, clipsPerTrack = 100, firstClip = 100;
+    constexpr auto beat = textproj::kPPQ, length = 2 * beat;
+    const auto file = dir / "arrangement-midi-redraw.adi";
+    std::string error;
+    auto doc = ProjectDocument::open(file, true, {}, error);
+    check(doc != nullptr, "MIDI redraw: create project");
+    if (!doc)
+        return;
+    std::vector<OpRequest> requests;
+    for (int trackId = firstTrack; trackId < firstTrack + tracks; ++trackId) {
+        OpRequest &add = requests.emplace_back();
+        add.opType = "track.create";
+        add.payload = {{"id", trackId}, {"kind", "midi"}, {"name", "Song MIDI"}};
+    }
+    if (!doc->ops().submit(std::move(requests)).ok) {
+        check(false, "MIDI redraw: create 42 tracks");
+        return;
+    }
+    {
+        NoteRecord note{};
+        note.dur_ticks = 3 * beat / 4;
+        note.note_id = 1;
+        note.key = 60;
+        note.vel_on = 100;
+        note.probability = 10000;
+        const auto bytes = writeStream<NoteRecord>(FourCC::Notes, std::array{note}, 1, StreamFlags::SortedByTime);
+        auto &db = doc->store().db();
+        SQLite::Transaction seed(db);
+        SQLite::Statement clip(db, "INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks) VALUES(?,?,'midi',?,?)");
+        for (int i = 0; i < tracks * clipsPerTrack; ++i) {
+            const int id = firstClip + i;
+            clip.bind(1, id);
+            clip.bind(2, firstTrack + i / clipsPerTrack);
+            clip.bind(3, (i % clipsPerTrack) * length);
+            clip.bind(4, length);
+            clip.exec();
+            clip.reset();
+            if (!doc->store().putEventStream(id, "notes", bytes)) {
+                check(false, "MIDI redraw: write notes");
+                return;
+            }
+        }
+        seed.commit();
+    }
+    doc.reset();
+    doc = ProjectDocument::open(file, false, {}, error);
+    check(doc != nullptr, "MIDI redraw: load 4,200 clips");
+    if (!doc)
+        return;
+    doc->prepare(48000, 128);
+    AdiRootComponent root(doc->view(), doc->ops(), doc->mailbox(), commands, doc->views(),
+                          doc->sessionState(), "midi-redraw");
+    root.setSize(1600, 1100);
+    auto &canvas = root.arrangement.canvas;
+    auto &geo = root.arrangement.geometry;
+    constexpr int rowHeight = 48;
+    for (int trackId = firstTrack; trackId < firstTrack + tracks; ++trackId)
+        geo.resizeTrack(trackId, rowHeight);
+    root.mark(DirtySet::All);
+    root.frame();
+    geo.left = 0;
+    geo.scale = (canvas.getWidth() - 4.) / (2 * clipsPerTrack);
+    geo.scrollY = laneTop(root, firstTrack);
+    root.mark(DirtySet::Layout);
+    root.frame();
+    int shown = 0;
+    for (int trackId = firstTrack; trackId < firstTrack + tracks; ++trackId) {
+        const int top = laneTop(root, trackId);
+        if (top >= 0 && top + rowHeight <= geo.footTop(root.reader()))
+            shown += clipsPerTrack;
+    }
+    std::printf("Arrangement MIDI: %d clips in fully visible rows, %d clips in horizontal range\n",
+                shown, tracks * clipsPerTrack);
+    check(shown >= 800 && shown < tracks * clipsPerTrack, "MIDI redraw: at least 800 visible clips and hidden rows");
+
+    auto *db = doc->store().db().getHandle();
+    const auto paint = [&](const char *label) {
+        struct Queries { int streams = 0, details = 0; } queries;
+        const auto trace = [](unsigned, void *state, void *statement, void *) -> int {
+            const char *sql = sqlite3_sql(static_cast<sqlite3_stmt *>(statement));
+            if (!sql)
+                return 0;
+            const std::string_view text(sql);
+            auto &count = *static_cast<Queries *>(state);
+            count.streams += text.find("event_streams") != text.npos;
+            count.details += text.find("alias_of FROM clips WHERE id=") != text.npos;
+            return 0;
+        };
+        juce::Image image(juce::Image::ARGB, canvas.getWidth(), canvas.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(image);
+            sqlite3_trace_v2(db, SQLITE_TRACE_STMT, trace, &queries);
+            const auto start = std::chrono::steady_clock::now();
+            canvas.paintEntireComponent(g, true);
+            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+            sqlite3_trace_v2(db, 0, nullptr, nullptr);
+            std::printf("Arrangement MIDI %s: %.2f ms, %d note-stream reads, %d clip-details reads\n", label, ms,
+                        queries.streams, queries.details);
+        }
+        check(queries.streams == 0 && queries.details == 0, label);
+        return image;
+    };
+    const auto hasBar = [&](const juce::Image &image, int trackId, std::int64_t tick) {
+        const int column = static_cast<int>(geo.x(tick));
+        const int top = laneTop(root, trackId) + 1 + ArrangementCanvas::kClipBarHeight + 1;
+        const int bottom = laneTop(root, trackId) + rowHeight - 4;
+        if (!image.getBounds().contains(column, top) || !image.getBounds().contains(column, bottom))
+            return false;
+        const auto body = image.getPixelAt(column, top);
+        for (int y = top + 1; y < bottom; ++y)
+            if (image.getPixelAt(column, y) != body)
+                return true;
+        return false;
+    };
+    constexpr auto firstNote = beat / 2, secondNote = 3 * beat / 2;
+    const auto cold = paint("cold paint reads no MIDI data from SQLite");
+    check(hasBar(cold, firstTrack, firstNote) && !hasBar(cold, firstTrack, secondNote),
+          "MIDI redraw: note and silence show at their own positions");
+    const auto repeat = paint("same frame across 4,200 clips reads no MIDI data from SQLite");
+    check(repeat.getPixelAt(3, 30) == cold.getPixelAt(3, 30), "MIDI redraw: a repeat paint preserves the clip image");
+
+    const auto generation = root.generation();
+    const auto journalSize = OpJournal(doc->store()).count();
+    const gesture::RelativeScalarSelection fader{gesture::ScalarKind::TrackVolume, 4, {}, {-70, 6, -150}};
+    const bool dragged = doc->beginMixerDrag(fader, std::nullopt, "Change Track Volume") && doc->mixerDrag(-6);
+    root.frame();
+    check(dragged && root.generation() > generation && OpJournal(doc->store()).count() == journalSize,
+          "MIDI redraw: a real uncommitted fader move presents a new generation");
+    const auto preview = paint("fader preview paint reads no MIDI data from SQLite");
+    check(hasBar(preview, firstTrack, firstNote) && !hasBar(preview, firstTrack, secondNote),
+          "MIDI redraw: fader preview retains the note depiction");
+    doc->cancelMixerDrag();
+
+    OpRequest add;
+    add.opType = "note.insert";
+    add.payload = {{"clip", firstClip}, {"note", 2}, {"start", beat + beat / 4},
+                   {"dur", beat / 2}, {"key", 60}, {"vel", 100}};
+    add.label = "Add Note";
+    check(doc->ops().submit(add).ok && doc->synchronise(), "MIDI redraw: insert a note into the first clip");
+    root.frame();
+    const auto edited = paint("note edit paint reads no MIDI data from SQLite");
+    check(hasBar(edited, firstTrack, firstNote) && hasBar(edited, firstTrack, secondNote),
+          "MIDI redraw: a committed edit shows the new note");
+    check(doc->ops().undo().ok && doc->synchronise(), "MIDI redraw: undo the note insertion");
+    root.frame();
+    const auto undone = paint("Undo paint reads no MIDI data from SQLite");
+    check(hasBar(undone, firstTrack, firstNote) && !hasBar(undone, firstTrack, secondNote),
+          "MIDI redraw: Undo restores the previous note depiction");
+
+    const int scrolledTrack = firstTrack + 30;
+    geo.scrollY += laneTop(root, scrolledTrack);
+    root.mark(DirtySet::Layout);
+    root.frame();
+    const auto scrolled = paint("scrolling to new MIDI rows reads no MIDI data from SQLite");
+    check(laneTop(root, firstTrack) < 0 && hasBar(scrolled, scrolledTrack, firstNote),
+          "MIDI redraw: a newly revealed row shows its note");
+    doc->release();
 }
 // The Clip View (STEP-7-PLAN 7.7, ADR-0240): a double-click on a clip opens it above the Device View;
 // it shows the clip's properties and its notes on the song's time axis, follows the project through
@@ -15472,6 +15633,11 @@ int main(int argc, char **argv) {
         trace("groupTracks", [&] { groupTracks(commands, temp.path()); });
         trace("sendKnobs", [&] { sendKnobs(commands, temp.path()); });
         std::printf("%d checks, %d failures (Arrangement components)\n", checks, failures);
+        return failures ? 1 : 0;
+    }
+    if (argc == 2 && std::string(argv[1]) == "--arrangement-midi-speed-only") {
+        arrangementMidiRedraw(commands, temp.path());
+        std::printf("%d checks, %d failures (Arrangement MIDI redraw)\n", checks, failures);
         return failures ? 1 : 0;
     }
     if (argc == 2 && std::string(argv[1]) == "--mixview-only") {
