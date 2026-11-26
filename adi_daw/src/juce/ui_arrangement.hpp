@@ -15,6 +15,7 @@
 namespace adi::ui {
 class AdiRootComponent;
 class ArrangementView;
+struct LiveMidiTake;
 // The Overview (Live 12 manual 6.1, ADR-0129): the whole arrangement in miniature,
 // an outline around the part on screen. Drag sideways to scroll, vertically to zoom;
 // a double-click zooms out to the whole arrangement.
@@ -130,7 +131,10 @@ class TimelineRuler final : public juce::Component, public juce::SettableTooltip
 };
 // One row per track, on the RIGHT of the clips as in Live's Arrangement View (on the left,
 // before the track controls, with the side panels swapped).
-class TrackHeaderList final : public juce::Component, public juce::SettableTooltipClient {
+class TrackHeaderList final : public juce::Component,
+                              public juce::SettableTooltipClient,
+                              public juce::DragAndDropTarget,
+                              public juce::FileDragAndDropTarget {
   public:
     explicit TrackHeaderList(ArrangementView &);
     void paint(juce::Graphics &) override;
@@ -146,7 +150,12 @@ class TrackHeaderList final : public juce::Component, public juce::SettableToolt
     void mouseUp(const juce::MouseEvent &) override;
     void mouseMove(const juce::MouseEvent &) override;
     void mouseWheelMove(const juce::MouseEvent &, const juce::MouseWheelDetails &) override;
+    bool isInterestedInDragSource(const SourceDetails &) override;
+    void itemDropped(const SourceDetails &) override;
+    bool isInterestedInFileDrag(const juce::StringArray &) override;
+    void filesDropped(const juce::StringArray &, int, int) override;
 
+    bool keyPressed(const juce::KeyPress &) override;
     // Live's split line at a track's foot (manual 6.9: "dragging the split line"): a press this
     // close to a row's foot resizes the track; anywhere else on its title, a drag moves it.
     static constexpr int kSplitLine = 5;
@@ -223,6 +232,7 @@ class ArrangementCanvas final : public juce::Component,
     void mouseUp(const juce::MouseEvent &) override;
     void mouseWheelMove(const juce::MouseEvent &, const juce::MouseWheelDetails &) override;
     bool keyPressed(const juce::KeyPress &) override;
+    bool editMaterialSelection(bool deactivate);
     // Automation Mode (AU-01): each track's lane body, where its envelope is drawn and edited; the
     // breakpoint under a point, if any; the one chosen for Delete.
     struct LaneBody {
@@ -371,6 +381,8 @@ class ArrangementCanvas final : public juce::Component,
     // `engine::readClipDetails` on the message thread, once for each clip and document generation.
     void paintNotes(juce::Graphics &, const engine::ClipNode &, std::int64_t pos, float left, float right, float top,
                     float bottom) const;
+    void paintLiveMidiTake(juce::Graphics &, const LiveMidiTake &, const engine::TrackNode &,
+                           std::size_t trackNumber, int y, int height) const;
     struct ClipNotes {
         struct Bar {
             std::int64_t start = 0, duration = 0;
@@ -455,9 +467,6 @@ class ArrangementView final : public juce::Component {
     // Under the bar over the track names, Live's Set Locator, Previous and Next Locator buttons (Live 12
     // manual 6.4): where paint draws each, and where a click finds it.
     enum class TopButton { Set, Previous, Next };
-    // What a track's Unfold Track button and U say on a track that is not a group.
-    static constexpr const char *kUnfoldWaits =
-        "Unfolding a track shows its automation lanes, which wait for the engine's automation (window log, N26).";
     juce::Rectangle<float> topButton(TopButton) const noexcept;
     void mouseDown(const juce::MouseEvent &) override;
     // The colour of the track at `position` down the rows: its own, an index into Live's palette
@@ -490,6 +499,7 @@ class ArrangementView final : public juce::Component {
     bool snaps(const juce::ModifierKeys &) const noexcept;
     // Select one clip by identity: the accessible children's press action.
     void selectClip(std::int64_t track, std::int64_t clip);
+    void dropMovedDevice(const juce::DragAndDropTarget::SourceDetails &);
     // Live's Select All (Ctrl/Cmd+A, manual §42.5): all the material, a time selection from the
     // earliest clip's start to the latest one's end across every track that holds clips; one clip
     // alone is selected as that clip. False, saying so, when there is nothing to select.
@@ -591,11 +601,9 @@ class ArrangementView final : public juce::Component {
     // folded groups leave out; a group that is gone gives way to the whole project. A new
     // generation with the same rows allocates nothing.
     void applyView();
-    // Live's group tracks (manual 18.3): folds or unfolds a group in this window. What it holds
-    // leaves the lanes, the names and the track controls; a selected track inside it gives the
-    // selection to the group.
-    void toggleFold(std::int64_t group);
-    // Alt+U (§42.16): every group unfolded.
+    // Folding a group hides its children. Folding an ordinary track collapses its row.
+    void toggleFold(std::int64_t track);
+    // Alt+U (§42.16): every track unfolded.
     void unfoldAll();
     // Where a row's name column begins: past a line in its group's colour for each group it sits
     // in, as Live's; the Arrangement sheet's lines, 4 wide at a step of 5, the row itself as wide as
@@ -612,6 +620,7 @@ class ArrangementView final : public juce::Component {
 
   private:
     std::optional<LiveTake> liveTake_;
+    bool hadLiveMidiTake_ = false;
     void refreshTree();
     TrackRows trackRows_;
     // What the chosen view and the folded groups leave out, from the tree as it is.

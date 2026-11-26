@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_shell.hpp"
+#include "adi/track_image.hpp"
 #include "adi/edit_plan.hpp"
+#include "adi/media/media_ops.hpp"
 #include "ui_controls.hpp"
 #include "ui_floating.hpp"
 #include "adi/edit_plan.hpp"
@@ -659,6 +661,13 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         info.addDefaultKeypress('m', cmd | shift);
         break;
     case DeleteTrack:
+        info.addDefaultKeypress(juce::KeyPress::deleteKey, 0);
+        info.addDefaultKeypress(juce::KeyPress::backspaceKey, 0);
+        if (active_ != nullptr && active_->devices.focusedDevice()) {
+            info.shortName = "Delete";
+            info.setActive(true);
+            break;
+        }
         // On a selected locator, Delete removes it (Live 12 manual 6.4).
         if (active_ != nullptr && active_->arrangement.selectedLocator != 0) {
             info.shortName = "Delete Locator";
@@ -671,7 +680,19 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
             info.setActive(true);
             break;
         }
-        info.setActive(active_ != nullptr && active_->arrangement.geometry.selection.track != 0);
+        if (active_ != nullptr) {
+            const auto &selection = active_->arrangement.geometry.selection;
+            const auto &canvas = active_->arrangement.canvas;
+            const bool detail = canvas.hasKeyboardFocus(true) && active_->automationMode() &&
+                                canvas.chosenAutomationPoint().has_value();
+            const bool material = detail || selection.clip != 0 || selection.start != selection.end;
+            if (material)
+                info.shortName = "Delete";
+            info.setActive(material ||
+                           (selection.track != 0 && !active_->arrangement.canvas.hasKeyboardFocus(true)));
+        } else {
+            info.setActive(false);
+        }
         break;
     case Quit:
         // §41.3: Ctrl+Q. On the Mac Cmd+Q is the application menu's own Quit, which
@@ -1302,6 +1323,7 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
     arrangement.geometry.scale = state_.pixelsPerQuarter;
     arrangement.geometry.height = state_.laneHeight;
     arrangement.geometry.heights = state_.laneHeights;
+    arrangement.geometry.foldedTracks = state_.foldedTracks;
     arrangement.geometry.largeTracks = state_.largeTracks;
     arrangement.geometry.grid = {state_.gridSnap, state_.gridFixed, state_.gridTriplet, state_.gridNarrow,
                                  state_.gridFixedQuarters};
@@ -1333,7 +1355,8 @@ bool AdiRootComponent::insertDevice(const std::string &uid, std::int64_t track, 
     const std::string name = info != nullptr ? std::string(info->name) : std::string("the device");
     if (!loadBuiltin)
         return fail("Devices load in the application.");
-    if (track == 0 || reader().findTrack(track) == nullptr)
+    const auto current = view_.current();
+    if (track != 0 && (!current || current->findTrack(track) == nullptr))
         return fail("Select a track to load " + name + " onto.");
     const juce::Component::SafePointer<AdiRootComponent> alive(this);
     if (!loadBuiltin(uid, track, before))
@@ -2264,8 +2287,14 @@ bool AdiRootComponent::canClipClipboard(ClipCommand command) const {
     if (!current)
         return false;
     const auto &sel = arrangement.geometry.selection;
-    if (command == ClipCommand::Paste)
+    if (command == ClipCommand::Paste) {
+        if (std::holds_alternative<AppCommands::TrackCopy>(commands_.clipClipboard().held))
+            return trackClipboardContext();
         return !commands_.clipClipboard().empty() && pasteOrigin() != 0;
+    }
+    if (trackClipboardContext())
+        if (const auto *track = current->findTrack(sel.track); track != nullptr && track->kind != "master")
+            return true;
     if (chosenClip(*current, sel).clip != nullptr)
         return true;
     if (sel.start == sel.end)
@@ -2275,12 +2304,113 @@ bool AdiRootComponent::canClipClipboard(ClipCommand command) const {
             return true;
     return false;
 }
+bool AdiRootComponent::trackClipboardContext() const {
+    const auto &sel = arrangement.geometry.selection;
+    if (sel.clip != 0 || !sel.pickedClips.empty() || sel.start != sel.end)
+        return false;
+    const auto *focus = juce::Component::getCurrentlyFocusedComponent();
+    return focus == &arrangement.headers ||
+           (dynamic_cast<const MixerStrip *>(focus) != nullptr && mixerView.isParentOf(focus));
+}
+bool AdiRootComponent::trackClipboard(ClipCommand command) {
+    using track_edits_detail::children;
+    using track_edits_detail::op;
+    using track_edits_detail::rank;
+    auto &board = commands_.clipClipboard();
+    auto &store = submitter_.store();
+    auto &sel = arrangement.geometry.selection;
+    const auto current = view_.current();
+    if (!current || !trackClipboardContext())
+        return fail("Select a track by its title to use the track clipboard.");
+    const auto *selected = current->findTrack(sel.track);
+    try {
+        AppCommands::TrackCopy copy;
+        if (command == ClipCommand::Paste) {
+            const auto *held = std::get_if<AppCommands::TrackCopy>(&board.held);
+            if (held == nullptr || held->sourceFile != projectFile(store))
+                return fail("Copy the track in this project before pasting it.");
+            copy = *held;
+        } else {
+            if (selected == nullptr || selected->kind == "master")
+                return fail("Select a track other than Main.");
+            copy = {projectFile(store), selected->kind, selected->name, selected->parent, selected->indexInParent,
+                    detail::captureTrackForCopy(store.db(), selected->id)};
+            for (const auto &row : copy.contents.at("rows"))
+                if (row.at("table") == "tracks" && row.at("before").at("kind") == "master")
+                    return fail("The Main track cannot be copied.");
+            if (command == ClipCommand::Cut || command == ClipCommand::Copy) {
+                if (command == ClipCommand::Cut) {
+                    if (!submitEdit("track.delete", {{"id", selected->id}}, "Cut Track"))
+                        return false;
+                    sel.track = sel.toTrack = 0;
+                    sel.picked.clear();
+                    publishSelection();
+                }
+                board.held = std::move(copy);
+                error_.clear();
+                dirty_.mark(DirtySet::Status);
+                commands_.manager.commandStatusChanged();
+                return true;
+            }
+        }
+
+        // The duplicate goes immediately under its source. Without a paste
+        // destination, reuse the copied track's original position if possible.
+        const bool hasAnchor = selected != nullptr && selected->kind != "master";
+        const auto sourceParent = current->findTrack(copy.parent) ? copy.parent : 0;
+        const auto parent = hasAnchor ? selected->parent : sourceParent;
+        const auto order = children(current->tracks, parent);
+        const int newRank = copy.kind == "return" ? 1 : 0;
+        const auto end = std::find_if(order.begin(), order.end(), [&](const auto *sibling) { return rank(*sibling) > newRank; });
+        auto place = end;
+        if (hasAnchor) {
+            if (const auto anchor = std::find(order.begin(), end, selected);
+                anchor != end && rank(*selected) == newRank)
+                place = std::next(anchor);
+        } else {
+            place = std::find_if(order.begin(), end, [&](const auto *sibling) {
+                return rank(*sibling) == newRank && sibling->indexInParent >= copy.index;
+            });
+        }
+        const auto index = static_cast<std::int64_t>(place - order.begin());
+        auto contents = detail::copyTrackContents(store.db(), copy.contents, sourceParent, index,
+                                                  retainedDeviceId ? retainedDeviceId() : 0);
+        const auto id = contents.at("root").get<std::int64_t>();
+        const auto label = command == ClipCommand::Duplicate ? "Duplicate Track" : "Paste Track";
+        std::vector<OpRequest> requests;
+        requests.push_back(op("track.create", {{"id", id}, {"kind", copy.kind}, {"name", copy.name},
+                                               {"contents", std::move(contents)}}, label));
+        // Moving a pasted track between groups follows the standard automatic
+        // Main route and grouped-send rules.
+        if (parent != sourceParent)
+            requests.push_back(op("track.setParent", {{"id", id}, {"parent", track_edits_detail::parentValue(parent)}}, label));
+        for (std::size_t i = 0; i < order.size(); ++i) {
+            const auto next = static_cast<std::int64_t>(i) + (static_cast<std::int64_t>(i) >= index ? 1 : 0);
+            if (order[i]->indexInParent != next)
+                requests.push_back(op("track.reorder", {{"id", order[i]->id}, {"index", next}}, label));
+        }
+        if (!submitEdits(std::move(requests)))
+            return false;
+        sel.track = id;
+        sel.toTrack = 0;
+        sel.picked.clear();
+        arrangement.revealTrack = id;
+        arrangement.changed();
+        return true;
+    } catch (const std::exception &e) {
+        return fail(e.what());
+    }
+}
 bool AdiRootComponent::clipClipboard(ClipCommand command) {
     const auto current = view_.current();
     if (!current)
         return fail("The clipboard needs an open project.");
     auto &sel = arrangement.geometry.selection;
     auto &board = commands_.clipClipboard();
+    if (command == ClipCommand::Paste && std::holds_alternative<AppCommands::TrackCopy>(board.held))
+        return trackClipboard(command);
+    if (command != ClipCommand::Paste && sel.track != 0 && trackClipboardContext())
+        return trackClipboard(command);
     auto &store = submitter_.store();
     const auto rate = editRate();
     const edit_plan::Options options{rate, edit_plan::capturePolicy(commandSettings())};
@@ -2838,7 +2968,9 @@ bool AdiRootComponent::insertTrack(bool midi) {
     arrangement.geometry.selection.track = edit.select;
     arrangement.geometry.selection.toTrack = 0;
     arrangement.geometry.selection.picked.clear();
+    arrangement.geometry.selection.clearMaterial();
     publishSelection();
+    focusIfShowing(arrangement.headers);
     return true;
 }
 bool AdiRootComponent::insertMidiClips(const std::vector<std::int64_t> &tracks, std::int64_t start, std::int64_t end) {
@@ -2898,27 +3030,53 @@ bool AdiRootComponent::insertReturnTrack(std::int64_t group) {
     return true;
 }
 bool AdiRootComponent::deleteTrack() {
-    const auto id = arrangement.geometry.selection.track;
-    if (id == 0)
+    const SnapshotReader current(view_.current());
+    const auto selected = arrangement.geometry.selectedTracks(current);
+    if (selected.empty())
         return fail("Select a track to delete.");
-    OpRequest request;
-    request.opType = "track.delete";
-    request.payload = {{"id", id}};
-    request.label = "Delete Track";
-    request.selBefore = session_.advisory();
-    const auto result = submitter_.submit(std::move(request));
-    if (!result)
-        return fail(result.error);
-    arrangement.followPaused = true;
-    arrangement.geometry.selection.track = 0;
-    arrangement.geometry.selection.clip = 0;
-    arrangement.geometry.selection.pickedClips.clear();
+    std::vector<OpRequest> requests;
+    for (const auto id : selected) {
+        const auto *track = current.findTrack(id);
+        if (track == nullptr)
+            return fail("A selected track is gone.");
+        if (track->kind == "master")
+            return fail("The Main track cannot be deleted.");
+        // Deleting a group also removes its descendants.
+        bool covered = false;
+        auto parentId = track->parent;
+        for (std::size_t depth = 0; parentId != 0 && depth < current.tracks().size(); ++depth) {
+            if (std::find(selected.begin(), selected.end(), parentId) != selected.end()) {
+                covered = true;
+                break;
+            }
+            const auto *parent = current.findTrack(parentId);
+            parentId = parent != nullptr ? parent->parent : 0;
+        }
+        if (!covered)
+            requests.push_back(track_edits_detail::op("track.delete", {{"id", id}}, "Delete Track"));
+    }
+    if (requests.empty() || !submitEdits(std::move(requests)))
+        return false;
+    auto &selection = arrangement.geometry.selection;
+    selection.track = selection.toTrack = 0;
+    selection.picked.clear();
+    selection.clearMaterial();
     publishSelection();
     return true;
 }
 bool AdiRootComponent::dropAudio(const std::string &utf8Path, std::int64_t track, std::int64_t pos,
                                  const std::string &name) {
     return dropAudioFiles({{utf8Path, name}}, track, pos, false);
+}
+bool AdiRootComponent::dropAudioPaths(const juce::StringArray &paths, std::int64_t track, std::int64_t pos,
+                                     bool separate) {
+    if (paths.isEmpty())
+        return false;
+    std::vector<std::pair<std::string, std::string>> files;
+    for (const auto &path : paths)
+        files.emplace_back(path.toStdString(),
+                           juce::File::createFileWithoutCheckingPath(path).getFileNameWithoutExtension().toStdString());
+    return dropAudioFiles(files, track, pos, separate);
 }
 bool AdiRootComponent::dropAudioFiles(const std::vector<std::pair<std::string, std::string>> &files,
                                       std::int64_t track, std::int64_t pos, bool separate) {
@@ -4276,13 +4434,20 @@ bool AdiRootComponent::command(int id) {
             return false;
         break;
     case AppCommands::DeleteTrack:
+        if (const auto device = devices.focusedDevice())
+            return devices.action("device.remove", {{"id", *device}});
         if (arrangement.selectedLocator != 0)
             return deleteLocator(arrangement.selectedLocator);
         if (arrangement.selectedMeter >= 0)
             return deleteMeter(arrangement.selectedMeter);
-        if (!deleteTrack())
+        if (arrangement.canvas.hasKeyboardFocus(true) &&
+            (arrangement.canvas.selectedFade() || (automationMode() && arrangement.canvas.chosenAutomationPoint())))
+            return arrangement.canvas.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey));
+        if (const auto &sel = arrangement.geometry.selection; sel.clip != 0 || sel.start != sel.end)
+            return arrangement.canvas.editMaterialSelection(false);
+        if (arrangement.canvas.hasKeyboardFocus(true))
             return false;
-        break;
+        return deleteTrack();
     case AppCommands::InsertTimeSignatureChange: {
         // At the insert marker (Live 12 manual 6.5): a field there to type the value; where a marker
         // stands, that marker's value. The start's signature is the control bar's.
@@ -4616,7 +4781,28 @@ juce::File projectsFolder(const settings::AppSettings &settings) {
     return directory;
 }
 juce::File nextUntitledProject(const settings::AppSettings &settings) {
-    return projectsFolder(settings).getNonexistentChildFile("Untitled", ".adi");
+    const auto parent = projectsFolder(settings);
+    for (int index = 1; ; ++index) {
+        const auto name = index == 1 ? juce::String("Untitled") : "Untitled(" + juce::String(index) + ")";
+        if (parent.getChildFile(name + ".adi").exists())
+            continue;
+        const auto directory = parent.getChildFile(name);
+        const auto path = media::pathFromUtf8(directory.getFullPathName().toStdString());
+        std::error_code error;
+        if (std::filesystem::create_directory(path, error))
+            return directory.getChildFile(name + ".adi");
+        if (error && error != std::errc::file_exists)
+            return {};
+    }
+}
+juce::File songProjectFile(const juce::File &file) {
+    const auto name = file.getFileNameWithoutExtension();
+    if (name.isEmpty() || name == "." || name == "..")
+        return {};
+    const auto parent = file.getParentDirectory();
+    if (parent == parent.getSiblingFile(name))
+        return file;
+    return parent.getChildFile(name).getChildFile(file.getFileName());
 }
 std::string displayAt(juce::Point<int> screen) {
     const auto *d = juce::Desktop::getInstance().getDisplays().getDisplayForPoint(screen.toFloat());

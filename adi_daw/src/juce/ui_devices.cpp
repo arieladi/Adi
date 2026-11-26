@@ -2,6 +2,7 @@
 #include "ui_devices.hpp"
 #include "ui_shell.hpp"
 #include "ui_browser.hpp"
+#include "ui_value_entry.hpp"
 #include "adi/ui/automation_override.hpp"
 #include "adi/builtin_catalog.hpp"
 #include "juce/pd_declarations.hpp"
@@ -70,6 +71,7 @@ ParameterControl::ParameterControl(DeviceChainStrip &s, std::int64_t d, const pa
     addChildComponent(menu);
     present(r, defaultNormalized);
 }
+ParameterControl::~ParameterControl() = default;
 bool ParameterControl::gesture(engine::ParamEventKind kind, double v) {
     if (kind != engine::ParamEventKind::End && !isEnabled()) return false;
     return parameterGesture ? parameterGesture(parameter, kind, v) : strip.edit(device, parameter, kind, v);
@@ -81,17 +83,43 @@ bool ParameterControl::keyPressed(const juce::KeyPress &k) {
         returnToDefault();
         return true; // A refused reset must not bubble into deleting the device or its track.
     }
-    return false;
+    if (!record || record->shape != panel::Shape::Continuous || k.getModifiers().isAnyModifierKeyDown())
+        return false;
+    if (k == juce::KeyPress::upKey || k == juce::KeyPress::downKey) {
+        const auto step = record->stepCount > 1 ? 1.0 / static_cast<double>(record->stepCount - 1) : .01;
+        setOnce(std::clamp(record->playing + (k == juce::KeyPress::upKey ? step : -step), 0.0, 1.0));
+        return true;
+    }
+    const auto first = valueEntryStart(k);
+    if (k != juce::KeyPress::returnKey && first == 0)
+        return false;
+    if (!valueEntry_)
+        valueEntry_ = std::make_unique<ValueEntry>("Normalized parameter value (0 to 1)", [this](const juce::String &text) {
+            const auto normalized = valueNumber(text);
+            if (normalized && *normalized >= 0 && *normalized <= 1)
+                setOnce(*normalized);
+            else
+                strip.root.say("Enter a parameter value from 0 to 1.");
+        });
+    valueEntry_->open(*this, value.getBounds().withHeight(std::max(18, value.getHeight())).constrainedWithin(getLocalBounds()),
+                      juce::String(record->playing, 6), first);
+    return true;
 }
 bool ParameterControl::returnToDefault() {
+    return setOnce(defaultValue);
+}
+bool ParameterControl::setOnce(double normalized) {
     if (!record || record->missing)
         return false;
-    // One bounded gesture from the value playing to the plug-in's default: one undo step, its
-    // opener in front when the parameter was never touched (ADR-0124 d4).
-    if (!gesture(engine::ParamEventKind::Begin, record->playing))
+    const auto previous = record->playing;
+    if (normalized == previous)
+        return true;
+    // One gesture is one undo step. A callback may rebuild the control.
+    const SafePointer<ParameterControl> alive(this);
+    if (!gesture(engine::ParamEventKind::Begin, previous) || !alive)
         return false;
-    gesture(engine::ParamEventKind::Value, defaultValue);
-    return gesture(engine::ParamEventKind::End, defaultValue);
+    const bool applied = gesture(engine::ParamEventKind::Value, normalized);
+    return alive && gesture(engine::ParamEventKind::End, normalized) && applied;
 }
 void ParameterControl::present(const panel::Record &r, double defaultNormalized) {
     record = &r;
@@ -133,6 +161,10 @@ void ParameterControl::present(const panel::Record &r, double defaultNormalized)
 void ParameterControl::mouseDown(const juce::MouseEvent &e) {
     if (e.mods.isPopupMenu() && (e.eventComponent == this || e.eventComponent == &slider))
         showMenu();
+}
+void ParameterControl::mouseDoubleClick(const juce::MouseEvent &e) {
+    if (!e.mods.isPopupMenu() && record && record->shape == panel::Shape::Continuous)
+        returnToDefault();
 }
 void ParameterControl::showMenu() {
     const auto current = strip.root.current();
@@ -946,7 +978,12 @@ bool DevicePanelView::beginFunctionDrag() {
     return true;
 }
 const DevicePanelData *DevicePanelView::functionDragTarget() const noexcept {
-    return dragTarget_ ? &*dragTarget_ : nullptr;
+    return nativeFunction() && dragTarget_ ? &*dragTarget_ : nullptr;
+}
+bool DevicePanelView::beginDeviceDrag() {
+    if (mixCard_ || nativeFunction() || !data || !validTarget()) return false;
+    dragTarget_ = *data;
+    return true;
 }
 void DevicePanelView::endFunctionParameter() {
     if (!editingBegan_) return;
@@ -1614,11 +1651,17 @@ void DevicePanelView::mouseExit(const juce::MouseEvent &) {
 void DevicePanelView::mouseUp(const juce::MouseEvent &) { releaseEqHandle(); }
 void DevicePanelView::mouseDrag(const juce::MouseEvent &e) {
     if (eqPreview_ && eqPreview_->edit) { dragEqHandle(e.position); return; }
-    if (!nativeFunction() || dragTarget_ || e.getDistanceFromDragStart() < 4 || !e.mods.isLeftButtonDown() ||
-        !(e.eventComponent == &title || (e.eventComponent == this && e.y < kTitleHeight))) return;
+    const auto pressed = e.getMouseDownPosition();
+    const bool panelTitle = e.eventComponent == this && !foldSwitch().contains(pressed) &&
+                            (pressed.y < kTitleHeight || strip.folded(id));
+    if (dragTarget_ || e.getDistanceFromDragStart() < 4 || !e.mods.isLeftButtonDown() ||
+        !(e.eventComponent == &title || panelTitle)) return;
     auto *container = juce::DragAndDropContainer::findParentDragContainerFor(this);
-    if (container && beginFunctionDrag())
-        container->startDragging(juce::String("adi-mix-function"), this, juce::ScaledImage{}, true, nullptr, &e.source);
+    if (!container) return;
+    const bool function = nativeFunction() != nullptr;
+    if (function ? beginFunctionDrag() : beginDeviceDrag())
+        container->startDragging(juce::String(function ? "adi-mix-function" : kDeviceMoveDrag), this,
+                                 juce::ScaledImage{}, function, nullptr, &e.source);
 }
 void DevicePanelView::mouseDoubleClick(const juce::MouseEvent &e) {
     if (!validTarget()) return;
@@ -1869,7 +1912,7 @@ bool DeviceChainStrip::isInterestedInDragSource(const SourceDetails &details) {
         return source && source->functionDragTarget() && &source->strip.root == &root &&
                source->functionDragTarget()->track == selectedTrack;
     }
-    return !BrowserPanel::droppedDevice(details.description).empty();
+    return isMovingDevice(details) || (selectedTrack != 0 && root.browser.acceptsDeviceDrop(details));
 }
 std::optional<std::int64_t> DeviceChainStrip::dropBefore(int x) const {
     const int at = x + scroll.getViewPositionX();
@@ -1884,9 +1927,38 @@ void DeviceChainStrip::itemDropped(const SourceDetails &details) {
             dropFunction(*source, dropBefore(details.localPosition.x));
         return;
     }
-    const auto uid = BrowserPanel::droppedDevice(details.description);
-    if (!uid.empty())
-        root.insertDevice(uid, selectedTrack, dropBefore(details.localPosition.x));
+    if (details.description.toString() == DevicePanelView::kDeviceMoveDrag) {
+        moveDroppedDevice(details, selectedTrack, dropBefore(details.localPosition.x));
+        return;
+    }
+    if (selectedTrack != 0)
+        root.browser.loadDroppedDevice(details, selectedTrack, dropBefore(details.localPosition.x));
+}
+DevicePanelView *DeviceChainStrip::moveSource(const SourceDetails &details) const {
+    if (details.description.toString() != DevicePanelView::kDeviceMoveDrag)
+        return nullptr;
+    auto *source = dynamic_cast<DevicePanelView *>(details.sourceComponent.get());
+    if (!source || &source->strip.root != &root || source->nativeFunction() || !source->dragTarget_)
+        return nullptr;
+    return source;
+}
+bool DeviceChainStrip::isMovingDevice(const SourceDetails &details) const {
+    return moveSource(details) != nullptr;
+}
+bool DeviceChainStrip::moveDroppedDevice(const SourceDetails &details, std::int64_t track,
+                                        std::optional<std::int64_t> before) {
+    auto *source = moveSource(details);
+    if (!source) {
+        root.say("That device changed before it could be moved.");
+        return false;
+    }
+    auto expected = std::move(*source->dragTarget_);
+    source->dragTarget_.reset();
+    if (!moveDevice) {
+        root.say("Devices move in the application.");
+        return false;
+    }
+    return moveDevice(expected, track, before);
 }
 bool DeviceChainStrip::hasFunction(mix::Function kind) const {
     if (presented) for (const auto &d : *presented)

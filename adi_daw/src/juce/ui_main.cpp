@@ -50,8 +50,8 @@ class LiveMidiProcessor final : public engine::BlockProcessor {
     void process(const engine::AudioIo &io) noexcept override {
         auto &session = document_.session();
         feed_.pump(io.streamTimeSamples, io.frames, rate_, juce::Time::getMillisecondCounterHiRes(),
-                   [&session](std::int64_t sample, const engine::Event &event) noexcept {
-                       return session.enqueueMidiInput(sample, event);
+                   [&session](std::int64_t sample, const engine::Event &event, std::int64_t inputSample) noexcept {
+                       return session.enqueueMidiInput(sample, event, inputSample);
                    });
         document_.process(io);
     }
@@ -647,6 +647,10 @@ class AdiApplication final : public juce::JUCEApplication,
         live_.reset();
     }
     bool install(const juce::File &file, bool create) {
+        if (file == juce::File{}) {
+            report("Cannot create an Untitled project folder in " + projectsFolder(*settings_).getFullPathName().toStdString());
+            return false;
+        }
         std::string error;
         std::string catalogueError;
         (void)loader_.hydrateCatalogue(catalogueError); // no scanner child or root enumeration
@@ -753,6 +757,12 @@ class AdiApplication final : public juce::JUCEApplication,
             if (root_) root_->say(ok ? std::string{} : document_->error());
             return ok;
         };
+        root->devices.moveDevice = [this](const DevicePanelData &expected, std::int64_t track,
+                                         std::optional<std::int64_t> before) {
+            const bool ok = document_->moveDevice(expected, track, before);
+            if (root_) root_->say(ok ? std::string{} : document_->error());
+            return ok;
+        };
         root->devices.gesture = [this](std::int64_t id, const std::string &param,
                                        engine::ParamEventKind kind, double value) {
             const bool ok = document_->parameterGesture(id, param, kind, value);
@@ -820,6 +830,7 @@ class AdiApplication final : public juce::JUCEApplication,
             if ((!registry || !registry->remember(target.format, target.uid, route, now, why)) && root_)
                 root_->say("The choice is kept in this project, not for the plug-in's next instance: " + why);
         };
+        root->retainedDeviceId = [this] { return document_->retainedDeviceId(); };
         root->devices.keyChoices=[this](const DevicePanelData& target){return document_->deviceKeyChoices(target);};
         root->devices.setKey=[this](const DevicePanelData& target,const DeviceKeyChoice& choice){
             const bool ok=document_->setDeviceKeyChoice(target,choice);
@@ -853,7 +864,7 @@ class AdiApplication final : public juce::JUCEApplication,
         }
         // A built-in device from the browser (D4): one undo step, its reason in the Status Bar.
         root->loadBuiltin = [this](const std::string &uid, std::int64_t track, std::optional<std::int64_t> before) {
-            const bool ok = document_->insertBuiltin(uid, track, before);
+            const bool ok = document_->insertBuiltin(uid, track, before, &commands_->recordingDefaults());
             if (!ok && root_)
                 root_->say(document_->error());
             return ok;
@@ -875,7 +886,7 @@ class AdiApplication final : public juce::JUCEApplication,
             const auto before_ = newest();
             // As Live loads one: an instrument onto a MIDI track only, in place of the track's instrument
             // (walk-A A26).
-            if (!document_->loadPlugin(ref, track, before)) {
+            if (!document_->loadPlugin(ref, track, before, &commands_->recordingDefaults())) {
                 if (root_)
                     root_->say(document_->error());
                 return false;
@@ -951,6 +962,7 @@ class AdiApplication final : public juce::JUCEApplication,
         };
         root->stopRecording = [this] { document_->stopRecording(); };
         root->recording = [this] { return document_->recording(); };
+        root->liveMidiTakes = [this] { return document_->liveMidiTakes(); };
         // Export Audio/Video (EX-11): the Export page, then a file, then a render on a worker.
         root->exportAudio = [this](const ExportChoices &c) { openExport(c); };
         // A mixer drag heard while it moves (MX-23, SRF-02): the document's live gesture.
@@ -1239,11 +1251,23 @@ class AdiApplication final : public juce::JUCEApplication,
     // only a warning the store or the session reports goes there. The store never overwrites,
     // so an existing file is refused and the Status Bar says why, where Live asks first and
     // then replaces.
-    void saveAs(const juce::File &file) {
+    void saveAs(const juce::File &chosenFile) {
         if (!document_ || !root_ || !window_)
             return;
+        const auto file = songProjectFile(chosenFile);
+        if (file == juce::File{}) {
+            root_->say("Choose a name for the project.");
+            return;
+        }
+        const auto path = pathFromUtf8(file.getFullPathName().toStdString());
+        std::error_code folderError;
+        const bool created = std::filesystem::create_directory(path.parent_path(), folderError);
+        if (folderError) {
+            root_->say("Cannot create the project folder: " + folderError.message());
+            return;
+        }
         const auto before = document_->deviceCopyIdentity();
-        const bool saved = document_->saveAs(pathFromUtf8(file.getFullPathName().toStdString()));
+        const bool saved = document_->saveAs(path);
         // A take landed before the switch (PD06-SAVEAS-GUARD) is told here with Save As's own words, so the
         // timer finds nothing to say over them; a kept take is chosen, as when it lands on its own.
         std::string landedFirst;
@@ -1254,6 +1278,8 @@ class AdiApplication final : public juce::JUCEApplication,
                 root_->selectClip(landed->clips.front());
         }
         if (!saved) {
+            if (created && std::filesystem::is_empty(path.parent_path(), folderError) && !folderError)
+                std::filesystem::remove(path.parent_path(), folderError);
             root_->say(landedFirst + document_->error());
             return;
         }
@@ -1317,13 +1343,16 @@ class AdiApplication final : public juce::JUCEApplication,
         }
         if (id == AppCommands::SaveAs) {
             // Live's Save Live Set As (manual 5.4.1, 41.3; ADR-0203 d6): a new file the project
-            // carries on in. A save chooser for `.adi`, opened beside the current file; the
-            // document copies and switches (`Store::saveAs`, #380, N3).
+            // carries on in. The chooser opens beside the current song's folder so two saved
+            // variations get their own folders. The document copies and switches (`Store::saveAs`).
             if (chooser_)
                 return false;
             const auto current = juce::File(juce::String::fromUTF8(reinterpret_cast<const char *>(
                 document_->store().path().u8string().c_str())));
-            chooser_ = std::make_unique<juce::FileChooser>("Save ADI project as", current, "*.adi");
+            const auto suggested = songProjectFile(current) == current
+                                       ? current.getParentDirectory().getSiblingFile(current.getFileName())
+                                       : current;
+            chooser_ = std::make_unique<juce::FileChooser>("Save ADI project as", suggested, "*.adi");
             chooser_->launchAsync(juce::FileBrowserComponent::saveMode |
                                       juce::FileBrowserComponent::canSelectFiles,
                                   [this](const juce::FileChooser &chooser) {
