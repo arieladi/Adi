@@ -124,7 +124,14 @@ if(ADI_WITH_JUCE)
     set_source_files_properties(tests/test_ui_eq_pages.cpp PROPERTIES
         COMPILE_OPTIONS "$<TARGET_PROPERTY:adi_warnings,INTERFACE_COMPILE_OPTIONS>")
     add_test(NAME adi_ui_eq_pages_tests COMMAND adi_ui_eq_pages_tests)
-    juce_add_gui_app(adi_app PRODUCT_NAME "ADI" COMPANY_NAME "ADI" BUNDLE_ID "org.adi.daw")
+    juce_add_gui_app(adi_app PRODUCT_NAME "ADI" COMPANY_NAME "ADI" BUNDLE_ID "org.adi.daw"
+        MICROPHONE_PERMISSION_ENABLED TRUE
+        MICROPHONE_PERMISSION_TEXT "ADI uses audio input to record audio tracks.")
+    if(APPLE)
+        add_test(NAME adi_ui_microphone_usage_tests
+            COMMAND /usr/libexec/PlistBuddy -c "Print :NSMicrophoneUsageDescription"
+                "$<TARGET_BUNDLE_CONTENT_DIR:adi_app>/Info.plist")
+    endif()
     target_sources(adi_app PRIVATE src/juce/ui_main.cpp src/juce/app_audio_page.cpp src/juce/app_midi_ports.cpp src/juce/juce_device_loader.cpp src/juce/vst3_host.cpp src/juce/vst3_events.cpp src/juce/editor_host_component.cpp)
     # Reuse the player's host-format/ASIO switches, not its console entry or fixture.
     get_target_property(adi_ui_host_defs adi_play COMPILE_DEFINITIONS)
