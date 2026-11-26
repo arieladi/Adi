@@ -53,6 +53,11 @@ class StackTab final : public juce::Component {
     void frame(const SnapshotReader &);
     // Deterministic component-test entry; normal frames use the window's monotonic clock.
     void frameAt(const SnapshotReader &, stack::TimeMs);
+    // The clock that stamps this surface's own frames and events (a release, a press, a key):
+    // the window's monotonic clock unless a component test sets one, so that its frameAt times and
+    // the surface's own stamps share one timeline (walk-A A24).
+    std::function<stack::TimeMs()> clock;
+    stack::TimeMs now() const;
     void paint(juce::Graphics &) override;
     void resized() override;
     void visibilityChanged() override;
