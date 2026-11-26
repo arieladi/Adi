@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/appdata.hpp"
 #include "adi/audio/decode.hpp"
+#include "adi/media/publish_file.hpp"
 #include "adi/render/queue.hpp"
 #include "adi/render/host_dispatch.hpp"
 #include "adi/settings/device_grant.hpp"
@@ -661,6 +662,7 @@ class AdiApplication final : public juce::JUCEApplication,
         midiPorts_.reset();
         stopTimer();
         chooser_.reset();
+        replaceProjectPrompt_.reset();
         settingsWindow_.reset();
         if (snapshotPrompt_ != nullptr)
             delete snapshotPrompt_.getComponent();
@@ -785,6 +787,7 @@ class AdiApplication final : public juce::JUCEApplication,
         }
         // A worker preparing for the document going is stopped; its result is dropped.
         ++installGeneration_;
+        replaceProjectPrompt_.reset();
         importStop_.request_stop();
         juce::PopupMenu::dismissAllActiveMenus();
         // An export of the old project stops, and its page goes: its tracks and range were that project's.
@@ -1350,17 +1353,11 @@ class AdiApplication final : public juce::JUCEApplication,
     // Save As, once the chooser has a file: the document carries on in it and the window takes
     // its name, and that is all Live shows (manual 5.4.1). As after New and Open, a success says
     // nothing in the Status Bar and clears what a refusal left there (parity-7.2-shell row 4);
-    // only a warning the store or the session reports goes there. The store never overwrites,
-    // so an existing file is refused and the Status Bar says why, where Live asks first and
-    // then replaces.
-    void saveAs(const juce::File &chosenFile) {
+    // only a warning the store or the session reports goes there.
+    void saveAs(const juce::File &file, StoreFileCollision collision = StoreFileCollision::Fail,
+                const media::FileIdentity *expectedTarget = nullptr) {
         if (!document_ || !root_ || !window_)
             return;
-        const auto file = songProjectFile(chosenFile);
-        if (file == juce::File{}) {
-            root_->say("Choose a name for the project.");
-            return;
-        }
         const auto path = pathFromUtf8(file.getFullPathName().toStdString());
         std::error_code folderError;
         const bool created = std::filesystem::create_directory(path.parent_path(), folderError);
@@ -1369,7 +1366,7 @@ class AdiApplication final : public juce::JUCEApplication,
             return;
         }
         const auto before = document_->deviceCopyIdentity();
-        const bool saved = document_->saveAs(path, root_->needsFirstSave);
+        const bool saved = document_->saveAs(path, root_->needsFirstSave, collision, expectedTarget);
         // A take landed before the switch (PD06-SAVEAS-GUARD) is told here with Save As's own words, so the
         // timer finds nothing to say over them; a kept take is chosen, as when it lands on its own.
         std::string landedFirst;
@@ -1401,6 +1398,48 @@ class AdiApplication final : public juce::JUCEApplication,
         if (diagnosticLog_)
             diagnosticLog_->write("Saved project as", file.getFileName().toStdString());
         root_->say(landedFirst + document_->warning());
+    }
+    void requestSaveAs(const juce::File &chosenFile) {
+        if (!document_ || !root_ || !window_)
+            return;
+        const auto file = songProjectFile(chosenFile);
+        if (file == juce::File{}) {
+            root_->say("Choose a name for the project.");
+            return;
+        }
+        if (!file.existsAsFile()) {
+            saveAs(file);
+            return;
+        }
+        const auto destination = pathFromUtf8(file.getFullPathName().toStdString());
+        std::error_code error;
+        if (std::filesystem::equivalent(destination, document_->store().path(), error)) {
+            root_->say("The current project is already at this location. Choose another name or folder.");
+            return;
+        }
+        const auto expected = media::readFileIdentity(destination, error);
+        if (!expected) {
+            root_->say("Save As could not identify the existing project: " + error.message());
+            return;
+        }
+        const auto options = juce::MessageBoxOptions{}
+                                 .withIconType(juce::MessageBoxIconType::WarningIcon)
+                                 .withTitle("Replace project?")
+                                 .withMessage(file.getFullPathName())
+                                 .withButton(juce::MessageBoxButtonOptions("Cancel", 0)
+                                                 .withRole(juce::MessageBoxButtonRole::cancel).withPreferredAction())
+                                 .withButton(juce::MessageBoxButtonOptions("Replace", 1)
+                                                 .withRole(juce::MessageBoxButtonRole::destroy))
+                                 .withAssociatedComponent(window_.get());
+        replaceProjectPrompt_.emplace(juce::AlertWindow::showScopedAsync(options,
+            [this, file, generation = installGeneration_, identity = *expected](int result) {
+                if (generation == installGeneration_ && result == 1)
+                    saveAs(file, StoreFileCollision::ReplaceConfirmed, &identity);
+                juce::MessageManager::callAsync([this, generation] {
+                    if (juce::JUCEApplicationBase::getInstance() == this && generation == installGeneration_)
+                        replaceProjectPrompt_.reset();
+                });
+            }));
     }
     // Save a Copy, once the chooser has a file. The Status Bar says where it went, since nothing
     // else in the window changes.
@@ -1485,7 +1524,7 @@ class AdiApplication final : public juce::JUCEApplication,
             return true;
         }
         if (id == AppCommands::SaveAs || id == AppCommands::TakeSnapshot) {
-            if (chooser_ || !document_)
+            if (chooser_ || replaceProjectPrompt_ || !document_)
                 return false;
             const auto current = juce::File(juce::String::fromUTF8(reinterpret_cast<const char *>(
                 document_->store().path().u8string().c_str())));
@@ -1496,17 +1535,19 @@ class AdiApplication final : public juce::JUCEApplication,
             else if (songProjectFile(current) == current)
                 suggested = current.getParentDirectory().getSiblingFile(current.getFileName());
             const auto generation = installGeneration_;
+            // The app confirms the resolved destination after the file chooser closes.
             chooser_ = std::make_unique<juce::FileChooser>(firstSave ? "Save ADI project" : "Save ADI project as",
-                                                           suggested, "*.adi");
+                                                           suggested, "*.adi", false);
             chooser_->launchAsync(juce::FileBrowserComponent::saveMode |
                                       juce::FileBrowserComponent::canSelectFiles,
                                   [this, generation](const juce::FileChooser &chooser) {
                                       const auto file = chooser.getResult();
-                                      if (file != juce::File{} && generation == installGeneration_)
-                                          saveAs(withAdiExtension(file));
-                                      juce::MessageManager::callAsync([this] {
-                                          if (juce::JUCEApplicationBase::getInstance() == this)
+                                      juce::MessageManager::callAsync([this, file, generation] {
+                                          if (juce::JUCEApplicationBase::getInstance() == this) {
                                               chooser_.reset();
+                                              if (file != juce::File{} && generation == installGeneration_)
+                                                  requestSaveAs(withAdiExtension(file));
+                                          }
                                       });
                                   });
             return true;
@@ -1765,6 +1806,7 @@ class AdiApplication final : public juce::JUCEApplication,
     AdiRootComponent *root_ = nullptr;
     std::unique_ptr<FloatingHost> floating_;
     std::unique_ptr<juce::FileChooser> chooser_;
+    std::optional<juce::ScopedMessageBox> replaceProjectPrompt_;
     // The library index's owner and what it last listed (D1).
     std::thread libraryThread_;
     std::shared_ptr<LibraryOwner> libraryOwner_;

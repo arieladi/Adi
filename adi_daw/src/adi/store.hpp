@@ -32,7 +32,7 @@ class Database;
 }
 
 namespace adi {
-namespace media { class ProjectFileLease; }
+namespace media { struct FileIdentity; class ProjectFileLease; }
 class Store;
 namespace freeze {bool validated(Store&) noexcept;void remember(Store&) noexcept;}
 namespace detail {struct AppliedDomain; struct AppliedSourceAccess;}
@@ -132,11 +132,15 @@ public:
     /// Save a copy, then switch this same Store object to the new writable file.
     /// Existing OpJournal/History references remain valid. Requires no live SQL
     /// statements. Refresh ProjectView/Session and the window's filename after
-    /// success. A failed switch retains the source and a completed copy.
-    [[nodiscard]] StoreFileResult saveAs(const std::filesystem::path&, StoreFileCollision=StoreFileCollision::Fail);
+    /// success. A failed switch retains the source and a completed copy. When
+    /// given, expectedTarget binds the confirmation to the existing file.
+    [[nodiscard]] StoreFileResult saveAs(const std::filesystem::path&, StoreFileCollision=StoreFileCollision::Fail,
+                                        const media::FileIdentity* expectedTarget=nullptr);
     /// Name a newly created, unnamed project. Project-local media and history
     /// follow the file; the original is discarded only after the switch.
-    [[nodiscard]] StoreFileResult saveUntitledAs(const std::filesystem::path&);
+    [[nodiscard]] StoreFileResult saveUntitledAs(const std::filesystem::path&,
+                                                StoreFileCollision=StoreFileCollision::Fail,
+                                                const media::FileIdentity* expectedTarget=nullptr);
     /// Retry releasing an unnamed project's old files once playback and
     /// waveform readers have switched away from them.
     void finishUntitledSave() noexcept;
@@ -219,8 +223,10 @@ private:
     Store(std::unique_ptr<SQLite::Database>, std::filesystem::path, bool readOnly,
           std::shared_ptr<media::ProjectFileLease>);
     struct CopyState;
-    CopyState saveCopyImpl(const std::filesystem::path&,StoreFileCollision,bool firstSave=false) const;
-    StoreFileResult saveAsImpl(const std::filesystem::path&,StoreFileCollision,bool firstSave);
+    CopyState saveCopyImpl(const std::filesystem::path&,StoreFileCollision,bool firstSave=false,
+                           const media::FileIdentity* expectedTarget=nullptr) const;
+    StoreFileResult saveAsImpl(const std::filesystem::path&,StoreFileCollision,bool firstSave,
+                               const media::FileIdentity* expectedTarget);
     std::function<bool()> untitledCleanup_;
     bool untitledCleanupReady_=false;
     bool applySessionPragmas();

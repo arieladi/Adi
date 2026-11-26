@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/audio/wav_file.hpp"
 #include "adi/automation_lanes.hpp"
+#include "adi/media/blake3.hpp"
 #include "adi/media/media_ops.hpp"
+#include "adi/media/publish_file.hpp"
 #include "adi/settings/store.hpp"
 #include "adi/ui/project_document.hpp"
 #include "adi/ui/arrangement_geometry.hpp"
@@ -19,6 +21,8 @@
 #include <complex>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
+#include <iterator>
 #include <optional>
 #include <thread>
 #if !defined(_WIN32)
@@ -1360,7 +1364,7 @@ void recordAfterSaveAs(const std::filesystem::path &dir) {
           "as one Record Audio step in the saved file, the file it was saved from untouched");
     doc->release();
 }
-void firstSaveMovesTheTake(const std::filesystem::path &dir) {
+void firstSaveMovesTheTake(const std::filesystem::path &dir, bool replace = false) {
     namespace fs = std::filesystem;
     const auto staging = dir / "Untitled";
     fs::create_directory(staging);
@@ -1406,6 +1410,8 @@ void firstSaveMovesTheTake(const std::filesystem::path &dir) {
     };
     const auto originalAudio = mediaPath();
     check(!originalAudio.empty(), "the take resolves in unnamed staging");
+    if (originalAudio.empty())
+        return;
 
     const auto occupied = dir / "Occupied.adi";
     fs::create_directory(occupied);
@@ -1416,7 +1422,36 @@ void firstSaveMovesTheTake(const std::filesystem::path &dir) {
     const auto destination = dir / "Song";
     fs::create_directory(destination);
     const auto named = destination / "Song.adi";
-    const bool saved = doc->saveAs(named, true);
+    const auto relativeAudio = originalAudio.lexically_relative(fs::canonical(staging));
+    const auto existingAudio = destination / relativeAudio;
+    std::optional<media::FileIdentity> replacementIdentity;
+    if (replace) {
+        StoreError openError{};
+        auto existing = Store::createNewProject(named, openError);
+        check(existing && existing->close(), "the first-save replacement fixture is a closed project");
+        if (!existing)
+            return;
+        existing.reset();
+        fs::create_directories(existingAudio.parent_path());
+        std::ofstream(existingAudio) << "An existing take in the destination folder";
+        std::error_code identityError;
+        replacementIdentity = media::readFileIdentity(named, identityError);
+        const auto wrongIdentity = media::readFileIdentity(source, identityError);
+        check(replacementIdentity && wrongIdentity, "identify both projects in the replacement fixture");
+        if (!replacementIdentity || !wrongIdentity)
+            return;
+        check(!doc->saveAs(named, true) && fs::exists(originalAudio),
+              "a named destination keeps the first save pending until replacement is confirmed");
+        check(!doc->saveAs(named, true, StoreFileCollision::ReplaceConfirmed, &*wrongIdentity) &&
+                  doc->store().path() == source && fs::exists(originalAudio) &&
+                  media::readFileIdentity(named, identityError) == replacementIdentity &&
+                  std::distance(fs::directory_iterator(existingAudio.parent_path()), fs::directory_iterator{}) == 1,
+              "a stale confirmation leaves both projects and their media in place");
+    }
+    const auto existingHash = replace ? media::blake3File(existingAudio).hex : std::string{};
+    const bool saved = replacementIdentity ? doc->saveAs(named, true, StoreFileCollision::ReplaceConfirmed,
+                                                          &*replacementIdentity)
+                                           : doc->saveAs(named, true);
     check(saved && doc->name() == "Song" && doc->store().path() == named,
           "first save names the active project");
     if (!saved) {
@@ -1424,10 +1459,13 @@ void firstSaveMovesTheTake(const std::filesystem::path &dir) {
         return;
     }
     const auto newAudio = mediaPath();
-    check(!newAudio.empty() && newAudio != originalAudio &&
-              newAudio == media::projectFolder(doc->store()) /
-                              originalAudio.lexically_relative(fs::canonical(staging.parent_path()) / staging.filename()),
+    const auto localAudio = newAudio.lexically_relative(media::projectFolder(doc->store()));
+    check(!newAudio.empty() && newAudio != originalAudio && localAudio.parent_path() == relativeAudio.parent_path() &&
+              (replace ? localAudio != relativeAudio : localAudio == relativeAudio),
           "first save keeps the take in the destination's media folder");
+    if (replace)
+        check(!existingHash.empty() && media::blake3File(existingAudio).hex == existingHash,
+              "a first-save replacement leaves the other recording at the conflicting name intact");
     const auto undoStep = doc->ops().nextUndo();
     check(undoStep && undoStep->label == "Record Audio", "first save preserves the recording's undo step");
     const bool undone = doc->ops().undo().ok && doc->synchronise();
@@ -1524,6 +1562,8 @@ int main(int argc, char **argv) {
         recordAfterSaveAs(afterDir.path());
         test::TempDirectory firstSaveDir("ui_document", "first-save");
         firstSaveMovesTheTake(firstSaveDir.path());
+        test::TempDirectory firstSaveReplacement("ui_document", "first-save-replacement");
+        firstSaveMovesTheTake(firstSaveReplacement.path(), true);
         test::TempDirectory firstSaveHeld("ui_document", "first-save-held");
         firstSavePreservesLaterSourceEdits(firstSaveHeld.path());
         test::TempDirectory refusedDir("ui_document", "refused");
@@ -1950,6 +1990,18 @@ int main(int argc, char **argv) {
                   "a folder that does not exist is refused with the store's reason");
             check(saving->ops().redo().ok && saving->synchronise() && saving->view().current()->tracks.size() == 8,
                   "and the history still redoes after a refusal");
+            std::error_code identityError;
+            const auto wrongTarget = media::readFileIdentity(after, identityError);
+            const auto target = media::readFileIdentity(before, identityError);
+            check(wrongTarget && target && !saving->saveAs(before, false, StoreFileCollision::ReplaceConfirmed, &*wrongTarget) &&
+                      std::filesystem::equivalent(saving->store().path(), after) &&
+                      media::readFileIdentity(before, identityError) == target,
+                  "the dialog's approval cannot replace a different file at the chosen path");
+            check(saving->ops().submit(second).ok && saving->synchronise(), "an edit to distinguish the replacement");
+            check(target && saving->saveAs(before, false, StoreFileCollision::ReplaceConfirmed, &*target) &&
+                      std::filesystem::equivalent(saving->store().path(), before) && saving->name() == "before" &&
+                      saving->store().db().execAndGet("SELECT count(*) FROM tracks").getInt() == 9,
+                  "confirmed Save As replaces the approved closed project and switches the current document");
         }
     }
     {

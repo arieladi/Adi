@@ -151,15 +151,16 @@ History::SnapshotResult ProjectDocument::takeSnapshot(const std::string &name,
 std::string ProjectDocument::snapshotName(std::int64_t nowUtc, int utcOffsetMinutes) const {
     return History::defaultSnapshotName(name_, nowUtc, utcOffsetMinutes);
 }
-bool ProjectDocument::saveAs(const std::filesystem::path &path, bool firstSave) {
+bool ProjectDocument::saveAs(const std::filesystem::path &path, bool firstSave, StoreFileCollision collision,
+                             const media::FileIdentity *expectedTarget) {
     warning_.clear();
-    // The store refuses an existing file too, in its own words; the Status Bar gets ours, with
-    // the name, since Live would have asked here and replaced it.
+    // The unconfirmed path checks before stopping a recording. The store also checks when publishing.
     std::error_code ignored;
-    if (std::filesystem::exists(path, ignored) ||
-        std::filesystem::is_symlink(std::filesystem::symlink_status(path, ignored))) {
+    if (collision == StoreFileCollision::Fail &&
+        (std::filesystem::exists(path, ignored) ||
+         std::filesystem::is_symlink(std::filesystem::symlink_status(path, ignored)))) {
         error_ = "Save As: " + media::pathUtf8(path.filename()) +
-                 " already exists; ADI never replaces a project. Choose another name.";
+                 " already exists. Confirm replacement or choose another name.";
         return false;
     }
     // A take recording or landing goes into the file it was recorded in, before the file switches
@@ -173,7 +174,8 @@ bool ProjectDocument::saveAs(const std::filesystem::path &path, bool firstSave) 
     // the members hold the Store itself, which keeps its identity across the switch.
     if (!capturePluginState())
         return false;
-    const auto result = firstSave ? store_->saveUntitledAs(path) : store_->saveAs(path);
+    const auto result = firstSave ? store_->saveUntitledAs(path, collision, expectedTarget)
+                                  : store_->saveAs(path, collision, expectedTarget);
     if (!result.ok) {
         error_ = "Save As failed: " + result.error;
         return false;

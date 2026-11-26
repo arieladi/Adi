@@ -54,14 +54,15 @@ class ProjectDocument final : public engine::BlockProcessor {
     // Save As (Live 12 manual 5.4.1, 41.3; ADR-0203 d6; N3): the store copies the project into a
     // new `.adi` and carries on in it (`Store::saveAs`, #380), called with no live statement held
     // (SPEC §3.7); the name, the view and the session follow, and the caller retitles the window.
-    // The store never overwrites, so an existing destination is refused and `error()` says why,
-    // where Live asks first and then replaces. False means nothing moved; once the store has
+    // Existing destinations require explicit replacement confirmation. False means nothing moved; once the store has
     // switched the save stands and is true, a warning the store reports, or a session that
     // failed to re-read the new file, in `warning()`.
-    bool saveAs(const std::filesystem::path &, bool firstSave = false);
+    bool saveAs(const std::filesystem::path &, bool firstSave = false,
+                StoreFileCollision = StoreFileCollision::Fail,
+                const media::FileIdentity *expectedTarget = nullptr);
     const std::string &warning() const noexcept { return warning_; }
     // Live's Save a Copy (manual 5.4.1): the project as it stands into a new `.adi`, the open one
-    // left as it is (`Store::saveCopy`, #380, N30). An existing file is refused, as for Save As.
+    // left as it is (`Store::saveCopy`, #380, N30). An existing file is refused.
     bool saveCopy(const std::filesystem::path &);
     // Live's Collect All and Save (manual 5.7): every outside media file the project and its
     // history use is copied into `audio/` beside it and the project points at the copies

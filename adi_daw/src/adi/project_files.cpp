@@ -47,20 +47,25 @@ bool localPath(const fs::path& relative) {
     return !relative.empty() && !relative.is_absolute() && *relative.begin()!=".." && relative!=".";
 }
 struct UntitledMedia {
+    struct Move {
+        media::FileIdentity identity;
+        fs::path destination;
+    };
     struct Publication {
         fs::path path;
         std::optional<media::FileIdentity> identity;
     };
     fs::path staged, targetFolder;
     bool privateFolder;
-    std::map<fs::path,media::FileIdentity> sources;
+    bool replacing;
+    std::map<fs::path,Move> sources;
     std::vector<fs::path> createdDirectories;
     std::vector<Publication> published;
     bool keepPublished=false;
     bool durable=true;
 
-    UntitledMedia(fs::path stageFolder,fs::path target,bool ownsFolder)
-        :staged(std::move(stageFolder)),targetFolder(std::move(target)),privateFolder(ownsFolder){}
+    UntitledMedia(fs::path stageFolder,fs::path target,bool ownsFolder,bool replace)
+        :staged(std::move(stageFolder)),targetFolder(std::move(target)),privateFolder(ownsFolder),replacing(replace){}
 
     void makeDirectory(const fs::path& directory) {
         if(directory==targetFolder)return;
@@ -69,19 +74,34 @@ struct UntitledMedia {
         else if(!fs::is_directory(fs::symlink_status(directory)))
             throw std::runtime_error("project media folder is not an ordinary directory");
     }
-    void stage(const fs::path& source,const fs::path& relative) {
-        if(sources.contains(relative))return;
+    fs::path destinationFor(const fs::path& relative) const {
+        auto candidate=relative;
+        if(!replacing)return candidate;
+        const auto exists=[](const fs::path& path){return fs::symlink_status(path).type()!=fs::file_type::not_found;};
+        // An existing take may still belong to another file in the destination.
+        for(unsigned suffix=2;exists(targetFolder/candidate) || exists(staged/candidate);++suffix){
+            auto name=relative.stem();
+            name+=fs::path(" ("+std::to_string(suffix)+")");
+            name+=relative.extension();
+            candidate=relative.parent_path()/name;
+        }
+        return candidate;
+    }
+    fs::path stage(const fs::path& source,const fs::path& relative) {
+        if(const auto found=sources.find(relative);found!=sources.end())return found->second.destination;
+        const auto destination=destinationFor(relative);
         std::error_code identityError;
         const auto identity=media::readFileIdentity(source,identityError);
         if(!identity)throw fs::filesystem_error("identify project media",source,identityError);
-        const auto copy=staged/relative;
+        const auto copy=staged/destination;
         fs::create_directories(copy.parent_path());
         fs::copy_file(source,copy);
         const auto originalHash=media::blake3File(source),copiedHash=media::blake3File(copy);
         if(!originalHash || !copiedHash || originalHash.hex!=copiedHash.hex ||
            media::readFileIdentity(source,identityError)!=identity)
             throw std::runtime_error("project media changed during first save: "+media::pathUtf8(source));
-        sources.emplace(relative,*identity);
+        sources.emplace(relative,Move{*identity,destination});
+        return destination;
     }
     bool relocate(Payload& paths,const fs::path& oldFolder,const fs::path& primary) {
         const auto relative=primary.lexically_relative(oldFolder);
@@ -90,20 +110,19 @@ struct UntitledMedia {
         const auto resolved=fs::weakly_canonical(primary);
         if(resolved!=primary)return false; // a linked file or directory remains an external reference
         const auto status=fs::symlink_status(primary);
-        if(fs::is_regular_file(status))stage(primary,relative);
-        else if(status.type()!=fs::file_type::not_found)
+        if(!fs::is_regular_file(status) && status.type()!=fs::file_type::not_found)
             throw std::runtime_error("project media is not an ordinary file: "+media::pathUtf8(primary));
-        paths["rel_path"]=media::pathUtf8(relative);
+        paths["rel_path"]=media::pathUtf8(fs::is_regular_file(status) ? stage(primary,relative) : destinationFor(relative));
         paths["abs_path_hint"]=nullptr;
         return true;
     }
     void publish() {
-        for(const auto& [relative,identity]:sources) {
-            (void)identity;
-            const auto destination=targetFolder/relative;
+        for(const auto& [relative,move]:sources) {
+            (void)relative;
+            const auto destination=targetFolder/move.destination;
             makeDirectory(destination.parent_path());
             published.push_back({destination,{}});
-            const auto result=media::publishFile(staged/relative,destination);
+            const auto result=media::publishFile(staged/move.destination,destination);
             if(result.status!=media::PublishStatus::published){
                 published.pop_back();
                 throw std::runtime_error("publish project media: "+result.error);
@@ -334,7 +353,7 @@ StoreFileResult Store::saveCopy(const std::filesystem::path& output,StoreFileCol
     return {result.ok,std::move(result.error),std::move(result.warning)};
 }
 Store::CopyState Store::saveCopyImpl(const std::filesystem::path& output,StoreFileCollision collision,
-                                    bool firstSave) const {
+                                    bool firstSave,const media::FileIdentity* expectedTarget) const {
     if(audio::onAudioThread)return {false,{},{}};
     try {
         if(!validCollision(collision))return {false,"unknown save collision mode",{}};
@@ -362,7 +381,8 @@ Store::CopyState Store::saveCopyImpl(const std::filesystem::path& output,StoreFi
             return {false,"choose a location outside the temporary project folder",{}};
         std::optional<UntitledMedia> mediaToMove;
         if(firstSave && oldFolder!=targetFolder)
-            mediaToMove.emplace(stage.path/"media",targetFolder,privateFolder);
+            mediaToMove.emplace(stage.path/"media",targetFolder,privateFolder,
+                                collision==StoreFileCollision::ReplaceConfirmed);
         {
             SQLite::Database destination(media::pathUtf8(staged),SQLite::OPEN_READWRITE|SQLite::OPEN_CREATE);
             {
@@ -381,7 +401,17 @@ Store::CopyState Store::saveCopyImpl(const std::filesystem::path& output,StoreFi
         }
         media::PublishResult result;
         if(collision==StoreFileCollision::ReplaceConfirmed){
-            media::ReplaceHooks hooks;hooks.validateTarget=projectDestinationReady;
+            bool mediaPublished=false;
+            media::ReplaceHooks hooks;
+            hooks.validateTarget=[&](const fs::path& destination){
+                const auto error=projectDestinationReady(destination);
+                if(!error && mediaToMove && !mediaPublished){
+                    mediaToMove->publish();
+                    mediaPublished=true;
+                }
+                return error;
+            };
+            if(expectedTarget)hooks.expectedTarget=*expectedTarget;
             result=media::replaceFile(staged,target,hooks);
         }else{
             if(projectDestinationReady(target))return {false,"destination acquired unrecovered SQLite sidecars",{}};
@@ -400,17 +430,22 @@ Store::CopyState Store::saveCopyImpl(const std::filesystem::path& output,StoreFi
             copied.durable=false;
         if(firstSave && !copied.durable)
             copied.warning=joinedWarning(std::move(copied.warning),"the unnamed file was kept because durability could not be confirmed");
-        if(mediaToMove && privateFolder)copied.originalMedia=std::move(mediaToMove->sources);
+        if(mediaToMove && privateFolder)
+            for(const auto& [relative,move]:mediaToMove->sources)
+                copied.originalMedia.emplace(relative,move.identity);
         return copied;
     }catch(const std::exception& e){return {false,e.what(),{}};}
 }
-StoreFileResult Store::saveAs(const std::filesystem::path& output,StoreFileCollision collision) {
-    return saveAsImpl(output,collision,false);
+StoreFileResult Store::saveAs(const std::filesystem::path& output,StoreFileCollision collision,
+                              const media::FileIdentity* expectedTarget) {
+    return saveAsImpl(output,collision,false,expectedTarget);
 }
-StoreFileResult Store::saveUntitledAs(const std::filesystem::path& output) {
-    return saveAsImpl(output,StoreFileCollision::Fail,true);
+StoreFileResult Store::saveUntitledAs(const std::filesystem::path& output,StoreFileCollision collision,
+                                      const media::FileIdentity* expectedTarget) {
+    return saveAsImpl(output,collision,true,expectedTarget);
 }
-StoreFileResult Store::saveAsImpl(const std::filesystem::path& output,StoreFileCollision collision,bool firstSave) {
+StoreFileResult Store::saveAsImpl(const std::filesystem::path& output,StoreFileCollision collision,bool firstSave,
+                                  const media::FileIdentity* expectedTarget) {
     if(audio::onAudioThread)return {false,{},{}};
     if(detail::appliedDispatchActive(*this))return {false,"reentrant Save As during applied-batch delivery",{}};
     if(closed_ || !db_)return {false,"project is closed",{}};
@@ -425,7 +460,7 @@ StoreFileResult Store::saveAsImpl(const std::filesystem::path& output,StoreFileC
     };
     const auto dataVersion=firstSave ? db_->execAndGet("PRAGMA data_version").getInt64() : 0;
     const auto sourceRevision=firstSave ? readRevision(*db_) : std::pair<std::int64_t,std::int64_t>{};
-    auto copied=saveCopyImpl(output,collision,firstSave);
+    auto copied=saveCopyImpl(output,collision,firstSave,expectedTarget);
     if(!copied.ok)return copied;
     StoreError error{};
     auto replacement=Store::open(fs::absolute(output),error);
