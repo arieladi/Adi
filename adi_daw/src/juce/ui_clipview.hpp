@@ -396,6 +396,7 @@ class SampleEditor final : public juce::Component {
     ClipViewPanel &panel;
     bool fitPending_ = false;
     std::int64_t sourceEnd_ = 0, downTick_ = 0, original_ = 0, preview_ = 0;
+    std::uint64_t waveformsSeen_ = 0;
     std::int64_t gestureClip_ = 0;
     Drag drag_ = Drag::None;
     juce::Point<int> last_;

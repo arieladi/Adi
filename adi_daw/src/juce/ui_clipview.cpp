@@ -2915,6 +2915,12 @@ bool SampleEditor::playFromSource(std::int64_t tick) {
     return true;
 }
 void SampleEditor::frame() {
+    if (panel.audio())
+        if (const auto *waveforms = panel.root.arrangement.waveforms)
+            if (const auto delivered = waveforms->delivered(); delivered != waveformsSeen_) {
+                waveformsSeen_ = delivered;
+                repaint();
+            }
     const auto area = waveArea();
     const int x = static_cast<int>(std::clamp(time.x(sourceTick(panel.root.timelineTick())), -1e7, 1e7));
     playhead.setVisible(panel.audio() && panel.root.playing() && x >= 0 && x < area.getWidth());
