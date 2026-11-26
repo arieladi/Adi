@@ -91,7 +91,8 @@ struct WindowState {
     // returns left out of the lanes, the track controls and the Mixer View; shown by default.
     bool hideReturns = false;
     // Live's Follow (manual §6.2): the arrangement keeps the playhead on screen while it plays.
-    bool follow = false;
+    static constexpr bool kDefaultFollow = false;
+    bool follow = kDefaultFollow;
     // Live's View menu (§42.1): the Overview above the ruler, and the track controls' In/Out
     // (Ctrl/Cmd+Alt+I) and sends (Hide/Show Sends, Ctrl/Cmd+Alt+S): Live 12's Arrangement Track
     // Controls submenu.

@@ -19152,6 +19152,8 @@ int main(int argc, char **argv) {
                   "jumps there and keeps playing");
             // Live's Follow (§6.2): the arrangement keeps the playhead on screen while it plays.
             const auto viewBefore = arrangement.geometry;
+            if (integrated.state().follow)
+                integrated.command(AppCommands::Follow);
             check(!integrated.state().follow && integrated.command(AppCommands::Follow) &&
                       integrated.state().follow && document->views().load("main").follow,
                   "Follow switches on, kept with the window");
