@@ -1593,14 +1593,14 @@ std::int64_t AdiRootComponent::timelineTick() const noexcept {
     const double rate = sampleRate_ > 0 ? sampleRate_ : reader_->sampleRate();
     return tempo && rate > 0 ? tempo->secondsToTicks(static_cast<double>(position_) / rate) : 0;
 }
-bool AdiRootComponent::locate(std::int64_t tick) {
+bool AdiRootComponent::locate(std::int64_t tick, bool fromInsertMarker) {
     // Landing reads the current cell, not this window's presented frame.
     const auto current = view_.current();
     const double rate = mailbox_.sampleRate() > 0 ? mailbox_.sampleRate() : current->sampleRate;
     if (!current->tempo || !mailbox_.hasRoom())
         return false;
-    const bool posted = mailbox_.post(TransportMailbox::Command::Locate,
-                                      static_cast<std::int64_t>(current->tempo->ticksToSeconds(tick) * rate));
+    const auto command = fromInsertMarker ? TransportMailbox::Command::LocateMarker : TransportMailbox::Command::Locate;
+    const bool posted = mailbox_.post(command, static_cast<std::int64_t>(current->tempo->ticksToSeconds(tick) * rate));
     return posted;
 }
 bool AdiRootComponent::playFrom(std::int64_t tick) {
@@ -3317,8 +3317,7 @@ bool AdiRootComponent::toggleRecord() {
     return true;
 }
 ExportChoices AdiRootComponent::exportDefaults() const {
-    // Live renders the time selection, else the loop brace (manual 5.2.1); a project has a brace from New,
-    // so the whole song (its start to the end of its last clip or locator) is for a project without one.
+    // R36: without a time selection or an active loop, export covers the Arrangement.
     ExportChoices c;
     const auto &sel = arrangement.geometry.selection;
     const auto current = view_.current();
@@ -3326,8 +3325,8 @@ ExportChoices AdiRootComponent::exportDefaults() const {
         // A selection made right to left is the same range.
         c.startTicks = std::min(sel.start, sel.end);
         c.lengthTicks = std::max(sel.start, sel.end) - c.startTicks;
-    } else if (current && current->transport.loopEndTicks > current->transport.loopStartTicks) {
-        // The loop brace, whether the loop is switched on or not, as Live's.
+    } else if (current && current->transport.loopEnabled &&
+               current->transport.loopEndTicks > current->transport.loopStartTicks) {
         c.startTicks = current->transport.loopStartTicks;
         c.lengthTicks = current->transport.loopEndTicks - current->transport.loopStartTicks;
     } else {
@@ -3869,7 +3868,7 @@ void placeInsertMarker(ArrangementView &arrangement, std::int64_t tick) {
     sel.clip = 0;
     sel.pickedClips.clear();
     sel.marked = true;
-    arrangement.locate();
+    arrangement.root.locate(tick);
 }
 } // namespace
 bool AdiRootComponent::setPositionAt(const std::string &text) {
@@ -4137,7 +4136,8 @@ bool AdiRootComponent::command(int id) {
             return fail(result.error);
         if (fromMarker)
             locate(arrangement.geometry.selection.insert);
-        mailbox_.post(play ? TransportMailbox::Command::Play : TransportMailbox::Command::Stop);
+        using Command = TransportMailbox::Command;
+        mailbox_.post(!play ? Command::Stop : fromMarker ? Command::Play : Command::Continue);
         break;
     }
     case AppCommands::ArrangementRecord:

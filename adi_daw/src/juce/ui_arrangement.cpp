@@ -1415,7 +1415,7 @@ bool ArrangementView::command(int id) {
     case AppCommands::GoStart:
         geometry.selection.insert = 0;
         geometry.selection.marked = true;
-        locate();
+        root.locate(geometry.selection.insert);
         break;
     case AppCommands::InsertMarkerToPlayhead: {
         // Ctrl/Cmd+Shift+Space (§42.16): the insert marker, a point, where the playhead is;
@@ -1470,7 +1470,7 @@ bool ArrangementView::command(int id) {
     changed();
     return true;
 }
-void ArrangementView::locate() { root.locate(geometry.selection.insert); }
+void ArrangementView::locate() { root.locate(geometry.selection.insert, true); }
 void ArrangementView::select(int x, int y, bool snapToGrid, SelectionPurpose purpose) {
     if (const auto *t = geometry.trackAt(reader(), y)) {
         const auto at = geometry.tick(x);
@@ -1645,7 +1645,7 @@ juce::PopupMenu ArrangementView::headerMenu() {
 }
 void ArrangementView::contextMenu(juce::Point<int> where, bool header, const engine::AutomationLaneNode *lane) {
     if (onContextMenu) {
-        onContextMenu(header);
+        onContextMenu(where, header, lane);
         return;
     }
     contextMenuItems(header, lane).showMenuAsync(juce::PopupMenu::Options{}.withTargetScreenArea(
@@ -3149,7 +3149,6 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
     moving_ = resizing_ = 0;
     rangeDrag_.reset();
     copying_ = false;
-    bodySelectionOnDrag_ = false;
     keyResize_ = false; // a click ends a resize begun from the keyboard, as Esc does
     selectedFade_.reset(); // a click chooses a fade handle again, or nothing
     focusLost(focusChangedDirectly);
@@ -3272,15 +3271,13 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
             return;
         }
         using Purpose = ArrangementView::SelectionPurpose;
-        const auto purpose = bar != nullptr || kSelectClipFromBodyClick ? Purpose::Edit : Purpose::InsertMarker;
+        const auto purpose = bar != nullptr ? Purpose::Edit : Purpose::InsertMarker;
         view.select(e.x, e.y, view.snaps(e.mods), purpose);
         if (bar != nullptr && bar->id == view.geometry.selection.clip) {
             moving_ = bar->id;
             movingFrom_ = movingTo_ = bar->posTicks;
             movingSource_ = movingTrack_ = track;
             grabTicks_ = view.geometry.tick(e.x) - bar->posTicks;
-        } else {
-            bodySelectionOnDrag_ = view.geometry.selection.clip != 0;
         }
     }
 }
@@ -3470,14 +3467,6 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
         last = e.position;
     } else {
         auto &sel = view.geometry.selection;
-        if (bodySelectionOnDrag_) {
-            if (!e.mouseWasDraggedSinceMouseDown())
-                return;
-            // The body drag selects time from the press, leaving the clip itself unselected.
-            bodySelectionOnDrag_ = false;
-            sel.clip = 0;
-            sel.start = sel.insert;
-        }
         // Dragged across lanes, the selection reaches every track between (Live 12 manual 6.9); at
         // the lanes' edge they scroll, and it reaches on.
         if (e.mouseWasDraggedSinceMouseDown())
@@ -3539,11 +3528,21 @@ void ArrangementCanvas::mouseUp(const juce::MouseEvent &e) {
             sel.end = resizeStart_ + length;
         repaint();
     }
-    if (const auto drag = std::exchange(rangeDrag_, std::nullopt); drag && view.geometry.selection == drag->from) {
-        if (!e.mouseWasDraggedSinceMouseDown())
-            view.select(pressedAt_.x, pressedAt_.y, view.snaps(e.mods));
-        else if (drag->to != std::min(drag->from.start, drag->from.end) && moveTimeSelection(drag->to))
-            view.locate();
+    if (const auto drag = std::exchange(rangeDrag_, std::nullopt)) {
+        bool landed = false;
+        if (view.geometry.selection == drag->from) {
+            if (!e.mouseWasDraggedSinceMouseDown()) {
+                view.select(pressedAt_.x, pressedAt_.y, view.snaps(e.mods));
+                return;
+            }
+            landed = drag->to != std::min(drag->from.start, drag->from.end) && moveTimeSelection(drag->to);
+            if (landed)
+                view.locate();
+        }
+        view.changed(); // Clear the destination outline even if the range stayed where it was.
+        if (landed)
+            view.root.linkLoopToSelection();
+        return;
     }
     if (moving_ != 0 && !view.geometry.selection.pickedClips.empty()) {
         // Several selected clips: one drag moves them all by the same offset, one undo step; a

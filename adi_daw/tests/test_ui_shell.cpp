@@ -3532,6 +3532,16 @@ void splitAndRangeEdits(AppCommands &commands, settings::AppSettings &settings, 
     geo.grid.fixed = true;
     geo.grid.fixedQuarters = 1.;
     geo.grid.snap = true;
+    const juce::Point<float> body(static_cast<float>(geo.x(bar / 2)) + 1.f,
+                                 static_cast<float>(laneTop(root, 2) + 20));
+    canvas.mouseDown(pressAt(canvas, body));
+    canvas.mouseUp(pressAt(canvas, body));
+    check(sel.track == 2 && sel.marked && sel.insert == bar / 2 && sel.start == sel.end && sel.clip == 0,
+          "SC-175: a plain clip body click places only the insert marker");
+    const auto clipsBeforeDelete = clipsOf(2);
+    canvas.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey));
+    root.frame();
+    check(clipsOf(2) == clipsBeforeDelete, "SC-175: Delete after a body click does not remove the clip");
     const auto dragInsideClip = [&](std::int64_t track, std::int64_t from, std::int64_t to) {
         const auto y = static_cast<float>(laneTop(root, track) + 20);
         const juce::Point<float> press(static_cast<float>(geo.x(from)) + 1.f, y);
@@ -8450,7 +8460,7 @@ void rangeSelection(AppCommands &commands, const std::filesystem::path &dir) {
     {
         const auto pick = juce::ModifierKeys::commandModifier;
         auto clickClip = [&](std::int64_t track, juce::ModifierKeys mods = {}) {
-            const juce::Point<float> at(x(bar) + 10, lane(track));
+            const juce::Point<float> at(x(bar) + 10, static_cast<float>(laneTop(root, track) + 5));
             canvas.mouseDown(pressAt(canvas, at, mods));
             canvas.mouseUp(pressAt(canvas, at, mods));
         };
@@ -8691,7 +8701,7 @@ void rangeSelection(AppCommands &commands, const std::filesystem::path &dir) {
 
     // SC-174: opening a menu on selected material keeps the target of its commands.
     int laneMenus = 0, headerMenus = 0;
-    root.arrangement.onContextMenu = [&](bool header) {
+    root.arrangement.onContextMenu = [&](juce::Point<int>, bool header, const engine::AutomationLaneNode *) {
         if (header)
             ++headerMenus;
         else
@@ -8865,6 +8875,14 @@ void dragTimeSelection(AppCommands &commands, const std::filesystem::path &dir) 
               "drag across three lanes to select two bars with partial and whole clips");
     };
     selectRange();
+    const auto selection = geo.selection;
+    canvas.mouseDown(pressAt(canvas, title));
+    canvas.mouseDrag(dragAt(canvas, title, drop));
+    canvas.mouseDrag(dragAt(canvas, title, title));
+    canvas.mouseUp(dragAt(canvas, title, title));
+    check(geo.selection == selection && submitter.nextUndo()->txnId == before,
+          "dragging back to the original position leaves the time range selected without an edit");
+
     canvas.mouseDown(pressAt(canvas, title));
     canvas.mouseUp(pressAt(canvas, title));
     check(geo.selection.clip == 12 && geo.selection.toTrack == 0 && submitter.nextUndo()->txnId == before,
@@ -11860,6 +11878,31 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
             root.arrangement.geometry.scale = scale;
         }
     }
+    auto &lanes = root.arrangement;
+    auto &transport = document->session().transport();
+    const auto lanePress = [&](int x, int button) {
+        auto &canvas = lanes.canvas;
+        const juce::Point<int> at{x, laneTop(root, 4) + 12};
+        canvas.mouseDown(pressAt(canvas, at.toFloat(), juce::ModifierKeys(button)));
+        canvas.mouseUp(pressAt(canvas, at.toFloat()));
+    };
+    // The right press asks for the lanes' menu. It is counted here and not shown: a menu placed on the
+    // screen makes a window of its own, which a run with no display cannot have.
+    int laneMenus = 0;
+    lanes.onContextMenu = [&laneMenus](juce::Point<int>, bool, const engine::AutomationLaneNode *) { ++laneMenus; };
+    for (const int button : {juce::ModifierKeys::leftButtonModifier, juce::ModifierKeys::rightButtonModifier}) {
+        const auto insert = lanes.geometry.selection.insert;
+        const auto sample = transport.position();
+        const auto revision = transport.revision();
+        lanePress(button == juce::ModifierKeys::leftButtonModifier ? 140 : 210, button);
+        block();
+        frame();
+        check(lanes.geometry.selection.insert != insert && transport.position() == sample + io.frames &&
+                  transport.revision() == revision && document->recording(),
+              "SC-02: a lane press moves the insert marker without seeking or interrupting the take");
+    }
+    check(laneMenus == 1, "SC-02: the right press asks for the lanes' menu once");
+    lanes.onContextMenu = nullptr;
     check(root.command(AppCommands::ArrangementRecord), "F9's command again");
     frame();
     check(!root.arrangement.liveTake(), "stopped, the growing take goes");
@@ -11897,6 +11940,24 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     landed = document->takeLanded();
     check(landed && landed->ok && landed->clips.size() == 2, "the punched-in takes land");
     frame();
+    const auto stopped = transport.position();
+    lanePress(270, juce::ModifierKeys::leftButtonModifier);
+    block();
+    const auto marker = transport.position();
+    check(marker != stopped && !transport.playing(), "a stopped lane press still positions the playhead");
+    const juce::KeyPress resume(juce::KeyPress::spaceKey, juce::ModifierKeys::shiftModifier, 0);
+    check(root.keyPressed(resume), "Shift+Space invokes Continue");
+    block();
+    check(transport.playing() && transport.position() == stopped + io.frames,
+          "SC-03: Continue resumes at the driver's last stop position after a lane press");
+    check(root.command(AppCommands::Stop), "stop continued playback");
+    block();
+    check(root.keyPressed(juce::KeyPress(juce::KeyPress::spaceKey)), "Space invokes Play");
+    block();
+    check(transport.playing() && transport.position() == marker + io.frames,
+          "Space starts from the current insert marker");
+    check(root.command(AppCommands::Stop), "stop playback from the marker");
+    block();
     // A Count-In is playing for the window: Space during it stops, it does not start again.
     {
         OpRequest countIn;
@@ -11909,6 +11970,12 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
         block();
         check(document->mailbox().playing() && document->session().transport().countInRemaining() > 0,
               "during the Count-In the window reads the transport as playing");
+        const auto leadIn = transport.countInRemaining();
+        const auto sample = transport.position();
+        lanePress(340, juce::ModifierKeys::leftButtonModifier);
+        block();
+        check(transport.countInRemaining() == leadIn - io.frames && transport.position() == sample,
+              "SC-02: a lane press neither cancels nor relocates the Count-In");
         check(root.command(AppCommands::PlayStop) && !document->recording() && !document->mailbox().desiredPlaying(),
               "Space during the Count-In stops it and the recording [P:recording#29]");
         block();
@@ -11970,14 +12037,26 @@ void exportPage(AppCommands &commands, const std::filesystem::path &dir) {
           "outside the application it says where it runs");
     std::optional<ExportChoices> asked;
     root.exportAudio = [&](const ExportChoices &c) { asked = c; };
-    // With nothing selected: the loop brace, whether the loop is on or not (New's brace: four bars), Main,
-    // at the project's rate.
-    const auto &transport = root.reader().transport();
+    // R36: leave the loop off and place the insert marker beyond a song longer than its brace.
+    const auto songLength = 11 * textproj::kWhole;
+    OpRequest clip;
+    clip.opType = "clip.create";
+    clip.payload = {{"id", 20}, {"track", 2}, {"kind", "midi"}, {"pos", 0}, {"length", songLength}};
+    check(document->ops().submit(std::move(clip)).ok && document->synchronise(), "SC-394 fixture creates an eleven-bar song");
+    root.frame();
+    auto &selection = root.arrangement.geometry.selection;
+    selection.insert = selection.start = selection.end = 19 * textproj::kWhole;
+    selection.marked = true;
+    const auto transport = root.reader().transport();
     check(root.command(AppCommands::ExportAudio) && asked && !transport.loopEnabled &&
-              asked->startTicks == transport.loopStartTicks &&
-              asked->lengthTicks == transport.loopEndTicks - transport.loopStartTicks && asked->lengthTicks == 4 * textproj::kWhole &&
+              asked->startTicks == 0 && asked->lengthTicks == songLength &&
               asked->track == 0 && asked->sampleRate == root.reader().sampleRate(),
-          "the loop brace with the loop off, Main, at the project's rate");
+          "SC-394: with no range and looping off, export defaults to the whole song");
+    check(root.toggleLoop() && root.command(AppCommands::ExportAudio) &&
+              asked->startTicks == transport.loopStartTicks &&
+              asked->lengthTicks == transport.loopEndTicks - transport.loopStartTicks,
+          "SC-394: with looping on, export still defaults to the brace");
+    check(root.toggleLoop(), "SC-394 fixture turns looping off again");
     auto &sel = root.arrangement.geometry.selection;
     sel.start = 3840;
     sel.end = 3840 * 5;
@@ -17357,15 +17436,18 @@ int main(int argc, char **argv) {
             const auto origin =
                 peerRoot.getLocalPoint(&arrangement.canvas, juce::Point<int>{10, laneTop(integrated, 2) + 35})
                     .toFloat();
+            const auto title =
+                peerRoot.getLocalPoint(&arrangement.canvas, juce::Point<int>{10, laneTop(integrated, 2) + 5})
+                    .toFloat();
             juce::int64 when = 100000;
             auto mouse = [&](juce::Point<float> point, int mods) {
                 peer->handleMouseEvent(juce::MouseInputSource::InputSourceType::mouse, point,
                                        juce::ModifierKeys(mods), 1.f, 0.f, when += 100);
             };
             arrangement.geometry.selection.clip = 0;
-            mouse(origin, 0);
-            mouse(origin, juce::ModifierKeys::leftButtonModifier);
-            mouse(origin, 0);
+            mouse(title, 0);
+            mouse(title, juce::ModifierKeys::leftButtonModifier);
+            mouse(title, 0);
             check(arrangement.geometry.selection.clip == 1 && arrangement.geometry.selection.marked,
                   "peer dispatch hit-tests, selects the painted clip and places the marker");
             mouse(origin, juce::ModifierKeys::leftButtonModifier);

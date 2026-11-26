@@ -361,9 +361,6 @@ class ArrangementCanvas final : public juce::Component,
     // The drag holds Ctrl (Option on the Mac): released, it copies the clips instead of moving them.
     bool copying_ = false;
     bool contextMenuPress_ = false;
-    // ADR-0258 d12 switches a body click to the insert marker when reading R37 confirms it.
-    static constexpr bool kSelectClipFromBodyClick = true;
-    bool bodySelectionOnDrag_ = false;
     // The offset the drag gives every selected clip: the dragged clip's, stopped where the earliest
     // of them reaches the arrangement's start.
     std::int64_t movingDelta() const noexcept { return movingTo_ - movingFrom_; }
@@ -513,8 +510,10 @@ class ArrangementView final : public juce::Component {
     // The lanes' or a header's menu at `where`. `lane`: in Automation Mode, the envelope under the click, whose
     // Re-Enable Automation the lanes' menu ends with (AU-04).
     void contextMenu(juce::Point<int> where, bool header, const engine::AutomationLaneNode *lane = nullptr);
+    // A test replaces the menu: one placed by screen position makes a window of its own, which a run with
+    // no display cannot have (the headers' Solo has the same seam, `onMenu`).
+    std::function<void(juce::Point<int>, bool, const engine::AutomationLaneNode *)> onContextMenu;
     juce::PopupMenu contextMenuItems(bool header, const engine::AutomationLaneNode *lane = nullptr);
-    std::function<void(bool header)> onContextMenu; // peerless tests intercept delivery of a popup
     // In Automation Mode, the Volume lane of the track at `y` that the engine plays, else null; a pointer into
     // the root's current snapshot, for use at once.
     const engine::AutomationLaneNode *automationLaneAt(int y) const;
