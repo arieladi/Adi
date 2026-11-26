@@ -6,6 +6,21 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-26, afternoon — the director's note: a waveform while recording; view filters; the ninth pass asked
+
+The director brought a note of three items, drafted with an outside model. Win audited each against main, the decision log and the plan.
+
+- **No waveform while audio records: a gap, registered.** DF-E90 (engine-win: the recorder publishes min and max columns from its writer thread) and DF-W58 (the window draws them in the growing take). Live does it, so it is a parity fix inside the walked "record audio" step, not an addition. His go is asked (choice P).
+- **A track and group visibility filter with ad-hoc groups: already decided,** ADR-0112 d2 of 22 September (named view filters over tracks, applied to the timeline and the mixer, never changing routing). It is in FEATURES at P2 and the schema has `ui_view`. **No plan row owns it and nothing is built.** New in the note: a View Selected command, a banner while a filter is on, Clear Filter.
+- **Agent-driven filtering: decided too,** ADR-0112 d3 (a `view.*` op family). New in the note: clip-level predicates with highlight and dim, and no undo step.
+- **Asked of him:** plan rows for the view filters and their order (Q), clip highlight as a new addition (R), and the agent's rule for view ops (S). Nothing enters the plan before he answers.
+
+**The ninth pass.** Win asked walk-A directly for one whole pass on a clean build of main, with win's two fixes of #790 checked in the window. The hold ends when it is clean.
+
+**Next free:** DF-E91, DF-W59. The others are unchanged.
+
+---
+
 ## 2026-11-26, afternoon — the gemini seat's Release runs of main
 
 - **Mix View seat: DF-M79.** Under Clang 14 at `-O2` and `-O3`, `adi_mix_compressor_tests` fails "neutral path preserves signed zero and subnormal programme". The unity-gain bypass in `compressor/Core.cpp` is folded into a multiply, and with denormals flushed the smallest subnormal comes out as zero. Nothing is audible. The other 276 suites pass in that build.
