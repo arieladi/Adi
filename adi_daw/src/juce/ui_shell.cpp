@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_shell.hpp"
 #include "adi/edit_plan.hpp"
+#include "adi/media/media_ops.hpp"
 #include "ui_controls.hpp"
 #include "ui_floating.hpp"
 #include "adi/edit_plan.hpp"
@@ -4615,7 +4616,28 @@ juce::File projectsFolder(const settings::AppSettings &settings) {
     return directory;
 }
 juce::File nextUntitledProject(const settings::AppSettings &settings) {
-    return projectsFolder(settings).getNonexistentChildFile("Untitled", ".adi");
+    const auto parent = projectsFolder(settings);
+    for (int index = 1; ; ++index) {
+        const auto name = index == 1 ? juce::String("Untitled") : "Untitled(" + juce::String(index) + ")";
+        if (parent.getChildFile(name + ".adi").exists())
+            continue;
+        const auto directory = parent.getChildFile(name);
+        const auto path = media::pathFromUtf8(directory.getFullPathName().toStdString());
+        std::error_code error;
+        if (std::filesystem::create_directory(path, error))
+            return directory.getChildFile(name + ".adi");
+        if (error && error != std::errc::file_exists)
+            return {};
+    }
+}
+juce::File songProjectFile(const juce::File &file) {
+    const auto name = file.getFileNameWithoutExtension();
+    if (name.isEmpty() || name == "." || name == "..")
+        return {};
+    const auto parent = file.getParentDirectory();
+    if (parent == parent.getSiblingFile(name))
+        return file;
+    return parent.getChildFile(name).getChildFile(file.getFileName());
 }
 std::string displayAt(juce::Point<int> screen) {
     const auto *d = juce::Desktop::getInstance().getDisplays().getDisplayForPoint(screen.toFloat());

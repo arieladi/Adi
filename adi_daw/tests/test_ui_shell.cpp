@@ -15368,18 +15368,23 @@ void untitledProjects(const std::filesystem::path &dir) {
         return juce::File(juce::String::fromUTF8(reinterpret_cast<const char *>(p.u8string().c_str())));
     };
     settings::AppSettings fresh(appdata::App::Daw, dir / "untitled-settings.json");
-    check(nextUntitledProject(fresh) == file(dir / "projects" / "Untitled.adi") &&
-              std::filesystem::is_directory(dir / "projects"),
-          "with no projects folder chosen, the first untitled project is <config>/projects/Untitled.adi");
+    check(nextUntitledProject(fresh) == file(dir / "projects" / "Untitled" / "Untitled.adi") &&
+              std::filesystem::is_directory(dir / "projects" / "Untitled"),
+          "with no projects folder chosen, the first Untitled reserves its own project folder");
     const auto folder = dir / "untitled";
     std::string why;
     check(fresh.set("files.projectsFolder", folder.string(), {}, why), "the projects folder is chosen");
-    check(nextUntitledProject(fresh) == file(folder / "Untitled.adi") && std::filesystem::is_directory(folder),
-          "the chosen projects folder is made, and its first untitled project is Untitled.adi");
-    std::ofstream(folder / "Untitled.adi").put('x');
+    check(nextUntitledProject(fresh) == file(folder / "Untitled" / "Untitled.adi") &&
+              std::filesystem::is_directory(folder / "Untitled"),
+          "the chosen projects folder is made and its first Untitled has a separate directory");
     std::ofstream(folder / "Untitled(2).adi").put('x');
-    check(nextUntitledProject(fresh) == file(folder / "Untitled(3).adi"),
-          "beside Untitled.adi and Untitled(2).adi, the next untitled project is Untitled(3).adi");
+    check(nextUntitledProject(fresh) == file(folder / "Untitled(3)" / "Untitled(3).adi") &&
+              std::filesystem::is_directory(folder / "Untitled(3)"),
+          "the next Untitled skips both a reserved folder and an existing flat project");
+    const auto saved = folder / "Song v1.2" / "Song v1.2.adi";
+    check(songProjectFile(file(folder / "Song v1.2.adi")) == file(saved) &&
+              songProjectFile(file(saved)) == file(saved),
+          "Save As adds one same-named folder and preserves dots in the song name");
 }
 int main(int argc, char **argv) {
     // WTS-02: no dialog box on Windows; JUCE's assertions counted, the run failing on one.
