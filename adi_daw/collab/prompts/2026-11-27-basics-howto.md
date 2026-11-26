@@ -31,8 +31,13 @@ fix, not a new feature, so it is worked now.
    - the session suite: `ctest -L acceptance`;
    - if your session can drive the real window, do the gesture there, with `ADI_HOME` set to a folder
      of its own.
-5. One branch per item from origin/main, named `basics/<sc id>-<short name>`. Commit and push. **Open no
-   pull request:** the one macOS runner cannot carry one per fix. Win stacks the branches and lands them.
+5. One branch per item, named `basics/<sc id>-<short name>`. **Start your first from origin/main and each
+   later one from your own previous item's branch,** so that your items form a chain and never collide
+   with each other. (On 27 November four branches could not be stacked because a session had cut each
+   from main and changed the same functions twice in different ways.) Commit and push. **Open no pull
+   request:** the one macOS runner cannot carry one per fix. Win stacks the branches and lands them.
+   - If win's report says a branch of yours collides: merge the landing stack it names (`origin/land/...`)
+     into that branch, resolve it yourself, since you wrote both sides, run your tests and push.
 6. Add a line to your report and start the next item in the same turn.
 
 ## Your report
@@ -70,3 +75,11 @@ answer goes under "For the director" in the same file, with your recommendation;
 Your queue file names your second queue. After both, take the wave 2 rows of your queues in `docs/SANITY-CHECK.md`
 (round 2 added rows SC-120 onward, each with its queue), in their order. Stop only at your usage
 limit or a broken environment, and say which in your report.
+
+**One session per queue.** The director starts more sessions as he can, and a queue named as someone's
+second may by then have a session of its own.
+- When you start any queue, push its log branch (`basics/<queue>-log`) first, before the first item.
+- Before you start a second queue, fetch and look for that queue's log branch. If it exists, another
+  session has the queue: leave it, and take the wave 2 rows of your own first queue instead.
+- A queue with no file of its own (device, export) is every row of `docs/SANITY-CHECK.md` whose Queue
+  cell names it: wave 1 first, then 2, then 3.
