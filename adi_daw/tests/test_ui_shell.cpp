@@ -1539,8 +1539,9 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
     root.command(AppCommands::Undo);
     root.frame();
     check(meterOf(bar2).empty(), "undo: the inserted marker gone");
-    // Moved by the mouse, to the nearest grid line (a quarter at this zoom), or by the arrow keys
-    // (manual 6.5): one step each, the marker still selected.
+    // Move on a quarter grid by mouse or arrow keys (manual 6.5), one step each.
+    lanes.grid.fixed = true;
+    lanes.grid.fixedQuarters = 1.;
     const auto q = textproj::kPPQ, sevenEighths = 14 * q;
     const auto stepsBefore = submitter.nextUndo()->txnId;
     const juce::Point<float> grab{static_cast<float>(lanes.x(bar3)) + 6.f, 10.f};
@@ -5819,6 +5820,7 @@ void clipView(AppCommands &commands, const std::filesystem::path &dir, bool writ
     check(!editor.velocityArea().isEmpty() && editor.velocityArea().getY() == area.getBottom(),
           "the Velocity lane is under the key tracks");
 
+    check(panel.chooseGrid(15), "use a quarter grid for the Clip View layout reference");
     clipViewReference(panel, "clip-view-midi", write);
     if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
         juce::Image picture(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
@@ -5908,6 +5910,91 @@ void clipView(AppCommands &commands, const std::filesystem::path &dir, bool writ
     check(root.state().clipView && ViewStateStore(*store).load("clip-view").clipView, "the Clip View Selector opens it, and that is kept");
     check(root.command(AppCommands::ToggleClipView) && !root.state().clipView, "and the command hides it");
 }
+void adaptiveSubQuarterGrid(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "adaptive-grid.adi", true, {}, error);
+    check(document != nullptr, "a project for the adaptive grid");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "adaptive-grid");
+    root.setSize(1440, 900);
+    root.frame();
+    constexpr auto beat = textproj::kPPQ;
+    auto &arrangement = root.arrangement;
+    auto &geometry = arrangement.geometry;
+    auto &ruler = arrangement.ruler;
+    geometry.left = 0;
+    geometry.scale = 24;
+    check(geometry.gridQuarters() == 1., "the medium grid is a quarter at 24 px per quarter");
+    geometry.zoom(2., 0.);
+    check(geometry.gridQuarters() == .5 && geometry.nextGridLine(0, true) == beat / 2,
+          "zooming doubles the grid resolution to eighths");
+    geometry.scale = 256;
+    std::vector<std::pair<std::int64_t, std::optional<BarPosition>>> marks;
+    geometry.forEachRulerSubdivision(0, beat / 2, root.reader().meters(), [&](auto tick, auto label) {
+        marks.emplace_back(tick, label);
+    });
+    check(marks.size() == 4 && marks[0] == std::pair{beat / 8, std::optional<BarPosition>{}} &&
+              marks[1] == std::pair{beat / 4, std::optional{BarPosition{1, 1, 2}}},
+          "the ruler marks a thirty-second and labels the sixteenth as 1.1.2");
+    juce::Image image(juce::Image::ARGB, ruler.getWidth(), ruler.getHeight(), true, juce::SoftwareImageType{});
+    juce::Graphics graphics(image);
+    ruler.paint(graphics);
+    const auto tickInk = look::rulerLabel.interpolatedWith(look::band, .5f);
+    check(image.getPixelAt(32, ruler.getHeight() - 2) == tickInk &&
+              image.getPixelAt(64, ruler.getHeight() - 4) == tickInk,
+          "Arrangement paints the short thirty-second tick 32 px from the ruler origin");
+
+    check(root.insertMidiClips({2}, 0, 4 * beat) && root.showClipView(), "open a one-bar clip in the Note Editor");
+    root.resizeClipView(360);
+    root.frame();
+    auto &panel = root.clipView;
+    auto &editor = panel.notes;
+    if (panel.details() == nullptr)
+        return;
+    editor.time.left = 0;
+    editor.time.scale = 64;
+    check(!editor.time.grid.fixed && editor.gridTicks() == beat / 4 && panel.readings().grid == "1/16",
+          "the adaptive Note Editor has a sixteenth grid at 64 px per quarter");
+    const auto notes = editor.notesArea();
+    editor.mouseDoubleClick(pressAt(editor, {static_cast<float>(notes.getX() + 34),
+                                            static_cast<float>(notes.getY() + 3)}));
+    check(panel.details()->notes.size() == 1 && panel.details()->notes[0].startTicks == beat / 2 &&
+              panel.details()->notes[0].durationTicks == beat / 4,
+          "drawing at x34 snaps to x32 and inserts a 16 px sixteenth note");
+    if (panel.details()->notes.empty())
+        return;
+    check(editor.keyPressed(juce::KeyPress(juce::KeyPress::rightKey)) &&
+              panel.details()->notes[0].startTicks == 3 * beat / 4,
+          "Right moves the selected note 16 px by one sixteenth");
+    editor.time.zoom(2., 0.);
+    const auto command = juce::ModifierKeys::commandModifier;
+    check(panel.readings().grid == "1/32" && panel.quantizeGrid() == beat / 8 &&
+              editor.keyPressed(juce::KeyPress('e', command, 0)) && panel.details()->notes.size() == 2 &&
+              panel.details()->notes[0].durationTicks == beat / 8 && panel.details()->notes[1].durationTicks == beat / 8,
+          "one zoom lets Chop split the note into two thirty-seconds");
+#if JUCE_MAC
+    const juce::ModifierKeys bypass(juce::ModifierKeys::commandModifier);
+#else
+    const juce::ModifierKeys bypass(juce::ModifierKeys::altModifier);
+#endif
+    editor.mouseDoubleClick(pressAt(editor, {static_cast<float>(notes.getX() + 173),
+                                            static_cast<float>(notes.getY() + 3)}, bypass));
+    check(editor.keyPressed(juce::KeyPress('u', command, 0)) &&
+              std::any_of(panel.details()->notes.begin(), panel.details()->notes.end(),
+                          [](const auto &note) { return note.startTicks == 11 * beat / 8; }),
+          "Quantize moves a note drawn off-grid from x173 to the thirty-second at x176");
+
+    editor.time.zoom(2., 0.);
+    const auto noteRuler = editor.rulerArea();
+    juce::Image editorImage(juce::Image::ARGB, editor.getWidth(), editor.getHeight(), true, juce::SoftwareImageType{});
+    juce::Graphics editorGraphics(editorImage);
+    editor.paint(editorGraphics);
+    check(editorImage.getPixelAt(noteRuler.getX() + 32, noteRuler.getBottom() - 4) == look::rulerLabel &&
+              editorImage.getPixelAt(noteRuler.getX() + 64, noteRuler.getBottom() - 8) == look::rulerLabel,
+          "the Note Editor paints the first thirty-second's short tick and the sixteenth's label tick");
+}
 // The Clip View's editing (STEP-7-PLAN 7.7 step 3): a MIDI clip is made from the window (a double-click
 // on an empty MIDI lane, Insert Empty MIDI Clip(s) on a time selection), and its notes are added,
 // moved, resized, given velocities and deleted with the mouse and the keys, each gesture one undo
@@ -5991,7 +6078,8 @@ void clipViewNotes(AppCommands &commands, const std::filesystem::path &dir) {
     // Back on the first clip: its bar across the editor, a quarter-note grid, opened around middle C.
     canvas.mouseDoubleClick(pressAt(canvas, {x(2 * bar) + 30, lane(1)}));
     root.frame();
-    check(panel.clip() == clipId && ed.gridTicks() == beat, "the first clip again, on a quarter-note grid");
+    check(panel.clip() == clipId && panel.chooseGrid(15) && ed.gridTicks() == beat,
+          "the first clip again, with a fixed quarter-note grid for these editing gestures");
     const auto area = ed.notesArea();
     const int kh = ed.keys.keyHeight;
     const int step = static_cast<int>(std::lround(ed.time.scale)); // a quarter note, in pixels
@@ -6509,13 +6597,14 @@ void clipViewTools(AppCommands &commands, const std::filesystem::path &dir) {
         allStep = allStep && n.durationTicks == ed.gridTicks();
     check(allStep && undoIs("Set Length", 4), "Set Length, its Duration on Grid, makes the four notes a grid step long");
     ed.select({});
-    check(submitter.submit(op("note.insert", {{"clip", 11}, {"note", 30}, {"start", beat / 2}, {"dur", beat}, {"key", 60}}, "Add Note")).ok,
+    const auto overlapAt = ed.gridTicks() / 2;
+    check(submitter.submit(op("note.insert", {{"clip", 11}, {"note", 30}, {"start", overlapAt}, {"dur", beat}, {"key", 60}}, "Add Note")).ok,
           "a second C3 begins while the first still sounds");
     root.frame();
     panel.setToolsTab(2);
     click(panel.toolBox(Tool::OverlapsMono));
     panel.setToolsTab(0);
-    check(note(20).durationTicks == beat / 2 && undoIs("Delete Overlaps (Mono)", 1), "Overlaps Mono cuts the first C3 where the second begins");
+    check(note(20).durationTicks == overlapAt && undoIs("Delete Overlaps (Mono)", 1), "Overlaps Mono cuts the first C3 where the second begins");
 
     // ADI's Functions tab (ADR-0242 d1): the velocity functions, Delete Doubles and Restrict Polyphony.
     check(panel.toolsTab() == 0 && panel.toolBox(Tool::VelocityAdd).isEmpty() && !panel.toolBox(Tool::Invert).isEmpty(),
@@ -6730,6 +6819,7 @@ void clipViewMore(AppCommands &commands, const std::filesystem::path &dir) {
 
     // Draw Mode (B, or the header's switch): a stroke across empty space draws a note at each grid step on
     // the key it began on, one undo step; steps a note already fills are skipped; a click on a note deletes it.
+    check(panel.chooseGrid(15), "use beat-long steps for the Draw, Quantize and Chop gestures below");
     check(!ed.drawMode() && ed.keyPressed(juce::KeyPress('b')) && ed.drawMode() && !panel.drawBox().isEmpty(), "B turns Draw Mode on");
     const auto area = ed.notesArea();
     const auto xAt = [&](std::int64_t tick) { return static_cast<float>(area.getX() + static_cast<int>(ed.time.x(tick))); };
@@ -8750,7 +8840,7 @@ void clipViewMulti(AppCommands &commands, const std::filesystem::path &dir) {
     const auto mine = [&]() -> const engine::ClipNote & { return panel.details()->notes[0]; };
     const auto theirs = [&]() -> const engine::ClipNote & { return panel.others()[0].details.notes[0]; };
     const auto all = juce::KeyPress('a', juce::ModifierKeys::commandModifier, 0);
-    check(ed.gridTicks() == beat && ed.keyPressed(all) && ed.selected() == std::vector<std::uint64_t>{1} &&
+    check(panel.chooseGrid(15) && ed.gridTicks() == beat && ed.keyPressed(all) && ed.selected() == std::vector<std::uint64_t>{1} &&
               ed.selectedIn(12) == std::vector<std::uint64_t>{1} && ed.anySelected(),
           "Ctrl/Cmd+A selects the notes of both clips");
     const auto mineStart = mine().startTicks, theirStart = theirs().startTicks;
@@ -18366,7 +18456,7 @@ int main(int argc, char **argv) {
         {
             auto &lanes = lanesView.geometry;
             const auto ppq = textproj::kPPQ;
-            lanes.scale = 48;
+            lanes.scale = 24;
             check(lanes.grid == ArrangementGeometry::Grid{} && lanes.gridQuarters() == 1 &&
                       gridLabel(lanes.gridQuarters(), false) == "1/4" && lanes.snap(ppq * 3 / 2, false) == ppq &&
                       lanes.snap(ppq * 3 / 2, true) == 2 * ppq && lanesView.snaps(juce::ModifierKeys()),
@@ -18399,7 +18489,7 @@ int main(int argc, char **argv) {
                   "the spacing reads as Live's: bars, then fractions");
             // The lanes' menu names the widths (§6.10); the keys stay within them.
             lanes.grid = {};
-            lanes.scale = 48;
+            lanes.scale = 24;
             auto gridMenu = [&lanesView] {
                 juce::PopupMenu menu;
                 lanesView.addGridItems(menu);
@@ -19597,6 +19687,9 @@ int main(int argc, char **argv) {
             peerRoot.removeFromDesktop();
         }
         integrated.frame();
+        // Keep these layout references at a quarter grid. The adaptive grid has its own fixture.
+        arrangement.geometry.grid.fixed = true;
+        arrangement.geometry.grid.fixedQuarters = 1.;
         reference(integrated, "arrangement", write);
         // Step 7.4 (#203): the device strip, fed by one publication, in Live's shape.
         auto publication = std::make_shared<ParameterPublication>();
@@ -21127,6 +21220,7 @@ int main(int argc, char **argv) {
     trace("clipToTrack", [&] { clipToTrack(commands, temp.path()); });
     trace("clipCopyDrag", [&] { clipCopyDrag(commands, temp.path()); });
     trace("clipView", [&] { clipView(commands, temp.path(), write); });
+    trace("adaptiveSubQuarterGrid", [&] { adaptiveSubQuarterGrid(commands, temp.path()); });
     trace("clipViewNotes", [&] { clipViewNotes(commands, temp.path()); });
     trace("clipViewFields", [&] { clipViewFields(commands, temp.path()); });
     trace("clipViewTools", [&] { clipViewTools(commands, temp.path()); });

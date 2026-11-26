@@ -1939,12 +1939,13 @@ void TimelineRuler::paint(juce::Graphics &g) {
     // are 56 points apart; else every bar, every second, every fourth and so on.
     const auto &first = meterAt(from, meters);
     const double beatPx = 4. / std::max<double>(1, first.denominator) * geo.scale;
+    constexpr auto labelSpacing = ArrangementGeometry::kRulerLabelSpacing;
     std::int64_t beatStep = 1;
-    while (beatStep < first.numerator && static_cast<double>(beatStep) * beatPx < 56)
+    while (beatStep < first.numerator && static_cast<double>(beatStep) * beatPx < labelSpacing)
         beatStep *= 2;
     const bool beats = beatStep < first.numerator;
     std::int64_t barStep = 1;
-    while (static_cast<double>(barStep) * beatPx * first.numerator < 56)
+    while (static_cast<double>(barStep) * beatPx * first.numerator < labelSpacing)
         barStep *= 2;
     const int foot = getHeight();
     const auto ink = look::rulerLabel.interpolatedWith(look::band, .5f);
@@ -1982,6 +1983,12 @@ void TimelineRuler::paint(juce::Graphics &g) {
             label(beatX, juce::String(bar) + "." + juce::String(b + 1));
             tickMark(beatX, 5);
         }
+    });
+    geo.forEachRulerSubdivision(from, to, meters, [&](std::int64_t tick, const std::optional<BarPosition> &at) {
+        const int x = static_cast<int>(geo.x(tick));
+        if (at)
+            label(x, juce::String(at->bar) + "." + juce::String(at->beat) + "." + juce::String(at->sixteenth));
+        tickMark(x, at ? 5 : 3);
     });
 }
 void TimelineRuler::mouseDown(const juce::MouseEvent &e) {
