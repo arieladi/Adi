@@ -1223,15 +1223,18 @@ class AdiApplication final : public juce::JUCEApplication,
         window_->setName("ADI - " + file.getFileNameWithoutExtension());
         // Where it was when the application last stood (window.places, WIN-02), at first run centred; full
         // screen again once it shows, so JUCE keeps the rectangle it goes back to.
-        if (standingAt)
+        if (quitExportProbe_)
+            window_->setSize(1200, 720);
+        else if (standingAt)
             window_->setBounds(fromPlace(*standingAt));
         else
             fullScreen = restorePlace(*window_, *settings_, "main", 1200, 720);
-        window_->place.save = [this] {
-            std::string why;
-            if (window_ && !keepPlace(*window_, *settings_, "main", why))
-                report("The window's place was not kept: " + why);
-        };
+        if (!quitExportProbe_)
+            window_->place.save = [this] {
+                std::string why;
+                if (window_ && !keepPlace(*window_, *settings_, "main", why))
+                    report("The window's place was not kept: " + why);
+            };
         // The floating-window host, built before anything needs two windows (STEP-7-PLAN
         // 7.5). Its users arrive with the hosts' plug-in editors (collab/window.md, N8)
         // and the analyser device's big view (ADR-0183 d4).
