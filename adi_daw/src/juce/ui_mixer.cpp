@@ -1033,14 +1033,14 @@ juce::PopupMenu MixerStrip::audioInputMenu() {
     const auto *selected = resolveExternalAudioInput(choices, track->inputRef);
     const auto safe = SafePointer<MixerStrip>(this);
     for (const auto &input : choices) {
-        const bool active = &input == selected;
+        const bool inputSelected = &input == selected;
         juce::PopupMenu::Item item(juce::String::fromUTF8(input.label.c_str()));
-        item.setID(-1).setTicked(active).setAction([safe, id = track_, ref = input.ref] {
+        item.setID(-1).setTicked(inputSelected).setAction([safe, id = track_, ref = input.ref] {
             if (safe)
                 safe->panel_.root.setExternalAudioInput(id, ref);
         });
         if (panel_.root.externalInputMeter)
-            item.setCustomComponent(new InputMenuRow(input, panel_.root.externalInputMeter, active));
+            item.setCustomComponent(new InputMenuRow(input, panel_.root.externalInputMeter, inputSelected));
         menu.addItem(std::move(item));
     }
     if (choices.empty())
