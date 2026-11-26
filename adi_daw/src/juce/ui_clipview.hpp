@@ -51,9 +51,12 @@ class NoteEditor final : public juce::Component {
     void mouseDrag(const juce::MouseEvent &) override;
     void mouseUp(const juce::MouseEvent &) override;
     void mouseDoubleClick(const juce::MouseEvent &) override;
+    void focusLost(FocusChangeType) override;
     // Delete, the arrows (with Shift: an octave, or the length), Ctrl/Cmd+A, Esc, and 0 to
     // deactivate (manual 10.5).
     bool keyPressed(const juce::KeyPress &) override;
+    juce::TextButton &previewButton() noexcept { return preview_; }
+    bool keySounding(int key) const noexcept;
     static constexpr int kKeysWidth = 44, kRulerHeight = 18, kVelocityHeight = 56;
     // The lane's height (manual 10.1: the divider between the key tracks and the lanes drags to
     // resize them): never lower than its header needs, and it leaves the key tracks four rows.
@@ -302,6 +305,12 @@ class NoteEditor final : public juce::Component {
 
   private:
     enum class Drag { None, Move, Start, End, Velocity, Band, Draw, Shape, Trim, Handle, Ruler, LaneDraw, Zoom, Keys, Stretch, LaneSize };
+    juce::TextButton preview_{"Preview"};
+    std::array<std::uint64_t, 2> soundingKeys_{};
+    bool pianoPreviewHeld_ = false;
+    void audition(std::int64_t track, int key, int velocity = 100, bool held = false);
+    void auditionSelected();
+    void releasePianoPreview();
     int laneHeight_ = kVelocityHeight, laneFrom_ = 0;
     // A stretch held: which marker, the pair as it was and the place grabbed, where the marker is
     // now (all in the song's ticks), and the notes it carries.

@@ -171,6 +171,11 @@ public:
     /// head or tail -- a clip reader pushing into `inputFor`, or a device
     /// chain being registered. Same lifetime warning as `currentGraph`.
     [[nodiscard]] RealizedGraph* current() const noexcept { return live_; }
+    /// Owner-only metadata for the graph currently published, with the same lifetime as current().
+    [[nodiscard]] const GraphTransportState* currentTransportState() const noexcept {
+        const auto* snapshot = pub_.peek();
+        return snapshot ? snapshot->transportState() : nullptr;
+    }
 
     /// Applied to each graph as it is built. Kept on the host because it
     /// outlives any one graph (ADR-0088).

@@ -891,6 +891,16 @@ class AdiApplication final : public juce::JUCEApplication,
         // Arm, monitoring and Arrangement Record (MX-09): the session's rows, and the recorder.
         root->readRecordStates = [this] { return document_->recordStates(); };
         root->setRecordStates(document_->recordStates());
+        root->previewMidiNote = [this](std::int64_t track, int key, int velocity, bool held) {
+            return document_ && document_->session().previewMidiNote(track, key, velocity, held);
+        };
+        root->stopMidiPreview = [this] {
+            if (document_)
+                document_->session().stopMidiPreview();
+        };
+        root->midiKeysSounding = [this](std::int64_t track) {
+            return document_ ? document_->session().midiKeysSounding(track) : std::array<std::uint64_t, 2>{};
+        };
         root->startRecording = [this](std::int64_t insertTick, bool playing) {
             const auto *device = manager_.getCurrentAudioDevice();
             const int inputs = device != nullptr ? device->getActiveInputChannels().countNumberOfSetBits() : 0;

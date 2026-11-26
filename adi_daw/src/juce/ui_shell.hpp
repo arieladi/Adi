@@ -31,6 +31,7 @@
 #include "ui_mixview.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <juce_gui_extra/juce_gui_extra.h> // the Shortcuts page's key editor (WIN-04)
+#include <array>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -374,6 +375,9 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
         }
     }
     bool midiIn() const noexcept { return midiIn_; }
+    std::function<bool(std::int64_t, int, int, bool)> previewMidiNote;
+    std::function<void()> stopMidiPreview;
+    std::function<std::array<std::uint64_t, 2>(std::int64_t)> midiKeysSounding;
     double bpm() const noexcept;
     std::uint64_t generation() const noexcept { return generation_; }
     std::uint64_t projectViewGeneration() const noexcept { return view_.generation(); }

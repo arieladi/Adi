@@ -1227,6 +1227,7 @@ void Graph::release() {
             ++s.node->preparation_.revision;
             s.node->preparation_.ready = false;
             s.node->release();
+            s.node->heldNotes().clear();
         }
     prepared_ = false;
     ok_ = false;

@@ -356,6 +356,11 @@ public:
     bool startMidiInputCapture(std::span<const std::int64_t> tracks, std::string& error);
     [[nodiscard]] MidiInputCapture& midiInputCapture() noexcept { return *midiInputCapture_; }
 
+    // Owner only. Note Editor audition bypasses Track monitoring and capture.
+    bool previewMidiNote(std::int64_t track, int key, int velocity, bool held) noexcept;
+    void stopMidiPreview() noexcept;
+    [[nodiscard]] std::array<std::uint64_t, 2> midiKeysSounding(std::int64_t track) const noexcept;
+
     /// Owner only. Configures the next graph and rebuilds when loaded; the
     /// prior graph stays live on failure. Zero workers restores serial.
     bool setParallelRendering(std::uint32_t workers,std::int32_t minimumFrames,
@@ -520,6 +525,9 @@ private:
     std::unique_ptr<LiveMidiInput> midiInput_;
     std::unique_ptr<MidiInputCapture> midiInputCapture_;
     std::map<std::size_t, std::shared_ptr<LiveMidiInput::Voices>> midiInputVoices_;
+    // Device nodes persist across graph swaps and Undo. Their audition voices
+    // retain any pending releases even if the device temporarily leaves the graph.
+    std::map<const Node*, LiveMidiInput::PreviewVoice> midiPreviewVoices_;
     std::map<std::int64_t, std::array<std::int32_t, 2>> monitorInputs_;
     std::unique_ptr<AudioInputRecorder> recording_;
     std::string recordingProject_;
@@ -542,6 +550,7 @@ private:
         std::vector<rows::TimeSignature> signatures;
         std::vector<std::pair<std::int64_t, std::int64_t>> deviceClockChanges; ///< sample, tick
         std::vector<LiveMidiInput::Route> midiInputRoutes;
+        std::vector<LiveMidiInput::PreviewRoute> midiPreviewRoutes;
         std::shared_ptr<const StripLaneBindings> stripLanes;
         ClipPlayback::Readiness sourceReadiness;
         std::shared_ptr<InputMonitors> inputMonitors;
@@ -558,6 +567,9 @@ private:
         [[nodiscard]] Node* inputMonitorSource(std::int64_t track) const noexcept;
     };
     void prepareMidiInput(TimingView&, const rows::Model&);
+    void prepareMidiPreview(TimingView&, const rows::Model&);
+    [[nodiscard]] const LiveMidiInput::PreviewRoute* midiPreviewRoute(std::int64_t track) const noexcept;
+    void clearMidiPreviewDevice() noexcept;
     MainLoudness mainLoudness_;
     CueSettings cueSettings_;
     CueMonitor cueMonitor_;

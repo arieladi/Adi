@@ -5142,6 +5142,114 @@ void clipViewNotes(AppCommands &commands, const std::filesystem::path &dir) {
     root.frame();
     check(panel.details()->notes.size() == 1, "and Undo brings the note back into the view");
 }
+void clipViewNotePreview(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "clip-note-preview.adi", true, {}, error);
+    check(document != nullptr, "a project for Note Editor preview");
+    if (!document)
+        return;
+    struct Press {
+        std::int64_t track;
+        int key, velocity;
+        bool held;
+        bool operator==(const Press &) const = default;
+    };
+    std::vector<Press> heard;
+    std::array<std::uint64_t, 2> playing{};
+    int stops = 0;
+    std::int64_t maskTrack = 0;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "note-preview");
+    root.setSize(1400, 900);
+    root.previewMidiNote = [&](std::int64_t track, int key, int velocity, bool held) {
+        heard.push_back({track, key, velocity, held});
+        return true;
+    };
+    root.stopMidiPreview = [&] { ++stops; };
+    root.midiKeysSounding = [&](std::int64_t track) {
+        maskTrack = track;
+        return playing;
+    };
+    constexpr auto beat = textproj::kPPQ;
+    check(root.insertMidiClips({2}, 0, 4 * beat), "create a MIDI clip on an unarmed track for preview");
+    root.resizeClipView(360);
+    root.frame();
+    auto &panel = root.clipView;
+    auto &editor = panel.notes;
+    check(panel.midi() && editor.previewButton().getToggleState(), "the Preview switch above the unarmed track's piano is on");
+    if (!panel.midi())
+        return;
+    const auto area = editor.notesArea();
+    const auto point = [&](int key, float x) {
+        return juce::Point<float>{x, static_cast<float>(area.getY() + editor.keys.y(key).value_or(0) + editor.keys.keyHeight / 2)};
+    };
+    const auto xAt = [&](std::int64_t tick) {
+        return static_cast<float>(area.getX()) + static_cast<float>(editor.time.x(tick)) + 8.f;
+    };
+    const auto piano = point(60, 12.f);
+    const auto beforePiano = OpJournal(document->store()).headSeq();
+    editor.mouseDown(pressAt(editor, piano));
+    check(heard == std::vector<Press>{{2, 60, 100, true}} && stops == 0,
+          "a piano key starts a held note on the clip's track without arming the track");
+    editor.mouseUp(pressAt(editor, piano));
+    check(stops == 1 && OpJournal(document->store()).headSeq() == beforePiano,
+          "releasing the piano key stops the note without a project edit");
+
+    editor.mouseDoubleClick(pressAt(editor, point(64, xAt(beat))));
+    root.frame();
+    check(heard.size() == 2 && heard.back() == Press{2, 64, 100, false} && panel.details()->notes.size() == 1,
+          "adding a note sounds it and preserves the normal clip edit");
+    if (panel.details()->notes.empty())
+        return;
+    const auto box = editor.boxOf(panel.details()->notes.front());
+    if (!box)
+        return;
+    const auto from = point(64, static_cast<float>(box->x + box->width / 2));
+    const auto to = point(66, from.x);
+    editor.mouseDown(pressAt(editor, from));
+    check(heard.size() == 3 && heard.back() == Press{2, 64, 100, false}, "clicking the note sounds its original pitch");
+    editor.mouseDrag(dragAt(editor, from, to));
+    editor.mouseDrag(dragAt(editor, from, to));
+    check(heard.size() == 4 && heard.back() == Press{2, 66, 100, false}, "dragging to a new pitch sounds it once");
+    editor.mouseUp(pressAt(editor, to));
+    root.frame();
+    check(panel.details()->notes.front().key == 66, "preview does not change how the drag is committed");
+
+    editor.setDrawMode(true);
+    const auto draw = point(67, xAt(2 * beat));
+    editor.mouseDown(pressAt(editor, draw));
+    check(heard.size() == 5 && heard.back() == Press{2, 67, 100, false}, "Draw Mode sounds the new note at the start of a stroke");
+    editor.mouseUp(pressAt(editor, draw));
+    root.frame();
+    editor.setDrawMode(false);
+
+    editor.previewButton().onClick();
+    check(!editor.previewButton().getToggleState() && stops == 2, "turning Preview off releases any audition");
+    editor.mouseDown(pressAt(editor, piano));
+    editor.mouseUp(pressAt(editor, piano));
+    check(heard.size() == 5 && stops == 2, "the piano remains silent with Preview off");
+    playing = {std::uint64_t{1} << 60, std::uint64_t{1} << (66 - 64)};
+    allocations = 0;
+    audit = true;
+    root.frame();
+    audit = false;
+    check(allocations == 0 && maskTrack == 2 && editor.keySounding(60) && editor.keySounding(66) && !editor.keySounding(65),
+          "the frame borrows both halves of the track's sounding-note mask without allocating, even with Preview off");
+    juce::Image image(juce::Image::ARGB, editor.getWidth(), editor.getHeight(), true, juce::SoftwareImageType{});
+    {
+        juce::Graphics graphics(image);
+        editor.paintEntireComponent(graphics, true);
+    }
+    check(image.getPixelAt(12, static_cast<int>(point(66, 12.f).y)) == look::accent,
+          "a sounding pitch paints its piano key in the active colour");
+    playing = {};
+    root.frame();
+    check(!editor.keySounding(60) && !editor.keySounding(66), "released notes clear their piano keys");
+    check(root.insertMidiClips({3}, 5 * beat, 9 * beat), "open another MIDI clip in the same Set");
+    root.frame();
+    check(panel.details() != nullptr && panel.details()->trackId == 3 && maskTrack == 3 && !editor.previewButton().getToggleState(),
+          "the same Preview switch applies across clips, and playback lights follow the new track");
+}
 // The Clip View's Main panel (worklist G2; manual 8.2): Start, End, the Loop switch, the loop's Position
 // and Length and the clip's Signature act, typed, dragged or through Live's Set buttons, each one of
 // the clip's own ops and one undo step; what the engine would refuse is refused with a reason; the
@@ -18772,6 +18880,7 @@ int main(int argc, char **argv) {
     trace("clipCopyDrag", [&] { clipCopyDrag(commands, temp.path()); });
     trace("clipView", [&] { clipView(commands, temp.path(), write); });
     trace("clipViewNotes", [&] { clipViewNotes(commands, temp.path()); });
+    trace("clipViewNotePreview", [&] { clipViewNotePreview(commands, temp.path()); });
     trace("clipViewFields", [&] { clipViewFields(commands, temp.path()); });
     trace("clipViewTools", [&] { clipViewTools(commands, temp.path()); });
     trace("clipViewMore", [&] { clipViewMore(commands, temp.path()); });

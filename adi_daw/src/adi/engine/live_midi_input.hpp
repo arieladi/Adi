@@ -37,11 +37,28 @@ public:
         bool processes = false;
         mutable NodeId slot = kInvalidNode;
     };
+    struct PreviewVoice {
+        Event off;
+        std::int64_t track = 0;
+        std::uint64_t epoch = 0, earliestRelease = 0, releaseAt = 0;
+    };
+    struct PreviewRoute {
+        const Node* node = nullptr;
+        PreviewVoice* voice = nullptr;
+        std::int64_t track = 0;
+        mutable NodeId slot = kInvalidNode;
+    };
 
     bool push(std::int64_t sample, const Event&) noexcept;
     void reset() noexcept;
     void render(const GraphHost::RenderBlock&, const AudioIo&, std::span<const Route>,
                 const Transport&, MidiInputCapture*) noexcept;
+    // A separate owner-to-driver queue keeps audition out of Track input and recording.
+    bool preview(const PreviewRoute&, int key, int velocity, bool held) noexcept;
+    void stopPreview() noexcept;
+    void clearPreviewDevice() noexcept; // owner, driver quiescent
+    void renderPreview(const GraphHost::RenderBlock&, std::int32_t frames,
+                       std::span<const PreviewRoute>, double sampleRate) noexcept;
 
 private:
     struct Timed {
@@ -56,6 +73,21 @@ private:
     std::uint64_t renderedEpoch_ = 1;
     std::uint64_t generation_ = 0;
     std::uint64_t voiceSerial_ = 0;
+
+    struct PreviewCommand {
+        const Node* node = nullptr; // null is a release request
+        std::int64_t track = 0;
+        std::uint64_t epoch = 0;
+        int key = 0, velocity = 0;
+        bool held = false;
+    };
+    bool pushPreview(PreviewCommand) noexcept;
+    static constexpr std::size_t previewCapacity = 128;
+    std::array<PreviewCommand, previewCapacity> previewRing_{};
+    std::atomic<std::size_t> previewRead_{0}, previewWritten_{0};
+    std::atomic<std::uint64_t> previewEpoch_{1};
+    std::uint64_t previewGeneration_ = 0, previewClock_ = 0;
+    PreviewVoice* activePreview_ = nullptr;
 
     void deliver(const GraphHost::RenderBlock&, const Route&, const Event&) noexcept;
     static void release(const GraphHost::RenderBlock&, const Route&) noexcept;

@@ -989,6 +989,28 @@ void Session::prepareMidiInput(TimingView& timing, const rows::Model& model) {
         timing.midiInputRoutes.push_back({&node, voices->second, target == armed.end() ? 0 : target->second,
                                           node.eventFlow() == EventFlow::Consume});
     }
+    prepareMidiPreview(timing, model);
+}
+
+void Session::prepareMidiPreview(TimingView& timing, const rows::Model& model) {
+    std::map<const Node*, std::int64_t> targets;
+    for (const auto& track : model.tracks) {
+        if ((track.kind != "midi" && track.kind != "instrument" && track.kind != "audio") ||
+            track.frozen || frozenGroupChildren_.contains(track.id))
+            continue;
+        for (const auto* node : chainFor(track.id)) {
+            if (node->eventFlow() != EventFlow::Consume)
+                continue;
+            targets.emplace(node, track.id);
+            midiPreviewVoices_.try_emplace(node);
+            break;
+        }
+    }
+    timing.midiPreviewRoutes.reserve(midiPreviewVoices_.size());
+    for (auto& [node, voice] : midiPreviewVoices_) {
+        const auto target = targets.find(node);
+        timing.midiPreviewRoutes.push_back({node, &voice, target == targets.end() ? 0 : target->second});
+    }
 }
 
 bool Session::rebuild() {
@@ -2060,6 +2082,7 @@ bool Session::prepareFormat(double sampleRate, std::int32_t maxFrames, bool work
         recording_->stop();
         midiInputCapture_->deviceStopped();
         resetMidiInput();
+        clearMidiPreviewDevice();
         if (transport_.countInRemaining() > 0)
             transport_.play(false);
     }
@@ -2461,6 +2484,7 @@ bool Session::RenderBlock::process(const AudioIo& io) noexcept {
         auto* capture = timing->spec.performanceState && !timing->spec.exporting
             ? session_.midiInputCapture_.get() : nullptr;
         session_.midiInput_->render(graph_, io, timing->midiInputRoutes, session_.transport_, capture);
+        session_.midiInput_->renderPreview(graph_, io.frames, timing->midiPreviewRoutes, timing->sampleRate);
     }
     auto* inputMonitors = timing ? timing->inputMonitors.get() : nullptr;
     if (inputMonitors) {
@@ -2514,6 +2538,37 @@ bool Session::enqueueMidiInput(std::int64_t sample, const Event& event) noexcept
 void Session::resetMidiInput() noexcept {
     midiInput_->reset();
 }
+
+const LiveMidiInput::PreviewRoute* Session::midiPreviewRoute(std::int64_t track) const noexcept {
+    const auto* timing = dynamic_cast<const TimingView*>(graph_.currentTransportState());
+    if (!live_ || !timing || track <= 0)
+        return nullptr;
+    for (const auto& route : timing->midiPreviewRoutes)
+        if (route.track == track)
+            return &route;
+    return nullptr;
+}
+
+bool Session::previewMidiNote(std::int64_t track, int key, int velocity, bool held) noexcept {
+    const auto* route = midiPreviewRoute(track);
+    return route && midiInput_->preview(*route, key, velocity, held);
+}
+
+void Session::stopMidiPreview() noexcept { midiInput_->stopPreview(); }
+
+std::array<std::uint64_t, 2> Session::midiKeysSounding(std::int64_t track) const noexcept {
+    const auto* route = midiPreviewRoute(track);
+    return route ? route->node->heldNotes().keyMask() : std::array<std::uint64_t, 2>{};
+}
+
+void Session::clearMidiPreviewDevice() noexcept {
+    midiInput_->clearPreviewDevice();
+    for (auto& [node, voice] : midiPreviewVoices_) {
+        (void)node;
+        voice = {};
+    }
+}
+
 bool Session::startMidiInputCapture(std::span<const std::int64_t> tracks, std::string& error) {
     if (!loaded_ || !spec_.performanceState || spec_.exporting || tracks.empty() || tracks.size() > 256) {
         error = "MIDI capture needs a live project and between 1 and 256 armed tracks";
@@ -2643,6 +2698,7 @@ void Session::release() {
     recording_->stop();
     midiInputCapture_->deviceStopped();
     resetMidiInput();
+    clearMidiPreviewDevice();
     // A device stop cancels a pending lead-in, as a format change does in
     // prepare(): the recorder it was counting in for has just stopped, so a
     // same-format restart must not resume clicking and then start the
