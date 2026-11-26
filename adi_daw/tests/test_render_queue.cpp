@@ -255,13 +255,41 @@ void cancellationAndFailures() {
     check(failed.state==JobState::Failed && failed.error=="fixture failure" && !fs::exists(j.directory/"callback-failure.wav") && f.noStage(),
           "callback failure produces no partial published output");
     f.effect();
-    j.nameTemplate="missing";
-    check(renderMasterWav(j,{}).state==JobState::Failed,"missing plugin fails rather than exporting a placeholder");
     for (const double gain : {std::numeric_limits<double>::infinity(),1e100}) {
         j.nameTemplate="nonfinite"; j.session.precision=Precision::Float64;
         const auto bad=renderMasterWav(j,[gain](const DeviceRequest&,std::string&) {auto d=std::make_unique<Delay>(); d->gain=gain; return d;});
         check(bad.state==JobState::Failed && !fs::exists(j.directory/"nonfinite.wav") && f.noStage(),"nonfinite and finite-double overflow cannot reach Float32 files");
     }
+}
+void missingSources() {
+    Fixture f;
+    f.parallel();
+    f.store->db().exec("INSERT INTO media_files(id,hash_blake3,rel_path,format) VALUES(2,'lost','lost.wav','wav');"
+        "UPDATE audio_clips SET media_id=2 WHERE clip_id=2;");
+    const auto missingFile=renderWav(f.job("missing-file"),{});
+    check(matches(read(missingFile,866),137) && missingFile.mediaVerification &&
+          missingFile.mediaVerification->identities.size()==1 &&
+          missingFile.mediaVerification->publicationVerified,
+          "missing clip media renders silence while the remaining source is verified");
+
+    f.effect();
+    f.store->db().exec("INSERT INTO plugin_params(device_id,param_id,name,normalized_value) VALUES(1,'7','Mix',0.5);"
+        "INSERT INTO automation_lanes(id,owner_kind,owner_id,param_ref,time_base,value_domain) "
+        "VALUES(1,'device',1,'7',1,'normalized');");
+    const auto missingPlugin=renderWav(f.job("missing-file-and-plugin"),{});
+    check(matches(read(missingPlugin,866),137) && f.noStage(),
+          "an unavailable audio effect with automation is bypassed as it is during playback");
+
+    auto stem=f.job("missing-file-stem"); stem.source.trackId=2;
+    const auto samples=read(renderWav(stem,{}),866);
+    check(!samples.empty() && std::all_of(samples.begin(),samples.end(),[](float value){return value==0;}),
+          "a stem whose only clip lost its file contains silence");
+
+    f.store->db().exec("UPDATE audio_clips SET reverse=1 WHERE clip_id=1;");
+    const auto unsupported=renderWav(f.job("unsupported"),{});
+    check(unsupported.state==JobState::Failed && unsupported.error.find("reverse unsupported")!=std::string::npos &&
+          !fs::exists(unsupported.output) && f.noStage(),
+          "other unresolved playback problems still stop export");
 }
 void queueEdits() {
     Fixture f;
@@ -1549,7 +1577,7 @@ void mediaIdentities() {
 }
 } // namespace
 int main() {
-    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); hostOwnerLifecycle(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); mediaIdentities();}
+    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); missingSources(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); hostOwnerLifecycle(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); mediaIdentities();}
     catch(const std::exception& e) {check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures ? "FAIL" : "PASS",checks,failures);
     return failures ? 1 : 0;

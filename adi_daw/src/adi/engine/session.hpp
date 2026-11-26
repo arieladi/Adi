@@ -408,6 +408,9 @@ public:
     [[nodiscard]] const std::vector<std::string>& problems() const noexcept {
         return problems_;
     }
+    /// Problems that still invalidate a render when missing clips play
+    /// silently and unavailable plug-ins are bypassed as in live playback.
+    [[nodiscard]] std::vector<std::string> exportBlockingProblems();
 
     /// ADR-0174: the group summing this graph plays. Message thread.
     [[nodiscard]] const GroupSumming& summing() const noexcept { return summing_; }
@@ -620,6 +623,7 @@ private:
     // each device's node before the graph that plays them is published.
     std::shared_ptr<DeviceAutomationBinding> deviceAutomation_;
     std::vector<std::string> deviceSourceProblems_;
+    std::vector<std::string> placeholderAutomationProblems_;
     void bindDeviceSources();
     std::set<std::int64_t> overridden_;   ///< ADR-0162: lane ids
     std::set<std::int64_t> writingAutomation_;
@@ -632,6 +636,7 @@ private:
     AppliedSource appliedSource_;
     void observeKeyRoutes();
     void refreshProblems();
+    [[nodiscard]] std::vector<std::string> collectProblems(bool includeUnavailable);
     std::uint64_t appliedSequence_ = 0;
     std::shared_ptr<const void> lifetime_ = std::make_shared<const int>(0);
     std::shared_ptr<SessionEndpoint> endpoint_;
@@ -656,6 +661,7 @@ private:
     std::unordered_map<std::int64_t, std::size_t> byId_;   ///< device id -> entries_
     std::vector<std::string> problems_;
     std::vector<std::string> sessionProblems_;   ///< ours, re-appended after each read
+    std::vector<std::string> placeholderProblems_;
     std::string error_;
     std::atomic<bool> playbackRunning_{false}; // driver sample; owner never reads Transport
     bool loaded_ = false;

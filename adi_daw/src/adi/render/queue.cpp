@@ -486,9 +486,10 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
                 if (!session.load(*store, std::move(loader), renderSpec))
                     throw std::runtime_error(session.error());
             });
-            if (session.stats().placeholders || session.stats().skipped || !session.problems().empty()) {
-                std::string why = "export requires a fully resolved project";
-                for (const auto& problem : session.problems()) why += "; " + problem;
+            const auto blockingProblems = session.exportBlockingProblems();
+            if (session.stats().skipped || !blockingProblems.empty()) {
+                std::string why = "Some parts of this song cannot be exported";
+                for (const auto& problem : blockingProblems) why += "\n" + problem;
                 throw std::runtime_error(why);
             }
             names.project = store->db().execAndGet("SELECT name FROM project WHERE id=1").getString();
