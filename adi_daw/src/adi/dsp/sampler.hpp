@@ -21,8 +21,7 @@ class Sampler final : public DeviceInstance {
     // filled slot is a zone over every key and velocity until publishSlotZones
     // gives it another shape; filling one slot never cuts another's voices.
     static constexpr std::size_t kSlots = 32;
-    /// The most events one block brings a layer: OneShotPdMidi's capacity,
-    /// which feeds the hosted Sampler (test_builtin_devices checks it).
+    /// Minimum layer capacity, also covering legacy Pd MIDI-sized blocks.
     static constexpr std::size_t kEventCapacity = 512;
     struct SlotSample {
         const OneShot::PreparedSample *sample = nullptr;
@@ -83,6 +82,7 @@ class Sampler final : public DeviceInstance {
     void playLayer(const engine::NodeIo &, OneShot &, const Zone &,
                    const std::array<double, OneShot::Count> &initial,
                    const OneShot::PreparedSample *, std::uint64_t generation, bool slot) noexcept;
+    void rememberEvents(engine::EventSpan) noexcept;
     std::array<std::unique_ptr<OneShot>, kSlots> slotEngines_{};
     engine::SnapshotPublisher<SlotZones> slotZones_;
     std::uint64_t slotZonesSeen_ = 0;              // audio thread
@@ -93,6 +93,7 @@ class Sampler final : public DeviceInstance {
     std::vector<std::uint32_t> destinations_;
     std::array<std::atomic<double>, OneShot::Count> values_{};
     std::array<double, OneShot::Count> modulation_{};
+    OneShot::MidiChannels midiChannels_{};
     engine::SnapshotPublisher<Bank> publisher_;
     Bank *messageBank_ = nullptr; // publisher owns it; message thread only
     std::vector<engine::Event> events_;

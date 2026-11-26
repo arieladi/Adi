@@ -90,7 +90,10 @@ class OneShot final : public DeviceInstance {
     // clears them and plays silence. Empty replacements still need a new seq.
     void processPrepared(const engine::NodeIo&, const PreparedSample*,
                          std::uint64_t generation) noexcept;
-    void resetVoices() noexcept { voices_ = {}; }
+    void resetVoices() noexcept {
+        voices_ = {};
+        noteGainHead_ = noteGainCount_ = 0;
+    }
     /// Audio thread: whether any voice sounds. A OneShot with none, given no
     /// note-on, plays exact silence (each voice's filter is its own: no tail).
     [[nodiscard]] bool sounding() const noexcept {
@@ -126,6 +129,17 @@ class OneShot final : public DeviceInstance {
     void setRootKey(int key) noexcept { rootKey_ = std::clamp(key, 0, 127); }
     bool loadSample(const std::filesystem::path &, std::string &error);
 
+    // Sampler gives each layer the same channel state at the start of a block,
+    // including controls played before the layer had a sample.
+    struct MidiChannel {
+        double bend = 0;
+        double modulation = 1; // Keep the authored depth until CC1 arrives.
+        bool sustain = false;
+    };
+    using MidiChannels = std::array<MidiChannel, 16>;
+    static void rememberMidiControl(MidiChannels &, const engine::Event &) noexcept;
+    void setMidiChannels(const MidiChannels &channels) noexcept { midiChannels_ = channels; }
+
   private:
     using Sample = PreparedSample;
     struct Publication : engine::Sequenced {
@@ -136,9 +150,10 @@ class OneShot final : public DeviceInstance {
         double run(double x, double g, double r, double d, int type) noexcept;
     };
     struct Voice {
-        bool active = false, held = false;
+        bool active = false, held = false, sustained = false;
         std::uint64_t id = 0, age = 0;
         int key = 60, stage = 0;
+        std::uint8_t channel = 0;
         double position = 0, begin = 0, end = 0, loop = 0, env = 0, releaseStep = 0, velocity = 1,
                phase = 0, random = 0, tuning = 0, gain = 1;
         std::uint32_t rng = 1;
@@ -154,6 +169,7 @@ class OneShot final : public DeviceInstance {
     static bool slice(int key, const Sample &s, const std::array<double, Count> &p, double &begin,
                       double &end) noexcept;
     void noteOn(const engine::Event &, const Sample &, const std::array<double, Count> &) noexcept;
+    void releaseVoice(Voice &, const std::array<double, Count> &) noexcept;
     double read(const Sample &, double, int) const noexcept;
     void readBoth(const Sample &, double position, double *x) const noexcept;
     void processSample(const engine::NodeIo&, const Sample*, std::uint64_t,
@@ -161,6 +177,7 @@ class OneShot final : public DeviceInstance {
     std::array<ParamDescriptor, Count> params_;
     std::array<std::atomic<double>, Count> values_{};
     std::array<Voice, 32> voices_{};
+    MidiChannels midiChannels_{};
     std::array<double, Count> modulation_{};
     engine::SnapshotPublisher<Publication> publisher_;
     std::shared_ptr<const Sample> sample_; // message thread only, including saveState
