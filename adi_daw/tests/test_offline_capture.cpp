@@ -10,16 +10,22 @@ namespace {
 bool counting=false;
 int allocations=0;
 }
-void* operator new(std::size_t bytes) {
+#if defined(__GNUC__) && !defined(__clang__)
+#define ADI_TEST_NOINLINE __attribute__((noinline))
+#else
+#define ADI_TEST_NOINLINE
+#endif
+ADI_TEST_NOINLINE void* operator new(std::size_t bytes) {
     if(counting) ++allocations;
     if(void* p=std::malloc(bytes ? bytes : 1)) return p;
     throw std::bad_alloc();
 }
-void* operator new[](std::size_t bytes) {return ::operator new(bytes);}
-void operator delete(void* p) noexcept {std::free(p);}
-void operator delete[](void* p) noexcept {std::free(p);}
-void operator delete(void* p,std::size_t) noexcept {std::free(p);}
-void operator delete[](void* p,std::size_t) noexcept {std::free(p);}
+ADI_TEST_NOINLINE void* operator new[](std::size_t bytes) {return ::operator new(bytes);}
+ADI_TEST_NOINLINE void operator delete(void* p) noexcept {std::free(p);}
+ADI_TEST_NOINLINE void operator delete[](void* p) noexcept {std::free(p);}
+ADI_TEST_NOINLINE void operator delete(void* p,std::size_t) noexcept {std::free(p);}
+ADI_TEST_NOINLINE void operator delete[](void* p,std::size_t) noexcept {std::free(p);}
+#undef ADI_TEST_NOINLINE
 
 namespace {
 using namespace adi::engine;

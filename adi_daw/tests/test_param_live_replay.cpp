@@ -35,26 +35,31 @@
 #endif
 
 namespace { std::atomic<unsigned> callbackAllocations{0}; }
-void* operator new(std::size_t n) {
+#if defined(__GNUC__) && !defined(__clang__)
+#define ADI_TEST_NOINLINE __attribute__((noinline))
+#else
+#define ADI_TEST_NOINLINE
+#endif
+ADI_TEST_NOINLINE void* operator new(std::size_t n) {
     if (adi::audio::onAudioThread) ++callbackAllocations;
     if (auto* pointer = std::malloc(n ? n : 1)) return pointer;
     throw std::bad_alloc();
 }
-void* operator new[](std::size_t n) { return operator new(n); }
-void* operator new(std::size_t n, const std::nothrow_t&) noexcept {
+ADI_TEST_NOINLINE void* operator new[](std::size_t n) { return operator new(n); }
+ADI_TEST_NOINLINE void* operator new(std::size_t n, const std::nothrow_t&) noexcept {
     try { return operator new(n); } catch (...) { return nullptr; }
 }
-void* operator new[](std::size_t n, const std::nothrow_t&) noexcept {
+ADI_TEST_NOINLINE void* operator new[](std::size_t n, const std::nothrow_t&) noexcept {
     try { return operator new[](n); } catch (...) { return nullptr; }
 }
-void operator delete(void* pointer) noexcept { std::free(pointer); }
-void operator delete[](void* pointer) noexcept { std::free(pointer); }
-void operator delete(void* pointer, std::size_t) noexcept { std::free(pointer); }
-void operator delete[](void* pointer, std::size_t) noexcept { std::free(pointer); }
-void operator delete(void* pointer, const std::nothrow_t&) noexcept { std::free(pointer); }
-void operator delete[](void* pointer, const std::nothrow_t&) noexcept { std::free(pointer); }
+ADI_TEST_NOINLINE void operator delete(void* pointer) noexcept { std::free(pointer); }
+ADI_TEST_NOINLINE void operator delete[](void* pointer) noexcept { std::free(pointer); }
+ADI_TEST_NOINLINE void operator delete(void* pointer, std::size_t) noexcept { std::free(pointer); }
+ADI_TEST_NOINLINE void operator delete[](void* pointer, std::size_t) noexcept { std::free(pointer); }
+ADI_TEST_NOINLINE void operator delete(void* pointer, const std::nothrow_t&) noexcept { std::free(pointer); }
+ADI_TEST_NOINLINE void operator delete[](void* pointer, const std::nothrow_t&) noexcept { std::free(pointer); }
 
-void* operator new(std::size_t n, std::align_val_t alignment) {
+ADI_TEST_NOINLINE void* operator new(std::size_t n, std::align_val_t alignment) {
     if (adi::audio::onAudioThread) ++callbackAllocations;
     const auto boundary = static_cast<std::size_t>(alignment);
     const auto bytes = n ? n : 1;
@@ -67,25 +72,26 @@ void* operator new(std::size_t n, std::align_val_t alignment) {
 #endif
     throw std::bad_alloc();
 }
-void* operator new[](std::size_t n, std::align_val_t alignment) { return operator new(n, alignment); }
-void* operator new(std::size_t n, std::align_val_t alignment, const std::nothrow_t&) noexcept {
+ADI_TEST_NOINLINE void* operator new[](std::size_t n, std::align_val_t alignment) { return operator new(n, alignment); }
+ADI_TEST_NOINLINE void* operator new(std::size_t n, std::align_val_t alignment, const std::nothrow_t&) noexcept {
     try { return operator new(n, alignment); } catch (...) { return nullptr; }
 }
-void* operator new[](std::size_t n, std::align_val_t alignment, const std::nothrow_t&) noexcept {
+ADI_TEST_NOINLINE void* operator new[](std::size_t n, std::align_val_t alignment, const std::nothrow_t&) noexcept {
     try { return operator new[](n, alignment); } catch (...) { return nullptr; }
 }
-void operator delete(void* pointer, std::align_val_t) noexcept {
+ADI_TEST_NOINLINE void operator delete(void* pointer, std::align_val_t) noexcept {
 #if defined(_MSC_VER)
     _aligned_free(pointer);
 #else
     std::free(pointer);
 #endif
 }
-void operator delete[](void* pointer, std::align_val_t alignment) noexcept { operator delete(pointer, alignment); }
-void operator delete(void* pointer, std::size_t, std::align_val_t alignment) noexcept { operator delete(pointer, alignment); }
-void operator delete[](void* pointer, std::size_t, std::align_val_t alignment) noexcept { operator delete(pointer, alignment); }
-void operator delete(void* pointer, std::align_val_t alignment, const std::nothrow_t&) noexcept { operator delete(pointer, alignment); }
-void operator delete[](void* pointer, std::align_val_t alignment, const std::nothrow_t&) noexcept { operator delete(pointer, alignment); }
+ADI_TEST_NOINLINE void operator delete[](void* pointer, std::align_val_t alignment) noexcept { operator delete(pointer, alignment); }
+ADI_TEST_NOINLINE void operator delete(void* pointer, std::size_t, std::align_val_t alignment) noexcept { operator delete(pointer, alignment); }
+ADI_TEST_NOINLINE void operator delete[](void* pointer, std::size_t, std::align_val_t alignment) noexcept { operator delete(pointer, alignment); }
+ADI_TEST_NOINLINE void operator delete(void* pointer, std::align_val_t alignment, const std::nothrow_t&) noexcept { operator delete(pointer, alignment); }
+ADI_TEST_NOINLINE void operator delete[](void* pointer, std::align_val_t alignment, const std::nothrow_t&) noexcept { operator delete(pointer, alignment); }
+#undef ADI_TEST_NOINLINE
 
 namespace {
 using namespace adi;
