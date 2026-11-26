@@ -312,7 +312,7 @@ public:
         /// the recorder on its owner first. Explicit locate/play bypasses this
         /// default start policy. Offline sessions ignore saved performance state.
         bool startPlayback(std::int64_t insertMarkerTick, bool recording = false) noexcept;
-        bool process(const AudioIo&) noexcept;
+        bool process(const AudioIo&, bool captureRecording = true) noexcept;
     private:
         friend class Session;
         explicit RenderBlock(Session&) noexcept;
@@ -348,13 +348,15 @@ public:
     /// expression event may use ID zero.
     /// Returns false for invalid events or a full queue. Rebind the producer
     /// when the driver restarts its sample clock.
-    bool enqueueMidiInput(std::int64_t streamSample, const Event&) noexcept;
+    bool enqueueMidiInput(std::int64_t streamSample, const Event&, std::int64_t inputSample = -1) noexcept;
     /// Discard queued events and release held live notes on the next callback.
     /// Call when the producer disconnects or replaces its port configuration.
     void resetMidiInput() noexcept;
     /// Owner only. Start a new capture with the listed armed MIDI tracks.
     bool startMidiInputCapture(std::span<const std::int64_t> tracks, std::string& error);
     [[nodiscard]] MidiInputCapture& midiInputCapture() noexcept { return *midiInputCapture_; }
+    // With the audio callback detached, finish without waiting for another slice.
+    void finishMidiInputCapture() noexcept;
 
     /// Owner only. Configures the next graph and rebuilds when loaded; the
     /// prior graph stays live on failure. Zero workers restores serial.
@@ -458,6 +460,11 @@ public:
     /// AudioIo inputs; per-device channel configuration remains the adapter's.
     bool startRecording(const AudioRecordingSpec&,std::string& error);
     [[nodiscard]] AudioInputRecorder& recording() noexcept;
+    // Selection arming is a live session choice. Explicit arms stay in the project.
+    bool setSelectionArmedTrack(std::int64_t track);
+    [[nodiscard]] bool recordArmed(const rows::Track& track) const noexcept {
+        return track.recordArmed || (selectionArmedTrack_ != 0 && track.id == selectionArmedTrack_);
+    }
     // Message/offline driver inspection. Pointer valid until the next rebuild.
     [[nodiscard]] ClipPlayback* clips() noexcept { if(auto* value=gestureClips(gestureRuntime_))return value;return clips_.get(); }
     [[nodiscard]] MidiClips* midiClips() noexcept { if(auto* value=gestureMidi(gestureRuntime_))return value;return midi_.get(); }
@@ -557,7 +564,7 @@ private:
         [[nodiscard]] const TransportInfo* beginBlock()const noexcept override;
         [[nodiscard]] Node* inputMonitorSource(std::int64_t track) const noexcept;
     };
-    void prepareMidiInput(TimingView&, const rows::Model&);
+    void prepareMidiInput(TimingView&, const rows::Model&, const MidiClips&);
     MainLoudness mainLoudness_;
     CueSettings cueSettings_;
     CueMonitor cueMonitor_;
@@ -651,6 +658,7 @@ private:
     DeviceLoader loader_;
     SourceFn sources_;
     SessionSpec spec_;
+    std::int64_t selectionArmedTrack_ = 0;
     Stats stats_;
     std::vector<Entry> entries_;
     std::unordered_map<std::int64_t, std::size_t> byId_;   ///< device id -> entries_

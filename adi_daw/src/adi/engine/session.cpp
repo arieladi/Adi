@@ -291,6 +291,14 @@ void Session::retainRuntimeClient(std::shared_ptr<SessionRuntimeClient> client) 
 }
 
 AudioInputRecorder& Session::recording() noexcept{return *recording_;}
+bool Session::setSelectionArmedTrack(std::int64_t track) {
+    if (track == selectionArmedTrack_) return true;
+    const auto previous = std::exchange(selectionArmedTrack_, track);
+    if (!loaded_ || rebuild()) return true;
+    selectionArmedTrack_ = previous;
+    return false;
+}
+
 bool Session::startRecording(const AudioRecordingSpec& options,std::string& error) {
     if(!live_){error="No active audio session for recording";return false;}
     if(options.sampleRate!=spec_.sampleRate || options.maxFrames!=static_cast<std::uint32_t>(spec_.maxFrames)) {
@@ -298,7 +306,7 @@ bool Session::startRecording(const AudioRecordingSpec& options,std::string& erro
     }
     for(const auto& target:options.targets) {
         const auto track=std::find_if(model_.tracks.begin(),model_.tracks.end(),[&](const auto& row){return row.id==target.trackId;});
-        if(track==model_.tracks.end() || !track->recordArmed || (track->kind!="audio" && track->kind!="midi")) {
+        if(track==model_.tracks.end() || !recordArmed(*track) || (track->kind!="audio" && track->kind!="midi")) {
             error="Recording target must be an armed audio or MIDI track";return false;
         }
     }
@@ -801,7 +809,7 @@ void Session::prepareInputMonitors(TimingView& timing, const rows::Model& model,
             frozenGroupChildren_.contains(track.id))
             continue;
         const bool inputOnly = track.monitorMode == 1;
-        const bool armedAuto = track.monitorMode == 2 && track.recordArmed;
+        const bool armedAuto = track.monitorMode == 2 && recordArmed(track);
         if (!inputOnly && !armedAuto) continue;
         const auto binding = monitorInputs_.find(track.id);
         if (binding == monitorInputs_.end()) continue;
@@ -957,16 +965,24 @@ DeviceChainFn Session::eventPathFor(const rows::Model& model) {
     };
 }
 
-void Session::prepareMidiInput(TimingView& timing, const rows::Model& model) {
+void Session::prepareMidiInput(TimingView& timing, const rows::Model& model, const MidiClips& clips) {
     if (!timing.spec.performanceState || timing.spec.exporting) return;
-    std::map<const Node*, std::int64_t> armed;
+    struct Target {
+        std::int64_t track;
+        std::span<const MidiMonitorRange> blockedRanges;
+    };
+    std::map<const Node*, Target> monitored;
     for (const auto& track : model.tracks) {
-        if (!track.recordArmed ||
-            (track.kind != "midi" && track.kind != "instrument" && track.kind != "audio"))
+        const bool midi = track.kind == "midi" || track.kind == "instrument";
+        const bool armed = recordArmed(track);
+        const bool monitorMidi = midi && (track.monitorMode == 1 || (track.monitorMode == 2 && armed));
+        if (!monitorMidi && !(track.kind == "audio" && armed))
             continue;
+        const auto blocked = midi && track.monitorMode == 2 ? clips.monitorRanges(track.id)
+                                                           : std::span<const MidiMonitorRange>{};
         for (const auto* node : chainFor(track.id)) {
             if (node->eventFlow() == EventFlow::Consume) {
-                armed.emplace(node, track.id);
+                monitored.emplace(node, Target{track.id, blocked});
                 break;
             }
         }
@@ -979,15 +995,24 @@ void Session::prepareMidiInput(TimingView& timing, const rows::Model& model) {
         auto& instance = devices_.deviceAt(entry.hostIndex);
         if (instance.eventFlow() != EventFlow::Consume) continue;
         auto& node = devices_.nodeAt(entry.hostIndex);
-        const auto target = armed.find(&node);
+        const auto target = monitored.find(&node);
         // Keep a disarmed or parked instrument's state until it can render
         // its releases. A retired instance's last graph still owns its state.
         auto voices = midiInputVoices_.find(entry.hostIndex);
-        if (target == armed.end() && voices == midiInputVoices_.end()) continue;
+        if (target == monitored.end() && voices == midiInputVoices_.end()) continue;
         if (voices == midiInputVoices_.end())
             voices = midiInputVoices_.emplace(entry.hostIndex, std::make_shared<LiveMidiInput::Voices>()).first;
-        timing.midiInputRoutes.push_back({&node, voices->second, target == armed.end() ? 0 : target->second,
-                                          node.eventFlow() == EventFlow::Consume});
+        LiveMidiInput::Route route;
+        route.node = &node;
+        route.voices = voices->second;
+        route.processes = node.eventFlow() == EventFlow::Consume;
+        if (target != monitored.end()) {
+            route.monitorTrack = target->second.track;
+            const auto ranges = target->second.blockedRanges;
+            if (!ranges.empty())
+                route.blockedRanges.assign(ranges.begin(), ranges.end());
+        }
+        timing.midiInputRoutes.push_back(std::move(route));
     }
 }
 
@@ -1031,7 +1056,8 @@ bool Session::rebuild() {
         nextClips = std::make_shared<ClipPlayback>(clipProject_, transport_, spec_.sampleRate,
                                                 spec_.channels, spec_.maxFrames, spec_.progressiveDecoder);
         nextMidi = std::make_shared<MidiClips>(playbackModel_,transport_,spec_.sampleRate,midiState_,
-                                               eventPath,clipNoteExpressions(*clipProject_));
+                                               eventPath,clipNoteExpressions(*clipProject_),
+                                               spec_.performanceState && !spec_.exporting);
         prepareInputMonitors(*timing, model_, *nextClips);
     } catch (const std::exception& e) { error_ = e.what(); return false; }
     // ADR-0164: the automation this graph plays, bound to strips, less every
@@ -1124,7 +1150,7 @@ bool Session::rebuild() {
     cueMonitor_.captureLanes(*laneBindings);
     timing->stripLanes = std::move(laneBindings);
     timing->generationControls=nativeGestureControls(*this);
-    prepareMidiInput(*timing, model_);
+    prepareMidiInput(*timing, model_, *midi_);
     attach(std::move(timing)); // publish the matching clock with this graph
     gestureAudio_->stageReset(gestureGeneration); // tagged, inert until this graph is adopted
     ++stats_.rebuilds;
@@ -2404,7 +2430,7 @@ bool Session::RenderBlock::startPlayback(std::int64_t insertMarkerTick, bool rec
     session_.publishDriverClock();
     return true;
 }
-bool Session::RenderBlock::process(const AudioIo& io) noexcept {
+bool Session::RenderBlock::process(const AudioIo& io, bool captureRecording) noexcept {
     const auto* timing = dynamic_cast<const TimingView*>(graph_.transportState());
     if (!graph_.valid() || io.frames <= 0 || io.numIn < 0 || io.numOut < 0 ||
         (timing && io.frames > timing->spec.maxFrames)) {
@@ -2433,7 +2459,7 @@ bool Session::RenderBlock::process(const AudioIo& io) noexcept {
         const auto prefix = static_cast<std::int32_t>(remaining);
         AudioIo lead = io;
         lead.frames = prefix;
-        if (!process(lead))
+        if (!process(lead, captureRecording))
             return false;
         for (std::int32_t channel = 0; channel < io.numIn; ++channel)
             timing->inputSlice[static_cast<std::size_t>(channel)] =
@@ -2450,15 +2476,15 @@ bool Session::RenderBlock::process(const AudioIo& io) noexcept {
         tail.in = io.in ? timing->inputSlice.data() : nullptr;
         tail.out = io.out ? timing->outputSlice.data() : nullptr;
         tail.out64 = io.out64 ? timing->outputSlice64.data() : nullptr;
-        return process(tail);
+        return process(tail, captureRecording);
     }
-    session_.recording_->capture(io, session_.transport_);
+    if (captureRecording) session_.recording_->capture(io, session_.transport_);
     session_.playbackRunning_.store(session_.transport_.playing(), std::memory_order_release);
     AudioIo block = io;
     if (timing) {
         block.transport = &timing->blockInfo;
         block.exporting = timing->spec.exporting;
-        auto* capture = timing->spec.performanceState && !timing->spec.exporting
+        auto* capture = captureRecording && timing->spec.performanceState && !timing->spec.exporting
             ? session_.midiInputCapture_.get() : nullptr;
         session_.midiInput_->render(graph_, io, timing->midiInputRoutes, session_.transport_, capture);
     }
@@ -2508,8 +2534,8 @@ void Session::process(const AudioIo& io) noexcept {
     (void)block.process(io);
 }
 
-bool Session::enqueueMidiInput(std::int64_t sample, const Event& event) noexcept {
-    return midiInput_->push(sample, event);
+bool Session::enqueueMidiInput(std::int64_t sample, const Event& event, std::int64_t inputSample) noexcept {
+    return midiInput_->push(sample, event, inputSample < 0 ? sample : inputSample);
 }
 void Session::resetMidiInput() noexcept {
     midiInput_->reset();
@@ -2523,7 +2549,7 @@ bool Session::startMidiInputCapture(std::span<const std::int64_t> tracks, std::s
     for (const auto id : tracks) {
         const auto track = std::find_if(model_.tracks.begin(), model_.tracks.end(),
             [id](const rows::Track& t) { return t.id == id; });
-        if (id <= 0 || track == model_.tracks.end() || !track->recordArmed ||
+        if (id <= 0 || track == model_.tracks.end() || !recordArmed(*track) ||
             (track->kind != "midi" && track->kind != "instrument") || !seen.insert(id).second) {
             error = "MIDI capture needs distinct armed MIDI or instrument tracks";
             return false;
@@ -2535,6 +2561,10 @@ bool Session::startMidiInputCapture(std::span<const std::int64_t> tracks, std::s
     }
     error.clear();
     return true;
+}
+
+void Session::finishMidiInputCapture() noexcept {
+    midiInputCapture_->deviceStopped();
 }
 
 // DF-E6 (a). The count-in clicks on the clock the listener hears, the same

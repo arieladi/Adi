@@ -35,10 +35,12 @@ struct PreparedBuiltinInsert {
 };
 // A document reserves IDs belonging to runtimes retained for Undo.
 [[nodiscard]] PreparedBuiltinInsert prepareBuiltinInsert(Store&,std::string_view uid,
-    std::int64_t track,std::optional<std::int64_t> beforeDevice={},std::int64_t retainedDeviceId=0);
+    std::int64_t track,std::optional<std::int64_t> beforeDevice={},std::int64_t retainedDeviceId=0,
+    bool exclusiveArm=false);
 struct PluginInsertOptions {
     bool replaceInstrument = false;
     std::optional<engine::RouteChoice> expressionRoute;
+    bool exclusiveArm = false;
 };
 [[nodiscard]] PreparedBuiltinInsert preparePluginInsert(Store&,const rows::PluginRef&,std::int64_t track,
     std::optional<std::int64_t> beforeDevice={},const PluginInsertOptions& = {},

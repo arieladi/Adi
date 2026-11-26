@@ -464,7 +464,8 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
             out->clips=std::make_shared<ClipPlayback>(image->clips,owner->transport_,owner->spec_.sampleRate,
                 owner->spec_.channels,owner->spec_.maxFrames,owner->spec_.progressiveDecoder);
             out->midi=std::make_shared<MidiClips>(playback,owner->transport_,owner->spec_.sampleRate,owner->midiState_,
-                                                 owner->eventPathFor(image->model),clipNoteExpressions(*image->clips));
+                                                 owner->eventPathFor(image->model),clipNoteExpressions(*image->clips),
+                                                 owner->spec_.performanceState && !owner->spec_.exporting);
         }
         const auto program=compileAutomation(playback,owner->spec_.sampleRate);
         auto excluded=committedOverrides?*committedOverrides:owner->overridden_;excluded.insert(owner->writingAutomation_.begin(),owner->writingAutomation_.end());
@@ -476,7 +477,7 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
         out->tag=owner->gestureAudio_->reserveGeneration();timing->gestureGeneration=out->tag;
         timing->sampleRate=owner->spec_.sampleRate;timing->settings=owner->spec_.performanceState?image->transport:TransportSettings{};
         timing->spec=owner->spec_;timing->stripLanes=out->controls->lanes;
-        owner->prepareMidiInput(*timing, image->model);
+        owner->prepareMidiInput(*timing, image->model, *out->midi);
         if (reusedReaders) timing->inputMonitors = previousTiming->inputMonitors;
         else owner->prepareInputMonitors(*timing,image->model,*out->clips);
         timing->sourceReadiness=out->clips->readiness();

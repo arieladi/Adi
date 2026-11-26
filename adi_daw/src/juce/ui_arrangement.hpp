@@ -15,6 +15,7 @@
 namespace adi::ui {
 class AdiRootComponent;
 class ArrangementView;
+struct LiveMidiTake;
 // The Overview (Live 12 manual 6.1, ADR-0129): the whole arrangement in miniature,
 // an outline around the part on screen. Drag sideways to scroll, vertically to zoom;
 // a double-click zooms out to the whole arrangement.
@@ -371,6 +372,8 @@ class ArrangementCanvas final : public juce::Component,
     // `engine::readClipDetails` on the message thread, once for each clip and document generation.
     void paintNotes(juce::Graphics &, const engine::ClipNode &, std::int64_t pos, float left, float right, float top,
                     float bottom) const;
+    void paintLiveMidiTake(juce::Graphics &, const LiveMidiTake &, const engine::TrackNode &,
+                           std::size_t trackNumber, int y, int height) const;
     struct ClipNotes {
         struct Bar {
             std::int64_t start = 0, duration = 0;
@@ -609,6 +612,7 @@ class ArrangementView final : public juce::Component {
 
   private:
     std::optional<LiveTake> liveTake_;
+    bool hadLiveMidiTake_ = false;
     void refreshTree();
     TrackRows trackRows_;
     // What the chosen view and the folded groups leave out, from the tree as it is.

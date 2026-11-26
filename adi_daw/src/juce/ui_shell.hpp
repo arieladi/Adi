@@ -9,6 +9,7 @@
 #include "adi/ui/export_choices.hpp"
 #include "adi/ui/automation_mode.hpp"
 #include "adi/ui/import_choices.hpp"
+#include "adi/ui/live_midi_take.hpp"
 #include "adi/ui/locator_edits.hpp"
 #include "adi/ui/loop_edits.hpp"
 #include "adi/ui/op_submitter.hpp"
@@ -35,6 +36,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <span>
 #include <type_traits>
 #include <variant>
 namespace adi::ui {
@@ -232,6 +234,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     // Live's Exclusive Arm (the same page), on by default: arming a track disarms the others unless
     // Ctrl/Cmd is held.
     bool exclusiveArm() const noexcept { return exclusiveArm_; }
+    enum class SelectionArm { None, Midi, All };
+    SelectionArm selectionArm() const noexcept { return selectionArm_; }
     // The registry's recording defaults a new track takes (`record.quantize`,
     // `audio.keepMonitoringLatency`; N31).
     const RecordingDefaults &recordingDefaults() const noexcept { return recordingDefaults_; }
@@ -289,6 +293,7 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     bool followByPage_ = true;
     bool exclusiveSolo_ = true;
     bool exclusiveArm_ = true;
+    SelectionArm selectionArm_ = SelectionArm::None;
     RecordingDefaults recordingDefaults_;
     bool linkLoop_ = false;
     bool splitAll_ = true;
@@ -483,6 +488,8 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // `recording` reads whether it runs. A refusal comes back as false and the application has said
     // why. Unset outside the application.
     std::function<RecordStates()> readRecordStates;
+    std::function<bool(std::int64_t)> setSelectionArmedTrack;
+    void refreshSelectionArming();
     void setRecordStates(RecordStates states) {
         if (states != recordStates_)
             recordStates_ = std::move(states);
@@ -490,6 +497,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     std::function<bool(std::int64_t insertTick, bool playing)> startRecording;
     std::function<void()> stopRecording;
     std::function<bool()> recording;
+    std::function<std::span<const LiveMidiTake>()> liveMidiTakes;
     // Live's MIDI Arrangement Overdub (manual 21.2): the Control Bar's switch, the window's own state.
     // It decides what a MIDI recording does to the notes already there once MIDI records (SRF-05).
     bool midiOverdub() const noexcept { return midiOverdub_; }
@@ -904,6 +912,8 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     bool playing_ = false;
     bool midiOverdub_ = false; // Live's MIDI Arrangement Overdub, off in a new Set
     RecordStates recordStates_; // the arm and monitoring the application last handed over (MX-09)
+    std::int64_t selectionArmedTrack_ = 0;
+    bool changeSelectionArming(std::int64_t track);
     RecordStates freshRecordStates() const { return readRecordStates ? readRecordStates() : recordStates_; }
     bool midiIn_ = false;
     bool computerMidiEnabled_ = false;
