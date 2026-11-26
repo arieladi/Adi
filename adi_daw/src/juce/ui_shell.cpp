@@ -11,6 +11,7 @@
 #include "adi/ui/fade_edits.hpp"
 #include "adi/ui/meter_edits.hpp"
 #include "adi/ui/meters.hpp"
+#include "adi/ui/midi_tracks.hpp"
 #include "adi/ui/recording_edits.hpp"
 #include "adi/ui/send_edits.hpp"
 #include "adi/ui/tempo_edits.hpp"
@@ -22,6 +23,7 @@
 #include <cctype>
 #include <cmath>
 #include <initializer_list>
+#include <string_view>
 #include <vector>
 namespace adi::ui {
 namespace {
@@ -2213,14 +2215,15 @@ ChosenClip chosenClip(const engine::Snapshot &current, const Selection &sel) {
                     return {t.get(), c.get()};
     return {};
 }
-bool holdsClips(const engine::TrackNode &t) { return t.kind == "audio" || t.kind == "midi"; }
+bool holdsClips(const engine::TrackNode &t) { return t.kind == "audio" || isMidiTrack(t); }
+std::string_view clipTrackKind(const engine::TrackNode &t) { return isMidiTrack(t) ? "midi" : std::string_view(t.kind); }
 // A copied clip's kind, as its image holds it ("audio" or "midi").
 std::string imageKind(const Payload &image) {
     if (image.contains("row") && image["row"].contains("kind") && image["row"]["kind"].is_string())
         return image["row"]["kind"].get<std::string>();
     return {};
 }
-std::string kindWord(const std::string &kind) { return kind == "midi" ? "a MIDI" : "an audio"; }
+std::string kindWord(std::string_view kind) { return kind == "midi" ? "a MIDI" : "an audio"; }
 } // namespace
 bool AdiRootComponent::deviceClipboardFirst(DeviceChainStrip::Clip clip) const {
     // The device chain's when a device has the keyboard focus (Live's focus is where the command
@@ -2448,9 +2451,9 @@ bool AdiRootComponent::clipClipboard(ClipCommand command) {
             return fail("Select an audio or MIDI track to paste on.");
         if (const auto *copy = std::get_if<clip_edit::ClipCopy>(&board.held)) {
             // Audio on audio tracks, MIDI on MIDI tracks, as Live places them.
-            if (const auto kind = imageKind(copy->image); !kind.empty() && kind != track->kind)
+            if (const auto kind = imageKind(copy->image); !kind.empty() && kind != clipTrackKind(*track))
                 return fail("The copied clip goes on " + kindWord(kind) + " track: " + shownName(arrangement.geometry, reader(), track->id) + " is " +
-                            kindWord(track->kind) + " track.");
+                            kindWord(clipTrackKind(*track)) + " track.");
             // A new identity, never the copied clip's own: after a Cut of the newest clip, the
             // project's next free id is the one the copy still carries.
             auto id = audio_drop_detail::newClipId(*current);
@@ -2498,14 +2501,15 @@ bool AdiRootComponent::clipClipboard(ClipCommand command) {
                 const auto source = rangeCopy.selection.tracks[i];
                 std::string kind;
                 if (const auto *t = reader().findTrack(source))
-                    kind = t->kind;
+                    kind = clipTrackKind(*t);
                 for (const auto &image : rangeCopy.images)
                     if (kind.empty() && image.contains("row") && image["row"].value("track_id", std::int64_t{0}) == source)
                         kind = imageKind(image);
                 const auto *target = reader().findTrack(targets[i]);
-                if (!kind.empty() && target != nullptr && target->kind != kind)
+                if (!kind.empty() && target != nullptr && clipTrackKind(*target) != kind)
                     return fail("The copy's track " + std::to_string(i + 1) + " goes on " + kindWord(kind) +
-                                " track: " + shownName(arrangement.geometry, reader(), target->id) + " is " + kindWord(target->kind) + " track.");
+                                " track: " + shownName(arrangement.geometry, reader(), target->id) + " is " +
+                                kindWord(clipTrackKind(*target)) + " track.");
             }
             if (!commitEdit(clip_edit::preparePasteRange(store, rangeCopy, targets, {0, at}, options)))
                 return false;

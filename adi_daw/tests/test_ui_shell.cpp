@@ -4066,7 +4066,7 @@ void clipClipboard(AppCommands &commands, const std::filesystem::path &dir) {
     };
     const auto pasteAt = 5 * bar;
     const auto gapAt = pasteAt + 3 * bar / 2;
-    add("track.create", {{"id", 20}, {"kind", "midi"}, {"name", "Lower MIDI"}, {"index", 2}});
+    add("track.create", {{"id", 20}, {"kind", "instrument"}, {"name", "Lower MIDI"}, {"index", 2}});
     add("clip.create", {{"id", 61}, {"track", 20}, {"kind", "midi"}, {"pos", 2 * bar}, {"length", bar / 2}});
     add("clip.create", {{"id", 62}, {"track", 2}, {"kind", "midi"}, {"pos", bar}, {"length", bar / 2}});
     add("clip.create", {{"id", 63}, {"track", 2}, {"kind", "midi"}, {"pos", gapAt}, {"length", bar / 4}});
