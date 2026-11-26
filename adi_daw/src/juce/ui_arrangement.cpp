@@ -1331,6 +1331,10 @@ void ArrangementView::frame(bool modelChanged) noexcept {
             liveTake_.reset();
         canvas.repaint();
     }
+    const bool hasLiveMidiTake = root.liveMidiTakes && !root.liveMidiTakes().empty();
+    if (hasLiveMidiTake || hadLiveMidiTake_)
+        canvas.repaint();
+    hadLiveMidiTake_ = hasLiveMidiTake;
     if (modelChanged) {
         canvas.realiseAccessible();
         overview.repaint();
@@ -2330,6 +2334,7 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
     ++view.canvasPaints;
     const auto &geo = view.geometry;
     const auto rows = geo.rows(view.reader());
+    const auto midiTakes = view.root.liveMidiTakes ? view.root.liveMidiTakes() : std::span<const LiveMidiTake>{};
     const auto foot = geo.footStart(rows);
     int y = -geo.scrollY;
     auto lanes = [&](int top, int height, bool selected) {
@@ -2477,6 +2482,10 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
                 }
             }
         }
+        const auto midiTake = std::find_if(midiTakes.begin(), midiTakes.end(),
+                                          [t](const LiveMidiTake &take) { return take.track == t->id; });
+        if (midiTake != midiTakes.end())
+            paintLiveMidiTake(g, *midiTake, *t, row.number(), y, h);
         y += h;
     }
     if (foot == rows.size())
@@ -2957,6 +2966,52 @@ void ArrangementCanvas::paintWaveform(juce::Graphics &g, const engine::ClipNode 
             g.fillRect(static_cast<float>(x), y0, 1.f, std::max(1.f, y1 - y0));
         }
     }
+}
+void ArrangementCanvas::paintLiveMidiTake(juce::Graphics &g, const LiveMidiTake &take, const engine::TrackNode &track,
+                                         std::size_t trackNumber, int y, int height) const {
+    const auto &geo = view.geometry;
+    const double x0 = geo.x(take.start), x1 = geo.x(take.end);
+    if (take.end <= take.start || x1 < 0 || x0 > getWidth())
+        return;
+    const float left = static_cast<float>(std::max(-1., x0));
+    const float right = static_cast<float>(std::min(x1, static_cast<double>(getWidth() + 1)));
+    const float top = static_cast<float>(y + 1), width = std::max(1.f, right - left);
+    g.setColour(look::record);
+    g.fillRect(left, top, width, static_cast<float>(height - 4));
+    g.setColour(look::record.darker(0.3f));
+    g.fillRect(left, top, width, static_cast<float>(kClipBarHeight));
+    if (right - left > 6.f) {
+        g.setColour(look::ink);
+        g.setFont(look::font(look::fontSmall));
+        g.drawText(juce::String::fromUTF8(displayName(track.name, trackNumber).c_str()),
+                   juce::Rectangle<float>(left + 3.f, top, right - left - 5.f, static_cast<float>(kClipBarHeight)),
+                   juce::Justification::centredLeft, false);
+    }
+    const float noteTop = top + static_cast<float>(kClipBarHeight);
+    const float noteHeight = static_cast<float>(y + height - 3) - noteTop;
+    if (!take.notes.empty() && right > left && noteHeight >= 4.f) {
+        const auto [low, high] = std::minmax_element(take.notes.begin(), take.notes.end(),
+                                                    [](const LiveMidiNote &a, const LiveMidiNote &b) {
+                                                        return a.key < b.key;
+                                                    });
+        const int range = high->key - low->key + 1;
+        const int keys = std::max(12, range), lowest = low->key - (keys - range) / 2;
+        const float inner = noteHeight - 2.f;
+        const float pitch = inner / static_cast<float>(keys);
+        const float thick = std::clamp(pitch - (pitch >= 3.f ? 1.f : 0.f), 1.f, 4.f);
+        g.setColour(look::ink.withAlpha(0.9f));
+        for (const auto &note : take.notes) {
+            const float start = std::max(left, static_cast<float>(geo.x(note.start)));
+            const float end = std::min(right, static_cast<float>(geo.x(note.end)));
+            if (end <= start)
+                continue;
+            const float noteY = noteTop + 1.f + inner - (static_cast<float>(note.key - lowest) + 1.f) * pitch +
+                                (pitch - thick) * .5f;
+            g.fillRect(start, noteY, std::min(std::max(1.f, end - start), right - start), thick);
+        }
+    }
+    g.setColour(look::record.darker(0.5f));
+    g.drawRect(left, top, width, static_cast<float>(height - 4), 1.f);
 }
 void ArrangementCanvas::paintNotes(juce::Graphics &g, const engine::ClipNode &clip, std::int64_t pos, float left,
                                    float right, float top, float bottom) const {

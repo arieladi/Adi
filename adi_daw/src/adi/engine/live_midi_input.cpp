@@ -140,7 +140,7 @@ void LiveMidiInput::render(const GraphHost::RenderBlock& block, const AudioIo& i
         if (capture) {
             auto event = item.event;
             event.frame = eventFrame(item);
-            capture->record(item.sample, event);
+            capture->record(item.sample, item.inputSample, event);
         }
     }
     // Only monitoring is gated. Recording above sees the original input regardless of the track's Monitor switch.

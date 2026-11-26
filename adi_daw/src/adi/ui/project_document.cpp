@@ -2,6 +2,7 @@
 #include "project_document.hpp"
 #include "arrangement_geometry.hpp"
 #include "adi/audio/decode.hpp"
+#include "adi/engine/midi_input_capture.hpp"
 #include "adi/gesture_navigation_detail.hpp"
 #include "adi/media/collect_export.hpp"
 #include "adi/mix_function_edit.hpp"
@@ -24,6 +25,114 @@ struct WaveformSource {
     explicit WaveformSource(std::filesystem::path file) : path(std::move(file)) {}
     std::mutex mutex;
     std::filesystem::path path;
+};
+
+struct ProjectDocument::MidiRecording {
+    struct Track {
+        bool monitored = false;
+        std::int32_t instrumentArrival = 0;
+        std::vector<notes::NoteValues> notes;
+        std::map<std::uint64_t, std::size_t> held;
+        std::map<std::pair<std::uint64_t, ExpressionDim>, std::vector<ExpressionPoint>> expression;
+    };
+    std::shared_ptr<const engine::TempoMap> tempo;
+    double sampleRate = 0;
+    std::vector<Track> tracks;
+    std::vector<LiveMidiTake> preview;
+    bool started = false;
+    std::int64_t firstStreamSample = 0;
+    engine::MidiCaptureState state = engine::MidiCaptureState::Waiting;
+
+    std::int64_t tickAt(std::int64_t sample) const noexcept {
+        const double seconds = static_cast<double>(std::max<std::int64_t>(0, sample)) / sampleRate;
+        const auto tick = tempo->secondsToTicks(seconds);
+        if (tick == (std::int64_t{1} << 50))
+            return tick;
+        const auto next = tempo->ticksToSeconds(tick + 1);
+        return next - seconds < seconds - tempo->ticksToSeconds(tick) ? tick + 1 : tick;
+    }
+
+    void ingest(const engine::MidiCapturePacket &packet) {
+        if (packet.kind == engine::MidiCapturePacket::Kind::Span) {
+            if (!started)
+                firstStreamSample = packet.streamSample;
+            const auto start = tickAt(packet.timelineSample);
+            const auto end = tickAt(packet.timelineSample + packet.frames);
+            for (auto &take : preview) {
+                if (!started)
+                    take.start = start;
+                take.end = std::max(take.start + 1, end);
+            }
+            started = true;
+            return;
+        }
+        const auto &event = packet.event;
+        if (!started || event.noteId == 0 || event.type == engine::EventType::Controller)
+            return;
+        const auto played = tickAt(packet.timelineSample - (packet.streamSample - packet.inputSample));
+        for (std::size_t i = 0; i < tracks.size(); ++i) {
+            auto &track = tracks[i];
+            auto &take = preview[i];
+            // Live input goes directly to the instrument. A replayed clip passes through the
+            // upstream nodes first, so place it on the clock at the instrument's input.
+            const auto heard = tickAt(packet.timelineSample - track.instrumentArrival);
+            const auto at = std::clamp(track.monitored ? heard : played, take.start, take.end - 1);
+            const auto held = track.held.find(event.noteId);
+            if (event.type == engine::EventType::NoteOn) {
+                if (held != track.held.end() || (!track.monitored && packet.inputSample < firstStreamSample))
+                    continue;
+                const auto index = track.notes.size();
+                const auto velocity = static_cast<int>(std::lround(std::clamp(event.value, 0.0, 1.0) * 127.0));
+                track.held.emplace(event.noteId, index);
+                track.notes.push_back({at - take.start, 1, index + 1, event.dim, std::max(1, velocity), 0, event.channel});
+                take.notes.push_back({at, take.end, event.dim});
+            } else if (held != track.held.end()) {
+                auto &note = track.notes[held->second];
+                auto &shown = take.notes[held->second];
+                if (event.type == engine::EventType::NoteOff) {
+                    shown.end = std::max(shown.start + 1, at);
+                    note.duration = shown.end - shown.start;
+                    note.releaseVelocity = static_cast<int>(std::lround(std::clamp(event.value, 0.0, 1.0) * 127.0));
+                    track.held.erase(held);
+                } else if (event.type == engine::EventType::NoteExpression && event.dim <= static_cast<std::uint16_t>(ExpressionDim::Timbre)) {
+                    const auto dimension = static_cast<ExpressionDim>(event.dim);
+                    const auto value = dimension == ExpressionDim::Pitch ? std::clamp(event.value, -48.0, 48.0)
+                                                                         : std::clamp(event.value, 0.0, 1.0);
+                    auto &lane = track.expression[{note.id, dimension}];
+                    ExpressionPoint point{};
+                    point.time_ticks = std::max(shown.start, at) - shown.start;
+                    point.value = static_cast<float>(value);
+                    point.curve = static_cast<std::uint8_t>(Curve::Hold);
+                    if (!lane.empty() && point.time_ticks <= lane.back().time_ticks) {
+                        point.time_ticks = lane.back().time_ticks;
+                        lane.back() = point;
+                    } else {
+                        lane.push_back(point);
+                    }
+                }
+            }
+        }
+    }
+
+    void drain(engine::MidiInputCapture &capture) {
+        std::array<engine::MidiCapturePacket, 128> packets;
+        // The callback publishes its last packets before its terminal state. Observing the state
+        // first lets the final drain collect everything before releasing the take.
+        state = capture.state();
+        while (const auto count = capture.drain(packets))
+            for (const auto &packet : std::span(packets).first(count))
+                ingest(packet);
+        for (std::size_t i = 0; i < tracks.size(); ++i)
+            for (const auto &item : tracks[i].held) {
+                auto &shown = preview[i].notes[item.second];
+                shown.end = preview[i].end;
+                tracks[i].notes[item.second].duration = shown.end - shown.start;
+            }
+    }
+
+    bool finished() const noexcept {
+        return state != engine::MidiCaptureState::Waiting && state != engine::MidiCaptureState::Recording;
+    }
 };
 namespace {
 // The waveform worker's build: its own read-only store on the project's file, opened on the worker
@@ -398,12 +507,7 @@ void ProjectDocument::tick(std::int64_t milliseconds) {
     // ended on its own while recording (a locate, an overflow, a device change), which lands at once and
     // turns Record off. A healthy capture returns nothing. With the device stopped, nothing moves the
     // callback on, so the take is settled as the driver's is.
-    if (recording_ || landing_)
-        if (auto result = session_.recording().poll(deviceStopped_.load(std::memory_order_acquire) && landing_)) {
-            recording_ = false;
-            landing_ = false;
-            landTake(*result);
-        }
+    pollRecording(deviceStopped_.load(std::memory_order_acquire));
     std::vector<OpRequest> requests;
     parameterOps_.drain(captureNowMs(), requests);
     commitCaptured(requests);
@@ -1101,12 +1205,9 @@ bool ProjectDocument::landTakeHere() {
     // The device's callback moves the capture past its end while it runs; a stopped device settles it
     // here, as `settleRecording` does. Up to ten seconds for the recorder's worker.
     for (int waited = 0; landing_ && waited < 5000; ++waited) {
-        if (auto result = session_.recording().poll(deviceStopped_.load(std::memory_order_acquire))) {
-            landing_ = false;
-            landTake(*result);
-            break;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        pollRecording(deviceStopped_.load(std::memory_order_acquire));
+        if (landing_)
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
     return !landing_;
 }
@@ -1116,12 +1217,9 @@ bool ProjectDocument::settleRecording() {
         stopRecording();
     // The recorder's worker finishes writing on its own thread: wait for it, up to ten seconds.
     for (int waited = 0; landing_ && waited < 5000; ++waited) {
-        if (auto result = session_.recording().poll(true)) {
-            landing_ = false;
-            landTake(*result);
-            return true;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        pollRecording(true);
+        if (landing_)
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
     return !landing_;
 }
@@ -1205,7 +1303,7 @@ void ProjectDocument::process(const engine::AudioIo &io) noexcept {
         // has already failed is silent and cannot hold otherwise valid clips.
         return block.sourcesReadyAt(sample, io.frames, true);
     });
-    (void)block.process(io);
+    (void)block.process(io, captureReady_.load(std::memory_order_acquire));
     mailbox_.publish(session_.transport());
 }
 RecordStates ProjectDocument::recordStates() const {
@@ -1224,14 +1322,18 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
         error_ = "Recording needs an open project.";
         return false;
     }
-    const auto armed = armedTracks(current->tracks, recordStates());
-    if (armed.audio.empty()) {
-        error_ = armed.midi.empty() ? "Arm a track to record into it."
-                                    : "Recording MIDI waits for the engine's live MIDI input; arm an audio track to record audio.";
+    const auto states = recordStates();
+    const auto armed = armedTracks(current->tracks, states);
+    if (armed.audio.empty() && armed.midi.empty()) {
+        error_ = "Arm a track to record into it.";
         return false;
     }
-    if (inputs <= 0) {
+    if (!armed.audio.empty() && inputs <= 0) {
         error_ = "The audio device has no inputs to record from. Choose an input device in the Settings' Audio page.";
+        return false;
+    }
+    if (deviceStopped_.load(std::memory_order_acquire)) {
+        error_ = "Recording needs an active audio device.";
         return false;
     }
     // A loop pass is a take of its own in Live; ADI's recorder captures loop passes, but their publication
@@ -1239,6 +1341,33 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
     if (current->transport.loopEnabled) {
         error_ = "Recording with the loop on waits for take lanes (CT-02); turn the loop off to record.";
         return false;
+    }
+    if (!playing && !mailbox_.hasRoom()) {
+        error_ = "Transport command queue is full";
+        return false;
+    }
+    std::unique_ptr<MidiRecording> midi;
+    if (!armed.midi.empty()) {
+        midi = std::make_unique<MidiRecording>();
+        midi->tempo = current->tempo;
+        midi->sampleRate = engineRate_;
+        midi->tracks.resize(armed.midi.size());
+        midi->preview.resize(armed.midi.size());
+        const auto *graph = session_.graph().currentGraph();
+        for (std::size_t i = 0; i < armed.midi.size(); ++i) {
+            const auto track = armed.midi[i];
+            midi->preview[i].track = track;
+            auto &timing = midi->tracks[i];
+            timing.monitored = recordState(states, track).monitor != Monitor::Off;
+            if (timing.monitored && graph) {
+                const auto chain = session_.chainFor(track);
+                const auto instrument = std::find_if(chain.begin(), chain.end(), [](const auto *node) {
+                    return node->eventFlow() == engine::EventFlow::Consume;
+                });
+                if (instrument != chain.end())
+                    timing.instrumentArrival = std::max(0, graph->arrivalOf(graph->find(**instrument)));
+            }
+        }
     }
     engine::AudioRecordingSpec spec;
     spec.workFolder = media::projectFolder(*store_);
@@ -1250,18 +1379,31 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
     for (const auto id : armed.audio)
         spec.targets.push_back({id, channels});
     std::string why;
-    if (!session_.startRecording(spec, why)) {
+    if (!spec.targets.empty() && !session_.startRecording(spec, why)) {
         error_ = "Recording did not start: " + why;
         return false;
     }
+    recordingAudio_ = !spec.targets.empty();
+    if (midi && !session_.startMidiInputCapture(armed.midi, why)) {
+        if (recordingAudio_) {
+            session_.recording().stop(true);
+            cancelTake_ = true;
+            landing_ = true;
+            captureReady_.store(true, std::memory_order_release);
+        }
+        error_ = "MIDI recording did not start: " + why;
+        return false;
+    }
+    midiRecording_ = std::move(midi);
+    captureReady_.store(true, std::memory_order_release);
     if (!playing && !mailbox_.post(TransportMailbox::Command::Record, insertTick)) {
-        session_.recording().stop(true);
-        std::string kept;
-        if (auto dropped = session_.recording().poll())
-            kept = discardTake(*dropped);
-        else
-            landing_ = true; // the cancelled capture is collected and dropped on the timer
-        error_ = "Transport command queue is full" + (kept.empty() ? std::string() : "." + kept);
+        if (recordingAudio_)
+            session_.recording().stop(true);
+        if (midiRecording_)
+            session_.midiInputCapture().stop();
+        cancelTake_ = true;
+        landing_ = true;
+        error_ = "Transport command queue is full";
         return false;
     }
     recording_ = true;
@@ -1271,9 +1413,37 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
 void ProjectDocument::stopRecording() {
     if (!recording_)
         return;
-    session_.recording().stop();
+    if (recordingAudio_)
+        session_.recording().stop();
+    if (midiRecording_)
+        session_.midiInputCapture().stop();
     recording_ = false;
     landing_ = true;
+}
+std::span<const LiveMidiTake> ProjectDocument::liveMidiTakes() const noexcept {
+    if (!midiRecording_ || !midiRecording_->started || cancelTake_)
+        return {};
+    return midiRecording_->preview;
+}
+void ProjectDocument::pollRecording(bool deviceStopped) {
+    if (!recording_ && !landing_)
+        return;
+    if (deviceStopped && midiRecording_)
+        session_.finishMidiInputCapture();
+    if (midiRecording_)
+        midiRecording_->drain(session_.midiInputCapture());
+    if (recordingAudio_ && !audioTake_)
+        audioTake_ = session_.recording().poll(deviceStopped);
+    const bool midiDone = !midiRecording_ || midiRecording_->finished();
+    const bool audioDone = !recordingAudio_ || audioTake_.has_value();
+    if ((midiRecording_ && midiDone) || (recordingAudio_ && audioDone))
+        stopRecording();
+    if (midiDone && audioDone) {
+        captureReady_.store(false, std::memory_order_release);
+        recording_ = false;
+        landing_ = false;
+        landTake();
+    }
 }
 std::optional<ProjectDocument::TakeLanded> ProjectDocument::takeLanded() {
     auto out = std::move(landed_);
@@ -1307,11 +1477,38 @@ std::string ProjectDocument::discardTake(engine::AudioRecordingResult &result) {
     return " Its recorded files could not be removed (" + refused.message() + "); they stay in " +
            media::pathUtf8(result.directory().filename()) + " in the project's folder.";
 }
-void ProjectDocument::landTake(engine::AudioRecordingResult &result) {
+void ProjectDocument::landTake() {
+    auto audio = std::move(audioTake_);
+    audioTake_.reset();
+    auto midi = std::move(midiRecording_);
+    recordingAudio_ = false;
+    if (std::exchange(cancelTake_, false)) {
+        if (audio) {
+            const auto kept = discardTake(*audio);
+            if (!kept.empty())
+                landed_ = TakeLanded{false, {}, "The cancelled take was not kept." + kept};
+        }
+        return;
+    }
     TakeLanded outcome;
-    const auto interruption = recordingFailure(result);
-    if (!result.hasAttachableAudio()) {
-        outcome.message = "The take was not kept: " + interruption + "." + discardTake(result);
+    const auto audioProblem = audio ? recordingFailure(*audio) : std::string{};
+    std::string midiProblem;
+    if (midi) {
+        using State = engine::MidiCaptureState;
+        switch (midi->state) {
+        case State::InputReset: midiProblem = "the MIDI input was reset"; break;
+        case State::Discontinuity: midiProblem = "the MIDI recording clock jumped"; break;
+        case State::Overflow: midiProblem = "the MIDI recording buffer filled"; break;
+        case State::DeviceStopped: midiProblem = "the MIDI recording device stopped"; break;
+        default: break;
+        }
+    }
+    const bool hasAudio = audio && audio->hasAttachableAudio();
+    const bool hasMidi = midi && midi->started;
+    const auto discarded = audio && !hasAudio ? discardTake(*audio) : std::string{};
+    if (!hasAudio && !hasMidi) {
+        const std::string reason = !audioProblem.empty() ? audioProblem : !midiProblem.empty() ? midiProblem : "nothing was recorded";
+        outcome.message = "The take was not kept: " + reason + "." + discarded;
         landed_ = std::move(outcome);
         return;
     }
@@ -1322,16 +1519,41 @@ void ProjectDocument::landTake(engine::AudioRecordingResult &result) {
     RowIds rows(store_->db());
     std::vector<recording::ClipIds> ids;
     const SnapshotReader current(view_.current());
-    for (const auto &track : result.tracks) {
-        auto name = shownTrackName(current, track.trackId);
-        const auto clip = rows.next("clips");
-        ids.push_back({clip, rows.next("media_files"), name.empty() ? std::string("Take") : std::move(name)});
-        outcome.clips.push_back(ids.back().clip);
+    if (hasAudio) {
+        for (const auto &track : audio->tracks) {
+            auto name = shownTrackName(current, track.trackId);
+            const auto clip = rows.next("clips");
+            ids.push_back({clip, rows.next("media_files"), name.empty() ? std::string("Take") : std::move(name)});
+            outcome.clips.push_back(clip);
+        }
     }
-    auto edit = recording::prepareCommit(*store_, result, ids);
+    std::vector<recording::MidiLinearTake> takes;
+    std::vector<std::vector<recording::MidiExpressionLane>> expressions;
+    if (hasMidi) {
+        expressions.resize(midi->tracks.size());
+        takes.reserve(midi->tracks.size());
+        for (std::size_t i = 0; i < midi->tracks.size(); ++i) {
+            auto &track = midi->tracks[i];
+            const auto &span = midi->preview[i];
+            for (auto &[key, points] : track.expression) {
+                const auto &note = track.notes[static_cast<std::size_t>(key.first - 1)];
+                std::erase_if(points, [&note](const auto &point) { return point.time_ticks > note.duration; });
+                if (!points.empty())
+                    expressions[i].push_back({key.first, key.second, points});
+            }
+            const auto clip = rows.next("clips");
+            auto name = shownTrackName(current, span.track);
+            takes.push_back({span.track, clip, span.start, span.end - span.start,
+                             name.empty() ? std::string("Take") : std::move(name), track.notes, expressions[i]});
+            outcome.clips.push_back(clip);
+        }
+    }
+    auto edit = hasAudio ? recording::prepareCommit(*store_, *audio, ids, takes)
+                         : recording::prepareMidiLinearCommit(*store_, takes, midi->sampleRate);
     if (!edit.ok) {
         outcome.clips.clear();
-        outcome.message = "The take was recorded but could not be added: " + edit.error + "." + discardTake(result);
+        outcome.message = "The take was recorded but could not be added: " + edit.error + "." +
+                          (hasAudio ? discardTake(*audio) : discarded);
         landed_ = std::move(outcome);
         return;
     }
@@ -1345,10 +1567,12 @@ void ProjectDocument::landTake(engine::AudioRecordingResult &result) {
     }
     synchronise();
     outcome.ok = true;
-    if (!interruption.empty())
-        outcome.message = "Kept the audio recorded before the interruption: " + interruption + ".";
-    else
-        outcome.message = result.tracks.size() == 1 ? "Recorded one take." : "Recorded " + std::to_string(result.tracks.size()) + " takes.";
+    outcome.message = outcome.clips.size() == 1 ? "Recorded one take." : "Recorded " + std::to_string(outcome.clips.size()) + " takes.";
+    if (!audioProblem.empty())
+        outcome.message = hasAudio ? "Kept the audio recorded before the interruption: " + audioProblem + "."
+                                   : outcome.message + " Audio was not kept: " + audioProblem + "." + discarded;
+    if (!midiProblem.empty())
+        outcome.message += (hasMidi ? " MIDI recording ended: " : " MIDI was not kept: ") + midiProblem + ".";
     landed_ = std::move(outcome);
 }
 } // namespace adi::ui
