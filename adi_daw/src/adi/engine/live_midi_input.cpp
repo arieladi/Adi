@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/engine/live_midi_input.hpp"
+#include "adi/controller_data.hpp"
 #include "adi/engine/midi_input_capture.hpp"
 #include "adi/engine/transport.hpp"
 
@@ -15,7 +16,9 @@ constexpr std::array<std::uint32_t, 3> pedals{64, 66, 69};
 bool LiveMidiInput::push(std::int64_t sample, const Event& event, std::int64_t inputSample) noexcept {
     if (sample < 0 || inputSample < 0 || inputSample > sample || !isNoteStream(event.type) || event.channel > 15 || !std::isfinite(event.value))
         return false;
-    if (event.type == EventType::Controller && event.paramId > 127) return false;
+    if (event.type == EventType::Controller &&
+        (!controllers::validController(event.paramId) ||
+         (event.paramId == controllers::kPitchBend && (event.value < 0 || event.value > 1)))) return false;
     if ((event.type == EventType::NoteOn || event.type == EventType::NoteOff) &&
         (event.dim > 127 || event.noteId == 0)) return false;
     const auto next = written_.load(std::memory_order_relaxed);

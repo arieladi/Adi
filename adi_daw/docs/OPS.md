@@ -911,8 +911,10 @@ Controller address 129 identifies the channel pitch wheel for these three ops.
 Its ACTL row uses `stream_kind='pitchbend'`, the same channel, and a NULL SQL
 controller. The normalized extremes are 0 and 1, with .5 for neutral. Losing an
 envelope's playback owner returns the channel wheel to neutral. Notes retain their
-separate per-note pitch expression. The MIDI file and Capture MIDI producers still
-use 0..127 controller addresses.
+separate per-note pitch expression. Standard MIDI file import and export translate
+the 14-bit channel wheel wire value to and from this lane. Capture MIDI retains
+both normalized typed channel wheel events and the physical parser's unowned pitch
+events on their respective channels.
 
 Streams are sorted stably by time. Updating an existing future record preserves
 its full tail, while insertion of a new record into an unknown wider layout
@@ -1386,8 +1388,9 @@ Redo/replay uses only captured values, independent of input devices or UI state.
 The closed opcode payload contains `clip` (the existing explicit MIDI clip.create
 row packet), `controllers` (array of `{id,channel,controller,bytes}`), and optional
 `notes` (`{id,bytes}`). Bytes are CBOR binary known-v1 sorted ACTL/ANOT images,
-with exact record stride/count and no opaque trailer. At most 2,048 controller
-addresses and 1,048,576 total points/notes are accepted. All stream IDs are
+with exact record stride/count and no opaque trailer. At most 2,064 controller
+addresses (2,048 CCs plus 16 channel pitch wheels) and 1,048,576 total points/notes
+are accepted. All stream IDs are
 explicit positive int64; record IDs remain uint64. Fresh records are checked for
 unique identities, times within the clip, valid domains/curves/velocity/channel/
 probability/tuning and zero reserved/flag fields. Invalid/future images,

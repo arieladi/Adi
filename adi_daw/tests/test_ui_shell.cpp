@@ -12492,6 +12492,25 @@ void captureMidiButton(AppCommands &commands, const std::filesystem::path &dir) 
     check(History(document->store()).nextUndo()->label == "Capture MIDI" && document->ops().undo().ok &&
               document->store().db().execAndGet("SELECT count(*) FROM clips").getInt() == 0,
           "one Capture MIDI undo removes both captured clips");
+
+    constexpr auto pitch = static_cast<std::uint16_t>(ExpressionDim::Pitch);
+    check(session.enqueueMidiInput(72, {0, EventType::NoteExpression, 2, pitch, 0, 0, 1.}) &&
+              session.enqueueMidiInput(80, {0, EventType::NoteExpression, 2, pitch, 0, 0, 0.}),
+          "plain channel wheel input reaches the live queue without a note");
+    document->process({out, nullptr, 2, 0, 64, 64});
+    root.transport.capture.setEnabled(document->canCaptureMidi());
+    root.transport.capture.onClick();
+    check(captured.ok && stopped && captured.clips.size() == 2 && !document->canCaptureMidi(),
+          "the Capture button retains pitch-only input and consumes the captured histories");
+    if (!captured.ok || captured.clips.size() != 2)
+        return;
+    for (const auto clip : captured.clips) {
+        const auto lanes = controllers::readLanes(document->store(), clip);
+        check(lanes.ok && lanes.lanes.size() == 1 && lanes.lanes[0].controller == controllers::kPitchBend &&
+                  lanes.lanes[0].channel == 2 && lanes.lanes[0].points.size() == 2 &&
+                  lanes.lanes[0].points[0].value == .75 && lanes.lanes[0].points[1].value == .5,
+              "pitch-only capture keeps both channel wheel positions in an editable envelope");
+    }
 }
 void midiTakePreview(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;

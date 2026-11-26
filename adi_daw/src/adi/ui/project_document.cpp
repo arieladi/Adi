@@ -1503,7 +1503,8 @@ ProjectDocument::TakeLanded ProjectDocument::captureRecentMidi(std::int64_t posi
     if (!session_.readMidiHistories(histories, outcome.message)) return outcome;
     std::erase_if(histories, [this](const auto& history) {
         if (std::any_of(history.events.begin(), history.events.end(), [](const auto& event) {
-                return event.event.type == engine::EventType::NoteOn || event.event.type == engine::EventType::Controller;
+                return event.event.type == engine::EventType::NoteOn || event.event.type == engine::EventType::Controller ||
+                       capture::isChannelPitchWheel(event.event);
             })) return false;
         session_.consumeMidiHistories(std::span(&history, 1));
         return true;
