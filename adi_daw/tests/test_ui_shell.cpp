@@ -8,6 +8,7 @@
 #include "../src/juce/ui_settings.hpp"
 #include "../src/juce/ui_shell.hpp"
 #include "../src/juce/window_release.hpp"
+#include "adi/audio/warp_map.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/automation_lanes.hpp"
 #include "adi/blob.hpp"
@@ -9387,14 +9388,30 @@ void clipViewMulti(AppCommands &commands, const std::filesystem::path &dir) {
     bool made = true;
     for (const auto &[id, name] : {std::pair<std::int64_t, const char *>{1, "Keys"}, {2, "Bass"}, {3, "Drums"}})
         made = submitter.submit(op("track.create", {{"id", id}, {"kind", id == 3 ? "audio" : "midi"}, {"name", name}, {"index", id - 1}}, "Create track")).ok && made;
-    // Keys: two bars from the start, a C3. Bass: two bars from bar 2, an E2 on its first beat. An audio clip.
+    // Keys: two bars from the start, a C3. Bass: two bars from bar 2, an E2 on its first beat.
     made = submitter.submit(op("clip.create", {{"id", 11}, {"track", 1}, {"kind", "midi"}, {"name", "Chords"}, {"pos", 0}, {"length", 2 * bar}}, "Create clip")).ok && made;
     made = submitter.submit(op("clip.create", {{"id", 12}, {"track", 2}, {"kind", "midi"}, {"name", "Line"}, {"pos", bar}, {"length", 2 * bar}}, "Create clip")).ok && made;
-    made = submitter.submit(op("clip.create", {{"id", 13}, {"track", 3}, {"kind", "audio"}, {"name", "Loop"}, {"pos", 0}, {"length", bar}}, "Create clip")).ok && made;
+    made = submitter.submit(op("clip.create", {{"id", 13}, {"track", 3}, {"kind", "audio"}, {"name", "Kick"}, {"pos", 0}, {"length", bar}}, "Create clip")).ok && made;
+    made = submitter.submit(op("clip.create", {{"id", 14}, {"track", 3}, {"kind", "audio"}, {"name", "Snare"}, {"pos", bar}, {"length", bar}}, "Create clip")).ok && made;
     made = submitter.submit(std::vector<OpRequest>{
                op("note.insert", {{"clip", 11}, {"note", 1}, {"start", 0}, {"dur", beat}, {"key", 60}}, "Add Note"),
                op("note.insert", {{"clip", 12}, {"note", 1}, {"start", 0}, {"dur", beat}, {"key", 52}}, "Add Note")}).ok && made;
-    check(made, "two MIDI tracks with a clip each, and an audio clip");
+    check(made, "two MIDI tracks with a clip each and an audio track with two clips");
+    auto &db = store->db();
+    db.exec("INSERT INTO media_files(id,hash_blake3,rel_path,format,sample_rate,channels,frames,orig_name,bit_depth) "
+            "VALUES(1,'multi-kick','kick.wav','wav',48000,1,96000,'Kick.wav',16),"
+            "(2,'multi-snare','snare.wav','wav',44100,1,88200,'Snare.wav',16);"
+            "INSERT INTO audio_clips(clip_id,media_id,src_len_frames,warp_enabled,warp_mode) "
+            "VALUES(13,1,96000,1,'beats'),(14,2,88200,1,'beats');");
+    for (const auto &[id, frames] : {std::pair<std::int64_t, std::int64_t>{13, 96000}, {14, 88200}}) {
+        const std::array markers{WarpMarker{0, 0}, WarpMarker{frames, bar}};
+        const auto warp = audio::writeWarpMap(markers, static_cast<std::uint64_t>(frames));
+        SQLite::Statement attachWarp(db, "UPDATE audio_clips SET warp_markers=? WHERE clip_id=?");
+        attachWarp.bind(1, warp.bytes.data(), static_cast<int>(warp.bytes.size()));
+        attachWarp.bind(2, id);
+        attachWarp.exec();
+    }
+    view.refresh(*store);
     AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "clip-view-multi");
     commands.activate(root);
     root.setSize(1400, 900);
@@ -9413,6 +9430,12 @@ void clipViewMulti(AppCommands &commands, const std::filesystem::path &dir) {
               ed.rulerArea().getY() == 0,
           "one clip open: no loop bars, no Focus switch");
     const auto oneScale = ed.time.scale;
+    const auto clickActivator = [&] {
+        const auto dot = panel.activatorArea().getCentre().toFloat();
+        panel.mouseDown(pressAt(panel, dot));
+        panel.mouseUp(pressAt(panel, dot));
+        root.frame();
+    };
 
     // A second MIDI clip and an audio clip picked with it: both MIDI clips are shown, the audio clip is not.
     geo.selection.pickedClips = {12, 13};
@@ -9538,6 +9561,12 @@ void clipViewMulti(AppCommands &commands, const std::filesystem::path &dir) {
         ed.select({});
         check(panel.others().size() == 1 && panel.readings().title == "2 MIDI Clips" && !panel.readings().loopMixed && panel.readings().scale != "*",
               "with two clips shown the title reads their number; they agree on looping and on the scale");
+        clickActivator();
+        check(edited().muted && another().muted && submitter.nextUndo()->opCount == 2,
+              "the MIDI Clip Activator deactivates both clips in one undo step");
+        check(root.command(AppCommands::Undo), "undo deactivating both MIDI clips");
+        root.frame();
+        check(!edited().muted && !another().muted, "one Undo reactivates both MIDI clips");
         const bool looped = edited().loopEnabled;
         check(panel.toggleLoop() && edited().loopEnabled == !looped && another().loopEnabled == !looped && submitter.nextUndo()->opCount == 2,
               "the Loop switch switches both clips: one undo step");
@@ -9629,6 +9658,52 @@ void clipViewMulti(AppCommands &commands, const std::filesystem::path &dir) {
     check(!ed.keyPressed(juce::KeyPress('n')), "and N is not the editor's with one clip");
     check(panel.readings().title == "Verse A" && panel.rename("") && panel.details()->name.empty() && panel.readings().title == "Keys",
           "one clip shown: the title is its name; a clip with no name reads its track's");
+
+    root.arrangement.selectClip(3, 13);
+    geo.selection.pickedClips = {14};
+    root.frame();
+    const auto summary = panel.readings();
+    check(panel.shownClips() == std::vector<std::int64_t>{13, 14} && summary.title == "2 Audio Clips" &&
+              summary.sampleName == "2 Samples" && summary.sampleProperties == "*   16 bit   1 ch",
+          "selected audio clips show a count and shared sample properties, with an asterisk for a differing rate");
+    const auto audioCount = [&](const char *sql) { return value(*store, sql) == "2"; };
+    check(panel.rename("Break") && audioCount("SELECT COUNT(*) FROM clips WHERE id IN (13,14) AND name='Break'") &&
+              submitter.nextUndo()->opCount == 2,
+          "renaming the audio selection names both clips in one undo step");
+    check(panel.recolour(5) && audioCount("SELECT COUNT(*) FROM clips WHERE id IN (13,14) AND color=5") &&
+              submitter.nextUndo()->opCount == 2,
+          "colouring the audio selection colours both clips in one undo step");
+
+    check(submitter.submit(op("clip.setMute", {{"id", 13}, {"muted", true}}, "Deactivate Clip")).ok,
+          "deactivate the primary audio clip to make a mixed selection");
+    root.frame();
+    clickActivator();
+    check(audioCount("SELECT COUNT(*) FROM clips WHERE id IN (13,14) AND muted=1") &&
+              submitter.nextUndo()->opCount == 1,
+          "the mixed audio Clip Activator deactivates the one active clip");
+    clickActivator();
+    check(audioCount("SELECT COUNT(*) FROM clips WHERE id IN (13,14) AND muted=0") &&
+              submitter.nextUndo()->opCount == 2,
+          "the audio Clip Activator reactivates both clips in one undo step");
+
+    check(panel.toggleLoop() && audioCount("SELECT COUNT(*) FROM clips WHERE id IN (13,14) AND loop_enabled=1") &&
+              submitter.nextUndo()->opCount == 2,
+          "the audio Loop switch enables both warped clips in one undo step");
+    check(root.command(AppCommands::Undo), "undo the audio selection's Loop switch");
+    root.frame();
+    check(audioCount("SELECT COUNT(*) FROM clips WHERE id IN (13,14) AND loop_enabled=0"),
+          "one Undo switches off both audio clips' loops");
+    db.exec("UPDATE audio_clips SET warp_enabled=0 WHERE clip_id=14");
+    view.refresh(*store);
+    root.frame();
+    check(!panel.toggleLoop() && audioCount("SELECT COUNT(*) FROM clips WHERE id IN (13,14) AND loop_enabled=0"),
+          "Loop is unavailable when a selected audio clip has Warp off");
+
+    geo.selection.pickedClips.clear();
+    root.frame();
+    check(panel.readings().title == "Break" && panel.readings().sampleName == "Kick.wav" &&
+              panel.readings().sampleProperties == "48000 Hz   16 bit   1 ch",
+          "the single audio clip shows its shared edits and its own sample");
 }
 // Live's time selection across tracks (manual 6.9): a drag across lanes reaches every track between,
 // Shift+click and Shift+Down extend it, it is drawn on every selected lane, and Delete and 0 act on
