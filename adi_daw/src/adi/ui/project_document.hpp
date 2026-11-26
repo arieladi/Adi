@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
+#include "adi/automation_lanes.hpp"
 #include "adi/builtin_catalog.hpp"
 #include "adi/device_copy.hpp"
 #include "adi/sample_slots.hpp"
@@ -146,9 +147,8 @@ class ProjectDocument final : public engine::BlockProcessor {
     // when the lane was not overridden or the rebuild failed.
     bool reenableAutomation(std::int64_t laneId);
     // Live's Automation Arm (manual 25.1): whether a control moved while the Arrangement Record
-    // button is on becomes automation. The session's switch, on in a new Set as Live's. Automation
-    // recording is not wired yet (AU-03), so the session is never told that recording is on.
-    void setAutomationArmed(bool armed) noexcept;
+    // button is on becomes automation. The session's switch is on in a new Set.
+    void setAutomationArmed(bool armed);
     bool automationArmed() const noexcept { return session_.automationArmed(); }
     // Arm and monitoring as the session's rows hold them (MX-09): the snapshot carries neither yet.
     RecordStates recordStates() const;
@@ -177,6 +177,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     // the file switches. False when the recorder's worker did not finish in ten seconds.
     bool landTakeHere();
     bool recording() const noexcept { return recording_; }
+    bool capturingAudioTake() const noexcept { return capturingAudioTake_; }
     bool landingTake() const noexcept { return landing_; }
     // What the last take did, once: the clips it added (one undo step for all of them), or nothing and
     // the reason in `error()`. Empty until a take lands.
@@ -293,6 +294,33 @@ class ProjectDocument final : public engine::BlockProcessor {
     // so a frame that changes nothing builds nothing; the rows did not move, so the session has
     // nothing to re-read after it.
     void followOverrides();
+    struct AutomationPass {
+        automation::LaneSpec target;
+        std::optional<std::int64_t> suspendedLane;
+        std::optional<engine::DeviceRuntimeToken> device;
+        std::shared_ptr<const gesture::OwnerToken> owner;
+        std::vector<std::vector<AutomationPoint>> spans;
+        engine::Session::DriverClock last;
+        bool touched = false, nativeReleased = false;
+        void append(std::int64_t sample,double value);
+        void advance(const engine::Session::DriverClock &);
+        void value(const engine::Session::DriverClock &,double value);
+        void close(const engine::Session::DriverClock &);
+    };
+    void recordMixerValues(std::span<const OpRequest>);
+    void advanceAutomationWrites();
+    void closeAutomationWrites();
+    bool commitAutomation(std::vector<AutomationPass>,std::vector<OpRequest> requests={});
+    std::optional<AutomationPass> prepareParameterAutomation(std::int64_t,const device::ParamDescriptor&,
+                                                            double before,double after);
+    void suspendParameterAutomation(AutomationPass&);
+    bool observeNativeAutomation(std::int64_t,const device::ParamDescriptor&,engine::ParamEventKind,double before,double after,
+                                 const std::shared_ptr<const gesture::OwnerToken>&);
+    void finishNativeAutomation(bool stop=false);
+    bool releaseParameterPreview(const std::shared_ptr<const gesture::OwnerToken>&);
+    bool commitParameterAutomation(std::int64_t,const std::string&);
+    std::vector<AutomationPass> mixerWrites_, nativeWrites_;
+    std::map<std::pair<std::int64_t,std::string>,AutomationPass> parameterWrites_;
     [[nodiscard]] device::DeviceInstance* limiterReductionTarget(
         std::int64_t id, const engine::DeviceRuntimeToken& expected);
     void refreshLimiterReductionSources();
@@ -323,7 +351,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     void landTake(engine::AudioRecordingResult &);
     // Discards a take that is not kept; what the Status Bar adds when its files stay (DF-E44), else empty.
     std::string discardTake(engine::AudioRecordingResult &);
-    bool recording_ = false, landing_ = false;
+    bool recording_ = false, capturingAudioTake_ = false, landing_ = false;
     std::atomic<bool> deviceStopped_{true}; // `release` without a `prepare` since
     std::optional<TakeLanded> landed_;
     // The mixer drag's gesture (MX-23): the coordinator of this store's gestures, and the open session.

@@ -703,6 +703,118 @@ void discardRefusalSaid(const std::filesystem::path &dir) {
     check(entries() == before + 1, "the folder stays for the next attempt");
 #endif
 }
+void arrangementAutomation(const std::filesystem::path &dir) {
+    std::string error;
+    auto doc=ui::ProjectDocument::open(dir/"automation-record.adi",true,test::knobsLoader("7"),error);
+    check(doc!=nullptr,"a project for Arrangement automation");
+    if(!doc)return;
+    doc->prepare(48000,64);
+    const bool started=doc->startRecording(0,0,false);
+    check(started && doc->recording() && doc->session().automationRecording(),
+          "Arrangement Record starts automation with no armed tracks or audio inputs");
+    if(!started)return;
+    std::array<float,64> l{},r{};
+    float *outputs[]{l.data(),r.data()};
+    engine::AudioIo io;
+    io.out=outputs;io.numOut=2;io.frames=64;
+    auto block=[&] {doc->process(io);};
+    block();
+    const auto before=OpJournal(doc->store()).headSeq();
+    const gesture::RelativeScalarSelection volume{gesture::ScalarKind::TrackVolume,4,{}, {-70,6,-150}};
+    const bool touched=doc->beginMixerDrag(volume,std::nullopt,"Change Track Volume");
+    const bool first=doc->mixerDrag(-6);
+    block();
+    const bool second=doc->mixerDrag(-12);
+    block();
+    const bool ended=doc->endMixerDrag();
+    check(touched && first && second && ended,"a touched fader previews and releases during Arrangement Record");
+    check(doc->store().db().execAndGet("SELECT count(*) FROM automation_lanes WHERE owner_kind='track'"
+                                        " AND owner_id=4 AND param_ref='volume'").getInt()==1,
+          "first recorded touch creates a Volume envelope");
+    const auto lane=doc->store().db().execAndGet("SELECT coalesce(max(id),0) FROM automation_lanes"
+                                                " WHERE owner_kind='track' AND owner_id=4 AND param_ref='volume'").getInt64();
+    bool firstWritten=false,secondWritten=false;
+    if(const auto data=doc->store().getAutomationData(lane,{})) {
+        StreamReader<AutomationPoint> points(*data,FourCC::Automation);
+        for(std::uint32_t i=0;i<points.count();++i)if(const auto point=points.at(i)) {
+            firstWritten=firstWritten || point->value==-6;
+            secondWritten=secondWritten || point->value==-12;
+        }
+    }
+    check(firstWritten && secondWritten && !doc->session().automationOverridden(),
+          "the written pass keeps both played values and follows automation on release");
+    doc->stopRecording();
+    check(!doc->recording() && !doc->session().automationRecording() && !doc->landingTake(),
+          "stopping automation alone has no audio take to land");
+    check(History(doc->store()).undo().ok && OpJournal(doc->store()).headSeq()==before &&
+              doc->store().db().execAndGet("SELECT count(*) FROM automation_lanes WHERE id="+std::to_string(lane)).getInt()==0,
+          "one Undo restores the curve and its absence before recording");
+
+    doc->store().db().exec(std::string("INSERT INTO plugin_refs(id,format,uid,name) VALUES(3,'vst3','")+
+        test::kKnobsUid+"','UI knobs')");
+    std::vector<OpRequest> make(2);
+    make[0].opType="chain.create";
+    make[0].payload={{"id",3},{"track",2},{"ord",0},{"name","Devices"}};
+    make[1].opType="device.insert";
+    make[1].payload={{"id",3},{"chain",3},{"ord",0},{"ref",3},{"name","UI knobs"},{"latency",0}};
+    check(doc->ops().submit(make).ok && doc->synchronise(),"a device to write while Arrangement Record is on");
+    check(doc->startRecording(0,0,true),"automation can punch in while playing without an armed track");
+    const auto beforeKnob=OpJournal(doc->store()).headSeq();
+    using Event=engine::ParamEventKind;
+    check(doc->parameterGesture(3,"7",Event::Begin,.5) &&
+              doc->parameterGesture(3,"7",Event::Value,.7),"a device strip knob can be touched");
+    block();
+    check(doc->parameterGesture(3,"7",Event::End,.7),"releasing the knob completes the touch");
+    const auto knobLane=doc->store().db().execAndGet("SELECT coalesce(max(id),0) FROM automation_lanes"
+                                                    " WHERE owner_kind='device' AND owner_id=3 AND param_ref='7'").getInt64();
+    const auto wrote=[&](double value) {
+        const auto data=doc->store().getAutomationData(knobLane,{});
+        if(!data)return false;
+        const StreamReader<AutomationPoint> points(*data,FourCC::Automation);
+        for(std::uint32_t i=0;i<points.count();++i)
+            if(const auto point=points.at(i);point && point->value==value)return true;
+        return false;
+    };
+    check(wrote(.7) && !doc->session().automationOverridden() &&
+              doc->store().db().execAndGet("SELECT count(*) FROM plugin_params WHERE device_id=3").getInt()==0,
+          "device touch records normalized automation and leaves the manual parameter row untouched");
+    const auto beforeNative=OpJournal(doc->store()).headSeq();
+    block();
+    if(auto *knobs=dynamic_cast<test::Knobs*>(doc->session().instanceFor(3))) {
+        knobs->windowGesture(0,.35);
+        knobs->windowGesture(0,.4);
+    } else check(false,"the hosted editor is attached");
+    doc->tick(1);
+    doc->tick(2);
+    check(wrote(.4) && !doc->session().automationOverridden(),
+          "two gestures in one hosted-editor drain preserve the last pass");
+    doc->stopRecording();
+    check(doc->ops().undo().ok && wrote(.35),"the first Undo restores the previous hosted-editor pass");
+    check(doc->ops().undo().ok && OpJournal(doc->store()).headSeq()==beforeNative && !wrote(.35),
+          "the next Undo reverses the first hosted-editor pass");
+    check(doc->ops().undo().ok && OpJournal(doc->store()).headSeq()==beforeKnob,
+          "one Undo reverses the device strip pass");
+
+    OpRequest loop;loop.opType="transport.setLoop";loop.payload={{"on",true},{"start",0},{"end",61501}};
+    check(doc->ops().submit(loop).ok && doc->synchronise(),"a short loop for a held touch");
+    doc->mailbox().post(ui::TransportMailbox::Command::Locate,0);
+    block();
+    check(doc->startRecording(0,0,true) &&
+          doc->beginMixerDrag(volume,std::nullopt,"Change Track Volume") && doc->mixerDrag(-9),
+          "an automation-only touch can record with looping enabled");
+    for(int i=0;i<6;++i){block();doc->tick(i+2);}
+    check(doc->endMixerDrag(),"release a touch held across a loop wrap");
+    const auto loopLane=doc->store().db().execAndGet("SELECT coalesce(max(id),0) FROM automation_lanes"
+                                                    " WHERE owner_kind='track' AND owner_id=4").getInt64();
+    bool carried=false;
+    if(const auto data=doc->store().getAutomationData(loopLane,{})) {
+        const StreamReader<AutomationPoint> points(*data,FourCC::Automation);
+        for(std::uint32_t i=0;i<points.count();++i)
+            if(const auto point=points.at(i);point && point->time==0 && point->value==-9)carried=true;
+    }
+    check(carried,"the held value is recorded at the next loop start");
+    doc->stopRecording();
+}
 void arrangementRecord(const std::filesystem::path &dir) {
     std::string error;
     auto doc = ui::ProjectDocument::open(dir / "record.adi", true, {}, error);
@@ -716,11 +828,13 @@ void arrangementRecord(const std::filesystem::path &dir) {
         r.payload = {{"id", id}, {"armed", on}};
         return doc->ops().submit(r).ok && doc->synchronise();
     };
+    doc->setAutomationArmed(false);
     check(!doc->startRecording(0, 2, false) && doc->error() == "Arm a track to record into it.",
           "with nothing armed, Record says to arm a track");
     check(armed(2, true) && doc->recordStates().at(2).armed, "a MIDI track armed, as the rows say");
     check(!doc->startRecording(0, 2, false) && doc->error().find("live MIDI input") != std::string::npos,
           "with only MIDI armed, Record says MIDI waits for the engine's live input");
+    doc->setAutomationArmed(true);
     check(armed(2, false) && armed(4, true), "3 Audio armed instead");
     check(!doc->startRecording(0, 0, false) && doc->error().find("no inputs") != std::string::npos,
           "a device with no inputs is refused");
@@ -1272,6 +1386,8 @@ int main(int argc, char **argv) {
     }
     peakSpans();
     {
+        test::TempDirectory automationDir("ui_document", "automation-record");
+        arrangementAutomation(automationDir.path());
         test::TempDirectory recordDir("ui_document", "record");
         arrangementRecord(recordDir.path());
         test::TempDirectory guardDir("ui_document", "guard");

@@ -480,7 +480,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     }
     std::function<bool(std::int64_t insertTick, bool playing)> startRecording;
     std::function<void()> stopRecording;
-    std::function<bool()> recording;
+    std::function<bool()> recording, capturingAudioTake;
     // Live's MIDI Arrangement Overdub (manual 21.2): the Control Bar's switch, the window's own state.
     // It decides what a MIDI recording does to the notes already there once MIDI records (SRF-05).
     bool midiOverdub() const noexcept { return midiOverdub_; }

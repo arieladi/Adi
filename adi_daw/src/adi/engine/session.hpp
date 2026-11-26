@@ -243,6 +243,13 @@ public:
     // Turning a gate off prevents new writes but keeps a pending write suspended
     // until its captured data is committed/refreshed and explicitly finished.
     void setAutomationWriteState(bool armed, bool recording) noexcept;
+    struct DriverClock {
+        std::int64_t sample = 0, streamedFrames = 0, loopBegin = 0, loopEnd = 0;
+        std::uint64_t revision = 0;
+        bool playing = false;
+    };
+    bool readDriverClock(DriverClock&) const noexcept; // bounded owner observation
+
     [[nodiscard]] bool automationArmed() const noexcept { return automationArmed_; }
     [[nodiscard]] bool automationRecording() const noexcept { return automationRecording_; }
     [[nodiscard]] const std::set<std::int64_t>& writingAutomationLanes() const noexcept { return writingAutomation_; }
@@ -567,16 +574,10 @@ private:
     std::optional<std::int64_t> primeExternalAt_; // owner-only candidate readiness anchor
     bool primeExternalFollowDriver_ = false;
     const std::function<bool()>* externalPublishGuard_ = nullptr; // synchronous owner call only
-    struct DriverClock {
-        std::int64_t sample = 0;
-        std::uint64_t revision = 0;
-        bool playing = false;
-    };
     void publishDriverClock() noexcept; // single audio driver only
-    bool readDriverClock(DriverClock&) const noexcept; // bounded owner observation
     void primeWhilePlaying(ClipPlayback&, const TimingView&); // owner, an unpublished candidate only; stopped too (B12)
     std::atomic<std::uint64_t> driverClockSequence_{0}, driverRevision_{0};
-    std::atomic<std::int64_t> driverSample_{0};
+    std::atomic<std::int64_t> driverSample_{0}, driverStreamed_{0}, driverLoopBegin_{0}, driverLoopEnd_{0};
     std::atomic<bool> driverPlaying_{false};
     bool loopApplied_=false,loopOn_=false;
     std::int64_t loopBegin_=0,loopEnd_=0;
