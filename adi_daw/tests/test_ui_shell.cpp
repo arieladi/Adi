@@ -4531,7 +4531,7 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
         if (!index)
             return;
         // An added folder whose name is a sidebar label's: told apart by its volume, not its name.
-        const auto addedFolder = dir / "Samples";
+        const auto addedFolder = dir / "browser-places" / "Samples";
         std::filesystem::create_directories(addedFolder);
         {
             std::vector<float> samples(4800, .3f);
