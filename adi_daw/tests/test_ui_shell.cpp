@@ -14930,8 +14930,8 @@ void settingsAvailabilityAndTestTone(const std::filesystem::path &dir) {
     check(row && !row->control->isEnabled() && row->getTooltip().contains("Not available in this build"),
           "Find also explains an unavailable setting");
     panel.showPage("Record, Warp & Launch");
-    const auto *monitoringLatency = rowFor("audio.keepMonitoringLatency");
-    const auto *recordQuantize = rowFor("record.quantize");
+    auto *monitoringLatency = rowFor("audio.keepMonitoringLatency");
+    auto *recordQuantize = rowFor("record.quantize");
     check(monitoringLatency && !monitoringLatency->control->isEnabled() &&
               monitoringLatency->getTooltip().contains("Not available in this build") &&
               recordQuantize && !recordQuantize->control->isEnabled() &&
