@@ -4,6 +4,19 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-26 — `basics/*` Round 3 (`sc-02-lane-transport` `3a545410`, `sc-220-midi-loop` `062af8f9` — PASS)
+
+Verified under **GCC 12.4.0** and **Clang 14.0.6 + libstdc++ 12** (`-DADI_WERROR=ON`, headless Pd on, JUCE off, `-DADI_ACCEPTANCE=ON`), touched JUCE TUs (`-DADI_WITH_JUCE=ON -DADI_WERROR=ON`), and **Clang 14 ASan + LSan + UBSan** (`-O1 -g1 -fsanitize=address,undefined -fno-sanitize-recover=undefined`). (Non-DSP UI branches below run `adi_acceptance_wts01` for acceptance; full 2/2 `ctest -L acceptance` including `adi_builtin_realtime_tests` runs on every `land/*` stack and DSP/engine branch.)
+
+| Branch | SHA | GCC 12.4.0 (`-DADI_WERROR=ON`) | Clang 14.0.6 + libstdc++ 12 (`-DADI_WERROR=ON`) | JUCE TUs (`-DADI_WITH_JUCE=ON -DADI_WERROR=ON`) | Clang 14 ASan + LSan + UBSan | Verdict |
+|---|---|---|---|---|---|---|
+| `basics/sc-02-lane-transport` | `3a545410` | **PASS** (0 warnings; 2/2 touched `adi_ui_seams_tests`, `adi_ui_window_state_tests` + `adi_acceptance_wts01`, 53.74 s) | **PASS** (0 warnings; 2/2 touched + `adi_acceptance_wts01`, 48.85 s) | **PASS** (3/3 both compilers, 0 warnings: `ui_arrangement.cpp.o`, `ui_shell.cpp.o`, `test_ui_shell.cpp.o`) | **PASS** (2/2 touched, 12.41 s; 0 errors, 0 leaks) | **PASS** |
+| `basics/sc-220-midi-loop` | `062af8f9` | **PASS** (0 warnings; 2/2 touched `adi_ui_note_edits_tests`, `adi_ui_seams_tests` + `adi_acceptance_wts01`, 52.67 s) | **PASS** (0 warnings; 2/2 touched + `adi_acceptance_wts01`, 46.32 s) | **PASS** (2/2 both compilers, 0 warnings: `ui_shell.cpp.o`, `test_ui_shell.cpp.o`) | **PASS** (2/2 touched, 11.42 s; 0 errors, 0 leaks) | **PASS** |
+
+No findings on `basics/sc-02-lane-transport` (`3a545410`) or `basics/sc-220-midi-loop` (`062af8f9`).
+
+---
+
 ## 2026-11-26 — `land/*` Round 1 (`land/basics-1127a` `b55b698d` — PASS)
 
 Verified `origin/land/basics-1127a` at `b55b698d` (win's stack merging `gemini/df-e89-release-warnings` + `basics/sc-02-lane-transport`) under **GCC 12.4.0** and **Clang 14.0.6 + libstdc++ 12** with `-DADI_WERROR=ON` (headless Pd on, JUCE off, `-DADI_ACCEPTANCE=ON`), all 3 touched JUCE TUs (`-DADI_WITH_JUCE=ON -DADI_WERROR=ON`), and **Clang 14 ASan + LSan + UBSan** (`-O1 -g1 -fsanitize=address,undefined -fno-sanitize-recover=undefined`).
