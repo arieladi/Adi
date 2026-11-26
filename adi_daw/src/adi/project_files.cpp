@@ -19,6 +19,7 @@
 #include <limits>
 #include <map>
 #include <functional>
+#include <vector>
 
 namespace adi {
 namespace {
@@ -253,11 +254,48 @@ std::string joinedWarning(std::string first,const std::string& next) {
     if(!first.empty())first+="; ";
     first+=next;return first;
 }
-std::string collectionName(const std::string& hash,const fs::path& source) {
-    auto extension=media::pathUtf8(source.extension());
-    if(extension.empty() || extension.size()>16 || extension.find_first_not_of(".abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")!=std::string::npos)
-        extension=".bin";
-    return hash+extension;
+fs::path publishCollectedMedia(const fs::path& directory, const fs::path& stage, const fs::path& source,
+                               const std::string& original, const std::string& hash,
+                               media::detail::PublishedRollback& owned) {
+    auto fallbackExtension = media::pathUtf8(source.extension());
+    if (fallbackExtension.empty() || fallbackExtension.size() > 16 ||
+        fallbackExtension.find_first_not_of(".abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") != std::string::npos)
+        fallbackExtension = ".bin";
+    const auto name = media::detail::portableFilename(original, "Sample-" + hash.substr(0, 8) + fallbackExtension);
+    const auto filename = media::pathFromUtf8(name);
+    const auto stem = media::pathUtf8(filename.stem());
+    const auto extension = media::pathUtf8(filename.extension());
+    const auto matches = [&](const fs::path& target) {
+        if (!fs::is_regular_file(fs::symlink_status(target))) return false;
+        const auto actual = media::blake3File(target);
+        return actual && actual.hex == hash;
+    };
+    const auto staged = stage / hash;
+    for (unsigned number = 1; number <= 10000; ++number) {
+        const auto target = directory / (number == 1 ? filename
+            : media::pathFromUtf8(stem + " (" + std::to_string(number) + ")" + extension));
+        if (fs::symlink_status(target).type() != fs::file_type::not_found) {
+            if (matches(target)) return target;
+            continue;
+        }
+        if (!fs::exists(staged)) {
+            fs::copy_file(source, staged);
+            if (!matches(staged)) throw std::runtime_error("hash mismatch or unreadable media: " + media::pathUtf8(source));
+        }
+        owned.files.push_back({target, {}});
+        const auto result = media::publishFile(staged, target, {}, media::PublishPolicy::VerifiedCopyFallback);
+        if (result.status == media::PublishStatus::published) {
+            owned.files.back().identity = result.identity;
+            return target;
+        }
+        owned.files.pop_back();
+        if (result.status != media::PublishStatus::exists) throw std::runtime_error("publish media: " + result.error);
+        if (matches(target)) {
+            fs::remove(staged);
+            return target;
+        }
+    }
+    throw std::runtime_error("too many filename collisions for " + original);
 }
 }
 struct Store::CopyState : StoreFileResult {
@@ -467,38 +505,35 @@ StoreFileResult Store::collectAllAndSave() {
             candidates[hash].push_back(std::move(row));return false;
         },false);
         const auto folder=media::projectFolder(*this),audio=folder/"audio";
+        struct Source {
+            std::string hash;
+            fs::path path;
+            std::string original;
+        };
+        std::vector<Source> sources;
+        // Resolve before publishing any new basename that a later source
+        // might otherwise pick up through resolveMedia's audio/ fallback.
+        for (const auto& [hash, rows] : candidates) {
+            std::string error;
+            fs::path source;
+            std::string original;
+            for (const auto& row : rows) {
+                if (original.empty()) original = row.at("orig_name").get<std::string>();
+                source = media::resolveMedia(folder, row, error);
+                if (!source.empty()) break;
+            }
+            if (source.empty()) throw std::runtime_error(error);
+            if (original.empty()) original = media::pathUtf8(source.filename());
+            sources.push_back({hash, std::move(source), std::move(original)});
+        }
         std::map<std::string,std::string> locations;
-        if(!candidates.empty()) {
+        if(!sources.empty()) {
             if(fs::is_symlink(fs::symlink_status(audio)))throw std::runtime_error("audio/ must not be a symlink");
             fs::create_directories(audio);
             Stage stage(audio);
-            for(const auto& [hash,rows]:candidates) {
-                fs::path source;std::string error;
-                for(const auto& row:rows) {
-                    source=media::resolveMedia(folder,row,error);
-                    if(!source.empty())break;
-                }
-                if(source.empty())throw std::runtime_error(error);
-                const auto target=audio/media::pathFromUtf8(collectionName(hash,source));
-                auto verify=[&wantHash=hash](const fs::path& file){
-                    const auto actual=media::blake3File(file);
-                    if(!actual || actual.hex!=wantHash)throw std::runtime_error("hash mismatch or unreadable media: "+media::pathUtf8(file));
-                };
-                if(fs::is_symlink(fs::symlink_status(target)))throw std::runtime_error("collected target must not be a symlink");
-                if(fs::exists(target))verify(target);
-                else {
-                    const auto staged=stage.path/"media.tmp";
-                    fs::copy_file(source,staged);verify(staged);
-                    files.files.push_back({target,{}});
-                    const auto result = media::publishFile(staged, target, {},
-                                                           media::PublishPolicy::VerifiedCopyFallback);
-                    if(result.status!=media::PublishStatus::published) {
-                        files.files.pop_back();
-                        if(result.status!=media::PublishStatus::exists)throw std::runtime_error("publish media: "+result.error);
-                        verify(target);fs::remove(staged);
-                    }else files.files.back().identity=result.identity;
-                }
-                locations[hash]=media::pathUtf8(target.lexically_relative(folder));
+            for (const auto& [hash, path, original] : sources) {
+                const auto target = publishCollectedMedia(audio, stage.path, path, original, hash, files);
+                locations[hash] = media::pathUtf8(target.lexically_relative(folder));
             }
         }
         visitPaths(*db_,[&](Payload& paths,const std::string&,const std::string& hash){

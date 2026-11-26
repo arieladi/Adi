@@ -195,7 +195,12 @@ void collection() {
         check(copy->db().execAndGet("SELECT COUNT(*) FROM media_files").getInt() == 2, "backup included both committed WAL rows");
         check(checkProject(*copy, true).clean(), "extracted project check is clean including media hashes");
         const auto a = media::mediaRow(copy->db(),1), b = media::mediaRow(copy->db(),2);
-        check(a.at("rel_path") != b.at("rel_path"), "same original basename gets collision-safe paths");
+        const auto named = [](const Payload& row) {
+            return media::pathFromUtf8(row.at("rel_path").get<std::string>()).filename();
+        };
+        check((named(a) == "clip.wav" && named(b) == "clip (2).wav") ||
+              (named(b) == "clip.wav" && named(a) == "clip (2).wav"),
+              "the ZIP keeps the sample's basename with a short suffix for the clash");
         bool resolved = true;
         for (const auto& row : {a,b}) {
             const auto path = media::pathFromUtf8(row.at("rel_path").get<std::string>());
@@ -257,7 +262,8 @@ void collectActiveAndHistory() {
     check(history.undo().ok && history.undo().ok && resolves(*f.store,2),"undo unlink restores a collected media path");
     check(history.redo().ok && history.undo().ok && resolves(*f.store,2),"redo and undo retain portable captured paths");
     const auto current=media::mediaRow(f.store->db(),1);
-    check(current.at("abs_path_hint").is_null() && current.at("rel_path").get<std::string>().starts_with("audio/"),"collected paths are local with no external absolute hints");
+    check(current.at("abs_path_hint").is_null() && current.at("rel_path")=="audio/current.bin",
+          "collected paths keep the original basename with no external absolute hints");
     check(f.store->close(),"collected WAL folds on close");f.store.reset();
     const auto moved=f.temp.path()/"moved";fs::create_directory(moved);
     fs::rename(f.temp.path()/"song.adi",moved/"song.adi");fs::rename(f.temp.path()/"audio",moved/"audio");
@@ -274,12 +280,7 @@ void collectionRefusals() {
     const auto missingResult=f.store->collectAllAndSave();
     check(!missingResult.ok,"a missing asset aborts collection");
     check(digestProject(*f.store).text==before,"failed collection leaves all rows and captured paths unchanged");
-#if defined(_WIN32)
-    check(fs::is_empty(f.temp.path()/"audio"),"failed collection removes only its newly published media and stages");
-#else
-    check(!missingResult.warning.empty() && !fs::is_empty(f.temp.path()/"audio"),"unsupported rollback retains and reports public media");
-    fs::remove_all(f.temp.path()/"audio");fs::create_directory(f.temp.path()/"audio");
-#endif
+    check(!fs::exists(f.temp.path()/"audio"),"a missing sample fails before collection publishes any files");
     write(missing,missingB?"second":"first");
     f.store->db().exec("CREATE TRIGGER refuse_collection BEFORE UPDATE OF rel_path ON media_files BEGIN SELECT RAISE(ABORT,'injected update failure'); END");
     const auto sqlResult=f.store->collectAllAndSave();
@@ -291,13 +292,18 @@ void collectionRefusals() {
 #endif
     check(digestProject(*f.store).text==before,"SQL failure restores pool and captured path bytes");
     f.store->db().exec("DROP TRIGGER refuse_collection");
-    const auto aTarget=f.temp.path()/"audio"/(a.at("hash_blake3").get<std::string>()+".bin");
-    const auto bTarget=f.temp.path()/"audio"/(b.at("hash_blake3").get<std::string>()+".bin");
+    const auto aTarget=f.temp.path()/"audio"/"a.bin";
+    const auto bTarget=f.temp.path()/"audio"/"b.bin";
     write(aTarget,"first");write(bTarget,"keep wrong existing file");
-    check(!f.store->collectAllAndSave().ok && read(aTarget)=="first" && read(bTarget)=="keep wrong existing file","hash-addressed targets are verified and never overwritten or removed on failure");
-    check(digestProject(*f.store).text==before,"existing corrupt destination also rolls back path changes");
-    fs::remove(bTarget);
-    check(f.store->collectAllAndSave().ok && read(aTarget)=="first","existing matching target is safely reused");
+    check(f.store->collectAllAndSave().ok && read(aTarget)=="first" && read(bTarget)=="keep wrong existing file",
+          "an occupied basename with different content survives collection");
+    check(media::mediaRow(f.store->db(),1).at("rel_path")=="audio/a.bin" &&
+          media::mediaRow(f.store->db(),2).at("rel_path")=="audio/b (2).bin" &&
+          read(f.temp.path()/"audio"/"b (2).bin")=="second", "reuse matching content and suffix the name of the other sample");
+    const auto collected=digestProject(*f.store).text;
+    check(f.store->collectAllAndSave().ok && digestProject(*f.store).text==collected &&
+          std::distance(fs::directory_iterator(f.temp.path()/"audio"),fs::directory_iterator{})==3,
+          "a second collection reuses the suffixed destination");
     {
         SQLite::Transaction transaction(f.store->db());
         check(!f.store->collectAllAndSave().ok,"collection refuses an active transaction");
