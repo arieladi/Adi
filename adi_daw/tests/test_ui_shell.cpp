@@ -12589,6 +12589,22 @@ void clipWaveforms(AppCommands &commands, const std::filesystem::path &dir) {
     check(root.submitEdit("clip.setGain", {{"id", clipId}, {"gain", -24.}}, "Set Clip Gain"), "lower the audio clip's gain");
     root.frame();
     check(waveformHeight() + 40 < inside, "the arrangement waveform shrinks with clip gain");
+    auto *verticalZoom =
+        dynamic_cast<juce::Slider *>(root.arrangement.findChildWithID("waveformVerticalZoom"));
+    check(verticalZoom != nullptr && verticalZoom->isVisible() && !verticalZoom->getBounds().isEmpty(),
+          "the Arrangement shows a waveform vertical zoom slider");
+    if (verticalZoom != nullptr) {
+        const auto atLowGain = waveformHeight();
+        const auto undoBeforeZoom = document->ops().nextUndo()->txnId;
+        verticalZoom->setValue(24., juce::sendNotificationSync);
+        check(std::abs(waveformHeight() - inside) <= 4 && waves.builds() == 1,
+              "24 dB of display zoom enlarges the same cached peaks");
+        check(root.reader().findTrack(4)->clips[0]->gainDb == -24. &&
+                  document->ops().nextUndo()->txnId == undoBeforeZoom,
+              "waveform vertical zoom preserves clip gain and does not add an Undo step");
+        verticalZoom->setValue(0., juce::sendNotificationSync);
+        check(waveformHeight() == atLowGain, "returning to unity restores the previous waveform height");
+    }
     check(root.command(AppCommands::Undo), "undo the lower gain");
     root.frame();
     check(waveformHeight() == inside && waves.builds() == 1, "undo restores the waveform height using the same peaks");
