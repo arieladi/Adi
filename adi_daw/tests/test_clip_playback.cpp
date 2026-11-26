@@ -11,6 +11,7 @@
 #include "adi/audio/wav_file.hpp"
 #include "adi/audio/warp_map.hpp"
 #include "adi/audio/io_audit.hpp"
+#include "adi/media/blake3.hpp"
 #include "adi/store.hpp"
 #include "adi/ops.hpp"
 #include "adi/ui/audio_drop.hpp"
@@ -375,10 +376,28 @@ void reverseSelectedRange() {
     constexpr auto quarter=textproj::kPPQ;
     Fixture f(48000,2,40000);
     f.add(1,0,24000,source,30000);
+    const auto hash = media::blake3File(f.dir.path() / "audio.wav");
+    if (!hash) {
+        check(false,"hash the Reverse selection's source file");
+        return;
+    }
+    {
+        SQLite::Statement media(f.store->db(),"UPDATE media_files SET hash_blake3=? WHERE id=1");
+        media.bind(1,hash.hex);
+        media.exec();
+    }
     const std::array clips{std::int64_t{1}};
     const auto edit=clip_edit::prepareReverse(*f.store,clips,std::pair{quarter/4,quarter/2},48000);
-    check(edit.ok && edit.requests.size()==1 && clip_edit::commitPrepared(*f.store,edit).ok,
-          "Reverse captures both cuts and the selected audio in one edit");
+    if (!edit.ok) {
+        check(false,edit.error.c_str());
+        return;
+    }
+    const auto committed = clip_edit::commitPrepared(*f.store,edit);
+    if (!committed.ok) {
+        check(false,committed.error.c_str());
+        return;
+    }
+    check(edit.requests.size()==1,"Reverse captures both cuts and the selected audio in one edit");
     f.load(block);
     const auto matches=[&](bool reversed) {
         bool exact=true;
