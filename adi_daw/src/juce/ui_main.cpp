@@ -1134,7 +1134,8 @@ class AdiApplication final : public juce::JUCEApplication,
             if (importing_ && importing_->load())
                 return false;
             const auto now = juce::Time::currentTimeMillis() * 1000;
-            const auto job = document_->materialJob(path, track, pos, choices, now);
+            const auto job = document_->materialJob(path, track, pos, choices, now,
+                                                    edit_plan::capturePolicy(*settings_));
             if (import_.joinable())
                 import_.join(); // the last one has finished
             importing_ = std::make_shared<std::atomic<bool>>(true);

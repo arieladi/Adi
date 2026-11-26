@@ -31,6 +31,10 @@ struct DroppedAudio {
     std::string name;
     AudioImport import;
 };
+struct AudioDropEdit : TrackEdit {
+    std::int64_t endOnTarget = 0; // additional files may be sent to other tracks
+    std::int64_t lastClip = 0; // reserve every newcomer before allocating leftovers
+};
 namespace audio_drop_detail {
 // The first id past every live row of a kind and every id a remark still holds for it: `RowIds`' rule
 // (DF-E16), so a deleted clip or track whose remark stays is never given again.
@@ -77,12 +81,12 @@ inline std::string audioDropRefusal(const engine::Snapshot &snapshot, std::int64
 // `separate` (Ctrl/Cmd held), the first there and each of the others on a new audio track of its
 // own at the end, all at `pos`. One batch, one undo step: the pool rows, the new tracks, the clips.
 // The first clip and its track are selected.
-inline TrackEdit dropAudio(const engine::Snapshot &snapshot, std::int64_t track, std::int64_t pos,
+inline AudioDropEdit dropAudio(const engine::Snapshot &snapshot, std::int64_t track, std::int64_t pos,
                            std::vector<DroppedAudio> files, bool separate = false,
                            const RecordingDefaults *defaults = nullptr) {
     using namespace track_edits_detail;
     constexpr const char *label = "Insert Audio Clip";
-    TrackEdit edit;
+    AudioDropEdit edit;
     edit.refusal = audioDropRefusal(snapshot, track);
     if (!edit.refusal.empty())
         return edit;
@@ -139,8 +143,10 @@ inline TrackEdit dropAudio(const engine::Snapshot &snapshot, std::int64_t track,
             edit.select = on;
             edit.clip = clip;
         }
-        ++clip;
+        edit.lastClip = clip++;
         at = start + length;
+        if (on == track)
+            edit.endOnTarget = at;
     }
     return edit;
 }
@@ -162,7 +168,7 @@ inline TrackEdit newAudioTrack(const engine::Snapshot &snapshot, const Recording
     return edit;
 }
 // One file dropped at `track` and `pos`, named `name`.
-inline TrackEdit dropAudio(const engine::Snapshot &snapshot, std::int64_t track, std::int64_t pos,
+inline AudioDropEdit dropAudio(const engine::Snapshot &snapshot, std::int64_t track, std::int64_t pos,
                            const std::string &name, AudioImport import) {
     std::vector<DroppedAudio> files;
     files.push_back({name, std::move(import)});

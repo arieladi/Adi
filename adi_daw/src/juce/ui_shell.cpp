@@ -26,6 +26,7 @@
 #include <cctype>
 #include <cmath>
 #include <initializer_list>
+#include <iterator>
 #include <vector>
 namespace adi::ui {
 namespace {
@@ -3605,8 +3606,25 @@ bool AdiRootComponent::dropPlain(const std::vector<std::pair<std::string, std::s
                                    &commands_.recordingDefaults());
     if (!edit.refusal.empty())
         return fail(std::move(edit.refusal));
-    if (!submitEdits(std::move(edit.ops)))
+    if (track != 0) {
+        const edit_plan::Options options{editRate(), edit_plan::capturePolicy(commandSettings())};
+        auto cleared = clip_edit::prepareAudioDropReplacement(submitter_.store(), track,
+            {0, std::max<std::int64_t>(0, pos)}, {0, edit.endOnTarget}, options, edit.lastClip);
+        if (!cleared.ok)
+            return fail(std::move(cleared.error));
+        if (!cleared.requests.empty()) {
+            for (auto &request : cleared.requests)
+                request.label = edit.ops.front().label;
+            cleared.requests.insert(cleared.requests.end(), std::make_move_iterator(edit.ops.begin()),
+                                    std::make_move_iterator(edit.ops.end()));
+            if (!commitEdit(std::move(cleared)))
+                return false;
+        } else if (!submitEdits(std::move(edit.ops))) {
+            return false;
+        }
+    } else if (!submitEdits(std::move(edit.ops))) {
         return false;
+    }
     // The first clip selected, as a click on it selects it: its track, and its time.
     auto &sel = arrangement.geometry.selection;
     sel.track = edit.select;

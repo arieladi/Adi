@@ -99,6 +99,9 @@ struct RangeCut {RangeCopy copy;PreparedEdit edit;};
                                             TimePoint at,double referenceRate,bool insertTime=false);
 [[nodiscard]] PreparedEdit prepareDuplicateRange(Store&,const RangeSelection&,double referenceRate,bool insertTime=false);
 [[nodiscard]] PreparedEdit prepareDeleteRange(Store&,const RangeSelection&,const edit_plan::Options&,std::int64_t reserveClipId=0);
+/// Capture the existing Arrangement material covered by a new audio clip.
+[[nodiscard]] PreparedEdit prepareAudioDropReplacement(Store&,std::int64_t track,TimePoint begin,TimePoint end,
+    const edit_plan::Options&,std::int64_t lastIncomingId);
 [[nodiscard]] PreparedEdit preparePasteRange(Store&,const RangeCopy&,const std::vector<std::int64_t>& tracks,
     TimePoint at,const edit_plan::Options&);
 [[nodiscard]] PreparedEdit prepareDuplicateRange(Store&,const RangeSelection&,const edit_plan::Options&);

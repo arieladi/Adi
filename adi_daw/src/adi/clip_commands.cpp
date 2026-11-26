@@ -962,6 +962,40 @@ PreparedEdit prepareDeleteRange(Store& store,const RangeSelection& selection,con
     } catch(const std::exception& exception){result.ok=false;result.error=exception.what();}
     return result;
 }
+PreparedEdit prepareAudioDropReplacement(Store& store,std::int64_t track,TimePoint begin,TimePoint end,
+                                         const edit_plan::Options& options,std::int64_t lastIncomingId) {
+    PreparedEdit result;
+    try {
+        if(options.policy.deleteOverlaps && begin.value!=end.value) {
+            const RangeSelection range{{track},begin,end};
+            validRange(range);
+            Read read(store.db());
+            const edit::TimeMap time(store.db());
+            const auto first=coordinate(begin,1,time),last=coordinate(end,1,time);
+            SQLite::Statement clips(store.db(),
+                "SELECT time_base,COALESCE(pos_ticks,pos_ns),COALESCE(length_ticks,length_ns) "
+                "FROM clips WHERE track_id=? AND lane_id IS NULL");
+            clips.bind(1,track);
+            while(clips.executeStep()) {
+                const auto base=clips.getColumn(0).getInt();
+                const auto start=clips.getColumn(1).getInt64();
+                const auto physical=[&](std::int64_t value){
+                    return base==1?static_cast<long double>(value):std::round(static_cast<long double>(time.seconds(value))*1e9L);
+                };
+                if(physical(start)>=static_cast<long double>(last))continue;
+                const auto length=clips.getColumn(2);
+                if(length.isNull() || (length.getInt64()>0 &&
+                    physical(edit::addTime(start,length.getInt64()))>static_cast<long double>(first))) {
+                    // Only an actual overlap invokes the planner. Other
+                    // imports keep their usual policy and admission path.
+                    return prepareDeleteRange(store,range,options,lastIncomingId);
+                }
+            }
+        }
+        result.ok=true;
+    } catch(const std::exception& error) {result.error=error.what();}
+    return result;
+}
 PreparedEdit preparePasteRange(Store& store,const RangeCopy& copy,const std::vector<std::int64_t>& tracks,
                                 TimePoint at,double referenceRate,bool insertTime) {
     if(!insertTime)return preparePasteRange(store,copy,tracks,at,edit_plan::Options{referenceRate,{}});

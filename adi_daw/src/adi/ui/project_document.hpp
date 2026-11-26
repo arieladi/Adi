@@ -316,9 +316,10 @@ class ProjectDocument final : public engine::BlockProcessor {
         std::int64_t track = 0, clipId = 0, mediaId = 0, atTicks = 0, importedUtc = 0;
         ImportChoices choices;
         double rate = 48000.0;
+        edit_plan::EditPolicy placementPolicy;
     };
     MaterialJob materialJob(const std::string &utf8Path, std::int64_t track, std::int64_t atTicks,
-                            const ImportChoices &, std::int64_t nowUtc) const;
+                            const ImportChoices &, std::int64_t nowUtc, edit_plan::EditPolicy = {}) const;
     static clip_edit::MaterialEdit prepareMaterial(const MaterialJob &, std::stop_token = {});
     // The new clip's id when it landed; 0 with `error()` saying why when it did not.
     std::int64_t commitMaterial(clip_edit::MaterialEdit &, const MaterialJob &);

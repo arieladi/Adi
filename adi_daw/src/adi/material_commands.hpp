@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
-#include "adi/clip_commands.hpp"
+#include "adi/edit_plan.hpp"
 #include "adi/audio/auto_warp.hpp"
 #include "adi/audio/warp.hpp"
 #include "adi/render/queue.hpp"
@@ -19,6 +19,7 @@ struct ImportOptions {
     audio::WarpMode warpMode=audio::WarpMode::Beats;
     audio::AutoWarpOptions warpAnalysis;
     std::stop_token stop;
+    std::optional<edit_plan::EditPolicy> arrangementPlacement; // the Arrangement drop owns overlap policy
 };
 /// Off-callback, on this connection's owner. Does not change project rows.
 /// Keep the document generation with the job. Hosts keep their thread contract.

@@ -1735,7 +1735,7 @@ bool ProjectDocument::prepareImport(const std::string &utf8Path, std::int64_t no
 }
 ProjectDocument::MaterialJob ProjectDocument::materialJob(const std::string &utf8Path, std::int64_t track,
                                                           std::int64_t atTicks, const ImportChoices &choices,
-                                                          std::int64_t nowUtc) const {
+                                                          std::int64_t nowUtc, edit_plan::EditPolicy placementPolicy) const {
     MaterialJob job;
     job.project = store_->path();
     job.source = pathFromUtf8(utf8Path);
@@ -1743,6 +1743,7 @@ ProjectDocument::MaterialJob ProjectDocument::materialJob(const std::string &utf
     job.atTicks = atTicks;
     job.importedUtc = nowUtc;
     job.choices = choices;
+    job.placementPolicy = placementPolicy;
     job.rate = engineRate_ > 0 ? engineRate_ : 48000.0;
     // The next free ids as the project stands; a project changed before the commit refuses as stale.
     RowIds rows(store_->db()); // DF-E16: never an id a remark still holds
@@ -1771,6 +1772,7 @@ clip_edit::MaterialEdit ProjectDocument::prepareMaterial(const MaterialJob &job,
     options.edgeFades = job.choices.edgeFades;
     options.warpMode = job.choices.mode;
     options.stop = stop;
+    options.arrangementPlacement = job.placementPolicy;
     out = clip_edit::prepareImportAudio(*store, options, job.rate);
     return out;
 }

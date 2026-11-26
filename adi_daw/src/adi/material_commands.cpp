@@ -218,6 +218,19 @@ MaterialEdit prepareImportAudio(Store& store,const ImportOptions& options,double
         image["children"]["audio_clips"]=Payload::array({edit::defaultRow(store.db(),"audio_clips",sourceValues)});
         image["children"]["clip_playback_details"]=Payload::array({edit::defaultRow(store.db(),"clip_playback_details",playbackValues)});
         if(saved)applySampleDefaults(store,image,*saved,referenceRate);
+        if(options.arrangementPlacement) {
+            const auto& placed=image.at("row");
+            const int clock=placed.at("time_base").get<int>();
+            const auto first=placed.at(clock==0?"pos_ticks":"pos_ns").get<std::int64_t>();
+            const auto length=placed.at(clock==0?"length_ticks":"length_ns").get<std::int64_t>();
+            auto cleared=prepareAudioDropReplacement(store,options.track,{clock,first},
+                {clock,edit::addTime(first,length)},{referenceRate,*options.arrangementPlacement},options.clipId);
+            if(!cleared.ok)throw std::runtime_error(cleared.error);
+            for(auto& request:cleared.requests) {
+                request.label="Import Audio";
+                result.edit.requests.push_back(std::move(request));
+            }
+        }
         edit::RowEdits plan(store.db());createImage(plan,image);
         OpRequest request;request.opType="clip.duplicate";request.payload={{"id",options.clipId},{"changes",plan.changes()}};
         request.label="Import Audio";request.targetKind="clip";request.targetId=options.clipId;result.edit.requests.push_back(std::move(request));
