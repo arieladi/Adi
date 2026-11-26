@@ -4086,7 +4086,7 @@ void clipClipboard(AppCommands &commands, const std::filesystem::path &dir) {
     };
     const auto pasteAt = 5 * bar;
     const auto gapAt = pasteAt + 3 * bar / 2;
-    add("track.create", {{"id", 20}, {"kind", "midi"}, {"name", "Lower MIDI"}, {"index", 2}});
+    add("track.create", {{"id", 20}, {"kind", "instrument"}, {"name", "Lower MIDI"}, {"index", 2}});
     add("clip.create", {{"id", 61}, {"track", 20}, {"kind", "midi"}, {"pos", 2 * bar}, {"length", bar / 2}});
     add("clip.create", {{"id", 62}, {"track", 2}, {"kind", "midi"}, {"pos", bar}, {"length", bar / 2}});
     add("clip.create", {{"id", 63}, {"track", 2}, {"kind", "midi"}, {"pos", gapAt}, {"length", bar / 4}});
@@ -8798,6 +8798,18 @@ void rangeSelection(AppCommands &commands, const std::filesystem::path &dir) {
     check(fourth.size() == 1 && fourth.front()->id == 14 && fourth.front()->posTicks == bar &&
               fourth.front()->lengthTicks == 2 * bar,
           "SC-177: Delete after a track title click leaves that track's overlapping clip intact");
+
+    const auto popupInsert = pickClip(3);
+    int headerMenus = 0;
+    root.arrangement.onContextMenu = [&](juce::Point<int>, bool header, const engine::AutomationLaneNode *) {
+        if (header)
+            ++headerMenus;
+    };
+    headers.mouseDown(pressAt(headers, title(4), juce::ModifierKeys::rightButtonModifier));
+    headers.mouseUp(pressAt(headers, title(4)));
+    root.arrangement.onContextMenu = nullptr;
+    check(headerMenus == 1 && trackOnly(4, popupInsert),
+          "SC-177: a popup on another title clears the earlier clip's time range");
 
     canvas.mouseDown(pressAt(canvas, rangeFrom));
     canvas.mouseDrag(dragAt(canvas, rangeFrom, rangeTo));
