@@ -185,6 +185,9 @@ struct Control {
     // cancelled job. Without it the caller is the owner. Rendering always
     // processes on the caller's thread and never overlaps an owner action.
     std::function<void(std::function<void()>)> onHost{};
+    // WAV work fraction, including preroll and normalization. 1.0 means the
+    // delivery has been published. The written-frame callback above is separate.
+    std::function<void(JobId, double)> wavProgress{};
 };
 [[nodiscard]] Result renderMasterWav(Job, engine::DeviceLoader,
                                     Control = {}, JobId = 0,

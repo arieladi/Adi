@@ -556,6 +556,7 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
         const auto rawBegin = addLatency(job.beginSample, latency);
         const auto rawEnd = addLatency(job.endSample, latency);
         const auto total = static_cast<std::uint64_t>(job.endSample - job.beginSample);
+        const auto leadingSilence = rawBegin < 0 ? (std::min)(total, static_cast<std::uint64_t>(-rawBegin)) : 0;
         const auto channels = static_cast<std::size_t>(job.session.channels);
         const auto block = static_cast<std::size_t>(job.session.maxFrames);
         std::vector<float> narrow(channels * block);
@@ -581,20 +582,32 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
             else writer->write(interleaved.data(),frames);
             result.framesWritten+=frames;
         };
-        auto progress = [&] {
-            if (control.progress) control.progress(id, result.framesWritten, total);
+        const auto passes = job.normalization.mode == NormalizeMode::Loudness ? maxLoudnessEncodingPasses :
+                            (normalized ? 1u : 0u);
+        const double totalWork = static_cast<double>(leadingSilence) +
+                                 static_cast<double>((std::max)(std::int64_t{0}, rawEnd)) +
+                                 2.0 * static_cast<double>(total) * passes; // encode and measure each pass
+        double workDone = 0;
+        auto advanceWork = [&](std::uint32_t frames) {
+            if (!control.wavProgress) return;
+            workDone += frames;
+            // Keep the last percentage for verification and publication.
+            control.wavProgress(id, (std::min)(workDone / totalWork, 0.99));
             cancellation(control);
         };
-        progress();
+        auto progress = [&](std::uint32_t frames) {
+            if (control.progress) control.progress(id, result.framesWritten, total);
+            cancellation(control);
+            advanceWork(frames);
+        };
+        progress(0);
         // Signed output latency may map a requested position before transport
         // zero: that is silence, not a negative locate (which clamps).
-        if (rawBegin < 0) {
-            auto silence = (std::min)(total, static_cast<std::uint64_t>(-rawBegin));
-            while (silence > 0) {
-                const auto frames = static_cast<std::uint32_t>((std::min)(silence, static_cast<std::uint64_t>(block)));
-                write(frames);
-                silence -= frames; progress();
-            }
+        for (auto silence = leadingSilence; silence > 0;) {
+            const auto frames = static_cast<std::uint32_t>((std::min)(silence, static_cast<std::uint64_t>(block)));
+            write(frames);
+            silence -= frames;
+            progress(frames);
         }
         session.transport().loop(0, 0, false);
         session.transport().locate(0);
@@ -645,7 +658,7 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
                 write(count);
             }
             at = last;
-            progress();
+            progress(static_cast<std::uint32_t>(frames));
         }
         if (result.framesWritten != total) throw std::runtime_error("export produced an incomplete range");
         service(); // include reports raised by the final process call
@@ -653,7 +666,7 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
             cancellation(control);
             if (control.serviceHost) onHost(control.serviceHost);
             cancellation(control);
-        });
+        },advanceWork);
         else writer->close();
         cancellation(control);
         auto delivery = staged;
@@ -662,6 +675,10 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
             audio::writeAiffFromWav(staged, delivery, [&] { cancellation(control); });
         }
         detail::publishVerifiedOutput(delivery, result, control, "export destination already exists");
+        if (control.wavProgress) {
+            // A display update cannot change the state of the published file.
+            try { control.wavProgress(id, 1.0); } catch (...) {}
+        }
     } catch (const Cancelled&) {
         result.state = JobState::Cancelled;
     } catch (const std::exception& e) {

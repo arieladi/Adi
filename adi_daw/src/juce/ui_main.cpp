@@ -479,9 +479,12 @@ class AdiApplication final : public juce::JUCEApplication,
                 juce::MessageManager::callAsync([host] { (void)host->service(); });
             });
         };
-        control.progress = [this, alive, count = jobs.size()](render::JobId id, std::uint64_t written, std::uint64_t total) {
-            const double current = total > 0 ? static_cast<double>(written) / static_cast<double>(total) : 0.0;
+        control.wavProgress = [this, alive, count = jobs.size(), lastPercent = 0](render::JobId id, double current) mutable {
             const double fraction = (static_cast<double>(id - 1) + current) / static_cast<double>(count);
+            const auto percent = static_cast<int>(fraction * 100);
+            if (percent == lastPercent)
+                return;
+            lastPercent = percent;
             juce::MessageManager::callAsync([this, alive, fraction] {
                 if (!alive->load())
                     return;

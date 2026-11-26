@@ -14252,9 +14252,8 @@ void exportPage(AppCommands &commands, const std::filesystem::path &dir) {
               aiffJobs.front().encoding.format == audio::WavFormat::Float32 &&
               aiffJobs.front().exactPcmFilename == "Song {mix}.AIFF",
           "the Export page allows 32-bit AIFF-C and preserves the selected filename");
-    one.normalize = false; // a silent song has no peak to normalize
-    // New's Set holds Reverb and Delay, which a build without Pd cannot load, and the renderer renders
-    // only a project whose every device loads: an empty project here.
+    // Use a silent project with no device dependencies to exercise the page's
+    // normalized export in builds with or without the Pd device tier.
     {
         StoreError made{};
         auto empty = Store::createEmpty(dir / "export-empty.adi", made);
@@ -14263,12 +14262,22 @@ void exportPage(AppCommands &commands, const std::filesystem::path &dir) {
             empty->db().exec("INSERT INTO project(id,name) VALUES(1,'Export'); INSERT INTO tracks(id,kind,name) VALUES(1,'master','Main')");
     }
     job = exportJob(one, dir / "export-empty.adi", dir / "Song {mix}.wav", *tempo);
-    const auto result = render::renderWav(job, {});
+    render::Control progress;
+    bool sawWork = false, disabledWhileRendering = true;
+    progress.wavProgress = [&](render::JobId, double fraction) {
+        page.showProgress(fraction);
+        sawWork = sawWork || (fraction > 0 && fraction < 1);
+        disabledWhileRendering = disabledWhileRendering && !page.exportButton.isEnabled();
+    };
+    const auto result = render::renderWav(job, {}, progress);
     if (result.state != render::JobState::Completed)
         std::printf("render: %s\n", result.error.c_str());
     check(result.state == render::JobState::Completed && result.output == dir / "Song {mix}.wav" &&
               std::filesystem::exists(result.output) && result.framesWritten == static_cast<std::uint64_t>(expected),
           "the renderer writes the chosen file, the whole range [P:export#3]");
+    page.showDone("Exported.");
+    check(sawWork && disabledWhileRendering && page.exportButton.isEnabled(),
+          "render work updates the Export page and completion enables Export again");
     {
         ExportInterruption interruption;
         int proceeded = 0;

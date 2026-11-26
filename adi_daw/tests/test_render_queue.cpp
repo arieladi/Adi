@@ -745,7 +745,50 @@ void hostOwnerLifecycle() {
         }
     }
 }
+void exportWorkProgress() {
+    Fixture f;
+    auto job=f.job("normalized-progress");
+    job.normalization.mode=NormalizeMode::Peak;
+    std::uint64_t written=0;
+    std::vector<double> fractions, afterCapture;
+    bool prerollAdvanced=false, finishedAfterPublish=false, frameCountsUnchanged=true;
+    Control control;
+    control.progress=[&](JobId,std::uint64_t done,std::uint64_t total) {
+        frameCountsUnchanged=frameCountsUnchanged && total==866;
+        written=done;
+    };
+    control.wavProgress=[&](JobId,double fraction) {
+        fractions.push_back(fraction);
+        prerollAdvanced=prerollAdvanced || (written==0 && fraction>0);
+        if(written==866 && fraction<1) afterCapture.push_back(fraction);
+        if(fraction==1) finishedAfterPublish=fs::exists(job.directory/"normalized-progress.wav");
+    };
+    const auto result=renderWav(job,{},control);
+    check(result.state==JobState::Completed && !fractions.empty() && fractions.front()==0 &&
+          fractions.back()==1 && std::is_sorted(fractions.begin(),fractions.end()) &&
+          std::count(fractions.begin(),fractions.end(),1.0)==1 && finishedAfterPublish,
+          "WAV work progress advances monotonically from zero to publication");
+    check(prerollAdvanced,"WAV work advances before the selected audio");
+    check(afterCapture.size()>1 && afterCapture.front()<afterCapture.back(),
+          "WAV work continues advancing after capture during normalization");
+    check(written==866 && frameCountsUnchanged,"existing render progress still measures output frames");
+
+    std::stop_source stop;
+    job.nameTemplate="cancel-normalizing";
+    double beforeNormalization=0, last=0;
+    control.stop=stop.get_token();
+    control.wavProgress=[&](JobId,double fraction) {
+        last=fraction;
+        if(written==866 && beforeNormalization==0) beforeNormalization=fraction;
+        else if(beforeNormalization>0 && fraction>beforeNormalization) stop.request_stop();
+    };
+    const auto cancelled=renderWav(job,{},control);
+    check(cancelled.state==JobState::Cancelled && beforeNormalization>0 && last<1 &&
+          !fs::exists(job.directory/"cancel-normalizing.wav") && f.noStage(),
+          "cancellation during normalization stays below 100 percent and removes the stage");
+}
 void normalizedRenders() {
+    exportWorkProgress();
     for(const auto precision:{Precision::Float32,Precision::Float64}) {
         Fixture f;f.effect();auto job=f.job(precision==Precision::Float64?"normalized-wide":"normalized-float");
         job.beginSample=200;job.endSample=220;job.session.precision=precision;job.normalization.mode=NormalizeMode::Peak;
