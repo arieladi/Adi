@@ -4,6 +4,18 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-26 — `basics/*` Round 10 (clips chain `sc-32-clip-warp-switch` `a6f21e46` — PASS)
+
+Verified `origin/basics/sc-32-clip-warp-switch` at `a6f21e46` (5-branch clips chain covering `sc-11-unwarped-tempo`, `sc-191-waveform-source-offset`, `sc-30-left-trim`, `sc-31-clip-gain`, `sc-32-clip-warp-switch`; 16 files vs `origin/main`) under **GCC 12.4.0** and **Clang 14.0.6 + libstdc++ 12** (`-DADI_WERROR=ON`, headless Pd on, JUCE off, `-DADI_ACCEPTANCE=ON`), all 4 touched JUCE TUs (`-DADI_WITH_JUCE=ON -DADI_WERROR=ON`), and **Clang 14 ASan + LSan + UBSan**.
+
+| Branch | SHA | GCC 12.4.0 (`-DADI_WERROR=ON`) | Clang 14.0.6 + libstdc++ 12 (`-DADI_WERROR=ON`) | JUCE TUs (`-DADI_WITH_JUCE=ON -DADI_WERROR=ON`, 4 TUs) | Clang 14 ASan + LSan + UBSan | Verdict |
+|---|---|---|---|---|---|---|
+| `basics/sc-32-clip-warp-switch` (chains `sc-11`, `sc-191`, `sc-30`, `sc-31`) | `a6f21e46` | **PASS** (0 warnings; 5/5 touched `adi_clip_playback_tests`, `adi_recording_commands_tests`, `adi_ui_document_tests`, `adi_ui_seams_tests`, `adi_warp_actions_tests` + `adi_acceptance_wts01`, 140.04 s) | **PASS** (0 warnings; 5/5 touched + `adi_acceptance_wts01`, 129.51 s) | **PASS** (4/4 both compilers, 0 warnings: `ui_arrangement.cpp.o`, `ui_clipview.cpp.o`, `ui_shell.cpp.o`, `test_ui_shell.cpp.o`) | **PASS** (5/5 touched, 101.89 s; 0 errors, 0 leaks) | **PASS** |
+
+No findings on `basics/sc-32-clip-warp-switch` (`a6f21e46`).
+
+---
+
 ## 2026-11-26 — `land/*` Round 4 (`land/basics-1127e` `9a9c3f38` & `land/basics-1127d` `569c921e` — FAIL: 2 Clang 14 JUCE errors + 1 headless test failure)
 
 Verified `origin/land/basics-1127e` at `9a9c3f38` (merging `land/basics-1127d` `569c921e` + `basics/look-chain` + `basics/recording-chain`) on all 21 touched headless suites (`GCC 12.4.0 -DADI_WERROR=ON`) and all 16 touched JUCE TUs (`-DADI_WITH_JUCE=ON -DADI_WERROR=ON`) under **GCC 12.4.0** and **Clang 14.0.6 + libstdc++ 12**.
