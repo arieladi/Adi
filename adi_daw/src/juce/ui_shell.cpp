@@ -12,6 +12,7 @@
 #include "adi/ui/meter_edits.hpp"
 #include "adi/ui/meters.hpp"
 #include "adi/ui/midi_tracks.hpp"
+#include "adi/ui/project_document.hpp"
 #include "adi/ui/recording_edits.hpp"
 #include "adi/ui/send_edits.hpp"
 #include "adi/ui/tempo_edits.hpp"
@@ -2756,6 +2757,109 @@ bool AdiRootComponent::edited(const SubmitResult &result) {
 void AdiRootComponent::say(std::string message) {
     error_ = std::move(message);
     dirty_.mark(DirtySet::Status);
+}
+bool AdiRootComponent::canRenderTrack(TrackRenderAction action, const engine::TrackNode &track) const {
+    if (!trackRenderDocument_ || trackRenderDocument_->store().readOnly() || track.frozenByGroup != 0)
+        return false;
+    const bool regular = track.kind == "audio" || isMidiTrack(track);
+    const bool cached = track.frozen && track.freezeMediaId &&
+                        (track.freezeMode == "wet" || track.freezeMode == "group");
+    const bool running = trackRenderDocument_->trackRenderRunning();
+    switch (action) {
+    case TrackRenderAction::Freeze:
+        if (!regular || track.frozen || running)
+            return false;
+        break;
+    case TrackRenderAction::Unfreeze:
+        if (!regular || !track.frozen)
+            return false;
+        break;
+    case TrackRenderAction::Flatten:
+        if (!regular || !cached)
+            return false;
+        break;
+    case TrackRenderAction::BounceToNewTrack:
+        if ((!regular && track.kind != "group") || (track.frozen && !cached) || running)
+            return false;
+        break;
+    case TrackRenderAction::BounceInPlace:
+        if (!regular || (track.frozen && !cached) || running)
+            return false;
+        break;
+    }
+    SQLite::Statement state(trackRenderDocument_->store().db(),
+                            "SELECT locked FROM tracks WHERE id=?");
+    state.bind(1, track.id);
+    if (!state.executeStep() || state.getColumn(0).getInt() != 0)
+        return false;
+    if (action == TrackRenderAction::BounceInPlace && !track.frozen) {
+        SQLite::Statement incoming(trackRenderDocument_->store().db(),
+                                   "SELECT 1 FROM routing WHERE dst_kind='track' AND dst_id=? "
+                                   "AND kind IN ('main','send') LIMIT 1");
+        incoming.bind(1, track.id);
+        return !incoming.executeStep();
+    }
+    return true;
+}
+void AdiRootComponent::addTrackRenderItems(juce::PopupMenu &menu, std::int64_t id) {
+    const auto current = view_.current();
+    const auto *track = current ? current->findTrack(id) : nullptr;
+    if (track == nullptr)
+        return;
+    const bool regular = track->kind == "audio" || isMidiTrack(*track);
+    if (!regular && track->kind != "group")
+        return;
+    menu.addSeparator();
+    const juce::Component::SafePointer<AdiRootComponent> safe(this);
+    const auto add = [&](const char *name, TrackRenderAction action) {
+        menu.addItem(name, canRenderTrack(action, *track), false, [safe, action, id] {
+            if (safe)
+                safe->renderTrack(action, id);
+        });
+    };
+    if (regular) {
+        if (track->frozen)
+            add("Unfreeze Track", TrackRenderAction::Unfreeze);
+        else
+            add("Freeze Track", TrackRenderAction::Freeze);
+        add("Flatten Track", TrackRenderAction::Flatten);
+    }
+    add("Bounce to New Track", TrackRenderAction::BounceToNewTrack);
+    if (regular)
+        add("Bounce Track in Place", TrackRenderAction::BounceInPlace);
+}
+bool AdiRootComponent::renderTrack(TrackRenderAction action, std::int64_t id) {
+    const auto current = view_.current();
+    const auto *track = current ? current->findTrack(id) : nullptr;
+    if (track == nullptr || !canRenderTrack(action, *track))
+        return fail("That track is no longer available for this command.");
+    bool ok = false;
+    std::string status;
+    switch (action) {
+    case TrackRenderAction::Freeze:
+        ok = trackRenderDocument_->freezeTrack(id);
+        status = "Freezing track...";
+        break;
+    case TrackRenderAction::Unfreeze:
+        ok = trackRenderDocument_->unfreezeTrack(id);
+        break;
+    case TrackRenderAction::Flatten:
+        ok = trackRenderDocument_->flattenTrack(id);
+        break;
+    case TrackRenderAction::BounceToNewTrack:
+        ok = trackRenderDocument_->bounceTrackToNewTrack(id);
+        status = "Bouncing to a new track...";
+        break;
+    case TrackRenderAction::BounceInPlace:
+        ok = trackRenderDocument_->bounceTrackInPlace(id);
+        if (!track->frozen)
+            status = "Bouncing track in place...";
+        break;
+    }
+    if (!ok)
+        return fail(trackRenderDocument_->error());
+    say(std::move(status));
+    return true;
 }
 void AdiRootComponent::sayStaleAddMenu() {
     say("This Add menu is out of date. Reopen it and try again.");

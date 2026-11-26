@@ -675,6 +675,11 @@ class AdiApplication final : public juce::JUCEApplication,
                                                        document_->views(),
                                                        document_->sessionState(), "main");
         root_ = root.get();
+        root->attachTrackRendering(*document_);
+        document_->configureTrackRenderDispatch([](std::function<void()> action) {
+            juce::MessageManager::callAsync(std::move(action));
+        });
+        document_->configureFreezeTail(settings_->get("devices.freezeTailSeconds").get<double>());
         root->browser.setListing(library_, libraryReady_); // the library listed so far, if anything
         root->devices.publication = [this] { return document_->parameterFeed().current(); };
         root->devices.parameterDemand = [this](const void *consumer, const std::vector<std::int64_t> &ids) {
@@ -1352,6 +1357,8 @@ class AdiApplication final : public juce::JUCEApplication,
                     // The Audio page's Delay Compensation row is the Options menu's switch.
                     if (root_ && root_->applyDelayCompensation)
                         root_->applyDelayCompensation(commands_->delayCompensation());
+                    if (document_)
+                        document_->configureFreezeTail(settings_->get("devices.freezeTailSeconds").get<double>());
                     pluginSourcesChanged();
                     // The MIDI Ports' switches open or close inputs: after the row's commit has unwound.
                     juce::MessageManager::callAsync([this] {
@@ -1438,6 +1445,8 @@ class AdiApplication final : public juce::JUCEApplication,
                 if (landed->ok && !landed->clips.empty())
                     root_->selectClip(landed->clips.front());
             }
+            if (auto rendered = document_->takeTrackRenderStatus())
+                root_->say(std::move(*rendered));
         }
         if (midiPorts_ && root_) {
             // The ports' events go to the session from the device callback (N60); a message arriving

@@ -39,6 +39,7 @@
 namespace adi::ui {
 class AdiRootComponent;
 class FloatingHost;
+class ProjectDocument;
 // The app-scoped command layer (ADR-0180 d6): one manager, installed on every window.
 // The keys are Live 12's (manual §41, ADR-0203 d6) unless a preset says otherwise.
 class AppCommands final : public juce::ApplicationCommandTarget {
@@ -360,6 +361,8 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // letter, selected; the returns shown again if they were hidden. With `group`, Insert Return Track
     // in Group (ADR-0247 d2): inside it, after what it holds, lettered with its initial ("DA").
     bool insertReturnTrack(std::int64_t group = 0);
+    void attachTrackRendering(ProjectDocument &document) noexcept { trackRenderDocument_ = &document; }
+    void addTrackRenderItems(juce::PopupMenu &, std::int64_t track);
     void mark(unsigned bits) noexcept { dirty_.mark(bits); }
     const SnapshotReader &reader() const noexcept { return *reader_; }
     bool playing() const noexcept { return playing_; }
@@ -859,6 +862,10 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     bool clipViewFull() const noexcept { return clipViewRestore_ > 0; }
 
   private:
+    enum class TrackRenderAction { Freeze, Unfreeze, Flatten, BounceToNewTrack, BounceInPlace };
+    bool canRenderTrack(TrackRenderAction, const engine::TrackNode &) const;
+    bool renderTrack(TrackRenderAction, std::int64_t);
+    ProjectDocument *trackRenderDocument_ = nullptr;
     bool insertTrack(bool midi);
     bool deleteTrack();
     // Live's Group Tracks and Ungroup Tracks (manual 18.3), each one undo step.

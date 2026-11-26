@@ -2,12 +2,16 @@
 #include "project_document.hpp"
 #include "arrangement_geometry.hpp"
 #include "adi/audio/decode.hpp"
+#include "adi/bounce_commands.hpp"
+#include "adi/edit_time.hpp"
+#include "adi/freeze_commands.hpp"
 #include "adi/gesture_navigation_detail.hpp"
 #include "adi/media/collect_export.hpp"
 #include "adi/mix_function_edit.hpp"
 #include "adi/row_ids.hpp"
 #include "adi/device_key_routes.hpp"
 #include "adi/recording_commands.hpp"
+#include "adi/render/host_dispatch.hpp"
 #include "adi/gesture_presentation.hpp"
 #include "juce/mix_function_host.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -17,6 +21,8 @@
 #include <cmath>
 #include <mutex>
 #include <thread>
+#include <utility>
+#include <variant>
 namespace adi::ui {
 // Where the document's file is now. The message thread moves it at Save As; the waveform worker
 // reads it at each build.
@@ -25,7 +31,50 @@ struct WaveformSource {
     std::mutex mutex;
     std::filesystem::path path;
 };
+struct ProjectDocument::TrackRenderWork {
+    using Result = std::variant<std::string, freeze::FreezeEdit, clip_edit::TrackBounce>;
+    AppliedSource source;
+    std::uint64_t generation = 0;
+    std::optional<std::int64_t> head;
+    std::string label;
+    std::shared_ptr<render::HostDispatch> host = std::make_shared<render::HostDispatch>();
+    std::future<Result> completion;
+    std::jthread worker;
+};
 namespace {
+bool ordinaryTrack(const engine::TrackNode &track) {
+    return track.kind == "audio" || track.kind == "midi" || track.kind == "instrument";
+}
+
+long double trackRenderLength(Store &store, const engine::TrackNode &track, double tailSeconds) {
+    if (track.frozen) {
+        SQLite::Statement cache(store.db(), "SELECT frames,sample_rate FROM frozen_renders WHERE track_id=?");
+        cache.bind(1, track.id);
+        if (!cache.executeStep() || cache.getColumn(1).getDouble() <= 0)
+            throw std::runtime_error("The track has no usable freeze cache.");
+        return static_cast<long double>(cache.getColumn(0).getInt64()) / cache.getColumn(1).getDouble();
+    }
+    edit::TimeMap time(store.db());
+    SQLite::Statement ends(store.db(), R"sql(
+        WITH RECURSIVE subtree(id) AS (
+            SELECT ? UNION SELECT tracks.id FROM tracks JOIN subtree ON tracks.parent_id=subtree.id
+        )
+        SELECT time_base,pos_ticks,length_ticks,pos_ns,length_ns FROM clips
+            WHERE lane_id IS NULL AND track_id IN subtree
+    )sql");
+    ends.bind(1, track.id);
+    long double end = 0;
+    while (ends.executeStep()) {
+        const bool absolute = ends.getColumn(0).getInt() == 1;
+        const auto position = ends.getColumn(absolute ? 3 : 1).getInt64();
+        const auto length = ends.getColumn(absolute ? 4 : 2).getInt64();
+        const auto last = edit::addTime(position, length);
+        const long double seconds = absolute ? last / 1000000000.0L : time.seconds(last);
+        end = std::max(end, seconds);
+    }
+    return end > 0 ? end + tailSeconds : 0;
+}
+
 // The waveform worker's build: its own read-only store on the project's file, opened on the worker
 // at its first build and kept for the next (the worker is the only caller).
 // The worker's reader follows the document's file: after Save As the pool rows of anything imported
@@ -80,6 +129,7 @@ ProjectDocument::ProjectDocument(std::unique_ptr<Store> s, std::string name)
         });
 }
 ProjectDocument::~ProjectDocument() {
+    stopTrackRender();
     for (const auto& item : limiterReductionSources_)
         if (const auto mailbox = item.second.mailbox.lock()) mailbox->revokeObservers();
     analysis_->shutdown();
@@ -114,6 +164,7 @@ std::unique_ptr<ProjectDocument> ProjectDocument::open(const std::filesystem::pa
         document->ops_.protectRoot(kNewProjectLabel);
         engine::SessionSpec spec;
         spec.sampleRate = document->view_.current()->sampleRate;
+        document->renderLoader_ = loader;
         if (!document->session_.load(*document->store_, std::move(loader), spec)) {
             error = document->session_.error();
             return {};
@@ -163,6 +214,10 @@ bool ProjectDocument::saveAs(const std::filesystem::path &path) {
     }
     // No History, OpJournal or Statement of ours is alive here: every one is made per call, and
     // the members hold the Store itself, which keeps its identity across the switch.
+    if (trackRender_) {
+        stopTrackRender();
+        trackRenderStatus_ = "Track render cancelled for Save As.";
+    }
     refreshReportedLatenciesForSave();
     const auto result = store_->saveAs(path);
     if (!result.ok) {
@@ -409,6 +464,7 @@ void ProjectDocument::tick(std::int64_t milliseconds) {
     commitCaptured(requests);
     feed_.publish(session_, realisedGeneration_);
     persistReportedLatencies();
+    pollTrackRender();
 }
 void ProjectDocument::refreshReportedLatenciesForSave() {
     if (realisedGeneration_ != view_.generation()) return;
@@ -507,6 +563,223 @@ bool ProjectDocument::autoGainStage(bool lufs) {
     view_.refresh(*store_, session_.overriddenLanes());
     return synchronise();
 }
+void ProjectDocument::configureFreezeTail(double seconds) noexcept {
+    if (std::isfinite(seconds) && seconds >= 0)
+        freezeTailSeconds_ = seconds;
+}
+
+void ProjectDocument::configureTrackRenderDispatch(std::function<void(std::function<void()>)> post) {
+    postTrackRenderHost_ = std::move(post);
+}
+
+bool ProjectDocument::freezeTrack(std::int64_t track) {
+    return startTrackRender(TrackRenderKind::Freeze, track);
+}
+
+bool ProjectDocument::unfreezeTrack(std::int64_t track) {
+    const auto result = ops_.commitPrepared([&](Store &s, Actor) {
+        return freeze::unfreeze(s, std::span<const std::int64_t>(&track, 1));
+    });
+    error_ = result.error;
+    return result && synchronise();
+}
+
+bool ProjectDocument::flattenTrack(std::int64_t track) {
+    if (recording_ || landing_) {
+        error_ = "Stop recording before flattening a track.";
+        return false;
+    }
+    try {
+        RowIds rows(store_->db());
+        const auto clip = rows.next("clips");
+        const auto result = ops_.commitPrepared([&](Store &s, Actor actor) {
+            return freeze::flatten(s, track, clip, actor);
+        });
+        error_ = result.error;
+        return result && synchronise();
+    } catch (const std::exception &e) {
+        error_ = e.what();
+        return false;
+    }
+}
+
+bool ProjectDocument::bounceTrackToNewTrack(std::int64_t track) {
+    return startTrackRender(TrackRenderKind::BounceToNew, track);
+}
+
+bool ProjectDocument::bounceTrackInPlace(std::int64_t track) {
+    const auto snapshot = view_.committed();
+    const auto *node = snapshot ? snapshot->findTrack(track) : nullptr;
+    return node && node->frozen ? flattenTrack(track) : startTrackRender(TrackRenderKind::BounceInPlace, track);
+}
+
+bool ProjectDocument::startTrackRender(TrackRenderKind kind, std::int64_t track) {
+    try {
+        if (trackRender_)
+            throw std::runtime_error("A track is already rendering.");
+        if (store_->readOnly())
+            throw std::runtime_error("The project is read-only.");
+        if (recording_ || landing_)
+            throw std::runtime_error("Stop recording before rendering a track.");
+        if (!settleParameters() || (mixerDragging() && !endMixerDrag()))
+            return false;
+        const auto snapshot = view_.committed();
+        const auto *node = snapshot ? snapshot->findTrack(track) : nullptr;
+        if (!node || node->frozenByGroup ||
+            !(ordinaryTrack(*node) || (kind == TrackRenderKind::BounceToNew && node->kind == "group")) ||
+            (node->frozen && kind != TrackRenderKind::BounceToNew))
+            throw std::runtime_error("This track cannot be rendered.");
+
+        auto work = std::make_unique<TrackRenderWork>();
+        work->source = appliedSource(*store_);
+        work->generation = work->source.sequence();
+        work->label = kind == TrackRenderKind::Freeze ? "Freeze Track"
+                    : kind == TrackRenderKind::BounceToNew ? "Bounce to New Track" : "Bounce Track in Place";
+        render::Job job;
+        job.project = store_->path();
+        job.session.sampleRate = engineRate_;
+        job.session.maxFrames = std::clamp(engineFrames_, 1, 4096);
+        job.encoding.format = audio::WavFormat::Float32;
+
+        render::FreezeCaptureSpec freezeSpec;
+        clip_edit::TrackBounceOptions newTrack;
+        clip_edit::InPlaceBounceOptions inPlace;
+        std::int64_t mediaId = 0;
+        {
+            SQLite::Transaction read(store_->db(), SQLite::TransactionBehavior::DEFERRED);
+            work->head = OpJournal(*store_).headSeq();
+            const auto frames = std::ceil(trackRenderLength(*store_, *node, freezeTailSeconds_) *
+                                          job.session.sampleRate);
+            if (!std::isfinite(frames) || frames > (std::int64_t{1} << 50))
+                throw std::runtime_error("The track is too long to render.");
+            if (frames <= 0)
+                throw std::runtime_error("The track has no arrangement material to render.");
+            job.endSample = static_cast<std::int64_t>(frames);
+            RowIds rows(store_->db());
+            mediaId = rows.next("media_files");
+            if (kind == TrackRenderKind::Freeze) {
+                freezeSpec.tracks = {track};
+                freezeSpec.endSample = job.endSample;
+                freezeSpec.session = job.session;
+                freezeSpec.documentGeneration = work->generation;
+            } else if (kind == TrackRenderKind::BounceToNew) {
+                newTrack.job = job;
+                newTrack.sourceTrack = track;
+                newTrack.newTrack = rows.next("tracks");
+                newTrack.clipId = rows.next("clips");
+                newTrack.mediaId = mediaId;
+                newTrack.routingId = rows.next("routing");
+                newTrack.documentGeneration = work->generation;
+                newTrack.copyMixerSettings = true;
+            } else {
+                inPlace.job = job;
+                inPlace.sourceTrack = track;
+                inPlace.clipId = rows.next("clips");
+                inPlace.mediaId = mediaId;
+                inPlace.documentGeneration = work->generation;
+                inPlace.replaceDevices = true;
+            }
+            read.commit();
+        }
+        const auto now = std::chrono::duration_cast<std::chrono::microseconds>(
+                             std::chrono::system_clock::now().time_since_epoch()).count();
+        std::packaged_task<TrackRenderWork::Result(std::stop_token)> prepare(
+            [kind, path = std::move(job.project), head = work->head, host = work->host,
+             post = postTrackRenderHost_,
+             loader = renderLoader_, freezeSpec = std::move(freezeSpec), newTrack = std::move(newTrack),
+             inPlace = std::move(inPlace), mediaId, now](std::stop_token stop) mutable -> TrackRenderWork::Result {
+                StoreError problem{};
+                auto reader = Store::open(path, problem, false);
+                if (!reader || reader->readOnly())
+                    return "The project could not be opened for rendering: " + std::string(toString(problem));
+                if (OpJournal(*reader).headSeq() != head)
+                    return "The project changed before rendering could start.";
+                render::Control control;
+                control.stop = stop;
+                control.onHost = [host, post](std::function<void()> action) {
+                    host->invoke(std::move(action), [&] {
+                        if (post)
+                            post([host] { (void)host->service(); });
+                    });
+                };
+                if (kind == TrackRenderKind::Freeze) {
+                    const auto generation = freezeSpec.documentGeneration;
+                    auto capture = render::captureFreezeAudio(*reader, std::move(freezeSpec), std::move(loader),
+                                                              std::move(control));
+                    if (!capture.ready())
+                        return capture.error();
+                    return freeze::prepareFreeze(*reader, std::move(capture), generation, mediaId, now);
+                }
+                if (kind == TrackRenderKind::BounceToNew)
+                    return clip_edit::prepareBounceToNewTrack(*reader, newTrack, std::move(loader), std::move(control));
+                return clip_edit::prepareBounceInPlace(*reader, inPlace, std::move(loader), std::move(control));
+            });
+        work->completion = prepare.get_future();
+        work->worker = std::jthread([prepare = std::move(prepare)](std::stop_token stop) mutable { prepare(stop); });
+        trackRender_ = std::move(work);
+        trackRenderStatus_.reset();
+        error_.clear();
+        return true;
+    } catch (const std::exception &e) {
+        error_ = e.what();
+        return false;
+    }
+}
+
+void ProjectDocument::pollTrackRender() {
+    if (!trackRender_)
+        return;
+    trackRender_->host->service();
+    if (trackRender_->completion.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+        return;
+    auto work = std::move(trackRender_);
+    try {
+        auto prepared = work->completion.get();
+        const auto source = appliedSource(*store_);
+        if (!source.sameConnection(work->source) || source.sequence() != work->generation ||
+            OpJournal(*store_).headSeq() != work->head || recording_ || landing_) {
+            trackRenderStatus_ = work->label + " stopped because the project changed.";
+            return;
+        }
+        std::string failure;
+        if (const auto *message = std::get_if<std::string>(&prepared)) {
+            failure = *message;
+        } else if (auto *freezeEdit = std::get_if<freeze::FreezeEdit>(&prepared)) {
+            if (freezeEdit->ready())
+                failure = ops_.commitPrepared([&](Store &s, Actor) {
+                    return freeze::commitFreeze(s, *freezeEdit, work->generation);
+                }).error;
+            else
+                failure = freezeEdit->error();
+        } else {
+            auto &bounce = std::get<clip_edit::TrackBounce>(prepared);
+            if (bounce.ready())
+                failure = ops_.commitPrepared([&](Store &s, Actor actor) {
+                    return clip_edit::commitTrackBounce(s, bounce, work->generation, actor);
+                }).error;
+            else
+                failure = bounce.error();
+        }
+        if (failure.empty() && !synchronise())
+            failure = error_;
+        trackRenderStatus_ = failure.empty() ? work->label + " complete." : work->label + " failed. " + failure;
+    } catch (const std::exception &e) {
+        trackRenderStatus_ = work->label + " failed. " + e.what();
+    }
+}
+
+void ProjectDocument::stopTrackRender() {
+    if (trackRender_) {
+        trackRender_->worker.request_stop();
+        trackRender_->host->wait(trackRender_->completion);
+        trackRender_.reset();
+    }
+}
+
+std::optional<std::string> ProjectDocument::takeTrackRenderStatus() {
+    return std::exchange(trackRenderStatus_, std::nullopt);
+}
+
 bool ProjectDocument::deviceAction(const std::string &op, Payload payload) {
     OpRequest r;
     r.opType = op;

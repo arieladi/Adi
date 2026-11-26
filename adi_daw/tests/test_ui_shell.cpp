@@ -8531,6 +8531,70 @@ void rangeSelection(AppCommands &commands, const std::filesystem::path &dir) {
 }
 // Live's foot (Live 12 manual 6.1, its demo arrangement): the returns and Main pinned at the
 // bottom of the lanes, below the drop area, whatever the scroll.
+void trackRenderMenu(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "track-render-menu.adi", true, {}, error);
+    check(document != nullptr, "SC-86: a project for the track render menu");
+    if (!document)
+        return;
+    auto &store = document->store();
+    OpRequest group;
+    group.opType = "track.create";
+    group.payload = {{"id", 20}, {"kind", "group"}, {"name", "Bus"}};
+    group.label = "Create Track";
+    check(document->ops().submit(group).ok && document->synchronise(), "add a group to the render menu fixture");
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "track-render-menu");
+    const auto menuFor = [&](std::int64_t track) {
+        root.arrangement.geometry.selection.track = track;
+        return root.arrangement.contextMenuItems(true);
+    };
+    const auto enabled = [](const juce::PopupMenu &menu, const char *name) -> std::optional<bool> {
+        for (juce::PopupMenu::MenuItemIterator item(menu); item.next();)
+            if (item.getItem().text == name)
+                return item.getItem().isEnabled;
+        return std::nullopt;
+    };
+    check(enabled(menuFor(4), "Freeze Track") == false, "Freeze waits for an attached document");
+    root.attachTrackRendering(*document);
+    auto audio = menuFor(4);
+    check(enabled(audio, "Freeze Track") == true && !enabled(audio, "Unfreeze Track").has_value() &&
+              enabled(audio, "Flatten Track") == false && enabled(audio, "Bounce to New Track") == true &&
+              enabled(audio, "Bounce Track in Place") == true,
+          "SC-86: an ordinary audio track can Freeze or Bounce, and Flatten waits for its cache");
+    check(enabled(menuFor(2), "Freeze Track") == true, "a MIDI track can be frozen");
+    check(enabled(menuFor(20), "Bounce to New Track") == true &&
+              !enabled(menuFor(20), "Bounce Track in Place").has_value() &&
+              !enabled(menuFor(20), "Freeze Track").has_value(),
+          "a group can bounce its direct output to a new track");
+    check(!enabled(menuFor(1), "Bounce to New Track").has_value() &&
+              !enabled(menuFor(6), "Freeze Track").has_value() &&
+              !enabled(root.arrangement.contextMenuItems(false), "Freeze Track").has_value(),
+          "track render commands stay off Main, return and lane menus");
+    OpRequest lock;
+    lock.opType = "track.setLocked";
+    lock.payload = {{"id", 4}, {"locked", true}};
+    lock.label = "Lock Track";
+    check(document->ops().submit(lock).ok && enabled(menuFor(4), "Freeze Track") == false,
+          "a locked track's menu greys out Freeze");
+    for (juce::PopupMenu::MenuItemIterator item(audio); item.next();)
+        if (item.getItem().text == "Freeze Track" && item.getItem().action)
+            item.getItem().action();
+    check(!document->trackRenderRunning() && root.error().find("no longer available") != std::string::npos,
+          "a menu action rechecks the original track before starting a render");
+    lock.payload["locked"] = false;
+    check(document->ops().submit(lock).ok, "unlock the track for the frozen fixture");
+    store.db().exec("UPDATE tracks SET frozen=1 WHERE id=4"); // Legacy frozen flag with no verified audio.
+    document->view().refresh(store);
+    auto frozen = menuFor(4);
+    check(!enabled(frozen, "Freeze Track").has_value() && enabled(frozen, "Unfreeze Track") == true &&
+              enabled(frozen, "Flatten Track") == false && enabled(frozen, "Bounce Track in Place") == false,
+          "a legacy frozen track offers Unfreeze and cannot flatten without cached audio");
+    for (juce::PopupMenu::MenuItemIterator item(frozen); item.next();)
+        if (item.getItem().text == "Unfreeze Track" && item.getItem().action)
+            item.getItem().action();
+    check(enabled(menuFor(4), "Freeze Track") == true, "Unfreeze opens the track back up from its title menu");
+}
 void footRows(AppCommands &commands, const std::filesystem::path &dir) {
     StoreError err{};
     auto store = Store::createEmpty(dir / "foot.adi", err);
@@ -18786,6 +18850,7 @@ int main(int argc, char **argv) {
     trace("firstRunAudioInput", [&] { firstRunAudioInput(temp.path()); });
     trace("liveParity", [&] { liveParity(commands, temp.path(), write); });
     trace("groupTracks", [&] { groupTracks(commands, temp.path()); });
+    trace("trackRenderMenu", [&] { trackRenderMenu(commands, temp.path()); });
     trace("footRows", [&] { footRows(commands, temp.path()); });
     trace("newProject", [&] { newProject(commands, temp.path()); });
     trace("trackColoursStay", [&] { trackColoursStay(commands, temp.path()); });

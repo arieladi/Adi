@@ -1169,6 +1169,113 @@ void playRightAfterAStoppedCommit(const std::filesystem::path &dir) {
     }
     doc->release();
 }
+void trackRenderLifecycle(const std::filesystem::path &dir) {
+    const auto project = dir / "freeze-document.adi";
+    {
+        StoreError error{};
+        auto store = Store::create(project, error);
+        check(store != nullptr, "SC-86: create the render lifecycle project");
+        if (!store)
+            return;
+        // Use a project with no plug-in dependencies and a known clock.
+        store->db().exec("UPDATE project SET sample_rate=48000; DELETE FROM tempo_map;"
+                         "INSERT INTO tempo_map(id,pos_ticks,bpm) VALUES(1,0,120);"
+                         "INSERT INTO tracks(id,kind,name,index_in_parent) "
+                         "VALUES(1,'master','Main',1),(2,'audio','Source',0);"
+                         "INSERT INTO mixer_strip(track_id) VALUES(1),(2);");
+    }
+    std::atomic<bool> hostRequested{false};
+    std::string error;
+    auto doc = ui::ProjectDocument::open(project, false, {}, error);
+    check(doc != nullptr, "open the render lifecycle project");
+    if (!doc)
+        return;
+    doc->prepare(48000, 128);
+    doc->configureFreezeTail(0.015625); // 750 frames at 48 kHz.
+    doc->configureTrackRenderDispatch([&hostRequested](std::function<void()>) {
+        // Leave the worker's pending host call for the owner's next tick.
+        hostRequested.store(true, std::memory_order_release);
+    });
+    const auto wav = dir / "source.wav";
+    {
+        std::vector<float> samples(6000, .25f);
+        audio::WavWriter writer(wav, 48000, 1, audio::WavFormat::Float32);
+        writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
+    }
+    ui::AudioImport import;
+    if (!doc->prepareImport(media::pathUtf8(wav), 1'700'000'000'000'000, import)) {
+        check(false, "import the source file to freeze");
+        return;
+    }
+    auto drop = ui::dropAudio(*doc->view().current(), 2, 0, "Source", import);
+    const auto clip = drop.clip;
+    if (!drop.refusal.empty() || !doc->ops().submit(std::move(drop.ops)).ok || !doc->synchronise()) {
+        check(false, "place the source clip to freeze");
+        return;
+    }
+    auto &db = doc->store().db();
+    std::int64_t now = 0;
+    const auto finish = [&]() {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (doc->trackRenderRunning() && std::chrono::steady_clock::now() < deadline) {
+            doc->tick(++now);
+            if (doc->trackRenderRunning())
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        return doc->takeTrackRenderStatus();
+    };
+    if (!doc->freezeTrack(2)) {
+        check(false, ("start asynchronous Freeze: " + doc->error()).c_str());
+        return;
+    }
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!hostRequested.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    check(hostRequested.load(std::memory_order_acquire) && doc->trackRenderRunning() &&
+              !doc->takeTrackRenderStatus(),
+          "the render reaches its host handoff before it can land");
+    check(!doc->bounceTrackToNewTrack(2) && doc->error().find("already rendering") != std::string::npos,
+          "a second track render cannot replace the pending one");
+    OpRequest mute;
+    mute.opType = "clip.setMute";
+    mute.payload = {{"id", clip}, {"muted", true}};
+    mute.label = "Mute Source Clip";
+    check(doc->ops().submit(mute).ok, "an authored edit reaches the project while Freeze waits");
+    const auto stale = finish();
+    check(stale && stale->find("project changed") != std::string::npos && !doc->takeTrackRenderStatus(),
+          "Freeze reports the stale capture once");
+    check(db.execAndGet("SELECT frozen FROM tracks WHERE id=2").getInt() == 0 &&
+              db.execAndGet("SELECT count(*) FROM frozen_renders").getInt() == 0 &&
+              db.execAndGet("SELECT count(*) FROM media_files").getInt() == 1 &&
+              doc->ops().nextUndo() && doc->ops().nextUndo()->label == "Mute Source Clip",
+          "a stale Freeze publishes no cache, media row or history step");
+    const auto hasPublishedFile = std::any_of(std::filesystem::directory_iterator(dir),
+                                             std::filesystem::directory_iterator(), [](const auto &entry) {
+        const auto name = media::pathUtf8(entry.path().filename());
+        return name.starts_with("freeze-") && entry.path().extension() == ".wav";
+    });
+    check(!hasPublishedFile, "the stale render leaves no published freeze audio");
+    mute.payload["muted"] = false;
+    mute.label = "Unmute Source Clip";
+    check(doc->ops().submit(mute).ok && doc->synchronise(), "restore the sample for a fresh Freeze");
+    if (!doc->freezeTrack(2)) {
+        check(false, ("start the new Freeze: " + doc->error()).c_str());
+        return;
+    }
+    const auto frozen = finish();
+    if (!frozen || *frozen != "Freeze Track complete.")
+        std::printf("Freeze completion: %s\n", frozen ? frozen->c_str() : "timed out");
+    const auto snapshot = doc->view().current();
+    const auto *track = snapshot ? snapshot->findTrack(2) : nullptr;
+    check(frozen && *frozen == "Freeze Track complete." && track && track->frozen && track->freezeMediaId &&
+              db.execAndGet("SELECT COALESCE(MAX(frames),0) FROM frozen_renders").getInt64() == 6750 &&
+              doc->ops().nextUndo() && doc->ops().nextUndo()->label == "Freeze Tracks",
+          "a new Freeze publishes its cache and configured tail in one step");
+    if (track && track->frozen)
+        check(doc->ops().undo().ok && doc->synchronise() && !doc->view().current()->findTrack(2)->frozen,
+              "one Undo gives back the original unfrozen track");
+    doc->release();
+}
 void peakSpans() {
     media::MediaPeaks p;
     p.channels = 2;
@@ -1387,6 +1494,8 @@ int main(int argc, char **argv) {
         commitKeepsClipSounding(commitDir.path());
         test::TempDirectory stoppedDir("ui_document", "stopped-commit");
         playRightAfterAStoppedCommit(stoppedDir.path());
+        test::TempDirectory renderDir("ui_document", "track-render");
+        trackRenderLifecycle(renderDir.path());
     }
     test::TempDirectory temp("ui_document", "lifetime");
     std::string error;
