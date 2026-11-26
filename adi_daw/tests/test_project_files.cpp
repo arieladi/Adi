@@ -12,6 +12,7 @@
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <array>
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <future>
 
@@ -239,7 +240,8 @@ void stagedFileSaves() {
     check(!progress.empty() && progress.front().phase == StoreSavePhase::copying &&
           progress.front().pagesCopied > 0 && progress.front().pagesCopied < progress.front().totalPages &&
           complete != progress.end() && std::distance(complete, progress.end()) == 3 &&
-          std::next(complete)->phase == StoreSavePhase::relocating && progress.back().phase == StoreSavePhase::publishing,
+          std::next(complete)->phase == StoreSavePhase::relocating && progress.back().phase == StoreSavePhase::publishing &&
+          progress.back().pagesCopied == complete->totalPages && progress.back().totalPages == complete->totalPages,
           "worker reports chunked page progress before relocation and publication");
     StoreError error{};
     auto copy = Store::open(copyPath, error, true);
@@ -290,6 +292,25 @@ void stagedFileSaves() {
           "owner adopts the exact readonly snapshot as a writable successor");
     const auto folded = std::async(std::launch::async, [&] { return saveTask.closeReplacedProject(); }).get();
     check(folded.empty(), "worker closes the detached readonly source");
+
+    const auto busyPath = fixture.target("busy-staged");
+    StoreFileSave busyTask;
+    check(store.prepareFileSave(busyPath, StoreSaveKind::saveAs, busyTask).ok, "pin a copy before a competing writer");
+    const auto busyCopy = std::async(std::launch::async, [&] { return busyTask.write(); }).get();
+    check(busyCopy.ok, "completed copy survives a competing writer at adoption");
+    {
+        SQLite::Database writer(media::pathUtf8(fixture.source), SQLite::OPEN_READWRITE);
+        SQLite::Transaction gate(writer, SQLite::TransactionBehavior::IMMEDIATE);
+        const auto start = std::chrono::steady_clock::now();
+        const auto refused = store.adoptFileSave(busyTask);
+        check(!refused.ok && std::chrono::steady_clock::now() - start < std::chrono::seconds(1) &&
+              store.path() == fixture.source && store.db().execAndGet("PRAGMA busy_timeout").getInt() == 5000,
+              "a busy external writer refuses promptly without replacing the active Store's busy timeout");
+    }
+    check(store.adoptFileSave(busyTask).ok && store.path() == busyPath,
+          "the completed copy can be adopted once the competing writer releases without editing");
+    const auto closed = std::async(std::launch::async, [&] { return busyTask.closeReplacedProject(); }).get();
+    check(closed.empty(), "worker folds the old writable project after releasing the writer gate");
 }
 }
 int main(){try{copiesAndSwitches();refusalsAndMissingMedia();readOnlySource();historyBranches();symlinkedDestination();checkpointRelocation();unknownMajorAndReaders();stagedFileSaves();}catch(const std::exception& e){check(false,e.what());}
