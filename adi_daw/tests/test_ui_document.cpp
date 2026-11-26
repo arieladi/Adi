@@ -2957,7 +2957,7 @@ void reversedWaveform() {
     clip.audio->warpMarkers = audio::writeWarpMap(markers, 96000).bytes;
     check(frameIs(0, 96009.) && frameIs(quarter, 68009.), "warped reverse mirrors time before interpolating the map");
     clip.contentOffsetTicks = quarter;
-    check(frameIs(0, 68009.) && ui::warpedWaveformFrame(markers, quarter, true) == 68000.,
+    check(frameIs(0, 68009.) && ui::warpedWaveformFrame(markers, static_cast<double>(quarter), true) == 68000.,
           "arrangement offsets and the Sample Editor's source ruler agree on reverse Warp position");
 }
 
@@ -3000,9 +3000,25 @@ void waveformLoopRepeats(const std::filesystem::path &dir) {
           "the warped waveform repeats the loop's own source region");
     check(frameIs(7, 7 * beat / 2, 24100), "a tempo change after the first repeat follows playback's rendered loop clock");
     check(frameIs(8, 5 * beat / 2, 12100), "the legacy unwarped waveform repeats its physical loop bounds");
+    if (const auto *track = snapshot->findTrack(21); track && !track->clips.empty() && track->clips.front()->audio) {
+        const auto &clip = *track->clips.front();
+        const ui::ClipSourceMap map(clip, snapshot->tempo.get(), 48000);
+        const auto seam = map.framesAcross(7 * beat / 4, 9 * beat / 4);
+        const auto near = [](double a, double b) { return std::abs(a - b) < .01; };
+        check(seam.repeats && near(seam.first.from, 42100) && near(seam.first.to, 48100) &&
+                  near(seam.second.from, 24100) && near(seam.second.to, 30100),
+              "the boundary pixel reads only the source tail and head it plays and marks the repeat");
+        check(!map.framesAcross(3 * beat / 2, 7 * beat / 4).repeats,
+              "pixels away from a loop boundary have no repeat mark");
+    } else {
+        check(false, "find waveform source ranges in the arrangement snapshot");
+    }
     db.exec("UPDATE clips SET content_offset_ticks=20180160,pos_ticks=20180160 WHERE id=7");
     snapshot = engine::SnapshotBuilder::fromStore(*store, *snapshot, {}, false);
     check(frameIs(7, 7 * beat / 2, 24100), "the first pixel of a clip split at a repeat keeps its loop source position");
+    db.exec("UPDATE audio_clips SET reverse=1 WHERE clip_id=7");
+    snapshot = engine::SnapshotBuilder::fromStore(*store, *snapshot, {}, false);
+    check(frameIs(7, 7 * beat / 2, 72099), "reversing a repeat reflects its source frame inside the file window");
 }
 
 // PD06-SAVEAS-GUARD: Save As during Record, or while a take's placement is pending, lands the take in

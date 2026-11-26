@@ -6,6 +6,7 @@
 #include "adi/media/peaks.hpp"
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -347,78 +348,193 @@ class WaveformCache {
     std::atomic<int> builds_{0};
     std::jthread worker_; // last: stopped and joined before the rest goes
 };
-// The file-relative frame on a canonical warp map. Its last marker denotes
-// the boundary after the last sample, so endpoints are valid for peak spans.
-inline double warpedWaveformFrame(std::span<const WarpMarker> markers, std::int64_t tick, bool reverse) noexcept {
-    if (reverse && !markers.empty()) {
-        const auto end = markers.back().tick;
-        tick = end - std::clamp(tick, std::int64_t{0}, end);
-    }
+// The file-relative boundary on a canonical warp map, in the clip's direction.
+inline double warpedWaveformFrame(std::span<const WarpMarker> markers, double tick, bool reverse) noexcept {
+    if (markers.empty())
+        return 0.;
+    const auto end = static_cast<double>(markers.back().tick);
+    if (reverse)
+        tick = end - std::clamp(tick, 0., end);
     const auto right = std::upper_bound(markers.begin(), markers.end(), tick,
-                                        [](std::int64_t at, const WarpMarker &marker) { return at < marker.tick; });
+                                       [](double at, const WarpMarker &m) { return at < static_cast<double>(m.tick); });
     if (right == markers.begin())
         return 0.;
     const auto &a = *(right - 1);
     if (right == markers.end())
         return static_cast<double>(a.sourceFrame);
-    return static_cast<double>(a.sourceFrame) + static_cast<double>(tick - a.tick) *
-           static_cast<double>(right->sourceFrame - a.sourceFrame) / static_cast<double>(right->tick - a.tick);
+    return static_cast<double>(a.sourceFrame) + (tick - static_cast<double>(a.tick)) *
+               static_cast<double>(right->sourceFrame - a.sourceFrame) / static_cast<double>(right->tick - a.tick);
 }
-// Where a clip's timeline tick falls in its file: the source frame, or none outside its source
-// window. Unwarped, seconds from the clip's placement are added to its source offset and converted
-// at the file's rate. Warped, ticks from the placement are added to the source offset, then mapped
-// between warp markers (AWRP v1: a frame and a musical tick, both relative to the source window).
-// A map that does not read is taken as unwarped.
+// Convert Arrangement ticks into file frames using the clip's source clock.
+// Loop bounds repeat in elapsed render time, as in ClipPlayback, including
+// when later repeats play across a change of project tempo.
 class ClipSourceMap {
   public:
+    struct FrameSpan {
+        double from = 0., to = 0.;
+    };
+    struct Column {
+        // A pixel at a wrap has one range on either side of the loop boundary.
+        FrameSpan first{}, second{};
+        bool repeats = false;
+    };
+
     ClipSourceMap(const engine::ClipNode &clip, const engine::TempoMap *tempo, double sampleRate)
         : pos_(clip.posTicks), offsetTicks_(clip.contentOffsetTicks), rate_(sampleRate), tempo_(tempo),
           audio_(*clip.audio) {
         if (audio_.warpEnabled && audio_.warpMarkers)
             if (auto read = audio::readWarpMap(*audio_.warpMarkers, static_cast<std::uint64_t>(audio_.sourceLengthFrames)))
                 markers_ = std::move(read.markers);
-        if (tempo_ != nullptr)
-            startSeconds_ = tempo_->ticksToSeconds(pos_);
+        if (pos_ < 0 || !(rate_ > 0))
+            return;
+        startSeconds_ = timelineSeconds(pos_);
         if (markers_.empty()) {
             if (clip.contentOffsetNs)
                 offsetSeconds_ = static_cast<double>(*clip.contentOffsetNs) * 1e-9;
-            else if (pos_ < 0 || offsetTicks_ < 0 || offsetTicks_ > std::numeric_limits<std::int64_t>::max() - pos_)
-                offsetSeconds_ = std::numeric_limits<double>::infinity();
             else
-                offsetSeconds_ = tempo_ != nullptr ? tempo_->ticksToSeconds(pos_ + offsetTicks_) - startSeconds_
-                                                   : static_cast<double>(offsetTicks_) * fallbackSecondsPerTick;
+                offsetSeconds_ = secondsFrom(pos_, offsetTicks_);
         }
+        if (clip.loopEnabled)
+            setLoop(clip);
     }
+
     std::optional<double> frameAt(std::int64_t tick) const {
-        if (pos_ < 0 || tick < pos_)
+        auto frame = boundaryAt(tick);
+        if (!frame)
             return std::nullopt;
-        const auto into = tick - pos_;
-        double frame = 0;
-        const double sourceLength = static_cast<double>(audio_.sourceLengthFrames);
-        if (markers_.size() >= 2) {
-            const auto end = markers_.back().tick;
-            if (offsetTicks_ < 0 || offsetTicks_ >= end - into)
-                return std::nullopt;
-            const auto sourceTick = into + offsetTicks_;
-            frame = warpedWaveformFrame(markers_, sourceTick, audio_.reverse);
-            if (audio_.reverse)
-                frame = std::max(0., frame - 1.);
-        } else {
-            const double seconds = tempo_ != nullptr ? tempo_->ticksToSeconds(tick) - startSeconds_
-                                                     : static_cast<double>(into) * fallbackSecondsPerTick;
-            frame = (offsetSeconds_ + seconds) * rate_;
-            if (audio_.reverse && frame >= 0 && frame < sourceLength)
-                frame = std::max(0., sourceLength - 1. - frame);
+        const auto start = static_cast<double>(audio_.sourceStartFrames);
+        if (audio_.reverse)
+            return std::max(start, *frame - 1.);
+        return *frame < start + static_cast<double>(audio_.sourceLengthFrames) ? frame : std::nullopt;
+    }
+
+    Column framesAcross(std::int64_t first, std::int64_t last) const {
+        if (last <= pos_ || last < first)
+            return {};
+        first = std::max(first, pos_);
+        const auto begin = boundaryAt(first);
+        if (!begin)
+            return {};
+        const auto end = boundaryAt(last);
+        const auto wraps = repeatAt(last) - repeatAt(first);
+        const auto span = [](double a, double b) { return FrameSpan{std::min(a, b), std::max(a, b)}; };
+        if (wraps >= 1.) {
+            const double afterWrap = wraps > 1. ? loopLastFrame_ : end.value_or(loopFirstFrame_);
+            return {span(*begin, loopLastFrame_), span(loopFirstFrame_, afterWrap), true};
         }
-        if (frame < 0 || frame >= sourceLength)
-            return std::nullopt;
-        return static_cast<double>(audio_.sourceStartFrames) + frame;
+        const auto sourceStart = static_cast<double>(audio_.sourceStartFrames);
+        const auto sourceEnd = sourceStart + static_cast<double>(audio_.sourceLengthFrames);
+        const auto limit = loopLength_ > 0 ? loopLastFrame_ : audio_.reverse ? sourceStart : sourceEnd;
+        const auto endFrame = audio_.reverse ? std::max(limit, std::min(*begin - 1., end.value_or(limit)))
+                                            : std::min(limit, std::max(*begin + 1., end.value_or(limit)));
+        return {span(*begin, endFrame), {}, false};
     }
 
   private:
     static constexpr double fallbackSecondsPerTick = .5 / textproj::kPPQ; // 120 BPM
-    std::int64_t pos_, offsetTicks_;
-    double rate_, startSeconds_ = 0, offsetSeconds_ = 0;
+    double earlySecondsPerTick() const {
+        return tempo_ != nullptr ? 60. / tempo_->bpmAt(0) / textproj::kPPQ : fallbackSecondsPerTick;
+    }
+    double timelineSeconds(std::int64_t tick) const {
+        // Playback extrapolates a Warp source origin before song zero at the first tempo.
+        return tempo_ != nullptr && tick >= 0 ? tempo_->ticksToSeconds(tick)
+                                             : static_cast<double>(tick) * earlySecondsPerTick();
+    }
+    double secondsFrom(std::int64_t origin, std::int64_t ticks) const {
+        if (ticks < 0 || ticks > std::numeric_limits<std::int64_t>::max() - std::max(std::int64_t{0}, origin))
+            return std::numeric_limits<double>::infinity();
+        return timelineSeconds(origin + ticks) - timelineSeconds(origin);
+    }
+    double clockAt(std::int64_t tick) const { return offsetSeconds_ + (timelineSeconds(tick) - startSeconds_); }
+
+    double sourceTickAt(double seconds) const {
+        const auto absolute = warpOriginSeconds_ + seconds;
+        if (tempo_ == nullptr || absolute < 0)
+            return absolute / earlySecondsPerTick() - static_cast<double>(warpOrigin_);
+        const auto tick = tempo_->secondsToTicks(absolute);
+        const auto at = tempo_->ticksToSeconds(tick);
+        const auto ticksFromOrigin = static_cast<double>(tick) - static_cast<double>(warpOrigin_);
+        if (tick == std::numeric_limits<std::int64_t>::max())
+            return ticksFromOrigin;
+        const auto interval = tempo_->ticksToSeconds(tick + 1) - at;
+        return interval > 0 ? ticksFromOrigin + (absolute - at) / interval : ticksFromOrigin;
+    }
+    std::optional<double> boundaryAt(std::int64_t tick) const {
+        if (pos_ < 0 || tick < pos_ || !(rate_ > 0))
+            return std::nullopt;
+        const auto into = tick - pos_;
+        const auto sourceLength = static_cast<double>(audio_.sourceLengthFrames);
+        const auto repeat = repeatAt(tick);
+        const auto wrapped = repeat >= 1. ? std::clamp(clockAt(tick) - repeat * loopLength_, loopStart_, loopStart_ + loopLength_)
+                                          : 0.;
+        double frame;
+        if (!markers_.empty()) {
+            if (repeat < 1. && (offsetTicks_ < 0 || offsetTicks_ >= markers_.back().tick - into))
+                return std::nullopt;
+            const auto ticks = repeat >= 1. ? sourceTickAt(wrapped) : static_cast<double>(offsetTicks_ + into);
+            frame = warpedWaveformFrame(markers_, ticks, audio_.reverse);
+        } else {
+            frame = (repeat >= 1. ? wrapped : clockAt(tick)) * rate_;
+            if (!(frame >= 0. && frame < sourceLength))
+                return std::nullopt;
+            if (audio_.reverse)
+                frame = sourceLength - frame;
+        }
+        if (!(frame >= 0. && frame <= sourceLength))
+            return std::nullopt;
+        return static_cast<double>(audio_.sourceStartFrames) + frame;
+    }
+    double repeatAt(std::int64_t tick) const {
+        if (loopLength_ <= 0 || tick < pos_)
+            return 0.;
+        const double cycles = (clockAt(tick) - loopStart_) / loopLength_;
+        if (!std::isfinite(cycles) || cycles <= 0.)
+            return 0.;
+        // Keep exact musical boundaries on the next pass through roundoff in the tempo conversion.
+        const double error = std::numeric_limits<double>::epsilon() * cycles * 8.;
+        return std::floor(cycles + error);
+    }
+    void setLoop(const engine::ClipNode &clip) {
+        const auto start = clip.loopStartTicks, length = clip.loopLengthTicks.value_or(0);
+        if (start < 0 || length < 0 || length > std::numeric_limits<std::int64_t>::max() - start)
+            return;
+        const auto end = start + length;
+        double beginSeconds, endSeconds, beginFrame, endFrame;
+        if (markers_.empty()) {
+            if (audio_.warpEnabled)
+                return;
+            beginSeconds = clip.loopBeginNs ? static_cast<double>(*clip.loopBeginNs) * 1e-9 : secondsFrom(pos_, start);
+            endSeconds = clip.loopEndNs ? static_cast<double>(*clip.loopEndNs) * 1e-9 : secondsFrom(pos_, end);
+            beginFrame = beginSeconds * rate_;
+            endFrame = endSeconds * rate_;
+            if (audio_.reverse) {
+                const auto sourceLength = static_cast<double>(audio_.sourceLengthFrames);
+                beginFrame = sourceLength - beginFrame;
+                endFrame = sourceLength - endFrame;
+            }
+        } else {
+            if (offsetTicks_ < 0 || end > markers_.back().tick)
+                return;
+            warpOrigin_ = pos_ - offsetTicks_;
+            warpOriginSeconds_ = timelineSeconds(warpOrigin_);
+            offsetSeconds_ = startSeconds_ - warpOriginSeconds_;
+            beginSeconds = secondsFrom(warpOrigin_, start);
+            endSeconds = secondsFrom(warpOrigin_, end);
+            beginFrame = warpedWaveformFrame(markers_, static_cast<double>(start), audio_.reverse);
+            endFrame = warpedWaveformFrame(markers_, static_cast<double>(end), audio_.reverse);
+        }
+        if (!(beginSeconds >= 0. && endSeconds > beginSeconds && beginFrame != endFrame &&
+              std::min(beginFrame, endFrame) >= 0. && std::max(beginFrame, endFrame) <= static_cast<double>(audio_.sourceLengthFrames)))
+            return;
+        loopStart_ = beginSeconds;
+        loopLength_ = endSeconds - beginSeconds;
+        loopFirstFrame_ = static_cast<double>(audio_.sourceStartFrames) + beginFrame;
+        loopLastFrame_ = static_cast<double>(audio_.sourceStartFrames) + endFrame;
+    }
+
+    std::int64_t pos_, offsetTicks_, warpOrigin_ = 0;
+    double rate_, startSeconds_ = 0., offsetSeconds_ = 0., warpOriginSeconds_ = 0.;
+    double loopStart_ = 0., loopLength_ = 0., loopFirstFrame_ = 0., loopLastFrame_ = 0.;
     const engine::TempoMap *tempo_;
     const engine::AudioClipSource &audio_;
     std::vector<WarpMarker> markers_;

@@ -2900,7 +2900,7 @@ std::int64_t SampleEditor::endMarker() const noexcept {
 }
 double SampleEditor::frameAt(std::int64_t tick, double rate, const engine::AudioClipSource &audio) const noexcept {
     if (!markers_.empty())
-        return warpedWaveformFrame(markers_, tick, audio.reverse);
+        return warpedWaveformFrame(markers_, static_cast<double>(tick), audio.reverse);
     const auto length = static_cast<double>(audio.sourceLengthFrames);
     const auto frame = std::clamp(sourceTicksToSeconds(tick) * rate, 0., length);
     return audio.reverse ? length - frame : frame;

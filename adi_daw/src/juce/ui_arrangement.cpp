@@ -3410,26 +3410,61 @@ void ArrangementCanvas::paintWaveform(juce::Graphics &g, const engine::ClipNode 
                                       float right, float top, float bottom) const {
     // Live's audio clip (manual 6.1, chapter 9): its waveform across the body, each channel in a
     // band of its own, inside the clip's source window only. The colour is ADI's until measured.
-    if (view.waveforms == nullptr || !clip.audio || bottom - top < 4.f)
+    if (!clip.audio || bottom - top < 4.f)
         return;
-    const auto peaks = view.waveforms->peaks(*clip.audio);
-    if (!peaks)
+    const auto peaks = view.waveforms != nullptr ? view.waveforms->peaks(*clip.audio) : nullptr;
+    const auto *finest = peaks ? &peaks->finest() : nullptr;
+    if (!clip.loopEnabled && (!finest || finest->channels == 0))
         return;
-    const auto &finest = peaks->finest();
-    if (finest.channels == 0 || finest.sampleRate == 0)
+    const auto rate = finest ? static_cast<double>(finest->sampleRate)
+                             : clip.audio->mediaInfo ? static_cast<double>(clip.audio->mediaInfo->sampleRate.value_or(0)) : 0.;
+    if (!(rate > 0.))
         return;
     const auto *snapshot = view.reader().get();
     const auto &geo = view.geometry;
     auto moved = clip;
     moved.posTicks = pos; // drawn where a drag would put it
-    const ClipSourceMap source(moved, snapshot != nullptr ? snapshot->tempo.get() : nullptr,
-                               static_cast<double>(finest.sampleRate));
+    const ClipSourceMap source(moved, snapshot != nullptr ? snapshot->tempo.get() : nullptr, rate);
     const auto gain = std::abs(clip.gainDb) <= 120.f ? std::pow(10.f, clip.gainDb / 20.f) : 0.f;
-    g.setColour(look::ink.withAlpha(clip.muted ? 0.4f : 0.85f));
+    const auto waveColour = look::ink.withAlpha(clip.muted ? 0.4f : 0.85f);
+    g.setColour(waveColour);
     const int from = std::max(0, static_cast<int>(std::floor(left))),
               to = std::min(getWidth(), static_cast<int>(std::ceil(right)));
-    paintPeakColumns(g, *peaks, from, to, top, bottom, finest.channels, {},
-                     [&](int x) { return source.frameAt(geo.tick(x)); }, static_cast<double>(finest.frames), gain);
+    if (!clip.loopEnabled) {
+        paintPeakColumns(g, *peaks, from, to, top, bottom, finest->channels, {},
+                         [&](int x) { return source.frameAt(geo.tick(x)); }, static_cast<double>(finest->frames), gain);
+        return;
+    }
+    const auto channels = finest ? finest->channels : 0;
+    const float band = channels > 0 ? (bottom - top) / static_cast<float>(channels) : 0.f;
+    const auto repeatColour = waveColour.withMultipliedAlpha(.55f);
+    for (int x = from; x < to; ++x) {
+        const double rightEdge = std::min(static_cast<double>(x + 1), static_cast<double>(right));
+        const auto column = source.framesAcross(geo.tick(x), geo.tick(rightEdge));
+        for (std::uint32_t ch = 0; ch < channels; ++ch) {
+            auto span = peakSpan(*peaks, column.first.from, column.first.to, ch);
+            if (column.repeats) {
+                if (const auto wrapped = peakSpan(*peaks, column.second.from, column.second.to, ch)) {
+                    if (span)
+                        mergePeakBins(*span, *wrapped);
+                    else
+                        span = wrapped;
+                }
+            }
+            if (!span)
+                continue;
+            const float mid = top + band * (static_cast<float>(ch) + .5f), half = band * .5f;
+            const float y0 = mid - std::clamp(span->maximum * gain, -1.f, 1.f) * half,
+                        y1 = mid - std::clamp(span->minimum * gain, -1.f, 1.f) * half;
+            g.fillRect(static_cast<float>(x), y0, 1.f, std::max(1.f, y1 - y0));
+        }
+        // At overview scales several short repeats can share one pixel and one boundary mark.
+        if (column.repeats && x + 1 < to) {
+            g.setColour(repeatColour);
+            g.drawVerticalLine(x, top, bottom);
+            g.setColour(waveColour);
+        }
+    }
 }
 void ArrangementCanvas::paintLiveMidiTake(juce::Graphics &g, const LiveMidiTake &take, const engine::TrackNode &track,
                                          std::size_t trackNumber, int y, int height) const {
