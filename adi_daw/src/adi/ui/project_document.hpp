@@ -97,6 +97,19 @@ class ProjectDocument final : public engine::BlockProcessor {
     // Live's Save a Copy (manual 5.4.1): the project as it stands into a new `.adi`, the open one
     // left as it is (`Store::saveCopy`, #380, N30). An existing file is refused, as for Save As.
     bool saveCopy(const std::filesystem::path &);
+    enum class SaveKind { as, copy };
+    struct SaveProgress {
+        enum class Phase { waitingForRecording, copying, relocating, finishing, succeeded, cancelled, failed };
+        Phase phase;
+        int pagesDone = 0;
+        int pagesTotal = 0;
+    };
+    // File-menu saves progress between owner turns. Only Save As switches the live document.
+    bool startSave(const std::filesystem::path &, SaveKind);
+    std::optional<SaveProgress> saveProgress() const;
+    void advanceSave();
+    void cancelSave();
+    void clearSave(); // after a terminal result has been shown
     // Live's Collect All and Save (manual 5.7): every outside media file the project and its
     // history use is copied into `audio/` beside it and the project points at the copies
     // (`Store::collectAllAndSave`, #411). Live's dialog chooses which locations to collect; the
@@ -342,6 +355,8 @@ class ProjectDocument final : public engine::BlockProcessor {
     std::vector<std::pair<std::int64_t, std::vector<std::uint32_t>>> monitorInputs_;
     void persistReportedLatencies();
     void refreshReportedLatenciesForSave();
+    void followSaveAs(const StoreFileResult &, bool keptTake);
+    struct SaveJob;
     std::unique_ptr<Store> store_;
     std::string name_;
     engine::ProjectView view_;
@@ -403,5 +418,6 @@ class ProjectDocument final : public engine::BlockProcessor {
     };
     std::map<std::int64_t, ReductionSource> limiterReductionSources_;
     std::int64_t limiterReductionPublication_ = 0;
+    std::unique_ptr<SaveJob> saveJob_;
 };
 } // namespace adi::ui

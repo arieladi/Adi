@@ -83,10 +83,10 @@ class UndoHistoryWindow final : public juce::DocumentWindow {
     }
     void closeButtonPressed() override { setVisible(false); }
 };
-class ProjectOpenWindow final : public juce::DocumentWindow {
+class ProjectProgressWindow final : public juce::DocumentWindow {
   public:
-    ProjectOpenWindow(const juce::File& file, juce::Component* previous)
-        : juce::DocumentWindow("Open ADI Project", look::frame, juce::DocumentWindow::closeButton),
+    ProjectProgressWindow(const juce::String& title, const juce::File& file, juce::Component* previous)
+        : juce::DocumentWindow(title, look::frame, juce::DocumentWindow::closeButton),
           body_(new Body(file.getFileName())) {
         setContentOwned(body_, true);
         setUsingNativeTitleBar(true);
@@ -582,6 +582,11 @@ class AdiApplication final : public juce::JUCEApplication,
     // A project opened while a discovery runs waits for its adoption, so the plug-ins it finds load
     // (`PluginCatalogueService::settleThen`).
     void openSettled(const juce::File &file, bool create) {
+        if (projectSave_) {
+            if (root_)
+                root_->say("The project is still being saved.");
+            return;
+        }
         if (projectOpen_ || installingDocument_) {
             if (root_)
                 root_->say("Another project is already opening.");
@@ -595,7 +600,7 @@ class AdiApplication final : public juce::JUCEApplication,
             if (root_)
                 root_->say("Opening " + file.getFileName().toStdString() + " once the plug-in scan has finished…");
             catalogue_->settleThen([this, file] {
-                if (!projectOpen_ && !installingDocument_ && !installNew(file) && root_)
+                if (!projectOpen_ && !projectSave_ && !installingDocument_ && !installNew(file) && root_)
                     root_->say({});
             });
             return;
@@ -603,7 +608,7 @@ class AdiApplication final : public juce::JUCEApplication,
         const auto request = ++openRequest_;
         projectOpen_.emplace(PendingProjectOpen{file, request, {}});
         if (!testLaunch()) {
-            openProgress_ = std::make_unique<ProjectOpenWindow>(file, window_.get());
+            openProgress_ = std::make_unique<ProjectProgressWindow>("Open ADI Project", file, window_.get());
             openProgress_->showStage(catalogue_ && catalogue_->running() ? "Waiting for the plug-in scan…"
                                                                          : "Reading the project…");
         }
@@ -733,6 +738,7 @@ class AdiApplication final : public juce::JUCEApplication,
     void shutdown() override {
         stopTimer();
         clearProjectOpen();
+        stopProjectSave();
         // A Collect and Export still running finishes first: its ZIP is not left half written.
         if (export_.joinable())
             export_.join();
@@ -1335,14 +1341,13 @@ class AdiApplication final : public juce::JUCEApplication,
             }),
             true);
     }
-    // Save As, once the chooser has a file: the document carries on in it and the window takes
-    // its name, and that is all Live shows (manual 5.4.1). As after New and Open, a success says
-    // nothing in the Status Bar and clears what a refusal left there (parity-7.2-shell row 4);
-    // only a warning the store or the session reports goes there. The store never overwrites,
-    // so an existing file is refused and the Status Bar says why, where Live asks first and
-    // then replaces.
+    using SaveKind = ProjectDocument::SaveKind;
+    using SavePhase = ProjectDocument::SaveProgress::Phase;
+
+    // Save As uses the chosen song folder. Keep the existing project in use
+    // until the owner has successfully switched its Store to the finished copy.
     void saveAs(const juce::File &chosenFile) {
-        if (!document_ || !root_ || !window_)
+        if (!document_ || !root_ || !window_ || projectOpen_ || projectSave_ || installingDocument_)
             return;
         const auto file = songProjectFile(chosenFile);
         if (file == juce::File{}) {
@@ -1356,41 +1361,114 @@ class AdiApplication final : public juce::JUCEApplication,
             root_->say("Cannot create the project folder: " + folderError.message());
             return;
         }
-        const auto before = document_->deviceCopyIdentity();
-        const bool saved = document_->saveAs(path);
-        // A take landed before the switch (PD06-SAVEAS-GUARD) is told here with Save As's own words, so the
-        // timer finds nothing to say over them; a kept take is chosen, as when it lands on its own.
-        std::string landedFirst;
-        if (auto landed = document_->takeLanded()) {
-            if (!landed->ok)
-                landedFirst = landed->message + " ";
-            else if (!landed->clips.empty())
-                root_->selectClip(landed->clips.front());
-        }
-        if (!saved) {
-            if (created && std::filesystem::is_empty(path.parent_path(), folderError) && !folderError)
-                std::filesystem::remove(path.parent_path(), folderError);
-            root_->say(landedFirst + document_->error());
-            return;
-        }
-        // The same project under a new file: a copy held from it still pastes into it.
-        if (deviceClipboard_ && deviceClipboard_->sourceFile == before)
-            deviceClipboard_->sourceFile = document_->deviceCopyIdentity();
-        commands_->clipClipboard().rebase(before, document_->deviceCopyIdentity());
-        window_->setName("ADI - " + file.getFileNameWithoutExtension());
-        root_->say(landedFirst + document_->warning());
+        startProjectSave(file, path, SaveKind::as, created);
     }
-    // Save a Copy, once the chooser has a file. The Status Bar says where it went, since nothing
-    // else in the window changes.
     void saveCopy(const juce::File &file) {
-        if (!document_ || !root_)
+        if (!document_ || !root_ || projectOpen_ || projectSave_ || installingDocument_)
             return;
-        if (!document_->saveCopy(pathFromUtf8(file.getFullPathName().toStdString()))) {
+        startProjectSave(file, pathFromUtf8(file.getFullPathName().toStdString()), SaveKind::copy, false);
+    }
+    static void removeEmptySaveFolder(const std::filesystem::path &folder) {
+        std::error_code error;
+        if (std::filesystem::is_directory(std::filesystem::symlink_status(folder, error)))
+            std::filesystem::remove(folder, error);
+    }
+    void startProjectSave(const juce::File &file, const std::filesystem::path &path, SaveKind kind, bool createdFolder) {
+        const auto before = kind == SaveKind::as ? document_->deviceCopyIdentity() : std::string{};
+        if (!document_->startSave(path, kind)) {
+            if (createdFolder)
+                removeEmptySaveFolder(path.parent_path());
             root_->say(document_->error());
             return;
         }
-        root_->say(document_->warning().empty() ? ("Saved a copy as " + file.getFileName()).toStdString()
-                                                : document_->warning());
+        projectSave_.emplace(PendingProjectSave{file, kind, before, {}, createdFolder, false});
+        if (!testLaunch()) {
+            saveProgress_ = std::make_unique<ProjectProgressWindow>(
+                kind == SaveKind::as ? "Save ADI Project As" : "Save a Copy", file, window_.get());
+            updateProjectSave();
+        }
+    }
+    void requestProjectSaveCancellation() {
+        if (!projectSave_ || !saveProgress_ || !saveProgress_->cancelled() || projectSave_->cancelling)
+            return;
+        projectSave_->cancelling = true;
+        document_->cancelSave();
+        saveProgress_->showStage("Cancelling…");
+    }
+    static bool saveFinished(SavePhase phase) noexcept {
+        return phase == SavePhase::succeeded || phase == SavePhase::cancelled || phase == SavePhase::failed;
+    }
+    void updateProjectSave() {
+        if (!projectSave_)
+            return;
+        const auto progress = document_->saveProgress();
+        if (!progress)
+            return;
+        if (saveFinished(progress->phase)) {
+            finishProjectSave(progress->phase, true);
+            return;
+        }
+        if (!saveProgress_ || projectSave_->cancelling)
+            return;
+        switch (progress->phase) {
+        case SavePhase::waitingForRecording:
+            saveProgress_->showStage("Finishing the recording…");
+            break;
+        case SavePhase::copying:
+            saveProgress_->showStage("Copying the project…", progress->pagesTotal <= 0 ? -1.0 :
+                std::clamp(static_cast<double>(progress->pagesDone) / static_cast<double>(progress->pagesTotal), 0.0, 1.0));
+            break;
+        case SavePhase::relocating:
+            saveProgress_->showStage("Updating media paths…");
+            break;
+        case SavePhase::finishing:
+            saveProgress_->showStage("Finishing the save…");
+            break;
+        case SavePhase::succeeded:
+        case SavePhase::cancelled:
+        case SavePhase::failed:
+            break;
+        }
+    }
+    void finishProjectSave(SavePhase phase, bool showOutcome) {
+        auto save = std::move(*projectSave_);
+        projectSave_.reset();
+        saveProgress_.reset();
+        const bool saved = phase == SavePhase::succeeded;
+        if (!saved && save.createdFolder)
+            removeEmptySaveFolder(pathFromUtf8(save.file.getParentDirectory().getFullPathName().toStdString()));
+        if (showOutcome && root_) {
+            if (saved && save.kind == SaveKind::as) {
+                const auto after = document_->deviceCopyIdentity();
+                if (deviceClipboard_ && deviceClipboard_->sourceFile == save.sourceIdentity)
+                    deviceClipboard_->sourceFile = after;
+                commands_->clipClipboard().rebase(save.sourceIdentity, after);
+                window_->setName("ADI - " + save.file.getFileNameWithoutExtension());
+            }
+            auto message = document_->warning();
+            if (phase == SavePhase::failed)
+                message = document_->error() + (message.empty() ? "" : " " + message);
+            else if (message.empty() && phase == SavePhase::cancelled)
+                message = "Project save cancelled.";
+            else if (message.empty() && save.kind == SaveKind::copy)
+                message = ("Saved a copy as " + save.file.getFileName()).toStdString();
+            root_->say(save.takeWarning + message);
+        }
+        document_->clearSave();
+    }
+    void stopProjectSave() {
+        if (!projectSave_ || !document_)
+            return;
+        document_->cancelSave();
+        while (const auto progress = document_->saveProgress()) {
+            if (saveFinished(progress->phase)) {
+                finishProjectSave(progress->phase, false);
+                return;
+            }
+            document_->advanceSave();
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        finishProjectSave(SavePhase::cancelled, false);
     }
     // Collect and Export, once the chooser has a file: on a worker the application owns, so the
     // window keeps working and a project opened meanwhile does not wait for it; the Status Bar says it
@@ -1435,7 +1513,7 @@ class AdiApplication final : public juce::JUCEApplication,
             // Live's Save Live Set As (manual 5.4.1, 41.3; ADR-0203 d6): a new file the project
             // carries on in. The chooser opens beside the current song's folder so two saved
             // variations get their own folders. The document copies and switches (`Store::saveAs`).
-            if (chooser_)
+            if (chooser_ || !document_ || projectOpen_ || projectSave_ || installingDocument_)
                 return false;
             const auto current = juce::File(juce::String::fromUTF8(reinterpret_cast<const char *>(
                 document_->store().path().u8string().c_str())));
@@ -1443,11 +1521,12 @@ class AdiApplication final : public juce::JUCEApplication,
                                        ? current.getParentDirectory().getSiblingFile(current.getFileName())
                                        : current;
             chooser_ = std::make_unique<juce::FileChooser>("Save ADI project as", suggested, "*.adi");
+            const auto generation = installGeneration_;
             chooser_->launchAsync(juce::FileBrowserComponent::saveMode |
                                       juce::FileBrowserComponent::canSelectFiles,
-                                  [this](const juce::FileChooser &chooser) {
+                                  [this, generation](const juce::FileChooser &chooser) {
                                       const auto file = chooser.getResult();
-                                      if (file != juce::File{})
+                                      if (file != juce::File{} && generation == installGeneration_)
                                           saveAs(withAdiExtension(file));
                                       juce::MessageManager::callAsync([this] {
                                           if (juce::JUCEApplicationBase::getInstance() == this)
@@ -1459,18 +1538,19 @@ class AdiApplication final : public juce::JUCEApplication,
         // Live's Save a Copy (manual 5.4.1): a save chooser, then the copy; the open project and
         // its window stay as they are (`Store::saveCopy`, N30).
         if (id == AppCommands::SaveCopy || id == AppCommands::CollectAndExport) {
-            if (chooser_ || !document_)
-                return false;
             const bool zip = id == AppCommands::CollectAndExport;
+            if (chooser_ || !document_ || (!zip && (projectOpen_ || projectSave_ || installingDocument_)))
+                return false;
             const auto current = juce::File(juce::String::fromUTF8(reinterpret_cast<const char *>(
                 document_->store().path().u8string().c_str())));
             chooser_ = std::make_unique<juce::FileChooser>(
                 zip ? "Collect and export ADI project as" : "Save a copy of the ADI project as",
                 zip ? current.withFileExtension("zip") : current, zip ? "*.zip" : "*.adi");
+            const auto generation = installGeneration_;
             chooser_->launchAsync(juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles,
-                                  [this, zip](const juce::FileChooser &chooser) {
+                                  [this, zip, generation](const juce::FileChooser &chooser) {
                                       const auto file = chooser.getResult();
-                                      if (file != juce::File{})
+                                      if (file != juce::File{} && generation == installGeneration_)
                                           zip ? collectAndExport(withExtension(file, "zip"))
                                               : saveCopy(withAdiExtension(file));
                                       juce::MessageManager::callAsync([this] {
@@ -1567,7 +1647,7 @@ class AdiApplication final : public juce::JUCEApplication,
         // no chooser; Save As names and places it (walk-A A3).
         if (id != AppCommands::NewProject && id != AppCommands::OpenProject)
             return false;
-        if (chooser_ || projectOpen_ || installingDocument_)
+        if (chooser_ || projectOpen_ || projectSave_ || installingDocument_)
             return false;
         if (id == AppCommands::NewProject) {
             openSettled(nextUntitledProject(*settings_), true);
@@ -1627,16 +1707,20 @@ class AdiApplication final : public juce::JUCEApplication,
         advanceProjectOpen();
         if (!document_)
             return;
+        requestProjectSaveCancellation();
         document_->tick(static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
         if (root_) {
             root_->setRecordStates(document_->recordStates());
             // A take landed (MX-09): its outcome in the Status Bar, its clips selected.
             if (auto landed = document_->takeLanded()) {
+                if (projectSave_ && projectSave_->kind == SaveKind::as && !landed->ok)
+                    projectSave_->takeWarning = landed->message + " ";
                 root_->say(landed->message);
                 if (landed->ok && !landed->clips.empty())
                     root_->selectClip(landed->clips.front());
             }
         }
+        updateProjectSave();
         if (midiPorts_ && root_) {
             // The ports' events go to the session from the device callback (N60); a message arriving
             // lights the MIDI Indicators for 150 ms.
@@ -1702,9 +1786,17 @@ class AdiApplication final : public juce::JUCEApplication,
         std::unique_ptr<ProjectDocument::OpenJob> job;
     };
     std::optional<PendingProjectOpen> projectOpen_;
-    std::unique_ptr<ProjectOpenWindow> openProgress_;
+    std::unique_ptr<ProjectProgressWindow> openProgress_;
     std::uint64_t openRequest_ = 0;
     bool installingDocument_ = false, ticking_ = false;
+    struct PendingProjectSave {
+        juce::File file;
+        SaveKind kind;
+        std::string sourceIdentity, takeWarning;
+        bool createdFolder = false, cancelling = false;
+    };
+    std::optional<PendingProjectSave> projectSave_;
+    std::unique_ptr<ProjectProgressWindow> saveProgress_;
     std::unique_ptr<ProjectDocument> document_;
     std::shared_ptr<const MainMeterSource> mainMeterSource_;
     juce::AudioDeviceManager manager_;

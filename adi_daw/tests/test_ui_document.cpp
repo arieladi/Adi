@@ -1286,6 +1286,211 @@ std::optional<std::uint64_t> ownerReadBytes() {
 #endif
     return std::nullopt;
 }
+void largeProjectSaveResponse(const std::filesystem::path &dir) {
+    namespace fs = std::filesystem;
+    using Clock = std::chrono::steady_clock;
+    using namespace std::chrono_literals;
+    using SaveKind = ui::ProjectDocument::SaveKind;
+    using Phase = ui::ProjectDocument::SaveProgress::Phase;
+    constexpr std::uintmax_t payloadBytes = 256U * 1024U * 1024U;
+    constexpr std::string_view sourceName = "Saved from the WAL", laterName = "Edited during Save As";
+    const auto source = dir / "source" / "song.adi";
+    const auto copy = dir / "copy" / "copy.adi";
+    const auto saved = dir / "saved" / "saved.adi";
+    const auto cancelled = dir / "cancelled" / "cancelled.adi";
+    const auto stale = dir / "stale" / "stale.adi";
+    for (const auto &path : {source, copy, saved, cancelled, stale})
+        fs::create_directories(path.parent_path());
+    std::string error;
+    auto doc = ui::ProjectDocument::open(source, true, {}, error);
+    check(doc != nullptr, "large project save: open the fixture");
+    if (!doc)
+        return;
+
+    const auto wav = source.parent_path() / "snare.wav";
+    {
+        std::array<float, 4800> samples{};
+        for (std::size_t i = 0; i < samples.size(); ++i)
+            samples[i] = static_cast<float>(i % 17) / 32.f - .25f;
+        audio::WavWriter writer(wav, 48000, 1, audio::WavFormat::Pcm16);
+        writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
+    }
+    ui::AudioImport import;
+    const bool prepared = doc->prepareImport(wav.string(), 1'700'000'000'000'000, import);
+    auto drop = ui::dropAudio(*doc->view().current(), 4, 0, "Snare", import);
+    const bool placed = prepared && drop.refusal.empty() && doc->ops().submit(std::move(drop.ops)).ok && doc->synchronise();
+    check(placed, "large project save: the project references a playable WAV");
+    if (!placed)
+        return;
+
+    // Materialize real SQLite pages without making the project parser decode
+    // hundreds of megabytes of unrelated musical events before the benchmark.
+    {
+        auto &db = doc->store().db();
+        db.exec("CREATE TABLE save_fixture_blocks(id INTEGER PRIMARY KEY, data BLOB NOT NULL) STRICT");
+        db.exec("WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<256) "
+                "INSERT INTO save_fixture_blocks SELECT i, zeroblob(1048576) FROM n");
+        db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+        db.exec("PRAGMA wal_autocheckpoint=0");
+    }
+    const auto sourceBytes = fs::file_size(source);
+    check(sourceBytes >= payloadBytes, "large project save: at least 256 MiB of pages are in the source file");
+    const auto checkpointTime = fs::last_write_time(source);
+    OpRequest rename;
+    rename.opType = "track.rename";
+    rename.payload = {{"id", 4}, {"name", sourceName}};
+    rename.label = "Rename Track";
+    const bool renamed = doc->ops().submit(rename).ok && doc->synchronise();
+    auto wal = source;
+    wal += "-wal";
+    std::error_code walError;
+    const auto walBytes = fs::file_size(wal, walError);
+    check(renamed && !walError && walBytes > 32 && fs::last_write_time(source) == checkpointTime,
+          "large project save: the journaled track name is still in the source WAL");
+    if (!renamed)
+        return;
+    std::printf("Large project save fixture: %ju main-file bytes, %ju WAL bytes\n", sourceBytes,
+                walError ? std::uintmax_t{0} : walBytes);
+    const auto ops = OpJournal(doc->store()).count();
+    const auto identity = doc->deviceCopyIdentity();
+
+    const auto terminal = [](Phase phase) {
+        return phase == Phase::succeeded || phase == Phase::cancelled || phase == Phase::failed;
+    };
+    struct Observation {
+        std::optional<Phase> phase;
+        Clock::duration longestTurn{};
+        int pagesDone = 0, pagesTotal = 0;
+        bool progressOrdered = true;
+    };
+    const auto settle = [&](Clock::time_point start, Clock::duration firstTurn) {
+        Observation observed;
+        observed.longestTurn = firstTurn;
+        auto progress = doc->saveProgress();
+        while (progress) {
+            if (observed.phase && progress->phase < *observed.phase)
+                observed.progressOrdered = false;
+            if (progress->pagesDone < observed.pagesDone || progress->pagesDone > progress->pagesTotal ||
+                (observed.pagesTotal != 0 && progress->pagesTotal != observed.pagesTotal))
+                observed.progressOrdered = false;
+            observed.phase = progress->phase;
+            observed.pagesDone = progress->pagesDone;
+            observed.pagesTotal = progress->pagesTotal;
+            if (terminal(*observed.phase) || Clock::now() - start >= 2min)
+                break;
+            std::this_thread::sleep_for(1ms);
+            const auto turn = Clock::now();
+            doc->advanceSave();
+            progress = doc->saveProgress();
+            observed.longestTurn = std::max(observed.longestTurn, Clock::now() - turn);
+        }
+        if (observed.phase && terminal(*observed.phase)) {
+            const auto turn = Clock::now();
+            doc->clearSave();
+            observed.longestTurn = std::max(observed.longestTurn, Clock::now() - turn);
+        }
+        return observed;
+    };
+    const auto measure = [&](const char *label, const fs::path &path, SaveKind kind) {
+        const auto readBefore = ownerReadBytes();
+        const auto start = Clock::now();
+        const bool started = doc->startSave(path, kind);
+        const auto observed = settle(start, Clock::now() - start);
+        const auto elapsed = Clock::now() - start;
+        const auto readAfter = ownerReadBytes();
+        const bool ok = started && observed.phase == Phase::succeeded;
+        if (!ok)
+            std::printf("%s failed: %s\n", label, doc->error().c_str());
+        check(ok, label);
+        check(observed.progressOrdered && observed.pagesTotal > 0 && observed.pagesDone == observed.pagesTotal,
+              "large project save: phase and page progress reaches a complete stable total");
+        check(observed.longestTurn < 250ms, "large project save: each owner turn returns within 250 ms");
+#if defined(__linux__)
+        check(readBefore && readAfter, "large project save: capture Linux owner-thread read counters");
+#endif
+        const auto ms = [](Clock::duration value) { return std::chrono::duration<double, std::milli>(value).count(); };
+        std::printf("%s: %.2f ms longest owner turn, %.2f ms total, %d/%d pages", label, ms(observed.longestTurn),
+                    ms(elapsed), observed.pagesDone, observed.pagesTotal);
+        if (readBefore && readAfter) {
+            const auto bytes = *readAfter - *readBefore;
+            std::printf(", %llu owner read bytes", static_cast<unsigned long long>(bytes));
+            check(bytes < 32U * 1024U * 1024U, "large project save: the owner reads less than 32 MiB");
+        }
+        std::printf("\n");
+        return ok;
+    };
+    const auto trackName = [](Store &store) { return store.db().execAndGet("SELECT name FROM tracks WHERE id=4").getString(); };
+    const auto verify = [&](Store &store, std::string_view expectedName) {
+        auto &db = store.db();
+        const auto mediaId = db.execAndGet("SELECT media_id FROM audio_clips").getInt64();
+        std::string problem;
+        const auto resolved = media::resolveMedia(media::projectFolder(store), media::mediaRow(db, mediaId), problem);
+        return !resolved.empty() && fs::equivalent(resolved, wav) &&
+               trackName(store) == expectedName &&
+               db.execAndGet("SELECT sum(length(data)) FROM save_fixture_blocks").getInt64() ==
+                   static_cast<std::int64_t>(payloadBytes);
+    };
+    if (measure("Large project Save a Copy", copy, SaveKind::copy)) {
+        check(fs::equivalent(doc->store().path(), source) && doc->name() == "song" &&
+                  doc->deviceCopyIdentity() == identity,
+              "large project Save a Copy: the live document and its identity stay on the source");
+        StoreError opened{};
+        auto copied = Store::open(copy, opened, true);
+        check(copied && verify(*copied, sourceName) && OpJournal(*copied).count() == ops,
+              "large project Save a Copy: the destination includes the WAL, payload, history, and resolved WAV");
+    }
+    if (measure("Large project Save As", saved, SaveKind::as)) {
+        check(fs::equivalent(doc->store().path(), saved) && doc->name() == "saved" &&
+                  doc->deviceCopyIdentity() != identity && verify(doc->store(), sourceName) && OpJournal(doc->store()).count() == ops,
+              "large project Save As: the live document adopts a snapshot with the WAL, payload, history, and WAV");
+        check(doc->ops().undo().ok && doc->synchronise() && doc->view().current()->findTrack(4)->name != sourceName,
+              "large project Save As: Undo still reaches the journaled rename in the new file");
+        check(doc->ops().redo().ok && doc->synchronise() && trackName(doc->store()) == sourceName,
+              "large project Save As: Redo restores the journaled rename in the new file");
+        StoreError opened{};
+        auto original = Store::open(source, opened, true);
+        check(original && verify(*original, sourceName) && OpJournal(*original).count() == ops,
+              "large project Save As: the source keeps its original snapshot after edits in the destination");
+    } else {
+        return;
+    }
+
+    const auto savedIdentity = doc->deviceCopyIdentity();
+    const auto cancelStart = Clock::now();
+    const bool startedCancel = doc->startSave(cancelled, SaveKind::copy);
+    doc->cancelSave();
+    const auto cancelledRun = settle(cancelStart, Clock::now() - cancelStart);
+    check(startedCancel && cancelledRun.phase == Phase::cancelled && !doc->saveProgress() &&
+              fs::is_empty(cancelled.parent_path()) && doc->deviceCopyIdentity() == savedIdentity,
+          "large project save: cancellation removes its stage, leaves no copy, and keeps the live project");
+
+    const auto staleStart = Clock::now();
+    const bool startedStale = doc->startSave(stale, SaveKind::as);
+    // The owner has not yet run a turn that could adopt any worker result.
+    rename.payload = {{"id", 4}, {"name", laterName}};
+    const bool edited = doc->ops().submit(rename).ok && doc->synchronise();
+    const auto staleRun = settle(staleStart, {});
+    check(startedStale && edited && staleRun.phase == Phase::failed && !doc->saveProgress() &&
+              fs::equivalent(doc->store().path(), saved) && doc->deviceCopyIdentity() == savedIdentity &&
+              trackName(doc->store()) == laterName && OpJournal(doc->store()).count() == ops + 1,
+          "large project save: a stale Save As cannot adopt over a later source edit");
+    StoreError opened{};
+    auto coherent = Store::open(stale, opened, true);
+    bool validCopy = false;
+    if (coherent) {
+        const auto name = trackName(*coherent);
+        const auto count = OpJournal(*coherent).count();
+        // The worker may have pinned the source before or after the rename.
+        const bool frozenVersion = (name == sourceName && count == ops) || (name == laterName && count == ops + 1);
+        validCopy = frozenVersion && verify(*coherent, name);
+    }
+    check(validCopy, "large project save: stale adoption leaves a readable coherent copy at the destination");
+    for (const auto &path : {copy, saved, stale}) {
+        const bool clean = std::none_of(fs::directory_iterator(path.parent_path()), fs::directory_iterator(),
+                                       [](const auto &entry) { return entry.path().filename().string().starts_with(".adi-save-"); });
+        check(clean, "large project save: a completed save leaves no staging directory");
+    }
+}
 void longTakeStopResponse(const std::filesystem::path &dir) {
     using Clock = std::chrono::steady_clock;
     using namespace std::chrono_literals;
@@ -2322,6 +2527,11 @@ int main(int argc, char **argv) {
     if (argc == 2 && std::string_view(argv[1]) == "--many-track-memory-only") {
         test::TempDirectory memoryDir("ui_document", "many-track-memory");
         manyTrackMemory(memoryDir.path());
+        return failures != 0;
+    }
+    if (argc == 2 && std::string_view(argv[1]) == "--large-project-save-only") {
+        test::TempDirectory saveDir("ui_document", "large-project-save");
+        largeProjectSaveResponse(saveDir.path());
         return failures != 0;
     }
     if (argc == 2 && std::string_view(argv[1]) == "--long-take-speed-only") {
