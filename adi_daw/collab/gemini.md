@@ -4,6 +4,44 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-26 — Item 5 (Standing Queue Item 15): `REGISTER-AUDIT` — second check of engine's landed DF-E rows on `origin/main` (`18fcc6fd`)
+
+Audited all 19 rows named in `2026-11-22-gemini-queue.md` item 15 (`DF-E1, E3, E4, E7, E9, E13, E14, E15, E18, E26 (a, b), E27 (a-d), E29 (a-d), E48, E49`) directly against the commits, production source, and tests currently on `origin/main` (`18fcc6fd`). Every headless suite named below also passed on `main` across our GCC 12 `-Werror`, ASan+LSan+UBSan (Item 11), TSan (Item 12), and `-D_GLIBCXX_DEBUG` (Item 13) sweeps.
+
+| Row | Commit on `main` (PR) | Test on `origin/main` | Verdict & residual |
+|---|---|---|---|
+| **DF-E1** | `55fd8bbd` + `9cc16085` (via `#696` `054eeb00` / `e8b6ee36`) | `exactLinearEnd` (`test_clip_details.cpp:119`), `absoluteLinearEndSamples` (`test_clip_playback.cpp`) | **Confirmed met.** None. (Already in `DEFERRED.md` Done.) |
+| **DF-E3** | `83cca8a5` (`#696` `054eeb00`) | `poolBounds` (`test_progressive_decode.cpp:284`) + `ProgressiveFile::~ProgressiveFile` (`progressive_decode.cpp:71-78`) | **Confirmed met.** None. (Already in `DEFERRED.md` Done.) |
+| **DF-E4** | `47243494` (`#696` `054eeb00`) | `vanishedDirectoryKeepsSiblings`, `failedCommitReleasesStagedHashes` (`test_library.cpp:339,358`) | **Confirmed met.** None. (Already in `DEFERRED.md` Done.) |
+| **DF-E7** | `f6215fb1` (via `#696` `054eeb00` / `e8b6ee36`) | `clipEditBoundaries` (`test_edit_plan.cpp:308`) | **Confirmed met.** None. (Already in `DEFERRED.md` Done.) |
+| **DF-E9** | `ab5feee1` (via `#696` `054eeb00` / `e8b6ee36`) | `forwardCompatibleUndo` (`test_automation_range_undo.cpp:42`) | **Confirmed met.** None. (Already in `DEFERRED.md` Done.) |
+| **DF-E13** | `f3656b3a` (via `#685` `5acebf6b` / `548f8856`) | `exactBoundaries` (`test_automation_splice_store.cpp:242`) + `test_automation_splice.cpp` | **Confirmed met.** None. (Already in `DEFERRED.md` Done.) |
+| **DF-E14** | `9aa23bec` (via `#685` `5acebf6b` / `548f8856`) | `childlessRoots`, `legacyOrigin` (`test_history_move.cpp:518,557`) | **Confirmed met.** None. (Already in `DEFERRED.md` Done.) |
+| **DF-E15** | `f60f7f53` (`#685` `5acebf6b`) | `transitions` (`test_quiet_gesture.cpp:207-230`) + `transitionStatus` (`quiet_gesture.cpp:8-14`) | **Confirmed met.** None. (Already in `DEFERRED.md` Done.) |
+| **DF-E18 (a–f)** | `f28eacd0` (`#685` `5acebf6b`) | (a) `switchToBranch` `keepBranchTip` (`history.cpp:630-635`); (b) `tipOf` `COUNT(*)` bound (`history.cpp:171-175`); (c) `opsApplied = ops.size()` (`history.cpp:413,461`); (d) `true_peak.cpp` `std::isfinite` + `test_dsp.cpp:1654`; (e) `marker_ops.cpp:19-22` + `test_markers.cpp`; (f) single `src/adi/clip_image.cpp` | **Confirmed met (all 6 sub-parts).** None. (Already in `DEFERRED.md` Done.) |
+| **DF-E26 (a, b)** | `a548544d` (`#685` `5acebf6b`) | (a) `undoneHead` (`test_history_compaction.cpp:260-276`); (b) `connectedRedo` (`test_history_compaction.cpp:307-325`) + unique ordinal suffix loop (`history_archive.cpp:180-191`) | **Confirmed met for (a) & (b).** Residual: only **(c)** (abandoned-branch budget rule, win/director policy item, already noted open in `DEFERRED.md`). |
+| **DF-E27 (a)** | `2accc015` (via `#685` / `#696` `e8b6ee36`) | `shortenedFade` (`test_clip_playback.cpp:287`) | **Confirmed met.** None. (Already in `DEFERRED.md` Done.) |
+| **DF-E27 (b)** | `25ba8fce` (`#685` `5acebf6b`) | `endSourceClocks` (`test_clip_playback.cpp:847`) + `test_sample_defaults.cpp` | **Confirmed met.** None. (Already in `DEFERRED.md` Done.) |
+| **DF-E27 (c)** | `4f7815a3` (via `#685` `5acebf6b` / `548f8856`) | `queuedNoteAtSwap` (`test_midi_clock_continuity.cpp:250`) | **Confirmed met.** None. (Already in `DEFERRED.md` Done.) |
+| **DF-E27 (d)** | `2414ac7c` (`#685` `5acebf6b`) | `testEphemeralSkipped` (`test_history.cpp:467`) | **Confirmed met.** None. (Already in `DEFERRED.md` Done.) |
+| **DF-E29 (a–d)** | `dfab28af` (via `#685` `5acebf6b` / `548f8856`) | (a, b) `receivingLoopClock` (`test_transport_settings.cpp:140-175`); (c) drain-adopted + structural preview + cancel (`test_clap.cpp:3405-3441`); (d) rounded 117 BPM bar boundary at 48 kHz & 44.1 kHz (`test_clap.cpp:3444-3473`, `src/juce/vst3_probe.cpp:1124-1166`) | **Confirmed met for (a)–(d).** Note: VST3 half of (d) lives in `vst3_probe.cpp` (Windows/JUCE probe, not headless CTest). Residual: **(e)** was answered by `ADR-0255 d7 (b)` (MIDI keeps upstream physical latency when Delay Compensation is off) — ready to move whole `DF-E29` to Done once (e)'s ruling/test is recorded. |
+| **DF-E48** | `c5f4ae0c` (`#696` `054eeb00`) | `scopesOnlyPlayingAssets` (`test_freeze_capture.cpp:126`), `mutedMidiDoesNotForward` (`test_freeze_commands.cpp:453`) | **Confirmed met.** None. (Already in `DEFERRED.md` Done.) |
+| **DF-E49** | `b57638c8` (`#696` `054eeb00`) | `concurrentFaultRemainsLatched` (`test_gesture.cpp`) | **Confirmed met.** None. (Already in `DEFERRED.md` Done.) |
+
+---
+
+## 2026-11-26 — Item 5 (Standing Queue Item 14): `FUZZ` (`adi_fuzz_blob` & `adi_fuzz_textproj`) on `origin/main` (`18fcc6fd`)
+
+Configured and built `adi_fuzzers` under **Clang 14.0.6 + libstdc++ 12** (`-DADI_BUILD_FUZZERS=ON -DADI_WERROR=ON -DADI_WITH_PD=OFF -DADI_WITH_JUCE=OFF`; real libFuzzer + ASan + UBSan via `libclang_rt.fuzzer-x86_64.a`). Ran both targets with 2 parallel workers (`-jobs=2 -workers=2 -max_total_time=300 -print_final_stats=1`).
+
+| Target | Seed corpus | CPU-time (2 workers) | Executions | Avg exec/s | Coverage (`cov` / `ft`) | Final corpus | Peak RSS | Crashes / Reports |
+|---|---|---|---|---|---|---|---|---|
+| `adi_fuzz_blob` (`src/adi/blob.cpp`) | 18 generated seeds (`fuzz_seeds.py`) | **602 CPU-s** (`0.17 CPU-h`, 301 s wall × 2) | **7,553,439** (3,572,627 + 3,980,812) | 11,869 / 13,225 | `cov: 1868` / `ft: 4405` | 46 units / 9,636 B | 514 MB | **0 crashes, 0 ASan/UBSan/invariant failures** |
+| `adi_fuzz_textproj` (`src/adi/textproj.cpp`) | Fresh corpus (all P1–P8 properties) | **602 CPU-s** (`0.17 CPU-h`, 301 s wall × 2) | **328,315** (164,760 + 163,555) | 547 / 543 | `cov: 3785` / `ft: 19896` | 1,016 units / 45 KB | 487 MB | **0 crashes, 0 ASan/UBSan/property failures** |
+| **Total** | — | **1,204 CPU-s (`0.33 CPU-h`)** | **7,881,754** | — | — | — | — | **0 crashes** |
+
+---
+
 ## 2026-11-26 — Item 1 (`walk/*` Round 18): `walk/a31-plugin-tables-per-tick` (`674d6863`)
 
 Built under **GCC 12.4.0** and **Clang 14.0.6 + libstdc++ 12** with `-DADI_WERROR=ON -DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF -DADI_ACCEPTANCE=ON`, plus targeted JUCE `-DADI_WERROR=ON` compile check on `tests/test_mix_pipeline_document.cpp.o`.
