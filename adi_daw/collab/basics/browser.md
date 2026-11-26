@@ -9,4 +9,6 @@ display. Windows is checked by Win before a branch lands.
 
 ## For the director
 
-(none yet)
+The desktop Codex session cloned the repository and read the queue. It stopped before SC-121 because the checkout was on Windows, WSL was unavailable, and the configured Linux host did not respond. No item has been verified or pushed by that session.
+
+If the desktop request was meant as a handoff, which session should own the queue? Recommendation: keep it with the Linux session that claimed this report so it can run the required JUCE and acceptance suites.
