@@ -29,6 +29,7 @@ Baseline `00f1f369f3566c0c833390f8af5f0df9ed50f1cf`.
 | `origin/basics/look-chain` | `f8f32f63673086ee31a66cd246fc6e8cb9e6a15f` | Yes | Passed 34/34, including window and mixer 31/31, acceptance 3/3. |
 | `origin/basics/look-chain` | `3ddd7c56f6bc79080eca4c84295f8a09be1f6002` | Yes | Passed 34/34, including window and mixer 31/31, acceptance 3/3. |
 | `origin/basics/look-chain` | `587573d1eb96257abefa30addcb3198d50c46d48` | Yes | Passed 35/35, including affected suites 1/1, window and mixer 31/31, acceptance 3/3. |
+| `origin/basics/look-chain` | `26569ddf93070751febe68d8e829dbfc0caac374` | Yes | Passed 34/34, including window and mixer 31/31, acceptance 3/3. |
 
 ## Nine-step window walk
 
