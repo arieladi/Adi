@@ -2811,6 +2811,7 @@ void NoteEditor::paint(juce::Graphics &g) {
 // ---------------------------------------------------------------------------------------------
 SampleEditor::SampleEditor(ClipViewPanel &p) : panel(p) {
     setTitle("Sample Editor");
+    setWantsKeyboardFocus(true);
     setOpaque(true);
     addChildComponent(playhead);
 }
@@ -2921,6 +2922,7 @@ void SampleEditor::mouseDown(const juce::MouseEvent &e) {
     const auto *clip = panel.details();
     if (!clip || !e.mods.isLeftButtonDown() || e.mods.isPopupMenu())
         return;
+    focusIfShowing(*this);
     gestureClip_ = clip->id;
     drag_ = Drag::None;
     last_ = e.getPosition();
@@ -2995,6 +2997,48 @@ void SampleEditor::mouseUp(const juce::MouseEvent &) {
     default: break;
     }
     repaint();
+}
+bool SampleEditor::command(int id) {
+    const auto *clip = panel.details();
+    if (!clip)
+        return false;
+    switch (id) {
+    case AppCommands::TimeZoomIn:
+    case AppCommands::TimeZoomOut: {
+        const auto anchor = insert_.value_or(panel.root.playing() ? sourceTick(panel.root.timelineTick())
+                                                                  : time.tick(getWidth() / 2.));
+        time.zoomAround(id == AppCommands::TimeZoomIn ? 1.25 : .8, anchor);
+        break;
+    }
+    case AppCommands::ZoomToSelection: {
+        const auto start = std::max<std::int64_t>(0, sourceTick(ClipWindow::of(*clip).pos));
+        const auto end = std::max(start + 1, endMarker());
+        time.fit(start, end + std::max<std::int64_t>(1, (end - start) / 24), getWidth());
+        break;
+    }
+    case AppCommands::ZoomBack:
+        time.back();
+        break;
+    case AppCommands::InsertSilence:
+        return true;
+    default:
+        return false;
+    }
+    repaint();
+    return true;
+}
+bool SampleEditor::keyPressed(const juce::KeyPress &key) {
+    const auto code = key.getKeyCode();
+    const auto mods = key.getModifiers();
+    if (!mods.isCommandDown() && !mods.isAltDown() && (code == '+' || code == '=' || code == '-'))
+        return command(code == '-' ? AppCommands::TimeZoomOut : AppCommands::TimeZoomIn);
+    if (!mods.isAnyModifierKeyDown() && (code == 'z' || code == 'Z'))
+        return command(AppCommands::ZoomToSelection);
+    if (!mods.isAnyModifierKeyDown() && (code == 'x' || code == 'X'))
+        return command(AppCommands::ZoomBack);
+    if (key == juce::KeyPress('i', juce::ModifierKeys::commandModifier, 0))
+        return command(AppCommands::InsertSilence);
+    return false;
 }
 void SampleEditor::mouseWheelMove(const juce::MouseEvent &e, const juce::MouseWheelDetails &w) {
     if (timeWheel(time, e, w, 0)) {

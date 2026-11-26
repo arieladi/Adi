@@ -372,6 +372,8 @@ class SampleEditor final : public juce::Component {
     explicit SampleEditor(ClipViewPanel &);
     void paint(juce::Graphics &) override;
     void resized() override;
+    bool keyPressed(const juce::KeyPress &) override;
+    bool command(int id);
     void mouseDown(const juce::MouseEvent &) override;
     void mouseDrag(const juce::MouseEvent &) override;
     void mouseUp(const juce::MouseEvent &) override;

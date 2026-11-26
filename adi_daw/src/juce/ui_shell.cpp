@@ -4729,6 +4729,8 @@ bool AdiRootComponent::command(int id) {
         if (id == AppCommands::RenameTrack)
             return clipView.chooseTitleItem(1);
     }
+    if (state_.clipView && clipView.audio() && clipView.sample.hasKeyboardFocus(true) && clipView.sample.command(id))
+        return true;
     // The editor's switches, from a menu, whenever it is on screen; the Clip View's full height
     // whenever it is open (manual 10.2).
     if (id >= AppCommands::FoldToNotes && id <= AppCommands::HighlightScales) {
