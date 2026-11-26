@@ -394,8 +394,12 @@ class ClipSourceMap {
             else
                 offsetSeconds_ = secondsFrom(pos_, offsetTicks_);
         }
-        if (clip.loopEnabled)
+        if (clip.loopEnabled) {
             setLoop(clip);
+            if (!audio_.warpEnabled && loopLength_ == 0. && std::isfinite(offsetSeconds_) &&
+                offsetSeconds_ * rate_ >= static_cast<double>(audio_.sourceLengthFrames))
+                offsetSeconds_ = 0.; // ClipPlayback's fallback for an invalid legacy loop.
+        }
     }
 
     std::optional<double> frameAt(std::int64_t tick) const {

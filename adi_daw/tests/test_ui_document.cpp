@@ -3019,6 +3019,10 @@ void waveformLoopRepeats(const std::filesystem::path &dir) {
     db.exec("UPDATE audio_clips SET reverse=1 WHERE clip_id=7");
     snapshot = engine::SnapshotBuilder::fromStore(*store, *snapshot, {}, false);
     check(frameIs(7, 7 * beat / 2, 72099), "reversing a repeat reflects its source frame inside the file window");
+    db.exec("UPDATE clip_playback_details SET loop_end_ns=3000000000 WHERE clip_id=8;"
+            "UPDATE clips SET content_offset_ticks=46126080 WHERE id=8");
+    snapshot = engine::SnapshotBuilder::fromStore(*store, *snapshot, {}, false);
+    check(frameIs(8, 0, 100), "an invalid legacy loop draws the one-shot playback fallback at source zero");
 }
 
 // PD06-SAVEAS-GUARD: Save As during Record, or while a take's placement is pending, lands the take in
