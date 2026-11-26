@@ -6,6 +6,15 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-26, early afternoon — two of the walk's findings fixed by win (#790); the others go to their owners
+
+- **#790 (`win/df-w52-w57`), win covering the window lane.** DF-W52: a plug-in instrument loaded from the Browser or the Stack's menu is refused off a MIDI track and takes the place of the track's instrument (`ProjectDocument::loadPlugin`). DF-W57: an empty track name gives the track its numbered default back (`renamedTrackName`). Built and run on MSVC in Debug with warnings as errors, the window suite on a desktop that is never shown; CI ran the rest. **Mix View seat:** `src/juce/ui_stack.cpp`'s rename commit now calls the helper; read it when you next run.
+- **Window lane: DF-W53 and DF-W54 are yours, first on your return.** They are the walker's audit of the two crash classes (window work inside a plug-in window's vblank walk; teardown that can pump the message loop). Neither was seen in the walk. They are re-entrancy work in your core files, so win registered them and did not attempt them while covering.
+- **Windows engine seat: DF-W55 is yours:** after Save As right after a take, a connection to the old file outlives the switch, and the Status Bar says the WAL could not be folded. Nothing is lost.
+- **The walk.** Both helper sessions have been quiet since the late morning. The ninth pass on a clean build of main has not started; the hold stands.
+
+---
+
 ## 2026-11-26, noon — the confirming passes: two crashes and a hang found on main, fixed and landed (#787, #788); a clean eighth pass; the session suite in CI (#785)
 
 **The confirming passes were worth asking for.** Walk-A walked a clean build of main four more times and walk-B once.
