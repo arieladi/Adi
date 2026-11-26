@@ -1568,10 +1568,9 @@ void AdiRootComponent::frame() noexcept {
         infoShown_ = commands_.infoView();
         resized();
     }
-    if (infoShown_)
+    if (!infoArea_.isEmpty())
         hover(juce::Desktop::getInstance().getMainMouseSource().getComponentUnderMouse());
-    infoSpectrum.setBounds(infoArea_.reduced(look::border));
-    infoSpectrum.setVisible(infoShown_ && !infoArea_.isEmpty() && infoText_.isEmpty());
+    infoSpectrum.setVisible(!infoArea_.isEmpty() && infoText_.isEmpty());
     if (infoSpectrum.isVisible()) {
         const auto &analysis = mixViewPanel.analysis;
         const auto &settings = analysis.detail;
@@ -1698,6 +1697,7 @@ void AdiRootComponent::resized() {
             child->setVisible(false);
         browserArea_ = mixerArea_ = mixerViewArea_ = stripArea_ = {};
         clipArea_ = deviceArea_ = infoArea_ = {};
+        infoSpectrum.setBounds({});
         if (mixViewPanel.getParentComponent() == this) {
             mixViewPanel.setBounds(mixViewArea_);
             if (!mixViewPanel.isVisible() && reader_) mixViewPanel.frame(reader());
@@ -1709,9 +1709,8 @@ void AdiRootComponent::resized() {
     if (mixViewPanel.getParentComponent() == this)
         mixViewPanel.setVisible(false);
     arrangement.setVisible(true);
-    // The detail row: Live's Info View and Device View. The strip never goes below its
-    // floor and grows upward only (ADR-0203 d7); it leaves the transport, the ruler and
-    // a row when it can.
+    // The detail row below the tracks. The Device View grows upward from its floor
+    // (ADR-0203 d7), leaving the ruler and a row when there is room.
     // Live 12's Clip View stacks above the Device View (manual 8); the Device View leaves it its
     // floor, and it takes what it asks for while the arrangement keeps its ruler and a row.
     const int clipFloor = state_.clipView ? kClipViewFloor + gap : 0;
@@ -1723,8 +1722,7 @@ void AdiRootComponent::resized() {
                          ? std::min(clipRoom, std::max(kClipViewFloor, std::min(state_.clipViewHeight, clipRoom - 100)))
                          : 0;
     const int detail = dock + clip + (dock > 0 && clip > 0 ? gap : 0);
-    const int row = detail > 0 ? detail : (infoShown_ ? std::min(body, state_.deviceFloor) : 0);
-    const int rowY = bottom - row;
+    const int rowY = bottom - detail;
     // Each panel has Live's dark 4 pt edge, which the root draws; the strip sits inside.
     // Widths belong to panels (ADR-0080 d2). If the window shrinks, share the
     // lost space proportionally above each panel's own minimum; the centre
@@ -1755,17 +1753,27 @@ void AdiRootComponent::resized() {
     const int mid = std::max(0, rowY - gap - top);
     const bool browserLeft = slots[0].panel == Panel::Browser;
     const int bw = browserLeft ? left : right;
-    browserArea_ = bw > 0 ? juce::Rectangle<int>(browserLeft ? gap : w - right, top, bw - gap, mid)
-                          : juce::Rectangle<int>();
-    // The Arrangement sheet makes the Info box as wide as the Browser column. With the Browser
-    // closed, use its stored width within the available detail space.
-    const int storedBrowserWidth = slots[browserLeft ? 0 : 1].width - gap;
-    const int infoW = bw > 0 ? browserArea_.getWidth() : std::clamp(storedBrowserWidth, 0, w / 2);
-    infoArea_ = infoShown_ ? juce::Rectangle<int>(gap, rowY, infoW, row) : juce::Rectangle<int>();
-    const int deviceX = infoShown_ ? infoArea_.getRight() + gap : gap;
-    clipArea_ = clip > 0 ? juce::Rectangle<int>(deviceX, rowY, w - deviceX - gap, clip) : juce::Rectangle<int>();
-    deviceArea_ = dock > 0 ? juce::Rectangle<int>(deviceX, bottom - dock, w - deviceX - gap, dock)
-                           : juce::Rectangle<int>();
+    // The Browser column spans the working area. Info takes its width and sits at its foot.
+    browserArea_ = bw > gap ? juce::Rectangle<int>(browserLeft ? gap : w - right, top, bw - gap, body)
+                            : juce::Rectangle<int>{};
+    infoArea_ = {};
+    if (infoShown_ && !browserArea_.isEmpty()) {
+        // Keep the Browser's search and preview bars usable in a short window.
+        const int browserBars = 2 * BrowserPanel::kBarHeight + look::border;
+        const int infoHeight = std::min(state_.deviceFloor, std::max(0, body - browserBars - gap));
+        if (infoHeight > 0) {
+            infoArea_ = browserArea_.removeFromBottom(infoHeight);
+            browserArea_.setHeight(browserArea_.getHeight() - gap);
+        }
+    }
+    infoSpectrum.setBounds(infoArea_.reduced(look::border));
+    if (infoArea_.isEmpty())
+        infoSpectrum.setVisible(false);
+    const int detailX = browserLeft ? gap + bw : gap;
+    const int detailWidth = std::max(0, w - bw - 2 * gap);
+    clipArea_ = clip > 0 ? juce::Rectangle<int>(detailX, rowY, detailWidth, clip) : juce::Rectangle<int>{};
+    deviceArea_ = dock > 0 ? juce::Rectangle<int>(detailX, bottom - dock, detailWidth, dock)
+                           : juce::Rectangle<int>{};
     // The mixer's columns sit against the arrangement, inside its frame, as Live's
     // track headers do; the browser stands apart, a gap away. Swapped, the track names lead,
     // then the track controls, then the clips, as Bitwig and Cubase have them (the

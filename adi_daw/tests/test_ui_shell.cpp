@@ -17754,6 +17754,9 @@ int main(int argc, char **argv) {
     check(a.deviceArea().getHeight() == 300, "the strip grows upward");
     a.setSize(1200, 300);
     check(a.deviceArea().getHeight() == floor, "a short window keeps the floor");
+    check(a.browserArea().getHeight() >= 2 * BrowserPanel::kBarHeight + look::border &&
+              a.infoArea().getHeight() > 0 && a.infoArea().getHeight() < floor,
+          "SC-424: a short Browser keeps its search and preview bars by shortening the Info dock");
     a.setSize(1200, 720);
     check(a.keyPressed(juce::KeyPress('b', cmd | alt, 0)) &&
               a.state().panels.find(Panel::Browser)->collapsed,
@@ -17788,6 +17791,9 @@ int main(int argc, char **argv) {
             hasAiTab |= child->isVisible() && child->getTitle() == "AI";
         check(!hasAiTab, "the Browser has no AI tab");
     }
+    const bool restoreBrowserRight = a.state().panels.slotOf(Panel::Browser) != 0;
+    if (restoreBrowserRight)
+        check(a.command(AppCommands::SwapPanels), "start the Info layout checks with the Browser on the left");
     check(commands.infoView() && a.infoArea().getX() == look::gap &&
               a.infoArea().getBottom() == a.status.getY() &&
               a.infoArea().getRight() + look::gap == a.deviceArea().getX(),
@@ -17795,19 +17801,61 @@ int main(int argc, char **argv) {
     check(a.infoArea().getWidth() == a.browserArea().getWidth(),
           "SC-111: the Info box is exactly as wide as the Browser column");
     {
+        const auto aligned = [&] {
+            const auto browserBounds = a.browserArea();
+            const auto infoBounds = a.infoArea();
+            return !browserBounds.isEmpty() && !infoBounds.isEmpty() &&
+                   browserBounds.getHorizontalRange() == infoBounds.getHorizontalRange() &&
+                   browserBounds.getY() == a.transport.getBottom() &&
+                   browserBounds.getBottom() + look::gap == infoBounds.getY() &&
+                   infoBounds.getBottom() == a.status.getY();
+        };
         const auto normal = a.infoArea();
+        check(aligned() && normal.getWidth() == DesktopDefaults{}.browser - look::gap && normal.getHeight() == floor,
+              "SC-424: the default Info box is docked below the Browser at the SC-111 width");
         a.setSize(480, 720);
-        check(a.infoArea().getWidth() < normal.getWidth() && a.infoArea().getWidth() == a.browserArea().getWidth(),
-              "a squeezed Browser gives the Info box its actual width");
+        check(aligned() && a.infoArea().getWidth() < normal.getWidth(),
+              "a squeezed Browser gives the docked Info box its actual width");
         a.setSize(1200, 720);
         check(a.infoArea() == normal, "restoring the window also restores the Info box width");
-        check(a.command(AppCommands::SwapPanels) && a.infoArea().getWidth() == a.browserArea().getWidth(),
-              "the Info box uses the Browser width when the Browser moves to the other side");
-        check(a.command(AppCommands::SwapPanels) && a.infoArea() == normal,
-              "return the Browser to its original side");
-        check(a.command(AppCommands::ToggleBrowser) && a.infoArea() == normal,
-              "closing the Browser keeps the Info box at its stored width");
-        check(a.command(AppCommands::ToggleBrowser), "return the Browser to the layout");
+        const int preferredWidth = a.state().panels.find(Panel::Browser)->width;
+        constexpr int grownBy = 60;
+        check(!a.state().panels.setWidth(Panel::Browser, preferredWidth + grownBy, a.getWidth()),
+              "increase the preferred Browser width within the available space");
+        a.resized();
+        check(aligned() && a.infoArea() == normal.withWidth(normal.getWidth() + grownBy) &&
+                  a.deviceArea().getX() == a.infoArea().getRight() + look::gap,
+              "a live Browser width change reflows the Info and Device bounds together");
+        check(!a.state().panels.setWidth(Panel::Browser, preferredWidth, a.getWidth()),
+              "return the Browser width to its default");
+        a.resized();
+        check(a.infoArea() == normal, "the Info box returns to its original bounds with the Browser width");
+
+        check(a.command(AppCommands::ToggleClipView) && a.clipView.isVisible() && a.devices.isVisible(),
+              "SC-424: open both detail panels to check the Browser column beside them");
+        check(a.command(AppCommands::SwapPanels) && aligned() && a.infoArea().getX() > normal.getX() &&
+                  a.infoArea().getY() == normal.getY() && a.infoArea().getHeight() == normal.getHeight() &&
+                  a.deviceArea().getRight() + look::gap == a.infoArea().getX() &&
+                  a.clipArea().getHorizontalRange() == a.deviceArea().getHorizontalRange(),
+              "the Info box moves right with the Browser and both detail panels stay beside the column");
+        const auto rightInfo = a.infoArea();
+        check(a.command(AppCommands::ToggleBrowser), "collapse the Browser column from its swapped position");
+        a.frame();
+        const juce::Range<int> fullDetail{look::gap, a.getWidth() - look::gap};
+        check(a.browserArea().isEmpty() && a.infoArea().isEmpty() && !a.infoSpectrum.isVisible() && commands.infoView() &&
+                  a.clipArea().getHorizontalRange() == fullDetail && a.deviceArea().getHorizontalRange() == fullDetail,
+              "collapsing the Browser hides its Info box and frees the full width for Clip and Device View");
+        check(a.command(AppCommands::ToggleBrowser) && aligned() && a.infoArea() == rightInfo,
+              "reopening the Browser restores the dock and keeps the independent Info preference");
+        check(a.command(AppCommands::SwapPanels) && aligned() && a.infoArea().getX() == normal.getX() &&
+                  a.deviceArea().getX() == a.infoArea().getRight() + look::gap &&
+                  a.clipArea().getHorizontalRange() == a.deviceArea().getHorizontalRange(),
+              "swapping back restores the Browser and Info column on the left, beside the detail panels");
+        check(a.command(AppCommands::ToggleClipView) && a.infoArea() == normal,
+              "restore the original detail layout");
+        check(a.command(AppCommands::ToggleDeviceView) && a.deviceArea().isEmpty() && a.infoArea() == normal,
+              "the Browser's Info dock also keeps its bounds with both detail panels closed");
+        check(a.command(AppCommands::ToggleDeviceView), "restore Device View");
     }
     a.frame();
     check(a.infoSpectrum.mode() == SharedSpectrumView::Mode::Spectrogram,
@@ -17827,7 +17875,21 @@ int main(int argc, char **argv) {
                 blankPlot = blankPlot && empty.getPixelAt(x, y) == juce::Colour(look::display);
         check(blankPlot, "the idle spectrogram has an empty plot without spectrum grid or status prose");
 
+        const auto previousCentre = a.infoArea().getCentre();
+        check(a.command(AppCommands::SwapPanels), "move the Info gestures to the right-hand Browser dock");
+        a.frame();
         const auto centre = a.infoArea().getCentre().toFloat();
+        bool analyserTakesClick = true, analyserChildrenTakeClick = true;
+        infoView.getInterceptsMouseClicks(analyserTakesClick, analyserChildrenTakeClick);
+        check(centre.x > static_cast<float>(previousCentre.x) && infoView.getBounds().contains(centre.roundToInt()) &&
+                  !analyserTakesClick && !analyserChildrenTakeClick,
+              "SC-424: the relocated Info display forwards hits to its root gesture handler");
+        int obsoleteMenus = 0;
+        a.onInfoMenu = [&](const juce::PopupMenu &) { ++obsoleteMenus; };
+        a.mouseDown(pressAt(a, previousCentre.toFloat(), juce::ModifierKeys::rightButtonModifier));
+        a.mouseUp(pressAt(a, previousCentre.toFloat()));
+        a.onInfoMenu = {};
+        check(obsoleteMenus == 0, "the old Info location no longer requests its menu");
         auto pick = [&](int choice, const juce::String &ticked) {
             int requested = 0;
             a.onInfoMenu = [&](const juce::PopupMenu &menu) {
@@ -17841,7 +17903,8 @@ int main(int argc, char **argv) {
             a.mouseDown(pressAt(a, centre, juce::ModifierKeys::rightButtonModifier));
             a.mouseUp(pressAt(a, centre));
             a.onInfoMenu = {};
-            check(requested == 1 && !a.state().mixView, "a context press requests the menu without opening Analysers");
+            check(requested == 1 && !a.state().mixView,
+                  "the moved Info dock requests its mode menu without opening Analysers");
         };
 
         pick(1, "Spectrogram");
@@ -17870,8 +17933,9 @@ int main(int argc, char **argv) {
         a.mouseUp(pressAt(a, centre));
         a.frame();
         check(a.state().mixView && a.mixViewPanel.tab() == MixViewPanel::Tab::Analysis && !infoView.isVisible(),
-              "a left click opens the Analysers page");
-        check(a.setMixView(false, false), "return to Arrangement after checking the Info click");
+              "a left click on the moved Info dock opens the Analysers page");
+        check(a.setMixView(false, false) && a.command(AppCommands::SwapPanels),
+              "return to the original Arrangement after checking the relocated Info click");
         a.frame();
     }
     a.hover(&a.transport.play);
@@ -17904,14 +17968,27 @@ int main(int argc, char **argv) {
                     ++outside;
         check(outside == 0, "a long description stays inside the Info View");
     }
-    check(a.keyPressed(juce::KeyPress('?', juce::ModifierKeys::shiftModifier, 0)) &&
-              !commands.infoView() && a.infoArea().isEmpty() && a.deviceArea().getX() == look::gap,
-          "Shift+? hides the Info View");
+    const auto browserWithInfo = a.browserArea();
+    const auto deviceWithInfo = a.deviceArea();
+    const int contentWithInfo = a.browser.contentArea().getHeight();
+    const int reclaimedInfoSpace = a.infoArea().getHeight() + look::gap;
+    const bool toggledInfo = a.keyPressed(juce::KeyPress('?', juce::ModifierKeys::shiftModifier, 0));
+    a.frame();
+    check(toggledInfo && !commands.infoView() && a.infoArea().isEmpty() && !a.infoSpectrum.isVisible() &&
+              a.browser.isVisible() && a.browserArea().getHorizontalRange() == browserWithInfo.getHorizontalRange() &&
+              a.browserArea().getBottom() == a.status.getY() && a.deviceArea() == deviceWithInfo &&
+              a.browser.contentArea().getHeight() == contentWithInfo + reclaimedInfoSpace &&
+              a.browser.list.getBottom() == a.browser.contentArea().getBottom(),
+          "SC-424: Shift+? hides Info alone and expands the Browser content to fill the freed column space");
     b.frame();
     check(b.infoArea().isEmpty(), "the Info View is app-scoped: every window follows");
     check(settings.get("lookfeel.showInfoView") == false, "and the App setting records it");
     a.status.infoToggle.onClick();
-    check(commands.infoView() && !a.infoArea().isEmpty(), "the Status Bar's toggle shows it");
+    check(commands.infoView() && !a.infoArea().isEmpty() && a.browserArea() == browserWithInfo &&
+              a.browser.contentArea().getHeight() == contentWithInfo && a.deviceArea() == deviceWithInfo,
+          "the Status Bar restores the Info dock and the Browser content shrinks back above it");
+    if (restoreBrowserRight)
+        check(a.command(AppCommands::SwapPanels), "restore the Browser side used by the surrounding fixtures");
     a.setSize(400, 540);
     check(!a.command(AppCommands::SwapPanels) && !a.error().empty(),
           "a refused swap says why in the Status Bar");
@@ -18373,6 +18450,7 @@ int main(int argc, char **argv) {
             }
             auto has = [&flat](int id) { return std::find(flat.begin(), flat.end(), id) != flat.end(); };
             const auto at = [&flat](int id) { return std::find(flat.begin(), flat.end(), id) - flat.begin(); };
+            check(has(C::ToggleInfoView), "the View menu controls Info View independently");
             check(has(C::ExpandClipView) && at(C::ExpandClipView) == at(C::ToggleClipView) + 1 && has(C::FoldToNotes) &&
                       at(C::FoldToScale) == at(C::FoldToNotes) + 1 && at(C::HighlightScales) == at(C::FoldToScale) + 1 &&
                       has(C::ArrangePanelsAutomatically) && at(C::ArrangePanelsHorizontally) == at(C::ArrangePanelsAutomatically) + 1 &&
