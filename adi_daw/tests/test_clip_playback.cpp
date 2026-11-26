@@ -463,6 +463,16 @@ void properties() {
         check(o[10]==want && o[138]==want,"left and mono-sum channel modes");
     }
 }
+void legacyUnwarpedLoopPastSource() {
+    Fixture f;
+    f.add(1, 0, 2000, 7, 300);
+    f.store->db().exec("DELETE FROM tempo_map; INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,60);"
+                       "UPDATE clips SET loop_enabled=1,loop_start_ticks=24024,loop_len_ticks=48048");
+    f.load(512);
+    const auto audio = f.render(512);
+    check(audio.front() == f.media[14] && audio[299] == f.media[612] && audio[300] == 0,
+          "an old unwarped loop that outgrows the source plays the file once instead of silencing it");
+}
 void editedFades() {
     for(const auto width:{Precision::Float32,Precision::Float64}) {
         Fixture f(48000,2,4000,-1);f.add(1,0,800,0,1000);
@@ -1791,7 +1801,7 @@ int main(int argc,char** argv) {
         if(only=="all" || only=="reverse"){reversedSource();reverseSelectedRange();}
         if(only=="all" || only=="monitor-input")liveInputMonitoring();
         if(only=="all" || only=="take-lanes")takeLanePlayback();
-        if(only=="all" || only=="properties")properties();
+        if(only=="all" || only=="properties"){properties();legacyUnwarpedLoopPastSource();}
         if(only=="all" || only=="fades"){editedFades();shortenedFade();resizeClampsFades();}
         if(only=="all" || only=="split"){splitSourceClocks();splitInsideFades();twoPointSplitSourceClocks();twoPointSplitWarpFades();rangeSurvivorSourceClocks();silenceSourceClocks();deleteTimeSourceClocks();timeClipboardSourceClocks();}
         if(only=="all" || only=="seeks")seeksAndStalls();

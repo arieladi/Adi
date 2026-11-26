@@ -12231,6 +12231,11 @@ void sampleEditorMouse(AppCommands &commands, const std::filesystem::path &dir) 
     auto &panel = root.clipView;
     auto &edit = panel.sample;
     using Field = ClipViewPanel::Field;
+    check(!panel.toggleLoop() && !panel.setField(Field::Position, beat) &&
+              !panel.setField(Field::Length, 2 * beat) && !panel.setFieldHere(Field::Length),
+          "Warp-off audio cannot enter Loop through the switch or the loop fields");
+    if (panel.details() && panel.details()->loopEnabled)
+        panel.toggleLoop();
     check(panel.setField(Field::Start, 2 * beat) && panel.setField(Field::End, 6 * beat),
           "start with material trimmed at both ends");
     root.frame();

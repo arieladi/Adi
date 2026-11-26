@@ -173,6 +173,34 @@ void correctWarpedSourceTempo() {
     check(digestProject(*f.store).text==original,
           "halving then doubling an exact clock restores all clip and marker data");
 }
+void disableWarpOnLoop() {
+    Fixture f;
+    auto on = f.options();
+    if (!apply(f, clip_edit::prepareSetWarp(*f.store, 7, on, 48000), "warp audio before enabling its loop"))
+        return;
+    OpRequest loop;
+    loop.opType = "clip.setLoop";
+    loop.payload = {{"id", 7}, {"on", true}, {"start", q}, {"length", 2 * q}};
+    if (!OpJournal(*f.store).commit(loop).ok) {
+        check(false, "loop the middle two beats of the warped source");
+        return;
+    }
+    auto& db = f.store->db();
+    // An Arrangement piece split during a repeat can start beyond the file's first pass.
+    db.exec("UPDATE clips SET content_offset_ticks=" + std::to_string(6 * q) + " WHERE id=7");
+    const auto before = digestProject(*f.store).text;
+    auto off = on;
+    off.enabled = false;
+    if (!apply(f, clip_edit::prepareSetWarp(*f.store, 7, off, 48000), "disable Warp on a looped repeat"))
+        return;
+    check(db.execAndGet("SELECT loop_enabled FROM clips WHERE id=7").getInt() == 0 &&
+              db.execAndGet("SELECT warp_enabled FROM audio_clips WHERE clip_id=7").getInt() == 0 &&
+              db.execAndGet("SELECT content_offset_ns FROM clip_playback_details WHERE clip_id=7").getInt64() == 500'000'000,
+          "Warp off disables Loop and keeps the repeat's first audible source sample");
+    History history(*f.store);
+    check(history.undo().ok && digestProject(*f.store).text == before,
+          "one Undo restores Warp, the enabled loop and its unrolled playback offset");
+}
 void modesAndGuards() {
     Fixture f;auto& db=f.store->db();
     for(const auto mode:{audio::WarpMode::Beats,audio::WarpMode::Tones,audio::WarpMode::Texture,audio::WarpMode::RePitch,audio::WarpMode::Complex,audio::WarpMode::ComplexPro}) {
@@ -202,4 +230,4 @@ void cancellationAndCaptureGuards() {
     check(pending.ok && !clip_edit::commitPrepared(*f.store,pending).ok && digestProject(*f.store).text==before,"a changed source file after analysis rolls back the entire edit");
 }
 }
-int main(){try{actionAndHistory();editedSourceWindow();explicitSourceTempo();correctWarpedSourceTempo();modesAndGuards();futureMapRefusesRewrite();cancellationAndCaptureGuards();}catch(const std::exception& e){check(false,e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{actionAndHistory();editedSourceWindow();explicitSourceTempo();correctWarpedSourceTempo();disableWarpOnLoop();modesAndGuards();futureMapRefusesRewrite();cancellationAndCaptureGuards();}catch(const std::exception& e){check(false,e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
