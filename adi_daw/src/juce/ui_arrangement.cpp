@@ -2140,7 +2140,7 @@ void TrackHeaderList::mouseDown(const juce::MouseEvent &e) {
         // A title press selects tracks. Keep the playback starting point when clearing the lane selection.
         sel.clip = 0;
         sel.pickedClips.clear();
-        if (!popup && !split) {
+        if (popup || !split) {
             sel.start = sel.end = sel.insert;
             sel.marked = false;
         }
