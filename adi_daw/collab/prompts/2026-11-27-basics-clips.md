@@ -34,3 +34,23 @@ Another session shares the machine: build with 2 jobs.
 
 SC-33 (reversing a clip: today it is silent), SC-35 (a file dropped onto a clip replaces what it
 covers), SC-39 (a looped clip's repeats marked).
+
+## Added by round 2 (26 November)
+
+- **This queue now comes after `2026-11-27-basics-plugins.md`** for the Windows 10 walker.
+- **First of all, SC-191: after a split, or after Start is moved, each piece draws its own part of the
+  waveform.** Confirmed by a probe: the piece draws the file's beginning while it plays the right audio
+  (`ClipSourceMap::frameAt`, `src/adi/ui/waveform.hpp`, about 158). SC-30's left trim would show the
+  same fault.
+- **SC-11 is run and confirmed:** a 4 s unwarped file placed at 120 BPM plays 2 s at 240 BPM. Recorded
+  takes store their length the same way (`src/adi/recording_commands.cpp`, about 86).
+- **SC-192: an audio clip's editor answers the mouse** (TM-WT-06 moves up): the start, the end and the
+  loop dragged on the waveform, a click to set a point, the ruler dragged to zoom. Today only the wheel
+  works.
+- **SC-193: a loop's tempo can be told, halved and doubled** when ADI guessed wrong. Today a file whose
+  beat is not found is refused when Warp is ticked.
+- **SC-32's producer refuses most real clips:** `prepareSetWarp` refuses a clip that was trimmed, split
+  or had its Start moved. The switch needs that lifted.
+- **Every edit stretches every warped clip again, on the message thread** (the round's row: 1.4 s to
+  30 s per edit for one 60 s clip in a Debug build). Cache the stretched result by what it depends on
+  and render off the message thread.

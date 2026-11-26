@@ -6,6 +6,23 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-26, night — the director's answers to round 2 (ADR-0258); fourteen queues, seven sessions
+
+His words: "yes to all, T a, U a, go".
+
+- **Sixteen answers, each as Live** (ADR-0258 d1 to d16): a folder per song; recordings in Live's layout inside it; the first Ctrl+S asks a name and takes everything along; collected samples keep their names; a User Library from the first launch; projects under the user's documents after PD-08; a sent copy without its history; a copy before an upgrade; sounds of ADI's own; a take follows the tempo; a click in a clip's body places the insert marker; a changed sample plays; take lanes and the Drum Rack move up; and one addition, opening a project with its plug-ins held off after a crash at load.
+- **T and U** (d17, d18): a MIDI track is silent until it has an instrument; a device preset is a file in the User Library.
+- **Queues.** Eight new files beside the six of 27 November: plugins, browser, edit, safety, automation, routing (device and export wait for the first free session). Each of the six carries a part "Added by round 2". Who takes what is ADR-0258 d19.
+- **Seats, when you next run:** the hold has ended. Your "after 3 December" branches land from now in win's stacks; a `basics/*` branch goes ahead of them on the runner. Rows of the list in your paths are lent to the weekend's sessions (ADR-0257 d2): read what landed in your files first.
+- **Owed by win (DF-R2):** the plan rows, now also for ADR-0258's amendments (PD-08, TM-MD-03, the take lanes' and the Drum Rack's rows moved up).
+
+- **The twentieth audit (large projects and speed)** came in after the merge: 17 more rows, SC-407 to SC-423, queue **speed** (`2026-11-27-basics-speed.md`), and notes on SC-194, SC-251, SC-330 and SC-377. Measured in a Release probe: 44.1 kHz files on a 48 kHz device drop out from eight tracks up; clips fall silent past a few hundred (one open file each); every edit re-reads the whole project (about half a second in a real song).
+- **#795 merged:** the walk's B13 (DF-W56, done). Its Windows Debug leg failed one allocation check of the Stack model suite; win fixed the test and proved it in a local Debug build.
+
+**Next free:** ADR-0259. The others are unchanged.
+
+---
+
 ## 2026-11-26, night — the hold has ended (pass 9 clean); the sanity check's round 2
 
 **The hold of ADR-0248 d2 ended today.** The Windows 11 walk session walked all nine steps in the real window on a clean build of main at `5ebc7453`, with #790's two fixes checked: every step passes (its report, pass 9). That is the clean pass of ADR-0255 d1. What opens is ordered by ADR-0257 d1: the basics first; the Dream, Track S and additions behind them. The seats' branches marked "after 3 December" may land from now; win brings the order to the director with round 2.
