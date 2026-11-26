@@ -4952,8 +4952,9 @@ void clipViewNotes(AppCommands &commands, const std::filesystem::path &dir) {
     const auto *made1 = panel.details();
     check(root.state().clipView && made1 != nullptr && panel.midi() && made1->posTicks == 2 * bar &&
               made1->lengthTicks == bar && made1->notes.empty() && geo.selection.clip == made1->id &&
-              submitter.nextUndo()->label == "Insert MIDI Clip" && submitter.nextUndo()->opCount == 1,
-          "a double-click on an empty MIDI lane makes a one-bar clip there, selects and opens it, one undo step");
+              made1->loopEnabled && made1->loopStartTicks == 0 && made1->loopLengthTicks == bar &&
+              submitter.nextUndo()->label == "Insert MIDI Clip" && submitter.nextUndo()->opCount == 2,
+          "a double-click makes, selects and opens a looping one-bar MIDI clip in one undo step");
     if (made1 == nullptr)
         return;
     const auto clipId = made1->id;
@@ -4970,8 +4971,9 @@ void clipViewNotes(AppCommands &commands, const std::filesystem::path &dir) {
     check(root.command(AppCommands::InsertMidiClip), "Insert Empty MIDI Clip(s) on a two-bar selection");
     root.frame();
     check(panel.details() != nullptr && panel.details()->id != clipId && panel.details()->posTicks == 4 * bar &&
-              panel.details()->lengthTicks == 2 * bar && geo.selection.clip == panel.details()->id,
-          "makes a two-bar clip there, selected and shown");
+              panel.details()->lengthTicks == 2 * bar && panel.details()->loopEnabled &&
+              panel.details()->loopLengthTicks == 2 * bar && geo.selection.clip == panel.details()->id,
+          "makes a looping two-bar clip there, selected and shown");
     geo.selection.clip = 0;
     geo.selection.start = 5 * bar;
     geo.selection.end = 7 * bar;
@@ -11399,6 +11401,57 @@ void automationArm(AppCommands &commands, const std::filesystem::path &dir) {
 // Arm, monitoring and Arrangement Record (MX-09; Live 12 manual 21.1, 21.4): the strips' Arm and the
 // monitoring switch, and the Control Bar's Record and F9, wired as ui_main.cpp wires them, over a
 // document whose callback the test drives with an input.
+void selectionArmsTrack(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "arm-selection.adi", true, {}, error);
+    check(document != nullptr, "a project for selection arming");
+    if (!document)
+        return;
+    document->prepare(48000, 64);
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "record");
+    commands.activate(root);
+    root.afterEdit = [&] { document->synchronise(); };
+    root.readRecordStates = [&] { return document->recordStates(); };
+    root.setSelectionArmedTrack = [&](std::int64_t track) { return document->session().setSelectionArmedTrack(track); };
+    const auto select = [&](std::int64_t track) {
+        root.arrangement.geometry.selection.track = track;
+        root.publishSelection();
+    };
+    const auto armed = [&](std::int64_t track) { return document->recordStates().at(track).armed; };
+    const auto head = [&] { return OpJournal(document->store()).headSeq(); };
+    auto &prefs = commands.writableSettings();
+    const auto saved = prefs.get("record.autoArmOnSelect");
+    const auto mode = [&](const settings::Value &value) {
+        check(prefs.set("record.autoArmOnSelect", value, {}, error), "the setting accepts an arming choice");
+        commands.reload();
+    };
+    mode("none");
+    select(2);
+    check(!armed(2), "selection arming is off by default");
+    mode("instrumentAndMidi");
+    check(armed(2) && root.recordState(2).armed &&
+              document->store().db().execAndGet("SELECT record_armed FROM tracks WHERE id=2").getInt() == 0,
+          "selection arms the MIDI track in the session and UI without writing its manual arm");
+    const auto originalHead = head();
+    check(root.armTrack(2, false) && !armed(2) && head() == originalHead,
+          "the Arm switch can clear a selection arm without adding an undo step");
+    select(2);
+    check(!armed(2), "a click on the same track leaves a cleared selection arm off");
+    select(3);
+    const std::array<std::int64_t, 1> captureTrack{3};
+    check(armed(3) && document->session().startMidiInputCapture(captureTrack, error),
+          "selecting another MIDI track switches the arm and admits driver capture");
+    select(4);
+    check(!armed(3) && !armed(4) && head() == originalHead,
+          "selecting an audio track in MIDI-only mode clears the temporary arm without an edit");
+    mode("all");
+    check(armed(4) && head() == originalHead, "all tracks mode also arms a selected audio track");
+    mode("none");
+    check(!armed(4) && head() == originalHead, "switching off selection arming clears it immediately");
+    mode(saved);
+    document->release();
+}
 void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto document = ProjectDocument::open(dir / "arm-record.adi", true, {}, error);
@@ -11492,7 +11545,7 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     check(root.command(AppCommands::Redo), "redo");
     frame();
     check(!root.setMonitor(1, Monitor::In) && root.error().find("no input") != std::string::npos, "Main has no monitoring [P:recording#9]");
-    // Arrangement Record: F9 records both armed audio tracks; 2 MIDI, armed too, records nothing yet.
+    // Arrangement Record: F9 records both armed audio tracks and the armed MIDI track.
     juce::ApplicationCommandInfo recordInfo(AppCommands::ArrangementRecord);
     commands.getCommandInfo(AppCommands::ArrangementRecord, recordInfo);
     check(recordInfo.shortName == "Arrangement Record" &&
@@ -11562,15 +11615,17 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     auto landed = document->takeLanded();
-    check(landed && landed->ok && landed->clips.size() == 2 && landed->message == "Recorded 2 takes.",
-          "both armed tracks' takes land together [P:recording#19]");
+    check(landed && landed->ok && landed->clips.size() == 3,
+          "both audio takes and the MIDI take land together [P:recording#19]");
     frame();
-    check(root.reader().findTrack(4)->clips.size() == 1 && root.reader().findTrack(5)->clips.size() == 1,
+    check(root.reader().findTrack(3)->clips.size() == 1 && root.reader().findTrack(4)->clips.size() == 1 &&
+              root.reader().findTrack(5)->clips.size() == 1,
           "a clip on each armed track");
     check(root.command(AppCommands::Undo), "one Undo");
     frame();
-    check(root.reader().findTrack(4)->clips.empty() && root.reader().findTrack(5)->clips.empty(),
-          "takes both takes back [P:recording#23]");
+    check(root.reader().findTrack(3)->clips.empty() && root.reader().findTrack(4)->clips.empty() &&
+              root.reader().findTrack(5)->clips.empty(),
+          "takes all three takes back [P:recording#23]");
     // Punch-in: Record while playing records from the playhead, and Stop ends the take with the transport.
     check(root.command(AppCommands::ArrangementRecord) && document->recording() && document->mailbox().desiredPlaying(),
           "Record while playing records; the transport keeps rolling [P:recording#22]");
@@ -11585,7 +11640,7 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     landed = document->takeLanded();
-    check(landed && landed->ok && landed->clips.size() == 2, "the punched-in takes land");
+    check(landed && landed->ok && landed->clips.size() == 3, "the punched-in audio and MIDI takes land");
     frame();
     // A Count-In is playing for the window: Space during it stops, it does not start again.
     {
@@ -11636,6 +11691,162 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     frame();
     check(!root.midiOverdub() && !overdub.getToggleState(), "and off");
     document->release();
+}
+void midiTakePreview(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "midi-take-preview.adi", true, {}, error);
+    check(document != nullptr, "a project for the MIDI take preview");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "midi-take-preview");
+    root.setSize(1440, 900);
+    auto &geo = root.arrangement.geometry;
+    auto &canvas = root.arrangement.canvas;
+    geo.resizeTrack(2, 64);
+    geo.left = 0;
+    geo.scale = 96;
+    constexpr auto beat = textproj::kPPQ;
+    std::vector<LiveMidiTake> takes{{2, beat, 4 * beat, {}}};
+    root.liveMidiTakes = [&]() -> std::span<const LiveMidiTake> { return takes; };
+    root.mark(DirtySet::All);
+    root.frame();
+    const auto snapshot = [&] {
+        juce::Image image(juce::Image::ARGB, canvas.getWidth(), canvas.getHeight(), true, juce::SoftwareImageType{});
+        juce::Graphics graphics(image);
+        canvas.paintEntireComponent(graphics, true);
+        return image;
+    };
+    const auto takeWithNoNotes = snapshot();
+    const int top = laneTop(root, 2) + 17, bottom = laneTop(root, 2) + 61;
+    const int firstNote = static_cast<int>(geo.x(2 * beat + beat / 2));
+    const int later = static_cast<int>(geo.x(3 * beat + beat / 2));
+    check(takeWithNoNotes.getPixelAt(firstNote, top) == look::record,
+          "a growing MIDI take draws the record-coloured clip body before a note arrives");
+    const auto notePixels = [&](const juce::Image &image, int column) {
+        int changed = 0;
+        for (int y = top; y < bottom; ++y)
+            if (image.getPixelAt(column, y) != takeWithNoNotes.getPixelAt(column, y))
+                ++changed;
+        return changed;
+    };
+    takes.front().notes.push_back({2 * beat, 3 * beat, 60});
+    root.frame();
+    const auto noteAppeared = snapshot();
+    check(notePixels(noteAppeared, firstNote) > 0 && notePixels(noteAppeared, later) == 0 &&
+              root.reader().findTrack(2)->clips.empty(),
+          "a note appears in the clip preview before any edit is committed");
+    takes.front().notes.front().end = 4 * beat;
+    takes.front().end = 5 * beat;
+    allocations = 0;
+    audit = true;
+    root.frame();
+    audit = false;
+    check(allocations == 0, "a frame borrowing growing MIDI takes allocates zero");
+    const auto noteHeld = snapshot();
+    check(notePixels(noteHeld, later) > 0 &&
+              noteHeld.getPixelAt(static_cast<int>(geo.x(4 * beat + beat / 2)), top) == look::record,
+          "both the held note and the clip extend as recording progresses");
+    takes.clear();
+    root.frame();
+    check(snapshot().getPixelAt(firstNote, top) != look::record, "the preview disappears when the take ends");
+}
+void computerMidiKeyboard(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "computer-midi.adi", true, {}, error);
+    check(document != nullptr, "a project for the computer MIDI keyboard");
+    if (!document)
+        return;
+    std::vector<engine::Event> events;
+    std::array<bool, 26> held{};
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "computer-midi");
+    UiPeerRoot surface;
+    surface.setSize(1200, 800);
+    surface.addAndMakeVisible(root);
+    surface.setVisible(true);
+    surface.addToDesktop(0);
+    root.setSize(1200, 800);
+    root.sendComputerMidi = [&](const engine::Event &event) { events.push_back(event); };
+    root.input.keyDown = [&](int key) {
+        if (key >= 'A' && key <= 'Z')
+            key += 'a' - 'A';
+        return key >= 'a' && key <= 'z' && held[static_cast<std::size_t>(key - 'a')];
+    };
+    const auto down = [&](char key) {
+        held[static_cast<std::size_t>(key - 'a')] = true;
+        return root.keyPressed(juce::KeyPress(key, 0, key));
+    };
+    const auto up = [&](char key) {
+        held[static_cast<std::size_t>(key - 'a')] = false;
+        root.keyStateChanged(false);
+    };
+    const auto head = OpJournal(document->store()).headSeq();
+    check(!root.computerMidiEnabled() && !root.transport.keyboard.getToggleState(), "the computer MIDI keyboard starts off");
+    check(down('m') && down('m') && root.computerMidiEnabled() && root.transport.keyboard.getToggleState(),
+          "M lights the keyboard switch once even if the OS repeats it");
+    up('m');
+    juce::ApplicationCommandInfo command(AppCommands::ComputerMidiKeyboard);
+    commands.getCommandInfo(AppCommands::ComputerMidiKeyboard, command);
+    check(command.defaultKeypresses.contains(juce::KeyPress('m')) &&
+              (command.flags & juce::ApplicationCommandInfo::isTicked) != 0,
+          "the Options command shows the M shortcut and the same active state");
+    check(down('a') && down('a') && down('w') && down('k') && events.size() == 3 &&
+              events[0].type == engine::EventType::NoteOn && events[0].dim == 60 && events[1].dim == 61 && events[2].dim == 72 &&
+              events[0].noteId != events[1].noteId && events[1].noteId != events[2].noteId,
+          "white and black keys play the Live layout and a held key sends one note-on");
+    check(down('x') && down('v'), "X raises the octave and V raises velocity");
+    up('x');
+    up('v');
+    check(down('a') && down('s') && events.size() == 4 && events[3].dim == 74 && events[3].value == 120.0 / 127.0,
+          "the octave and velocity affect new notes only");
+    up('a');
+    check(events.size() == 5 && events[4].type == engine::EventType::NoteOff &&
+              events[4].dim == 60 && events[4].noteId == events[0].noteId,
+          "releasing after an octave change preserves the held note's pitch and identity");
+    up('w');
+    up('k');
+    up('s');
+
+    auto &canvas = root.arrangement.canvas;
+    held['f' - 'a'] = true;
+    check(canvas.keyPressed(juce::KeyPress('f')) && !canvas.showFades && events.size() == 9 && events.back().dim == 77,
+          "the keyboard claims F before the Arrangement's fade shortcut");
+    up('f');
+    check(canvas.keyPressed(juce::KeyPress('f', juce::ModifierKeys::shiftModifier, 0)) && canvas.showFades &&
+              root.computerMidiShortcut(juce::KeyPress('s', juce::ModifierKeys::shiftModifier, 0)) == juce::KeyPress('s') &&
+              events.size() == 10,
+          "Shift keeps the Arrangement and application shortcuts available without playing notes");
+    const bool pluginToggle = commands.key(juce::KeyPress('m'), root, false);
+    (void)commands.key(juce::KeyPress('w'), root, false);
+    check(!pluginToggle && root.computerMidiEnabled() && events.size() == 10,
+          "forwarded plug-in window keys cannot toggle the keyboard or sound a note");
+
+    {
+        juce::TextEditor field;
+        root.addAndMakeVisible(field);
+        field.setBounds(10, 10, 140, 22);
+        field.grabKeyboardFocus();
+        auto *peer = surface.getPeer();
+        check(field.hasKeyboardFocus(false) && peer != nullptr &&
+                  peer->handleKeyPress(juce::KeyPress('a', 0, 'a')) && peer->handleKeyPress(juce::KeyPress('m', 0, 'm')) &&
+                  field.getText() == "am" && root.computerMidiEnabled() && events.size() == 10,
+              "a focused text field owns the typing keys even when MIDI keyboard mode is on");
+    }
+    root.grabKeyboardFocus();
+    check(down('j'), "a note plays after returning focus to the Arrangement");
+    root.releaseComputerMidiKeys();
+    check(root.computerMidiEnabled() && events.size() == 12 && events.back().type == engine::EventType::NoteOff &&
+              events.back().noteId == events[10].noteId,
+          "the focus-loss release path silences held notes and leaves the mode enabled");
+    up('j');
+    check(down('k'), "hold another note before turning the keyboard off");
+    root.transport.keyboard.onClick();
+    check(!root.computerMidiEnabled() && !root.transport.keyboard.getToggleState() && events.size() == 14 &&
+              events.back().type == engine::EventType::NoteOff && events.back().noteId == events[12].noteId &&
+              OpJournal(document->store()).headSeq() == head,
+          "turning the Control Bar switch off releases the held note without an Undo item");
+    up('k');
 }
 // EX-11, the Export page (Live 12 manual 5.2.1): the choices in Live's order, what the renderer cannot do
 // yet refused with its reason, the range from the selection, the loop or the song, and the job the choices
@@ -14892,10 +15103,11 @@ void midiInputFeedCases() {
     struct Got {
         std::int64_t sample;
         engine::Event event;
+        std::int64_t inputSample;
     };
     std::vector<Got> got;
-    const auto take = [&got](std::int64_t sample, const engine::Event &e) {
-        got.push_back({sample, e});
+    const auto take = [&got](std::int64_t sample, const engine::Event &e, std::int64_t inputSample) {
+        got.push_back({sample, e, inputSample});
         return true;
     };
     // A 480-frame block at 48 kHz starting at stream sample 4800; the ports' clock reads 112 ms. What
@@ -14915,6 +15127,9 @@ void midiInputFeedCases() {
         check(got[2].event.type == engine::EventType::NoteOff && got[2].event.noteId == got[0].event.noteId &&
                   got[2].sample == 4800 + 480 - 2 * 48 && got[0].sample <= got[1].sample && got[1].sample <= got[2].sample,
               "the note off with its note's id, 2 ms before the clock; the stamps never go back");
+        check(got[0].inputSample == 4800 - 12 * 48 && got[1].inputSample == 4800 - 7 * 48 &&
+                  got[2].inputSample == 4800 - 2 * 48,
+              "capture also receives the original port timestamps before buffer scheduling");
     }
     // An event stamped earlier than one already given is put at that one's sample, never before it.
     got.clear();
@@ -14932,7 +15147,7 @@ void midiInputFeedCases() {
     // A refused event is counted; a restart forgets held notes, so a note off with no note on is nothing.
     got.clear();
     keys.push(msg(130, 0x90, 67, 90));
-    feed.pump(6240, 480, 48000, 131, [](std::int64_t, const engine::Event &) { return false; });
+    feed.pump(6240, 480, 48000, 131, [](std::int64_t, const engine::Event &, std::int64_t) { return false; });
     check(feed.refused() == 1, "a full session queue refuses the note, and it is counted");
     feed.restart();
     keys.push(msg(140, 0x80, 67, 0));
@@ -16354,10 +16569,10 @@ int main(int argc, char **argv) {
 #if JUCE_MAC
         check(names == juce::StringArray{"File", "Edit", "Create", "View", "Options", "Navigate", "Help"},
               "the Mac's menu bar: File, Edit, Create, View, Options, Navigate, Help");
-        check(items("Options") == std::vector<int>{C::Follow, 0, C::DrawMode, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid,
+        check(items("Options") == std::vector<int>{C::Follow, 0, C::DrawMode, C::ComputerMidiKeyboard, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid,
                                                    C::SnapToGrid, C::FixedGrid, 0, C::DelayCompensation, 0, C::SoloSwitches,
                                                    C::CueSwitches, C::SoloInPlace},
-              "the Options menu: Follow (§6.2), Draw Mode (§10.4.1), the grid (§6.10), Delay Compensation (§18.7), then "
+              "the Options menu: Follow, Draw Mode, Computer MIDI Keyboard, the grid, Delay Compensation, then "
               "Solo in Place (§18.6)");
         check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0, C::TakeSnapshot, C::SaveAs,
                                                 C::SaveCopy, C::CollectAllAndSave, C::CollectAndExport, 0, C::ExportAudio},
@@ -16371,11 +16586,11 @@ int main(int argc, char **argv) {
                                                 C::Quit},
               "the File menu: Save As, then Save a Copy and Collect All and Save (5.4.1, 5.7), ADI's "
               "Collect and Export after them, then Export Audio/Video (5.2.1); it ends with Quit and no longer holds Settings [P:export#1]");
-        check(items("Options") == std::vector<int>{C::Follow, 0, C::DrawMode, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid,
+        check(items("Options") == std::vector<int>{C::Follow, 0, C::DrawMode, C::ComputerMidiKeyboard, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid,
                                                    C::SnapToGrid, C::FixedGrid, 0, C::DelayCompensation, 0, C::SoloSwitches,
                                                    C::CueSwitches, C::SoloInPlace, 0,
                                                    C::Settings},
-              "the Options menu: Follow (§6.2), Draw Mode (§10.4.1), the grid (§6.10), Delay Compensation (§18.7), Solo in "
+              "the Options menu: Follow, Draw Mode, Computer MIDI Keyboard, the grid, Delay Compensation, Solo in "
               "Place (§18.6), then Settings off the Mac "
               "(§2.3)");
 #endif
@@ -16419,12 +16634,12 @@ int main(int argc, char **argv) {
                       C::DelayCompensation == C::ExportAudio + 1 && C::SoloSwitches == C::DelayCompensation + 1 &&
                       C::CueSwitches == C::SoloSwitches + 1 && C::HelpManual == C::CueSwitches + 1 &&
                       C::KeyboardReference == C::HelpManual + 1 && C::AutomationMode == C::KeyboardReference + 1 &&
-                      C::LastId == C::AutomationMode,
+                      C::ComputerMidiKeyboard == C::AutomationMode + 1 && C::LastId == C::ComputerMidiKeyboard,
                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
                   "Select Loop, Save a Copy, Collect All and Save, Collect and Export, Cut, Copy, Paste, Duplicate, "
                   "Show/Hide Plug-In Windows, Split, Clip View, Insert Empty MIDI Clip(s), the …Time commands and "
                   "Insert Silence, then Create Fade In/Out and Delete Fades/Crossfades, then the Note Editor's nine, "
-                  "Arrangement Record and Delay Compensation, each named");
+                  "Arrangement Record, Delay Compensation and Computer MIDI Keyboard, each named");
             // The Note Editor's commands, the last ids: named in the table's order, each on the editor's key.
             {
                 const auto named = [&](int id) {
@@ -18862,7 +19077,10 @@ int main(int argc, char **argv) {
     trace("deviceClipboard", [&] { deviceClipboard(commands, temp.path()); });
     trace("pluginWindows", [&] { pluginWindows(commands, settings, temp.path()); });
     trace("automationArm", [&] { automationArm(commands, temp.path()); });
+    trace("selectionArmsTrack", [&] { selectionArmsTrack(commands, temp.path()); });
     trace("armAndRecord", [&] { armAndRecord(commands, temp.path()); });
+    trace("midiTakePreview", [&] { midiTakePreview(commands, temp.path()); });
+    trace("computerMidiKeyboard", [&] { computerMidiKeyboard(commands, temp.path()); });
     trace("exportPage", [&] { exportPage(commands, temp.path()); });
     trace("mixerDragLive", [&] { mixerDragLive(commands, temp.path()); });
     trace("mixerShowsAutomation", [&] { mixerShowsAutomation(commands, temp.path()); });

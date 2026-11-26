@@ -48,9 +48,9 @@ class LiveMidiProcessor final : public engine::BlockProcessor {
     void process(const engine::AudioIo &io) noexcept override {
         auto &session = document_.session();
         feed_.pump(io.streamTimeSamples, io.frames, rate_, juce::Time::getMillisecondCounterHiRes(),
-                   [&session](std::int64_t sample, const engine::Event &event) noexcept {
-                       return session.enqueueMidiInput(sample, event);
-                   });
+                   [&session](std::int64_t sample, const engine::Event &event, std::int64_t inputSample) noexcept {
+                       return session.enqueueMidiInput(sample, event, inputSample);
+                   }, [&session]() noexcept { session.resetMidiInput(); });
         document_.process(io);
     }
     void release() override { document_.release(); }
@@ -183,6 +183,8 @@ class AdiApplication final : public juce::JUCEApplication,
                                                                 return false;
                                                             (void)settings_->save(why);
                                                             return true;
+                                                        }, [this] {
+                                                            return settings_->get(settings::kNewMidiInputTrackKey).get<bool>();
                                                         });
             midiPorts_->setFeed(&midiFeed_);
             midiPorts_->onInputsChanged = [this] {
@@ -675,6 +677,9 @@ class AdiApplication final : public juce::JUCEApplication,
                                                        document_->views(),
                                                        document_->sessionState(), "main");
         root_ = root.get();
+        root->sendComputerMidi = [this](const engine::Event &event) {
+            (void)midiFeed_.pushComputerMidi(juce::Time::getMillisecondCounterHiRes(), event);
+        };
         root->browser.setListing(library_, libraryReady_); // the library listed so far, if anything
         root->devices.publication = [this] { return document_->parameterFeed().current(); };
         root->devices.parameterDemand = [this](const void *consumer, const std::vector<std::int64_t> &ids) {
@@ -809,7 +814,7 @@ class AdiApplication final : public juce::JUCEApplication,
         }
         // A built-in device from the browser (D4): one undo step, its reason in the Status Bar.
         root->loadBuiltin = [this](const std::string &uid, std::int64_t track, std::optional<std::int64_t> before) {
-            const bool ok = document_->insertBuiltin(uid, track, before);
+            const bool ok = document_->insertBuiltin(uid, track, before, commands_->exclusiveArm());
             if (!ok && root_)
                 root_->say(document_->error());
             return ok;
@@ -831,7 +836,7 @@ class AdiApplication final : public juce::JUCEApplication,
             const auto before_ = newest();
             // As Live loads one: an instrument onto a MIDI track only, in place of the track's instrument
             // (walk-A A26).
-            if (!document_->loadPlugin(ref, track, before)) {
+            if (!document_->loadPlugin(ref, track, before, commands_->exclusiveArm())) {
                 if (root_)
                     root_->say(document_->error());
                 return false;
@@ -890,7 +895,9 @@ class AdiApplication final : public juce::JUCEApplication,
         root->armAutomation = [this](bool armed) { document_->setAutomationArmed(armed); };
         // Arm, monitoring and Arrangement Record (MX-09): the session's rows, and the recorder.
         root->readRecordStates = [this] { return document_->recordStates(); };
+        root->setSelectionArmedTrack = [this](std::int64_t track) { return document_->session().setSelectionArmedTrack(track); };
         root->setRecordStates(document_->recordStates());
+        root->refreshSelectionArming();
         root->previewMidiNote = [this](std::int64_t track, int key, int velocity, bool held) {
             return document_ && document_->session().previewMidiNote(track, key, velocity, held);
         };
@@ -917,6 +924,7 @@ class AdiApplication final : public juce::JUCEApplication,
         };
         root->stopRecording = [this] { document_->stopRecording(); };
         root->recording = [this] { return document_->recording(); };
+        root->liveMidiTakes = [this] { return document_->liveMidiTakes(); };
         // Export Audio/Video (EX-11): the Export page, then a file, then a render on a worker.
         root->exportAudio = [this](const ExportChoices &c) { openExport(c); };
         // A mixer drag heard while it moves (MX-23, SRF-02): the document's live gesture.

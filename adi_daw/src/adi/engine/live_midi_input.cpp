@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/engine/live_midi_input.hpp"
 #include "adi/engine/midi_input_capture.hpp"
+#include "adi/engine/transport.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -33,12 +34,12 @@ void LiveMidiInput::reset() noexcept {
     epoch_.fetch_add(1, std::memory_order_acq_rel);
 }
 
-void LiveMidiInput::release(const GraphHost::RenderBlock& block, const Route& route) noexcept {
+void LiveMidiInput::release(const GraphHost::RenderBlock& block, const Route& route, std::int32_t frame) noexcept {
     auto& state = *route.voices;
     state.retry = false;
     for (auto& voice : state.active) {
         if (!voice.sourceId || (!state.flush && !voice.releasing)) continue;
-        voice.off.frame = 0;
+        voice.off.frame = frame;
         if (block.pushInputEvent(route.slot, voice.off)) voice = {};
         else state.retry = true;
     }
@@ -46,7 +47,7 @@ void LiveMidiInput::release(const GraphHost::RenderBlock& block, const Route& ro
     for (std::size_t ch = 0; ch < state.pedals.size(); ++ch)
         for (std::size_t p = 0; p < pedals.size(); ++p) {
             if (!state.pedals[ch][p]) continue;
-            if (block.pushInputEvent(route.slot, {0, EventType::Controller, static_cast<std::uint8_t>(ch),
+            if (block.pushInputEvent(route.slot, {frame, EventType::Controller, static_cast<std::uint8_t>(ch),
                                                  0, 0, pedals[p], 0}))
                 state.pedals[ch][p] = false;
             else state.retry = true;
@@ -115,9 +116,9 @@ void LiveMidiInput::render(const GraphHost::RenderBlock& block, const AudioIo& i
         if (generation != generation_)
             route.slot = route.processes ? block.find(*route.node) : kInvalidNode;
         auto& state = *route.voices;
-        if (state.track != route.armedTrack || epoch != renderedEpoch_) state.flush = true;
-        state.track = route.armedTrack;
-        if (route.slot != kInvalidNode && (state.flush || state.retry)) release(block, route);
+        if (state.track != route.monitorTrack || epoch != renderedEpoch_) state.flush = true;
+        state.track = route.monitorTrack;
+        if (route.slot != kInvalidNode && (state.flush || state.retry)) release(block, route, 0);
     }
     generation_ = generation;
     renderedEpoch_ = epoch;
@@ -126,18 +127,61 @@ void LiveMidiInput::render(const GraphHost::RenderBlock& block, const AudioIo& i
         io.streamTimeSamples > std::numeric_limits<std::int64_t>::max() - io.frames)
         return;
     const auto end = io.streamTimeSamples + io.frames;
-    auto next = read_.load(std::memory_order_relaxed);
+    const auto first = read_.load(std::memory_order_relaxed);
     const auto written = written_.load(std::memory_order_acquire);
+    const auto eventFrame = [&io](const Timed& item) {
+        return static_cast<std::int32_t>(std::max(item.sample - io.streamTimeSamples, std::int64_t{0}));
+    };
+    auto next = first;
     for (; next != written; ++next) {
         const auto& item = ring_[next % capacity];
         if (item.epoch < epoch) continue;
         if (item.epoch != epoch || item.sample >= end) break;
-        auto event = item.event;
-        event.frame = static_cast<std::int32_t>(std::max(item.sample - io.streamTimeSamples, std::int64_t{0}));
-        if (capture) capture->record(item.sample, event);
-        for (const auto& route : routes)
-            if (route.armedTrack && route.slot != kInvalidNode && !route.voices->flush)
-                deliver(block, route, event);
+        if (capture) {
+            auto event = item.event;
+            event.frame = eventFrame(item);
+            capture->record(item.sample, item.inputSample, event);
+        }
+    }
+    // Only monitoring is gated. Recording above sees the original input regardless of the track's Monitor switch.
+    for (const auto& route : routes) {
+        if (!route.monitorTrack || route.slot == kInvalidNode) continue;
+        auto& state = *route.voices;
+        const bool followClips = transport.playing() && !route.blockedRanges.empty();
+        auto input = first;
+        for (std::int32_t frame = 0; frame < io.frames;) {
+            auto runEnd = io.frames;
+            bool blocked = false;
+            if (followClips) {
+                const auto sample = transport.sampleAt(frame);
+                auto remaining = transport.contiguousFrames(frame, io.frames - frame);
+                const auto range = std::upper_bound(route.blockedRanges.begin(), route.blockedRanges.end(), sample,
+                    [](std::int64_t at, const MidiMonitorRange& span) { return at < span.end; });
+                if (range != route.blockedRanges.end()) {
+                    blocked = sample >= range->start;
+                    remaining = std::min(remaining, (blocked ? range->end : range->start) - sample);
+                }
+                runEnd = frame + static_cast<std::int32_t>(remaining);
+            }
+            // Clip starts and loop wraps can silence a held note even when no input arrives in this block.
+            if (blocked && !state.blocked) {
+                state.flush = true;
+                release(block, route, frame);
+            }
+            state.blocked = blocked;
+            for (; input != next; ++input) {
+                const auto& item = ring_[input % capacity];
+                if (item.epoch < epoch) continue;
+                const auto at = eventFrame(item);
+                if (at >= runEnd) break;
+                if (!blocked && !state.flush) {
+                    auto event = item.event;
+                    event.frame = at;
+                    deliver(block, route, event);
+                }
+            }
+            frame = runEnd;
+        }
     }
     read_.store(next, std::memory_order_release);
     if (capture) capture->endSlice();

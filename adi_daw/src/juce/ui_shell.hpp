@@ -3,11 +3,13 @@
 #include "adi/engine/project_view.hpp"
 #include "adi/settings/store.hpp"
 #include "adi/ui/arm_edits.hpp"
+#include "adi/ui/computer_midi_keyboard.hpp"
 #include "adi/gesture_producers.hpp"
 #include "adi/ui/audio_drop.hpp"
 #include "adi/ui/export_choices.hpp"
 #include "adi/ui/automation_mode.hpp"
 #include "adi/ui/import_choices.hpp"
+#include "adi/ui/live_midi_take.hpp"
 #include "adi/ui/locator_edits.hpp"
 #include "adi/ui/loop_edits.hpp"
 #include "adi/ui/op_submitter.hpp"
@@ -35,6 +37,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <span>
 #include <type_traits>
 #include <variant>
 namespace adi::ui {
@@ -169,7 +172,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         HelpManual,        // the Help menu's manual (WIN-09)
         KeyboardReference, // the Help menu's keyboard reference, written from the keys in force (WIN-09)
         AutomationMode,    // the View menu's Automation Mode, A (Live 12 manual 25.2, 41.7)
-        LastId = AutomationMode
+        ComputerMidiKeyboard, // the Control Bar and Options menu's Computer MIDI Keyboard, M
+        LastId = ComputerMidiKeyboard
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -187,7 +191,7 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     // they differ from what it holds (false with why when the write fails).
     settings::Value userKeys() const;
     bool storeUserKeys(std::string &why);
-    bool key(const juce::KeyPress &, AdiRootComponent &);
+    bool key(const juce::KeyPress &, AdiRootComponent &, bool allowComputerMidi = true);
     void activate(AdiRootComponent &);
     void detach(AdiRootComponent &);
     juce::ApplicationCommandTarget *getNextCommandTarget() override { return nullptr; }
@@ -231,6 +235,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     // Live's Exclusive Arm (the same page), on by default: arming a track disarms the others unless
     // Ctrl/Cmd is held.
     bool exclusiveArm() const noexcept { return exclusiveArm_; }
+    enum class SelectionArm { None, Midi, All };
+    SelectionArm selectionArm() const noexcept { return selectionArm_; }
     // The registry's recording defaults a new track takes (`record.quantize`,
     // `audio.keepMonitoringLatency`; N31).
     const RecordingDefaults &recordingDefaults() const noexcept { return recordingDefaults_; }
@@ -288,6 +294,7 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     bool followByPage_ = true;
     bool exclusiveSolo_ = true;
     bool exclusiveArm_ = true;
+    SelectionArm selectionArm_ = SelectionArm::None;
     RecordingDefaults recordingDefaults_;
     bool linkLoop_ = false;
     bool splitAll_ = true;
@@ -343,7 +350,8 @@ class StatusBar final : public juce::Component {
     bool selectorDragged_ = false;
 };
 // The window is JUCE's drag container, so a browser row can be dragged onto the lanes (D1).
-class AdiRootComponent final : public juce::Component, public juce::DragAndDropContainer {
+class AdiRootComponent final : public juce::Component, public juce::DragAndDropContainer,
+                               private juce::FocusChangeListener {
   public:
     AdiRootComponent(engine::ProjectView &, OpSubmitter &, TransportMailbox &, AppCommands &,
                      ViewStateStore &, SessionState &, std::string window,
@@ -375,6 +383,12 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
         }
     }
     bool midiIn() const noexcept { return midiIn_; }
+    bool computerMidiEnabled() const noexcept { return computerMidiEnabled_; }
+    bool playComputerMidiKey(const juce::KeyPress &);
+    juce::KeyPress computerMidiShortcut(const juce::KeyPress &) const;
+    bool pressComputerMidiToggle(int key);
+    void releaseComputerMidiKeys();
+    std::function<void(const engine::Event &)> sendComputerMidi;
     std::function<bool(std::int64_t, int, int, bool)> previewMidiNote;
     std::function<void()> stopMidiPreview;
     std::function<std::array<std::uint64_t, 2>(std::int64_t)> midiKeysSounding;
@@ -478,6 +492,8 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // `recording` reads whether it runs. A refusal comes back as false and the application has said
     // why. Unset outside the application.
     std::function<RecordStates()> readRecordStates;
+    std::function<bool(std::int64_t)> setSelectionArmedTrack;
+    void refreshSelectionArming();
     void setRecordStates(RecordStates states) {
         if (states != recordStates_)
             recordStates_ = std::move(states);
@@ -485,6 +501,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     std::function<bool(std::int64_t insertTick, bool playing)> startRecording;
     std::function<void()> stopRecording;
     std::function<bool()> recording;
+    std::function<std::span<const LiveMidiTake>()> liveMidiTakes;
     // Live's MIDI Arrangement Overdub (manual 21.2): the Control Bar's switch, the window's own state.
     // It decides what a MIDI recording does to the notes already there once MIDI records (SRF-05).
     bool midiOverdub() const noexcept { return midiOverdub_; }
@@ -899,8 +916,14 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     bool playing_ = false;
     bool midiOverdub_ = false; // Live's MIDI Arrangement Overdub, off in a new Set
     RecordStates recordStates_; // the arm and monitoring the application last handed over (MX-09)
+    std::int64_t selectionArmedTrack_ = 0;
+    bool changeSelectionArming(std::int64_t track);
     RecordStates freshRecordStates() const { return readRecordStates ? readRecordStates() : recordStates_; }
     bool midiIn_ = false;
+    bool computerMidiEnabled_ = false;
+    ComputerMidiKeyboard computerMidi_;
+    std::optional<int> computerMidiToggleKey_;
+    void globalFocusChanged(juce::Component *) override;
     bool automationMode_ = false;
     std::map<std::int64_t, AutomationTarget> automationTargets_;
     std::vector<std::int64_t> automationDemand_;
@@ -1010,6 +1033,7 @@ class AdiWindow final : public juce::DocumentWindow, private juce::KeyListener {
     // The displays changed (a monitor gone, another resolution or scale): the title bar kept on one.
     void parentSizeChanged() override;
     void minimisationStateChanged(bool) override;
+    void activeWindowStatusChanged() override;
     void broughtToFront() override;
     // Where the window stands, saved after each move or size once it stands still (WIN-02).
     PlaceWatch place;

@@ -11,6 +11,9 @@
 namespace adi::settings {
 namespace {
 
+// Keep the existing Track default for new inputs until Live reading R17.
+constexpr bool kDefaultTrackOnForNewMidiInputs = false;
+
 Setting make(std::string key, Type type, std::string page, std::string label, std::string help,
              Value dflt, bool agent = false) {
     Setting s;
@@ -175,6 +178,7 @@ void liveSections(std::vector<Setting>& r) {
         {"midi.autoAddControllers", "Control Surface"},
         {"midi.takeoverMode", "Control Surface"},
         {"midi.ports", "MIDI Ports"},
+        {kNewMidiInputTrackKey, "MIDI Ports"},
         // File & Folder
         {"files.sampleEditor", "Sample Editor"},
         {"files.sampleEditorOpens", "Sample Editor"},
@@ -547,6 +551,9 @@ void catalogueSettings(std::vector<Setting>& r) {
                        "Stored with this MIDI port so its settings can be found if the identifier changes.", ""));
     r.push_back(device("midi.port.track", Type::Bool, "Tempo & MIDI", "Track",
                        "The port feeds tracks. Stored per port.", false));
+    r.push_back(make(kNewMidiInputTrackKey, Type::Bool, "Tempo & MIDI", "Track on for new MIDI inputs",
+                     "Set the initial Track switch when a new MIDI input is discovered.",
+                     kDefaultTrackOnForNewMidiInputs));
     r.push_back(device("midi.port.sync", Type::Bool, "Tempo & MIDI", "Sync", "The port sends or takes sync. Stored per port.", false));
     r.push_back(device("midi.port.remote", Type::Bool, "Tempo & MIDI", "Remote",
                        "The port may be MIDI-mapped. Stored per port.", false));
