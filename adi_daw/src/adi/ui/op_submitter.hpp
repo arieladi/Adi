@@ -76,6 +76,7 @@
 
 #include "adi/engine/project_view.hpp"
 #include "adi/history.hpp"
+#include "adi/note_diff.hpp"
 #include "adi/ops.hpp"
 
 #include <concepts>
@@ -297,6 +298,7 @@ public:
         }
         if (requests.size() == 1) return submit(std::move(requests.front()));
         for (auto& r : requests) stamp(r);
+        if (auto gesture = notes::commitScalarGesture(store_, requests)) return run(std::move(*gesture));
         return run(OpJournal(store_).commit(std::span<const OpRequest>(requests)));
     }
 

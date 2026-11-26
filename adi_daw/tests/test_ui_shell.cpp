@@ -5038,7 +5038,7 @@ void clipViewNotes(AppCommands &commands, const std::filesystem::path &dir) {
     ed.mouseDrag(dragAt(ed, from, {from.x + static_cast<float>(step), from.y}));
     ed.mouseUp(pressAt(ed, {from.x + static_cast<float>(step), from.y}));
     root.frame();
-    check(note(0).startTicks == 3 * beat && note(0).durationTicks == beat && undoIs("Resize Note", 2),
+    check(note(0).startTicks == 3 * beat && note(0).durationTicks == beat && undoIs("Resize Note", 1),
           "its start edge dragged a step right: it starts a beat later and ends where it did");
     check(root.command(AppCommands::Undo), "undo");
     root.frame();
@@ -5067,7 +5067,7 @@ void clipViewNotes(AppCommands &commands, const std::filesystem::path &dir) {
     const auto keysBefore = std::pair<int, int>(note(0).key, note(1).key);
     check(ed.keyPressed(juce::KeyPress(juce::KeyPress::upKey)), "Up");
     root.frame();
-    check(note(0).key == keysBefore.first + 1 && note(1).key == keysBefore.second + 1 && undoIs("Move Notes", 2),
+    check(note(0).key == keysBefore.first + 1 && note(1).key == keysBefore.second + 1 && undoIs("Move Notes", 1),
           "Up moves both a key up, one undo step");
     check(ed.keyPressed(juce::KeyPress(juce::KeyPress::downKey)), "Down");
     root.frame();
@@ -5090,7 +5090,7 @@ void clipViewNotes(AppCommands &commands, const std::filesystem::path &dir) {
     check(ed.keyPressed(juce::KeyPress(juce::KeyPress::rightKey, juce::ModifierKeys::shiftModifier, 0)), "Shift+Right");
     root.frame();
     check(note(0).durationTicks == lengthsBefore.first + beat && note(1).durationTicks == lengthsBefore.second + beat &&
-              undoIs("Resize Notes", 2),
+              undoIs("Resize Notes", 1),
           "Shift+Right makes both a grid step longer, one undo step");
     check(ed.keyPressed(juce::KeyPress(juce::KeyPress::leftKey, juce::ModifierKeys::shiftModifier, 0)), "Shift+Left");
     root.frame();
@@ -5100,10 +5100,10 @@ void clipViewNotes(AppCommands &commands, const std::filesystem::path &dir) {
     // 0 deactivates the selected notes, one undo step; again, it activates them (manual 10.5.7).
     check(ed.keyPressed(juce::KeyPress('0')), "0");
     root.frame();
-    check(!note(0).active && !note(1).active && undoIs("Deactivate Notes", 2), "0 deactivates both notes, one undo step");
+    check(!note(0).active && !note(1).active && undoIs("Deactivate Notes", 1), "0 deactivates both notes, one undo step");
     check(ed.keyPressed(juce::KeyPress('0')), "0 again");
     root.frame();
-    check(note(0).active && note(1).active && undoIs("Activate Notes", 2), "and 0 again activates them");
+    check(note(0).active && note(1).active && undoIs("Activate Notes", 1), "and 0 again activates them");
 
     // A click on empty space selects nothing; a drag from empty space selects what it touches.
     const juce::Point<float> empty(xAt(2 * bar) + 4.f, static_cast<float>(area.getY() + 2));
@@ -5391,22 +5391,22 @@ void clipViewTools(AppCommands &commands, const std::filesystem::path &dir) {
           "Fit to Scale moves F#3 to F3 and leaves the others, one undo step");
     // Invert, between the lowest and the highest.
     click(panel.toolBox(Tool::Invert));
-    check(note(1).key == 65 && note(2).key == 61 && note(3).key == 60 && undoIs("Invert Notes", 3), "Invert mirrors the three in pitch");
+    check(note(1).key == 65 && note(2).key == 61 && note(3).key == 60 && undoIs("Invert Notes", 1), "Invert mirrors the three in pitch");
     check(root.command(AppCommands::Undo), "undo");
     root.frame();
     // Reverse, between the first start and the last end.
     click(panel.toolBox(Tool::Reverse));
-    check(note(1).startTicks == 2 * beat && note(2).startTicks == beat && note(3).startTicks == 0 && undoIs("Reverse Notes", 2),
+    check(note(1).startTicks == 2 * beat && note(2).startTicks == beat && note(3).startTicks == 0 && undoIs("Reverse Notes", 1),
           "Reverse mirrors them in time: the last is first");
     check(root.command(AppCommands::Undo), "undo");
     root.frame();
     // x2 and /2.
     click(panel.toolBox(Tool::Double));
     check(note(1).startTicks == 0 && note(1).durationTicks == 2 * beat && note(2).startTicks == 2 * beat &&
-              note(3).startTicks == 4 * beat && note(3).durationTicks == 2 * beat && undoIs("Stretch Notes", 5),
+              note(3).startTicks == 4 * beat && note(3).durationTicks == 2 * beat && undoIs("Stretch Notes", 1),
           "x2 doubles the starts and the lengths from the first note, one undo step");
     click(panel.toolBox(Tool::Halve));
-    check(note(2).startTicks == beat && note(3).startTicks == 2 * beat && note(3).durationTicks == beat && undoIs("Stretch Notes", 5),
+    check(note(2).startTicks == beat && note(3).startTicks == 2 * beat && note(3).durationTicks == beat && undoIs("Stretch Notes", 1),
           "/2 halves them again");
     // Legato: with the middle note gone, the first lasts until the last begins.
     const auto beforeLegato = submitter.nextUndo()->txnId;
@@ -5425,7 +5425,7 @@ void clipViewTools(AppCommands &commands, const std::filesystem::path &dir) {
     check(panel.readings().transpose == "+3 st" && note(1).key == 60, "Transpose dragged up three steps reads +3 st, nothing written yet");
     panel.mouseUp(pressAt(panel, {grab.x, grab.y - 12.f}));
     check(note(1).key == 63 && note(3).key == 68 && panel.readings().transpose == "0 st" && panel.readings().range == "D#3 - G#3" &&
-              undoIs("Transpose Notes", 2),
+              undoIs("Transpose Notes", 1),
           "let go, both notes are three semitones up, one undo step, and the field reads 0 st again");
     check(panel.typeField(Field::Transpose, "-3") && note(1).key == 60 && note(3).key == 65, "typed as -3, they are back");
     const auto beforeBad = submitter.nextUndo()->txnId;
@@ -5452,7 +5452,7 @@ void clipViewTools(AppCommands &commands, const std::filesystem::path &dir) {
     check(panel.transpose(1) && note(1).key == 61 && note(3).key == 78, "a semitone up, neither note is in D Minor Blues");
     click(panel.toolBox(Tool::FitToScale));
     check(inScale(note(1).key, 2, panel.details()->scale.mask) && inScale(note(3).key, 2, panel.details()->scale.mask) &&
-              undoIs("Fit to Scale", 2),
+              undoIs("Fit to Scale", 1),
           "Fit to Scale then fits the notes to D Minor Blues");
 
     // ADI's additions from Cubase's Key Editor (ADR-0241 d2): chord editing and the length functions.
@@ -5470,7 +5470,7 @@ void clipViewTools(AppCommands &commands, const std::filesystem::path &dir) {
           "a chord type is chosen from it");
     ed.select({20});
     click(panel.toolBox(Tool::Chord));
-    check(panel.details()->notes.size() == 4 && ed.selected().size() == 4 && undoIs("Insert Chord", 3),
+    check(panel.details()->notes.size() == 4 && ed.selected().size() == 4 && undoIs("Insert Chord", 1),
           "Add Chord builds C major 7 on the selected note: three notes added, all four selected, one undo step");
     int low = 127, high = 0;
     for (const auto &n : panel.details()->notes) {
@@ -5498,7 +5498,7 @@ void clipViewTools(AppCommands &commands, const std::filesystem::path &dir) {
     bool allStep = true;
     for (const auto &n : panel.details()->notes)
         allStep = allStep && n.durationTicks == ed.gridTicks();
-    check(allStep && undoIs("Set Length", 4), "Set Length, its Duration on Grid, makes the four notes a grid step long");
+    check(allStep && undoIs("Set Length", 1), "Set Length, its Duration on Grid, makes the four notes a grid step long");
     ed.select({});
     check(submitter.submit(op("note.insert", {{"clip", 11}, {"note", 30}, {"start", beat / 2}, {"dur", beat}, {"key", 60}}, "Add Note")).ok,
           "a second C3 begins while the first still sounds");
@@ -5538,7 +5538,7 @@ void clipViewTools(AppCommands &commands, const std::filesystem::path &dir) {
     root.frame();
     ed.select({});
     click(panel.toolBox(Tool::VelocityAdd));
-    check(note(50).velocity == 110 && note(51).velocity == 50 && note(52).velocity == 127 && undoIs("Add Velocity", 3),
+    check(note(50).velocity == 110 && note(51).velocity == 50 && note(52).velocity == 127 && undoIs("Add Velocity", 1),
           "Add, with none selected, raises every velocity by the amount in its field, 10: one undo step");
     check(panel.typeField(Field::VelocityAmount, "-20") && panel.velocityAmount == -20, "the amount typed as -20");
     ed.select({50});
@@ -5550,7 +5550,7 @@ void clipViewTools(AppCommands &commands, const std::filesystem::path &dir) {
           "a word is refused; a number out of range is brought inside it; typing an amount is no undo step");
     ed.select({});
     click(panel.toolBox(Tool::VelocityScale));
-    check(note(50).velocity == 45 && note(51).velocity == 25 && note(52).velocity == 64 && undoIs("Compress Velocities", 3),
+    check(note(50).velocity == 45 && note(51).velocity == 25 && note(52).velocity == 64 && undoIs("Compress Velocities", 1),
           "Scale at 50 per cent halves them");
     // A field dragged: four pixels a step.
     {
@@ -5562,7 +5562,7 @@ void clipViewTools(AppCommands &commands, const std::filesystem::path &dir) {
     check(panel.velocityLow == 31 && submitter.nextUndo()->label == "Compress Velocities", "the low limit dragged up by thirty steps: 31");
     check(panel.typeField(Field::VelocityHigh, "60") && panel.velocityHigh == 60, "the high limit typed");
     click(panel.toolBox(Tool::VelocityLimit));
-    check(note(50).velocity == 45 && note(51).velocity == 31 && note(52).velocity == 60 && undoIs("Limit Velocities", 2),
+    check(note(50).velocity == 45 && note(51).velocity == 31 && note(52).velocity == 60 && undoIs("Limit Velocities", 1),
           "Limit brings the two outside 31 to 60 to its ends");
     check(panel.typeField(Field::Voices, "2") && panel.voices == 2, "two voices");
     click(panel.toolBox(Tool::RestrictPolyphony));
@@ -5698,7 +5698,7 @@ void clipViewMore(AppCommands &commands, const std::filesystem::path &dir) {
     // Duplicate: the selected notes again, right after themselves.
     check(ed.keyPressed(juce::KeyPress('a', juce::ModifierKeys::commandModifier, 0)) && ed.selected().size() == 2, "both selected");
     check(ed.keyPressed(juce::KeyPress('d', juce::ModifierKeys::commandModifier, 0)), "Ctrl/Cmd+D");
-    check(panel.details()->notes.size() == 4 && ed.selected().size() == 2 && undoIs("Duplicate Notes", 2), "two copies, selected, one undo step");
+    check(panel.details()->notes.size() == 4 && ed.selected().size() == 2 && undoIs("Duplicate Notes", 1), "two copies, selected, one undo step");
     bool placed = true;
     for (const auto id : ed.selected())
         placed = placed && (note(id).startTicks == 2 * beat || note(id).startTicks == 3 * beat) && (note(id).key == 60 || note(id).key == 64);
@@ -5734,7 +5734,7 @@ void clipViewMore(AppCommands &commands, const std::filesystem::path &dir) {
     for (const auto &n : panel.details()->notes)
         if (n.key == 67 && n.durationTicks == beat && (n.startTicks == 4 * beat || n.startTicks == 5 * beat || n.startTicks == 6 * beat))
             ++drawn;
-    check(panel.details()->notes.size() == countBefore + 3 && drawn == 3 && ed.selected().size() == 3 && undoIs("Draw Notes", 3),
+    check(panel.details()->notes.size() == countBefore + 3 && drawn == 3 && ed.selected().size() == 3 && undoIs("Draw Notes", 1),
           "let go, three G3s a grid step long, selected, one undo step");
     ed.mouseDown(pressAt(ed, {xAt(0) + 5.f, yOf(60)}));
     ed.mouseUp(pressAt(ed, {xAt(0) + 5.f, yOf(60)}));
@@ -5762,7 +5762,7 @@ void clipViewMore(AppCommands &commands, const std::filesystem::path &dir) {
     ed.select({41});
     for (int i = 0; i < 3; ++i)
         check(ed.keyPressed(juce::KeyPress(juce::KeyPress::leftKey)), "Left");
-    check(note(41).startTicks == 2 * beat && note(40).durationTicks == 2 * beat && submitter.nextUndo()->opCount == 2 &&
+    check(note(41).startTicks == 2 * beat && note(40).durationTicks == 2 * beat && submitter.nextUndo()->opCount == 1 &&
               submitter.nextUndo()->label == "Move Note",
           "moved into the long note, the short one survives whole and the long one now ends where it begins: one undo step");
     check(root.command(AppCommands::Undo), "undo");
@@ -5785,10 +5785,10 @@ void clipViewMore(AppCommands &commands, const std::filesystem::path &dir) {
               note(50).durationTicks == 3 * beat && undoIs("Quantize Notes", 1),
           "Ctrl/Cmd+U puts its start on the grid and keeps its length, one undo step");
     check(ed.keyPressed(juce::KeyPress('e', juce::ModifierKeys::commandModifier, 0)) && ed.selected().size() == 3 &&
-              note(50).durationTicks == beat && undoIs("Chop Notes", 3),
+              note(50).durationTicks == beat && undoIs("Chop Notes", 1),
           "Ctrl/Cmd+E with the note selected chops it on the grid: three notes of a beat, selected, one undo step");
     check(ed.keyPressed(juce::KeyPress('j', juce::ModifierKeys::commandModifier, 0)) && ed.selected() == std::vector<std::uint64_t>{50} &&
-              note(50).durationTicks == 3 * beat && undoIs("Join Notes", 3),
+              note(50).durationTicks == 3 * beat && undoIs("Join Notes", 1),
           "Ctrl/Cmd+J joins them into one again");
     const juce::Point<float> cutAt(xAt(5 * beat) + 4.f, static_cast<float>(area.getY() + 3));
     ed.mouseDown(pressAt(ed, cutAt));
@@ -5819,7 +5819,7 @@ void clipViewMore(AppCommands &commands, const std::filesystem::path &dir) {
     ed.mouseUp(pressAt(ed, marker));
     check(ed.insertMarker() == 6 * beat && ed.selected().empty(), "a click on empty space puts the insert marker there, on the grid");
     check(ed.keyPressed(juce::KeyPress('v', juce::ModifierKeys::commandModifier, 0)) && panel.details()->notes.size() == clipCount + 2 &&
-              ed.selected().size() == 2 && undoIs("Paste Notes", 2),
+              ed.selected().size() == 2 && undoIs("Paste Notes", 1),
           "Paste puts them in, selected, one undo step");
     bool landed = true;
     std::int64_t firstPasted = 0;
@@ -5830,7 +5830,7 @@ void clipViewMore(AppCommands &commands, const std::filesystem::path &dir) {
     check(landed && firstPasted == 6 * beat, "the earliest pasted note is on the insert marker, the other as far after it as before");
     const auto pasted = ed.selected();
     check(ed.keyPressed(juce::KeyPress('x', juce::ModifierKeys::commandModifier, 0)) && panel.details()->notes.size() == clipCount &&
-              undoIs("Cut Notes", 2) && panel.noteClipboard.size() == 2 && ed.selected().empty(),
+              undoIs("Cut Notes", 1) && panel.noteClipboard.size() == 2 && ed.selected().empty(),
           "Cut takes the selected notes out and keeps them for a paste, one undo step");
     check(root.command(AppCommands::Undo) && root.command(AppCommands::Undo), "the cut and the paste undone");
     root.frame();
@@ -5934,7 +5934,7 @@ void clipViewMore(AppCommands &commands, const std::filesystem::path &dir) {
     ed.mouseDrag(dragAt(ed, grabScale, {grabScale.x, grabScale.y + 12.f}));
     ed.mouseUp(pressAt(ed, {grabScale.x, grabScale.y + 12.f}));
     check(note(1).velocity < s1 && note(2).velocity < s2 && std::abs(note(1).velocity * s2 - note(2).velocity * s1) <= s1 + s2 &&
-              undoIs("Scale Velocities", 2),
+              undoIs("Scale Velocities", 1),
           "the Scale handle dragged down lowers both in proportion, one undo step");
     check(root.command(AppCommands::Undo) && root.command(AppCommands::Undo), "both undone");
     root.frame();
@@ -6076,7 +6076,7 @@ void clipViewTime(AppCommands &commands, const std::filesystem::path &dir) {
     ed.selectTime(4 * beat + beat / 2, 7 * beat);
     check(ed.keyPressed(key('e', command)) && panel.details()->notes.size() == 6 && note(1).durationTicks == beat / 2 &&
               note(3).durationTicks == beat && note(4).durationTicks == beat && note(2).durationTicks == beat &&
-              submitter.nextUndo()->label == "Split Notes" && submitter.nextUndo()->opCount == 4,
+              submitter.nextUndo()->label == "Split Notes" && submitter.nextUndo()->opCount == 1,
           "Ctrl+E with time selected and no note cuts the notes crossing its two edges: one undo step");
     check(root.command(AppCommands::Undo), "undo");
     root.frame();
@@ -6284,13 +6284,13 @@ void clipViewTime(AppCommands &commands, const std::filesystem::path &dir) {
         ed.mouseDrag(dragAt(ed, grab, middle));
         ed.mouseUp(dragAt(ed, grab, middle));
         const int level = velocityAt(middle.y, vTop, vHeight);
-        check(note(1).velocity == level && note(2).velocity == level && level > 55 && level < 75 && undoIs("Change Velocity", 2) &&
+        check(note(1).velocity == level && note(2).velocity == level && level > 55 && level < 75 && undoIs("Change Velocity", 1) &&
                   ed.selected() == Ids({1, 2}),
               "brought back down, both have the one value under the pointer: one undo step");
         // Typed.
         check(ed.keyPressed(key('9')) && ed.keyPressed(key('0')) && ed.velocityReadout() == "90" && note(1).velocity == level,
               "digits typed with notes selected show in the header, and nothing is written yet");
-        check(ed.keyPressed(key(juce::KeyPress::returnKey)) && note(1).velocity == 90 && note(2).velocity == 90 && undoIs("Set Velocity", 2) &&
+        check(ed.keyPressed(key(juce::KeyPress::returnKey)) && note(1).velocity == 90 && note(2).velocity == 90 && undoIs("Set Velocity", 1) &&
                   ed.velocityReadout() == "90" && ed.selected() == Ids({1, 2}) && !ed.timeSelection(),
               "Enter sets both notes to 90: one undo step; Enter did not swap to a time selection");
         check(ed.keyPressed(key('2')) && ed.keyPressed(key('0')) && ed.keyPressed(key('0')) && ed.keyPressed(key(juce::KeyPress::returnKey)) &&
@@ -6304,7 +6304,7 @@ void clipViewTime(AppCommands &commands, const std::filesystem::path &dir) {
         check(ed.keyPressed(key('0')) && !note(1).active && ed.velocityReadout() == "127" && ed.keyPressed(key('0')) && note(1).active,
               "a 0 typed first is still the deactivate key");
         // Ctrl/Cmd and up or down.
-        check(ed.keyPressed(key(down, command)) && note(1).velocity == 117 && note(2).velocity == 117 && undoIs("Change Velocity", 2),
+        check(ed.keyPressed(key(down, command)) && note(1).velocity == 117 && note(2).velocity == 117 && undoIs("Change Velocity", 1),
               "Ctrl and Down take 10 off the selected notes' velocity");
         check(ed.keyPressed(key(up, command | shift)) && note(1).velocity == 118, "with Shift, Up adds 1");
         // Alt (Cmd on the Mac) and a vertical drag on a note.
@@ -6329,7 +6329,7 @@ void clipViewTime(AppCommands &commands, const std::filesystem::path &dir) {
         ed.mouseUp(dragAt(ed, from1, to1));
         const int drawn = velocityAt(from1.y, vTop, vHeight);
         check(note(1).velocity == drawn && note(2).velocity == drawn && note(3).velocity == drawn && note(4).velocity == drawn && drawn > 25 &&
-                  drawn < 35 && undoIs("Draw Velocities", 4) && ed.selected().empty(),
+                  drawn < 35 && undoIs("Draw Velocities", 1) && ed.selected().empty(),
               "with Draw Mode on, a stroke along the lane gives every note of the grid steps it crosses its height: one undo step");
         ed.select({1});
         const juce::Point<float> from2(from1.x, yOf(80)), to2(to1.x, yOf(80));
@@ -6376,11 +6376,11 @@ void clipViewTime(AppCommands &commands, const std::filesystem::path &dir) {
         panel.randomOffset = [&turn](int amount) { return ++turn % 2 == 1 ? amount : -amount; };
         ed.select({1, 2});
         click(panel.randomizeBox());
-        check(note(1).velocity == 120 && note(2).velocity == 80 && note(3).velocity == 100 && undoIs("Randomize Velocities", 2) &&
+        check(note(1).velocity == 120 && note(2).velocity == 80 && note(3).velocity == 100 && undoIs("Randomize Velocities", 1) &&
                   ed.selected() == Ids({1, 2}),
               "Randomize moves each selected note's velocity by up to the amount, 20: one undo step");
         check(panel.typeField(Field::RandomAmount, "5") && panel.randomAmount == 5 && note(1).velocity == 125 && note(2).velocity == 75 &&
-                  undoIs("Randomize Velocities", 2),
+                  undoIs("Randomize Velocities", 1),
               "the amount typed, with Enter, randomizes again by the new amount");
         panel.randomOffset = nullptr;
         ed.select({});
@@ -6396,7 +6396,7 @@ void clipViewTime(AppCommands &commands, const std::filesystem::path &dir) {
         root.frame();
         // The Ramp.
         check(panel.typeField(Field::RampStart, "40") && panel.rampStart == 40 && note(1).velocity == 40 && note(2).velocity == 60 &&
-                  note(3).velocity == 80 && note(4).velocity == 100 && undoIs("Ramp Velocities", 3),
+                  note(3).velocity == 80 && note(4).velocity == 100 && undoIs("Ramp Velocities", 1),
               "the Ramp's start typed as 40: the notes rise evenly from 40 at the first to 100 at the last, in the order they begin");
         {
             const auto box = panel.fieldBox(Field::RampEnd).getCentre().toFloat();
@@ -6405,7 +6405,7 @@ void clipViewTime(AppCommands &commands, const std::filesystem::path &dir) {
             panel.mouseUp(dragAt(panel, box, box.translated(0.f, 160.f)));
         }
         check(panel.rampEnd == 60 && note(1).velocity == 40 && note(4).velocity == 60 && note(2).velocity == 47 && note(3).velocity == 53 &&
-                  undoIs("Ramp Velocities", 3),
+                  undoIs("Ramp Velocities", 1),
               "the Ramp's end dragged down to 60 ramps again: one undo step");
         ed.select({2, 3});
         check(panel.typeField(Field::RampStart, "10") && note(2).velocity == 10 && note(3).velocity == 60 && note(1).velocity == 40 &&
@@ -7030,7 +7030,7 @@ void clipViewClipTime(AppCommands &commands, const std::filesystem::path &dir) {
         bool allEighths = true;
         for (const auto &n : details().notes)
             allEighths = allEighths && n.durationTicks == beat / 2;
-        check(allEighths && submitter.nextUndo()->opCount == 5 && undo() && undo() && note(3).durationTicks == 2 * beat && panel.chooseDuration(2),
+        check(allEighths && submitter.nextUndo()->opCount == 1 && undo() && undo() && note(3).durationTicks == 2 * beat && panel.chooseDuration(2),
               "with no note selected, every note; undone, and the Duration back on Grid");
     }
 
