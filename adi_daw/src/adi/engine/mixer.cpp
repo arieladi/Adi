@@ -76,11 +76,12 @@ const StripLanes* StripNode::lanesFor(const NodeIo& io) const noexcept {
     return lanes_.load(std::memory_order_acquire);
 }
 
-void StripNode::setStatic(double volumeDb, double pan, PanLaw law, bool audible) noexcept {
+void StripNode::setStatic(double volumeDb, double pan, PanLaw law, bool audible, bool unmuted) noexcept {
     volumeDb_.store(static_cast<float>(volumeDb), std::memory_order_relaxed);
     pan_.store(static_cast<float>(pan), std::memory_order_relaxed);
     law_.store(static_cast<int>(law), std::memory_order_relaxed);
-    audible_.store(audible, std::memory_order_relaxed);
+    hearingGates_.store(static_cast<std::uint8_t>((audible ? kAudible : 0) | (unmuted ? kUnmuted : 0)),
+                        std::memory_order_relaxed);
 }
 
 void StripNode::setPanMode(PanMode mode,double left,double right) noexcept {
@@ -134,7 +135,8 @@ StripNode::Gains StripNode::desired(const StripLanes* lanes, std::int32_t frame)
     const int law = law_.load(std::memory_order_relaxed);
     const int mode = panMode_.load(std::memory_order_relaxed);
     double left=panLeft_.load(std::memory_order_relaxed),right=panRight_.load(std::memory_order_relaxed);
-    bool heard = audible_.load(std::memory_order_relaxed);
+    const auto gates = hearingGates_.load(std::memory_order_relaxed);
+    bool unmuted = (gates & kUnmuted) != 0;
     const Transport* transport=transport_.load(std::memory_order_acquire);
     if (lanes != nullptr && transport != nullptr) {
         // A parked playhead is ONE position. sampleAt answers position + offset
@@ -145,8 +147,9 @@ StripNode::Gains StripNode::desired(const StripLanes* lanes, std::int32_t frame)
         if (lanes->pan != nullptr) pan = valueAt(*lanes->pan, at);
         if (lanes->panLeft != nullptr) left = valueAt(*lanes->panLeft, at);
         if (lanes->panRight != nullptr) right = valueAt(*lanes->panRight, at);
-        if (lanes->mute != nullptr && valueAt(*lanes->mute, at) >= 0.5) heard = false;
+        if (lanes->mute != nullptr) unmuted = heldValueAt(*lanes->mute, at, unmuted ? 0.0 : 1.0) < 0.5;
     }
+    const bool heard = (gates & kAudible) != 0 && unmuted;
     vol = std::min(vol, volumeCeiling_.load(std::memory_order_relaxed));
     // Recomputed only when an input moved: a pow and a sin per change, never
     // per sample.
@@ -607,11 +610,13 @@ StripControlImage StripNode::captureControls() const {
     out.config.keepAlive=keepAlive_;
     out.config.delaySamples=delayProject_.load(std::memory_order_relaxed);
     out.config.delayRate=delayRate_.load(std::memory_order_relaxed);
-    out.audible=audible_.load(std::memory_order_relaxed);
+    const auto gates = hearingGates_.load(std::memory_order_relaxed);
+    out.audible = (gates & kAudible) != 0;
+    out.config.unmuted = (gates & kUnmuted) != 0;
     return out;
 }
 void StripNode::applyPublishedControls(const StripControlImage& value) noexcept {
-    setStatic(value.config.volumeDb,value.config.pan,value.config.law,value.audible);
+    setStatic(value.config.volumeDb,value.config.pan,value.config.law,value.audible,value.config.unmuted);
     setPanMode(value.config.panMode,value.config.panLeft,value.config.panRight);
 }
 void MixerControlBatch::captureLanes(StripLaneBindings& captured) const {
@@ -664,6 +669,9 @@ void MixerStrips::sync(const rows::Model& model, const Transport* transport,
     // still follows the actual curve; no routing/PDC edge changes per sample.
     rows::Model hearingModel;
     hearingModel.tracks = model.tracks;
+    // Keep the authored Activator at the strip. Automation can change it,
+    // while the solo and reference-track gates keep their independent say.
+    for (auto& track : hearingModel.tracks) track.muted = false;
     hearingModel.routing = model.routing;
     if (automation) for (auto& route : hearingModel.routing) {
         const auto at = automation->bySend.find(route.id);
@@ -680,7 +688,7 @@ void MixerStrips::sync(const rows::Model& model, const Transport* transport,
     std::map<std::int64_t, const rows::MixerStrip*> row;
     for (const rows::MixerStrip& s : model.strips) row[s.trackId] = &s;
     std::map<std::int64_t, bool> unmuted;
-    for (const rows::Track& t : model.tracks) unmuted[t.id] = !t.muted && t.id!=flags.referenceTrack;
+    for (const rows::Track& t : model.tracks) unmuted[t.id] = !t.muted;
 
     // ADR-0203 d3: a node for every send the plan made, kept per routing row.
     // Back in the plan after time out of it, in no graph and so never
@@ -776,7 +784,7 @@ void MixerStrips::sync(const rows::Model& model, const Transport* transport,
         const auto heard = audible.find(node.trackId);
         strip->configure(config, heard != audible.end() && heard->second, transport);
         if (const auto it = postSendsOf.find(node.trackId); it != postSendsOf.end())
-            for (SendNode* send : it->second) send->setSource(config, transport);
+            for (SendNode* send : it->second) send->setSource(config, transport, node.trackId != flags.referenceTrack);
     }
     // A departed track's strip stays, silent, until the session ends.
     for (auto& [id, strip] : strips_) {
@@ -811,9 +819,7 @@ void MixerStrips::sync(const rows::Model& model, const Transport* transport,
         if (tapOf[r.id] == Tap::PreFx) {
             // Reused send nodes must lose their previous tap's controls.
             // Reference tracks remain excluded from Main and sends.
-            StripConfig pre;
-            pre.unmuted = r.srcId != flags.referenceTrack;
-            send.setSource(pre, transport);
+            send.setSource({}, transport, r.srcId != flags.referenceTrack);
         } else if (tapOf[r.id] == Tap::PostFx) {
             StripConfig pre;
             pre.unmuted = unmuted[r.srcId];
@@ -835,7 +841,7 @@ void MixerStrips::sync(const rows::Model& model, const Transport* transport,
                 pre.lanes = &held->lanes;
                 pre.keepAlive = std::move(held);
             }
-            send.setSource(pre, transport);
+            send.setSource(pre, transport, r.srcId != flags.referenceTrack);
         }
         const auto gate = hears.send.find(r.id);
         send.set(r.gainDb, pan, PanLaw::Live, r.enabled && gate != hears.send.end() && gate->second);

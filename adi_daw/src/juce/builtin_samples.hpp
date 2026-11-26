@@ -4,6 +4,7 @@
 #include "juce/pd_samples.hpp"
 #include <span>
 namespace adi::device {
+inline constexpr char kPresetSampleStateHint[] = "adi.device-preset/embedded-sample";
 inline constexpr std::size_t builtinSampleMaxFrames=8u*1024u*1024u;
 /// Whether a source of this many frames and channels fits a built-in's sample
 /// state: its float backup holds at most builtinSampleMaxFrames values, which
