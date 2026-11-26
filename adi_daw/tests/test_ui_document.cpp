@@ -1672,20 +1672,23 @@ void loopRecord(const std::filesystem::path &dir, bool retimeBeforeLanding = fal
     };
     check(takeLanes() == 3, "SC-27: three separate take lanes");
     {
-        SQLite::Statement takes(db, "SELECT a.src_start_frames, a.src_len_frames, c.length_ticks "
+        SQLite::Statement takes(db, "SELECT a.src_start_frames, a.src_len_frames, c.length_ticks, a.warp_enabled, a.warp_mode, a.warp_markers "
                                     "FROM clips c JOIN audio_clips a ON a.clip_id=c.id "
                                     "WHERE c.track_id=4 AND c.lane_id IS NOT NULL ORDER BY a.src_start_frames");
-        bool allPasses = true;
+        bool allPasses = true, warped = true;
         for (int pass = 0; pass < 3; ++pass) {
             if (!takes.executeStep()) {
                 allPasses = false;
                 break;
             }
+            warped = warped && takes.getColumn(3).getInt() == 1 && takes.getColumn(4).getString() == "beats" &&
+                     !takes.getColumn(5).isNull();
             allPasses = allPasses && takes.getColumn(0).getInt() == pass * loopFrames &&
                         takes.getColumn(1).getInt() == (pass < 2 ? loopFrames : partialFrames) &&
                         (pass == 2 || takes.getColumn(2).getInt64() == loopEnd);
         }
         check(allPasses && !takes.executeStep(), "SC-27: each lane references exactly its source interval");
+        check(allPasses && warped, "SC-248: every pass admits Beats Warp on the frozen 90 BPM render clock");
     }
     if (landed && landed->ok && landed->clips.size() == 1) {
         SQLite::Statement selected(db, "SELECT a.src_start_frames, a.src_len_frames, m.rel_path "
