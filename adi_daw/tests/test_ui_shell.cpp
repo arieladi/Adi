@@ -3143,6 +3143,47 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
         root.frame();
     }
 }
+void bypassedDeviceAppearance(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "bypass-appearance.adi", true, {}, error);
+    check(document != nullptr, "SC-90: a project for the bypassed device");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "bypass-appearance");
+    DevicePanelData active;
+    active.id = 17;
+    active.available = true;
+    active.name = "Effect";
+    auto bypassed = active;
+    bypassed.enabled = false;
+    DevicePanelView view(root.devices, active);
+    view.setLookAndFeel(&look::liveLook());
+    view.setSize(150, 180);
+    const auto paintDevice = [&] {
+        juce::Image image(juce::Image::RGB, view.getWidth(), view.getHeight(), true, juce::SoftwareImageType{});
+        juce::Graphics g(image);
+        view.paintEntireComponent(g, true);
+        return image;
+    };
+    const auto on = paintDevice();
+    view.present(bypassed);
+    const auto off = paintDevice();
+    const juce::Point<int> title{90, 10}, configure = view.configureButton.getBounds().getCentre(), body{100, 100};
+    const auto pixel = [](const juce::Image &image, juce::Point<int> at) {
+        return image.getPixelAt(at.x, at.y);
+    };
+    check(pixel(on, title) != pixel(off, title) && pixel(on, configure) != pixel(off, configure) &&
+              pixel(on, body) != pixel(off, body),
+          "SC-90: bypass changes the title, Configure button and body");
+    check(view.enabled.isEnabled() && !view.enabled.getToggleState(), "SC-90: the activator can still turn the device on");
+    view.present(active);
+    const auto restored = paintDevice();
+    check(pixel(on, title) == pixel(restored, title) && pixel(on, configure) == pixel(restored, configure) &&
+              pixel(on, body) == pixel(restored, body),
+          "SC-90: reactivating restores the appearance of the whole device");
+    view.setLookAndFeel(nullptr);
+}
 // Live's file drop (manual 6.1): an audio file on an audio track's lane makes a clip there, named
 // after the file, on the nearest grid line; on a MIDI track it is refused; below the tracks it
 // makes a new audio track. Each drop is one undo step (#308).
@@ -11221,24 +11262,29 @@ void arrangementClipColour(AppCommands &commands, const std::filesystem::path &d
     root.frame();
     auto &canvas = arrangement.canvas;
     const auto top = laneTop(root, 2);
-    const auto hasColour = [&](std::int64_t palette) {
+    const auto hasColour = [&](juce::Colour expected) {
         juce::Image image(juce::Image::RGB, canvas.getWidth(), canvas.getHeight(), true, juce::SoftwareImageType{});
         juce::Graphics g(image);
         canvas.paintEntireComponent(g, true);
-        const auto expected = look::paletteColour(palette);
         return image.getPixelAt(100, top + 9) == expected && image.getPixelAt(100, top + 35) == expected;
     };
-    check(hasColour(2), "SC-37: a clip with no colour inherits the track colour in its title and body");
+    check(hasColour(look::paletteColour(2)), "SC-37: a clip with no colour inherits the track colour in its title and body");
     geometry.selection.clip = 50;
     root.frame();
     check(root.clipView.chooseTitleItem(100), "SC-37: pick the first clip-view swatch");
     geometry.selection.clip = 0;
     geometry.selection.pickedClips.clear();
     root.frame();
-    check(hasColour(0), "SC-37: the same clip redraws its title and body in the explicit palette colour zero");
+    check(hasColour(look::paletteColour(0)), "SC-37: the same clip redraws its title and body in the explicit palette colour zero");
+    check(root.submitEdit("track.setMute", {{"id", 2}, {"muted", true}}, "Deactivate Track"), "SC-90: deactivate its track");
+    root.frame();
+    check(hasColour(look::mutedClip), "SC-90: a clip on a deactivated track paints its title and body grey");
+    check(root.command(AppCommands::Undo), "SC-90: reactivate the track with Undo");
+    root.frame();
+    check(hasColour(look::paletteColour(0)), "SC-90: reactivating restores the clip's own colour");
     check(root.command(AppCommands::Undo), "SC-37: undo the colour choice");
     root.frame();
-    check(hasColour(2), "SC-37: undo restores the inherited track colour");
+    check(hasColour(look::paletteColour(2)), "SC-37: undo restores the inherited track colour");
 }
 void clipWaveforms(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
@@ -21065,6 +21111,7 @@ int main(int argc, char **argv) {
     trace("audioDrop", [&] { audioDrop(commands, temp.path()); });
     trace("importPrompt", [&] { importPrompt(commands, settings, temp.path()); });
     trace("browserDevices", [&] { browserDevices(commands, temp.path()); });
+    trace("bypassedDeviceAppearance", [&] { bypassedDeviceAppearance(commands, temp.path()); });
     trace("splitAndRangeEdits", [&] { splitAndRangeEdits(commands, settings, temp.path()); });
     trace("deleteArrangementSelection", [&] { deleteArrangementSelection(commands, temp.path()); });
     trace("clipClipboard", [&] { clipClipboard(commands, temp.path()); });

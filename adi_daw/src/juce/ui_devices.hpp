@@ -149,6 +149,7 @@ class DevicePanelView final : public juce::Component, public juce::FileDragAndDr
     void releaseLimiterReduction();
     void resized() override;
     void paint(juce::Graphics &) override;
+    void paintOverChildren(juce::Graphics &) override;
     bool keyPressed(const juce::KeyPress &) override;
     void mouseDown(const juce::MouseEvent &) override;
     void mouseDoubleClick(const juce::MouseEvent &) override;

@@ -1389,7 +1389,10 @@ void DevicePanelView::present(const DevicePanelData &d) {
     if (!presentParameterPages(d)) return;
     presentFunctionSelection(d);
     updateEqPreview(d);
+    const bool bypassChanged = data != nullptr && data->enabled != d.enabled;
     data = &d;
+    if (bypassChanged)
+        repaint();
     auto hint = juce::String("Double-click to fold; right-click for device commands.\n") +
                       (d.available ? "Latency: " + juce::String(d.latency) + " samples."
                                    : juce::String("This device is unavailable."));
@@ -1703,6 +1706,11 @@ void DevicePanelView::paint(juce::Graphics &g) {
         g.drawFittedText("Choose parameters with Configure", 8, kTitleHeight + 6, getWidth() - 16,
                          36, juce::Justification::centred, 2);
     }
+}
+void DevicePanelView::paintOverChildren(juce::Graphics &g) {
+    // Wash the whole device, including its controls, while keeping them editable.
+    if (data != nullptr && !data->enabled)
+        g.fillAll(look::frame.withAlpha(0.55f));
 }
 bool DevicePanelView::canHotSwap() const {
     if (!strip.hotSwap || mixCard_ || !data || !data->available || data->uid.empty() || nativeFunction())

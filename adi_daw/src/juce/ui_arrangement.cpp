@@ -126,7 +126,8 @@ void ArrangementOverview::paint(juce::Graphics &g) {
         g.fillRect(0.f, y, static_cast<float>(w), line);
         const auto trackColour = view.colourFor(r.position);
         for (const auto &c : r.track->clips) {
-            g.setColour(c->color ? look::paletteColour(*c->color) : trackColour);
+            const auto colour = c->color ? look::paletteColour(*c->color) : trackColour;
+            g.setColour(r.track->muted || c->muted ? look::mutedClip : colour);
             g.fillRect(static_cast<float>(static_cast<double>(c->posTicks) / total * w), y,
                        std::max(1.f, static_cast<float>(static_cast<double>(c->lengthTicks) / total * w)),
                        line);
@@ -2559,9 +2560,9 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
             const bool picked = geo.clipSelected(c->id);
             // A clip as Live 12 draws it (the director's reference pictures, 18 November): the whole
             // clip in its colour, solid, title strip and body alike, and what it holds drawn dark on
-            // it. A deactivated clip is grey, as Live's.
-            const auto clipColour = c->muted ? static_cast<juce::Colour>(look::mutedClip)
-                                            : c->color ? look::paletteColour(*c->color) : colour;
+            // it. A deactivated clip or a clip on a deactivated track is grey.
+            const auto ownColour = c->color ? look::paletteColour(*c->color) : colour;
+            const auto clipColour = c->muted || t->muted ? look::mutedClip : ownColour;
             g.setColour(picked ? clipColour.brighter(0.25f) : clipColour);
             g.fillRect(left, static_cast<float>(y + 1), std::max(1.f, right - left), static_cast<float>(h - 4));
             g.setColour(clipColour);
