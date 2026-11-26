@@ -222,6 +222,9 @@ void thirdPartyPlacement() {
     const auto midi = plugin("test.midi","MIDI effect","midi_effect");
     const auto instrument = plugin("test.instrument","Existing synth","instrument");
     const auto replacement = plugin("test.replacement","Replacement synth","instrument");
+    check(!preparePluginInsert(store, instrument, 1).ok && !preparePluginInsert(store, midi, 1).ok,
+          "the insertion entry point refuses instruments and MIDI effects on audio tracks");
+    db.exec("UPDATE tracks SET kind='midi' WHERE id=1");
     const auto add = [&](const rows::PluginRef& ref,std::optional<std::int64_t> before = {},
                          const PluginInsertOptions& options = {}) {
         const auto prepared = preparePluginInsert(store,ref,1,before,options);
@@ -751,6 +754,12 @@ void builtinInstrumentPlacement() {
           "a second instrument replaces the first in its place instead of stacking after it");
     check(History(store).undo().ok && at(oneShot.deviceId)==0 && at(sampler.deviceId)==-1 && at(reverb.deviceId)==1,
           "one Undo brings the replaced instrument back where it was");
+    const auto utility = prepareBuiltinInsert(store, "org.adidaw.builtin.utility", 2, oneShot.deviceId);
+    check(utility.ok && commitBuiltinInsert(store, utility).ok && at(oneShot.deviceId) == 0 &&
+              at(utility.deviceId) == 1 && at(reverb.deviceId) == 2,
+          "SC-282: a built-in effect loaded at the selected instrument is placed after it");
+    check(History(store).undo().ok && at(oneShot.deviceId) == 0 && at(reverb.deviceId) == 1 && at(utility.deviceId) == -1,
+          "SC-282: one Undo restores the original effect order");
 #endif
 }
 int main(){try{catalogueAndHost();paramsAndState();insertionAndHistory();thirdPartyPlacement();playingSession();instrumentSession();duplicatePrepareKeepsBuiltinState();builtinInstrumentPlacement();}catch(const std::exception& exception){counting=false;check(false,exception.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

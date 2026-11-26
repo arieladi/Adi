@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/device_copy.hpp"
+#include "adi/builtin_catalog.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/op_transaction_resources_detail.hpp"
 #include "adi/row_capture.hpp"
@@ -28,22 +29,28 @@ DeviceRemoteReference remoteReference(SQLite::Database& db,std::int64_t id) {
     if(!row.executeStep())throw std::runtime_error("copied remote host reference is missing");
     return {id,row.getColumn(1).getInt64(),row.getColumn(0).getString(),row.getColumn(2).getString()};
 }
-void verifyReferences(Store& store,const DeviceCopy& copy) {
+detail::DeviceRole copiedDeviceRole(Store& store,const DeviceCopy& copy) {
+    std::string subtype;
     const auto& reference=copy.insert.at("ref");
     if(!reference.is_null()) {
         if(!copy.reference || reference!=copy.reference->id)throw std::runtime_error("copied plug-in identity is not captured");
-        SQLite::Statement row(store.db(),"SELECT format,uid,shell_id FROM plugin_refs WHERE id=?");row.bind(1,copy.reference->id);
+        SQLite::Statement row(store.db(),"SELECT format,uid,shell_id,subtype FROM plugin_refs WHERE id=?");row.bind(1,copy.reference->id);
         if(!row.executeStep())throw std::runtime_error("copied plug-in reference is missing");
         std::optional<std::int64_t> shell;if(!row.getColumn(2).isNull())shell=row.getColumn(2).getInt64();
         if(row.getColumn(0).getString()!=copy.reference->format || row.getColumn(1).getString()!=copy.reference->uid || shell!=copy.reference->shellId)
             throw std::runtime_error("plug-in reference identity changed after copy");
+        subtype = row.getColumn(3).getString();
     }
+    if (subtype.empty())
+        if (const auto rack = copy.insert.find("rackKind"); rack != copy.insert.end() && rack->is_string())
+            subtype = rack->get<std::string>();
     if(copy.insert.contains("remoteHost") && !copy.insert.at("remoteHost").is_null()) {
         if(!copy.remoteHost || copy.insert.at("remoteHost")!=copy.remoteHost->id)
             throw std::runtime_error("copied remote host identity is not captured");
         if(remoteReference(store.db(),copy.remoteHost->id)!=*copy.remoteHost)
             throw std::runtime_error("remote host identity changed after copy");
     }
+    return detail::deviceRole(subtype);
 }
 
 }
@@ -94,7 +101,9 @@ PreparedDevicePaste preparePaste(Store &store, const DeviceCopy &copy, std::int6
         Read read(store.db());result.sourceFile=identity(store);
         if(copy.sourceFile!=result.sourceFile)throw std::runtime_error("device clipboard belongs to a different project");
         result.options.expectHead.emplace(OpJournal(store).headSeq());
-        verifyReferences(store,copy);
+        const auto role = copiedDeviceRole(store, copy);
+        const auto destinationTrack = track ? *track : detail::deviceChainOwner(store.db(), chain);
+        detail::requireDeviceInsertTrack(store.db(), destinationTrack, role, copy.insert.value("name", std::string("Device")));
         if(newId==copy.insert.at("id").get<std::int64_t>())throw std::runtime_error("device copy needs a new identity");
         SQLite::Statement occupied(store.db(),"SELECT 1 FROM devices WHERE id=?");occupied.bind(1,newId);
         if(occupied.executeStep())throw std::runtime_error("new device id is occupied");
@@ -142,30 +151,28 @@ PreparedDevicePaste preparePaste(Store &store, const DeviceCopy &copy, std::int6
                     {"plugin_refs",
                      {{"id", copy.reference->id}},
                      detail::captureRow(store.db(), "plugin_refs", "id", copy.reference->id)});
-        } else {
-            SQLite::Statement target(store.db(), "SELECT 1 FROM device_chains WHERE id=?");
-            target.bind(1, chain);
-            if (!target.executeStep())
-                throw std::runtime_error("destination chain is missing");
         }
         result.chainId = chain;
-        std::vector<std::pair<std::int64_t,std::int64_t>> order;
-        SQLite::Statement existing(store.db(),"SELECT id,ord FROM devices WHERE chain_id=? ORDER BY ord,id");existing.bind(1,chain);
-        while(existing.executeStep())order.emplace_back(existing.getColumn(0).getInt64(),existing.getColumn(1).getInt64());
+        const auto order = detail::deviceChainOrder(store.db(), chain);
+        if (role == detail::DeviceRole::Instrument && std::any_of(order.begin(), order.end(), [](const auto& device) {
+                return device.role == detail::DeviceRole::Instrument;
+            }))
+            throw std::runtime_error("The destination chain already has an instrument.");
         auto position=order.size();
         if(before) {
-            const auto found=std::find_if(order.begin(),order.end(),[&](const auto& item){return item.first==*before;});
+            const auto found=std::find_if(order.begin(),order.end(),[&](const auto& item){return item.id==*before;});
             if(found==order.end())throw std::runtime_error("selected device is not in the destination chain");
             position=static_cast<std::size_t>(found-order.begin());
         }
         if(!std::in_range<std::int64_t>(order.size()))throw std::runtime_error("device chain order is exhausted");
+        position = detail::deviceInsertPosition(order, role, position);
         // Canonical integer order also handles legacy ties and ord=INT64_MAX;
         // every original value is restored by the moves' captured inverses.
         for(std::size_t i=0;i<order.size();++i) {
             const auto index=static_cast<std::int64_t>(i+(i>=position?1u:0u));
-            if(order[i].second==index)continue;
-            OpRequest move;move.opType="device.move";move.payload={{"id",order[i].first},{"chain",chain},{"ord",index}};
-            move.label="Paste Device";move.targetKind="device";move.targetId=order[i].first;result.requests.push_back(std::move(move));
+            if(order[i].ord==index)continue;
+            OpRequest move;move.opType="device.move";move.payload={{"id",order[i].id},{"chain",chain},{"ord",index}};
+            move.label="Paste Device";move.targetKind="device";move.targetId=order[i].id;result.requests.push_back(std::move(move));
         }
         OpRequest insert;insert.opType="device.insert";insert.payload=copy.insert;
         insert.payload["id"]=newId;insert.payload["chain"]=chain;insert.payload["ord"]=static_cast<std::int64_t>(position);

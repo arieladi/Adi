@@ -84,6 +84,46 @@ void pasteAndUndo() {
     check(append.ok && commitDevicePaste(*f.store,append).ok &&
           db.execAndGet("SELECT id FROM devices WHERE chain_id=20 ORDER BY ord DESC,id DESC LIMIT 1").getInt64()==71,"null selection appends to the chosen chain");
 }
+void deviceRolePlacement() {
+    Fixture fixture;
+    auto &store = *fixture.store;
+    auto &db = store.db();
+    db.exec("UPDATE tracks SET kind='midi';"
+            "INSERT INTO tracks(id,kind,name) VALUES(3,'audio','Audio'),(4,'midi','MIDI');"
+            "INSERT INTO device_chains(id,track_id,name) VALUES(21,3,'Audio chain');"
+            "INSERT INTO plugin_refs(id,format,uid,subtype) VALUES"
+            "(31,'clap','test.instrument','instrument'),(32,'clap','test.midi','midi_effect');"
+            "INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name) VALUES"
+            "(41,10,0,31,'Instrument'),(42,10,-1,32,'MIDI effect');"
+            "UPDATE devices SET plugin_ref_id=32 WHERE id=51;"
+            "UPDATE devices SET plugin_ref_id=31 WHERE id=52;");
+    const auto ids = [&] {
+        return db.execAndGet("SELECT group_concat(id,',') FROM "
+                             "(SELECT id FROM devices WHERE chain_id=20 ORDER BY ord,id)").getString();
+    };
+    const auto audioEffect = readDeviceCopy(store, 40);
+    const auto midiEffect = readDeviceCopy(store, 42);
+    const auto instrument = readDeviceCopy(store, 41);
+    const auto audioPaste = prepareDevicePaste(store, audioEffect, 70, 20, 52);
+    check(audioPaste.ok && commitDevicePaste(store, audioPaste).ok && ids() == "51,52,70,53",
+          "SC-284: pasting an audio effect at an instrument lands after it");
+    const auto midiPaste = prepareDevicePaste(store, midiEffect, 71, 20, 53);
+    check(midiPaste.ok && commitDevicePaste(store, midiPaste).ok && ids() == "51,71,52,70,53",
+          "SC-284: pasting a MIDI effect at an audio effect lands before the instrument");
+    const auto head = OpJournal(store).headSeq();
+    const auto duplicate = prepareDevicePaste(store, readDeviceCopy(store, 52), 72, 20, 70);
+    check(!duplicate.ok && duplicate.error.find("already has an instrument") != std::string::npos &&
+              !prepareDevicePaste(store, instrument, 72, 21).ok &&
+              !prepareDevicePasteForTrack(store, midiEffect, 72, 3).ok && OpJournal(store).headSeq() == head,
+          "SC-284: an instrument cannot be duplicated in its chain or pasted onto audio; MIDI effects also need MIDI tracks");
+    const auto synthPaste = prepareDevicePasteForTrack(store, instrument, 72, 4);
+    check(synthPaste.ok && commitDevicePaste(store, synthPaste).ok &&
+              db.execAndGet("SELECT track_id FROM device_chains JOIN devices ON devices.chain_id=device_chains.id "
+                           "WHERE devices.id=72").getInt64() == 4 &&
+              History(store).undo().ok && OpJournal(store).headSeq() == head &&
+              db.execAndGet("SELECT count(*) FROM device_chains WHERE track_id=4").getInt() == 0,
+          "SC-284: a copied instrument can still be pasted onto an empty MIDI track and undone in one step");
+}
 void refusals() {
     Fixture f;auto& db=f.store->db();const auto copy=readDeviceCopy(*f.store,40);
     check(!prepareDevicePaste(*f.store,copy,40,20).ok && !prepareDevicePaste(*f.store,copy,51,20).ok,"paste refuses source identity and occupied IDs");
@@ -382,6 +422,7 @@ int main() {
     try {
         reads();
         pasteAndUndo();
+        deviceRolePlacement();
         refusals();
         reusedReferenceIds();
         pasteToEmptyTrack();
