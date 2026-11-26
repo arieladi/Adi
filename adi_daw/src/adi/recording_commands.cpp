@@ -73,6 +73,23 @@ std::int64_t tickAt(const engine::TempoMap& tempo,std::int64_t sample,std::uint3
         throw std::runtime_error("recording boundary cannot preserve its sample on this musical clock");
     return tick;
 }
+struct RecordedPiece {
+    std::int64_t id=0,begin=0,end=0;
+    std::uint64_t source=0;
+    std::string name;
+};
+Payload recordedImage(Store& store,const engine::TempoMap& tempo,const RecordedPiece& piece,
+    std::int64_t track,std::int64_t media,std::uint32_t rate,std::optional<std::int64_t> lane={}) {
+    const auto first=tickAt(tempo,piece.begin,rate),last=tickAt(tempo,piece.end,rate);
+    if(last<=first)throw std::runtime_error("recorded pass has no representable musical extent");
+    auto row=edit::defaultRow(store.db(),"clips",{{"id",piece.id},{"track_id",track},{"kind","audio"},
+        {"name",piece.name},{"time_base",0},{"pos_ticks",first},{"length_ticks",last-first}});
+    row["lane_id"]=lane?Payload(*lane):Payload{};
+    auto audio=edit::defaultRow(store.db(),"audio_clips",{{"clip_id",piece.id},{"media_id",media},
+        {"src_start_frames",static_cast<std::int64_t>(piece.source)},{"src_len_frames",piece.end-piece.begin}});
+    return {{"id",piece.id},{"row",std::move(row)},
+        {"children",{{"audio_clips",Payload::array({std::move(audio)})}}},{"alias_links",Payload::array()}};
+}
 }
 engine::AudioRecordingResult captureMemory(Store& store,const engine::AudioMemorySnapshot& memory,
     std::int64_t track,std::int64_t timelineStartSample,const fs::path& workFolder) {
@@ -169,14 +186,32 @@ RecordingEdit prepareCommit(Store& store,const engine::AudioRecordingResult& rec
         const auto last=tickAt(tempo,start+static_cast<std::int64_t>(recorded.frames),recorded.sampleRate);
         if(last<=first)throw std::runtime_error("recording has no representable musical extent");
         auto sources=RecordingEdit::prepareSources(store,recorded,ids,result);
+        // The take replaces what it covers in each target's main lane (Live 12 manual 19.2), as each pass of
+        // a loop take does (prepareLoopCommit): one placement clears the interval and lands the clips, so the
+        // material under the take is trimmed, split or removed in the same Undo step, never left playing.
+        clip_edit::CopyIds allocated(store.db());
+        std::vector<std::int64_t> trackIds;
+        edit_plan::detail::PlacementBatch batch;
         for(std::size_t index=0;index<ids.size();++index) {
             const auto& target=recorded.tracks[index];const auto& wanted=ids[index];
             auto& source=sources[index];
             if(source.mediaEdit)result.requests.push_back(std::move(*source.mediaEdit));
-            OpRequest clip;clip.opType="clip.create";clip.payload={{"id",wanted.clip},{"track",target.trackId},{"kind","audio"},{"name",wanted.name.empty()?"Recording":wanted.name},{"pos",first},{"length",last-first}};
-            clip.label="Record Audio";clip.targetKind="clip";clip.targetId=wanted.clip;result.requests.push_back(std::move(clip));
-            OpRequest attach;attach.opType="clip.attachAudio";attach.payload={{"id",wanted.clip},{"media",source.mediaId},{"frames",static_cast<std::int64_t>(recorded.frames)}};
-            attach.label="Record Audio";attach.targetKind="clip";attach.targetId=wanted.clip;result.requests.push_back(std::move(attach));
+            allocated.reserve("clips",wanted.clip);
+            trackIds.push_back(target.trackId);
+            const RecordedPiece take{wanted.clip,start,start+static_cast<std::int64_t>(recorded.frames),0,
+                                     wanted.name.empty()?std::string("Recording"):wanted.name};
+            batch.incoming.push_back(recordedImage(store,tempo,take,target.trackId,source.mediaId,recorded.sampleRate));
+            batch.clear.push_back({{target.trackId,std::nullopt},{first,last}});
+        }
+        auto scope=edit_plan::materialScope(trackIds,edit_plan::PlacementClock::Ticks,{first,last});
+        scope.domains=edit_plan::Domains::Clips;
+        edit_plan::Options placement{static_cast<double>(recorded.sampleRate),{}};
+        placement.policy.automationFollowsClips=false; // Audio recording does not rewrite authored automation.
+        auto prepared=edit_plan::detail::prepareCaptured(store,scope,std::move(batch),placement,allocated,"Record Audio");
+        if(!prepared.ok)throw std::runtime_error(prepared.error);
+        for(auto& request:prepared.requests) {
+            request.label="Record Audio";
+            result.requests.push_back(std::move(request));
         }
         result.ok=true;
     }catch(const std::exception& exception){result.error=exception.what();}
@@ -226,23 +261,6 @@ std::optional<std::int64_t> takeReusableLane(std::vector<ReusableLane>& lanes,
         lane.used=true;return lane.id;
     }
     return {};
-}
-struct RecordedPiece {
-    std::int64_t id=0,begin=0,end=0;
-    std::uint64_t source=0;
-    std::string name;
-};
-Payload recordedImage(Store& store,const engine::TempoMap& tempo,const RecordedPiece& piece,
-    std::int64_t track,std::int64_t media,std::uint32_t rate,std::optional<std::int64_t> lane={}) {
-    const auto first=tickAt(tempo,piece.begin,rate),last=tickAt(tempo,piece.end,rate);
-    if(last<=first)throw std::runtime_error("recorded pass has no representable musical extent");
-    auto row=edit::defaultRow(store.db(),"clips",{{"id",piece.id},{"track_id",track},{"kind","audio"},
-        {"name",piece.name},{"time_base",0},{"pos_ticks",first},{"length_ticks",last-first}});
-    row["lane_id"]=lane?Payload(*lane):Payload{};
-    auto audio=edit::defaultRow(store.db(),"audio_clips",{{"clip_id",piece.id},{"media_id",media},
-        {"src_start_frames",static_cast<std::int64_t>(piece.source)},{"src_len_frames",piece.end-piece.begin}});
-    return {{"id",piece.id},{"row",std::move(row)},
-        {"children",{{"audio_clips",Payload::array({std::move(audio)})}}},{"alias_links",Payload::array()}};
 }
 // Both packets are complete changes from the same unchanged read snapshot.
 // Derive a sequential native splice, without applying anything while preparing.

@@ -14,6 +14,7 @@
 #include "adi/settings/bundle.hpp"
 #include "adi/settings/catalogue.hpp"
 #include "adi/settings/channel_config.hpp"
+#include "adi/settings/device_grant.hpp"
 #include "adi/settings/registry.hpp"
 #include "adi/settings/store.hpp"
 
@@ -1193,6 +1194,31 @@ void testWindowZoom() {
     check(again.get("window.zoom").size() == 3, "three rows in the table");
 }
 
+void testDeviceGrant() {
+    section("a device's grant: kept when the setting offers it, never an error when not (ADR-0145 d5)");
+    adi::test::TempDirectory temp("settings", "grant");
+    AppSettings s(appdata::App::Daw, temp.path() / "settings.json");
+    std::string why;
+    check(s.set("audio.bufferSize", 512, kUser, why) && s.set("audio.sampleRate", 48000, kUser, why),
+          "the request: 512 samples at 48 kHz");
+    // WASAPI shared mode grants its period, DirectSound its own size: neither is offered.
+    for (const int granted : {480, 2560}) {
+        why.clear();
+        const bool kept = keepGrant(s, {"WASAPI", "", "Speakers", 48000, granted}, kUser, why);
+        check(kept && why.empty(), std::to_string(granted) + " granted against 512 is not an error: " + why);
+        check(s.get("audio.bufferSize") == 512, "and the request stays 512 after " + std::to_string(granted));
+        check(s.get("audio.outputDevice") == "Speakers" && s.get("audio.driverType") == "WASAPI",
+              "the device and driver are still kept beside it");
+    }
+    why.clear();
+    const bool rate = keepGrant(s, {"WASAPI", "", "Speakers", 32000, 480}, kUser, why);
+    check(rate && why.empty() && s.get("audio.sampleRate") == 48000,
+          "a rate the ladder does not offer is the same: the request stays: " + why);
+    const bool offered = keepGrant(s, {"ASIO", "", "Interface", 96000, 256}, kUser, why);
+    check(offered && s.get("audio.bufferSize") == 256 && s.get("audio.sampleRate") == 96000,
+          "an offered grant becomes the setting (the Audio page's own change): " + why);
+}
+
 void testChannelConfig() {
     section("the channel configuration: one record per audio device, Live's Input and Output Config (N20)");
     const Setting* c = find("audio.channelConfig");
@@ -1376,6 +1402,7 @@ int runAll() {
     testChangeLog();
     testWindowZoom();
     testChannelConfig();
+    testDeviceGrant();
     testAgentWhitelist();
     testPartialPreset();
     testBundles();

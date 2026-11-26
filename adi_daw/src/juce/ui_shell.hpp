@@ -167,7 +167,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         CueSwitches,       // ... or cue, sending the track to Cue Out
         HelpManual,        // the Help menu's manual (WIN-09)
         KeyboardReference, // the Help menu's keyboard reference, written from the keys in force (WIN-09)
-        LastId = KeyboardReference
+        AutomationMode,    // the View menu's Automation Mode, A (Live 12 manual 25.2, 41.7)
+        LastId = AutomationMode
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -703,6 +704,10 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
         std::int64_t clip = 0, track = 0, position = 0;
     };
     bool placeClips(const std::vector<ClipPlace> &, const char *label);
+    // Copies of clips, each to a track and a position (a Ctrl+drag; Option on the Mac): the originals
+    // stay, each copy clears what it lands on (`clip_edit::prepareDuplicates`), one undo step named
+    // `label`. The copies' ids, in the order given; none when refused, which is said.
+    std::vector<std::int64_t> copyClips(const std::vector<ClipPlace> &, const char *label);
     // Live's Automation Mode (AU-01; manual 25.2): each track's Volume envelope drawn on its lane, and its
     // breakpoints edited there, each edit one undo step. Off in a new window, as Live's.
     bool automationMode() const noexcept { return automationMode_; }
@@ -929,9 +934,19 @@ std::optional<float> nextZoom(float now, bool in) noexcept;
 // monitors (JUCE exposes no stable EDID identifier); the one nearest a point on the screen.
 std::string displayId(const juce::Displays::Display &);
 std::string displayAt(juce::Point<int> screen);
+// A launch's arguments, unquoted, in order. What a launcher puts around them is no argument: a
+// trailing space (PowerShell's Start-Process leaves one) gave an empty token, which opened the working
+// folder as the project (walk-B B11).
+juce::StringArray launchArguments(const juce::String &commandLine);
 // WTS-01: a test launch (--smoke-output, --control-test): an instance of its own, never the running
 // copy's, which keeps its window out of the foreground and reports to stderr.
 bool isTestLaunch(const juce::String &commandLine);
+// The default projects folder (File & Folder's files.projectsFolder; unset, <config>/projects), made
+// when missing.
+juce::File projectsFolder(const settings::AppSettings &settings);
+// Live's New Live Set (manual 5.4.1): a new project is untitled and asks nothing; Save As names and
+// places it. The next free Untitled.adi, Untitled(2).adi, ... in the projects folder, for launch and New.
+juce::File nextUntitledProject(const settings::AppSettings &settings);
 // Holds a root at its window's interface zoom: the root lays out in logical
 // units and the transform scales it, so nothing below knows the zoom exists.
 class ZoomHost final : public juce::Component {

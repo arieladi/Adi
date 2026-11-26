@@ -726,7 +726,10 @@ class ClipViewPanel final : public juce::Component {
     std::string problem_;
     const engine::ClipNode *node_ = nullptr;
     // The edited clip's track's name, from this frame's snapshot: what an unnamed clip's title reads.
-    std::string_view trackName_;
+    std::string trackName_; // as the header shows it, so owned; made again only when its source changes
+    std::string trackStored_; // the stored name and the number `trackName_` was made from
+    std::size_t trackNumber_ = 0;
+    bool trackNamed_ = false;
     juce::Colour colour_;
     textproj::Meter meter_;
     std::vector<textproj::Meter> clipMeters_;

@@ -125,3 +125,4 @@
 29052 Cue Switches: 
 29053 Live 12 Manual: 
 29054 Keyboard Shortcuts: 
+29055 Automation Mode: A

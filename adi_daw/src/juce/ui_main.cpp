@@ -2,6 +2,7 @@
 #include "adi/appdata.hpp"
 #include "adi/render/queue.hpp"
 #include "adi/render/host_dispatch.hpp"
+#include "adi/settings/device_grant.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include "adi/ui/plugin_scan.hpp"
 #include "adi/ui/project_document.hpp"
@@ -92,10 +93,10 @@ class AdiApplication final : public juce::JUCEApplication,
     // line to the running copy; an ordinary launch hands a file to the copy already running.
     bool moreThanOneInstanceAllowed() override { return isTestLaunch(getCommandLineParameters()); }
     void initialise(const juce::String &commandLine) override {
-        const auto args = juce::StringArray::fromTokens(commandLine, true);
+        const auto args = launchArguments(commandLine);
         juce::File project;
         for (int i = 0; i < args.size(); ++i) {
-            const auto a = args[i].unquoted();
+            const auto &a = args[i];
             if (a == "--no-audio")
                 noAudio_ = true;
             else if (a == "--smoke-output" && i + 1 < args.size())
@@ -149,7 +150,7 @@ class AdiApplication final : public juce::JUCEApplication,
         if (project == juce::File{}) {
             // ADI has no unsaved state: every op is committed to a file, so a new
             // project is made in the default projects folder (File & Folder).
-            project = projectsFolder().getNonexistentChildFile("Untitled", ".adi");
+            project = nextUntitledProject(*settings_);
             if (!install(project, true)) {
                 setApplicationReturnValue(1);
                 quit();
@@ -598,9 +599,13 @@ class AdiApplication final : public juce::JUCEApplication,
         // A test launch runs on its own (WTS-01); should one reach here, it opens nothing.
         if (isTestLaunch(commandLine))
             return;
-        auto file = juce::File(commandLine.unquoted());
-        if (file.existsAsFile())
-            openSettled(file, false);
+        for (const auto &argument : launchArguments(commandLine))
+            if (!argument.startsWithChar('-')) {
+                const auto file = juce::File::getCurrentWorkingDirectory().getChildFile(argument);
+                if (file.existsAsFile())
+                    openSettled(file, false);
+                return;
+            }
     }
 
   private:
@@ -623,17 +628,6 @@ class AdiApplication final : public juce::JUCEApplication,
         manager_.closeAudioDevice();
         bridge_.reset();
         live_.reset();
-    }
-    juce::File projectsFolder() const {
-        const auto chosen = settings_->get("files.projectsFolder");
-        auto directory =
-            chosen.is_string() && !chosen.get<std::string>().empty()
-                ? juce::File(juce::String::fromUTF8(chosen.get<std::string>().c_str()))
-                : juce::File(juce::String::fromUTF8(reinterpret_cast<const char *>(
-                                 settings_->file().parent_path().u8string().c_str())))
-                      .getChildFile("projects");
-        directory.createDirectory();
-        return directory;
     }
     bool install(const juce::File &file, bool create) {
         std::string error;
@@ -1092,11 +1086,9 @@ class AdiApplication final : public juce::JUCEApplication,
             report("Requested audio driver is unavailable: " + requested);
             return;
         }
-        auto error = manager_.initialise(0, 2, nullptr, true, {}, &setup);
-        // Then the channels each device's record keeps in use: Live's 1, 2 and 1/2 in and out
-        // where none is kept (N20; Live 12 manual 17.2).
-        if (error.isEmpty())
-            error = useChannelConfig(manager_, *settings_);
+        // The devices named, an empty one the system's, then the channels each device's record keeps
+        // in use: Live's 1, 2 and 1/2 in and out where none is kept (N20; Live 12 manual 17.2).
+        const auto error = openAudioDevice(manager_, setup, *settings_);
         if (error.isNotEmpty()) {
             report(error.toStdString());
             return;
@@ -1122,8 +1114,10 @@ class AdiApplication final : public juce::JUCEApplication,
             root_->mixer.resolveMeters();
             root_->mixerView.resolveMeters();
         }
-        if (bridge_->mismatchReport().isNotEmpty())
-            report(bridge_->mismatchReport().toStdString());
+        // Another size than requested is the driver's grant, not an error (ADR-0049 d3, ADR-0145 d5):
+        // noted in the Status Bar, shown on Settings > Audio.
+        if (root_ && bridge_->mismatchReport().isNotEmpty())
+            root_->say("Audio buffer: " + bridge_->mismatchReport().toStdString());
     }
     // Take Snapshot: the name prompt is pre-filled with the project's name and
     // the time (ADR-0203 d13); the snapshot is history metadata, not an edit.
@@ -1363,23 +1357,21 @@ class AdiApplication final : public juce::JUCEApplication,
                 settingsWindow_->toFront(true);
             return true;
         }
+        // Live's New Live Set (manual 5.4.1): the next untitled project opens at once, as at launch, with
+        // no chooser; Save As names and places it (walk-A A3).
         if (id != AppCommands::NewProject && id != AppCommands::OpenProject)
             return false;
         if (chooser_)
             return false;
-        const bool create = id == AppCommands::NewProject;
-        chooser_ = std::make_unique<juce::FileChooser>(
-            create ? "New ADI project" : "Open ADI project", juce::File{}, "*.adi");
-        int flags =
-            juce::FileBrowserComponent::canSelectFiles |
-            (create ? juce::FileBrowserComponent::saveMode : juce::FileBrowserComponent::openMode);
-        chooser_->launchAsync(flags, [this, create](const juce::FileChooser &chooser) {
-            auto file = chooser.getResult();
-            if (file != juce::File{}) {
-                if (create)
-                    file = withAdiExtension(file);
-                openSettled(file, create);
-            }
+        if (id == AppCommands::NewProject) {
+            openSettled(nextUntitledProject(*settings_), true);
+            return true;
+        }
+        chooser_ = std::make_unique<juce::FileChooser>("Open ADI project", juce::File{}, "*.adi");
+        const int flags = juce::FileBrowserComponent::canSelectFiles | juce::FileBrowserComponent::openMode;
+        chooser_->launchAsync(flags, [this](const juce::FileChooser &chooser) {
+            if (const auto file = chooser.getResult(); file != juce::File{})
+                openSettled(file, false);
             // Do not destroy the chooser while its completion callback is on the stack.
             juce::MessageManager::callAsync([this] {
                 if (juce::JUCEApplicationBase::getInstance() == this)
@@ -1403,19 +1395,17 @@ class AdiApplication final : public juce::JUCEApplication,
         const auto setup = manager_.getAudioDeviceSetup();
         if (!manager_.getCurrentAudioDevice())
             return;
-        std::string why;
-        auto set = [&](const char *key, const settings::Value &value) {
-            if (!settings_->set(key, value, {}, why))
-                report(why);
-        };
-        set("audio.inputDevice", setup.inputDeviceName.toStdString());
-        set("audio.outputDevice", setup.outputDeviceName.toStdString());
-        set("audio.sampleRate", static_cast<int>(setup.sampleRate));
-        set("audio.bufferSize", setup.bufferSize);
+        // A grant the setting does not offer (WASAPI's 480) keeps the request; the page shows the grant.
         auto type = manager_.getCurrentAudioDeviceType();
         if (type.startsWith("Windows Audio"))
             type = "WASAPI";
-        set("audio.driverType", type.toStdString());
+        std::string why;
+        if (!settings::keepGrant(*settings_,
+                                 {type.toStdString(), setup.inputDeviceName.toStdString(),
+                                  setup.outputDeviceName.toStdString(), static_cast<int>(setup.sampleRate),
+                                  setup.bufferSize},
+                                 {}, why))
+            report(why);
         if (!settings_->save(why))
             report(why);
         if (settingsWindow_)
