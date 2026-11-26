@@ -6,6 +6,7 @@
 #include "../src/juce/ui_floating.hpp"
 #include "../src/juce/ui_settings.hpp"
 #include "../src/juce/ui_shell.hpp"
+#include "../src/juce/window_release.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/automation_lanes.hpp"
 #include "adi/cue_settings.hpp"
@@ -15229,6 +15230,41 @@ void firstRunAudioInput(const std::filesystem::path &dir) {
           ("a default input that will not open leaves the output open, without an error: " + why.toStdString())
               .c_str());
 }
+// Walk-A A27: New, Open and Quit destroy the main window, and on Windows that can run the message loop
+// (UiaDisconnectAllProviders waits in a COM modal loop with a UI Automation client attached). The
+// application's 20 ms timer then reads its root pointer, which must be null by then: it read the
+// destroyed root and crashed (an access violation in AdiRootComponent::setRecordStates).
+void windowTeardownRunsTimers() {
+    struct Root {
+        int recordStates = 1;
+    };
+    struct Window {
+        std::unique_ptr<Root> content = std::make_unique<Root>();
+        ~Window() {
+            content.reset(); // a window's content goes first (ResizableWindow::clearContentComponent)
+            // ...then the teardown waits in a loop that dispatches the due timers for a while.
+            for (int i = 0; i < 10; ++i) {
+                juce::Timer::callPendingTimersSynchronously();
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+        }
+    };
+    struct Application final : juce::Timer {
+        std::unique_ptr<Window> window = std::make_unique<Window>();
+        Root *root = window->content.get();
+        int ticks = 0, rootReads = 0;
+        void timerCallback() override {
+            ++ticks;
+            if (root != nullptr) // the application's own guard: `if (root_) root_->setRecordStates(...)`
+                ++rootReads;
+        }
+    } app;
+    app.startTimer(1);
+    releaseWindow(app.window, app.root);
+    app.stopTimer();
+    check(app.ticks > 0 && app.rootReads == 0 && app.window == nullptr && app.root == nullptr,
+          "a timer run inside the main window's teardown finds the root pointer already null");
+}
 // Live's New Live Set (manual 5.4.1; walk-A A3): New opens the next untitled project in the projects folder
 // at once, as launch does, with no chooser; Save As names and places it.
 void untitledProjects(const std::filesystem::path &dir) {
@@ -18614,6 +18650,7 @@ int main(int argc, char **argv) {
     trace("userShortcuts", [&] { userShortcuts(commands, settings); });
     trace("launchIsolation", [&] { launchIsolation(commands); });
     trace("untitledProjects", [&] { untitledProjects(temp.path()); });
+    trace("windowTeardownRunsTimers", [&] { windowTeardownRunsTimers(); });
     trace("paintHygiene", [&] { paintHygiene(commands, temp.path()); });
     check(assertions.count() == 0, ("no JUCE assertion in the run; the last: " + assertions.last().toStdString()).c_str());
     if (assertions.queueFull() > 0)
