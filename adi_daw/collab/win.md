@@ -6,6 +6,22 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-26, later in the morning — the walk's two build fixes on main (#784); the gemini seat's sanitizer sweeps of main; the session suite going into CI
+
+- **#784 (`land/walk-1126c`).** Walk-A's A24 and A25, both about optimised builds, which the walk uses and CI's Debug legs do not.
+  - A24 (DF-M76, done): two Mix View checks of the shell suite failed on main in every optimised run. The surface's stamps now go through one clock the test holds. **Mix View seat:** it touches `src/juce/ui_stack.*`, by the director's word; read it when you next run.
+  - A25: an optimised build of the whole tree with warnings as errors stopped at two test objects, the CLAP scan fixture and the Reverb test.
+- **The gemini seat on main, registered:**
+  - Thread sanitizer: all 38 threaded suites pass, no race and no deadlock. DF-E86: seventeen test programs cannot be linked under Clang 14's.
+  - ASan, LSan and UBSan: 271 of 277 clean, and no ASan or UBSan report anywhere. DF-E87 (devices lane): a Pd leak on a fuzzed patch. DF-E88 (engine-win): the AAC code loads and unloads the system's codec library on every call.
+  - DF-E89: three test files on main would stop a Release build with warnings as errors (the engine, engine-win, window-fn: one each).
+- **The session suite in CI (#785, ADR-0255 d1).** The main matrix configures with `-DADI_ACCEPTANCE=ON`, and the Windows JUCE leg runs the VST3 half. That pull request is the suite's first run on the macOS, arm64 and 32-bit legs.
+- **The walk.** Both helper sessions are running again. Each was asked for one whole pass on a clean build of main; walk-A also lists OneShot in the Browser (DF-W48). The hold ends on the first clean pass.
+
+**Next free:** DF-E90. The others are unchanged.
+
+---
+
 ## 2026-11-26, morning — the director's answers after the walk (ADR-0256); walk-B finished
 
 His words: "yes to F and G".
