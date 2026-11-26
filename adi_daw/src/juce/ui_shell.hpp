@@ -894,7 +894,8 @@ class AdiRootComponent final : public juce::Component,
     // on each MIDI track of `tracks`, one undo step; the first is selected.
     bool insertMidiClips(const std::vector<std::int64_t> &tracks, std::int64_t start, std::int64_t end);
     // Hands this window's selection to the session, which every window presents.
-    void publishSelection();
+    enum class SelectionOrigin { Other, Arrangement, Mixer };
+    void publishSelection(SelectionOrigin origin = SelectionOrigin::Other);
     SessionState &session() noexcept { return session_; }
     // Drag the strip's top edge: never below the floor, never past the ceiling that
     // leaves the transport, the ruler and one track row (ADR-0184, ADR-0203 d7).
@@ -935,6 +936,7 @@ class AdiRootComponent final : public juce::Component,
     ViewStateStore &persistence_;
     SessionState &session_;
     std::uint64_t selectionGeneration_ = 0;
+    std::int64_t revealInLanes_ = 0, revealInMixer_ = 0;
     std::string window_;
     WindowState state_;
     DirtySet dirty_;

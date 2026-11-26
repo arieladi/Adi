@@ -1440,7 +1440,7 @@ void ArrangementView::changed() {
     state.gridNarrow = geometry.grid.narrow;
     state.gridFixedQuarters = geometry.grid.fixedQuarters;
     root.persist();
-    root.publishSelection();
+    root.publishSelection(AdiRootComponent::SelectionOrigin::Arrangement);
     // The mixer's rows follow these lanes: re-place them on the next frame.
     root.mark(DirtySet::Layout);
     frame(true);
@@ -2207,7 +2207,7 @@ bool TrackHeaderList::beginRename(std::int64_t track, bool selectTrack) {
     renaming_ = track;
     if (selectTrack) {
         view.geometry.selection.track = track;
-        view.root.publishSelection();
+        view.root.publishSelection(AdiRootComponent::SelectionOrigin::Arrangement);
     }
     const int x = nameLeft(depth) + 2;
     editor.setBounds(x, y + 3, std::max(0, getWidth() - x - 4), 24);
@@ -4379,6 +4379,7 @@ bool ArrangementCanvas::keyPressed(const juce::KeyPress &k) {
             sel.toTrack = far == sel.track ? 0 : far;
             sel.clip = 0;
             sel.pickedClips.clear();
+            view.geometry.reveal(view.reader(), far);
             view.changed();
             announce(view.root.selectionText());
             return true;
@@ -4388,6 +4389,7 @@ bool ArrangementCanvas::keyPressed(const juce::KeyPress &k) {
         sel.picked.clear();
         sel.clip = 0;
         sel.pickedClips.clear();
+        view.geometry.reveal(view.reader(), sel.track);
         view.changed();
         return true;
     }

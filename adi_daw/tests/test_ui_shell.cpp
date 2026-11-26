@@ -635,6 +635,82 @@ juce::MouseEvent dragAt(juce::Component &c, juce::Point<float> from, juce::Point
     return {juce::Desktop::getInstance().getMainMouseSource(), at, mods, 1.f, 0.f, 0.f, 0.f, 0.f, &c, &c, now, from,
             now, 1, true};
 }
+void selectedTrackScrollsIntoView(AppCommands &commands, const std::filesystem::path &dir) {
+    StoreError error{};
+    auto store = Store::createEmpty(dir / "track-reveal.adi", error);
+    check(store != nullptr, "a new project for track navigation");
+    if (!store)
+        return;
+    store->db().exec("INSERT INTO project(id,name) VALUES(1,'Track Navigation')");
+    engine::ProjectView view;
+    view.refresh(*store);
+    OpSubmitter submitter(*store, view);
+    std::vector<OpRequest> tracks;
+    for (int id = 1; id <= 16; ++id) {
+        auto request = track(id);
+        request.payload["index"] = id - 1;
+        tracks.push_back(std::move(request));
+    }
+    check(submitter.submit(std::move(tracks)).ok, "16 tracks exceed both viewports");
+    TransportMailbox mailbox;
+    ViewStateStore persistence(*store);
+    SessionState session(*store);
+    AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "track-reveal");
+    root.setSize(1440, 900);
+    root.frame();
+    check(root.command(AppCommands::ToggleMixerView), "open the Mixer View below the lanes");
+    root.frame();
+
+    auto &arrangement = root.arrangement;
+    auto &lanes = arrangement.geometry;
+    auto &mixer = root.mixerView;
+    const auto visibleRow = [&](auto id) {
+        const int y = laneTop(root, id);
+        return y >= 0 && y + lanes.heightFor(id) <= lanes.footTop(root.reader());
+    };
+    const auto visibleStrip = [&](auto id) -> MixerStrip * {
+        for (const auto &strip : mixer.strips())
+            if (strip->isVisible() && strip->track() == id && mixer.getLocalBounds().contains(strip->getBounds()))
+                return strip.get();
+        return nullptr;
+    };
+    const auto step = [&](int code) {
+        const bool pressed = arrangement.canvas.keyPressed(juce::KeyPress(code));
+        root.frame();
+        return pressed;
+    };
+    constexpr int target = 11;
+    check(laneTop(root, target) >= lanes.footTop(root.reader()) && visibleStrip(target) == nullptr,
+          "track 11 starts outside both viewports");
+    bool movedDown = true;
+    for (int id = 1; id <= target; ++id)
+        movedDown = step(juce::KeyPress::downKey) && lanes.selection.track == id && movedDown;
+    check(movedDown && visibleRow(target), "Down selects track 11 and brings its lane fully into view");
+    check(visibleStrip(target) != nullptr, "the same track's Mixer View strip scrolls fully into view");
+
+    lanes.scrollY = 0;
+    root.mark(DirtySet::Layout);
+    root.frame();
+    check(lanes.scrollY == 0, "the lanes can scroll away from an unchanged selection");
+    if (auto *strip = visibleStrip(target - 1)) {
+        strip->mouseDown(pressAt(*strip, {5.f, 7.f}));
+        root.frame();
+        check(lanes.selection.track == target - 1 && visibleRow(target - 1),
+              "selecting the preceding Mixer View strip reveals its lane");
+    } else {
+        check(false, "the preceding Mixer View strip is also in sight");
+    }
+    lanes.scrollY = 0;
+    check(arrangement.canvas.keyPressed(juce::KeyPress(juce::KeyPress::downKey, juce::ModifierKeys::shiftModifier, 0)),
+          "Shift+Down extends the selection");
+    root.frame();
+    check(lanes.selection.track == target - 1 && lanes.selection.toTrack == target && visibleRow(target),
+          "Shift+Down reveals the far lane and retains the anchor");
+    bool movedUp = true;
+    for (int id = target - 2; id >= 1; --id)
+        movedUp = step(juce::KeyPress::upKey) && lanes.selection.track == id && movedUp;
+    check(movedUp && visibleRow(1) && visibleStrip(1) != nullptr, "Up returns both views to the first selected track");
+}
 // Live's group tracks (manual 18.3) in the director's Bitwig project (Master Reference 10,
 // Figure 32): Drums holds Clap/Snare/Rimshot and Hats & Percs; Body holds Bass, Synths and
 // Fx And Hits, which holds Rises and Hits; Main. The tree from the snapshot (#299), as the
@@ -10032,6 +10108,8 @@ void footRows(AppCommands &commands, const std::filesystem::path &dir) {
         const juce::Colour own(0xff92a7ff);
         check(root.arrangement.colourFor(1) == own && headerPixel(11) == own,
               "its own colour, index 26 of Live's palette, on its title");
+        lanes.selection.track = 11;
+        root.publishSelection();
         check(root.command(AppCommands::ToggleMixerView), "the Mixer View opens");
         root.resizeMixerView(220);
         root.mark(DirtySet::All);
@@ -14704,13 +14782,14 @@ void automationMode(AppCommands &commands, const std::filesystem::path &dir) {
     // A14: a click in the lane away from the line adds nothing; it selects there, as without the mode
     // (Live 12 manual 25.5.2).
     const auto titleBefore = root.undoTitle(false);
+    const int scrollBefore = root.arrangement.geometry.scrollY;
     root.arrangement.geometry.selection.track = 2;
     canvas.mouseDown(pressAt(canvas, {barX + 1, midY}));
     canvas.mouseUp(pressAt(canvas, {barX + 1, midY}));
     root.frame();
     check(std::abs(midY - lineY) > 12 && laneOf().lane == nullptr && root.undoTitle(false) == titleBefore &&
-              root.arrangement.geometry.selection.track == 4,
-          "a click in the lane off the envelope's line adds no breakpoint and no lane: it selects the track there");
+              root.arrangement.geometry.selection.track == 4 && root.arrangement.geometry.scrollY == scrollBefore,
+          "a click away from the envelope selects the visible track without moving the lane or adding a breakpoint");
     canvas.mouseDown(pressAt(canvas, {barX + 1, lineY + 2}));
     canvas.mouseUp(pressAt(canvas, {barX + 1, lineY + 2}));
     root.frame();
@@ -14719,6 +14798,10 @@ void automationMode(AppCommands &commands, const std::filesystem::path &dir) {
               env.data->points[0].time == textproj::kWhole && std::abs(env.data->points[0].value - level) < 1e-6 &&
               root.undoTitle(false) == "Undo Add Automation Point",
           "a click on the line adds a breakpoint on the grid, on the line, the Volume lane with it, one step");
+    if (env.lane == nullptr || env.data == nullptr || env.data->points.empty()) {
+        document->release();
+        return;
+    }
     check(env.lane->paramRef == "volume" && env.lane->valueDomain == "real" && env.lane->ownerKind == "track",
           "the lane is the track's Volume in dB, as the engine plays it");
     check(env.data->points[0].curve == 1, "a new breakpoint is linear to the next, as the lane draws it");
@@ -17920,6 +18003,7 @@ int main(int argc, char **argv) {
         trace("arrangementRulerAndGrid", [&] { arrangementRulerAndGrid(commands, temp.path()); });
         trace("liveParity", [&] { liveParity(commands, temp.path(), false); });
         trace("controlBarAdjustments", [&] { controlBarAdjustments(commands, temp.path()); });
+        trace("selectedTrackScrollsIntoView", [&] { selectedTrackScrollsIntoView(commands, temp.path()); });
         trace("groupTracks", [&] { groupTracks(commands, temp.path()); });
         trace("sendKnobs", [&] { sendKnobs(commands, temp.path()); });
         std::printf("%d checks, %d failures (Arrangement components)\n", checks, failures);
@@ -20809,6 +20893,8 @@ int main(int argc, char **argv) {
         check(document->views().load("main").mixerView, "and the window remembers it");
         integrated.mark(DirtySet::All);
         integrated.frame();
+        // The fixture measures the first strips even when the preceding tests selected a later track.
+        mixerView.reveal(0);
         std::vector<MixerStrip *> columns;
         for (const auto &strip : mixerView.strips())
             if (strip->isVisible())
@@ -21550,6 +21636,7 @@ int main(int argc, char **argv) {
     trace("heldOutputKeepsInput", [&] { heldOutputKeepsInput(temp.path()); });
     trace("liveParity", [&] { liveParity(commands, temp.path(), write); });
     trace("controlBarAdjustments", [&] { controlBarAdjustments(commands, temp.path()); });
+    trace("selectedTrackScrollsIntoView", [&] { selectedTrackScrollsIntoView(commands, temp.path()); });
     trace("groupTracks", [&] { groupTracks(commands, temp.path()); });
     trace("groupCommandContext", [&] { groupCommandContext(commands, temp.path()); });
     trace("trackRenderMenu", [&] { trackRenderMenu(commands, temp.path()); });

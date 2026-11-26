@@ -1252,7 +1252,7 @@ void MixerStrip::mouseDoubleClick(const juce::MouseEvent &e) {
     panel_.root.arrangement.geometry.selection.track = track_;
     panel_.root.arrangement.geometry.selection.toTrack = 0;
     panel_.root.arrangement.geometry.selection.picked.clear();
-    panel_.root.publishSelection();
+    panel_.root.publishSelection(AdiRootComponent::SelectionOrigin::Mixer);
     panel_.root.showDeviceView();
 }
 bool MixerStrip::isInterestedInDragSource(const SourceDetails &details) {
@@ -1338,7 +1338,7 @@ void MixerStrip::mouseUp(const juce::MouseEvent &e) {
                 panel_.root.moveTracks(drag->source, panel_.trackDropAt(at.x, drag->movingReturn).target);
         } else if (drag->selectOnRelease) {
             selectTitle(drag->source);
-            panel_.root.publishSelection();
+            panel_.root.publishSelection(AdiRootComponent::SelectionOrigin::Mixer);
             panel_.root.arrangement.changed();
         }
         return;
@@ -1370,6 +1370,7 @@ void MixerStrip::trackTitleMenu(juce::Point<int> where) {
     view.loopSelected = false;
     view.scrub.repaint();
     focusIfShowing(*this);
+    panel_.root.publishSelection(AdiRootComponent::SelectionOrigin::Mixer);
     view.changed();
     panel_.showContextMenu(view.headerMenu(track), where);
 }
@@ -1445,7 +1446,7 @@ void MixerStrip::mouseDown(const juce::MouseEvent &e) {
             selection.toTrack = track_ == selection.track ? 0 : track_;
         else
             selectTitle(track_);
-        panel_.root.publishSelection();
+        panel_.root.publishSelection(AdiRootComponent::SelectionOrigin::Mixer);
         panel_.root.arrangement.changed();
         return;
     }

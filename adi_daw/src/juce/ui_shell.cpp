@@ -1591,6 +1591,13 @@ void AdiRootComponent::frame() noexcept {
     if (arrangement.isVisible() && state_.follow && playing_ && !arrangement.followPaused &&
         arrangement.follow(timelineTick(), commands_.followByPage()))
         dirty_.mark(DirtySet::Content);
+    // Cross-view selection navigation has a destination. Edits and Undo can restore selections without scrolling.
+    const auto selectedTrack = session_.selection().track;
+    if (arrangement.isVisible()) {
+        if (const auto track = std::exchange(revealInLanes_, 0); track != 0 && track == selectedTrack &&
+            arrangement.geometry.reveal(reader(), track, false))
+            dirty_.mark(DirtySet::Layout);
+    }
     lastDrain_ = dirty_.drain();
     arrangement.frame((lastDrain_ & (DirtySet::Layout | DirtySet::Content)) != 0);
     devices.frame(arrangement.geometry.selection.track);
@@ -1607,8 +1614,12 @@ void AdiRootComponent::frame() noexcept {
     else
         followPluginWindows();
     mixer.frame((lastDrain_ & (DirtySet::Layout | DirtySet::Content)) != 0);
-    if (mixerView.isVisible())
+    if (mixerView.isVisible()) {
+        if (const auto track = std::exchange(revealInMixer_, 0); track != 0 && track == selectedTrack &&
+            arrangement.geometry.inView(track))
+            mixerView.reveal(arrangement.geometry.rows(reader()).find(track));
         mixerView.frame((lastDrain_ & (DirtySet::Layout | DirtySet::Content)) != 0);
+    }
     // In its own window the floating host drives its frame.
     if (mixViewPanel.isVisible() && mixViewPanel.getParentComponent() == this)
         mixViewPanel.frame(reader());
@@ -2216,11 +2227,19 @@ bool AdiRootComponent::chooseMixViewTab(int tab) {
     dirty_.mark(DirtySet::Layout);
     return true;
 }
-void AdiRootComponent::publishSelection() {
+void AdiRootComponent::publishSelection(SelectionOrigin origin) {
+    const auto before = session_.selection().track;
     std::string why;
     if (!session_.select(arrangement.geometry.selection, why))
         fail(why);
     selectionGeneration_ = session_.generation();
+    const auto track = session_.selection().track;
+    if (track != before) {
+        revealInLanes_ = origin == SelectionOrigin::Mixer ? track : 0;
+        revealInMixer_ = origin == SelectionOrigin::Arrangement ? track : 0;
+        if (origin != SelectionOrigin::Other)
+            dirty_.mark(DirtySet::Layout);
+    }
 }
 bool AdiRootComponent::submitEdit(const std::string &op, Payload payload, const char *label) {
     OpRequest request;

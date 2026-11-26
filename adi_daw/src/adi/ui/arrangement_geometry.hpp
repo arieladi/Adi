@@ -523,10 +523,9 @@ struct ArrangementGeometry {
     // The most the tracks scroll: the foot never scrolls, and the last track keeps a sliver in
     // sight.
     int maxScroll(const SnapshotReader &r) const noexcept { return std::max(0, tracksHeight(r) - kMinTrackHeight); }
-    // Scrolls the tracks just enough to show track `id` whole above the foot, as Live brings a newly
-    // inserted track into sight (manual 18.2). A row of the foot is always shown; a geometry without
-    // its view has nothing to scroll. True when the scroll moved.
-    bool reveal(const SnapshotReader &r, std::int64_t id) noexcept {
+    // Scrolls to show track `id` above the foot. Pointer selection can leave a partly visible row in place.
+    // The foot is pinned and a geometry without its view has nothing to scroll. True when the scroll moved.
+    bool reveal(const SnapshotReader &r, std::int64_t id, bool fully = true) noexcept {
         const auto all = rows(r);
         const auto i = all.find(id);
         const int h = heightFor(id);
@@ -536,8 +535,11 @@ struct ArrangementGeometry {
         for (std::size_t k = 0; k < i; ++k)
             top += heightFor(all[k].track->id);
         const int before = scrollY;
-        if (top + h - scrollY > footTop(r))
-            scrollY = top + h - footTop(r);
+        const int footY = footTop(r);
+        if (!fully && top + h > scrollY && top < scrollY + footY)
+            return false;
+        if (top + h - scrollY > footY)
+            scrollY = top + h - footY;
         if (top < scrollY)
             scrollY = top;
         scrollY = std::clamp(scrollY, 0, maxScroll(r));
