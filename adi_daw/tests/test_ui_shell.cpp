@@ -5136,8 +5136,9 @@ void clipViewNotes(AppCommands &commands, const std::filesystem::path &dir) {
     const auto *made1 = panel.details();
     check(root.state().clipView && made1 != nullptr && panel.midi() && made1->posTicks == 2 * bar &&
               made1->lengthTicks == bar && made1->notes.empty() && geo.selection.clip == made1->id &&
-              submitter.nextUndo()->label == "Insert MIDI Clip" && submitter.nextUndo()->opCount == 1,
-          "a double-click on an empty MIDI lane makes a one-bar clip there, selects and opens it, one undo step");
+              made1->loopEnabled && made1->loopStartTicks == 0 && made1->loopLengthTicks == bar &&
+              submitter.nextUndo()->label == "Insert MIDI Clip" && submitter.nextUndo()->opCount == 2,
+          "a double-click makes, selects and opens a looping one-bar MIDI clip in one undo step");
     if (made1 == nullptr)
         return;
     const auto clipId = made1->id;
@@ -5154,8 +5155,9 @@ void clipViewNotes(AppCommands &commands, const std::filesystem::path &dir) {
     check(root.command(AppCommands::InsertMidiClip), "Insert Empty MIDI Clip(s) on a two-bar selection");
     root.frame();
     check(panel.details() != nullptr && panel.details()->id != clipId && panel.details()->posTicks == 4 * bar &&
-              panel.details()->lengthTicks == 2 * bar && geo.selection.clip == panel.details()->id,
-          "makes a two-bar clip there, selected and shown");
+              panel.details()->lengthTicks == 2 * bar && panel.details()->loopEnabled &&
+              panel.details()->loopLengthTicks == 2 * bar && geo.selection.clip == panel.details()->id,
+          "makes a looping two-bar clip there, selected and shown");
     geo.selection.clip = 0;
     geo.selection.start = 5 * bar;
     geo.selection.end = 7 * bar;
