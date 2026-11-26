@@ -8548,6 +8548,54 @@ void rangeSelection(AppCommands &commands, const std::filesystem::path &dir) {
           "SC-174: a right-click outside the selection chooses the clicked clip and sets the insert marker");
     check(driver.playing() && driver.position() == position && driver.revision() == revision,
           "SC-174: opening the menu outside the selection does not seek during playback");
+
+    const auto pickClip = [&](std::int64_t track) {
+        canvas.mouseDown(pressAt(canvas, clipTitle(track)));
+        canvas.mouseUp(pressAt(canvas, clipTitle(track)));
+        return geo.selection.insert;
+    };
+    const auto trackOnly = [&](std::int64_t track, std::int64_t insert) {
+        const auto &sel = geo.selection;
+        return sel.track == track && sel.toTrack == 0 && sel.picked.empty() && sel.clip == 0 &&
+               sel.pickedClips.empty() && !sel.marked && sel.insert == insert && sel.start == insert &&
+               sel.end == insert;
+    };
+    const auto sameTrackInsert = pickClip(1);
+    check(geo.selection.clip == 11, "SC-177 fixture selects the clip on track 1");
+    click(title(1));
+    check(trackOnly(1, sameTrackInsert), "SC-177: clicking the same track's title clears the clip and time selection");
+    canvas.keyPressed(juce::KeyPress('0'));
+    root.frame();
+    check(!clipOf(1)->muted, "SC-177: 0 on the selected track leaves the clip active");
+
+    const auto otherTrackInsert = pickClip(3);
+    check(geo.selection.clip == 13, "SC-177 fixture selects the clip on track 3");
+    click(title(4));
+    check(trackOnly(4, otherTrackInsert), "SC-177: clicking another track's title selects only that track");
+    canvas.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey));
+    root.frame();
+    const auto &fourth = root.reader().findTrack(4)->clips;
+    check(fourth.size() == 1 && fourth.front()->id == 14 && fourth.front()->posTicks == bar &&
+              fourth.front()->lengthTicks == 2 * bar,
+          "SC-177: Delete after a track title click leaves that track's overlapping clip intact");
+
+    canvas.mouseDown(pressAt(canvas, rangeFrom));
+    canvas.mouseDrag(dragAt(canvas, rangeFrom, rangeTo));
+    canvas.mouseUp(dragAt(canvas, rangeFrom, rangeTo));
+    const auto rangeInsert = geo.selection.insert;
+    check(geo.selection.track == 1 && geo.selection.toTrack == 3 && geo.selection.start < geo.selection.end,
+          "SC-177 fixture selects a time range across tracks");
+    headers.mouseDown(pressAt(headers, title(2)));
+    check(geo.selectedTracks(root.reader()) == std::vector<std::int64_t>{1, 2, 3},
+          "SC-177: pressing a selected track title keeps multiple tracks for dragging");
+    headers.mouseUp(pressAt(headers, title(2)));
+    check(trackOnly(2, rangeInsert), "SC-177: releasing without dragging selects just the clicked track");
+    canvas.keyPressed(juce::KeyPress('x', cmd, 0));
+    root.frame();
+    const auto &second = root.reader().findTrack(2)->clips;
+    check(second.size() == 1 && second.front()->id == 12 && second.front()->posTicks == bar &&
+              second.front()->lengthTicks == bar,
+          "SC-177: Cut after releasing a track title leaves the clip intact");
 }
 // Live's foot (Live 12 manual 6.1, its demo arrangement): the returns and Main pinned at the
 // bottom of the lanes, below the drop area, whatever the scroll.

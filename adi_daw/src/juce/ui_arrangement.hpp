@@ -189,7 +189,8 @@ class TrackHeaderList final : public juce::Component, public juce::SettableToolt
     // is moving; whether the press, on one of several selected tracks, selects it alone on release
     // without a drag (Live keeps the selection for the drag).
     std::int64_t moveId_ = 0;
-    bool moving_ = false, selectOnUp_ = false, movingReturn_ = false;
+    bool moving_ = false, movingReturn_ = false;
+    std::int64_t selectOnUp_ = 0;
     // Whether the press was on a fold switch, which does all it does on the press: its release keeps
     // what the Status Bar says.
     bool foldPressed_ = false;

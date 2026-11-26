@@ -2096,10 +2096,12 @@ void TrackHeaderList::mouseDown(const juce::MouseEvent &e) {
             }
     resizeId = 0;
     moveId_ = 0;
-    moving_ = selectOnUp_ = false;
+    moving_ = false;
+    selectOnUp_ = 0;
+    const bool popup = e.mods.isPopupMenu();
     if (auto *t = view.geometry.trackAt(view.reader(), e.y)) {
-        const auto &sel = view.geometry.selection;
-        if (e.mods.isPopupMenu() && sel.clip == 0 && sel.pickedClips.empty() &&
+        auto &sel = view.geometry.selection;
+        if (popup && sel.clip == 0 && sel.pickedClips.empty() &&
             view.geometry.inSelection(view.reader(), t->id)) {
             view.contextMenu(e.getScreenPosition(), true);
             return;
@@ -2108,36 +2110,39 @@ void TrackHeaderList::mouseDown(const juce::MouseEvent &e) {
         // the returns aside.
         const auto pressed = view.geometry.rowAt(view.reader(), e.y, &top);
         const bool split = e.y >= top + view.geometry.heightFor(t->id) - kSplitLine;
-        const bool plain = !e.mods.isCommandDown() && !e.mods.isShiftDown() && !e.mods.isPopupMenu();
+        const bool plain = !e.mods.isCommandDown() && !e.mods.isShiftDown() && !popup;
         // Ctrl/Cmd+click picks a track apart from the others, or lets it go again (Live: non-adjacent
         // tracks); Shift+click on another header reaches the selection across the tracks between.
         // A plain press on one of several selected tracks keeps them for a drag; released
         // without one, it selects that track alone.
         if (plain && !split && view.geometry.inSelection(view.reader(), t->id) &&
             view.geometry.selectedTracks(view.reader()).size() > 1)
-            selectOnUp_ = true;
-        else if (e.mods.isCommandDown() && view.geometry.selection.track != 0 && !e.mods.isPopupMenu()) {
-            auto &picked = view.geometry.selection.picked;
-            if (t->id != view.geometry.selection.track) {
+            selectOnUp_ = t->id;
+        else if (e.mods.isCommandDown() && sel.track != 0 && !popup) {
+            auto &picked = sel.picked;
+            if (t->id != sel.track) {
                 if (const auto at = std::find(picked.begin(), picked.end(), t->id); at != picked.end())
                     picked.erase(at);
                 else
                     picked.push_back(t->id);
             }
-        } else if (e.mods.isShiftDown() && view.geometry.selection.track != 0 && !e.mods.isPopupMenu())
-            view.geometry.selection.toTrack = t->id == view.geometry.selection.track ? 0 : t->id;
+        } else if (e.mods.isShiftDown() && sel.track != 0 && !popup)
+            sel.toTrack = t->id == sel.track ? 0 : t->id;
         else {
-            view.geometry.selection.track = t->id;
-            view.geometry.selection.toTrack = 0;
-            view.geometry.selection.picked.clear();
-            // The track is what is selected now, not a clip (Live): Rename then acts on the track
-            // (walk-B B14).
-            view.geometry.selection.clip = 0;
-            view.geometry.selection.pickedClips.clear();
+            sel.track = t->id;
+            sel.toTrack = 0;
+            sel.picked.clear();
+        }
+        // A title press selects tracks. Keep the playback starting point when clearing the lane selection.
+        sel.clip = 0;
+        sel.pickedClips.clear();
+        if (!popup && !split) {
+            sel.start = sel.end = sel.insert;
+            sel.marked = false;
         }
         if (split)
             resizeId = t->id;
-        else if (!e.mods.isPopupMenu() && pressed < rows.size() && !rows[pressed].place.main) {
+        else if (!popup && pressed < rows.size() && !rows[pressed].place.main) {
             moveId_ = t->id;
             movingReturn_ = rows[pressed].place.ret;
             // Held still at the lanes' edge, the drag repeats, so they keep scrolling.
@@ -2146,7 +2151,7 @@ void TrackHeaderList::mouseDown(const juce::MouseEvent &e) {
         initialHeight = view.geometry.heightFor(t->id);
         view.changed();
     }
-    if (e.mods.isPopupMenu()) {
+    if (popup) {
         resizeId = moveId_ = 0;
         view.contextMenu(e.getScreenPosition(), true);
     }
@@ -2316,7 +2321,7 @@ void TrackHeaderList::mouseDrag(const juce::MouseEvent &e) {
         // Live: "Tracks can be reordered by selecting and dragging them above or below other
         // tracks"; the line shows where they would land.
         moving_ = true;
-        selectOnUp_ = false;
+        selectOnUp_ = 0;
         // At the lanes' top or foot they scroll, and the line follows; the returns stand still.
         if (!movingReturn_ && view.edgeScroll(0, e.y, false))
             view.frame(true);
@@ -2331,12 +2336,11 @@ void TrackHeaderList::mouseUp(const juce::MouseEvent &e) {
     const bool moved = moving_;
     resizeId = moveId_ = 0;
     moving_ = false;
-    if (selectOnUp_ && !moved && dragged != 0) {
-        view.geometry.selection.track = dragged;
+    if (const auto selected = std::exchange(selectOnUp_, 0); selected != 0 && !moved) {
+        view.geometry.selection.track = selected;
         view.geometry.selection.toTrack = 0;
         view.geometry.selection.picked.clear();
     }
-    selectOnUp_ = false;
     view.changed();
     // After the window's state is kept, which clears the Status Bar: a refusal stays on it.
     if (moved) {
