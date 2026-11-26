@@ -223,6 +223,43 @@ void expressionHistory() {
           History(*fixture.store).redo().ok && digestProject(*fixture.store).text == after,
           "Capture undo and redo restore both notes and expression rows");
 }
+void liveHistoryConsumption() {
+    Fixture fixture;
+    fixture.store->db().exec("UPDATE tracks SET record_armed=1 WHERE id=1");
+    Session session;
+    check(session.load(*fixture.store, [](const DeviceRequest&, std::string&) {
+        return std::make_unique<Probe>();
+    }, SessionSpec{2, 48000, 64}), "create a live MIDI history on an armed track");
+    std::array<float, 64> left{}, right{};
+    float* output[]{left.data(), right.data()};
+    const auto playNote = [&](std::int64_t stream, std::uint64_t id) {
+        const Event on{0, EventType::NoteOn, 0, 60, id, 0, 1};
+        const Event off{0, EventType::NoteOff, 0, 60, id, 0, 0};
+        check(session.enqueueMidiInput(stream + 1, on) && session.enqueueMidiInput(stream + 16, off),
+              "a completed note reaches its published MIDI history");
+        audio::CallbackScope callback;
+        session.process({output, nullptr, 2, 0, 64, stream});
+    };
+    std::string error;
+    std::vector<MidiMemorySnapshot> original, replacement, more;
+    playNote(0, 1);
+    check(session.readMidiHistories(original, error) && original.size() == 1, "read the initial history");
+    if (original.size() != 1) return;
+    session.prepare(44100, 64);
+    playNote(0, 2);
+    check(session.readMidiHistories(replacement, error) && replacement.size() == 1 &&
+              replacement.front().sampleRate == 44100 && replacement.front().inputId != original.front().inputId,
+          "a new driver format replaces the history identity but retains the track");
+    if (replacement.size() != 1) return;
+    session.consumeMidiHistories(original);
+    check(session.midiHistoryAvailable(), "consuming a stale snapshot leaves replacement notes available");
+    playNote(64, 3);
+    check(session.readMidiHistories(more, error) && more.size() == 1 && more.front().events.size() == 4,
+          "both replacement notes remain available");
+    session.consumeMidiHistories(more);
+    session.consumeMidiHistories(replacement);
+    check(!session.midiHistoryAvailable(), "consuming an earlier snapshot cannot move its history watermark back");
+}
 void clocksAndSourceConventions() {
     bool all=true;
     for(std::uint32_t rate:{44100u,48000u,96000u,192000u,384000u,768000u}) {
@@ -356,6 +393,6 @@ void largeCapture() {
         "large Capture retains every identity and one undo/redo restores the complete stream");
 }
 }
-int main(){try{nativeHistory();expressionHistory();clocksAndSourceConventions();sampleOriginRounding();guardsAndTransactions();refusalCases();nativePackets();largeCapture();check(allocations==0 && audio::callbackFileIo==0,"actual input/Capture playback and callback refusal allocate nothing and perform no callback file I/O");}
+int main(){try{nativeHistory();expressionHistory();liveHistoryConsumption();clocksAndSourceConventions();sampleOriginRounding();guardsAndTransactions();refusalCases();nativePackets();largeCapture();check(allocations==0 && audio::callbackFileIo==0,"actual input/Capture playback and callback refusal allocate nothing and perform no callback file I/O");}
 catch(const std::exception& e){std::printf("EXCEPTION: %s\n",e.what());check(false,"fixture must complete");}
 std::printf("midi_capture: %d checks, %d failures\n",checks,failures);return failures?1:0;}
