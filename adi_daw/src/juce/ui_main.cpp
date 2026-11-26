@@ -627,7 +627,7 @@ class AdiApplication final : public juce::JUCEApplication,
             if (root_)
                 root_->say("Opening " + file.getFileName().toStdString() + " once the plug-in scan has finished…");
             catalogue_->settleThen([this, file] {
-                if (!projectOpen_ && !projectSave_ && !installingDocument_ && !installNew(file) && root_)
+                if (!quitAfterExport_ && !projectOpen_ && !projectSave_ && !installingDocument_ && !installNew(file) && root_)
                     root_->say({});
             });
             return;
@@ -640,7 +640,7 @@ class AdiApplication final : public juce::JUCEApplication,
                                                                          : "Reading the project…");
         }
         const auto start = [this, request] {
-            if (!projectOpen_ || projectOpen_->request != request || openWasCancelled())
+            if (quitAfterExport_ || !projectOpen_ || projectOpen_->request != request || openWasCancelled())
                 return;
             try {
                 std::string catalogueError;
@@ -698,11 +698,13 @@ class AdiApplication final : public juce::JUCEApplication,
         try {
             job->advance();
         } catch (const std::exception& error) {
-            openFailed(error.what());
+            if (!quitAfterExport_) openFailed(error.what());
             return;
         }
-        // A plug-in can run a nested message loop while loading. A cancel in
-        // that loop is handled here, once the host call has returned.
+        // A plug-in can run a nested message loop while loading. Handle a
+        // quit or cancellation once the host call has returned.
+        if (quitAfterExport_)
+            return;
         if (openWasCancelled()) {
             openCancelled();
             return;
