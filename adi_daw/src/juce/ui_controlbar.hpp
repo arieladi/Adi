@@ -6,7 +6,6 @@
 #include <functional>
 #include <optional>
 #include <string>
-#include <vector>
 namespace adi::ui {
 class AdiRootComponent;
 // One item of Live's control bar: a field with text, or a glyph, flat as Live's.
@@ -86,9 +85,7 @@ class BarValue final : public BarItem {
     bool pressed_ = false, dragged_ = false;
 };
 // Live's control bar (manual 3.1): tempo and the metronome on the left, the
-// transport and the loop in the middle, the global switches on the right. What the
-// engine has is live; the rest is drawn as Live draws it and says, when clicked, that
-// it is not built yet.
+// transport and the loop in the middle, the global switches on the right.
 class TransportBar final : public juce::Component {
   public:
     explicit TransportBar(AdiRootComponent &);
@@ -135,7 +132,7 @@ class TransportBar final : public juce::Component {
     BarItem link{"Link"}, tap{"Tap"},
         nudgeDown{{}, BarItem::Glyph::NudgeDown}, nudgeUp{{}, BarItem::Glyph::NudgeUp},
         metronome{{}, BarItem::Glyph::Metronome, true, true},
-        quantize{"1 Bar", BarItem::Glyph::None, true, true},
+        quantize{juce::String::charToString(0x2014), BarItem::Glyph::None, true, true},
         follow{{}, BarItem::Glyph::Follow},
         play{{}, BarItem::Glyph::Play, false}, stop{{}, BarItem::Glyph::Stop, false},
         record{{}, BarItem::Glyph::Record, false}, overdub{{}, BarItem::Glyph::Overdub},
@@ -149,9 +146,8 @@ class TransportBar final : public juce::Component {
         arrangementPage{"Arrangement"}, mix{"Mix View"};
 
   private:
-    std::vector<BarItem *> items();
     AdiRootComponent &root_;
-    BarItem *lastFocused_ = &link;
+    BarItem *lastFocused_ = nullptr;
     void beginFieldEdit(BarValue &, const juce::String &text, std::function<bool(const std::string &)> commit);
     enum class TimeField { Position, LoopStart, LoopLength };
     juce::String adjustTime(TimeField, int part, int steps, bool commit);

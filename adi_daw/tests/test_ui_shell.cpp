@@ -2017,6 +2017,18 @@ void controlBarAdjustments(AppCommands &commands, const std::filesystem::path &d
     wheel(bar.loopLength, 2, false);
     check(loopRange().start == start && loopRange().length() == originalLength + 4 * q - q / 4,
           "loop length drag, arrows and wheel preserve the brace's start");
+
+    BarItem *const unavailable[] = {&bar.link, &bar.nudgeDown, &bar.nudgeUp, &bar.quantize, &bar.overdub,
+                                    &bar.automationArm, &bar.capture, &bar.sessionRecord, &bar.keyboard,
+                                    &bar.key, &bar.midi};
+    for (auto *item : unavailable)
+        check(!item->isEnabled() && item->getAlpha() < 1.f && !item->onClick && !item->onDropdown &&
+                  item->getTooltip().startsWith(item->getTitle() + ". Unavailable until "),
+              "unavailable Control Bar actions are dimmed and explain why in their Info text");
+    check(bar.quantize.text == juce::String::charToString(0x2014) && bar.draw.isEnabled() && bar.draw.onClick &&
+              bar.metronome.isEnabled() && bar.metronome.onDropdown && bar.cpu.isEnabled() && bar.cpu.onClick &&
+              bar.punchIn.isEnabled() && bar.punchIn.onClick && bar.punchOut.isEnabled() && bar.punchOut.onClick,
+          "launch quantization shows no value while Draw Mode, Metronome, CPU and Punch remain available");
 }
 // The sends (ADR-0203 d3) on Live's default set: one per return on every track's controls, Live's
 // value boxes on the row under volume and pan, and its knobs under "Sends" in the Mixer View.
@@ -12790,9 +12802,10 @@ void automationArm(AppCommands &commands, const std::filesystem::path &dir) {
     root.frame();
     auto &reEnable = root.transport.reEnable;
     auto &arm = root.transport.automationArm;
-    check(!reEnable.getToggleState() && arm.getToggleState() && reEnable.getTitle() == "Re-Enable Automation" &&
+    check(!reEnable.getToggleState() && !arm.isEnabled() && !arm.getToggleState() &&
+              reEnable.getTitle() == "Re-Enable Automation" &&
               arm.getTitle() == "Automation Arm",
-          "nothing overridden: Re-Enable Automation is unlit, and Automation Arm is on as Live's new Set");
+          "Re-Enable Automation is unlit without an override; Automation Arm awaits recording support");
     const bool shown = root.devices.panels.size() == 1 && root.devices.panels[0]->controls.size() == 2 &&
                        root.devices.panels[0]->controls[0]->slider.isVisible();
     check(shown, "the strip shows the automated device's two controls");
@@ -12833,13 +12846,8 @@ void automationArm(AppCommands &commands, const std::filesystem::path &dir) {
     reEnable.onClick();
     root.frame();
     check(!reEnable.getToggleState() && root.error().empty(), "with nothing overridden a click changes nothing");
-    arm.onClick();
-    root.frame();
-    check(!arm.getToggleState() && !document->automationArmed() && root.error().empty(),
-          "Automation Arm clicked: off on the switch and in the session (manual 25.1)");
-    arm.onClick();
-    root.frame();
-    check(arm.getToggleState() && document->automationArmed(), "and on again");
+    check(!arm.onClick && document->automationArmed(),
+          "the unavailable Control Bar switch leaves the session's default alone");
     check(document->setDelayCompensation(false) && document->setDelayCompensation(true) && document->error().empty(),
           "the session takes Delay Compensation off and on (MX-04)");
     // Live's per-parameter Re-Enable Automation (manual 25.4; AU-04): the knob's context menu offers it
@@ -12934,10 +12942,8 @@ void automationArm(AppCommands &commands, const std::filesystem::path &dir) {
     reEnable.onClick();
     check(root.error() == "Re-Enable Automation: no session holds automation to re-enable.",
           "without a session, Re-Enable Automation says so");
-    arm.onClick();
-    root.frame();
-    check(root.error() == "Automation Arm: no session to arm." && arm.getToggleState(),
-          "and Automation Arm says so, showing Live's default, on");
+    check(!arm.isEnabled() && !arm.onClick && !arm.getToggleState(),
+          "Automation Arm remains unavailable without a session");
     document->release();
 }
 void armFollowsSelection(AppCommands &commands, const std::filesystem::path &dir) {
@@ -13414,14 +13420,9 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     root.startRecording = nullptr;
     check(!root.command(AppCommands::ArrangementRecord) && root.error().find("in the application") != std::string::npos,
           "outside the application Record says it records there");
-    // MIDI Arrangement Overdub: the window's own switch.
-    auto &overdub = root.transport.overdub;
-    overdub.onClick();
-    frame();
-    check(root.midiOverdub() && overdub.getToggleState(), "Overdub on, lit");
-    overdub.onClick();
-    frame();
-    check(!root.midiOverdub() && !overdub.getToggleState(), "and off");
+    check(!root.transport.overdub.isEnabled() && !root.midiOverdub() &&
+              root.transport.overdub.getTooltip().contains("Arrangement Record can overdub MIDI clips"),
+          "MIDI Arrangement Overdub is unavailable while the recorder has no overdub support");
     document->release();
 }
 void midiTakePreview(AppCommands &commands, const std::filesystem::path &dir) {
@@ -19867,13 +19868,13 @@ int main(int argc, char **argv) {
                       integrated.arrangement.canvas.hasKeyboardFocus(false),
                   "Alt/Option+2 moves the focus to the Arrangement View");
             auto &bar = integrated.transport;
-            check(integrated.keyPressed(juce::KeyPress('0', alt, 0)) && bar.link.hasKeyboardFocus(false) &&
-                      bar.link.focusRing(),
-                  "Alt/Option+0 moves the focus to the Control Bar's first control, ringed");
+            check(integrated.keyPressed(juce::KeyPress('0', alt, 0)) && bar.tap.hasKeyboardFocus(false) &&
+                      bar.tap.focusRing(),
+                  "Alt/Option+0 moves past disabled Link to Tap, the first available Control Bar control");
             bar.stop.grabKeyboardFocus();
             integrated.command(AppCommands::FocusArrangement);
             check(!bar.stop.focusRing() && integrated.command(AppCommands::FocusControlBar) &&
-                      bar.stop.hasKeyboardFocus(false) && !bar.link.focusRing(),
+                      bar.stop.hasKeyboardFocus(false) && !bar.tap.focusRing(),
                   "the Control Bar's focus returns to the control that last had it");
             auto &browserPanel = integrated.browser;
             check(integrated.keyPressed(juce::KeyPress('5', alt, 0)) &&
