@@ -590,7 +590,17 @@ void ScrubArea::endMeterEdit() {
 }
 TimelineRuler::TimelineRuler(ArrangementView &v) : view(v) {
     setTitle("Beat-time ruler");
-    setTooltip("Drag sideways to scroll, up or down to zoom; double-click to zoom to the selection.");
+    setTooltip("Drag sideways to scroll, up or down to zoom. Double-click to zoom to the selection. "
+               "Right-click to insert or edit a tempo change.");
+    addChildComponent(tempoEditor);
+    tempoEditor.setTitle("Tempo in BPM");
+    tempoEditor.onCommit = [this] {
+        if (view.root.setTempoChange(tempoEditing_, tempoEditor.getText().toStdString()))
+            tempoEditor.setVisible(false);
+        else
+            tempoEditor.selectAll();
+    };
+    tempoEditor.onCancel = [this] { tempoEditor.setVisible(false); };
 }
 bool RenameEditor::keyPressed(const juce::KeyPress &k) {
     if (k == juce::KeyPress::returnKey) {
@@ -1990,20 +2000,82 @@ void TimelineRuler::paint(juce::Graphics &g) {
             label(x, juce::String(at->bar) + "." + juce::String(at->beat) + "." + juce::String(at->sixteenth));
         tickMark(x, at ? 5 : 3);
     });
+    paintTempos(g);
+}
+void TimelineRuler::paintTempos(juce::Graphics &g) const {
+    const auto *tempo = view.reader().tempo();
+    if (!tempo || tempo->events.size() < 2 || getWidth() <= 0) return;
+    const auto &geometry = view.geometry;
+    const auto from = geometry.tick(0.), to = geometry.tick(getWidth());
+    const auto &events = tempo->events;
+    auto event = std::upper_bound(events.begin(), events.end(), from,
+                                  [](auto tick, const auto &e) { return tick < e.posTicks; });
+    if (event != events.begin()) --event;
+    const int top = getHeight() - kTempoRowHeight;
+    g.setFont(look::font(look::fontCaption));
+    for (; event != events.end() && event->posTicks <= to; ++event) {
+        const int x = juce::roundToInt(std::clamp(geometry.x(event->posTicks), 0., static_cast<double>(getWidth())));
+        const auto next = std::next(event);
+        const int right = next != events.end() && next->posTicks <= to
+            ? juce::roundToInt(geometry.x(next->posTicks)) : getWidth();
+        g.setColour(look::accent);
+        if (event->posTicks >= from) g.fillRect(x, top + 2, 1, 8);
+        g.drawText(juce::String(event->bpm, std::round(event->bpm) == event->bpm ? 0 : 2) + " BPM",
+                   x + 4, top, std::clamp(right - x - 4, 0, kTempoLabelWidth), kTempoRowHeight,
+                   juce::Justification::centredLeft, false);
+    }
+}
+std::int64_t TimelineRuler::tempoPosition(const juce::MouseEvent &e) const {
+    const auto &geometry = view.geometry;
+    if (e.getPosition().y >= getHeight() - kTempoRowHeight)
+        if (const auto *tempo = view.reader().tempo())
+            for (const auto &event : tempo->events)
+                if (std::abs(geometry.x(event.posTicks) - e.position.x) <= 3.) return event.posTicks;
+    const auto at = geometry.tick(e.position.x);
+    return std::max<std::int64_t>(0, view.snaps(e.mods) ? geometry.snap(at, false) : at);
+}
+void TimelineRuler::beginTempoEdit(std::int64_t at) {
+    const auto *tempo = view.reader().tempo();
+    if (!tempo) return;
+    tempoEditing_ = at;
+    const int width = std::min(kTempoLabelWidth, getWidth());
+    const int x = juce::roundToInt(std::clamp(view.geometry.x(at), 0., static_cast<double>(getWidth() - width)));
+    tempoEditor.setBounds(x, 0, width, getHeight());
+    tempoEditor.setText(juce::String(tempo->bpmAt(at), 2), false);
+    tempoEditor.setVisible(true);
+    tempoEditor.selectAll();
+    focusIfShowing(tempoEditor);
 }
 void TimelineRuler::mouseDown(const juce::MouseEvent &e) {
+    tempoMenuPressed_ = e.mods.isPopupMenu();
+    if (tempoMenuPressed_) {
+        const auto *tempo = view.reader().tempo();
+        if (!tempo) return;
+        const auto at = tempoPosition(e);
+        const bool exists = std::ranges::any_of(tempo->events, [at](const auto &event) { return event.posTicks == at; });
+        juce::PopupMenu menu;
+        menu.addItem(exists ? "Edit Tempo Change" : "Insert Tempo Change", [safe = SafePointer<TimelineRuler>(this), at] {
+            if (safe) safe->beginTempoEdit(at);
+        });
+        if (onTempoMenu)
+            onTempoMenu(menu);
+        else
+            menu.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(this).withMousePosition());
+        return;
+    }
     last = e.position;
     view.followPaused = true; // a click on the beat-time ruler pauses Follow (§6.2)
 }
 void TimelineRuler::mouseDrag(const juce::MouseEvent &e) {
+    if (tempoMenuPressed_) return;
     auto d = e.position - last;
     view.geometry.pan(-d.x);
     view.geometry.zoom(std::exp(-d.y * .02), e.position.x);
     last = e.position;
     view.changed();
 }
-void TimelineRuler::mouseDoubleClick(const juce::MouseEvent &) {
-    view.fit(view.geometry.selection.start != view.geometry.selection.end);
+void TimelineRuler::mouseDoubleClick(const juce::MouseEvent &e) {
+    if (!e.mods.isPopupMenu()) view.fit(view.geometry.selection.start != view.geometry.selection.end);
 }
 int TrackHeaderList::nameLeft(std::uint32_t depth) const noexcept {
     // One band per group the track sits in, as many as leave the name some room.

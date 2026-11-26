@@ -1692,6 +1692,58 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
     root.frame();
     check(std::abs(root.bpm() - 120) < 1e-9 && submitter.nextUndo()->txnId == beforeField,
           "three undos: 120 again, as before");
+    {
+        auto &ruler = root.arrangement.ruler;
+        const auto x = juce::roundToInt(lanes.x(bar2));
+        auto rulerPixel = [&] {
+            juce::Image picture(juce::Image::RGB, ruler.getWidth(), ruler.getHeight(), true,
+                                juce::SoftwareImageType{});
+            juce::Graphics graphics(picture);
+            ruler.paintEntireComponent(graphics, true);
+            return picture.getPixelAt(x, 22);
+        };
+        const auto empty = rulerPixel();
+        auto openTempo = [&](const juce::String &expected, float y) {
+            int requested = 0;
+            ruler.onTempoMenu = [&](const juce::PopupMenu &menu) {
+                ++requested;
+                check(menuLine(menu) == expected, "the beat ruler offers to insert or edit at the chosen tick");
+                juce::PopupMenu::MenuItemIterator item(menu);
+                if (item.next()) item.getItem().action();
+            };
+            ruler.mouseDown(pressAt(ruler, {static_cast<float>(x), y}, juce::ModifierKeys::rightButtonModifier));
+            ruler.onTempoMenu = {};
+            check(requested == 1 && ruler.tempoEditor.isVisible() && ruler.tempoEditor.getX() == x,
+                  "the ruler opens the tempo field at the tick without posting a native menu");
+        };
+        auto enter = [&](const char *bpm) {
+            ruler.tempoEditor.setText(bpm, false);
+            ruler.tempoEditor.keyPressed(juce::KeyPress(juce::KeyPress::returnKey));
+            root.frame();
+        };
+        openTempo("Insert Tempo Change", 20.f);
+        check(ruler.tempoEditor.getText() == "120.00", "the field starts with the tempo in force");
+        enter("1000");
+        check(ruler.tempoEditor.isVisible() && root.reader().tempo()->events.size() == 1,
+              "invalid BPM leaves the editor open and the map intact");
+        enter("96.5");
+        const auto *tempo = root.reader().tempo();
+        check(!ruler.tempoEditor.isVisible() && tempo->events.size() == 2 && tempo->bpmAt(bar2 - 1) == 120. &&
+                  tempo->bpmAt(bar2) == 96.5 && rulerPixel() != empty && submitter.nextUndo()->opCount == 1,
+              "SC-74: the exact new event takes effect at bar 2 and draws its ruler mark in one undo step");
+        // An imported event can carry identity and curvature the playback map does not expose.
+        store->db().exec("UPDATE tempo_map SET id=987, curve=1, tension=0.4 WHERE bpm=96.5");
+        openTempo("Edit Tempo Change", 22.f);
+        enter("88");
+        check(root.reader().tempo()->events.size() == 2 && root.reader().tempo()->bpmAt(bar2) == 88. &&
+                  submitter.nextUndo()->opCount == 2 &&
+                  value(*store, "SELECT count(*) FROM tempo_map WHERE id=987 AND curve=1 AND tension=0.4") == "1",
+              "editing replaces only the exact event's BPM in one undo step");
+        check(root.command(AppCommands::Undo) && root.command(AppCommands::Undo), "undo the two tempo gestures");
+        root.frame();
+        check(root.reader().tempo()->events.size() == 1 && rulerPixel() == empty,
+              "the original map and plain ruler return after the two undos");
+    }
     // Tap Tempo (manual 9.1.2): from the second tap the tempo follows; a run is one step.
     check(root.tapTempo(1000), "a first tap");
     root.frame();

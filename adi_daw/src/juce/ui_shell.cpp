@@ -4391,6 +4391,37 @@ bool AdiRootComponent::setPositionAt(const std::string &text) {
     arrangement.placeInsertMarker(*tick);
     return true;
 }
+bool AdiRootComponent::setTempoChange(std::int64_t pos, const std::string &text) {
+    const auto bpm = parseTempo(text);
+    if (!bpm) return fail("Type a tempo from 20 to 999 BPM, such as 128 or 97.50.");
+    if (pos < 0) return fail("A tempo change cannot precede the start of the song.");
+    constexpr auto *label = "Change Tempo";
+    CommitOptions options;
+    std::vector<OpRequest> ops;
+    auto &store = submitter_.store();
+    Payload payload{{"pos", pos}, {"bpm", *bpm}, {"curve", 0}};
+    // The playback snapshot omits row identity and ramp tension. Preserve both when editing an
+    // authored event, and guard the read and replacement against another edit of the project.
+    try {
+        options.expectHead.emplace(History(store).head());
+        SQLite::Statement stmt(store.db(), "SELECT id,bpm,curve,tension FROM tempo_map WHERE pos_ticks=?");
+        stmt.bind(1, pos);
+        if (stmt.executeStep()) {
+            if (stmt.getColumn(1).getDouble() == *bpm) return true;
+            payload["id"] = stmt.getColumn(0).getInt64();
+            payload["curve"] = stmt.getColumn(2).getInt64();
+            payload["tension"] = stmt.getColumn(3).getDouble();
+            ops.push_back(track_edits_detail::op("project.removeTempoEvent", {{"pos", pos}}, label));
+        }
+    } catch (const std::exception &e) {
+        return fail(e.what());
+    }
+    ops.push_back(track_edits_detail::op("project.insertTempoEvent", std::move(payload), label));
+    ops.front().selBefore = session_.advisory();
+    return edited(submitter_.commitPrepared(ops, [&](Store &target, Actor) {
+        return OpJournal(target).commit(ops, options);
+    }));
+}
 bool AdiRootComponent::setTempoAtPlay(const std::string &text, const char *label) {
     const auto current = view_.current();
     if (!current || !current->tempo)

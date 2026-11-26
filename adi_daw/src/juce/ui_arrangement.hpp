@@ -126,10 +126,18 @@ class TimelineRuler final : public juce::Component, public juce::SettableTooltip
     void mouseDown(const juce::MouseEvent &) override;
     void mouseDrag(const juce::MouseEvent &) override;
     void mouseDoubleClick(const juce::MouseEvent &) override;
+    std::function<void(const juce::PopupMenu &)> onTempoMenu;
+    RenameEditor tempoEditor;
 
   private:
+    static constexpr int kTempoRowHeight = 12, kTempoLabelWidth = 64;
+    void paintTempos(juce::Graphics &) const;
+    void beginTempoEdit(std::int64_t);
+    std::int64_t tempoPosition(const juce::MouseEvent &) const;
     ArrangementView &view;
     juce::Point<float> last;
+    std::int64_t tempoEditing_ = 0;
+    bool tempoMenuPressed_ = false;
 };
 // One row per track, on the RIGHT of the clips as in Live's Arrangement View (on the left,
 // before the track controls, with the side panels swapped).

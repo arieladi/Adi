@@ -813,6 +813,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // step: Insert Time Signature Change at `pos` with the value typed, Edit Time Signature on the
     // marker there, Delete. The marker inserted or edited is selected; a refusal is said.
     bool insertMeter(std::int64_t pos, const std::string &text);
+    bool setTempoChange(std::int64_t pos, const std::string &text);
     bool editMeter(std::int64_t pos, const std::string &text);
     bool deleteMeter(std::int64_t pos);
     // The marker at `from` moved to `to`, its value kept, one step; it stays selected.
