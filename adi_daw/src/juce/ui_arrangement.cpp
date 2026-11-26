@@ -1659,20 +1659,52 @@ juce::PopupMenu ArrangementView::contextMenuItems(bool header, const engine::Aut
     if (!header) {
         auto &commands = root.commands();
         commands.activate(root);
-        // A clip's menu (Live 12 manual 6.9): Cut, Copy, Paste and Duplicate, then Split at where it
-        // was clicked, above the lanes' items. The lanes' own menu offers Paste.
-        if (geometry.selection.clip != 0) {
-            for (const auto id : {AppCommands::Cut, AppCommands::Copy, AppCommands::Paste, AppCommands::Duplicate})
+        using Command = AppCommands;
+        const auto addActive = [&commands, &menu](Command::Id id) {
+            juce::ApplicationCommandInfo info(id);
+            commands.getCommandInfo(id, info);
+            if ((info.flags & juce::ApplicationCommandInfo::isDisabled) == 0)
                 menu.addCommandItem(&commands.manager, id);
+        };
+        const auto &sel = geometry.selection;
+        const bool clips = sel.clip != 0 || !sel.pickedClips.empty();
+        const bool time = !clips && sel.start != sel.end;
+        if (clips || time) {
+            for (const auto id : {Command::Cut, Command::Copy, Command::Paste, Command::Duplicate})
+                addActive(id);
+            juce::Component::SafePointer<ArrangementView> safe(this);
+            menu.addItem("Delete", [safe] {
+                if (safe != nullptr)
+                    safe->canvas.editSelection(false);
+            });
+            if (const auto current = root.current()) {
+                if (clips) {
+                    const auto ids = geometry.selectedClips();
+                    const auto activation = deactivateClips(current->tracks, ids);
+                    if (!activation.ops.empty())
+                        menu.addItem(activation.ops.front().payload.value("muted", false) ? "Deactivate" : "Activate", [safe] {
+                            if (safe != nullptr)
+                                safe->canvas.editSelection(true);
+                        });
+                    if (!deleteFades(current->tracks, ids).ops.empty())
+                        addActive(Command::DeleteFades);
+                } else if (!createFades(current->tracks, geometry.selectedTracks(reader()), sel.start, sel.end).ops.empty()) {
+                    addActive(Command::CreateFade);
+                }
+            }
+            addActive(Command::LoopSelection);
             menu.addSeparator();
-            menu.addCommandItem(&commands.manager, AppCommands::Split);
-            menu.addSeparator();
-            // Rename, the clip's (walk-B B14): the same command as Ctrl/Cmd+R, which acts on the
-            // selected clip.
-            menu.addCommandItem(&commands.manager, AppCommands::RenameTrack);
+            if (clips) {
+                addActive(Command::Split);
+                addActive(Command::RenameTrack);
+            } else {
+                for (const auto id : {Command::CutTime, Command::CopyTime, Command::PasteTime, Command::DuplicateTime,
+                                      Command::DeleteTime, Command::InsertSilence})
+                    addActive(id);
+            }
             menu.addSeparator();
         } else if (!commands.clipClipboard().empty()) {
-            menu.addCommandItem(&commands.manager, AppCommands::Paste);
+            addActive(Command::Paste);
             menu.addSeparator();
         }
         menu.addCommandItem(&commands.manager, AppCommands::InsertAudioTrack);
@@ -3913,39 +3945,37 @@ bool ArrangementCanvas::keyPressed(const juce::KeyPress &k) {
         view.root.deleteMeter(view.selectedMeter);
         return true;
     }
-    // Live's Delete, and 0 to deactivate (§6.9), on a time selection: every selected track's
-    // material, as one undo step.
-    if (sel.clip == 0 && sel.start != sel.end &&
-        (k == juce::KeyPress::deleteKey || k == juce::KeyPress::backspaceKey || k == juce::KeyPress('0'))) {
-        rangeEdit(k == juce::KeyPress('0'));
+    const bool deactivate = k == juce::KeyPress('0');
+    if ((deactivate || k == juce::KeyPress::deleteKey || k == juce::KeyPress::backspaceKey) && editSelection(deactivate))
+        return true;
+    return view.root.keyPressed(k);
+}
+bool ArrangementCanvas::editSelection(bool deactivate) {
+    auto &sel = view.geometry.selection;
+    if (sel.clip == 0 && sel.pickedClips.empty()) {
+        if (sel.start == sel.end)
+            return false;
+        rangeEdit(deactivate);
         return true;
     }
-    // Live's Delete, and 0 to deactivate (§6.9), on the selected clips: the one clicked and those
-    // picked besides it with Ctrl/Cmd+click, one undo step for them all, from the CURRENT cell.
-    if (view.geometry.selection.clip != 0) {
-        const bool erase = k == juce::KeyPress::deleteKey || k == juce::KeyPress::backspaceKey;
-        if (erase || k == juce::KeyPress('0')) {
-            const auto current = view.root.current();
-            if (!current)
-                return true;
-            const auto ids = view.geometry.selectedClips();
-            auto edit = erase ? deleteClips(current->tracks, ids) : deactivateClips(current->tracks, ids);
-            // A refused edit is still the key's: the Status Bar says why.
-            if (!edit.refusal.empty()) {
-                view.root.say(edit.refusal);
-                return true;
-            }
-            if (!view.root.submitEdits(std::move(edit.ops)) || !erase)
-                return true;
-            sel.clip = 0;
-            sel.pickedClips.clear();
-            sel.end = sel.start;
-            sel.insert = sel.start;
-            view.changed();
-            return true;
-        }
+    // Apply the edit to the explicit selection in the current snapshot, one undo step.
+    const auto current = view.root.current();
+    if (!current)
+        return true;
+    const auto ids = view.geometry.selectedClips();
+    auto edit = deactivate ? deactivateClips(current->tracks, ids) : deleteClips(current->tracks, ids);
+    if (!edit.refusal.empty()) {
+        view.root.say(edit.refusal);
+        return true;
     }
-    return view.root.keyPressed(k);
+    if (view.root.submitEdits(std::move(edit.ops)) && !deactivate) {
+        sel.clip = 0;
+        sel.pickedClips.clear();
+        sel.end = sel.start;
+        sel.insert = sel.start;
+        view.changed();
+    }
+    return true;
 }
 bool ArrangementCanvas::arrow(bool forward, const juce::ModifierKeys &mods) {
 #if JUCE_MAC

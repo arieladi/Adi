@@ -4360,6 +4360,66 @@ void timeCommands(AppCommands &commands, const std::filesystem::path &dir) {
     // Nothing selected: the …Time commands say what to do.
     select(bar, bar);
     check(!root.command(AppCommands::DeleteTime) && !root.error().empty(), "Delete Time with no time selected says so");
+
+    // SC-176: the two menus offer the commands that can act on their selections.
+    commands.clipClipboard().held = std::monostate{};
+    auto &arrangement = root.arrangement;
+    auto &canvas = arrangement.canvas;
+    const auto x = [&](std::int64_t tick) { return static_cast<float>(arrangement.geometry.x(tick)); };
+    const auto item = [](const juce::PopupMenu &menu, const juce::String &caption) -> const juce::PopupMenu::Item * {
+        for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+            if (it.getItem().text == caption)
+                return &it.getItem();
+        return nullptr;
+    };
+    const auto enabled = [&](const juce::PopupMenu &menu, const juce::String &caption) {
+        const auto *entry = item(menu, caption);
+        return entry != nullptr && entry->isEnabled;
+    };
+    const auto invoke = [&](const juce::PopupMenu &menu, const juce::String &caption) {
+        if (const auto *entry = item(menu, caption); entry != nullptr && entry->isEnabled && entry->action) {
+            entry->action();
+            return true;
+        }
+        return false;
+    };
+    const auto y = static_cast<float>(laneTop(root, 2));
+    const juce::Point<float> clipTitle{x(2 * bar) + 5.f, y + 5.f};
+    canvas.mouseDown(pressAt(canvas, clipTitle));
+    canvas.mouseUp(pressAt(canvas, clipTitle));
+    check(sel.clip == 50, "SC-176 fixture selects the MIDI clip by its title");
+    const auto clipMenu = arrangement.contextMenuItems(false);
+    check(enabled(clipMenu, "Delete") && enabled(clipMenu, "Deactivate") && enabled(clipMenu, "Loop Selection"),
+          "SC-176: a MIDI clip's menu offers Delete, Deactivate and Loop Selection");
+    juce::StringArray inapplicable;
+    for (juce::PopupMenu::MenuItemIterator it(clipMenu); it.next();)
+        for (const auto *word : {"Crop", "Consolidate", "Fade"})
+            if (it.getItem().text.containsIgnoreCase(word))
+                inapplicable.add(it.getItem().text);
+    check(inapplicable.isEmpty(), "SC-176: a MIDI clip's menu omits Crop, Consolidate and audio fades");
+    check(invoke(clipMenu, "Deactivate"), "SC-176: choose Deactivate from the clip's menu");
+    root.frame();
+    const auto &midi = root.reader().findTrack(2)->clips;
+    check(midi.size() == 1 && midi.front()->id == 50 && midi.front()->muted &&
+              !root.reader().findTrack(3)->clips.front()->muted,
+          "SC-176: Deactivate acts on the selected clip");
+
+    const juce::Point<float> from{x(2 * bar) + 1.f, y + 20.f}, to{x(3 * bar) - 1.f, y + 20.f};
+    canvas.mouseDown(pressAt(canvas, from));
+    canvas.mouseDrag(dragAt(canvas, from, to));
+    canvas.mouseUp(dragAt(canvas, from, to));
+    check(sel.clip == 0 && sel.start == 2 * bar && sel.end == 3 * bar, "SC-176 fixture selects time over the MIDI clip");
+    const auto timeMenu = arrangement.contextMenuItems(false);
+    for (const auto *caption : {"Cut", "Copy", "Delete", "Duplicate", "Cut Time", "Copy Time", "Delete Time",
+                                "Duplicate Time", "Insert Silence"})
+        check(enabled(timeMenu, caption), ("SC-176: the time selection's menu offers " + juce::String(caption)).toRawUTF8());
+    check(item(timeMenu, "Paste Time") == nullptr, "SC-176: Paste Time is absent with an empty clipboard");
+    check(root.command(AppCommands::CopyTime) && enabled(arrangement.contextMenuItems(false), "Paste Time"),
+          "SC-176: a time copy makes Paste Time available");
+    check(invoke(timeMenu, "Delete"), "SC-176: choose Delete from the time selection's menu");
+    root.frame();
+    check(clipsOf(2).empty() && clipsOf(3) == Clips{{4 * bar, bar}} && locator() == 4 * bar,
+          "SC-176: Delete removes selected material without deleting time");
     commands.clipClipboard().held = std::monostate{};
     commands.detach(root);
     document->release();

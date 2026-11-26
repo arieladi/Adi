@@ -268,6 +268,8 @@ class ArrangementCanvas final : public juce::Component,
     // width of its right edge, where a drag changes its length.
     static constexpr int kClipBarHeight = 11, kClipEdge = 4;
     void mouseMove(const juce::MouseEvent &) override;
+    // Delete or toggle activation on selected arrangement material, from a key or the context menu.
+    bool editSelection(bool deactivate);
     // Whether the clip's length is being changed from the keyboard: Enter with the insert
     // marker at its end, the arrows, then Enter to keep it or Esc to cancel (§41.4.1.3).
     bool keyResizing() const noexcept { return resizing_ != 0 && keyResize_; }
