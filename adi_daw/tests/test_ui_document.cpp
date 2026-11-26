@@ -4,6 +4,7 @@
 #include "adi/engine/clip_details.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/settings/store.hpp"
+#include "adi/ui/plugin_hold_off.hpp"
 #include "adi/ui/project_document.hpp"
 #include "adi/ui/recording_edits.hpp"
 #include "adi/ui/arrangement_geometry.hpp"
@@ -342,6 +343,133 @@ void refusedBeginOwnership(const std::filesystem::path &dir) {
                   }), "refused Begin: a completed newer edit does not silently retry an older refused transaction");
         } catch (const std::exception &e) { check(false, e.what()); }
     }
+}
+
+// SC-320 (ADR-0258 d16): a plug-in that brought ADI down as the project loaded leaves the marker naming it;
+// the next open holds the plug-ins off, and the user then loads all but that one, or all.
+void heldOffAfterACrash(const std::filesystem::path &dir) {
+    const auto file = dir / "held-off.adi";
+    const auto markerFile = dir / "held-off-marker.json";
+    std::vector<std::string> markedWhileLoading;
+    engine::DeviceLoader inner = [&](const engine::DeviceRequest &request, std::string &error)
+        -> std::unique_ptr<device::DeviceInstance> {
+        if (request.ref && (request.ref->uid == "test.calm" || request.ref->uid == "test.crashy")) {
+            const auto marker = ui::LoadingGuard::read(markerFile);
+            markedWhileLoading.push_back(marker ? marker->uid : std::string("<none>"));
+            return std::make_unique<test::Knobs>("cutoff", "clap");
+        }
+        error = "not a test plug-in";
+        return nullptr;
+    };
+    auto guard = std::make_shared<ui::LoadingGuard>(markerFile);
+    std::string error;
+    {
+        auto document = ui::ProjectDocument::open(file, true, inner, error);
+        check(document != nullptr, "held off: a fresh project");
+        if (!document) return;
+        try {
+            document->store().db().exec("INSERT INTO plugin_refs(id,format,uid,name) VALUES"
+                                        "(3,'clap','test.calm','Calm'),(4,'clap','test.crashy','Crashy')");
+            std::vector<OpRequest> make(3);
+            make[0].opType = "chain.create";
+            make[0].payload = {{"id", 3}, {"track", 2}, {"ord", 0}, {"name", "Devices"}};
+            make[1].opType = "device.insert";
+            make[1].payload = {{"id", 3}, {"chain", 3}, {"ord", 0}, {"ref", 3}, {"name", "Calm"}, {"latency", 0}};
+            make[2].opType = "device.insert";
+            make[2].payload = {{"id", 4}, {"chain", 3}, {"ord", 1}, {"ref", 4}, {"name", "Crashy"}, {"latency", 0}};
+            check(document->ops().submit(std::move(make)).ok && document->synchronise(), "held off: two plug-ins");
+        } catch (const std::exception &e) {
+            check(false, e.what());
+            return;
+        }
+    }
+    // An ordinary open, guarded: while each plug-in loads, the marker names it; the end removes it.
+    markedWhileLoading.clear();
+    {
+        auto plain = std::make_shared<ui::PluginHoldOff>();
+        guard->arm(file);
+        auto document = ui::ProjectDocument::open(file, false, ui::holdingOff(inner, plain, guard), error);
+        guard->disarm();
+        check(document && document->session().stats().loaded == 2, "held off: an ordinary open loads both");
+        check(markedWhileLoading == std::vector<std::string>{"test.calm", "test.crashy"},
+              "held off: while each plug-in loads, the marker names it");
+        check(!std::filesystem::exists(markerFile), "held off: a clean open leaves no marker");
+    }
+    // The crash: Crashy's load began and never ended.
+    guard->arm(file);
+    guard->loading("clap", "test.crashy", "Crashy");
+    auto lingering = std::make_shared<ui::LoadingGuard>(markerFile); // the next run's guard
+    const auto marker = ui::LoadingGuard::read(markerFile);
+    check(marker && ui::LoadingGuard::names(*marker, file) && marker->uid == "test.crashy" && marker->name == "Crashy",
+          "held off: the marker left behind names the project and the plug-in that was loading");
+    check(marker && !ui::LoadingGuard::names(*marker, dir / "another.adi"), "held off: and no other project");
+    // The next open holds them all off; each is a placeholder that says why.
+    auto holdOff = std::make_shared<ui::PluginHoldOff>();
+    holdOff->scope = ui::PluginHoldOff::Scope::All;
+    lingering->arm(file);
+    markedWhileLoading.clear();
+    auto document = ui::ProjectDocument::open(file, false, ui::holdingOff(inner, holdOff, lingering), error);
+    lingering->disarm();
+    check(document != nullptr, "held off: the project opens");
+    if (!document) return;
+    auto &session = document->session();
+    check(markedWhileLoading.empty(), "held off: no plug-in was asked to load");
+    const auto *calm = session.entryFor(3), *crashy = session.entryFor(4);
+    check(calm && calm->placeholder && crashy && crashy->placeholder &&
+              calm->error.find("held off") != std::string::npos,
+          "held off: both stand as placeholders, their reason said");
+    check(document->wakeMissingPlugins() == 0, "held off: a scan's wake leaves them held off");
+    // "Load All but Crashy".
+    holdOff->scope = ui::PluginHoldOff::Scope::One;
+    holdOff->format = "clap";
+    holdOff->uid = "test.crashy";
+    check(document->wakeMissingPlugins() == 1, "held off: Load All but Crashy loads one");
+    calm = session.entryFor(3);
+    crashy = session.entryFor(4);
+    check(calm && !calm->placeholder && session.instanceFor(3) && session.instanceFor(3)->loaded(),
+          "held off: Calm is loaded");
+    check(crashy && crashy->placeholder, "held off: Crashy stays held off");
+    // "Load All" (or the next ordinary open).
+    holdOff->scope = ui::PluginHoldOff::Scope::None;
+    check(document->wakeMissingPlugins() == 1 && session.entryFor(4) && !session.entryFor(4)->placeholder,
+          "held off: Load All loads Crashy too");
+}
+
+// SC-325: the expression route remembered for a plug-in is the one its next instance starts with, on the
+// device row, so the project plays it the same anywhere.
+void rememberedRouteStartsANewInstance(const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ui::ProjectDocument::open(dir / "remembered-route.adi", true, test::knobsLoader("cutoff", "clap"), error);
+    check(document != nullptr, "route: a fresh project");
+    if (!document) return;
+    std::vector<std::pair<std::string, std::string>> asked;
+    document->pluginRouteDefault = [&](const std::string &format, const std::string &uid)
+        -> std::optional<engine::RouteChoice> {
+        asked.emplace_back(format, uid);
+        return engine::RouteChoice::MpeMidi;
+    };
+    rows::PluginRef ref;
+    ref.format = "clap";
+    ref.uid = test::kKnobsUid;
+    ref.name = "UI knobs";
+    ref.subtype = "effect";
+    const bool loaded = document->loadPlugin(ref, 2);
+    check(loaded, ("route: the plug-in loads: " + document->error()).c_str());
+    check(asked.size() == 1 && asked[0].first == "clap" && asked[0].second == test::kKnobsUid,
+          "route: the remembered route is asked for that plug-in");
+    try {
+        SQLite::Statement row(document->store().db(),
+                              "SELECT r.route FROM device_expression_routes r JOIN devices d ON d.id=r.device_id "
+                              "JOIN plugin_refs p ON p.id=d.plugin_ref_id WHERE p.uid=?");
+        row.bind(1, test::kKnobsUid);
+        check(row.executeStep() && row.getColumn(0).getString() == "mpe_midi",
+              "route: the new instance's device row holds it");
+    } catch (const std::exception &e) {
+        check(false, e.what());
+    }
+    check(document->ops().undo().ok && document->store().db().execAndGet(
+                                            "SELECT count(*) FROM device_expression_routes").getInt() == 0,
+          "route: one undo step takes the device and its route away together");
 }
 
 void moveOrdinaryDevice(const std::filesystem::path &file) {
@@ -3621,6 +3749,8 @@ int main(int argc, char **argv) {
     }
     deviceGraphWorkers(temp.path());
     refusedBeginOwnership(temp.path());
+    heldOffAfterACrash(temp.path());
+    rememberedRouteStartsANewInstance(temp.path());
     importWithChoices(temp.path());
     moveOrdinaryDevice(temp.path() / "move-device.adi");
     deviceRangeEdits(temp.path() / "device-range.adi");

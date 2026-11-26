@@ -586,6 +586,9 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
         std::function<std::string()> frame;
         // Whether the plug-in has dropped its editor: its window then closes.
         std::function<bool()> gone;
+        // Whether the plug-in says its editor can be resized: its window then is, from its edges and
+        // corner, and the plug-in is asked for each size (SC-328).
+        bool resizable = false;
     };
     std::function<PluginEditorView(std::int64_t device, std::string &error)> pluginEditor;
     FloatingHost *pluginHost = nullptr;
