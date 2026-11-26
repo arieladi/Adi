@@ -6,6 +6,63 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-26 — the walk in the real window: 24 fixes on main (#773, #779); a clean pass on the walker's merge; a confirming pass on main asked
+
+The two helper sessions walked ADR-0248 d2's nine steps in the real ADI window through the night (ADR-0255 d2). Their reports are `collab/walk/2026-11-25-windows11.md` on `walk/windows11` and `collab/walk/2026-11-25-windows10.md` on `walk/windows10`.
+
+**Where the proof stands.** Walk-A's fourth pass is clean: all nine steps pass in the real window. It was walked on main with the 24 fixes merged by the walker. Main now carries the same 24 through win's merges, with one fix of win's on top, and that exact build has not been walked. Win asked walk-A for a fifth pass on main at `1e12bce59`. **The hold of ADR-0248 d2 ends when that pass is clean** (ADR-0255 d1).
+
+**Landed.**
+
+| Finding | What a user met | Landed in |
+|---|---|---|
+| A1 | two error boxes on every project open, when the driver grants another buffer size than the one chosen (every WASAPI user) | #773 |
+| A2, A23 | Insert Track and Insert Return Track left a track undrawn or after Main, and two tracks on one index | #773, #779 |
+| A2b | every insert or group recoloured the later tracks; a track's colour is now fixed when it is made (ADR-0211 d2) | #779 |
+| A3 | New Project asked for a file first; it opens an untitled project at once | #773 |
+| A5 | OneShot had no Sample tile, so it could not be given a sample | #773 |
+| A6 | a VST3 instrument's editor window opened blank | #773 |
+| A8 | Ctrl+drag of a clip did not copy it | #773 |
+| A9 | the track controls' value boxes could not be dragged up or down | #773 |
+| A10 | a send that had never been raised was not heard while dragged | #779 |
+| A12 | the Mixer View's Peak Level stayed with the strip's place, not its track | #773 |
+| A13 | an automated control did not move with its envelope and showed no sign of it | #773 |
+| A14 | a click anywhere in an automation lane wrote a breakpoint; the A key did not toggle the mode | #773 |
+| A15 | an optimised build of the UI tests stopped under warnings as errors | #773 |
+| A16, B8 | a first run opened no audio input though the system has a default one | #773 |
+| A18 | **data loss:** after Save Project As, every take recorded in that session was refused and lost | #773 |
+| A20 | **a hang:** after a drag on a Mixer View strip during playback the message thread span at 100 % | #773 |
+| A21 | every edit committed during playback dropped the audio clips out for about 11 ms | #779 |
+| A22 | a Mixer View fader at 0 dB could not be grabbed by its handle | #779 |
+| B3 | a take was named "# Audio", not what the track's header shows | #773 |
+| B4, A17 | nothing was drawn in the lane while recording | #773 |
+| B6 | a take recorded over clips landed on top of them; it replaces what it covers | #773 |
+| B10 | a click on a Mixer View strip's title selected nothing | #773 |
+| B11, A19 | a project given on the command line could not be opened | #773 |
+
+The gemini seat ran each fix branch on Linux as it appeared (GCC 12 and Clang 14, warnings as errors, with the session suite): all pass.
+
+**Merged by hand, each by keeping both sides.**
+- `AdiRootComponent::insertReturnTrack`: A23 moved the op building into `adi::ui::insertReturnTrack`; A2b's colour and A10's sends are applied to its ops.
+- `MixerStrip::bind`: A12's held Peak Level and A13's cleared automation LEDs.
+- `tests/test_ui_shell.cpp`: the test functions of A3, A16, A13, A22 and A10 were added at the same places. Each function was compared with its own branch and is identical.
+
+**One fix of win's on the stack (8aa49583e).** The first stack failed four of the shell suite's allocates-zero checks on the Windows Debug leg. B3 had made the Clip View's track name an owned string assigned on every frame, and under MSVC's Debug containers every string made allocates. The name is now made again only when the stored name or the track's number changes. The walk's builds are optimised and do not show it.
+- **For every seat that builds optimised only:** run `adi_ui_shell_tests` in a Debug build before a request.
+- The sessions had opened a pull request per fix, 24 in all, and the one macOS runner could not carry them. Win cancelled those runs and landed two stacks. Fix branches are now pushed without a pull request.
+
+**Open from the walk, registered:** DF-W46 (recording from a physical input, deferred by the director: neither machine has one, and the walk recorded through a virtual audio cable), DF-W47 (A4, the Browser's Add Folder), DF-W48 (A7, OneShot is not in the Browser), DF-W49 (B7, the Export dialog stays open), DF-W50 (B9, the adaptive grid never finer than a quarter note; a Live reading), DF-W51 (B5, the Audio page under ASIO), DF-M76 (A24, two shell checks read the wall clock), DF-E84 (`audio.loopbackSource` has no reader).
+
+**For the director, asked and open.**
+- F: playing notes from the computer keyboard, recording MIDI and recording automation by moving a control are not built. Win recommends that they wait until the hold ends and then go first. The walk used a virtual MIDI port and drawn automation.
+- G: OneShot listed in the Browser's Instruments now (DF-W48). Win recommends yes.
+
+**The landing of 25 November, evening (#752), in the register.** DF-E67 (b), DF-E76 and DF-E12 are done. DF-E36's tests and DF-E68 (a) are on main; their rows say what is left.
+
+**Next free:** DF-W52, DF-M77, DF-E85. ADR-0256 and the others are unchanged.
+
+---
+
 ## 2026-11-25, evening — the seats' questions answered (ADR-0255); the hold ends on the proof; a walk in the real window; a landing window
 
 Win gathered the questions the seats had parked for the director, 25 with two of its own, and put the five real choices to him in plain words. His words: "yes to A–E, scope: yes". The others stand as recommended. **Every seat: your answers are below and in ADR-0255. Strike the matching lines from your FOR THE DIRECTOR section.**
