@@ -2624,6 +2624,29 @@ void takesStayOffTheMainRow() {
     check(ui::audio_drop_detail::newClipId(*view.current()) == 4, "the next clip is 4: past the takes' ids, not 2");
 }
 
+// Live's rename with an empty name (walk-A A34, DF-W57): the track takes its default name back.
+void anEmptyRenameGivesTheDefaultNameBack() {
+    section("a track renamed to nothing takes its default name back");
+    engine::TrackNode midi, audio, group, ret, main;
+    midi.kind = "midi";
+    midi.name = "Bass";
+    audio.kind = "audio";
+    audio.name = "Vox";
+    group.kind = "group";
+    group.name = "Drums";
+    ret.kind = "return";
+    ret.name = "A Reverb";
+    main.kind = "master";
+    main.name = "Main";
+    check(ui::renamedTrackName(midi, "Lead") == "Lead" && ui::renamedTrackName(audio, " x ") == " x ",
+          "a name with anything in it is stored as typed");
+    check(ui::renamedTrackName(midi, "") == "# MIDI" && ui::renamedTrackName(audio, "") == "# Audio" &&
+              ui::renamedTrackName(group, "") == "# Group",
+          "an empty name gives a MIDI, audio or group track its numbered default");
+    check(ui::renamedTrackName(audio, "  \t") == "# Audio", "a name of spaces alone is empty");
+    check(ui::renamedTrackName(ret, "") == "A Reverb" && ui::renamedTrackName(main, "") == "Main",
+          "a return and Main keep the name they have");
+}
 void insertTrackMovesTheReturnsAndMainDown() {
     section("Insert Track in the default project: every later track down one, the returns and Main too (manual 18.2)");
     adi::test::TempDirectory temp("ui_seams", "insert-foot");
@@ -2738,6 +2761,7 @@ void insertTrackMovesTheReturnsAndMainDown() {
 int main() {
     theWrongThingDoesNotCompile();
     heldIdsAreSkipped();
+    anEmptyRenameGivesTheDefaultNameBack();
     takesStayOffTheMainRow();
     reenableFindsThePlayedLane();
     invalidReaderAnswersEmpty();

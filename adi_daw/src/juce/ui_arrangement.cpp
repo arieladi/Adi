@@ -1997,10 +1997,13 @@ bool TrackHeaderList::commitRename() {
     const auto id = renaming_;
     if (id == 0)
         return false;
-    const auto text = editor.getText().toStdString();
     const auto now = view.root.current();
     const auto *t = now->findTrack(id);
-    if (t == nullptr || t->name == text)
+    if (t == nullptr)
+        return true;
+    // An empty name gives the track its default name back, as Live (walk-A A34).
+    const auto text = renamedTrackName(*t, editor.getText().toStdString());
+    if (t->name == text)
         return true;
     return view.root.submitEdit("track.rename", {{"id", id}, {"name", text}}, "Rename Track");
 }

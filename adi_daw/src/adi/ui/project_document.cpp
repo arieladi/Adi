@@ -555,6 +555,25 @@ bool ProjectDocument::insertPlugin(const rows::PluginRef &ref, std::int64_t trac
                                    std::optional<std::int64_t> before, const PluginInsertOptions& options) {
     return finishInsert(preparePluginInsert(*store_, ref, track, before, options, retainedDeviceId()));
 }
+bool ProjectDocument::loadPlugin(const rows::PluginRef &ref, std::int64_t track, std::optional<std::int64_t> before) {
+    PluginInsertOptions options;
+    if (ref.subtype == "instrument") {
+        try {
+            SQLite::Statement kind(store_->db(), "SELECT kind FROM tracks WHERE id=?");
+            kind.bind(1, track);
+            if (kind.executeStep() && kind.getColumn(0).getString() != "midi" &&
+                kind.getColumn(0).getString() != "instrument") {
+                error_ = ref.name + " is an instrument: load it onto a MIDI track";
+                return false;
+            }
+        } catch (const std::exception &e) {
+            error_ = e.what();
+            return false;
+        }
+        options.replaceInstrument = true;
+    }
+    return insertPlugin(ref, track, before, options);
+}
 bool ProjectDocument::finishInsert(PreparedBuiltinInsert prepared) {
     if (!prepared.ok) {
         error_ = prepared.error.empty() ? "The device could not be loaded." : prepared.error;
