@@ -4381,18 +4381,6 @@ bool AdiRootComponent::setPositionAt(const std::string &text) {
     arrangement.placeInsertMarker(*tick);
     return true;
 }
-bool AdiRootComponent::stepPosition(int bars) {
-    const auto &meters = reader().meters();
-    const auto from = barPosition(playing_ ? timelineTick() : arrangement.geometry.selection.insert, meters);
-    const BarPosition to{std::max<std::int64_t>(1, from.bar + bars), from.beat, from.sixteenth};
-    auto tick = tickOf(to, meters);
-    if (!tick)
-        tick = tickOf({to.bar, 1, 1}, meters); // a beat that bar does not have: its start
-    if (!tick)
-        return false;
-    arrangement.placeInsertMarker(*tick);
-    return true;
-}
 bool AdiRootComponent::setTempoAtPlay(const std::string &text, const char *label) {
     const auto current = view_.current();
     if (!current || !current->tempo)

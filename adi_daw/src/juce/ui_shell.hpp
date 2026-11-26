@@ -829,7 +829,6 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // meters, puts the insert marker and the playhead there; up and down step a bar from the play
     // position (the insert marker while stopped). Neither is an edit, so neither is an undo step.
     bool setPositionAt(const std::string &text);
-    bool stepPosition(int bars);
     const TapTempo &taps() const noexcept { return tap_; }
     // Live's metronome (manual 19.4.1): O and the control bar's switch, `transport.setMetronome`
     // outside undo and saved with the project (#383, N19); the switch lights from the snapshot.

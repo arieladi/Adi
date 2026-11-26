@@ -1908,6 +1908,115 @@ void groupCommandContext(AppCommands &commands, const std::filesystem::path &dir
         check(false, "the same track has a visible Mixer title and a Device View panel");
     }
 }
+// SC-73: exercise the real field handlers on a peerless root.
+void controlBarAdjustments(AppCommands &commands, const std::filesystem::path &dir) {
+    StoreError error{};
+    auto store = Store::createEmpty(dir / "control-bar-adjustments.adi", error);
+    check(store != nullptr, "the Control Bar's project opens");
+    if (!store)
+        return;
+    store->db().exec("INSERT INTO project(id,name) VALUES(1,'Control Bar Adjustments')");
+    engine::ProjectView view;
+    view.refresh(*store);
+    OpSubmitter submitter(*store, view);
+    TransportMailbox mailbox;
+    ViewStateStore persistence(*store);
+    SessionState session(*store);
+    AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "control-bar-adjustments");
+    root.setSize(1440, 900);
+    root.frame();
+    auto &bar = root.transport;
+    const auto up = juce::KeyPress(juce::KeyPress::upKey);
+    const auto down = juce::KeyPress(juce::KeyPress::downKey);
+    const auto left = juce::KeyPress(juce::KeyPress::leftKey);
+    const auto right = juce::KeyPress(juce::KeyPress::rightKey);
+    const auto at = [](juce::Component &field, int part) -> juce::Point<float> {
+        const int x = part == 0 ? 4 : part == 1 ? field.getWidth() / 2 : field.getWidth() - 4;
+        return {static_cast<float>(x), static_cast<float>(field.getHeight() / 2)};
+    };
+    const auto wheel = [&](juce::Component &field, int part, bool increase) {
+        field.mouseWheelMove(pressAt(field, at(field, part)), {0, increase ? 1.f : -1.f, false, false, false});
+    };
+    const auto press = [&](juce::Component &field, int part) {
+        field.mouseDown(pressAt(field, at(field, part)));
+    };
+    const auto drag = [&](juce::Component &field, int part, float distance) {
+        const auto from = at(field, part);
+        field.mouseDrag(dragAt(field, from, from.translated(0, -distance)));
+    };
+    const auto release = [&](juce::Component &field, int part, float distance) {
+        field.mouseUp(pressAt(field, at(field, part).translated(0, -distance)));
+    };
+    const auto bpm = [&] { return view.current()->tempo->bpmAt(0); };
+    const auto meter = [&] { return meterAt(0, view.current()->meters); };
+    const auto loopRange = [&] { return loopOf(view.current()->transport); };
+    const auto insert = [&] { return root.arrangement.geometry.selection.insert; };
+    const auto q = textproj::kPPQ;
+    const auto near = [](double a, double b) { return std::abs(a - b) < 1.e-9; };
+
+    // One drag can move through several steps without writing intermediate undo transactions.
+    press(bar.tempo, 0);
+    drag(bar.tempo, 0, 4.f);
+    drag(bar.tempo, 0, 8.f);
+    check(near(bpm(), 120) && !submitter.canUndo(), "dragging tempo has not written an undo step");
+    release(bar.tempo, 0, 8.f);
+    check(near(bpm(), 122) && bar.editing() == nullptr && submitter.nextUndo() &&
+              submitter.nextUndo()->label == "Change Tempo",
+          "an eight-point coarse drag adds 2 BPM and leaves no text editor");
+    root.command(AppCommands::Undo);
+    check(near(bpm(), 120) && !submitter.canUndo(), "one undo restores the whole tempo drag");
+    wheel(bar.tempo, 2, true);
+    wheel(bar.tempo, 2, true);
+    check(near(bpm(), 120.02), "wheel events in the same frame both step the fine tempo");
+    check(bar.tempo.keyPressed(down) && near(bpm(), 120.01), "the arrow steps the selected fine tempo");
+    root.frame();
+
+    press(bar.signature, 2);
+    drag(bar.signature, 2, 4.f);
+    release(bar.signature, 2, 4.f);
+    check(meter().numerator == 4 && meter().denominator == 8, "signature drag steps the denominator");
+    check(bar.signature.keyPressed(left) && bar.signature.keyPressed(up) && meter().numerator == 5,
+          "left selects the numerator and up adds one");
+    wheel(bar.signature, 2, false);
+    check(meter().numerator == 5 && meter().denominator == 4, "signature wheel steps the power-of-two denominator");
+
+    // Click still opens typing, and up/down after that click work on the selected number.
+    root.frame();
+    press(bar.position, 1);
+    release(bar.position, 1, 0.f);
+    check(bar.editing() == &bar.position && bar.fieldEditor.getText() == "1.1.1",
+          "a plain click opens the existing position editor");
+    check(bar.fieldEditor.keyPressed(up) && bar.editing() == nullptr && insert() == q,
+          "up from the fresh editor steps the position's beats");
+    const auto undoHead = [&] {
+        const auto head = submitter.nextUndo();
+        return head ? head->txnId : 0;
+    };
+    const auto beforePosition = undoHead();
+    wheel(bar.position, 2, true);
+    press(bar.position, 0);
+    drag(bar.position, 0, 4.f);
+    release(bar.position, 0, 4.f);
+    check(insert() == 6 * q + q / 4 && undoHead() == beforePosition,
+          "position wheel and drag step sixteenths and bars with no undo entry");
+
+    const auto originalLength = loopRange().length();
+    press(bar.loopStart, 0);
+    drag(bar.loopStart, 0, 4.f);
+    release(bar.loopStart, 0, 4.f);
+    check(bar.loopStart.keyPressed(right) && bar.loopStart.keyPressed(up), "the loop start steps its beats");
+    wheel(bar.loopStart, 2, true);
+    check(loopRange().start == 6 * q + q / 4 && loopRange().length() == originalLength,
+          "loop start drag, arrows and wheel preserve the brace's length");
+    const auto start = loopRange().start;
+    press(bar.loopLength, 0);
+    drag(bar.loopLength, 0, 4.f);
+    release(bar.loopLength, 0, 4.f);
+    check(bar.loopLength.keyPressed(right) && bar.loopLength.keyPressed(down), "the loop length steps its beats");
+    wheel(bar.loopLength, 2, false);
+    check(loopRange().start == start && loopRange().length() == originalLength + 4 * q - q / 4,
+          "loop length drag, arrows and wheel preserve the brace's start");
+}
 // The sends (ADR-0203 d3) on Live's default set: one per return on every track's controls, Live's
 // value boxes on the row under volume and pan, and its knobs under "Sends" in the Mixer View.
 void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
@@ -17127,6 +17236,7 @@ int main(int argc, char **argv) {
         // These fixtures render components in software and do not create a native peer.
         trace("arrangementRulerAndGrid", [&] { arrangementRulerAndGrid(commands, temp.path()); });
         trace("liveParity", [&] { liveParity(commands, temp.path(), false); });
+        trace("controlBarAdjustments", [&] { controlBarAdjustments(commands, temp.path()); });
         trace("groupTracks", [&] { groupTracks(commands, temp.path()); });
         trace("sendKnobs", [&] { sendKnobs(commands, temp.path()); });
         std::printf("%d checks, %d failures (Arrangement components)\n", checks, failures);
@@ -20575,6 +20685,7 @@ int main(int argc, char **argv) {
     trace("firstRunAudioInput", [&] { firstRunAudioInput(temp.path()); });
     trace("arrangementRulerAndGrid", [&] { arrangementRulerAndGrid(commands, temp.path()); });
     trace("liveParity", [&] { liveParity(commands, temp.path(), write); });
+    trace("controlBarAdjustments", [&] { controlBarAdjustments(commands, temp.path()); });
     trace("groupTracks", [&] { groupTracks(commands, temp.path()); });
     trace("groupCommandContext", [&] { groupCommandContext(commands, temp.path()); });
     trace("trackRenderMenu", [&] { trackRenderMenu(commands, temp.path()); });
