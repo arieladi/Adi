@@ -4517,7 +4517,16 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
     // right goes from the sidebar into the list, left back; the search narrows it; a row dragged onto a
     // lane is the audio drop.
     {
-        const auto library = dir / "Library";
+        const auto library = dir / "User Library";
+        std::string why;
+        check(provisionDefaultUserLibrary(library, why) &&
+                  std::filesystem::is_directory(library / "Clips") &&
+                  std::filesystem::is_directory(library / "Defaults") &&
+                  std::filesystem::is_directory(library / "Grooves") &&
+                  std::filesystem::is_directory(library / "Presets") &&
+                  std::filesystem::is_directory(library / "Samples"),
+              "the first launch creates the User Library and its default folders");
+        std::filesystem::remove(library / "Grooves");
         std::filesystem::create_directories(library / "Drums");
         for (const auto &[name, value] : {std::pair{"Drums/Clap.wav", .2f}, std::pair{"Bass Hit.wav", .4f}}) {
             std::vector<float> samples(4800, value);
@@ -4525,7 +4534,12 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
             writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
         }
         std::ofstream(library / "notes.txt") << "not audio";
-        std::string why;
+        check(provisionDefaultUserLibrary(library, why) &&
+                  std::filesystem::is_regular_file(library / "notes.txt") &&
+                  !std::filesystem::exists(library / "Grooves"),
+              "a later launch preserves existing library content and folder choices");
+        check(!provisionDefaultUserLibrary(library / "notes.txt" / "Blocked", why) && !why.empty(),
+              "a blocked User Library reports why it could not be created");
         auto index = library::Index::open(dir / "library.sqlite", why, false);
         check(index != nullptr, "a library index");
         if (!index)

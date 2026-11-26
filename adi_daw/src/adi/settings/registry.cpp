@@ -943,7 +943,7 @@ std::vector<Setting> build() {
 
     // --- Library: paths are roles in a bundle (R-05) -------------------------------------
     r.push_back(make("library.userLibrary", Type::Path, "Library", "User Library",
-                     "Your own presets, samples and clips.", ""));
+                     "Your own presets, samples and clips. Leave empty to use the default User Library.", ""));
     r.push_back(make("library.contentFolders", Type::PathList, "Library", "Content folders",
                      "Sample and content folders the browser shows.", Value::array()));
     // The default record folder is files.recordFolder, on File & Folder (ADR-0203).

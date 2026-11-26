@@ -70,6 +70,16 @@ juce::File withExtension(const juce::File &file, const char *extension) {
     return file.getParentDirectory().getChildFile(file.getFileName() + "." + extension);
 }
 juce::File withAdiExtension(const juce::File &file) { return withExtension(file, "adi"); }
+juce::File defaultUserLibraryFolder() {
+    if (const auto home = juce::SystemStats::getEnvironmentVariable("ADI_HOME", {}); home.isNotEmpty())
+        return juce::File::getCurrentWorkingDirectory().getChildFile(home).getChildFile("User Library");
+#if JUCE_WINDOWS
+    const auto parent = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory);
+#else
+    const auto parent = juce::File::getSpecialLocation(juce::File::userMusicDirectory);
+#endif
+    return parent == juce::File{} ? juce::File{} : parent.getChildFile("ADI").getChildFile("User Library");
+}
 // Live's Undo History window (manual 5.4.2; A5): the main window's list in a window of its own,
 // which closing hides. The list stays the root's; the window only shows it.
 class UndoHistoryWindow final : public juce::DocumentWindow {
@@ -209,8 +219,8 @@ class AdiApplication final : public juce::JUCEApplication,
     // The browser's Samples and Places (D1): the library index (#102) at its app-data file, on one
     // background owner. It registers and scans the User Library and the added content folders the
     // settings name, then hands the browser what it lists, and keeps the index open so it goes on
-    // hashing while `library.backgroundIndexing` is on, until Quit. A smoke run or a machine with no
-    // app-data folder, or no folder named, indexes nothing.
+    // hashing while `library.backgroundIndexing` is on, until Quit. An empty User Library setting
+    // uses the default folder. A smoke run or a machine with no app-data folder indexes nothing.
     //
     // Quit never waits on a folder still being walked: `Index::scan` cannot be stopped part way (N50),
     // so the owner checks its stop flag between folders, and Quit leaves an owner still scanning to
@@ -223,8 +233,19 @@ class AdiApplication final : public juce::JUCEApplication,
     void startLibrary() {
         const auto file = appdata::libraryIndexFile();
         std::vector<LibraryFolder> folders;
-        if (const auto user = settings_->get("library.userLibrary"); user.is_string() && !user.get<std::string>().empty())
-            folders.push_back({"User Library", pathFromUtf8(user.get<std::string>()), true});
+        auto userLibrary = pathFromUtf8(settings_->get("library.userLibrary").get<std::string>());
+        if (userLibrary.empty() && !file.empty() && smokeOutput_ == juce::File{}) {
+            if (const auto folder = defaultUserLibraryFolder(); folder != juce::File{}) {
+                auto path = pathFromUtf8(folder.getFullPathName().toStdString());
+                std::string why;
+                if (provisionDefaultUserLibrary(path, why))
+                    userLibrary = std::move(path);
+                else if (root_)
+                    root_->say(why);
+            }
+        }
+        if (!userLibrary.empty())
+            folders.push_back({"User Library", std::move(userLibrary), true});
         if (const auto added = settings_->get("library.contentFolders"); added.is_array())
             for (const auto &folder : added)
                 if (folder.is_string() && !folder.get<std::string>().empty()) {

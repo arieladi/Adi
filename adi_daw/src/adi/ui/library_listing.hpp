@@ -42,6 +42,37 @@ struct LibraryListing {
     std::vector<LibraryFile> samples; // by name, case-insensitive
     std::string error;                // the first folder that could not be read, and why
 };
+// Provision a new default User Library once. An existing library belongs to
+// the user, who may move or remove any of its initial folders.
+inline bool provisionDefaultUserLibrary(const std::filesystem::path& root, std::string& error) {
+    namespace fs = std::filesystem;
+    error.clear();
+    std::error_code status;
+    if (!fs::create_directories(root, status)) {
+        if (!status) return true;
+        error = "The User Library could not be created: " + status.message();
+        return false;
+    }
+    std::vector<fs::path> created;
+    for (const auto* name : {"Clips", "Defaults", "Grooves", "Presets", "Samples"}) {
+        const auto folder = root / name;
+        if (fs::create_directory(folder, status))
+            created.push_back(folder);
+        if (status) {
+            error = std::string("The User Library's ") + name + " folder could not be created: " + status.message();
+            // Leave anything another owner put here. Only undo empty directories we created.
+            const auto removeDirectory = [&status](const fs::path& path) {
+                if (fs::is_directory(fs::symlink_status(path, status)))
+                    (void)fs::remove(path, status);
+            };
+            for (auto it = created.rbegin(); it != created.rend(); ++it)
+                removeDirectory(*it);
+            removeDirectory(root);
+            return false;
+        }
+    }
+    return true;
+}
 // The extensions the engine's decoders read (adi/audio/decode.hpp's formats).
 inline bool isAudioFile(const std::filesystem::path &path) {
     auto ext = media::pathUtf8(path.extension());
