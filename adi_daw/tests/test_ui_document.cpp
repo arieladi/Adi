@@ -1354,6 +1354,36 @@ void importWithChoices(const std::filesystem::path &dir) {
         SQLite::Database db(doc->store().path().string(), SQLite::OPEN_READONLY);
         check(db.execAndGet("SELECT count(*) FROM media_files").getInt64() == media, "and leaves no pool row");
     }
+    // An import with choices replaces the covered part in the same journal step.
+    job = doc->materialJob(wav.string(), audioTrack, 0, fades, 1'700'000'000'000'004);
+    prepared = ui::ProjectDocument::prepareMaterial(job);
+    const auto original = doc->commitMaterial(prepared, job);
+    doc->synchronise();
+    const auto shard = outside / "Shard.wav";
+    {
+        std::vector<float> samples(12000, .3f);
+        audio::WavWriter writer(shard, 48000, 1, audio::WavFormat::Pcm16);
+        writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
+    }
+    const auto halfBeat = textproj::kPPQ / 2;
+    job = doc->materialJob(shard.string(), audioTrack, halfBeat, copy, 1'700'000'000'000'005);
+    prepared = ui::ProjectDocument::prepareMaterial(job);
+    check(prepared.edit.ok && original != 0 && clipsOn(audioTrack) == 1,
+          "preparing the overlap leaves the original intact");
+    const auto replacement = doc->commitMaterial(prepared, job);
+    doc->synchronise();
+    const auto *track = doc->view().current()->findTrack(audioTrack);
+    check(replacement != 0 && track && track->clips.size() == 3 &&
+              track->clips[0]->id == original && track->clips[0]->lengthTicks == halfBeat &&
+              track->clips[1]->id == replacement && track->clips[1]->posTicks == halfBeat &&
+              track->clips[1]->lengthTicks == halfBeat &&
+              track->clips[2]->posTicks == 2 * halfBeat && track->clips[2]->lengthTicks == 2 * halfBeat &&
+              track->clips[2]->contentOffsetNs == 500'000'000,
+          "copy-in placement replaces its covered range and trims both old pieces to the proper source");
+    check(doc->ops().undo().ok && (doc->synchronise(), clipsOn(audioTrack) == 1) &&
+              doc->view().current()->findTrack(audioTrack)->clips.front()->id == original &&
+              doc->view().current()->findTrack(audioTrack)->clips.front()->lengthTicks == 4 * halfBeat,
+          "one undo removes the imported copy's rows and restores the uncut audio");
     doc->release();
 }
 // The extremes a waveform column draws (`peakSpan`): always those of real bins.

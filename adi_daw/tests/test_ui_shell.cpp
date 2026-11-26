@@ -6011,6 +6011,28 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
     check(root.command(AppCommands::Undo), "undo");
     root.frame();
 
+    // A separate-track drop covers only its first file's range on the target track.
+    const auto beat = textproj::kPPQ;
+    const auto punch = bar2 + beat / 2;
+    const auto initial = clipsOn(1);
+    check(root.dropAudioFiles({{snarePath.toStdString(), "Snare 909"}, {path.toStdString(), "Kick 808"}}, 1, punch, true),
+          "drop a file over the middle of an audio clip with a second file on its own track");
+    root.frame();
+    const auto *overwritten = root.reader().findTrack(1);
+    check(clipsOn(1) == Clips{{"Kick 808", bar2}, {"Snare 909", punch}, {"Kick 808", punch + beat}} &&
+              overwritten && overwritten->clips.size() == 3 &&
+              overwritten->clips[0]->lengthTicks == beat / 2 &&
+              overwritten->clips[1]->lengthTicks == beat &&
+              overwritten->clips[2]->lengthTicks == beat / 2 &&
+              overwritten->clips[2]->contentOffsetNs == 750'000'000 &&
+              clipsOn(3) == Clips{{"Kick 808", punch}},
+          "overlapping drop replaces only what it covers and keeps both source-aligned survivors");
+    check(root.command(AppCommands::Undo), "undo the overwrite in one step");
+    root.frame();
+    check(clipsOn(1) == initial && root.reader().findTrack(3) == nullptr &&
+              root.reader().findTrack(1)->clips.front()->lengthTicks == 2 * beat,
+          "undo restores the uncut clip and removes the full drop");
+
     // The browser's Samples and Places (D1; Live 12 manual 4.1, 4.6, 4.7; N15's index part): a folder
     // registered and scanned into the library index (#102) lists its audio files, and not its others;
     // right goes from the sidebar into the list, left back; the search narrows it; a row dragged onto a
