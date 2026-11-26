@@ -75,7 +75,7 @@ class MidiInputFeed {
 
     // Audio thread, once per device callback, before the document processes the block that starts at
     // stream sample `blockStart` and lasts `frames` at `sampleRate`; `nowMs` is the ports' clock now.
-    // `enqueue(streamSample, event)` returns whether the session took it. Returns how many it took.
+    // `enqueue(streamSample, event, inputSample)` returns whether the session took it. Returns how many it took.
     template <class Enqueue>
     std::size_t pump(std::int64_t blockStart, std::int32_t frames, double sampleRate, double nowMs, Enqueue &&enqueue) noexcept {
         if (restart_.exchange(false, std::memory_order_acq_rel)) {
@@ -138,14 +138,19 @@ class MidiInputFeed {
         const std::int64_t first = blockStart, lastSample = blockStart + std::max<std::int32_t>(frames, 1) - 1;
         for (std::size_t i = 0; i < pending_; ++i) {
             const auto &e = buffer_[i];
+            auto inputSample = first;
             auto sample = first;
             if (sampleRate > 0 && std::isfinite(e.timeMs) && std::isfinite(nowMs))
                 // The ports stamp with JUCE's millisecond counter, which some backends read in its 32-bit
                 // form that wraps every 2^32 ms while the high-resolution one does not: the age is taken
                 // modulo the wrap.
-                sample = blockStart + frames +
-                         static_cast<std::int64_t>(std::llround(std::remainder(e.timeMs - nowMs, 4294967296.0) * sampleRate / 1000.0));
+            {
+                inputSample = blockStart + static_cast<std::int64_t>(
+                    std::llround(std::remainder(e.timeMs - nowMs, 4294967296.0) * sampleRate / 1000.0));
+                sample = inputSample + frames;
+            }
             sample = std::clamp(sample, std::max(first, last_), lastSample);
+            inputSample = std::clamp(inputSample, std::int64_t{0}, sample);
             Out out{};
             (*parsers_)[e.port].feed(e.bytes.data(), e.size, &Out::sink, &out);
             for (std::size_t k = 0; k < out.count; ++k) {
@@ -161,7 +166,7 @@ class MidiInputFeed {
                     continue;
                 if (ev.noteId != 0)
                     ev.noteId = (static_cast<std::uint64_t>(e.port + 1) << 40) | (ev.noteId & ((std::uint64_t{1} << 40) - 1));
-                if (enqueue(sample, ev)) {
+                if (enqueue(sample, ev, inputSample)) {
                     ++taken;
                     last_ = sample;
                 } else {
