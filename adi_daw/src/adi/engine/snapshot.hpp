@@ -102,6 +102,7 @@ struct ClipNode {
     std::int64_t lengthTicks = 0;
     bool muted = false;
     float gainDb = 0.0f;
+    std::optional<std::int64_t> color{}; // absent inherits the track colour
     std::int64_t fadeInTicks=0,fadeOutTicks=0,fadeInCurve=1,fadeOutCurve=1;
     std::optional<double> fadeInTension,fadeOutTension;
     std::optional<std::int64_t> contentOffsetNs,loopBeginNs,loopEndNs,sourceEndNs;

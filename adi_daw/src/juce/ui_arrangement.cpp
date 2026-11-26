@@ -106,7 +106,7 @@ juce::Rectangle<float> ArrangementOverview::outline() const noexcept {
 }
 void ArrangementOverview::paint(juce::Graphics &g) {
     // Live's Overview: a grey line per track on the dark band, its clips in the
-    // track's colour, and a black outline around what is on screen.
+    // clip's colour, and a black outline around what is on screen.
     g.fillAll(look::band);
     const auto rows = view.geometry.rows(view.reader());
     const double total = static_cast<double>(span()), w = getWidth();
@@ -124,11 +124,13 @@ void ArrangementOverview::paint(juce::Graphics &g) {
         const float line = std::max(1.f, row - 1);
         g.setColour(look::panel);
         g.fillRect(0.f, y, static_cast<float>(w), line);
-        g.setColour(view.colourFor(r.position));
-        for (const auto &c : r.track->clips)
+        const auto trackColour = view.colourFor(r.position);
+        for (const auto &c : r.track->clips) {
+            g.setColour(c->color ? look::paletteColour(*c->color) : trackColour);
             g.fillRect(static_cast<float>(static_cast<double>(c->posTicks) / total * w), y,
                        std::max(1.f, static_cast<float>(static_cast<double>(c->lengthTicks) / total * w)),
                        line);
+        }
         y += row;
     }
     g.setColour(look::overviewFrame);
@@ -2558,7 +2560,8 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
             // A clip as Live 12 draws it (the director's reference pictures, 18 November): the whole
             // clip in its colour, solid, title strip and body alike, and what it holds drawn dark on
             // it. A deactivated clip is grey, as Live's.
-            const auto clipColour = c->muted ? look::mutedClip : colour;
+            const auto clipColour = c->muted ? static_cast<juce::Colour>(look::mutedClip)
+                                            : c->color ? look::paletteColour(*c->color) : colour;
             g.setColour(picked ? clipColour.brighter(0.25f) : clipColour);
             g.fillRect(left, static_cast<float>(y + 1), std::max(1.f, right - left), static_cast<float>(h - 4));
             g.setColour(clipColour);
@@ -2598,8 +2601,8 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
                 paintFades(g, *c, static_cast<float>(x), static_cast<float>(end), static_cast<float>(y + 1 + kClipBarHeight),
                            static_cast<float>(y + h - 3));
         };
-        // A clip dragged onto another track is drawn on that track's lane, in its colour; so is
-        // each of several selected clips dragged across tracks.
+        // A clip dragged across tracks is drawn on the destination lane, using that track's
+        // colour if the clip has no colour of its own.
         for (const auto &c : t->clips) {
             // A copy being dragged leaves its original drawn where it is.
             if (copying_ && moving_ != 0 &&

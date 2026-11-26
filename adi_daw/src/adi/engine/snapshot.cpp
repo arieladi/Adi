@@ -42,7 +42,7 @@ constexpr double kTicksPerQuarter = 5765760.0;   // ADI_PPQ, SPEC §4.2
 bool same(const ClipNode& a, const ClipNode& b) {
     return a.id == b.id && a.name == b.name && a.posTicks == b.posTicks && a.lengthTicks == b.lengthTicks &&
            a.timeBase==b.timeBase && a.posNs==b.posNs && a.lengthNs==b.lengthNs && a.laneId==b.laneId &&
-           a.muted == b.muted && a.gainDb == b.gainDb && a.fadeInTicks==b.fadeInTicks &&
+           a.muted == b.muted && a.gainDb == b.gainDb && a.color == b.color && a.fadeInTicks==b.fadeInTicks &&
            a.fadeOutTicks==b.fadeOutTicks && a.fadeInCurve==b.fadeInCurve && a.fadeOutCurve==b.fadeOutCurve &&
            a.fadeInTension==b.fadeInTension && a.fadeOutTension==b.fadeOutTension &&
            a.contentOffsetNs==b.contentOffsetNs && a.loopBeginNs==b.loopBeginNs &&
@@ -374,7 +374,7 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
         SQLite::Statement st(db,
             "SELECT id, track_id, IFNULL(pos_ticks,0), IFNULL(length_ticks,0), muted, "
             "gain_db, name, fade_in_ticks, fade_out_ticks, fade_in_curve, fade_out_curve, "
-            "content_offset_ticks,time_base,pos_ns,length_ns,lane_id "
+            "content_offset_ticks,time_base,pos_ns,length_ns,lane_id,color "
             "FROM clips WHERE track_id IS NOT NULL ORDER BY track_id, pos_ticks, id");
         while (st.executeStep()) {
             ClipNode c;
@@ -400,6 +400,7 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
             c.posNs=linear(13);
             c.lengthNs=linear(14);
             c.laneId=linear(15);
+            c.color=linear(16);
             if(c.timeBase==1) {
                 c.posTicks=c.posNs?snap->tempo->storedNanosecondsToTicks(*c.posNs):0;
                 c.lengthTicks=0;

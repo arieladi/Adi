@@ -11198,6 +11198,48 @@ void clipFades(AppCommands &commands, const std::filesystem::path &dir) {
     commands.detach(root);
     document->release();
 }
+void arrangementClipColour(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "clip-colour.adi", true, {}, error);
+    check(document != nullptr, "SC-37: a project for clip colours");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "clip-colour");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.setSize(1440, 900);
+    constexpr auto beat = textproj::kPPQ;
+    check(root.submitEdit("track.setColor", {{"id", 2}, {"color", 2}}, "Recolour Track") &&
+              root.submitEdit("clip.create", {{"id", 50}, {"track", 2}, {"kind", "midi"}, {"pos", beat},
+                                             {"length", 2 * beat}}, "Insert MIDI Clip"),
+          "SC-37: a clip without a custom colour on a red track");
+    auto &arrangement = root.arrangement;
+    auto &geometry = arrangement.geometry;
+    geometry.left = 0;
+    geometry.scale = 40;
+    geometry.heights[2] = 88;
+    root.frame();
+    auto &canvas = arrangement.canvas;
+    const auto top = laneTop(root, 2);
+    const auto hasColour = [&](std::int64_t palette) {
+        juce::Image image(juce::Image::RGB, canvas.getWidth(), canvas.getHeight(), true, juce::SoftwareImageType{});
+        juce::Graphics g(image);
+        canvas.paintEntireComponent(g, true);
+        const auto expected = look::paletteColour(palette);
+        return image.getPixelAt(100, top + 9) == expected && image.getPixelAt(100, top + 35) == expected;
+    };
+    check(hasColour(2), "SC-37: a clip with no colour inherits the track colour in its title and body");
+    geometry.selection.clip = 50;
+    root.frame();
+    check(root.clipView.chooseTitleItem(100), "SC-37: pick the first clip-view swatch");
+    geometry.selection.clip = 0;
+    geometry.selection.pickedClips.clear();
+    root.frame();
+    check(hasColour(0), "SC-37: the same clip redraws its title and body in the explicit palette colour zero");
+    check(root.command(AppCommands::Undo), "SC-37: undo the colour choice");
+    root.frame();
+    check(hasColour(2), "SC-37: undo restores the inherited track colour");
+}
 void clipWaveforms(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto document = ProjectDocument::open(dir / "waves.adi", true, {}, error);
@@ -21045,6 +21087,7 @@ int main(int argc, char **argv) {
     trace("mixSeekChecks", [&] { adi::uitest::mixSeekChecks(commands, temp.path(), check); });
     trace("recordingOptions", [&] { recordingOptions(commands, settings, temp.path()); });
     trace("undoHistoryWindow", [&] { undoHistoryWindow(commands, temp.path()); });
+    trace("arrangementClipColour", [&] { arrangementClipColour(commands, temp.path()); });
     trace("clipWaveforms", [&] { clipWaveforms(commands, temp.path()); });
     trace("clipFades", [&] { clipFades(commands, temp.path()); });
     trace("showcase", [&] { showcase(commands, temp.path()); });
