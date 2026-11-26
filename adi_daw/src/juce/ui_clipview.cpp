@@ -2991,11 +2991,16 @@ void SampleEditor::paint(juce::Graphics &g) {
 }
 
 // ---------------------------------------------------------------------------------------------
-ClipViewPanel::ClipViewPanel(AdiRootComponent &r) : root(r), notes(*this), sample(*this) {
+ClipViewPanel::ClipViewPanel(AdiRootComponent &r) : root(r), notes(*this), sample(*this), envelopes(*this) {
     setTitle("Clip View");
     setOpaque(true);
     addChildComponent(notes);
     addChildComponent(sample);
+    addChildComponent(envelopes);
+    addChildComponent(envelopesTab_);
+    envelopesTab_.setTitle("Clip Envelopes");
+    envelopesTab_.setTooltip("Switch between the Note Editor and its MIDI controller envelopes.");
+    envelopesTab_.onClick = [this] { showEnvelopes(!envelopesShown()); };
     // One editor for whichever field is typed into: Enter keeps the value, Esc and a click
     // elsewhere leave the field as it was.
     addChildComponent(editor_);
@@ -3414,6 +3419,25 @@ void ClipViewPanel::numberChanged(Field field, bool typed) {
     else if (field == Field::QuantizeAmount || field == Field::QuantizeSwing)
         keepSettings();
 }
+void ClipViewPanel::visibilityChanged() {
+    if (!isVisible())
+        envelopes.cancelGesture();
+}
+void ClipViewPanel::showEnvelopes(bool show) {
+    if ((show && !midi()) || envelopesShown_ == show)
+        return;
+    envelopesShown_ = show;
+    if (show)
+        notes.releasePianoPreview();
+    else
+        envelopes.cancelGesture();
+    resized();
+    repaint();
+    if (show)
+        focusIfShowing(envelopes);
+    else
+        focusIfShowing(notes);
+}
 void ClipViewPanel::resized() {
     // A field open for typing closes when the panels change places under it.
     if (const bool vertical = panelsVertical(); vertical != wasVertical_) {
@@ -3424,6 +3448,16 @@ void ClipViewPanel::resized() {
         scroll_ = columnScroll();
     notes.setBounds(editorArea().withTrimmedTop(filterArea().getHeight()).withTrimmedBottom(velocityStripArea().getHeight()));
     sample.setBounds(editorArea());
+    const auto header = headerArea();
+    const int width = std::clamp(header.getWidth() - 8, 0, 86);
+    const int left = std::max(header.getX() + 4,
+        std::min(coloursBox().getRight() + 8, gridBox().getX() - width - 4));
+    envelopesTab_.setBounds(left, header.getY() + 1, width, std::max(0, header.getHeight() - 2));
+    envelopesTab_.setVisible(midi());
+    envelopesTab_.setToggleState(envelopesShown(), juce::dontSendNotification);
+    notes.setVisible(midi() && !envelopesShown());
+    envelopes.setBounds(editorArea());
+    envelopes.setVisible(envelopesShown());
 }
 void ClipViewPanel::read(const SnapshotReader &reader) {
     details_.reset();
@@ -3565,7 +3599,6 @@ void ClipViewPanel::frame(const SnapshotReader &reader) {
         generation_ = generation;
         read_ = true;
         read(reader);
-        notes.setVisible(midi());
         sample.setVisible(audio());
         notes.prune();
         resized();
@@ -3579,6 +3612,22 @@ void ClipViewPanel::frame(const SnapshotReader &reader) {
     }
     notes.frame();
     sample.frame();
+    if (envelopesShown()) {
+        std::shared_ptr<const engine::ClipNode> selectedNode;
+        if (details_) {
+            if (const auto* track = reader.findTrack(details_->trackId)) {
+                const auto find = [this](const auto& clips) {
+                    const auto found = std::find_if(clips.begin(), clips.end(),
+                                                    [this](const auto& node) { return node && node->id == clip_; });
+                    return found == clips.end() ? std::shared_ptr<const engine::ClipNode>{} : *found;
+                };
+                selectedNode = find(track->clips);
+                if (!selectedNode)
+                    selectedNode = find(track->takeClips);
+            }
+        }
+        envelopes.setClip(std::move(selectedNode));
+    }
     // The Status Bar reads the selected notes: it is drawn again when what it would read changes.
     if (const auto stamp = midi() ? notes.statusStamp() : 0; stamp != statusStamp_) {
         statusStamp_ = stamp;
@@ -4501,7 +4550,7 @@ void ClipViewPanel::mouseDown(const juce::MouseEvent &e) {
         randomize();
         return;
     }
-    if (findBox().contains(at)) {
+    if (!envelopesShown() && findBox().contains(at)) {
         showFilters(!filtersShown_);
         return;
     }
@@ -4514,6 +4563,8 @@ void ClipViewPanel::mouseDown(const juce::MouseEvent &e) {
                                  });
         return;
     }
+    if (envelopesShown() && headerArea().contains(at))
+        return;
     if (coloursBox().contains(at)) {
         juce::Component::SafePointer<ClipViewPanel> safe(this);
         coloursMenu().showMenuAsync(
@@ -4727,6 +4778,8 @@ std::vector<juce::Rectangle<int>> ClipViewPanel::textAreas() const {
     if (notes.isVisible())
         for (auto r : notes.textAreas())
             out.push_back(r + notes.getPosition());
+    if (envelopesTab_.isVisible())
+        out.push_back(envelopesTab_.getBounds().reduced(2, 0));
     if (sample.isVisible())
         out.push_back(juce::Rectangle<int>(0, 0, sample.getWidth(), SampleEditor::kRulerHeight) + sample.getPosition());
     return out;
@@ -4961,7 +5014,7 @@ void ClipViewPanel::paint(juce::Graphics &g) {
         number(Field::RampEnd);
     }
     // The editor's header: its tab, and the editing grid at its right (manual 10.2.1).
-    if (const auto fold = foldBox(); !fold.isEmpty()) {
+    if (const auto fold = foldBox(); !envelopesShown() && !fold.isEmpty()) {
         // The header's switches: the shared button (language.png part B), lit while on.
         const auto onOff = [&](juce::Rectangle<int> box, bool on, const char *name) {
             controls::button(g, box.toFloat(), on ? controls::ButtonState::On : controls::ButtonState::Rest, name, look::fontSmall);
@@ -5027,7 +5080,8 @@ void ClipViewPanel::paint(juce::Graphics &g) {
         labels_.push_back(invert);
         labels_.push_back(select);
     }
-    text(midi() ? "Notes" : audio() ? "Sample" : "", header.withTrimmedLeft(midi() ? coloursBox().getRight() - header.getX() + 10 : 8).withWidth(60),
+    if (audio())
+        text("Sample", header.withTrimmedLeft(8).withWidth(60),
          juce::Justification::centredLeft, look::text, look::fontBody, true);
     text(r.grid, header.withTrimmedRight(8).removeFromRight(70), juce::Justification::centredRight, look::text, look::fontLabel);
     if (!problem_.empty())

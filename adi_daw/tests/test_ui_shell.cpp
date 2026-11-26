@@ -20,6 +20,7 @@
 #include "adi/ui/midi_tracks.hpp"
 #include "adi/ui/library_listing.hpp"
 #include "adi/ui/project_document.hpp"
+#include "adi/controller_lanes.hpp"
 #include "adi/ui/recording_edits.hpp"
 #include "adi/ui/audio_drop.hpp"
 #include "adi/ui/send_edits.hpp"
@@ -5402,6 +5403,129 @@ void clipViewNoteGrid(AppCommands &commands, const std::filesystem::path &dir) {
           "the temporary bypass keeps a resized start off the grid and preserves the end");
 }
 
+void clipControllerEnvelope(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "clip-controller-envelope.adi", true, {}, error);
+    check(document != nullptr, "a project for the MIDI controller envelope editor");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "controller-envelopes");
+    root.setSize(1400, 900);
+    constexpr auto beat = textproj::kPPQ;
+    if (!root.insertMidiClips({2}, 0, 4 * beat)) {
+        check(false, "an Arrangement MIDI clip for controller envelopes");
+        return;
+    }
+    const auto clip = root.arrangement.geometry.selection.clip;
+    const controllers::Address mod{50, clip, 2, 1}, pedal{51, clip, 2, 64};
+    const std::array modPoints{controllers::Point{1, beat, 0.25}, controllers::Point{2, 3 * beat, 0.75}};
+    const std::array pedalPoints{controllers::Point{1, 0, 1}};
+    check(root.submitEdits({controllers::writeRequest(mod, modPoints), controllers::writeRequest(pedal, pedalPoints)}),
+          "seed the clip's mod wheel and sustain envelopes");
+    root.showClipView();
+    root.resizeClipView(360);
+    root.frame();
+    auto &panel = root.clipView;
+    auto &editor = panel.envelopes;
+    check(panel.envelopesTab().isVisible() && panel.notes.isVisible() && !editor.isVisible(),
+          "MIDI shows an Envelopes tab while initially showing Notes");
+    panel.envelopesTab().onClick();
+    root.frame();
+    check(editor.isVisible() && !panel.notes.isVisible() && editor.lane() && editor.lane()->id == mod.id,
+          "the tab shows the selected clip's stored controller lanes");
+    if (!editor.lane())
+        return;
+
+    check(editor.chooseLane(pedal.id) && editor.lane()->points == std::vector<controllers::Point>(pedalPoints.begin(), pedalPoints.end()),
+          "the chooser selects the requested controller lane and channel");
+    check(editor.chooseLane(mod.id), "switch back to the mod wheel lane");
+    panel.notes.time.grid.snap = false;
+    const auto current = [&](std::int64_t laneId) {
+        const auto all = controllers::readLanes(document->store(), clip);
+        const auto lane = std::find_if(all.lanes.begin(), all.lanes.end(),
+                                       [&](const auto &item) { return item.id == laneId; });
+        return lane == all.lanes.end() ? std::vector<controllers::Point>{} : lane->points;
+    };
+
+    const auto initial = OpJournal(document->store()).headSeq();
+    const auto from = editor.pointPosition(modPoints[0]);
+    const auto to = editor.pointPosition({1, 2 * beat, 0.5});
+    editor.mouseDown(pressAt(editor, from));
+    editor.mouseDrag(dragAt(editor, from, to));
+    check(OpJournal(document->store()).headSeq() == initial,
+          "dragging previews a breakpoint without editing the store");
+    editor.mouseUp(pressAt(editor, to));
+    root.frame();
+    auto points = current(mod.id);
+    check(points.size() == 2 && points[0].id == 1 &&
+              std::abs(points[0].timeTicks - 2 * beat) <= beat / 1000 &&
+              std::abs(points[0].value - 0.5) < 0.01,
+          "releasing the drag writes the breakpoint's time and value");
+    check(root.command(AppCommands::Undo) && current(mod.id) == std::vector<controllers::Point>(modPoints.begin(), modPoints.end()),
+          "one Undo restores the original controller point");
+    root.frame();
+
+    const auto added = editor.pointPosition({0, 2 * beat, 1.0});
+    editor.mouseDown(pressAt(editor, added));
+    editor.mouseUp(pressAt(editor, added));
+    root.frame();
+    points = current(mod.id);
+    check(points.size() == 3 && std::abs(points[1].timeTicks - 2 * beat) <= beat / 1000 && points[1].value == 1.0,
+          "clicking the graph adds a controller breakpoint");
+    if (points.size() != 3)
+        return;
+    const auto selected = editor.pointPosition(points[1]);
+    editor.mouseDown(pressAt(editor, selected));
+    editor.mouseUp(pressAt(editor, selected));
+    check(editor.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)) && current(mod.id).size() == 2,
+          "Delete removes the selected breakpoint");
+    root.frame();
+    check(editor.clearEnvelope() && current(mod.id).empty() &&
+              current(pedal.id) == std::vector<controllers::Point>(pedalPoints.begin(), pedalPoints.end()),
+          "Clear Envelope deletes this lane's points and preserves the other controller");
+    check(root.command(AppCommands::Undo) && current(mod.id).size() == 2,
+          "one Undo restores the cleared controller envelope");
+    root.frame();
+
+    const auto beforeNew = OpJournal(document->store()).headSeq();
+    check(editor.chooseController(14, 74) && !editor.lane() &&
+              OpJournal(document->store()).headSeq() == beforeNew,
+          "choosing an unused MIDI controller address opens an empty envelope without creating a stream");
+    editor.mouseDown(pressAt(editor, added));
+    editor.mouseUp(pressAt(editor, added));
+    root.frame();
+    check(editor.lane() && editor.lane()->channel == 14 && editor.lane()->controller == 74 &&
+              editor.lane()->points.size() == 1 && editor.lane()->points.front().value == 1.0,
+          "drawing the first breakpoint creates the selected channel and controller stream");
+    check(root.command(AppCommands::Undo), "undo the first breakpoint in a new controller envelope");
+    root.frame();
+    check(!editor.lane() && current(mod.id).size() == 2 && current(pedal.id).size() == 1,
+          "one Undo removes the new stream and preserves both previous envelopes");
+    check(root.command(AppCommands::Redo), "redo the first breakpoint in a new controller envelope");
+    root.frame();
+    check(editor.lane() && editor.lane()->channel == 14 && editor.lane()->controller == 74 &&
+              editor.lane()->points.size() == 1,
+          "the selected controller address displays the restored lane after Redo");
+
+    check(editor.chooseController(2, controllers::kPitchBend) && !editor.lane(),
+          "choose a channel's empty Pitch Bend envelope");
+    const auto center = editor.pointPosition({0, beat, .5});
+    editor.mouseDown(pressAt(editor, center));
+    editor.mouseUp(pressAt(editor, center));
+    root.frame();
+    check(editor.lane() && editor.lane()->channel == 2 && editor.lane()->controller == controllers::kPitchBend &&
+              editor.lane()->points.size() == 1 && editor.lane()->points.front().value == .5,
+          "drawing at the center of the Pitch Bend envelope stores exact neutral");
+
+    allocations = 0;
+    audit = true;
+    root.frame();
+    audit = false;
+    check(allocations == 0, "the visible Envelopes tab allocates nothing in a steady frame");
+    panel.envelopesTab().onClick();
+    check(panel.notes.isVisible() && !editor.isVisible(), "click the Envelopes tab again to return to Notes");
+}
 // The Clip View's Main panel (worklist G2; manual 8.2): Start, End, the Loop switch, the loop's Position
 // and Length and the clip's Signature act, typed, dragged or through Live's Set buttons, each one of
 // the clip's own ops and one undo step; what the engine would refuse is refused with a reason; the
@@ -19258,6 +19382,7 @@ int main(int argc, char **argv) {
     trace("clipViewNotes", [&] { clipViewNotes(commands, temp.path()); });
     trace("clipViewNotePreview", [&] { clipViewNotePreview(commands, temp.path()); });
     trace("clipViewNoteGrid", [&] { clipViewNoteGrid(commands, temp.path()); });
+    trace("clipControllerEnvelope", [&] { clipControllerEnvelope(commands, temp.path()); });
     trace("clipViewFields", [&] { clipViewFields(commands, temp.path()); });
     trace("clipViewTools", [&] { clipViewTools(commands, temp.path()); });
     trace("clipViewMore", [&] { clipViewMore(commands, temp.path()); });

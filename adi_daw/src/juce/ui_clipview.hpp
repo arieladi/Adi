@@ -18,6 +18,7 @@
 #include "adi/ui/snapshot_reader.hpp"
 #include "adi/ui/window_state.hpp"
 #include "ui_arrangement.hpp"
+#include "ui_clip_controller.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
 #include <array>
@@ -310,6 +311,7 @@ class NoteEditor final : public juce::Component {
     bool pianoPreviewHeld_ = false;
     void audition(std::int64_t track, int key, int velocity = 100, bool held = false);
     void auditionSelected();
+    friend class ClipViewPanel;
     void releasePianoPreview();
     int laneHeight_ = kVelocityHeight, laneFrom_ = 0;
     // A stretch held: which marker, the pair as it was and the place grabbed, where the marker is
@@ -693,6 +695,11 @@ class ClipViewPanel final : public juce::Component {
     AdiRootComponent &root;
     NoteEditor notes;
     SampleEditor sample;
+    ClipControllerEditor envelopes;
+    void showEnvelopes(bool);
+    bool envelopesShown() const noexcept { return midi() && envelopesShown_; }
+    juce::Button &envelopesTab() noexcept { return envelopesTab_; }
+    void visibilityChanged() override;
 
   private:
     void read(const SnapshotReader &);
@@ -708,6 +715,8 @@ class ClipViewPanel final : public juce::Component {
     int *plainField(Field, int *low = nullptr, int *high = nullptr) noexcept;
     // What follows a number field's change: a Ramp value ramps; the Randomize amount typed randomizes.
     void numberChanged(Field, bool typed);
+    juce::TextButton envelopesTab_{"Envelopes"};
+    bool envelopesShown_ = false;
     bool panelsFolded_ = false;
     Panels arrangement_ = Panels::Automatic;
     bool edgeDrag_ = false, wasVertical_ = false;

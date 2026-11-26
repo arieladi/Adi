@@ -40,6 +40,7 @@
 #include <span>
 #include <type_traits>
 #include <variant>
+namespace adi::controllers { struct Address; }
 namespace adi::ui {
 class AdiRootComponent;
 class FloatingHost;
@@ -709,6 +710,9 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     double editRate() const noexcept;
     // The store an engine edit is prepared against, and the settings its policy is captured from.
     Store &editStore() noexcept { return submitter_.store(); }
+    bool writeControllerPoint(const controllers::Address &, const controllers::Point &,
+                              const std::optional<std::int64_t> &expectedHead);
+    bool deleteControllerPoints(const controllers::Lane &, std::span<const std::uint64_t>);
     const settings::AppSettings &commandSettings() const noexcept { return commands_.settings(); }
     // Live's Solo on track `id` (a switch, or S on the selection), with Exclusive Solo, Ctrl/Cmd for
     // several (`add`), and the selected tracks together; one undo step.
