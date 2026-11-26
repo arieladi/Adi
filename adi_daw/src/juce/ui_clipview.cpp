@@ -3764,7 +3764,7 @@ juce::Rectangle<int> ClipViewPanel::fieldBox(Field field) const noexcept {
     const int column = field == Field::End || field == Field::Length || field == Field::Scale || field == Field::Gain ? 1 : 0;
     if (field == Field::None)
         return {};
-    if (field == Field::Gain && (!audio() || panelsFolded_))
+    if ((field == Field::Gain && (!audio() || panelsFolded_)) || (field == Field::Scale && !midi()))
         return {};
     if (panelsFolded_ && (field == Field::Start || field == Field::End || field == Field::Position || field == Field::Length ||
                           field == Field::Signature || field == Field::Scale))

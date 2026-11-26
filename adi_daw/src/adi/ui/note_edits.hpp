@@ -92,7 +92,7 @@ inline NoteEdit addNote(const engine::ClipDetails &clip, std::int64_t start, std
                            {"key", key},
                            {"vel", std::clamp(velocity, 1, 127)}},
                           "Add Note"));
-    edit.select = {id};
+    edit.select.push_back(id);
     return edit;
 }
 
