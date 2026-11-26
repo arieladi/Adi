@@ -326,6 +326,49 @@ public:
         writer_.close();
     }
 };
+void keepPrefixAfterPartialDiskFailure() {
+    test::TempDirectory directory{"audio_recording","disk_error_keep"};
+    DiskFailure disk;
+    AudioInputRecorder recorder;
+    auto request=spec(directory.path());
+    request.targets={{21,{0}}};
+    std::string error;
+    if(!recorder.start(request,error,[&](const auto& file,auto rate,auto channels,auto format) {
+        return std::make_unique<PartialWaveSink>(file,rate,channels,format,disk,true);
+    }))throw std::runtime_error(error);
+    Transport transport;
+    transport.play();
+    const std::array<float,8> samples{.25f,-.5f,0.f,.5f,-.125f,0.f,0.f,.125f};
+    const std::array<float,8> unwritten{1.f,1.f,1.f,1.f,1.f,1.f,1.f,1.f};
+    const float* channels[]={samples.data()};
+    AudioIo io;
+    io.in=channels;
+    io.numIn=1;
+    io.frames=static_cast<int>(samples.size());
+    input(recorder,transport,io);
+    // Allow the first WAV write to finish before offering a block that will fail.
+    const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+    while(!disk.firstWrites.load(std::memory_order_acquire) && std::chrono::steady_clock::now()<deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    if(!disk.firstWrites.load(std::memory_order_acquire))
+        throw std::runtime_error("the first WAV block was not written");
+    channels[0]=unwritten.data();
+    io.streamTimeSamples=io.frames;
+    input(recorder,transport,io);
+    const auto result=finish(recorder,true);
+    check(result.failure==RecordingFailure::Io && result.error=="injected disk failure after the first write" &&
+          !recorder.pending(),"a non-cancelled disk failure finishes with its original writer error");
+    const auto file=result.directory()/"take-0.wav";
+    const bool retained=!result.directory().empty() && std::filesystem::is_regular_file(file);
+    check(retained,"a failed recording keeps its WAV even when closing the sink fails");
+    if(retained) {
+        audio::WavReader reader(file);
+        std::array<float,8> saved{};
+        check(reader.frames()==saved.size() &&
+              reader.read(saved.data(),static_cast<std::uint32_t>(saved.size()))==saved.size() && saved==samples,
+              "the first completed block survives and the failed block is absent");
+    }
+}
 void cancelAfterPartialDiskFailure() {
     for(const bool deviceStopped:{false,true}) {
         test::TempDirectory directory{"audio_recording","disk_error_cancel"};
@@ -586,7 +629,7 @@ int main() {
         actualFilesAndAcknowledgment();stopDrainsLastShortBlock();formatAndInputFailures();
         boundedOverflow();actualQueueWraps();waveformPreviewUsesCapturedFrames();
         discontinuityAndWriterFailures();closeFailureAfterDiscontinuity();
-        cancelAfterPartialDiskFailure();
+        keepPrefixAfterPartialDiskFailure();cancelAfterPartialDiskFailure();
 #if defined(_WIN32)
         cancelReportsCleanupDenial();
 #endif

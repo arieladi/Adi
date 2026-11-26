@@ -892,13 +892,14 @@ class AdiApplication final : public juce::JUCEApplication,
         root->readRecordStates = [this] { return document_->recordStates(); };
         root->setRecordStates(document_->recordStates());
         root->startRecording = [this](std::int64_t insertTick, bool playing) {
-            const auto *device = manager_.getCurrentAudioDevice();
-            const int inputs = device != nullptr ? device->getActiveInputChannels().countNumberOfSetBits() : 0;
-            if (device == nullptr) {
+            auto *audioDevice = manager_.getCurrentAudioDevice();
+            if (audioDevice == nullptr) {
                 root_->say("Recording needs an audio device. Choose one in the Settings' Audio page.");
                 return false;
             }
-            if (!document_->startRecording(insertTick, inputs, playing)) {
+            const int inputs = audioDevice->getActiveInputChannels().countNumberOfSetBits();
+            const auto latency = device::reportedRoundTripLatency(*audioDevice);
+            if (!document_->startRecording(insertTick, inputs, playing, latency)) {
                 root_->say(document_->error());
                 return false;
             }

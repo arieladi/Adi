@@ -66,6 +66,7 @@ struct Job {
     AudioRecordingSpec spec;
     fs::path directory;
     std::vector<RecordedTrack> tracks;
+    std::vector<std::int64_t> trackIds;
     std::vector<std::uint32_t> inputChannels;
     std::vector<std::vector<std::size_t>> mappings;
     std::vector<std::unique_ptr<AudioRecordingSink>> writers;
@@ -230,19 +231,19 @@ struct Job {
         publishPreview(Clock::now());
         done.store(true,std::memory_order_release);
     }
-    void capture(const AudioIo& io,const Transport& transport)noexcept {
-        if(failure.load(std::memory_order_relaxed)!=RecordingFailure::None || transportEnded.load(std::memory_order_relaxed))return;
-        if(!transport.playing()){if(begun)transportEnded.store(true,std::memory_order_release);return;}
-        if(io.frames==0)return;
-        if(io.frames<0 || static_cast<std::uint32_t>(io.frames)>spec.maxFrames){fail(RecordingFailure::BlockSize);return;}
+    bool capture(const AudioIo& io,const Transport& transport)noexcept {
+        if(failure.load(std::memory_order_relaxed)!=RecordingFailure::None || transportEnded.load(std::memory_order_relaxed))return false;
+        if(!transport.playing()){if(begun)transportEnded.store(true,std::memory_order_release);return false;}
+        if(io.frames==0)return false;
+        if(io.frames<0 || static_cast<std::uint32_t>(io.frames)>spec.maxFrames){fail(RecordingFailure::BlockSize);return false;}
         const auto frames=static_cast<std::uint32_t>(io.frames);
-        for(const auto channel:inputChannels)if(!io.in || io.numIn<=0 || channel>=static_cast<std::uint32_t>(io.numIn) || !io.in[channel]){fail(RecordingFailure::MissingInput);return;}
+        for(const auto channel:inputChannels)if(!io.in || io.numIn<=0 || channel>=static_cast<std::uint32_t>(io.numIn) || !io.in[channel]){fail(RecordingFailure::MissingInput);return false;}
         const auto position=spec.loop?transport.sampleAt(0):transport.position();
         if(position<0 || io.streamTimeSamples<0 || io.streamTimeSamples>std::numeric_limits<std::int64_t>::max()-frames ||
-           (begun && (position!=nextTimeline || io.streamTimeSamples!=nextStream))){fail(RecordingFailure::Discontinuity);return;}
+           (begun && (position!=nextTimeline || io.streamTimeSamples!=nextStream))){fail(RecordingFailure::Discontinuity);return false;}
         if(spec.loop) {
             if(!transport.looping() || transport.loopBegin()!=spec.loop->beginSample || transport.loopEnd()!=spec.loop->endSample ||
-               (begun && transport.revision()!=transportRevision)){fail(RecordingFailure::Discontinuity);return;}
+               (begun && transport.revision()!=transportRevision)){fail(RecordingFailure::Discontinuity);return false;}
             // Preflight the entire callback before modifying either log or ring.
             // A callback can span many short loops; callback boundaries do not
             // create passes, and ending exactly at loop end creates no empty row.
@@ -250,18 +251,18 @@ struct Job {
             auto previousEnd=needed?passes[needed-1].timelineEndSample:std::int64_t{-1};
             for(std::int64_t offset=0;offset<frames;) {
                 const auto at=transport.sampleAt(offset),count=transport.contiguousFrames(offset,frames-offset);
-                if(count<=0){fail(RecordingFailure::Discontinuity);return;}
+                if(count<=0){fail(RecordingFailure::Discontinuity);return false;}
                 if(previousEnd!=at) {
-                    if(needed==passes.size()){fail(RecordingFailure::PassLimit);return;}
+                    if(needed==passes.size()){fail(RecordingFailure::PassLimit);return false;}
                     ++needed;
                 }
                 previousEnd=at+count;offset+=count;
             }
         }else if(position>std::numeric_limits<std::int64_t>::max()-frames || transport.contiguousFrames(0,frames)!=frames) {
-            fail(RecordingFailure::Discontinuity);return;
+            fail(RecordingFailure::Discontinuity);return false;
         }
         const auto head=written.load(std::memory_order_relaxed),tail=read.load(std::memory_order_acquire);
-        if(head>std::numeric_limits<std::uint64_t>::max()-frames || head-tail+frames>spec.ringFrames){fail(RecordingFailure::Overflow);return;}
+        if(head>std::numeric_limits<std::uint64_t>::max()-frames || head-tail+frames>spec.ringFrames){fail(RecordingFailure::Overflow);return false;}
         if(spec.loop)for(std::int64_t offset=0;offset<frames;) {
             const auto at=transport.sampleAt(offset),count=transport.contiguousFrames(offset,frames-offset);
             if(passCount==0 || passes[passCount-1].timelineEndSample!=at)
@@ -273,6 +274,7 @@ struct Job {
         if(!begun){firstSample.store(position,std::memory_order_relaxed);transportRevision=transport.revision();begun=true;}
         nextTimeline=spec.loop?transport.sampleAt(frames):position+frames;nextStream=io.streamTimeSamples+frames;
         written.store(head+frames,std::memory_order_release);
+        return true;
     }
 };
 struct State final:Sequenced {std::shared_ptr<Job> job;};
@@ -336,6 +338,7 @@ bool AudioInputRecorder::start(const AudioRecordingSpec& spec,std::string& error
             channels.insert(target.channels.begin(),target.channels.end());
         }
         if(static_cast<std::uint64_t>(spec.ringFrames)*channels.size()*sizeof(float)>256ULL*1024*1024)throw std::runtime_error("recording ring exceeds memory bound");
+        job->trackIds.assign(targetIds.begin(),targetIds.end());
         job->inputChannels.assign(channels.begin(),channels.end());job->ring.resize(static_cast<std::size_t>(spec.ringFrames)*channels.size());job->readBuffer.resize(4096*channels.size());
         owned=reserve(spec.workFolder);job->directory=owned;
         for(std::size_t index=0;index<spec.targets.size();++index) {
@@ -406,8 +409,10 @@ std::optional<AudioRecordingResult> AudioInputRecorder::poll(bool deviceStopped)
     }
     return result;
 }
-void AudioInputRecorder::capture(const AudioIo& io,const Transport& transport)noexcept {
+std::span<const std::int64_t> AudioInputRecorder::capture(const AudioIo& io,const Transport& transport)noexcept {
     SnapshotPublisher<State>::AudioRead state(*impl_->published);
-    if(state.valid() && state->job)state->job->capture(io,transport);
+    if(state.valid() && state->job && state->job->capture(io,transport))
+        return state->job->trackIds;
+    return {};
 }
 }

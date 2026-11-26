@@ -399,7 +399,7 @@ void ProjectDocument::tick(std::int64_t milliseconds) {
     // turns Record off. A healthy capture returns nothing. With the device stopped, nothing moves the
     // callback on, so the take is settled as the driver's is.
     if (recording_ || landing_)
-        if (auto result = session_.recording().poll(deviceStopped_.load(std::memory_order_acquire) && landing_)) {
+        if (auto result = session_.recording().poll(deviceStopped_.load(std::memory_order_acquire))) {
             recording_ = false;
             landing_ = false;
             landTake(*result);
@@ -1214,7 +1214,8 @@ RecordStates ProjectDocument::recordStates() const {
         out[t.id] = {t.recordArmed, t.monitorMode == 1 ? Monitor::In : t.monitorMode == 2 ? Monitor::Auto : Monitor::Off};
     return out;
 }
-bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t inputs, bool playing) {
+bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t inputs, bool playing,
+                                     std::int64_t deviceLatencySamples) {
     if (recording_ || landing_) {
         error_ = recording_ ? "Recording is already running." : "The last take is still being saved.";
         return false;
@@ -1264,6 +1265,7 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
         error_ = "Transport command queue is full" + (kept.empty() ? std::string() : "." + kept);
         return false;
     }
+    takeLatencySamples_ = deviceLatencySamples;
     recording_ = true;
     error_.clear();
     return true;
@@ -1297,9 +1299,11 @@ std::string recordingFailure(const engine::AudioRecordingResult &r) {
     }
     return r.error;
 }
+std::string retainedCaptureLocation(const engine::AudioRecordingResult &result) {
+    return " Look for the recorded WAV files in " + media::pathUtf8(result.directory()) + ".";
+}
 } // namespace
-// A take that is not kept goes with its private files (DF-E44): a folder the system would not remove stays
-// in the project's folder, and the Status Bar says so, with the system's words, rather than nothing.
+// For an empty or cancelled capture, report if the system refuses to remove its private directory.
 std::string ProjectDocument::discardTake(engine::AudioRecordingResult &result) {
     const auto refused = result.discard();
     if (!refused)
@@ -1311,7 +1315,13 @@ void ProjectDocument::landTake(engine::AudioRecordingResult &result) {
     TakeLanded outcome;
     const auto interruption = recordingFailure(result);
     if (!result.hasAttachableAudio()) {
-        outcome.message = "The take was not kept: " + interruption + "." + discardTake(result);
+        using Failure = engine::RecordingFailure;
+        if (result.failure == Failure::Cancelled || result.failure == Failure::NoFrames) {
+            outcome.message = "The take was not kept: " + interruption + "." + discardTake(result);
+        } else {
+            outcome.message = interruption.empty() ? "The capture did not finish." : "Recording stopped because " + interruption + ".";
+            outcome.message += retainedCaptureLocation(result);
+        }
         landed_ = std::move(outcome);
         return;
     }
@@ -1319,19 +1329,24 @@ void ProjectDocument::landTake(engine::AudioRecordingResult &result) {
     // them (Live names a take by its track, "5 Audio"; a stored "# Audio" shows its number, walk-B B3).
     // One `RowIds` for the take's rows (DF-E16): past every clip and media row, and past a clip id a
     // remark still holds.
-    RowIds rows(store_->db());
-    std::vector<recording::ClipIds> ids;
-    const SnapshotReader current(view_.current());
-    for (const auto &track : result.tracks) {
-        auto name = shownTrackName(current, track.trackId);
-        const auto clip = rows.next("clips");
-        ids.push_back({clip, rows.next("media_files"), name.empty() ? std::string("Take") : std::move(name)});
-        outcome.clips.push_back(ids.back().clip);
+    recording::RecordingEdit edit;
+    try {
+        RowIds rows(store_->db());
+        std::vector<recording::ClipIds> ids;
+        const SnapshotReader current(view_.current());
+        for (const auto &track : result.tracks) {
+            auto name = shownTrackName(current, track.trackId);
+            const auto clip = rows.next("clips");
+            ids.push_back({clip, rows.next("media_files"), name.empty() ? std::string("Take") : std::move(name)});
+            outcome.clips.push_back(ids.back().clip);
+        }
+        edit = recording::prepareCommit(*store_, result, ids, takeLatencySamples_);
+    } catch (const std::exception &error) {
+        edit.error = error.what();
     }
-    auto edit = recording::prepareCommit(*store_, result, ids);
     if (!edit.ok) {
         outcome.clips.clear();
-        outcome.message = "The take was recorded but could not be added: " + edit.error + "." + discardTake(result);
+        outcome.message = "Could not add the recorded take. " + edit.error + "." + retainedCaptureLocation(result);
         landed_ = std::move(outcome);
         return;
     }
@@ -1339,7 +1354,7 @@ void ProjectDocument::landTake(engine::AudioRecordingResult &result) {
         ops_.commitPrepared(edit.requests, [&](Store &s, Actor actor) { return recording::commit(s, edit, actor); });
     if (!committed) {
         outcome.clips.clear();
-        outcome.message = "The take was recorded but could not be added: " + committed.error + ".";
+        outcome.message = "Could not add the recorded take. " + committed.error + "." + retainedCaptureLocation(result);
         landed_ = std::move(outcome);
         return;
     }

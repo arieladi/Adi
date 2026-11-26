@@ -11462,6 +11462,27 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
             check(allocations == 0, "SC-20: replacing the live waveform snapshot allocates nothing in a frame");
         }
     }
+    auto &lanes = root.arrangement;
+    auto &transport = document->session().transport();
+    const auto lanePress = [&](int x, int button) {
+        auto &canvas = lanes.canvas;
+        const juce::Point<int> at{x, laneTop(root, 4) + 12};
+        canvas.mouseDown(pressAt(canvas, at.toFloat(), juce::ModifierKeys(button)));
+        canvas.mouseUp(pressAt(canvas, at.toFloat()));
+        if (button == juce::ModifierKeys::rightButtonModifier)
+            juce::PopupMenu::dismissAllActiveMenus();
+    };
+    for (const int button : {juce::ModifierKeys::leftButtonModifier, juce::ModifierKeys::rightButtonModifier}) {
+        const auto insert = lanes.geometry.selection.insert;
+        const auto sample = transport.position();
+        const auto revision = transport.revision();
+        lanePress(button == juce::ModifierKeys::leftButtonModifier ? 140 : 210, button);
+        block();
+        frame();
+        check(lanes.geometry.selection.insert != insert && transport.position() == sample + io.frames &&
+                  transport.revision() == revision && document->recording(),
+              "SC-02: a lane press moves the insert marker without seeking or interrupting the take");
+    }
     check(root.command(AppCommands::ArrangementRecord), "F9's command again");
     frame();
     check(root.arrangement.liveTake() && root.arrangement.liveTake()->landing,
@@ -11501,6 +11522,24 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
     landed = document->takeLanded();
     check(landed && landed->ok && landed->clips.size() == 2, "the punched-in takes land");
     frame();
+    const auto stopped = transport.position();
+    lanePress(270, juce::ModifierKeys::leftButtonModifier);
+    block();
+    const auto marker = transport.position();
+    check(marker != stopped && !transport.playing(), "a stopped lane press still positions the playhead");
+    const juce::KeyPress resume(juce::KeyPress::spaceKey, juce::ModifierKeys::shiftModifier, 0);
+    check(root.keyPressed(resume), "Shift+Space invokes Continue");
+    block();
+    check(transport.playing() && transport.position() == stopped + io.frames,
+          "SC-03: Continue resumes at the driver's last stop position after a lane press");
+    check(root.command(AppCommands::Stop), "stop continued playback");
+    block();
+    check(root.keyPressed(juce::KeyPress(juce::KeyPress::spaceKey)), "Space invokes Play");
+    block();
+    check(transport.playing() && transport.position() == marker + io.frames,
+          "Space starts from the current insert marker");
+    check(root.command(AppCommands::Stop), "stop playback from the marker");
+    block();
     // A Count-In is playing for the window: Space during it stops, it does not start again.
     {
         OpRequest countIn;
@@ -11513,6 +11552,12 @@ void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
         block();
         check(document->mailbox().playing() && document->session().transport().countInRemaining() > 0,
               "during the Count-In the window reads the transport as playing");
+        const auto leadIn = transport.countInRemaining();
+        const auto sample = transport.position();
+        lanePress(340, juce::ModifierKeys::leftButtonModifier);
+        block();
+        check(transport.countInRemaining() == leadIn - io.frames && transport.position() == sample,
+              "SC-02: a lane press neither cancels nor relocates the Count-In");
         check(root.command(AppCommands::PlayStop) && !document->recording() && !document->mailbox().desiredPlaying(),
               "Space during the Count-In stops it and the recording [P:recording#29]");
         block();
