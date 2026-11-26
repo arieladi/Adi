@@ -88,9 +88,7 @@ inline TrackEdit setMonitor(const SnapshotTracks &tracks, const RecordStates &st
     }
     return edit;
 }
-// The tracks a Record takes (manual 21.1: "all armed tracks"): the armed ones the snapshot still holds,
-// in its order, audio apart from MIDI, since the recorder takes audio and the engine's live MIDI input
-// is not on main yet.
+// The tracks Arrangement Record takes: the armed ones the snapshot still holds, in track order.
 struct ArmedTracks {
     std::vector<std::int64_t> audio, midi;
 };

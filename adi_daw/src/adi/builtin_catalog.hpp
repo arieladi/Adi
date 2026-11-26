@@ -30,20 +30,38 @@ struct PreparedBuiltinInsert {
     bool ok=false;
     std::string error,sourceFile;
     std::int64_t deviceId=0,chainId=0,referenceId=0;
+    std::optional<std::int64_t> newTrack;
     std::vector<OpRequest> requests;
     CommitOptions options;
 };
-// A document reserves IDs belonging to runtimes retained for Undo.
+// A document reserves IDs belonging to runtimes retained for Undo. For a
+// drop onto a new track, the track-creation requests start the same batch.
 [[nodiscard]] PreparedBuiltinInsert prepareBuiltinInsert(Store&,std::string_view uid,
-    std::int64_t track,std::optional<std::int64_t> beforeDevice={},std::int64_t retainedDeviceId=0);
+    std::int64_t track,std::optional<std::int64_t> beforeDevice={},std::int64_t retainedDeviceId=0,
+    std::span<const OpRequest> newTrack={});
 struct PluginInsertOptions {
     bool replaceInstrument = false;
     std::optional<engine::RouteChoice> expressionRoute;
 };
 [[nodiscard]] PreparedBuiltinInsert preparePluginInsert(Store&,const rows::PluginRef&,std::int64_t track,
     std::optional<std::int64_t> beforeDevice={},const PluginInsertOptions& = {},
-    std::int64_t retainedDeviceId=0);
+    std::int64_t retainedDeviceId=0,std::span<const OpRequest> newTrack={});
 [[nodiscard]] CommitResult commitBuiltinInsert(Store&,const PreparedBuiltinInsert&,Actor=Actor::User);
+
+struct DeviceMoveSource {
+    std::int64_t device, track, chain;
+};
+struct PreparedDeviceMove {
+    bool ok = false;
+    std::string error, sourceFile;
+    std::vector<OpRequest> requests;
+    CommitOptions options;
+};
+// Move the same device and its state. A missing anchor means the destination
+// track's root chain, which is created in the same Undo step when needed.
+[[nodiscard]] PreparedDeviceMove prepareDeviceMove(Store&, DeviceMoveSource, std::int64_t track,
+                                                    std::optional<std::int64_t> before);
+[[nodiscard]] CommitResult commitDeviceMove(Store&, const PreparedDeviceMove&, Actor = Actor::User);
 std::span<const OpDescriptor> builtinReferenceOps();
 
 namespace detail {

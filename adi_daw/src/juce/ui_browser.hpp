@@ -34,7 +34,7 @@ class BrowserList final : public juce::ListBox {
 // track or into the chain. An entry
 // this build cannot load is dimmed and says why. Plug-Ins lists the VST3 and CLAP plug-ins the app's
 // loader found, in folders by format and vendor (DF-W9), from the app's scan off the message thread
-// (DF-W34); double-click or Enter loads one onto the selected track through the engine's insert (N57). The other categories say what they wait for.
+// (DF-W34); double-click, Enter and drag load through the engine's insert (N57). The other categories say what they wait for.
 class BrowserPanel final : public juce::Component, public juce::SettableTooltipClient, private juce::ListBoxModel {
   public:
     explicit BrowserPanel(AdiRootComponent &);
@@ -108,6 +108,9 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     // A device's drag description, and the uid a drop carries ("" when it is not a device).
     static juce::String deviceDescription(const BuiltinInfo &);
     static std::string droppedDevice(const juce::var &description);
+    bool acceptsDeviceDrop(const juce::DragAndDropTarget::SourceDetails &) const;
+    bool loadDroppedDevice(const juce::DragAndDropTarget::SourceDetails &, std::int64_t track,
+                           std::optional<std::int64_t> before = {});
     // The drag's description of these files: what the lanes accept as a drop (`dropDescription`).
     static juce::String dragDescription(const std::vector<const LibraryFile *> &);
     static juce::StringArray droppedFiles(const juce::var &description);
@@ -115,6 +118,8 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     juce::KeyListener &searchKeys() noexcept { return searchKeys_; }
 
   private:
+    const PluginEntry *draggedPlugin(const juce::DragAndDropTarget::SourceDetails &) const;
+    bool loadPluginEntry(const PluginEntry &, std::int64_t track, std::optional<std::int64_t> before);
     // The list's rows for the label chosen and the search typed.
     void refill();
     int getNumRows() override;

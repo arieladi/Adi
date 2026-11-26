@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/audio/wav_file.hpp"
 #include "adi/automation_lanes.hpp"
+#include "adi/engine/clip_details.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/settings/store.hpp"
 #include "adi/ui/project_document.hpp"
@@ -145,12 +146,14 @@ double bin(const std::array<float, 2048> &data, int k) {
 // DevicePanelData::latency defaulted to zero. The two controls retain the shared headless fixture.
 class SurfaceKnobs final : public device::DeviceInstance {
   public:
-    explicit SurfaceKnobs(std::int32_t initialLatency = 37) : reportedLatency(initialLatency) {}
+    explicit SurfaceKnobs(std::int32_t initialLatency = 37, engine::EventFlow flow = engine::EventFlow::Through)
+        : reportedLatency(initialLatency), flow_(flow) {}
     const device::DeviceIdentity &identity() const noexcept override { return controls.identity(); }
     bool loaded() const noexcept override { return true; }
     std::string_view processingIssue() const noexcept override { return issue; }
     void process(const engine::NodeIo &io) noexcept override { device::passThrough(io); }
     std::int32_t latencySamples() const noexcept override { return reportedLatency; }
+    engine::EventFlow eventFlow() const noexcept override { return flow_; }
     std::int32_t paramCount() const noexcept override { return controls.paramCount(); }
     const device::ParamDescriptor *paramAt(std::int32_t i) const noexcept override { return controls.paramAt(i); }
     device::ParamValue getParam(const std::string &id) const noexcept override { return controls.getParam(id); }
@@ -159,6 +162,8 @@ class SurfaceKnobs final : public device::DeviceInstance {
     std::int32_t reportedLatency;
     test::Knobs controls;
     std::string issue;
+  private:
+    engine::EventFlow flow_;
 };
 
 Payload readLatencyReport(Store &store) {
@@ -332,6 +337,152 @@ void refusedBeginOwnership(const std::filesystem::path &dir) {
                              p.submission == CapturedSubmissionPhase::Refused;
                   }), "refused Begin: a completed newer edit does not silently retry an older refused transaction");
         } catch (const std::exception &e) { check(false, e.what()); }
+    }
+}
+
+void moveOrdinaryDevice(const std::filesystem::path &file) {
+    std::string error;
+    auto document = ui::ProjectDocument::open(file, true, test::knobsLoader(), error);
+    check(document != nullptr, "SC-83: a project to move devices in");
+    if (!document)
+        return;
+    constexpr std::int64_t sourceTrack = 2, targetTrack = 4;
+    rows::PluginRef plugin;
+    plugin.format = "clap";
+    plugin.uid = test::kKnobsUid;
+    plugin.name = "UI knobs";
+    plugin.subtype = "effect";
+    const bool inserted = document->insertPlugin(plugin, sourceTrack) && document->insertPlugin(plugin, sourceTrack);
+    check(inserted, "SC-83: two ordinary plug-ins in the source chain");
+    if (!inserted)
+        return;
+    const auto chain = [&](std::int64_t track) {
+        std::vector<ui::DevicePanelData> devices;
+        const auto publication = document->parameterFeed().current();
+        for (const auto &device : *publication)
+            if (device.track == track)
+                devices.push_back(device);
+        return devices;
+    };
+    const auto original = chain(sourceTrack);
+    const bool initial = original.size() == 2 && chain(targetTrack).empty();
+    check(initial, "SC-83: the published source chain and a destination without a chain");
+    if (!initial)
+        return;
+    const auto first = original.front().id;
+    const auto moving = original.back();
+    auto *const runtime = document->session().instanceFor(moving.id);
+    check(runtime != nullptr && document->deviceAction("device.setParam", {{"dev", moving.id}, {"param", "cutoff"}, {"norm", .75}}),
+          "SC-83: the moving device has a live instance and saved parameter");
+    auto &db = document->store().db();
+    const auto order = [&](std::int64_t track) {
+        std::vector<std::int64_t> ids;
+        for (const auto &device : chain(track))
+            ids.push_back(device.id);
+        return ids;
+    };
+    check(document->moveDevice(moving, sourceTrack, first) &&
+              order(sourceTrack) == std::vector<std::int64_t>{moving.id, first},
+          "SC-83: the document moves the second ordinary device before the first");
+    const auto reorderedHead = OpJournal(document->store()).headSeq();
+    check(document->moveDevice(moving, sourceTrack, first) && document->moveDevice(moving, sourceTrack, moving.id) &&
+              OpJournal(document->store()).headSeq() == reorderedHead,
+          "SC-83: dropping on itself or in the same place leaves history alone");
+    const auto countTargetChains = [&] {
+        SQLite::Statement count(db, "SELECT count(*) FROM device_chains WHERE track_id=?");
+        count.bind(1, targetTrack);
+        (void)count.executeStep();
+        return count.getColumn(0).getInt();
+    };
+    check(countTargetChains() == 0 && document->moveDevice(moving, targetTrack, {}) && countTargetChains() == 1 &&
+              order(sourceTrack) == std::vector<std::int64_t>{first} && order(targetTrack) == std::vector<std::int64_t>{moving.id},
+          "SC-83: a drop on an empty track creates a chain and moves the same row to it");
+    SQLite::Statement state(db, "SELECT normalized_value FROM plugin_params WHERE device_id=? AND param_id='cutoff'");
+    state.bind(1, moving.id);
+    check(state.executeStep() && state.getColumn(0).getDouble() == .75 &&
+              document->session().instanceFor(moving.id) == runtime,
+          "SC-83: the moved plug-in retains its parameter and runtime");
+    state.reset();
+    const auto crossTrackHead = OpJournal(document->store()).headSeq();
+    check(!document->moveDevice(moving, sourceTrack, first) && OpJournal(document->store()).headSeq() == crossTrackHead,
+          "SC-83: the old drag cannot move the device again from its previous track");
+    check(document->ops().nextUndo()->label == "Move Device" && document->ops().undo().ok && document->synchronise(),
+          "SC-83: the cross-track move is one Undo step");
+    document->tick(0);
+    check(countTargetChains() == 0 && order(sourceTrack) == std::vector<std::int64_t>{moving.id, first} &&
+              order(targetTrack).empty() && OpJournal(document->store()).headSeq() == reorderedHead,
+          "SC-83: Undo restores the source order and removes the added chain");
+}
+void dropDeviceOnNewTrack(const std::filesystem::path &dir) {
+    constexpr std::int64_t existingTrack = 4;
+    for (const auto *subtype : {"instrument", "midi_effect", "effect"}) {
+        std::string error;
+        auto document = ui::ProjectDocument::open(dir / (std::string("new-track-") + subtype + ".adi"),
+                                                  true, test::knobsLoader(), error);
+        check(document != nullptr, "SC-84/61: a document for dropping a device below the tracks");
+        if (!document)
+            continue;
+        rows::PluginRef plugin;
+        plugin.format = "clap";
+        plugin.uid = test::kKnobsUid;
+        plugin.name = "Drop device";
+        plugin.subtype = subtype;
+        auto &db = document->store().db();
+        const auto tracks = [&] { return db.execAndGet("SELECT count(*) FROM tracks").getInt(); };
+        const auto before = tracks();
+        const auto beforeHead = OpJournal(document->store()).headSeq();
+        ui::Selection selection;
+        selection.track = existingTrack;
+        selection.marked = true;
+        selection.insert = textproj::kWhole;
+        selection.start = selection.insert;
+        selection.end = selection.insert * 2;
+        check(document->sessionState().select(selection, error), "SC-84/61: select an existing track first");
+        const ui::RecordingDefaults defaults{"off", false};
+        check(!document->loadPlugin(plugin, 0, std::int64_t{1}, &defaults) && tracks() == before &&
+                  OpJournal(document->store()).headSeq() == beforeHead,
+              "SC-84/61: an incompatible anchor leaves no new track or history");
+        db.exec("CREATE TEMP TRIGGER refuse_device_drop BEFORE INSERT ON main.ops "
+                "WHEN NEW.op_type='device.insert' BEGIN SELECT RAISE(ABORT,'drop rejected'); END");
+        check(!document->loadPlugin(plugin, 0, {}, &defaults) && tracks() == before &&
+                  OpJournal(document->store()).headSeq() == beforeHead && document->sessionState().selection() == selection,
+              "SC-84/61: a late device refusal rolls back the track and leaves the selection alone");
+        db.exec("DROP TRIGGER refuse_device_drop");
+        const auto loaded = document->loadPlugin(plugin, 0, {}, &defaults);
+        const auto selected = document->sessionState().selection();
+        const auto current = document->view().current();
+        const auto *track = current->findTrack(selected.track);
+        const auto *firstReturn = current->findTrack(6);
+        const auto expectedKind = std::string_view(subtype) == "effect" ? "audio" : "midi";
+        check(loaded && tracks() == before + 1 && track != nullptr && track->kind == expectedKind &&
+                  track->parent == 0 && firstReturn != nullptr && track->indexInParent < firstReturn->indexInParent &&
+                  selected.track != existingTrack && selected.start == selected.end && selected.insert == selection.insert,
+              "SC-84/61: the correct new top-level track is selected before the returns");
+        if (!loaded || track == nullptr)
+            continue;
+        {
+            SQLite::Statement row(db, "SELECT t.monitor_mode,o.record_enabled,o.keep_monitoring_latency,d.name "
+                "FROM tracks t JOIN track_recording_options o ON o.track_id=t.id "
+                "JOIN device_chains c ON c.track_id=t.id JOIN devices d ON d.chain_id=c.id WHERE t.id=?");
+            row.bind(1, track->id);
+            check(row.executeStep() && row.getColumn(0).getInt() == 2 && row.getColumn(1).getInt() == 0 &&
+                      row.getColumn(2).getInt() == 0 && row.getColumn(3).getString() == plugin.name,
+                  "SC-84/61: new-track recording defaults and the device are created together");
+        }
+        const auto step = document->ops().nextUndo();
+        const auto undone = document->ops().undo();
+        check(step && step->label == "Insert Drop device" && undone.ok && document->synchronise() && tracks() == before &&
+                  OpJournal(document->store()).headSeq() == beforeHead,
+              "SC-84/61: one Undo removes the track and the device");
+    }
+    const auto *builtin = findBuiltin("org.adidaw.builtin.auto-filter");
+    if (builtin != nullptr && builtin->available) {
+        std::string error;
+        auto document = ui::ProjectDocument::open(dir / "new-track-builtin.adi", true, {}, error);
+        const bool loaded = document && document->insertBuiltin(std::string(builtin->uid), 0, {});
+        const auto *track = loaded ? document->view().current()->findTrack(document->sessionState().selection().track) : nullptr;
+        check(track != nullptr && track->kind == "audio",
+              "SC-84: an ADI audio effect dropped below the tracks creates an audio track too");
     }
 }
 
@@ -718,10 +869,7 @@ void arrangementRecord(const std::filesystem::path &dir) {
     };
     check(!doc->startRecording(0, 2, false) && doc->error() == "Arm a track to record into it.",
           "with nothing armed, Record says to arm a track");
-    check(armed(2, true) && doc->recordStates().at(2).armed, "a MIDI track armed, as the rows say");
-    check(!doc->startRecording(0, 2, false) && doc->error().find("live MIDI input") != std::string::npos,
-          "with only MIDI armed, Record says MIDI waits for the engine's live input");
-    check(armed(2, false) && armed(4, true), "3 Audio armed instead");
+    check(armed(4, true), "3 Audio armed");
     check(!doc->startRecording(0, 0, false) && doc->error().find("no inputs") != std::string::npos,
           "a device with no inputs is refused");
     // walk-B B3: the armed track stored as "# Audio" (as Insert Audio Track names one) shows "3 Audio".
@@ -833,6 +981,106 @@ void arrangementRecord(const std::filesystem::path &dir) {
     const auto settled = doc->takeLanded();
     check(settled && settled->ok && !doc->recording() && !doc->landingTake(),
           "a take whose device stopped is settled into the project, not lost");
+}
+void arrangementMidiRecord(const std::filesystem::path &path, bool mixed) {
+    std::string error;
+    constexpr std::int32_t upstreamLatency = 16;
+    auto doc = ui::ProjectDocument::open(path, true,
+        [](const engine::DeviceRequest &request, std::string &) -> std::unique_ptr<device::DeviceInstance> {
+            if (request.ref->uid == "record.test.delay")
+                return std::make_unique<SurfaceKnobs>(16);
+            if (request.ref->uid == "record.test.keys")
+                return std::make_unique<SurfaceKnobs>(0, engine::EventFlow::Consume);
+            return nullptr;
+        }, error);
+    check(doc != nullptr, "a project for Arrangement MIDI recording");
+    if (!doc)
+        return;
+    const auto set = [&](const char *type, Payload payload) {
+        OpRequest request;
+        request.opType = type;
+        request.payload = std::move(payload);
+        return doc->ops().submit(request).ok;
+    };
+    if (mixed) {
+        doc->store().db().exec("INSERT INTO plugin_refs(id,format,uid,name,subtype) VALUES"
+                              "(30,'clap','record.test.delay','Delay','effect'),"
+                              "(31,'clap','record.test.keys','Keys','instrument')");
+        check(set("chain.create", {{"id", 30}, {"track", 2}, {"ord", 0}, {"name", "Devices"}}) &&
+                  set("device.insert", {{"id", 30}, {"chain", 30}, {"ord", 0}, {"ref", 30}, {"name", "Delay"}, {"latency", 0}}) &&
+                  set("device.insert", {{"id", 31}, {"chain", 30}, {"ord", 1}, {"ref", 31}, {"name", "Keys"}, {"latency", 0}}),
+              "the monitored track has an instrument after a device with latency");
+    }
+    check(set("track.setArm", {{"id", 2}, {"armed", true}}) &&
+              set("track.setMonitorMode", {{"id", 2}, {"mode", 1}}) &&
+              (!mixed || (set("track.setArm", {{"id", 3}, {"armed", true}}) &&
+                          set("track.setMonitorMode", {{"id", 3}, {"mode", 0}}) &&
+                          set("track.setArm", {{"id", 4}, {"armed", true}}))) && doc->synchronise(),
+          "armed monitored MIDI, optionally with unmonitored MIDI and audio");
+    doc->prepare(48000, 64);
+    const auto clipCount = [&] { return doc->store().db().execAndGet("SELECT count(*) FROM clips").getInt(); };
+    const auto before = clipCount();
+    if (!doc->startRecording(0, mixed ? 1 : 0, false)) {
+        check(false, "MIDI-only Record works without audio input, mixed Record with one input");
+        return;
+    }
+    std::array<float, 64> input{}, left{}, right{};
+    const float *channels[]{input.data()};
+    float *outputs[]{left.data(), right.data()};
+    engine::AudioIo io;
+    io.in = mixed ? channels : nullptr;
+    io.numIn = mixed ? 1 : 0;
+    io.out = outputs;
+    io.numOut = 2;
+    io.frames = 64;
+    const auto block = [&] {
+        doc->process(io);
+        io.streamTimeSamples += io.frames;
+        doc->tick(io.streamTimeSamples);
+    };
+    block();
+    check(doc->session().enqueueMidiInput(112, {0, engine::EventType::NoteOn, 1, 64, 9, 0, 1.0}, 80) &&
+              doc->session().enqueueMidiInput(120, {0, engine::EventType::NoteExpression, 1,
+                   static_cast<std::uint16_t>(ExpressionDim::Pitch), 9, 0, 3.0}, 88) &&
+              doc->session().enqueueMidiInput(120, {0, engine::EventType::NoteExpression, 1,
+                   static_cast<std::uint16_t>(ExpressionDim::Timbre), 9, 0, 0.25}, 88) &&
+              doc->session().enqueueMidiInput(120, {0, engine::EventType::NoteExpression, 1,
+                   static_cast<std::uint16_t>(ExpressionDim::Pressure), 9, 0, 0.5}, 88),
+          "one held note with bend, slide and pressure and separate played and heard timestamps");
+    block();
+    const auto live = doc->liveMidiTakes();
+    check(!live.empty() && live.front().notes.size() == 1 && live.front().notes.front().end == live.front().end &&
+              clipCount() == before, "the held note appears before any clip row is committed");
+    check(doc->session().enqueueMidiInput(160, {0, engine::EventType::NoteOff, 1, 64, 9, 0, 0.5}, 128),
+          "the held note releases");
+    block();
+    doc->stopRecording();
+    block();
+    doc->release();
+    check(doc->settleRecording(), "the audio and MIDI takes settle together");
+    const auto landed = doc->takeLanded();
+    const auto expected = mixed ? 3 : 1;
+    check(landed && landed->ok && clipCount() == before + expected && doc->liveMidiTakes().empty(),
+          "one committed clip per armed track replaces the growing take");
+    if (!landed || !landed->ok)
+        return;
+    for (const auto id : landed->clips) {
+        const auto read = engine::readClipDetails(doc->store(), id, true, true);
+        if (!read.clip || read.clip->kind != "midi")
+            continue;
+        const auto &clip = *read.clip;
+        const double samples = clip.trackId == 2 ? 112.0 - (mixed ? upstreamLatency : 0) : 80.0;
+        const auto ticks = static_cast<std::int64_t>(std::lround(samples * textproj::kPPQ / 24000.0));
+        check(clip.notes.size() == 1 && clip.notes.front().startTicks == ticks && clip.notes.front().key == 64,
+              "monitored notes land where heard and unmonitored notes where played");
+        const auto &curves = clip.noteExpressions.curves;
+        check(clip.noteExpressions.problems.empty() && curves.size() == 3 && !clip.notes.empty() &&
+                  std::all_of(curves.begin(), curves.end(), [&](const auto &curve) {
+                      return curve.noteId == clip.notes.front().id && curve.points.size() == 1 && curve.points.front().time_ticks > 0;
+                  }), "the clip preserves bend, slide and pressure as note-relative curves");
+    }
+    check(doc->ops().undo().ok && clipCount() == before && doc->ops().redo().ok && clipCount() == before + expected,
+          "one Undo and one Redo for the whole take");
 }
 // MX-23 and SRF-02: a fader dragged is heard while it moves, writes nothing until the mouse lets go, then
 // lands as one undo step; Esc puts it back (Live 12 manual 18.1).
@@ -1274,6 +1522,8 @@ int main(int argc, char **argv) {
     {
         test::TempDirectory recordDir("ui_document", "record");
         arrangementRecord(recordDir.path());
+        arrangementMidiRecord(recordDir.path() / "midi.adi", false);
+        arrangementMidiRecord(recordDir.path() / "mixed.adi", true);
         test::TempDirectory guardDir("ui_document", "guard");
         saveAsKeepsTheTake(guardDir.path());
         test::TempDirectory afterDir("ui_document", "after-save-as");
@@ -2267,6 +2517,8 @@ int main(int argc, char **argv) {
     deviceGraphWorkers(temp.path());
     refusedBeginOwnership(temp.path());
     importWithChoices(temp.path());
+    moveOrdinaryDevice(temp.path() / "move-device.adi");
+    dropDeviceOnNewTrack(temp.path());
     mixSurfacePublication(temp.path() / "mix-surface.adi");
     reportedDeviceLatency(temp.path());
     std::printf("%d checks, %d failures\n", checks, failures);

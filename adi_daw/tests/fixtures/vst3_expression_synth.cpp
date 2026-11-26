@@ -143,6 +143,10 @@ std::atomic<int> g_legacyMidiCount{0};
 std::array<std::array<std::atomic<int>, 3>, 128> g_noteWire{};
 std::atomic<int> g_noteWireCount{0};
 std::atomic<double> g_mappedMemberBend{-1.0};
+// SC-310: Drive as the PROCESSOR last received it, through IParameterChanges and nothing else. The
+// fixture is one object, so its controller's own value would reach the sound without the host; a VST3
+// that keeps its processor apart learns a value only this way, and this records exactly that.
+std::atomic<double> g_processorDrive{-1.0};
 constexpr double kPresetDrive7 = 0.45, kPresetDrive3 = 0.6;
 constexpr int32 kStateBytes = 16;   // 'ADS1', the patch, Drive
 constexpr char kStateMagic[4] = {'A', 'D', 'S', '1'};
@@ -597,6 +601,7 @@ private:
         else if (id == kRpnLsb)   rpnLsb_ = static_cast<int>(std::lround(v * 127.0));
         else if (id == kDataEntry && rpnMsb_ == 0 && rpnLsb_ == 6)
             memberBend_ = std::lround(v * 127.0) > 0 ? 48.0 : 2.0;   // the MCM: MPE's +/-48
+        else if (id == kDrive) g_processorDrive.store(v, std::memory_order_relaxed);
         else if (id == kSlowBlock && v > 0.5) slow_ = true;
         else if (id == kRefuseBlock && v > 0.5) refuse_ = true;
     }
@@ -954,6 +959,7 @@ extern "C" SMTG_EXPORT_SYMBOL int adiFixtureReadNoteWire(int* output, int rows) 
     }
     return count;
 }
+extern "C" SMTG_EXPORT_SYMBOL double adiFixtureProcessorDrive() { return g_processorDrive.load(); }
 extern "C" SMTG_EXPORT_SYMBOL double adiFixtureMappedMemberBend() {
     return g_mappedMemberBend.load(std::memory_order_relaxed);
 }

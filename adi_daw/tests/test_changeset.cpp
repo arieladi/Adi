@@ -225,6 +225,13 @@ void testPreviewDoesNotWrite() {
               p2.changes[1].before->at("name") == "Keys",
           "a creation shows only after, a deletion only what it removes");
     check(count(s, "SELECT COUNT(*) FROM tracks") == 2, "and neither happened");
+
+    s.db().exec("INSERT INTO tracks(id,kind,name) VALUES(9,'master','Main')");
+    const auto before = digestProject(s).text;
+    auto main = begin(s, "remove Main", "m", kT0);
+    main.ops.push_back(op("track.delete", {{"id", 9}}));
+    check(!preview(s, main).ok && !apply(s, main).ok && digestProject(s).text == before,
+          "SC-01: a changeset cannot delete Main in either preview or apply");
 }
 
 void testDescribeByContent() {

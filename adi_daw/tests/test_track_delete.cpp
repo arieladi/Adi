@@ -89,6 +89,68 @@ void fullInverse() {
     check(project.store && History(*project.store).undo().ok && digestProject(*project.store).text==before,"CBOR inverse survives close/reopen with full typed metadata");
     check(project.scalar("PRAGMA defer_foreign_keys")==0 && project.scalar("PRAGMA foreign_keys")==1,"temporary FK deferral never leaks to the caller");
 }
+void mainCannotBeDeleted() {
+    Project project;
+    auto& store = *project.store;
+    OpJournal journal(store);
+    const auto before = digestProject(store).text;
+    const auto head = journal.headSeq();
+    const auto deleted = journal.commit(op("track.delete", {{"id", 900}}));
+    check(!deleted.ok && deleted.error.find("Main track cannot be deleted") != std::string::npos,
+          "SC-01: deleting a track of kind master is refused");
+    check(digestProject(store).text == before && journal.headSeq() == head,
+          "SC-01: the refused delete changes neither project data nor history");
+
+    store.db().exec("UPDATE tracks SET parent_id=100 WHERE id=900");
+    const auto grouped = digestProject(store).text;
+    const auto group = journal.commit(op("track.delete", {{"id", 100}}));
+    check(!group.ok && group.error.find("Main track cannot be deleted") != std::string::npos &&
+              digestProject(store).text == grouped && journal.headSeq() == head,
+          "SC-01: Main is protected as a descendant in an existing project's track tree");
+}
+void copyAGroup() {
+    Project project;
+    auto& store = *project.store;
+    OpJournal journal(store);
+    store.db().exec("INSERT INTO tracks(id,kind,name) VALUES(901,'return','Delay');"
+                    "INSERT INTO routing(id,src_kind,src_id,dst_kind,dst_id,kind,gain_db) "
+                    "VALUES(8,'track',101,'track',901,'send',-8.5);");
+    const auto before = digestProject(store).text;
+    const auto source = detail::captureTrackForCopy(store.db(), 100);
+    const auto copied = detail::copyTrackContents(store.db(), source, 0, 4, 500);
+    const auto id = copied.at("root").get<std::int64_t>();
+    const auto created = journal.commit(op("track.create", {{"id", id}, {"kind", "group"}, {"contents", copied}}));
+    check(created.ok && id > 901, "copy the group through track.create: " + created.error);
+    if (!created.ok)
+        return;
+    const auto audio = store.db().execAndGet("SELECT id FROM tracks WHERE kind='audio' AND parent_id=" + std::to_string(id)).getInt64();
+    check(store.db().execAndGet("SELECT count(*) FROM routing WHERE src_kind='track' AND src_id=" + std::to_string(audio) +
+                                " AND kind='send' AND gain_db=-8.5 AND dst_id=901").getInt() == 1,
+          "the copied track sends independently to the same return");
+    check(project.scalar("SELECT count(*) FROM routing WHERE src_id=200 AND kind='send'") == 1,
+          "the sender of an incoming send still has only its original send");
+    check(project.scalar("SELECT count(*) FROM audio_clips WHERE media_id=1 AND src_start_frames=3") == 2 &&
+              project.scalar("SELECT count(*) FROM plugin_state WHERE state_hash='state'") == 2 &&
+              project.scalar("SELECT count(*) FROM automation_data WHERE data=X'0011'") == 2 &&
+              project.scalar("SELECT count(*) FROM device_panel_params WHERE param_id='gain'") == 2,
+          "clip media, nested device state and panel, and automation follow the copy");
+    check(project.scalar("SELECT count(*) FROM devices WHERE id>500") == 2,
+          "copied devices skip IDs retained by the running session");
+    check(project.scalar("SELECT count(*) FROM future_grandchild WHERE track<>101 AND payload=X'1122'") == 1,
+          "a schema extension's composite foreign keys also follow the copied track");
+    const auto after = digestProject(store).text;
+    check(History(store).undo().ok && digestProject(store).text == before &&
+              History(store).redo().ok && digestProject(store).text == after,
+          "one Undo and Redo round trip the complete copy");
+    store.db().exec("UPDATE media_files SET hash_blake3='other-sample' WHERE id=1");
+    bool refused = false;
+    try {
+        (void)detail::copyTrackContents(store.db(), source, 0, 4);
+    } catch (const std::exception &error) {
+        refused = std::string(error.what()).find("identities have changed") != std::string::npos;
+    }
+    check(refused, "a clipboard cannot attach a different sample that took the old media ID");
+}
 void batchAndConflicts() {
     Project project;auto& store=*project.store;const auto before=digestProject(store).text;
     std::array<OpRequest,2> batch={op("track.delete",{{"id",100}}),op("track.rename",{{"id",200},{"name","Kept"}})};
@@ -135,4 +197,4 @@ void legacyAndReplay() {
     {SQLite::Transaction transaction(first->db());check(OpRegistry::instance().find("track.create")->apply(context,{{"id",3},{"kind","audio"},{"name","Legacy"},{"parent",nullptr},{"index",4}},why),"old four-field captured inverse remains playable");transaction.commit();}
 }
 }
-int main(){try{fullInverse();batchAndConflicts();ungroupAndGuards();legacyAndReplay();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{fullInverse();mainCannotBeDeleted();copyAGroup();batchAndConflicts();ungroupAndGuards();legacyAndReplay();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

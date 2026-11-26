@@ -16,6 +16,7 @@
 #include "adi/ui/arm_edits.hpp"
 #include "adi/ui/audio_drop.hpp"
 #include "adi/ui/import_choices.hpp"
+#include "adi/ui/live_midi_take.hpp"
 #include "adi/ui/op_submitter.hpp"
 #include "adi/ui/parameter_feed.hpp"
 #include "adi/ui/session_state.hpp"
@@ -100,6 +101,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     SessionState &sessionState() noexcept { return sessionState_; }
     TransportMailbox &mailbox() noexcept { return mailbox_; }
     engine::Session &session() noexcept { return session_; }
+    std::int64_t retainedDeviceId() const noexcept;
     const std::string &error() const noexcept { return error_; }
     // The parameter feed every window and the control API drain (ADR-0180 d5).
     ParameterFeed &parameterFeed() noexcept { return feed_; }
@@ -152,13 +154,12 @@ class ProjectDocument final : public engine::BlockProcessor {
     bool automationArmed() const noexcept { return session_.automationArmed(); }
     // Arm and monitoring as the session's rows hold them (MX-09): the snapshot carries neither yet.
     RecordStates recordStates() const;
-    // Arrangement Record (MX-09; Live 12 manual 21.1): every armed audio track records from the audio
+    // Arrangement Record: every armed MIDI track records the Track MIDI input; armed audio tracks record from the audio
     // device's inputs 1/2 (1 on a device with one input; the window's In/Out column shows "1/2", and
     // `tracks.input_ref` has no grammar yet, MX-25). The recorder is prepared here, on the message
     // thread, before the driver is told; stopped, the driver starts at the song start or the insert
     // marker after the saved Count-In (`RenderBlock::startPlayback`). Playing, it records from the
-    // playhead on, as Live's punch in. False with `error()` saying why: nothing armed, only MIDI armed
-    // (the engine's live MIDI input is not on main yet), a device with no inputs, the engine's refusal.
+    // playhead on, as Live's punch in. False with `error()` saying why.
     // `inputs` is the device's input channel count, `insertTick` where a stopped transport starts.
     bool startRecording(std::int64_t insertTick, std::int32_t inputs, bool playing);
     // How many inputs the audio device has open (N65's window half): every audio track is fed by inputs
@@ -178,6 +179,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     bool landTakeHere();
     bool recording() const noexcept { return recording_; }
     bool landingTake() const noexcept { return landing_; }
+    std::span<const LiveMidiTake> liveMidiTakes() const noexcept;
     // What the last take did, once: the clips it added (one undo step for all of them), or nothing and
     // the reason in `error()`. Empty until a take lands.
     struct TakeLanded {
@@ -219,21 +221,26 @@ class ProjectDocument final : public engine::BlockProcessor {
     // A built-in device from the browser (D4; N15, #395): `uid` from `builtinCatalog()` onto
     // `track`, in front of `before` or at the end of its chain. The plug-in reference and the
     // chain are made in the same batch when the project has neither: one undo step, "Insert <name>".
+    // A drop below the tracks passes track 0 and creates and selects the appropriate track.
     // The catalogue's refusals (an unavailable device, a missing track) come back in `error()`.
-    bool insertBuiltin(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before);
+    bool insertBuiltin(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before,
+                       const RecordingDefaults *defaults = nullptr);
     bool insertPlugin(const rows::PluginRef &, std::int64_t track,
                       std::optional<std::int64_t> before = {}, const PluginInsertOptions& = {});
     // A plug-in the user loads from the Browser or the Stack's menu, as Live loads one (walk-A A26,
     // DF-W52): an instrument goes onto a MIDI track only (it takes notes and no audio, so it would
     // silence any other track) and takes the place of the track's instrument, in the same undo step.
     // An effect loads as `insertPlugin` places it.
-    bool loadPlugin(const rows::PluginRef &, std::int64_t track, std::optional<std::int64_t> before = {});
+    bool loadPlugin(const rows::PluginRef &, std::int64_t track, std::optional<std::int64_t> before = {},
+                    const RecordingDefaults *defaults = nullptr);
     bool addMixFunction(mix::Function, std::int64_t track);
     std::vector<DeviceKeyChoice> deviceKeyChoices(const DevicePanelData&);
     bool setDeviceKeyChoice(const DevicePanelData&,const DeviceKeyChoice&);
     bool setDeviceKey(const DevicePanelData&,std::optional<std::int64_t> source,const std::string& tap);
     bool moveMixFunction(const DevicePanelData &expected, std::int64_t track,
                          std::optional<std::int64_t> before);
+    bool moveDevice(const DevicePanelData &expected, std::int64_t track,
+                    std::optional<std::int64_t> before);
     // A built-in device's sample slot (D5; N28, #414; ENGINE-SAMPLE-SLOTS.md): `file` imported by its
     // content and prepared for the engine's rate, then the slot replaced, in one undo step; Clear
     // empties it. The live device takes the new state at once (`ParamOps::appliedState`). The
@@ -274,7 +281,6 @@ class ProjectDocument final : public engine::BlockProcessor {
     WaveformCache &waveforms() noexcept { return waveforms_; }
 
   private:
-    std::int64_t retainedDeviceId() const noexcept;
     bool finishInsert(PreparedBuiltinInsert);
     ProjectDocument(std::unique_ptr<Store>, std::string name);
     // The clock the capture's timers run on: steady milliseconds, the same for the timer's drain
@@ -320,10 +326,18 @@ class ProjectDocument final : public engine::BlockProcessor {
     double engineRate_ = 48000.0;   // the rate `prepare` last set, for a sample's preparation
     std::int32_t engineFrames_ = 512; // the block `prepare` last set, for the recorder
     // Arrangement Record (MX-09): recording, then landing the take on the timer, then its outcome.
-    void landTake(engine::AudioRecordingResult &);
+    void pollRecording(bool deviceStopped);
+    void landTake();
     // Discards a take that is not kept; what the Status Bar adds when its files stay (DF-E44), else empty.
     std::string discardTake(engine::AudioRecordingResult &);
     bool recording_ = false, landing_ = false;
+    struct MidiRecording;
+    std::unique_ptr<MidiRecording> midiRecording_;
+    std::optional<engine::AudioRecordingResult> audioTake_;
+    bool recordingAudio_ = false;
+    bool cancelTake_ = false;
+    // Both recorders must be installed before either observes the next rolling callback.
+    std::atomic<bool> captureReady_{false};
     std::atomic<bool> deviceStopped_{true}; // `release` without a `prepare` since
     std::optional<TakeLanded> landed_;
     // The mixer drag's gesture (MX-23): the coordinator of this store's gestures, and the open session.
