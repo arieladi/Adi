@@ -31,8 +31,13 @@ fix, not a new feature, so it is worked now.
    - the session suite: `ctest -L acceptance`;
    - if your session can drive the real window, do the gesture there, with `ADI_HOME` set to a folder
      of its own.
-5. One branch per item from origin/main, named `basics/<sc id>-<short name>`. Commit and push. **Open no
-   pull request:** the one macOS runner cannot carry one per fix. Win stacks the branches and lands them.
+5. One branch per item, named `basics/<sc id>-<short name>`. **Start your first from origin/main and each
+   later one from your own previous item's branch,** so that your items form a chain and never collide
+   with each other. (On 27 November four branches could not be stacked because a session had cut each
+   from main and changed the same functions twice in different ways.) Commit and push. **Open no pull
+   request:** the one macOS runner cannot carry one per fix. Win stacks the branches and lands them.
+   - If win's report says a branch of yours collides: merge the landing stack it names (`origin/land/...`)
+     into that branch, resolve it yourself, since you wrote both sides, run your tests and push.
 6. Add a line to your report and start the next item in the same turn.
 
 ## Your report
