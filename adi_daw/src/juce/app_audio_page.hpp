@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include "adi/settings/channel_config.hpp"
+#include "adi/ui/recording_edits.hpp"
 #include "ui_channel_config.hpp"
 #include "ui_settings.hpp"
 #include <juce_audio_devices/juce_audio_devices.h>
 #include <array>
+#include <functional>
 #include <memory>
 #include <set>
 #include <vector>
@@ -16,6 +18,10 @@ juce::BigInteger channelBits(const std::set<int> &active, int count);
 // Live's default for its channel counts (N20; Live 12 manual 17.2).
 settings::ChannelConfig channelConfigFor(const settings::AppSettings &, const std::string &device, int inputs,
                                          int outputs);
+// Independent enabled mono inputs and stereo pairs, with physical IDs and packed callback indices.
+std::vector<ExternalAudioInput> externalAudioInputsFor(const settings::ChannelConfig &, const juce::BigInteger &active,
+                                                       int inputCount);
+std::vector<ExternalAudioInput> readExternalAudioInputs(juce::AudioDeviceManager &, const settings::AppSettings &);
 // Keeps one side of a device's record as a dialog edited it, the other side as it was; saved at
 // once. False, and why, when refused.
 bool keepChannelConfig(settings::AppSettings &, const std::string &device, bool inputs,
@@ -57,6 +63,8 @@ class AudioDevicePage final : public juce::Component, public SettingsPageHead, p
     } channels;
     // The open dialog, if any.
     ChannelConfigPanel *configPanel() const;
+    // A saved Input or Output Config edit, including a change to names alone.
+    std::function<void()> onChannelConfigChanged;
 
   private:
     void changeListenerCallback(juce::ChangeBroadcaster *) override;

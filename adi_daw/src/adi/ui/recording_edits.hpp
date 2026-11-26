@@ -3,12 +3,32 @@
 #include "adi/engine/snapshot.hpp"
 #include "adi/track_recording.hpp"
 #include "adi/ui/track_edits.hpp"
+#include <algorithm>
 #include <array>
 #include <cstdint>
+#include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
 namespace adi::ui {
+// An enabled external input. Its reference stores physical channel numbers,
+// and its channels are indices in the current driver's packed input buffer.
+struct ExternalAudioInput {
+    std::string ref, label;
+    std::vector<std::uint32_t> channels;
+};
+
+inline const ExternalAudioInput *resolveExternalAudioInput(std::span<const ExternalAudioInput> inputs,
+                                                          const std::optional<std::string> &ref) noexcept {
+    const std::string_view wanted = ref ? std::string_view(*ref) : "ext:stereo:1";
+    const auto found = std::find_if(inputs.begin(), inputs.end(),
+                                    [wanted](const ExternalAudioInput &input) { return input.ref == wanted; });
+    if (found != inputs.end())
+        return &*found;
+    return ref || inputs.empty() ? nullptr : &inputs.front();
+}
+
 // A track's recording options (#397, N31; MR V.2 §9; Live 12 manual 18.8): Rec-Q, the quantize new
 // recordings get ([1/16] or [Free]), and Play-Q, the live quantization of what is played, on a MIDI
 // track's header; Keep Monitoring Latency in Recorded Audio, from a right-click on the In or Auto

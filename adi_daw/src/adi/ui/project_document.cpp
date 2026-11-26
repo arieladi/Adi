@@ -14,6 +14,7 @@
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <sqlite3.h>
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <mutex>
@@ -394,18 +395,39 @@ bool ProjectDocument::synchronise() {
     syncMonitorInputs(); // a track added or removed is fed or let go (N65)
     return true;
 }
+void ProjectDocument::setExternalAudioInputs(std::vector<ExternalAudioInput> inputs) {
+    externalAudioInputs_ = std::move(inputs);
+    syncMonitorInputs();
+}
+std::span<const ExternalAudioInput> ProjectDocument::externalAudioInputs() const noexcept {
+    if (externalAudioInputs_)
+        return *externalAudioInputs_;
+    return {};
+}
 void ProjectDocument::setInputChannels(std::int32_t inputs) {
     inputChannels_ = std::max(0, inputs);
     syncMonitorInputs();
 }
+std::span<const std::uint32_t> ProjectDocument::channelsForInput(const std::optional<std::string> &ref,
+                                                                std::int32_t legacyCount) const noexcept {
+    if (externalAudioInputs_) {
+        if (const auto *input = resolveExternalAudioInput(*externalAudioInputs_, ref))
+            return input->channels;
+        return {};
+    }
+    if (ref || legacyCount <= 0)
+        return {};
+    static constexpr std::array<std::uint32_t, 2> contiguous{0, 1};
+    return std::span{contiguous}.first(legacyCount >= 2 ? 2u : 1u);
+}
 void ProjectDocument::syncMonitorInputs() {
     std::vector<std::pair<std::int64_t, std::vector<std::uint32_t>>> wanted;
-    if (inputChannels_ > 0) {
-        const std::vector<std::uint32_t> channels =
-            inputChannels_ >= 2 ? std::vector<std::uint32_t>{0, 1} : std::vector<std::uint32_t>{0};
-        for (const auto &t : session_.model().tracks)
-            if (t.kind == "audio")
-                wanted.emplace_back(t.id, channels);
+    for (const auto &t : session_.model().tracks) {
+        if (t.kind != "audio")
+            continue;
+        const auto channels = channelsForInput(t.inputRef, inputChannels_);
+        if (!channels.empty())
+            wanted.emplace_back(t.id, std::vector<std::uint32_t>(channels.begin(), channels.end()));
     }
     if (wanted == monitorInputs_)
         return;
@@ -1265,6 +1287,7 @@ void ProjectDocument::prepare(double rate, std::int32_t frames) {
 }
 void ProjectDocument::release() {
     session_.release(); // stops a running capture; the timer lands what it holds
+    externalInputMeter_->clear();
     mailbox_.publish(session_.transport(), {});
     deviceStopped_.store(true, std::memory_order_release);
 }
@@ -1363,6 +1386,7 @@ void ProjectDocument::cancelMixerDrag() {
     synchronise();
 }
 void ProjectDocument::process(const engine::AudioIo &io) noexcept {
+    externalInputMeter_->measure(io);
     // One render handle for the callback, so a Record start (`startPlayback`, which applies the saved
     // song start and Count-In) and the block it starts in read the same graph.
     auto block = session_.beginRender();
@@ -1400,7 +1424,8 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
         error_ = "Arm a track to record into it.";
         return false;
     }
-    if (!armed.audio.empty() && inputs <= 0) {
+    const auto availableInputs = static_cast<std::uint32_t>(std::max(0, inputs));
+    if (!armed.audio.empty() && availableInputs == 0 && !externalAudioInputs_) {
         error_ = "The audio device has no inputs to record from. Choose an input device in the Settings' Audio page.";
         return false;
     }
@@ -1448,9 +1473,19 @@ bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t input
     spec.maxFrames = static_cast<std::uint32_t>(std::max<std::int32_t>(1, engineFrames_));
     // Two seconds of input between the callback and the writer, at least eight blocks.
     spec.ringFrames = std::max<std::uint32_t>(spec.sampleRate * 2, spec.maxFrames * 8);
-    const std::vector<std::uint32_t> channels = inputs >= 2 ? std::vector<std::uint32_t>{0, 1} : std::vector<std::uint32_t>{0};
-    for (const auto id : armed.audio)
-        spec.targets.push_back({id, channels});
+    for (const auto id : armed.audio) {
+        const auto *track = current->findTrack(id);
+        const auto channels = track ? channelsForInput(track->inputRef, inputs) : std::span<const std::uint32_t>{};
+        if (channels.empty() || std::any_of(channels.begin(), channels.end(), [availableInputs](auto channel) {
+                return channel >= availableInputs;
+            })) {
+            const auto name = shownTrackName(SnapshotReader(current), id);
+            error_ = "No available recording input for " + (name.empty() ? std::string("the armed track") : name) +
+                     ". Choose an enabled input under Audio From.";
+            return false;
+        }
+        spec.targets.push_back({id, std::vector<std::uint32_t>(channels.begin(), channels.end())});
+    }
     std::string why;
     if (!spec.targets.empty() && !session_.startRecording(spec, why)) {
         error_ = "Recording did not start: " + why;

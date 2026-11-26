@@ -855,6 +855,97 @@ void discardRefusalSaid(const std::filesystem::path &dir) {
     check(entries() == before + 1, "the folder stays for the next attempt");
 #endif
 }
+void externalInputRecording(const std::filesystem::path &dir) {
+    std::string error;
+    auto doc = ui::ProjectDocument::open(dir / "external-input.adi", true, {}, error);
+    check(doc != nullptr, "SC-23: a project with external input tracks");
+    if (!doc)
+        return;
+    const auto edit = [&](const char *type, Payload payload) {
+        OpRequest request;
+        request.opType = type;
+        request.payload = std::move(payload);
+        return doc->ops().submit(request).ok;
+    };
+    const bool configured = edit("track.create", {{"id", 8}, {"kind", "audio"}, {"name", "Stereo"}}) &&
+                            edit("track.setInput", {{"id", 4}, {"input", "ext:mono:2"}}) &&
+                            edit("track.setInput", {{"id", 8}, {"input", "ext:stereo:5"}}) &&
+                            edit("track.setArm", {{"id", 4}, {"armed", true}}) &&
+                            edit("track.setArm", {{"id", 8}, {"armed", true}}) && doc->synchronise();
+    check(configured, "SC-23: set and arm the two authored input routes");
+    if (!configured)
+        return;
+
+    // Physical inputs 2, 5 and 6 arrive as callback channels 0, 1 and 2.
+    doc->setExternalAudioInputs({{"ext:mono:2", "Voice", {0}}, {"ext:stereo:5", "Keys", {1, 2}}});
+    constexpr int frames = 64, blocks = 8;
+    constexpr std::uint32_t capturedFrames = frames * blocks;
+    constexpr std::array<float, 3> levels{0.125f, -0.25f, 0.5f};
+    std::array<std::array<float, frames>, levels.size()> input{};
+    for (std::size_t channel = 0; channel < levels.size(); ++channel)
+        input[channel].fill(levels[channel]);
+    std::array<float, frames> left{}, right{};
+    const float *inputs[]{input[0].data(), input[1].data(), input[2].data()};
+    float *outputs[]{left.data(), right.data()};
+    engine::AudioIo io;
+    io.in = inputs;
+    io.numIn = 3;
+    io.out = outputs;
+    io.numOut = 2;
+    io.frames = frames;
+    doc->prepare(48000, frames);
+    const bool started = doc->startRecording(0, io.numIn, false);
+    check(started, "SC-23: record one mono input and one stereo pair at the same time");
+    if (!started) {
+        doc->release();
+        return;
+    }
+    const auto inputMeter = doc->externalInputMeter();
+    inputMeter->beginReading();
+    for (int block = 0; block < blocks; ++block) {
+        io.streamTimeSamples = block * frames;
+        doc->process(io);
+    }
+    inputMeter->endReading();
+    check(inputMeter->peak(0) == 0.125f && inputMeter->peak(1) == 0.25f && inputMeter->peak(2) == 0.5f,
+          "SC-23: the picker measures each packed input independently");
+    doc->release();
+    check(inputMeter->peak(0) == 0.f && inputMeter->peak(1) == 0.f && inputMeter->peak(2) == 0.f,
+          "SC-23: stopping the device clears the chooser meters");
+    check(doc->settleRecording(), "SC-23: settle the recorded inputs");
+    const auto landed = doc->takeLanded();
+    check(landed && landed->ok && landed->clips.size() == 2, "SC-23: both input takes land");
+    const auto recorded = [&](int track, std::size_t firstInput, std::uint16_t channels) {
+        SQLite::Statement path(doc->store().db(),
+                               "SELECT m.rel_path FROM clips c JOIN audio_clips a ON c.id=a.clip_id "
+                               "JOIN media_files m ON a.media_id=m.id WHERE c.track_id=?");
+        path.bind(1, track);
+        if (!path.executeStep())
+            return false;
+        audio::WavReader wav(media::projectFolder(doc->store()) / media::pathFromUtf8(path.getColumn(0).getString()));
+        std::vector<float> samples(static_cast<std::size_t>(capturedFrames) * channels);
+        if (wav.channels() != channels || wav.frames() != capturedFrames ||
+            wav.read(samples.data(), capturedFrames) != capturedFrames)
+            return false;
+        for (std::size_t i = 0; i < samples.size(); ++i)
+            if (samples[i] != levels[firstInput + i % channels])
+                return false;
+        return true;
+    };
+    check(recorded(4, 0, 1), "SC-23: the mono take contains only physical input 2");
+    check(recorded(8, 1, 2), "SC-23: the stereo take contains physical inputs 5 and 6 in order");
+
+    check(edit("track.setArm", {{"id", 8}, {"armed", false}}) && doc->synchronise(),
+          "SC-23: disarm the track whose input is still available");
+    doc->setExternalAudioInputs({{"ext:stereo:5", "Keys", {0, 1}}});
+    doc->prepare(48000, frames);
+    check(!doc->startRecording(0, 2, false) && !doc->recording() && !doc->landingTake() && !doc->error().empty(),
+          "SC-23: a missing authored input refuses recording instead of taking another channel");
+    const auto *track = doc->view().current()->findTrack(4);
+    check(track && track->inputRef && *track->inputRef == "ext:mono:2",
+          "SC-23: losing an input keeps the track's authored source");
+    doc->release();
+}
 void arrangementRecord(const std::filesystem::path &dir) {
     std::string error;
     auto doc = ui::ProjectDocument::open(dir / "record.adi", true, {}, error);
@@ -1798,6 +1889,8 @@ int main(int argc, char **argv) {
     recordedWaveformHandoff();
     {
         test::TempDirectory recordDir("ui_document", "record");
+        test::TempDirectory externalInputDir("ui_document", "external-input");
+        externalInputRecording(externalInputDir.path());
         arrangementRecord(recordDir.path());
         arrangementMidiRecord(recordDir.path() / "midi.adi", false);
         arrangementMidiRecord(recordDir.path() / "mixed.adi", true);

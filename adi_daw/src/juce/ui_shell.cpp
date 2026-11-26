@@ -3377,6 +3377,18 @@ bool AdiRootComponent::setMonitor(std::int64_t id, Monitor mode) {
         return fail(std::move(edit.refusal));
     return edit.ops.empty() || submitEdits(std::move(edit.ops));
 }
+bool AdiRootComponent::setExternalAudioInput(std::int64_t id, std::string_view ref) {
+    const auto current = view_.current();
+    const auto *track = current ? current->findTrack(id) : nullptr;
+    if (!track || track->kind != "audio")
+        return fail("External audio inputs are available on audio tracks.");
+    const auto choices = audioInputs();
+    if (std::none_of(choices.begin(), choices.end(), [&](const auto &input) { return input.ref == ref; }))
+        return fail("That external input is unavailable. Open Audio Settings to configure inputs.");
+    if (track->inputRef && *track->inputRef == ref)
+        return true;
+    return submitEdit("track.setInput", {{"id", id}, {"input", std::string(ref)}}, "Audio From");
+}
 bool AdiRootComponent::toggleRecord() {
     if (!startRecording || !stopRecording || !recording)
         return fail("Recording runs in the application, with an audio device.");

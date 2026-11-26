@@ -6,6 +6,7 @@
 #include "adi/gesture_producers.hpp"
 #include "adi/ui/audio_drop.hpp"
 #include "adi/ui/export_choices.hpp"
+#include "adi/ui/external_input_meter.hpp"
 #include "adi/ui/automation_mode.hpp"
 #include "adi/ui/import_choices.hpp"
 #include "adi/ui/live_midi_take.hpp"
@@ -14,6 +15,7 @@
 #include "adi/ui/op_submitter.hpp"
 #include "adi/ui/momentary_latch.hpp"
 #include "adi/ui/reference_audition.hpp"
+#include "adi/ui/recording_edits.hpp"
 #include "adi/ui/tap_tempo.hpp"
 #include "ui_input_clock.hpp"
 #include "adi/ui/snapshot_reader.hpp"
@@ -464,6 +466,12 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // How many outputs the audio device has open (the highest open channel's number), for Cue Out's
     // stereo pairs (MX-08). Unset or 0: none known, and Cue Out offers only 1/2.
     std::function<int()> outputChannels;
+    std::function<std::span<const ExternalAudioInput>()> externalAudioInputs;
+    std::shared_ptr<ExternalInputMeter> externalInputMeter;
+    std::function<void()> configureExternalInputs;
+    std::span<const ExternalAudioInput> audioInputs() const {
+        return externalAudioInputs ? externalAudioInputs() : std::span<const ExternalAudioInput>{};
+    }
     // Live's per-parameter Re-Enable Automation (manual 25.4; AU-04): one overridden lane follows its
     // envelope again; false with the reason said. Session state, no undo step, as the global switch.
     std::function<bool(std::int64_t)> reenableLane;
@@ -708,6 +716,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // one batch.
     bool armTrack(std::int64_t id, bool add);
     bool setMonitor(std::int64_t id, Monitor mode);
+    bool setExternalAudioInput(std::int64_t id, std::string_view ref);
     // Arrangement Record (F9, the Control Bar's Record): records every armed audio track; again,
     // stops recording and the transport plays on.
     bool toggleRecord();

@@ -11606,6 +11606,75 @@ void automationArm(AppCommands &commands, const std::filesystem::path &dir) {
           "and Automation Arm says so, showing Live's default, on");
     document->release();
 }
+void externalAudioInputMenus(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "input-menu.adi", true, {}, error);
+    check(document != nullptr, "SC-23: a project for the external input menus");
+    if (!document)
+        return;
+    document->prepare(48000, 64);
+    document->setExternalAudioInputs({{"ext:mono:2", "Spoken word", {0}}, {"ext:stereo:5", "Keys", {1, 2}}});
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "inputs");
+    root.setSize(1440, 900);
+    root.afterEdit = [&] { document->synchronise(); };
+    root.externalAudioInputs = [&] { return document->externalAudioInputs(); };
+    root.externalInputMeter = document->externalInputMeter();
+    int configured = 0;
+    root.configureExternalInputs = [&] { ++configured; };
+    if (!root.state().inOut)
+        root.command(AppCommands::ToggleInOut);
+    if (!root.state().mixerInOut)
+        root.command(AppCommands::ToggleMixerInOut);
+    root.frame();
+
+    const auto findAudio = [](MixerPanel &panel) -> MixerStrip * {
+        for (const auto &strip : panel.strips())
+            if (strip->track() == 4)
+                return strip.get();
+        return nullptr;
+    };
+    const auto choose = [&](MixerStrip &strip, juce::Point<float> at, const char *label, const char *ref,
+                            const char *currentLabel) {
+        int requests = 0;
+        strip.onAudioInputMenu = [&](juce::PopupMenu menu) {
+            ++requests;
+            bool picked = false, marked = false;
+            for (juce::PopupMenu::MenuItemIterator it(menu, true); it.next();) {
+                const auto &item = it.getItem();
+                if (item.text == currentLabel)
+                    marked = item.isTicked;
+                if (item.text == label && item.action) {
+                    item.action();
+                    picked = true;
+                }
+                if (item.text == "Configure..." && item.action)
+                    item.action();
+            }
+            check(marked && picked, "SC-23: the chooser marks its saved input and selects by the configured name");
+        };
+        strip.mouseDown(pressAt(strip, at, juce::ModifierKeys::leftButtonModifier));
+        strip.onAudioInputMenu = {};
+        const auto *track = root.current()->findTrack(4);
+        check(requests == 1 && track && track->inputRef && *track->inputRef == ref,
+              "SC-23: clicking the chooser writes the selected physical input");
+    };
+    auto *horizontal = findAudio(root.mixer);
+    check(horizontal != nullptr, "SC-23: the Arrangement exposes 3 Audio's input");
+    if (horizontal)
+        choose(*horizontal, {12.f, 8.f}, "Keys", "ext:stereo:5", "Spoken word");
+
+    if (!root.state().mixerView)
+        root.command(AppCommands::ToggleMixerView);
+    root.resizeMixerView(360);
+    root.frame();
+    auto *vertical = findAudio(root.mixerView);
+    check(vertical != nullptr, "SC-23: the Mixer View exposes the same track input");
+    if (vertical)
+        choose(*vertical, {12.f, 54.f}, "Spoken word", "ext:mono:2", "Keys");
+    check(configured == 2, "SC-23: both input menus reach Audio Settings");
+    document->release();
+}
 // Arm, monitoring and Arrangement Record (MX-09; Live 12 manual 21.1, 21.4): the strips' Arm and the
 // monitoring switch, and the Control Bar's Record and F9, wired as ui_main.cpp wires them, over a
 // document whose callback the test drives with an input.
@@ -19089,6 +19158,20 @@ int main(int argc, char **argv) {
             const auto bits = channelBits(channelConfigFor(settings, "Interface", 4, 2).activeInputs(), 4);
             check(bits[0] && bits[1] && bits[2] && !bits[3] && channelBits({1, 2, 5}, 4).countNumberOfSetBits() == 2,
                   "the record's channels in use are the device's channel bits, none beyond the device");
+
+            ChannelConfig sparse;
+            sparse.monoInputs = {{1, false, {}}, {3, true, "Voice"}, {7, true, {}}, {9, true, {}}};
+            sparse.stereoInputs = {{1, true, {}}, {3, false, {}}, {5, true, {}}, {7, true, "Room"}, {8, true, {}}};
+            const auto sources = externalAudioInputsFor(sparse, channelBits({1, 2, 3, 4, 6, 7, 8}, 8), 8);
+            const auto matches = [&](std::size_t i, std::string_view ref, std::string_view label,
+                                     const std::vector<std::uint32_t> &channels) {
+                return sources[i].ref == ref && sources[i].label == label && sources[i].channels == channels;
+            };
+            check(sources.size() == 4 && matches(0, "ext:mono:3", "Voice", {2}) &&
+                      matches(1, "ext:mono:7", "7 (mono)", {5}) &&
+                      matches(2, "ext:stereo:1", "1/2 (stereo)", {0, 1}) &&
+                      matches(3, "ext:stereo:7", "Room", {5, 6}),
+                  "SC-23: enabled mono and stereo sources retain physical IDs and use packed active buffers");
         }
         auto rowFor = [&panel](const settings::Setting *s) -> SettingRow * {
             if (s == nullptr)
@@ -19301,6 +19384,7 @@ int main(int argc, char **argv) {
     trace("deviceClipboard", [&] { deviceClipboard(commands, temp.path()); });
     trace("pluginWindows", [&] { pluginWindows(commands, settings, temp.path()); });
     trace("automationArm", [&] { automationArm(commands, temp.path()); });
+    trace("externalAudioInputMenus", [&] { externalAudioInputMenus(commands, temp.path()); });
     trace("armAndRecord", [&] { armAndRecord(commands, temp.path()); });
     trace("midiTakePreview", [&] { midiTakePreview(commands, temp.path()); });
     trace("exportPage", [&] { exportPage(commands, temp.path()); });
