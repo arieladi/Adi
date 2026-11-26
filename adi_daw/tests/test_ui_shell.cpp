@@ -14201,6 +14201,15 @@ void exportPage(AppCommands &commands, const std::filesystem::path &dir) {
               page.refusals().front() == "Shaped dither is unavailable. Choose triangular, rectangular or no dither.",
           "shaped dither explains which choices can be used");
     page.dither.setSelectedId(3, juce::sendNotificationSync);
+    for (const int rate : {176400, 192000}) {
+        int item = 0;
+        for (int i = 0; i < page.sampleRate.getNumItems(); ++i)
+            if (page.sampleRate.getItemText(i).getIntValue() == rate)
+                item = page.sampleRate.getItemId(i);
+        page.sampleRate.setSelectedId(item, juce::sendNotificationSync);
+        check(item != 0 && page.choices().sampleRate == rate && page.exportButton.isEnabled(),
+              "176.4 and 192 kHz can be selected in a project at a lower rate");
+    }
     page.renderedTrack.setSelectedId(2, juce::sendNotificationSync);
     check(page.choices().tracks == ExportTracks::All &&
               page.choices().stemTracks == std::vector<std::int64_t>{4, 6, 0} && page.exportButton.isEnabled(),

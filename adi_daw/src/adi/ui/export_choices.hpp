@@ -48,7 +48,7 @@ struct ExportChoices {
     bool video = false;
     render::Normalization normalization{render::NormalizeMode::Peak, -14, 0};
 };
-inline constexpr std::array<int, 6> kExportSampleRates{22050, 32000, 44100, 48000, 88200, 96000};
+inline constexpr std::array<int, 8> kExportSampleRates{22050, 32000, 44100, 48000, 88200, 96000, 176400, 192000};
 inline constexpr std::array<const char *, 4> kExportFileTypes{"WAV", "AIFF", "FLAC", "AAC"};
 inline render::PcmContainer exportContainer(const ExportChoices &c) {
     return c.fileType == "AIFF" ? render::PcmContainer::Aiff : render::PcmContainer::Wav;
