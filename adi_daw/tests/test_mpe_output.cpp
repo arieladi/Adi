@@ -520,6 +520,24 @@ void testPlainRoute() {
           "a second finger on the same key, collapsed onto channel 0, is counted");
 }
 
+void testChannelPitchWheel() {
+    section("An ordinary pitch wheel stays a channel message on every route");
+    for (const auto mode : {ExpressionRoute::Plain, ExpressionRoute::NoteExpression, ExpressionRoute::MpeMidi}) {
+        MpeRouter router;
+        ExpressionCaps caps;
+        caps.bendParam[4] = 21;
+        router.configure(mode, caps);
+        auto wheel = expr(7, 0, ExpressionDim::Pitch, 1.0);
+        wheel.channel = 4;
+        Out output;
+        route(router, {wheel}, output);
+        const auto bend = controls(output.all(), 4, kCtrlPitchBend);
+        check(bend.size() == 1 && bend[0].frame == 7 && bend[0].word == 12288 && bend[0].paramId == 21 &&
+                  bend[0].noteId == 0 && bend[0].fromControllerEvent && router.unknownNotes() == 0,
+              "the wheel keeps its channel and frame and uses the standard channel bend range");
+    }
+}
+
 void testSwitchingRoutesEndsNotesWhereTheyStarted() {
     section("ADR-0097 -- switching route ends every note on its own channel first");
 
@@ -890,6 +908,7 @@ int main() {
     testMemberChannelAllocation();
     testParameterPath();
     testPlainRoute();
+    testChannelPitchWheel();
     testSwitchingRoutesEndsNotesWhereTheyStarted();
     testUnassignedIdsAndCapacity();
     testFullOutputListPreservesState();

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "adi/engine/mpe_output.hpp"
+#include "adi/engine/mpe_input.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -285,7 +286,8 @@ void MpeRouter::control(std::uint8_t chan, std::uint16_t ctrl, double v, std::in
         // `v` is semitones. The parameter gets the UNROUNDED word over 16383
         // -- the scale JUCE's own host uses, which its client decodes back to
         // the same word -- and the wire gets the rounded one.
-        const double x = semitonesToBendExact(v, kMpeOutBendSemitones);
+        constexpr double channelRange = MpeZone{}.masterBendSemitones;
+        const double x = semitonesToBendExact(v, fromControllerEvent ? channelRange : kMpeOutBendSemitones);
         o.word = static_cast<std::uint16_t>(std::lround(x));
         o.value = x / 16383.0;
         o.paramId = caps_.bendParam[c];
@@ -443,6 +445,11 @@ void MpeRouter::noteOff(const Event& e, MpeOutList& out) noexcept {
 
 void MpeRouter::expression(const Event& e, MpeOutList& out) noexcept {
     const auto d = static_cast<ExpressionDim>(e.dim);
+    // A channel wheel has no note to address. Preserve it as a MIDI channel message on every route.
+    if (e.noteId == 0 && d == ExpressionDim::Pitch && e.channel < 16 && std::isfinite(e.value)) {
+        control(e.channel, kCtrlPitchBend, e.value, e.frame, 0, out, true);
+        return;
+    }
     const auto di = static_cast<std::size_t>(e.dim);
     auto drop = [&]() noexcept {
         if (di < dropped_.size()) ++dropped_[di]; else ++droppedOther_;
