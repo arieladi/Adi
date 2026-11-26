@@ -16,6 +16,7 @@ Baseline `00f1f369f3566c0c833390f8af5f0df9ed50f1cf`.
 | Branch | Head | Built | Suites and failures |
 |---|---|---|---|
 | `origin/land/basics-1127b` | `2ab946f3892dbef49cb822b507f3bfe3a42deb4f` | Yes | Window and mixer 31/31, acceptance 3/3. This head and the main baseline differ only in the Mac queue prompt. |
+| `origin/land/basics-1127a` | `b6753499d60f6e31a811fdec47897a23acee2488` | Yes | Passed 122/122. Affected suites 88/88, window and mixer 31/31, acceptance 3/3. |
 
 ## Nine-step window walk
 
