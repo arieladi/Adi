@@ -11833,6 +11833,29 @@ void clipFades(AppCommands &commands, const std::filesystem::path &dir) {
               canvas.fadeHandlePoint(Handle{first, 4, true, false}) && canvas.fadeHandlePoint(Handle{second, 4, false, false}),
           "F held: every audio clip's peak handles show");
     canvas.showFades = false;
+    root.setAutomationMode(true);
+    root.frame();
+    const Handle fadeIn{first, 4, true, false};
+    check(!canvas.fadeHandlePoint(fadeIn), "Automation Mode hides fade handles while F is up");
+    check(canvas.keyPressed(juce::KeyPress('f')), "F is handled in Automation Mode");
+    const auto automationPeak = canvas.fadeHandlePoint(fadeIn);
+    check(automationPeak.has_value(), "holding F reveals the fade while Automation Mode stays on");
+    if (automationPeak) {
+        const juce::Point<float> to{static_cast<float>(lanes.x(bar / 4)), automationPeak->y};
+        canvas.mouseDown(pressAt(canvas, *automationPeak));
+        canvas.mouseDrag(dragAt(canvas, *automationPeak, to));
+        check(canvas.fadeDragging().has_value(), "the fade takes the drag in Automation Mode");
+        canvas.mouseUp(dragAt(canvas, *automationPeak, to));
+        root.frame();
+        check(clips()[0]->fadeInTicks > 0 && root.automationMode() && root.undoTitle(false) == "Undo Change Fade",
+              "the drag writes one fade change while Automation Mode stays on");
+        check(root.command(AppCommands::Undo), "Undo the fade changed while F was held");
+        root.frame();
+    }
+    canvas.keyStateChanged(false);
+    check(!canvas.fadeHandlePoint(fadeIn), "releasing F hides the handles in Automation Mode again");
+    root.setAutomationMode(false);
+    root.frame();
     // Choose the first clip; drag its fade-in peak a quarter of a bar in: one clip.setFades, one step.
     sel.track = 4;
     sel.clip = first;
