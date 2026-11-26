@@ -10,6 +10,7 @@ The Linux session owns `basics/look-chain`, started from `origin/main`. The queu
 | SC-110 | `basics/look-chain` at `26569ddf` | Removed the AI tab and its chat space so the list reaches the preview. Old projects can still decode the former flag. Window seat. | Headless geometry and legacy settings checks passed. Reviewed and refreshed the structural software fixtures. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 | SC-72 | `basics/look-chain` at `02bf4001` | Reveal the insert marker after Home, a locator jump or an entered position. Window seat. | Peerless Home, typed-position and locator tests verified the viewport and marker. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 | SC-73 | `basics/look-chain` at `4080cd3a` | Drag, wheel and per-part arrow input on the five Control Bar fields. Window seat. | The baseline fine-tempo wheel probe reproduced the failure. Peerless gesture and editing checks passed. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
+| SC-76 | `basics/look-chain` at `c5f204b8` | Source the new-window Follow default and legacy fallback from one named constant. Window seat. | Tests checked fresh and legacy view states and explicit saved on and off. Debug Werror, 17 UI suites without DISPLAY and 3 acceptance suites passed. | Pushed |
 
 ## Measurements
 
@@ -86,6 +87,12 @@ At 1440 × 900 Compact these Control Bar bounds are unchanged before and after, 
 
 The keyboard-part underline is now 1 px tall at root y=23, inset 2 px from each edge of the active part. A drag moves one step per 4 logical px and a wheel event moves one step. Tempo supports 1 BPM and 0.01 BPM parts, signature clicks work through legal denominators, and musical fields step by bar, beat or sixteenth according to the part. A peerless baseline wheel event on the fine tempo part left 120.00 BPM. It now produces 120.01 BPM. Typing remains available.
 
+### SC-76
+
+The Follow button is `(663, 9, 21, 17)` at 1920 × 1080 Compact and `(313, 9, 21, 17)` at 960 × 540. Its centred glyph is approximately 16 × 7 px. Bounds and the unlit initial state are the same before and after. One named setting now supplies the default for both new windows and legacy view data with no saved value. Explicit saved on and off toggles each round trip. The approved sheet shows the Follow group at `(640, 32, 36, 28)`, including the menu bar.
+
 ## For the director
 
 Confirm the Control Bar gesture rate and wheel feel in a real window when the window-driving session reaches the fields. Recommendation is to start with the implemented one step per wheel event and one per four logical px of drag.
+
+Does a stock Live 12 Set start with Follow lit? Recommendation is to retain Off until the window-driving session confirms the default.
