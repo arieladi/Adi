@@ -14155,7 +14155,8 @@ void exportPage(AppCommands &commands, const std::filesystem::path &dir) {
     // The page: Live's rows in Live's order, Main and the tracks to render.
     ExportChoices c = *asked;
     c.lengthTicks = textproj::kWhole * 2; // two 4/4 bars
-    ExportPage page(c, {{4, "3 Audio"}, {6, "A Reverb"}}, root.reader().meters());
+    ExportPage page(c, {{4, "3 Audio", true}, {6, "A Reverb"}, {3, "2 MIDI", true, false}, {0, "Main"}},
+                    root.reader().meters());
     std::vector<juce::String> titles;
     for (auto *control : std::initializer_list<juce::Component *>{&page.renderedTrack, &page.start, &page.length,
                                                                    &page.includeReturnAndMain, &page.renderAsLoop,
@@ -14169,7 +14170,7 @@ void exportPage(AppCommands &commands, const std::filesystem::path &dir) {
                                               "Normalize", "Create Analysis File", "Sample Rate", "Encode PCM",
                                               "File Type", "Bit Depth", "Dither Options", "Encode MP3", "Export Video"},
           "Live's choices in Live's order [P:export#2]");
-    check(page.renderedTrack.getNumItems() == 3 && page.renderedTrack.getText() == "Main" &&
+    check(page.renderedTrack.getNumItems() == 6 && page.renderedTrack.getText() == "Main" &&
               page.start.getText() == "1.1.1" && page.length.getText() == "2.0.0" && page.refusals().empty() &&
               page.exportButton.isEnabled(),
           "Main, from 1.1.1 for 2.0.0: Export is offered [P:export#1] [P:export#3]");
@@ -14192,12 +14193,17 @@ void exportPage(AppCommands &commands, const std::filesystem::path &dir) {
     page.encodeMp3.setToggleState(false, juce::dontSendNotification);
     page.encodeMp3.onClick();
     page.renderedTrack.setSelectedId(2, juce::sendNotificationSync);
-    check(page.choices().track == 4 && !page.exportButton.isEnabled() &&
-              page.refusals()[0].find("Include Return and Main Effects off") != std::string::npos,
-          "a track through the returns and Main waits; the reason says what renders now");
-    page.includeReturnAndMain.setToggleState(false, juce::dontSendNotification);
-    page.includeReturnAndMain.onClick();
-    check(page.exportButton.isEnabled(), "with the effects off, the track's own signal renders");
+    check(page.choices().tracks == ExportTracks::All &&
+              page.choices().stemTracks == std::vector<std::int64_t>{4, 6, 0} && page.exportButton.isEnabled(),
+          "All Individual Tracks exports audio tracks, returns and Main");
+    page.renderedTrack.setSelectedId(3, juce::sendNotificationSync);
+    check(page.choices().tracks == ExportTracks::Selected &&
+              page.choices().stemTracks == std::vector<std::int64_t>{4} && page.exportButton.isEnabled(),
+          "Selected Tracks Only filters the selection to tracks with audio");
+    const auto batch = page.choices();
+    page.renderedTrack.setSelectedId(4, juce::sendNotificationSync);
+    check(page.choices().track == 4 && page.exportButton.isEnabled(),
+          "an individual track is ready to export on selection");
     page.length.setText("one bar", false);
     page.length.onTextChange();
     check(!page.exportButton.isEnabled() && page.refusals()[0].find("Render Length is not a length") != std::string::npos,
@@ -14225,6 +14231,11 @@ void exportPage(AppCommands &commands, const std::filesystem::path &dir) {
         return;
     }
     auto job = exportJob(one, document->store().path(), dir / "Song {mix}.wav", *tempo);
+    const auto stemJobs = exportJobs(batch, document->store().path(), dir / "Song {mix}.wav", *tempo);
+    check(stemJobs.size() == 1 && stemJobs.front().source.trackId == 4 &&
+              stemJobs.front().nameTemplate == "Song {{mix}} - {track}" &&
+              stemJobs.front().collision == render::Collision::Increment,
+          "Selected Tracks Only queues a named, no-clobber delivery for each selected stem");
     const auto expected = exportSample(*tempo, textproj::kWhole, 44100);
     check(job.directory == dir && job.nameTemplate == "Song {{mix}}" && job.beginSample == 0 && job.endSample == expected &&
               job.session.sampleRate == 44100 && job.encoding.format == audio::WavFormat::Pcm16 &&
@@ -14362,7 +14373,7 @@ void exportPreferences(const std::filesystem::path &dir) {
               preferences.folder(settings, dir) == configuredFolder,
           "the first Export page reads the configured defaults and render folder");
 
-    first.renderedTrack.setSelectedId(3, juce::sendNotificationSync);
+    first.renderedTrack.setSelectedId(5, juce::sendNotificationSync);
     first.fileType.setSelectedId(1, juce::sendNotificationSync);
     first.bitDepth.setSelectedId(2, juce::sendNotificationSync);
     first.dither.setSelectedId(1, juce::sendNotificationSync);

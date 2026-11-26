@@ -22,10 +22,19 @@
 #include <string_view>
 #include <vector>
 namespace adi::ui {
+enum class ExportTracks { One, All, Selected };
+struct ExportTrack {
+    std::int64_t id;
+    std::string name;
+    bool selected = false;
+    bool hasAudio = true;
+};
 struct ExportChoices {
     std::int64_t track = 0;                  // Rendered Track: 0 is Main, else the track's id
+    ExportTracks tracks = ExportTracks::One;
+    std::vector<std::int64_t> stemTracks;
     std::int64_t startTicks = 0, lengthTicks = 0; // Render Start and Render Length
-    bool includeReturnAndMain = true;        // Live's default; for a single track only
+    bool includeReturnAndMain = false;       // Direct track exports are available
     bool renderAsLoop = false;
     bool convertToMono = false;
     bool normalize = false;
@@ -49,7 +58,8 @@ inline std::string unsupported(const ExportChoices &c, const char *choice) {
     const std::string what(choice);
     // The renderer takes a track's own signal after its fader; a track through the returns and Main is
     // the engine's through-Main stems, not on main yet. Main always renders whole.
-    if (what == "includeReturnAndMain" && c.track != 0 && c.includeReturnAndMain)
+    if (what == "includeReturnAndMain" && (c.track != 0 || c.tracks != ExportTracks::One) &&
+        c.includeReturnAndMain)
         return "A track through the returns and Main waits for the engine's stems (EX-07); turn Include Return "
                "and Main Effects off to render the track's own signal.";
     if (what == "renderAsLoop" && c.renderAsLoop)
@@ -79,6 +89,8 @@ inline std::vector<std::string> exportRefusals(const ExportChoices &c) {
             out.push_back(std::move(why));
     if (c.lengthTicks <= 0)
         out.push_back("Render Length is zero: there is nothing to render.");
+    if (c.tracks != ExportTracks::One && c.stemTracks.empty())
+        out.push_back("Choose at least one track with audio to export.");
     return out;
 }
 // Render Length as Live's field shows it: bars, beats and sixteenths, each from 0, in the meter in force at
@@ -161,5 +173,20 @@ inline render::Job exportJob(const ExportChoices &c, const std::filesystem::path
     // since is not overwritten.
     job.collision = render::Collision::Fail;
     return job;
+}
+inline std::vector<render::Job> exportJobs(const ExportChoices &c, const std::filesystem::path &project,
+                                           const std::filesystem::path &file, const engine::TempoMap &tempo) {
+    auto job = exportJob(c, project, file, tempo);
+    if (c.tracks == ExportTracks::One)
+        return {std::move(job)};
+    job.nameTemplate += " - {track}";
+    job.collision = render::Collision::Increment;
+    std::vector<render::Job> jobs;
+    jobs.reserve(c.stemTracks.size());
+    for (const auto track : c.stemTracks) {
+        job.source.trackId = track;
+        jobs.push_back(job);
+    }
+    return jobs;
 }
 } // namespace adi::ui

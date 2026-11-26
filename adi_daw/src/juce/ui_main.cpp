@@ -110,6 +110,21 @@ juce::File withExtension(const juce::File &file, const char *extension) {
     return file.getParentDirectory().getChildFile(file.getFileName() + "." + extension);
 }
 juce::File withAdiExtension(const juce::File &file) { return withExtension(file, "adi"); }
+bool hasStemAudio(const engine::TrackNode &track, const rows::Model &model) {
+    if (track.kind != "midi" || track.frozen)
+        return true;
+    return std::any_of(model.devices.begin(), model.devices.end(), [&](const rows::Device &device) {
+        const auto chain = std::find_if(model.deviceChains.begin(), model.deviceChains.end(),
+                                        [&](const rows::DeviceChain &row) { return row.id == device.chainId; });
+        if (chain == model.deviceChains.end() || chain->trackId != track.id)
+            return false;
+        const auto plugin = std::find_if(model.pluginRefs.begin(), model.pluginRefs.end(),
+                                          [&](const rows::PluginRef &ref) { return ref.id == device.pluginRefId; });
+        if (plugin != model.pluginRefs.end())
+            return plugin->subtype != "midi_effect";
+        return device.isRack && device.rackKind != "midi_effect";
+    });
+}
 // Live's Undo History window (manual 5.4.2; A5): the main window's list in a window of its own,
 // which closing hides. The list stays the root's; the window only shows it.
 class UndoHistoryWindow final : public juce::DocumentWindow {
@@ -352,11 +367,16 @@ class AdiApplication final : public juce::JUCEApplication,
         if (!document_ || !root_)
             return;
         // Rendered Track: the tracks in the lanes' order, as the Arrangement shows them.
-        std::vector<std::pair<std::int64_t, std::string>> tracks;
+        std::vector<ExportTrack> tracks;
         std::vector<textproj::Meter> meters;
-        for (const auto &row : root_->arrangement.geometry.rows(root_->reader()))
-            if (row.track != nullptr && row.track->kind != "master")
-                tracks.emplace_back(row.track->id, displayName(row.track->name, row.number())); // as headed (B13)
+        const auto selected = root_->arrangement.geometry.selectedTracks(root_->reader());
+        for (const auto &row : root_->arrangement.geometry.rows(root_->reader())) {
+            const auto &track = *row.track;
+            if (track.kind != "vca")
+                tracks.push_back({track.kind == "master" ? 0 : track.id, displayName(track.name, row.number()),
+                                  std::find(selected.begin(), selected.end(), track.id) != selected.end(),
+                                  hasStemAudio(track, document_->session().model())});
+        }
         meters = root_->reader().meters();
         auto page = std::make_unique<ExportPage>(exportPreferences_.open(initial, *settings_), std::move(tracks),
                                                  std::move(meters));
@@ -390,12 +410,13 @@ class AdiApplication final : public juce::JUCEApplication,
         const auto project = juce::File(juce::String::fromUTF8(media::pathUtf8(document_->store().path()).c_str()));
         const auto folder = exportPreferences_.folder(*settings_, document_->store().path().parent_path());
         const auto destination = juce::File(juce::String::fromUTF8(media::pathUtf8(folder).c_str()));
-        chooser_ = std::make_unique<juce::FileChooser>("Export Audio", destination.getChildFile(
-                                                                           project.getFileNameWithoutExtension() + ".wav"),
+        const bool batch = c.tracks != ExportTracks::One;
+        chooser_ = std::make_unique<juce::FileChooser>(batch ? "Name the Exported Tracks" : "Export Audio",
+                                                       destination.getChildFile(project.getFileNameWithoutExtension() + ".wav"),
                                                        "*.wav");
         const int flags = juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles |
-                          juce::FileBrowserComponent::warnAboutOverwriting;
-        chooser_->launchAsync(flags, [this, c](const juce::FileChooser &chosen) {
+                          (batch ? 0 : juce::FileBrowserComponent::warnAboutOverwriting);
+        chooser_->launchAsync(flags, [this, c, batch](const juce::FileChooser &chosen) {
             auto file = chosen.getResult();
             juce::MessageManager::callAsync([this] {
                 if (juce::JUCEApplicationBase::getInstance() == this)
@@ -407,7 +428,7 @@ class AdiApplication final : public juce::JUCEApplication,
             // file the chooser did not ask about is never replaced.
             const auto chosenFile = file;
             file = withExtension(file, "wav");
-            if (file != chosenFile && file.exists()) {
+            if (!batch && file != chosenFile && file.exists()) {
                 if (exportPage_)
                     exportPage_->showDone(file.getFileName().toStdString() + " already exists; choose it to replace it.");
                 return;
@@ -425,7 +446,7 @@ class AdiApplication final : public juce::JUCEApplication,
                 return;
             }
             // The user chose to replace it: the old file goes to the trash, so a failed render loses nothing.
-            if (file.existsAsFile() && !file.moveToTrash()) {
+            if (!batch && file.existsAsFile() && !file.moveToTrash()) {
                 if (exportPage_)
                     exportPage_->showDone("The existing file could not be moved to the trash; choose another name.");
                 return;
@@ -435,10 +456,10 @@ class AdiApplication final : public juce::JUCEApplication,
                 return;
             const auto output = pathFromUtf8(file.getFullPathName().toStdString());
             exportPreferences_.rememberFolder(*settings_, output.parent_path());
-            startRender(exportJob(c, document_->store().path(), output, *current->tempo));
+            startRender(exportJobs(c, document_->store().path(), output, *current->tempo));
         });
     }
-    void startRender(render::Job job) {
+    void startRender(std::vector<render::Job> jobs) {
         renderStop_ = std::stop_source{};
         auto alive = renderAlive_;
         if (exportPage_)
@@ -454,33 +475,49 @@ class AdiApplication final : public juce::JUCEApplication,
                 juce::MessageManager::callAsync([host] { (void)host->service(); });
             });
         };
-        control.progress = [this, alive](render::JobId, std::uint64_t written, std::uint64_t total) {
-            const double fraction = total > 0 ? static_cast<double>(written) / static_cast<double>(total) : 0.0;
+        control.progress = [this, alive, count = jobs.size()](render::JobId id, std::uint64_t written, std::uint64_t total) {
+            const double current = total > 0 ? static_cast<double>(written) / static_cast<double>(total) : 0.0;
+            const double fraction = (static_cast<double>(id - 1) + current) / static_cast<double>(count);
             juce::MessageManager::callAsync([this, alive, fraction] {
                 if (alive->load() && exportPage_)
                     exportPage_->showProgress(fraction);
             });
         };
-        render_ = std::thread([this, alive, completed, job = std::move(job),
+        render_ = std::thread([this, alive, completed, jobs = std::move(jobs),
                                made = loader_.fn(), control, stop = renderStop_.get_token()]() mutable {
-            auto result = render::renderWav(std::move(job), std::move(made), std::move(control));
-            // A Cancel while devices were made reads as the cancel it is.
-            if (stop.stop_requested() && result.state != render::JobState::Completed)
-                result.state = render::JobState::Cancelled;
+            std::string message;
+            try {
+                render::Queue queue;
+                for (auto &job : jobs)
+                    queue.add(std::move(job));
+                queue.run(std::move(made), std::move(control));
+                const auto entries = queue.snapshot();
+                const auto succeeded = std::count_if(entries.begin(), entries.end(), [](const render::Entry &entry) {
+                    return entry.result.state == render::JobState::Completed;
+                });
+                const auto failed = std::find_if(entries.begin(), entries.end(), [](const render::Entry &entry) {
+                    return entry.result.state == render::JobState::Failed;
+                });
+                if (entries.size() == 1 && succeeded == 1)
+                    message = "Exported " + media::pathUtf8(entries.front().result.output.filename()) + ".";
+                else if (static_cast<std::size_t>(succeeded) == entries.size())
+                    message = "Exported " + std::to_string(succeeded) + " tracks.";
+                else if (stop.stop_requested())
+                    message = "The export was cancelled.";
+                else
+                    message = "The export failed: " + (failed == entries.end() ? std::string("unknown error") : failed->result.error);
+                if (succeeded > 0 && static_cast<std::size_t>(succeeded) < entries.size())
+                    message += " " + std::to_string(succeeded) + " tracks were exported.";
+            } catch (const std::exception &e) {
+                message = "The export failed: " + std::string(e.what());
+            }
             completed->set_value();
-            juce::MessageManager::callAsync([this, alive, result = std::move(result)] {
+            juce::MessageManager::callAsync([this, alive, message = std::move(message)] {
                 if (!alive->load())
                     return;
                 if (render_.joinable())
                     render_.join();
                 renderHost_.reset();
-                std::string message;
-                if (result.state == render::JobState::Completed)
-                    message = "Exported " + media::pathUtf8(result.output.filename()) + ".";
-                else if (result.state == render::JobState::Cancelled)
-                    message = "The export was cancelled.";
-                else
-                    message = "The export failed: " + result.error;
                 if (exportPage_)
                     exportPage_->showDone(message);
                 if (root_)

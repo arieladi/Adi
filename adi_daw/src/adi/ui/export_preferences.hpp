@@ -41,8 +41,11 @@ class ExportPreferences {
     void remember(const ExportChoices &choices) { last_ = choices; }
 
     void forgetTrack() {
-        if (last_)
+        if (last_) {
             last_->track = 0;
+            last_->tracks = ExportTracks::One;
+            last_->stemTracks.clear();
+        }
     }
 
     std::filesystem::path folder(const settings::AppSettings &settings,
