@@ -16252,9 +16252,6 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
         menuPanel.present(menuDevice);
         check(menuPanel.controls.front()->menu.getSelectedId() == 5, "a refused pick shows the value playing again");
     }
-    std::fputs("[shell] mix fixture seek checks start\n", stderr);
-    adi::uitest::mixSeekChecks(commands, dir, check);
-    std::fputs("[shell] mix fixture seek checks returned\n", stderr);
     const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {});
     if (!headlessOnly && folder.isNotEmpty()) {
         root.command(AppCommands::ToggleMixView);
@@ -17005,6 +17002,8 @@ int main(int argc, char **argv) {
         mixChannelToolSearch(commands, temp.path());
         mixStackViewReopen(commands, temp.path());
         mixViewShell(commands, temp.path(), true);
+        // The seek checks own their projects and run after the Mix View fixture has unwound.
+        trace("mixSeekChecks", [&] { adi::uitest::mixSeekChecks(commands, temp.path(), check); });
         pluginWindows(commands, settings, temp.path());
         std::printf("%d checks, %d failures (Mix View fake-peer components)\n", checks, failures);
         return failures ? 1 : 0;
@@ -20394,6 +20393,7 @@ int main(int argc, char **argv) {
     trace("clipViewClipTime", [&] { clipViewClipTime(commands, temp.path()); });
     trace("clipViewMulti", [&] { clipViewMulti(commands, temp.path()); });
     trace("mixViewShell", [&] { mixViewShell(commands, temp.path()); });
+    trace("mixSeekChecks", [&] { adi::uitest::mixSeekChecks(commands, temp.path(), check); });
     trace("recordingOptions", [&] { recordingOptions(commands, settings, temp.path()); });
     trace("undoHistoryWindow", [&] { undoHistoryWindow(commands, temp.path()); });
     trace("clipWaveforms", [&] { clipWaveforms(commands, temp.path()); });
