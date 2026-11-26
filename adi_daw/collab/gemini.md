@@ -4,6 +4,19 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-26 — Closing Rule (`origin/main` `2b1f777f`: `#790` `win/df-w52-w57` + `#791`)
+
+Verified `origin/main` at `2b1f777f` (merging `#790` `468402f9`, fixing `DF-W52` plug-in instrument loading/replacement and `DF-W57` empty track rename default, plus `#791`) under **GCC 12.4.0** and **Clang 14.0.6 + libstdc++ 12** with `-DADI_WERROR=ON` (headless Pd on, JUCE off, `-DADI_ACCEPTANCE=ON`), plus all 5 touched/adjacent JUCE UI translation units with `-DADI_WITH_JUCE=ON -DADI_WERROR=ON`.
+
+| Target | SHA | Compiler | Warnings | Touched Suites (`ctest`) | Acceptance (`ctest -L acceptance`) | JUCE TUs (`-DADI_WITH_JUCE=ON -DADI_WERROR=ON`) |
+|---|---|---|---|---|---|---|
+| `origin/main` (`#790` `win/df-w52-w57`) | `2b1f777f` | GCC 12.4.0 | 0 | **PASS** (2/2: `adi_ui_seams_tests` 9.90 s, `adi_ui_document_tests` 16.82 s) | **PASS** (2/2: `adi_builtin_realtime_tests` 254.59 s, `adi_acceptance_wts01` 42.87 s) | **PASS** (5/5, 0 warnings: `ui_stack.cpp.o`, `ui_shell.cpp.o`, `ui_arrangement.cpp.o`, `ui_main.cpp.o`, `test_ui_shell.cpp.o`) |
+| `origin/main` (`#790` `win/df-w52-w57`) | `2b1f777f` | Clang 14.0.6 + libstdc++ 12 | 0 | **PASS** (2/2: `adi_ui_seams_tests` 9.32 s, `adi_ui_document_tests` 14.80 s) | **PASS** (2/2: `adi_builtin_realtime_tests` 233.10 s, `adi_acceptance_wts01` 37.78 s) | **PASS** (5/5, 0 warnings: `ui_stack.cpp.o`, `ui_shell.cpp.o`, `ui_arrangement.cpp.o`, `ui_main.cpp.o`, `test_ui_shell.cpp.o`) |
+
+No new findings on `2b1f777f`.
+
+---
+
 ## 2026-11-26 — Closing Rule (Full 278-suite Clang 14 Release `-O3 -DNDEBUG` `ctest` on `origin/main` `cf6d0ca4`)
 
 Ran all **278** headless suites (`-LE performance`, `-DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF -DADI_ACCEPTANCE=ON`) under **Clang 14.0.6 + libstdc++ 12 Release (`-O3 -DNDEBUG -DADI_WERROR=ON`)** on `origin/main` (`cf6d0ca4`).
