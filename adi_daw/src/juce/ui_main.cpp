@@ -1114,6 +1114,23 @@ class AdiApplication final : public juce::JUCEApplication,
             });
             return true;
         };
+        root->chooseAudioFile = [this](AdiRootComponent::ChosenAudioFile chosen) {
+            if (chooser_)
+                return false;
+            const auto path = media::pathUtf8(document_->store().path());
+            const auto folder = juce::File(juce::String::fromUTF8(path.c_str())).getParentDirectory();
+            // The same decoder as the drop path recognises files by content.
+            chooser_ = std::make_unique<juce::FileChooser>("Import Audio File", folder, "*");
+            chooser_->launchAsync(juce::FileBrowserComponent::canSelectFiles | juce::FileBrowserComponent::openMode,
+                                  [this, chosen = std::move(chosen)](const juce::FileChooser &chooser) {
+                                      juce::MessageManager::callAsync([this] {
+                                          if (juce::JUCEApplicationBase::getInstance() == this)
+                                              chooser_.reset();
+                                      });
+                                      chosen(chooser.getResult());
+                                  });
+            return true;
+        };
         root->importAudio = [this](const std::string &path, AudioImport &out, std::string &why) {
             // The history's clock: microseconds UTC.
             const auto now = juce::Time::currentTimeMillis() * 1000;

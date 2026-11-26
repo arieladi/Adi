@@ -349,6 +349,7 @@ const StableEntry *stableEntry(int id) noexcept {
         {"help.keyboard-shortcuts", "Help"}, // KeyboardReference
         {"view.automation-mode", "View"}, // AutomationMode
         {"help.about", "Help"}, // About
+        {"create.import-audio-file", "Create"}, // ImportAudioFile
     });
     static_assert(table.size() == AppCommands::LastId - AppCommands::PlayStop + 1);
     const auto at = id - AppCommands::PlayStop;
@@ -574,7 +575,8 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Draw Mode", "Arrange Clip View Panels Automatically", "Arrange Clip View Panels Horizontally",
                                   "Arrange Clip View Panels Vertically", "Clip View", "Fit to Time Range",
                                   "Arrangement Record", "Export Audio/Video...", "Delay Compensation", "Solo Switches", "Cue Switches",
-                                  "Live 12 Manual", "Keyboard Shortcuts", "Automation Mode", "About ADI"};
+                                  "Live 12 Manual", "Keyboard Shortcuts", "Automation Mode", "About ADI",
+                                  "Import Audio File..."};
     static_assert(std::size(names) == LastId - PlayStop + 1);
     info.setInfo(names[id - PlayStop], names[id - PlayStop], category(id), 0);
     if (id == TakeSnapshot && active_ && active_->needsFirstSave)
@@ -703,6 +705,9 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
     case InsertMidiClip:
         // Live 12's Create menu: Insert Empty MIDI Clip(s), on a time selection (§41.1).
         info.addDefaultKeypress('m', cmd | shift);
+        break;
+    case ImportAudioFile:
+        info.setActive(active_ != nullptr && active_->chooseAudioFile);
         break;
     case DeleteTrack:
         // On a selected locator, Delete removes it (Live 12 manual 6.4).
@@ -4326,6 +4331,26 @@ bool AdiRootComponent::command(int id) {
             return false;
         break;
     }
+    case AppCommands::ImportAudioFile: {
+        const auto &selection = arrangement.geometry.selection;
+        const auto *track = reader().findTrack(selection.track);
+        if (track == nullptr || track->kind != "audio")
+            return fail("Select an audio track to import a file.");
+        if (importPrompt_)
+            return fail("Answer the import prompt first.");
+        if (importing_)
+            return fail("The last file is still being imported.");
+        if (!chooseAudioFile)
+            return fail("The audio file chooser is unavailable.");
+        const auto root = juce::Component::SafePointer<AdiRootComponent>(this);
+        if (!chooseAudioFile([root, id = track->id, tick = selection.insert](const juce::File &file) {
+                if (root != nullptr && file != juce::File{})
+                    root->dropAudio(file.getFullPathName().toStdString(), id, tick,
+                                    file.getFileNameWithoutExtension().toStdString());
+            }))
+            return fail("Close the open file chooser before importing audio.");
+        return true;
+    }
     case AppCommands::InsertAudioTrack:
     case AppCommands::InsertMidiTrack:
         if (!insertTrack(id == AppCommands::InsertMidiTrack))
@@ -4548,7 +4573,8 @@ const std::vector<MenuEntries> &menuBar() {
         // Add Locator and Delete Locator (manual 6.4) after Insert Time Signature Change, then
         // Create Fade In/Out and Delete Fades/Crossfades (6.8); their place in Live 12's Create
         // menu is to be read on Live.
-        {"Create", {C::InsertAudioTrack, C::InsertMidiTrack, C::InsertReturnTrack, 0, C::InsertMidiClip, 0,
+        {"Create", {C::InsertAudioTrack, C::InsertMidiTrack, C::InsertReturnTrack, 0, C::InsertMidiClip,
+                    C::ImportAudioFile, 0,
                     C::InsertTimeSignatureChange, 0,
                     C::AddLocator, C::DeleteLocator, 0, C::CreateFade, C::DeleteFades}},
         // The show and hide toggles in §42.1's order, ADI's Channel EQ after the Mixer. Automation Mode

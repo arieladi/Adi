@@ -170,7 +170,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         KeyboardReference, // the Help menu's keyboard reference, written from the keys in force (WIN-09)
         AutomationMode,    // the View menu's Automation Mode, A (Live 12 manual 25.2, 41.7)
         About,
-        LastId = About
+        ImportAudioFile,
+        LastId = ImportAudioFile
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -418,6 +419,9 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     std::function<bool()> settleEdits;
     // Whether the document holds parameter edits Undo would commit first (DF-W29).
     std::function<bool()> editsHeld;
+    // Opens the application's chooser and supplies the chosen file on the message thread.
+    using ChosenAudioFile = std::function<void(const juce::File &)>;
+    std::function<bool(ChosenAudioFile)> chooseAudioFile;
     // Reads a dropped file and captures its media row, writing nothing (the document's
     // `prepareImport`, #308); false with `why` when it can't. Unset, a drop says it needs one.
     std::function<bool(const std::string &utf8Path, AudioImport &, std::string &why)> importAudio;

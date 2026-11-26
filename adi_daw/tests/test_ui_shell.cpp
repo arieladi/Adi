@@ -4180,6 +4180,41 @@ void importPrompt(AppCommands &commands, settings::AppSettings &settings, const 
         prompt->answer(true);
     root.frame();
     check(settings.get("files.copyImportedMedia") == "ask" && clipsOn() == 5, "and the answer leaves \"ask\" as it was");
+
+    AdiRootComponent::ChosenAudioFile chosen;
+    root.chooseAudioFile = [&](AdiRootComponent::ChosenAudioFile callback) {
+        chosen = std::move(callback);
+        return true;
+    };
+    auto &selection = root.arrangement.geometry.selection;
+    selection.track = 0;
+    check(!root.command(AppCommands::ImportAudioFile) && !chosen &&
+              root.error().find("Select an audio track") != std::string::npos,
+          "SC-34: the import command asks for an audio track before opening the chooser");
+    const auto insert = 24 * textproj::kWhole;
+    selection.track = audioTrack;
+    selection.insert = insert;
+    check(root.command(AppCommands::ImportAudioFile) && chosen && clipsOn() == 5,
+          "SC-34: the command opens the chooser, with no change until a file is chosen");
+    if (chosen)
+        std::exchange(chosen, {})(juce::File{});
+    check(!root.importPrompt() && clipsOn() == 5, "SC-34: cancelling the chooser leaves the project alone");
+    check(root.command(AppCommands::ImportAudioFile) && chosen, "SC-34: reopen the chooser");
+    selection.track = 0;
+    selection.insert = 0;
+    if (chosen)
+        std::exchange(chosen, {})(juce::File(juce::String(media::pathUtf8(wav))));
+    check(root.importPrompt() && clipsOn() == 5, "SC-34: choosing the file opens the regular drop import prompt");
+    if (auto *prompt = root.importPrompt())
+        prompt->answer(true);
+    root.frame();
+    const auto *track = root.reader().findTrack(audioTrack);
+    check(track && track->clips.size() == 6 &&
+              std::any_of(track->clips.begin(), track->clips.end(), [&](const auto &clip) {
+                  return clip && clip->posTicks == insert && clip->name == "Prompted";
+              }),
+          "SC-34: import uses the selected audio track and insert marker captured at invocation");
+
     keepImportChoices(settings, ImportChoices{}, why);
     settings.set("files.copyImportedMedia", std::string("never"), {}, why);
     settings.set("editing.importOptions", std::string("ask"), {}, why);
@@ -16415,6 +16450,12 @@ int main(int argc, char **argv) {
             return ids;
         };
         using C = AppCommands;
+        const auto create = items("Create");
+        juce::ApplicationCommandInfo import(C::ImportAudioFile);
+        commands.getCommandInfo(C::ImportAudioFile, import);
+        check(std::find(create.begin(), create.end(), C::ImportAudioFile) != create.end() &&
+                  import.shortName == "Import Audio File...",
+              "SC-34: Create contains the Import Audio File command");
 #if JUCE_MAC
         check(names == juce::StringArray{"File", "Edit", "Create", "View", "Options", "Navigate", "Help"},
               "the Mac's menu bar: File, Edit, Create, View, Options, Navigate, Help");
@@ -16531,7 +16572,7 @@ int main(int argc, char **argv) {
                       C::DelayCompensation == C::ExportAudio + 1 && C::SoloSwitches == C::DelayCompensation + 1 &&
                       C::CueSwitches == C::SoloSwitches + 1 && C::HelpManual == C::CueSwitches + 1 &&
                       C::KeyboardReference == C::HelpManual + 1 && C::AutomationMode == C::KeyboardReference + 1 &&
-                      C::LastId == C::About,
+                      C::About == C::AutomationMode + 1 && C::LastId == C::ImportAudioFile,
                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
                   "Select Loop, Save a Copy, Collect All and Save, Collect and Export, Cut, Copy, Paste, Duplicate, "
                   "Show/Hide Plug-In Windows, Split, Clip View, Insert Empty MIDI Clip(s), the …Time commands and "
