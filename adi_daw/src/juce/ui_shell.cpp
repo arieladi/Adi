@@ -1650,6 +1650,9 @@ bool AdiRootComponent::playFrom(std::int64_t tick) {
     dirty_.mark(DirtySet::Transport | DirtySet::Status);
     return true;
 }
+bool AdiRootComponent::playOrStopFrom(std::int64_t tick) {
+    return mailbox_.desiredPlaying() ? command(AppCommands::Stop) : playFrom(tick);
+}
 double AdiRootComponent::bpm() const noexcept {
     const auto *tempo = reader_->tempo();
     const double rate = sampleRate_ > 0 ? sampleRate_ : reader_->sampleRate();

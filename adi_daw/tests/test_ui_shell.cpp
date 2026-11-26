@@ -5144,6 +5144,44 @@ void clipViewNotes(AppCommands &commands, const std::filesystem::path &dir) {
     root.frame();
     check(panel.details()->notes.size() == 1, "and Undo brings the note back into the view");
 }
+void clipViewPlayFromMarker(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "clip-play-from-marker.adi", true, {}, error);
+    check(document != nullptr, "a project for Note Editor playback");
+    if (!document) return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "note-play-marker");
+    root.setSize(1400, 900);
+    constexpr auto beat = textproj::kPPQ;
+    check(root.insertMidiClips({2}, 2 * beat, 6 * beat) && root.showClipView(), "open a later Arrangement clip in the Note Editor");
+    root.resizeClipView(360);
+    root.frame();
+    auto& editor = root.clipView.notes;
+    const juce::KeyPress space(juce::KeyPress::spaceKey);
+    check(!editor.keyPressed(space), "without a local marker, Space reaches the global transport");
+    auto& mailbox = document->mailbox();
+    mailbox.setSampleRate(48000);
+    engine::Transport transport;
+    root.arrangement.geometry.selection.insert = beat;
+    const auto area = editor.notesArea();
+    const auto click = juce::Point<float>(static_cast<float>(area.getX() + editor.time.x(4 * beat) + 2),
+                                          static_cast<float>(area.getCentreY()));
+    editor.mouseDown(pressAt(editor, click));
+    editor.mouseUp(pressAt(editor, click));
+    mailbox.drain(transport);
+    check(editor.insertMarker() == 4 * beat && root.arrangement.geometry.selection.insert == beat &&
+              !transport.playing() && transport.position() == 0,
+          "an empty editor click places the local marker without moving the Arrangement marker or transport");
+    check(editor.keyPressed(space), "focused Space starts at the editor marker");
+    mailbox.drain(transport);
+    check(transport.playing() && transport.position() == 96000 && root.arrangement.geometry.selection.insert == beat,
+          "the driver starts at the clicked beat in song time");
+    check(editor.keyPressed(space), "focused Space also stops playback");
+    mailbox.drain(transport);
+    check(!transport.playing() && transport.position() == 96000, "Space stops at the current playhead without seeking");
+    check(editor.keyPressed(space) && editor.keyPressed(space) && !mailbox.desiredPlaying(),
+          "two Space presses before the next driver block cancel the pending start");
+}
 void clipViewNotePreview(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto document = ProjectDocument::open(dir / "clip-note-preview.adi", true, {}, error);
@@ -19101,6 +19139,7 @@ int main(int argc, char **argv) {
     trace("clipCopyDrag", [&] { clipCopyDrag(commands, temp.path()); });
     trace("clipView", [&] { clipView(commands, temp.path(), write); });
     trace("clipViewNotes", [&] { clipViewNotes(commands, temp.path()); });
+    trace("clipViewPlayFromMarker", [&] { clipViewPlayFromMarker(commands, temp.path()); });
     trace("clipViewNotePreview", [&] { clipViewNotePreview(commands, temp.path()); });
     trace("clipViewFields", [&] { clipViewFields(commands, temp.path()); });
     trace("clipViewTools", [&] { clipViewTools(commands, temp.path()); });

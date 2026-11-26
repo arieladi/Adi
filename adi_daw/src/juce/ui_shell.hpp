@@ -548,6 +548,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     bool locate(std::int64_t tick);
     // Plays from a point: starts the transport there, or jumps there while it plays.
     bool playFrom(std::int64_t tick);
+    bool playOrStopFrom(std::int64_t tick);
     TransportBar transport;
     StatusBar status;
     juce::TextButton aiTab{"AI"};
