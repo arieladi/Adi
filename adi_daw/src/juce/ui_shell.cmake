@@ -124,13 +124,23 @@ if(ADI_WITH_JUCE)
     set_source_files_properties(tests/test_ui_eq_pages.cpp PROPERTIES
         COMPILE_OPTIONS "$<TARGET_PROPERTY:adi_warnings,INTERFACE_COMPILE_OPTIONS>")
     add_test(NAME adi_ui_eq_pages_tests COMMAND adi_ui_eq_pages_tests)
-    juce_add_gui_app(adi_app PRODUCT_NAME "ADI" COMPANY_NAME "ADI" BUNDLE_ID "org.adi.daw")
+    set(adi_program_icon "${CMAKE_CURRENT_SOURCE_DIR}/src/juce/assets/program.png")
+    juce_add_binary_data(adi_app_resources NAMESPACE AdiAppResources HEADER_NAME adi_app_resources.hpp SOURCES
+        "${adi_program_icon}"
+        third_party_notices/analysis_palettes/README.md
+        third_party_notices/analysis_palettes/CMasher-LICENSE.txt
+        third_party_notices/analysis_palettes/matplotlib-LICENSE.txt
+        third_party_notices/analysis_palettes/seaborn-LICENSE.txt
+        third_party_notices/smexoscope/NOTICE.md
+        third_party_notices/smexoscope/LICENSE.txt)
+    juce_add_gui_app(adi_app PRODUCT_NAME "ADI" COMPANY_NAME "ADI" BUNDLE_ID "org.adi.daw"
+        ICON_BIG "${adi_program_icon}")
     target_sources(adi_app PRIVATE src/juce/ui_main.cpp src/juce/app_audio_page.cpp src/juce/app_midi_ports.cpp src/juce/juce_device_loader.cpp src/juce/vst3_host.cpp src/juce/vst3_events.cpp src/juce/editor_host_component.cpp)
     # Reuse the player's host-format/ASIO switches, not its console entry or fixture.
     get_target_property(adi_ui_host_defs adi_play COMPILE_DEFINITIONS)
     list(FILTER adi_ui_host_defs EXCLUDE REGEX "^(_CONSOLE|ADI_TEST_VST3)")
     target_compile_definitions(adi_app PRIVATE ${adi_ui_host_defs})
-    target_link_libraries(adi_app PRIVATE adi_ui_shell adi_mix_pipeline_host juce::juce_audio_processors juce::juce_audio_utils juce::juce_audio_devices)
+    target_link_libraries(adi_app PRIVATE adi_app_resources adi_ui_shell adi_mix_pipeline_host juce::juce_audio_processors juce::juce_audio_utils juce::juce_audio_devices)
     if(_adi_proc_incs)
         target_include_directories(adi_app SYSTEM PRIVATE ${_adi_proc_incs})
     endif()

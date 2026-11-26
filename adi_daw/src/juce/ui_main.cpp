@@ -19,6 +19,7 @@
 #include "ui_shell.hpp"
 #include "window_release.hpp"
 #include "mix_function_host.hpp"
+#include "adi_app_resources.hpp"
 #include <algorithm>
 #include <chrono>
 #include <optional>
@@ -1162,6 +1163,8 @@ class AdiApplication final : public juce::JUCEApplication,
         };
         // A test launch never takes the foreground from the person at the desk (WTS-01).
         window_->quiet = testLaunch();
+        window_->setIcon(juce::ImageCache::getFromMemory(AdiAppResources::program_png,
+                                                       AdiAppResources::program_pngSize));
         window_->setVisible(true);
         if (fullScreen)
             window_->setFullScreen(true);
@@ -1350,9 +1353,40 @@ class AdiApplication final : public juce::JUCEApplication,
         });
         root_->say("Collecting and exporting to " + name + "...");
     }
+    void showAbout() {
+        juce::String notices;
+        for (int index = 0; index < AdiAppResources::namedResourceListSize; ++index) {
+            const auto *name = AdiAppResources::namedResourceList[index];
+            const auto *filename = AdiAppResources::getNamedResourceOriginalFilename(name);
+            if (juce::StringRef(filename) == "program.png")
+                continue;
+            int length = 0;
+            const auto *contents = AdiAppResources::getNamedResource(name, length);
+            notices << juce::String::fromUTF8(contents, length).trimEnd() << "\n\n";
+        }
+        auto text = std::make_unique<juce::TextEditor>();
+        text->setMultiLine(true, true);
+        text->setReadOnly(true);
+        text->setText(notices, false);
+        text->setCaretPosition(0);
+        text->setSize(650, 490);
+        juce::DialogWindow::LaunchOptions options;
+        options.dialogTitle = "About ADI " + getApplicationVersion();
+        options.componentToCentreAround = window_.get();
+        options.associatedComponent = window_.get();
+        options.content.setOwned(text.release());
+        options.escapeKeyTriggersCloseButton = true;
+        options.useNativeTitleBar = true;
+        options.resizable = true;
+        options.launchAsync();
+    }
     bool applicationCommand(int id) {
         if (id == AppCommands::Quit) {
             systemRequestedQuit();
+            return true;
+        }
+        if (id == AppCommands::About) {
+            showAbout();
             return true;
         }
         const bool firstSave = root_ && root_->needsFirstSave;

@@ -16484,7 +16484,7 @@ int main(int argc, char **argv) {
                       C::DelayCompensation == C::ExportAudio + 1 && C::SoloSwitches == C::DelayCompensation + 1 &&
                       C::CueSwitches == C::SoloSwitches + 1 && C::HelpManual == C::CueSwitches + 1 &&
                       C::KeyboardReference == C::HelpManual + 1 && C::AutomationMode == C::KeyboardReference + 1 &&
-                      C::LastId == C::AutomationMode,
+                      C::LastId == C::About,
                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
                   "Select Loop, Save a Copy, Collect All and Save, Collect and Export, Cut, Copy, Paste, Duplicate, "
                   "Show/Hide Plug-In Windows, Split, Clip View, Insert Empty MIDI Clip(s), the …Time commands and "
@@ -16596,10 +16596,19 @@ int main(int argc, char **argv) {
               "the Navigate menu: the views ADI has, the neighbours, then Tab's two switches (§41.1.1)");
         // WIN-09: the Help menu, last, with the manual and the keyboard reference (the Mac's Cmd+?
         // search then finds ADI's menus); each opens its target.
-        check(names[names.size() - 1] == "Help" && items("Help") == std::vector<int>{C::HelpManual, C::KeyboardReference},
-              "the Help menu, last: the manual and the keyboard reference");
+        check(names[names.size() - 1] == "Help" &&
+                  items("Help") == std::vector<int>{C::HelpManual, C::KeyboardReference, 0, C::About},
+              "the Help menu, last: the manual, the keyboard reference and About ADI");
         {
             auto &helpRoot = window.root();
+            int applicationCommand = 0;
+            helpRoot.applicationCommand = [&applicationCommand](int id) {
+                applicationCommand = id;
+                return true;
+            };
+            check(helpRoot.command(C::About) && applicationCommand == C::About,
+                  "About ADI opens the application's version and notices dialog");
+            helpRoot.applicationCommand = nullptr;
             std::vector<juce::URL> opened;
             helpRoot.openHelp = [&opened](const juce::URL &u) {
                 opened.push_back(u);

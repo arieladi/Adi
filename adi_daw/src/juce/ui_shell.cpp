@@ -348,6 +348,7 @@ const StableEntry *stableEntry(int id) noexcept {
         {"help.manual", "Help"}, // HelpManual
         {"help.keyboard-shortcuts", "Help"}, // KeyboardReference
         {"view.automation-mode", "View"}, // AutomationMode
+        {"help.about", "Help"}, // About
     }};
     const auto at = id - AppCommands::PlayStop;
     return at >= 0 && at < static_cast<int>(table.size()) ? &table[static_cast<std::size_t>(at)] : nullptr;
@@ -572,7 +573,7 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Draw Mode", "Arrange Clip View Panels Automatically", "Arrange Clip View Panels Horizontally",
                                   "Arrange Clip View Panels Vertically", "Clip View", "Fit to Time Range",
                                   "Arrangement Record", "Export Audio/Video...", "Delay Compensation", "Solo Switches", "Cue Switches",
-                                  "Live 12 Manual", "Keyboard Shortcuts", "Automation Mode"};
+                                  "Live 12 Manual", "Keyboard Shortcuts", "Automation Mode", "About ADI"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], category(id), 0);
     if (id == TakeSnapshot && active_ && active_->needsFirstSave)
         info.setInfo("Save Project...", "Name this project", category(id), 0);
@@ -4082,7 +4083,7 @@ bool AdiRootComponent::command(int id) {
     if (id == AppCommands::DetachMixView || (id == AppCommands::ToggleMixView && state_.mixViewDetached))
         return applicationCommand && applicationCommand(id);
     if ((id >= AppCommands::NewProject && id <= AppCommands::Settings) || id == AppCommands::Quit ||
-        (id >= AppCommands::SaveCopy && id <= AppCommands::CollectAndExport))
+        (id >= AppCommands::SaveCopy && id <= AppCommands::CollectAndExport) || id == AppCommands::About)
         return applicationCommand && applicationCommand(id);
     if ((id >= AppCommands::TimeZoomIn && id <= AppCommands::GoStart) ||
         (id >= AppCommands::InsertMarkerToPlayhead && id <= AppCommands::ShrinkTracks) ||
@@ -4582,7 +4583,7 @@ const std::vector<MenuEntries> &menuBar() {
           C::WrapTabNavigation}},
         // WIN-09: the manual and the keyboard reference, so the Mac's Cmd+? search finds ADI's menus;
         // the Help View (Learn View) joins it later.
-        {"Help", {C::HelpManual, C::KeyboardReference}}};
+        {"Help", {C::HelpManual, C::KeyboardReference, 0, C::About}}};
     return bar;
 }
 } // namespace
