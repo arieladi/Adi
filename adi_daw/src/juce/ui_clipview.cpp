@@ -2922,9 +2922,21 @@ void SampleEditor::frame() {
                 repaint();
             }
     const auto area = waveArea();
-    const int x = static_cast<int>(std::clamp(time.x(sourceTick(panel.root.timelineTick())), -1e7, 1e7));
-    playhead.setVisible(panel.audio() && panel.root.playing() && x >= 0 && x < area.getWidth());
-    playhead.setBounds(area.getX() + x, area.getY(), 1, area.getHeight());
+    const auto tick = panel.root.timelineTick();
+    const auto *node = panel.node();
+    const bool inClip = node && tick >= node->posTicks && tick - node->posTicks < node->lengthTicks;
+    const bool playing = panel.audio() && panel.root.playing() && inClip;
+    const auto source = sourceTick(tick);
+    auto x = time.x(source);
+    if (playing && panel.root.state().follow && !panel.root.arrangement.followPaused &&
+        source >= 0 && source < sourceEnd_ && area.getWidth() > 0 && (x < 0 || x >= area.getWidth())) {
+        time.left = static_cast<double>(source) / textproj::kPPQ;
+        x = 0.;
+        repaint();
+    }
+    const int pixel = static_cast<int>(std::clamp(x, -1e7, 1e7));
+    playhead.setVisible(playing && x >= 0. && x < area.getWidth());
+    playhead.setBounds(area.getX() + pixel, area.getY(), 1, area.getHeight());
 }
 juce::Rectangle<int> SampleEditor::waveArea() const noexcept {
     const auto top = kRulerHeight + kScrubHeight + (markers_.empty() ? 2 : 3) * kMarkerHeight;
@@ -3120,6 +3132,7 @@ void SampleEditor::mouseDrag(const juce::MouseEvent &e) {
     const auto *clip = panel.details();
     if (drag_ == Drag::None || !clip || clip->id != gestureClip_)
         return;
+    panel.root.arrangement.followPaused = true;
     if (drag_ == Drag::Ruler) {
         time.pan(static_cast<double>(last_.x - e.x));
         time.zoom(std::pow(1.012, static_cast<double>(e.y - last_.y)), static_cast<double>(e.x));
@@ -3200,6 +3213,7 @@ bool SampleEditor::command(int id) {
     default:
         return false;
     }
+    panel.root.arrangement.followPaused = true;
     repaint();
     return true;
 }
@@ -3220,6 +3234,7 @@ bool SampleEditor::keyPressed(const juce::KeyPress &key) {
 }
 void SampleEditor::mouseWheelMove(const juce::MouseEvent &e, const juce::MouseWheelDetails &w) {
     if (timeWheel(time, e, w, 0)) {
+        panel.root.arrangement.followPaused = true;
         panel.repaint(panel.headerArea());
         repaint();
     }
