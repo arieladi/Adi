@@ -174,7 +174,9 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         KeyboardReference, // the Help menu's keyboard reference, written from the keys in force (WIN-09)
         AutomationMode,    // the View menu's Automation Mode, A (Live 12 manual 25.2, 41.7)
         ComputerMidiKeyboard, // the Control Bar and Options menu's Computer MIDI Keyboard, M
-        LastId = ComputerMidiKeyboard
+        ImportMidiFile,
+        ExportMidiClip,
+        LastId = ExportMidiClip
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -499,10 +501,11 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
         if (states != recordStates_)
             recordStates_ = std::move(states);
     }
-    std::function<bool(std::int64_t insertTick, bool playing)> startRecording;
+    std::function<bool(std::int64_t insertTick, bool playing, bool overdub)> startRecording;
     std::function<void()> stopRecording;
     std::function<bool()> recording;
     std::function<std::span<const LiveMidiTake>()> liveMidiTakes;
+    std::function<void(std::int64_t positionTick, bool playing)> captureRecentMidi;
     // Live's MIDI Arrangement Overdub (manual 21.2): the Control Bar's switch, the window's own state.
     // It decides what a MIDI recording does to the notes already there once MIDI records (SRF-05).
     bool midiOverdub() const noexcept { return midiOverdub_; }
@@ -515,6 +518,9 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // the drop area below the tracks (`track` 0), which makes a new audio track. One undo step;
     // the new clip and its track are selected. A refusal goes to the Status Bar.
     bool dropAudio(const std::string &utf8Path, std::int64_t track, std::int64_t pos, const std::string &name);
+    bool dropMidiFiles(const std::vector<std::pair<std::string, std::string>> &files,
+                       std::int64_t track, std::int64_t position, bool separate);
+    std::int64_t midiClipForExport() const noexcept;
     // Several files dropped at once, each a (path, clip name): one after another on that track, or
     // with `separate` (Ctrl/Cmd held) the first there and each other on a new audio track of its own
     // (`adi::ui::dropAudio`). Each file is read and captured first; one undo step for them all.
@@ -549,6 +555,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     bool locate(std::int64_t tick);
     // Plays from a point: starts the transport there, or jumps there while it plays.
     bool playFrom(std::int64_t tick);
+    bool playOrStopFrom(std::int64_t tick);
     TransportBar transport;
     StatusBar status;
     juce::TextButton aiTab{"AI"};

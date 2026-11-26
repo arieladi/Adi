@@ -52,6 +52,10 @@ class NoteEditor final : public juce::Component {
     void mouseDrag(const juce::MouseEvent &) override;
     void mouseUp(const juce::MouseEvent &) override;
     void mouseDoubleClick(const juce::MouseEvent &) override;
+    void mouseEnter(const juce::MouseEvent &) override;
+    void mouseMove(const juce::MouseEvent &) override;
+    void mouseExit(const juce::MouseEvent &) override;
+    void modifierKeysChanged(const juce::ModifierKeys &) override;
     void focusLost(FocusChangeType) override;
     // Delete, the arrows (with Shift: an octave, or the length), Ctrl/Cmd+A, Esc, and 0 to
     // deactivate (manual 10.5).
@@ -59,6 +63,7 @@ class NoteEditor final : public juce::Component {
     juce::TextButton &previewButton() noexcept { return preview_; }
     bool keySounding(int key) const noexcept;
     static constexpr int kKeysWidth = 44, kRulerHeight = 18, kVelocityHeight = 56;
+    static constexpr int kScrubHeight = 10;
     // The lane's height (manual 10.1: the divider between the key tracks and the lanes drags to
     // resize them): never lower than its header needs, and it leaves the key tracks four rows.
     static constexpr int kLaneFloor = 50, kKeysFloor = 48;
@@ -283,6 +288,7 @@ class NoteEditor final : public juce::Component {
     juce::Rectangle<int> notesArea() const noexcept;
     juce::Rectangle<int> velocityArea() const noexcept;
     juce::Rectangle<int> rulerArea() const noexcept;
+    juce::Rectangle<int> scrubArea() const noexcept;
     juce::Rectangle<int> keysArea() const noexcept;
     // The loop brace in the time ruler (manual 8.2.2): its left and right edge in this component;
     // none for a clip with no loop window.
@@ -361,6 +367,11 @@ class NoteEditor final : public juce::Component {
     // the previous and next note in time, left and right to those on the same key. Shift extends.
     bool walk(bool sideways, bool forward, bool extend);
     Drag drag_ = Drag::None;
+    std::optional<juce::Point<int>> hover_;
+    juce::ModifierKeys hoverMods_;
+    bool scrubGestureAt(juce::Point<int>, const juce::ModifierKeys &) const;
+    juce::MouseCursor::StandardCursorType cursorAt(juce::Point<int>, const juce::ModifierKeys &) const;
+    void updateCursor();
     bool copying_ = false, folded_ = false, drawMode_ = false, scaleFolded_ = false;
     // The key tracks shown, after either fold or none.
     void refold();
@@ -371,6 +382,16 @@ class NoteEditor final : public juce::Component {
     std::vector<std::pair<std::uint64_t, std::int64_t>> trimPreview_;
     std::vector<std::pair<std::uint64_t, int>> shapePreview_;
     juce::Point<int> from_, to_;
+    // The press is anchored to the content while the edge under the pointer scrolls.
+    double dragLeft_ = 0, dragScale_ = 1;
+    int dragScrollY_ = 0;
+    std::int64_t dragStartTick_ = 0;
+    std::optional<int> dragStartKey_;
+    bool dragAutoRepeat_ = false;
+    double dragAnchorX() const noexcept;
+    juce::Point<int> dragAnchorPoint() const noexcept;
+    double dragDistanceTicks() const noexcept;
+    void scrollDrag(juce::Rectangle<int> area);
     std::int64_t dragTicks_ = 0;
     int dragKeys_ = 0;
     std::uint64_t anchor_ = 0;

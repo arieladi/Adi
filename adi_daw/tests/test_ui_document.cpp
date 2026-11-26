@@ -836,7 +836,7 @@ void arrangementRecord(const std::filesystem::path &dir) {
     check(settled && settled->ok && !doc->recording() && !doc->landingTake(),
           "a take whose device stopped is settled into the project, not lost");
 }
-void arrangementMidiRecord(const std::filesystem::path &path, bool mixed) {
+void arrangementMidiRecord(const std::filesystem::path &path, bool mixed, bool quantize = false) {
     std::string error;
     constexpr std::int32_t upstreamLatency = 16;
     auto doc = ui::ProjectDocument::open(path, true,
@@ -865,9 +865,11 @@ void arrangementMidiRecord(const std::filesystem::path &path, bool mixed) {
                   set("device.insert", {{"id", 31}, {"chain", 30}, {"ord", 1}, {"ref", 31}, {"name", "Keys"}, {"latency", 0}}),
               "the monitored track has an instrument after a device with latency");
     }
-    check(set("track.setArm", {{"id", 2}, {"armed", true}}) &&
+    check(set("track.setRecordQuantize", {{"id", 2}, {"on", quantize}, {"grid", "1/16"}}) &&
+              set("track.setArm", {{"id", 2}, {"armed", true}}) &&
               set("track.setMonitorMode", {{"id", 2}, {"mode", 1}}) &&
-              (!mixed || (set("track.setArm", {{"id", 3}, {"armed", true}}) &&
+              (!mixed || (set("track.setRecordQuantize", {{"id", 3}, {"on", quantize}, {"grid", "1/32"}}) &&
+                          set("track.setArm", {{"id", 3}, {"armed", true}}) &&
                           set("track.setMonitorMode", {{"id", 3}, {"mode", 0}}) &&
                           set("track.setArm", {{"id", 4}, {"armed", true}}))) && doc->synchronise(),
           "armed monitored MIDI, optionally with unmonitored MIDI and audio");
@@ -892,22 +894,26 @@ void arrangementMidiRecord(const std::filesystem::path &path, bool mixed) {
         io.streamTimeSamples += io.frames;
         doc->tick(io.streamTimeSamples);
     };
-    block();
-    check(doc->session().enqueueMidiInput(112, {0, engine::EventType::NoteOn, 1, 64, 9, 0, 1.0}, 80) &&
-              doc->session().enqueueMidiInput(120, {0, engine::EventType::NoteExpression, 1,
-                   static_cast<std::uint16_t>(ExpressionDim::Pitch), 9, 0, 3.0}, 88) &&
-              doc->session().enqueueMidiInput(120, {0, engine::EventType::NoteExpression, 1,
-                   static_cast<std::uint16_t>(ExpressionDim::Timbre), 9, 0, 0.25}, 88) &&
-              doc->session().enqueueMidiInput(120, {0, engine::EventType::NoteExpression, 1,
-                   static_cast<std::uint16_t>(ExpressionDim::Pressure), 9, 0, 0.5}, 88),
+    const std::int64_t lead = quantize ? 4096 : 0;
+    while (io.streamTimeSamples < lead + 64)
+        block();
+    check(doc->session().enqueueMidiInput(lead + 112, {0, engine::EventType::NoteOn, 1, 64, 9, 0, 1.0}, lead + 80) &&
+              doc->session().enqueueMidiInput(lead + 120, {0, engine::EventType::NoteExpression, 1,
+                   static_cast<std::uint16_t>(ExpressionDim::Pitch), 9, 0, 3.0}, lead + 88) &&
+              doc->session().enqueueMidiInput(lead + 120, {0, engine::EventType::NoteExpression, 1,
+                   static_cast<std::uint16_t>(ExpressionDim::Timbre), 9, 0, 0.25}, lead + 88) &&
+              doc->session().enqueueMidiInput(lead + 120, {0, engine::EventType::NoteExpression, 1,
+                   static_cast<std::uint16_t>(ExpressionDim::Pressure), 9, 0, 0.5}, lead + 88),
           "one held note with bend, slide and pressure and separate played and heard timestamps");
     block();
     const auto live = doc->liveMidiTakes();
     check(!live.empty() && live.front().notes.size() == 1 && live.front().notes.front().end == live.front().end &&
               clipCount() == before, "the held note appears before any clip row is committed");
-    check(doc->session().enqueueMidiInput(160, {0, engine::EventType::NoteOff, 1, 64, 9, 0, 0.5}, 128),
+    check(doc->session().enqueueMidiInput(lead + 160, {0, engine::EventType::NoteOff, 1, 64, 9, 0, 0.5}, lead + 128),
           "the held note releases");
     block();
+    while (quantize && io.streamTimeSamples < 6400)
+        block();
     doc->stopRecording();
     block();
     doc->release();
@@ -918,13 +924,29 @@ void arrangementMidiRecord(const std::filesystem::path &path, bool mixed) {
           "one committed clip per armed track replaces the growing take");
     if (!landed || !landed->ok)
         return;
+    if (quantize) {
+        for (const auto id : landed->clips) {
+            const auto read = engine::readClipDetails(doc->store(), id, true, true);
+            if (!read.clip || read.clip->kind != "midi")
+                continue;
+            const auto &clip = *read.clip;
+            const auto expectedTick = textproj::kPPQ / (clip.trackId == 2 ? 4 : 8);
+            check(clip.notes.size() == 1 && clip.notes.front().startTicks == expectedTick &&
+                      clip.noteExpressions.curves.size() == 3,
+                  "each track's Rec-Q grid moves its recorded note and retains note expression");
+        }
+        const auto step = doc->ops().nextUndo();
+        check(step && step->label == "Record Quantize" && step->opCount == 2 &&
+                  doc->ops().undo().ok && clipCount() == before + expected,
+              "one Record Quantize undo restores both tracks and leaves the raw mixed take");
+    }
     for (const auto id : landed->clips) {
         const auto read = engine::readClipDetails(doc->store(), id, true, true);
         if (!read.clip || read.clip->kind != "midi")
             continue;
         const auto &clip = *read.clip;
-        const double samples = clip.trackId == 2 ? 112.0 - (mixed ? upstreamLatency : 0) : 80.0;
-        const auto ticks = static_cast<std::int64_t>(std::lround(samples * textproj::kPPQ / 24000.0));
+        const double samples = clip.trackId == 2 && mixed ? 112.0 - upstreamLatency : 80.0;
+        const auto ticks = static_cast<std::int64_t>(std::lround((static_cast<double>(lead) + samples) * textproj::kPPQ / 24000.0));
         check(clip.notes.size() == 1 && clip.notes.front().startTicks == ticks && clip.notes.front().key == 64,
               "monitored notes land where heard and unmonitored notes where played");
         const auto &curves = clip.noteExpressions.curves;
@@ -935,6 +957,93 @@ void arrangementMidiRecord(const std::filesystem::path &path, bool mixed) {
     }
     check(doc->ops().undo().ok && clipCount() == before && doc->ops().redo().ok && clipCount() == before + expected,
           "one Undo and one Redo for the whole take");
+    if (quantize)
+        check(doc->ops().redo().ok && doc->ops().nextUndo()->label == "Record Quantize" && clipCount() == before + expected,
+              "redo reapplies Record Quantize as a separate step");
+}
+void arrangementMidiAutoTiming(const std::filesystem::path &path, bool overdub) {
+    std::string error;
+    constexpr int upstream = 16;
+    auto doc = ui::ProjectDocument::open(path, true,
+        [](const engine::DeviceRequest &request, std::string &) -> std::unique_ptr<device::DeviceInstance> {
+            if (request.ref->uid == "record.test.delay") return std::make_unique<SurfaceKnobs>(16);
+            if (request.ref->uid == "record.test.keys") return std::make_unique<SurfaceKnobs>(0, engine::EventFlow::Consume);
+            return nullptr;
+        }, error);
+    check(doc != nullptr, "a project for Monitor Auto MIDI timing");
+    if (!doc) return;
+    const auto set = [&](const char *type, Payload payload) {
+        OpRequest request;
+        request.opType = type;
+        request.payload = std::move(payload);
+        return doc->ops().submit(request).ok;
+    };
+    const auto tick = [](int sample) {
+        return static_cast<std::int64_t>(std::llround(static_cast<double>(sample) * textproj::kPPQ / 24000.));
+    };
+    doc->store().db().exec("INSERT INTO plugin_refs(id,format,uid,name,subtype) VALUES"
+                          "(30,'clap','record.test.delay','Delay','effect'),"
+                          "(31,'clap','record.test.keys','Keys','instrument')");
+    for (const int track : {2, 3}) {
+        const auto chain = track * 10;
+        check(set("chain.create", {{"id", chain}, {"track", track}, {"ord", 0}, {"name", "Devices"}}) &&
+                  set("device.insert", {{"id", chain}, {"chain", chain}, {"ord", 0}, {"ref", 30}, {"name", "Delay"}, {"latency", 0}}) &&
+                  set("device.insert", {{"id", chain + 1}, {"chain", chain}, {"ord", 1}, {"ref", 31}, {"name", "Keys"}, {"latency", 0}}) &&
+                  set("track.setRecordQuantize", {{"id", track}, {"on", false}}) &&
+                  set("track.setArm", {{"id", track}, {"armed", true}}) &&
+                  set("track.setMonitorMode", {{"id", track}, {"mode", 2}}), "arm two Monitor Auto instruments with the same latency");
+    }
+    check(set("clip.create", {{"id", 100}, {"track", 2}, {"kind", "midi"}, {"pos", 0}, {"length", tick(128)}}) &&
+              doc->synchronise(), "a playing clip covers the onset on only one track");
+    doc->prepare(48000, 64);
+    check(doc->session().midiRecordMonitor(2) && doc->session().midiRecordMonitor(3),
+          "both tracks have an actual published live instrument route");
+    if (!doc->startRecording(0, 0, false, overdub)) {
+        check(false, "record MIDI through Monitor Auto");
+        return;
+    }
+    std::array<float, 64> left{}, right{};
+    float *output[]{left.data(), right.data()};
+    engine::AudioIo io{output, nullptr, 2, 0, 64, 0};
+    const auto block = [&] {
+        doc->process(io);
+        io.streamTimeSamples += io.frames;
+        doc->tick(io.streamTimeSamples);
+    };
+    block();
+    check(doc->session().enqueueMidiInput(112, {0, engine::EventType::NoteOn, 1, 64, 9, 0, 1}, 80) &&
+              doc->session().enqueueMidiInput(160, {0, engine::EventType::NoteOff, 1, 64, 9, 0, 0}, 128),
+          "record the same event on each track across the first track's suppression boundary");
+    block();
+    block();
+    const auto expected = [&](std::int64_t track) {
+        const bool heard = track == 3 || overdub;
+        return std::pair{tick(heard ? 112 - upstream : 80), tick(heard ? 160 - upstream : 128)};
+    };
+    const auto preview = doc->liveMidiTakes();
+    check(preview.size() == 2 && std::all_of(preview.begin(), preview.end(), [&](const auto &take) {
+        const auto [start, end] = expected(take.track);
+        return take.notes.size() == 1 && take.notes.front().start == start && take.notes.front().end == end;
+    }), overdub ? "overdub bypasses Auto suppression for the armed tracks" :
+                  "Auto suppression uses raw onset and release while the other armed track uses heard time");
+    doc->stopRecording();
+    block();
+    doc->release();
+    check(doc->settleRecording(), "settle the Monitor Auto MIDI recording");
+    const auto landed = doc->takeLanded();
+    check(landed && landed->ok && landed->clips.size() == 2, "the Monitor Auto take lands on both tracks");
+    if (!landed || !landed->ok) return;
+    for (const auto id : landed->clips) {
+        const auto read = engine::readClipDetails(doc->store(), id, true, true);
+        if (!read.clip || read.clip->notes.size() != 1 || !read.clip->posTicks) {
+            check(false, "read the landed Monitor Auto note");
+            continue;
+        }
+        const auto [start, end] = expected(read.clip->trackId);
+        const auto &note = read.clip->notes.front();
+        check(*read.clip->posTicks + note.startTicks == start && note.durationTicks == end - start,
+              "the landed note preserves both endpoints from its track's selected clock");
+    }
 }
 // MX-23 and SRF-02: a fader dragged is heard while it moves, writes nothing until the mouse lets go, then
 // lands as one undo step; Esc puts it back (Live 12 manual 18.1).
@@ -1378,6 +1487,9 @@ int main(int argc, char **argv) {
         arrangementRecord(recordDir.path());
         arrangementMidiRecord(recordDir.path() / "midi.adi", false);
         arrangementMidiRecord(recordDir.path() / "mixed.adi", true);
+        arrangementMidiRecord(recordDir.path() / "quantized-mixed.adi", true, true);
+        arrangementMidiAutoTiming(recordDir.path() / "midi-auto.adi", false);
+        arrangementMidiAutoTiming(recordDir.path() / "midi-auto-overdub.adi", true);
         test::TempDirectory guardDir("ui_document", "guard");
         saveAsKeepsTheTake(guardDir.path());
         test::TempDirectory afterDir("ui_document", "after-save-as");

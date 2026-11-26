@@ -269,6 +269,28 @@ void midiMonitoring() {
               controller(instrument, 0, 1, 0.25) == mode.arrange, mode.checkLabel);
     }
 
+    {
+        Fixture overdub;
+        overdub.clip();
+        overdub.store->db().exec("UPDATE tracks SET record_armed=1,monitor_mode=2 WHERE id=1");
+        overdub.load();
+        const std::array<std::int64_t, 1> targets{1};
+        std::string error;
+        check(overdub.session.startMidiInputCapture(targets, error, true) &&
+                  key(overdub, 50, EventType::NoteOn, 98, 66) && key(overdub, 150, EventType::NoteOff, 98, 66),
+              "start an Auto-monitored overdub while an Arrangement clip plays");
+        overdub.render();
+        check(played(*overdub.instrument, EventType::NoteOn, 50, 66) &&
+                  played(*overdub.instrument, EventType::NoteOn, 100, 60) &&
+                  played(*overdub.instrument, EventType::NoteOff, 150, 66),
+              "an Auto-monitored overdub hears new input and the Arrangement together");
+        overdub.session.midiInputCapture().stop();
+        check(key(overdub, 550, EventType::NoteOn, 99, 67), "send live MIDI after the overdub stops");
+        overdub.render();
+        check(!played(*overdub.instrument, EventType::NoteOn, 550, 67),
+              "ending overdub restores Auto suppression over the playing Arrangement clip");
+    }
+
     Fixture f(48000, 64);
     f.clip(1, 0, 12012, 24024);
     f.store->db().exec("UPDATE tracks SET record_armed=1,monitor_mode=2 WHERE id=1;"

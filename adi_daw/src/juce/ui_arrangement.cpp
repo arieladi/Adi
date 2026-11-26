@@ -325,6 +325,7 @@ void ScrubArea::mouseDown(const juce::MouseEvent &e) {
         view.selectLoop();
         view.loopSelected = true;
         focusIfShowing(view.canvas); // the arrows go to the lanes, which act on the brace
+        beginDragAutoRepeat(ArrangementView::kAutoRepeatMs);
         repaint();
         return;
     }
@@ -354,6 +355,7 @@ void ScrubArea::mouseDown(const juce::MouseEvent &e) {
         locatorTo_ = pos;
         locatorMoved_ = false;
         focusIfShowing(view.canvas); // Delete and the arrows go to the lanes, which act on it
+        beginDragAutoRepeat(ArrangementView::kAutoRepeatMs);
         repaint();
         return;
     }
@@ -380,18 +382,25 @@ void ScrubArea::mouseDown(const juce::MouseEvent &e) {
             .showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(this).withMousePosition());
         return;
     }
-    if (marker >= 0)
+    if (marker >= 0) {
+        beginDragAutoRepeat(ArrangementView::kAutoRepeatMs);
         return;
+    }
     view.followPaused = false;
     // From the point clicked; Live's global launch quantization arrives with Session
     // View's launch settings (ADR-0203 d10), so nothing is quantized yet.
     view.root.playFrom(view.geometry.tick(e.position.x));
 }
 void ScrubArea::mouseDrag(const juce::MouseEvent &e) {
+    const auto pan = [&] {
+        if (e.mouseWasDraggedSinceMouseDown() && view.edgeScroll(e.x, e.y, true, false))
+            view.frame(true);
+    };
     if (locatorDragged_ != 0) {
         if (e.getDistanceFromDragStart() < 3 && !locatorMoved_)
             return; // a click, not a drag
         locatorMoved_ = true;
+        pan();
         const auto raw = view.geometry.tick(e.position.x) - locatorGrab_;
         const auto down = view.geometry.snap(raw, false), up = view.geometry.snap(raw, true);
         locatorTo_ = std::max<std::int64_t>(0, !view.snaps(e.mods) ? raw : (raw - down <= up - raw ? down : up));
@@ -399,6 +408,7 @@ void ScrubArea::mouseDrag(const juce::MouseEvent &e) {
         return;
     }
     if (brace_ != BracePart::None) {
+        pan();
         // To the nearest grid line while snapping (manual 6.6: "dragging from the left or right edge
         // adjusts the loop start/end points, while dragging the brace bar horizontally moves the loop
         // without changing its length"); never before the start, never shorter than a grid step.
@@ -433,6 +443,7 @@ void ScrubArea::mouseDrag(const juce::MouseEvent &e) {
     }
     if (dragged_ < 0)
         return;
+    pan();
     const auto raw = view.geometry.tick(e.position.x) - grabbed_;
     const auto down = view.geometry.snap(raw, false), up = view.geometry.snap(raw, true);
     const auto snapped = !view.snaps(e.mods) ? raw : (raw - down <= up - raw ? down : up);
@@ -1740,24 +1751,26 @@ void ArrangementView::addGridItems(juce::PopupMenu &menu) {
     menu.addCommandItem(&root.commands().manager, AppCommands::TripletGrid);
     menu.addCommandItem(&root.commands().manager, AppCommands::SnapToGrid);
 }
-bool ArrangementView::edgeScroll(int x, int y, bool sideways, bool upAndDown) {
+int ArrangementView::edgeScrollStep(int position, int length) noexcept {
     // How far past the edge zone's inner line, as a step: a few points at its rim, up to a track
     // a step well past it.
-    auto step = [](int depth) { return depth == 0 ? 0 : (depth > 0 ? 1 : -1) * std::min(48, 2 + std::abs(depth) / 2); };
+    const int depth = position < kScrollEdge ? position - kScrollEdge
+                    : position > length - kScrollEdge ? position - (length - kScrollEdge) : 0;
+    return depth == 0 ? 0 : (depth > 0 ? 1 : -1) * std::min(48, 2 + std::abs(depth) / 2);
+}
+bool ArrangementView::edgeScroll(int x, int y, bool sideways, bool upAndDown) {
     bool moved = false;
     if (upAndDown) {
         // The tracks scroll above the foot: its top is their bottom.
         const int bottom = geometry.footTop(reader());
-        const int depth = y < kScrollEdge ? y - kScrollEdge : y > bottom - kScrollEdge ? y - (bottom - kScrollEdge) : 0;
         const int before = geometry.scrollY;
-        geometry.scrollY = std::clamp(before + step(depth), 0, geometry.maxScroll(reader()));
+        geometry.scrollY = std::clamp(before + edgeScrollStep(y, bottom), 0, geometry.maxScroll(reader()));
         moved = geometry.scrollY != before;
     }
     if (sideways) {
         const int width = canvas.getWidth();
-        const int depth = x < kScrollEdge ? x - kScrollEdge : x > width - kScrollEdge ? x - (width - kScrollEdge) : 0;
         const double before = geometry.left;
-        geometry.pan(step(depth));
+        geometry.pan(edgeScrollStep(x, width));
         if (geometry.left != before) {
             moved = true;
             followPaused = true; // a sideways scroll pauses Follow (§6.2)
@@ -4121,11 +4134,18 @@ void ArrangementCanvas::filesDropped(const juce::StringArray &files, int x, int 
     const auto *track = view.geometry.trackAt(view.reader(), y);
     // Several files go one after another on that track, or each on a track of its own with Ctrl/Cmd
     // held, as Live places them; one undo step for them all.
-    std::vector<std::pair<std::string, std::string>> dropped;
-    for (const auto &path : files)
-        dropped.emplace_back(path.toStdString(),
-                             juce::File::createFileWithoutCheckingPath(path).getFileNameWithoutExtension().toStdString());
-    view.root.dropAudioFiles(dropped, track != nullptr ? track->id : 0, at,
-                             juce::ModifierKeys::currentModifiers.isCommandDown());
+    std::vector<std::pair<std::string, std::string>> audio, midi;
+    for (const auto &path : files) {
+        const auto file = juce::File::createFileWithoutCheckingPath(path);
+        auto &dropped = file.hasFileExtension("mid;smf") ? midi : audio;
+        dropped.emplace_back(path.toStdString(), file.getFileNameWithoutExtension().toStdString());
+    }
+    const auto on = track != nullptr ? track->id : 0;
+    const bool onMidi = track != nullptr && isMidiTrack(*track);
+    const bool separate = juce::ModifierKeys::currentModifiers.isCommandDown();
+    if (!audio.empty())
+        view.root.dropAudioFiles(audio, !midi.empty() && onMidi ? 0 : on, at, separate);
+    if (!midi.empty())
+        view.root.dropMidiFiles(midi, !audio.empty() && !onMidi ? 0 : on, at, separate);
 }
 } // namespace adi::ui
