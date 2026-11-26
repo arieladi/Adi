@@ -33,6 +33,8 @@
 #include "ui_fake_peer.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <sqlite3.h>
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -47,6 +49,7 @@
 #include <new>
 #include <optional>
 #include <set>
+#include <string_view>
 #include <thread>
 #include <tuple>
 #include <vector>
@@ -4830,6 +4833,139 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
         checkSampleDrop(strip, {drag, &browser.list, {10, 10}});
         browser.setListing({});
     }
+}
+void browserSearchSpeed(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto doc = ProjectDocument::open(dir / "browser-search.adi", true, {}, error);
+    check(doc != nullptr, "Browser search: create project");
+    if (!doc)
+        return;
+    AdiRootComponent root(doc->view(), doc->ops(), doc->mailbox(), commands, doc->views(),
+                          doc->sessionState(), "browser-search");
+    root.setSize(1000, 650);
+    auto &browser = root.browser;
+    const auto library = dir / "User Library";
+    const auto drums = library / "Drums";
+    const auto archive = dir / "User Library Archive";
+    const auto packs = std::filesystem::path("Sample Packs") / "Acoustic Takes" / "One Shots";
+    const auto libraryPacks = library / packs;
+    const auto drumPacks = drums / packs;
+    const auto archivePacks = archive / packs;
+    const auto pathOnlyMatch = library / "Sample Packs" / "qxy-collection" / "One Shots";
+    LibraryListing listing;
+    listing.places = {{"User Library", library, "library", true},
+                      {"Drums", drums, "drums", false}, {"Archive", archive, "archive", false}};
+    constexpr int sampleCount = 200000;
+    listing.samples.reserve(sampleCount);
+    for (int i = 0; i < sampleCount; ++i) {
+        auto name = "Take " + std::to_string(1000000 + i);
+        switch (i) {
+        case 4: name += " QXylophone"; break;
+        case 27: name += " qxyLead"; break;
+        case 200: name += " AqxYtone"; break;
+        case 201: name += " QXHat"; break;
+        case 202: name += " Qua"; break;
+        case 206: name += " \xc3\x89" "cho"; break;
+        case sampleCount - 1: name += " QxyOutside"; break;
+        default: break;
+        }
+        name += ".wav";
+        const bool archived = i == sampleCount - 1;
+        const auto &folder = archived ? archivePacks : (i % 2 == 0 ? drumPacks : libraryPacks);
+        auto path = (i == 205 ? pathOnlyMatch : folder) / media::pathFromUtf8(name);
+        // A nested file can keep the outer volume ID after the library deduplicates it.
+        listing.samples.push_back({std::move(name), std::move(path), archived ? "archive" : "library"});
+    }
+    const auto indexStart = std::chrono::steady_clock::now();
+    auto publication = std::make_shared<const BrowserLibrarySnapshot>(std::move(listing));
+    const auto indexed = std::chrono::steady_clock::now();
+    browser.setLibrarySnapshot(publication);
+    const auto handedOver = std::chrono::steady_clock::now();
+    {
+        BrowserPanel secondBrowser(root);
+        secondBrowser.setLibrarySnapshot(publication);
+        check(&browser.listing() == &publication->listing() && &secondBrowser.listing() == &browser.listing(),
+              "Browser search: two windows use the same owning library listing");
+        publication.reset();
+        check(&secondBrowser.listing() == &browser.listing() && browser.listing().samples.size() == sampleCount,
+              "Browser search: the windows retain the listing after the producer releases it");
+    }
+    std::printf("Browser library: %.2f ms to build the search index, %.2f ms to hand it to the first window\n",
+                std::chrono::duration<double, std::milli>(indexed - indexStart).count(),
+                std::chrono::duration<double, std::milli>(handedOver - indexed).count());
+    int user = -1, nested = -1, samples = -1;
+    for (std::size_t i = 0; i < browser.sidebar().size(); ++i) {
+        const auto &entry = browser.sidebar()[i];
+        if (entry.place == "library")
+            user = static_cast<int>(i);
+        if (entry.place == "drums")
+            nested = static_cast<int>(i);
+        if (entry.samples)
+            samples = static_cast<int>(i);
+    }
+    check(user >= 0 && nested >= 0 && samples >= 0, "Browser search: locate Samples and its Places");
+    if (user < 0 || nested < 0 || samples < 0)
+        return;
+    const auto edit = [&](const juce::String &query) {
+        browser.search.setText(query, false);
+        const auto start = std::chrono::steady_clock::now();
+        browser.search.onTextChange();
+        return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    };
+    const auto matches = [&](std::size_t row, std::string_view name) {
+        return row < browser.shown().size() && browser.shown()[row]->name == name;
+    };
+    browser.choose(user);
+    check(browser.shown().size() == sampleCount - 1 && matches(0, "Take 1000000.wav"),
+          "Browser search: blank User Library includes descendants and excludes the neighboring Place");
+    constexpr std::array queries{"Q", "QX", "QXY"};
+    constexpr std::array<std::size_t, queries.size()> counts{5, 4, 3};
+    constexpr std::size_t trials = 7;
+    std::array<std::array<double, trials>, queries.size()> timings{};
+    for (std::size_t trial = 0; trial < trials; ++trial) {
+        edit({});
+        for (std::size_t key = 0; key < queries.size(); ++key) {
+            timings[key][trial] = edit(queries[key]);
+            check(browser.shown().size() == counts[key], "Browser search: each typed prefix narrows the Place");
+        }
+    }
+    std::array<double, queries.size()> medians{};
+    for (std::size_t key = 0; key < queries.size(); ++key) {
+        auto &times = timings[key];
+        std::sort(times.begin(), times.end());
+        medians[key] = times[trials / 2];
+    }
+    std::printf("Browser search in a %d-file listing, median of %zu trials: Q %.3f ms, QX %.3f ms, QXY %.3f ms\n",
+                sampleCount, trials, medians[0], medians[1], medians[2]);
+    check(std::ranges::all_of(medians, [](double ms) { return ms < 40.; }),
+          "SC-421: a search keystroke in a large Place takes under 40 ms");
+    check(matches(0, "Take 1000004 QXylophone.wav") && matches(1, "Take 1000027 qxyLead.wav") &&
+              matches(2, "Take 1000200 AqxYtone.wav"),
+          "Browser search: case-insensitive filename substrings keep library order");
+    edit("QX");
+    check(browser.shown().size() == 4 && matches(3, "Take 1000201 QXHat.wav"),
+          "Browser search: backspace brings back matches for the shorter query");
+    edit("  qXy  ");
+    check(browser.shown().size() == 3, "Browser search: whitespace is trimmed and directory names do not match");
+    browser.choose(nested);
+    check(browser.shown().size() == 2 && matches(0, "Take 1000004 QXylophone.wav") &&
+              matches(1, "Take 1000200 AqxYtone.wav"),
+          "Browser search: an overlapping Place includes its files despite their outer volume ID");
+    browser.choose(samples);
+    check(browser.shown().size() == 4 && matches(3, "Take 1199999 QxyOutside.wav"),
+          "Browser search: Samples searches across all Places");
+    edit(juce::String::fromUTF8(" \xc3\x89" "CHO "));
+    check(browser.shown().size() == 1 && matches(0, "Take 1000206 \xc3\x89" "cho.wav"),
+          "Browser search: a UTF-8 filename matches the editor's case-insensitive query");
+    edit("no match here");
+    check(browser.shown().empty(), "Browser search: a disjoint query can leave no matches");
+    edit({});
+    check(browser.shown().size() == sampleCount && matches(0, "Take 1000000.wav") &&
+              matches(sampleCount - 1, "Take 1199999 QxyOutside.wav"),
+          "Browser search: clearing the query restores every sample in order");
+    const auto broad = edit("Take");
+    check(browser.shown().size() == sampleCount, "Browser search: a common query returns the entire listing");
+    std::printf("Browser search with %d matches: %.3f ms for the common query\n", sampleCount, broad);
 }
 void arrangementMidiRedraw(AppCommands &commands, const std::filesystem::path &dir) {
     constexpr int firstTrack = 20, tracks = 42, clipsPerTrack = 100, firstClip = 100;
@@ -16206,6 +16342,11 @@ int main(int argc, char **argv) {
         std::printf("%d checks, %d failures (Arrangement MIDI redraw)\n", checks, failures);
         return failures ? 1 : 0;
     }
+    if (argc == 2 && std::string(argv[1]) == "--browser-search-speed-only") {
+        browserSearchSpeed(commands, temp.path());
+        std::printf("%d checks, %d failures (Browser search)\n", checks, failures);
+        return failures ? 1 : 0;
+    }
     if (argc == 2 && std::string(argv[1]) == "--automation-demand-only") {
         automationParameterDemand(commands, temp.path());
         std::printf("%d checks, %d failures (Automation Mode demand)\n", checks, failures);
@@ -19557,6 +19698,7 @@ int main(int argc, char **argv) {
     trace("audioDrop", [&] { audioDrop(commands, temp.path()); });
     trace("importPrompt", [&] { importPrompt(commands, settings, temp.path()); });
     trace("browserDevices", [&] { browserDevices(commands, temp.path()); });
+    trace("browserSearchSpeed", [&] { browserSearchSpeed(commands, temp.path()); });
     trace("splitAndRangeEdits", [&] { splitAndRangeEdits(commands, settings, temp.path()); });
     trace("deleteArrangementSelection", [&] { deleteArrangementSelection(commands, temp.path()); });
     trace("clipClipboard", [&] { clipClipboard(commands, temp.path()); });
