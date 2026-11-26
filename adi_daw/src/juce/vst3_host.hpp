@@ -402,6 +402,23 @@ private:
     void postToProcessor(std::size_t i, double normalized) noexcept;
     /// Audio thread: every posted value not yet sent, at offset 0 of this call.
     void drainPosted() noexcept;
+
+    /// SC-311: the other way. An automation value goes to the processor in the block, and the edit
+    /// controller (what ADI's panel and the plug-in's own window show) learns it from the host, as VST3
+    /// asks: the audio thread records the last value sent per parameter here, and `pumpMainThread` hands
+    /// it to the controller on the message thread, muted so it is not taken for an edit.
+    std::unique_ptr<PendingParam[]> followed_;
+    std::vector<std::uint32_t> followedSeen_;    ///< message thread: the sequence last handed over
+    std::atomic<std::uint32_t> followedEpoch_{0};
+    std::uint32_t followedHanded_ = 0;           ///< message thread
+    /// Each VST3 ParamID with its index, sorted, for the audio thread's lookup (no allocation).
+    std::vector<std::pair<std::uint32_t, std::int32_t>> wireIndex_;
+    /// Audio thread: record that the processor was sent `value` for `wireId`.
+    void recordFollowed(std::uint32_t wireId, double value) noexcept;
+public:
+    /// SC-311: hands the controller the automation values the processor was sent.
+    void pumpMainThread() override;
+private:
     std::vector<engine::Event> injected_;
     std::size_t injectedUsed_ = 0;
     std::vector<float*> rawIn_, rawOut_;

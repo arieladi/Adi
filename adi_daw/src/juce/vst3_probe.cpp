@@ -378,6 +378,14 @@ int paramReach(adi::device::Vst3Host& host, const juce::String& want, const juce
         }
         out.level = 10.0 * std::log10(sum / double(n) + 1e-20);
         out.ok = true;
+        if (change == Change::Automation) {
+            // SC-311: the controller (what ADI's panel and the plug-in's window show) follows the lane.
+            v3->pumpMainThread();
+            const double shown = v3->getParam(id).normalized;
+            std::printf("  after the lane's value and a pump, the controller shows %.3f (the lane sent %.3f)\n", shown,
+                        target);
+            check(std::fabs(shown - target) < 1e-3, "an automated parameter moves where it is shown (SC-311)");
+        }
         return out;
     };
     int rc = 0;

@@ -3,6 +3,7 @@
 #include "adi/blob.hpp"
 #include "adi/ui/project_document.hpp"
 #include "juce/vst3_host.hpp"
+#include <pluginterfaces/vst/ivsteditcontroller.h>
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
@@ -76,6 +77,60 @@ void valuesReachProcessor(device::Vst3Host& host, const juce::PluginDescription&
     vst.setParam("4000", device::ParamValue::fromNormalized(0.9));
     block();
     check(near(processorDrive(), 0.9), "of two values set between blocks, the processor ends on the last");
+}
+// SC-311: an edit made in the plug-in's own window reaches its sound, and an automated parameter moves
+// where its value is shown (ADI's panel reads the edit controller, as does the plug-in's window). The
+// fixture's Gesture Trigger makes its controller drag Drive to 0.7 through the host's IComponentHandler,
+// beginEdit, forty performEdits, endEdit, exactly as an editor reports a drag.
+void editorAndAutomationFollow(device::Vst3Host& host, const juce::PluginDescription& desc, double (*processorDrive)()) {
+    constexpr double sampleRate = 48000.0;
+    constexpr std::int32_t frames = 64;
+    std::string error;
+    auto instance = host.instantiate(desc, sampleRate, frames, error);
+    if (!instance)
+        throw std::runtime_error(error);
+    device::Vst3Device vst(std::move(instance), device::identityOf(desc));
+    vst.prepare(sampleRate, frames);
+    std::array<float, frames> inL{}, inR{}, outL{}, outR{};
+    const float *input[]{inL.data(), inR.data()};
+    float *output[]{outL.data(), outR.data()};
+    const auto block = [&] {
+        engine::NodeIo io;
+        io.channels = 2;
+        io.frames = frames;
+        io.sampleRate = sampleRate;
+        io.in = input;
+        io.out = output;
+        vst.process(io);
+    };
+    const auto near = [](double a, double b) { return std::fabs(a - b) < 1e-6; };
+    block();
+    auto *component = static_cast<Steinberg::Vst::IComponent *>(vst.rawComponent());
+    Steinberg::Vst::IEditController *controller = nullptr;
+    if (component != nullptr)
+        component->queryInterface(Steinberg::Vst::IEditController::iid, reinterpret_cast<void **>(&controller));
+    check(controller != nullptr, "the fixture's edit controller is reachable");
+    if (controller == nullptr)
+        return;
+    controller->setParamNormalized(4001 /* Gesture Trigger: the editor drags Drive to 0.7 */, 1.0);
+    block();
+    std::printf("processor Drive after the editor's drag: %.4f\n", processorDrive());
+    check(near(processorDrive(), 0.7), "an edit made in the plug-in's own window reaches the processor in the next block");
+    // A lane plays Drive: the value reaches the processor through the block, and the controller (what
+    // ADI's panel and the plug-in's window show) follows on the message thread.
+    engine::Event lane{};
+    lane.type = engine::EventType::ParamValue;
+    lane.paramId = 4000;
+    lane.value = 0.45;
+    lane.frame = 0;
+    check(vst.pushEvent(lane), "an automation value for Drive");
+    block();
+    check(near(processorDrive(), 0.45), "the lane's value reaches the processor");
+    vst.pumpMainThread();
+    std::printf("controller Drive after the lane's value and a pump: %.4f\n", vst.getParam("4000").normalized);
+    check(near(vst.getParam("4000").normalized, 0.45),
+          "an automated parameter moves where it is shown: the controller follows the lane");
+    controller->release();
 }
 void expressionBlock(device::Vst3Host& host, const juce::PluginDescription& desc,
                      std::uint64_t (*completedProcessCalls)()) {
@@ -516,6 +571,8 @@ void contract() {
     if (processorDrive != nullptr)
         for (const bool offline : {false, true})
             valuesReachProcessor(host, *expression, processorDrive, offline);
+    if (processorDrive != nullptr)
+        editorAndAutomationFollow(host, *expression, processorDrive);
     for (const auto &desc : types)
         for (bool wide : {false, true}) {
             std::string error;
