@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/appdata.hpp"
+#include "adi/engine/clip_details.hpp"
+#include "adi/interchange/midi_clip_file.hpp"
+#include "adi/ui/midi_tracks.hpp"
 #include "adi/render/queue.hpp"
 #include "adi/render/host_dispatch.hpp"
 #include "adi/settings/device_grant.hpp"
@@ -925,6 +928,12 @@ class AdiApplication final : public juce::JUCEApplication,
         root->stopRecording = [this] { document_->stopRecording(); };
         root->recording = [this] { return document_->recording(); };
         root->liveMidiTakes = [this] { return document_->liveMidiTakes(); };
+        root->captureRecentMidi = [this](std::int64_t tick, bool playing) {
+            auto result = document_->captureRecentMidi(tick, playing);
+            root_->say(std::move(result.message));
+            if (result.ok && !result.clips.empty()) root_->selectClip(result.clips.front());
+            root_->transport.capture.setEnabled(document_->canCaptureMidi());
+        };
         // Export Audio/Video (EX-11): the Export page, then a file, then a render on a worker.
         root->exportAudio = [this](const ExportChoices &c) { openExport(c); };
         // A mixer drag heard while it moves (MX-23, SRF-02): the document's live gesture.
@@ -1241,7 +1250,65 @@ class AdiApplication final : public juce::JUCEApplication,
         });
         root_->say("Collecting and exporting to " + name + "...");
     }
+    bool chooseMidiFile(bool exporting) {
+        if (chooser_ || !document_ || !root_)
+            return false;
+        const auto current = juce::File(juce::String::fromUTF8(reinterpret_cast<const char *>(
+            document_->store().path().u8string().c_str())));
+        juce::File suggested = current.getParentDirectory();
+        interchange::smf::Bytes bytes;
+        if (exporting) {
+            const auto clip = root_->midiClipForExport();
+            std::string error;
+            bytes = interchange::encodeMidiClipFile(document_->store(), clip, error);
+            if (bytes.empty()) {
+                root_->say(error);
+                return false;
+            }
+            const auto details = engine::readClipDetails(document_->store(), clip, false);
+            const auto name = details.clip && !details.clip->name.empty()
+                ? juce::File::createLegalFileName(juce::String::fromUTF8(details.clip->name.c_str()))
+                : juce::String("MIDI Clip");
+            suggested = suggested.getChildFile(name + ".mid");
+        }
+        const auto &selection = root_->arrangement.geometry.selection;
+        const auto snapshot = document_->view().current();
+        const auto *track = snapshot ? snapshot->findTrack(selection.track) : nullptr;
+        const auto destination = track != nullptr && isMidiTrack(*track) ? track->id : 0;
+        const auto position = selection.insert;
+        const juce::Component::SafePointer<AdiRootComponent> root(root_);
+        chooser_ = std::make_unique<juce::FileChooser>(exporting ? "Export MIDI Clip" : "Import MIDI File",
+                                                      suggested, exporting ? "*.mid" : "*.mid;*.smf");
+        const auto mode = exporting ? juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::warnAboutOverwriting
+                                    : juce::FileBrowserComponent::openMode;
+        chooser_->launchAsync(mode | juce::FileBrowserComponent::canSelectFiles,
+            [this, root, exporting, bytes = std::move(bytes), destination, position](const juce::FileChooser &chosen) {
+                const auto file = chosen.getResult();
+                if (root != nullptr && file != juce::File{}) {
+                    if (exporting) {
+                        const auto target = withExtension(file, "mid");
+                        if (target != file && target.exists()) {
+                            root->say("Select the existing .mid file to confirm replacement.");
+                        } else {
+                            const bool saved = target.replaceWithData(bytes.data(), bytes.size());
+                            root->say(saved ? ("Exported " + target.getFileName()).toStdString()
+                                            : "The MIDI file could not be saved.");
+                        }
+                    } else {
+                        root->dropMidiFiles({{file.getFullPathName().toStdString(), file.getFileNameWithoutExtension().toStdString()}},
+                                            destination, position, false);
+                    }
+                }
+                juce::MessageManager::callAsync([this] {
+                    if (juce::JUCEApplicationBase::getInstance() == this)
+                        chooser_.reset();
+                });
+            });
+        return true;
+    }
     bool applicationCommand(int id) {
+        if (id == AppCommands::ImportMidiFile || id == AppCommands::ExportMidiClip)
+            return chooseMidiFile(id == AppCommands::ExportMidiClip);
         if (id == AppCommands::Quit) {
             systemRequestedQuit();
             return true;
@@ -1442,6 +1509,7 @@ class AdiApplication final : public juce::JUCEApplication,
         document_->tick(static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
         if (root_) {
             root_->setRecordStates(document_->recordStates());
+            root_->transport.capture.setEnabled(document_->canCaptureMidi());
             // A take landed (MX-09): its outcome in the Status Bar, its clips selected.
             if (auto landed = document_->takeLanded()) {
                 root_->say(landed->message);

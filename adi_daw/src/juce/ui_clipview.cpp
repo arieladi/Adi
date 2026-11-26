@@ -23,22 +23,25 @@ juce::String lengthText(std::int64_t ticks, const textproj::Meter &meter) {
     return juce::String(l.bars) + ". " + juce::String(l.beats) + ". " + juce::String(l.sixteenths);
 }
 // The time ruler both editors share: the song's bars along the foot of a dark band, as the
-// arrangement's beat-time ruler draws them, and beats when they have room.
+// arrangement's beat-time ruler draws them. The Note Editor also marks the finer editing grid.
 void paintRuler(juce::Graphics &g, juce::Rectangle<int> area, const ArrangementGeometry &time,
-                const std::vector<textproj::Meter> &meters) {
+                const std::vector<textproj::Meter> &meters, bool showSubdivisions = false) {
     g.setColour(look::band);
     g.fillRect(area);
     juce::Graphics::ScopedSaveState state(g);
     g.reduceClipRegion(area);
     const auto from = time.tick(0.), to = time.tick(static_cast<double>(area.getWidth()));
     const auto &first = meterAt(from, meters);
+    constexpr double minLabelSpacing = 56.;
+    const double gridQuarters = time.gridQuarters();
+    const bool subdivisions = showSubdivisions && gridQuarters < 1. && gridQuarters * time.scale >= 4.;
     const double beatPx = 4. / std::max<double>(1, first.denominator) * time.scale;
     std::int64_t beatStep = 1;
-    while (beatStep < first.numerator && static_cast<double>(beatStep) * beatPx < 56)
+    while (beatStep < first.numerator && static_cast<double>(beatStep) * beatPx < minLabelSpacing)
         beatStep *= 2;
     const bool beats = beatStep < first.numerator;
     std::int64_t barStep = 1;
-    while (static_cast<double>(barStep) * beatPx * first.numerator < 56)
+    while (static_cast<double>(barStep) * beatPx * first.numerator < minLabelSpacing)
         barStep *= 2;
     const int foot = area.getBottom();
     g.setFont(look::font(look::fontLabel, true));
@@ -66,6 +69,25 @@ void paintRuler(juce::Graphics &g, juce::Rectangle<int> area, const ArrangementG
             }
         for (std::int64_t b = beatStep; b < m.numerator && tick + b * beatTicks < until; b += beatStep)
             label(tick + b * beatTicks, juce::String(bar) + "." + juce::String(b + 1));
+        if (!subdivisions)
+            return;
+        constexpr auto sixteenth = textproj::kWhole / 16;
+        const double sixteenthPixels = time.scale / 4.;
+        const auto labelStep = sixteenthPixels >= minLabelSpacing ? sixteenth :
+                               2 * sixteenthPixels >= minLabelSpacing ? 2 * sixteenth : beatTicks;
+        const auto last = std::min({to, tick + m.barTicks() - 1, until - 1});
+        time.forEachGridLine(std::max(from, tick), last, [&](std::int64_t line) {
+            const auto offset = (line - tick) % beatTicks;
+            if (offset == 0)
+                return;
+            if (offset % labelStep == 0) {
+                const auto beat = (line - tick) / beatTicks + 1;
+                label(line, juce::String(bar) + "." + juce::String(beat) + "." + juce::String(offset / sixteenth + 1));
+            } else {
+                g.setColour(look::rulerLabel);
+                g.fillRect(area.getX() + static_cast<int>(time.x(line)), foot - 5, 1, 3);
+            }
+        });
     });
 }
 // The editing grid's lines and the bar lines over them, across `area`.
@@ -111,6 +133,7 @@ bool timeWheel(ArrangementGeometry &time, const juce::MouseEvent &e, const juce:
 
 // ---------------------------------------------------------------------------------------------
 NoteEditor::NoteEditor(ClipViewPanel &p) : panel(p) {
+    time.adaptiveGridFloor = ArrangementGeometry::kFinestGrid;
     setTitle("MIDI Note Editor");
     setOpaque(true);
     setWantsKeyboardFocus(true);
@@ -443,6 +466,7 @@ void NoteEditor::zoomToNotes() {
         return;
     if (const auto span = timeSelection(); span && !anySelected()) {
         time.fit(span->first, span->second + std::max<std::int64_t>(1, (span->second - span->first) / 24), notesArea().getWidth());
+        panel.repaint(panel.gridBox());
         repaint();
         return;
     }
@@ -462,11 +486,13 @@ void NoteEditor::zoomToNotes() {
     const auto area = notesArea();
     const auto margin = std::max<std::int64_t>(1, (to - from) / 24);
     time.fit(std::max<std::int64_t>(0, window.toArrangement(from)), window.toArrangement(to) + margin, area.getWidth());
+    panel.repaint(panel.gridBox());
     keys.show(range->low, range->high, area.getHeight());
     repaint();
 }
 void NoteEditor::zoomBack() {
     time.back();
+    panel.repaint(panel.gridBox());
     repaint();
 }
 bool NoteEditor::quantize() {
@@ -1291,6 +1317,7 @@ void NoteEditor::fitWidth() {
     const auto length = std::max<std::int64_t>(textproj::kPPQ, to - from);
     time.fit(from, from + length + length / 24, area.getWidth());
     panel.root.arrangement.followPaused = true;
+    panel.repaint(panel.gridBox());
     repaint();
 }
 void NoteEditor::fitHeight() {
@@ -1413,6 +1440,7 @@ bool NoteEditor::duplicateLoop() {
         const auto from = std::min(window.pos, window.toArrangement(start));
         const auto to = std::max(window.end(), end);
         time.fit(from, to + (to - from) / 24, area.getWidth());
+        panel.repaint(panel.gridBox());
     }
     repaint();
     return true;
@@ -2039,12 +2067,30 @@ void NoteEditor::mouseDrag(const juce::MouseEvent &e) {
 #endif
     const auto area = notesArea();
     const auto previousTicks = dragTicks_;
-    if (drag_ == Drag::Move || drag_ == Drag::Start || drag_ == Drag::End) {
-        // Notes keep their offset from the grid: the drag moves by whole grid steps (manual 10.2.1).
-        const double raw = static_cast<double>(to_.x - from_.x) / time.scale * static_cast<double>(textproj::kPPQ);
-        const auto step = static_cast<double>(gridTicks());
-        dragTicks_ = snapping(e.mods) ? static_cast<std::int64_t>(std::llround(raw / step) * static_cast<long long>(step))
-                                      : static_cast<std::int64_t>(std::llround(raw));
+    const bool draggingNotes = drag_ == Drag::Move || drag_ == Drag::Start || drag_ == Drag::End;
+    const auto *anchor = draggingNotes ? note_edits_detail::find(*clip, anchor_) : nullptr;
+    if (draggingNotes) {
+        const int dx = to_.x - from_.x;
+        dragTicks_ = std::llround(static_cast<double>(dx) / time.scale * textproj::kPPQ);
+        if (dx != 0 && anchor != nullptr && snapping(e.mods)) {
+            // Follow the pointer until the first grid line approaches. Snap the grabbed note's moving
+            // edge from then on, and apply its delta to the whole selection (manual 10.2.1).
+            const auto origin = ClipWindow::of(*clip).toArrangement(
+                anchor->startTicks + (drag_ == Drag::End ? anchor->durationTicks : 0));
+            const auto target = origin + dragTicks_;
+            const auto firstLine = time.snap(origin, dx > 0);
+            constexpr double magneticPixels = 4.;
+            const auto remaining = dx > 0 ? firstLine - target : target - firstLine;
+            const auto distance = static_cast<double>(remaining) / textproj::kPPQ * time.scale;
+            if (distance <= std::min(magneticPixels, time.gridQuarters() * time.scale / 2.)) {
+                const auto below = time.snap(target, false), above = time.snap(target, true);
+                const auto distanceBelow = target - below, distanceAbove = above - target;
+                const bool nearerBelow = distanceBelow < distanceAbove || (distanceBelow == distanceAbove && dx < 0);
+                const auto nearest = nearerBelow ? below : above;
+                const auto line = dx > 0 ? std::max(nearest, firstLine) : std::min(nearest, firstLine);
+                dragTicks_ = line - origin;
+            }
+        }
     }
     if (drag_ == Drag::Move) {
         const auto a = keys.keyAt(from_.y - area.getY());
@@ -2063,9 +2109,8 @@ void NoteEditor::mouseDrag(const juce::MouseEvent &e) {
                         high = std::max(high, static_cast<int>(n->key));
                     }
         const int keyDelta = a && b && low <= high ? std::clamp(*b - *a, -low, kNoteKeys - 1 - high) : 0;
-        if (keyDelta != dragKeys_ || previousTicks != dragTicks_)
-            if (const auto *anchor = note_edits_detail::find(*clip, anchor_))
-                audition(clip->trackId, anchor->key + keyDelta, anchor->velocity);
+        if (anchor != nullptr && (keyDelta != dragKeys_ || previousTicks != dragTicks_))
+            audition(clip->trackId, anchor->key + keyDelta, anchor->velocity);
         dragKeys_ = keyDelta;
     } else if (drag_ == Drag::Velocity) {
         velocityDrag();
@@ -2554,8 +2599,10 @@ void NoteEditor::mouseWheelMove(const juce::MouseEvent &e, const juce::MouseWhee
         keys.zoom(keys.keyHeight + (w.deltaY > 0 ? 2 : -2), e.y - area.getY(), area.getHeight());
     else if (!timeWheel(time, e, w, area.getX()))
         keys.scrollBy(static_cast<int>(std::lround(-w.deltaY * 180.f)), area.getHeight());
-    else
+    else {
         panel.root.arrangement.followPaused = true; // a scroll or zoom in time pauses Follow
+        panel.repaint(panel.gridBox());
+    }
     repaint();
 }
 std::vector<juce::Rectangle<int>> NoteEditor::textAreas() const {
@@ -2593,7 +2640,7 @@ void NoteEditor::paint(juce::Graphics &g) {
         return;
     }
     const auto &meters = *time.meters;
-    paintRuler(g, ruler, time, meters);
+    paintRuler(g, ruler, time, meters, true);
     // The stretch markers' strip, under the ruler.
     g.setColour(look::lane.darker(0.25f));
     g.fillRect(stretchArea());

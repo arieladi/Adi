@@ -1833,12 +1833,30 @@ void testOrdinaryControllerPorts() {
         controller.value = 0.123456789012345;
         d.pushEvent(controller);
         d.pushEvent(noteOn(11, 60, 0.8, 20));
+        if (mode == 0) {
+            controller.frame = 21;
+            controller.paramId = 1;
+            controller.value = 93.0 / 127.0;
+            d.pushEvent(controller);
+            controller.frame = 22;
+            controller.paramId = 64;
+            controller.value = 1;
+            d.pushEvent(controller);
+            d.pushEvent({23, engine::EventType::NoteExpression, 3, static_cast<std::uint16_t>(ExpressionDim::Pitch),
+                         0, 0, 1.0});
+        }
         d.process(io);
         if (mode == 0) {
             check(
-                f.seenMidi.size() == 1 && f.seenMidi[0].header.time == 3 && f.seenMidi[0].data[0] == 0xb3 &&
+                f.seenMidi.size() == 4 && f.seenMidi[0].header.time == 3 && f.seenMidi[0].data[0] == 0xb3 &&
                     f.seenMidi[0].data[1] == 7 && f.seenMidi[0].data[2] == 16,
                 "ordinary controller reaches the MIDI-capable native CLAP port with segment-relative frame");
+            check(f.seenMidi.size() == 4 &&
+                      f.seenMidi[1].header.time == 5 && f.seenMidi[1].data[1] == 1 && f.seenMidi[1].data[2] == 93 &&
+                      f.seenMidi[2].header.time == 6 && f.seenMidi[2].data[1] == 64 && f.seenMidi[2].data[2] == 127 &&
+                      f.seenMidi[3].header.time == 7 && f.seenMidi[3].data[0] == 0xe3 &&
+                      f.seenMidi[3].data[1] == 0 && f.seenMidi[3].data[2] == 96,
+                  "the CLAP processor receives mod wheel, sustain and the channel pitch wheel as MIDI bytes");
             check(f.seenNotes.size() == 1 && f.seenNotes[0].header.time == 4 &&
                       d.unsupportedControllers() == 0,
                   "the native note and ordinary MIDI controller coexist without changing note dialect");

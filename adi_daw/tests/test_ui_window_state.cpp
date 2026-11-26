@@ -629,7 +629,8 @@ int main() {
               restored.noteLaneHeight == 90 && views.load("other").noteLaneHeight == 56 &&
               restored.clipPanelsArrangement == 2 && views.load("other").clipPanelsArrangement == 0 &&
               restored.quantizeAmount == 40 && restored.quantizeSwing == 15 && !restored.quantizeStarts && restored.quantizeEnds &&
-              views.load("other").noteGridSnap && !views.load("other").noteGridFixed && views.load("other").highlightScale &&
+              views.load("other").noteGridSnap && views.load("other").noteGridFixed &&
+              views.load("other").noteGridFixedQuarters == .25 && views.load("other").highlightScale &&
               views.load("other").noteColours == 0 && views.load("other").quantizeAmount == 100 && views.load("other").quantizeStarts &&
               views.load("other").clipViewHeight == 286,
           "the Note Editor's grid, Highlight Scale, note colours and Quantize settings persist per window, with Live's defaults");

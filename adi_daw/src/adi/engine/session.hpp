@@ -358,6 +358,10 @@ public:
     // With the audio callback detached, finish without waiting for another slice.
     void finishMidiInputCapture() noexcept;
 
+    [[nodiscard]] bool midiHistoryAvailable() const noexcept;
+    bool readMidiHistories(std::vector<MidiMemorySnapshot>&, std::string& error) const;
+    void consumeMidiHistories(std::span<const MidiMemorySnapshot>) noexcept;
+
     // Owner only. Note Editor audition bypasses Track monitoring and capture.
     bool previewMidiNote(std::int64_t track, int key, int velocity, bool held) noexcept;
     void stopMidiPreview() noexcept;
@@ -532,6 +536,7 @@ private:
     std::unique_ptr<LiveMidiInput> midiInput_;
     std::unique_ptr<MidiInputCapture> midiInputCapture_;
     std::map<std::size_t, std::shared_ptr<LiveMidiInput::Voices>> midiInputVoices_;
+    std::map<std::int64_t, std::shared_ptr<LiveMidiInput::History>> midiHistories_;
     // Device nodes persist across graph swaps and Undo. Their audition voices
     // retain any pending releases even if the device temporarily leaves the graph.
     std::map<const Node*, LiveMidiInput::PreviewVoice> midiPreviewVoices_;
@@ -557,6 +562,7 @@ private:
         std::vector<rows::TimeSignature> signatures;
         std::vector<std::pair<std::int64_t, std::int64_t>> deviceClockChanges; ///< sample, tick
         std::vector<LiveMidiInput::Route> midiInputRoutes;
+        std::vector<std::shared_ptr<LiveMidiInput::History>> midiHistories;
         std::vector<LiveMidiInput::PreviewRoute> midiPreviewRoutes;
         std::shared_ptr<const StripLaneBindings> stripLanes;
         ClipPlayback::Readiness sourceReadiness;
