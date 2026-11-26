@@ -4,6 +4,22 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-26 — Item 4 (part 3, after-3-December pile): Devices lane's DEV-22 stack head `devices/spectral-resonator` (`920177d9`)
+
+`devices/spectral-resonator` (`920177d9`) is the tip of the full DEV-22 after-date stack (172 files changed vs merge-base `ac07be74`, +18,854 / -29 lines), carrying all 27 new post-3-December devices (Align Delay, Auto Pan-Tremolo, Auto Shift, Channel EQ, Corpus, DJ Filter, Drum Buss, Dynamic Tube, EQ Three, Erosion, Filter Delay, Glue Compressor, Grain Delay, LFO Modulator, Live Amp, Live Cabinet, Live Compressor, Live Gate, Live Limiter, Live Pedal, Roar, Shaper Modulator, Spectral Resonator, Spectral Time, Spectrum, Tuner, Vinyl Distortion + DF-E77 merged up).
+
+Base `ac07be74` predates four already-landed `main` fixes (`DF-M62` `FloatRealTransform.h:61`, `DF-E69` Clang 14 structured-binding captures in `param_ops.cpp`/`clip_playback.cpp`, `DF-E67 (b)` `canvas_setargs` LSan fix, and `adi::test::countReplacedNew()`). With a transient local 1-line `DF-M62` unblock on `FloatRealTransform.h:61` (reverted immediately after), **zero failures or warnings were found in any of the 172 DEV-22 files**:
+
+| Configuration | Compiler & Flags | Build | Suites & Results | Verdict |
+|---|---|---|---|---|
+| Headless Debug (`-DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF`) | GCC 12.4.0 `-DADI_WERROR=ON` (transient DF-M62 unblock for base `ac07be74`) | **PASS** (0 warnings across all 27 new DSP devices, 27 Pd builtins, and 29 test suites) | All 29 DEV-22 suites (`adi_align_delay_tests`, `adi_auto_pan_tests`, `adi_auto_shift_tests`, `adi_builtin_devices_tests`, `adi_channel_eq_tests`, `adi_corpus_tests`, `adi_dj_filter_tests`, `adi_drum_buss_tests`, `adi_dynamic_tube_tests`, `adi_eq_three_tests`, `adi_erosion_tests`, `adi_filter_delay_tests`, `adi_glue_compressor_tests`, `adi_grain_delay_tests`, `adi_lfo_modulator_tests`, `adi_live_amp_tests`, `adi_live_cabinet_tests`, `adi_live_compressor_tests`, `adi_live_gate_tests`, `adi_live_limiter_tests`, `adi_live_pedal_tests`, `adi_pd_native_devices_tests`, `adi_roar_tests`, `adi_shaper_modulator_tests`, `adi_spectral_resonator_tests`, `adi_spectral_time_tests`, `adi_spectrum_device_tests`, `adi_tuner_tests`, `adi_vinyl_distortion_tests`): **29/29 PASS** (94.03 s) | **PASS** |
+| Headless Debug (`-DADI_WITH_PD=ON -DADI_WITH_JUCE=OFF`) | Clang 14.0.6 + libstdc++ 12 `-DADI_WERROR=ON` | **PASS** on all 83 DEV-22 TUs (0 warnings; only pre-DF-E69 `param_ops.cpp`/`clip_playback.cpp` from base `ac07be74` stopped final link) | All 27 DSP + 27 Pd builtin + 29 test TUs compile clean | **PASS (needs rebase onto `main` for Clang 14 link)** |
+| Headless ASan+LSan+UBSan | GCC 12.4.0 `-O1 -g1 -fsanitize=address,undefined` (`halt_on_error=1`) | **PASS** | All 27 new DEV-22 suites: **27/27 PASS** with `detect_leaks=1:alloc_dealloc_mismatch=1` (0 leaks, 0 reports). `adi_builtin_devices_tests` (**386/0 PASS**, `detect_leaks=1:alloc_dealloc_mismatch=0`) and `adi_pd_native_devices_tests` (**778/0 PASS**, 42 devices exact 0 max-error, `detect_leaks=0:alloc_dealloc_mismatch=0`; pre-rebase base `ac07be74` lacked `countReplacedNew` and `DF-E67 (b)`). | **PASS** |
+
+- **Note for landing day (owner: `devices`):** Rebase/merge onto current `main` before 3 December to inherit `DF-M62`, `DF-E69`, `DF-E67 (b)`, and `countReplacedNew()`; zero DEV-22 code defects found.
+
+---
+
 ## 2026-11-26 — Item 4 (part 2, after-3-December pile): Clones seat's ADI-Shaper stacks (`clones/shaper-time-block-cost` `31df6e89` and `clones/shaper-curve-edit` `b3d393b3`)
 
 Checked ancestry per `clones/log`: Clones has two maximal ADI-Shaper stack heads:
