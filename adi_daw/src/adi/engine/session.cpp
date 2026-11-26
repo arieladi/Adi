@@ -2270,9 +2270,13 @@ bool Session::readDriverClock(DriverClock& result) const noexcept {
 // generation's readers start cold, so while the driver plays, read the pages at its
 // playhead (and the loop head) before the graph is published; priming waits for the
 // two pages of look-ahead too. A timeout publishes anyway: the readers catch up.
+// Stopped, the pages at the playhead are read too, where Play starts (walk-B B12): Space
+// commits `transport.play` before it posts Play, and the generation that commit builds
+// while stopped could be published just after the driver started, cold, so the second
+// block of playback was silent. Only while a driver runs: with no device nothing plays.
 void Session::primeWhilePlaying(ClipPlayback& clips, const TimingView& timing) {
     DriverClock clock;
-    if (!readDriverClock(clock) || !clock.playing) return;
+    if (driverClockSequence_.load() == 0 || !readDriverClock(clock)) return;
     Transport requested;
     requested.locate(clock.sample);
     if (timing.settings.hasLoop) requested.loop(timing.loopBegin, timing.loopEnd, timing.settings.loopEnabled);
