@@ -12284,6 +12284,22 @@ void sampleEditorMouse(AppCommands &commands, const std::filesystem::path &dir) 
     edit.mouseDrag(dragAt(edit, down, up, juce::ModifierKeys::leftButtonModifier));
     edit.mouseUp(dragAt(edit, down, up));
     check(edit.time.scale > scale, "dragging down on the time ruler zooms in");
+    const auto zoomed = edit.time.scale;
+    const auto arrangementScale = root.arrangement.geometry.scale;
+    check(edit.keyPressed(juce::KeyPress('+')) && edit.time.scale > zoomed,
+          "Plus zooms the Sample Editor");
+    check(edit.keyPressed(juce::KeyPress('-')) && std::abs(edit.time.scale - zoomed) < .01,
+          "Minus zooms out in the Sample Editor");
+    const auto left = edit.time.left;
+    check(edit.keyPressed(juce::KeyPress('z')) && edit.time.historySize > 0,
+          "Z remembers the previous waveform view and fits the clip");
+    check(edit.keyPressed(juce::KeyPress('x')) && edit.time.left == left &&
+              std::abs(edit.time.scale - zoomed) < .01 && root.arrangement.geometry.scale == arrangementScale,
+          "X restores the waveform view without zooming the Arrangement");
+    const auto undoBefore = root.undoTitle(false);
+    check(edit.keyPressed(juce::KeyPress('i', juce::ModifierKeys::commandModifier, 0)) &&
+              root.undoTitle(false) == undoBefore,
+          "the Sample Editor consumes Insert Silence without inserting song time");
     commands.detach(root);
 }
 void clipWaveforms(AppCommands &commands, const std::filesystem::path &dir) {
