@@ -9,6 +9,7 @@
 #include "adi/audio/progressive_decode.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/audio/wav_file.hpp"
+#include "adi/media/media_ops.hpp"
 #include "adi/edit_time.hpp"
 #include "adi/store.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -504,6 +505,8 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
     if(tempo.events.empty()) tempo.events.push_back({0,120,0});
     if(!project->rows.audioClips.empty() && std::any_of(tempo.events.begin(),tempo.events.end(),[](const auto& e){return e.curve!=0;}))
         impl_->problems.push_back("tempo_map: TempoMap does not implement ramps; clip timing uses step tempos");
+    struct RelocatedSource { fs::path path; std::string error; };
+    std::unordered_map<std::int64_t, RelocatedSource> relocatedSources;
     for(const auto& row:timelineClips(project->rows)) {
         // Muted clips do not need a reader or a playable media source.
         if(row.kind!="audio" || row.muted) continue;
@@ -516,12 +519,27 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             if(row.aliasOf) throw std::runtime_error("alias resolution unsupported; silent");
             if(row.fadeInCurve<0 || row.fadeInCurve>5 || row.fadeOutCurve<0 || row.fadeOutCurve>5) throw std::runtime_error("fade curve unsupported; silent");
             if(a->channelMode<0 || a->channelMode>3) throw std::runtime_error("unknown channel mode; silent");
-            const auto media=std::find_if(project->rows.media.begin(),project->rows.media.end(),[&](const auto& m){return m.id==a->mediaId;});
-            if(media==project->rows.media.end() || media->embedded) throw std::runtime_error("missing or embedded media; extract first; silent");
+            const auto source=std::find_if(project->rows.media.begin(),project->rows.media.end(),[&](const auto& m){return m.id==a->mediaId;});
+            if(source==project->rows.media.end() || source->embedded) throw std::runtime_error("missing or embedded media; extract first; silent");
             auto clip=std::make_unique<Clip>();
-            clip->clipId=row.id; clip->mediaId=media->id; clip->storedBlake3=media->hashBlake3;
-            if(media->relPath) clip->path=project->folder/utf8Path(*media->relPath);
-            else if(auto h=project->hints.find(media->id);h!=project->hints.end()) clip->path=h->second;
+            clip->clipId=row.id; clip->mediaId=source->id; clip->storedBlake3=source->hashBlake3;
+            const auto hint = project->hints.find(source->id);
+            if (source->relPath) {
+                const auto relative = utf8Path(*source->relPath);
+                clip->path = project->folder / relative;
+                // In the ordinary case both stored locations name the same file.
+                // Verify differing candidates once per media asset, not per clip.
+                if (hint != project->hints.end() && !relative.empty() && *relative.begin() == ".." &&
+                    clip->path.lexically_normal() != hint->second.lexically_normal()) {
+                    auto [found, inserted] = relocatedSources.try_emplace(source->id);
+                    auto& resolved = found->second;
+                    if (inserted) resolved.path = media::resolveMedia(project->folder, relative, hint->second,
+                        source->origName, source->hashBlake3, resolved.error);
+                    if (resolved.path.empty()) throw std::runtime_error(
+                        (resolved.error.empty() ? "missing media: " + source->origName : resolved.error) + "; silent");
+                    clip->path = resolved.path;
+                }
+            } else if (hint != project->hints.end()) clip->path = hint->second;
             else throw std::runtime_error("no media path; silent");
             // Direct WAV remains unchanged. Plain compressed clips consume a
             // shared worker's flushed prefixes; Warp still needs its complete
@@ -533,7 +551,7 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                 const auto info=audio::inspectPcm(clip->path);
                 if(info.frames && *info.frames) {
                     auto& service=decoder?*decoder:audio::defaultProgressiveDecoder();
-                    clip->progressive=service.openSaved(clip->path,info,media->hashBlake3);
+                    clip->progressive=service.openSaved(clip->path,info,source->hashBlake3);
                     clip->channels=static_cast<std::uint16_t>(clip->progressive->info().channels);
                     clip->sourceRate=clip->progressive->info().sampleRate;
                     sourceFrames=*clip->progressive->info().frames;

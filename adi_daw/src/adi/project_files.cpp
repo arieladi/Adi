@@ -58,14 +58,20 @@ bool rebasePaths(Payload& paths,const fs::path& oldFolder,const fs::path& newFol
             const auto fallback=oldFolder/"audio"/media::pathFromUtf8(original).filename();
             if(fs::exists(fallback,ec))primary=fallback;
         }
-        if(primary.empty() && !paths.at("abs_path_hint").is_null())
-            primary=media::pathFromUtf8(paths.at("abs_path_hint").get<std::string>());
+        if(!paths.at("abs_path_hint").is_null()) {
+            const auto hint=media::pathFromUtf8(paths.at("abs_path_hint").get<std::string>());
+            if(primary.empty() || (!fs::exists(primary,ec) && fs::exists(hint,ec)))primary=hint;
+        }
         if(primary.empty() && !original.empty())primary=oldFolder/"audio"/media::pathFromUtf8(original).filename();
     }
     if(!primary.empty()) {
         if(!primary.is_absolute())throw std::runtime_error("media path hint is not absolute");
         const auto relative=primary.lexically_relative(newFolder);
-        if(!relative.empty() && !relative.is_absolute())paths["rel_path"]=media::pathUtf8(relative);
+        if(!relative.empty() && !relative.is_absolute()) {
+            paths["rel_path"]=media::pathUtf8(relative);
+            if(*relative.begin()==".." && paths.at("abs_path_hint").is_null())
+                paths["abs_path_hint"]=media::pathUtf8(primary);
+        }
         else {paths["rel_path"]=nullptr;paths["abs_path_hint"]=media::pathUtf8(primary);}
     }
     return paths!=before;

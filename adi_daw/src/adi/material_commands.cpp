@@ -82,13 +82,21 @@ void snapshot(Store& store,const fs::path& target) {
     if(!backup)throw std::runtime_error("cannot start bounce snapshot");
     const int copied=sqlite3_backup_step(backup,-1),finished=sqlite3_backup_finish(backup);
     if(copied!=SQLITE_DONE || finished!=SQLITE_OK)throw std::runtime_error("cannot capture bounce snapshot");
-    // The backup lives in a private subdirectory. Its media retain the live
-    // project's original base; no project or history paths are rewritten.
+    // Keep both locations against the private backup's new base so a project
+    // moved by hand bounces the same file that plays in the live session.
+    const auto sourceFolder=media::projectFolder(store),captureFolder=media::projectFolder(output);
     SQLite::Statement rows(output,"SELECT id,rel_path FROM media_files WHERE rel_path IS NOT NULL");
+    SQLite::Statement update(output,"UPDATE media_files SET rel_path=?,abs_path_hint=COALESCE(?,abs_path_hint) WHERE id=?");
     while(rows.executeStep()) {
-        const auto source=media::projectFolder(store)/media::pathFromUtf8(rows.getColumn(1).getString());
-        SQLite::Statement update(output,"UPDATE media_files SET rel_path=NULL,abs_path_hint=? WHERE id=?");
-        update.bind(1,media::pathUtf8(fs::absolute(source)));update.bind(2,rows.getColumn(0).getInt64());update.exec();
+        const auto original=media::pathFromUtf8(rows.getColumn(1).getString());
+        const auto source=sourceFolder/original;
+        const auto relative=source.lexically_normal().lexically_relative(captureFolder);
+        if(relative.empty() || original.empty() || *original.begin()!="..") {
+            update.bind(1);update.bind(2,media::pathUtf8(source));
+        } else {
+            update.bind(1,media::pathUtf8(relative));update.bind(2);
+        }
+        update.bind(3,rows.getColumn(0).getInt64());update.exec();update.reset();
     }
 }
 }
