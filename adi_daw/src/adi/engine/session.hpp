@@ -512,6 +512,7 @@ private:
     friend class gesture::EnginePresentation;
     struct TimingView;
     struct PendingLoad;
+    bool prepareLoad(const Store&, DeviceLoader, SessionSpec, bool staged);
     bool checkLoadRevision(const Store&);
     SourceFn playbackSources(ClipPlayback*, MidiClips*, std::shared_ptr<const TimingView>);
     struct InputMonitors;

@@ -241,7 +241,7 @@ struct Session::ScopeRuntime {
 struct Session::PendingLoad {
     const Store* store = nullptr;
     std::thread::id owner;
-    gesture::detail::StoreWriteStamp stamp{};
+    std::optional<gesture::detail::StoreWriteStamp> stamp;
     std::uint64_t sequence = 0;
     std::vector<std::size_t> deviceRows;
     std::size_t next = 0;
@@ -1492,13 +1492,17 @@ std::optional<bool> Session::refreshDeviceKeys(const Store& store, const std::sh
 }
 
 bool Session::load(const Store& store, DeviceLoader loader, SessionSpec spec) {
-    if (!beginLoad(store, std::move(loader), spec)) return false;
+    if (!prepareLoad(store, std::move(loader), spec, false)) return false;
     while (pendingLoad_->next < pendingLoad_->deviceRows.size())
         if (!loadNextDevice(store)) return false;
     return finishLoad(store);
 }
 
 bool Session::beginLoad(const Store& store, DeviceLoader loader, SessionSpec spec) {
+    return prepareLoad(store, std::move(loader), spec, true);
+}
+
+bool Session::prepareLoad(const Store& store, DeviceLoader loader, SessionSpec spec, bool staged) {
     if(audio::onAudioThread)return false;
     error_.clear();
     if (loaded_ || pendingLoad_) {
@@ -1515,8 +1519,11 @@ bool Session::beginLoad(const Store& store, DeviceLoader loader, SessionSpec spe
     loader_ = std::move(loader);
     appliedSource_ = adi::appliedSource(store);
     const auto sequence = appliedSource_.sequence();
-    const auto revision = gesture::detail::storeWriteStamp(store);
-    if (!revision) {
+    // A staged open may yield to another owner turn. Synchronous load uses
+    // the coherent playback image read in readPlayback, including a caller's
+    // pinned transaction when present.
+    const auto revision = staged ? gesture::detail::storeWriteStamp(store) : std::nullopt;
+    if (staged && !revision) {
         error_ = "cannot capture the project revision for opening";
         return false;
     }
@@ -1534,14 +1541,14 @@ bool Session::beginLoad(const Store& store, DeviceLoader loader, SessionSpec spe
     recordingProject_ = recordingIdentity(store);
     if (!readPlayback(store))
         return false;
-    if (gesture::detail::storeWriteStamp(store) != revision || appliedSource_.sequence() != sequence) {
+    if (revision && (gesture::detail::storeWriteStamp(store) != revision || appliedSource_.sequence() != sequence)) {
         error_ = "the project changed while it was opening";
         return false;
     }
     auto pending = std::make_unique<PendingLoad>();
     pending->store = &store;
     pending->owner = std::this_thread::get_id();
-    pending->stamp = *revision;
+    pending->stamp = revision;
     pending->sequence = sequence;
     pending->deviceRows.reserve(model_.devices.size());
     for (std::size_t index = 0; index < model_.devices.size(); ++index)
@@ -1573,7 +1580,8 @@ bool Session::checkLoadRevision(const Store& store) {
     auto& pending = *pendingLoad_;
     if (pending.owner != std::this_thread::get_id() || pending.failed) return false;
     if (pending.store != &store || !appliedSource_.sameConnection(adi::appliedSource(store)) ||
-        appliedSource_.sequence() != pending.sequence || gesture::detail::storeWriteStamp(store) != pending.stamp) {
+        (pending.stamp && (appliedSource_.sequence() != pending.sequence ||
+                           gesture::detail::storeWriteStamp(store) != pending.stamp))) {
         pending.failed = true;
         error_ = "the project changed while it was opening";
         return false;
@@ -1619,7 +1627,7 @@ bool Session::finishLoad(const Store& store) {
             loaded_ = false;
             return false;
         }
-        appliedSequence_ = pending.sequence;
+        appliedSequence_ = pending.stamp ? pending.sequence : appliedSource_.sequence();
         pendingLoad_.reset();
         return true;
     } catch (const std::exception& exception) {
