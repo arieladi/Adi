@@ -33,9 +33,8 @@ bool deviceOrTrackEditCommand(int id) noexcept {
     return id == AppCommands::Cut || id == AppCommands::Copy || id == AppCommands::Paste ||
            id == AppCommands::Duplicate || id == AppCommands::RenameTrack || id == AppCommands::DeleteTrack;
 }
-// Live's measures, in points at 100 %: the AI tab, the Info View's width and the browser's preview strip.
-constexpr int kTabHeight = 20;
-constexpr int kInfoWidth = 200, kPreviewHeight = 27;
+// Live's measures, in points at 100 %: the AI tab and the browser's preview strip.
+constexpr int kTabHeight = 20, kPreviewHeight = 27;
 // Interface zoom steps per window. PROVISIONAL: Live's own list is to be
 // measured (ADR-0203 d26); 100 % is the start and the steps are symmetric.
 constexpr std::array<float, 7> kZoomSteps{.5f, .75f, 1.f, 1.25f, 1.5f, 1.75f, 2.f};
@@ -1722,13 +1721,6 @@ void AdiRootComponent::resized() {
     const int detail = dock + clip + (dock > 0 && clip > 0 ? gap : 0);
     const int row = detail > 0 ? detail : (infoShown_ ? std::min(body, state_.deviceFloor) : 0);
     const int rowY = bottom - row;
-    // Live's Info View sits in the bottom-left corner beside the Device View.
-    const int infoW = infoShown_ ? std::min(kInfoWidth, w / 2) : 0;
-    infoArea_ = infoShown_ ? juce::Rectangle<int>(gap, rowY, infoW, row) : juce::Rectangle<int>();
-    const int deviceX = infoShown_ ? infoArea_.getRight() + gap : gap;
-    clipArea_ = clip > 0 ? juce::Rectangle<int>(deviceX, rowY, w - deviceX - gap, clip) : juce::Rectangle<int>();
-    deviceArea_ = dock > 0 ? juce::Rectangle<int>(deviceX, bottom - dock, w - deviceX - gap, dock)
-                           : juce::Rectangle<int>();
     // Each panel has Live's dark 4 pt edge, which the root draws; the strip sits inside.
     // Widths belong to panels (ADR-0080 d2). If the window shrinks, share the
     // lost space proportionally above each panel's own minimum; the centre
@@ -1758,6 +1750,18 @@ void AdiRootComponent::resized() {
     }
     const int mid = std::max(0, rowY - gap - top);
     const bool browserLeft = slots[0].panel == Panel::Browser;
+    const int bw = browserLeft ? left : right;
+    browserArea_ = bw > 0 ? juce::Rectangle<int>(browserLeft ? gap : w - right, top, bw - gap, mid)
+                          : juce::Rectangle<int>();
+    // The Arrangement sheet makes the Info box as wide as the Browser column. With the Browser
+    // closed, use its stored width within the available detail space.
+    const int storedBrowserWidth = slots[browserLeft ? 0 : 1].width - gap;
+    const int infoW = bw > 0 ? browserArea_.getWidth() : std::clamp(storedBrowserWidth, 0, w / 2);
+    infoArea_ = infoShown_ ? juce::Rectangle<int>(gap, rowY, infoW, row) : juce::Rectangle<int>();
+    const int deviceX = infoShown_ ? infoArea_.getRight() + gap : gap;
+    clipArea_ = clip > 0 ? juce::Rectangle<int>(deviceX, rowY, w - deviceX - gap, clip) : juce::Rectangle<int>();
+    deviceArea_ = dock > 0 ? juce::Rectangle<int>(deviceX, bottom - dock, w - deviceX - gap, dock)
+                           : juce::Rectangle<int>();
     // The mixer's columns sit against the arrangement, inside its frame, as Live's
     // track headers do; the browser stands apart, a gap away. Swapped, the track names lead,
     // then the track controls, then the clips, as Bitwig and Cubase have them (the
@@ -1779,9 +1783,6 @@ void AdiRootComponent::resized() {
     mixer.setBounds(mixerArea_);
     strip.setVisible(!stripArea_.isEmpty());
     strip.setBounds(stripArea_);
-    const int bw = browserLeft ? left : right;
-    browserArea_ = bw > 0 ? juce::Rectangle<int>(browserLeft ? gap : w - right, top, bw - gap, mid)
-                          : juce::Rectangle<int>();
     browser.setVisible(!browserArea_.isEmpty());
     browser.setBounds(browserArea_);
     // The AI chat is a tab at the browser's foot, collapsed by default, so the

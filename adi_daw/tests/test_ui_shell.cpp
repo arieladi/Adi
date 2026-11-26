@@ -17450,6 +17450,23 @@ int main(int argc, char **argv) {
               a.infoArea().getBottom() == a.status.getY() &&
               a.infoArea().getRight() + look::gap == a.deviceArea().getX(),
           "the Info View is on, bottom-left, beside the Device View");
+    check(a.infoArea().getWidth() == a.browserArea().getWidth(),
+          "SC-111: the Info box is exactly as wide as the Browser column");
+    {
+        const auto normal = a.infoArea();
+        a.setSize(480, 720);
+        check(a.infoArea().getWidth() < normal.getWidth() && a.infoArea().getWidth() == a.browserArea().getWidth(),
+              "a squeezed Browser gives the Info box its actual width");
+        a.setSize(1200, 720);
+        check(a.infoArea() == normal, "restoring the window also restores the Info box width");
+        check(a.command(AppCommands::SwapPanels) && a.infoArea().getWidth() == a.browserArea().getWidth(),
+              "the Info box uses the Browser width when the Browser moves to the other side");
+        check(a.command(AppCommands::SwapPanels) && a.infoArea() == normal,
+              "return the Browser to its original side");
+        check(a.command(AppCommands::ToggleBrowser) && a.infoArea() == normal,
+              "closing the Browser keeps the Info box at its stored width");
+        check(a.command(AppCommands::ToggleBrowser), "return the Browser to the layout");
+    }
     a.frame();
     check(a.infoSpectrum.mode() == SharedSpectrumView::Mode::Spectrogram,
           "SC-112: a window with no saved choice starts on the spectrogram");
