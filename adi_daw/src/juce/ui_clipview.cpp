@@ -2921,15 +2921,66 @@ void SampleEditor::frame() {
     playhead.setBounds(area.getX() + x, area.getY(), 1, area.getHeight());
 }
 juce::Rectangle<int> SampleEditor::waveArea() const noexcept {
-    constexpr auto top = kRulerHeight + kScrubHeight + 2 * kMarkerHeight;
+    const auto top = kRulerHeight + kScrubHeight + (markers_.empty() ? 2 : 3) * kMarkerHeight;
     return {0, top, getWidth(), std::max(0, getHeight() - top)};
 }
 juce::Rectangle<int> SampleEditor::scrubArea() const noexcept {
     return {0, kRulerHeight, getWidth(), kScrubHeight};
 }
+juce::Rectangle<int> SampleEditor::warpMarkerArea() const noexcept {
+    return markers_.empty() ? juce::Rectangle<int>{} : juce::Rectangle<int>{0, waveArea().getY() - kMarkerHeight, getWidth(), kMarkerHeight};
+}
+const WarpMarker *SampleEditor::warpMarkerAt(int x) const noexcept {
+    if (markers_.size() < 3)
+        return nullptr;
+    const WarpMarker *nearest = nullptr;
+    double distance = 5.;
+    for (auto marker = markers_.begin() + 1; marker != markers_.end() - 1; ++marker) {
+        const auto at = std::abs(time.x(marker->tick) - x);
+        if (at <= distance) {
+            distance = at;
+            nearest = &*marker;
+        }
+    }
+    return nearest;
+}
+bool SampleEditor::deleteWarpMarker() {
+    if (!selectedWarpFrame_ || markers_.empty() || !panel.node())
+        return false;
+    const auto frame = *selectedWarpFrame_;
+    selectedWarpFrame_.reset();
+    panel.root.commitEdit(clip_edit::prepareWarpMarkerEdit(panel.root.editStore(), panel.node()->id,
+        clip_edit::WarpMarkerChange::Remove, {frame, 0}, panel.root.editRate()));
+    repaint();
+    return true;
+}
+void SampleEditor::mouseDoubleClick(const juce::MouseEvent &e) {
+    const auto *node = panel.node();
+    const auto at = e.getPosition();
+    const auto upperWave = waveArea().withHeight(waveArea().getHeight() / 2);
+    if (!node || markers_.empty() || e.mods.isPopupMenu() ||
+        (!warpMarkerArea().contains(at) && !upperWave.contains(at)))
+        return;
+    if (warpMarkerArea().contains(at)) {
+        if (const auto *marker = warpMarkerAt(at.x)) {
+            selectedWarpFrame_ = marker->sourceFrame;
+            deleteWarpMarker();
+            return;
+        }
+    }
+    const auto tick = std::clamp(time.tick(at.x), std::int64_t{0}, sourceEnd_);
+    const auto frame = std::llround(warpedWaveformFrame(markers_, static_cast<double>(tick), false));
+    if (frame <= 0 || frame >= markers_.back().sourceFrame)
+        return;
+    if (panel.root.commitEdit(clip_edit::prepareWarpMarkerEdit(panel.root.editStore(), node->id,
+            clip_edit::WarpMarkerChange::Add, {frame, tick}, panel.root.editRate())))
+        selectedWarpFrame_ = frame;
+    repaint();
+}
 void SampleEditor::showClip() {
     fitPending_ = true;
     insert_.reset();
+    selectedWarpFrame_.reset();
     drag_ = Drag::None;
 }
 void SampleEditor::updateSource() {
@@ -2951,6 +3002,8 @@ void SampleEditor::updateSource() {
                 sourceEnd_ = std::max<std::int64_t>(1, sourceSecondsToTicks(static_cast<double>(audio.sourceLengthFrames) / rate));
         }
     }
+    if (selectedWarpFrame_ && std::ranges::find(markers_, *selectedWarpFrame_, &WarpMarker::sourceFrame) == markers_.end())
+        selectedWarpFrame_.reset();
     resized();
     repaint();
 }
@@ -3017,6 +3070,18 @@ void SampleEditor::mouseDown(const juce::MouseEvent &e) {
         return;
     }
     downTick_ = tickAt(last_.x, e.mods);
+    if (warpMarkerArea().contains(last_)) {
+        if (const auto *marker = warpMarkerAt(last_.x)) {
+            selectedWarpFrame_ = marker->sourceFrame;
+            drag_ = Drag::WarpMarker;
+            original_ = preview_ = marker->tick;
+        } else {
+            selectedWarpFrame_.reset();
+        }
+        repaint();
+        return;
+    }
+    selectedWarpFrame_.reset();
     const auto near = [&](std::int64_t tick) { return std::abs(time.x(tick) - last_.x) <= 5.; };
     if (last_.y < kRulerHeight) {
         drag_ = Drag::Ruler;
@@ -3062,6 +3127,16 @@ void SampleEditor::mouseDrag(const juce::MouseEvent &e) {
         case Drag::LoopStart: high = std::min(high, first + length - 1); break;
         case Drag::LoopEnd: low = first + 1; break;
         case Drag::Loop: high = std::max<std::int64_t>(0, high - length); break;
+        case Drag::WarpMarker: {
+            if (!selectedWarpFrame_ || markers_.size() < 3)
+                return;
+            const auto marker = std::ranges::find(markers_, *selectedWarpFrame_, &WarpMarker::sourceFrame);
+            if (marker == markers_.begin() || marker >= markers_.end() - 1)
+                return;
+            low = (marker - 1)->tick + 1;
+            high = (marker + 1)->tick - 1;
+            break;
+        }
         default: break;
         }
         preview_ = std::clamp(original_ + tickAt(e.x, e.mods) - downTick_, low, std::max(low, high));
@@ -3084,6 +3159,11 @@ void SampleEditor::mouseUp(const juce::MouseEvent &) {
         break;
     case Drag::LoopEnd: panel.setField(Field::Length, preview_ - first); break;
     case Drag::Loop: panel.setField(Field::Position, preview_); break;
+    case Drag::WarpMarker:
+        if (selectedWarpFrame_)
+            panel.root.commitEdit(clip_edit::prepareWarpMarkerEdit(panel.root.editStore(), clip->id,
+                clip_edit::WarpMarkerChange::Move, {*selectedWarpFrame_, preview_}, panel.root.editRate()));
+        break;
     default: break;
     }
     repaint();
@@ -3119,6 +3199,8 @@ bool SampleEditor::command(int id) {
 }
 bool SampleEditor::keyPressed(const juce::KeyPress &key) {
     const auto code = key.getKeyCode();
+    if ((code == juce::KeyPress::deleteKey || code == juce::KeyPress::backspaceKey) && deleteWarpMarker())
+        return true;
     const auto mods = key.getModifiers();
     if (!mods.isCommandDown() && !mods.isAltDown() && (code == '+' || code == '=' || code == '-'))
         return command(code == '-' ? AppCommands::TimeZoomOut : AppCommands::TimeZoomIn);
@@ -3165,11 +3247,47 @@ void SampleEditor::paint(juce::Graphics &g) {
     for (const auto tick : {start, end}) {
         const auto x = static_cast<float>(time.x(tick));
         g.setColour(look::textBright.withAlpha(.55f));
-        g.fillRect(x - 3.f, static_cast<float>(area.getY() - kMarkerHeight + 1), 7.f, static_cast<float>(kMarkerHeight - 2));
+        g.fillRect(x - 3.f, static_cast<float>(scrubArea().getBottom() + kMarkerHeight + 1), 7.f, static_cast<float>(kMarkerHeight - 2));
         g.fillRect(x, static_cast<float>(area.getY()), 1.f, static_cast<float>(area.getHeight()));
     }
     const auto *node = panel.node();
     auto *waveforms = panel.root.arrangement.waveforms;
+    if (node && node->audio && node->audio->sourceStartFrames >= 0 && node->audio->sourceLengthFrames > 0 && !markers_.empty()) {
+        const auto band = warpMarkerArea();
+        g.setColour(look::band);
+        g.fillRect(band);
+        if (waveforms) {
+            const auto &audio = *node->audio;
+            if (const auto onsets = waveforms->transients(audio)) {
+                juce::Graphics::ScopedSaveState marks(g);
+                g.reduceClipRegion(band);
+                g.setColour(look::text.withAlpha(.55f));
+                const auto first = static_cast<std::uint64_t>(audio.sourceStartFrames);
+                const auto frames = static_cast<std::uint64_t>(audio.sourceLengthFrames);
+                for (auto onset = std::ranges::lower_bound(*onsets, first); onset != onsets->end() && *onset - first < frames; ++onset) {
+                    const auto local = *onset - first;
+                    const auto frame = static_cast<std::int64_t>(audio.reverse ? frames - 1 - local : local);
+                    const auto right = std::ranges::upper_bound(markers_, frame, {}, &WarpMarker::sourceFrame);
+                    if (right == markers_.begin() || right == markers_.end())
+                        continue;
+                    const auto &left = *(right - 1);
+                    const auto fraction = static_cast<double>(frame - left.sourceFrame) / static_cast<double>(right->sourceFrame - left.sourceFrame);
+                    const auto tick = static_cast<double>(left.tick) + fraction * static_cast<double>(right->tick - left.tick);
+                    const auto x = static_cast<float>(time.x(std::llround(tick)));
+                    g.fillRect(x, static_cast<float>(band.getY() + 3), 2.f, 4.f);
+                }
+            }
+        }
+        for (const auto &marker : markers_) {
+            const bool selected = selectedWarpFrame_ == marker.sourceFrame;
+            const auto at = drag_ == Drag::WarpMarker && selected ? preview_ : marker.tick;
+            const auto x = static_cast<float>(time.x(at));
+            if (x < -4.f || x > static_cast<float>(getWidth()) + 4.f)
+                continue;
+            g.setColour(selected ? look::textBright : look::accent);
+            g.fillRect(x - 2.f, static_cast<float>(band.getY() + 1), 5.f, static_cast<float>(band.getHeight() - 2));
+        }
+    }
     if (node == nullptr || !node->audio || node->audio->sourceLengthFrames <= 0 || waveforms == nullptr)
         return;
     const auto peaks = waveforms->peaks(*node->audio);

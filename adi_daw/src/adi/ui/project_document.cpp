@@ -239,7 +239,17 @@ WaveformCache::BuildSource peaksFrom(std::shared_ptr<WaveformSource> source) {
 ProjectDocument::ProjectDocument(std::unique_ptr<Store> s, std::string name)
     : store_(std::move(s)), name_(std::move(name)), ops_(*store_, view_), views_(*store_),
       sessionState_(*store_), waveformSource_(std::make_shared<WaveformSource>(store_->path())),
-      waveforms_(peaksFrom(waveformSource_)) {
+      waveforms_(peaksFrom(waveformSource_), [source = waveformSource_](std::int64_t mediaId, const std::string &hash,
+                                                                      std::stop_token stop) {
+          std::filesystem::path path;
+          {
+              std::lock_guard lock(source->mutex);
+              path = source->path;
+          }
+          StoreError error{};
+          auto reader = Store::open(path, error, true);
+          return reader ? media::buildMediaTransients(*reader, mediaId, hash, stop) : std::vector<std::uint64_t>{};
+      }) {
     // Every refresh the submitter makes carries the session's overridden lanes (N26); the set is
     // the session's own member, alive as long as this document.
     ops_.followOverrides(session_.overriddenLanes());

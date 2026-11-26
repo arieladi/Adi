@@ -144,12 +144,15 @@ class WaveformCache {
     // A missing media ID selects an embedded sample state. Both builders run on the worker only.
     using BuildSource = std::function<media::PeakResult(std::optional<std::int64_t> mediaId,
                                                        const std::string &stateHash, std::stop_token)>;
+    using TransientBuild = std::function<std::vector<std::uint64_t>(std::int64_t mediaId,
+                                                                   const std::string &contentHash, std::stop_token)>;
     explicit WaveformCache(Build build)
         : WaveformCache([build = std::move(build)](std::optional<std::int64_t> mediaId, const std::string &,
                                                    std::stop_token stop) {
               return mediaId ? build(*mediaId, stop) : media::PeakResult{media::PeakProblem::invalidSource, {}, {}};
           }) {}
-    explicit WaveformCache(BuildSource build) : build_(std::move(build)) {}
+    explicit WaveformCache(BuildSource build, TransientBuild transientBuild = {})
+        : build_(std::move(build)), transientBuild_(std::move(transientBuild)) {}
     WaveformCache(const WaveformCache &) = delete;
     WaveformCache &operator=(const WaveformCache &) = delete;
     ~WaveformCache() {
@@ -218,6 +221,23 @@ class WaveformCache {
             }
         }
     }
+    // Only the Sample Editor requests onsets; Arrangement overview builds
+    // still need just peaks.
+    std::shared_ptr<const std::vector<std::uint64_t>> transients(const engine::AudioClipSource &audio) {
+        if (!transientBuild_ || !audio.mediaInfo || audio.mediaInfo->missing || audio.mediaInfo->contentHash.empty())
+            return {};
+        const auto &hash = audio.mediaInfo->contentHash;
+        std::lock_guard lock(mutex_);
+        if (const auto found = transients_.find(hash); found != transients_.end())
+            return found->second;
+        wanted_.insert(hash);
+        if (transientAsked_.insert(hash).second) {
+            queue_.push_back({audio.mediaId, hash, true});
+            start();
+            wake_.notify_one();
+        }
+        return {};
+    }
     // A new document generation drops requests and results for sources neither a clip nor a sample slot uses.
     void follow(const engine::Snapshot &snapshot, std::uint64_t generation) {
         if (generation == generation_)
@@ -240,6 +260,8 @@ class WaveformCache {
         });
         std::erase_if(provisional_, [&used](const auto &entry) { return !used.contains(entry.first); });
         std::erase_if(asked_, [&used](const std::string &hash) { return !used.contains(hash); });
+        std::erase_if(transients_, [&used](const auto &entry) { return !used.contains(entry.first); });
+        std::erase_if(transientAsked_, [&used](const std::string &hash) { return !used.contains(hash); });
         std::erase_if(queue_, [&used](const Request &r) { return !used.contains(r.hash); });
         wanted_ = std::move(used);
     }
@@ -279,6 +301,7 @@ class WaveformCache {
     struct Request {
         std::optional<std::int64_t> mediaId;
         std::string hash;
+        bool transient = false;
     };
     void requestLocked(std::optional<std::int64_t> mediaId, const std::string &hash) {
         wanted_.insert(hash);
@@ -303,6 +326,22 @@ class WaveformCache {
                 next = std::move(queue_.front());
                 queue_.pop_front();
                 busy_ = true;
+            }
+            if (next.transient) {
+                std::shared_ptr<const std::vector<std::uint64_t>> built;
+                try {
+                    if (next.mediaId)
+                        built = std::make_shared<const std::vector<std::uint64_t>>(
+                            transientBuild_(*next.mediaId, next.hash, stop));
+                } catch (const std::bad_alloc &) {}
+                {
+                    std::lock_guard lock(mutex_);
+                    busy_ = false;
+                    if (built && !stop.stop_requested() && wanted_.contains(next.hash))
+                        transients_.emplace(std::move(next.hash), std::move(built));
+                    delivered_.fetch_add(1, std::memory_order_acq_rel);
+                }
+                continue;
             }
             static const std::string noState;
             auto result = build_(next.mediaId, next.mediaId ? noState : next.hash, stop);
@@ -335,12 +374,14 @@ class WaveformCache {
         }
     }
     BuildSource build_;
+    TransientBuild transientBuild_;
     mutable std::mutex mutex_;
     std::condition_variable_any wake_;
     std::deque<Request> queue_;
     std::map<std::string, std::shared_ptr<const WaveformPeaks>> kept_;
     std::map<std::string, std::shared_ptr<const WaveformPeaks>> provisional_;
-    std::set<std::string> asked_, wanted_;
+    std::map<std::string, std::shared_ptr<const std::vector<std::uint64_t>>> transients_;
+    std::set<std::string> asked_, transientAsked_, wanted_;
     std::string problem_;
     bool busy_ = false;
     std::size_t detailValues_ = 0;

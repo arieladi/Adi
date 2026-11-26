@@ -53,4 +53,7 @@ PeakResult buildMediaPeaks(const Store&,std::int64_t mediaId,std::uint32_t maxBi
 // overload uses the process analysed folder. Cache write failure is nonfatal.
 PeakResult buildMediaPeaks(const Store&,std::int64_t mediaId,std::uint32_t maxBinsPerChannel,
     std::stop_token,audio::DecodeCache*,AnalysisCache*,PeakCacheResolution = PeakCacheResolution::AnyValid);
+/// Onsets for the Sample Editor. Reads the source only on a worker.
+[[nodiscard]] std::vector<std::uint64_t> buildMediaTransients(const Store&, std::int64_t mediaId,
+                                                             const std::string &contentHash, std::stop_token = {});
 }

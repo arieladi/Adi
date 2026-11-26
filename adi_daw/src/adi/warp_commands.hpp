@@ -18,4 +18,8 @@ struct WarpOptions {
 /// Commit with commitPrepared on the same document generation. Both directions
 /// capture actual source clocks and duration; replay never analyzes a file.
 [[nodiscard]] PreparedEdit prepareSetWarp(Store&,std::int64_t clipId,const WarpOptions&,double referenceRate);
+enum class WarpMarkerChange { Add, Move, Remove };
+/// Edit an interior anchor by its source frame; the endpoint anchors stay fixed.
+[[nodiscard]] PreparedEdit prepareWarpMarkerEdit(Store&,std::int64_t clipId,WarpMarkerChange,
+    WarpMarker,double referenceRate);
 }

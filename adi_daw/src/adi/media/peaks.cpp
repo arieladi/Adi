@@ -5,6 +5,7 @@
 #include "adi/media/media_ops.hpp"
 #include "adi/audio/decode.hpp"
 #include "adi/audio/io_audit.hpp"
+#include "adi/audio/transients.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/store.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -194,5 +195,24 @@ PeakResult buildMediaPeaks(const Store& store,std::int64_t id,std::uint32_t maxi
     }catch(const Cancelled&){return failed(PeakProblem::cancelled);}
     catch(const std::bad_alloc&){return fallback(PeakProblem::resource);}
     catch(const std::exception& exception){return fallback(PeakProblem::read,exception.what());}
+}
+std::vector<std::uint64_t> buildMediaTransients(const Store& store, std::int64_t id, const std::string &contentHash,
+                                              std::stop_token stop) {
+    if(audio::onAudioThread || stop.stop_requested())return {};
+    try {
+        const auto source=plan(store,id);
+        if(!source || source->hash!=contentHash || !validHash(source->hash))return {};
+        const auto path=locate(store,*source,stop);
+        if(path.empty())return {};
+        auto& cache=audio::defaultDecodeCache();
+        const auto playable=cache.playable(path);
+        struct Release {audio::DecodeCache& cache;const std::filesystem::path& path;~Release(){cache.release(path);}} release{cache,playable};
+        audio::WavReader reader(playable);
+        auto detected=audio::detectTransients(reader,0,reader.frames(),50,stop);
+        if(!detected)return {};
+        const auto hash=blake3File(path,stop);
+        if(hash && hash.hex==source->hash)return std::move(detected.frames);
+    } catch(const Cancelled&) {} catch(const std::exception&) {}
+    return {};
 }
 }

@@ -58,7 +58,7 @@ long double correctWarpMap(std::vector<WarpMarker>& markers,double rate,double r
 }
 Payload capturedWarpMap(std::span<const WarpMarker> markers,std::uint64_t frames) {
     const auto blob=audio::writeWarpMap(markers,frames);
-    if(!blob)throw std::runtime_error("source tempo cannot fit the Warp markers");
+    if(!blob)throw std::runtime_error("cannot capture the Warp markers");
     std::vector<std::uint8_t> bytes(blob.bytes.size());
     if(!bytes.empty())std::memcpy(bytes.data(),blob.bytes.data(),bytes.size());
     return Payload::binary(std::move(bytes));
@@ -287,6 +287,72 @@ PreparedEdit prepareSetWarp(Store& store,std::int64_t clipId,const WarpOptions& 
         };
         cancelled(options.stop);result.ok=true;
     } catch(const std::exception& exception){result.error=exception.what();}
+    return result;
+}
+PreparedEdit prepareWarpMarkerEdit(Store& store,std::int64_t clipId,WarpMarkerChange change,
+                                  WarpMarker marker,double referenceRate) {
+    PreparedEdit result;
+    try {
+        if(store.readOnly())throw std::runtime_error("project is read-only");
+        if(!std::isfinite(referenceRate) || referenceRate<44100 || referenceRate>768000)
+            throw std::runtime_error("invalid Warp session rate");
+        Read read(store.db());
+        result.options.expectHead.emplace(OpJournal(store).headSeq());
+        SQLite::Statement location(store.db(),"PRAGMA database_list");
+        while(location.executeStep())
+            if(location.getColumn(1).getString()=="main")result.sourceFile=location.getColumn(2).getString();
+        OpContext context{store,store.db()};
+        const auto image=captureImage(context,clipId);
+        const auto& root=image.at("row");
+        const auto& sources=image.at("children").at("audio_clips");
+        if(root.at("kind")!="audio" || !root.at("alias_of").is_null() || sources.size()!=1)
+            throw std::runtime_error("Warp markers need an independent audio clip");
+        auto source=sources.front();
+        if(integer(source,"warp_enabled")==0 || !source.at("warp_markers").is_binary())
+            throw std::runtime_error("Enable Warp before editing its markers.");
+        const auto frames=integer(source,"src_len_frames");
+        if(marker.sourceFrame<=0 || marker.sourceFrame>=frames)
+            throw std::runtime_error("The Warp map's first and last anchors are fixed.");
+        const auto& data=source.at("warp_markers").get_binary();
+        auto map=audio::readWarpMap(
+            std::span<const std::byte>(reinterpret_cast<const std::byte*>(data.data()),data.size()),
+            static_cast<std::uint64_t>(frames));
+        if(!map || map.futureLayout)throw std::runtime_error("Warp map is unreadable or in a newer format");
+        const auto it=std::ranges::lower_bound(map.markers,marker.sourceFrame,{},&WarpMarker::sourceFrame);
+        const bool exists=it!=map.markers.end() && it->sourceFrame==marker.sourceFrame;
+        if(change==WarpMarkerChange::Add) {
+            if(exists)throw std::runtime_error("There is already a Warp marker on this source frame.");
+            map.markers.insert(it,marker);
+        } else {
+            if(!exists)throw std::runtime_error("The Warp marker no longer exists.");
+            if(change==WarpMarkerChange::Move)it->tick=marker.tick;
+            else map.markers.erase(it);
+        }
+        source["warp_markers"]=capturedWarpMap(map.markers,static_cast<std::uint64_t>(frames));
+        engine::TempoMap tempo;
+        SQLite::Statement points(store.db(),"SELECT pos_ticks,bpm,curve FROM tempo_map ORDER BY pos_ticks,id");
+        while(points.executeStep())
+            tempo.events.push_back({points.getColumn(0).getInt64(),points.getColumn(1).getDouble(),points.getColumn(2).getInt()});
+        if(tempo.events.empty() || tempo.events.front().posTicks!=0)tempo.events.insert(tempo.events.begin(),{0,120,0});
+        const auto origin=integer(root,"time_base")==0?integer(root,"pos_ticks"):
+            tempo.storedNanosecondsToTicks(integer(root,"pos_ns"));
+        const auto offset=integer(root,"content_offset_ticks");
+        if(offset<0 || engine::projectWarpAnchors(map.markers,tempo,origin-offset,referenceRate).back().outputFrame>0x7fffffffULL)
+            throw std::runtime_error("warped clip exceeds supported duration");
+        edit::RowEdits plan(store.db());
+        plan.set("audio_clips",clipId,std::move(source));
+        auto changes=plan.changes();
+        if(!changes.empty()) {
+            OpRequest op;
+            op.opType="arranger.splice";
+            op.payload={{"id",clipId},{"changes",std::move(changes)}};
+            op.targetKind="clip";op.targetId=clipId;
+            op.label=change==WarpMarkerChange::Add?"Add Warp Marker":
+                change==WarpMarkerChange::Move?"Move Warp Marker":"Delete Warp Marker";
+            result.requests.push_back(std::move(op));
+        }
+        result.ok=true;
+    } catch(const std::exception& error) {result.error=error.what();}
     return result;
 }
 }
