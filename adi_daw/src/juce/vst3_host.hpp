@@ -112,6 +112,14 @@ private:
 /// Identity as the format records it, so a missing plugin can still be named.
 DeviceIdentity identityOf(const juce::PluginDescription& desc);
 
+/// SC-312: a plug-in's MIDI map read from the parameters it declares, for a plug-in whose edit
+/// controller the host cannot reach (JUCE keeps a separate controller private: every JUCE-built plug-in,
+/// Surge XT among them). JUCE's VST3 wrapper declares its map as parameters named "MIDI CC <channel>|
+/// <controller>", controller 0..127 a CC, 128 channel aftertouch, 129 the pitch bend, and its
+/// `IMidiMapping` answers exactly that table. Fills every entry the caps do not have yet; true when any
+/// was found. Other names are ignored.
+bool mapDeclaredMidiControllers(const std::vector<ParamDescriptor>& params, engine::ExpressionCaps& caps);
+
 /// One VST3, behind the format-agnostic contract.
 class Vst3Device final : public DeviceInstance,
                          private juce::AudioProcessorListener {

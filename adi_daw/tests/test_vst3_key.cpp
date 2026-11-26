@@ -25,6 +25,35 @@ void check(bool yes, const char *label) {
 std::filesystem::path native(const std::string &s) {
     return std::filesystem::path(std::u8string(s.begin(), s.end()));
 }
+// SC-312: the MIDI map read from a plug-in's declared "MIDI CC c|n" parameters (JUCE's wrapper declares
+// its map that way and answers IMidiMapping from it), for a controller the host cannot reach.
+void declaredMidiMap() {
+    const auto param = [](std::string name, std::uint32_t id) {
+        device::ParamDescriptor d;
+        d.name = std::move(name);
+        d.id = std::to_string(id);
+        return d;
+    };
+    const std::vector<device::ParamDescriptor> params{
+        param("Cutoff", 7), param("MIDI CC 0|1", 0x6d636d01), param("MIDI CC 0|64", 0x6d636d40),
+        param("MIDI CC 0|7", 0x6d636d07), param("MIDI CC 0|128", 0x6d636d80), param("MIDI CC 0|129", 0x6d636d81),
+        param("MIDI CC 0|74", 0x6d636d4a), param("MIDI CC 3|11", 0x6d636f00), param("MIDI CC 0|101", 0x6d636d65),
+        param("MIDI CC x|1", 99), param("MIDI CC 16|1", 98), param("MIDI CC 0|130", 97)};
+    engine::ExpressionCaps caps;
+    caps.controllerParam[0][7] = 1234; // already known: kept
+    check(device::mapDeclaredMidiControllers(params, caps), "a declared map is found");
+    check(caps.controllerParam[0][1] == 0x6d636d01 && caps.controllerParam[0][64] == 0x6d636d40,
+          "the mod wheel and the sustain pedal land on their declared parameters");
+    check(caps.bendParam[0] == 0x6d636d81 && caps.pressureParam[0] == 0x6d636d80,
+          "controller 129 is the pitch bend, 128 channel aftertouch");
+    check(caps.timbreParam[0] == 0x6d636d4a && caps.controllerParam[3][11] == 0x6d636f00 && caps.rpnParam[0] == 0x6d636d65,
+          "CC74 is the timbre too; other channels and the MPE configuration's CC101 are read");
+    check(caps.controllerParam[0][7] == 1234, "an entry the caps already have is kept");
+    check(caps.controllerParam[0][2] == engine::kNoParam && caps.bendParam[1] == engine::kNoParam,
+          "what is not declared stays unmapped; malformed names and channel 16 or controller 130 are ignored");
+    engine::ExpressionCaps none;
+    check(!device::mapDeclaredMidiControllers({param("Cutoff", 7)}, none), "no declared map, nothing found");
+}
 void expressionBlock(device::Vst3Host& host, const juce::PluginDescription& desc,
                      std::uint64_t (*completedProcessCalls)()) {
     constexpr double sampleRate = 48000.0;
@@ -417,6 +446,7 @@ void documentContract(device::Vst3Host &host, const juce::PluginDescription &des
 }
 
 void contract() {
+    declaredMidiMap();
     test::TempDirectory temp("vst3_key", "owned");
     scan::Config config;
     config.executable = native(ADI_SCAN_HELPER);
