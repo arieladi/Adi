@@ -30,6 +30,11 @@ struct Selection {
     std::int64_t start = 0, end = 0; // a time selection, in ticks; start == end is none
     std::int64_t insert = 0;         // the insert marker
     bool marked = false;             // the insert marker has been placed
+    void clearMaterial() {
+        clip = 0;
+        pickedClips.clear();
+        start = end = insert;
+    }
     bool operator==(const Selection &) const = default;
 };
 class SessionState {

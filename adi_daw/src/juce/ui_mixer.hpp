@@ -34,10 +34,15 @@ class SoloButton final : public juce::TextButton {
 };
 // Live's peak level (manual 18.1): the highest peak since the last click, in dB, red once
 // it has clipped. A click resets it.
+class ValueEntry;
 // A mixer control the left button moves; the right one opens the strip's menu for it and moves nothing (AU-04):
 // JUCE's Slider starts a drag on any button when its own menu is off.
 class PrimaryButtonSlider final : public juce::Slider {
   public:
+    PrimaryButtonSlider();
+    ~PrimaryButtonSlider() override;
+    void enableValueEdits(double defaultValue, double step);
+    bool keyPressed(const juce::KeyPress &) override;
     // A gesture belongs to the press that began it: a primary press's drag and release reach the Slider whatever
     // keys or buttons join it (a Ctrl held at the release is a popup click on macOS), and a popup press's never do.
     void mouseDown(const juce::MouseEvent &e) override {
@@ -49,18 +54,14 @@ class PrimaryButtonSlider final : public juce::Slider {
         if (primary_)
             juce::Slider::mouseDrag(e);
     }
-    void mouseUp(const juce::MouseEvent &e) override {
-        if (primary_)
-            juce::Slider::mouseUp(e);
-        primary_ = false;
-    }
-    void mouseDoubleClick(const juce::MouseEvent &e) override {
-        if (!e.mods.isPopupMenu())
-            juce::Slider::mouseDoubleClick(e);
-    }
+    void mouseUp(const juce::MouseEvent &) override;
+    void mouseDoubleClick(const juce::MouseEvent &) override;
 
   private:
     bool primary_ = false;
+    std::optional<double> default_;
+    double step_ = 0;
+    std::unique_ptr<ValueEntry> valueEntry_;
 };
 class PeakHold final : public juce::Button {
   public:
@@ -77,7 +78,10 @@ double meterLevel(double depth) noexcept;
 // In/Out column, then the Track Activator, Solo and Arm; volume and pan; one send per
 // return on the rows under them (ADR-0203 d3); the meter. A channel has no button of its own for
 // any Mix View function: those are added in the Mix View like every other one (ADR-0243).
-class MixerStrip final : public juce::Component, public juce::SettableTooltipClient {
+class MixerStrip final : public juce::Component,
+                         public juce::SettableTooltipClient,
+                         public juce::DragAndDropTarget,
+                         public juce::FileDragAndDropTarget {
   public:
     // Esc during a live drag cancels it (MX-23).
     bool keyPressed(const juce::KeyPress &) override;
@@ -98,6 +102,10 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     static constexpr int kTitleHeight = 17;
     // A double-click on a Mixer View strip's title selects its track and brings up the Device View.
     void mouseDoubleClick(const juce::MouseEvent &) override;
+    bool isInterestedInDragSource(const SourceDetails &) override;
+    void itemDropped(const SourceDetails &) override;
+    bool isInterestedInFileDrag(const juce::StringArray &) override;
+    void filesDropped(const juce::StringArray &, int, int) override;
     // A row takes clicks only level with the lanes (MixerPanel::rowsBand).
     bool hitTest(int x, int y) override;
     std::int64_t track() const noexcept { return track_; }

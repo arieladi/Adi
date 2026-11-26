@@ -3,6 +3,7 @@
 // See vst3_host.hpp, in particular for what JUCE's host path cannot carry.
 
 #include "juce/vst3_host.hpp"
+#include <charconv>
 #include "juce/vst3_scan_host.hpp"
 #include "adi/engine/graph.hpp"
 #include "adi/scan_batch.hpp"
@@ -476,6 +477,81 @@ void Vst3Device::readParameters() {
         params_.push_back(std::move(d));
         handles_.push_back(p);
     }
+    // SC-310: one slot per parameter for the values the host sets, and each one's VST3 ParamID (JUCE
+    // names a VST3 parameter by its id in decimal, as the automation lanes do).
+    pending_ = std::make_unique<PendingParam[]>(params_.size());
+    pendingSent_.assign(params_.size(), 0);
+    wireIds_.assign(params_.size(), 0);
+    wireValid_.assign(params_.size(), 0);
+    for (std::size_t i = 0; i < params_.size(); ++i) {
+        const auto& text = params_[i].id;
+        std::uint32_t id = 0;
+        const auto [end, fault] = std::from_chars(text.data(), text.data() + text.size(), id);
+        if (fault == std::errc{} && end == text.data() + text.size() && !text.empty()) {
+            wireIds_[i] = id;
+            wireValid_[i] = 1;
+        }
+    }
+    // SC-311: the values the processor is sent by a lane, for the controller to follow.
+    followed_ = std::make_unique<PendingParam[]>(params_.size());
+    followedSeen_.assign(params_.size(), 0);
+    wireIndex_.clear();
+    for (std::size_t i = 0; i < params_.size(); ++i)
+        if (wireValid_[i] != 0) wireIndex_.emplace_back(wireIds_[i], static_cast<std::int32_t>(i));
+    std::sort(wireIndex_.begin(), wireIndex_.end());
+}
+
+void Vst3Device::recordFollowed(std::uint32_t wireId, double value) noexcept {
+    if (followed_ == nullptr) return;
+    const auto at = std::lower_bound(wireIndex_.begin(), wireIndex_.end(), std::pair<std::uint32_t, std::int32_t>{wireId, 0},
+                                     [](const auto& a, const auto& b) { return a.first < b.first; });
+    if (at == wireIndex_.end() || at->first != wireId) return;
+    auto& slot = followed_[static_cast<std::size_t>(at->second)];
+    slot.value.store(value, std::memory_order_relaxed);
+    slot.sequence.fetch_add(1, std::memory_order_release);
+    followedEpoch_.fetch_add(1, std::memory_order_release);
+}
+
+void Vst3Device::pumpMainThread() {
+    const auto epoch = followedEpoch_.load(std::memory_order_acquire);
+    if (epoch == followedHanded_ || followed_ == nullptr) return;
+    // A host set, not an edit: muted from our own listener (ADR-0124), so it is never taken for the
+    // user's, and the plug-in's echo of it lands inside the scope. Not posted to the processor: the
+    // lane already sent it there.
+    HostMutationScope mute(*this);
+    if (!mute.admitted) return; // another host change in progress: the next pump hands it over
+    for (std::size_t i = 0; i < followedSeen_.size() && i < handles_.size(); ++i) {
+        const auto sequence = followed_[i].sequence.load(std::memory_order_acquire);
+        if (sequence == followedSeen_[i]) continue;
+        followedSeen_[i] = sequence;
+        if (auto* h = handles_[i]) h->setValue(static_cast<float>(followed_[i].value.load(std::memory_order_relaxed)));
+    }
+    followedHanded_ = epoch;
+}
+
+void Vst3Device::postToProcessor(std::size_t i, double normalized) noexcept {
+    if (pending_ == nullptr || i >= params_.size() || wireValid_[i] == 0) return;
+    pending_[i].value.store(normalized, std::memory_order_relaxed);
+    pending_[i].sequence.fetch_add(1, std::memory_order_release);
+    pendingEpoch_.fetch_add(1, std::memory_order_release);
+}
+
+void Vst3Device::drainPosted() noexcept {
+    const auto epoch = pendingEpoch_.load(std::memory_order_acquire);
+    if (epoch == pendingSeen_ || pending_ == nullptr) return;
+    // A value posted after this scan bumps the epoch again, so the next call scans again. A slot whose
+    // value finds the pool full stays unsent and is retried in the next call.
+    bool all = true;
+    for (std::size_t i = 0; i < pendingSent_.size(); ++i) {
+        const auto sequence = pending_[i].sequence.load(std::memory_order_acquire);
+        if (sequence == pendingSent_[i]) continue;
+        if (paramChanges_.set(static_cast<SV::ParamID>(wireIds_[i]),
+                              pending_[i].value.load(std::memory_order_relaxed), 0))
+            pendingSent_[i] = sequence;
+        else
+            all = false;
+    }
+    if (all) pendingSeen_ = epoch;
 }
 
 const ParamDescriptor* Vst3Device::paramAt(std::int32_t i) const noexcept {
@@ -511,6 +587,8 @@ bool Vst3Device::setParam(const std::string& paramId, const ParamValue& v) {
         h->beginChangeGesture();
         h->setValueNotifyingHost(static_cast<float>(v.normalized));
         h->endChangeGesture();
+        // SC-310: and to the processor, in the next process call (JUCE's hand-over never runs here).
+        postToProcessor(i, v.normalized);
         return true;
     }
     return false;
@@ -522,6 +600,10 @@ void Vst3Device::audioProcessorParameterChanged(juce::AudioProcessor*, int index
     if (index < 0 || static_cast<std::size_t>(index) >= juceToOurs_.size()) return;
     const std::int32_t ours = juceToOurs_[static_cast<std::size_t>(index)];
     if (ours >= 0) broadcastParam(ours, engine::ParamEventKind::Value, static_cast<double>(value));
+    // SC-311: an edit made in the plug-in's own window reaches its processor too, as SC-310's host sets
+    // do: JUCE hands it over only in its processBlock, which ADI does not call. Not for a parameter a
+    // lane is driving: there the lane plays, and an echo of its value must not stand in for it.
+    if (ours >= 0 && !paramIsAutomated(ours)) postToProcessor(static_cast<std::size_t>(ours), static_cast<double>(value));
 }
 
 void Vst3Device::audioProcessorParameterChangeGestureBegin(juce::AudioProcessor*, int index) {
@@ -676,7 +758,9 @@ void Vst3Device::prepare(double sampleRate, std::int32_t maxFrames) {
     const double updates = (sampleRate > 0.0)
                              ? (static_cast<double>(maxFrames) / sampleRate) * 500.0 : 1.0;
     const auto points = static_cast<std::int32_t>(updates * 3.0) + 10;
-    paramChanges_.reserve(256, points);
+    // Room for every parameter at once: a project's rows replayed at open reach the processor in one
+    // call (SC-310).
+    paramChanges_.reserve(std::max<std::int32_t>(256, static_cast<std::int32_t>(params_.size()) + 16), points);
     outParams_.reserve(256, points);
     // Room for channel resets on note-on and one configuration message.
     constexpr std::int32_t routerHeadroom = 16 * 4 + 8;
@@ -755,6 +839,9 @@ void Vst3Device::process(const engine::NodeIo& io) noexcept {
         events_.clear();
         paramChanges_.clear();
         outParams_.clear();
+        // SC-310: what the host set since the last call, first, at the segment's start; the automation
+        // and mapped controllers below follow it in the same queues.
+        drainPosted();
 
         // ADR-0097: a route change asked for since the last call. Every
         // sounding note ends on its own channel before the new route starts.
@@ -820,6 +907,7 @@ void Vst3Device::process(const engine::NodeIo& io) noexcept {
             const std::int32_t t = e.frame - off;
             if (t < 0 || t >= n) { ++routedOutOfRange_; return; }
             paramChanges_.set(static_cast<SV::ParamID>(e.paramId), e.value, t);
+            recordFollowed(e.paramId, e.value); // SC-311: for the controller to follow
         };
         for (const auto& e : io.events) queueParamValue(e);
         // The injected list too, and BEFORE it was cleared -- the router

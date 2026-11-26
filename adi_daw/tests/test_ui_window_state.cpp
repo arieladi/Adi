@@ -89,6 +89,37 @@ void locateFence() {
     check(observedRecordTick == recordTick && settledLocateRevision(mailbox) == locateInMixedDrain,
           "Record still dispatches its tick without replacing the last explicit Locate revision");
 }
+
+void laneMarkerTransport() {
+    using Command = TransportMailbox::Command;
+    TransportMailbox mailbox;
+    engine::Transport transport;
+    mailbox.post(Command::Locate, 1024);
+    mailbox.post(Command::Play);
+    mailbox.post(Command::LocateMarker, 4096);
+    mailbox.drain(transport, [](std::int64_t) noexcept {},
+                  [](std::int64_t) noexcept { return false; });
+    check(transport.position() == 1024 && mailbox.desiredPlaying(),
+          "SC-02: a lane press cannot move playback waiting to start");
+    mailbox.drain(transport);
+    transport.advance(64);
+    mailbox.post(Command::Stop);
+    mailbox.post(Command::LocateMarker, 4096);
+    mailbox.post(Command::Continue);
+    mailbox.drain(transport);
+    check(transport.playing() && transport.position() == 1088,
+          "SC-03: Continue uses the position where the driver applied Stop in the same drain");
+
+    mailbox.post(Command::Stop);
+    mailbox.post(Command::Record, 2048);
+    mailbox.post(Command::LocateMarker, 4096);
+    mailbox.drain(transport, [&](std::int64_t start) noexcept {
+        transport.locate(start);
+        transport.countIn(96000);
+    });
+    check(transport.position() == 2048 && transport.countInRemaining() == 96000 && mailbox.playing(),
+          "SC-02: a lane press queued with Record leaves its count-in in place");
+}
 // The theme and density tables (DF-W24): the window's every colour and size, by role.
 void themeAndDensityTables() {
     // Each theme by its settings word, and back; "os" and anything unknown read as Dark, the default.
@@ -375,6 +406,7 @@ void midiPortsCore() {
 int main() {
     themeAndDensityTables();
     locateFence();
+    laneMarkerTransport();
     midiPortsCore();
     placementRule();
     test::TempDirectory temp("ui_state", "roundtrip");

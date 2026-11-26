@@ -12,6 +12,7 @@
 #include "adi/clip_image.hpp"
 #include "adi/edit_plan.hpp"
 #include "adi/edit_time.hpp"
+#include "adi/note_stream_detail.hpp"
 #include "adi/take_lane_ops.hpp"
 #include <algorithm>
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -19,6 +20,7 @@
 #include <cmath>
 #include <atomic>
 #include <chrono>
+#include <iterator>
 #include <map>
 #include <set>
 #include <limits>
@@ -35,9 +37,13 @@ FileStamp fileStamp(const fs::path& path) {
     return *revision;
 }
 
-void requireAudioFolder(const fs::path& folder) {
-    if (fs::is_symlink(fs::symlink_status(folder)))
-        throw std::runtime_error("recording audio directory must not be a symlink");
+fs::path recordingFolder(const fs::path& projectFolder) {
+    return projectFolder / "Samples" / "Recorded";
+}
+
+void requireRecordingFolder(const fs::path& folder) {
+    if (fs::is_symlink(fs::symlink_status(folder.parent_path())) || fs::is_symlink(fs::symlink_status(folder)))
+        throw std::runtime_error("recording audio directories must not be symlinks");
 }
 }
 
@@ -131,6 +137,107 @@ Payload recordedImage(Store& store,const engine::TempoMap& tempo,const RecordedP
     return {{"id",piece.id},{"row",std::move(row)},
         {"children",{{"audio_clips",Payload::array({std::move(audio)})}}},{"alias_links",Payload::array()}};
 }
+
+Payload binary(std::span<const std::byte> bytes) {
+    std::vector<std::uint8_t> data;
+    data.reserve(bytes.size());
+    for (const auto byte : bytes)
+        data.push_back(std::to_integer<std::uint8_t>(byte));
+    return Payload::binary(std::move(data));
+}
+
+bool validExpressionValue(ExpressionDim dimension, float value) {
+    if (!std::isfinite(value))
+        return false;
+    switch (dimension) {
+    case ExpressionDim::Pitch: return value >= -48.0f && value <= 48.0f;
+    case ExpressionDim::Pressure:
+    case ExpressionDim::Timbre: return value >= 0.0f && value <= 1.0f;
+    case ExpressionDim::Gain: return true;
+    case ExpressionDim::Pan: return value >= -1.0f && value <= 1.0f;
+    }
+    return static_cast<unsigned>(dimension) >= 64;
+}
+
+Payload recordedMidiImage(Store& store, const MidiLinearTake& take, clip_edit::CopyIds& allocated) {
+    if (take.track <= 0 || take.clip <= 0 || take.start < 0 || take.length <= 0 ||
+        take.start > std::numeric_limits<std::int64_t>::max() - take.length)
+        throw std::runtime_error("invalid linear MIDI recording placement");
+    SQLite::Statement track(store.db(), "SELECT kind,locked,frozen FROM tracks WHERE id=?");
+    track.bind(1, take.track);
+    if (!track.executeStep() || track.getColumn(1).getInt() != 0 || track.getColumn(2).getInt() != 0)
+        throw std::runtime_error("MIDI recording target is missing, locked or frozen");
+    const auto kind = track.getColumn(0).getString();
+    if (kind != "midi" && kind != "instrument")
+        throw std::runtime_error("MIDI recording needs a MIDI or instrument track");
+
+    struct NoteExtent { std::int64_t duration; bool expressed = false; };
+    std::map<std::uint64_t, NoteExtent> extents;
+    for (const auto& note : take.notes) {
+        if (note.start < 0 || note.start >= take.length || note.duration <= 0 || note.duration > take.length - note.start)
+            throw std::runtime_error("MIDI recorded note lies outside the take");
+        if (note.id == 0 || !extents.emplace(note.id, NoteExtent{note.duration}).second)
+            throw std::runtime_error("MIDI recorded notes need distinct assigned identities");
+    }
+
+    Payload children = Payload::object();
+    std::set<std::pair<std::uint64_t, ExpressionDim>> lanes;
+    for (const auto& lane : take.expression) {
+        const auto note = extents.find(lane.noteId);
+        if (note == extents.end() || lane.points.empty() ||
+            lane.points.size() > StreamReader<ExpressionPoint>::kMaxRecordsAtOnce ||
+            !lanes.emplace(lane.noteId, lane.dimension).second)
+            throw std::runtime_error("invalid MIDI recorded expression lane");
+        std::int64_t previous = -1;
+        for (const auto& point : lane.points) {
+            if (point.time_ticks <= previous || point.time_ticks > note->second.duration ||
+                !validExpressionValue(lane.dimension, point.value) || !std::isfinite(point.tension) ||
+                point.curve > static_cast<std::uint8_t>(Curve::Bezier) ||
+                std::any_of(std::begin(point.reserved), std::end(point.reserved), [](auto value) { return value != 0; }))
+                throw std::runtime_error("invalid MIDI recorded expression point");
+            previous = point.time_ticks;
+        }
+        note->second.expressed = true;
+        if (!children.contains("note_expression"))
+            children["note_expression"] = Payload::array();
+        children["note_expression"].push_back(edit::defaultRow(store.db(), "note_expression", {
+            {"id", allocated.next("note_expression")}, {"clip_id", take.clip},
+            {"note_id", static_cast<std::int64_t>(lane.noteId)}, {"dimension", static_cast<int>(lane.dimension)},
+            {"data", binary(writeStream<ExpressionPoint>(FourCC::Expression, lane.points))},
+        }));
+    }
+
+    if (!take.notes.empty()) {
+        notes::Diff diff;
+        diff.added.reserve(take.notes.size());
+        for (auto note : take.notes) {
+            note.flags &= ~static_cast<std::uint32_t>(NoteFlags::HasExpression);
+            if (extents.at(note.id).expressed)
+                note.flags |= NoteFlags::HasExpression;
+            std::string error;
+            auto record = notes::makeRecord(note, {}, error);
+            if (!record)
+                throw std::runtime_error(error);
+            diff.added.push_back(std::move(*record));
+        }
+        auto plan = notes::detail::planRecords(notes::detail::emptyNotes(), diff);
+        if (!plan.ok || !plan.changed)
+            throw std::runtime_error(plan.error);
+        children["event_streams"] = Payload::array({edit::defaultRow(store.db(), "event_streams", {
+            {"id", allocated.next("event_streams")}, {"clip_id", take.clip},
+            {"stream_kind", "notes"}, {"data", binary(plan.bytes)},
+        })});
+    }
+
+    auto row = edit::defaultRow(store.db(), "clips", {
+        {"id", take.clip}, {"track_id", take.track}, {"kind", "midi"}, {"time_base", 0},
+        {"name", take.name.empty() ? std::string("MIDI Recording") : take.name},
+        {"pos_ticks", take.start}, {"length_ticks", take.length},
+        {"loop_enabled", 1}, {"loop_start_ticks", 0}, {"loop_len_ticks", take.length},
+    });
+    return {{"id", take.clip}, {"row", std::move(row)}, {"children", std::move(children)},
+            {"alias_links", Payload::array()}};
+}
 }
 StagedTake stageTake(const engine::AudioRecordingResult& recorded,const fs::path& projectFolder,std::stop_token stop) {
     StagedTake result;
@@ -141,8 +248,8 @@ StagedTake stageTake(const engine::AudioRecordingResult& recorded,const fs::path
             throw std::runtime_error("recording is not a completed linear take");
         auto staged = std::make_shared<StagedTake::Data>();
         staged->recorded = recorded;
-        staged->folder = projectFolder / "audio";
-        requireAudioFolder(staged->folder);
+        staged->folder = recordingFolder(projectFolder);
+        requireRecordingFolder(staged->folder);
         fs::create_directories(staged->folder);
         staged->publicationDirectory = reservePublication(staged->folder);
         staged->waves.reserve(recorded.tracks.size());
@@ -202,8 +309,9 @@ std::vector<RecordingEdit::PreparedSource> RecordingEdit::prepareSources(Store& 
        recorded.startSample<0 || recorded.frames>static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()-recorded.startSample) ||
        ids.size()!=recorded.tracks.size() || ids.empty() || recorded.directory().empty())throw std::runtime_error("recording is not a completed attachable take");
     result.options.expectHead.emplace(OpJournal(store).headSeq());
-    const auto folder=media::projectFolder(store)/"audio";
-    requireAudioFolder(folder);
+    const auto projectFolder = media::projectFolder(store);
+    const auto folder = recordingFolder(projectFolder);
+    requireRecordingFolder(folder);
     auto files=std::make_shared<RecordingEdit::Files>();files->source=recorded;result.files_=files;
     if (staged) {
         if (!staged->data_ || staged->data_->folder != folder || staged->data_->waves.size() != ids.size())
@@ -234,14 +342,13 @@ std::vector<RecordingEdit::PreparedSource> RecordingEdit::prepareSources(Store& 
                 sources.push_back({duplicate->second, std::nullopt});
                 continue;
             }
-            const auto top = folder.parent_path();
             SQLite::Statement known(store.db(), "SELECT id,embedded OR EXISTS(SELECT 1 FROM media_blobs WHERE media_id=m.id) "
                                                 "FROM media_files m WHERE hash_blake3=?");
             known.bind(1, wave.hash);
             const bool reused = known.executeStep();
             const auto mediaId = reused ? known.getColumn(0).getInt64() : wanted.media;
             const auto file = folder / ("recording-" + std::to_string(mediaId) + "-" + wave.hash.substr(0, 16) + ".wav");
-            Payload paths{{"rel_path", media::pathUtf8(file.lexically_relative(top))}, {"abs_path_hint", nullptr}, {"missing", 0}};
+            Payload paths{{"rel_path", media::pathUtf8(file.lexically_relative(projectFolder))}, {"abs_path_hint", nullptr}, {"missing", 0}};
             OpRequest request;
             request.label = "Record Audio";
             if (reused) {
@@ -251,7 +358,7 @@ std::vector<RecordingEdit::PreparedSource> RecordingEdit::prepareSources(Store& 
                 for (const auto* column : {"rel_path", "abs_path_hint"}) {
                     if (previous.at(column).is_null()) continue;
                     const auto old = media::pathFromUtf8(previous.at(column).get<std::string>());
-                    if (fs::weakly_canonical((top / old).parent_path()) == fs::weakly_canonical(recorded.directory()))
+                    if (fs::weakly_canonical((projectFolder / old).parent_path()) == fs::weakly_canonical(recorded.directory()))
                         files->keepPrivate = true;
                 }
                 request.opType = "media.relink";
@@ -294,12 +401,12 @@ std::vector<RecordingEdit::PreparedSource> RecordingEdit::prepareSources(Store& 
             const auto capturedHash=request.opType=="media.import"?request.payload.at("row").at("hash_blake3"):media::mediaRow(store.db(),mediaId).at("hash_blake3");
             if(capturedHash!=hash.hex)throw std::runtime_error("recorded file changed during media capture");
             if(imported.existing) {
-                std::string pathError;const auto oldPath=media::resolveMedia(media::projectFolder(store),media::mediaRow(store.db(),mediaId),pathError);
+                std::string pathError;const auto oldPath=media::resolveMedia(projectFolder,media::mediaRow(store.db(),mediaId),pathError);
                 if(!oldPath.empty() && fs::weakly_canonical(oldPath.parent_path())==fs::weakly_canonical(recorded.directory()))files->keepPrivate=true;
             }
             capturedMedia.emplace(hash.hex,mediaId);
             const auto targetFile=folder/("recording-"+std::to_string(mediaId)+"-"+hash.hex.substr(0,16)+".wav");
-            const auto relative=media::pathUtf8(fs::relative(targetFile,media::projectFolder(store)));
+            const auto relative=media::pathUtf8(fs::relative(targetFile,projectFolder));
             Payload paths={{"rel_path",relative},{"abs_path_hint",nullptr},{"missing",0}};
             if(request.opType=="media.import")request.payload["row"].update(paths);
             else {request.opType="media.relink";request.payload={{"id",mediaId},{"hash",hash.hex},{"paths",paths}};}
@@ -313,73 +420,121 @@ std::vector<RecordingEdit::PreparedSource> RecordingEdit::prepareSources(Store& 
     }
     return sources;
 }
-RecordingEdit RecordingEdit::prepareLinear(Store& store,const engine::AudioRecordingResult& recorded,std::span<const ClipIds> ids,
-                                            std::int64_t placementOffsetSamples,const StagedTake* staged) {
+RecordingEdit prepareCommit(Store& store,const engine::AudioRecordingResult& recorded,std::span<const ClipIds> ids,
+                            std::int64_t placementOffsetSamples) {
+    return prepareCommit(store, recorded, ids, {}, placementOffsetSamples);
+}
+
+RecordingEdit prepareCommit(Store& store, const engine::AudioRecordingResult& recorded, std::span<const ClipIds> ids,
+                            std::span<const MidiLinearTake> midi, std::int64_t placementOffsetSamples) {
+    return RecordingEdit::prepareLinear(store, &recorded, ids, midi, recorded.sampleRate, placementOffsetSamples);
+}
+
+RecordingEdit prepareMidiLinearCommit(Store& store, std::span<const MidiLinearTake> midi, double sampleRate) {
+    return RecordingEdit::prepareLinear(store, nullptr, {}, midi, sampleRate, 0);
+}
+
+RecordingEdit RecordingEdit::prepareLinear(Store& store, const engine::AudioRecordingResult* audioTake,
+                                           std::span<const ClipIds> ids, std::span<const MidiLinearTake> midi,
+                                           double sampleRate, std::int64_t placementOffsetSamples, const StagedTake* staged) {
     RecordingEdit result;
     try {
-        if(store.readOnly())throw std::runtime_error("project is read-only");
-        if(audio::onAudioThread)throw std::runtime_error("prepare recording off callback");
-        if(recorded.loopSpec())throw std::runtime_error("loop recording needs take-pass publication; linear attachment is not permitted");
+        if (store.readOnly())
+            throw std::runtime_error("project is read-only");
+        if (audio::onAudioThread)
+            throw std::runtime_error("prepare recording off callback");
+        if (!audioTake && midi.empty())
+            throw std::runtime_error("recording has no takes to place");
         Read read(store.db());
-        const auto tempo=tempoOf(store);
-        if(recorded.frames>static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) ||
-           recorded.startSample<0 || recorded.frames>static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()-recorded.startSample) ||
-           recorded.sampleRate<8000 || recorded.sampleRate>768000)
-            throw std::runtime_error("recording is not a completed attachable take");
-        constexpr auto ceiling=std::numeric_limits<std::int64_t>::max();
-        if(placementOffsetSamples<0 && recorded.startSample>ceiling+placementOffsetSamples)
-            throw std::runtime_error("recording latency placement overflows the song clock");
-        const auto start=placementOffsetSamples>recorded.startSample ? 0 : recorded.startSample-placementOffsetSamples;
-        if(recorded.frames>static_cast<std::uint64_t>(ceiling-start))
-            throw std::runtime_error("recording latency placement overflows the song clock");
-        const auto first=tickAt(tempo,start,recorded.sampleRate);
-        const auto last=tickAt(tempo,start+static_cast<std::int64_t>(recorded.frames),recorded.sampleRate);
-        if(last<=first)throw std::runtime_error("recording has no representable musical extent");
-        auto sources=prepareSources(store,recorded,ids,result,staged);
-        // The take replaces what it covers in each target's main lane (Live 12 manual 19.2), as each pass of
-        // a loop take does (prepareLoopCommit): one placement clears the interval and lands the clips, so the
-        // material under the take is trimmed, split or removed in the same Undo step, never left playing.
+        const char* label = midi.empty() ? "Record Audio" : audioTake ? "Record" : "Record MIDI";
         clip_edit::CopyIds allocated(store.db());
         std::vector<std::int64_t> trackIds;
         edit_plan::detail::PlacementBatch batch;
-        for(std::size_t index=0;index<ids.size();++index) {
-            const auto& target=recorded.tracks[index];const auto& wanted=ids[index];
-            auto& source=sources[index];
-            if(source.mediaEdit)result.requests.push_back(std::move(*source.mediaEdit));
-            allocated.reserve("clips",wanted.clip);
-            trackIds.push_back(target.trackId);
-            const RecordedPiece take{wanted.clip,start,start+static_cast<std::int64_t>(recorded.frames),0,
-                                     wanted.name.empty()?std::string("Recording"):wanted.name};
-            batch.incoming.push_back(recordedImage(store,tempo,take,target.trackId,source.mediaId,recorded.sampleRate));
-            batch.clear.push_back({{target.trackId,std::nullopt},{first,last}});
+        auto first = std::numeric_limits<std::int64_t>::max();
+        std::int64_t last = 0;
+        const auto place = [&](Payload image, std::int64_t track, std::int64_t begin, std::int64_t end) {
+            trackIds.push_back(track);
+            batch.incoming.push_back(std::move(image));
+            batch.clear.push_back({{track, std::nullopt}, {begin, end}});
+            first = std::min(first, begin);
+            last = std::max(last, end);
+        };
+        if (audioTake) {
+            const auto& recorded = *audioTake;
+            if (recorded.loopSpec())
+                throw std::runtime_error("loop recording needs take-pass publication; linear attachment is not permitted");
+            const auto tempo = tempoOf(store);
+            constexpr auto ceiling = std::numeric_limits<std::int64_t>::max();
+            if (recorded.frames > static_cast<std::uint64_t>(ceiling) || recorded.startSample < 0 ||
+                recorded.frames > static_cast<std::uint64_t>(ceiling - recorded.startSample) ||
+                recorded.sampleRate < 8000 || recorded.sampleRate > 768000)
+                throw std::runtime_error("recording is not a completed attachable take");
+            if (placementOffsetSamples < 0 && recorded.startSample > ceiling + placementOffsetSamples)
+                throw std::runtime_error("recording latency placement overflows the song clock");
+            const auto start = placementOffsetSamples > recorded.startSample ? 0 : recorded.startSample - placementOffsetSamples;
+            if (recorded.frames > static_cast<std::uint64_t>(ceiling - start))
+                throw std::runtime_error("recording latency placement overflows the song clock");
+            const auto end = start + static_cast<std::int64_t>(recorded.frames);
+            const auto beginTick = tickAt(tempo, start, recorded.sampleRate);
+            const auto endTick = tickAt(tempo, end, recorded.sampleRate);
+            if (endTick <= beginTick)
+                throw std::runtime_error("recording has no representable musical extent");
+            auto sources = prepareSources(store, recorded, ids, result, staged);
+            for (std::size_t index = 0; index < ids.size(); ++index) {
+                const auto& target = recorded.tracks[index];
+                const auto& wanted = ids[index];
+                auto& source = sources[index];
+                if (source.mediaEdit) {
+                    source.mediaEdit->label = label;
+                    result.requests.push_back(std::move(*source.mediaEdit));
+                }
+                const RecordedPiece take{wanted.clip, start, end, 0, wanted.name.empty() ? std::string("Recording") : wanted.name};
+                place(recordedImage(store, tempo, take, target.trackId, source.mediaId, recorded.sampleRate),
+                      target.trackId, beginTick, endTick);
+            }
+        } else {
+            result.sourceProject = identity(store);
+            result.owner_ = &store;
+            result.client_ = store.clientId();
+            result.options.expectHead.emplace(OpJournal(store).headSeq());
+            result.files_ = std::make_shared<Files>();
         }
-        auto scope=edit_plan::materialScope(trackIds,edit_plan::PlacementClock::Ticks,{first,last});
-        scope.domains=edit_plan::Domains::Clips;
-        edit_plan::Options placement{static_cast<double>(recorded.sampleRate),{}};
-        placement.policy.automationFollowsClips=false; // Audio recording does not rewrite authored automation.
-        auto prepared=edit_plan::detail::prepareCaptured(store,scope,std::move(batch),placement,allocated,"Record Audio");
-        if(!prepared.ok)throw std::runtime_error(prepared.error);
-        for(auto& request:prepared.requests) {
-            request.label="Record Audio";
+        for (const auto& take : midi) {
+            auto image = recordedMidiImage(store, take, allocated);
+            place(std::move(image), take.track, take.start, take.start + take.length);
+        }
+
+        // Resolve every destination in one splice. Existing material is cut
+        // around the take and any surviving fragments get distinct row IDs.
+        auto scope = edit_plan::materialScope(trackIds, edit_plan::PlacementClock::Ticks, {first, last});
+        scope.domains = edit_plan::Domains::Clips;
+        edit_plan::Options placement{sampleRate, {}};
+        placement.policy.automationFollowsClips = false;
+        auto prepared = edit_plan::detail::prepareCaptured(store, scope, std::move(batch), placement, allocated, label);
+        if (!prepared.ok)
+            throw std::runtime_error(prepared.error);
+        for (auto& request : prepared.requests)
             result.requests.push_back(std::move(request));
-        }
-        result.ok=true;
-    }catch(const std::exception& exception){result.error=exception.what();}
+        result.ok = true;
+    } catch (const std::exception& exception) {
+        result.error = exception.what();
+    }
     return result;
 }
-RecordingEdit prepareCommit(Store& store,const engine::AudioRecordingResult& recorded,std::span<const ClipIds> ids,
-                            std::int64_t placementOffsetSamples) {
-    return RecordingEdit::prepareLinear(store, recorded, ids, placementOffsetSamples, nullptr);
+RecordingEdit prepareStagedCommit(Store& store,const StagedTake& staged,std::span<const ClipIds> ids,
+                                  std::int64_t placementOffsetSamples) {
+    return prepareStagedCommit(store, staged, ids, {}, placementOffsetSamples);
 }
 
 RecordingEdit prepareStagedCommit(Store& store,const StagedTake& staged,std::span<const ClipIds> ids,
-                                  std::int64_t placementOffsetSamples) {
+                                  std::span<const MidiLinearTake> midi,std::int64_t placementOffsetSamples) {
     if (!staged.ok || !staged.data_) {
         RecordingEdit refused;
         refused.error = staged.error.empty() ? "recording staging has not completed" : staged.error;
         return refused;
     }
-    return RecordingEdit::prepareLinear(store, staged.data_->recorded, ids, placementOffsetSamples, &staged);
+    const auto& recorded = staged.data_->recorded;
+    return RecordingEdit::prepareLinear(store, &recorded, ids, midi, recorded.sampleRate, placementOffsetSamples, &staged);
 }
 namespace {
 // Existing lanes are considered in visible order, once per capture. A lane
@@ -690,7 +845,7 @@ bool publishStagedTake(RecordingEdit& edit,std::stop_token stop) {
         auto rollback = std::make_shared<media::detail::PublishedRollback>();
         rollback->files.reserve(files->assets.size());
         files->publications = rollback;
-        requireAudioFolder(files->stagedTake->folder);
+        requireRecordingFolder(files->stagedTake->folder);
         for (auto& asset : files->assets) {
             if (stop.stop_requested()) throw std::runtime_error("recording publication cancelled");
             if (fileStamp(asset.source) != asset.sourceProof)
@@ -738,6 +893,11 @@ bool publishStagedTake(RecordingEdit& edit,std::stop_token stop) {
 
 StagedRefresh refreshStagedCommit(Store& store,const StagedTake& staged,RecordingEdit& edit,std::span<const ClipIds> ids,
                                   std::int64_t placementOffsetSamples) {
+    return refreshStagedCommit(store, staged, edit, ids, {}, placementOffsetSamples);
+}
+
+StagedRefresh refreshStagedCommit(Store& store,const StagedTake& staged,RecordingEdit& edit,std::span<const ClipIds> ids,
+                                  std::span<const MidiLinearTake> midi,std::int64_t placementOffsetSamples) {
     const auto published = edit.files_;
     if (!edit.ok || !published || !published->stagedTake || !published->publications || published->committed)
         return StagedRefresh::refused;
@@ -752,7 +912,7 @@ StagedRefresh refreshStagedCommit(Store& store,const StagedTake& staged,Recordin
         if (edit.owner_ != &store || edit.client_ != store.clientId() || identity(store) != edit.sourceProject)
             throw std::runtime_error("recording project changed during publication");
         if (edit.options.expectHead && *edit.options.expectHead == OpJournal(store).headSeq()) return StagedRefresh::ready;
-        auto current = prepareStagedCommit(store, staged, ids, placementOffsetSamples);
+        auto current = prepareStagedCommit(store, staged, ids, midi, placementOffsetSamples);
         if (!current.ok) throw std::runtime_error(current.error);
         const auto replacement = current.files_;
         if (published->assets.size() != replacement->assets.size())
@@ -806,7 +966,7 @@ CommitResult commit(Store& store,RecordingEdit& edit,Actor actor) {
         if(previous && !previous(db,transaction,error))return false;
         if (files->stagedTake) {
             try {
-                requireAudioFolder(files->stagedTake->folder);
+                requireRecordingFolder(files->stagedTake->folder);
                 for (const auto& asset : files->assets) {
                     if (fileStamp(asset.source) != asset.sourceProof ||
                         (!asset.target.empty() && fileStamp(asset.target) != asset.publishedProof)) {

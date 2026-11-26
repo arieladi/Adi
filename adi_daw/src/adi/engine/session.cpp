@@ -2605,7 +2605,7 @@ bool Session::RenderBlock::startPlayback(std::int64_t insertMarkerTick, bool rec
     session_.publishDriverClock();
     return true;
 }
-bool Session::RenderBlock::process(const AudioIo& io) noexcept {
+bool Session::RenderBlock::process(const AudioIo& io, bool captureRecording) noexcept {
     const auto* timing = dynamic_cast<const TimingView*>(graph_.transportState());
     if (!graph_.valid() || io.frames <= 0 || io.numIn < 0 || io.numOut < 0 ||
         (timing && io.frames > timing->spec.maxFrames)) {
@@ -2634,7 +2634,7 @@ bool Session::RenderBlock::process(const AudioIo& io) noexcept {
         const auto prefix = static_cast<std::int32_t>(remaining);
         AudioIo lead = io;
         lead.frames = prefix;
-        if (!process(lead))
+        if (!process(lead, captureRecording))
             return false;
         for (std::int32_t channel = 0; channel < io.numIn; ++channel)
             timing->inputSlice[static_cast<std::size_t>(channel)] =
@@ -2651,15 +2651,15 @@ bool Session::RenderBlock::process(const AudioIo& io) noexcept {
         tail.in = io.in ? timing->inputSlice.data() : nullptr;
         tail.out = io.out ? timing->outputSlice.data() : nullptr;
         tail.out64 = io.out64 ? timing->outputSlice64.data() : nullptr;
-        return process(tail);
+        return process(tail, captureRecording);
     }
-    session_.recording_->capture(io, session_.transport_);
+    if (captureRecording) session_.recording_->capture(io, session_.transport_);
     session_.playbackRunning_.store(session_.transport_.playing(), std::memory_order_release);
     AudioIo block = io;
     if (timing) {
         block.transport = &timing->blockInfo;
         block.exporting = timing->spec.exporting;
-        auto* capture = timing->spec.performanceState && !timing->spec.exporting
+        auto* capture = captureRecording && timing->spec.performanceState && !timing->spec.exporting
             ? session_.midiInputCapture_.get() : nullptr;
         session_.midiInput_->render(graph_, io, timing->midiInputRoutes, session_.transport_, capture);
     }
@@ -2709,8 +2709,8 @@ void Session::process(const AudioIo& io) noexcept {
     (void)block.process(io);
 }
 
-bool Session::enqueueMidiInput(std::int64_t sample, const Event& event) noexcept {
-    return midiInput_->push(sample, event);
+bool Session::enqueueMidiInput(std::int64_t sample, const Event& event, std::int64_t inputSample) noexcept {
+    return midiInput_->push(sample, event, inputSample < 0 ? sample : inputSample);
 }
 void Session::resetMidiInput() noexcept {
     midiInput_->reset();
@@ -2736,6 +2736,10 @@ bool Session::startMidiInputCapture(std::span<const std::int64_t> tracks, std::s
     }
     error.clear();
     return true;
+}
+
+void Session::finishMidiInputCapture() noexcept {
+    midiInputCapture_->deviceStopped();
 }
 
 // DF-E6 (a). The count-in clicks on the clock the listener hears, the same

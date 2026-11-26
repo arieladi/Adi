@@ -1241,15 +1241,18 @@ void midiClips() {
     bass->clips.push_back(existing);
     snapshot.tracks = {keys, audio, bass};
     const auto one = insertMidiClips(snapshot, {1}, 0, 4 * beat);
-    check(one.refusal.empty() && one.ops.size() == 1 && one.ops[0].opType == "clip.create" &&
+    check(one.refusal.empty() && one.ops.size() == 2 && one.ops[0].opType == "clip.create" &&
               one.ops[0].label == "Insert MIDI Clip" &&
               one.ops[0].payload == Payload({{"id", 41}, {"track", 1}, {"kind", "midi"}, {"pos", 0}, {"length", 4 * beat}}) &&
+              one.ops[1].opType == "clip.setLoop" &&
+              one.ops[1].payload == Payload({{"id", 41}, {"on", true}, {"start", 0}, {"length", 4 * beat}}) &&
               one.select == 1 && one.clip == 41,
-          "an empty MIDI clip across the selection, with an id past every clip's, selected");
-    const auto both = insertMidiClips(snapshot, {1, 2, 3}, 0, 4 * beat);
-    check(both.ops.size() == 2 && both.ops[0].payload.at("track") == 1 && both.ops[1].payload.at("track") == 3 &&
-              both.ops[1].payload.at("id") == 42 && both.clip == 41,
-          "on several tracks: one on each MIDI track, none on the audio track, the first selected");
+          "an empty MIDI clip loops across its full source length and is selected");
+    const auto both = insertMidiClips(snapshot, {1, 2, 3}, beat, 4 * beat);
+    check(both.ops.size() == 4 && both.ops[0].payload.at("track") == 1 && both.ops[2].payload.at("track") == 3 &&
+              both.ops[1].payload == Payload({{"id", 41}, {"on", true}, {"start", 0}, {"length", 3 * beat}}) &&
+              both.ops[3].payload == Payload({{"id", 42}, {"on", true}, {"start", 0}, {"length", 3 * beat}}) && both.clip == 41,
+          "on several tracks, each new MIDI clip loops from source zero regardless of Arrangement position");
     check(!insertMidiClips(snapshot, {2}, 0, beat).refusal.empty() && insertMidiClips(snapshot, {2}, 0, beat).ops.empty(),
           "with no MIDI track it is refused");
     check(!insertMidiClips(snapshot, {1}, beat, beat).refusal.empty(), "and with no time selected");

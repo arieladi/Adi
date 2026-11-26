@@ -194,6 +194,8 @@ juce::String BrowserPanel::dragDescription(const std::vector<const LibraryFile *
     return "adi-sample:" + paths.joinIntoString("\n");
 }
 juce::StringArray BrowserPanel::droppedFiles(const juce::var &description) {
+    if (!description.isString())
+        return {};
     const auto text = description.toString();
     if (!text.startsWith("adi-sample:"))
         return {};
@@ -351,9 +353,13 @@ juce::var BrowserPanel::getDragSourceDescription(const juce::SparseSet<int> &row
     for (int i = 0; i < rows.size(); ++i)
         if (const int r = rows[i]; r >= 0 && r < static_cast<int>(rows_.size())) {
             const auto &row = rows_[static_cast<std::size_t>(r)];
-            // A plug-in loads by a double-click or Enter; a drag of one is not built yet: it drags nothing.
-            if (row.plugin != nullptr)
-                return {};
+            // Carry the catalogue identity. A scan may replace the rows while the drag is running.
+            if (row.plugin != nullptr) {
+                if (!root_.loadPlugin)
+                    return {};
+                return juce::var(juce::Array<juce::var>{"adi-plugin", juce::String(row.plugin->format),
+                                                       juce::String(row.plugin->uid)});
+            }
             // A device drags alone, the first one chosen; one this build cannot load drags nothing.
             if (row.device != nullptr)
                 return unavailable(*row.device).empty() ? juce::var(deviceDescription(*row.device)) : juce::var();
@@ -371,11 +377,38 @@ juce::String BrowserPanel::deviceDescription(const BuiltinInfo &d) {
     return "adi-device:" + juce::String(std::string(d.uid));
 }
 std::string BrowserPanel::droppedDevice(const juce::var &description) {
+    if (!description.isString())
+        return {};
     const auto text = description.toString();
     if (!text.startsWith("adi-device:"))
         return {};
     const auto uid = text.fromFirstOccurrenceOf("adi-device:", false, false).toStdString();
     return findBuiltin(uid) != nullptr ? uid : std::string();
+}
+const PluginEntry *BrowserPanel::draggedPlugin(const juce::DragAndDropTarget::SourceDetails &details) const {
+    const auto *parts = details.description.getArray();
+    if (details.sourceComponent.get() != &list || parts == nullptr || parts->size() != 3 ||
+        !(*parts)[0].isString() || (*parts)[0].toString() != "adi-plugin" ||
+        !(*parts)[1].isString() || !(*parts)[2].isString())
+        return nullptr;
+    const auto format = (*parts)[1].toString().toStdString();
+    const auto uid = (*parts)[2].toString().toStdString();
+    const auto &entries = pluginScan_.listing.plugins;
+    const auto found = std::find_if(entries.begin(), entries.end(), [&](const PluginEntry &entry) {
+        return entry.format == format && entry.uid == uid;
+    });
+    return found != entries.end() ? &*found : nullptr;
+}
+bool BrowserPanel::acceptsDeviceDrop(const juce::DragAndDropTarget::SourceDetails &details) const {
+    return !droppedDevice(details.description).empty() || (root_.loadPlugin && draggedPlugin(details) != nullptr);
+}
+bool BrowserPanel::loadDroppedDevice(const juce::DragAndDropTarget::SourceDetails &details, std::int64_t track,
+                                    std::optional<std::int64_t> before) {
+    if (const auto uid = droppedDevice(details.description); !uid.empty())
+        return root_.insertDevice(uid, track, before);
+    if (const auto *plugin = draggedPlugin(details))
+        return loadPluginEntry(*plugin, track, before);
+    return false;
 }
 std::string BrowserPanel::pluginWaits(const PluginEntry &p) {
     return "Loading " + p.name + " needs the application's plug-in host.";
@@ -408,38 +441,56 @@ void BrowserPanel::setPluginScan(const PluginScan &scan) {
     if (began || ended)
         root_.say(pluginScanStatus(pluginScan_));
 }
-bool BrowserPanel::load(int row) {
-    if (row >= 0 && row < static_cast<int>(rows_.size()))
-        if (const auto *p = rows_[static_cast<std::size_t>(row)].plugin) {
-            if (!root_.loadPlugin) {
-                root_.say(pluginWaits(*p));
-                return false;
-            }
-            // Onto the selected track, in front of the device chosen in the strip, else where Live places
-            // its kind. A VST3 whose kind is not known yet (N58) goes onto a MIDI track as its instrument
-            // and onto an audio track as an effect, and the Status Bar says so.
-            const auto track = root_.arrangement.geometry.selection.track;
-            const auto *t = root_.reader().findTrack(track);
-            if (t == nullptr) {
-                root_.say("Select a track to load " + p->name + " onto.");
-                return false;
-            }
-            const bool midi = t->kind == "midi" || t->kind == "instrument";
-            // Copied first: the load can refill the list this row points into (a scan held and adopted).
-            const auto ref = pluginReference(*p, midi);
-            const bool guessed = p->kind == PluginEntry::Kind::Unknown;
-            return root_.loadPlugin(ref, track, root_.devices.insertPoint(), guessed);
-        }
-    if (row < 0 || row >= static_cast<int>(rows_.size()) || rows_[static_cast<std::size_t>(row)].device == nullptr)
+bool BrowserPanel::loadPluginEntry(const PluginEntry &p, std::int64_t track, std::optional<std::int64_t> before) {
+    if (!root_.loadPlugin) {
+        root_.say(pluginWaits(p));
         return false;
-    const auto &d = *rows_[static_cast<std::size_t>(row)].device;
+    }
+    const auto current = root_.current();
+    const auto *target = current ? current->findTrack(track) : nullptr;
+    if (track != 0 && target == nullptr) {
+        root_.say("Select a track to load " + p.name + " onto.");
+        return false;
+    }
+    // N58: with the kind unknown, a MIDI track takes an instrument and an audio track takes an effect.
+    // Copy the reference first: the load can refill the list this row points into.
+    const bool midi = target && (target->kind == "midi" || target->kind == "instrument");
+    return root_.loadPlugin(pluginReference(p, midi), track, before, p.kind == PluginEntry::Kind::Unknown);
+}
+bool BrowserPanel::load(int row) {
+    if (row < 0 || row >= static_cast<int>(rows_.size()))
+        return false;
+    const auto &entry = rows_[static_cast<std::size_t>(row)];
+    const bool instrument = entry.plugin ? entry.plugin->kind == PluginEntry::Kind::Instrument
+                                         : entry.device && entry.device->instrument;
+    auto track = root_.arrangement.geometry.selection.track;
+    // R50 decides whether a double-click on a known instrument with an audio track chosen creates a MIDI track.
+    constexpr bool kNewMidiTrackWhenAudioSelected = false;
+    if constexpr (kNewMidiTrackWhenAudioSelected) {
+        if (const auto *target = root_.reader().findTrack(track); instrument && target && target->kind == "audio")
+            track = 0;
+    }
+    const auto before = track != 0 ? root_.devices.insertPoint() : std::nullopt;
+    if (const auto *p = entry.plugin) {
+        if (track == 0 && !instrument && root_.loadPlugin) {
+            root_.say("Select a track to load " + p->name + " onto.");
+            return false;
+        }
+        return loadPluginEntry(*p, track, before);
+    }
+    if (entry.device == nullptr)
+        return false;
+    const auto &d = *entry.device;
     if (const auto why = unavailable(d); !why.empty()) {
         root_.say(why);
         return false;
     }
     // Onto the selected track, in front of the device chosen in the strip (manual 4.10, 41.4).
-    return root_.insertDevice(std::string(d.uid), root_.arrangement.geometry.selection.track,
-                              root_.devices.insertPoint());
+    if (track == 0 && !instrument) {
+        root_.say("Select a track to load " + std::string(d.name) + " onto.");
+        return false;
+    }
+    return root_.insertDevice(std::string(d.uid), track, before);
 }
 void BrowserPanel::resized() {
     // Live's shape: the search row and the preview row start right of the round
