@@ -15386,6 +15386,43 @@ void untitledProjects(const std::filesystem::path &dir) {
               songProjectFile(file(saved)) == file(saved),
           "Save As adds one same-named folder and preserves dots in the song name");
 }
+void discardUneditedUntitled(const std::filesystem::path &dir) {
+    std::string why;
+    std::error_code error;
+    const auto untouched = dir / "untouched.adi";
+    const auto edited = dir / "edited.adi";
+    const auto snapshotted = dir / "snapshotted.adi";
+    auto newDocument = ProjectDocument::open(untouched, true, {}, why);
+    auto editedDocument = ProjectDocument::open(edited, true, {}, why);
+    auto snapshotDocument = ProjectDocument::open(snapshotted, true, {}, why);
+    const auto untouchedIdentity = media::readFileIdentity(untouched, error);
+    const auto editedIdentity = media::readFileIdentity(edited, error);
+    const auto snapshotIdentity = media::readFileIdentity(snapshotted, error);
+    check(newDocument && editedDocument && snapshotDocument && untouchedIdentity && editedIdentity && snapshotIdentity,
+          "three Untitled projects are open and tracked by file identity");
+    if (!newDocument || !editedDocument || !snapshotDocument || !untouchedIdentity || !editedIdentity || !snapshotIdentity)
+        return;
+    check(!discardUntouchedProject(untouched, *untouchedIdentity) && std::filesystem::exists(untouched),
+          "an Untitled project still held open stays on disk");
+    newDocument.reset();
+    check(!discardUntouchedProject(untouched, *editedIdentity) && std::filesystem::exists(untouched),
+          "a file other than the Untitled project opened by this instance stays on disk");
+    check(discardUntouchedProject(untouched, *untouchedIdentity) && !std::filesystem::exists(untouched),
+          "closing an untouched Untitled project removes its file");
+    OpRequest rename;
+    rename.opType = "track.rename";
+    rename.payload = {{"id", 2}, {"name", "Keys"}};
+    check(editedDocument->ops().submit(std::move(rename)).ok && History(editedDocument->store()).undo().ok,
+          "an edit was made and undone in the second project");
+    check(snapshotDocument->takeSnapshot("Keep this", 1'700'000'000'000'000, 0).ok,
+          "the third project has a named snapshot without edit steps");
+    editedDocument.reset();
+    snapshotDocument.reset();
+    check(!discardUntouchedProject(edited, *editedIdentity) && std::filesystem::exists(edited),
+          "an Untitled project with redo history is kept");
+    check(!discardUntouchedProject(snapshotted, *snapshotIdentity) && std::filesystem::exists(snapshotted),
+          "an Untitled project with a named snapshot is kept");
+}
 int main(int argc, char **argv) {
     // WTS-02: no dialog box on Windows; JUCE's assertions counted, the run failing on one.
     adi::uitest::noDialogs();
@@ -16253,14 +16290,14 @@ int main(int argc, char **argv) {
                                                    C::CueSwitches, C::SoloInPlace},
               "the Options menu: Follow (§6.2), Draw Mode (§10.4.1), the grid (§6.10), Delay Compensation (§18.7), then "
               "Solo in Place (§18.6)");
-        check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0, C::TakeSnapshot, C::SaveAs,
+        check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0, 0, C::TakeSnapshot, C::SaveAs,
                                                 C::SaveCopy, C::CollectAllAndSave, C::CollectAndExport, 0, C::ExportAudio},
               "the File menu: Save As, then Save a Copy and Collect All and Save (5.4.1, 5.7), ADI's "
               "Collect and Export after them, then Export Audio/Video (5.2.1); Quit is the application menu's on the Mac [P:export#1]");
 #else
         check(names == juce::StringArray{"File", "Edit", "Create", "View", "Options", "Navigate", "Help"},
               "the menu bar: File, Edit, Create, View, Options, Navigate, Help");
-        check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0, C::TakeSnapshot, C::SaveAs,
+        check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0, 0, C::TakeSnapshot, C::SaveAs,
                                                 C::SaveCopy, C::CollectAllAndSave, C::CollectAndExport, 0, C::ExportAudio, 0,
                                                 C::Quit},
               "the File menu: Save As, then Save a Copy and Collect All and Save (5.4.1, 5.7), ADI's "
@@ -16273,6 +16310,54 @@ int main(int argc, char **argv) {
               "Place (§18.6), then Settings off the Mac "
               "(§2.3)");
 #endif
+        {
+            const auto fileIndex = names.indexOf("File");
+            const auto recentMenu = [&] {
+                const auto fileMenu = bar->getMenuForIndex(fileIndex, "File");
+                for (juce::PopupMenu::MenuItemIterator it(fileMenu); it.next();)
+                    if (it.getItem().text == "Open Recent" && it.getItem().subMenu)
+                        return *it.getItem().subMenu;
+                return juce::PopupMenu{};
+            };
+            const auto p = juce::File(juce::String(media::pathUtf8(temp.path())));
+            const auto one = p.getChildFile("First project.adi");
+            const auto two = p.getChildFile("Second project.adi");
+            check(one.replaceWithText("first") && two.replaceWithText("second"), "two named projects for Open Recent");
+            commands.rememberProject(one);
+            commands.rememberProject(two);
+            commands.rememberProject(one);
+            AppCommands restarted(settings);
+            check(restarted.recentProjects().getNumFiles() == 2 && restarted.recentProjects().getFile(0) == one &&
+                      restarted.recentProjects().getFile(1) == two,
+                  "the recent list survives restart, newest first, with reopened projects deduplicated");
+            check(two.deleteFile(), "the second recent project is now unavailable");
+            juce::File chosen;
+            window.root().openRecentProject = [&](const juce::File &file) { chosen = file; };
+            const auto recent = recentMenu();
+            int firstId = 0, removeId = 0, clearId = 0;
+            bool secondDisabled = false;
+            for (juce::PopupMenu::MenuItemIterator it(recent); it.next();) {
+                const auto &item = it.getItem();
+                if (item.text == "First project" && item.isEnabled)
+                    firstId = item.itemID;
+                if (item.text == "Second project")
+                    secondDisabled = !item.isEnabled;
+                if (item.text == "Remove Unavailable Projects" && item.isEnabled)
+                    removeId = item.itemID;
+                if (item.text == "Clear List" && item.isEnabled)
+                    clearId = item.itemID;
+            }
+            check(firstId != 0 && secondDisabled && removeId != 0 && clearId != 0,
+                  "File > Open Recent shows an available project, a disabled missing project and the cleanup commands");
+            bar->menuItemSelected(firstId, fileIndex);
+            check(chosen == one, "Open Recent sends the selected file to the application's open callback");
+            bar->menuItemSelected(removeId, fileIndex);
+            check(commands.recentProjects().getNumFiles() == 1 && commands.recentProjects().getFile(0) == one,
+                  "Remove Unavailable Projects keeps the rest of the list");
+            bar->menuItemSelected(clearId, fileIndex);
+            check(recentMenu().getNumItems() == 0, "Clear List empties Open Recent");
+            window.root().openRecentProject = {};
+        }
         // The new ids' names through getCommandInfo: `names[id - PlayStop]` is a table by position, so
         // an entry out of order mislabels a menu item with no compile error. B5 (Solo in Place) landed
         // first and B4 (window/track-delay) extends the same tail: SoloInPlace, then the two Track
@@ -18807,6 +18892,7 @@ int main(int argc, char **argv) {
     trace("userShortcuts", [&] { userShortcuts(commands, settings); });
     trace("launchIsolation", [&] { launchIsolation(commands); });
     trace("untitledProjects", [&] { untitledProjects(temp.path()); });
+    trace("discardUneditedUntitled", [&] { discardUneditedUntitled(temp.path()); });
     trace("windowTeardownRunsTimers", [&] { windowTeardownRunsTimers(); });
     trace("paintHygiene", [&] { paintHygiene(commands, temp.path()); });
     check(assertions.count() == 0, ("no JUCE assertion in the run; the last: " + assertions.last().toStdString()).c_str());

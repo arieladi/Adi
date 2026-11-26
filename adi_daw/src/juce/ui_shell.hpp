@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include "adi/engine/project_view.hpp"
+#include "adi/media/publish_file.hpp"
 #include "adi/settings/store.hpp"
 #include "adi/ui/arm_edits.hpp"
 #include "adi/gesture_producers.hpp"
@@ -241,6 +242,9 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     const settings::AppSettings &settings() const noexcept { return settings_; }
     // For what the window writes back: the import prompt's last choices (E5).
     settings::AppSettings &writableSettings() noexcept { return settings_; }
+    const juce::RecentlyOpenedFilesList &recentProjects() const noexcept { return recentProjects_; }
+    void rememberProject(const juce::File &);
+    void clearRecentProjects(bool onlyUnavailable);
     // The Arrangement's clipboard (Live 12 manual 6.9, 41.5; E2, N17): a clip's copy or a time
     // selection's, values the engine made (`copyClip`, `copyRange`), never ops. It is the app's, as
     // the device clipboard is, so it outlives a window; the engine refuses it in another project.
@@ -273,6 +277,9 @@ class AppCommands final : public juce::ApplicationCommandTarget {
 
   private:
     settings::AppSettings &settings_;
+    juce::File recentProjectsFile_;
+    juce::RecentlyOpenedFilesList recentProjects_;
+    void saveRecentProjects();
     AdiRootComponent *active_ = nullptr;
     bool live_ = true;
     bool infoView_ = true;
@@ -401,6 +408,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // the engine refresh after an edit belong to whoever owns the document.
     std::function<bool(int)> applicationCommand;
     bool needsFirstSave = false;
+    std::function<void(const juce::File &)> openRecentProject;
     std::function<void()> afterEdit;
     // Commits the parameter edits the document still holds before Undo, Redo or a restored step acts
     // (DF-W29); false, with the document's reason said, when it could not.
@@ -963,6 +971,9 @@ juce::File projectsFolder(const settings::AppSettings &settings);
 juce::File nextUntitledProject(const settings::AppSettings &settings);
 // Map the save chooser's file to the song file inside its own same-named folder.
 juce::File songProjectFile(const juce::File &file);
+// After closing the document: discard its provisional file only when the identity is still the
+// one created by this instance and it contains no edits or named snapshots.
+bool discardUntouchedProject(const std::filesystem::path &, const media::FileIdentity &);
 // Holds a root at its window's interface zoom: the root lays out in logical
 // units and the transform scales it, so nothing below knows the zoom exists.
 class ZoomHost final : public juce::Component {

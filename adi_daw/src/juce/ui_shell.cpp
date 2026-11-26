@@ -7,6 +7,7 @@
 #include "adi/edit_plan.hpp"
 #include "adi/ui/audio_drop.hpp"
 #include "adi/row_ids.hpp"
+#include "adi/media/media_ops.hpp"
 #include "adi/ui/clip_edits.hpp"
 #include "adi/ui/cue_edits.hpp"
 #include "adi/ui/fade_edits.hpp"
@@ -33,6 +34,7 @@ bool deviceOrTrackEditCommand(int id) noexcept {
 // Live's measures, in points at 100 %: the AI tab, the Info View's width and the browser's preview strip.
 constexpr int kTabHeight = 20;
 constexpr int kInfoWidth = 200, kPreviewHeight = 27;
+constexpr int kRecentProjectLimit = 12;
 // Interface zoom steps per window. PROVISIONAL: Live's own list is to be
 // measured (ADR-0203 d26); 100 % is the start and the steps are symmetric.
 constexpr std::array<float, 7> kZoomSteps{.5f, .75f, 1.f, 1.25f, 1.5f, 1.75f, 2.f};
@@ -42,8 +44,46 @@ bool flag(const settings::AppSettings &s, const char *key, bool fallback) {
 }
 } // namespace
 AppCommands::AppCommands(settings::AppSettings &settings) : settings_(settings) {
+    recentProjects_.setMaxNumberOfItems(kRecentProjectLimit);
+    if (const auto directory = settings_.file().parent_path().u8string(); !directory.empty()) {
+        recentProjectsFile_ = juce::File(juce::String::fromUTF8(reinterpret_cast<const char *>(directory.c_str())))
+                                  .getChildFile("recent-projects.json");
+        const auto recent = juce::JSON::parse(recentProjectsFile_);
+        if (const auto *paths = recent.getArray()) {
+            for (int i = std::min(paths->size(), kRecentProjectLimit); i > 0; --i) {
+                const auto &value = (*paths)[i - 1];
+                const auto path = value.toString();
+                if (value.isString() && juce::File::isAbsolutePath(path))
+                    recentProjects_.addFile(juce::File(path));
+            }
+        }
+    }
     manager.setFirstCommandTarget(this);
     reload();
+}
+void AppCommands::saveRecentProjects() {
+    if (recentProjectsFile_ == juce::File{} || !recentProjectsFile_.getParentDirectory().createDirectory().wasOk())
+        return;
+    juce::Array<juce::var> paths;
+    for (int i = 0; i < recentProjects_.getNumFiles(); ++i)
+        paths.add(recentProjects_.getFile(i).getFullPathName());
+    (void)recentProjectsFile_.replaceWithText(juce::JSON::toString(juce::var(std::move(paths))));
+}
+void AppCommands::rememberProject(const juce::File &file) {
+    if (recentProjects_.getFile(0) == file)
+        return;
+    recentProjects_.addFile(file);
+    saveRecentProjects();
+}
+void AppCommands::clearRecentProjects(bool onlyUnavailable) {
+    if (onlyUnavailable) {
+        for (int i = recentProjects_.getNumFiles(); i-- > 0;)
+            if (const auto file = recentProjects_.getFile(i); !file.existsAsFile())
+                recentProjects_.removeFile(file);
+    } else {
+        recentProjects_.clear();
+    }
+    saveRecentProjects();
 }
 void AppCommands::reload() {
     live_ = settings_.get("shortcuts.preset") == "live";
@@ -4466,15 +4506,18 @@ struct MenuEntries {
     std::vector<int> items;
 };
 // Live 12's View menu submenus, in a menu's items: Arrangement Track Controls and Mixer Controls.
-constexpr int kTrackControlsMenu = -1, kMixerControlsMenu = -2;
+constexpr int kTrackControlsMenu = -1, kMixerControlsMenu = -2, kOpenRecentMenu = -3;
+constexpr int kFirstRecentProject = 0x4000;
+constexpr int kClearRecentProjects = kFirstRecentProject + kRecentProjectLimit;
+constexpr int kRemoveUnavailableProjects = kClearRecentProjects + 1;
 const std::vector<MenuEntries> &menuBar() {
     using C = AppCommands;
     static const std::vector<MenuEntries> bar{
 #if JUCE_MAC
-        {"File", {C::NewProject, C::OpenProject, 0, C::TakeSnapshot, C::SaveAs, C::SaveCopy, C::CollectAllAndSave,
+        {"File", {C::NewProject, C::OpenProject, kOpenRecentMenu, 0, C::TakeSnapshot, C::SaveAs, C::SaveCopy, C::CollectAllAndSave,
                   C::CollectAndExport, 0, C::ExportAudio}},
 #else
-        {"File", {C::NewProject, C::OpenProject, 0, C::TakeSnapshot, C::SaveAs, C::SaveCopy, C::CollectAllAndSave,
+        {"File", {C::NewProject, C::OpenProject, kOpenRecentMenu, 0, C::TakeSnapshot, C::SaveAs, C::SaveCopy, C::CollectAllAndSave,
                   C::CollectAndExport, 0, C::ExportAudio, 0, C::Quit}},
 #endif
         // Live's Cut, Copy, Paste and Duplicate, then Delete (§18.2, 41.5); the four act on devices.
@@ -4554,16 +4597,57 @@ class ShellMenu final : public juce::MenuBarModel {
                         menu.addSubMenu("Arrangement Track Controls", root.trackControlsMenu());
                     else if (id == kMixerControlsMenu)
                         menu.addSubMenu("Mixer Controls", root.mixerOptionsMenu(true));
-                    else
+                    else if (id == kOpenRecentMenu) {
+                        auto recent = recentMenu();
+                        menu.addSubMenu("Open Recent", std::move(recent), !recentItems_.empty());
+                    } else
                         menu.addCommandItem(&commands.manager, id);
                 }
         return menu;
     }
-    void menuItemSelected(int, int) override {}
+    void menuItemSelected(int id, int) override {
+        if (id == kClearRecentProjects || id == kRemoveUnavailableProjects) {
+            commands.clearRecentProjects(id == kRemoveUnavailableProjects);
+            menuItemsChanged();
+        } else if (const auto index = static_cast<std::size_t>(id - kFirstRecentProject);
+                   index < recentItems_.size() && root.openRecentProject) {
+            // Opening a project replaces the root and its menu. Keep a local copy of the action and path.
+            auto open = root.openRecentProject;
+            const auto file = recentItems_[index];
+            open(file);
+        }
+    }
 
   private:
     AdiRootComponent &root;
     AppCommands &commands;
+    std::vector<juce::File> recentItems_;
+
+    juce::PopupMenu recentMenu() {
+        juce::PopupMenu menu;
+        recentItems_.clear();
+        const auto &files = commands.recentProjects();
+        for (int i = 0; i < files.getNumFiles(); ++i)
+            recentItems_.push_back(files.getFile(i));
+        bool unavailable = false;
+        for (std::size_t i = 0; i < recentItems_.size(); ++i) {
+            const auto &file = recentItems_[i];
+            auto name = file.getFileNameWithoutExtension();
+            if (std::count_if(recentItems_.begin(), recentItems_.end(), [&name](const auto &other) {
+                    return other.getFileNameWithoutExtension() == name;
+                }) > 1)
+                name = file.getFullPathName();
+            const bool present = file.existsAsFile();
+            menu.addItem(kFirstRecentProject + static_cast<int>(i), name, present);
+            unavailable |= !present;
+        }
+        if (!recentItems_.empty()) {
+            menu.addSeparator();
+            menu.addItem(kRemoveUnavailableProjects, "Remove Unavailable Projects", unavailable);
+            menu.addItem(kClearRecentProjects, "Clear List");
+        }
+        return menu;
+    }
 };
 juce::PopupMenu applicationMenu(AppCommands &commands) {
     juce::PopupMenu menu;
@@ -4640,6 +4724,23 @@ juce::File songProjectFile(const juce::File &file) {
     if (parent == parent.getSiblingFile(name))
         return file;
     return parent.getChildFile(name).getChildFile(file.getFileName());
+}
+bool discardUntouchedProject(const std::filesystem::path &path, const media::FileIdentity &expected) {
+    std::error_code error;
+    const auto lease = media::ProjectFileLease::openExclusive(path, error);
+    if (!lease || lease->identity() != expected || !std::filesystem::is_regular_file(std::filesystem::symlink_status(path, error)))
+        return false;
+    try {
+        // Read after all document workers have released SQLite and under the exclusive project lease.
+        // An edit followed by Undo still leaves an op. Performance-only gestures do not count.
+        SQLite::Database db(media::pathUtf8(path), SQLite::OPEN_READONLY);
+        if (db.execAndGet("SELECT EXISTS(SELECT 1 FROM ops WHERE tags <> 'ephemeral') OR "
+                          "EXISTS(SELECT 1 FROM history_snapshots WHERE auto = 0)").getInt() != 0)
+            return false;
+    } catch (const SQLite::Exception &) {
+        return false;
+    }
+    return media::readFileIdentity(path, error) == expected && std::filesystem::remove(path, error);
 }
 std::string displayAt(juce::Point<int> screen) {
     const auto *d = juce::Desktop::getInstance().getDisplays().getDisplayForPoint(screen.toFloat());

@@ -582,15 +582,14 @@ class AdiApplication final : public juce::JUCEApplication,
         manager_.removeChangeListener(this);
         detachAudio();
         // A take still recording or landing goes into its project before the project closes (MX-09).
-        if (document_)
-            (void)document_->settleRecording(); // Quit: nothing is left to tell
+        const bool takeSettled = !document_ || document_->settleRecording(); // Quit: nothing is left to tell
         mainMeterSource_.reset();
         floating_.reset();
         historyWindow_.reset();
         if (window_)
             window_->place.flush(); // a move still settling is kept (WIN-02)
         releaseWindow(window_, root_); // root_ is null before the window's teardown can pump (A27)
-        document_.reset();
+        closeProject(takeSettled);
         commands_.reset();
         settings_.reset();
     }
@@ -630,6 +629,27 @@ class AdiApplication final : public juce::JUCEApplication,
         bridge_.reset();
         live_.reset();
     }
+    void closeProject(bool takeSettled) {
+        if (!document_)
+            return;
+        const auto path = document_->store().path();
+        const bool mayDiscard = takeSettled && document_->pendingParameterGestures().empty();
+        document_.reset();
+        if (untitledIdentity_) {
+            if (mayDiscard && discardUntouchedProject(path, *untitledIdentity_)) {
+                std::error_code error;
+                if (!untitledFolder_.empty() &&
+                    std::filesystem::is_directory(std::filesystem::symlink_status(untitledFolder_, error)))
+                    (void)std::filesystem::remove(untitledFolder_, error); // empty directory only
+            } else if (!testLaunch()) {
+                const auto file = juce::File(juce::String(media::pathUtf8(path)));
+                if (file.existsAsFile())
+                    commands_->rememberProject(file);
+            }
+            untitledIdentity_.reset();
+            untitledFolder_.clear();
+        }
+    }
     bool install(const juce::File &file, bool create) {
         if (file == juce::File{}) {
             report("Cannot create an Untitled project folder in " + projectsFolder(*settings_).getFullPathName().toStdString());
@@ -655,8 +675,9 @@ class AdiApplication final : public juce::JUCEApplication,
         detachAudio();
         // A take still recording or landing goes into the project it was recorded in (MX-09); a take that
         // could not be kept says so before that project goes.
+        const bool takeSettled = !document_ || document_->settleRecording();
         if (document_) {
-            if (!document_->settleRecording())
+            if (!takeSettled)
                 report("The last take was still being saved and could not be kept; the new project opened.");
             else if (auto landed = document_->takeLanded(); landed && !landed->ok)
                 report(landed->message);
@@ -673,7 +694,18 @@ class AdiApplication final : public juce::JUCEApplication,
         }
         // The timer and posted callbacks read root_; the window's teardown can run them (walk-A A27).
         releaseWindow(window_, root_);
+        closeProject(takeSettled);
         document_ = std::move(next);
+        if (create) {
+            const auto &path = document_->store().path();
+            std::error_code error;
+            untitledIdentity_ = media::readFileIdentity(path, error);
+            // Only an Untitled-specific folder, never the user's chosen projects folder.
+            if (file.getParentDirectory().getParentDirectory() == projectsFolder(*settings_))
+                untitledFolder_ = path.parent_path();
+        } else if (!testLaunch()) {
+            commands_->rememberProject(file);
+        }
         auto root = std::make_unique<AdiRootComponent>(document_->view(), document_->ops(),
                                                        document_->mailbox(), *commands_,
                                                        document_->views(),
@@ -1003,6 +1035,12 @@ class AdiApplication final : public juce::JUCEApplication,
         // The audio clips' waveforms, from the document's own worker (N40).
         root->arrangement.waveforms = &document_->waveforms();
         root->applicationCommand = [this](int id) { return applicationCommand(id); };
+        root->openRecentProject = [this](const juce::File &chosen) {
+            if (chosen.existsAsFile())
+                openSettled(chosen, false);
+            else
+                report("The project is unavailable: " + chosen.getFileName().toStdString());
+        };
         // The Undo History's first action, as Live's "Open Live Set" row names the file.
         root->undoHistory.rootLabel = std::string(create ? "New Project: \u201c" : "Open Project: \u201c") +
                                       file.getFileName().toStdString() + "\u201d";
@@ -1192,6 +1230,12 @@ class AdiApplication final : public juce::JUCEApplication,
                 std::filesystem::remove(path.parent_path(), folderError);
             root_->say(landedFirst + document_->error());
             return;
+        }
+        untitledIdentity_.reset();
+        untitledFolder_.clear();
+        if (!testLaunch()) {
+            commands_->rememberProject(juce::File(juce::String(media::pathUtf8(document_->store().path()))));
+            window_->menu()->menuItemsChanged();
         }
         // The same project under a new file: a copy held from it still pastes into it.
         if (deviceClipboard_ && deviceClipboard_->sourceFile == before)
@@ -1398,7 +1442,7 @@ class AdiApplication final : public juce::JUCEApplication,
             openSettled(nextUntitledProject(*settings_), true);
             return true;
         }
-        chooser_ = std::make_unique<juce::FileChooser>("Open ADI project", juce::File{}, "*.adi");
+        chooser_ = std::make_unique<juce::FileChooser>("Open ADI project", projectsFolder(*settings_), "*.adi");
         const int flags = juce::FileBrowserComponent::canSelectFiles | juce::FileBrowserComponent::openMode;
         chooser_->launchAsync(flags, [this](const juce::FileChooser &chooser) {
             if (const auto file = chooser.getResult(); file != juce::File{})
@@ -1518,6 +1562,8 @@ class AdiApplication final : public juce::JUCEApplication,
     std::uint64_t midiSeen_ = 0;
     juce::uint32 midiLitUntil_ = 0;
     std::unique_ptr<ProjectDocument> document_;
+    std::optional<media::FileIdentity> untitledIdentity_;
+    std::filesystem::path untitledFolder_;
     std::shared_ptr<const MainMeterSource> mainMeterSource_;
     juce::AudioDeviceManager manager_;
     // The document with the keyboard in front of it, which the bridge drives (N60).
