@@ -10758,6 +10758,16 @@ void pluginWindows(AppCommands &commands, settings::AppSettings &settings, const
     int opened = 0;
     std::string refuse, editorError;
     bool editorGone = false;
+    // SC-321: an editor whose teardown pumps messages, so the window's frame clock can fire inside it.
+    struct PumpingEditor final : juce::Component {
+        std::function<void()> onGone;
+        ~PumpingEditor() override {
+            if (onGone) onGone();
+        }
+    };
+    std::function<void()> editorClosing;
+    bool editorDestroyed = false;
+    int framesAfterDestroy = 0;
     check(!root.togglePluginWindow(3, false) && root.error().find("in the application") != std::string::npos,
           "with no opener wired, the wrench says plug-in windows open in the application");
     root.pluginHost = &host;
@@ -10768,10 +10778,18 @@ void pluginWindows(AppCommands &commands, settings::AppSettings &settings, const
             return view;
         }
         ++opened;
-        auto editor = std::make_unique<juce::Component>();
+        auto editor = std::make_unique<PumpingEditor>();
         editor->setSize(320, 200);
+        editorDestroyed = false;
+        editor->onGone = [&] {
+            editorDestroyed = true;
+            if (editorClosing) editorClosing();
+        };
         view.view = std::move(editor);
-        view.frame = [&] { return editorError; };
+        view.frame = [&] {
+            if (editorDestroyed) ++framesAfterDestroy;
+            return editorError;
+        };
         view.gone = [&] { return editorGone; };
         return view;
     };
@@ -10861,9 +10879,15 @@ void pluginWindows(AppCommands &commands, settings::AppSettings &settings, const
                   !window->isResizable() && window->getContentComponentBorder().addedTo(host.content(key3)->getBounds()).getWidth() == window->getWidth(),
               "its window is titled track/device, fits the plug-in, and does not resize");
     }
+    // SC-321: the frame clock firing while the editor is destroyed (a plug-in pumping messages as its
+    // editor closes) never reaches the freed editor.
+    editorClosing = [&] { host.frame(key3); };
     panels[0]->wrench.onClick();
     root.frame();
+    editorClosing = nullptr;
     check(!host.contains(key3) && !panels[0]->wrench.getToggleState(), "a second click closes it");
+    check(editorDestroyed && framesAfterDestroy == 0,
+          "a frame that fires while the editor is destroyed never calls into it (SC-321)");
     // One at a time; Ctrl/Cmd keeps the others open.
     check(root.togglePluginWindow(3, false) && root.togglePluginWindow(5, false) && !host.contains(key3) &&
               host.contains(key5),

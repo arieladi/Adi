@@ -487,7 +487,9 @@ void FloatingHost::close(const std::string &key) {
         e.component->setBounds(e.dockBounds);
     }
     // The content before its window: a plug-in's editor tears its native view down while the
-    // window that parents it still exists.
+    // window that parents it still exists. Its frame callback goes first: an editor that pumps
+    // messages as it closes lets the window's clock fire, which must not reach the freed editor (SC-321).
+    e.onFrame = nullptr;
     e.zoomed.reset();
     e.owned.reset();
     entries_.erase(it);
@@ -526,7 +528,8 @@ void FloatingHost::closeAll(bool remember) {
             e.component->setBounds(e.dockBounds);
         }
         // The content before its window: a plug-in's editor tears its native view down while
-        // the window that parents it still exists.
+        // the window that parents it still exists; its frame callback first (SC-321).
+        e.onFrame = nullptr;
         e.zoomed.reset();
         e.owned.reset();
         entries_.erase(entries_.begin());
