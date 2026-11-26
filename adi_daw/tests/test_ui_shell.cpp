@@ -5256,6 +5256,155 @@ void clipViewNotePreview(AppCommands &commands, const std::filesystem::path &dir
     check(panel.details() != nullptr && panel.details()->trackId == 3 && maskTrack == 3 && !editor.previewButton().getToggleState(),
           "the same Preview switch applies across clips, and playback lights follow the new track");
 }
+void noteEditorEdgeScroll(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "note-edge-scroll.adi", true, {}, error);
+    check(document != nullptr, "a project for Note Editor edge scrolling");
+    if (!document) return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "note-edge-scroll");
+    root.setSize(1400, 900);
+    constexpr auto beat = textproj::kPPQ;
+    check(root.insertMidiClips({2}, 0, 64 * beat) && root.showClipView(), "open a long MIDI clip for edge scrolling");
+    root.resizeClipView(360);
+    root.frame();
+    auto& panel = root.clipView;
+    auto& editor = panel.notes;
+    if (!panel.details()) return;
+    editor.time.left = 2;
+    editor.time.scale = 100;
+    editor.time.grid.snap = false;
+    const auto area = editor.notesArea();
+    editor.keys.show(64, 64, area.getHeight());
+    const auto add = juce::Point<float>(static_cast<float>(area.getX() + editor.time.x(4 * beat)),
+        static_cast<float>(area.getY() + editor.keys.y(64).value_or(0) + editor.keys.keyHeight / 2));
+    editor.mouseDoubleClick(pressAt(editor, add));
+    root.frame();
+    check(panel.details()->notes.size() == 1, "a note to carry across both edges");
+    if (panel.details()->notes.size() != 1) return;
+    const auto original = panel.details()->notes.front();
+    const auto box = editor.boxOf(original);
+    if (!box) { check(false, "the note has a visible box"); return; }
+    const auto from = juce::Point<float>(static_cast<float>(box->x + box->width / 2),
+                                         static_cast<float>(box->y + box->height / 2));
+    const auto edge = juce::Point<float>(static_cast<float>(area.getRight() + 12),
+                                         static_cast<float>(area.getBottom() + 12));
+    const auto before = editor.time.left;
+    const int beforeY = editor.keys.scrollY;
+    const int horizontal = ArrangementView::edgeScrollStep(edge.roundToInt().x - area.getX(), area.getWidth());
+    const int vertical = ArrangementView::edgeScrollStep(edge.roundToInt().y - area.getY(), area.getHeight());
+    const auto pending = OpJournal(document->store()).headSeq();
+    editor.mouseDown(pressAt(editor, from));
+    const auto expectedAt = [&](int repeats) {
+        return original.startTicks + std::llround(static_cast<double>(edge.roundToInt().x - from.roundToInt().x +
+            repeats * horizontal) / editor.time.scale * beat);
+    };
+    for (int repeats = 1; repeats <= 3; ++repeats) {
+        editor.mouseDrag(dragAt(editor, from, edge));
+        root.frame();
+        const auto expectedKey = editor.keys.keyAt(area.getHeight() - 1);
+        check(std::abs(editor.time.left - (before + repeats * horizontal / editor.time.scale)) < 1e-9 &&
+                  editor.keys.scrollY == beforeY + repeats * vertical && expectedKey &&
+                  editor.shown(original).key == *expectedKey && editor.shown(original).startTicks == expectedAt(repeats) &&
+                  OpJournal(document->store()).headSeq() == pending,
+              "each repeated drag scrolls both axes and keeps the held note anchored without writing an edit");
+    }
+    editor.mouseUp(dragAt(editor, from, edge));
+    root.frame();
+    check(panel.details()->notes.front().startTicks == expectedAt(3) &&
+              panel.details()->notes.front().key == editor.keys.keyAt(area.getHeight() - 1),
+          "releasing commits the last edge-scrolled note preview");
+
+    editor.time.left = 0;
+    editor.time.grid.snap = true;
+    check(panel.chooseGrid(15), "use a quarter-note grid for a fixed Draw Mode start");
+    editor.setDrawMode(true);
+    editor.keys.show(72, 72, area.getHeight());
+    const auto drawFrom = juce::Point<float>(static_cast<float>(area.getX() + editor.time.x(beat) + 6),
+        static_cast<float>(area.getY() + editor.keys.y(72).value_or(0) + editor.keys.keyHeight / 2));
+    const auto drawTo = juce::Point<float>(edge.x, drawFrom.y);
+    editor.mouseDown(pressAt(editor, drawFrom));
+    for (int repeat = 0; repeat < 8; ++repeat) {
+        editor.mouseDrag(dragAt(editor, drawFrom, drawTo));
+        root.frame();
+    }
+    editor.mouseUp(dragAt(editor, drawFrom, drawTo));
+    root.frame();
+    const auto& notes = panel.details()->notes;
+    const auto drew = [&](std::int64_t tick) {
+        return std::any_of(notes.begin(), notes.end(), [&](const auto& note) { return note.key == 72 && note.startTicks == tick; });
+    };
+    const auto last = editor.time.snap(editor.time.tick(drawTo.x - static_cast<float>(area.getX())), false);
+    check(editor.time.left > 1 && drew(beat) && drew(last), "a Draw Mode stroke keeps its first grid step as the pressed point scrolls offscreen");
+    editor.setDrawMode(false);
+    editor.time.left = 0;
+    const auto early = std::find_if(notes.begin(), notes.end(), [&](const auto& note) {
+        return note.key == 72 && note.startTicks == beat;
+    });
+    if (early == notes.end()) return;
+    const auto earlyId = early->id;
+    const juce::Point<float> bandFrom(static_cast<float>(area.getX() + 50), drawFrom.y - 12.f);
+    const juce::Point<float> bandTo(edge.x, drawFrom.y + 12.f);
+    editor.mouseDown(pressAt(editor, bandFrom));
+    for (int repeat = 0; repeat < 8; ++repeat) {
+        editor.mouseDrag(dragAt(editor, bandFrom, bandTo));
+        root.frame();
+    }
+    const auto span = editor.timeSelection();
+    check(span && span->first == 0 && span->second >= last && editor.isSelected(earlyId),
+          "the band retains its song-time start and notes boxed before they scroll out of view");
+    editor.mouseUp(dragAt(editor, bandFrom, bandTo));
+}
+void arrangementScrubEdgeScroll(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "scrub-edge-scroll.adi", true, {}, error);
+    check(document != nullptr, "a project for Arrangement scrub edge scrolling");
+    if (!document) return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "scrub-edge-scroll");
+    root.setSize(1500, 900);
+    constexpr auto beat = textproj::kPPQ;
+    check(root.addLocatorAt(beat) && root.setLoopRange({2 * beat, 4 * beat}), "add a locator and loop brace to drag");
+    root.frame();
+    auto& arrangement = root.arrangement;
+    auto& geometry = arrangement.geometry;
+    auto& scrub = arrangement.scrub;
+    geometry.left = 0;
+    geometry.scale = 100;
+    geometry.grid.snap = false;
+    const auto locator = locatorsOf(*root.reader().get());
+    check(locator.size() == 1, "one locator to drag");
+    if (locator.size() != 1) return;
+    const juce::Point<float> from(static_cast<float>(geometry.x(beat) + 3), static_cast<float>(scrub.getHeight() - 2));
+    const juce::Point<float> edge(static_cast<float>(scrub.getWidth() + 12), from.y);
+    check(scrub.locatorAt(from.x) == locator.front().id, "the locator is hit off-centre");
+    const auto grab = geometry.tick(from.x) - beat;
+    scrub.mouseDown(pressAt(scrub, from));
+    scrub.mouseDrag(dragAt(scrub, from, edge));
+    root.frame();
+    const auto first = scrub.locatorMovingTo();
+    scrub.mouseDrag(dragAt(scrub, from, edge));
+    root.frame();
+    const auto last = geometry.tick(edge.x) - grab;
+    check(geometry.left > 0 && last > first && scrub.locatorMovingTo() == last,
+          "scrub-area auto-repeat moves the locator by the scroll without losing the grab offset");
+    scrub.mouseUp(dragAt(scrub, from, edge));
+    root.frame();
+    check(locatorsOf(*root.reader().get()).front().pos == last, "the locator commits at its last preview");
+    geometry.left = 0;
+    const juce::Point<float> braceFrom(static_cast<float>(geometry.x(3 * beat)), 3.f);
+    const juce::Point<float> braceEdge(edge.x, braceFrom.y);
+    scrub.mouseDown(pressAt(scrub, braceFrom));
+    scrub.mouseDrag(dragAt(scrub, braceFrom, braceEdge));
+    root.frame();
+    scrub.mouseDrag(dragAt(scrub, braceFrom, braceEdge));
+    root.frame();
+    const auto expectedStart = geometry.tick(braceEdge.x) - beat;
+    const auto preview = scrub.braceMoving();
+    check(geometry.left > 0 && preview && preview->start == expectedStart && preview->length() == 2 * beat,
+          "the dragged Arrangement loop brace scrolls while keeping its original length and grab offset");
+    scrub.mouseUp(dragAt(scrub, braceFrom, braceEdge));
+}
 void clipViewNoteGrid(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto document = ProjectDocument::open(dir / "note-grid.adi", true, {}, error);
@@ -19258,6 +19407,8 @@ int main(int argc, char **argv) {
     trace("clipViewNotes", [&] { clipViewNotes(commands, temp.path()); });
     trace("clipViewNotePreview", [&] { clipViewNotePreview(commands, temp.path()); });
     trace("clipViewNoteGrid", [&] { clipViewNoteGrid(commands, temp.path()); });
+    trace("noteEditorEdgeScroll", [&] { noteEditorEdgeScroll(commands, temp.path()); });
+    trace("arrangementScrubEdgeScroll", [&] { arrangementScrubEdgeScroll(commands, temp.path()); });
     trace("clipViewFields", [&] { clipViewFields(commands, temp.path()); });
     trace("clipViewTools", [&] { clipViewTools(commands, temp.path()); });
     trace("clipViewMore", [&] { clipViewMore(commands, temp.path()); });

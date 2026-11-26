@@ -369,6 +369,16 @@ class NoteEditor final : public juce::Component {
     std::vector<std::pair<std::uint64_t, std::int64_t>> trimPreview_;
     std::vector<std::pair<std::uint64_t, int>> shapePreview_;
     juce::Point<int> from_, to_;
+    // The press is anchored to the content while the edge under the pointer scrolls.
+    double dragLeft_ = 0, dragScale_ = 1;
+    int dragScrollY_ = 0;
+    std::int64_t dragStartTick_ = 0;
+    std::optional<int> dragStartKey_;
+    bool dragAutoRepeat_ = false;
+    double dragAnchorX() const noexcept;
+    juce::Point<int> dragAnchorPoint() const noexcept;
+    double dragDistanceTicks() const noexcept;
+    void scrollDrag(juce::Rectangle<int> area);
     std::int64_t dragTicks_ = 0;
     int dragKeys_ = 0;
     std::uint64_t anchor_ = 0;

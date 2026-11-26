@@ -278,7 +278,8 @@ void NoteEditor::trimStroke() {
     const auto window = ClipWindow::of(*clip);
     const auto at = time.tick(static_cast<double>(to_.x - area.getX()));
     const auto cut = window.toSource(time.grid.snap ? time.snap(at, false) : at);
-    const int top = std::min(from_.y, to_.y), bottom = std::max(from_.y, to_.y);
+    const int startY = dragAnchorPoint().y;
+    const int top = std::min(startY, to_.y), bottom = std::max(startY, to_.y);
     for (const auto &n : clip->notes) {
         const auto box = boxOf(n);
         if (!box || box->y > bottom || box->y + box->height <= top)
@@ -376,8 +377,9 @@ std::vector<std::int64_t> NoteEditor::drawnSteps() const {
     // Every grid step from where the stroke began to where it is, whichever way it went.
     const auto area = notesArea();
     const auto window = ClipWindow::of(*clip);
-    const auto a = time.snap(time.tick(static_cast<double>(std::min(from_.x, to_.x) - area.getX())), false);
-    const auto b = time.tick(static_cast<double>(std::max(from_.x, to_.x) - area.getX()));
+    const auto end = time.tick(static_cast<double>(to_.x - area.getX()));
+    const auto a = time.snap(std::min(dragStartTick_, end), false);
+    const auto b = std::max(dragStartTick_, end);
     const auto step = gridTicks();
     for (auto at = a; at <= b && out.size() < 4096; at += step)
         out.push_back(window.toSource(at));
@@ -1011,40 +1013,39 @@ void NoteEditor::rulerDrag(const juce::ModifierKeys &mods) {
     if (clip == nullptr)
         return;
     const auto window = ClipWindow::of(*clip);
-    const auto area = rulerArea();
-    // Where the pointer is, on the nearest grid line; and how far it has come, in whole grid steps.
-    const auto raw = time.tick(static_cast<double>(std::max(0, to_.x - area.getX())));
-    auto at = raw;
-    if (snapping(mods)) {
+    // The handle follows the pointer's distance in song time, including any scroll.
+    const double moved = dragDistanceTicks();
+    const auto destination = [&](std::int64_t source) {
+        const auto raw = window.toArrangement(source) + std::llround(moved);
+        if (!snapping(mods)) return window.toSource(raw);
         const auto below = time.snap(raw, false), above = time.snap(raw, true);
-        at = raw - below <= above - raw ? below : above;
-    }
-    const double moved = static_cast<double>(to_.x - from_.x) / time.scale * static_cast<double>(textproj::kPPQ);
+        return window.toSource(raw - below <= above - raw ? below : above);
+    };
     const auto step = static_cast<double>(gridTicks());
     const auto by = snapping(mods) ? static_cast<std::int64_t>(std::llround(moved / step) * static_cast<long long>(step))
                                    : static_cast<std::int64_t>(std::llround(moved));
     const auto start = clip->loopStartTicks, length = loopLengthOf(*clip);
     loopPreview_.reset();
     markerPreview_.reset();
-    if (to_ == from_)
+    if (moved == 0)
         return;
     switch (rulerDrag_) {
     case RulerPart::LoopStart: {
-        const auto to = std::clamp<std::int64_t>(window.toSource(at), 0, start + length - 1);
+        const auto to = std::clamp<std::int64_t>(destination(start), 0, start + length - 1);
         loopPreview_ = {to, start + length - to};
         break;
     }
     case RulerPart::LoopEnd:
-        loopPreview_ = {start, std::max<std::int64_t>(1, window.toSource(at) - start)};
+        loopPreview_ = {start, std::max<std::int64_t>(1, destination(start + length) - start)};
         break;
     case RulerPart::Loop:
         loopPreview_ = {std::max<std::int64_t>(0, start + by), length};
         break;
     case RulerPart::StartMarker:
-        markerPreview_ = std::clamp<std::int64_t>(window.toSource(at), 0, endMarkerOf(*clip) - 1);
+        markerPreview_ = std::clamp<std::int64_t>(destination(clip->startMarkerTicks), 0, endMarkerOf(*clip) - 1);
         break;
     case RulerPart::EndMarker:
-        markerPreview_ = std::max(window.toSource(at), clip->startMarkerTicks + 1);
+        markerPreview_ = std::max(destination(endMarkerOf(*clip)), clip->startMarkerTicks + 1);
         break;
     case RulerPart::None:
         break;
@@ -1817,6 +1818,13 @@ void NoteEditor::mouseDown(const juce::MouseEvent &e) {
     dragKeys_ = 0;
     typedVelocity_.clear();
     from_ = to_ = e.getPosition();
+    const auto area = notesArea();
+    dragLeft_ = time.left;
+    dragScale_ = time.scale;
+    dragScrollY_ = keys.scrollY;
+    dragStartTick_ = time.tick(static_cast<double>(from_.x - area.getX()));
+    dragStartKey_ = keys.keyAt(from_.y - area.getY());
+    dragAutoRepeat_ = false;
     const auto *clip = panel.details();
     if (clip != nullptr && e.mods.isPopupMenu()) {
         if (keysArea().contains(from_)) {
@@ -2055,6 +2063,34 @@ void NoteEditor::mouseDown(const juce::MouseEvent &e) {
     }
     repaint();
 }
+double NoteEditor::dragAnchorX() const noexcept {
+    const int origin = notesArea().getX();
+    return origin + (dragLeft_ - time.left) * time.scale + (from_.x - origin) * (time.scale / dragScale_);
+}
+juce::Point<int> NoteEditor::dragAnchorPoint() const noexcept {
+    return {static_cast<int>(std::lround(std::clamp(dragAnchorX(), -1e6, 1e6))),
+            from_.y + dragScrollY_ - keys.scrollY};
+}
+double NoteEditor::dragDistanceTicks() const noexcept {
+    return (static_cast<double>(to_.x) - dragAnchorX()) / time.scale * textproj::kPPQ;
+}
+void NoteEditor::scrollDrag(juce::Rectangle<int> area) {
+    const bool vertical = drag_ == Drag::Move || drag_ == Drag::Band || drag_ == Drag::Trim;
+    if (!vertical && drag_ != Drag::Start && drag_ != Drag::End && drag_ != Drag::Draw &&
+        drag_ != Drag::Ruler && drag_ != Drag::Stretch)
+        return;
+    if (!dragAutoRepeat_) {
+        dragAutoRepeat_ = true;
+        beginDragAutoRepeat(ArrangementView::kAutoRepeatMs);
+    }
+    panel.root.arrangement.followPaused = true;
+    const auto left = time.left;
+    time.pan(ArrangementView::edgeScrollStep(to_.x - area.getX(), area.getWidth()));
+    if (vertical)
+        keys.scrollBy(ArrangementView::edgeScrollStep(to_.y - area.getY(), area.getHeight()), area.getHeight());
+    if (time.left != left)
+        panel.repaint();
+}
 void NoteEditor::mouseDrag(const juce::MouseEvent &e) {
     const auto *clip = panel.details();
     if (clip == nullptr || drag_ == Drag::None)
@@ -2066,34 +2102,36 @@ void NoteEditor::mouseDrag(const juce::MouseEvent &e) {
     copying_ = drag_ == Drag::Move && e.mods.isCtrlDown();
 #endif
     const auto area = notesArea();
+    if (e.mouseWasDraggedSinceMouseDown())
+        scrollDrag(area);
     const auto previousTicks = dragTicks_;
     const bool draggingNotes = drag_ == Drag::Move || drag_ == Drag::Start || drag_ == Drag::End;
     const auto *anchor = draggingNotes ? note_edits_detail::find(*clip, anchor_) : nullptr;
     if (draggingNotes) {
-        const int dx = to_.x - from_.x;
-        dragTicks_ = std::llround(static_cast<double>(dx) / time.scale * textproj::kPPQ);
-        if (dx != 0 && anchor != nullptr && snapping(e.mods)) {
+        const double moved = dragDistanceTicks();
+        dragTicks_ = std::llround(moved);
+        if (moved != 0 && anchor != nullptr && snapping(e.mods)) {
             // Follow the pointer until the first grid line approaches. Snap the grabbed note's moving
             // edge from then on, and apply its delta to the whole selection (manual 10.2.1).
             const auto origin = ClipWindow::of(*clip).toArrangement(
                 anchor->startTicks + (drag_ == Drag::End ? anchor->durationTicks : 0));
             const auto target = origin + dragTicks_;
-            const auto firstLine = time.snap(origin, dx > 0);
+            const auto firstLine = time.snap(origin, moved > 0);
             constexpr double magneticPixels = 4.;
-            const auto remaining = dx > 0 ? firstLine - target : target - firstLine;
+            const auto remaining = moved > 0 ? firstLine - target : target - firstLine;
             const auto distance = static_cast<double>(remaining) / textproj::kPPQ * time.scale;
             if (distance <= std::min(magneticPixels, time.gridQuarters() * time.scale / 2.)) {
                 const auto below = time.snap(target, false), above = time.snap(target, true);
                 const auto distanceBelow = target - below, distanceAbove = above - target;
-                const bool nearerBelow = distanceBelow < distanceAbove || (distanceBelow == distanceAbove && dx < 0);
+                const bool nearerBelow = distanceBelow < distanceAbove || (distanceBelow == distanceAbove && moved < 0);
                 const auto nearest = nearerBelow ? below : above;
-                const auto line = dx > 0 ? std::max(nearest, firstLine) : std::min(nearest, firstLine);
+                const auto line = moved > 0 ? std::max(nearest, firstLine) : std::min(nearest, firstLine);
                 dragTicks_ = line - origin;
             }
         }
     }
     if (drag_ == Drag::Move) {
-        const auto a = keys.keyAt(from_.y - area.getY());
+        const auto a = dragStartKey_;
         const auto b = keys.keyAt(std::clamp(to_.y - area.getY(), 0, std::max(0, area.getHeight() - 1)));
         int low = kNoteKeys - 1, high = 0;
         for (const auto &n : clip->notes)
@@ -2121,7 +2159,9 @@ void NoteEditor::mouseDrag(const juce::MouseEvent &e) {
     } else if (drag_ == Drag::Stretch) {
         // The marker follows the pointer, on the nearest grid line unless snapping is bypassed; the
         // marker of a drag begun between the two stays between them.
-        const auto raw = time.tick(static_cast<double>(std::max(0, to_.x - area.getX())));
+        const auto origin = stretchPart_ == StretchPart::Middle ? stretchP_
+                          : stretchPart_ == StretchPart::Start ? stretchA_ : stretchB_;
+        const std::int64_t raw = origin + std::llround(dragDistanceTicks());
         auto at = raw;
         if (snapping(e.mods)) {
             const auto below = time.snap(raw, false), above = time.snap(raw, true);
@@ -2153,11 +2193,11 @@ void NoteEditor::mouseDrag(const juce::MouseEvent &e) {
         handleDrag();
     } else if (drag_ == Drag::Band) {
         // The notes the rectangle touches, added to what Shift kept.
-        const juce::Rectangle<int> band(from_, to_);
+        const juce::Rectangle<int> band(dragAnchorPoint(), to_);
         if (!e.mods.isShiftDown() && insert_) {
             // And the time it spans, from the insert marker, on the grid (manual 10.5.2).
             const auto at = time.tick(static_cast<double>(std::max(0, to_.x - area.getX())));
-            head_ = snapping(e.mods) ? time.snap(at, to_.x > from_.x) : at;
+            head_ = snapping(e.mods) ? time.snap(at, dragDistanceTicks() > 0) : at;
             if (*head_ == *insert_)
                 head_.reset();
         }
@@ -2793,10 +2833,11 @@ void NoteEditor::paint(juce::Graphics &g) {
         }
         if (drag_ == Drag::Trim) {
             g.setColour(look::textBright.withAlpha(0.8f));
-            g.fillRect(to_.x, std::min(from_.y, to_.y), 1, std::max(1, std::abs(to_.y - from_.y)));
+            const int startY = dragAnchorPoint().y;
+            g.fillRect(to_.x, std::min(startY, to_.y), 1, std::max(1, std::abs(to_.y - startY)));
         }
         if (drag_ == Drag::Band) {
-            const juce::Rectangle<int> band(from_, to_);
+            const juce::Rectangle<int> band(dragAnchorPoint(), to_);
             g.setColour(look::textBright.withAlpha(0.18f));
             g.fillRect(band);
             g.setColour(look::textBright.withAlpha(0.7f));
