@@ -282,6 +282,123 @@ int renderThrough(adi::device::Vst3Host& host, const juce::String& want) {
 }
 
 
+/// SC-310: does a value the HOST sets (ADI's panel, Undo, Delete, a project's rows at open: all
+/// `setParam`) reach a real plug-in's sound, as the same value sent as automation does? A held note
+/// (or, on an effect, a tone in), the level measured before, after `setParam`, back, and after the
+/// same value as a ParamValue event; stopped, then with the transport playing.
+/// --param-reach <plugin> <parameter name> <normalized value>
+int paramReach(adi::device::Vst3Host& host, const juce::String& want, const juce::String& paramName, double target) {
+    juce::KnownPluginList list;
+    host.scan(host.defaultSearchPaths(), list);
+    juce::PluginDescription found;
+    if (!pickPlugin(list, want, found)) { std::printf("  skip  no plugin matching '%s'\n", want.toRawUTF8()); return 0; }
+    // Three fresh instances on the same timeline, the change at the same block: none, the value set by
+    // the host, the same value as automation. A held note drifts and a compressor moves on its own, so
+    // only runs that are identical but for the change can be compared.
+    enum class Change { None, Host, Automation };
+    struct Run {
+        double level = 0.0;
+        std::string name;
+        double original = 0.0;
+        bool ok = false;
+    };
+    const auto run = [&](Change change, bool playing) {
+        Run out;
+        std::string err;
+        auto dev = host.makeDevice(found, 48000.0, 512, err);
+        auto* v3 = dynamic_cast<adi::device::Vst3Device*>(dev.get());
+        if (v3 == nullptr || !v3->loaded()) {
+            std::printf("  FAIL  %s did not load: %s\n", found.name.toRawUTF8(), err.c_str());
+            return out;
+        }
+        v3->prepare(48000.0, 512);
+        std::int32_t index = -1;
+        for (std::int32_t i = 0; i < v3->paramCount(); ++i)
+            if (const auto* d = v3->paramAt(i); d != nullptr && juce::String(d->name).equalsIgnoreCase(paramName))
+                index = i;
+        if (index < 0) {
+            std::printf("  FAIL  %s has no parameter '%s'; its level-like ones:\n", found.name.toRawUTF8(),
+                        paramName.toRawUTF8());
+            for (std::int32_t i = 0; i < v3->paramCount(); ++i)
+                if (const auto* d = v3->paramAt(i); d != nullptr) {
+                    const juce::String name(d->name);
+                    if (name.containsIgnoreCase("vol") || name.containsIgnoreCase("gain") ||
+                        name.containsIgnoreCase("out") || name.containsIgnoreCase("level") ||
+                        name.containsIgnoreCase("mix"))
+                        std::printf("        '%s'\n", d->name.c_str());
+                }
+            return out;
+        }
+        const auto* desc = v3->paramAt(index);
+        const std::string id = desc->id;
+        out.name = desc->name;
+        out.original = v3->getParam(id).normalized;
+        std::vector<float> l(512), r(512), il(512), ir(512);
+        float* outp[2] = {l.data(), r.data()};
+        const float* inp[2] = {il.data(), ir.data()};
+        adi::engine::DeviceTransport clock;
+        clock.playing = playing;
+        std::int64_t at = 0;
+        double phase = 0.0;
+        const auto block = [&] {
+            for (std::size_t i = 0; i < il.size(); ++i) { // a 220 Hz tone in, for an effect
+                il[i] = ir[i] = static_cast<float>(0.25 * std::sin(phase));
+                phase += 2.0 * juce::MathConstants<double>::pi * 220.0 / 48000.0;
+            }
+            clock.sample = at;
+            clock.quarterNotes = static_cast<double>(at) / 24000.0;
+            adi::engine::NodeIo io;
+            io.in = inp; io.out = outp; io.channels = 2; io.frames = 512; io.sampleRate = 48000.0;
+            io.deviceTransport = &clock;
+            v3->process(io);
+            at += 512;
+        };
+        if (found.isInstrument) {
+            adi::engine::Event on;
+            on.type = adi::engine::EventType::NoteOn; on.noteId = 1; on.dim = 48; on.value = 0.8; on.frame = 0;
+            v3->pushEvent(on);
+        }
+        for (int b = 0; b < 30; ++b) block();
+        if (change == Change::Host)
+            v3->setParam(id, adi::device::ParamValue::fromNormalized(target));
+        else if (change == Change::Automation) {
+            adi::engine::Event automation;
+            automation.type = adi::engine::EventType::ParamValue;
+            automation.paramId = static_cast<std::uint32_t>(std::stoul(id));
+            automation.value = target;
+            automation.frame = 0;
+            v3->pushEvent(automation);
+        }
+        for (int b = 0; b < 8; ++b) block();
+        double sum = 0.0;
+        std::size_t n = 0;
+        for (int b = 0; b < 20; ++b) {
+            block();
+            for (std::size_t i = 0; i < l.size(); ++i) { sum += double(l[i]) * l[i]; ++n; }
+        }
+        out.level = 10.0 * std::log10(sum / double(n) + 1e-20);
+        out.ok = true;
+        return out;
+    };
+    int rc = 0;
+    for (const bool playing : {false, true}) {
+        const auto none = run(Change::None, playing);
+        const auto bySet = run(Change::Host, playing);
+        const auto byAutomation = run(Change::Automation, playing);
+        if (!none.ok || !bySet.ok || !byAutomation.ok) return 1;
+        std::printf("  %s, %s, '%s' %.3f -> %.3f: unchanged %.1f dB, set by the host %.1f dB, as automation %.1f dB\n",
+                    found.name.toRawUTF8(), playing ? "playing" : "stopped", none.name.c_str(), none.original, target,
+                    none.level, bySet.level, byAutomation.level);
+        const bool moves = std::fabs(byAutomation.level - none.level) > 3.0;
+        check(moves, "the same value as automation moves the level (else the parameter proves nothing)");
+        const bool reaches = std::fabs(bySet.level - byAutomation.level) < 1.0;
+        check(reaches, std::string(playing ? "playing: " : "stopped: ") +
+                           "a value the host sets moves the sound as automation does");
+        if (!moves || !reaches) rc = 1;
+    }
+    return rc;
+}
+
 /// ADR-0098: does per-note expression reach a REAL synth as the music meant?
 ///
 /// Every route, on a fresh instance each time, two scenes:
@@ -1706,6 +1823,8 @@ int main(int argc, char** argv) {
     juce::String mpeName;
     juce::String pluginName;
     juce::String dimName;
+    juce::String reachName, reachParam;
+    double reachValue = 0.1;
     bool fixtureOnly = false;
     for (int i = 1; i < argc; ++i)
         if (std::string(argv[i]) == "--fixture") fixtureOnly = true;
@@ -1716,6 +1835,12 @@ int main(int argc, char** argv) {
         if (std::string(argv[i]) == "--latency-probe") latencyProbe = argv[i + 1];
         if (std::string(argv[i]) == "--render") renderName = argv[i + 1];
     }
+    for (int i = 1; i + 3 < argc; ++i)
+        if (std::string(argv[i]) == "--param-reach") {
+            reachName = argv[i + 1];
+            reachParam = argv[i + 2];
+            reachValue = std::atof(argv[i + 3]);
+        }
     for (int i = 1; i < argc; ++i)
         if (std::string(argv[i]) == "--require-plugin") requirePlugin = true;
 
@@ -1765,6 +1890,14 @@ int main(int argc, char** argv) {
     if (mpeName.isNotEmpty()) {
         std::printf("[ADR-0097/0098] MPE+ through VST3, measured on a real synth\n");
         const int rc = mpeAcceptance(host, mpeName);
+        std::printf("\n%s -- %d checks, %d failure(s)\n",
+                    g_failures ? "FAILED" : "PASS", g_checks, g_failures);
+        return g_failures ? 1 : rc;
+    }
+
+    if (reachName.isNotEmpty()) {
+        std::printf("[SC-310] a value the host sets reaches a real plug-in's sound\n");
+        const int rc = paramReach(host, reachName, reachParam, reachValue);
         std::printf("\n%s -- %d checks, %d failure(s)\n",
                     g_failures ? "FAILED" : "PASS", g_checks, g_failures);
         return g_failures ? 1 : rc;
