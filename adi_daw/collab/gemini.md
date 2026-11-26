@@ -4,6 +4,24 @@ Permanent verification seat (`ADR-0252`): Linux environment (from 25 November: f
 
 ---
 
+## 2026-11-26 — `land/*` Round 4 (`land/basics-1127e` `9a9c3f38` & `land/basics-1127d` `569c921e` — FAIL on Clang 14 JUCE)
+
+Verified `origin/land/basics-1127e` at `9a9c3f38` (merging `land/basics-1127d` `569c921e` + `basics/look-chain` + `basics/recording-chain`) on all 16 touched JUCE TUs (`-DADI_WITH_JUCE=ON -DADI_WERROR=ON`) under **GCC 12.4.0** and **Clang 14.0.6 + libstdc++ 12**.
+
+| Branch | SHA | Compiler / Tool | JUCE TUs (`-DADI_WITH_JUCE=ON -DADI_WERROR=ON`, 16 TUs) | Verdict |
+|---|---|---|---|---|
+| `land/basics-1127e` | `9a9c3f38` | GCC 12.4.0 | **PASS** (16/16, 0 warnings, 443.54 s: `ui_main.cpp.o`, `ui_analysis.cpp.o`, `ui_arrangement.cpp.o`, `ui_browser.cpp.o`, `ui_clipview.cpp.o`, `ui_controlbar.cpp.o`, `ui_devices.cpp.o`, `ui_floating.cpp.o`, `ui_mixer.cpp.o`, `ui_settings.cpp.o`, `ui_shell.cpp.o`, `app_audio_page.cpp.o`, `test_ui_shell.cpp.o`, `test_vst3_key.cpp.o`, `vst3_host.cpp.o`, `vst3_probe.cpp.o`) | — |
+| `land/basics-1127e` | `9a9c3f38` | Clang 14.0.6 + libstdc++ 12 | **FAIL** (14/16 0 warnings; **2 hard compile errors**: `src/juce/ui_shell.cpp:1966:74` and `src/juce/ui_arrangement.cpp:2892:42`) | **FAIL (do not land)** |
+| `land/basics-1127d` | `569c921e` | Clang 14.0.6 + libstdc++ 12 | **FAIL** (`src/juce/ui_arrangement.cpp:2800:42` unchanged from `90f4091d`) | **FAIL (do not land)** |
+
+### Findings on `land/basics-1127e` (`9a9c3f38`)
+
+1. **`src/juce/ui_shell.cpp:1966:74` (Clang 14.0.6, `SC-112` `3ddd7c56`, owner `basics/look`):** `error: 'mode' in capture list does not name a variable` (`[safe, mode]` capturing structured binding `const auto &[mode, name]`; fix: `[safe, mode = mode]` or plain pair reference).
+2. **`src/juce/ui_arrangement.cpp:2892:42` (Clang 14.0.6, `SC-87` `002f0b1b`, owner `basics/tracks`; also `:2800:42` on `land/basics-1127d` `569c921e`):** `error: no matching member function for call to 'emplace'` (`automationStroke_.emplace()`; fix: move `AutomationStroke` to namespace scope or assign `automationStroke_ = AutomationStroke{};`).
+- All other 14 JUCE TUs compiled with 0 warnings on Clang 14.0.6. Running headless GCC 12 / Clang 14 on `9a9c3f38` now to catch any headless defects ahead of the fix.
+
+---
+
 ## 2026-11-26 — `basics/*` Round 9 (`basics/speed-chain` `607e34fe` — FAIL in `adi_midi_clips_tests`)
 
 Verified `origin/basics/speed-chain` at `607e34fe` (77 files vs `origin/main`) under **GCC 12.4.0** (`-DADI_WERROR=ON`, headless Pd on, JUCE off, `-DADI_ACCEPTANCE=ON`).
